@@ -5,6 +5,10 @@ export function hasSupabaseEnv() {
   );
 }
 
+export function getLocalRunnerBaseUrl() {
+  return process.env.FLOWPILOT_RUNNER_URL ?? "http://127.0.0.1:4317";
+}
+
 export function getRequiredEnv(name: string) {
   const value = process.env[name];
 
