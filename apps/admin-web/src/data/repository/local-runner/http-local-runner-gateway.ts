@@ -1,10 +1,14 @@
 import type { LocalRunnerGateway } from "@/domain/gateway/local-runner-gateway";
 import type {
+  LocalRunnerArtifact,
+  LocalRunnerBackupResult,
   LocalRunnerFlow,
   LocalRunnerHealth,
   LocalRunnerProvider,
   LocalRunnerPromptExecutionRequest,
   LocalRunnerPromptExecutionResult,
+  LocalRunnerStorageDriver,
+  LocalRunnerStorageDriverRequest,
   LocalRunnerSkill,
 } from "@/domain/model/entity/local-runner";
 
@@ -75,6 +79,108 @@ export class HttpLocalRunnerGateway implements LocalRunnerGateway {
     } catch {
       return [];
     }
+  }
+
+  async listArtifacts() {
+    try {
+      return await readJson<LocalRunnerArtifact[]>(this.baseUrl, "/artifacts");
+    } catch {
+      return [];
+    }
+  }
+
+  async getArtifactById(artifactId: string) {
+    try {
+      return await readJson<LocalRunnerArtifact>(this.baseUrl, `/artifacts/${artifactId}`);
+    } catch {
+      return null;
+    }
+  }
+
+  async getStorageDriver() {
+    try {
+      return await readJson<LocalRunnerStorageDriver>(this.baseUrl, "/storage-driver");
+    } catch {
+      return {
+        driverKey: "filesystem",
+        enabled: false,
+        remoteRootPath: "",
+        remoteFolderName: "FlowPilot",
+        lastValidatedAt: null,
+        lastSyncedAt: null,
+        lastError: null,
+        updatedAt: null,
+      };
+    }
+  }
+
+  async saveStorageDriver(request: LocalRunnerStorageDriverRequest) {
+    const response = await fetch(new URL("/storage-driver", this.baseUrl), {
+      method: "PUT",
+      cache: "no-store",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(request),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Storage driver save failed: ${response.status} ${response.statusText}`);
+    }
+
+    return (await response.json()) as LocalRunnerStorageDriver;
+  }
+
+  async validateStorageDriver() {
+    const response = await fetch(new URL("/storage-driver", this.baseUrl), {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({}),
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        `Storage driver validation failed: ${response.status} ${response.statusText}`,
+      );
+    }
+
+    return (await response.json()) as LocalRunnerStorageDriver;
+  }
+
+  async syncArtifact(artifactId: string) {
+    const response = await fetch(new URL(`/artifacts/${artifactId}/sync`, this.baseUrl), {
+      method: "POST",
+      cache: "no-store",
+    });
+
+    if (!response.ok) {
+      throw new Error(`Artifact sync failed: ${response.status} ${response.statusText}`);
+    }
+
+    return (await response.json()) as LocalRunnerArtifact;
+  }
+
+  async createBackup(scope: string, runId: string | null) {
+    const response = await fetch(new URL("/backup", this.baseUrl), {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        scope,
+        runId,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Artifact backup failed: ${response.status} ${response.statusText}`);
+    }
+
+    return (await response.json()) as LocalRunnerBackupResult;
   }
 
   async executePrompt(request: LocalRunnerPromptExecutionRequest) {
