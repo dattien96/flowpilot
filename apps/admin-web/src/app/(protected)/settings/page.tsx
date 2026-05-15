@@ -3,8 +3,10 @@ import { CheckLocalRunnerHealthUseCase } from "@/domain/usecase/local-runner/che
 import { ListLocalFlowsUseCase } from "@/domain/usecase/local-runner/list-local-flows-usecase";
 import { ListLocalProvidersUseCase } from "@/domain/usecase/local-runner/list-local-providers-usecase";
 import { ListLocalSkillsUseCase } from "@/domain/usecase/local-runner/list-local-skills-usecase";
+import { GetStorageDriverUseCase } from "@/domain/usecase/artifacts/get-storage-driver-usecase";
 import { Badge } from "@/presentation/components/ui/badge";
 import { PromptExecutionPanel } from "@/presentation/components/settings/prompt-execution-panel";
+import { ArtifactStoragePanel } from "@/presentation/components/artifacts/artifact-storage-panel";
 
 function DetailRow({
   label,
@@ -22,11 +24,12 @@ function DetailRow({
 
 export default async function SettingsPage() {
   const gateways = await createGatewayBundle();
-  const [health, providers, skills, flows] = await Promise.all([
+  const [health, providers, skills, flows, storageDriver] = await Promise.all([
     new CheckLocalRunnerHealthUseCase(gateways.localRunnerGateway).execute(),
     new ListLocalProvidersUseCase(gateways.localRunnerGateway).execute(),
     new ListLocalSkillsUseCase(gateways.localRunnerGateway).execute(),
     new ListLocalFlowsUseCase(gateways.localRunnerGateway).execute(),
+    new GetStorageDriverUseCase(gateways.localRunnerGateway).execute(),
   ]);
 
   const runnerTone = health.status === "online" ? "success" : "danger";
@@ -195,6 +198,8 @@ export default async function SettingsPage() {
           filesystem discovery logic.
         </p>
       </section>
+
+      <ArtifactStoragePanel storageDriver={storageDriver} />
 
       <PromptExecutionPanel
         providers={providers.map((provider) => ({

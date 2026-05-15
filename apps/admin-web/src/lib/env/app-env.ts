@@ -1,3 +1,6 @@
+import path from "node:path";
+import fs from "node:fs";
+
 export function hasSupabaseEnv() {
   return Boolean(
     process.env.NEXT_PUBLIC_SUPABASE_URL &&
@@ -17,4 +20,26 @@ export function getRequiredEnv(name: string) {
   }
 
   return value;
+}
+
+export function getWorkspaceRoot() {
+  const workspace = process.env.FLOWPILOT_WORKSPACE;
+  if (workspace) {
+    return workspace;
+  }
+
+  let current = process.cwd();
+
+  for (;;) {
+    if (fs.existsSync(path.join(current, ".agents"))) {
+      return current;
+    }
+
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return process.cwd();
+    }
+
+    current = parent;
+  }
 }

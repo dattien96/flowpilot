@@ -2,6 +2,7 @@ import type { OutputType } from "@/domain/constant/status";
 import type { WorkflowExecutorGateway, WorkflowGateway } from "@/domain/gateway/workflow-gateway";
 import type { Feature } from "@/domain/model/entity/feature";
 import type { Project } from "@/domain/model/entity/project";
+import { saveWorkflowArtifact } from "@/data/repository/artifacts/local-artifact-store";
 
 function buildOutputMarkdown(
   outputType: OutputType,
@@ -125,6 +126,26 @@ export class MockWorkflowExecutor implements WorkflowExecutorGateway {
         ),
         isApproved: false,
         createdAt: new Date().toISOString(),
+      });
+
+      await saveWorkflowArtifact({
+        artifactId: outputId,
+        title: step.stepName,
+        projectId: detail.run.projectId,
+        featureId: detail.run.featureId,
+        workflowRunId: runId,
+        workflowStepKey: step.stepKey,
+        providerKey: "mock",
+        contentMarkdown: buildOutputMarkdown(
+          outputType ?? normalizedOutputType,
+          project,
+          feature,
+        ),
+        promptText: `Generate ${step.stepName} for ${project.name} / ${feature.title}`,
+        stdoutText: "",
+        stderrText: "",
+        commandText: "mock-executor",
+        sourceKind: "workflow_output",
       });
 
       await this.workflowGateway.createLog({

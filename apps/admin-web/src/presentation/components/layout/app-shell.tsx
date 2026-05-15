@@ -13,7 +13,7 @@ const navItems = [
   { href: "/features", label: "Features", icon: Bot },
   { href: "/workflow-runs", label: "Workflow Runs", icon: Workflow },
   { href: "/approvals", label: "Approval Center", icon: ShieldCheck },
-  { href: "/outputs", label: "Outputs", icon: FileStack },
+  { href: "/outputs", label: "Artifacts", icon: FileStack },
   { href: "/logs", label: "Logs", icon: Logs },
   { href: "/settings", label: "Settings", icon: Settings2 },
 ];
