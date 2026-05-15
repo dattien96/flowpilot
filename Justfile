@@ -83,7 +83,7 @@ runner-flows:
 # Build and run the admin web + local runner with Docker Compose
 docker-up:
     @echo "Starting admin web + local runner with Docker Compose..."
-    @docker compose up --build admin-web local-runner
+    @USERPROFILE="${USERPROFILE:-$HOME}" docker compose up --build admin-web local-runner
 
 # Stop Docker Compose services
 docker-down:
