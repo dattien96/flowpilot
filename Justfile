@@ -75,3 +75,16 @@ runner-skills:
 # List local flows markdown
 runner-flows:
     @cd {{LOCAL_RUNNER_PATH}} && go run ./cmd/flowpilot flows list
+
+# ============================================================================
+# DOCKER
+# ============================================================================
+
+# Build and run the admin web + local runner with Docker Compose
+docker-up:
+    @echo "Starting admin web + local runner with Docker Compose..."
+    @docker compose up --build admin-web local-runner
+
+# Stop Docker Compose services
+docker-down:
+    @docker compose down
