@@ -2,7 +2,9 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -128,6 +130,141 @@ func (r *Runner) ListFlows() ([]Flow, error) {
 	}
 
 	return flows, nil
+}
+
+func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionRequest) (PromptExecutionResult, error) {
+	if strings.TrimSpace(request.Prompt) == "" {
+		return PromptExecutionResult{}, errors.New("prompt is required")
+	}
+
+	if strings.TrimSpace(request.ProviderKey) != "codex" {
+		return PromptExecutionResult{}, fmt.Errorf("provider %q is not supported in the MVP runner", request.ProviderKey)
+	}
+
+	workspace := r.workspace
+	if strings.TrimSpace(request.WorkingDirectory) != "" {
+		resolved, err := filepath.Abs(request.WorkingDirectory)
+		if err != nil {
+			return PromptExecutionResult{}, err
+		}
+		workspace = resolved
+	}
+
+	timeout := 10 * time.Minute
+	if request.TimeoutMs > 0 {
+		timeout = time.Duration(request.TimeoutMs) * time.Millisecond
+	}
+
+	runID := newRunID()
+	runDir := filepath.Join(r.workspace, ".flowpilot", "runs", runID)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		return PromptExecutionResult{}, err
+	}
+
+	promptPath := filepath.Join(runDir, "prompt.txt")
+	stdoutPath := filepath.Join(runDir, "stdout.txt")
+	stderrPath := filepath.Join(runDir, "stderr.txt")
+	outputPath := filepath.Join(runDir, "output.md")
+	commandPath := filepath.Join(runDir, "command.txt")
+	metadataPath := filepath.Join(runDir, "metadata.json")
+
+	if err := os.WriteFile(promptPath, []byte(request.Prompt), 0o644); err != nil {
+		return PromptExecutionResult{}, err
+	}
+
+	args := []string{
+		"--sandbox", "read-only",
+		"--cd", workspace,
+		"exec",
+		"--output-last-message", outputPath,
+		"-",
+	}
+	command := "codex " + strings.Join(args, " ")
+	if err := os.WriteFile(commandPath, []byte(command), 0o644); err != nil {
+		return PromptExecutionResult{}, err
+	}
+
+	execCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(execCtx, "codex", args...)
+	promptFile, err := os.Open(promptPath)
+	if err != nil {
+		return PromptExecutionResult{}, err
+	}
+	defer promptFile.Close()
+
+	stdoutFile, err := os.Create(stdoutPath)
+	if err != nil {
+		return PromptExecutionResult{}, err
+	}
+	defer stdoutFile.Close()
+
+	stderrFile, err := os.Create(stderrPath)
+	if err != nil {
+		return PromptExecutionResult{}, err
+	}
+	defer stderrFile.Close()
+
+	cmd.Stdin = promptFile
+	cmd.Stdout = stdoutFile
+	cmd.Stderr = stderrFile
+	cmd.Dir = workspace
+
+	startedAt := time.Now().UTC()
+	runErr := cmd.Run()
+	completedAt := time.Now().UTC()
+
+	exitCode := 0
+	if cmd.ProcessState != nil {
+		exitCode = cmd.ProcessState.ExitCode()
+	} else if runErr != nil {
+		exitCode = 1
+	}
+
+	stdoutSummary := readTextWithLimit(stdoutPath, 4000)
+	stderrSummary := readTextWithLimit(stderrPath, 4000)
+	outputMarkdown := readTextWithLimit(outputPath, 12000)
+	status := "success"
+	errorMessage := ""
+
+	if runErr != nil || exitCode != 0 {
+		status = "failed"
+		if runErr != nil {
+			errorMessage = runErr.Error()
+		}
+		if errorMessage == "" {
+			errorMessage = stderrSummary
+		}
+	}
+
+	result := PromptExecutionResult{
+		Status:         status,
+		RunID:          runID,
+		ProviderKey:    request.ProviderKey,
+		Command:        command,
+		StdoutSummary:  stdoutSummary,
+		StderrSummary:  stderrSummary,
+		OutputMarkdown: outputMarkdown,
+		ArtifactPaths: []string{
+			promptPath,
+			stdoutPath,
+			stderrPath,
+			outputPath,
+			commandPath,
+			metadataPath,
+		},
+		StartedAt:    startedAt.Format(time.RFC3339Nano),
+		CompletedAt:  completedAt.Format(time.RFC3339Nano),
+		ExitCode:     exitCode,
+		ErrorMessage: errorMessage,
+	}
+
+	if metadataBytes, err := json.MarshalIndent(result, "", "  "); err == nil {
+		_ = os.WriteFile(metadataPath, metadataBytes, 0o644)
+	}
+
+	return result, nil
 }
 
 type providerSpec struct {
@@ -339,4 +476,22 @@ func deriveTags(relPath string) []string {
 		tags = append(tags, part)
 	}
 	return tags
+}
+
+func newRunID() string {
+	return fmt.Sprintf("prompt_%s_%d", time.Now().UTC().Format("20060102_150405"), time.Now().UTC().UnixNano()%10000)
+}
+
+func readTextWithLimit(path string, limit int) string {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+
+	trimmed := strings.TrimSpace(string(raw))
+	if len(trimmed) <= limit {
+		return trimmed
+	}
+
+	return trimmed[:limit] + "\n...[truncated]"
 }

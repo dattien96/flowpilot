@@ -33,3 +33,28 @@ export interface LocalRunnerFlow {
   description: string;
   steps: string[];
 }
+
+export interface LocalRunnerPromptExecutionRequest {
+  providerKey: string;
+  prompt: string;
+  skillIds: string[];
+  flowId: string | null;
+  contextSourceIds: string[];
+  timeoutMs: number;
+  workingDirectory: string | null;
+}
+
+export interface LocalRunnerPromptExecutionResult {
+  status: "success" | "failed";
+  runId: string;
+  providerKey: string;
+  command: string;
+  stdoutSummary: string;
+  stderrSummary: string;
+  outputMarkdown: string;
+  artifactPaths: string[];
+  startedAt: string;
+  completedAt: string;
+  exitCode: number;
+  errorMessage: string | null;
+}

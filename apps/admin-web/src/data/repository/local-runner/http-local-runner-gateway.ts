@@ -3,6 +3,8 @@ import type {
   LocalRunnerFlow,
   LocalRunnerHealth,
   LocalRunnerProvider,
+  LocalRunnerPromptExecutionRequest,
+  LocalRunnerPromptExecutionResult,
   LocalRunnerSkill,
 } from "@/domain/model/entity/local-runner";
 
@@ -73,5 +75,22 @@ export class HttpLocalRunnerGateway implements LocalRunnerGateway {
     } catch {
       return [];
     }
+  }
+
+  async executePrompt(request: LocalRunnerPromptExecutionRequest) {
+    const response = await fetch(new URL("/execute", this.baseUrl), {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(request),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Local runner prompt execution failed: ${response.status} ${response.statusText}`);
+    }
+
+    return (await response.json()) as LocalRunnerPromptExecutionResult;
   }
 }

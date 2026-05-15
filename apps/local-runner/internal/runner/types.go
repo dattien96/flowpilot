@@ -27,9 +27,34 @@ type Skill struct {
 }
 
 type Flow struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	FilePath    string   `json:"filePath"`
-	Description string   `json:"description"`
-	Steps       []string `json:"steps"`
+ 	ID          string   `json:"id"`
+ 	Name        string   `json:"name"`
+ 	FilePath    string   `json:"filePath"`
+ 	Description string   `json:"description"`
+ 	Steps       []string `json:"steps"`
+}
+
+type PromptExecutionRequest struct {
+	ProviderKey     string   `json:"providerKey"`
+	Prompt          string   `json:"prompt"`
+	SkillIds        []string `json:"skillIds"`
+	FlowId          string   `json:"flowId"`
+	ContextSourceIds []string `json:"contextSourceIds"`
+	TimeoutMs       int      `json:"timeoutMs"`
+	WorkingDirectory string  `json:"workingDirectory"`
+}
+
+type PromptExecutionResult struct {
+	Status        string   `json:"status"`
+	RunID         string   `json:"runId"`
+	ProviderKey   string   `json:"providerKey"`
+	Command       string   `json:"command"`
+	StdoutSummary string   `json:"stdoutSummary"`
+	StderrSummary string   `json:"stderrSummary"`
+	OutputMarkdown string  `json:"outputMarkdown"`
+	ArtifactPaths []string `json:"artifactPaths"`
+	StartedAt     string   `json:"startedAt"`
+	CompletedAt   string   `json:"completedAt"`
+	ExitCode      int      `json:"exitCode"`
+	ErrorMessage  string   `json:"errorMessage"`
 }
