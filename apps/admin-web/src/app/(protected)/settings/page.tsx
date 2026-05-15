@@ -4,6 +4,7 @@ import { ListLocalFlowsUseCase } from "@/domain/usecase/local-runner/list-local-
 import { ListLocalProvidersUseCase } from "@/domain/usecase/local-runner/list-local-providers-usecase";
 import { ListLocalSkillsUseCase } from "@/domain/usecase/local-runner/list-local-skills-usecase";
 import { Badge } from "@/presentation/components/ui/badge";
+import { PromptExecutionPanel } from "@/presentation/components/settings/prompt-execution-panel";
 
 function DetailRow({
   label,
@@ -194,6 +195,22 @@ export default async function SettingsPage() {
           filesystem discovery logic.
         </p>
       </section>
+
+      <PromptExecutionPanel
+        providers={providers.map((provider) => ({
+          key: provider.key,
+          label: provider.label,
+          installed: provider.installed,
+        }))}
+        skills={skills.map((skill) => ({
+          id: skill.id,
+          name: skill.name,
+        }))}
+        flows={flows.map((flow) => ({
+          id: flow.id,
+          name: flow.name,
+        }))}
+      />
     </div>
   );
 }
