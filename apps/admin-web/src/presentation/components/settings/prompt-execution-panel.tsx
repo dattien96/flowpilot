@@ -1,6 +1,5 @@
 "use client";
 
-import type { FormEvent } from "react";
 import { useMemo, useState } from "react";
 
 import { Button } from "@/presentation/components/ui/button";
@@ -60,8 +59,7 @@ export function PromptExecutionPanel({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [result, setResult] = useState<ExecutionResult | null>(null);
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function handleSubmit() {
     setLoading(true);
     setErrorMessage(null);
     setResult(null);
@@ -117,7 +115,7 @@ export function PromptExecutionPanel({
         </Badge>
       </div>
 
-      <form className="mt-6 space-y-4" onSubmit={handleSubmit}>
+      <div className="mt-6 space-y-4">
         <div className="grid gap-4 lg:grid-cols-3">
           <label className="space-y-2">
             <span className="text-sm font-medium">Provider</span>
@@ -178,7 +176,13 @@ export function PromptExecutionPanel({
         </label>
 
         <div className="flex items-center gap-3">
-          <Button type="submit" disabled={loading || !providerKey}>
+          <Button
+            type="button"
+            disabled={loading || !providerKey}
+            onClick={() => {
+              void handleSubmit();
+            }}
+          >
             {loading ? "Running..." : "Run prompt"}
           </Button>
           {errorMessage ? (
@@ -189,7 +193,7 @@ export function PromptExecutionPanel({
             </p>
           )}
         </div>
-      </form>
+      </div>
 
       {result ? (
         <div className="mt-6 space-y-4 rounded-[1.4rem] border border-border bg-card/80 p-5">
