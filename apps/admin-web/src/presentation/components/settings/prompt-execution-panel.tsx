@@ -189,7 +189,7 @@ export function PromptExecutionPanel({
             <p className="text-sm text-danger">{errorMessage}</p>
           ) : (
             <p className="text-sm text-muted-foreground">
-              The runner writes local artifacts under `.flowpilot/runs/`.
+              The runner writes local artifacts under `.flowpilot/artifacts/`.
             </p>
           )}
         </div>

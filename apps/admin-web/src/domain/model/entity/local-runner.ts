@@ -34,6 +34,49 @@ export interface LocalRunnerFlow {
   steps: string[];
 }
 
+export interface LocalRunnerArtifact {
+  artifactId: string;
+  title: string;
+  sourceKind: string;
+  projectId: string;
+  featureId: string;
+  workflowRunId: string;
+  workflowStepKey: string;
+  providerKey: string;
+  localPath: string;
+  remotePath: string;
+  remoteUrl: string;
+  syncStatus: "local_only" | "syncing" | "synced" | "failed";
+  createdAt: string;
+  updatedAt: string;
+  contentMarkdown: string;
+  previewMarkdown: string;
+}
+
+export interface LocalRunnerStorageDriver {
+  driverKey: string;
+  enabled: boolean;
+  remoteRootPath: string;
+  remoteFolderName: string;
+  lastValidatedAt: string | null;
+  lastSyncedAt: string | null;
+  lastError: string | null;
+  updatedAt: string | null;
+}
+
+export interface LocalRunnerBackupResult {
+  backupPath: string;
+  archiveName: string;
+  createdAt: string;
+}
+
+export interface LocalRunnerStorageDriverRequest {
+  driverKey: string;
+  enabled: boolean;
+  remoteRootPath: string;
+  remoteFolderName: string;
+}
+
 export interface LocalRunnerPromptExecutionRequest {
   providerKey: string;
   prompt: string;

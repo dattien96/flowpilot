@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 
 	"flowpilot-runner/internal/runner"
 	"github.com/spf13/cobra"
@@ -110,6 +111,115 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 					return
 				}
 				writeHTTPJSON(w, flows)
+			})
+			mux.HandleFunc("/artifacts", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+
+				artifacts, err := instance.ListArtifacts()
+				if err != nil {
+					writeHTTPError(w, http.StatusInternalServerError, err)
+					return
+				}
+
+				writeHTTPJSON(w, artifacts)
+			})
+			mux.HandleFunc("/storage-driver", func(w http.ResponseWriter, r *http.Request) {
+				switch r.Method {
+				case http.MethodGet:
+					config, err := instance.GetStorageDriver()
+					if err != nil {
+						writeHTTPError(w, http.StatusInternalServerError, err)
+						return
+					}
+					writeHTTPJSON(w, config)
+				case http.MethodPut:
+					var payload runner.StorageDriverConfig
+					if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+						writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+						return
+					}
+					config, err := instance.SaveStorageDriver(payload)
+					if err != nil {
+						writeHTTPError(w, http.StatusBadRequest, err)
+						return
+					}
+					writeHTTPJSON(w, config)
+				case http.MethodPost:
+					config, err := instance.ValidateStorageDriver()
+					if err != nil {
+						writeHTTPError(w, http.StatusBadRequest, err)
+						return
+					}
+					writeHTTPJSON(w, config)
+				default:
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				}
+			})
+			mux.HandleFunc("/backup", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+
+				var payload runner.BackupRequest
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+
+				result, err := instance.CreateBackup(payload)
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+
+				writeHTTPJSON(w, result)
+			})
+			mux.HandleFunc("/artifacts/", func(w http.ResponseWriter, r *http.Request) {
+				trimmed := strings.TrimPrefix(r.URL.Path, "/artifacts/")
+				parts := strings.Split(trimmed, "/")
+				if len(parts) == 0 || parts[0] == "" {
+					http.NotFound(w, r)
+					return
+				}
+
+				artifactID := parts[0]
+				if len(parts) == 1 {
+					if r.Method != http.MethodGet {
+						http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+						return
+					}
+
+					artifact, err := instance.GetArtifact(artifactID)
+					if err != nil {
+						writeHTTPError(w, http.StatusNotFound, err)
+						return
+					}
+
+					writeHTTPJSON(w, artifact)
+					return
+				}
+
+				if len(parts) == 2 && parts[1] == "sync" {
+					if r.Method != http.MethodPost {
+						http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+						return
+					}
+
+					artifact, err := instance.SyncArtifact(artifactID)
+					if err != nil {
+						writeHTTPError(w, http.StatusBadRequest, err)
+						return
+					}
+
+					writeHTTPJSON(w, artifact)
+					return
+				}
+
+				http.NotFound(w, r)
 			})
 			mux.HandleFunc("/execute", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost {
@@ -235,8 +345,13 @@ func writeHTTPError(w http.ResponseWriter, status int, err error) {
 
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "http://127.0.0.1:3001")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		origin := r.Header.Get("Origin")
+		if origin == "http://127.0.0.1:3001" || origin == "http://localhost:3001" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+		} else {
+			w.Header().Set("Access-Control-Allow-Origin", "http://127.0.0.1:3001")
+		}
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 
 		if r.Method == http.MethodOptions {

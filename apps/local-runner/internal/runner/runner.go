@@ -260,6 +260,17 @@ func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionReque
 		ErrorMessage: errorMessage,
 	}
 
+	if artifact, err := r.SavePromptArtifact(request, result); err == nil {
+		result.ArtifactPaths = []string{
+			artifact.ManifestPath,
+			artifact.ContentPath,
+			artifact.PromptPath,
+			artifact.StdoutPath,
+			artifact.StderrPath,
+			artifact.CommandPath,
+		}
+	}
+
 	if metadataBytes, err := json.MarshalIndent(result, "", "  "); err == nil {
 		_ = os.WriteFile(metadataPath, metadataBytes, 0o644)
 	}
