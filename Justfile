@@ -10,6 +10,8 @@ set windows-shell := ["C:\\Users\\dat.nguyen\\AppData\\Local\\Programs\\Git\\bin
 # --- Variables ---
 ADMIN_WEB_PATH := "apps/admin-web"
 ADMIN_WEB_PORT := "3001"
+LOCAL_RUNNER_PATH := "apps/local-runner"
+LOCAL_RUNNER_PORT := "4317"
 
 # --- Default Target ---
 default: help
@@ -47,3 +49,29 @@ web-lint:
 web-build:
     @echo "Building admin web..."
     @cd {{ADMIN_WEB_PATH}} && npm run build
+
+# Install local runner dependencies
+runner-install:
+    @echo "Downloading local runner dependencies..."
+    @cd {{LOCAL_RUNNER_PATH}} && go mod tidy
+
+# Start the local runner on the default local port
+runner-dev:
+    @echo "Starting local runner on port {{LOCAL_RUNNER_PORT}}..."
+    @cd {{LOCAL_RUNNER_PATH}} && go run ./cmd/flowpilot runner serve --port {{LOCAL_RUNNER_PORT}}
+
+# Print runner health as JSON
+runner-health:
+    @cd {{LOCAL_RUNNER_PATH}} && go run ./cmd/flowpilot runner health
+
+# Detect local AI provider CLIs
+runner-providers:
+    @cd {{LOCAL_RUNNER_PATH}} && go run ./cmd/flowpilot providers detect
+
+# List local skills markdown
+runner-skills:
+    @cd {{LOCAL_RUNNER_PATH}} && go run ./cmd/flowpilot skills list
+
+# List local flows markdown
+runner-flows:
+    @cd {{LOCAL_RUNNER_PATH}} && go run ./cmd/flowpilot flows list
