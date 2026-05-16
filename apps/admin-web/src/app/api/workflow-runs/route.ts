@@ -2,16 +2,29 @@ import { redirect } from "next/navigation";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
+import { assertAdminApiSession } from "@/data/auth/session";
 import { createGatewayBundle } from "@/data/repository/factory";
 import { StartWorkflowRunUseCase } from "@/domain/usecase/workflow-runs/start-workflow-run-usecase";
 
 const startWorkflowSchema = z.object({
   featureId: z.string().min(1),
   workflowDefinitionId: z.string().min(1),
-  contextSourceIds: z.string().optional(),
+  contextSourceIds: z.union([z.string(), z.array(z.string())]).optional(),
 });
 
+function normalizeContextSourceIds(input: string | string[] | undefined) {
+  if (!input) {
+    return [];
+  }
+
+  const values = Array.isArray(input) ? input : input.split(",");
+  return values.map((value) => value.trim()).filter(Boolean);
+}
+
 export async function POST(request: Request) {
+  const auth = await assertAdminApiSession();
+  if (!auth.ok) return auth.response;
+
   const contentType = request.headers.get("content-type") ?? "";
   let parsedInput: z.infer<typeof startWorkflowSchema>;
 
@@ -22,7 +35,7 @@ export async function POST(request: Request) {
     parsedInput = startWorkflowSchema.parse({
       featureId: formData.get("featureId"),
       workflowDefinitionId: formData.get("workflowDefinitionId"),
-      contextSourceIds: formData.get("contextSourceIds"),
+      contextSourceIds: formData.getAll("contextSourceIds").map(String),
     });
   }
 
@@ -34,9 +47,7 @@ export async function POST(request: Request) {
   ).execute({
     featureId: parsedInput.featureId,
     workflowDefinitionId: parsedInput.workflowDefinitionId,
-    contextSourceIds: parsedInput.contextSourceIds
-      ? parsedInput.contextSourceIds.split(",").filter(Boolean)
-      : [],
+    contextSourceIds: normalizeContextSourceIds(parsedInput.contextSourceIds),
   });
 
   if (!result) {
