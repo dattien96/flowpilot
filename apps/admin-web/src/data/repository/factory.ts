@@ -1,5 +1,6 @@
 import { createDemoGatewayBundle } from "@/data/repository/demo/demo-gateway-bundle";
 import { HttpLocalRunnerGateway } from "@/data/repository/local-runner/http-local-runner-gateway";
+import { createSupabaseGatewayBundle } from "@/data/repository/supabase/supabase-gateway-bundle";
 import { getLocalRunnerBaseUrl, hasSupabaseEnv } from "@/lib/env/app-env";
 
 export async function createGatewayBundle() {
@@ -7,7 +8,7 @@ export async function createGatewayBundle() {
 
   if (hasSupabaseEnv()) {
     return {
-      ...createDemoGatewayBundle(),
+      ...createSupabaseGatewayBundle(),
       localRunnerGateway,
     };
   }

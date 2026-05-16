@@ -23,6 +23,9 @@ export default async function WorkflowRunDetailPage({
   }
 
   const pendingApproval = detail.approvals.find((approval) => approval.status === "pending");
+  const outputByStepId = new Map(
+    detail.outputs.map((output) => [output.workflowStepId, output]),
+  );
 
   return (
     <div className="space-y-8">
@@ -38,12 +41,69 @@ export default async function WorkflowRunDetailPage({
 
       <section className="grid gap-4 xl:grid-cols-[0.95fr_1.05fr]">
         <div className="rounded-[1.6rem] border border-border bg-background/70 p-6">
-          <h2 className="text-xl font-semibold">Step timeline</h2>
+          <div className="flex items-start justify-between gap-3">
+            <h2 className="text-xl font-semibold">Step timeline</h2>
+            <div className="flex gap-2">
+              <form action={`/api/workflow-runs/${detail.run.id}/resume`} method="post">
+                <Button type="submit" variant="secondary">Resume</Button>
+              </form>
+              <form action={`/api/workflow-runs/${detail.run.id}/cancel`} method="post">
+                <Button type="submit" variant="ghost">Cancel</Button>
+              </form>
+            </div>
+          </div>
           <div className="mt-4">
             <WorkflowTimeline steps={detail.steps} />
           </div>
+          <div className="mt-6 space-y-3">
+            {detail.steps.map((step) => {
+              const output = outputByStepId.get(step.id);
+              return (
+                <div key={step.id} className="rounded-2xl border border-border bg-card p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="font-semibold">{step.stepName}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {step.stepKey} · {step.status}
+                      </p>
+                    </div>
+                    {output ? (
+                      <a className="text-sm font-medium text-accent" href={`/outputs/${output.id}`}>
+                        Open output
+                      </a>
+                    ) : null}
+                  </div>
+                  {output ? (
+                    <p className="mt-3 line-clamp-3 whitespace-pre-wrap text-sm text-muted-foreground">
+                      {output.contentMarkdown}
+                    </p>
+                  ) : null}
+                  {step.errorMessage ? (
+                    <p className="mt-3 text-sm text-warning">{step.errorMessage}</p>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
         </div>
         <div className="space-y-4">
+          <div className="rounded-[1.6rem] border border-border bg-background/70 p-6">
+            <h2 className="text-xl font-semibold">Selected context</h2>
+            <div className="mt-4 space-y-3">
+              {(detail.selectedContextSources ?? []).length === 0 ? (
+                <p className="text-sm text-muted-foreground">No context selected.</p>
+              ) : (
+                detail.selectedContextSources?.map((context) => (
+                  <div key={context.id} className="rounded-2xl border border-border bg-card p-4">
+                    <p className="font-semibold">{context.title}</p>
+                    <p className="mt-2 text-sm text-muted-foreground">
+                      {context.summarizedContent ?? context.rawContent}
+                    </p>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
           <div className="rounded-[1.6rem] border border-border bg-background/70 p-6">
             <h2 className="text-xl font-semibold">Latest output</h2>
             <article className="mt-4 whitespace-pre-wrap text-sm text-foreground">
@@ -53,13 +113,21 @@ export default async function WorkflowRunDetailPage({
           <div className="rounded-[1.6rem] border border-border bg-background/70 p-6">
             <h2 className="text-xl font-semibold">Approval panel</h2>
             {pendingApproval ? (
-              <div className="mt-4 flex flex-wrap gap-3">
+              <div className="mt-4 grid gap-3">
                 <form action={`/api/approvals/${pendingApproval.id}/decision`} method="post">
+                  <textarea
+                    className="mb-3 min-h-20 w-full rounded-2xl border border-border bg-card px-4 py-3 text-sm"
+                    name="comment"
+                    placeholder="Decision comment"
+                  />
+                  <div className="flex flex-wrap gap-3">
                   <input name="decision" type="hidden" value="approved" />
                   <Button type="submit">Approve</Button>
+                  </div>
                 </form>
                 <form action={`/api/approvals/${pendingApproval.id}/decision`} method="post">
                   <input name="decision" type="hidden" value="changes_requested" />
+                  <input name="comment" type="hidden" value="Changes requested from run detail." />
                   <Button type="submit" variant="secondary">
                     Request changes
                   </Button>
@@ -76,6 +144,39 @@ export default async function WorkflowRunDetailPage({
                 No pending approval for this run.
               </p>
             )}
+            {(detail.approvalDecisions ?? []).length > 0 ? (
+              <div className="mt-5 space-y-2">
+                <p className="text-sm font-semibold">Decision history</p>
+                {detail.approvalDecisions?.map((decision) => (
+                  <div key={decision.id} className="rounded-2xl border border-border bg-card p-3 text-sm">
+                    <Badge>{decision.decision}</Badge>
+                    <p className="mt-2 text-muted-foreground">
+                      {decision.comment ?? "No comment"}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+          <div className="rounded-[1.6rem] border border-border bg-background/70 p-6">
+            <h2 className="text-xl font-semibold">Logs</h2>
+            <div className="mt-4 space-y-2">
+              {detail.logs.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No logs yet.</p>
+              ) : (
+                detail.logs.map((log) => (
+                  <div key={log.id} className="rounded-2xl border border-border bg-card p-3 text-sm">
+                    <p className="font-semibold">
+                      {log.provider}/{log.model}
+                    </p>
+                    <p className="mt-1 text-muted-foreground">
+                      {log.inputTokens + log.outputTokens} tokens · $
+                      {log.costEstimate.toFixed(4)} · {log.latencyMs}ms
+                    </p>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
         </div>
       </section>

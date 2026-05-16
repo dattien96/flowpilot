@@ -75,6 +75,18 @@ export interface Approval {
   createdAt: string;
 }
 
+export interface ApprovalDecision {
+  id: string;
+  approvalId: string;
+  workflowRunId: string;
+  workflowStepId: string;
+  aiOutputId: string | null;
+  decision: ApprovalStatus;
+  reviewerId: string | null;
+  comment: string | null;
+  createdAt: string;
+}
+
 export interface AiCallLog {
   id: string;
   workflowRunId: string;

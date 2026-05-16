@@ -5,12 +5,14 @@ import { usePathname } from "next/navigation";
 
 import { Bot, FileStack, FolderKanban, LayoutDashboard, Logs, Settings2, ShieldCheck, Workflow } from "lucide-react";
 
+import type { AdminSession } from "@/data/auth/session";
 import { cn } from "@/lib/utils/cn";
 
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/projects", label: "Projects", icon: FolderKanban },
   { href: "/features", label: "Features", icon: Bot },
+  { href: "/workflow-definitions", label: "Definitions", icon: Workflow },
   { href: "/workflow-runs", label: "Workflow Runs", icon: Workflow },
   { href: "/approvals", label: "Approval Center", icon: ShieldCheck },
   { href: "/outputs", label: "Artifacts", icon: FileStack },
@@ -20,9 +22,10 @@ const navItems = [
 
 interface AppShellProps {
   children: ReactNode;
+  session: AdminSession;
 }
 
-export function AppShell({ children }: AppShellProps) {
+export function AppShell({ children, session }: AppShellProps) {
   const pathname = usePathname();
 
   return (
@@ -38,6 +41,9 @@ export function AppShell({ children }: AppShellProps) {
             </h1>
             <p className="mt-2 text-sm text-muted-foreground">
               Workflow-first operations shell for AI-assisted mobile engineering.
+            </p>
+            <p className="mt-4 rounded-2xl border border-border bg-background/70 px-3 py-2 text-xs text-muted-foreground">
+              {session.mode === "demo" ? "Demo mode" : session.user.email ?? "Supabase user"}
             </p>
           </div>
           <nav className="space-y-2">

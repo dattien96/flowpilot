@@ -1,9 +1,24 @@
 import { createGatewayBundle } from "@/data/repository/factory";
 import { ListAiCallLogsUseCase } from "@/domain/usecase/logs/list-ai-call-logs-usecase";
+import { StatCard } from "@/presentation/components/dashboard/stat-card";
 
-export default async function LogsPage() {
+export default async function LogsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ status?: string; provider?: string }>;
+}) {
+  const params = await searchParams;
+  const status =
+    params.status === "success" || params.status === "failed"
+      ? params.status
+      : undefined;
+  const provider = params.provider || undefined;
   const gateways = await createGatewayBundle();
-  const logs = await new ListAiCallLogsUseCase(gateways.workflowGateway).execute();
+  const useCase = new ListAiCallLogsUseCase(gateways.workflowGateway);
+  const [logs, summary] = await Promise.all([
+    useCase.execute({ status, provider }),
+    useCase.summarize({ status, provider }),
+  ]);
 
   return (
     <div className="space-y-6">
@@ -13,6 +28,44 @@ export default async function LogsPage() {
         </p>
         <h1 className="mt-3 text-4xl font-semibold tracking-tight">Mock AI call telemetry</h1>
       </header>
+      <form className="grid gap-3 rounded-[1.6rem] border border-border bg-background/70 p-5 lg:grid-cols-3">
+        <select
+          className="rounded-2xl border border-border bg-card px-4 py-3"
+          defaultValue={status ?? ""}
+          name="status"
+        >
+          <option value="">All statuses</option>
+          <option value="success">success</option>
+          <option value="failed">failed</option>
+        </select>
+        <input
+          className="rounded-2xl border border-border bg-card px-4 py-3"
+          defaultValue={provider ?? ""}
+          name="provider"
+          placeholder="Provider filter"
+        />
+        <button className="rounded-full bg-accent px-4 py-3 text-sm font-semibold text-accent-foreground">
+          Apply filters
+        </button>
+      </form>
+      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <StatCard label="Calls" value={summary.totalCalls} hint="Filtered AI calls." />
+        <StatCard
+          label="Tokens"
+          value={summary.totalInputTokens + summary.totalOutputTokens}
+          hint="Input and output tokens."
+        />
+        <StatCard
+          label="Cost"
+          value={`$${summary.totalCostEstimate.toFixed(4)}`}
+          hint="Estimated mock spend."
+        />
+        <StatCard
+          label="Latency"
+          value={`${summary.averageLatencyMs}ms`}
+          hint={`${summary.failedCalls} failed calls.`}
+        />
+      </section>
       <div className="overflow-hidden rounded-[1.6rem] border border-border bg-background/70">
         <table className="w-full text-left text-sm">
           <thead className="bg-muted/60 text-muted-foreground">

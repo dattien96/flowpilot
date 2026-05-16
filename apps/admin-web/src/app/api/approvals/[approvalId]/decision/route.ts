@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
+import { assertAdminApiSession } from "@/data/auth/session";
 import { createGatewayBundle } from "@/data/repository/factory";
 import { SubmitApprovalDecisionUseCase } from "@/domain/usecase/approvals/submit-approval-decision-usecase";
 
@@ -14,6 +15,9 @@ export async function POST(
   request: Request,
   context: { params: Promise<{ approvalId: string }> },
 ) {
+  const auth = await assertAdminApiSession();
+  if (!auth.ok) return auth.response;
+
   const { approvalId } = await context.params;
   const contentType = request.headers.get("content-type") ?? "";
   let parsedInput: z.infer<typeof approvalDecisionSchema>;

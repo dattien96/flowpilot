@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
+import { assertAdminApiSession } from "@/data/auth/session";
 import { createGatewayBundle } from "@/data/repository/factory";
 import { GetStorageDriverUseCase } from "@/domain/usecase/artifacts/get-storage-driver-usecase";
 import { UpdateStorageDriverUseCase } from "@/domain/usecase/artifacts/update-storage-driver-usecase";
@@ -14,6 +15,9 @@ const storageDriverSchema = z.object({
 });
 
 export async function GET() {
+  const auth = await assertAdminApiSession();
+  if (!auth.ok) return auth.response;
+
   const gateways = await createGatewayBundle();
   const result = await new GetStorageDriverUseCase(gateways.localRunnerGateway).execute();
   return NextResponse.json(result);
@@ -21,6 +25,9 @@ export async function GET() {
 
 export async function PUT(request: Request) {
   try {
+    const auth = await assertAdminApiSession();
+    if (!auth.ok) return auth.response;
+
     const payload = storageDriverSchema.parse(await request.json());
     const gateways = await createGatewayBundle();
     const result = await new UpdateStorageDriverUseCase(gateways.localRunnerGateway).execute(payload);
@@ -37,6 +44,9 @@ export async function PUT(request: Request) {
 
 export async function POST() {
   try {
+    const auth = await assertAdminApiSession();
+    if (!auth.ok) return auth.response;
+
     const gateways = await createGatewayBundle();
     const result = await new ValidateStorageDriverUseCase(gateways.localRunnerGateway).execute();
     return NextResponse.json(result);

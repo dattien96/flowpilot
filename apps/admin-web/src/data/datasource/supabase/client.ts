@@ -1,21 +1,43 @@
 import { createServerClient } from "@supabase/ssr";
+import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 
-import { getRequiredEnv } from "@/lib/env/app-env";
+import {
+  getSupabaseAnonKey,
+  getSupabaseServiceRoleKey,
+  getSupabaseUrl,
+} from "@/lib/env/app-env";
 
 export async function createSupabaseServerClient() {
   const cookieStore = await cookies();
 
   return createServerClient(
-    getRequiredEnv("NEXT_PUBLIC_SUPABASE_URL"),
-    getRequiredEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY"),
+    getSupabaseUrl(),
+    getSupabaseAnonKey(),
     {
       cookies: {
         getAll() {
           return cookieStore.getAll();
         },
-        setAll() {},
+        setAll(cookiesToSet) {
+          try {
+            cookiesToSet.forEach(({ name, value, options }) => {
+              cookieStore.set(name, value, options);
+            });
+          } catch {
+            // Server components cannot set cookies; route handlers can.
+          }
+        },
       },
     },
   );
+}
+
+export function createSupabaseServiceClient() {
+  return createClient(getSupabaseUrl(), getSupabaseServiceRoleKey(), {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+    },
+  });
 }

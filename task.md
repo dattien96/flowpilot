@@ -1,95 +1,96 @@
-# Task - Admin MVP Skeleton
+# Task - Implement Pending Admin MVP Skeleton Features
 
 Date: 2026-05-15
-Type: New feature
+Type: Planning, Architecture, and TDD
 Primary module: `apps/admin-web`
-Supporting module: `supabase`
+Supporting modules: `supabase`, root docs, root env handling
 
 ## Goal
 
-Build the planning baseline for an Admin MVP Skeleton that proves workflow state, approval gates, output history, and context visibility using Next.js and Supabase, with a mock workflow executor behind a replaceable service boundary.
+Prepare the implementation handoff for the pending Admin MVP Skeleton work already implied by the docs and current codebase. The implementation must move the admin app from a demo-only shell to a Supabase-backed MVP with protected routes, persistent workflow state, richer approval/output/workflow views, and meaningful test coverage, while preserving demo fallback.
 
-## Phase Breakdown
+## In Scope
 
-### Phase 1 - Planner
+- Supabase persistence wiring using root `.env`:
+  - `SUPABASE_API_URL`
+  - `SUPABASE_API_KEY`
+  - `SUPABASE_SERVICE_ROLE_KEY`
+- Demo fallback when Supabase env is unavailable
+- Supabase Auth session protection for protected pages and protected route handlers
+- Context source CRUD
+- Feature intake project selection sourced from real projects instead of hardcoded ids
+- Workflow definitions listing/detail page
+- Approval center improvements:
+  - output preview
+  - decision comments
+  - request-changes behavior
+  - decision history
+- Output library improvements:
+  - persisted AI outputs
+  - output detail
+  - version/approval state
+  - export support
+- Workflow run detail improvements:
+  - selected context
+  - per-step outputs
+  - logs and metadata
+  - resume/cancel placeholders
+- Logs/cost dashboard summaries and filters
+- RLS and seed migration updates
+- Meaningful use case and route tests
+- Local-runner path normalization test fix
+- README and setup docs updates
 
-- Confirm scope from `README.md` and the Google Doc
-- Freeze the stable entity vocabulary
-- Translate the old React/Vite implementation notes into a Next.js-first plan
-- Choose the boundary strategy for future backend replacement
+## Non-Goals
 
-### Phase 2 - Architecture
+- No real AI provider execution
+- No NestJS service
+- No background worker
+- No Jira, Firebase, Context7, RAG, Telegram, or MCP integrations
+- No redesign of the clean architecture layering already present
 
-- Define app structure for `apps/admin-web`
-- Define route groups, shared layout, and protected shell boundaries
-- Define server-side modules for repositories, services, and workflow execution
-- Define Supabase schema ownership and realtime usage
-- Define the contract between UI and workflow services
+## Current State Snapshot
 
-### Phase 3 - TDD
+- Supabase tables exist in one migration, but repository factory still serves demo repositories only
+- auth is not enforced on `(protected)` routes or protected APIs
+- pages for approvals, outputs, workflow runs, and logs are minimal
+- context sources cannot be edited or deleted
+- feature intake hardcodes one project id
+- no workflow definitions page exists
+- tests are effectively absent in `apps/admin-web`
 
-- Identify the initial contract tests for route handlers and service behavior
-- Identify repository and orchestration logic paths
-- Identify approval and workflow progression cases
-- Document test signatures only, without implementation
+## Architecture Guardrails
 
-### Phase 4 - Coding Handoff
+- Presentation may depend on domain use cases only
+- Domain may depend on gateway interfaces only
+- Data owns Supabase, auth/session, and persistence details
+- Mock workflow execution remains behind gateway/use-case boundaries
+- Page and route contracts must not assume demo-only data access
 
-- Bootstrap Next.js admin app structure
-- Add Supabase environment and client/server wiring
-- Create initial SQL migrations and seed data
-- Implement protected shell, CRUD, workflow run flows, approvals, outputs, and logs
+## Delivery Order
 
-### Phase 5 - Review Handoff
+1. Foundation
+2. Auth protection
+3. Supabase repositories and fallback factory
+4. Context/project/feature workflow
+5. Workflow definitions and run detail enhancements
+6. Approval and output library enhancements
+7. Logs summaries and migration hardening
+8. Test coverage and docs
 
-- Validate entity naming consistency
-- Validate the UI contract is not coupled to mock executor internals
-- Validate refresh persistence, approval pauses, and workflow resume behavior
-- Validate the MVP excludes real AI orchestration concerns
+## Expected Implementation Outcome
 
-## Implementation Streams
+After implementation, the admin app should be able to run in two modes:
 
-### Stream A - Platform foundation
+- Supabase mode:
+  - authenticated users can access protected routes
+  - workflow data persists across refreshes
+  - approvals, outputs, and logs reflect real database state
+- Demo mode:
+  - the current seeded experience still works for local exploration when Supabase env is not configured
 
-- Next.js app bootstrap
-- Tailwind and shadcn/ui setup
-- Auth/session plumbing
-- shared app shell
+## Planning Output For This Task
 
-### Stream B - Data foundation
-
-- Supabase schema and RLS
-- seed workflow definition
-- seed sample project and feature
-
-### Stream C - Core product flows
-
-- project CRUD
-- feature intake
-- context source management
-- workflow run creation
-- mock workflow execution
-- approval center
-- outputs library
-- log placeholder
-
-### Stream D - Replacement-safe boundaries
-
-- UI-facing API contracts
-- service interfaces for workflow execution
-- repository interfaces for persistence access
-- adapter slot for future real orchestrator
-
-## Key Non-Goals
-
-- real AI provider integration
-- queue workers
-- external MCP integrations
-- RAG or long-running orchestration
-- CI/CD or production incident automation
-
-## Handoff Notes
-
-- The implementation should favor server-owned mutations over direct client writes for workflow operations
-- The workflow executor must be swappable without requiring page or component contract changes
-- The stable entities in this file and the other planning artifacts should be treated as v0.1 vocabulary
+- `4c_summary.md`: problem framing and repo constraints
+- `implementation_plan.md`: actionable Next.js implementation architecture and sequence
+- `tdd_signatures.md`: target behavior signatures for tests and regression coverage

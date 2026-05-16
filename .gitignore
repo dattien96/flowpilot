@@ -37,3 +37,18 @@ next-env.d.ts
 
 .flowpilot
 .gitnexus
+
+# AI Rules
+.agents/
+.claude/
+.codex/
+core-ai-rules/
+.cursorrules
+.qwen/
+implementation_plan.md
+flow_variant_Confirm.md
+task.md
+4c_summary.md
+walkthrough.md
+agent_handshake.json
+tdd_signatures.md

@@ -54,8 +54,8 @@ export default async function DashboardPage() {
         />
         <StatCard
           label="Projects"
-          value={1}
-          hint="Seeded product scope for the first workflow walkthrough."
+          value={summary.projectCount}
+          hint="Registered product scopes available for intake."
           accent={<FolderOpen className="size-6 text-accent" />}
         />
       </section>

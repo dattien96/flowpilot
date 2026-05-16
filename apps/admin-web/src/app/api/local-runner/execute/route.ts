@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
+import { assertAdminApiSession } from "@/data/auth/session";
 import { createGatewayBundle } from "@/data/repository/factory";
 import { RunPromptUseCase } from "@/domain/usecase/local-runner/run-prompt-usecase";
 
@@ -16,6 +17,9 @@ const executeSchema = z.object({
 
 export async function POST(request: Request) {
   try {
+    const auth = await assertAdminApiSession();
+    if (!auth.ok) return auth.response;
+
     const payload = executeSchema.parse(await request.json());
     const gateways = await createGatewayBundle();
     const result = await new RunPromptUseCase(gateways.localRunnerGateway).execute({

@@ -5,6 +5,7 @@ import type {
   AiCallLog,
   AiOutput,
   Approval,
+  ApprovalDecision,
   WorkflowDefinition,
   WorkflowRun,
   WorkflowStep,
@@ -198,6 +199,7 @@ export const demoWorkflowRuns: WorkflowRun[] = [];
 export const demoWorkflowSteps: WorkflowStep[] = [];
 export const demoOutputs: AiOutput[] = [];
 export const demoApprovals: Approval[] = [];
+export const demoApprovalDecisions: ApprovalDecision[] = [];
 export const demoLogs: AiCallLog[] = [];
 
 function createTimestamp(minutesAgo: number) {

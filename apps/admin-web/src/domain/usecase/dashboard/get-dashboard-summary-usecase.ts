@@ -13,10 +13,11 @@ export class GetDashboardSummaryUseCase {
   ) {}
 
   async execute(): Promise<DashboardSummary> {
-    const [projects, features, runs] = await Promise.all([
+    const [projects, features, runs, outputs] = await Promise.all([
       this.projectGateway.listProjects(),
       this.featureGateway.listFeatures(),
       this.workflowGateway.listWorkflowRuns(),
+      this.workflowGateway.listOutputs(),
     ]);
 
     await this.contextGateway.listContextSourcesByProject(projects[0]?.id ?? "");
@@ -25,14 +26,11 @@ export class GetDashboardSummaryUseCase {
       (run) => run.status === "waiting_approval",
     ).length;
 
-    const completedOutputCount = runs.filter(
-      (run) => run.status === "completed",
-    ).length * 3;
-
     return {
       activeWorkflowCount: runs.filter((run) => run.status === "running").length,
       pendingApprovalCount,
-      completedOutputCount,
+      completedOutputCount: outputs.length,
+      projectCount: projects.length,
       recentRuns: [...runs]
         .sort((left, right) => right.startedAt.localeCompare(left.startedAt))
         .slice(0, Math.max(features.length > 0 ? 4 : 0, 4)),

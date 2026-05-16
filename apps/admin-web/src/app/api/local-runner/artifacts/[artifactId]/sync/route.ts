@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { assertAdminApiSession } from "@/data/auth/session";
 import { createGatewayBundle } from "@/data/repository/factory";
 import { SyncArtifactUseCase } from "@/domain/usecase/artifacts/sync-artifact-usecase";
 
@@ -11,6 +12,9 @@ type RouteContext = {
 
 export async function POST(_: Request, context: RouteContext) {
   try {
+    const auth = await assertAdminApiSession();
+    if (!auth.ok) return auth.response;
+
     const { artifactId } = await context.params;
     const gateways = await createGatewayBundle();
     const result = await new SyncArtifactUseCase(gateways.localRunnerGateway).execute(artifactId);

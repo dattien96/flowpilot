@@ -10,16 +10,25 @@ export class GetFeatureDetailUseCase {
   ) {}
 
   async execute(featureId: string) {
-    const [feature, contexts, runs, definitions] = await Promise.all([
-      this.featureGateway.getFeatureById(featureId),
-      this.contextGateway.listContextSourcesByFeature(featureId),
-      this.workflowGateway.listWorkflowRuns(),
-      this.workflowGateway.listWorkflowDefinitions(),
-    ]);
+    const feature = await this.featureGateway.getFeatureById(featureId);
 
     if (!feature) {
       return null;
     }
+
+    const [featureContexts, projectContexts, runs, definitions] = await Promise.all([
+      this.contextGateway.listContextSourcesByFeature(featureId),
+      this.contextGateway.listContextSourcesByProject(feature.projectId),
+      this.workflowGateway.listWorkflowRuns(),
+      this.workflowGateway.listWorkflowDefinitions(),
+    ]);
+    const contexts = Array.from(
+      new Map(
+        [...projectContexts.filter((context) => !context.featureId), ...featureContexts].map(
+          (context) => [context.id, context],
+        ),
+      ).values(),
+    );
 
     return {
       feature,

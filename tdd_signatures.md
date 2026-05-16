@@ -1,170 +1,158 @@
-# TDD Signatures - Admin MVP Skeleton
+# TDD Signatures - Admin MVP Skeleton Pending Features
 
 Date: 2026-05-15
 
 Rules for this artifact:
 
-- Signatures only
-- No executable test code
-- No mocks, assertions, or implementation details
+- signatures only
+- no executable test code
+- no implementation snippets
+- prefer domain/use-case and route behavior over fragile UI snapshots
 
-## 1. Presentation Contract And Validation Tests
-
-### File
-
-`apps/admin-web/src/presentation/actions/__tests__/workflow-contracts.test.ts`
-
-#### `describe("StartWorkflowRunCommandSchema")`
-
-- `it("accepts a valid feature, workflow definition, and selected context source ids")`
-  - Input:
-    - valid `featureId`
-    - valid `workflowDefinitionId`
-    - array of `contextSourceIds`
-  - Expected Output:
-    - command is accepted
-    - normalized payload preserves stable entity references
-
-- `it("rejects an empty contextSourceIds array only when workflow start requires explicit context selection")`
-  - Input:
-    - valid feature and workflow definition ids
-    - empty context source array
-  - Expected Output:
-    - validation behavior matches the chosen product rule
-
-- `it("rejects malformed ids and missing required identifiers")`
-  - Input:
-    - missing `featureId` or `workflowDefinitionId`
-    - malformed ids
-  - Expected Output:
-    - command is rejected with field-level validation issues
-
-#### `describe("SubmitApprovalDecisionCommandSchema")`
-
-- `it("accepts approved, rejected, and changes_requested decisions with optional comment")`
-  - Input:
-    - valid `approvalId`
-    - each supported decision value
-    - optional comment
-  - Expected Output:
-    - payload is accepted
-
-- `it("rejects unsupported decision values")`
-  - Input:
-    - invalid decision string
-  - Expected Output:
-    - payload is rejected
-
-## 2. Data Repository Tests
+## 1. Environment And Bundle Selection
 
 ### File
 
-`apps/admin-web/src/data/repository/__tests__/supabase-project-repository.test.ts`
+`apps/admin-web/src/lib/env/__tests__/app-env.test.ts`
 
-#### `describe("SupabaseProjectRepository")`
+#### `describe("hasSupabaseEnv")`
 
-- `it("creates a project owned by the authenticated user")`
-  - Input:
-    - user identity
-    - project create payload
-  - Expected Output:
-    - `project` row stores ownership and timestamps
+- `it("returns true only when SUPABASE_API_URL, SUPABASE_API_KEY, and SUPABASE_SERVICE_ROLE_KEY are present")`
+- `it("returns false when any required Supabase variable is missing")`
 
-- `it("lists only projects visible to the authenticated user")`
-  - Input:
-    - user identity
-    - mixed owned and non-owned records
-  - Expected Output:
-    - only allowed projects are returned
+#### `describe("supabase env getters")`
 
-- `it("updates editable project fields without changing immutable ownership fields")`
-  - Input:
-    - project id
-    - partial update payload
-  - Expected Output:
-    - allowed fields change
-    - ownership fields remain stable
+- `it("reads root env values from SUPABASE_API_URL and SUPABASE_API_KEY without requiring NEXT_PUBLIC aliases")`
+- `it("throws a clear error when SUPABASE_SERVICE_ROLE_KEY is requested but missing")`
 
 ### File
 
-`apps/admin-web/src/data/repository/__tests__/supabase-feature-repository.test.ts`
+`apps/admin-web/src/data/repository/__tests__/factory.test.ts`
 
-#### `describe("SupabaseFeatureRepository")`
+#### `describe("createGatewayBundle")`
 
-- `it("creates a feature linked to its parent project")`
-  - Input:
-    - existing `projectId`
-    - feature intake payload
-  - Expected Output:
-    - `feature.project_id` is stored correctly
+- `it("returns the demo gateway bundle when Supabase env is unavailable")`
+- `it("returns the Supabase gateway bundle when all required Supabase env values are available")`
+- `it("always returns a mock workflow executor regardless of persistence mode")`
 
-- `it("lists features by project id")`
-  - Input:
-    - project id
-  - Expected Output:
-    - only that project's features are returned
-
-- `it("persists acceptance criteria and expected flow rich text fields")`
-  - Input:
-    - populated intake fields
-  - Expected Output:
-    - text fields are stored and returned without truncation
+## 2. Auth And Protected Route Behavior
 
 ### File
 
-`apps/admin-web/src/data/repository/__tests__/supabase-context-source-repository.test.ts`
+`apps/admin-web/src/data/auth/__tests__/require-admin-session.test.ts`
 
-#### `describe("SupabaseContextSourceRepository")`
+#### `describe("requireAdminSession")`
 
-- `it("creates a context source attached to a feature and project")`
-  - Input:
-    - `projectId`
-    - `featureId`
-    - context create payload
-  - Expected Output:
-    - `context_source` row is linked to both entities
-
-- `it("supports project-level context sources without a feature id")`
-  - Input:
-    - `projectId`
-    - null `featureId`
-  - Expected Output:
-    - row persists as project-scoped context
-
-- `it("archives or deletes context sources according to the chosen lifecycle rule")`
-  - Input:
-    - context source id
-  - Expected Output:
-    - record is no longer active for selection in workflow start
-
-## 3. Domain Workflow Definition Tests
+- `it("returns the current authenticated user session when a valid Supabase session cookie exists")`
+- `it("redirects or rejects when the request is unauthenticated")`
 
 ### File
 
-`apps/admin-web/src/domain/service/__tests__/workflow-definition-loader.test.ts`
+`apps/admin-web/src/app/(protected)/__tests__/layout.test.ts`
 
-#### `describe("workflow definition seed and loader")`
+#### `describe("(protected) layout")`
 
-- `it("loads the active feature_to_android_tech_spec definition")`
-  - Input:
-    - workflow name `feature_to_android_tech_spec`
-  - Expected Output:
-    - one active `workflow_definition` is returned
+- `it("redirects guests to /login")`
+- `it("renders protected content for authenticated users")`
 
-- `it("preserves step order and approval step placement from definition json")`
-  - Input:
-    - stored definition json
-  - Expected Output:
-    - step order remains deterministic
-    - approval steps appear after the expected generation steps
+### File
 
-- `it("rejects definitions missing required step keys or types")`
-  - Input:
-    - invalid definition payload
-  - Expected Output:
-    - validation fails before execution starts
+`apps/admin-web/src/app/api/__tests__/protected-routes-auth.test.ts`
 
-## 4. Domain Use Case Tests
+#### `describe("protected admin routes")`
+
+- `it("rejects unauthenticated POST /api/features")`
+- `it("rejects unauthenticated POST /api/context-sources")`
+- `it("rejects unauthenticated POST /api/workflow-runs")`
+- `it("rejects unauthenticated POST /api/approvals/[approvalId]/decision")`
+
+## 3. Context Source CRUD Use Cases
+
+### File
+
+`apps/admin-web/src/domain/usecase/context-sources/__tests__/create-context-source-usecase.test.ts`
+
+#### `describe("CreateContextSourceUseCase")`
+
+- `it("creates a project-level context source when featureId is null")`
+- `it("creates a feature-scoped context source when featureId is provided")`
+- `it("rejects creation when the selected project does not exist or is not visible to the user")`
+
+### File
+
+`apps/admin-web/src/domain/usecase/context-sources/__tests__/update-context-source-usecase.test.ts`
+
+#### `describe("UpdateContextSourceUseCase")`
+
+- `it("updates title, type, rawContent, and summarizedContent")`
+- `it("rejects updates for invisible or missing context sources")`
+
+### File
+
+`apps/admin-web/src/domain/usecase/context-sources/__tests__/delete-context-source-usecase.test.ts`
+
+#### `describe("DeleteContextSourceUseCase")`
+
+- `it("removes or archives a context source so it no longer appears in active lists")`
+- `it("does not delete context sources outside the caller visibility scope")`
+
+### File
+
+`apps/admin-web/src/app/api/context-sources/__tests__/route.test.ts`
+
+#### `describe("POST /api/context-sources")`
+
+- `it("creates a new context source from validated form or json input")`
+- `it("returns validation failure for missing title, type, or rawContent")`
+
+#### `describe("PATCH /api/context-sources/[contextSourceId]")`
+
+- `it("updates a context source and returns the persisted row")`
+
+#### `describe("DELETE /api/context-sources/[contextSourceId]")`
+
+- `it("deletes or archives a context source and returns a success response")`
+
+## 4. Feature Intake Project Selection
+
+### File
+
+`apps/admin-web/src/domain/usecase/features/__tests__/create-feature-usecase.test.ts`
+
+#### `describe("CreateFeatureUseCase")`
+
+- `it("creates a feature against the selected project id instead of a hardcoded project")`
+- `it("rejects creation when the selected project id is missing or invalid")`
+
+### File
+
+`apps/admin-web/src/app/api/features/__tests__/route.test.ts`
+
+#### `describe("POST /api/features")`
+
+- `it("accepts a projectId chosen from the current project list")`
+- `it("returns a validation error when projectId is empty")`
+
+## 5. Workflow Definitions
+
+### File
+
+`apps/admin-web/src/domain/usecase/workflow-definitions/__tests__/list-workflow-definitions-usecase.test.ts`
+
+#### `describe("ListWorkflowDefinitionsUseCase")`
+
+- `it("returns active workflow definitions with version and status")`
+- `it("returns ordered step definitions from the persisted definition payload")`
+
+### File
+
+`apps/admin-web/src/app/api/workflow-definitions/__tests__/route.test.ts`
+
+#### `describe("GET /api/workflow-definitions")`
+
+- `it("returns workflow definitions for authenticated users")`
+
+## 6. Workflow Run Creation And Detail
 
 ### File
 
@@ -172,148 +160,10 @@ Rules for this artifact:
 
 #### `describe("StartWorkflowRunUseCase")`
 
-- `it("creates a workflow_run and materializes workflow_step rows from the selected definition")`
-  - Input:
-    - valid start command
-    - active workflow definition
-  - Expected Output:
-    - one `workflow_run` is created
-    - one `workflow_step` per definition step is created in order
-
-- `it("stores the selected context source ids on the workflow run")`
-  - Input:
-    - selected context ids
-  - Expected Output:
-    - run snapshot preserves selected ids for later inspection
-
-- `it("rejects workflow start when feature and workflow definition belong to incompatible visibility scope")`
-  - Input:
-    - inaccessible feature or definition
-  - Expected Output:
-    - run creation is denied
-
-## 5. Data Workflow Executor Tests
-
-### File
-
-`apps/admin-web/src/data/workflow/__tests__/mock-workflow-executor.test.ts`
-
-#### `describe("MockWorkflowExecutor")`
-
-- `it("completes collect_context immediately and advances to the first generation step")`
-  - Input:
-    - newly created run
-  - Expected Output:
-    - `collect_context` becomes completed
-    - next step becomes current
-
-- `it("creates ai_output and ai_call_log records for generation steps")`
-  - Input:
-    - runnable generation step
-  - Expected Output:
-    - one `ai_output` record exists
-    - one `ai_call_log` record exists with mock provider metadata
-
-- `it("pauses the workflow at approval steps with pending approval status")`
-  - Input:
-    - run reaching an approval step
-  - Expected Output:
-    - run status becomes `waiting_approval`
-    - one `approval` record is created
-
-- `it("marks the run failed when step execution encounters an unrecoverable persistence error")`
-  - Input:
-    - persistence failure during mock execution
-  - Expected Output:
-    - run status becomes terminal failure state
-    - error summary is stored
-
-## 6. Domain Approval Decision Tests
-
-### File
-
-`apps/admin-web/src/domain/usecase/approvals/__tests__/submit-approval-decision-usecase.test.ts`
-
-#### `describe("SubmitApprovalDecisionUseCase")`
-
-- `it("continues workflow execution after an approved decision")`
-  - Input:
-    - pending approval
-    - approved decision
-  - Expected Output:
-    - approval is decided
-    - approval step is completed
-    - next executable step begins or completes
-
-- `it("stops the workflow after a rejected decision")`
-  - Input:
-    - pending approval
-    - rejected decision
-  - Expected Output:
-    - run becomes terminal rejected or failed state
-    - no further steps execute
-
-- `it("keeps the workflow waiting when changes are requested")`
-  - Input:
-    - pending approval
-    - changes requested decision with comment
-  - Expected Output:
-    - approval comment is stored
-    - run remains in waiting state
-
-- `it("rejects duplicate decisions for an already decided approval")`
-  - Input:
-    - approval with existing decided state
-  - Expected Output:
-    - second decision is refused
-
-## 7. Route Handler Tests
-
-### File
-
-`apps/admin-web/src/app/api/workflow-runs/__tests__/route.test.ts`
-
-#### `describe("POST /api/workflow-runs")`
-
-- `it("returns run summary data after successful workflow start")`
-  - Input:
-    - authenticated request
-    - valid start payload
-  - Expected Output:
-    - response contains created `workflow_run` identifier and summary fields
-
-- `it("returns validation errors for malformed workflow start payloads")`
-  - Input:
-    - invalid payload
-  - Expected Output:
-    - response contains client error status and validation detail
-
-- `it("returns unauthorized for unauthenticated requests")`
-  - Input:
-    - unauthenticated request
-  - Expected Output:
-    - protected endpoint denies access
-
-### File
-
-`apps/admin-web/src/app/api/approvals/[approvalId]/decision/__tests__/route.test.ts`
-
-#### `describe("POST /api/approvals/[approvalId]/decision")`
-
-- `it("returns updated run detail after an approval decision is submitted")`
-  - Input:
-    - authenticated request
-    - valid decision payload
-  - Expected Output:
-    - response reflects updated approval and run status
-
-- `it("returns not found when the approval id is unknown")`
-  - Input:
-    - unknown approval id
-  - Expected Output:
-    - response indicates missing approval
-
-## 8. Domain Query Use Case Tests
+- `it("creates a workflow run using the selected feature and workflow definition")`
+- `it("persists selectedContextSourceIds on the run")`
+- `it("materializes ordered workflow steps from the definition")`
+- `it("starts mock execution after run creation")`
 
 ### File
 
@@ -321,75 +171,100 @@ Rules for this artifact:
 
 #### `describe("GetWorkflowRunDetailUseCase")`
 
-- `it("returns timeline, selected output, metadata, approvals, and logs in one stable DTO")`
-  - Input:
-    - run id with completed and pending steps
-  - Expected Output:
-    - response shape is sufficient for the run detail page without client-side data stitching
-
-- `it("orders workflow steps by sequence index")`
-  - Input:
-    - persisted steps in database
-  - Expected Output:
-    - DTO step timeline is correctly ordered
-
-- `it("returns latest output revision metadata for each output-producing step")`
-  - Input:
-    - multiple output versions
-  - Expected Output:
-    - latest visible revision is selected according to product rule
-
-## 9. Auth And Protected Shell Tests
+- `it("returns run, steps, selected context sources, outputs, approvals, and logs")`
+- `it("groups or associates outputs by step for per-step detail rendering")`
+- `it("includes metadata needed for resume/cancel placeholders")`
 
 ### File
 
-`apps/admin-web/src/app/(protected)/__tests__/layout.test.tsx`
+`apps/admin-web/src/app/api/workflow-runs/__tests__/route.test.ts`
 
-#### `describe("Protected layout")`
+#### `describe("POST /api/workflow-runs")`
 
-- `it("redirects unauthenticated users to the login page")`
-  - Input:
-    - missing session
-  - Expected Output:
-    - user is redirected away from protected routes
+- `it("creates a workflow run and returns run detail for authenticated requests")`
+- `it("returns validation failure for malformed workflow start payloads")`
 
-- `it("renders sidebar navigation for authenticated users")`
-  - Input:
-    - valid session and profile
-  - Expected Output:
-    - shell renders the expected navigation items
-
-- `it("creates or hydrates the user profile on first authenticated visit according to the chosen auth bootstrap rule")`
-  - Input:
-    - authenticated user without profile row
-  - Expected Output:
-    - profile bootstrap behavior completes successfully
-
-## 10. Domain Output Library And Logs Tests
+## 7. Mock Workflow Executor
 
 ### File
 
-`apps/admin-web/src/domain/usecase/outputs/__tests__/list-output-library-usecase.test.ts`
+`apps/admin-web/src/data/workflow/__tests__/mock-workflow-executor.test.ts`
 
-#### `describe("ListOutputLibraryUseCase")`
+#### `describe("MockWorkflowExecutor")`
 
-- `it("filters outputs by project, feature, and output type")`
-  - Input:
-    - filter set with project, feature, and output type
-  - Expected Output:
-    - only matching `ai_output` items are returned
+- `it("completes non-approval steps and persists ai_outputs and ai_call_logs")`
+- `it("pauses at approval steps and creates a pending approval")`
+- `it("stores output content through the active repository implementation in Supabase mode")`
+- `it("marks the run completed after the final step")`
+- `it("stores an error summary when persistence fails during execution")`
 
-- `it("supports approved-only filtering")`
-  - Input:
-    - approved-only flag
-  - Expected Output:
-    - only approved outputs are returned
+## 8. Approval Center And Decision History
 
-- `it("returns related workflow run and feature metadata for each library item")`
-  - Input:
-    - output rows with related entities
-  - Expected Output:
-    - DTO contains enough metadata for list and detail links
+### File
+
+`apps/admin-web/src/domain/usecase/approvals/__tests__/list-pending-approvals-usecase.test.ts`
+
+#### `describe("ListPendingApprovalsUseCase")`
+
+- `it("returns pending approvals with linked run, feature, step, and output preview data")`
+- `it("sorts pending approvals by urgency or createdAt as defined by product rules")`
+
+### File
+
+`apps/admin-web/src/domain/usecase/approvals/__tests__/submit-approval-decision-usecase.test.ts`
+
+#### `describe("SubmitApprovalDecisionUseCase")`
+
+- `it("approves a pending approval, completes the approval step, and resumes workflow execution")`
+- `it("stores a changes_requested decision with reviewer comment and keeps the run blocked")`
+- `it("stores a rejected decision and marks the workflow run terminal")`
+- `it("records decision history for every approval transition")`
+- `it("rejects duplicate decisions on already decided approvals")`
+
+### File
+
+`apps/admin-web/src/app/api/approvals/[approvalId]/decision/__tests__/route.test.ts`
+
+#### `describe("POST /api/approvals/[approvalId]/decision")`
+
+- `it("accepts approved decisions and returns updated run detail")`
+- `it("accepts changes_requested decisions with a comment")`
+- `it("returns not found for unknown approval ids")`
+- `it("returns validation failure for unsupported decision values")`
+
+## 9. Output Library
+
+### File
+
+`apps/admin-web/src/domain/usecase/outputs/__tests__/list-outputs-usecase.test.ts`
+
+#### `describe("ListOutputsUseCase")`
+
+- `it("returns persisted ai_outputs instead of local artifact records")`
+- `it("filters outputs by project, feature, run, outputType, and approval state")`
+
+### File
+
+`apps/admin-web/src/domain/usecase/outputs/__tests__/get-output-detail-usecase.test.ts`
+
+#### `describe("GetOutputDetailUseCase")`
+
+- `it("returns output content, approval state, and linked workflow metadata")`
+- `it("returns version history for outputs with multiple revisions")`
+
+### File
+
+`apps/admin-web/src/app/api/outputs/__tests__/route.test.ts`
+
+#### `describe("GET /api/outputs")`
+
+- `it("returns filtered output library results for authenticated users")`
+
+#### `describe("GET /api/outputs/[outputId]")`
+
+- `it("returns output detail including versions and approval metadata")`
+
+## 10. Logs And Cost Dashboard
 
 ### File
 
@@ -397,40 +272,89 @@ Rules for this artifact:
 
 #### `describe("ListAiCallLogsUseCase")`
 
-## 11. Architecture Boundary Tests
+- `it("returns logs filtered by run, provider, model, status, and date range")`
+- `it("does not return logs outside the caller visibility scope")`
 
 ### File
 
-`apps/admin-web/src/__tests__/architecture/clean-boundary.test.ts`
+`apps/admin-web/src/domain/usecase/logs/__tests__/get-log-summary-usecase.test.ts`
 
-#### `describe("clean architecture dependency boundaries")`
+#### `describe("GetLogSummaryUseCase")`
 
-- `it("prevents presentation modules from importing data repositories directly")`
-  - Input:
-    - import graph for presentation modules
-  - Expected Output:
-    - only domain use cases and presentation helpers are referenced
+- `it("returns total token, cost, and latency summaries across the filtered log set")`
+- `it("returns grouped summary data by provider and model")`
 
-- `it("prevents domain modules from importing Next.js or Supabase modules")`
-  - Input:
-    - import graph for domain modules
-  - Expected Output:
-    - domain depends only on domain packages and shared utilities
+### File
 
-- `it("ensures data repositories implement domain gateway interfaces")`
-  - Input:
-    - repository classes and gateway contracts
-  - Expected Output:
-    - each required repository satisfies its interface contract
+`apps/admin-web/src/app/api/logs/__tests__/route.test.ts`
 
-- `it("lists mock ai_call_log rows by workflow run")`
-  - Input:
-    - run id
-  - Expected Output:
-    - only logs for that run are returned
+#### `describe("GET /api/logs")`
 
-- `it("preserves provider, model, token, cost, latency, and status fields for future real AI parity")`
-  - Input:
-    - mock log rows
-  - Expected Output:
-    - DTO contains the full observability shape required by the UI
+- `it("returns filtered logs and summary payload for authenticated users")`
+
+## 11. Supabase Repository Adapters
+
+### File
+
+`apps/admin-web/src/data/repository/supabase/__tests__/context-source-gateway.test.ts`
+
+#### `describe("Supabase context source gateway")`
+
+- `it("maps context_sources rows to domain entities correctly")`
+- `it("persists create/update/delete changes with the authenticated owner context")`
+
+### File
+
+`apps/admin-web/src/data/repository/supabase/__tests__/workflow-gateway.test.ts`
+
+#### `describe("Supabase workflow gateway")`
+
+- `it("returns workflow run detail with steps, outputs, approvals, and logs")`
+- `it("creates approvals without scanning unrelated runs")`
+- `it("reads workflow definitions from seeded rows")`
+
+## 12. RLS And Seed Validation
+
+### File
+
+`supabase/__tests__/admin-mvp-rls.test.md`
+
+#### `describe("admin mvp rls policies")`
+
+- `it("allows authenticated owners to read and write their own projects and related rows")`
+- `it("denies anonymous reads to protected tables")`
+- `it("prevents cross-user reads of projects, features, runs, approvals, and logs")`
+
+### File
+
+`supabase/__tests__/admin-mvp-seed.test.md`
+
+#### `describe("admin mvp seed data")`
+
+- `it("seeds the feature_to_android_tech_spec workflow definition with ordered steps")`
+- `it("seeds at least one project and feature for local setup validation")`
+
+## 13. Local Runner Path Normalization Regression
+
+### File
+
+`apps/admin-web/src/lib/env/__tests__/workspace-root-normalization.test.ts`
+
+#### `describe("getWorkspaceRoot path normalization")`
+
+- `it("returns FLOWPILOT_WORKSPACE when explicitly set")`
+- `it("normalizes workspace paths consistently across trailing slashes and nested cwd values")`
+- `it("walks upward to the nearest directory containing .agents when FLOWPILOT_WORKSPACE is absent")`
+- `it("does not regress local-runner artifact path generation on macOS-style absolute paths")`
+
+## 14. Documentation Regression Checks
+
+### File
+
+`README.md`
+
+#### `describe("documentation completeness checklist")`
+
+- `it("documents required Supabase env variables and demo fallback behavior")`
+- `it("documents auth expectations for protected admin pages")`
+- `it("documents migration, seed, and test commands for apps/admin-web")`
