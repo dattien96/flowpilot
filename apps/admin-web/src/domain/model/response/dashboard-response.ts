@@ -4,5 +4,6 @@ export interface DashboardSummary {
   activeWorkflowCount: number;
   pendingApprovalCount: number;
   completedOutputCount: number;
+  projectCount: number;
   recentRuns: WorkflowRun[];
 }

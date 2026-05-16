@@ -5,3 +5,11 @@ export interface CreateContextSourcePayload {
   title: string;
   rawContent: string;
 }
+
+export interface UpdateContextSourcePayload {
+  contextSourceId: string;
+  title: string;
+  type: "manual_text" | "url" | "api_note" | "file";
+  rawContent: string;
+  summarizedContent?: string | null;
+}

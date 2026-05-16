@@ -6,6 +6,7 @@ export interface ContextSource {
   title: string;
   rawContent: string;
   summarizedContent: string | null;
+  archivedAt?: string | null;
   createdBy: string;
   createdAt: string;
 }
