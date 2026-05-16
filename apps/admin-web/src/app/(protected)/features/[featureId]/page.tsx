@@ -49,8 +49,26 @@ export default async function FeatureDetailPage({
             <input
               name="contextSourceIds"
               type="hidden"
-              value={detail.contexts.map((item) => item.id).join(",")}
+              value=""
             />
+            <div className="mb-3 max-w-sm rounded-2xl border border-border bg-background/70 p-3">
+              <p className="text-xs uppercase tracking-[0.22em] text-muted-foreground">
+                Selected context
+              </p>
+              <div className="mt-2 space-y-2">
+                {detail.contexts.map((context) => (
+                  <label key={context.id} className="flex items-center gap-2 text-sm">
+                    <input
+                      defaultChecked
+                      name="contextSourceIds"
+                      type="checkbox"
+                      value={context.id}
+                    />
+                    <span>{context.title}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
             <Button type="submit">Start demo workflow</Button>
           </form>
         ) : null}

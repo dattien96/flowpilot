@@ -2,12 +2,16 @@ import Link from "next/link";
 
 import { createGatewayBundle } from "@/data/repository/factory";
 import { ListFeaturesUseCase } from "@/domain/usecase/features/list-features-usecase";
+import { ListProjectsUseCase } from "@/domain/usecase/projects/list-projects-usecase";
 import { Badge } from "@/presentation/components/ui/badge";
 import { Button } from "@/presentation/components/ui/button";
 
 export default async function FeaturesPage() {
   const gateways = await createGatewayBundle();
-  const features = await new ListFeaturesUseCase(gateways.featureGateway).execute();
+  const [features, projects] = await Promise.all([
+    new ListFeaturesUseCase(gateways.featureGateway).execute(),
+    new ListProjectsUseCase(gateways.projectGateway).execute(),
+  ]);
 
   return (
     <div className="space-y-6">
@@ -20,7 +24,18 @@ export default async function FeaturesPage() {
       <section className="rounded-[1.6rem] border border-border bg-background/70 p-6">
         <h2 className="text-xl font-semibold">Create feature</h2>
         <form action="/api/features" method="post" className="mt-4 grid gap-3">
-          <input name="projectId" type="hidden" value="project_meal_suggestion" />
+          <select
+            className="rounded-2xl border border-border bg-card px-4 py-3"
+            name="projectId"
+            required
+          >
+            <option value="">Select project</option>
+            {projects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.name}
+              </option>
+            ))}
+          </select>
           <div className="grid gap-3 lg:grid-cols-2">
             <input
               className="rounded-2xl border border-border bg-card px-4 py-3"

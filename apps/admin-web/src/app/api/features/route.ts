@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { z } from "zod";
 
+import { assertAdminApiSession } from "@/data/auth/session";
 import { createGatewayBundle } from "@/data/repository/factory";
 import { CreateFeatureUseCase } from "@/domain/usecase/features/create-feature-usecase";
 
@@ -15,6 +16,9 @@ const createFeatureSchema = z.object({
 });
 
 export async function POST(request: Request) {
+  const auth = await assertAdminApiSession();
+  if (!auth.ok) return auth.response;
+
   const formData = await request.formData();
   const payload = createFeatureSchema.parse({
     projectId: formData.get("projectId"),
@@ -27,7 +31,10 @@ export async function POST(request: Request) {
   });
 
   const gateways = await createGatewayBundle();
-  await new CreateFeatureUseCase(gateways.featureGateway).execute(payload);
+  await new CreateFeatureUseCase(
+    gateways.featureGateway,
+    gateways.projectGateway,
+  ).execute(payload);
 
   redirect("/features");
 }
