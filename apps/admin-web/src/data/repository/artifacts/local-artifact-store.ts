@@ -105,13 +105,19 @@ export async function saveWorkflowArtifact(input: WorkflowArtifactInput) {
   await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
 }
 
-function sanitize(value: string) {
-  const trimmed = value.trim();
+export function sanitize(value: string) {
+  const trimmed = path.basename(value.trim().split(/[\\/]/).filter(Boolean).at(-1) ?? "");
   if (!trimmed) {
     return "unassigned";
   }
 
-  return trimmed.replaceAll("/", "_").replaceAll("\\", "_").replaceAll(":", "_").replaceAll(" ", "_");
+  return trimmed
+    .replaceAll("/", "_")
+    .replaceAll("\\", "_")
+    .replaceAll(":", "_")
+    .replaceAll(" ", "_")
+    .replace(/[^\w.-]/g, "_")
+    .replace(/^\.+$/, "unassigned");
 }
 
 function preview(contents: string) {
