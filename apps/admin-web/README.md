@@ -1,36 +1,42 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# FlowPilot Admin Web
 
-## Getting Started
+Next.js admin shell for the FlowPilot MVP workflow skeleton. It runs in two modes:
 
-First, run the development server:
+- Demo mode when Supabase env is missing. In-memory demo repositories keep local exploration working.
+- Supabase mode when all required root env values are present. Data persists through Supabase and protected pages require a Supabase Auth session.
+
+## Required Env
+
+Set these values in the repository root `.env` to enable Supabase mode:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+SUPABASE_API_URL=...
+SUPABASE_API_KEY=...
+SUPABASE_SERVICE_ROLE_KEY=...
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Optional local runner override:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+FLOWPILOT_RUNNER_URL=http://127.0.0.1:4317
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Local Run
 
-## Learn More
+```bash
+cd apps/admin-web
+npm install
+npm run dev
+```
 
-To learn more about Next.js, take a look at the following resources:
+Open `http://localhost:3000`. If Supabase mode is enabled, create or invite a Supabase Auth user and sign in at `/login`.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Database
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Apply `supabase/migrations/20260515050000_admin_mvp_skeleton.sql`. It creates the admin MVP tables, RLS policies, indexes, and seed data for projects, features, context sources, and the default workflow definition.
 
-## Deploy on Vercel
+## Current MVP Boundaries
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- The workflow executor is intentionally mocked in both demo and Supabase modes.
+- AI outputs, approvals, logs, and workflow run state are persisted through the active repository implementation.
+- Local runner artifact sync remains a separate server-side boundary and is protected by the same admin session guard.
