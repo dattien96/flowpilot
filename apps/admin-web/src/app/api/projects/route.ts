@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { z } from "zod";
 
+import { assertAdminApiSession } from "@/data/auth/session";
 import { createGatewayBundle } from "@/data/repository/factory";
 import { CreateProjectUseCase } from "@/domain/usecase/projects/create-project-usecase";
 
@@ -12,6 +13,9 @@ const createProjectSchema = z.object({
 });
 
 export async function POST(request: Request) {
+  const auth = await assertAdminApiSession();
+  if (!auth.ok) return auth.response;
+
   const formData = await request.formData();
   const payload = createProjectSchema.parse({
     name: formData.get("name"),
