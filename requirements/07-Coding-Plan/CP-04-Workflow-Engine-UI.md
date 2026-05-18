@@ -47,6 +47,90 @@ ALTER TABLE workflow_prompt_cache ENABLE ROW LEVEL SECURITY;
 
 ---
 
+## 2.1 Workflow Prompt Caching — `/built-in-workflow/` (from SD-05 §2.3)
+
+The workflow engine's **core optimization** is caching assembled prompt `.md` files so that identical workflow configurations reuse the same prompt without regeneration.
+
+### 2.1.1 Where Cached Files Live
+```
+<flowpilot-system-root>/built-in-workflow/<hash>_<step_type>.md
+```
+Example: `/built-in-workflow/a3f8c2_tech_spec.md`
+
+**NOT** inside `.claude/`, `.codex/`, `.gemini/` — those folders stay clean with project-level instructions and skills only.
+
+### 2.1.2 Hash Computation (Go-Runner)
+The Go-Runner generates a deterministic SHA256 from the full workflow step configuration:
+```go
+// internal/workflow/hash.go
+func computeConfigHash(cfg StepConfig) string {
+    h := sha256.New()
+    h.Write([]byte(cfg.WorkflowID))
+    h.Write([]byte(cfg.StepType))
+    h.Write([]byte(fmt.Sprintf("%d", cfg.OrderIndex)))
+    h.Write([]byte(fmt.Sprintf("%v", cfg.IsEnabled)))
+    h.Write([]byte(cfg.Provider))
+    h.Write([]byte(cfg.Model))
+    for _, skillID := range cfg.SkillIDs {
+        h.Write([]byte(skillID))
+    }
+    for _, contentHash := range cfg.CustomSkillContentHashes {
+        h.Write([]byte(contentHash))
+    }
+    return hex.EncodeToString(h.Sum(nil))[:12] // short hash for filename
+}
+```
+
+### 2.1.3 Cache-First Execution Loop
+```
+Go-Runner receives PENDING step
+    → Compute config_hash from step configuration
+    → Query workflow_prompt_cache WHERE config_hash = ? AND is_valid = true
+    → IF cache HIT:
+        → Read cached .md file from /built-in-workflow/<hash>_<step_type>.md
+        → Inject runtime placeholders (MCP context, user context, previous artifacts)
+        → Send to AI provider
+    → IF cache MISS:
+        → Assemble new .md from step SKILL.md templates + workflow config
+        → Save to /built-in-workflow/<hash>_<step_type>.md
+        → Insert record into workflow_prompt_cache table
+        → Inject runtime placeholders
+        → Send to AI provider
+```
+
+### 2.1.4 Runtime Placeholder Injection
+The cached `.md` contains structural template sections. At execution time, the Go-Runner fills:
+```markdown
+# MCP Context
+{{mcp_context}}          ← Jira ticket data, Firebase crash logs, etc.
+
+# User Context
+{{user_context}}          ← Manual text from context_sources
+
+# Previous Artifacts
+{{previous_artifacts}}    ← Output from earlier steps in this run
+
+# Reviewer Feedback (Retry)
+{{rejection_note}}        ← Only populated on retry (from workflow_steps.rejection_note)
+```
+
+This means the **structural template is cached**, but **run-specific data is always fresh**.
+
+### 2.1.5 Cache Invalidation Rules
+The cached `.md` is **regenerated** (old record marked `is_valid = false`) when:
+- User modifies the workflow (adds/removes/reorders/enables/disables steps)
+- A skill file (built-in or custom) is updated
+- Provider or model override changes
+
+Any of these changes cause the config_hash to change → new file generated → new DB record.
+
+### 2.1.6 Admin Web Cache Visibility
+- **Workflow Builder:** After save, display: "This configuration maps to cache hash: `a3f8c2`"
+- **Execution Dashboard:** Step detail shows: "Prompt file: `/built-in-workflow/a3f8c2_tech_spec.md`" (clickable to view the actual assembled prompt)
+- **Settings:** "Clear Prompt Cache" button to invalidate all cached files for a workflow
+
+---
+
 ## 3. Domain Model Updates
 
 ### 3.1 Update Status Constants
@@ -102,6 +186,22 @@ export type StepType =
   | 'telegram_notification'
   | 'code_traceability'
   | 'onboarding_walkthrough';
+```
+
+### 3.3 Prompt Cache Entity
+```typescript
+// src/domain/model/entity/prompt-cache.ts
+export interface PromptCacheEntry {
+  id: string;
+  workflowDefinitionId: string;
+  configHash: string;
+  filePath: string;
+  stepType: StepType;
+  provider: string;
+  isValid: boolean;
+  createdAt: string;
+  invalidatedAt: string | null;
+}
 ```
 
 ---
@@ -235,4 +335,9 @@ User clicks "Reject & Retry"
 - [ ] YOLO mode toggle at workflow level
 - [ ] Reject/Retry loop: rejection note stored, retry count incremented
 - [ ] Supabase Realtime subscription for live updates
-- [ ] `workflow_prompt_cache` table created (used by Go-Runner in Phase 6)
+- [ ] `workflow_prompt_cache` table created with `config_hash` index
+- [ ] Go-Runner: `computeConfigHash()` function implemented
+- [ ] Go-Runner: cache-first execution loop (check cache → reuse or generate → save)
+- [ ] Go-Runner: runtime placeholder injection for MCP/user context and rejection notes
+- [ ] `/built-in-workflow/` directory created at system root
+- [ ] Admin Web: cache hash display in Workflow Builder + prompt file link in Execution Dashboard
