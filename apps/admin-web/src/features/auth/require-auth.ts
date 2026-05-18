@@ -1,38 +1,33 @@
 import { redirect } from "@tanstack/react-router";
 
+import { supabase } from "@/data/supabase/client";
+import { getDemoSession, type AdminSession } from "@/features/auth/use-auth";
 import { hasSupabaseEnv } from "@/lib/env/browser-env";
-import type { AdminSession } from "@/features/auth/auth-provider";
-import { createSupabaseBrowserClient } from "@/data/supabase/client";
 
-export async function getOptionalAdminSession(): Promise<AdminSession | null> {
+export async function getOptionalSession(): Promise<AdminSession | null> {
   if (!hasSupabaseEnv()) {
-    return {
-      mode: "demo",
-      user: {
-        id: "demo-user",
-        email: "demo@flowpilot.local",
-      },
-    };
+    return getDemoSession();
   }
 
-  const supabase = createSupabaseBrowserClient();
-  const { data, error } = await supabase.auth.getUser();
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
 
-  if (error || !data.user) {
+  if (!session?.user) {
     return null;
   }
 
   return {
     mode: "supabase",
     user: {
-      id: data.user.id,
-      email: data.user.email ?? null,
+      email: session.user.email ?? null,
+      id: session.user.id,
     },
   };
 }
 
-export async function requireAdminSession() {
-  const session = await getOptionalAdminSession();
+export async function requireAuth() {
+  const session = await getOptionalSession();
 
   if (!session) {
     throw redirect({ to: "/login" });
@@ -40,4 +35,3 @@ export async function requireAdminSession() {
 
   return session;
 }
-
