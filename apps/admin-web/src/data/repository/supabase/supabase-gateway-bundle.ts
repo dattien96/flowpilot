@@ -38,6 +38,10 @@ function createId(prefix: string) {
   return `${prefix}_${crypto.randomUUID().replaceAll("-", "").slice(0, 18)}`;
 }
 
+function createUuid() {
+  return crypto.randomUUID();
+}
+
 function assertRow<T>(row: T | null, message: string): T {
   if (!row) {
     throw new Error(message);
@@ -448,7 +452,7 @@ class SupabaseGatewayBundle
   async createTeam(name: string) {
     const { data, error } = await this.supabase
       .from("teams")
-      .insert({ id: createId("team"), name })
+      .insert({ id: createUuid(), name })
       .select("*")
       .single();
     assertNoError(error, "Unable to create team.");
@@ -485,7 +489,7 @@ class SupabaseGatewayBundle
     const { data, error } = await this.supabase
       .from("team_members")
       .insert({
-        id: createId("member"),
+        id: createUuid(),
         team_id: member.teamId,
         name: member.name,
         email: member.email,
@@ -528,7 +532,7 @@ class SupabaseGatewayBundle
   async linkTeamToProject(projectId: string, teamId: string) {
     const { error } = await this.supabase
       .from("project_teams")
-      .insert({ id: createId("projectteam"), project_id: projectId, team_id: teamId });
+      .insert({ id: createUuid(), project_id: projectId, team_id: teamId });
     assertNoError(error, "Unable to link team to project.");
   }
 

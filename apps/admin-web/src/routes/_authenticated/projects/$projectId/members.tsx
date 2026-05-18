@@ -1,6 +1,6 @@
 import { useMutation } from "@tanstack/react-query";
 import { createFileRoute, useRouter } from "@tanstack/react-router";
-import { type Dispatch, type FormEvent, type SetStateAction, useMemo, useState } from "react";
+import { type Dispatch, type FormEvent, type SetStateAction, useEffect, useMemo, useState } from "react";
 
 import { createGatewayBundle } from "@/data/repository/browser-factory";
 import { PageFrame } from "@/components/common/page-frame";
@@ -16,14 +16,13 @@ export const Route = createFileRoute("/_authenticated/projects/$projectId/member
       teams.length === 0
         ? []
         : (await Promise.all(teams.map((team) => gateways.teamGateway.listMembersByTeam(team.id)))).flat();
-    const allTeams = await gateways.teamGateway.listTeams();
-    return { teams, members, allTeams, projectId: params.projectId };
+    return { teams, members, projectId: params.projectId };
   },
   component: MembersPage,
 });
 
 function MembersPage() {
-  const { teams, members, allTeams, projectId } = Route.useLoaderData();
+  const { teams, members, projectId } = Route.useLoaderData();
   const router = useRouter();
   const [teamName, setTeamName] = useState("");
   const [editingTeamId, setEditingTeamId] = useState<string | null>(null);
@@ -54,10 +53,13 @@ function MembersPage() {
   const createTeam = useMutation({
     mutationFn: async () => {
       const gateways = await createGatewayBundle();
-      return gateways.teamGateway.createTeam(teamName);
+      const team = await gateways.teamGateway.createTeam(teamName);
+      await gateways.teamGateway.linkTeamToProject(projectId, team.id);
+      return team;
     },
-    onSuccess: async () => {
+    onSuccess: async (team) => {
       setTeamName("");
+      setMemberForm((current) => ({ ...current, teamId: team.id }));
       await router.invalidate();
     },
   });
@@ -139,6 +141,19 @@ function MembersPage() {
       await router.invalidate();
     },
   });
+
+  useEffect(() => {
+    setMemberForm((current) => {
+      if (teams.some((team) => team.id === current.teamId)) {
+        return current;
+      }
+
+      return {
+        ...current,
+        teamId: teams[0]?.id ?? "",
+      };
+    });
+  }, [teams]);
 
   const workloadSummary = useMemo(() => {
     const totalCapacity = members.reduce((sum, member) => sum + member.weeklyCapacityHours, 0);
@@ -303,14 +318,18 @@ function MembersPage() {
               className="rounded-2xl border border-border bg-card px-4 py-3"
               value={memberForm.teamId}
               onChange={(event) => setMemberForm((current) => ({ ...current, teamId: event.target.value }))}
+              required
             >
               <option value="">Select team</option>
-              {allTeams.map((team) => (
+              {teams.map((team) => (
                 <option key={team.id} value={team.id}>
                   {team.name}
                 </option>
               ))}
             </select>
+            <div className="rounded-2xl border border-border bg-card px-4 py-3 text-sm text-muted-foreground md:col-span-2">
+              Members can only be attached to teams already linked to this project. Create a team above or link one from Settings first.
+            </div>
             <select
               className="rounded-2xl border border-border bg-card px-4 py-3"
               value={memberForm.role}
@@ -395,7 +414,9 @@ function MembersPage() {
               }
             />
             <div className="flex items-center justify-end md:col-span-2">
-              <Button type="submit">Add member</Button>
+              <Button disabled={teams.length === 0} type="submit">
+                Add member
+              </Button>
             </div>
           </form>
         </section>
@@ -483,7 +504,7 @@ function MembersPage() {
                 onChange={(event) => setEditingMemberTeamId(event.target.value)}
               >
                 <option value="">Select team</option>
-                {allTeams.map((team) => (
+                {teams.map((team) => (
                   <option key={team.id} value={team.id}>
                     {team.name}
                   </option>

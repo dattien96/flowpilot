@@ -1,8 +1,8 @@
-# CP-09: Artifact Memory, RAG & Prompt Context
+# CP-12: Artifact Memory, RAG & Prompt Context
 
 **Maps from:** SS-09, SD-10, SD-08, SD-05
-**Phase:** Cross-cutting, built after CP-04 and alongside CP-06
-**Depends on:** CP-04, CP-06
+**Phase:** Cross-cutting, built after CP-07 and alongside CP-09
+**Depends on:** CP-07, CP-09
 
 ---
 
@@ -37,7 +37,7 @@ The current schema stores generated artifacts in `ai_outputs`; `artifact_memorie
 
 Create or reuse `generate-embedding`.
 
-Use the known-working reference implementation documented in [CP-06 §3.5](./CP-06-AI-Orchestration.md).
+Use the known-working reference implementation documented in [CP-09 §3.5](./CP-09-AI-Orchestration.md).
 
 Requirements:
 - accepts `POST`
@@ -204,3 +204,4 @@ Manual validation:
 - Context Resolver builds prompt memory from selected records.
 - Prompt assembly no longer relies on pushing all prior artifacts into the model.
 - Admin Web exposes artifacts, working memory, embedding status, and prompt context usage.
+

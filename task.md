@@ -1,4 +1,4 @@
-# Task - Execute CP-02 Project & Team Management
+# Task - Execute CP-05 Project & Team Management
 
 Date: 2026-05-18
 Type: Planning, Architecture, and TDD
@@ -6,7 +6,7 @@ Primary module: `apps/admin-web`
 
 ## Goal
 
-Execute `requirements/07-Coding-Plan/CP-02-Project-Management.md` to establish the project management foundation:
+Execute `requirements/07-Coding-Plan/CP-05-Project-Management.md` to establish the project management foundation:
 
 - teams and team members domain support
 - project-team linking
@@ -26,14 +26,15 @@ Execute `requirements/07-Coding-Plan/CP-02-Project-Management.md` to establish t
 
 ## Non-Goals
 
-- CP-07 integration installation flow
+- CP-10 integration installation flow
 - full Jira/Figma/Google Drive connector configuration logic
 - broad workflow or feature domain rewrites unrelated to project management
 - unnecessary redesign of unrelated screens
 
 ## Success Criteria
 
-- the design artifacts fully cover the CP-02 schema, domain, gateway, and UI surfaces
+- the design artifacts fully cover the CP-05 schema, domain, gateway, and UI surfaces
 - the plan preserves existing project behavior while adding team management support
 - the project detail experience includes the required management tabs
 - the project settings surface exposes storage preference and MCP context status placeholders
+

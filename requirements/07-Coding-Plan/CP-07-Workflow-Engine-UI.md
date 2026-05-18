@@ -1,8 +1,8 @@
-# CP-04: Workflow Engine UI & Execution Dashboard
+# CP-07: Workflow Engine UI & Execution Dashboard
 
 **Maps from:** SD-05 (Workflow Engine), SD-09 (Approval Gates), SS-04 (Workflow Spec)
 **Phase:** 4
-**Depends on:** CP-03
+**Depends on:** CP-06
 
 ---
 
@@ -383,3 +383,4 @@ User clicks "Reject & Retry"
 - [ ] Go-Runner: runtime placeholder injection for MCP/user context and rejection notes
 - [ ] `/built-in-workflow/` directory created at system root
 - [ ] Admin Web: cache hash display in Workflow Builder + prompt file link in Execution Dashboard
+

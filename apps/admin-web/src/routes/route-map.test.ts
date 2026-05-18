@@ -9,6 +9,7 @@ describe("CP-01 route tree", () => {
     expect(routePaths).toContain("/login");
     expect(routePaths).toContain("/dashboard");
     expect(routePaths).toContain("/projects");
+    expect(routePaths).toContain("/teams");
     expect(routePaths).toContain("/projects/$projectId/business-logic");
     expect(routePaths).toContain("/projects/$projectId/tech-specs");
     expect(routePaths).toContain("/projects/$projectId/coding-plan");

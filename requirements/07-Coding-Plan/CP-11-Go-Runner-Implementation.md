@@ -1,8 +1,8 @@
-# CP-08: Go-Runner Implementation — CLI, Providers, Skills & Process Isolation
+# CP-11: Go-Runner Implementation — CLI, Providers, Skills & Process Isolation
 
 **Maps from:** SD-03 (Util Tools), SD-05 §3–5 (Prompt Assembly, Provider Execution, LLM Files), SD-06 (AI Provider Integration), SD-07 (Skill & Agent Runtime), SD-10 (Context Resolver & RAG)
 **Phase:** Cross-cutting (built alongside Phases 4–6)
-**Depends on:** CP-04 (workflow engine schema must exist first), CP-09 (artifact memory schema and retrieval policy)
+**Depends on:** CP-07 (workflow engine schema must exist first), CP-12 (artifact memory schema and retrieval policy)
 
 ---
 
@@ -312,7 +312,7 @@ func (a *PromptAssembler) Assemble() string {
 
 ## 6. Context Resolver Integration (from SD-10)
 
-Before the Prompt Assembler injects runtime context, the Go-Runner must call the Context Resolver from CP-09.
+Before the Prompt Assembler injects runtime context, the Go-Runner must call the Context Resolver from CP-12.
 
 ```text
 internal/contextresolver/
@@ -690,7 +690,7 @@ Triggered:
 
 ---
 
-## 12. Definition of Done — CP-08
+## 12. Definition of Done — CP-11
 
 ### Go-Runner CLI
 - [ ] Cobra CLI with commands: `run`, `install-provider`, `install-tools`, `init-project`, `sync-skills`, `cache-clear`, `status`, `version`
@@ -723,3 +723,4 @@ Triggered:
 - [ ] Provider/model resolution: step override → run override → project default
 - [ ] `workflow_run_logs` table for real-time log streaming
 - [ ] `step_definitions` seed table with 17 MVP step types
+

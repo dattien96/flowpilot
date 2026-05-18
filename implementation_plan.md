@@ -1,10 +1,10 @@
-# Implementation Plan - CP-02 Project & Team Management
+# Implementation Plan - CP-05 Project & Team Management
 
 Date: 2026-05-18
 
 ## 1. Objective
 
-Extend the existing admin project area so it can manage teams, team members, and project settings in line with `requirements/07-Coding-Plan/CP-02-Project-Management.md`.
+Extend the existing admin project area so it can manage teams, team members, and project settings in line with `requirements/07-Coding-Plan/CP-05-Project-Management.md`.
 
 ## 2. Execution Boundaries
 
@@ -19,14 +19,14 @@ Extend the existing admin project area so it can manage teams, team members, and
 - `ProjectGateway` only supports list, detail, and create.
 - `Project` does not yet include `directoryPath`, `ownerId`, `status`, or artifact storage preference.
 - There are no domain entities or gateways for teams or team members.
-- The Supabase gateway bundle does not map the new tables required by CP-02.
+- The Supabase gateway bundle does not map the new tables required by CP-05.
 - The project detail route still prioritizes feature and workflow run cards instead of project management tabs.
 
 ## 4. Phase Breakdown
 
 ### Phase A - Domain Expansion
 
-1. Update the `Project` entity with the CP-02 fields.
+1. Update the `Project` entity with the CP-05 fields.
 2. Add `Team`, `TeamMember`, and `Integration` entities.
 3. Define `MemberRole` and `LevelLabel` as narrow unions.
 
@@ -47,7 +47,7 @@ Extend the existing admin project area so it can manage teams, team members, and
 1. Rework `/projects/[projectId]` into a tabbed management layout.
 2. Add member management at `/projects/[projectId]/members`.
 3. Add project settings at `/projects/[projectId]/settings`.
-4. Keep other tabs as route placeholders if the detailed content is not yet part of CP-02.
+4. Keep other tabs as route placeholders if the detailed content is not yet part of CP-05.
 
 ### Phase E - Query And Form Support
 
@@ -58,18 +58,19 @@ Extend the existing admin project area so it can manage teams, team members, and
 ### Phase F - Schema Alignment
 
 1. Prepare the migration shape for the new Supabase tables and project column changes.
-2. Ensure naming and enum values match the CP-02 specification.
-3. Keep the CP-07 integration storage note as a dependency boundary, not an implementation dependency.
+2. Ensure naming and enum values match the CP-05 specification.
+3. Keep the CP-10 integration storage note as a dependency boundary, not an implementation dependency.
 
 ## 5. Verification Sequence
 
-1. Confirm the design covers all CP-02 schema changes.
+1. Confirm the design covers all CP-05 schema changes.
 2. Confirm the gateway interfaces support team CRUD and project linkage.
 3. Confirm the route tree covers project management tabs, members, and settings.
 4. Confirm the new domain shapes remain compatible with the current project flow.
 
 ## 6. Done Criteria
 
-- the CP-02 design artifacts are aligned with the project management requirement
+- the CP-05 design artifacts are aligned with the project management requirement
 - the implementation scope is clear and bounded
 - the next coding phase can proceed without guessing at schema or UI structure
+

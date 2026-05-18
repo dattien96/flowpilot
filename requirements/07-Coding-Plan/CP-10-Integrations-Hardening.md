@@ -1,8 +1,8 @@
-# CP-07: Integrations, Security Hardening & Audit
+# CP-10: Integrations, Security Hardening & Audit
 
 **Maps from:** SD-03 (Util Tools), SD-04 §4 (MCP Installation), Google Doc §10, §13.8
 **Phase:** 7
-**Depends on:** CP-06
+**Depends on:** CP-09
 
 ---
 
@@ -235,3 +235,4 @@ export function ErrorBoundary({ error }: { error: Error }) {
 - [ ] Error boundaries, loading states, empty states
 - [ ] No secrets in frontend code
 - [ ] Edge Functions validate auth headers
+

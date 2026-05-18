@@ -1,4 +1,4 @@
-# CP-02: Project & Team Management
+# CP-05: Project & Team Management
 
 **Maps from:** SD-04 (Project Management), SS-01, SS-02, SS-03
 **Phase:** 2 (after foundation setup)
@@ -46,12 +46,12 @@ CREATE TABLE team_members (
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 
--- Note: MCP/Integration config is handled by the `integrations` table defined in CP-07.
+-- Note: MCP/Integration config is handled by the `integrations` table defined in CP-10.
 -- This avoids duplication. The `integrations` table stores:
 --   project_id, type (jira/figma/google_drive/firebase/telegram),
 --   config_encrypted (JSONB), status (pending/connected/failed),
 --   last_synced_at, timestamps.
--- See CP-07-Integrations-Hardening.md §2.1 for full schema.
+-- See CP-10-Integrations-Hardening.md §2.1 for full schema.
 
 -- Alter existing projects table to add directory_path, owner_id, and storage preference
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS directory_path TEXT;
@@ -208,7 +208,7 @@ export function useTeamMembers(teamId: string) {
 
 ### 5.4 Settings (`/projects/:projectId/settings`)
 - **Storage Strategy:** Dropdown to select "Artifact Storage Preference" (Supabase vs Google Drive). Note: Requires Google Drive MCP to be connected if Google Drive is selected.
-- **MCP Contexts:** List of configured MCP contexts with status badges (PENDING/CONNECTED/FAILED). "Add MCP" button → select type → configure per SD-04 §4.
+- **MCP Contexts:** Read-only summary of configured MCP contexts with status badges (PENDING/CONNECTED/FAILED). The full add/edit/test flow lives in CP-04.
 
 ---
 
@@ -219,6 +219,7 @@ export function useTeamMembers(teamId: string) {
 - [ ] Team CRUD: create, rename, delete
 - [ ] Team member CRUD: add, edit, remove with level labels
 - [ ] Project ↔ Team linking (N:N)
-- [ ] Project settings page with MCP context list (status display only, installation in Phase 7)
+- [ ] Project settings page with MCP context summary and link to CP-04 management flow
 - [ ] Project detail page with tabbed navigation layout
 - [ ] RLS policies for all new tables
+

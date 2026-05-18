@@ -7,15 +7,17 @@ import { PageFrame } from "@/components/common/page-frame";
 import { ProjectSectionNav } from "@/components/project/project-section-nav";
 import { Badge } from "@/presentation/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { getTeamLinkDelta } from "./project-team-links";
 
 export const Route = createFileRoute("/_authenticated/projects/$projectId")({
   loader: async ({ params }) => {
     const gateways = await createGatewayBundle();
-    const [project, features, workflowRuns, teams] = await Promise.all([
+    const [project, features, workflowRuns, teams, allTeams] = await Promise.all([
       gateways.projectGateway.getProjectById(params.projectId),
       gateways.featureGateway.listFeaturesByProject(params.projectId),
       gateways.workflowGateway.listWorkflowRuns(),
       gateways.teamGateway.listTeamsByProject(params.projectId),
+      gateways.teamGateway.listTeams(),
     ]);
 
     const members =
@@ -28,6 +30,7 @@ export const Route = createFileRoute("/_authenticated/projects/$projectId")({
       features,
       workflowRuns: workflowRuns.filter((run) => run.projectId === params.projectId),
       teams,
+      allTeams,
       members,
     };
   },
@@ -46,6 +49,7 @@ function ProjectDetailPage() {
     status: "active",
     platform: "android" as "android" | "ios" | "web" | "multi",
   });
+  const [selectedTeamIds, setSelectedTeamIds] = useState<string[]>([]);
 
   useEffect(() => {
     if (!detail.project) return;
@@ -57,13 +61,14 @@ function ProjectDetailPage() {
       status: detail.project.status,
       platform: detail.project.platform,
     });
-  }, [detail.project]);
+    setSelectedTeamIds(detail.teams.map((team) => team.id));
+  }, [detail.project, detail.teams]);
 
   const updateProject = useMutation({
     mutationFn: async () => {
       if (!detail.project) return null;
       const gateways = await createGatewayBundle();
-      return gateways.projectGateway.updateProject(detail.project.id, {
+      const project = await gateways.projectGateway.updateProject(detail.project.id, {
         name: form.name,
         description: form.description,
         repositoryUrl: form.repositoryUrl,
@@ -71,6 +76,16 @@ function ProjectDetailPage() {
         status: form.status,
         platform: form.platform,
       });
+
+      const { toLink, toUnlink } = getTeamLinkDelta(detail.teams, selectedTeamIds);
+      await Promise.all([
+        ...toLink.map((teamId) => gateways.teamGateway.linkTeamToProject(detail.project.id, teamId)),
+        ...toUnlink.map((teamId) =>
+          gateways.teamGateway.unlinkTeamFromProject(detail.project.id, teamId),
+        ),
+      ]);
+
+      return project;
     },
     onSuccess: async () => {
       await router.invalidate();
@@ -92,6 +107,14 @@ function ProjectDetailPage() {
   const handleUpdate = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     updateProject.mutate();
+  };
+
+  const toggleTeam = (teamId: string) => {
+    setSelectedTeamIds((current) =>
+      current.includes(teamId)
+        ? current.filter((selectedTeamId) => selectedTeamId !== teamId)
+        : [...current, teamId],
+    );
   };
 
   if (!detail.project) {
@@ -180,6 +203,48 @@ function ProjectDetailPage() {
               <option value="active">active</option>
               <option value="archived">archived</option>
             </select>
+            <div className="rounded-[1.5rem] border border-border bg-card/70 p-4 md:col-span-2">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="font-medium">Assigned teams</p>
+                  <p className="text-sm text-muted-foreground">
+                    Update the teams linked to this project as part of the save flow.
+                  </p>
+                </div>
+                <Badge>{selectedTeamIds.length} linked</Badge>
+              </div>
+              {detail.allTeams.length === 0 ? (
+                <p className="mt-4 text-sm text-muted-foreground">
+                  No teams exist yet. Create one from the Members tab and it will appear here.
+                </p>
+              ) : (
+                <div className="mt-4 grid gap-3 md:grid-cols-2">
+                  {detail.allTeams.map((team) => {
+                    const checked = selectedTeamIds.includes(team.id);
+
+                    return (
+                      <label
+                        key={team.id}
+                        className="flex items-start gap-3 rounded-2xl border border-border bg-background px-4 py-3"
+                      >
+                        <input
+                          checked={checked}
+                          className="mt-1"
+                          onChange={() => toggleTeam(team.id)}
+                          type="checkbox"
+                        />
+                        <span className="min-w-0">
+                          <span className="block font-medium">{team.name}</span>
+                          <span className="block text-sm text-muted-foreground">
+                            Include this team in the project roster.
+                          </span>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
             <div className="flex items-center justify-end md:col-span-2">
               <Button type="submit">Save project</Button>
             </div>

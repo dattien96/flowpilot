@@ -1,4 +1,4 @@
-# TDD Signatures - CP-02 Project & Team Management
+# TDD Signatures - CP-05 Project & Team Management
 
 Date: 2026-05-18
 
@@ -68,7 +68,7 @@ Rules:
 
 #### `describe("SupabaseGatewayBundle project management mapping")`
 
-- `it("maps projects with the new CP-02 columns")`
+- `it("maps projects with the new CP-05 columns")`
 - `it("maps teams, team members, and project-team join rows")`
 - `it("persists and loads team records without losing role or level labels")`
 - `it("links teams to projects using the join table")`
@@ -127,3 +127,4 @@ Rules:
 #### `describe("member queries")`
 
 - `it("exposes keys for members-by-team data")`
+

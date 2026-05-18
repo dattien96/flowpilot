@@ -1,6 +1,6 @@
-# CP-11: Supabase Integration
+# CP-03: Supabase Integration
 
-**Maps from:** CP-01, CP-06, CP-09, SD-01, SD-04, SD-08
+**Maps from:** CP-01, CP-09, CP-12, SD-01, SD-04, SD-08
 **Phase:** Parallel foundation after CP-01, before deeper storage and Edge Function rollout
 **Status:** implemented
 
@@ -161,8 +161,8 @@ Responsibilities:
 
 Primary consumers:
 
-- CP-06 AI orchestration endpoints
-- CP-09 embedding generation and retrieval helpers
+- CP-09 AI orchestration endpoints
+- CP-12 embedding generation and retrieval helpers
 - future long-running AI helper functions
 
 ### 6.5 Keep Storage Outside Admin-Web Trust Boundary
@@ -215,3 +215,4 @@ Never solve an authorization problem by moving more power into the browser.
 - [ ] Storage bucket operations are handled by trusted backend/internal boundaries rather than the browser runtime.
 - [ ] Existing Supabase-backed project, feature, context, workflow, approval, output, and log flows continue to work.
 - [ ] Security boundaries between admin-web, Edge Functions, and trusted internal tools are explicit and testable.
+

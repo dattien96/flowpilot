@@ -1,10 +1,10 @@
-# 4C Summary - CP-02 Project & Team Management
+# 4C Summary - CP-05 Project & Team Management
 
 Date: 2026-05-18
 
 ## Context
 
-- The requested execution target is `requirements/07-Coding-Plan/CP-02-Project-Management.md`.
+- The requested execution target is `requirements/07-Coding-Plan/CP-05-Project-Management.md`.
 - The active app is `apps/admin-web`.
 - The current project surface already includes project listing and project detail pages, but the detail experience still centers on features and workflow runs rather than teams, members, and project settings.
 - The phase requires extending the existing project domain with team management, project-team linking, and project settings while keeping the current admin shell consistent.
@@ -20,7 +20,7 @@ Date: 2026-05-18
 
 - Preserve existing project behavior while expanding the domain for teams and settings.
 - Keep the new schema aligned with Supabase/Postgres conventions used by the repository.
-- Avoid duplicating CP-07 integration storage rules; only surface the project settings hook points required by CP-02.
+- Avoid duplicating CP-10 integration storage rules; only surface the project settings hook points required by CP-05.
 - Prefer incremental route expansion over a full visual redesign.
 
 ## Concerns
@@ -35,4 +35,5 @@ Date: 2026-05-18
 - Add project-team linkage and team CRUD on the gateway layer.
 - Update the Supabase bundle to map the new tables and project columns.
 - Rework the project detail route into a tabbed project-management shell with placeholder tabs where later phases will deepen behavior.
-- Add the project members and settings surfaces required by CP-02 while leaving MCP installation details for CP-07.
+- Add the project members and settings surfaces required by CP-05 while leaving MCP installation details for CP-10.
+

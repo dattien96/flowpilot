@@ -1,24 +1,29 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { createFileRoute, Link, useNavigate, useRouter } from "@tanstack/react-router";
+import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
 import { type FormEvent, useState } from "react";
 
 import { createGatewayBundle } from "@/data/repository/browser-factory";
 import { Button } from "@/components/ui/button";
 import { PageFrame } from "@/components/common/page-frame";
 import { Badge } from "@/presentation/components/ui/badge";
+import { getTeamLinkDelta } from "./project-team-links";
 
 export const Route = createFileRoute("/_authenticated/projects/")({
   loader: async () => {
     const gateways = await createGatewayBundle();
-    return gateways.projectGateway.listProjects();
+    const [projects, allTeams] = await Promise.all([
+      gateways.projectGateway.listProjects(),
+      gateways.teamGateway.listTeams(),
+    ]);
+
+    return { projects, allTeams };
   },
   component: ProjectsPage,
 });
 
 function ProjectsPage() {
-  const projects = Route.useLoaderData();
+  const { projects, allTeams } = Route.useLoaderData();
   const router = useRouter();
-  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [form, setForm] = useState({
     name: "",
@@ -27,11 +32,12 @@ function ProjectsPage() {
     repositoryUrl: "",
     directoryPath: "",
   });
+  const [selectedTeamIds, setSelectedTeamIds] = useState<string[]>([]);
 
   const createProject = useMutation({
     mutationFn: async () => {
       const gateways = await createGatewayBundle();
-      return gateways.projectGateway.createProject({
+      const project = await gateways.projectGateway.createProject({
         name: form.name,
         description: form.description,
         platform: form.platform,
@@ -40,6 +46,13 @@ function ProjectsPage() {
         status: "active",
         artifactStoragePreference: "supabase",
       });
+
+      const { toLink } = getTeamLinkDelta([], selectedTeamIds);
+      await Promise.all(
+        toLink.map((teamId) => gateways.teamGateway.linkTeamToProject(project.id, teamId)),
+      );
+
+      return project;
     },
     onSuccess: async () => {
       setForm({
@@ -49,10 +62,19 @@ function ProjectsPage() {
         repositoryUrl: "",
         directoryPath: "",
       });
+      setSelectedTeamIds([]);
       await queryClient.invalidateQueries();
       await router.invalidate();
     },
   });
+
+  const toggleTeam = (teamId: string) => {
+    setSelectedTeamIds((current) =>
+      current.includes(teamId)
+        ? current.filter((selectedTeamId) => selectedTeamId !== teamId)
+        : [...current, teamId],
+    );
+  };
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -116,6 +138,48 @@ function ProjectsPage() {
             <option value="web">web</option>
             <option value="multi">multi</option>
           </select>
+          <div className="rounded-[1.5rem] border border-border bg-card/70 p-4 md:col-span-2">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="font-medium">Assigned teams</p>
+                <p className="text-sm text-muted-foreground">
+                  Select existing teams that should be linked as soon as the project is created.
+                </p>
+              </div>
+              <Badge>{selectedTeamIds.length} selected</Badge>
+            </div>
+            {allTeams.length === 0 ? (
+              <p className="mt-4 text-sm text-muted-foreground">
+                No teams exist yet. Create one from a project Members screen, then assign it here.
+              </p>
+            ) : (
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                {allTeams.map((team) => {
+                  const checked = selectedTeamIds.includes(team.id);
+
+                  return (
+                    <label
+                      key={team.id}
+                      className="flex items-start gap-3 rounded-2xl border border-border bg-background px-4 py-3"
+                    >
+                      <input
+                        checked={checked}
+                        className="mt-1"
+                        onChange={() => toggleTeam(team.id)}
+                        type="checkbox"
+                      />
+                      <span className="min-w-0">
+                        <span className="block font-medium">{team.name}</span>
+                        <span className="block text-sm text-muted-foreground">
+                          Link this team to the new project.
+                        </span>
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+          </div>
           <div className="flex items-center justify-end md:col-span-2">
             <Button type="submit">Create project</Button>
           </div>
