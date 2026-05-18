@@ -23,14 +23,13 @@ services:
     working_dir: /workspace/apps/admin-web
     environment:
       FLOWPILOT_RUNNER_URL: http://local-runner:4317
-      WATCHPACK_POLLING: "true"
       CHOKIDAR_USEPOLLING: "true"
     ports:
       - "3001:3001"
     volumes:
       - .:/workspace
       - admin-web-node-modules:/workspace/apps/admin-web/node_modules
-    command: sh -c "npm ci && npm run dev -- --host 0.0.0.0 --port 3001"
+    command: sh -c "npm ci && npm run dev"
 
 volumes:
   admin-web-node-modules:

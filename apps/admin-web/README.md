@@ -1,6 +1,6 @@
 # FlowPilot Admin Web
 
-Next.js admin shell for the FlowPilot MVP workflow skeleton. It runs in two modes:
+Vite-based admin shell for the FlowPilot MVP workflow skeleton. It runs in two modes:
 
 - Demo mode when Supabase env is missing. In-memory demo repositories keep local exploration working.
 - Supabase mode when all required root env values are present. Data persists through Supabase and protected pages require a Supabase Auth session.
@@ -29,7 +29,22 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:3000`. If Supabase mode is enabled, create or invite a Supabase Auth user and sign in at `/login`.
+Open `http://localhost:3001`. If Supabase mode is enabled, create or invite a Supabase Auth user and sign in at `/login`.
+
+## Docker Run
+
+```bash
+just docker-up
+```
+
+Open `http://localhost:3001`.
+
+This Docker workflow is the default frontend dev loop:
+
+- Edit files under `apps/admin-web/src/**` on the host machine.
+- Vite runs inside Docker with polling enabled for bind-mounted files.
+- Component and style changes should apply through HMR.
+- Route or config changes may trigger a full-page reload instead.
 
 ## Database
 

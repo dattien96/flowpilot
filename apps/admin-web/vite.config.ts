@@ -9,4 +9,17 @@ export default defineConfig({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  server: {
+    host: "0.0.0.0",
+    port: 3001,
+    strictPort: true,
+    watch: {
+      usePolling: true,
+      interval: 300,
+    },
+    hmr: {
+      host: "localhost",
+      clientPort: 3001,
+    },
+  },
 });
