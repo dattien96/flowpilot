@@ -33,7 +33,7 @@ Go-Runner assembles the prompt:
   1. Load the Step's built-in SKILL.md template
   2. Load any custom SKILL.md files attached to this step
   3. Load the MCP context data (Jira ticket, Figma link, etc.)
-  4. Load previous step artifacts as input context
+  4. Resolve prompt memory from artifact working memory, previous approved outputs, pinned notes, and retrieval policy
   5. Inject the user's text-based context
         ↓
 Go-Runner checks: does a cached .md already exist for this config?
@@ -101,7 +101,7 @@ The cached `.md` file is **regenerated** when:
 
 When any of these change, the config hash changes → the Go-Runner generates a new file and creates a new record in Supabase.
 
-**Important:** MCP context and user text context are injected at runtime into the cached template. The cached `.md` contains placeholder sections (`# MCP Context`, `# User Context`, `# Previous Artifacts`) that the Go-Runner fills dynamically before passing to the AI provider. This means the structural template is cached, but run-specific data is always fresh.
+**Important:** MCP context, user text context, and prompt memory are injected at runtime into the cached template. The cached `.md` contains placeholder sections (`# MCP Context`, `# User Context`, `# Selected Working Memory`, `# Source Artifacts`, `# Raw Artifact Excerpts`) that the Go-Runner fills dynamically before passing to the AI provider. This means the structural template is cached, but run-specific data is always fresh.
 
 ### 2.4 Why NOT Save in LLM Provider Folders?
 
@@ -137,8 +137,14 @@ Previous steps completed: [list of completed steps and their artifact summaries]
 # User Context
 [User-provided text, uploaded files, pasted links]
 
-# Previous Artifacts (Input)
-[Output from the previous step, e.g., the Tech Spec artifact for the Coding Plan step]
+# Selected Working Memory
+[Structured summaries, decisions, constraints, and source references selected by the Context Resolver]
+
+# Source Artifacts
+[Links/references to raw artifact files used as durable memory]
+
+# Raw Artifact Excerpts
+[Only included when required by step policy or when summary memory is insufficient]
 
 # Task
 Execute the [Step Name] according to the skills and rules above.
@@ -291,18 +297,23 @@ function executeWorkflowRun(runId):
             insertPromptCache(configHash, promptFile, step.step_type, provider)
             promptFile = injectRuntimeContext(promptFile, previousArtifacts, mcpData, userContext)
         
-        // 5. Execute via provider CLI
+        // 5. Resolve prompt memory
+        promptMemory = resolveContext(step, mcpData, userContext)
+        promptFile = injectPromptMemory(promptFile, promptMemory)
+        
+        // 6. Execute via provider CLI
         output = executeProvider(provider, model, promptFile)
         
-        // 6. Parse output → save artifact
+        // 7. Parse output → save artifact and working memory
         artifact = parseAndSaveArtifact(output, step)
+        generateArtifactMemory(artifact)
         
-        // 7. Check approval gate
+        // 8. Check approval gate
         if step.requires_approval AND NOT yoloMode:
             updateStatus(step, WAITING_USER_APPROVAL)
             waitForApproval()  // blocks until user approves in UI
         
-        // 8. Mark step as DONE
+        // 9. Mark step as DONE
         updateStatus(step, DONE)
         previousArtifacts.append(artifact)
 ```
