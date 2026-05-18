@@ -13,6 +13,7 @@ This phase wires the actual AI execution pipeline. It includes:
 2. **Supabase Edge Functions** — server-side AI orchestration (never expose API keys to the browser).
 3. **AI Execution Log Viewer** — full auditability for every AI call.
 4. **Artifact Management** — storage, versioning, and annotation of generated outputs.
+5. **Embedding Support** — shared `generate-embedding` Edge Function used by artifact memory and prompt context retrieval.
 
 ---
 
@@ -164,6 +165,143 @@ serve(async (req) => {
 })
 ```
 
+### 3.5 `generate-embedding`
+This shared Edge Function supports artifact working memory search in CP-09.
+
+```
+POST /functions/v1/generate-embedding
+
+Body: {
+  text: string
+}
+
+Response: {
+  embedding: number[],
+  dimensions: number
+}
+```
+
+Implementation requirements:
+- use `new Supabase.ai.Session("gte-small")`
+- call `session.run(text, { mean_pool: true, normalize: true })`
+- validate method and input
+- support CORS preflight
+- return dimensions for debugging and migration validation
+
+Reference implementation from a previous working Supabase project:
+
+```typescript
+// supabase/functions/generate-embedding/index.ts
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+
+// CORS headers for cross-origin requests
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type",
+};
+
+serve(async (req: Request) => {
+  // Handle CORS preflight requests
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
+
+  try {
+    // Only accept POST requests
+    if (req.method !== "POST") {
+      return new Response(
+        JSON.stringify({ error: "Method not allowed" }),
+        {
+          status: 405,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    // Parse request body
+    const { text } = await req.json();
+
+    // Validate input
+    if (!text || typeof text !== "string") {
+      return new Response(
+        JSON.stringify({ error: "Missing or invalid 'text' field" }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    console.log(`Generating embedding for text: ${text.substring(0, 50)}...`);
+
+    // Create session and generate embedding
+    // Note: Session is created per-request to avoid cold start caching issues
+    const session = new Supabase.ai.Session("gte-small");
+
+    const result = await session.run(text, {
+      mean_pool: true,
+      normalize: true,
+    });
+
+    // Debug: Log result type and structure
+    console.log(`Result type: ${typeof result}, constructor: ${result?.constructor?.name}`);
+
+    // Ensure result is an array
+    let embedding: number[];
+
+    if (!result) {
+      throw new Error("session.run() returned null or undefined");
+    }
+
+    if (Array.isArray(result)) {
+      embedding = result;
+    } else if (typeof result === "object" && result !== null) {
+      // Convert TypedArray (Float32Array, etc.) to regular array
+      try {
+        embedding = Array.from(result as any);
+      } catch (e) {
+        // Fallback: try to extract numeric values
+        embedding = Object.values(result).filter((v): v is number => typeof v === "number");
+      }
+    } else {
+      throw new Error(`Unexpected result type: ${typeof result}`);
+    }
+
+    if (!embedding || embedding.length === 0) {
+      throw new Error("Empty embedding array");
+    }
+
+    console.log(`Generated embedding with ${embedding.length} dimensions`);
+    console.log(`First 5 values: ${embedding.slice(0, 5)}`);
+
+    // Return response
+    return new Response(
+      JSON.stringify({
+        embedding: embedding,
+        dimensions: embedding.length,
+      }),
+      {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      }
+    );
+  } catch (error) {
+    console.error("Error generating embedding:", error);
+    return new Response(
+      JSON.stringify({
+        error: "Failed to generate embedding",
+        details: error instanceof Error ? error.message : String(error),
+      }),
+      {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      }
+    );
+  }
+});
+```
+
 ---
 
 ## 4. UI Components
@@ -243,6 +381,7 @@ This dual-path design keeps the workflow engine independent from the admin UI.
 
 - [ ] Database migration: `ai_prompt_templates`, `ai_runs`, `artifact_annotations`
 - [ ] At least 4 Supabase Edge Functions: tech-spec, coding-plan, schedule, business-review
+- [ ] Shared Edge Function: generate-embedding
 - [ ] Prompt Template CRUD with Markdown editor
 - [ ] AI Execution Log viewer with filtering and detail drill-down
 - [ ] All "Generate from..." buttons functional

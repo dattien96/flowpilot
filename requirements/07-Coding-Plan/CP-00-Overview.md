@@ -40,6 +40,7 @@ React + Vite + TanStack gives us a lighter, more explicit architecture where eve
 | [CP-06](./CP-06-AI-Orchestration.md) | AI Prompt Templates & Execution Logs | SD-06, SD-07, SD-08 |
 | [CP-07](./CP-07-Integrations-Hardening.md) | MCP/Jira Integration & Security Hardening | SD-04 §4, SD-03 |
 | [CP-08](./CP-08-Go-Runner-Implementation.md) | Go-Runner CLI, Providers, Skills & Process Isolation | SD-03, SD-05 §3–5, SD-06, SD-07 |
+| [CP-09](./CP-09-Artifact-Memory-RAG.md) | Artifact Memory, RAG & Prompt Context | SS-09, SD-10 |
 
 ---
 
@@ -54,6 +55,7 @@ Phase 5 → CP-05: Master Schedule generator, task board
 Phase 6 → CP-06: AI prompt templates, execution log viewer
 Phase 7 → CP-07: Jira/MCP integration, RLS hardening, audit trails
 Phase ∥ → CP-08: Go-Runner CLI (cross-cutting, built alongside Phases 4–6)
+Phase ∥ → CP-09: Artifact memory + RAG context resolver (cross-cutting, built alongside Phases 4–6)
 ```
 
 ## Migration Strategy
