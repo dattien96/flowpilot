@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const getSession = vi.fn();
 
@@ -17,7 +17,12 @@ vi.mock("@/lib/env/browser-env", () => ({
 describe("requireAuth", () => {
   beforeEach(() => {
     vi.resetModules();
+    vi.spyOn(console, "error").mockImplementation(() => {});
     getSession.mockReset();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it("returns the current session when Supabase has an authenticated session", async () => {
@@ -54,6 +59,20 @@ describe("requireAuth", () => {
         session: null,
       },
     });
+
+    const { requireAuth } = await import("./require-auth");
+
+    await expect(requireAuth()).rejects.toMatchObject({
+      options: {
+        to: "/login",
+      },
+    });
+  });
+
+  it("redirects guests to /login when the session lookup fails", async () => {
+    const { hasSupabaseEnv } = await import("@/lib/env/browser-env");
+    vi.mocked(hasSupabaseEnv).mockReturnValue(true);
+    getSession.mockRejectedValue(new Error("network down"));
 
     const { requireAuth } = await import("./require-auth");
 

@@ -5,25 +5,30 @@ import { getDemoSession, type AdminSession } from "@/features/auth/use-auth";
 import { hasSupabaseEnv } from "@/lib/env/browser-env";
 
 export async function getOptionalSession(): Promise<AdminSession | null> {
-  if (!hasSupabaseEnv()) {
-    return getDemoSession();
-  }
+  try {
+    if (!hasSupabaseEnv()) {
+      return getDemoSession();
+    }
 
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
 
-  if (!session?.user) {
+    if (!session?.user) {
+      return null;
+    }
+
+    return {
+      mode: "supabase",
+      user: {
+        email: session.user.email ?? null,
+        id: session.user.id,
+      },
+    };
+  } catch (error) {
+    console.error("Failed to read the current admin session.", error);
     return null;
   }
-
-  return {
-    mode: "supabase",
-    user: {
-      email: session.user.email ?? null,
-      id: session.user.id,
-    },
-  };
 }
 
 export async function requireAuth() {
