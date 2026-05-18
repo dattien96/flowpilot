@@ -30,7 +30,7 @@ services:
     volumes:
       - .:/workspace
       - admin-web-node-modules:/workspace/apps/admin-web/node_modules
-    command: npm run dev -- --hostname 0.0.0.0 --port 3001
+    command: sh -c "npm ci && npm run dev -- --host 0.0.0.0 --port 3001"
 
 volumes:
   admin-web-node-modules:
