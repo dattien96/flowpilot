@@ -28,3 +28,14 @@ To ensure context is never lost and decisions are fully traceable, artifacts are
 Because artifacts represent highly valuable project documentation, they are not locked into the FlowPilot dashboard:
 - **Local Sync:** Artifacts can be synced directly to the local project workspace (e.g., saved inside an `.artifacts/` folder). This allows teams to commit their PRDs and Implementation Plans into Git alongside the source code.
 - **Cloud Sync:** Users can configure the system to automatically backup and sync artifacts to a cloud drive using the **Driver Google MCP**. This ensures that non-technical stakeholders have continuous, easy access to the latest project specs without needing to access the developer environment.
+
+## 3. Artifact Memory
+
+Artifacts also feed the workflow memory system defined in [SS-09](./SS-09-Artifact-Memory-Context-Retrieval.md).
+
+The raw artifact file remains the single source of truth. After an artifact is saved, FlowPilot generates a shorter structured working memory record from it. That working memory is stored in Supabase Postgres, embedded for vector search, and later selected by the Context Resolver when building prompt memory for a workflow step.
+
+This means:
+- raw artifact = durable memory and audit source
+- structured memory = searchable working memory
+- prompt memory = selected context sent to the AI model
