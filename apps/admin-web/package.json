@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
+    "dev": "vite",
+    "build": "vite build",
+    "start": "vite preview",
     "lint": "eslint",
     "test": "vitest run"
   },
@@ -13,6 +13,7 @@
     "@supabase/ssr": "^0.10.3",
     "@supabase/supabase-js": "^2.105.4",
     "@tanstack/react-query": "^5.100.10",
+    "@tanstack/react-router": "^1.126.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^1.16.0",
@@ -23,6 +24,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@vitejs/plugin-react": "^4.4.1",
     "@tailwindcss/postcss": "^4",
     "@types/node": "20.19.41",
     "@types/react": "19.2.14",
@@ -31,6 +33,7 @@
     "eslint-config-next": "16.2.6",
     "tailwindcss": "^4",
     "typescript": "5.9.3",
+    "vite": "^6.1.0",
     "vitest": "^2.1.9"
   }
 }
