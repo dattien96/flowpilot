@@ -1,24 +1,37 @@
-# Logic Sync Report - Admin MVP Skeleton
+# Logic Sync Report - CP-01 Foundation Setup
 
-Date: 2026-05-15
+Date: 2026-05-18
 
-## Source
+## Source Checked
 
+- `requirements/07-Coding-Plan/CP-01-Foundation-Setup.md`
 - `implementation_plan.md`
 - `tdd_signatures.md`
-- Current `apps/admin-web` implementation
 
-## Findings
+## Requirement Alignment
 
-- `[MISSING -> IMPLEMENTED]` Supabase env selection used `NEXT_PUBLIC_*` aliases. It now uses `SUPABASE_API_URL`, `SUPABASE_API_KEY`, and `SUPABASE_SERVICE_ROLE_KEY`.
-- `[MISSING -> IMPLEMENTED]` `createGatewayBundle()` always returned demo repositories. It now selects Supabase repositories when all required Supabase env values exist and keeps demo fallback otherwise.
-- `[MISSING -> IMPLEMENTED]` Protected routes were only grouped by folder. Protected layouts and admin APIs now use the shared admin session guard, with demo mode bypass.
-- `[MISSING -> IMPLEMENTED]` Context sources only listed one hardcoded project. CRUD use cases, API routes, and page forms now support list/create/update/archive.
-- `[MISSING -> IMPLEMENTED]` Feature intake used a hardcoded project id. The create form now loads projects and validates the selected project through the use case.
-- `[MISSING -> IMPLEMENTED]` Workflow definitions had no pages or route. Listing/detail pages and `GET /api/workflow-definitions` now exist.
-- `[MISSING -> IMPLEMENTED]` Approval listing scanned runs and lacked output preview or comments. Gateway approval queries now return enriched approval detail, and decision forms include comments.
-- `[MISSING -> IMPLEMENTED]` Outputs were artifact-browser focused. The output library now lists persisted `ai_outputs`, supports detail view, approval history, versions, and markdown export.
-- `[MISSING -> IMPLEMENTED]` Workflow run detail lacked context, per-step outputs, logs, and controls. The detail page now renders selected context, step output previews, logs, resume, and cancel.
-- `[MISSING -> IMPLEMENTED]` Logs lacked summary/filtering. The logs page and API now support status/provider filters and dashboard summaries.
-- `[MISSING -> IMPLEMENTED]` Migration lacked soft-delete, policies, indexes, and seed data. The migration now includes those pieces.
-- `[PARTIAL -> IMPLEMENTED]` A Vitest harness now covers Supabase env mapping, artifact path normalization, feature-scoped context validation, and approval decision history/current step behavior. Route-level and full repository integration tests remain follow-up coverage.
+| Requirement | Status | Evidence |
+|---|---|---|
+| Vite + React + TypeScript foundation | `[SYNCED]` | `apps/admin-web/package.json`, `apps/admin-web/vite.config.ts`, `apps/admin-web/src/main.tsx` |
+| TanStack Router file-based routing | `[SYNCED]` | `apps/admin-web/src/routes/**`, generated `apps/admin-web/src/routeTree.gen.ts`, `apps/admin-web/src/router.tsx` |
+| TanStack Query root wiring | `[SYNCED]` | `apps/admin-web/src/app.tsx`, `apps/admin-web/src/lib/query-client.ts` |
+| Browser-only Supabase client | `[SYNCED]` | `apps/admin-web/src/data/supabase/client.ts`, `apps/admin-web/src/lib/env/browser-env.ts` |
+| Auth guard and protected layout | `[SYNCED]` | `apps/admin-web/src/features/auth/require-auth.ts`, `apps/admin-web/src/routes/_authenticated.tsx`, `apps/admin-web/src/features/auth/require-auth.test.ts` |
+| AppShell layout with sidebar, header, content | `[SYNCED]` | `apps/admin-web/src/components/layout/app-shell.tsx` |
+| CP-01 route surface | `[SYNCED]` | `apps/admin-web/src/routes/_authenticated/**`, `apps/admin-web/src/routes/route-map.test.ts` |
+| Domain constants/contracts remain portable | `[SYNCED]` | Existing `apps/admin-web/src/domain/**` plus `apps/admin-web/src/domain/constant/status.test.ts` |
+| Backup of pre-migration app | `[SYNCED]` | `apps/admin-web-nextjs-backup/` |
+
+## Test Alignment
+
+- `[SYNCED]` `src/features/auth/require-auth.test.ts` verifies authenticated session return and guest redirect behavior.
+- `[SYNCED]` `src/routes/route-map.test.ts` verifies the required CP-01 route registrations.
+- `[SYNCED]` Existing domain and env tests still pass under the Vite test harness.
+- `[SYNCED]` `src/features/auth/auth-provider.test.tsx` verifies session hydration and demo fallback behavior.
+- `[SYNCED]` `src/components/layout/app-shell.test.tsx` verifies shell navigation and child rendering.
+
+## Notes
+
+- Legacy Next.js files still exist in the repo as inactive reference material, but the active Vite entry path no longer imports `next/*`.
+- `npm run build` passes.
+- `npm run test` passes.
