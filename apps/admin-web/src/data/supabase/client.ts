@@ -1,12 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 
-import {
-  getSupabaseAnonKey,
-  getSupabaseUrl,
-  hasSupabaseEnv,
-  hasSupabaseServiceEnv,
-  getSupabaseServiceRoleKey,
-} from "@/lib/env/browser-env";
+import { getSupabaseAnonKey, getSupabaseUrl, hasSupabaseEnv } from "@/lib/env/browser-env";
 
 function createDemoSupabaseClient() {
   return {
@@ -14,13 +8,10 @@ function createDemoSupabaseClient() {
       async getSession() {
         return { data: { session: null }, error: null };
       },
-      async getUser() {
-        return { data: { user: null }, error: null };
-      },
       async signInWithPassword() {
         return {
-          data: { user: null, session: null },
-          error: new Error("Supabase is not configured for demo mode."),
+          data: { session: null, user: null },
+          error: new Error("Supabase env is not configured."),
         };
       },
       async signOut() {
@@ -39,21 +30,6 @@ function createDemoSupabaseClient() {
   };
 }
 
-export function createSupabaseBrowserClient() {
-  if (!hasSupabaseEnv()) {
-    return createDemoSupabaseClient() as never;
-  }
-
-  return createClient(getSupabaseUrl(), getSupabaseAnonKey());
-}
-
-export function createSupabaseServerClient() {
-  if (!hasSupabaseServiceEnv()) {
-    return createDemoSupabaseClient() as never;
-  }
-
-  return createClient(getSupabaseUrl(), getSupabaseServiceRoleKey());
-}
-
-export const createSupabaseServiceClient = createSupabaseServerClient;
-export const supabase = createSupabaseBrowserClient();
+export const supabase = hasSupabaseEnv()
+  ? createClient(getSupabaseUrl(), getSupabaseAnonKey())
+  : (createDemoSupabaseClient() as never);
