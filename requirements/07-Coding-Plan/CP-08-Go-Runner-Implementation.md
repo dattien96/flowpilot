@@ -430,7 +430,58 @@ The Go-Runner:
 
 ---
 
-## 8. Process Isolation for Heavy Agents (from SD-07 §2)
+## 8. Artifact Storage & Upload (from SD-08)
+
+When the Go-Runner receives a successful payload from the AI Provider, it must handle the output artifact locally before syncing to the cloud:
+
+```go
+// internal/workflow/artifact.go
+func parseAndSaveArtifact(output string, step WorkflowRunStep, project Project) (Artifact, error) {
+    // 1. Extract markdown/json from LLM output block
+    content := extractContent(output)
+    
+    // 2. Save locally to .artifacts/ folder
+    artifactDir := filepath.Join(project.DirectoryPath, ".artifacts")
+    os.MkdirAll(artifactDir, 0755)
+    
+    filename := fmt.Sprintf("%s_%s.md", step.ID, step.StepType)
+    localPath := filepath.Join(artifactDir, filename)
+    os.WriteFile(localPath, []byte(content), 0644)
+    
+    // 3. Upload to configured storage backend (Supabase or Google Drive)
+    var storageURL string
+    var err error
+    
+    if project.ArtifactStoragePreference == "google_drive" && project.HasGoogleDriveMCP {
+        // Upload via Google Drive MCP Edge Function
+        storageURL, err = uploadToGoogleDrive(localPath, project.GoogleDriveFolderID)
+    } else {
+        // Default to Supabase Storage Bucket
+        bucketPath := fmt.Sprintf("artifacts/%s/%s", project.ID, filename)
+        storageURL, err = uploadToSupabaseStorage(localPath, bucketPath)
+    }
+    
+    if err != nil {
+        return Artifact{}, err
+    }
+    
+    // 4. Create record in Supabase DB
+    artifact := Artifact{
+        WorkflowRunID: step.WorkflowRunID,
+        StepID:        step.ID,
+        ContentURL:    storageURL,
+        ContentRaw:    content, // Optionally store raw content if small enough
+        Version:       1,
+    }
+    insertArtifactRecord(artifact)
+    
+    return artifact, nil
+}
+```
+
+---
+
+## 9. Process Isolation for Heavy Agents (from SD-07 §2)
 
 When a workflow step requires a heavy-duty agent (like Code/Review Loop), the main Go-Runner spawns a **separate background process** to avoid blocking:
 
@@ -473,12 +524,13 @@ func spawnIsolatedAgent(cmd *exec.Cmd, stepID string) (*AgentProcess, error) {
 
 ---
 
-## 9. Skill Sync to Google Drive (from SD-07 §3)
+## 10. Skill Storage & Sync (from SD-07 §3)
 
-If the Google Drive MCP is enabled for a project:
+Custom skills must be synced to remote storage for backup and cross-project sharing. This follows the same tiered strategy as Artifacts:
+
 ```go
 // internal/skills/sync.go
-func syncSkillsToDrive(project Project, driveConfig DriveConfig) error {
+func syncSkills(project Project) error {
     skillDirs := []string{
         filepath.Join(project.DirectoryPath, ".claude", "skills"),
         filepath.Join(project.DirectoryPath, ".codex", "skills"),
@@ -489,10 +541,17 @@ func syncSkillsToDrive(project Project, driveConfig DriveConfig) error {
         if _, err := os.Stat(dir); os.IsNotExist(err) {
             continue
         }
-        // Upload via Google Drive MCP Edge Function
-        err := uploadDirectoryToDrive(dir, driveConfig.FolderID)
+        if project.ArtifactStoragePreference == "google_drive" && project.HasGoogleDriveMCP {
+            // Upload via Google Drive MCP Edge Function
+            err = uploadDirectoryToDrive(dir, project.GoogleDriveFolderID)
+        } else {
+            // Default: Upload to Supabase Storage
+            bucketPath := fmt.Sprintf("skills/%s/%s", project.ID, filepath.Base(dir))
+            err = uploadDirectoryToSupabase(dir, bucketPath)
+        }
+        
         if err != nil {
-            log.Warnf("Failed to sync %s to Drive: %v", dir, err)
+            log.Warnf("Failed to sync %s: %v", dir, err)
         }
     }
     return nil
@@ -506,7 +565,7 @@ Triggered:
 
 ---
 
-## 10. Definition of Done — CP-08
+## 11. Definition of Done — CP-08
 
 ### Go-Runner CLI
 - [ ] Cobra CLI with commands: `run`, `install-provider`, `install-tools`, `init-project`, `sync-skills`, `cache-clear`, `status`, `version`
@@ -518,16 +577,18 @@ Triggered:
 - [ ] Cache-first execution: check `workflow_prompt_cache` → reuse or assemble new
 - [ ] Runtime placeholder injection (MCP, user context, previous artifacts, rejection notes)
 
-### Provider Execution
+### Provider Execution & Artifacts
 - [ ] `executeProvider()` with provider-specific CLI commands
 - [ ] Code/Review Loop special case with long-running sub-process
 - [ ] Exit criteria monitoring (build, tests, coverage)
 - [ ] Process isolation via `os/exec.Command` with process group management
+- [ ] Write artifacts locally to `.artifacts/` folder
+- [ ] Upload artifacts to Supabase Storage Bucket via API (or Google Drive if configured)
 
 ### Project Files
 - [ ] `init-project` generates `CLAUDE.md` / `AGENTS.md` / `GEMINI.md`
 - [ ] Built-in skill sync from backend to `.claude/skills/`, `.codex/skills/`, `.gemini/skills/`
-- [ ] Google Drive skill sync (if Drive MCP enabled)
+- [ ] Sync custom skills to Supabase Storage (or Google Drive if configured)
 
 ### Configuration
 - [ ] Provider/model resolution: step override → run override → project default

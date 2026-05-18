@@ -14,5 +14,7 @@ This document translates `SS-07-Workflow-Artifact` into technical implementation
 
 ## 3. Go-Runner File Sync
 - The Go-runner automatically writes the artifact payload it receives from the LLM to an `.artifacts/` folder in the local project directory.
-- It then uploads the file to Supabase Storage via API.
-- If Google Drive MCP is enabled, the runner pushes a copy to the specified Drive folder.
+- **Storage Strategy:** Based on the `projects.artifact_storage_preference` setting (configured via the Admin UI):
+  - **Default (`supabase`):** The Go-Runner uploads the file to the Supabase Storage Bucket via API.
+  - **Google Drive (`google_drive`):** If the Google Drive MCP is enabled and connected for the project, the Go-Runner uploads the file to the specified Drive folder instead of Supabase.
+  - The resulting `content_url` in the database will point to either the Supabase bucket or the Google Drive URL.

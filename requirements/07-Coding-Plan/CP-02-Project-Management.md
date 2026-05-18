@@ -53,10 +53,11 @@ CREATE TABLE team_members (
 --   last_synced_at, timestamps.
 -- See CP-07-Integrations-Hardening.md §2.1 for full schema.
 
--- Alter existing projects table to add directory_path and owner_id
+-- Alter existing projects table to add directory_path, owner_id, and storage preference
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS directory_path TEXT;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS owner_id TEXT;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active';
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS artifact_storage_preference TEXT DEFAULT 'supabase'; -- 'supabase' or 'google_drive'
 
 -- RLS
 ALTER TABLE teams ENABLE ROW LEVEL SECURITY;
@@ -205,9 +206,9 @@ export function useTeamMembers(teamId: string) {
 - "Import from Jira" button (disabled until Jira MCP connected — Phase 7)
 - Workload summary widget showing capacity vs assigned hours
 
-### 5.4 MCP Context Settings (`/projects/:projectId/settings`)
-- List of configured MCP contexts with status badges (PENDING/CONNECTED/FAILED)
-- "Add MCP" button → select type → configure per SD-04 §4
+### 5.4 Settings (`/projects/:projectId/settings`)
+- **Storage Strategy:** Dropdown to select "Artifact Storage Preference" (Supabase vs Google Drive). Note: Requires Google Drive MCP to be connected if Google Drive is selected.
+- **MCP Contexts:** List of configured MCP contexts with status badges (PENDING/CONNECTED/FAILED). "Add MCP" button → select type → configure per SD-04 §4.
 
 ---
 

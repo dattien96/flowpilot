@@ -13,4 +13,5 @@ This document translates `SS-06-Workflow-Skill-Agent` into technical implementat
 - The sub-process streams its stdout/stderr back to the main runner to be logged in Supabase.
 
 ## 3. Syncing Custom Skills
-- If the "Google Drive MCP" is enabled for the project, the Go-runner will execute a sync routine that uploads the contents of the `.claude/`, `.codex/`, and `.gemini/` skill folders to the configured Google Drive folder for backup and cross-project sharing.
+- By default (`supabase` storage preference), custom skills are synced to the Supabase Storage Bucket so they can be viewed in the Admin UI or shared across projects.
+- If the "Google Drive MCP" is enabled for the project AND the `projects.artifact_storage_preference` is set to `google_drive`, the Go-runner will instead execute a sync routine that uploads the contents of the `.claude/`, `.codex/`, and `.gemini/` skill folders to the configured Google Drive folder for backup and cross-project sharing.
