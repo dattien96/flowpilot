@@ -43,6 +43,48 @@ CREATE INDEX idx_prompt_cache_hash ON workflow_prompt_cache(config_hash) WHERE i
 
 -- Enable RLS
 ALTER TABLE workflow_prompt_cache ENABLE ROW LEVEL SECURITY;
+
+-- Workflow execution logs (per SD-05 §7.3)
+CREATE TABLE workflow_run_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  workflow_run_step_id TEXT NOT NULL REFERENCES workflow_steps(id) ON DELETE CASCADE,
+  log_level TEXT NOT NULL DEFAULT 'INFO',   -- INFO, WARN, ERROR, DEBUG
+  message TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+ALTER TABLE workflow_run_logs ENABLE ROW LEVEL SECURITY;
+
+-- Step definitions seed table (per SD-05 §7.4)
+-- Static/seeded data — the 17 MVP step types
+CREATE TABLE step_definitions (
+  step_type TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL,
+  required_mcps JSONB DEFAULT '[]',      -- e.g. ["jira", "firebase"]
+  required_skills JSONB DEFAULT '[]',    -- e.g. ["tech_spec_skill"]
+  agent_type TEXT NOT NULL DEFAULT 'standard'  -- standard, autonomous (for code/review loop)
+);
+
+-- Seed data (insert 17 MVP step types)
+INSERT INTO step_definitions (step_type, name, description, required_mcps, required_skills, agent_type) VALUES
+  ('business_idea', 'Business Idea', 'Capture and refine a raw business idea', '[]', '["business_analyst_skill"]', 'standard'),
+  ('feature_intake', 'Feature Intake', 'Read and structure feature requirements from Jira', '["jira"]', '["feature_intake_skill"]', 'standard'),
+  ('business_summary', 'Business Summary', 'Summarize business requirements into a PRD', '[]', '["business_summary_skill"]', 'standard'),
+  ('product_spec', 'Product Spec', 'Generate a detailed product specification', '[]', '["product_spec_skill"]', 'standard'),
+  ('tech_spec', 'Tech Spec', 'Generate a technical specification', '[]', '["tech_spec_skill"]', 'standard'),
+  ('make_plan_coding', 'Make Plan Coding', 'Create a step-by-step coding plan', '[]', '["make_plan_coding_skill"]', 'standard'),
+  ('create_architecture', 'Create Architecture', 'Design system architecture and components', '[]', '["create_architecture_skill"]', 'standard'),
+  ('tdd', 'TDD', 'Create unit test signatures matching business requirements', '[]', '["tdd_skill"]', 'standard'),
+  ('task_breakdown', 'Task Breakdown', 'Break coding plan into developer tasks with master schedule', '[]', '["task_breakdown_skill"]', 'standard'),
+  ('code_review_loop', 'Code/Review Loop', 'Autonomously code, test, and review until passing', '[]', '["coding_skill", "review_skill"]', 'autonomous'),
+  ('release_readiness', 'Release Readiness', 'Verify release criteria are met', '[]', '["release_readiness_skill"]', 'standard'),
+  ('issue_analysis', 'Issue Analysis', 'Analyze crash reports and issues for root cause', '["firebase", "jira"]', '["issue_analysis_skill"]', 'standard'),
+  ('analytics_review', 'Analytics Review', 'Review usage data and user behavior insights', '["firebase"]', '["analytics_review_skill"]', 'standard'),
+  ('project_analysis', 'Project Analysis', 'Analyze project health and process bottlenecks', '["google_drive"]', '["project_analysis_skill"]', 'standard'),
+  ('telegram_notification', 'Telegram Notification', 'Send workflow status to Telegram chat', '["telegram"]', '["notification_skill"]', 'standard'),
+  ('code_traceability', 'Code Traceability', 'Trace code/bug back to original Jira ticket', '["jira"]', '["code_traceability_skill"]', 'standard'),
+  ('onboarding_walkthrough', 'Onboarding Walkthrough', 'Generate product/codebase summary for new members', '["google_drive"]', '["onboarding_skill"]', 'standard');
 ```
 
 ---
