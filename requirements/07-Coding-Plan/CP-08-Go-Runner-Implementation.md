@@ -1,19 +1,20 @@
 # CP-08: Go-Runner Implementation — CLI, Providers, Skills & Process Isolation
 
-**Maps from:** SD-03 (Util Tools), SD-05 §3–5 (Prompt Assembly, Provider Execution, LLM Files), SD-06 (AI Provider Integration), SD-07 (Skill & Agent Runtime)
+**Maps from:** SD-03 (Util Tools), SD-05 §3–5 (Prompt Assembly, Provider Execution, LLM Files), SD-06 (AI Provider Integration), SD-07 (Skill & Agent Runtime), SD-10 (Context Resolver & RAG)
 **Phase:** Cross-cutting (built alongside Phases 4–6)
-**Depends on:** CP-04 (workflow engine schema must exist first)
+**Depends on:** CP-04 (workflow engine schema must exist first), CP-09 (artifact memory schema and retrieval policy)
 
 ---
 
 ## 1. Core Concept
 
-This plan covers everything the **Go-Runner** (Cobra CLI) must implement that is NOT captured in the Admin Web coding plans (CP-01 through CP-07). The Go-Runner is the execution engine that:
+This plan covers everything the **Go-Runner** (Cobra CLI) must implement that is NOT captured in the Admin Web coding plans. The Go-Runner is the execution engine that:
 1. Pulls pending workflow steps from Supabase
-2. Assembles prompts from skills + context
-3. Invokes AI provider CLIs
-4. Parses output and saves artifacts
-5. Manages approval gates and retry loops
+2. Resolves prompt memory from workflow context, MCP context, user context, and artifact working memory
+3. Assembles prompts from skills + selected context
+4. Invokes AI provider CLIs
+5. Parses output, saves artifacts, and generates working memory
+6. Manages approval gates and retry loops
 
 ---
 
@@ -211,8 +212,14 @@ Previous steps completed: [list of completed steps and their artifact summaries]
 # User Context
 [User-provided text, uploaded files, pasted links]
 
-# Previous Artifacts (Input)
-[Output from the previous step, e.g., the Tech Spec artifact for the Coding Plan step]
+# Selected Working Memory
+[Structured summaries, decisions, constraints, and source references selected by the Context Resolver]
+
+# Source Artifacts
+[Links/references to raw artifact files used as durable memory]
+
+# Raw Artifact Excerpts
+[Only included when required by step policy or when summary memory is insufficient]
 
 # Reviewer Feedback (Retry)
 [Only populated on retry — contains rejection_note from previous attempt]
@@ -230,7 +237,7 @@ type PromptAssembler struct {
     skills       []SkillContent
     mcpData      map[string]string
     userContext   string
-    prevArtifacts []ArtifactSummary
+    promptMemory  PromptMemory
     rejectionNote string
 }
 
@@ -264,10 +271,25 @@ func (a *PromptAssembler) Assemble() string {
     b.WriteString("# User Context\n")
     b.WriteString(a.userContext + "\n\n")
 
-    // Previous Artifacts (runtime — not cached)
-    b.WriteString("# Previous Artifacts (Input)\n")
-    for _, art := range a.prevArtifacts {
-        b.WriteString(fmt.Sprintf("## %s (Step: %s)\n%s\n\n", art.Title, art.StepType, art.Summary))
+    // Selected working memory (runtime — not cached)
+    b.WriteString("# Selected Working Memory\n")
+    for _, item := range a.promptMemory.WorkingMemoryItems {
+        b.WriteString(fmt.Sprintf("## %s\n%s\nSource: %s\n\n", item.Title, item.Summary, item.SourceRef))
+    }
+
+    // Source artifacts (runtime — audit references)
+    b.WriteString("# Source Artifacts\n")
+    for _, source := range a.promptMemory.SourceArtifacts {
+        b.WriteString(fmt.Sprintf("- %s\n", source.Ref))
+    }
+    b.WriteString("\n")
+
+    // Raw artifact excerpts (runtime — only when policy requires expansion)
+    if len(a.promptMemory.RawExcerpts) > 0 {
+        b.WriteString("# Raw Artifact Excerpts\n")
+        for _, excerpt := range a.promptMemory.RawExcerpts {
+            b.WriteString(fmt.Sprintf("## %s\n%s\n\n", excerpt.SourceRef, excerpt.Content))
+        }
     }
 
     // Rejection feedback (runtime — only on retry)
@@ -288,9 +310,64 @@ func (a *PromptAssembler) Assemble() string {
 
 ---
 
-## 6. Provider-Specific Execution (from SD-05 §4)
+## 6. Context Resolver Integration (from SD-10)
 
-### 6.1 Standard Steps
+Before the Prompt Assembler injects runtime context, the Go-Runner must call the Context Resolver from CP-09.
+
+```text
+internal/contextresolver/
+  policy.go
+  resolver.go
+  ranking.go
+  packing.go
+  audit.go
+```
+
+Responsibilities:
+1. Load the step retrieval policy from `step_definitions` or workflow step config.
+2. Include mandatory context: current step, workflow run, user context, MCP context, retry note.
+3. Include latest approved immediate previous-step artifact summary.
+4. Include pinned artifact memories and pinned annotations.
+5. Generate an embedding for the current step query through `generate-embedding`.
+6. Search `artifact_memories` through `match_artifact_memories()`.
+7. Rank by semantic similarity, approval status, recency, same workflow/run, required artifact type, and pinned boosts.
+8. Pack selected context into the step token budget.
+9. Load raw artifact excerpts only when policy requires full detail.
+10. Insert `workflow_prompt_context_items` audit rows for every selected item.
+
+```go
+// internal/contextresolver/resolver.go
+type PromptMemory struct {
+    WorkingMemoryItems []WorkingMemoryItem
+    SourceArtifacts    []SourceArtifactRef
+    RawExcerpts        []RawArtifactExcerpt
+    TokenEstimate      int
+}
+
+func ResolvePromptMemory(ctx context.Context, input ResolveInput) (PromptMemory, error) {
+    policy := loadStepContextPolicy(input.StepDefinition, input.WorkflowStep)
+    mandatory := collectMandatoryContext(input)
+    pinned := loadPinnedMemory(input.ProjectID, input.WorkflowID)
+
+    queryText := buildRetrievalQuery(input.StepDefinition, input.UserContext, input.MCPContext)
+    queryEmbedding := callGenerateEmbedding(queryText)
+    candidates := matchArtifactMemories(queryEmbedding, input.ProjectID, input.WorkflowID, policy)
+
+    ranked := rankMemoryCandidates(candidates, mandatory, pinned, policy)
+    packed := packPromptMemory(ranked, mandatory, policy.TokenBudget)
+
+    insertPromptContextAudit(input.WorkflowRunStepID, packed)
+    return packed, nil
+}
+```
+
+Prompt assembly must use `PromptMemory`; it must not append all previous raw artifacts by default.
+
+---
+
+## 7. Provider-Specific Execution (from SD-05 §4)
+
+### 7.1 Standard Steps
 ```go
 // internal/provider/executor.go
 func executeProvider(provider, model, promptFilePath string) (string, error) {
@@ -320,7 +397,7 @@ func executeProvider(provider, model, promptFilePath string) (string, error) {
 }
 ```
 
-### 6.2 Special Case: Code/Review Loop Step
+### 7.2 Special Case: Code/Review Loop Step
 The Code/Review Loop is unique — it requires a **long-running interactive agent** that autonomously codes, compiles, tests, and reviews:
 
 ```go
@@ -368,9 +445,9 @@ If criteria not met after provider finishes, the loop retries (up to configurabl
 
 ---
 
-## 7. Persistent LLM Instruction Files (from SD-05 §5)
+## 8. Persistent LLM Instruction Files (from SD-05 §5)
 
-### 7.1 Project Instruction File Generation
+### 8.1 Project Instruction File Generation
 The `flowpilot init-project` command generates the provider-specific instruction file:
 
 ```go
@@ -410,7 +487,7 @@ func initProjectFiles(project Project, provider string) error {
 
 **Important:** This file is NOT the workflow. It is the "project onboarding" context that every AI session loads automatically.
 
-### 7.2 Skill File Management
+### 8.2 Skill File Management
 Built-in and custom skills live permanently in provider-specific directories:
 ```
 project-root/
@@ -430,7 +507,7 @@ The Go-Runner:
 
 ---
 
-## 8. Artifact Storage & Upload (from SD-08)
+## 9. Artifact Storage, Upload & Memory Generation (from SD-08 and SD-10)
 
 When the Go-Runner receives a successful payload from the AI Provider, it must handle the output artifact locally before syncing to the cloud:
 
@@ -474,14 +551,62 @@ func parseAndSaveArtifact(output string, step WorkflowRunStep, project Project) 
         Version:       1,
     }
     insertArtifactRecord(artifact)
+
+    // 5. Generate searchable working memory for later prompt retrieval.
+    // Failure must not roll back the raw artifact save.
+    if err := generateArtifactMemory(artifact, content, step, project); err != nil {
+        log.Warnf("artifact memory generation failed for %s: %v", artifact.ID, err)
+        markArtifactMemoryFailed(artifact.ID, err)
+    }
     
     return artifact, nil
 }
 ```
 
+```go
+// internal/workflow/artifact_memory.go
+func generateArtifactMemory(artifact Artifact, content string, step WorkflowRunStep, project Project) error {
+    memory, err := extractWorkingMemory(content, step)
+    if err != nil {
+        return err
+    }
+
+    memoryID, err := insertArtifactMemory(ArtifactMemory{
+        AIOutputID:        artifact.ID,
+        ProjectID:         project.ID,
+        WorkflowRunID:     step.WorkflowRunID,
+        WorkflowRunStepID: step.ID,
+        ArtifactType:      step.StepType,
+        ArtifactStatus:    artifact.Status,
+        ArtifactVersion:   artifact.Version,
+        Summary:           memory.Summary,
+        KeyDecisions:      memory.KeyDecisions,
+        Constraints:       memory.Constraints,
+        Assumptions:       memory.Assumptions,
+        OpenQuestions:     memory.OpenQuestions,
+        Keywords:          memory.Keywords,
+        SourceRefs:        []string{artifact.ContentURL},
+        TokenEstimate:     estimateTokens(memory.Summary),
+        EmbeddingStatus:   "pending",
+    })
+    if err != nil {
+        return err
+    }
+
+    embeddingText := buildEmbeddingText(memory)
+    embedding, dimensions, err := callGenerateEmbedding(embeddingText)
+    if err != nil {
+        markEmbeddingFailed(memoryID, err)
+        return err
+    }
+
+    return updateArtifactMemoryEmbedding(memoryID, embedding, dimensions, "gte-small")
+}
+```
+
 ---
 
-## 9. Process Isolation for Heavy Agents (from SD-07 §2)
+## 10. Process Isolation for Heavy Agents (from SD-07 §2)
 
 When a workflow step requires a heavy-duty agent (like Code/Review Loop), the main Go-Runner spawns a **separate background process** to avoid blocking:
 
@@ -524,7 +649,7 @@ func spawnIsolatedAgent(cmd *exec.Cmd, stepID string) (*AgentProcess, error) {
 
 ---
 
-## 10. Skill Storage & Sync (from SD-07 §3)
+## 11. Skill Storage & Sync (from SD-07 §3)
 
 Custom skills must be synced to remote storage for backup and cross-project sharing. This follows the same tiered strategy as Artifacts:
 
@@ -565,7 +690,7 @@ Triggered:
 
 ---
 
-## 11. Definition of Done — CP-08
+## 12. Definition of Done — CP-08
 
 ### Go-Runner CLI
 - [ ] Cobra CLI with commands: `run`, `install-provider`, `install-tools`, `init-project`, `sync-skills`, `cache-clear`, `status`, `version`
@@ -575,7 +700,9 @@ Triggered:
 ### Prompt Assembly
 - [ ] `PromptAssembler` struct with full template structure (System Instruction → Task)
 - [ ] Cache-first execution: check `workflow_prompt_cache` → reuse or assemble new
-- [ ] Runtime placeholder injection (MCP, user context, previous artifacts, rejection notes)
+- [ ] Context Resolver integration before prompt assembly
+- [ ] Runtime placeholder injection (MCP, user context, selected working memory, source artifacts, raw excerpts, rejection notes)
+- [ ] `workflow_prompt_context_items` audit rows written for selected prompt memory
 
 ### Provider Execution & Artifacts
 - [ ] `executeProvider()` with provider-specific CLI commands
@@ -584,6 +711,8 @@ Triggered:
 - [ ] Process isolation via `os/exec.Command` with process group management
 - [ ] Write artifacts locally to `.artifacts/` folder
 - [ ] Upload artifacts to Supabase Storage Bucket via API (or Google Drive if configured)
+- [ ] Generate `artifact_memories` records after artifact save
+- [ ] Call `generate-embedding` and store embedding status
 
 ### Project Files
 - [ ] `init-project` generates `CLAUDE.md` / `AGENTS.md` / `GEMINI.md`
