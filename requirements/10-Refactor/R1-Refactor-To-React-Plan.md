@@ -238,7 +238,10 @@ Map every Next.js `page.tsx` to a TanStack Router file route:
 | `app/(protected)/workflow-runs/page.tsx` | `src/routes/_authenticated/projects/$projectId/workflows.tsx` |
 | `app/(protected)/approvals/page.tsx` | `src/routes/_authenticated/projects/$projectId/approvals.tsx` |
 | `app/(protected)/outputs/page.tsx` | `src/routes/_authenticated/projects/$projectId/outputs.tsx` |
+| New Artifact Management view | `src/routes/_authenticated/projects/$projectId/artifacts.tsx` |
+| New Artifact Memory detail view | `src/routes/_authenticated/projects/$projectId/artifacts/$artifactId.tsx` |
 | `app/(protected)/logs/page.tsx` | `src/routes/_authenticated/ai-runs.tsx` |
+| New Prompt Templates settings view | `src/routes/_authenticated/settings/prompt-templates.tsx` |
 | `app/(protected)/settings/page.tsx` | `src/routes/_authenticated/settings/integrations.tsx` |
 
 Each route file follows the TanStack Router convention:
@@ -278,7 +281,7 @@ export function useProjects() {
 }
 ```
 
-Repeat for: `features`, `workflows`, `approvals`, `outputs`, `logs`, `members`, `tasks`.
+Repeat for: `features`, `workflows`, `approvals`, `outputs`, `logs`, `members`, `tasks`, `ai-runs`, `artifact-memories`, `workflow-prompt-context-items`.
 
 ### Step 11: Wire App Entry Point (10 min)
 
@@ -327,7 +330,7 @@ export function App() {
 
 ## R2: Gap Analysis — Missing Features to Adapt
 
-After porting the existing code, the following features from CP-02 through CP-07 are **not yet implemented** and must be built on top of the new stack:
+After porting the existing code, the following features from CP-02 through CP-09 are **not yet implemented** and must be built on top of the new stack. CP-08 is mostly Go-Runner work, but it still affects Admin Web through execution status, artifact memory, and prompt-context inspection.
 
 | Gap | From | Priority | Effort |
 |-----|------|----------|--------|
@@ -345,13 +348,20 @@ After porting the existing code, the following features from CP-02 through CP-07
 | Level-based assignment validation | CP-05 | MEDIUM | 0.5 day |
 | AI Prompt Template CRUD | CP-06 | MEDIUM | 1 day |
 | AI Execution Log viewer | CP-06 | MEDIUM | 1 day |
-| Supabase Edge Functions (4 AI generators) | CP-06 | HIGH | 3 days |
+| Supabase Edge Functions (4 AI generators + `generate-embedding`) | CP-06 | HIGH | 3.5 days |
 | Artifact versioning & annotations | CP-06 | MEDIUM | 1 day |
 | Jira integration (import/create/sync) | CP-07 | LOW (Phase 7) | 2 days |
 | RLS hardening | CP-07 | HIGH | 1 day |
 | Audit log system | CP-07 | MEDIUM | 1 day |
+| Go-Runner prompt memory integration | CP-08/CP-09 | HIGH | 2 days |
+| `artifact_memories` + vector search migration | CP-09 | HIGH | 1 day |
+| `workflow_prompt_context_items` audit table | CP-09 | HIGH | 0.5 day |
+| `match_artifact_memories()` RPC + vector index | CP-09 | HIGH | 1 day |
+| Artifact Management screen with memory/index status | CP-09 | HIGH | 2 days |
+| Prompt context drawer per workflow step | CP-09 | MEDIUM | 1 day |
+| Embedding retry/indexing status UX | CP-09 | MEDIUM | 0.5 day |
 
-**Total estimated gap:** ~30 developer-days across Phases 2–7.
+**Total estimated gap:** ~39 developer-days across Phases 2–7 plus cross-cutting CP-08/CP-09.
 
 ---
 
@@ -367,4 +377,4 @@ After porting the existing code, the following features from CP-02 through CP-07
 | Step 11–12: Wire entry + verify | 25 min |
 | **Total migration time** | **~3.5 hours** |
 
-After migration, the app is functionally equivalent to the current Next.js version. New features (CP-02 through CP-07) are then built incrementally on the clean Vite + TanStack foundation.
+After migration, the app is functionally equivalent to the current Next.js version. New features (CP-02 through CP-09) are then built incrementally on the clean Vite + TanStack foundation.
