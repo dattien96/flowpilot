@@ -1,197 +1,124 @@
-# TDD Signatures - Next.js to Vite + TanStack Refactor
+# TDD Signatures - CP-01 Foundation Setup
 
 Date: 2026-05-18
 
-Rules for this artifact:
+Rules:
 
 - signatures only
-- no executable test code
-- no implementation snippets
-- focus on migration risk, route parity, and auth/data wiring
+- no implementation code
+- focus on foundation risk
 
-## 1. Vite Bootstrap And Env Wiring
-
-### File
-
-`apps/admin-web/src/lib/env/__tests__/app-env.test.ts`
-
-#### `describe("hasSupabaseEnv")`
-
-- `it("returns true only when the Vite Supabase env values are present")`
-- `it("returns false when any required env value is missing")`
-
-#### `describe("supabase env getters")`
-
-- `it("reads the Vite env contract without relying on Next.js public env names")`
-- `it("throws a clear error when a required env value is missing")`
+## 1. Environment And Tooling
 
 ### File
 
-`apps/admin-web/vite.config.test.ts`
+`apps/admin-web/src/lib/env/app-env.test.ts`
 
-#### `describe("Vite configuration")`
+#### `describe("Vite env contract")`
 
-- `it("resolves the app alias used by the migrated codebase")`
-- `it("registers the TanStack Router plugin when required by the stack")`
-
-## 2. Auth And Route Guards
-
-### File
-
-`apps/admin-web/src/features/auth/__tests__/require-auth.test.ts`
-
-#### `describe("requireAuth")`
-
-- `it("returns the current session when Supabase auth is available")`
-- `it("redirects to /login when no session exists")`
-
-### File
-
-`apps/admin-web/src/routes/__tests__/authenticated-route-guard.test.ts`
-
-#### `describe("authenticated route guard")`
-
-- `it("blocks access to protected routes for guests")`
-- `it("allows access for authenticated users")`
-
-### File
-
-`apps/admin-web/src/features/auth/__tests__/auth-provider.test.tsx`
-
-#### `describe("AuthProvider")`
-
-- `it("loads the current session on mount")`
-- `it("updates session state on auth changes")`
-
-## 3. Repository Bundle Selection
-
-### File
-
-`apps/admin-web/src/data/repository/__tests__/factory.test.ts`
-
-#### `describe("createGatewayBundle")`
-
-- `it("returns the demo bundle when Supabase env is unavailable")`
-- `it("returns the Supabase bundle when Supabase env is available")`
-- `it("always includes the local runner gateway")`
-
-## 4. Domain Layer Carryover
-
-### File
-
-`apps/admin-web/src/domain/constant/__tests__/status.test.ts`
-
-#### `describe("WorkflowStepStatus")`
-
-- `it("includes skipped as a valid workflow step status")`
-
-### File
-
-`apps/admin-web/src/domain/usecase/workflow-runs/__tests__/list-workflow-runs-usecase.test.ts`
-
-#### `describe("ListWorkflowRunsUseCase")`
-
-- `it("returns runs unchanged after the framework migration")`
-
-### File
-
-`apps/admin-web/src/domain/usecase/projects/__tests__/list-projects-usecase.test.ts`
-
-#### `describe("ListProjectsUseCase")`
-
-- `it("still works through the copied domain layer")`
-
-## 5. Routing Parity
-
-### File
-
-`apps/admin-web/src/routes/__tests__/route-map.test.ts`
-
-#### `describe("route map")`
-
-- `it("maps /login to the login route")`
-- `it("maps dashboard, projects, features, workflows, approvals, outputs, artifacts, ai-runs, and settings to the R1 route tree")`
-- `it("preserves nested project detail routing")`
-
-### File
-
-`apps/admin-web/src/routes/__tests__/redirects.test.ts`
-
-#### `describe("root redirects")`
-
-- `it("redirects / to /dashboard or the authenticated landing route")`
-- `it("redirects unknown protected paths to the correct fallback")`
-
-## 6. Query Hooks
-
-### File
-
-`apps/admin-web/src/features/projects/__tests__/queries.test.ts`
-
-#### `describe("useProjects")`
-
-- `it("returns the project list from the selected gateway")`
-
-### File
-
-`apps/admin-web/src/features/artifacts/__tests__/queries.test.ts`
-
-#### `describe("artifact memory queries")`
-
-- `it("returns artifact memories for the selected project or artifact")`
-- `it("returns workflow prompt context items for the selected workflow run")`
-
-## 7. Shell And Page Components
-
-### File
-
-`apps/admin-web/src/app/__tests__/app.test.tsx`
-
-#### `describe("App")`
-
-- `it("wraps the router in React Query and auth providers")`
-- `it("renders the migrated shell without Next.js layout assumptions")`
-
-### File
-
-`apps/admin-web/src/components/layout/__tests__/app-shell.test.tsx`
-
-#### `describe("AppShell")`
-
-- `it("renders the navigation using TanStack Router links")`
-- `it("highlights the active route correctly")`
-
-## 8. Page-Level Regression Checks
-
-### File
-
-`apps/admin-web/src/routes/__tests__/pages.test.tsx`
-
-#### `describe("migrated pages")`
-
-- `it("renders the dashboard page")`
-- `it("renders the projects page")`
-- `it("renders the workflow runs page")`
-- `it("renders the settings page")`
-- `it("renders the artifact management and artifact memory routes")`
-
-## 9. Local Runner Regression
-
-### File
-
-`apps/admin-web/src/lib/env/__tests__/workspace-root-normalization.test.ts`
-
-#### `describe("getWorkspaceRoot")`
-
-- `it("still resolves the workspace root correctly for local runner usage")`
-- `it("does not regress path normalization when invoked from the migrated app")`
-
-## 10. Build And Tooling Smoke Checks
+- `it("reads VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY from import.meta.env")`
+- `it("detects when Supabase env is unavailable")`
 
 ### File
 
 `apps/admin-web/package.json`
 
-#### `describe("scripts")`
+#### `describe("foundation scripts")`
 
-- `it("exposes dev, build, lint, and test scripts for the Vite stack")`
+- `it("exposes dev, build, preview, and test scripts for the Vite workflow")`
+
+## 2. Auth Foundation
+
+### File
+
+`apps/admin-web/src/features/auth/require-auth.test.ts`
+
+#### `describe("requireAuth")`
+
+- `it("returns the current session when Supabase has an authenticated session")`
+- `it("redirects guests to /login when no session exists")`
+
+### File
+
+`apps/admin-web/src/features/auth/auth-provider.test.tsx`
+
+#### `describe("AuthProvider")`
+
+- `it("hydrates auth state from the current Supabase session on mount")`
+- `it("subscribes to auth state changes and updates stored session data")`
+
+## 3. Router And Shell
+
+### File
+
+`apps/admin-web/src/routes/route-map.test.ts`
+
+#### `describe("CP-01 route tree")`
+
+- `it("maps /login to the public login route")`
+- `it("maps / to a redirect into the authenticated landing flow")`
+- `it("registers all authenticated project child routes required by CP-01")`
+- `it("registers ai-runs and settings child routes")`
+
+### File
+
+`apps/admin-web/src/components/layout/app-shell.test.tsx`
+
+#### `describe("AppShell")`
+
+- `it("renders sidebar, header, and main outlet regions")`
+- `it("renders navigation entries for the foundation route set")`
+
+### File
+
+`apps/admin-web/src/app.test.tsx`
+
+#### `describe("App composition")`
+
+- `it("wraps the router with query client and auth providers")`
+- `it("renders TanStack router content without Next.js layout dependencies")`
+
+## 4. Domain Carryover
+
+### File
+
+`apps/admin-web/src/domain/constant/status.test.ts`
+
+#### `describe("status constants")`
+
+- `it("exports the workflow and approval status values required by the migrated app")`
+
+### File
+
+`apps/admin-web/src/domain/model/entity/project.test.ts`
+
+#### `describe("domain entity portability")`
+
+- `it("keeps project entity typing intact after the foundation migration")`
+
+## 5. Build Safety
+
+### File
+
+`apps/admin-web/src/routes/login.test.tsx`
+
+#### `describe("login route")`
+
+- `it("renders without importing Next.js-only modules")`
+
+### File
+
+`apps/admin-web/src/routes/_authenticated.test.tsx`
+
+#### `describe("authenticated layout route")`
+
+- `it("uses the auth guard and renders AppShell with an outlet")`
+
+### File
+
+`apps/admin-web/vite-build-smoke.test.ts`
+
+#### `describe("foundation smoke checks")`
+
+- `it("keeps the active app entry free from next/* imports")`
+- `it("keeps src/app/api and old app-router files out of the active build path")`
