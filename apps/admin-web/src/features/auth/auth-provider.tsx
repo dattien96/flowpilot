@@ -1,20 +1,26 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  type ReactNode,
+} from "react";
 
+import { supabase } from "@/data/supabase/client";
+import {
+  clearAuthSession,
+  getDemoSession,
+  type AdminSession,
+  setAuthLoading,
+  setAuthSession,
+  useAuthStore,
+} from "@/features/auth/use-auth";
 import { hasSupabaseEnv } from "@/lib/env/browser-env";
-import { createSupabaseBrowserClient } from "@/data/supabase/client";
-
-export interface AdminSession {
-  user: {
-    id: string;
-    email: string | null;
-  };
-  mode: "supabase" | "demo";
-}
 
 interface AuthContextValue {
-  session: AdminSession | null;
   loading: boolean;
   refreshSession: () => Promise<void>;
+  session: AdminSession | null;
   signOut: () => Promise<void>;
 }
 
@@ -22,85 +28,83 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 async function readSession(): Promise<AdminSession | null> {
   if (!hasSupabaseEnv()) {
-    return {
-      mode: "demo",
-      user: {
-        id: "demo-user",
-        email: "demo@flowpilot.local",
-      },
-    };
+    return getDemoSession();
   }
 
-  const supabase = createSupabaseBrowserClient();
-  const { data, error } = await supabase.auth.getUser();
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
 
-  if (error || !data.user) {
+  if (!session?.user) {
     return null;
   }
 
   return {
     mode: "supabase",
     user: {
-      id: data.user.id,
-      email: data.user.email ?? null,
+      email: session.user.email ?? null,
+      id: session.user.id,
     },
   };
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [session, setSession] = useState<AdminSession | null>(null);
-  const [loading, setLoading] = useState(true);
+  const loading = useAuthStore((state) => state.loading);
+  const session = useAuthStore((state) => state.session);
 
   const refreshSession = async () => {
-    setSession(await readSession());
-    setLoading(false);
+    setAuthLoading(true);
+    setAuthSession(await readSession());
   };
 
   useEffect(() => {
-    let mounted = true;
+    let active = true;
 
-    void readSession().then((nextSession) => {
-      if (!mounted) return;
-      setSession(nextSession);
-      setLoading(false);
-    });
+    void (async () => {
+      const nextSession = await readSession();
+      if (!active) {
+        return;
+      }
+      setAuthSession(nextSession);
+    })();
 
     if (!hasSupabaseEnv()) {
       return () => {
-        mounted = false;
+        active = false;
       };
     }
 
-    const supabase = createSupabaseBrowserClient();
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(() => {
-      void readSession().then((nextSession) => {
-        if (!mounted) return;
-        setSession(nextSession);
-      });
+    } = supabase.auth.onAuthStateChange(async () => {
+      const nextSession = await readSession();
+      if (!active) {
+        return;
+      }
+      setAuthSession(nextSession);
     });
 
     return () => {
-      mounted = false;
+      active = false;
       subscription.unsubscribe();
     };
   }, []);
 
   const signOut = async () => {
     if (!hasSupabaseEnv()) {
+      clearAuthSession();
       return;
     }
 
-    await createSupabaseBrowserClient().auth.signOut();
-    setSession(null);
+    await supabase.auth.signOut();
+    clearAuthSession();
   };
 
   const value = useMemo<AuthContextValue>(
     () => ({
-      session,
       loading,
       refreshSession,
+      session,
       signOut,
     }),
     [loading, session],
@@ -110,12 +114,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 }
 
 export function useAuth() {
-  const value = useContext(AuthContext);
+  const context = useContext(AuthContext);
 
-  if (!value) {
+  if (!context) {
     throw new Error("useAuth must be used within AuthProvider.");
   }
 
-  return value;
+  return context;
 }
-
