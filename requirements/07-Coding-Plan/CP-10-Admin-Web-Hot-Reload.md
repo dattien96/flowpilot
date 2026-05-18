@@ -2,6 +2,7 @@
 
 **Maps from:** CP-01 (Vite foundation), local Docker development workflow
 **Phase:** Parallel, but should be completed immediately after CP-01
+**Status:** implemented
 
 ---
 

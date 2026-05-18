@@ -1,3 +1,4 @@
+import { createSupabaseBrowserClient } from "@/data/datasource/supabase/client";
 import { HttpLocalRunnerGateway } from "@/data/repository/local-runner/http-local-runner-gateway";
 import { createDemoGatewayBundle } from "@/data/repository/demo/demo-gateway-bundle";
 import { createSupabaseGatewayBundle } from "@/data/repository/supabase/supabase-gateway-bundle";
@@ -8,7 +9,7 @@ export function createGatewayBundle() {
 
   if (hasSupabaseEnv()) {
     return {
-      ...createSupabaseGatewayBundle(),
+      ...createSupabaseGatewayBundle(createSupabaseBrowserClient()),
       localRunnerGateway,
     };
   }

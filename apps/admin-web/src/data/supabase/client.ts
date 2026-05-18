@@ -1,6 +1,10 @@
 import { createClient } from "@supabase/supabase-js";
 
-import { getSupabaseAnonKey, getSupabaseUrl, hasSupabaseEnv } from "@/lib/env/browser-env";
+import {
+  getSupabaseAnonKey,
+  getSupabaseUrl,
+  hasSupabaseEnv,
+} from "@/lib/env/browser-env";
 
 function createDemoSupabaseClient() {
   return {
@@ -30,6 +34,10 @@ function createDemoSupabaseClient() {
   };
 }
 
-export const supabase = hasSupabaseEnv()
-  ? createClient(getSupabaseUrl(), getSupabaseAnonKey())
-  : (createDemoSupabaseClient() as never);
+export function createSupabaseBrowserClient() {
+  return hasSupabaseEnv()
+    ? createClient(getSupabaseUrl(), getSupabaseAnonKey())
+    : (createDemoSupabaseClient() as never);
+}
+
+export const supabase = createSupabaseBrowserClient();

@@ -4,7 +4,9 @@ function currentEnv(): EnvSource {
   return (import.meta as ImportMeta & { env?: EnvSource }).env ?? {};
 }
 
-function readRequiredEnv(name: "VITE_SUPABASE_URL" | "VITE_SUPABASE_ANON_KEY") {
+function readRequiredEnv(
+  name: "SUPABASE_API_URL" | "SUPABASE_API_KEY" | "SUPABASE_API_EDGE_FUNCTION_URL",
+) {
   const value = currentEnv()[name];
 
   if (!value) {
@@ -16,15 +18,19 @@ function readRequiredEnv(name: "VITE_SUPABASE_URL" | "VITE_SUPABASE_ANON_KEY") {
 
 export function hasSupabaseEnv() {
   const env = currentEnv();
-  return Boolean(env.VITE_SUPABASE_URL && env.VITE_SUPABASE_ANON_KEY);
+  return Boolean(env.SUPABASE_API_URL && env.SUPABASE_API_KEY);
 }
 
 export function getSupabaseUrl() {
-  return readRequiredEnv("VITE_SUPABASE_URL");
+  return readRequiredEnv("SUPABASE_API_URL");
 }
 
 export function getSupabaseAnonKey() {
-  return readRequiredEnv("VITE_SUPABASE_ANON_KEY");
+  return readRequiredEnv("SUPABASE_API_KEY");
+}
+
+export function getSupabaseEdgeFunctionUrl() {
+  return readRequiredEnv("SUPABASE_API_EDGE_FUNCTION_URL");
 }
 
 export function getLocalRunnerBaseUrl() {

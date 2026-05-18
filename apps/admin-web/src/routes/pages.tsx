@@ -27,6 +27,7 @@ import { ListArtifactsUseCase } from "@/domain/usecase/artifacts/list-artifacts-
 import type { CreateProjectPayload } from "@/domain/model/payload/project-payload";
 import { createSupabaseBrowserClient } from "@/data/supabase/client";
 import { useAuth } from "@/features/auth/auth-provider";
+import { hasSupabaseEnv } from "@/lib/env/browser-env";
 
 function LoadingState() {
   return <p className="text-sm text-muted-foreground">Loading...</p>;
@@ -51,7 +52,7 @@ export function LoginPage() {
   const [email, setEmail] = useState("admin@example.com");
   const [password, setPassword] = useState("password");
   const [error, setError] = useState<string | null>(null);
-  const supabaseEnabled = Boolean(session?.mode === "supabase" || import.meta.env.VITE_SUPABASE_URL || import.meta.env.SUPABASE_API_URL);
+  const supabaseEnabled = Boolean(session?.mode === "supabase" || hasSupabaseEnv());
 
   useEffect(() => {
     if (session) {

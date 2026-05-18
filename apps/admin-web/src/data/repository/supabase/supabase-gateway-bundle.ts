@@ -1,6 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { createSupabaseServiceClient } from "@/data/datasource/supabase/client";
 import { MockWorkflowExecutor } from "@/data/workflow/mock-workflow-executor";
 import type { ContextSourceGateway } from "@/domain/gateway/context-source-gateway";
 import type { FeatureGateway } from "@/domain/gateway/feature-gateway";
@@ -930,8 +929,8 @@ class SupabaseGatewayBundle
   }
 }
 
-export function createSupabaseGatewayBundle() {
-  const supabaseGatewayBundle = new SupabaseGatewayBundle(createSupabaseServiceClient());
+export function createSupabaseGatewayBundle(supabaseClient: SupabaseClient) {
+  const supabaseGatewayBundle = new SupabaseGatewayBundle(supabaseClient);
   const workflowExecutor: WorkflowExecutorGateway = new MockWorkflowExecutor(
     supabaseGatewayBundle,
     (projectId) => supabaseGatewayBundle.getProjectById(projectId),

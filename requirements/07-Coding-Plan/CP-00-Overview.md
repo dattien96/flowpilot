@@ -43,6 +43,7 @@ React + Vite + TanStack gives us a lighter, more explicit architecture where eve
 | [CP-08](./CP-08-Go-Runner-Implementation.md) | Go-Runner CLI, Providers, Skills & Process Isolation | SD-03, SD-05 Section 3-5, SD-06, SD-07 |
 | [CP-09](./CP-09-Artifact-Memory-RAG.md) | Artifact Memory, RAG & Prompt Context | SS-09, SD-10 |
 | [CP-10](./CP-10-Admin-Web-Hot-Reload.md) | Admin-Web Docker Hot Reload | DX hardening for local development |
+| [CP-11](./CP-11-Supabase-Integration.md) | Supabase Integration | CP-01, CP-06, CP-09, DX + data boundary hardening |
 
 ---
 
@@ -59,6 +60,7 @@ Phase 7 -> CP-07: Jira/MCP integration, RLS hardening, audit trails
 Phase Parallel -> CP-08: Go-Runner CLI (cross-cutting, built alongside Phases 4-6)
 Phase Parallel -> CP-09: Artifact memory + RAG context resolver (cross-cutting, built alongside Phases 4-6)
 Phase Parallel -> CP-10: Docker hot reload for admin-web (`just docker-up`) before heavy frontend iteration
+Phase Parallel -> CP-11: Supabase env contract, client boundaries, storage, and Edge Function integration
 ```
 
 ## Migration Strategy

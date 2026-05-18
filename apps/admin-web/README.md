@@ -7,12 +7,19 @@ Vite-based admin shell for the FlowPilot MVP workflow skeleton. It runs in two m
 
 ## Required Env
 
-Set these values in the repository root `.env` to enable Supabase mode:
+Set these values in the repository root `.env` to enable Supabase mode.
+
+The admin web runs from `apps/admin-web`, so Vite is configured to load env from the repo root rather than an app-local `.env` file.
 
 ```bash
 SUPABASE_API_URL=...
 SUPABASE_API_KEY=...
-SUPABASE_SERVICE_ROLE_KEY=...
+```
+
+Optional when calling Supabase Edge Functions directly:
+
+```bash
+SUPABASE_API_EDGE_FUNCTION_URL=...
 ```
 
 Optional local runner override:

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   getSupabaseAnonKey,
-  getSupabaseServiceRoleKey,
+  getSupabaseEdgeFunctionUrl,
   getSupabaseUrl,
   hasSupabaseEnv,
 } from "./app-env";
@@ -18,7 +18,7 @@ function resetEnv(values: Partial<NodeJS.ProcessEnv> = {}) {
   for (const key of [
     "SUPABASE_API_URL",
     "SUPABASE_API_KEY",
-    "SUPABASE_SERVICE_ROLE_KEY",
+    "SUPABASE_API_EDGE_FUNCTION_URL",
   ]) {
     if (!(key in values)) {
       delete process.env[key];
@@ -35,7 +35,6 @@ describe("hasSupabaseEnv", () => {
     resetEnv({
       SUPABASE_API_URL: "https://example.supabase.co",
       SUPABASE_API_KEY: "anon",
-      SUPABASE_SERVICE_ROLE_KEY: "service",
     });
 
     expect(hasSupabaseEnv()).toBe(true);
@@ -43,7 +42,6 @@ describe("hasSupabaseEnv", () => {
 
   it("returns false when any required Supabase variable is missing", () => {
     resetEnv({
-      SUPABASE_API_URL: "https://example.supabase.co",
       SUPABASE_API_KEY: "anon",
     });
 
@@ -56,21 +54,11 @@ describe("supabase env getters", () => {
     resetEnv({
       SUPABASE_API_URL: "https://example.supabase.co",
       SUPABASE_API_KEY: "anon",
-      SUPABASE_SERVICE_ROLE_KEY: "service",
+      SUPABASE_API_EDGE_FUNCTION_URL: "https://example.supabase.co/functions/v1",
     });
 
     expect(getSupabaseUrl()).toBe("https://example.supabase.co");
     expect(getSupabaseAnonKey()).toBe("anon");
-  });
-
-  it("throws a clear error when SUPABASE_SERVICE_ROLE_KEY is missing", () => {
-    resetEnv({
-      SUPABASE_API_URL: "https://example.supabase.co",
-      SUPABASE_API_KEY: "anon",
-    });
-
-    expect(() => getSupabaseServiceRoleKey()).toThrow(
-      "Missing required environment variable: SUPABASE_SERVICE_ROLE_KEY",
-    );
+    expect(getSupabaseEdgeFunctionUrl()).toBe("https://example.supabase.co/functions/v1");
   });
 });

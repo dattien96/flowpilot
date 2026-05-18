@@ -4,8 +4,7 @@ import fs from "node:fs";
 export function hasSupabaseEnv() {
   return Boolean(
     process.env.SUPABASE_API_URL &&
-      process.env.SUPABASE_API_KEY &&
-      process.env.SUPABASE_SERVICE_ROLE_KEY,
+      process.env.SUPABASE_API_KEY,
   );
 }
 
@@ -17,8 +16,8 @@ export function getSupabaseAnonKey() {
   return getRequiredEnv("SUPABASE_API_KEY");
 }
 
-export function getSupabaseServiceRoleKey() {
-  return getRequiredEnv("SUPABASE_SERVICE_ROLE_KEY");
+export function getSupabaseEdgeFunctionUrl() {
+  return getRequiredEnv("SUPABASE_API_EDGE_FUNCTION_URL");
 }
 
 export function getLocalRunnerBaseUrl() {
