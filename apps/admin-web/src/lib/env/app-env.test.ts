@@ -7,13 +7,13 @@ import {
   hasSupabaseEnv,
 } from "./app-env";
 
-const originalEnv = process.env;
+const originalEnv: NodeJS.ProcessEnv = process.env;
 
-function resetEnv(values: NodeJS.ProcessEnv = {}) {
+function resetEnv(values: Partial<NodeJS.ProcessEnv> = {}) {
   process.env = {
     ...originalEnv,
     ...values,
-  };
+  } as NodeJS.ProcessEnv;
 
   for (const key of [
     "SUPABASE_API_URL",
