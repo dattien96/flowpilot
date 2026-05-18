@@ -4,6 +4,7 @@ import { MockWorkflowExecutor } from "@/data/workflow/mock-workflow-executor";
 import type { ContextSourceGateway } from "@/domain/gateway/context-source-gateway";
 import type { FeatureGateway } from "@/domain/gateway/feature-gateway";
 import type { ProjectGateway } from "@/domain/gateway/project-gateway";
+import type { TeamGateway } from "@/domain/gateway/team-gateway";
 import type {
   WorkflowExecutorGateway,
   WorkflowGateway,
@@ -11,6 +12,7 @@ import type {
 import type { ContextSource } from "@/domain/model/entity/context-source";
 import type { Feature } from "@/domain/model/entity/feature";
 import type { Project } from "@/domain/model/entity/project";
+import type { Team, TeamMember } from "@/domain/model/entity/team";
 import type {
   AiCallLog,
   AiOutput,
@@ -26,7 +28,7 @@ import type {
   UpdateContextSourcePayload,
 } from "@/domain/model/payload/context-source-payload";
 import type { CreateFeaturePayload } from "@/domain/model/payload/feature-payload";
-import type { CreateProjectPayload } from "@/domain/model/payload/project-payload";
+import type { CreateProjectPayload, UpdateProjectPayload } from "@/domain/model/payload/project-payload";
 import type { StartWorkflowRunPayload } from "@/domain/model/payload/workflow-payload";
 import type { ListOutputsFilters } from "@/domain/model/payload/workflow-payload";
 
@@ -57,7 +59,36 @@ function mapProject(row: SupabaseRow): Project {
     description: String(row.description),
     platform: row.platform as Project["platform"],
     repositoryUrl: String(row.repository_url),
+    directoryPath: row.directory_path ? String(row.directory_path) : null,
+    ownerId: row.owner_id ? String(row.owner_id) : null,
+    status: String(row.status ?? "active"),
+    artifactStoragePreference: (row.artifact_storage_preference ?? "supabase") as Project["artifactStoragePreference"],
     createdBy: String(row.created_by),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+function mapTeam(row: SupabaseRow): Team {
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+function mapTeamMember(row: SupabaseRow): TeamMember {
+  return {
+    id: String(row.id),
+    teamId: String(row.team_id),
+    name: String(row.name),
+    email: row.email ? String(row.email) : null,
+    jiraAccountId: row.jira_account_id ? String(row.jira_account_id) : null,
+    role: row.role as TeamMember["role"],
+    levelLabel: row.level_label as TeamMember["levelLabel"],
+    skillTags: Array.isArray(row.skill_tags) ? row.skill_tags.map(String) : [],
+    weeklyCapacityHours: Number(row.weekly_capacity_hours ?? 40),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };
@@ -265,7 +296,7 @@ function approvalPatch(patch: Partial<Approval>) {
 }
 
 class SupabaseGatewayBundle
-  implements ProjectGateway, FeatureGateway, ContextSourceGateway, WorkflowGateway
+  implements ProjectGateway, FeatureGateway, ContextSourceGateway, WorkflowGateway, TeamGateway
 {
   constructor(private readonly supabase: SupabaseClient) {}
 
@@ -286,6 +317,46 @@ class SupabaseGatewayBundle
       .maybeSingle();
     assertNoError(error, "Unable to load project.");
     return data ? mapProject(data) : null;
+  }
+
+  async updateProject(projectId: string, patch: Partial<UpdateProjectPayload>) {
+    const { data, error } = await this.supabase
+      .from("projects")
+      .update({
+        name: patch.name,
+        description: patch.description,
+        platform: patch.platform,
+        repository_url: patch.repositoryUrl,
+        directory_path: patch.directoryPath,
+        owner_id: patch.ownerId,
+        status: patch.status,
+        artifact_storage_preference: patch.artifactStoragePreference,
+      })
+      .eq("id", projectId)
+      .select("*")
+      .single();
+    assertNoError(error, "Unable to update project.");
+    return mapProject(assertRow(data, "Project update returned no row."));
+  }
+
+  async deleteProject(projectId: string) {
+    const { error } = await this.supabase.from("projects").delete().eq("id", projectId);
+    assertNoError(error, "Unable to delete project.");
+  }
+
+  async listTeamsByProject(projectId: string) {
+    const { data, error } = await this.supabase
+      .from("project_teams")
+      .select("team_id, teams(*)")
+      .eq("project_id", projectId);
+    assertNoError(error, "Unable to list project teams.");
+    return (data ?? [])
+      .map((row) => {
+        const typed = row as { teams?: SupabaseRow[] };
+        return typed.teams?.[0];
+      })
+      .filter((row): row is SupabaseRow => Boolean(row))
+      .map(mapTeam);
   }
 
   async createProject(payload: CreateProjectPayload) {
@@ -353,6 +424,121 @@ class SupabaseGatewayBundle
       .single();
     assertNoError(error, "Unable to create feature.");
     return mapFeature(assertRow(data, "Feature insert returned no row."));
+  }
+
+  async listTeams() {
+    const { data, error } = await this.supabase
+      .from("teams")
+      .select("*")
+      .order("created_at", { ascending: false });
+    assertNoError(error, "Unable to list teams.");
+    return (data ?? []).map(mapTeam);
+  }
+
+  async getTeamById(teamId: string) {
+    const { data, error } = await this.supabase
+      .from("teams")
+      .select("*")
+      .eq("id", teamId)
+      .maybeSingle();
+    assertNoError(error, "Unable to load team.");
+    return data ? mapTeam(data) : null;
+  }
+
+  async createTeam(name: string) {
+    const { data, error } = await this.supabase
+      .from("teams")
+      .insert({ id: createId("team"), name })
+      .select("*")
+      .single();
+    assertNoError(error, "Unable to create team.");
+    return mapTeam(assertRow(data, "Team insert returned no row."));
+  }
+
+  async updateTeam(teamId: string, name: string) {
+    const { data, error } = await this.supabase
+      .from("teams")
+      .update({ name })
+      .eq("id", teamId)
+      .select("*")
+      .single();
+    assertNoError(error, "Unable to update team.");
+    return mapTeam(assertRow(data, "Team update returned no row."));
+  }
+
+  async deleteTeam(teamId: string) {
+    const { error } = await this.supabase.from("teams").delete().eq("id", teamId);
+    assertNoError(error, "Unable to delete team.");
+  }
+
+  async listMembersByTeam(teamId: string) {
+    const { data, error } = await this.supabase
+      .from("team_members")
+      .select("*")
+      .eq("team_id", teamId)
+      .order("created_at", { ascending: false });
+    assertNoError(error, "Unable to list team members.");
+    return (data ?? []).map(mapTeamMember);
+  }
+
+  async addMember(member: Omit<TeamMember, "id" | "createdAt" | "updatedAt">) {
+    const { data, error } = await this.supabase
+      .from("team_members")
+      .insert({
+        id: createId("member"),
+        team_id: member.teamId,
+        name: member.name,
+        email: member.email,
+        jira_account_id: member.jiraAccountId,
+        role: member.role,
+        level_label: member.levelLabel,
+        skill_tags: member.skillTags,
+        weekly_capacity_hours: member.weeklyCapacityHours,
+      })
+      .select("*")
+      .single();
+    assertNoError(error, "Unable to add team member.");
+    return mapTeamMember(assertRow(data, "Team member insert returned no row."));
+  }
+
+  async updateMember(memberId: string, patch: Partial<TeamMember>) {
+    const { data, error } = await this.supabase
+      .from("team_members")
+      .update({
+        name: patch.name,
+        email: patch.email,
+        jira_account_id: patch.jiraAccountId,
+        role: patch.role,
+        level_label: patch.levelLabel,
+        skill_tags: patch.skillTags,
+        weekly_capacity_hours: patch.weeklyCapacityHours,
+      })
+      .eq("id", memberId)
+      .select("*")
+      .single();
+    assertNoError(error, "Unable to update team member.");
+    return mapTeamMember(assertRow(data, "Team member update returned no row."));
+  }
+
+  async removeMember(memberId: string) {
+    const { error } = await this.supabase.from("team_members").delete().eq("id", memberId);
+    assertNoError(error, "Unable to remove team member.");
+  }
+
+  async linkTeamToProject(projectId: string, teamId: string) {
+    const { error } = await this.supabase
+      .from("project_teams")
+      .insert({ id: createId("projectteam"), project_id: projectId, team_id: teamId });
+    assertNoError(error, "Unable to link team to project.");
+  }
+
+  async unlinkTeamFromProject(projectId: string, teamId: string) {
+    const { error } = await this.supabase
+      .from("project_teams")
+      .delete()
+      .eq("project_id", projectId)
+      .eq("team_id", teamId);
+    assertNoError(error, "Unable to unlink team from project.");
   }
 
   async listContextSources() {
@@ -942,6 +1128,7 @@ export function createSupabaseGatewayBundle(supabaseClient: SupabaseClient) {
     featureGateway: supabaseGatewayBundle,
     contextSourceGateway: supabaseGatewayBundle,
     workflowGateway: supabaseGatewayBundle,
+    teamGateway: supabaseGatewayBundle,
     workflowExecutor,
   };
 }

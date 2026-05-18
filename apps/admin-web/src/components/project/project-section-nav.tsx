@@ -3,6 +3,7 @@ import { Link, useLocation } from "@tanstack/react-router";
 import { cn } from "@/lib/utils/cn";
 
 const tabs = [
+  { label: "Overview", suffix: "" },
   { label: "Business Logic", suffix: "/business-logic" },
   { label: "Tech Specs", suffix: "/tech-specs" },
   { label: "Coding Plan", suffix: "/coding-plan" },
@@ -20,7 +21,9 @@ export function ProjectSectionNav({ projectId }: { projectId: string }) {
     <div className="flex flex-wrap gap-2">
       {tabs.map((tab) => {
         const to = `/projects/${projectId}${tab.suffix}`;
-        const active = location.pathname === to;
+        const active = tab.suffix === ""
+          ? location.pathname === `/projects/${projectId}`
+          : location.pathname === to;
 
         return (
           <Link

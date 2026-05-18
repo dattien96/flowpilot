@@ -1,10 +1,10 @@
-# Logic Sync Report - CP-01 Foundation Setup
+# Logic Sync Report - CP-02 Project & Team Management
 
 Date: 2026-05-18
 
 ## Source Checked
 
-- `requirements/07-Coding-Plan/CP-01-Foundation-Setup.md`
+- `requirements/07-Coding-Plan/CP-02-Project-Management.md`
 - `implementation_plan.md`
 - `tdd_signatures.md`
 
@@ -12,26 +12,24 @@ Date: 2026-05-18
 
 | Requirement | Status | Evidence |
 |---|---|---|
-| Vite + React + TypeScript foundation | `[SYNCED]` | `apps/admin-web/package.json`, `apps/admin-web/vite.config.ts`, `apps/admin-web/src/main.tsx` |
-| TanStack Router file-based routing | `[SYNCED]` | `apps/admin-web/src/routes/**`, generated `apps/admin-web/src/routeTree.gen.ts`, `apps/admin-web/src/router.tsx` |
-| TanStack Query root wiring | `[SYNCED]` | `apps/admin-web/src/app.tsx`, `apps/admin-web/src/lib/query-client.ts` |
-| Browser-only Supabase client | `[SYNCED]` | `apps/admin-web/src/data/supabase/client.ts`, `apps/admin-web/src/lib/env/browser-env.ts` |
-| Auth guard and protected layout | `[SYNCED]` | `apps/admin-web/src/features/auth/require-auth.ts`, `apps/admin-web/src/routes/_authenticated.tsx`, `apps/admin-web/src/features/auth/require-auth.test.ts` |
-| AppShell layout with sidebar, header, content | `[SYNCED]` | `apps/admin-web/src/components/layout/app-shell.tsx` |
-| CP-01 route surface | `[SYNCED]` | `apps/admin-web/src/routes/_authenticated/**`, `apps/admin-web/src/routes/route-map.test.ts` |
-| Domain constants/contracts remain portable | `[SYNCED]` | Existing `apps/admin-web/src/domain/**` plus `apps/admin-web/src/domain/constant/status.test.ts` |
-| Backup of pre-migration app | `[SYNCED]` | `apps/admin-web-nextjs-backup/` |
+| Teams and team members tables | `[PLANNED]` | New Supabase migration and repository mapping to be added in implementation |
+| Project-team join table | `[PLANNED]` | `project_teams` link behavior planned through `TeamGateway` and repository methods |
+| Project schema updates | `[PLANNED]` | `Project` entity and Supabase project mapping planned to add CP-02 columns |
+| Team CRUD | `[PLANNED]` | `TeamGateway` and route-level management screens planned |
+| Team member CRUD | `[PLANNED]` | `TeamGateway` and project members route planned |
+| Project detail tab layout | `[PLANNED]` | `/projects/[projectId]` rework planned as a tabbed management shell |
+| Project settings surface | `[PLANNED]` | `/projects/[projectId]/settings` planned for storage preference and MCP status display |
+| RLS policies for new tables | `[PLANNED]` | Migration step planned, implementation pending |
 
 ## Test Alignment
 
-- `[SYNCED]` `src/features/auth/require-auth.test.ts` verifies authenticated session return and guest redirect behavior.
-- `[SYNCED]` `src/routes/route-map.test.ts` verifies the required CP-01 route registrations.
-- `[SYNCED]` Existing domain and env tests still pass under the Vite test harness.
-- `[SYNCED]` `src/features/auth/auth-provider.test.tsx` verifies session hydration and demo fallback behavior.
-- `[SYNCED]` `src/components/layout/app-shell.test.tsx` verifies shell navigation and child rendering.
+- `[PLANNED]` Domain tests will verify the new entity shapes and preserve project compatibility.
+- `[PLANNED]` Gateway tests will verify team CRUD and project linking behavior.
+- `[PLANNED]` Repository tests will verify Supabase row mapping for the new tables.
+- `[PLANNED]` Route tests will verify the new project management route surface.
 
 ## Notes
 
-- Legacy Next.js files still exist in the repo as inactive reference material, but the active Vite entry path no longer imports `next/*`.
-- `npm run build` passes.
-- `npm run test` passes.
+- CP-07 still owns the actual integration installation flow; CP-02 only surfaces the settings entry point and status display.
+- The current project detail page must be reshaped carefully because it is already tied to existing project, feature, and workflow data flows.
+- Implementation should preserve the current admin shell and expand the project domain incrementally rather than rewriting unrelated areas.
