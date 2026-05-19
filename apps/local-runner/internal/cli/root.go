@@ -35,6 +35,7 @@ func NewRootCommand() *cobra.Command {
 
 	rootCmd.AddCommand(newRunnerCommand(cfg))
 	rootCmd.AddCommand(newProvidersCommand(cfg))
+	rootCmd.AddCommand(newBackendsCommand(cfg))
 	rootCmd.AddCommand(newSkillsCommand(cfg))
 	rootCmd.AddCommand(newFlowsCommand(cfg))
 
@@ -87,6 +88,122 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 					return
 				}
 				writeHTTPJSON(w, providers)
+			})
+			mux.HandleFunc("/mcp-backends", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+
+				backends, err := instance.ListMcpBackends(r.Context())
+				if err != nil {
+					writeHTTPError(w, http.StatusInternalServerError, err)
+					return
+				}
+
+				writeHTTPJSON(w, backends)
+			})
+			mux.HandleFunc("/mcp-backends/", func(w http.ResponseWriter, r *http.Request) {
+				trimmed := strings.TrimPrefix(r.URL.Path, "/mcp-backends/")
+				parts := strings.Split(trimmed, "/")
+				if len(parts) != 2 || parts[0] == "" {
+					http.NotFound(w, r)
+					return
+				}
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+
+				switch parts[1] {
+				case "install", "action":
+				default:
+					http.NotFound(w, r)
+					return
+				}
+
+				if parts[1] == "action" {
+					var payload runner.McpBackendActionRequest
+					if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+						writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+						return
+					}
+					switch payload.Action {
+					case "install", "verify":
+					default:
+						writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("unsupported action %q", payload.Action))
+						return
+					}
+					var backend runner.McpBackend
+					var err error
+					switch payload.Action {
+					case "install":
+						backend, err = instance.InstallMcpBackend(r.Context(), parts[0])
+					case "verify":
+						backend, err = instance.VerifyMcpBackend(
+							r.Context(),
+							parts[0],
+							payload.ProjectID,
+							payload.IntegrationID,
+						)
+					}
+					if err != nil {
+						writeHTTPError(w, http.StatusBadRequest, err)
+						return
+					}
+					writeHTTPJSON(w, backend)
+					return
+				}
+
+				backend, err := instance.InstallMcpBackend(r.Context(), parts[0])
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+
+				writeHTTPJSON(w, backend)
+			})
+			mux.HandleFunc("/mcp-tests", func(w http.ResponseWriter, r *http.Request) {
+				switch r.Method {
+				case http.MethodGet:
+					limit := 10
+					if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
+						parsed, err := strconv.Atoi(rawLimit)
+						if err != nil {
+							writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid limit %q", rawLimit))
+							return
+						}
+						limit = parsed
+					}
+
+					runs, err := instance.ListMcpTestRuns(
+						r.Context(),
+						r.URL.Query().Get("backendKey"),
+						r.URL.Query().Get("projectId"),
+						r.URL.Query().Get("integrationId"),
+						limit,
+					)
+					if err != nil {
+						writeHTTPError(w, http.StatusInternalServerError, err)
+						return
+					}
+					writeHTTPJSON(w, runs)
+				case http.MethodPost:
+					var payload runner.McpTestRequest
+					if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+						writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+						return
+					}
+
+					result, err := instance.RunMcpTest(r.Context(), payload)
+					if err != nil {
+						writeHTTPError(w, http.StatusBadRequest, err)
+						return
+					}
+					writeHTTPJSON(w, result)
+				default:
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				}
 			})
 			mux.HandleFunc("/skills", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodGet {
@@ -221,6 +338,40 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 
 				http.NotFound(w, r)
 			})
+			mux.HandleFunc("/integrations/", func(w http.ResponseWriter, r *http.Request) {
+				trimmed := strings.TrimPrefix(r.URL.Path, "/integrations/")
+				parts := strings.Split(trimmed, "/")
+				if len(parts) != 2 || parts[0] == "" || parts[1] != "connection" {
+					http.NotFound(w, r)
+					return
+				}
+
+				switch r.Method {
+				case http.MethodPost:
+					var payload runner.IntegrationConnectionRequest
+					if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+						writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+						return
+					}
+
+					result, err := instance.TriggerIntegrationConnection(r.Context(), parts[0], payload)
+					if err != nil {
+						writeHTTPError(w, http.StatusBadRequest, err)
+						return
+					}
+
+					writeHTTPJSON(w, result)
+				case http.MethodDelete:
+					if err := instance.DeleteIntegrationConnection(r.Context(), parts[0]); err != nil {
+						writeHTTPError(w, http.StatusBadRequest, err)
+						return
+					}
+					w.WriteHeader(http.StatusNoContent)
+				default:
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+			})
 			mux.HandleFunc("/execute", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -274,6 +425,31 @@ func newProvidersCommand(cfg *config) *cobra.Command {
 	})
 
 	return providersCmd
+}
+
+func newBackendsCommand(cfg *config) *cobra.Command {
+	backendsCmd := &cobra.Command{
+		Use:   "backends",
+		Short: "Inspect allowlisted MCP backend installations",
+	}
+
+	backendsCmd.AddCommand(&cobra.Command{
+		Use:   "detect",
+		Short: "Print allowlisted MCP backend information as JSON",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			instance, err := runner.New(cfg.workspace)
+			if err != nil {
+				return err
+			}
+			backends, err := instance.ListMcpBackends(context.Background())
+			if err != nil {
+				return err
+			}
+			return writeJSON(os.Stdout, backends)
+		},
+	})
+
+	return backendsCmd
 }
 
 func newSkillsCommand(cfg *config) *cobra.Command {
@@ -351,7 +527,7 @@ func withCORS(next http.Handler) http.Handler {
 		} else {
 			w.Header().Set("Access-Control-Allow-Origin", "http://127.0.0.1:3001")
 		}
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 
 		if r.Method == http.MethodOptions {

@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -39,7 +41,28 @@ func TestResolveWorkspaceWalksUpToAgentsRoot(t *testing.T) {
 		t.Fatalf("resolve workspace: %v", err)
 	}
 
-	if resolved != root {
-		t.Fatalf("expected %q, got %q", root, resolved)
+	want, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("eval symlinks root: %v", err)
+	}
+	if resolved != want {
+		t.Fatalf("expected %q, got %q", want, resolved)
+	}
+}
+
+func TestWithCORSAllowsDeletePreflight(t *testing.T) {
+	req := httptest.NewRequest(http.MethodOptions, "/integrations/integration-1/connection", nil)
+	req.Header.Set("Origin", "http://localhost:3001")
+	recorder := httptest.NewRecorder()
+
+	withCORS(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("preflight should not reach wrapped handler")
+	})).ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 preflight response, got %d", recorder.Code)
+	}
+	if got := recorder.Header().Get("Access-Control-Allow-Methods"); got != "GET, POST, PUT, DELETE, OPTIONS" {
+		t.Fatalf("unexpected allow methods header %q", got)
 	}
 }
