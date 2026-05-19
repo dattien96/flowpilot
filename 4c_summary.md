@@ -1,38 +1,39 @@
-# 4C Summary - CP-01 Foundation Setup
+# 4C Summary - CP-05 Project & Team Management
 
 Date: 2026-05-18
 
 ## Context
 
-- The requested execution target is `requirements/07-Coding-Plan/CP-01-Foundation-Setup.md`.
-- The active frontend lives in `apps/admin-web`.
-- The current app is partially migrated already, but it still mixes Vite files with Next.js runtime structure.
-- The foundation phase must establish a stable Vite + TanStack base before later feature migrations continue.
+- The requested execution target is `requirements/07-Coding-Plan/CP-05-Project-Management.md`.
+- The active app is `apps/admin-web`.
+- The current project surface already includes project listing and project detail pages, but the detail experience still centers on features and workflow runs rather than teams, members, and project settings.
+- The phase requires extending the existing project domain with team management, project-team linking, and project settings while keeping the current admin shell consistent.
 
 ## Current Codebase Snapshot
 
-- `apps/admin-web` contains both Vite files (`vite.config.ts`, `src/main.tsx`, `src/app.tsx`) and legacy Next.js files (`src/app/**`, `next.config.ts`, `src/app/api/**`).
-- Some auth and layout files already exist outside the old Next.js tree, but the target CP-01 folder structure is not yet complete.
-- Domain contracts already exist and can be ported with low semantic risk.
-- The largest technical risk is not missing business logic; it is leaving conflicting app-entry and routing assumptions active in the same module.
+- `apps/admin-web/src/domain/gateway/project-gateway.ts` currently exposes only project list/detail/create operations.
+- `apps/admin-web/src/data/repository/supabase/supabase-gateway-bundle.ts` maps projects, features, context sources, and workflow artifacts, but has no team or integration persistence.
+- `apps/admin-web/src/app/(protected)/projects/[projectId]/page.tsx` still renders feature and workflow cards.
+- The project area is already central to the app, so changes here will propagate through domain use cases, gateway bundles, and the protected route tree.
 
 ## Constraints
 
-- Use a browser-only Supabase client.
-- Use TanStack Router file-based routing.
-- Keep demo-safe, framework-agnostic domain contracts portable.
-- Preserve a backup of the current Next.js app before reshaping the active tree.
-- Make the active build path free of Next.js runtime requirements.
+- Preserve existing project behavior while expanding the domain for teams and settings.
+- Keep the new schema aligned with Supabase/Postgres conventions used by the repository.
+- Avoid duplicating CP-10 integration storage rules; only surface the project settings hook points required by CP-05.
+- Prefer incremental route expansion over a full visual redesign.
 
 ## Concerns
 
-- The existing mixed tree may hide dormant imports from `next/*` that will break the Vite build.
-- Reorganizing route files has a broad file-level blast radius.
-- Over-migrating feature logic in this phase would slow delivery and increase breakage risk.
+- The project gateway is a shared abstraction used by multiple use cases and repositories.
+- The existing detail page is feature-centric, so introducing a team/settings layout will require careful route and component reshaping.
+- Database schema changes need to be reflected consistently across domain entities, Supabase mappings, and any table-backed queries.
 
 ## Course Of Action
 
-- Build the minimum solid foundation first.
-- Use placeholder route components where downstream features are not yet ready.
-- Port stable types and interfaces immediately.
-- Defer deeper feature rewrites until later coding plans.
+- Extend the domain model first with teams, team members, and updated project fields.
+- Add project-team linkage and team CRUD on the gateway layer.
+- Update the Supabase bundle to map the new tables and project columns.
+- Rework the project detail route into a tabbed project-management shell with placeholder tabs where later phases will deepen behavior.
+- Add the project members and settings surfaces required by CP-05 while leaving MCP installation details for CP-10.
+

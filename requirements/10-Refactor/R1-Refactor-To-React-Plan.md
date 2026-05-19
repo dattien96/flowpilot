@@ -330,38 +330,38 @@ export function App() {
 
 ## R2: Gap Analysis — Missing Features to Adapt
 
-After porting the existing code, the following features from CP-02 through CP-09 are **not yet implemented** and must be built on top of the new stack. CP-08 is mostly Go-Runner work, but it still affects Admin Web through execution status, artifact memory, and prompt-context inspection.
+After porting the existing code, the following features from CP-05 through CP-12 are **not yet implemented** and must be built on top of the new stack. CP-11 is mostly Go-Runner work, but it still affects Admin Web through execution status, artifact memory, and prompt-context inspection.
 
 | Gap | From | Priority | Effort |
 |-----|------|----------|--------|
-| Teams & Members with Level Labels | CP-02 | HIGH | 2 days |
-| Project ↔ Team N:N join table | CP-02 | HIGH | 0.5 day |
-| Project MCP Context management | CP-02 | MEDIUM | 1 day |
-| Business Logic → Tech Spec → Coding Plan editors | CP-03 | HIGH | 3 days |
-| Document status lifecycle (draft→approved) | CP-03 | HIGH | 1 day |
-| Workflow Builder (drag/reorder steps) | CP-04 | HIGH | 3 days |
-| Execution Dashboard with Realtime | CP-04 | HIGH | 2 days |
-| Reject/Retry flow with rejection notes | CP-04 | HIGH | 1 day |
-| YOLO mode toggle | CP-04 | MEDIUM | 0.5 day |
-| Master Schedule generator | CP-05 | HIGH | 3 days |
-| Task Board (Kanban + Table) | CP-05 | HIGH | 2 days |
-| Level-based assignment validation | CP-05 | MEDIUM | 0.5 day |
-| AI Prompt Template CRUD | CP-06 | MEDIUM | 1 day |
-| AI Execution Log viewer | CP-06 | MEDIUM | 1 day |
-| Supabase Edge Functions (4 AI generators + `generate-embedding`) | CP-06 | HIGH | 3.5 days |
-| Artifact versioning & annotations | CP-06 | MEDIUM | 1 day |
-| Jira integration (import/create/sync) | CP-07 | LOW (Phase 7) | 2 days |
-| RLS hardening | CP-07 | HIGH | 1 day |
-| Audit log system | CP-07 | MEDIUM | 1 day |
-| Go-Runner prompt memory integration | CP-08/CP-09 | HIGH | 2 days |
-| `artifact_memories` + vector search migration | CP-09 | HIGH | 1 day |
-| `workflow_prompt_context_items` audit table | CP-09 | HIGH | 0.5 day |
-| `match_artifact_memories()` RPC + vector index | CP-09 | HIGH | 1 day |
-| Artifact Management screen with memory/index status | CP-09 | HIGH | 2 days |
-| Prompt context drawer per workflow step | CP-09 | MEDIUM | 1 day |
-| Embedding retry/indexing status UX | CP-09 | MEDIUM | 0.5 day |
+| Teams & Members with Level Labels | CP-05 | HIGH | 2 days |
+| Project ↔ Team N:N join table | CP-05 | HIGH | 0.5 day |
+| Project MCP Context management | CP-05 | MEDIUM | 1 day |
+| Business Logic → Tech Spec → Coding Plan editors | CP-06 | HIGH | 3 days |
+| Document status lifecycle (draft→approved) | CP-06 | HIGH | 1 day |
+| Workflow Builder (drag/reorder steps) | CP-07 | HIGH | 3 days |
+| Execution Dashboard with Realtime | CP-07 | HIGH | 2 days |
+| Reject/Retry flow with rejection notes | CP-07 | HIGH | 1 day |
+| YOLO mode toggle | CP-07 | MEDIUM | 0.5 day |
+| Master Schedule generator | CP-08 | HIGH | 3 days |
+| Task Board (Kanban + Table) | CP-08 | HIGH | 2 days |
+| Level-based assignment validation | CP-08 | MEDIUM | 0.5 day |
+| AI Prompt Template CRUD | CP-09 | MEDIUM | 1 day |
+| AI Execution Log viewer | CP-09 | MEDIUM | 1 day |
+| Supabase Edge Functions (4 AI generators + `generate-embedding`) | CP-09 | HIGH | 3.5 days |
+| Artifact versioning & annotations | CP-09 | MEDIUM | 1 day |
+| Jira integration (import/create/sync) | CP-10 | LOW (Phase 7) | 2 days |
+| RLS hardening | CP-10 | HIGH | 1 day |
+| Audit log system | CP-10 | MEDIUM | 1 day |
+| Go-Runner prompt memory integration | CP-11/CP-12 | HIGH | 2 days |
+| `artifact_memories` + vector search migration | CP-12 | HIGH | 1 day |
+| `workflow_prompt_context_items` audit table | CP-12 | HIGH | 0.5 day |
+| `match_artifact_memories()` RPC + vector index | CP-12 | HIGH | 1 day |
+| Artifact Management screen with memory/index status | CP-12 | HIGH | 2 days |
+| Prompt context drawer per workflow step | CP-12 | MEDIUM | 1 day |
+| Embedding retry/indexing status UX | CP-12 | MEDIUM | 0.5 day |
 
-**Total estimated gap:** ~39 developer-days across Phases 2–7 plus cross-cutting CP-08/CP-09.
+**Total estimated gap:** ~39 developer-days across Phases 2–7 plus cross-cutting CP-11/CP-12.
 
 ---
 
@@ -377,4 +377,5 @@ After porting the existing code, the following features from CP-02 through CP-09
 | Step 11–12: Wire entry + verify | 25 min |
 | **Total migration time** | **~3.5 hours** |
 
-After migration, the app is functionally equivalent to the current Next.js version. New features (CP-02 through CP-09) are then built incrementally on the clean Vite + TanStack foundation.
+After migration, the app is functionally equivalent to the current Next.js version. New features (CP-05 through CP-12) are then built incrementally on the clean Vite + TanStack foundation.
+

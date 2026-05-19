@@ -1,6 +1,7 @@
 import type { ContextSource } from "@/domain/model/entity/context-source";
 import type { Feature } from "@/domain/model/entity/feature";
 import type { Project } from "@/domain/model/entity/project";
+import type { Team, TeamMember } from "@/domain/model/entity/team";
 import type {
   AiCallLog,
   AiOutput,
@@ -24,6 +25,10 @@ export const demoProjects: Project[] = [
     description: "Android product used to validate feature planning and widget flows.",
     platform: "android",
     repositoryUrl: "https://github.com/example/meal-suggestion",
+    directoryPath: "/projects/meal-suggestion",
+    ownerId: "demo-user",
+    status: "active",
+    artifactStoragePreference: "supabase",
     createdBy: "demo-user",
     createdAt: now,
     updatedAt: now,
@@ -35,11 +40,19 @@ export const demoProjects: Project[] = [
       "Internal admin surface for workflow orchestration, approvals, and engineering reports.",
     platform: "web",
     repositoryUrl: "https://github.com/example/flowpilot-admin",
+    directoryPath: "/projects/flowpilot-admin",
+    ownerId: "demo-user",
+    status: "active",
+    artifactStoragePreference: "supabase",
     createdBy: "demo-user",
     createdAt: now,
     updatedAt: now,
   },
 ];
+
+export const demoTeams: Team[] = [];
+export const demoTeamMembers: TeamMember[] = [];
+export const demoProjectTeamLinks: Array<{ projectId: string; teamId: string }> = [];
 
 export const demoFeatures: Feature[] = [
   {

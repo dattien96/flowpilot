@@ -1,4 +1,4 @@
-import { Bot, FolderKanban, LayoutDashboard, Settings2, Sparkles } from "lucide-react";
+import { Bot, FolderKanban, LayoutDashboard, Settings2, Sparkles, Users } from "lucide-react";
 import { Link, useLocation } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 
@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils/cn";
 const primaryNavItems = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/projects", label: "Projects", icon: FolderKanban },
+  { to: "/teams", label: "Teams", icon: Users },
   { to: "/ai-runs", label: "AI Runs", icon: Sparkles },
 ];
 

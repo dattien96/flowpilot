@@ -1,10 +1,12 @@
 import type { ContextSourceGateway } from "@/domain/gateway/context-source-gateway";
 import type { FeatureGateway } from "@/domain/gateway/feature-gateway";
 import type { ProjectGateway } from "@/domain/gateway/project-gateway";
+import type { TeamGateway } from "@/domain/gateway/team-gateway";
 import type { WorkflowExecutorGateway, WorkflowGateway } from "@/domain/gateway/workflow-gateway";
 import type { ContextSource } from "@/domain/model/entity/context-source";
 import type { Feature } from "@/domain/model/entity/feature";
 import type { Project } from "@/domain/model/entity/project";
+import type { Team, TeamMember } from "@/domain/model/entity/team";
 import type {
   AiCallLog,
   AiOutput,
@@ -19,7 +21,7 @@ import type {
   UpdateContextSourcePayload,
 } from "@/domain/model/payload/context-source-payload";
 import type { CreateFeaturePayload } from "@/domain/model/payload/feature-payload";
-import type { CreateProjectPayload } from "@/domain/model/payload/project-payload";
+import type { CreateProjectPayload, UpdateProjectPayload } from "@/domain/model/payload/project-payload";
 import type { StartWorkflowRunPayload } from "@/domain/model/payload/workflow-payload";
 import type { ListOutputsFilters } from "@/domain/model/payload/workflow-payload";
 import {
@@ -32,6 +34,9 @@ import {
   demoLogs,
   demoOutputs,
   demoProjects,
+  demoProjectTeamLinks,
+  demoTeamMembers,
+  demoTeams,
   demoWorkflowDefinitions,
   demoWorkflowRuns,
   demoWorkflowSteps,
@@ -51,7 +56,8 @@ class DemoGatewayBundle
     ProjectGateway,
     FeatureGateway,
     ContextSourceGateway,
-    WorkflowGateway
+    WorkflowGateway,
+    TeamGateway
 {
   listProjects() {
     return Promise.resolve(demoProjects);
@@ -70,12 +76,36 @@ class DemoGatewayBundle
       description: payload.description,
       platform: payload.platform,
       repositoryUrl: payload.repositoryUrl,
+      directoryPath: payload.directoryPath ?? null,
+      ownerId: payload.ownerId ?? null,
+      status: payload.status ?? "active",
+      artifactStoragePreference: payload.artifactStoragePreference ?? "supabase",
       createdBy: "demo-user",
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
     demoProjects.unshift(project);
     return project;
+  }
+
+  async updateProject(projectId: string, patch: Partial<UpdateProjectPayload>) {
+    const project = demoProjects.find((item) => item.id === projectId);
+    if (!project) throw new Error("Project not found.");
+    Object.assign(project, patch);
+    return project;
+  }
+
+  async deleteProject(projectId: string) {
+    const index = demoProjects.findIndex((item) => item.id === projectId);
+    if (index === -1) throw new Error("Project not found.");
+    demoProjects.splice(index, 1);
+  }
+
+  async listTeamsByProject(projectId: string) {
+    const teamIds = new Set(
+      demoProjectTeamLinks.filter((link) => link.projectId === projectId).map((link) => link.teamId),
+    );
+    return demoTeams.filter((team) => teamIds.has(team.id));
   }
 
   listFeatures() {
@@ -111,6 +141,68 @@ class DemoGatewayBundle
     };
     demoFeatures.unshift(feature);
     return feature;
+  }
+
+  async listTeams() {
+    return demoTeams;
+  }
+  async getTeamById(teamId: string) {
+    return Promise.resolve(demoTeams.find((team) => team.id === teamId) ?? null);
+  }
+  async createTeam(name: string) {
+    const team = { id: createId("team"), name, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    demoTeams.unshift(team);
+    return team;
+  }
+  async updateTeam(teamId: string, name: string) {
+    const team = demoTeams.find((item) => item.id === teamId);
+    if (!team) throw new Error("Team not found.");
+    team.name = name;
+    team.updatedAt = new Date().toISOString();
+    return team;
+  }
+  async deleteTeam(teamId: string) {
+    const index = demoTeams.findIndex((item) => item.id === teamId);
+    if (index === -1) throw new Error("Team not found.");
+    demoTeams.splice(index, 1);
+    for (let i = demoProjectTeamLinks.length - 1; i >= 0; i -= 1) {
+      if (demoProjectTeamLinks[i].teamId === teamId) demoProjectTeamLinks.splice(i, 1);
+    }
+    for (let i = demoTeamMembers.length - 1; i >= 0; i -= 1) {
+      if (demoTeamMembers[i].teamId === teamId) demoTeamMembers.splice(i, 1);
+    }
+  }
+  async listMembersByTeam(teamId: string) {
+    return demoTeamMembers.filter((member) => member.teamId === teamId);
+  }
+  async addMember(member: Omit<TeamMember, "id" | "createdAt" | "updatedAt">) {
+    const created = { ...member, id: createId("member"), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    demoTeamMembers.unshift(created);
+    return created;
+  }
+  async updateMember(memberId: string, patch: Partial<TeamMember>) {
+    const member = demoTeamMembers.find((item) => item.id === memberId);
+    if (!member) throw new Error("Member not found.");
+    Object.assign(member, {
+      ...patch,
+      teamId: patch.teamId ?? member.teamId,
+      updatedAt: new Date().toISOString(),
+    });
+    return member;
+  }
+  async removeMember(memberId: string) {
+    const index = demoTeamMembers.findIndex((item) => item.id === memberId);
+    if (index === -1) throw new Error("Member not found.");
+    demoTeamMembers.splice(index, 1);
+  }
+  async linkTeamToProject(projectId: string, teamId: string) {
+    if (!demoProjectTeamLinks.some((link) => link.projectId === projectId && link.teamId === teamId)) {
+      demoProjectTeamLinks.push({ projectId, teamId });
+    }
+  }
+  async unlinkTeamFromProject(projectId: string, teamId: string) {
+    const index = demoProjectTeamLinks.findIndex((link) => link.projectId === projectId && link.teamId === teamId);
+    if (index !== -1) demoProjectTeamLinks.splice(index, 1);
   }
 
   listContextSources() {
@@ -441,6 +533,7 @@ export function createDemoGatewayBundle() {
     featureGateway: demoGatewayBundle,
     contextSourceGateway: demoGatewayBundle,
     workflowGateway: demoGatewayBundle,
+    teamGateway: demoGatewayBundle,
     workflowExecutor,
   };
 }

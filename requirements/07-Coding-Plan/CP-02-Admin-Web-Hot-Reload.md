@@ -1,4 +1,4 @@
-# CP-10: Admin-Web Docker Hot Reload
+# CP-02: Admin-Web Docker Hot Reload
 
 **Maps from:** CP-01 (Vite foundation), local Docker development workflow
 **Phase:** Parallel, but should be completed immediately after CP-01
@@ -168,3 +168,4 @@ Run the following acceptance checks:
 - Solving backend hot reload for `local-runner`
 - Adding reverse proxies, TLS, or external dev ingress
 - Changing the public developer command away from `just docker-up`
+

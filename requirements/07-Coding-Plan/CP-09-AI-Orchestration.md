@@ -1,8 +1,8 @@
-# CP-06: AI Orchestration — Prompt Templates & Execution Logs
+# CP-09: AI Orchestration — Prompt Templates & Execution Logs
 
 **Maps from:** SD-06 (AI Provider Integration), SD-07 (Skill/Agent Runtime), SD-08 (Artifact Management), Google Doc §4.9–4.10
 **Phase:** 6
-**Depends on:** CP-04, CP-05
+**Depends on:** CP-07, CP-08
 
 ---
 
@@ -166,7 +166,7 @@ serve(async (req) => {
 ```
 
 ### 3.5 `generate-embedding`
-This shared Edge Function supports artifact working memory search in CP-09.
+This shared Edge Function supports artifact working memory search in CP-12.
 
 ```
 POST /functions/v1/generate-embedding
@@ -387,3 +387,4 @@ This dual-path design keeps the workflow engine independent from the admin UI.
 - [ ] All "Generate from..." buttons functional
 - [ ] Artifact viewer with version history and annotations
 - [ ] Go-Runner ↔ Admin Web integration via Supabase Realtime (read path)
+

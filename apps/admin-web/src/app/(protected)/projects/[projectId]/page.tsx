@@ -4,6 +4,7 @@ import Link from "next/link";
 import { createGatewayBundle } from "@/data/repository/factory";
 import { GetProjectDetailUseCase } from "@/domain/usecase/projects/get-project-detail-usecase";
 import { Badge } from "@/presentation/components/ui/badge";
+import { ProjectSectionNav } from "@/components/project/project-section-nav";
 
 export default async function ProjectDetailPage({
   params,
@@ -16,6 +17,7 @@ export default async function ProjectDetailPage({
     gateways.projectGateway,
     gateways.featureGateway,
     gateways.workflowGateway,
+    gateways.teamGateway,
   ).execute(projectId);
 
   if (!detail) {
@@ -36,8 +38,13 @@ export default async function ProjectDetailPage({
             {detail.project.description}
           </p>
         </div>
-        <Badge>{detail.project.platform}</Badge>
+        <div className="flex flex-col items-start gap-2">
+          <Badge>{detail.project.platform}</Badge>
+          <Badge>{detail.project.status}</Badge>
+        </div>
       </header>
+
+      <ProjectSectionNav projectId={projectId} />
 
       <section className="grid gap-4 xl:grid-cols-2">
         <div className="rounded-[1.6rem] border border-border bg-background/70 p-6">
@@ -56,23 +63,43 @@ export default async function ProjectDetailPage({
           </div>
         </div>
         <div className="rounded-[1.6rem] border border-border bg-background/70 p-6">
-          <h2 className="text-xl font-semibold">Workflow Runs</h2>
+          <h2 className="text-xl font-semibold">Teams</h2>
           <div className="mt-4 space-y-3">
-            {detail.workflowRuns.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No runs for this project yet.</p>
+            {detail.teams.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No teams are linked to this project yet.</p>
             ) : (
-              detail.workflowRuns.map((run) => (
-                <Link
-                  key={run.id}
+              detail.teams.map((team) => (
+                <div
+                  key={team.id}
                   className="flex items-center justify-between rounded-2xl border border-border bg-card px-4 py-3"
-                  href={`/workflow-runs/${run.id}`}
                 >
-                  <span className="font-semibold">{run.id}</span>
-                  <Badge>{run.status}</Badge>
-                </Link>
+                  <span className="font-semibold">{team.name}</span>
+                  <Badge>linked</Badge>
+                </div>
               ))
             )}
           </div>
+        </div>
+      </section>
+
+      <section className="rounded-[1.6rem] border border-border bg-background/70 p-6">
+        <h2 className="text-xl font-semibold">Project members snapshot</h2>
+        <div className="mt-4 space-y-3">
+          {detail.members.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No members have been added yet.</p>
+          ) : (
+            detail.members.map((member) => (
+              <div key={member.id} className="flex items-center justify-between rounded-2xl border border-border bg-card px-4 py-3">
+                <div>
+                  <p className="font-semibold">{member.name}</p>
+                  <p className="text-sm text-muted-foreground">
+                    {member.role} • {member.levelLabel}
+                  </p>
+                </div>
+                <Badge>{member.weeklyCapacityHours}h</Badge>
+              </div>
+            ))
+          )}
         </div>
       </section>
     </div>

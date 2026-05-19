@@ -1,8 +1,8 @@
-# CP-05: Master Schedule & Task Board
+# CP-08: Master Schedule & Task Board
 
 **Maps from:** Google Doc §4.6–4.7, §12
 **Phase:** 5
-**Depends on:** CP-04
+**Depends on:** CP-07
 
 ---
 
@@ -253,3 +253,4 @@ export const taskKeys = {
 - [ ] Task detail drawer with dependency display
 - [ ] Dashboard widgets: capacity, status summary, risk panel
 - [ ] Level-based assignment validation (warning if L1/L2 assigned critical task without reviewer)
+
