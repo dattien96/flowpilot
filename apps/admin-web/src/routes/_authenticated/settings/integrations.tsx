@@ -9,7 +9,7 @@ export const Route = createFileRoute("/_authenticated/settings/integrations")({
 function IntegrationsPage() {
   return (
     <PlaceholderPage
-      description="Integration settings route scaffolded for browser-first configuration work."
+      description="Project-scoped MCP connections live under Project > Settings. Use this page only as a pointer back to the project settings surface."
       title="Integrations"
     />
   );

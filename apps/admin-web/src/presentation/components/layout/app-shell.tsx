@@ -3,22 +3,9 @@
 import type { ReactNode } from "react";
 import { usePathname } from "next/navigation";
 
-import { Bot, FileStack, FolderKanban, LayoutDashboard, Logs, Settings2, ShieldCheck, Workflow } from "lucide-react";
-
 import type { AdminSession } from "@/data/auth/session";
 import { cn } from "@/lib/utils/cn";
-
-const navItems = [
-  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/projects", label: "Projects", icon: FolderKanban },
-  { href: "/features", label: "Features", icon: Bot },
-  { href: "/workflow-definitions", label: "Definitions", icon: Workflow },
-  { href: "/workflow-runs", label: "Workflow Runs", icon: Workflow },
-  { href: "/approvals", label: "Approval Center", icon: ShieldCheck },
-  { href: "/outputs", label: "Artifacts", icon: FileStack },
-  { href: "/logs", label: "Logs", icon: Logs },
-  { href: "/settings", label: "Settings", icon: Settings2 },
-];
+import { navItems } from "@/presentation/components/layout/app-nav";
 
 interface AppShellProps {
   children: ReactNode;
