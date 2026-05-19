@@ -1,8 +1,8 @@
 # CP-11: Go-Runner Implementation — CLI, Providers, Skills & Process Isolation
 
 **Maps from:** SD-03 (Util Tools), SD-05 §3–5 (Prompt Assembly, Provider Execution, LLM Files), SD-06 (AI Provider Integration), SD-07 (Skill & Agent Runtime), SD-10 (Context Resolver & RAG)
-**Phase:** Cross-cutting (built alongside Phases 4–6)
-**Depends on:** CP-07 (workflow engine schema must exist first), CP-12 (artifact memory schema and retrieval policy)
+**Phase:** Cross-cutting (built in two slices: CP-11A basic runner after CP-07, CP-11B full memory-aware runner after CP-12)
+**Depends on:** CP-07 for CP-11A; CP-09 and CP-12 for CP-11B
 
 ---
 
@@ -414,6 +414,8 @@ func executeCodeReviewLoop(provider, model, promptFilePath, projectDir string) (
         cmd = exec.Command("codex", "exec", "--full-auto", "--model", model)
     case "gemini":
         cmd = exec.Command("gemini", "--model", model)
+    default:
+        return "", fmt.Errorf("unsupported provider for code/review loop: %s", provider)
     }
 
     cmd.Dir = projectDir  // Execute in project directory
@@ -572,7 +574,7 @@ func generateArtifactMemory(artifact Artifact, content string, step WorkflowRunS
     }
 
     memoryID, err := insertArtifactMemory(ArtifactMemory{
-        AIOutputID:        artifact.ID,
+        ArtifactID:        artifact.ID,        // FK → artifacts(id) — NOT ai_outputs
         ProjectID:         project.ID,
         WorkflowRunID:     step.WorkflowRunID,
         WorkflowRunStepID: step.ID,
@@ -666,6 +668,7 @@ func syncSkills(project Project) error {
         if _, err := os.Stat(dir); os.IsNotExist(err) {
             continue
         }
+        var err error
         if project.ArtifactStoragePreference == "google_drive" && project.HasGoogleDriveMCP {
             // Upload via Google Drive MCP Edge Function
             err = uploadDirectoryToDrive(dir, project.GoogleDriveFolderID)
@@ -722,5 +725,4 @@ Triggered:
 ### Configuration
 - [ ] Provider/model resolution: step override → run override → project default
 - [ ] `workflow_run_logs` table for real-time log streaming
-- [ ] `step_definitions` seed table with 17 MVP step types
 

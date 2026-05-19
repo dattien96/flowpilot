@@ -12,6 +12,18 @@
 - `projects` — id, name, description, platform, repository_url, created_by, timestamps
 - `features` — linked to project, contains business goal / acceptance criteria
 
+### 1.1.1 UUID Baseline Decision
+
+All CP-04+ database work uses UUID primary keys and UUID foreign keys. CP-04 owns the baseline migration that converts or rebuilds the MVP skeleton tables from legacy `TEXT` IDs to UUID-compatible IDs before later CPs add FK-heavy tables.
+
+At minimum, the UUID baseline must cover:
+- `profiles.id UUID REFERENCES auth.users(id)`
+- `projects.id UUID PRIMARY KEY DEFAULT gen_random_uuid()`
+- `projects.created_by UUID REFERENCES auth.users(id)`
+- `features.id UUID PRIMARY KEY DEFAULT gen_random_uuid()`
+- `features.project_id UUID REFERENCES projects(id)`
+- existing workflow/output skeleton tables that remain in use, or an explicit note that CP-07 replaces them with canonical workflow tables
+
 ### 1.2 New Tables Required (new migration)
 
 ```sql
@@ -26,12 +38,13 @@ CREATE TABLE teams (
 -- Project ↔ Team join table (N:N per SD-04)
 CREATE TABLE project_teams (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
   UNIQUE(project_id, team_id)
 );
 
 -- Team members with level labels
+-- Planning roster only: members do not need a 1:1 mapping to auth.users.
 CREATE TABLE team_members (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
@@ -39,23 +52,18 @@ CREATE TABLE team_members (
   email TEXT,
   jira_account_id TEXT,
   role TEXT NOT NULL,              -- android, ios, backend, frontend, qa, devops, ai_workflow
-  level_label TEXT NOT NULL,       -- L1_intern, L2_junior, L3_middle, L4_senior, L5_lead
+  level_label TEXT NOT NULL CHECK (level_label IN ('L1_intern', 'L2_junior', 'L3_middle', 'L4_senior', 'L5_lead')),
   skill_tags JSONB DEFAULT '[]',
   weekly_capacity_hours INT DEFAULT 40,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 
--- Note: MCP/Integration config is handled by the `integrations` table defined in CP-10.
--- This avoids duplication. The `integrations` table stores:
---   project_id, type (jira/figma/google_drive/firebase/telegram),
---   config_encrypted (JSONB), status (pending/connected/failed),
---   last_synced_at, timestamps.
--- See CP-10-Integrations-Hardening.md §2.1 for full schema.
-
+-- Note: MCP/Integration config is handled by CP-05.
+-- Do not create or alter the integrations table in CP-04.
 -- Alter existing projects table to add directory_path, owner_id, and storage preference
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS directory_path TEXT;
-ALTER TABLE projects ADD COLUMN IF NOT EXISTS owner_id TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS owner_id UUID REFERENCES auth.users(id);
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active';
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS artifact_storage_preference TEXT DEFAULT 'supabase'; -- 'supabase' or 'google_drive'
 
@@ -119,20 +127,6 @@ export type MemberRole = 'android' | 'ios' | 'backend' | 'frontend' | 'qa' | 'de
 export type LevelLabel = 'L1_intern' | 'L2_junior' | 'L3_middle' | 'L4_senior' | 'L5_lead';
 ```
 
-```typescript
-// src/domain/model/entity/integration.ts
-export interface Integration {
-  id: string;
-  projectId: string;
-  type: 'jira' | 'figma' | 'google_drive' | 'firebase' | 'telegram';
-  configEncrypted: Record<string, unknown>;
-  status: 'pending' | 'connected' | 'failed';
-  lastSyncedAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-```
-
 ### 2.2 Update Existing Project Entity
 
 ```typescript
@@ -147,7 +141,7 @@ export interface Project {
   ownerId: string | null;           // NEW
   status: string;                   // NEW
   artifactStoragePreference: 'supabase' | 'google_drive'; // NEW
-  createdBy: string;
+  createdBy: string;                 // UUID string
   createdAt: string;
   updatedAt: string;
 }
@@ -245,13 +239,14 @@ export function useTeamMembers(teamId: string) {
 
 ### 5.5 Settings (`/projects/:projectId/settings`)
 - **Storage Strategy:** Dropdown to select "Artifact Storage Preference" (Supabase vs Google Drive). Note: Requires Google Drive MCP to be connected if Google Drive is selected.
-- **MCP Contexts:** Read-only summary of configured MCP contexts with status badges (PENDING/CONNECTED/FAILED). The full add/edit/test flow lives in CP-04.
+- **MCP Contexts:** Read-only summary or link into the MCP settings surface owned by CP-05. The existing simple MCP setting screen on the project page should be reused as the baseline instead of rebuilt from scratch.
 - **Project ↔ Team Links:** Link / unlink existing workspace teams for the current project
 
 ---
 
 ## 6. Definition of Done — Phase 2
 
+- [ ] UUID baseline migration applied before new FK-heavy tables are introduced
 - [ ] New Supabase migration with teams, project_teams, team_members tables + ALTER projects
 - [ ] RLS policies for teams, project_teams, and team_members
 - [ ] Project CRUD: list, create, edit, delete
@@ -261,5 +256,5 @@ export function useTeamMembers(teamId: string) {
 - [ ] Project ↔ Team linking (N:N)
 - [ ] Top-level `/teams` workspace route for shared team management
 - [ ] Cross-navigation: Team → Project detail and Project detail → Team workspace
-- [ ] Project settings page with MCP context summary and link to CP-04 management flow
+- [ ] Project settings page with MCP context summary and link to CP-05 management flow
 - [ ] Project detail page with tabbed navigation layout

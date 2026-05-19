@@ -1,6 +1,6 @@
 # CP-10: Integrations, Security Hardening & Audit
 
-**Maps from:** SD-03 (Util Tools), SD-04 §4 (MCP Installation), Google Doc §10, §13.8
+**Maps from:** SD-03 (Util Tools), SD-04 §4 (MCP Installation), SS-03 (Team), CP-05 (MCP Context)
 **Phase:** 7
 **Depends on:** CP-09
 
@@ -8,18 +8,18 @@
 
 ## 1. Core Concept
 
-This final phase connects FlowPilot to external systems (Jira, Firebase, Google Drive, Telegram) and hardens the entire application for production use with proper RLS policies, input validation, and audit trails.
+This final phase hardens the external systems configured in CP-05 (Jira, Firebase, Google Drive, Telegram) and the rest of the application for production use with stricter RLS policies, input validation, and audit trails. CP-10 must not move MCP configuration ownership out of CP-05.
 
 ---
 
-## 2. Jira MCP Integration
+## 2. Jira Integration Hardening
 
 ### 2.1 Database
 ```sql
 -- Cache Jira members for project syncing
 CREATE TABLE jira_members_cache (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   jira_account_id TEXT NOT NULL,
   display_name TEXT NOT NULL,
   email TEXT,
@@ -31,7 +31,7 @@ CREATE TABLE jira_members_cache (
 -- Cache Jira issues for status syncing
 CREATE TABLE jira_issues_cache (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   task_id UUID REFERENCES tasks(id) ON DELETE SET NULL,
   jira_issue_key TEXT NOT NULL,
   jira_status TEXT,
@@ -40,21 +40,40 @@ CREATE TABLE jira_issues_cache (
   UNIQUE(project_id, jira_issue_key)
 );
 
--- Integration config (securely stored)
-CREATE TABLE integrations (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  type TEXT NOT NULL,                 -- jira, firebase, google_drive, telegram
-  config_encrypted JSONB NOT NULL,    -- tokens, URLs, etc. (encrypt sensitive values)
-  status TEXT NOT NULL DEFAULT 'pending',  -- pending, connected, failed
-  last_synced_at TIMESTAMPTZ,
-  created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now()
-);
+-- NOTE: The `integrations` table already exists from CP-05.
+-- Do NOT re-create or move it here. CP-10 only hardens policies and adds provider-specific sync/cache tables.
 
+-- Enable RLS
 ALTER TABLE jira_members_cache ENABLE ROW LEVEL SECURITY;
 ALTER TABLE jira_issues_cache ENABLE ROW LEVEL SECURITY;
-ALTER TABLE integrations ENABLE ROW LEVEL SECURITY;
+
+-- RLS policies: project owner/admin scoped read access
+CREATE POLICY "jira_members_cache_select"
+  ON jira_members_cache FOR SELECT
+  USING (
+    project_id IN (
+      SELECT p.id FROM projects p
+      WHERE p.created_by = auth.uid() OR p.owner_id = auth.uid()
+    )
+  );
+
+CREATE POLICY "jira_issues_cache_select"
+  ON jira_issues_cache FOR SELECT
+  USING (
+    project_id IN (
+      SELECT p.id FROM projects p
+      WHERE p.created_by = auth.uid() OR p.owner_id = auth.uid()
+    )
+  );
+
+CREATE POLICY "integrations_select_project_members"
+  ON integrations FOR SELECT
+  USING (
+    project_id IN (
+      SELECT p.id FROM projects p
+      WHERE p.created_by = auth.uid() OR p.owner_id = auth.uid()
+    )
+  );
 ```
 
 ### 2.2 Edge Functions for Jira
@@ -83,19 +102,19 @@ Body: { projectId, integrationId }
 
 ---
 
-## 3. Other MCP Integrations
+## 3. Provider-Specific Integration Hardening
 
-### 3.1 Firebase MCP
+### 3.1 Firebase
 - **Edge Function:** `firebase-fetch-crashes` — pulls crash logs for Issue Analysis step
 - **Edge Function:** `firebase-fetch-analytics` — pulls usage data for Analytics Review step
 - **Config:** Firebase project ID + service account key (stored encrypted in `integrations`)
 
-### 3.2 Google Drive MCP
+### 3.2 Google Drive
 - **Edge Function:** `google-drive-sync-artifacts` — uploads artifacts to a configured Drive folder
 - **Edge Function:** `google-drive-sync-skills` — syncs `.claude/`, `.codex/`, `.gemini/` skill folders to Drive
 - **Config:** OAuth2 tokens (stored encrypted)
 
-### 3.3 Telegram MCP
+### 3.3 Telegram
 - **Edge Function:** `telegram-send-notification` — sends workflow status updates to a configured Telegram chat
 - **Config:** Bot token + chat ID (stored encrypted)
 - **Trigger:** Automatically called when a workflow step enters `WAITING_USER_APPROVAL` or `DONE`
@@ -108,24 +127,22 @@ Body: { projectId, integrationId }
 All existing permissive policies (`using (true)`) must be tightened:
 
 ```sql
--- Example: projects visible only to owner or team members
+-- Example: projects visible only to owner/admin clients
+-- projects.created_by and owner_id are UUID (CP-04 baseline) — no ::text cast needed
 CREATE POLICY "projects_select_own" ON projects
   FOR SELECT TO authenticated
   USING (
-    created_by = auth.uid()::text
-    OR id IN (
-      SELECT pt.project_id FROM project_teams pt
-      JOIN team_members tm ON tm.team_id = pt.team_id
-      WHERE tm.email = auth.jwt()->'email'
-    )
+    created_by = auth.uid()
+    OR owner_id = auth.uid()
   );
 
--- Example: features restricted to project members
+-- Example: features restricted to project owner/admin clients
 CREATE POLICY "features_select_project_member" ON features
   FOR SELECT TO authenticated
   USING (
     project_id IN (
-      SELECT id FROM projects WHERE created_by = auth.uid()::text
+      SELECT id FROM projects
+      WHERE created_by = auth.uid() OR owner_id = auth.uid()
     )
   );
 ```
@@ -150,7 +167,7 @@ export const addMemberSchema = z.object({
   name: z.string().min(2),
   email: z.string().email().optional(),
   role: z.enum(['android', 'ios', 'backend', 'frontend', 'qa', 'devops', 'ai_workflow']),
-  levelLabel: z.enum(['L1_intern', 'L2_junior', 'L3_middle', 'L4_senior', 'L5_lead']),
+  levelLabel: z.enum(['L1_intern', 'L2_junior', 'L3_middle', 'L4_senior', 'L5_lead']),  // maps to DB team_members.level_label
   skillTags: z.array(z.string()).default([]),
   weeklyCapacityHours: z.number().min(1).max(60).default(40),
 })
@@ -173,16 +190,27 @@ export const addMemberSchema = z.object({
 ```sql
 CREATE TABLE audit_logs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id TEXT NOT NULL,
+  user_id UUID NOT NULL REFERENCES auth.users(id),
   action TEXT NOT NULL,            -- create_project, approve_step, reject_step, generate_spec, etc.
   resource_type TEXT NOT NULL,     -- project, workflow_run, task, etc.
-  resource_id TEXT NOT NULL,
+  resource_id UUID NOT NULL,
   metadata JSONB DEFAULT '{}',    -- additional context
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
 ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
+
+-- Users can read their own audit entries; admins can read all entries for their projects
+CREATE POLICY "audit_logs_select_own"
+  ON audit_logs FOR SELECT
+  USING (user_id = auth.uid());
+
+CREATE POLICY "audit_logs_insert_authenticated"
+  ON audit_logs FOR INSERT
+  WITH CHECK (auth.role() = 'authenticated');
 ```
+
+> MVP note: CP-09/CP-10 allow authenticated admin/member writes in a few audit/log paths. That is acceptable for the admin-only MVP assumption, but CP-10 is still the phase that should tighten policies before production.
 
 ### 5.2 Auto-logging
 Write audit entries for:

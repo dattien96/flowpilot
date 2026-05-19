@@ -40,9 +40,9 @@ React + Vite + TanStack gives us a lighter, more explicit architecture where eve
 | [CP-05](./CP-05-Project-Mcp-Context.md) | Project MCP Context | SS-01, SS-02, SD-05, SD-10 |
 | [CP-06](./CP-06-Document-Workflow.md) | Business Logic -> Tech Spec -> Coding Plan | SD-05, SD-06 |
 | [CP-07](./CP-07-Workflow-Engine-UI.md) | Workflow Engine UI & Execution Dashboard | SD-05, SD-09 |
-| [CP-08](./CP-08-Master-Schedule-Tasks.md) | Master Schedule & Task Board | Google Doc Section 4.6-4.7 |
+| [CP-08](./CP-08-Master-Schedule-Tasks.md) | Master Schedule & Task Board | SS-03, SS-04 §3.5.9, SD-04 |
 | [CP-09](./CP-09-AI-Orchestration.md) | AI Prompt Templates & Execution Logs | SD-06, SD-07, SD-08 |
-| [CP-10](./CP-10-Integrations-Hardening.md) | MCP/Jira Integration & Security Hardening | SD-04 Section 4, SD-03 |
+| [CP-10](./CP-10-Integrations-Hardening.md) | Integration Hardening, Security & Audit | SD-04 Section 4, SD-03 |
 | [CP-11](./CP-11-Go-Runner-Implementation.md) | Go-Runner CLI, Providers, Skills & Process Isolation | SD-03, SD-05 Section 3-5, SD-06, SD-07 |
 | [CP-12](./CP-12-Artifact-Memory-RAG.md) | Artifact Memory, RAG & Prompt Context | SS-09, SD-10 |
 
@@ -51,18 +51,19 @@ React + Vite + TanStack gives us a lighter, more explicit architecture where eve
 ## Implementation Phases (Build Order)
 
 ```text
-Phase 1 -> CP-01: Scaffold Vite project, auth, layout, routing
+Phase 1  -> CP-01: Scaffold Vite project, auth, layout, routing
 Phase Parallel -> CP-02: Docker hot reload for admin-web (`just docker-up`) before heavy frontend iteration
 Phase Parallel -> CP-03: Supabase env contract, client boundaries, storage, and Edge Function integration
-Phase 2 -> CP-04: Projects + Members CRUD
-Phase Parallel -> CP-05: Project MCP context configuration and project-level context wiring
-Phase 3 -> CP-06: Business Logic / Tech Spec / Coding Plan editors
-Phase 4 -> CP-07: Workflow builder, execution dashboard, approval gates
-Phase 5 -> CP-08: Master Schedule generator, task board
-Phase 6 -> CP-09: AI prompt templates, execution log viewer
-Phase 7 -> CP-10: Jira/MCP integration, RLS hardening, audit trails
-Phase Parallel -> CP-11: Go-Runner CLI (cross-cutting, built alongside Phases 4-6)
-Phase Parallel -> CP-12: Artifact memory + RAG context resolver (cross-cutting, built alongside Phases 4-6)
+Phase 2  -> CP-04: UUID project/team/member baseline and settings shell
+Phase 3  -> CP-05: Project MCP context configuration and `integrations` table
+Phase 4  -> CP-07: Canonical workflow schema, builder, execution dashboard, approval gates
+Phase 4A -> CP-11A: Basic Go-Runner after workflow run/step state exists
+Phase 5  -> CP-06: Business Logic / Tech Spec / Coding Plan artifact editors
+Phase 6  -> CP-08: Master Schedule generator, task board
+Phase 7  -> CP-09: AI prompt templates, execution log viewer, Edge Functions
+Phase 8  -> CP-12: Artifact memory + RAG context resolver
+Phase 8A -> CP-11B: Full Go-Runner context memory integration
+Phase 9  -> CP-10: Integration hardening, RLS hardening, audit trails
 ```
 
 ## Migration Strategy
@@ -77,4 +78,3 @@ The current Next.js codebase in `apps/admin-web/` will be replaced in-place:
 6. Rewrite data layer: Server Actions -> TanStack Query hooks + Supabase client SDK.
 
 See [CP-01 Migration](./CP-01-Foundation-Setup.md) for the detailed refactor steps.
-

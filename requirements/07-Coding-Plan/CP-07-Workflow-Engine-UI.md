@@ -2,7 +2,7 @@
 
 **Maps from:** SD-05 (Workflow Engine), SD-09 (Approval Gates), SS-04 (Workflow Spec)
 **Phase:** 4
-**Depends on:** CP-06
+**Depends on:** CP-05
 
 ---
 
@@ -12,25 +12,73 @@ This phase builds the **Workflow Builder** (design-time) and **Execution Dashboa
 
 ---
 
-## 2. Database — Align Existing Schema
+## 2. Database - Canonical Workflow Schema
 
-The existing migration already has `workflow_definitions`, `workflow_runs`, `workflow_steps`, `ai_outputs`, `approvals`, and `approval_decisions`. We need to extend them to support the new features:
+The MVP skeleton has legacy `workflow_definitions`, `workflow_runs`, `workflow_steps`, `ai_outputs`, `approvals`, and `approval_decisions` tables. CP-07 replaces that runtime model with the canonical SD-05/SD-09 schema below. Later CPs must use `workflows`, definition-time `workflow_steps`, execution-time `workflow_run_steps`, and canonical `artifacts`; they must not add new features to the legacy `ai_outputs` runtime path.
 
 ```sql
--- Extend workflow_steps for prompt caching, rejection, and skip support
-ALTER TABLE workflow_steps ADD COLUMN IF NOT EXISTS rejection_note TEXT;
-ALTER TABLE workflow_steps ADD COLUMN IF NOT EXISTS retry_count INT DEFAULT 0;
-ALTER TABLE workflow_steps ADD COLUMN IF NOT EXISTS prompt_cache_id TEXT;
-ALTER TABLE workflow_steps ADD COLUMN IF NOT EXISTS provider_override TEXT;
-ALTER TABLE workflow_steps ADD COLUMN IF NOT EXISTS model_override TEXT;
-ALTER TABLE workflow_steps ADD COLUMN IF NOT EXISTS requires_approval BOOLEAN DEFAULT true;
-ALTER TABLE workflow_steps ADD COLUMN IF NOT EXISTS is_enabled BOOLEAN DEFAULT true;
+CREATE TABLE workflows (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  description TEXT,
+  is_template BOOLEAN NOT NULL DEFAULT false,
+  provider_override TEXT,
+  model_override TEXT,
+  created_by UUID REFERENCES auth.users(id),
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Definition-time step configuration only.
+CREATE TABLE workflow_steps (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  workflow_id UUID NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+  step_type TEXT NOT NULL,
+  order_index INT NOT NULL,
+  provider_override TEXT,
+  model_override TEXT,
+  requires_approval BOOLEAN DEFAULT true,
+  is_enabled BOOLEAN DEFAULT true,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE(workflow_id, order_index)
+);
+
+CREATE TABLE workflow_runs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  workflow_id UUID NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+  project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'RUNNING', 'DONE', 'FAILED', 'CANCELED')),
+  provider TEXT,
+  model TEXT,
+  started_by UUID REFERENCES auth.users(id),
+  started_at TIMESTAMPTZ DEFAULT now(),
+  finished_at TIMESTAMPTZ,
+  error_message TEXT
+);
+
+-- Execution-time step state only.
+CREATE TABLE workflow_run_steps (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  workflow_run_id UUID NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+  workflow_step_id UUID NOT NULL REFERENCES workflow_steps(id) ON DELETE CASCADE,
+  step_type TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'RUNNING', 'WAITING_USER_APPROVAL', 'DONE', 'FAILED', 'SKIPPED')),
+  artifact_id UUID, -- CP-06 adds FK to artifacts(id) after artifacts table exists
+  prompt_cache_id UUID,
+  rejection_note TEXT,
+  retry_count INT NOT NULL DEFAULT 0,
+  started_at TIMESTAMPTZ,
+  finished_at TIMESTAMPTZ,
+  error_message TEXT
+);
 
 -- Workflow prompt cache (per SD-05 §7.2)
 CREATE TABLE workflow_prompt_cache (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  workflow_definition_id TEXT NOT NULL REFERENCES workflow_definitions(id),
-  config_hash VARCHAR NOT NULL,
+  workflow_id UUID NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+  config_hash VARCHAR NOT NULL UNIQUE,   -- UNIQUE enforced: hash collision must not create duplicate entries
   file_path VARCHAR NOT NULL,
   step_type TEXT NOT NULL,
   provider TEXT NOT NULL,
@@ -41,19 +89,54 @@ CREATE TABLE workflow_prompt_cache (
 
 CREATE INDEX idx_prompt_cache_hash ON workflow_prompt_cache(config_hash) WHERE is_valid = true;
 
+ALTER TABLE workflow_run_steps
+  ADD CONSTRAINT workflow_run_steps_prompt_cache_fk
+  FOREIGN KEY (prompt_cache_id) REFERENCES workflow_prompt_cache(id);
+
 -- Enable RLS
 ALTER TABLE workflow_prompt_cache ENABLE ROW LEVEL SECURITY;
 
+-- Read policy: project members can view cache entries for their workflows
+CREATE POLICY "prompt_cache_select_project_members"
+  ON workflow_prompt_cache FOR SELECT
+  USING (
+    workflow_id IN (
+      SELECT w.id FROM workflows w
+      WHERE w.project_id IN (
+        SELECT pt.project_id FROM project_teams pt
+        JOIN team_members tm ON tm.team_id = pt.team_id
+        WHERE tm.user_id = auth.uid()
+      )
+    )
+  );
+
 -- Workflow execution logs (per SD-05 §7.3)
+-- Note: references workflow_run_steps (execution instance), NOT workflow_steps (definition)
 CREATE TABLE workflow_run_logs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  workflow_run_step_id TEXT NOT NULL REFERENCES workflow_steps(id) ON DELETE CASCADE,
+  workflow_run_step_id UUID NOT NULL REFERENCES workflow_run_steps(id) ON DELETE CASCADE,
   log_level TEXT NOT NULL DEFAULT 'INFO',   -- INFO, WARN, ERROR, DEBUG
   message TEXT NOT NULL,
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
 ALTER TABLE workflow_run_logs ENABLE ROW LEVEL SECURITY;
+
+-- Read policy: project members can view logs for their workflow runs
+CREATE POLICY "run_logs_select_project_members"
+  ON workflow_run_logs FOR SELECT
+  USING (
+    workflow_run_step_id IN (
+      SELECT wrs.id FROM workflow_run_steps wrs
+      JOIN workflow_runs wr ON wr.id = wrs.workflow_run_id
+      JOIN workflows w ON w.id = wr.workflow_id
+      WHERE w.project_id IN (
+        SELECT pt.project_id FROM project_teams pt
+        JOIN team_members tm ON tm.team_id = pt.team_id
+        WHERE tm.user_id = auth.uid()
+      )
+    )
+  );
 
 -- Step definitions seed table (per SD-05 §7.4)
 -- Static/seeded data — the 17 MVP step types
@@ -65,6 +148,12 @@ CREATE TABLE step_definitions (
   required_skills JSONB DEFAULT '[]',    -- e.g. ["tech_spec_skill"]
   agent_type TEXT NOT NULL DEFAULT 'standard'  -- standard, autonomous (for code/review loop)
 );
+
+-- Read policy: any authenticated user can read step definitions (static catalogue)
+ALTER TABLE step_definitions ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "step_definitions_select_authenticated"
+  ON step_definitions FOR SELECT
+  USING (auth.role() = 'authenticated');
 
 -- Seed data (insert 17 MVP step types)
 INSERT INTO step_definitions (step_type, name, description, required_mcps, required_skills, agent_type) VALUES
@@ -153,7 +242,7 @@ The cached `.md` contains structural template sections. At execution time, the G
 {{previous_artifacts}}    ← Output from earlier steps in this run
 
 # Reviewer Feedback (Retry)
-{{rejection_note}}        ← Only populated on retry (from workflow_steps.rejection_note)
+{{rejection_note}}        ← Only populated on retry (from workflow_run_steps.rejection_note)
 ```
 
 This means the **structural template is cached**, but **run-specific data is always fresh**.
@@ -178,14 +267,14 @@ Any of these changes cause the config_hash to change → new file generated → 
 ### 3.1 Update Status Constants
 ```typescript
 // src/domain/constant/status.ts (UPDATED)
+// Canonical values per SD-09 §2 — must match workflow_run_steps.status in DB exactly
 export type WorkflowStepStatus =
-  | 'pending'
-  | 'running'
-  | 'waiting_approval'
-  | 'completed'
-  | 'rejected'
-  | 'failed'
-  | 'skipped';   // ← NEW per SD-09
+  | 'PENDING'
+  | 'RUNNING'
+  | 'WAITING_USER_APPROVAL'
+  | 'DONE'
+  | 'FAILED'
+  | 'SKIPPED';
 ```
 
 ### 3.2 New Workflow Builder Types
@@ -235,7 +324,7 @@ export type StepType =
 // src/domain/model/entity/prompt-cache.ts
 export interface PromptCacheEntry {
   id: string;
-  workflowDefinitionId: string;
+  workflowId: string;
   configHash: string;
   filePath: string;
   stepType: StepType;
@@ -319,7 +408,7 @@ export function subscribeToWorkflowRun(runId: string, onUpdate: (step: WorkflowS
     .on('postgres_changes', {
       event: 'UPDATE',
       schema: 'public',
-      table: 'workflow_steps',
+      table: 'workflow_run_steps',
       filter: `workflow_run_id=eq.${runId}`,
     }, (payload) => {
       onUpdate(payload.new as WorkflowStep)
@@ -351,11 +440,13 @@ export function useWorkflowRealtime(runId: string) {
 ```
 User clicks "Reject & Retry"
     → UI captures rejection_note (required text)
-    → Frontend writes to workflow_steps:
-        status = 'pending'
+    → Frontend calls Edge Function (NOT direct table write) which updates workflow_run_steps:
+        status = 'PENDING'
         rejection_note = user text
         retry_count += 1
-    → Go-Runner detects step is PENDING again
+      Note: NEVER write execution state to workflow_steps (the definition table).
+            workflow_steps is immutable per-run — only workflow_run_steps holds run state.
+    → Go-Runner detects workflow_run_steps row is PENDING again
     → Re-assembles prompt with appended rejection context:
         "# Reviewer Feedback (Retry)
          The previous output was rejected. Reason: <rejection_note>
@@ -369,18 +460,42 @@ User clicks "Reject & Retry"
 
 ## 7. Definition of Done — Phase 4
 
-- [ ] Workflow Builder: list/create/edit workflows with step configuration
-- [ ] Built-in workflow templates loaded from seed data
+### Database
+- [ ] `workflows` table created with UUID `project_id` FK
+- [ ] `workflow_steps` created for definition-time columns: `provider_override`, `model_override`, `requires_approval`, `is_enabled`
+- [ ] `workflow_runs` and `workflow_run_steps` created for execution-time state
+- [ ] `workflow_run_steps` includes `rejection_note`, `retry_count`, `prompt_cache_id`
+- [ ] `workflow_prompt_cache` table created with `config_hash UNIQUE` index and `workflow_id UUID` FK
+- [ ] `workflow_run_logs` table created with `workflow_run_step_id UUID` FK → `workflow_run_steps` (not `workflow_steps`)
+- [ ] `step_definitions` table seeded with all 17 MVP step types
+- [ ] RLS policies on `workflow_prompt_cache`, `workflow_run_logs`, `step_definitions`
+
+### Domain & Types
+- [ ] `WorkflowStepStatus` TypeScript enum uses canonical SD-09 values: `PENDING`, `RUNNING`, `WAITING_USER_APPROVAL`, `DONE`, `FAILED`, `SKIPPED`
+- [ ] `WorkflowTemplate` and `WorkflowTemplateStep` entities defined
+- [ ] `PromptCacheEntry` entity defined
+
+### UI
+- [ ] Workflow Builder: list/create/edit workflows with step configuration (enable/disable, reorder, provider override)
+- [ ] Built-in workflow templates loaded from `step_definitions` seed data
 - [ ] Execution Dashboard: real-time step status via Supabase Realtime
-- [ ] Step status badges with all 7 states (PENDING, RUNNING, WAITING_APPROVAL, COMPLETED, REJECTED, FAILED, SKIPPED)
-- [ ] Approval Gate UI: approve/reject with rejection note capture
-- [ ] YOLO mode toggle at workflow level
-- [ ] Reject/Retry loop: rejection note stored, retry count incremented
-- [ ] Supabase Realtime subscription for live updates
-- [ ] `workflow_prompt_cache` table created with `config_hash` index
-- [ ] Go-Runner: `computeConfigHash()` function implemented
-- [ ] Go-Runner: cache-first execution loop (check cache → reuse or generate → save)
-- [ ] Go-Runner: runtime placeholder injection for MCP/user context and rejection notes
-- [ ] `/built-in-workflow/` directory created at system root
-- [ ] Admin Web: cache hash display in Workflow Builder + prompt file link in Execution Dashboard
+- [ ] Step status badges for all 6 canonical states: `PENDING` (gray) | `RUNNING` (blue pulse) | `WAITING_USER_APPROVAL` (yellow) | `DONE` (green) | `FAILED` (red) | `SKIPPED` (gray strikethrough)
+- [ ] Approval Gate UI: "Approve & Continue" and "Reject & Retry" with rejection note capture
+- [ ] YOLO mode toggle at workflow level with visual badge on run header
+- [ ] Prompt file link visible in Execution Dashboard step detail (reads from `workflow_prompt_cache`)
+- [ ] Cache hash displayed in Workflow Builder after save
+
+### Reject/Retry
+- [ ] Reject flow writes to `workflow_run_steps` via Edge Function (never direct client write to `workflow_steps`)
+- [ ] Rejection note stored, retry count incremented on each retry
+- [ ] Go-Runner appends rejection note to prompt on re-execution
+
+### Go-Runner
+- [ ] `computeConfigHash()` implemented as deterministic SHA256 per §2.1.2
+- [ ] Cache-first execution loop: check `workflow_prompt_cache` → reuse or generate → save
+- [ ] Runtime placeholder injection for `{{mcp_context}}`, `{{user_context}}`, `{{previous_artifacts}}`, `{{rejection_note}}`
+- [ ] `/built-in-workflow/` directory created at FlowPilot system root
+
+### Known Dependency (deferred)
+- [ ] User text context input surface for per-run context (SD-05 §3 `# User Context`) — to be addressed in CP-09 or CP-11
 

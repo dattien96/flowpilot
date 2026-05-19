@@ -1,8 +1,8 @@
 # CP-09: AI Orchestration — Prompt Templates & Execution Logs
 
-**Maps from:** SD-06 (AI Provider Integration), SD-07 (Skill/Agent Runtime), SD-08 (Artifact Management), Google Doc §4.9–4.10
+**Maps from:** SS-05 (AI Provider), SS-06 (Skill Agent), SS-07 (Artifacts), SD-06 (AI Provider Integration), SD-07 (Skill/Agent Runtime), SD-08 (Artifact Management), SD-10 (Context Resolver RAG)
 **Phase:** 6
-**Depends on:** CP-07, CP-08
+**Depends on:** CP-07, CP-06, CP-08
 
 ---
 
@@ -38,46 +38,100 @@ CREATE TABLE ai_prompt_templates (
 );
 
 ALTER TABLE ai_prompt_templates ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "ai_prompt_templates_select_authenticated"
+  ON ai_prompt_templates FOR SELECT
+  USING (auth.role() = 'authenticated');
+
+CREATE POLICY "ai_prompt_templates_insert_authenticated"
+  ON ai_prompt_templates FOR INSERT
+  WITH CHECK (auth.role() = 'authenticated');
 ```
 
 ### 2.2 AI Runs (already exists as `ai_call_logs`, extend for full audit)
 The existing `ai_call_logs` table covers provider/model/tokens/cost. We add an `ai_runs` table for higher-level tracking:
 
+-- ai_runs tracks DOCUMENT-LEVEL AI calls triggered from the UI.
+-- Workflow-step AI execution is tracked in workflow_run_logs (CP-07) and workflow_run_steps.
 ```sql
 CREATE TABLE ai_runs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  run_type TEXT NOT NULL,             -- tech_spec_generation, schedule_generation, etc.
+  project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  run_type TEXT NOT NULL,             -- tech_spec_generation, coding_plan_generation, schedule_generation, business_review
   input_payload JSONB NOT NULL,       -- The full prompt input that was sent
   output_payload JSONB,               -- The structured output received (or raw text)
   model_name TEXT NOT NULL,
-  triggered_by TEXT NOT NULL,
+  triggered_by UUID NOT NULL REFERENCES auth.users(id),  -- the user who triggered the run
   status TEXT NOT NULL DEFAULT 'running',  -- running, success, failed
   error_message TEXT,
+  tokens_input INT,                   -- prompt tokens consumed
+  tokens_output INT,                  -- completion tokens generated
+  cost_usd NUMERIC(10,6),             -- estimated cost in USD
   prompt_template_id UUID REFERENCES ai_prompt_templates(id),
-  workflow_run_id TEXT REFERENCES workflow_runs(id),
-  workflow_step_id TEXT REFERENCES workflow_steps(id),
+  workflow_run_step_id UUID REFERENCES workflow_run_steps(id) ON DELETE SET NULL,  -- set only for workflow-triggered runs
   created_at TIMESTAMPTZ DEFAULT now(),
   completed_at TIMESTAMPTZ
 );
 
 ALTER TABLE ai_runs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "ai_runs_select_project_members"
+  ON ai_runs FOR SELECT
+  USING (
+    project_id IN (
+      SELECT pt.project_id FROM project_teams pt
+      JOIN team_members tm ON tm.team_id = pt.team_id
+      WHERE tm.user_id = auth.uid()
+    )
+  );
+
+CREATE POLICY "ai_runs_insert_authenticated"
+  ON ai_runs FOR INSERT
+  WITH CHECK (auth.role() = 'authenticated');
 ```
 
+> MVP note: authenticated admin/member inserts are acceptable for this phase. CP-10 hardens these policies for production.
+
 ### 2.3 Artifact Annotations (from SD-08)
-The existing `ai_outputs` table stores content. Add annotations for human collaboration:
+Annotations belong to the canonical `artifacts` table (CP-06), not `ai_outputs`. Per SD-08 §1: `artifact_annotations (id, artifact_id, user_id, highlight_range, note_text)`.
 
 ```sql
 CREATE TABLE artifact_annotations (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  ai_output_id TEXT NOT NULL REFERENCES ai_outputs(id) ON DELETE CASCADE,
-  user_id TEXT NOT NULL,
+  artifact_id UUID NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES auth.users(id),
   highlight_range TEXT,               -- e.g., "L15-L22" for line ranges
   note_text TEXT NOT NULL,
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
 ALTER TABLE artifact_annotations ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "artifact_annotations_select"
+  ON artifact_annotations FOR SELECT
+  USING (
+    artifact_id IN (
+      SELECT a.id FROM artifacts a
+      WHERE a.project_id IN (
+        SELECT pt.project_id FROM project_teams pt
+        JOIN team_members tm ON tm.team_id = pt.team_id
+        WHERE tm.user_id = auth.uid()
+      )
+    )
+  );
+
+CREATE POLICY "artifact_annotations_insert"
+  ON artifact_annotations FOR INSERT
+  WITH CHECK (
+    artifact_id IN (
+      SELECT a.id FROM artifacts a
+      WHERE a.project_id IN (
+        SELECT pt.project_id FROM project_teams pt
+        JOIN team_members tm ON tm.team_id = pt.team_id
+        WHERE tm.user_id = auth.uid()
+      )
+    )
+  );
 ```
 
 ---
@@ -90,14 +144,14 @@ POST /functions/v1/generate-tech-spec
 
 Body: {
   projectId: string,
-  businessLogicDocId: string,
+  businessLogicArtifactId: string,   // artifacts.id WHERE artifact_type = 'business_logic'
   promptTemplateId?: string,
   modelOverride?: string
 }
 
 Response: {
   aiRunId: string,
-  outputId: string,
+  artifactId: string,                // the new tech_spec artifact created in artifacts table
   content: string
 }
 ```
@@ -108,19 +162,43 @@ POST /functions/v1/generate-coding-plan
 
 Body: {
   projectId: string,
-  technicalSpecId: string,
+  techSpecArtifactId: string,        // artifacts.id WHERE artifact_type = 'tech_spec'
   promptTemplateId?: string,
   modelOverride?: string
 }
+
+Response: {
+  aiRunId: string,
+  artifactId: string                 // the new coding_plan artifact
+}
 ```
 
-### 3.3 `generate-master-schedule`
+### 3.3b `review-business-logic`
+```
+POST /functions/v1/review-business-logic
+
+Body: {
+  projectId: string,
+  businessLogicArtifactId: string,   // artifacts.id WHERE artifact_type = 'business_logic'
+  promptTemplateId?: string,
+  modelOverride?: string
+}
+
+Response: {
+  aiRunId: string,
+  reviewNotes: string,               // AI-generated review comments in Markdown
+  ambiguities: string[],             // list of detected ambiguous or missing requirements
+  artifactId: string                 // updated artifact with review annotations
+}
+```
+
+### 3.4 `generate-master-schedule`
 ```
 POST /functions/v1/generate-master-schedule
 
 Body: {
   projectId: string,
-  codingPlanId: string,
+  codingPlanArtifactId: string,    // artifacts.id WHERE artifact_type = 'coding_plan'
   teamMembers: TeamMember[],       // fetched from project_teams → team_members
   sprintLength?: number,
   deadlines?: { name: string, date: string }[],
@@ -129,20 +207,21 @@ Body: {
 
 Response: {
   aiRunId: string,
-  scheduleItems: ScheduleItem[]    // structured JSON, not markdown
+  masterScheduleId: string,        // the new master_schedules row created
+  scheduleItems: ScheduleItem[]    // structured JSON parsed into schedule_items rows
 }
 ```
 
-### 3.4 Edge Function Pattern
+### 3.5 Edge Function Pattern
 All Edge Functions follow the same pattern:
 1. Validate auth (Supabase Auth JWT)
-2. Fetch input data from DB
-3. Load prompt template (or use default)
+2. Fetch input data from DB (using artifact IDs, not eliminated table IDs)
+3. Load prompt template (or use default from `ai_prompt_templates`)
 4. Assemble the prompt
-5. Call AI provider API (API keys stored in Supabase Vault/env)
+5. Call AI provider API (API keys stored in Supabase Vault/env — never exposed to browser)
 6. Parse response
-7. Store result in `ai_runs` + `ai_outputs`
-8. Return response
+7. Store result in `ai_runs` + save artifact to `artifacts` table (with `content_url` in Supabase Storage)
+8. Return `aiRunId` + `artifactId`
 
 ```typescript
 // supabase/functions/generate-tech-spec/index.ts
@@ -160,13 +239,15 @@ serve(async (req) => {
   const { data: { user } } = await supabase.auth.getUser(authHeader.replace('Bearer ', ''))
 
   // 2. Fetch inputs, assemble prompt, call AI...
-  // 3. Store result in ai_runs + ai_outputs
+  // 3. Store result in ai_runs + artifacts
   // 4. Return response
 })
 ```
 
-### 3.5 `generate-embedding`
+### 3.6 `generate-embedding`
 This shared Edge Function supports artifact working memory search in CP-12.
+
+> **Security note:** The CORS `"Access-Control-Allow-Origin": "*"` wildcard is acceptable for development. In production, restrict to the admin web app's domain.
 
 ```
 POST /functions/v1/generate-embedding
@@ -328,7 +409,7 @@ serve(async (req: Request) => {
 - "Retry/Regenerate" button → re-runs with same input
 
 ### 4.3 Artifact Viewer (updated from Phase 3)
-- Markdown rendering of `ai_outputs.content_markdown`
+- Markdown rendering of artifact content loaded from `artifacts.content_url`
 - **Version History:** Sidebar dropdown to select previous versions
 - **Annotations:** Click to highlight text range → add note → saved to `artifact_annotations`
 - **Compare versions:** Side-by-side diff of two artifact versions
@@ -364,14 +445,14 @@ export function useGenerateTechSpec() {
 ## 5. Go-Runner ↔ Admin Web Communication
 
 For **workflow execution** (Phase 4), the Go-Runner drives the pipeline:
-- The Go-Runner polls `workflow_steps` for `PENDING` steps.
-- It calls the AI provider directly (not through Edge Functions — it has local access).
-- It writes results back to `ai_outputs` and updates `workflow_steps.status`.
-- The Admin Web receives updates via Supabase Realtime.
+- The Go-Runner polls **`workflow_run_steps`** for `PENDING` status rows (not `workflow_steps` — the definition table has no status column).
+- It calls the AI provider directly (not through Edge Functions — it has local access to the CLI).
+- It writes results back to `artifacts` table and updates `workflow_run_steps.status`.
+- The Admin Web receives updates via Supabase Realtime subscription on `workflow_run_steps`.
 
 For **document-level AI** (this phase), the Admin Web calls Edge Functions directly:
 - Edge Functions handle the AI call securely.
-- Results are written to `ai_runs` + relevant document table.
+- Results are written to `ai_runs` + `artifacts`.
 
 This dual-path design keeps the workflow engine independent from the admin UI.
 
@@ -379,12 +460,27 @@ This dual-path design keeps the workflow engine independent from the admin UI.
 
 ## 6. Definition of Done — Phase 6
 
-- [ ] Database migration: `ai_prompt_templates`, `ai_runs`, `artifact_annotations`
-- [ ] At least 4 Supabase Edge Functions: tech-spec, coding-plan, schedule, business-review
-- [ ] Shared Edge Function: generate-embedding
-- [ ] Prompt Template CRUD with Markdown editor
-- [ ] AI Execution Log viewer with filtering and detail drill-down
-- [ ] All "Generate from..." buttons functional
-- [ ] Artifact viewer with version history and annotations
-- [ ] Go-Runner ↔ Admin Web integration via Supabase Realtime (read path)
+### Database
+- [ ] `ai_prompt_templates` with versioning, RLS SELECT + INSERT policies
+- [ ] `ai_runs` with `UUID` FKs, `tokens_input`, `tokens_output`, `cost_usd` columns, RLS project-member policy
+- [ ] `artifact_annotations` with `artifact_id UUID REFERENCES artifacts(id)`, `user_id UUID REFERENCES auth.users(id)`, RLS project-member policy
+
+### Edge Functions
+- [ ] `generate-tech-spec` — accepts `businessLogicArtifactId UUID`, writes to `artifacts` table
+- [ ] `generate-coding-plan` — accepts `techSpecArtifactId UUID`, writes to `artifacts` table
+- [ ] `generate-master-schedule` — accepts `codingPlanArtifactId UUID`, writes to `master_schedules` + `schedule_items`
+- [ ] `review-business-logic` — accepts `businessLogicArtifactId UUID`, returns review notes and ambiguities
+- [ ] `generate-embedding` — shared function, returns `{ embedding, dimensions }` for CP-12 RAG
+
+### UI
+- [ ] Prompt Template CRUD with Markdown editor, input/output schema, version history
+- [ ] AI Execution Log viewer with `tokens`, `cost_usd`, `status` filtering and detail drill-down
+- [ ] All "Generate from..." buttons functional and calling correct Edge Functions with artifact IDs
+- [ ] Artifact viewer with version history sidebar and annotation highlighting
+- [ ] Annotation create/edit/delete scoped to project members
+
+### Integration
+- [ ] Go-Runner polls `workflow_run_steps` (not `workflow_steps`) for PENDING rows
+- [ ] Go-Runner writes results to `artifacts` table (not `ai_outputs`)
+- [ ] Admin Web reads workflow progress via Supabase Realtime on `workflow_run_steps`
 
