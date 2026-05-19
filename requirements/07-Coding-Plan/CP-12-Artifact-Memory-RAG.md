@@ -2,7 +2,7 @@
 
 **Maps from:** SS-09, SD-10, SD-08, SD-05
 **Phase:** Cross-cutting, built after CP-07 and alongside CP-09
-**Depends on:** CP-07, CP-09
+**Depends on:** CP-07, CP-06, CP-09
 
 ---
 
@@ -29,7 +29,75 @@ Create a new Supabase migration for:
 - vector index for artifact memory embeddings
 - RLS policies matching project/team access rules
 
-The current schema stores generated artifacts in `ai_outputs`; `artifact_memories` should reference `ai_outputs(id)`. Use `vector(384)` when using Supabase `gte-small`. If another model is selected, align the vector dimension with that model.
+> **Important:** After the CP-06 redesign, all generated artifacts are stored in the canonical `artifacts` table (with `artifact_type`), not `ai_outputs`. The `artifact_memories` FK must reference `artifacts(id)`, not `ai_outputs(id)`.
+> Use `vector(384)` when using Supabase `gte-small`. If another model is selected, align the vector dimension with that model.
+
+Key DDL (refer to SD-10 §2 for full schema, update FKs as noted):
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE TABLE artifact_memories (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  artifact_id UUID NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,  -- NOT ai_outputs
+  project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  workflow_id UUID REFERENCES workflows(id) ON DELETE SET NULL,
+  workflow_run_id UUID REFERENCES workflow_runs(id) ON DELETE SET NULL,
+  workflow_run_step_id UUID REFERENCES workflow_run_steps(id) ON DELETE SET NULL,
+  artifact_type TEXT NOT NULL,
+  artifact_status TEXT NOT NULL,
+  artifact_version INT NOT NULL,
+  summary TEXT NOT NULL,
+  key_decisions JSONB NOT NULL DEFAULT '[]',
+  constraints JSONB NOT NULL DEFAULT '[]',
+  assumptions JSONB NOT NULL DEFAULT '[]',
+  open_questions JSONB NOT NULL DEFAULT '[]',
+  keywords JSONB NOT NULL DEFAULT '[]',
+  source_refs JSONB NOT NULL DEFAULT '[]',
+  token_estimate INT NOT NULL DEFAULT 0,
+  embedding vector(384),
+  embedding_model TEXT,
+  embedding_status TEXT NOT NULL DEFAULT 'pending',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX artifact_memories_project_idx ON artifact_memories(project_id);
+CREATE INDEX artifact_memories_workflow_idx ON artifact_memories(workflow_id);
+CREATE INDEX artifact_memories_artifact_type_idx ON artifact_memories(artifact_type);
+CREATE INDEX artifact_memories_embedding_idx
+  ON artifact_memories
+  USING ivfflat (embedding vector_cosine_ops)
+  WITH (lists = 100);
+
+-- RLS
+ALTER TABLE artifact_memories ENABLE ROW LEVEL SECURITY;
+ALTER TABLE workflow_prompt_context_items ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "artifact_memories_select_project_members"
+  ON artifact_memories FOR SELECT
+  USING (
+    project_id IN (
+      SELECT pt.project_id FROM project_teams pt
+      JOIN team_members tm ON tm.team_id = pt.team_id
+      WHERE tm.user_id = auth.uid()
+    )
+  );
+
+CREATE POLICY "prompt_context_items_select_project_members"
+  ON workflow_prompt_context_items FOR SELECT
+  USING (
+    workflow_run_step_id IN (
+      SELECT wrs.id FROM workflow_run_steps wrs
+      JOIN workflow_runs wr ON wr.id = wrs.workflow_run_id
+      JOIN workflows w ON w.id = wr.workflow_id
+      WHERE w.project_id IN (
+        SELECT pt.project_id FROM project_teams pt
+        JOIN team_members tm ON tm.team_id = pt.team_id
+        WHERE tm.user_id = auth.uid()
+      )
+    )
+  );
+```
 
 ---
 
@@ -122,6 +190,8 @@ type StepContextPolicy = {
 };
 ```
 
+> **Implementation note:** The retrieval policy for each step is seeded alongside the `step_definitions` table (CP-07) — one policy record per `step_type`. At runtime the Go-Runner loads it via `getStepDefinition(step.step_type)`. For MVP, default values (see below) are used if no per-step override is configured.
+
 Default policy:
 - include previous approved artifact summary
 - search same workflow only
@@ -198,10 +268,14 @@ Manual validation:
 
 ## 10. Definition of Done
 
-- Raw artifacts continue to save to Supabase Storage.
-- Working memory is generated and stored for each completed artifact.
-- Working memory embeddings are searchable through Supabase vector search.
-- Context Resolver builds prompt memory from selected records.
-- Prompt assembly no longer relies on pushing all prior artifacts into the model.
-- Admin Web exposes artifacts, working memory, embedding status, and prompt context usage.
+- [ ] `artifact_memories` table exists with `artifact_id UUID REFERENCES artifacts(id)` FK and vector search support.
+- [ ] `workflow_prompt_context_items` table exists with `workflow_run_step_id UUID` FK.
+- [ ] RLS SELECT policies on both tables (project-member scoped).
+- [ ] `generate-embedding` Edge Function returns normalized embeddings.
+- [ ] Working memory is generated after artifact save (non-fatal on failure).
+- [ ] Failed memory records are visible in Admin Web with retry capability.
+- [ ] Context Resolver selects memory by policy and token budget.
+- [ ] Prompt Assembler receives packed prompt memory (not all raw artifacts).
+- [ ] Each workflow step records the memory items used in `workflow_prompt_context_items`.
+- [ ] Admin Web can inspect artifacts, working memory, embedding status, and prompt context usage.
 
