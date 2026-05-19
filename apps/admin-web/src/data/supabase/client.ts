@@ -25,7 +25,7 @@ function createDemoSupabaseClient() {
         return {
           data: {
             subscription: {
-              unsubscribe() {},
+              unsubscribe() { },
             },
           },
         };
