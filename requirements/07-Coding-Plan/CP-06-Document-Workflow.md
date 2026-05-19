@@ -1,8 +1,8 @@
-# CP-03: Document Workflow — Business Logic → Tech Spec → Coding Plan
+# CP-06: Document Workflow — Business Logic → Tech Spec → Coding Plan
 
 **Maps from:** SD-05 (Workflow Engine), Google Doc §4.3–4.5, §11
 **Phase:** 3
-**Depends on:** CP-02
+**Depends on:** CP-05
 
 ---
 
@@ -220,3 +220,4 @@ Status transitions are enforced client-side in the UI and server-side via RLS po
 - [ ] Status badges: draft (gray), generated (blue), reviewed (yellow), approved (green)
 - [ ] Document linking: Tech Spec knows its parent Business Logic Doc, Coding Plan knows its parent Tech Spec
 - [ ] "Generate from..." buttons are visible but disabled (AI integration in Phase 6)
+

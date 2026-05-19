@@ -34,16 +34,17 @@ React + Vite + TanStack gives us a lighter, more explicit architecture where eve
 | Doc | Title | Maps From |
 |-----|-------|-----------|
 | [CP-01](./CP-01-Foundation-Setup.md) | Foundation Setup (Vite + TanStack + Auth) | SD-01, SD-02 |
-| [CP-02](./CP-02-Project-Management.md) | Project & Team CRUD | SD-04 |
-| [CP-03](./CP-03-Document-Workflow.md) | Business Logic -> Tech Spec -> Coding Plan | SD-05, SD-06 |
-| [CP-04](./CP-04-Workflow-Engine-UI.md) | Workflow Engine UI & Execution Dashboard | SD-05, SD-09 |
-| [CP-05](./CP-05-Master-Schedule-Tasks.md) | Master Schedule & Task Board | Google Doc Section 4.6-4.7 |
-| [CP-06](./CP-06-AI-Orchestration.md) | AI Prompt Templates & Execution Logs | SD-06, SD-07, SD-08 |
-| [CP-07](./CP-07-Integrations-Hardening.md) | MCP/Jira Integration & Security Hardening | SD-04 Section 4, SD-03 |
-| [CP-08](./CP-08-Go-Runner-Implementation.md) | Go-Runner CLI, Providers, Skills & Process Isolation | SD-03, SD-05 Section 3-5, SD-06, SD-07 |
-| [CP-09](./CP-09-Artifact-Memory-RAG.md) | Artifact Memory, RAG & Prompt Context | SS-09, SD-10 |
-| [CP-10](./CP-10-Admin-Web-Hot-Reload.md) | Admin-Web Docker Hot Reload | DX hardening for local development |
-| [CP-11](./CP-11-Supabase-Integration.md) | Supabase Integration | CP-01, CP-06, CP-09, DX + data boundary hardening |
+| [CP-02](./CP-02-Admin-Web-Hot-Reload.md) | Admin-Web Docker Hot Reload | DX hardening for local development |
+| [CP-03](./CP-03-Supabase-Integration.md) | Supabase Integration | CP-01, CP-09, CP-12, DX + data boundary hardening |
+| [CP-04](./CP-04-Project-Management.md) | Project & Team CRUD | SD-04 |
+| [CP-05](./CP-05-Project-Mcp-Context.md) | Project MCP Context | SS-01, SS-02, SD-05, SD-10 |
+| [CP-06](./CP-06-Document-Workflow.md) | Business Logic -> Tech Spec -> Coding Plan | SD-05, SD-06 |
+| [CP-07](./CP-07-Workflow-Engine-UI.md) | Workflow Engine UI & Execution Dashboard | SD-05, SD-09 |
+| [CP-08](./CP-08-Master-Schedule-Tasks.md) | Master Schedule & Task Board | Google Doc Section 4.6-4.7 |
+| [CP-09](./CP-09-AI-Orchestration.md) | AI Prompt Templates & Execution Logs | SD-06, SD-07, SD-08 |
+| [CP-10](./CP-10-Integrations-Hardening.md) | MCP/Jira Integration & Security Hardening | SD-04 Section 4, SD-03 |
+| [CP-11](./CP-11-Go-Runner-Implementation.md) | Go-Runner CLI, Providers, Skills & Process Isolation | SD-03, SD-05 Section 3-5, SD-06, SD-07 |
+| [CP-12](./CP-12-Artifact-Memory-RAG.md) | Artifact Memory, RAG & Prompt Context | SS-09, SD-10 |
 
 ---
 
@@ -51,16 +52,17 @@ React + Vite + TanStack gives us a lighter, more explicit architecture where eve
 
 ```text
 Phase 1 -> CP-01: Scaffold Vite project, auth, layout, routing
-Phase 2 -> CP-02: Projects + Members CRUD
-Phase 3 -> CP-03: Business Logic / Tech Spec / Coding Plan editors
-Phase 4 -> CP-04: Workflow builder, execution dashboard, approval gates
-Phase 5 -> CP-05: Master Schedule generator, task board
-Phase 6 -> CP-06: AI prompt templates, execution log viewer
-Phase 7 -> CP-07: Jira/MCP integration, RLS hardening, audit trails
-Phase Parallel -> CP-08: Go-Runner CLI (cross-cutting, built alongside Phases 4-6)
-Phase Parallel -> CP-09: Artifact memory + RAG context resolver (cross-cutting, built alongside Phases 4-6)
-Phase Parallel -> CP-10: Docker hot reload for admin-web (`just docker-up`) before heavy frontend iteration
-Phase Parallel -> CP-11: Supabase env contract, client boundaries, storage, and Edge Function integration
+Phase Parallel -> CP-02: Docker hot reload for admin-web (`just docker-up`) before heavy frontend iteration
+Phase Parallel -> CP-03: Supabase env contract, client boundaries, storage, and Edge Function integration
+Phase 2 -> CP-04: Projects + Members CRUD
+Phase Parallel -> CP-05: Project MCP context configuration and project-level context wiring
+Phase 3 -> CP-06: Business Logic / Tech Spec / Coding Plan editors
+Phase 4 -> CP-07: Workflow builder, execution dashboard, approval gates
+Phase 5 -> CP-08: Master Schedule generator, task board
+Phase 6 -> CP-09: AI prompt templates, execution log viewer
+Phase 7 -> CP-10: Jira/MCP integration, RLS hardening, audit trails
+Phase Parallel -> CP-11: Go-Runner CLI (cross-cutting, built alongside Phases 4-6)
+Phase Parallel -> CP-12: Artifact memory + RAG context resolver (cross-cutting, built alongside Phases 4-6)
 ```
 
 ## Migration Strategy
@@ -75,3 +77,4 @@ The current Next.js codebase in `apps/admin-web/` will be replaced in-place:
 6. Rewrite data layer: Server Actions -> TanStack Query hooks + Supabase client SDK.
 
 See [CP-01 Migration](./CP-01-Foundation-Setup.md) for the detailed refactor steps.
+
