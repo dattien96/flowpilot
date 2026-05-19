@@ -1,76 +1,160 @@
-# Implementation Plan - CP-05 Project & Team Management
+# Implementation Plan: MCP Management and Project Routing Alignment
 
-Date: 2026-05-18
+## Scope
 
-## 1. Objective
+Align admin-web routes and page responsibilities with the updated architecture:
 
-Extend the existing admin project area so it can manage teams, team members, and project settings in line with `requirements/07-Coding-Plan/CP-05-Project-Management.md`.
+- global MCP type and instance management
+- dedicated MCP Test Console route
+- dedicated RUNNER settings page
+- dedicated project creation route
+- project settings limited to link and unlink behavior
+- remote MCP type enablement persisted in the current integration storage rollout
 
-## 2. Execution Boundaries
+## Current State
 
-- This phase keeps the current admin app architecture intact.
-- Add project management capabilities on top of the existing project domain instead of replacing the broader app shell.
-- Introduce team and member support in the domain and persistence layers.
-- Rework the project detail screen into a management layout with tabbed subpages.
-- Surface project settings for artifact storage preference and MCP context status only; do not implement full MCP installation.
+Observed in current code:
 
-## 3. Current State To Correct
+- `/settings/mcp-servers` already owns much of the global MCP flow
+- `/projects/$projectId/settings` already behaves largely as link and unlink only
+- the current link and unlink UI still does not match the desired hide/show behavior
+- `/projects` still embeds project creation
+- `/settings/mcp-servers` still embeds MCP Test Console and runner-wide concerns
 
-- `ProjectGateway` only supports list, detail, and create.
-- `Project` does not yet include `directoryPath`, `ownerId`, `status`, or artifact storage preference.
-- There are no domain entities or gateways for teams or team members.
-- The Supabase gateway bundle does not map the new tables required by CP-05.
-- The project detail route still prioritizes feature and workflow run cards instead of project management tabs.
+## Work Items
 
-## 4. Phase Breakdown
+### 1. Split MCP routes
 
-### Phase A - Domain Expansion
+Create a dedicated route:
 
-1. Update the `Project` entity with the CP-05 fields.
-2. Add `Team`, `TeamMember`, and `Integration` entities.
-3. Define `MemberRole` and `LevelLabel` as narrow unions.
+- `/settings/mcp-servers/mcp-connect-test`
 
-### Phase B - Gateway Expansion
+Move from the current `mcp-servers.tsx` page:
 
-1. Expand `ProjectGateway` with update/delete operations and project-team listing if needed by the UI.
-2. Add a new `TeamGateway` contract covering team CRUD, member CRUD, and project linking.
-3. Keep the gateway shapes small and composable so the Supabase and demo implementations can be aligned cleanly.
+- test-console state
+- test-console mutations
+- test-console templates and prompt handling
+- recent-run and result panels
 
-### Phase C - Supabase Mapping
+Keep on `/settings/mcp-servers` only:
 
-1. Add table mappings for `teams`, `project_teams`, and `team_members`.
-2. Extend project mappings for the new project columns.
-3. Add repository methods for team CRUD, member CRUD, and project-team linking.
+- combined Runner Reachability + Allowlisted MCP inventory
+- MCP instances list
 
-### Phase D - Project Management UI
+### 2. Add RUNNER settings page
 
-1. Rework `/projects/[projectId]` into a tabbed management layout.
-2. Add member management at `/projects/[projectId]/members`.
-3. Add project settings at `/projects/[projectId]/settings`.
-4. Keep other tabs as route placeholders if the detailed content is not yet part of CP-05.
+Create a new route:
 
-### Phase E - Query And Form Support
+- `/settings/runner`
 
-1. Introduce project and member query keys for the new routes.
-2. Add local form state and validation only where the project management screens need it.
-3. Preserve existing project list behavior while adding the new management entry points.
+Move system-wide runner reachability content there when it is not required to explain a specific MCP backend row.
 
-### Phase F - Schema Alignment
+Keep on the MCP page only the runner summary that is necessary to understand whether MCP actions are blocked.
 
-1. Prepare the migration shape for the new Supabase tables and project column changes.
-2. Ensure naming and enum values match the CP-05 specification.
-3. Keep the CP-10 integration storage note as a dependency boundary, not an implementation dependency.
+### 3. Normalize MCP inventory behavior by category
 
-## 5. Verification Sequence
+Update the MCP inventory section to explicitly model:
 
-1. Confirm the design covers all CP-05 schema changes.
-2. Confirm the gateway interfaces support team CRUD and project linkage.
-3. Confirm the route tree covers project management tabs, members, and settings.
-4. Confirm the new domain shapes remain compatible with the current project flow.
+- `remote` types
+- `local` types
 
-## 6. Done Criteria
+Required behavior:
 
-- the CP-05 design artifacts are aligned with the project management requirement
-- the implementation scope is clear and bounded
-- the next coding phase can proceed without guessing at schema or UI structure
+- each type has one enable or disable surface
+- remote types can enable first, then create multiple instances
+- local types keep install-oriented UX such as `npx` command hints and `INSTALL`
 
+Persistence follow-up:
+
+- because the current rollout still uses integration persistence, add a new integration-table field for MCP type enablement state for remote types
+- this field gates whether instance creation is available for types like Jira
+- the schema/migration must make the enablement state explicit before a user can create multiple Jira MCP instances
+
+Copy and labels should clearly distinguish:
+
+- type inventory
+- instance list
+- project links
+
+### 4. Simplify MCP instances section
+
+Review the instance list on `/settings/mcp-servers` and remove wording that implies an instance is owned by a project.
+
+Expected display:
+
+- label
+- type
+- summary
+- status
+- verification or sync timestamp
+- error state
+- create, edit, verify, remove actions
+
+### 5. Split project creation route
+
+Refactor `/projects` so it becomes list-first and exposes one:
+
+- `ADD project`
+
+Create:
+
+- `/projects/create`
+
+Move existing create-project UI and team assignment flow into the new route.
+
+Update navigation so successful creation returns to the expected project page or project list.
+
+### 6. Keep project settings link-only and hide the invalid action
+
+Review `/projects/$projectId/settings` for stale copy and route targets only.
+
+Expected behavior:
+
+- list currently linked MCP by type
+- select an existing global MCP instance
+- when no MCP is linked for that type, show only `Link MCP`
+- when an MCP is already linked for that type, hide `Link MCP` and show only `Unlink`
+- `Create new MCP` navigates to `/settings/mcp-servers`
+
+Do not reintroduce:
+
+- project-owned create
+- project-owned edit
+- project-owned auth
+
+### 7. Update tests
+
+Adjust route and UI tests for:
+
+- MCP Test Console navigation and dedicated route
+- RUNNER settings route
+- `/projects` to `/projects/create` flow
+- project settings navigation to global MCP page
+- project settings hide/show state for `Link MCP` vs `Unlink`
+
+## Suggested Order
+
+1. Add new routes and move navigation targets.
+2. Extract MCP Test Console from the general MCP page.
+3. Introduce RUNNER page and move runner-only content.
+4. Clean up the remaining MCP page structure into the two required sections.
+5. Split `/projects` and `/projects/create`.
+6. Refresh tests and copy.
+7. Add the integration-table migration for remote MCP type enablement.
+
+## Risks
+
+- `mcp-servers.tsx` currently mixes inventory, instance CRUD, and test-console state, so route extraction may require shared helpers or component splitting.
+- Existing data models still use `Integration` naming and some project-oriented fields such as `projectId`, which may leak outdated ownership language into the UI.
+- Adding machine-level remote-type enablement into the current integration persistence is a staged compromise and must be documented carefully so it does not get mistaken for project ownership.
+- Navigation tests will fail until route constants and expected destinations are updated together.
+
+## Done Criteria
+
+- `/settings/mcp-servers` has only the two required sections
+- `/settings/mcp-servers/mcp-connect-test` owns MCP testing
+- `/settings/runner` exists for system-wide runner settings
+- `/projects` only lists projects and exposes `ADD project`
+- `/projects/create` owns project creation
+- project settings remain link and unlink only, with only the valid action visible per type
+- remote MCP type enablement is persisted with the required integration-table schema update
