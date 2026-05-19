@@ -55,7 +55,14 @@ This Docker workflow is the default frontend dev loop:
 
 ## Database
 
-Apply `supabase/migrations/20260515050000_admin_mvp_skeleton.sql`. It creates the admin MVP tables, RLS policies, indexes, and seed data for projects, features, context sources, and the default workflow definition.
+Apply all SQL files under the repository root `supabase/migrations/` directory in timestamp order.
+
+Today that includes:
+
+- `supabase/migrations/20260515050000_admin_mvp_skeleton.sql`
+- `supabase/migrations/20260519060000_cp02_project_team_management.sql`
+
+Together they create the admin MVP tables, team-management tables, RLS policies, indexes, and seed data used by the current app.
 
 ## Current MVP Boundaries
 
