@@ -20,30 +20,37 @@ function LoginPage() {
 
   const onSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (submitting) {
+      return;
+    }
+
     setSubmitting(true);
     setErrorMessage(null);
 
-    if (!hasSupabaseEnv()) {
+    try {
+      if (!hasSupabaseEnv()) {
+        await refreshSession();
+        void navigate({ to: "/dashboard" });
+        return;
+      }
+
+      const { error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+
+      if (error) {
+        setErrorMessage(error.message);
+        return;
+      }
+
       await refreshSession();
-      await navigate({ to: "/dashboard" });
+      void navigate({ to: "/dashboard" });
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Unable to sign in.");
+    } finally {
       setSubmitting(false);
-      return;
     }
-
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
-
-    if (error) {
-      setErrorMessage(error.message);
-      setSubmitting(false);
-      return;
-    }
-
-    await refreshSession();
-    await navigate({ to: "/dashboard" });
-    setSubmitting(false);
   };
 
   return (
