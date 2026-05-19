@@ -13,6 +13,7 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as AuthenticatedRouteImport } from './routes/_authenticated'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthenticatedDashboardRouteImport } from './routes/_authenticated/dashboard'
+import { Route as AuthenticatedTeamsRouteImport } from './routes/_authenticated/teams'
 import { Route as AuthenticatedAiRunsRouteImport } from './routes/_authenticated/ai-runs'
 import { Route as AuthenticatedProjectsIndexRouteImport } from './routes/_authenticated/projects/index'
 import { Route as AuthenticatedSettingsPromptTemplatesRouteImport } from './routes/_authenticated/settings/prompt-templates'
@@ -44,6 +45,11 @@ const IndexRoute = IndexRouteImport.update({
 const AuthenticatedDashboardRoute = AuthenticatedDashboardRouteImport.update({
   id: '/dashboard',
   path: '/dashboard',
+  getParentRoute: () => AuthenticatedRoute,
+} as any)
+const AuthenticatedTeamsRoute = AuthenticatedTeamsRouteImport.update({
+  id: '/teams',
+  path: '/teams',
   getParentRoute: () => AuthenticatedRoute,
 } as any)
 const AuthenticatedAiRunsRoute = AuthenticatedAiRunsRouteImport.update({
@@ -129,6 +135,7 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/ai-runs': typeof AuthenticatedAiRunsRoute
   '/dashboard': typeof AuthenticatedDashboardRoute
+  '/teams': typeof AuthenticatedTeamsRoute
   '/projects/$projectId': typeof AuthenticatedProjectsProjectIdRouteWithChildren
   '/settings/integrations': typeof AuthenticatedSettingsIntegrationsRoute
   '/settings/prompt-templates': typeof AuthenticatedSettingsPromptTemplatesRoute
@@ -147,6 +154,7 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/ai-runs': typeof AuthenticatedAiRunsRoute
   '/dashboard': typeof AuthenticatedDashboardRoute
+  '/teams': typeof AuthenticatedTeamsRoute
   '/projects/$projectId': typeof AuthenticatedProjectsProjectIdRouteWithChildren
   '/settings/integrations': typeof AuthenticatedSettingsIntegrationsRoute
   '/settings/prompt-templates': typeof AuthenticatedSettingsPromptTemplatesRoute
@@ -167,6 +175,7 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/_authenticated/ai-runs': typeof AuthenticatedAiRunsRoute
   '/_authenticated/dashboard': typeof AuthenticatedDashboardRoute
+  '/_authenticated/teams': typeof AuthenticatedTeamsRoute
   '/_authenticated/projects/$projectId': typeof AuthenticatedProjectsProjectIdRouteWithChildren
   '/_authenticated/settings/integrations': typeof AuthenticatedSettingsIntegrationsRoute
   '/_authenticated/settings/prompt-templates': typeof AuthenticatedSettingsPromptTemplatesRoute
@@ -187,6 +196,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/ai-runs'
     | '/dashboard'
+    | '/teams'
     | '/projects/$projectId'
     | '/settings/integrations'
     | '/settings/prompt-templates'
@@ -205,6 +215,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/ai-runs'
     | '/dashboard'
+    | '/teams'
     | '/projects/$projectId'
     | '/settings/integrations'
     | '/settings/prompt-templates'
@@ -224,6 +235,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/_authenticated/ai-runs'
     | '/_authenticated/dashboard'
+    | '/_authenticated/teams'
     | '/_authenticated/projects/$projectId'
     | '/_authenticated/settings/integrations'
     | '/_authenticated/settings/prompt-templates'
@@ -272,6 +284,13 @@ declare module '@tanstack/react-router' {
       path: '/dashboard'
       fullPath: '/dashboard'
       preLoaderRoute: typeof AuthenticatedDashboardRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/teams': {
+      id: '/_authenticated/teams'
+      path: '/teams'
+      fullPath: '/teams'
+      preLoaderRoute: typeof AuthenticatedTeamsRouteImport
       parentRoute: typeof AuthenticatedRoute
     }
     '/_authenticated/ai-runs': {
@@ -407,6 +426,7 @@ const AuthenticatedProjectsProjectIdRouteWithChildren =
 interface AuthenticatedRouteChildren {
   AuthenticatedAiRunsRoute: typeof AuthenticatedAiRunsRoute
   AuthenticatedDashboardRoute: typeof AuthenticatedDashboardRoute
+  AuthenticatedTeamsRoute: typeof AuthenticatedTeamsRoute
   AuthenticatedProjectsProjectIdRoute: typeof AuthenticatedProjectsProjectIdRouteWithChildren
   AuthenticatedSettingsIntegrationsRoute: typeof AuthenticatedSettingsIntegrationsRoute
   AuthenticatedSettingsPromptTemplatesRoute: typeof AuthenticatedSettingsPromptTemplatesRoute
@@ -416,6 +436,7 @@ interface AuthenticatedRouteChildren {
 const AuthenticatedRouteChildren: AuthenticatedRouteChildren = {
   AuthenticatedAiRunsRoute: AuthenticatedAiRunsRoute,
   AuthenticatedDashboardRoute: AuthenticatedDashboardRoute,
+  AuthenticatedTeamsRoute: AuthenticatedTeamsRoute,
   AuthenticatedProjectsProjectIdRoute:
     AuthenticatedProjectsProjectIdRouteWithChildren,
   AuthenticatedSettingsIntegrationsRoute:

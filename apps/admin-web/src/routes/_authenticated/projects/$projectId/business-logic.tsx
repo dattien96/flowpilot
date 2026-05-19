@@ -1,16 +1,21 @@
 import { createFileRoute } from "@tanstack/react-router";
 
-import { PlaceholderPage } from "@/components/common/placeholder-page";
+import { PageFrame } from "@/components/common/page-frame";
+import { ProjectSectionNav } from "@/components/project/project-section-nav";
 
 export const Route = createFileRoute("/_authenticated/projects/$projectId/business-logic")({
-  component: BusinessLogicPage,
+  component: ProjectBusinessLogicPage,
 });
 
-function BusinessLogicPage() {
+function ProjectBusinessLogicPage() {
+  const { projectId } = Route.useParams();
+
   return (
-    <PlaceholderPage
-      description="Business logic planning surface is routed and ready for later feature implementation."
-      title="Business Logic"
-    />
+    <PageFrame description="Business logic placeholder for project management." title="Business Logic">
+      <ProjectSectionNav projectId={projectId} />
+      <p className="mt-6 text-sm text-muted-foreground">
+        This tab is reserved for future business-rule detail.
+      </p>
+    </PageFrame>
   );
 }
