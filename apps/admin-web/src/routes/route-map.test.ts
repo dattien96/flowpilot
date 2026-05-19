@@ -19,6 +19,7 @@ describe("CP-01 route tree", () => {
     expect(routePaths).toContain("/projects/$projectId/workflows");
     expect(routePaths).toContain("/projects/$projectId/settings");
     expect(routePaths).toContain("/ai-runs");
+    expect(routePaths).toContain("/settings/mcp-servers");
     expect(routePaths).toContain("/settings/integrations");
     expect(routePaths).toContain("/settings/prompt-templates");
   });

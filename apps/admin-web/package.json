@@ -3,8 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
+    "router:generate": "npx @tanstack/router-cli generate",
+    "dev": "npm run router:generate && vite",
+    "build": "npm run router:generate && vite build",
     "preview": "vite preview",
     "lint": "eslint .",
     "test": "vitest run"
