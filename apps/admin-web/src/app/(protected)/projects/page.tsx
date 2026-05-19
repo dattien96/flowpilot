@@ -61,18 +61,24 @@ export default async function ProjectsPage() {
             className="rounded-[1.6rem] border border-border bg-background/70 p-6 transition-transform hover:-translate-y-0.5"
             href={`/projects/${project.id}`}
           >
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h2 className="text-2xl font-semibold">{project.name}</h2>
-                <p className="mt-2 text-sm text-muted-foreground">{project.description}</p>
-              </div>
-              <Badge>{project.platform}</Badge>
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h2 className="text-2xl font-semibold">{project.name}</h2>
+              <p className="mt-2 text-sm text-muted-foreground">{project.description}</p>
             </div>
-            <p className="mt-6 font-mono text-xs uppercase tracking-[0.24em] text-muted-foreground">
-              {project.repositoryUrl}
-            </p>
-          </Link>
-        ))}
+            <div className="flex flex-col items-end gap-2">
+              <Badge>{project.platform}</Badge>
+              <Badge>{project.status}</Badge>
+            </div>
+          </div>
+          <p className="mt-6 font-mono text-xs uppercase tracking-[0.24em] text-muted-foreground">
+            {project.repositoryUrl}
+          </p>
+          {project.directoryPath ? (
+            <p className="mt-2 text-xs text-muted-foreground">Directory: {project.directoryPath}</p>
+          ) : null}
+        </Link>
+      ))}
       </div>
     </div>
   );
