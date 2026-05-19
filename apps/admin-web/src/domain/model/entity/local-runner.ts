@@ -18,6 +18,69 @@ export interface LocalRunnerProvider {
   installHint: string | null;
 }
 
+export interface LocalRunnerMcpBackend {
+  key: string;
+  providerType: string;
+  label: string;
+  transport: "launcher" | "remote";
+  state: "installed" | "launcher_available" | "missing";
+  launcher: string;
+  installed: boolean;
+  binaryPath: string | null;
+  command: string;
+  installHint: string | null;
+  action: "install" | "verify";
+  actionLabel: string;
+  lastCheckedAt: string | null;
+  lastError: string | null;
+}
+
+export interface LocalRunnerMcpBackendActionRequest {
+  projectId: string;
+  integrationId?: string;
+  action: "install" | "verify";
+}
+
+export interface LocalRunnerMcpTestRequest {
+  backendKey: string;
+  providerType: string;
+  projectId: string;
+  integrationId: string;
+  templateKey: string;
+  allowWrite: boolean;
+  prompt: string;
+  timeoutMs: number;
+}
+
+export interface LocalRunnerMcpTestResult {
+  status: "success" | "failed";
+  runId: string;
+  backendKey: string;
+  providerType: string;
+  projectId: string;
+  integrationId: string;
+  command: string;
+  stdoutSummary: string;
+  stderrSummary: string;
+  outputMarkdown: string;
+  artifactPaths: string[];
+  startedAt: string;
+  completedAt: string;
+  errorMessage: string | null;
+}
+
+export interface LocalRunnerMcpTestRunSummary {
+  runId: string;
+  backendKey: string;
+  providerType: string;
+  projectId: string;
+  integrationId: string;
+  status: "success" | "failed";
+  startedAt: string;
+  completedAt: string;
+  artifactDir: string;
+}
+
 export interface LocalRunnerSkill {
   id: string;
   name: string;
@@ -100,4 +163,21 @@ export interface LocalRunnerPromptExecutionResult {
   completedAt: string;
   exitCode: number;
   errorMessage: string | null;
+}
+
+export interface LocalRunnerIntegrationConnectionRequest {
+  projectId: string;
+  integrationId: string;
+  providerType: string;
+  action: "test" | "retry";
+  email?: string;
+  apiToken?: string;
+}
+
+export interface LocalRunnerIntegrationConnectionResult {
+  requestStatus: "accepted" | "rejected";
+  integrationId: string;
+  integrationStatus: "pending" | "awaiting_oauth" | "connected" | "failed";
+  runId: string | null;
+  message: string | null;
 }

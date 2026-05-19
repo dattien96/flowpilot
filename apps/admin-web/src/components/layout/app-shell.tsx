@@ -1,28 +1,16 @@
-import { Bot, FolderKanban, LayoutDashboard, Settings2, Sparkles, Users } from "lucide-react";
 import { Link, useLocation } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 
+import { primaryNavItems, settingsNavItems } from "@/components/layout/app-nav";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/features/auth/auth-provider";
 import { cn } from "@/lib/utils/cn";
-
-const primaryNavItems = [
-  { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { to: "/projects", label: "Projects", icon: FolderKanban },
-  { to: "/teams", label: "Teams", icon: Users },
-  { to: "/ai-runs", label: "AI Runs", icon: Sparkles },
-];
-
-const settingsNavItems = [
-  { to: "/settings/integrations", label: "Integrations", icon: Settings2 },
-  { to: "/settings/prompt-templates", label: "Prompt Templates", icon: Bot },
-];
 
 function NavSection({
   items,
   title,
 }: {
-  items: Array<{ to: string; label: string; icon: typeof LayoutDashboard }>;
+  items: Array<{ to: string; label: string; icon: React.ComponentType<{ className?: string }> }>;
   title: string;
 }) {
   const location = useLocation();

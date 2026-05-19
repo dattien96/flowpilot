@@ -1,5 +1,6 @@
 import type { ContextSource } from "@/domain/model/entity/context-source";
 import type { Feature } from "@/domain/model/entity/feature";
+import type { Integration } from "@/domain/model/entity/integration";
 import type { Project } from "@/domain/model/entity/project";
 import type { Team, TeamMember } from "@/domain/model/entity/team";
 import type {
@@ -53,6 +54,73 @@ export const demoProjects: Project[] = [
 export const demoTeams: Team[] = [];
 export const demoTeamMembers: TeamMember[] = [];
 export const demoProjectTeamLinks: Array<{ projectId: string; teamId: string }> = [];
+export const demoProjectMcpLinks: Array<{
+  projectId: string;
+  integrationId: string;
+  type: Integration["type"];
+}> = [
+  {
+    projectId: "project_meal_suggestion",
+    integrationId: "integration_meal_jira",
+    type: "jira",
+  },
+  {
+    projectId: "project_meal_suggestion",
+    integrationId: "integration_meal_drive",
+    type: "google_drive",
+  },
+  {
+    projectId: "project_flowpilot_admin",
+    integrationId: "integration_admin_firebase",
+    type: "firebase",
+  },
+];
+export const demoIntegrations: Integration[] = [
+  {
+    id: "integration_meal_jira",
+    projectId: "project_meal_suggestion",
+    type: "jira",
+    label: "Meal Suggestion Jira",
+    configEncrypted: {
+      workspaceUrl: "https://jira.example.com/meal",
+      board: "MEAL",
+    },
+    status: "connected",
+    lastSyncedAt: now,
+    lastError: null,
+    createdAt: now,
+    updatedAt: now,
+  },
+  {
+    id: "integration_meal_drive",
+    projectId: "project_meal_suggestion",
+    type: "google_drive",
+    label: "Meal Drive Folder",
+    configEncrypted: {
+      folderId: "drive-folder-meal",
+    },
+    status: "awaiting_oauth",
+    lastSyncedAt: null,
+    lastError: null,
+    createdAt: now,
+    updatedAt: now,
+  },
+  {
+    id: "integration_admin_firebase",
+    projectId: "project_flowpilot_admin",
+    type: "firebase",
+    label: "Admin Firebase",
+    configEncrypted: {
+      projectId: "flowpilot-admin",
+      environment: "staging",
+    },
+    status: "failed",
+    lastSyncedAt: null,
+    lastError: "firebase-tools login is required on the runner host.",
+    createdAt: now,
+    updatedAt: now,
+  },
+];
 
 export const demoFeatures: Feature[] = [
   {

@@ -38,6 +38,8 @@ React + Vite + TanStack gives us a lighter, more explicit architecture where eve
 | [CP-03](./CP-03-Supabase-Integration.md) | Supabase Integration | CP-01, CP-09, CP-12, DX + data boundary hardening |
 | [CP-04](./CP-04-Project-Management.md) | Project & Team CRUD | SD-04 |
 | [CP-05](./CP-05-Project-Mcp-Context.md) | Project MCP Context | SS-01, SS-02, SD-05, SD-10 |
+| [CP-05-01](./CP-05-01-Jira-Mcp-Api-Token.md) | Jira MCP API Token Flow | Jira-specific follow-up to CP-05 |
+| [CP-05-02](./CP-05-02-Mcp-Test-Console.md) | MCP Test Console On `/mcp-servers` | MCP usability follow-up to CP-05 |
 | [CP-06](./CP-06-Document-Workflow.md) | Business Logic -> Tech Spec -> Coding Plan | SD-05, SD-06 |
 | [CP-07](./CP-07-Workflow-Engine-UI.md) | Workflow Engine UI & Execution Dashboard | SD-05, SD-09 |
 | [CP-08](./CP-08-Master-Schedule-Tasks.md) | Master Schedule & Task Board | SS-03, SS-04 §3.5.9, SD-04 |

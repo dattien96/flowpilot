@@ -1,0 +1,2 @@
+ALTER TABLE integrations
+ADD COLUMN IF NOT EXISTS mcp_type_enabled BOOLEAN NOT NULL DEFAULT false;

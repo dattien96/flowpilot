@@ -4,6 +4,13 @@ import type {
   LocalRunnerBackupResult,
   LocalRunnerFlow,
   LocalRunnerHealth,
+  LocalRunnerIntegrationConnectionRequest,
+  LocalRunnerIntegrationConnectionResult,
+  LocalRunnerMcpBackend,
+  LocalRunnerMcpBackendActionRequest,
+  LocalRunnerMcpTestRequest,
+  LocalRunnerMcpTestResult,
+  LocalRunnerMcpTestRunSummary,
   LocalRunnerProvider,
   LocalRunnerPromptExecutionRequest,
   LocalRunnerPromptExecutionResult,
@@ -150,6 +157,91 @@ export class HttpLocalRunnerGateway implements LocalRunnerGateway {
     return (await response.json()) as LocalRunnerStorageDriver;
   }
 
+  async listMcpBackends() {
+    try {
+      return await readJson<LocalRunnerMcpBackend[]>(this.baseUrl, "/mcp-backends");
+    } catch {
+      return [];
+    }
+  }
+
+  async installMcpBackend(backendKey: string) {
+    const response = await fetch(
+      new URL(`/mcp-backends/${encodeURIComponent(backendKey)}/install`, this.baseUrl),
+      {
+        method: "POST",
+        cache: "no-store",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({}),
+      },
+    );
+
+    if (!response.ok) {
+      throw new Error(`MCP backend install failed: ${response.status} ${response.statusText}`);
+    }
+
+    return (await response.json()) as LocalRunnerMcpBackend;
+  }
+
+  async triggerMcpBackendAction(
+    backendKey: string,
+    request: LocalRunnerMcpBackendActionRequest,
+  ) {
+    const response = await fetch(
+      new URL(`/mcp-backends/${encodeURIComponent(backendKey)}/action`, this.baseUrl),
+      {
+        method: "POST",
+        cache: "no-store",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(request),
+      },
+    );
+
+    if (!response.ok) {
+      throw new Error(`MCP backend action failed: ${response.status} ${response.statusText}`);
+    }
+
+    return (await response.json()) as LocalRunnerMcpBackend;
+  }
+
+  async listMcpTestRuns(backendKey: string, projectId?: string, integrationId?: string, limit = 5) {
+    try {
+      const url = new URL("/mcp-tests", this.baseUrl);
+      url.searchParams.set("backendKey", backendKey);
+      if (projectId) {
+        url.searchParams.set("projectId", projectId);
+      }
+      if (integrationId) {
+        url.searchParams.set("integrationId", integrationId);
+      }
+      url.searchParams.set("limit", String(limit));
+      return await readJson<LocalRunnerMcpTestRunSummary[]>(this.baseUrl, url.pathname + url.search);
+    } catch {
+      return [];
+    }
+  }
+
+  async runMcpTest(request: LocalRunnerMcpTestRequest) {
+    const response = await fetch(new URL("/mcp-tests", this.baseUrl), {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(request),
+    });
+
+    if (!response.ok) {
+      throw new Error(`MCP test failed: ${response.status} ${response.statusText}`);
+    }
+
+    return (await response.json()) as LocalRunnerMcpTestResult;
+  }
+
   async syncArtifact(artifactId: string) {
     const response = await fetch(new URL(`/artifacts/${artifactId}/sync`, this.baseUrl), {
       method: "POST",
@@ -181,6 +273,53 @@ export class HttpLocalRunnerGateway implements LocalRunnerGateway {
     }
 
     return (await response.json()) as LocalRunnerBackupResult;
+  }
+
+  async triggerIntegrationConnection(request: LocalRunnerIntegrationConnectionRequest) {
+    const response = await fetch(
+      new URL(`/integrations/${encodeURIComponent(request.integrationId)}/connection`, this.baseUrl),
+      {
+        method: "POST",
+        cache: "no-store",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          projectId: request.projectId,
+          providerType: request.providerType,
+          action: request.action,
+          ...(request.workspaceUrl ? { workspaceUrl: request.workspaceUrl } : {}),
+          ...(request.projectKey ? { projectKey: request.projectKey } : {}),
+          ...(request.boardId ? { boardId: request.boardId } : {}),
+          ...(request.email ? { email: request.email } : {}),
+          ...(request.apiToken ? { apiToken: request.apiToken } : {}),
+        }),
+      },
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `Integration connection trigger failed: ${response.status} ${response.statusText}`,
+      );
+    }
+
+    return (await response.json()) as LocalRunnerIntegrationConnectionResult;
+  }
+
+  async deleteIntegrationConnection(integrationId: string) {
+    const response = await fetch(
+      new URL(`/integrations/${encodeURIComponent(integrationId)}/connection`, this.baseUrl),
+      {
+        method: "DELETE",
+        cache: "no-store",
+      },
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `Integration connection delete failed: ${response.status} ${response.statusText}`,
+      );
+    }
   }
 
   async executePrompt(request: LocalRunnerPromptExecutionRequest) {

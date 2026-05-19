@@ -1,130 +1,191 @@
-# TDD Signatures - CP-05 Project & Team Management
+# CP-05 TDD Signatures
 
-Date: 2026-05-18
+## 1. Route Behavior
 
-Rules:
+### Target File
 
-- signatures only
-- no implementation code
-- focus on project-management risk
+- `apps/admin-web/src/routes/_authenticated/projects/$projectId/settings.test.tsx`
 
-## 1. Domain Models
+### Signatures
 
-### File
+```ts
+describe("Project settings MCP section", () => {
+  it("renders project integrations with label, status, last synced, and last error");
+  it("opens the add integration drawer and creates a new integration");
+  it("opens the edit flow for an existing integration and saves the patch");
+  it("deletes an integration from the project settings surface");
+  it("retries a failed integration through the local runner gateway");
+  it("shows the awaiting OAuth state with a waiting label");
+});
+```
 
-`apps/admin-web/src/domain/model/entity/project.test.ts`
+- `renders project integrations with label, status, last synced, and last error`
+  - Input:
+    - loader returns one `connected`, one `awaiting_oauth`, and one `failed` integration
+  - Expected:
+    - each row renders provider type and label
+    - `lastSyncedAt` is visible for connected rows
+    - `lastError` is visible for failed rows
 
-#### `describe("project entity extension")`
+- `opens the add integration drawer and creates a new integration`
+  - Input:
+    - user clicks `Add MCP`
+    - selects a provider
+    - enters label/config summary
+  - Expected:
+    - route calls `integrationGateway.createIntegration`
+    - route then calls `localRunnerGateway.triggerIntegrationConnection` with `action: "test"`
+    - route invalidation is requested after success
 
-- `it("includes directoryPath, ownerId, status, and artifactStoragePreference fields")`
-- `it("preserves the existing project identity and timestamps")`
+- `opens the edit flow for an existing integration and saves the patch`
+  - Input:
+    - existing integration row selected for edit
+    - label/config changed
+  - Expected:
+    - route calls `integrationGateway.updateIntegration`
+    - route then calls `localRunnerGateway.triggerIntegrationConnection` with `action: "test"`
 
-### File
+- `deletes an integration from the project settings surface`
+  - Input:
+    - user confirms delete for a selected integration
+  - Expected:
+    - route calls `integrationGateway.deleteIntegration`
+    - route invalidation is requested
 
-`apps/admin-web/src/domain/model/entity/team.test.ts`
+- `retries a failed integration through the local runner gateway`
+  - Input:
+    - row status is `failed`
+    - user clicks retry/reconnect
+  - Expected:
+    - route calls `localRunnerGateway.triggerIntegrationConnection`
+    - request contains the project id, integration id, and `action: "retry"`
 
-#### `describe("team domain entities")`
+- `shows the awaiting OAuth state with a waiting label`
+  - Input:
+    - integration row status is `awaiting_oauth`
+  - Expected:
+    - route renders a waiting indicator
+    - row does not show the row as connected or failed
 
-- `it("exports Team with timestamps")`
-- `it("exports TeamMember with role and level label unions")`
-- `it("allows nullable email and jiraAccountId fields")`
+## 2. Demo Repository Logic
 
-### File
+### Target File
 
-`apps/admin-web/src/domain/model/entity/integration.test.ts`
+- `apps/admin-web/src/data/repository/demo/demo-gateway-bundle.test.ts`
 
-#### `describe("integration entity")`
+### Signatures
 
-- `it("models project-scoped integration records with status and sync timestamps")`
+```ts
+describe("DemoGatewayBundle integrations", () => {
+  it("lists only integrations belonging to the requested project");
+  it("creates a pending integration with label and config");
+  it("updates integration label, status, and error fields");
+  it("deletes an integration by id");
+});
+```
 
-## 2. Gateway Contracts
+- `lists only integrations belonging to the requested project`
+  - Input:
+    - seeded demo integrations across multiple projects
+  - Expected:
+    - returned list contains only rows for the requested project id
 
-### File
+- `creates a pending integration with label and config`
+  - Input:
+    - create payload with `projectId`, `type`, `label`, `configEncrypted`
+  - Expected:
+    - created entity is added to the store
+    - `status` defaults to `pending`
+    - `lastError` is `null`
 
-`apps/admin-web/src/domain/gateway/project-gateway.test.ts`
+- `updates integration label, status, and error fields`
+  - Input:
+    - patch changes `label`, `status`, and `lastError`
+  - Expected:
+    - stored entity reflects the patch
+    - `updatedAt` changes
 
-#### `describe("ProjectGateway")`
+- `deletes an integration by id`
+  - Input:
+    - existing integration id
+  - Expected:
+    - entity is removed from the demo store
 
-- `it("adds updateProject and deleteProject support for project management screens")`
-- `it("can list teams linked to a project when the detail page needs them")`
+## 3. Supabase Repository Logic
 
-### File
+### Target File
 
-`apps/admin-web/src/domain/gateway/team-gateway.test.ts`
+- `apps/admin-web/src/data/repository/supabase/supabase-gateway-bundle.test.ts`
 
-#### `describe("TeamGateway")`
+### Signatures
 
-- `it("lists teams and fetches a team by id")`
-- `it("creates, updates, and deletes teams")`
-- `it("lists, adds, updates, and removes team members")`
-- `it("links and unlinks a team to a project")`
-- `it("lists teams by project")`
+```ts
+describe("SupabaseGatewayBundle integrations", () => {
+  it("maps integration rows including label, awaiting_oauth, and last_error");
+  it("inserts the expected integration payload for create");
+  it("updates mutable fields and stamps updated_at");
+  it("deletes the integration row by id");
+});
+```
 
-## 3. Repository And Mapping
+- `maps integration rows including label, awaiting_oauth, and last_error`
+  - Input:
+    - Supabase row with `label`, `status: "awaiting_oauth"`, `last_error`, `last_synced_at`
+  - Expected:
+    - mapped domain entity exposes `label`, `status`, `lastError`, `lastSyncedAt`
 
-### File
+- `inserts the expected integration payload for create`
+  - Input:
+    - create payload with project id, type, label, config envelope, and optional status
+  - Expected:
+    - repository sends `project_id`, `type`, `label`, `config_encrypted`, `status`
+    - inserted row maps back to a domain `Integration`
 
-`apps/admin-web/src/data/repository/supabase/supabase-gateway-bundle.test.ts`
+- `updates mutable fields and stamps updated_at`
+  - Input:
+    - patch updates `label`, `configEncrypted`, `status`, `lastError`
+  - Expected:
+    - repository issues an update with `updated_at`
+    - returned row maps back to the patched entity
 
-#### `describe("SupabaseGatewayBundle project management mapping")`
+- `deletes the integration row by id`
+  - Input:
+    - integration id
+  - Expected:
+    - repository targets the `integrations` table row with that id
 
-- `it("maps projects with the new CP-05 columns")`
-- `it("maps teams, team members, and project-team join rows")`
-- `it("persists and loads team records without losing role or level labels")`
-- `it("links teams to projects using the join table")`
+## 4. Local Runner HTTP Contract
 
-## 4. Route Surface
+### Target File
 
-### File
+- `apps/admin-web/src/data/repository/local-runner/http-local-runner-gateway.test.ts`
 
-`apps/admin-web/src/routes/projects/$projectId.test.tsx`
+### Signatures
 
-#### `describe("project detail management route")`
+```ts
+describe("HttpLocalRunnerGateway integration connection", () => {
+  it("posts a test request to the integration connection endpoint");
+  it("posts a retry request to the integration connection endpoint");
+  it("throws a descriptive error when the runner rejects the request");
+});
+```
 
-- `it("renders the tabbed project management shell")`
-- `it("keeps the header stable while tabs change")`
+- `posts a test request to the integration connection endpoint`
+  - Input:
+    - request with `projectId`, `integrationId`, `action: "test"`
+  - Expected:
+    - gateway POSTs to `/integrations/{integrationId}/connection`
+    - JSON body contains `projectId` and `action`
 
-### File
+- `posts a retry request to the integration connection endpoint`
+  - Input:
+    - request with `projectId`, `integrationId`, `action: "retry"`
+  - Expected:
+    - gateway POSTs to the same endpoint
+    - response is parsed into the local-runner connection result type
 
-`apps/admin-web/src/routes/projects/$projectId/members.test.tsx`
-
-#### `describe("project members route")`
-
-- `it("renders the members table and add-member entry point")`
-- `it("shows workload summary state from the project team data")`
-
-### File
-
-`apps/admin-web/src/routes/projects/$projectId/settings.test.tsx`
-
-#### `describe("project settings route")`
-
-- `it("renders artifact storage preference controls")`
-- `it("renders MCP context status placeholders without installation flows")`
-
-## 5. Build Safety
-
-### File
-
-`apps/admin-web/src/app/(protected)/projects/[projectId]/page.test.tsx`
-
-#### `describe("project detail page")`
-
-- `it("no longer assumes the old feature-and-workflow-only layout")`
-
-### File
-
-`apps/admin-web/src/features/projects/queries.test.ts`
-
-#### `describe("project queries")`
-
-- `it("exposes keys for project detail and project team data")`
-
-### File
-
-`apps/admin-web/src/features/members/queries.test.ts`
-
-#### `describe("member queries")`
-
-- `it("exposes keys for members-by-team data")`
-
+- `throws a descriptive error when the runner rejects the request`
+  - Input:
+    - non-OK HTTP response from the runner
+  - Expected:
+    - thrown error includes endpoint purpose and response status

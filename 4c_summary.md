@@ -1,39 +1,103 @@
-# 4C Summary - CP-05 Project & Team Management
-
-Date: 2026-05-18
+# CP-05 Project MCP Context - 4C Summary
 
 ## Context
 
-- The requested execution target is `requirements/07-Coding-Plan/CP-05-Project-Management.md`.
-- The active app is `apps/admin-web`.
-- The current project surface already includes project listing and project detail pages, but the detail experience still centers on features and workflow runs rather than teams, members, and project settings.
-- The phase requires extending the existing project domain with team management, project-team linking, and project settings while keeping the current admin shell consistent.
+- Active implementation surface: `apps/admin-web/src/routes/_authenticated/projects/$projectId/settings.tsx`
+- Current page already owns:
+  - artifact storage preference
+  - MCP placeholder content
+  - project-team link management
+- Current data access pattern in admin-web:
+  - route `loader` reads via `createGatewayBundle()`
+  - route-local `useMutation()` performs writes
+  - `router.invalidate()` refreshes the page after mutation
+- Existing domain/repository state:
+  - `apps/admin-web/src/domain/model/entity/integration.ts` exists but is incomplete for CP-05
+  - there is no dedicated integration gateway yet
+  - `apps/admin-web/src/data/repository/browser-factory.ts` already composes project, team, workflow, and local-runner gateways
+- Migration baseline:
+  - `20260519070000_projects_uuid_baseline.sql` is present and must be applied before CP-05
+  - `integrations.project_id` should reference `projects(id)` as `UUID`
+- Local runner state:
+  - current HTTP API supports `/health`, `/providers`, `/skills`, `/flows`, `/storage-driver`, `/backup`, `/artifacts`, `/execute`
+  - there is no MCP integration trigger endpoint yet
 
-## Current Codebase Snapshot
+## Command
 
-- `apps/admin-web/src/domain/gateway/project-gateway.ts` currently exposes only project list/detail/create operations.
-- `apps/admin-web/src/data/repository/supabase/supabase-gateway-bundle.ts` maps projects, features, context sources, and workflow artifacts, but has no team or integration persistence.
-- `apps/admin-web/src/app/(protected)/projects/[projectId]/page.tsx` still renders feature and workflow cards.
-- The project area is already central to the app, so changes here will propagate through domain use cases, gateway bundles, and the protected route tree.
+- Design CP-05 on top of the existing project settings route, not a new settings surface.
+- Scope must cover:
+  - `integrations` table migration owned by CP-05
+  - domain model updates for `label`, `status`, `lastError`
+  - gateway contract for project integration CRUD
+  - demo and Supabase repository support
+  - project settings UI for list/add/edit/delete/retry connection
+  - local-runner trigger contract for connection test/retry
+  - route-behavior and gateway-logic tests
 
 ## Constraints
 
-- Preserve existing project behavior while expanding the domain for teams and settings.
-- Keep the new schema aligned with Supabase/Postgres conventions used by the repository.
-- Avoid duplicating CP-10 integration storage rules; only surface the project settings hook points required by CP-05.
-- Prefer incremental route expansion over a full visual redesign.
+- Do not create a duplicate integration manager under `/_authenticated/settings/integrations`.
+- `team_members` remains planning-only and not auth-bound; CP-05 must not try to re-scope it.
+- CP-10 owns later hardening; CP-05 should only add MVP-safe authenticated RLS for `integrations`.
+- `ProjectGateway` is high-risk to widen:
+  - GitNexus impact on `ProjectGateway`: `CRITICAL`
+  - direct blast radius includes both gateway bundles and multiple project/context/dashboard usecases
+- `ProjectSettingsContent` and current `Integration` entity are low-risk extension points.
+- UI component inventory is small (`Button`, `Badge`); modal/drawer UX will need a lightweight route-local implementation.
+- Current admin-web project flows still use direct gateway calls rather than dedicated TanStack Query feature hooks; CP-05 should follow that pattern.
 
-## Concerns
+## Criteria
 
-- The project gateway is a shared abstraction used by multiple use cases and repositories.
-- The existing detail page is feature-centric, so introducing a team/settings layout will require careful route and component reshaping.
-- Database schema changes need to be reflected consistently across domain entities, Supabase mappings, and any table-backed queries.
+- Reuse `apps/admin-web/src/routes/_authenticated/projects/$projectId/settings.tsx` as the only CP-05 UI surface.
+- Create a CP-05 migration after the UUID baseline migration.
+- Persist and display:
+  - provider `type`
+  - user `label`
+  - `status` including `awaiting_oauth`
+  - `last_synced_at`
+  - `last_error`
+- Keep persistence and orchestration separated:
+  - integration CRUD in a repository gateway
+  - connection test/retry in the local-runner gateway
+- Provide concrete test targets for:
+  - settings route behavior
+  - demo repository logic
+  - Supabase repository mapping
+  - local-runner HTTP contract
 
-## Course Of Action
+## Options
 
-- Extend the domain model first with teams, team members, and updated project fields.
-- Add project-team linkage and team CRUD on the gateway layer.
-- Update the Supabase bundle to map the new tables and project columns.
-- Rework the project detail route into a tabbed project-management shell with placeholder tabs where later phases will deepen behavior.
-- Add the project members and settings surfaces required by CP-05 while leaving MCP installation details for CP-10.
+### Option A: Extend `ProjectGateway`
 
+- Pros:
+  - fewer new files
+  - route can stay on one gateway name
+- Cons:
+  - `ProjectGateway` is already `CRITICAL` blast-radius
+  - mixes MCP integration lifecycle into generic project CRUD
+  - forces both demo and Supabase bundles to grow a shared high-risk interface
+
+### Option B: Add `IntegrationGateway` and keep test/retry on `LocalRunnerGateway`
+
+- Pros:
+  - isolates CP-05 persistence from shared project CRUD
+  - fits existing bundle composition pattern (`projectGateway`, `teamGateway`, `localRunnerGateway`, etc.)
+  - keeps orchestration responsibility with the local runner instead of the database gateway
+- Cons:
+  - introduces one new gateway file and one new payload contract file
+
+### Option C: Build the full manager in `/_authenticated/settings/integrations`
+
+- Pros:
+  - route already exists
+- Cons:
+  - violates the "no duplicate settings surface" constraint
+  - breaks the CP-04 requirement that project settings is the active surface
+
+## Recommendation
+
+- Choose **Option B**.
+- Keep CP-05 storage and UI work anchored to the project settings route.
+- Add a new `IntegrationGateway` for CRUD.
+- Extend `LocalRunnerGateway` with a connection trigger contract for `test` and `retry`.
+- Leave `ProjectGateway` focused on project CRUD and project metadata.
