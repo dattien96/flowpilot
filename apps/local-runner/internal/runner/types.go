@@ -18,6 +18,24 @@ type Provider struct {
 	InstallHint string `json:"installHint"`
 }
 
+type McpBackend struct {
+	Key           string `json:"key"`
+	ProviderType  string `json:"providerType"`
+	Label         string `json:"label"`
+	Transport     string `json:"transport"`
+	Installed     bool   `json:"installed"`
+	State         string `json:"state"`
+	Launcher      string `json:"launcher"`
+	BinaryPath    string `json:"binaryPath"`
+	Command       string `json:"command"`
+	InstallHint   string `json:"installHint"`
+	Action        string `json:"action"`
+	ActionLabel   string `json:"actionLabel"`
+	LastCheckedAt string `json:"lastCheckedAt"`
+	LastError     string `json:"lastError"`
+	SecretKey     string `json:"secretKey,omitempty"`
+}
+
 type Skill struct {
 	ID          string   `json:"id"`
 	Name        string   `json:"name"`
@@ -84,6 +102,71 @@ type BackupResult struct {
 	BackupPath  string `json:"backupPath"`
 	ArchiveName string `json:"archiveName"`
 	CreatedAt   string `json:"createdAt"`
+}
+
+type IntegrationConnectionRequest struct {
+	ProjectID    string `json:"projectId"`
+	ProviderType string `json:"providerType"`
+	Action       string `json:"action"`
+	WorkspaceURL string `json:"workspaceUrl,omitempty"`
+	ProjectKey   string `json:"projectKey,omitempty"`
+	BoardID      string `json:"boardId,omitempty"`
+	Email        string `json:"email,omitempty"`
+	ApiToken     string `json:"apiToken,omitempty"`
+}
+
+type McpBackendActionRequest struct {
+	ProjectID     string `json:"projectId"`
+	IntegrationID string `json:"integrationId"`
+	Action        string `json:"action"`
+}
+
+type McpTestRequest struct {
+	BackendKey    string `json:"backendKey"`
+	ProviderType  string `json:"providerType"`
+	ProjectID     string `json:"projectId"`
+	IntegrationID string `json:"integrationId"`
+	TemplateKey   string `json:"templateKey"`
+	AllowWrite    bool   `json:"allowWrite"`
+	Prompt        string `json:"prompt"`
+	TimeoutMs     int    `json:"timeoutMs"`
+}
+
+type McpTestResult struct {
+	Status         string   `json:"status"`
+	RunID          string   `json:"runId"`
+	BackendKey     string   `json:"backendKey"`
+	ProviderType   string   `json:"providerType"`
+	ProjectID      string   `json:"projectId"`
+	IntegrationID  string   `json:"integrationId"`
+	Command        string   `json:"command"`
+	StdoutSummary  string   `json:"stdoutSummary"`
+	StderrSummary  string   `json:"stderrSummary"`
+	OutputMarkdown string   `json:"outputMarkdown"`
+	ArtifactPaths  []string `json:"artifactPaths"`
+	StartedAt      string   `json:"startedAt"`
+	CompletedAt    string   `json:"completedAt"`
+	ErrorMessage   string   `json:"errorMessage"`
+}
+
+type McpTestRunSummary struct {
+	RunID         string `json:"runId"`
+	BackendKey    string `json:"backendKey"`
+	ProviderType  string `json:"providerType"`
+	ProjectID     string `json:"projectId"`
+	IntegrationID string `json:"integrationId"`
+	Status        string `json:"status"`
+	StartedAt     string `json:"startedAt"`
+	CompletedAt   string `json:"completedAt"`
+	ArtifactDir   string `json:"artifactDir"`
+}
+
+type IntegrationConnectionResult struct {
+	RequestStatus     string  `json:"requestStatus"`
+	IntegrationID     string  `json:"integrationId"`
+	IntegrationStatus string  `json:"integrationStatus"`
+	RunID             *string `json:"runId"`
+	Message           *string `json:"message"`
 }
 
 type PromptExecutionRequest struct {
