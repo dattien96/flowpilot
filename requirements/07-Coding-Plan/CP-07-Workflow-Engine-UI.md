@@ -229,6 +229,26 @@ Go-Runner receives PENDING step
         → Send to AI provider
 ```
 
+### 2.1.4 MCP Data Hydration Before Prompt Injection
+The workflow engine must fetch MCP-backed data before the final prompt is sent to the AI provider.
+
+This step is separate from prompt assembly:
+
+1. resolve which MCPs are required for the current step
+2. read the project integration rows for those MCPs
+3. ask the local runner for fresh provider data
+4. normalize the returned MCP content into a step-specific runtime payload
+5. inject that payload into `{{mcp_context}}`
+6. continue with the cached or freshly assembled prompt
+
+Examples:
+
+- `feature_intake` may fetch Jira issue data and related comments
+- `project_analysis` may fetch Google Drive project docs
+- `telegram_notification` may not need inbound data, only a send action
+
+The fetch step must use current data, not stale cached copies, so prompt execution reflects the latest external context.
+
 ### 2.1.4 Runtime Placeholder Injection
 The cached `.md` contains structural template sections. At execution time, the Go-Runner fills:
 ```markdown
