@@ -26,15 +26,16 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-async function readSession(): Promise<AdminSession | null> {
-  if (!hasSupabaseEnv()) {
-    return getDemoSession();
-  }
-
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
-
+function mapSupabaseSession(
+  session:
+    | {
+        user?: {
+          email?: string | null;
+          id: string;
+        } | null;
+      }
+    | null,
+): AdminSession | null {
   if (!session?.user) {
     return null;
   }
@@ -46,6 +47,23 @@ async function readSession(): Promise<AdminSession | null> {
       id: session.user.id,
     },
   };
+}
+
+async function readSession(): Promise<AdminSession | null> {
+  try {
+    if (!hasSupabaseEnv()) {
+      return getDemoSession();
+    }
+
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+
+    return mapSupabaseSession(session);
+  } catch (error) {
+    console.error("Failed to read the current admin session.", error);
+    return null;
+  }
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -76,12 +94,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(async () => {
-      const nextSession = await readSession();
+    } = supabase.auth.onAuthStateChange((_event, session) => {
       if (!active) {
         return;
       }
-      setAuthSession(nextSession);
+      setAuthSession(mapSupabaseSession(session));
     });
 
     return () => {
