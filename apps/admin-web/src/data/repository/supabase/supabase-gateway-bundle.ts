@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { MockWorkflowExecutor } from "@/data/workflow/mock-workflow-executor";
 import type { ContextSourceGateway } from "@/domain/gateway/context-source-gateway";
 import type { FeatureGateway } from "@/domain/gateway/feature-gateway";
+import type { IntegrationGateway } from "@/domain/gateway/integration-gateway";
 import type { ProjectGateway } from "@/domain/gateway/project-gateway";
 import type { TeamGateway } from "@/domain/gateway/team-gateway";
 import type {
@@ -11,6 +12,7 @@ import type {
 } from "@/domain/gateway/workflow-gateway";
 import type { ContextSource } from "@/domain/model/entity/context-source";
 import type { Feature } from "@/domain/model/entity/feature";
+import type { Integration } from "@/domain/model/entity/integration";
 import type { Project } from "@/domain/model/entity/project";
 import type { Team, TeamMember } from "@/domain/model/entity/team";
 import type {
@@ -28,6 +30,10 @@ import type {
   UpdateContextSourcePayload,
 } from "@/domain/model/payload/context-source-payload";
 import type { CreateFeaturePayload } from "@/domain/model/payload/feature-payload";
+import type {
+  CreateIntegrationPayload,
+  UpdateIntegrationPayload,
+} from "@/domain/model/payload/integration-payload";
 import type { CreateProjectPayload, UpdateProjectPayload } from "@/domain/model/payload/project-payload";
 import type { StartWorkflowRunPayload } from "@/domain/model/payload/workflow-payload";
 import type { ListOutputsFilters } from "@/domain/model/payload/workflow-payload";
@@ -93,6 +99,25 @@ function mapTeamMember(row: SupabaseRow): TeamMember {
     levelLabel: row.level_label as TeamMember["levelLabel"],
     skillTags: Array.isArray(row.skill_tags) ? row.skill_tags.map(String) : [],
     weeklyCapacityHours: Number(row.weekly_capacity_hours ?? 40),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+function mapIntegration(row: SupabaseRow): Integration {
+  return {
+    id: String(row.id),
+    projectId: String(row.project_id),
+    type: row.type as Integration["type"],
+    label: String(row.label ?? ""),
+    mcpTypeEnabled: Boolean(row.mcp_type_enabled ?? false),
+    configEncrypted:
+      row.config_encrypted && typeof row.config_encrypted === "object"
+        ? (row.config_encrypted as Record<string, unknown>)
+        : {},
+    status: row.status as Integration["status"],
+    lastSyncedAt: row.last_synced_at ? String(row.last_synced_at) : null,
+    lastError: row.last_error ? String(row.last_error) : null,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };
@@ -300,7 +325,13 @@ function approvalPatch(patch: Partial<Approval>) {
 }
 
 class SupabaseGatewayBundle
-  implements ProjectGateway, FeatureGateway, ContextSourceGateway, WorkflowGateway, TeamGateway
+  implements
+    ProjectGateway,
+    FeatureGateway,
+    ContextSourceGateway,
+    WorkflowGateway,
+    TeamGateway,
+    IntegrationGateway
 {
   constructor(private readonly supabase: SupabaseClient) {}
 
@@ -366,6 +397,44 @@ class SupabaseGatewayBundle
       .map(mapTeam);
   }
 
+  async listIntegrationsByProject(projectId: string) {
+    const { data, error } = await this.supabase
+      .from("integrations")
+      .select("*")
+      .eq("project_id", projectId)
+      .order("created_at", { ascending: false });
+    assertNoError(error, "Unable to list project integrations.");
+    return (data ?? []).map(mapIntegration);
+  }
+
+  async listAllIntegrations() {
+    const { data, error } = await this.supabase
+      .from("integrations")
+      .select("*")
+      .order("updated_at", { ascending: false });
+    assertNoError(error, "Unable to list MCP instances.");
+    return (data ?? []).map(mapIntegration);
+  }
+
+  async listLinkedIntegrationsByProject(projectId: string) {
+    const { data, error } = await this.supabase
+      .from("project_mcp_links")
+      .select("integration_id, integrations(*)")
+      .eq("project_id", projectId)
+      .order("updated_at", { ascending: false });
+    assertNoError(error, "Unable to list linked project MCP instances.");
+    return (data ?? [])
+      .map((row) => {
+        const typed = row as { integrations?: SupabaseRow | SupabaseRow[] | null };
+        if (Array.isArray(typed.integrations)) {
+          return typed.integrations[0] ?? null;
+        }
+        return typed.integrations ?? null;
+      })
+      .filter((row): row is SupabaseRow => Boolean(row))
+      .map(mapIntegration);
+  }
+
   async createProject(payload: CreateProjectPayload) {
     const { data, error } = await this.supabase
       .from("projects")
@@ -381,6 +450,86 @@ class SupabaseGatewayBundle
       .single();
     assertNoError(error, "Unable to create project.");
     return mapProject(assertRow(data, "Project insert returned no row."));
+  }
+
+  async createIntegration(payload: CreateIntegrationPayload) {
+    const { data, error } = await this.supabase
+      .from("integrations")
+      .insert({
+        id: createUuid(),
+        project_id: payload.projectId,
+        type: payload.type,
+        label: payload.label,
+        config_encrypted: payload.configEncrypted,
+        status: payload.status ?? "pending",
+        mcp_type_enabled: payload.mcpTypeEnabled ?? false,
+        last_error: null,
+      })
+      .select("*")
+      .single();
+    assertNoError(error, "Unable to create integration.");
+    const integration = mapIntegration(assertRow(data, "Integration insert returned no row."));
+    await this.linkIntegrationToProject(payload.projectId, integration.id);
+    return integration;
+  }
+
+  async updateIntegration(integrationId: string, patch: Partial<UpdateIntegrationPayload>) {
+    const { data, error } = await this.supabase
+      .from("integrations")
+      .update({
+        type: patch.type,
+        label: patch.label,
+        config_encrypted: patch.configEncrypted,
+        status: patch.status,
+        mcp_type_enabled: patch.mcpTypeEnabled,
+        last_synced_at: patch.lastSyncedAt,
+        last_error: patch.lastError,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", integrationId)
+      .select("*")
+      .single();
+    assertNoError(error, "Unable to update integration.");
+    return mapIntegration(assertRow(data, "Integration update returned no row."));
+  }
+
+  async deleteIntegration(integrationId: string) {
+    const { error } = await this.supabase
+      .from("integrations")
+      .delete()
+      .eq("id", integrationId);
+    assertNoError(error, "Unable to delete integration.");
+  }
+
+  async linkIntegrationToProject(projectId: string, integrationId: string) {
+    const { data: integrationData, error: integrationError } = await this.supabase
+      .from("integrations")
+      .select("id, type")
+      .eq("id", integrationId)
+      .single();
+    assertNoError(integrationError, "Unable to load MCP instance before linking.");
+    const integrationRow = assertRow(integrationData, "MCP instance row not found.");
+    const { error } = await this.supabase
+      .from("project_mcp_links")
+      .upsert(
+        {
+          project_id: projectId,
+          integration_id: integrationId,
+          type: integrationRow.type,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "project_id,type" },
+      );
+    assertNoError(error, "Unable to link MCP instance to project.");
+  }
+
+  async unlinkIntegrationFromProject(projectId: string, integrationId: string) {
+    const { error } = await this.supabase
+      .from("project_mcp_links")
+      .delete()
+      .eq("project_id", projectId)
+      .eq("integration_id", integrationId);
+    assertNoError(error, "Unable to unlink MCP instance from project.");
   }
 
   async listFeatures() {
@@ -1137,6 +1286,7 @@ export function createSupabaseGatewayBundle(supabaseClient: SupabaseClient) {
     contextSourceGateway: supabaseGatewayBundle,
     workflowGateway: supabaseGatewayBundle,
     teamGateway: supabaseGatewayBundle,
+    integrationGateway: supabaseGatewayBundle,
     workflowExecutor,
   };
 }

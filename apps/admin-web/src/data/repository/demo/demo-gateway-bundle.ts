@@ -1,10 +1,12 @@
 import type { ContextSourceGateway } from "@/domain/gateway/context-source-gateway";
 import type { FeatureGateway } from "@/domain/gateway/feature-gateway";
+import type { IntegrationGateway } from "@/domain/gateway/integration-gateway";
 import type { ProjectGateway } from "@/domain/gateway/project-gateway";
 import type { TeamGateway } from "@/domain/gateway/team-gateway";
 import type { WorkflowExecutorGateway, WorkflowGateway } from "@/domain/gateway/workflow-gateway";
 import type { ContextSource } from "@/domain/model/entity/context-source";
 import type { Feature } from "@/domain/model/entity/feature";
+import type { Integration } from "@/domain/model/entity/integration";
 import type { Project } from "@/domain/model/entity/project";
 import type { Team, TeamMember } from "@/domain/model/entity/team";
 import type {
@@ -21,6 +23,10 @@ import type {
   UpdateContextSourcePayload,
 } from "@/domain/model/payload/context-source-payload";
 import type { CreateFeaturePayload } from "@/domain/model/payload/feature-payload";
+import type {
+  CreateIntegrationPayload,
+  UpdateIntegrationPayload,
+} from "@/domain/model/payload/integration-payload";
 import type { CreateProjectPayload, UpdateProjectPayload } from "@/domain/model/payload/project-payload";
 import type { StartWorkflowRunPayload } from "@/domain/model/payload/workflow-payload";
 import type { ListOutputsFilters } from "@/domain/model/payload/workflow-payload";
@@ -31,8 +37,10 @@ import {
   demoApprovals,
   demoContextSources,
   demoFeatures,
+  demoIntegrations,
   demoLogs,
   demoOutputs,
+  demoProjectMcpLinks,
   demoProjects,
   demoProjectTeamLinks,
   demoTeamMembers,
@@ -57,7 +65,8 @@ class DemoGatewayBundle
     FeatureGateway,
     ContextSourceGateway,
     WorkflowGateway,
-    TeamGateway
+    TeamGateway,
+    IntegrationGateway
 {
   listProjects() {
     return Promise.resolve(demoProjects);
@@ -203,6 +212,104 @@ class DemoGatewayBundle
   async unlinkTeamFromProject(projectId: string, teamId: string) {
     const index = demoProjectTeamLinks.findIndex((link) => link.projectId === projectId && link.teamId === teamId);
     if (index !== -1) demoProjectTeamLinks.splice(index, 1);
+  }
+
+  async listIntegrationsByProject(projectId: string) {
+    return demoIntegrations
+      .filter((integration) => integration.projectId === projectId)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  }
+
+  async listAllIntegrations() {
+    return [...demoIntegrations].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  }
+
+  async listLinkedIntegrationsByProject(projectId: string) {
+    const linkedIds = new Set(
+      demoProjectMcpLinks
+        .filter((link) => link.projectId === projectId)
+        .map((link) => link.integrationId),
+    );
+    return demoIntegrations
+      .filter((integration) => linkedIds.has(integration.id))
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  }
+
+  async createIntegration(payload: CreateIntegrationPayload) {
+    const now = new Date().toISOString();
+    const integration: Integration = {
+      id: createId("integration"),
+      projectId: payload.projectId,
+      type: payload.type,
+      label: payload.label,
+      configEncrypted: payload.configEncrypted,
+      status: payload.status ?? "pending",
+      mcpTypeEnabled: payload.mcpTypeEnabled ?? false,
+      lastSyncedAt: null,
+      lastError: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    demoIntegrations.unshift(integration);
+    demoProjectMcpLinks.push({
+      projectId: payload.projectId,
+      integrationId: integration.id,
+      type: integration.type,
+    });
+    return integration;
+  }
+
+  async updateIntegration(
+    integrationId: string,
+    patch: Partial<UpdateIntegrationPayload>,
+  ) {
+    const integration = demoIntegrations.find((item) => item.id === integrationId);
+    if (!integration) throw new Error("Integration not found.");
+    const nextLastError =
+      patch.status === "pending" && patch.lastError === undefined
+        ? null
+        : patch.lastError;
+    Object.assign(integration, {
+      ...patch,
+      lastError:
+        nextLastError !== undefined ? nextLastError : integration.lastError,
+      updatedAt: new Date().toISOString(),
+    });
+    return integration;
+  }
+
+  async deleteIntegration(integrationId: string) {
+    const index = demoIntegrations.findIndex((item) => item.id === integrationId);
+    if (index === -1) throw new Error("Integration not found.");
+    demoIntegrations.splice(index, 1);
+    for (let i = demoProjectMcpLinks.length - 1; i >= 0; i -= 1) {
+      if (demoProjectMcpLinks[i].integrationId === integrationId) {
+        demoProjectMcpLinks.splice(i, 1);
+      }
+    }
+  }
+
+  async linkIntegrationToProject(projectId: string, integrationId: string) {
+    const integration = demoIntegrations.find((item) => item.id === integrationId);
+    if (!integration) throw new Error("Integration not found.");
+    const existingIndex = demoProjectMcpLinks.findIndex(
+      (link) => link.projectId === projectId && link.type === integration.type,
+    );
+    const nextLink = { projectId, integrationId, type: integration.type };
+    if (existingIndex === -1) {
+      demoProjectMcpLinks.push(nextLink);
+      return;
+    }
+    demoProjectMcpLinks[existingIndex] = nextLink;
+  }
+
+  async unlinkIntegrationFromProject(projectId: string, integrationId: string) {
+    const index = demoProjectMcpLinks.findIndex(
+      (link) => link.projectId === projectId && link.integrationId === integrationId,
+    );
+    if (index !== -1) {
+      demoProjectMcpLinks.splice(index, 1);
+    }
   }
 
   listContextSources() {
@@ -531,6 +638,7 @@ export function createDemoGatewayBundle() {
   return {
     projectGateway: demoGatewayBundle,
     featureGateway: demoGatewayBundle,
+    integrationGateway: demoGatewayBundle,
     contextSourceGateway: demoGatewayBundle,
     workflowGateway: demoGatewayBundle,
     teamGateway: demoGatewayBundle,
