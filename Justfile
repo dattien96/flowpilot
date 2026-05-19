@@ -60,6 +60,33 @@ runner-dev:
     @echo "Starting local runner on port {{LOCAL_RUNNER_PORT}}..."
     @cd {{LOCAL_RUNNER_PATH}} && go run ./cmd/flowpilot runner serve --port {{LOCAL_RUNNER_PORT}}
 
+# Start admin web and local runner together
+dev:
+    @echo "Starting admin web on port {{ADMIN_WEB_PORT}} and local runner on port {{LOCAL_RUNNER_PORT}}..."
+    @bash -lc '\
+    started=0; \
+    pids=""; \
+    trap '\''if [ -n "$pids" ]; then kill $pids; fi'\'' EXIT; \
+    if lsof -ti tcp:{{ADMIN_WEB_PORT}} >/dev/null 2>&1; then \
+      echo "Admin web already running on port {{ADMIN_WEB_PORT}}, skipping start."; \
+    else \
+      (cd {{ADMIN_WEB_PATH}} && npm run dev -- --port {{ADMIN_WEB_PORT}}) & \
+      pids="$pids $!"; \
+      started=1; \
+    fi; \
+    if lsof -ti tcp:{{LOCAL_RUNNER_PORT}} >/dev/null 2>&1; then \
+      echo "Local runner already running on port {{LOCAL_RUNNER_PORT}}, skipping start."; \
+    else \
+      (cd {{LOCAL_RUNNER_PATH}} && go run ./cmd/flowpilot runner serve --port {{LOCAL_RUNNER_PORT}}) & \
+      pids="$pids $!"; \
+      started=1; \
+    fi; \
+    if [ "$started" -eq 0 ]; then \
+      echo "Both services are already running."; \
+      exit 0; \
+    fi; \
+    wait'
+
 # Print runner health as JSON
 runner-health:
     @cd {{LOCAL_RUNNER_PATH}} && go run ./cmd/flowpilot runner health
