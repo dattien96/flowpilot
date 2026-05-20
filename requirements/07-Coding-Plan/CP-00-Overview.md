@@ -47,6 +47,8 @@ React + Vite + TanStack gives us a lighter, more explicit architecture where eve
 | [CP-10](./CP-10-Integrations-Hardening.md) | Integration Hardening, Security & Audit | SD-04 Section 4, SD-03 |
 | [CP-11](./CP-11-Go-Runner-Implementation.md) | Go-Runner CLI, Providers, Skills & Process Isolation | SD-03, SD-05 Section 3-5, SD-06, SD-07 |
 | [CP-12](./CP-12-Artifact-Memory-RAG.md) | Artifact Memory, RAG & Prompt Context | SS-09, SD-10 |
+| [CP-13](./CP-13-Direct-MCP-Runtime.md) | Direct MCP Runtime for AI Providers | SD-11, CP-05, CP-07 |
+| [CP-14](./CP-14-Dark-Mode.md) | Site-Wide Dark Mode | SD-02, CP-01 |
 
 ---
 
@@ -66,6 +68,9 @@ Phase 7  -> CP-09: AI prompt templates, execution log viewer, Edge Functions
 Phase 8  -> CP-12: Artifact memory + RAG context resolver
 Phase 8A -> CP-11B: Full Go-Runner context memory integration
 Phase 9  -> CP-10: Integration hardening, RLS hardening, audit trails
+Phase 10 -> CP-14: Site-wide dark mode, theme persistence, contrast audit across admin-web
+
+Later improvement -> CP-13: Direct MCP runtime for supported AI providers
 ```
 
 ## Migration Strategy

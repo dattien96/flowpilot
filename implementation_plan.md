@@ -1,160 +1,408 @@
-# Implementation Plan: MCP Management and Project Routing Alignment
+# Implementation Plan: Site-Wide Dark Mode for `apps/admin-web`
 
-## Scope
+## 1. Objective
 
-Align admin-web routes and page responsibilities with the updated architecture:
+Implement CP-14 dark mode in `apps/admin-web` as a cross-cutting UI architecture change that delivers:
 
-- global MCP type and instance management
-- dedicated MCP Test Console route
-- dedicated RUNNER settings page
-- dedicated project creation route
-- project settings limited to link and unlink behavior
-- remote MCP type enablement persisted in the current integration storage rollout
+- persisted `light | dark | system` preference
+- no-flash startup theme bootstrap before React paint
+- one canonical semantic token source for light and dark palettes
+- dark-mode parity across shared shell, common components, and all current routes
+- route-level verification so no major page remains light-only
 
-## Current State
+This document is architecture-only by request. It intentionally skips 4C summary and TDD signatures.
 
-Observed in current code:
+## 2. Current State
 
-- `/settings/mcp-servers` already owns much of the global MCP flow
-- `/projects/$projectId/settings` already behaves largely as link and unlink only
-- the current link and unlink UI still does not match the desired hide/show behavior
-- `/projects` still embeds project creation
-- `/settings/mcp-servers` still embeds MCP Test Console and runner-wide concerns
+The existing Vite/TanStack admin app already provides a useful base for dark mode, but it is not yet architected for full site-wide theming.
 
-## Work Items
+Observed structure:
 
-### 1. Split MCP routes
+- App entry: `apps/admin-web/src/main.tsx`
+- App composition: `apps/admin-web/src/app.tsx`
+- Root route: `apps/admin-web/src/routes/__root.tsx`
+- Authenticated layout shell: `apps/admin-web/src/components/layout/app-shell.tsx`
+- Public login route: `apps/admin-web/src/routes/login.tsx`
+- Global CSS duplicated across:
+  - `apps/admin-web/src/styles.css`
+  - `apps/admin-web/src/app/globals.css`
+- Zustand is already in use in `apps/admin-web/src/features/auth/use-auth.ts`
 
-Create a dedicated route:
+Current gaps relevant to CP-14:
 
-- `/settings/mcp-servers/mcp-connect-test`
+- no theme state feature exists yet
+- no pre-React bootstrap script exists in `apps/admin-web/index.html`
+- token definitions are duplicated across two CSS entrypoints, which will cause drift once dark tokens are added
+- shared UI primitives still contain some light-biased values such as hard-coded hover colors
+- pages and overlays have not been audited route-by-route for dark contrast parity
 
-Move from the current `mcp-servers.tsx` page:
+## 3. Architectural Decision Summary
 
-- test-console state
-- test-console mutations
-- test-console templates and prompt handling
-- recent-run and result panels
+### Recommended approach
 
-Keep on `/settings/mcp-servers` only:
+Implement dark mode with a dedicated client-side `features/theme` slice backed by Zustand, a single root HTML `.dark` contract, and one canonical CSS token source in the Vite app.
 
-- combined Runner Reachability + Allowlisted MCP inventory
-- MCP instances list
+This is the recommended approach because it aligns with CP-14 and existing app architecture:
 
-### 2. Add RUNNER settings page
+- Zustand is already an accepted lightweight UI state mechanism in this app
+- Vite `index.html` can run the no-flash bootstrap script before `main.tsx`
+- Tailwind v4 token mapping already exists and can be consolidated instead of replaced
+- TanStack Router layout composition provides a single place to mount a theme controller
 
-Create a new route:
+### Rejected alternatives
 
-- `/settings/runner`
+#### Option A: React Context as theme source of truth
 
-Move system-wide runner reachability content there when it is not required to explain a specific MCP backend row.
+Not recommended.
 
-Keep on the MCP page only the runner summary that is necessary to understand whether MCP actions are blocked.
+- It duplicates the state-management role already assigned to Zustand
+- persistence and cross-component reads become more ad hoc
+- it gives no advantage over Zustand for this scope
 
-### 3. Normalize MCP inventory behavior by category
+#### Option B: CSS-only system dark mode without application state
 
-Update the MCP inventory section to explicitly model:
+Not recommended.
 
-- `remote` types
-- `local` types
+- it cannot satisfy explicit `light | dark | system` preference persistence cleanly
+- it cannot expose a reliable three-state UI switcher
+- it weakens testability of theme selection behavior
 
-Required behavior:
+## 4. Target Architecture
 
-- each type has one enable or disable surface
-- remote types can enable first, then create multiple instances
-- local types keep install-oriented UX such as `npx` command hints and `INSTALL`
+### 4.1 Theme feature boundary
 
-Persistence follow-up:
+Create a dedicated feature under:
 
-- because the current rollout still uses integration persistence, add a new integration-table field for MCP type enablement state for remote types
-- this field gates whether instance creation is available for types like Jira
-- the schema/migration must make the enablement state explicit before a user can create multiple Jira MCP instances
+`apps/admin-web/src/features/theme/`
 
-Copy and labels should clearly distinguish:
+Planned files:
 
-- type inventory
-- instance list
-- project links
+- `theme-store.ts`
+- `theme-storage.ts`
+- `theme-dom.ts`
+- `theme-controller.tsx`
+- `use-theme.ts`
+- `theme-bootstrap.ts`
 
-### 4. Simplify MCP instances section
+Responsibilities:
 
-Review the instance list on `/settings/mcp-servers` and remove wording that implies an instance is owned by a project.
+- `theme-store.ts`
+  - owns Zustand theme state
+  - stores `preference`
+  - derives `resolvedTheme`
+  - exposes `setPreference`
+  - exposes `onSystemPreferenceChange`
 
-Expected display:
+- `theme-storage.ts`
+  - owns the canonical storage key: `"flowpilot-theme-preference"`
+  - isolates safe localStorage read/write behavior
+  - normalizes unknown stored values to `system`
 
-- label
-- type
-- summary
-- status
-- verification or sync timestamp
-- error state
-- create, edit, verify, remove actions
+- `theme-dom.ts`
+  - centralizes all DOM writes to `document.documentElement`
+  - applies/removes the `.dark` class
+  - optionally sets `color-scheme` for native control rendering parity
 
-### 5. Split project creation route
+- `theme-controller.tsx`
+  - mounts once inside the React app
+  - subscribes to system media query changes
+  - syncs store state with DOM state
+  - prevents theme logic from leaking into arbitrary route components
 
-Refactor `/projects` so it becomes list-first and exposes one:
+- `use-theme.ts`
+  - exposes the narrow public hook API used by UI components
 
-- `ADD project`
+- `theme-bootstrap.ts`
+  - provides shared bootstrap-safe helpers for reading preference and resolving theme
+  - keeps bootstrap logic aligned with runtime logic
 
-Create:
+### 4.2 State model
 
-- `/projects/create`
+Canonical types:
 
-Move existing create-project UI and team assignment flow into the new route.
+```ts
+export type ThemePreference = "light" | "dark" | "system";
+export type ResolvedTheme = "light" | "dark";
+```
 
-Update navigation so successful creation returns to the expected project page or project list.
+Recommended store shape:
 
-### 6. Keep project settings link-only and hide the invalid action
+```ts
+interface ThemeState {
+  preference: ThemePreference;
+  resolvedTheme: ResolvedTheme;
+  setPreference: (value: ThemePreference) => void;
+  onSystemPreferenceChange: () => void;
+}
+```
 
-Review `/projects/$projectId/settings` for stale copy and route targets only.
+Behavior rules:
 
-Expected behavior:
+- initial preference loads from `"flowpilot-theme-preference"`
+- invalid or missing persisted value resolves to `system`
+- `resolvedTheme` depends on `window.matchMedia("(prefers-color-scheme: dark)")` when preference is `system`
+- explicit `light` or `dark` bypass system preference
+- every state change must update both storage and root DOM theme
 
-- list currently linked MCP by type
-- select an existing global MCP instance
-- when no MCP is linked for that type, show only `Link MCP`
-- when an MCP is already linked for that type, hide `Link MCP` and show only `Unlink`
-- `Create new MCP` navigates to `/settings/mcp-servers`
+### 4.3 Root theme application contract
 
-Do not reintroduce:
+Theme application standard:
 
-- project-owned create
-- project-owned edit
-- project-owned auth
+- source of truth for visual mode is the `.dark` class on `<html>`
+- bootstrap script runs in `apps/admin-web/index.html` before `src/main.tsx`
+- React runtime does not guess the initial theme; it hydrates around the already-applied HTML class
 
-### 7. Update tests
+Flow:
 
-Adjust route and UI tests for:
+1. `index.html` inline bootstrap script reads `"flowpilot-theme-preference"`
+2. script resolves final theme with system preference fallback
+3. script toggles `document.documentElement.classList`
+4. React mounts
+5. `theme-controller.tsx` attaches media-query listener and keeps runtime state synchronized
 
-- MCP Test Console navigation and dedicated route
-- RUNNER settings route
-- `/projects` to `/projects/create` flow
-- project settings navigation to global MCP page
-- project settings hide/show state for `Link MCP` vs `Unlink`
+This split is important because the bootstrap path solves FOWT while the React controller solves ongoing updates.
 
-## Suggested Order
+### 4.4 CSS token architecture
 
-1. Add new routes and move navigation targets.
-2. Extract MCP Test Console from the general MCP page.
-3. Introduce RUNNER page and move runner-only content.
-4. Clean up the remaining MCP page structure into the two required sections.
-5. Split `/projects` and `/projects/create`.
-6. Refresh tests and copy.
-7. Add the integration-table migration for remote MCP type enablement.
+For the Vite route tree, `apps/admin-web/src/styles.css` should become the single canonical token source.
 
-## Risks
+Reasoning:
 
-- `mcp-servers.tsx` currently mixes inventory, instance CRUD, and test-console state, so route extraction may require shared helpers or component splitting.
-- Existing data models still use `Integration` naming and some project-oriented fields such as `projectId`, which may leak outdated ownership language into the UI.
-- Adding machine-level remote-type enablement into the current integration persistence is a staged compromise and must be documented carefully so it does not get mistaken for project ownership.
-- Navigation tests will fail until route constants and expected destinations are updated together.
+- `src/main.tsx` imports `./styles.css`
+- the Vite route tree appears to be the active implementation surface for CP-14
+- `src/app/globals.css` belongs to the parallel Next-style app tree and should not become a second source of truth for the same UI contract
 
-## Done Criteria
+Required token groups:
 
-- `/settings/mcp-servers` has only the two required sections
-- `/settings/mcp-servers/mcp-connect-test` owns MCP testing
-- `/settings/runner` exists for system-wide runner settings
-- `/projects` only lists projects and exposes `ADD project`
-- `/projects/create` owns project creation
-- project settings remain link and unlink only, with only the valid action visible per type
-- remote MCP type enablement is persisted with the required integration-table schema update
+- `--background`
+- `--foreground`
+- `--muted`
+- `--muted-foreground`
+- `--card`
+- `--card-foreground`
+- `--border`
+- `--accent`
+- `--accent-foreground`
+- `--warning`
+- `--danger`
+- `--success`
+
+Architecture rules:
+
+- light tokens live under `:root`
+- dark tokens live under `.dark`
+- `@theme inline` remains semantic and maps only to CSS variables
+- component code uses semantic Tailwind utilities instead of raw grayscale values
+- decorative gradients and shadows must also become token-driven or dual-mode aware
+
+### 4.5 UI composition points
+
+Mount points:
+
+- `apps/admin-web/index.html`
+  - bootstrap script
+
+- `apps/admin-web/src/app.tsx`
+  - mount `ThemeController` near other app-wide providers
+
+- `apps/admin-web/src/routes/__root.tsx`
+  - optional alternative mount point if route-root lifecycle is preferred
+
+- `apps/admin-web/src/components/layout/app-shell.tsx`
+  - global theme switcher placement for authenticated users
+
+- `apps/admin-web/src/routes/login.tsx`
+  - public route dark-mode parity and optional public switcher placement if desired
+
+Recommended composition:
+
+- put the bootstrap in `index.html`
+- put `ThemeController` in `src/app.tsx`
+- put the visible switcher in `AppShell`
+- keep route pages free of direct DOM theme mutations
+
+## 5. Shared UI Audit Strategy
+
+Dark mode should be implemented from shared primitives outward. This minimizes repeated route work.
+
+### Tier 1: Foundation surfaces
+
+Audit first:
+
+- `src/styles.css`
+- `src/components/layout/app-shell.tsx`
+- `src/components/ui/button.tsx`
+- `src/components/common/page-frame.tsx`
+- `src/components/common/placeholder-page.tsx`
+- `src/routes/login.tsx`
+
+Expected changes:
+
+- replace remaining hard-coded light-biased values with semantic classes
+- adjust panel backgrounds, borders, shadows, and noise backgrounds for dark readability
+- ensure inputs, buttons, and helper text have dark contrast parity
+
+### Tier 2: Shared route patterns
+
+Audit route clusters that likely reuse similar card, form, and panel structures:
+
+- dashboard
+- projects list/detail subroutes
+- settings routes
+- MCP server routes
+- workflow and output routes
+- teams and AI runs routes
+
+Expected changes:
+
+- fix isolated hard-coded `bg-white`, `text-black`, `border-gray-*`, `shadow-black/*`
+- verify empty states, tables, badges, and status messaging in dark mode
+- verify translucent layers and blur surfaces remain readable
+
+### Tier 3: Overlays and edge states
+
+Pay special attention to:
+
+- overlays and backdrops
+- disabled states
+- focus states
+- validation and error states
+- text selection
+- hover and pressed states
+
+Known early risk:
+
+- `src/routes/_authenticated/settings/mcp-servers.tsx` already uses an explicit `dark:` overlay treatment, which suggests other pages may contain one-off color handling that must be normalized rather than expanded.
+
+## 6. Theme Switcher Architecture
+
+Provide one reusable presentation component, for example:
+
+- `src/features/theme/components/theme-switcher.tsx`
+
+Responsibilities:
+
+- render the three choices: `Light`, `Dark`, `System`
+- read current `preference` and `resolvedTheme`
+- update immediately through `setPreference`
+
+Placement strategy:
+
+- primary location: authenticated app shell header or top utility row
+- secondary optional location: settings page
+
+Architecture rules:
+
+- the switcher reads state through `useTheme()`
+- the switcher does not manipulate DOM classes directly
+- visual active state should reflect `preference`, not just `resolvedTheme`
+
+## 7. Testing and Verification Architecture
+
+### Automated coverage
+
+Add or update tests in these categories:
+
+- store tests
+  - preference persistence
+  - invalid-storage fallback
+  - `system` resolution behavior
+
+- DOM/theme sync tests
+  - `.dark` class application
+  - system preference change listener behavior
+
+- component tests
+  - switcher updates selection state
+  - app shell renders toggle safely
+
+- route smoke tests
+  - key route components render under dark-mode class without regressions
+
+### Manual visual QA matrix
+
+Check each route in:
+
+- light preference
+- dark preference
+- system preference with OS light
+- system preference with OS dark
+
+Validate:
+
+- no flash of wrong theme on refresh
+- body, shell, cards, panels, dialogs, forms, tables, and placeholders all adapt
+- contrast is acceptable for primary text, secondary text, borders, buttons, and alerts
+
+## 8. Rollout Sequence
+
+1. Build theme foundation in `src/features/theme`
+2. Add no-flash bootstrap in `index.html`
+3. Mount `ThemeController` in `src/app.tsx`
+4. Consolidate Vite token architecture into `src/styles.css`
+5. Refactor shared shell and common primitives
+6. Add visible theme switcher in app shell
+7. Audit public login route
+8. Audit authenticated route families
+9. Add/expand smoke tests and manual QA checklist
+
+This sequence is intentionally foundation-first so later route work becomes mostly cleanup instead of parallel theming implementations.
+
+## 9. Risks and Mitigations
+
+### Risk 1: Dual CSS entrypoint drift
+
+Cause:
+
+- `src/styles.css` and `src/app/globals.css` currently duplicate token definitions
+
+Mitigation:
+
+- treat `src/styles.css` as canonical for the Vite admin app
+- do not maintain parallel dark token definitions for the same runtime surface
+
+### Risk 2: Bootstrap/runtime mismatch
+
+Cause:
+
+- inline bootstrap and React runtime may resolve theme differently
+
+Mitigation:
+
+- share normalization and resolution helpers via `theme-bootstrap.ts`
+- keep one storage key and one resolution algorithm
+
+### Risk 3: Hard-coded component colors survive audit
+
+Cause:
+
+- current primitives and route screens still contain direct color literals
+
+Mitigation:
+
+- audit shared components before route pages
+- search for raw color utilities and token violations as part of implementation
+
+### Risk 4: System preference listener leaks
+
+Cause:
+
+- `matchMedia` listeners can accumulate if mounted in multiple places
+
+Mitigation:
+
+- mount exactly one `ThemeController`
+- centralize listener registration and cleanup there
+
+## 10. Definition of Done
+
+CP-14 is architecturally complete when:
+
+- `apps/admin-web` has a dedicated theme feature with Zustand-based preference state
+- the canonical storage key is `"flowpilot-theme-preference"`
+- `index.html` applies the correct `.dark` class before React paint
+- theme DOM mutation is centralized rather than scattered across components
+- Vite global tokens are consolidated into one canonical source
+- shared shell and common primitives are dark-safe
+- all current public and authenticated routes have been audited for dark-mode parity
+- route smoke coverage and manual visual QA checklist are in place

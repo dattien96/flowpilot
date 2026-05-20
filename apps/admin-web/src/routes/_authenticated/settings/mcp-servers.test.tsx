@@ -50,6 +50,20 @@ vi.mock("@tanstack/react-router", async () => {
       navigate: mocks.navigate,
     }),
     createFileRoute: () => () => ({}),
+    Link: ({ children, to, className, onClick, ...props }: any) => (
+      <button
+        className={className}
+        onClick={(e) => {
+          onClick?.(e);
+          if (to) {
+            mocks.navigate({ to });
+          }
+        }}
+        {...props}
+      >
+        {children}
+      </button>
+    ),
   };
 });
 
