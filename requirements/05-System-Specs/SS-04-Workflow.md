@@ -19,6 +19,12 @@ In this system, workflow is a collection of steps that are executed in order.
 
 -> That means, we can config many flows base on our step
 
+Workflow definition can exist in 2 scopes:
+- Global workflow: reusable template that any project can pick and run
+- Private workflow: custom workflow owned by a single project
+
+Workflow run is the execution record of a workflow on a specific project.
+
 # 3. Step in workflow - Core component
 
 1 flow created by combining steps
@@ -212,15 +218,26 @@ Expected artifact output is:
 - Product/Codebase Summary
 
 
-# 4. Workflow configuration in project
-- Enable/Disable: Approval gate, WAITING USER approval gate or yolo mode from AI
-- Allow user to enable/disable step
-- Allow user to re-order steps
-- Allow user to add/remove steps
+# 4. Workflow usage and configuration in project
+- Allow a project to browse and pick global workflows.
+- Allow a project to create and save private workflows that belong only to that project.
+- Allow a project to start a workflow run from either a global workflow or a private workflow.
+- Allow user to enable/disable approval gate per step.
+- Allow user to toggle YOLO mode per workflow run. When YOLO mode is ON, approval gates are skipped and the workflow continues automatically.
+- Allow user to enable/disable step.
+- Allow user to re-order steps.
+- Allow user to add/remove steps.
+
+## 4.1 Workflow execution states
+- Workflow run status: `PENDING`, `RUNNING`, `DONE`, `FAILED`, `CANCELED`.
+- Workflow step status: `PENDING`, `RUNNING`, `WAITING_USER_APPROVAL`, `DONE`, `FAILED`, `SKIPPED`.
+- If a step is disabled for a run, it becomes `SKIPPED`.
+- If approval gate is enabled and YOLO mode is OFF, the step waits at `WAITING_USER_APPROVAL`.
+- If user rejects an artifact, the same step retries with the rejection note as context.
 
 # 5. Built-in flows for MVP by Persona Use Cases
 
-Based on the supported steps, we provide the following built-in workflows to resolve specific use cases for different roles:
+Based on the supported steps, we provide 10 built-in workflows across 4 personas to resolve specific use cases for different roles:
 
 ## 5.1 As a Developer
 Focused on execution and implementation.
@@ -320,4 +337,3 @@ Focused on product direction, process tracking, and business outcomes.
 -> Product Spec Step
 -> Project Analysis Step (Analyze current progress and bottlenecks)
 -> Analytics Review Step (Review user impact)
-

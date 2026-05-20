@@ -1,408 +1,358 @@
-# Implementation Plan: Site-Wide Dark Mode for `apps/admin-web`
+# Implementation Plan - CP-07 Workflow Engine UI & Execution Dashboard
+
+## 1. Target Outcome
+
+Implement a canonical workflow-engine experience in `apps/admin-web` that lets a project member:
+
+1. view all workflows for a project
+2. create and edit a workflow from the 17 seeded `step_definitions`
+3. reorder, enable/disable, and configure steps
+4. start a workflow run with provider/model and YOLO choices
+5. monitor execution through realtime run-step state
+6. review waiting approvals and submit approve or reject-retry decisions
+7. inspect logs and prompt-cache references used by each step
+
+This phase establishes the frontend and data contracts for the control plane. The Go-Runner remains the executor and CP-06/CP-12 remain the deeper artifact and memory phases.
+
+## 2. Recommended Architecture
+
+### 2.1 Architectural choice
+
+- Use a **parallel canonical workflow-engine slice** in `apps/admin-web/src/domain`, `data`, and `routes`.
+- Do not stretch the current legacy workflow entity set to represent both old and new schemas.
+
+### 2.2 Why this is the correct shape
+
+- `workflow_steps` now means definition-time configuration, while `workflow_run_steps` owns execution state.
+- UI needs both builder and dashboard concerns at once, and they should not share the same model.
+- Later phases depend on stable canonical contracts for artifacts, logs, prompt context, and runner integration.
+
+## 3. Proposed Package Changes
+
+### 3.1 Domain
+
+Add a canonical workflow-engine area under `apps/admin-web/src/domain/`:
+
+- `model/entity/workflow-engine.ts`
+  - `Workflow`
+  - `WorkflowStepDefinition`
+  - `WorkflowStepConfig`
+  - `WorkflowRun`
+  - `WorkflowRunStep`
+  - `WorkflowPromptCacheEntry`
+  - `WorkflowRunLog`
+  - `WorkflowExecutionSummary`
+- `model/payload/workflow-engine-payload.ts`
+  - create/update workflow payloads
+  - start run payload
+  - approval decision payload
+- `model/response/workflow-engine-response.ts`
+  - project workflow detail
+  - workflow editor view model shape
+  - workflow run detail
+- `gateway/workflow-engine-gateway.ts`
+  - canonical query and mutation contract
+- `usecase/workflow-engine/**`
+  - list project workflows
+  - get workflow detail
+  - list step definitions
+  - save workflow draft
+  - start workflow run
+  - list workflow runs
+  - get workflow run detail
+  - submit run-step approval decision
+
+### 3.2 Data
+
+Extend `apps/admin-web/src/data/repository/supabase/`:
+
+- add canonical table mappers for:
+  - `workflows`
+  - `workflow_steps`
+  - `workflow_runs`
+  - `workflow_run_steps`
+  - `workflow_prompt_cache`
+  - `workflow_run_logs`
+  - `step_definitions`
+- keep implementation in the same gateway bundle initially, but isolate canonical methods behind a new `WorkflowEngineGateway` interface
+- mirror the same API in demo mode so local exploration still works without Supabase env
+
+### 3.3 Presentation / Routes
+
+Project-scoped workflow engine routes:
+
+- keep `/projects/$projectId/workflows` as the main entry
+- extend with nested detail paths:
+  - `/projects/$projectId/workflows`
+  - `/projects/$projectId/workflows/$workflowId`
+  - `/projects/$projectId/workflows/runs/$runId`
+
+UI components to add under `apps/admin-web/src/components/workflow-engine/`:
+
+- `workflow-list-panel.tsx`
+- `workflow-builder-shell.tsx`
+- `step-catalog-drawer.tsx`
+- `workflow-step-card.tsx`
+- `run-launch-dialog.tsx`
+- `execution-dashboard.tsx`
+- `run-step-timeline.tsx`
+- `run-step-log-panel.tsx`
+- `approval-decision-panel.tsx`
+- `prompt-cache-badge.tsx`
+
+## 4. Route and UX Design
+
+### 4.1 Project workflows index
+
+Purpose:
+- show all workflows for project
+- expose create CTA
+- show recent runs and waiting approvals summary
+
+Sections:
+- workflow list table/cards
+- built-in vs custom/template badges
+- start run quick action
+- recent run activity strip
+
+### 4.2 Workflow builder detail page
+
+Purpose:
+- edit one workflow definition
+
+Sections:
+- metadata header: name, description, provider/model overrides
+- ordered step stack
+- add-step drawer backed by `step_definitions`
+- per-step controls:
+  - order index controls / drag handle
+  - requires approval
+  - enabled toggle
+  - provider/model override
+  - MCP and skill requirement summary from `step_definitions`
+
+### 4.3 Run launch dialog
+
+Inputs:
+- project id
+- workflow id
+- YOLO mode
+- provider/model override
+
+Behavior:
+- creates `workflow_run`
+- creates ordered `workflow_run_steps`
+- marks disabled definition steps as `SKIPPED` or starts them in a state the runner will skip consistently, depending on final repository strategy
+
+### 4.4 Execution dashboard
+
+Purpose:
+- monitor one run in real time
+
+Sections:
+- run header: workflow name, status, provider, model, started by, started/finished timestamps, YOLO
+- progress/timeline grouped by ordered run steps
+- selected step detail pane:
+  - status
+  - retry count
+  - rejection note
+  - artifact reference placeholder
+  - prompt cache reference
+  - logs
+- approval action panel when step status is `WAITING_USER_APPROVAL`
+
+## 5. Data and Query Design
+
+### 5.1 Query keys
+
+Use canonical query keys:
+
+- `["workflow-engine", "project", projectId, "workflows"]`
+- `["workflow-engine", "workflow", workflowId]`
+- `["workflow-engine", "project", projectId, "step-definitions"]`
+- `["workflow-engine", "project", projectId, "runs"]`
+- `["workflow-engine", "run", runId]`
+
+### 5.2 Repository reads
+
+Minimum repository methods:
+
+- `listProjectWorkflows(projectId)`
+- `getWorkflowDetail(workflowId)`
+- `listStepDefinitions()`
+- `saveWorkflow(input)`
+- `deleteWorkflow(workflowId)` if included in MVP
+- `startWorkflowRun(input)`
+- `listProjectWorkflowRuns(projectId, filters?)`
+- `getWorkflowRunDetail(runId)`
+- `approveRunStep(input)`
+- `rejectRunStep(input)`
+- `subscribeToProjectWorkflowRuns(projectId, onChange)`
+- `subscribeToWorkflowRunSteps(runId, onChange)`
 
-## 1. Objective
+### 5.3 Repository writes
 
-Implement CP-14 dark mode in `apps/admin-web` as a cross-cutting UI architecture change that delivers:
+Workflow save strategy:
+- upsert `workflows`
+- replace or diff `workflow_steps` by `workflow_id`
+- preserve deterministic `order_index`
 
-- persisted `light | dark | system` preference
-- no-flash startup theme bootstrap before React paint
-- one canonical semantic token source for light and dark palettes
-- dark-mode parity across shared shell, common components, and all current routes
-- route-level verification so no major page remains light-only
+Run creation strategy:
+- insert `workflow_runs`
+- materialize ordered `workflow_run_steps` from enabled/disabled definition steps
+- populate run-level provider/model/yolo values
 
-This document is architecture-only by request. It intentionally skips 4C summary and TDD signatures.
+Approval strategy:
+- `approve`
+  - set current `workflow_run_steps.status = DONE`
+  - clear rejection note if needed
+  - mark next runnable step `PENDING`
+- `reject & retry`
+  - set same `workflow_run_steps.status = PENDING`
+  - write `rejection_note`
+  - increment `retry_count`
 
-## 2. Current State
+## 6. Realtime Strategy
 
-The existing Vite/TanStack admin app already provides a useful base for dark mode, but it is not yet architected for full site-wide theming.
+### 6.1 Channels
 
-Observed structure:
+Use Supabase Realtime subscriptions on:
 
-- App entry: `apps/admin-web/src/main.tsx`
-- App composition: `apps/admin-web/src/app.tsx`
-- Root route: `apps/admin-web/src/routes/__root.tsx`
-- Authenticated layout shell: `apps/admin-web/src/components/layout/app-shell.tsx`
-- Public login route: `apps/admin-web/src/routes/login.tsx`
-- Global CSS duplicated across:
-  - `apps/admin-web/src/styles.css`
-  - `apps/admin-web/src/app/globals.css`
-- Zustand is already in use in `apps/admin-web/src/features/auth/use-auth.ts`
+- `workflow_runs`
+- `workflow_run_steps`
+- optionally `workflow_run_logs` for active detail screens
 
-Current gaps relevant to CP-14:
+### 6.2 UI response
 
-- no theme state feature exists yet
-- no pre-React bootstrap script exists in `apps/admin-web/index.html`
-- token definitions are duplicated across two CSS entrypoints, which will cause drift once dark tokens are added
-- shared UI primitives still contain some light-biased values such as hard-coded hover colors
-- pages and overlays have not been audited route-by-route for dark contrast parity
+- Index pages:
+  - invalidate project run/workflow summary queries on relevant inserts/updates
+- Run detail page:
+  - patch or invalidate the run detail query when run-step status/log records change
+- Waiting-approval panels:
+  - switch actions on immediately when a step becomes `WAITING_USER_APPROVAL`
 
-## 3. Architectural Decision Summary
+### 6.3 Guardrails
 
-### Recommended approach
+- Scope subscriptions by `projectId` and `runId` to avoid site-wide churn.
+- Prefer invalidation for list pages and local patching only for active run detail if needed.
 
-Implement dark mode with a dedicated client-side `features/theme` slice backed by Zustand, a single root HTML `.dark` contract, and one canonical CSS token source in the Vite app.
+## 7. State Model Notes
 
-This is the recommended approach because it aligns with CP-14 and existing app architecture:
+### 7.1 Workflow definition vs run-step state
 
-- Zustand is already an accepted lightweight UI state mechanism in this app
-- Vite `index.html` can run the no-flash bootstrap script before `main.tsx`
-- Tailwind v4 token mapping already exists and can be consolidated instead of replaced
-- TanStack Router layout composition provides a single place to mount a theme controller
+- `workflow_steps`:
+  - definition-time only
+  - no runtime status
+- `workflow_run_steps`:
+  - execution-time state machine
+  - owns status, retry count, rejection note, artifact/prompt cache references, timestamps, error message
 
-### Rejected alternatives
+### 7.2 Status handling
 
-#### Option A: React Context as theme source of truth
+Supported run-step statuses:
 
-Not recommended.
+- `PENDING`
+- `RUNNING`
+- `WAITING_USER_APPROVAL`
+- `DONE`
+- `FAILED`
+- `SKIPPED`
 
-- It duplicates the state-management role already assigned to Zustand
-- persistence and cross-component reads become more ad hoc
-- it gives no advantage over Zustand for this scope
+Required UX implications:
 
-#### Option B: CSS-only system dark mode without application state
+- `PENDING`: queued, not active
+- `RUNNING`: highlight current step
+- `WAITING_USER_APPROVAL`: show blocking approval CTA
+- `DONE`: completed
+- `FAILED`: show error summary and stop-state
+- `SKIPPED`: visibly excluded but preserved in timeline
 
-Not recommended.
+## 8. Migration Plan
 
-- it cannot satisfy explicit `light | dark | system` preference persistence cleanly
-- it cannot expose a reliable three-state UI switcher
-- it weakens testability of theme selection behavior
+### 8.1 Short-term coexistence
 
-## 4. Target Architecture
+- Keep old legacy workflow pages/use cases untouched initially.
+- Build canonical workflow engine under project routes first.
+- Reuse shared shell/navigation/components where possible.
 
-### 4.1 Theme feature boundary
+### 8.2 Canonical-first replacement targets
 
-Create a dedicated feature under:
+Replace placeholder:
+- `apps/admin-web/src/routes/_authenticated/projects/$projectId/workflows.tsx`
 
-`apps/admin-web/src/features/theme/`
+Eventually migrate or retire legacy consumers:
+- dashboard “latest workflow activity” widgets
+- legacy approvals/output pages
+- old workflow-definition/run use cases
 
-Planned files:
+## 9. Implementation Sequence
 
-- `theme-store.ts`
-- `theme-storage.ts`
-- `theme-dom.ts`
-- `theme-controller.tsx`
-- `use-theme.ts`
-- `theme-bootstrap.ts`
+### Phase A - Domain and repository foundation
 
-Responsibilities:
+1. Add canonical domain entities/payloads/responses/gateway.
+2. Add Supabase mapper methods for canonical tables.
+3. Add demo-store canonical fixtures.
+4. Add use cases for list/detail/save/start/approve/reject.
 
-- `theme-store.ts`
-  - owns Zustand theme state
-  - stores `preference`
-  - derives `resolvedTheme`
-  - exposes `setPreference`
-  - exposes `onSystemPreferenceChange`
+### Phase B - Workflow Builder
 
-- `theme-storage.ts`
-  - owns the canonical storage key: `"flowpilot-theme-preference"`
-  - isolates safe localStorage read/write behavior
-  - normalizes unknown stored values to `system`
+1. Replace placeholder project route with workflow index.
+2. Add workflow detail route and builder shell.
+3. Implement step catalog + ordered step editor.
+4. Implement save workflow flow.
 
-- `theme-dom.ts`
-  - centralizes all DOM writes to `document.documentElement`
-  - applies/removes the `.dark` class
-  - optionally sets `color-scheme` for native control rendering parity
+### Phase C - Execution Dashboard
 
-- `theme-controller.tsx`
-  - mounts once inside the React app
-  - subscribes to system media query changes
-  - syncs store state with DOM state
-  - prevents theme logic from leaking into arbitrary route components
+1. Add run launch dialog.
+2. Add run detail route and execution dashboard.
+3. Show run-step timeline, log panel, prompt-cache badge, artifact placeholder link.
 
-- `use-theme.ts`
-  - exposes the narrow public hook API used by UI components
+### Phase D - Realtime and approvals
 
-- `theme-bootstrap.ts`
-  - provides shared bootstrap-safe helpers for reading preference and resolving theme
-  - keeps bootstrap logic aligned with runtime logic
+1. Add run and run-step subscriptions.
+2. Implement approve action.
+3. Implement reject & retry action with required note.
+4. Validate YOLO-mode behavior in UI states.
 
-### 4.2 State model
+### Phase E - Legacy cleanup follow-up
 
-Canonical types:
+1. Point dashboard summaries to canonical queries.
+2. Decommission legacy workflow-definition/run assumptions where safe.
 
-```ts
-export type ThemePreference = "light" | "dark" | "system";
-export type ResolvedTheme = "light" | "dark";
-```
+## 10. Risks and Mitigations
 
-Recommended store shape:
-
-```ts
-interface ThemeState {
-  preference: ThemePreference;
-  resolvedTheme: ResolvedTheme;
-  setPreference: (value: ThemePreference) => void;
-  onSystemPreferenceChange: () => void;
-}
-```
-
-Behavior rules:
-
-- initial preference loads from `"flowpilot-theme-preference"`
-- invalid or missing persisted value resolves to `system`
-- `resolvedTheme` depends on `window.matchMedia("(prefers-color-scheme: dark)")` when preference is `system`
-- explicit `light` or `dark` bypass system preference
-- every state change must update both storage and root DOM theme
-
-### 4.3 Root theme application contract
-
-Theme application standard:
-
-- source of truth for visual mode is the `.dark` class on `<html>`
-- bootstrap script runs in `apps/admin-web/index.html` before `src/main.tsx`
-- React runtime does not guess the initial theme; it hydrates around the already-applied HTML class
-
-Flow:
-
-1. `index.html` inline bootstrap script reads `"flowpilot-theme-preference"`
-2. script resolves final theme with system preference fallback
-3. script toggles `document.documentElement.classList`
-4. React mounts
-5. `theme-controller.tsx` attaches media-query listener and keeps runtime state synchronized
-
-This split is important because the bootstrap path solves FOWT while the React controller solves ongoing updates.
-
-### 4.4 CSS token architecture
-
-For the Vite route tree, `apps/admin-web/src/styles.css` should become the single canonical token source.
-
-Reasoning:
-
-- `src/main.tsx` imports `./styles.css`
-- the Vite route tree appears to be the active implementation surface for CP-14
-- `src/app/globals.css` belongs to the parallel Next-style app tree and should not become a second source of truth for the same UI contract
-
-Required token groups:
-
-- `--background`
-- `--foreground`
-- `--muted`
-- `--muted-foreground`
-- `--card`
-- `--card-foreground`
-- `--border`
-- `--accent`
-- `--accent-foreground`
-- `--warning`
-- `--danger`
-- `--success`
-
-Architecture rules:
-
-- light tokens live under `:root`
-- dark tokens live under `.dark`
-- `@theme inline` remains semantic and maps only to CSS variables
-- component code uses semantic Tailwind utilities instead of raw grayscale values
-- decorative gradients and shadows must also become token-driven or dual-mode aware
-
-### 4.5 UI composition points
-
-Mount points:
-
-- `apps/admin-web/index.html`
-  - bootstrap script
-
-- `apps/admin-web/src/app.tsx`
-  - mount `ThemeController` near other app-wide providers
-
-- `apps/admin-web/src/routes/__root.tsx`
-  - optional alternative mount point if route-root lifecycle is preferred
-
-- `apps/admin-web/src/components/layout/app-shell.tsx`
-  - global theme switcher placement for authenticated users
-
-- `apps/admin-web/src/routes/login.tsx`
-  - public route dark-mode parity and optional public switcher placement if desired
-
-Recommended composition:
-
-- put the bootstrap in `index.html`
-- put `ThemeController` in `src/app.tsx`
-- put the visible switcher in `AppShell`
-- keep route pages free of direct DOM theme mutations
-
-## 5. Shared UI Audit Strategy
-
-Dark mode should be implemented from shared primitives outward. This minimizes repeated route work.
-
-### Tier 1: Foundation surfaces
-
-Audit first:
-
-- `src/styles.css`
-- `src/components/layout/app-shell.tsx`
-- `src/components/ui/button.tsx`
-- `src/components/common/page-frame.tsx`
-- `src/components/common/placeholder-page.tsx`
-- `src/routes/login.tsx`
-
-Expected changes:
-
-- replace remaining hard-coded light-biased values with semantic classes
-- adjust panel backgrounds, borders, shadows, and noise backgrounds for dark readability
-- ensure inputs, buttons, and helper text have dark contrast parity
-
-### Tier 2: Shared route patterns
-
-Audit route clusters that likely reuse similar card, form, and panel structures:
-
-- dashboard
-- projects list/detail subroutes
-- settings routes
-- MCP server routes
-- workflow and output routes
-- teams and AI runs routes
-
-Expected changes:
-
-- fix isolated hard-coded `bg-white`, `text-black`, `border-gray-*`, `shadow-black/*`
-- verify empty states, tables, badges, and status messaging in dark mode
-- verify translucent layers and blur surfaces remain readable
-
-### Tier 3: Overlays and edge states
-
-Pay special attention to:
-
-- overlays and backdrops
-- disabled states
-- focus states
-- validation and error states
-- text selection
-- hover and pressed states
-
-Known early risk:
-
-- `src/routes/_authenticated/settings/mcp-servers.tsx` already uses an explicit `dark:` overlay treatment, which suggests other pages may contain one-off color handling that must be normalized rather than expanded.
-
-## 6. Theme Switcher Architecture
-
-Provide one reusable presentation component, for example:
-
-- `src/features/theme/components/theme-switcher.tsx`
-
-Responsibilities:
-
-- render the three choices: `Light`, `Dark`, `System`
-- read current `preference` and `resolvedTheme`
-- update immediately through `setPreference`
-
-Placement strategy:
-
-- primary location: authenticated app shell header or top utility row
-- secondary optional location: settings page
-
-Architecture rules:
-
-- the switcher reads state through `useTheme()`
-- the switcher does not manipulate DOM classes directly
-- visual active state should reflect `preference`, not just `resolvedTheme`
-
-## 7. Testing and Verification Architecture
-
-### Automated coverage
-
-Add or update tests in these categories:
-
-- store tests
-  - preference persistence
-  - invalid-storage fallback
-  - `system` resolution behavior
-
-- DOM/theme sync tests
-  - `.dark` class application
-  - system preference change listener behavior
-
-- component tests
-  - switcher updates selection state
-  - app shell renders toggle safely
-
-- route smoke tests
-  - key route components render under dark-mode class without regressions
-
-### Manual visual QA matrix
-
-Check each route in:
-
-- light preference
-- dark preference
-- system preference with OS light
-- system preference with OS dark
-
-Validate:
-
-- no flash of wrong theme on refresh
-- body, shell, cards, panels, dialogs, forms, tables, and placeholders all adapt
-- contrast is acceptable for primary text, secondary text, borders, buttons, and alerts
-
-## 8. Rollout Sequence
-
-1. Build theme foundation in `src/features/theme`
-2. Add no-flash bootstrap in `index.html`
-3. Mount `ThemeController` in `src/app.tsx`
-4. Consolidate Vite token architecture into `src/styles.css`
-5. Refactor shared shell and common primitives
-6. Add visible theme switcher in app shell
-7. Audit public login route
-8. Audit authenticated route families
-9. Add/expand smoke tests and manual QA checklist
-
-This sequence is intentionally foundation-first so later route work becomes mostly cleanup instead of parallel theming implementations.
-
-## 9. Risks and Mitigations
-
-### Risk 1: Dual CSS entrypoint drift
-
-Cause:
-
-- `src/styles.css` and `src/app/globals.css` currently duplicate token definitions
+### Risk 1 - Legacy and canonical naming collision
 
 Mitigation:
+- new domain files should be explicitly named `workflow-engine-*`
+- avoid reusing old `WorkflowStep` runtime semantics
 
-- treat `src/styles.css` as canonical for the Vite admin app
-- do not maintain parallel dark token definitions for the same runtime surface
-
-### Risk 2: Bootstrap/runtime mismatch
-
-Cause:
-
-- inline bootstrap and React runtime may resolve theme differently
+### Risk 2 - CP-06 artifact dependency gap
 
 Mitigation:
+- model artifact references as nullable links in run-step detail UI
+- ship placeholders now, full artifact detail wiring in CP-06
 
-- share normalization and resolution helpers via `theme-bootstrap.ts`
-- keep one storage key and one resolution algorithm
-
-### Risk 3: Hard-coded component colors survive audit
-
-Cause:
-
-- current primitives and route screens still contain direct color literals
+### Risk 3 - Approval state drift
 
 Mitigation:
+- keep approval decisions as direct run-step transitions in one use case path
+- derive UI from run-step state, not a second shadow state
 
-- audit shared components before route pages
-- search for raw color utilities and token violations as part of implementation
-
-### Risk 4: System preference listener leaks
-
-Cause:
-
-- `matchMedia` listeners can accumulate if mounted in multiple places
+### Risk 4 - Realtime over-invalidation
 
 Mitigation:
+- scope channels
+- use stable query keys
+- limit active subscriptions to mounted project/run pages
 
-- mount exactly one `ThemeController`
-- centralize listener registration and cleanup there
+## 11. Definition of Done For Coding Phase
 
-## 10. Definition of Done
-
-CP-14 is architecturally complete when:
-
-- `apps/admin-web` has a dedicated theme feature with Zustand-based preference state
-- the canonical storage key is `"flowpilot-theme-preference"`
-- `index.html` applies the correct `.dark` class before React paint
-- theme DOM mutation is centralized rather than scattered across components
-- Vite global tokens are consolidated into one canonical source
-- shared shell and common primitives are dark-safe
-- all current public and authenticated routes have been audited for dark-mode parity
-- route smoke coverage and manual visual QA checklist are in place
+- Project workflow route is no longer a placeholder.
+- Users can create/edit workflows from the 17 seeded step definitions.
+- Users can enable/disable/reorder steps and toggle approval requirements.
+- Users can start a run with YOLO/provider/model options.
+- Run detail reflects canonical `workflow_run_steps` state.
+- Waiting approval steps expose approve and reject-retry actions.
+- Realtime updates keep run detail current.
+- New code uses canonical workflow tables and does not add new dependency on legacy `ai_outputs` runtime flow.

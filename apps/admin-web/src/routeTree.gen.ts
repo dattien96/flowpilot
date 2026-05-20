@@ -12,10 +12,16 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as AuthenticatedRouteImport } from './routes/_authenticated'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AuthenticatedWorkflowsRouteImport } from './routes/_authenticated/workflows'
+import { Route as AuthenticatedWorkflowStepsRouteImport } from './routes/_authenticated/workflow-steps'
+import { Route as AuthenticatedWorkflowRunsRouteImport } from './routes/_authenticated/workflow-runs'
 import { Route as AuthenticatedTeamsRouteImport } from './routes/_authenticated/teams'
 import { Route as AuthenticatedDashboardRouteImport } from './routes/_authenticated/dashboard'
 import { Route as AuthenticatedAiRunsRouteImport } from './routes/_authenticated/ai-runs'
 import { Route as AuthenticatedProjectsIndexRouteImport } from './routes/_authenticated/projects/index'
+import { Route as AuthenticatedWorkflowsCreateRouteImport } from './routes/_authenticated/workflows/create'
+import { Route as AuthenticatedWorkflowsWorkflowIdRouteImport } from './routes/_authenticated/workflows/$workflowId'
+import { Route as AuthenticatedWorkflowStepsCreateRouteImport } from './routes/_authenticated/workflow-steps/create'
 import { Route as AuthenticatedSettingsRunnerRouteImport } from './routes/_authenticated/settings/runner'
 import { Route as AuthenticatedSettingsPromptTemplatesRouteImport } from './routes/_authenticated/settings/prompt-templates'
 import { Route as AuthenticatedSettingsMcpServersRouteImport } from './routes/_authenticated/settings/mcp-servers'
@@ -47,6 +53,23 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthenticatedWorkflowsRoute = AuthenticatedWorkflowsRouteImport.update({
+  id: '/workflows',
+  path: '/workflows',
+  getParentRoute: () => AuthenticatedRoute,
+} as any)
+const AuthenticatedWorkflowStepsRoute =
+  AuthenticatedWorkflowStepsRouteImport.update({
+    id: '/workflow-steps',
+    path: '/workflow-steps',
+    getParentRoute: () => AuthenticatedRoute,
+  } as any)
+const AuthenticatedWorkflowRunsRoute =
+  AuthenticatedWorkflowRunsRouteImport.update({
+    id: '/workflow-runs',
+    path: '/workflow-runs',
+    getParentRoute: () => AuthenticatedRoute,
+  } as any)
 const AuthenticatedTeamsRoute = AuthenticatedTeamsRouteImport.update({
   id: '/teams',
   path: '/teams',
@@ -67,6 +90,24 @@ const AuthenticatedProjectsIndexRoute =
     id: '/projects/',
     path: '/projects/',
     getParentRoute: () => AuthenticatedRoute,
+  } as any)
+const AuthenticatedWorkflowsCreateRoute =
+  AuthenticatedWorkflowsCreateRouteImport.update({
+    id: '/create',
+    path: '/create',
+    getParentRoute: () => AuthenticatedWorkflowsRoute,
+  } as any)
+const AuthenticatedWorkflowsWorkflowIdRoute =
+  AuthenticatedWorkflowsWorkflowIdRouteImport.update({
+    id: '/$workflowId',
+    path: '/$workflowId',
+    getParentRoute: () => AuthenticatedWorkflowsRoute,
+  } as any)
+const AuthenticatedWorkflowStepsCreateRoute =
+  AuthenticatedWorkflowStepsCreateRouteImport.update({
+    id: '/create',
+    path: '/create',
+    getParentRoute: () => AuthenticatedWorkflowStepsRoute,
   } as any)
 const AuthenticatedSettingsRunnerRoute =
   AuthenticatedSettingsRunnerRouteImport.update({
@@ -171,12 +212,18 @@ export interface FileRoutesByFullPath {
   '/ai-runs': typeof AuthenticatedAiRunsRoute
   '/dashboard': typeof AuthenticatedDashboardRoute
   '/teams': typeof AuthenticatedTeamsRoute
+  '/workflow-runs': typeof AuthenticatedWorkflowRunsRoute
+  '/workflow-steps': typeof AuthenticatedWorkflowStepsRouteWithChildren
+  '/workflows': typeof AuthenticatedWorkflowsRouteWithChildren
   '/projects/$projectId': typeof AuthenticatedProjectsProjectIdRouteWithChildren
   '/projects/create': typeof AuthenticatedProjectsCreateRoute
   '/settings/integrations': typeof AuthenticatedSettingsIntegrationsRoute
   '/settings/mcp-servers': typeof AuthenticatedSettingsMcpServersRouteWithChildren
   '/settings/prompt-templates': typeof AuthenticatedSettingsPromptTemplatesRoute
   '/settings/runner': typeof AuthenticatedSettingsRunnerRoute
+  '/workflow-steps/create': typeof AuthenticatedWorkflowStepsCreateRoute
+  '/workflows/$workflowId': typeof AuthenticatedWorkflowsWorkflowIdRoute
+  '/workflows/create': typeof AuthenticatedWorkflowsCreateRoute
   '/projects/': typeof AuthenticatedProjectsIndexRoute
   '/projects/$projectId/business-logic': typeof AuthenticatedProjectsProjectIdBusinessLogicRoute
   '/projects/$projectId/coding-plan': typeof AuthenticatedProjectsProjectIdCodingPlanRoute
@@ -195,12 +242,18 @@ export interface FileRoutesByTo {
   '/ai-runs': typeof AuthenticatedAiRunsRoute
   '/dashboard': typeof AuthenticatedDashboardRoute
   '/teams': typeof AuthenticatedTeamsRoute
+  '/workflow-runs': typeof AuthenticatedWorkflowRunsRoute
+  '/workflow-steps': typeof AuthenticatedWorkflowStepsRouteWithChildren
+  '/workflows': typeof AuthenticatedWorkflowsRouteWithChildren
   '/projects/$projectId': typeof AuthenticatedProjectsProjectIdRouteWithChildren
   '/projects/create': typeof AuthenticatedProjectsCreateRoute
   '/settings/integrations': typeof AuthenticatedSettingsIntegrationsRoute
   '/settings/mcp-servers': typeof AuthenticatedSettingsMcpServersRouteWithChildren
   '/settings/prompt-templates': typeof AuthenticatedSettingsPromptTemplatesRoute
   '/settings/runner': typeof AuthenticatedSettingsRunnerRoute
+  '/workflow-steps/create': typeof AuthenticatedWorkflowStepsCreateRoute
+  '/workflows/$workflowId': typeof AuthenticatedWorkflowsWorkflowIdRoute
+  '/workflows/create': typeof AuthenticatedWorkflowsCreateRoute
   '/projects': typeof AuthenticatedProjectsIndexRoute
   '/projects/$projectId/business-logic': typeof AuthenticatedProjectsProjectIdBusinessLogicRoute
   '/projects/$projectId/coding-plan': typeof AuthenticatedProjectsProjectIdCodingPlanRoute
@@ -221,12 +274,18 @@ export interface FileRoutesById {
   '/_authenticated/ai-runs': typeof AuthenticatedAiRunsRoute
   '/_authenticated/dashboard': typeof AuthenticatedDashboardRoute
   '/_authenticated/teams': typeof AuthenticatedTeamsRoute
+  '/_authenticated/workflow-runs': typeof AuthenticatedWorkflowRunsRoute
+  '/_authenticated/workflow-steps': typeof AuthenticatedWorkflowStepsRouteWithChildren
+  '/_authenticated/workflows': typeof AuthenticatedWorkflowsRouteWithChildren
   '/_authenticated/projects/$projectId': typeof AuthenticatedProjectsProjectIdRouteWithChildren
   '/_authenticated/projects/create': typeof AuthenticatedProjectsCreateRoute
   '/_authenticated/settings/integrations': typeof AuthenticatedSettingsIntegrationsRoute
   '/_authenticated/settings/mcp-servers': typeof AuthenticatedSettingsMcpServersRouteWithChildren
   '/_authenticated/settings/prompt-templates': typeof AuthenticatedSettingsPromptTemplatesRoute
   '/_authenticated/settings/runner': typeof AuthenticatedSettingsRunnerRoute
+  '/_authenticated/workflow-steps/create': typeof AuthenticatedWorkflowStepsCreateRoute
+  '/_authenticated/workflows/$workflowId': typeof AuthenticatedWorkflowsWorkflowIdRoute
+  '/_authenticated/workflows/create': typeof AuthenticatedWorkflowsCreateRoute
   '/_authenticated/projects/': typeof AuthenticatedProjectsIndexRoute
   '/_authenticated/projects/$projectId/business-logic': typeof AuthenticatedProjectsProjectIdBusinessLogicRoute
   '/_authenticated/projects/$projectId/coding-plan': typeof AuthenticatedProjectsProjectIdCodingPlanRoute
@@ -247,12 +306,18 @@ export interface FileRouteTypes {
     | '/ai-runs'
     | '/dashboard'
     | '/teams'
+    | '/workflow-runs'
+    | '/workflow-steps'
+    | '/workflows'
     | '/projects/$projectId'
     | '/projects/create'
     | '/settings/integrations'
     | '/settings/mcp-servers'
     | '/settings/prompt-templates'
     | '/settings/runner'
+    | '/workflow-steps/create'
+    | '/workflows/$workflowId'
+    | '/workflows/create'
     | '/projects/'
     | '/projects/$projectId/business-logic'
     | '/projects/$projectId/coding-plan'
@@ -271,12 +336,18 @@ export interface FileRouteTypes {
     | '/ai-runs'
     | '/dashboard'
     | '/teams'
+    | '/workflow-runs'
+    | '/workflow-steps'
+    | '/workflows'
     | '/projects/$projectId'
     | '/projects/create'
     | '/settings/integrations'
     | '/settings/mcp-servers'
     | '/settings/prompt-templates'
     | '/settings/runner'
+    | '/workflow-steps/create'
+    | '/workflows/$workflowId'
+    | '/workflows/create'
     | '/projects'
     | '/projects/$projectId/business-logic'
     | '/projects/$projectId/coding-plan'
@@ -296,12 +367,18 @@ export interface FileRouteTypes {
     | '/_authenticated/ai-runs'
     | '/_authenticated/dashboard'
     | '/_authenticated/teams'
+    | '/_authenticated/workflow-runs'
+    | '/_authenticated/workflow-steps'
+    | '/_authenticated/workflows'
     | '/_authenticated/projects/$projectId'
     | '/_authenticated/projects/create'
     | '/_authenticated/settings/integrations'
     | '/_authenticated/settings/mcp-servers'
     | '/_authenticated/settings/prompt-templates'
     | '/_authenticated/settings/runner'
+    | '/_authenticated/workflow-steps/create'
+    | '/_authenticated/workflows/$workflowId'
+    | '/_authenticated/workflows/create'
     | '/_authenticated/projects/'
     | '/_authenticated/projects/$projectId/business-logic'
     | '/_authenticated/projects/$projectId/coding-plan'
@@ -344,6 +421,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_authenticated/workflows': {
+      id: '/_authenticated/workflows'
+      path: '/workflows'
+      fullPath: '/workflows'
+      preLoaderRoute: typeof AuthenticatedWorkflowsRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/workflow-steps': {
+      id: '/_authenticated/workflow-steps'
+      path: '/workflow-steps'
+      fullPath: '/workflow-steps'
+      preLoaderRoute: typeof AuthenticatedWorkflowStepsRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/workflow-runs': {
+      id: '/_authenticated/workflow-runs'
+      path: '/workflow-runs'
+      fullPath: '/workflow-runs'
+      preLoaderRoute: typeof AuthenticatedWorkflowRunsRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
     '/_authenticated/teams': {
       id: '/_authenticated/teams'
       path: '/teams'
@@ -371,6 +469,27 @@ declare module '@tanstack/react-router' {
       fullPath: '/projects/'
       preLoaderRoute: typeof AuthenticatedProjectsIndexRouteImport
       parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/workflows/create': {
+      id: '/_authenticated/workflows/create'
+      path: '/create'
+      fullPath: '/workflows/create'
+      preLoaderRoute: typeof AuthenticatedWorkflowsCreateRouteImport
+      parentRoute: typeof AuthenticatedWorkflowsRoute
+    }
+    '/_authenticated/workflows/$workflowId': {
+      id: '/_authenticated/workflows/$workflowId'
+      path: '/$workflowId'
+      fullPath: '/workflows/$workflowId'
+      preLoaderRoute: typeof AuthenticatedWorkflowsWorkflowIdRouteImport
+      parentRoute: typeof AuthenticatedWorkflowsRoute
+    }
+    '/_authenticated/workflow-steps/create': {
+      id: '/_authenticated/workflow-steps/create'
+      path: '/create'
+      fullPath: '/workflow-steps/create'
+      preLoaderRoute: typeof AuthenticatedWorkflowStepsCreateRouteImport
+      parentRoute: typeof AuthenticatedWorkflowStepsRoute
     }
     '/_authenticated/settings/runner': {
       id: '/_authenticated/settings/runner'
@@ -487,6 +606,38 @@ declare module '@tanstack/react-router' {
   }
 }
 
+interface AuthenticatedWorkflowStepsRouteChildren {
+  AuthenticatedWorkflowStepsCreateRoute: typeof AuthenticatedWorkflowStepsCreateRoute
+}
+
+const AuthenticatedWorkflowStepsRouteChildren: AuthenticatedWorkflowStepsRouteChildren =
+  {
+    AuthenticatedWorkflowStepsCreateRoute:
+      AuthenticatedWorkflowStepsCreateRoute,
+  }
+
+const AuthenticatedWorkflowStepsRouteWithChildren =
+  AuthenticatedWorkflowStepsRoute._addFileChildren(
+    AuthenticatedWorkflowStepsRouteChildren,
+  )
+
+interface AuthenticatedWorkflowsRouteChildren {
+  AuthenticatedWorkflowsWorkflowIdRoute: typeof AuthenticatedWorkflowsWorkflowIdRoute
+  AuthenticatedWorkflowsCreateRoute: typeof AuthenticatedWorkflowsCreateRoute
+}
+
+const AuthenticatedWorkflowsRouteChildren: AuthenticatedWorkflowsRouteChildren =
+  {
+    AuthenticatedWorkflowsWorkflowIdRoute:
+      AuthenticatedWorkflowsWorkflowIdRoute,
+    AuthenticatedWorkflowsCreateRoute: AuthenticatedWorkflowsCreateRoute,
+  }
+
+const AuthenticatedWorkflowsRouteWithChildren =
+  AuthenticatedWorkflowsRoute._addFileChildren(
+    AuthenticatedWorkflowsRouteChildren,
+  )
+
 interface AuthenticatedProjectsProjectIdRouteChildren {
   AuthenticatedProjectsProjectIdBusinessLogicRoute: typeof AuthenticatedProjectsProjectIdBusinessLogicRoute
   AuthenticatedProjectsProjectIdCodingPlanRoute: typeof AuthenticatedProjectsProjectIdCodingPlanRoute
@@ -545,6 +696,9 @@ interface AuthenticatedRouteChildren {
   AuthenticatedAiRunsRoute: typeof AuthenticatedAiRunsRoute
   AuthenticatedDashboardRoute: typeof AuthenticatedDashboardRoute
   AuthenticatedTeamsRoute: typeof AuthenticatedTeamsRoute
+  AuthenticatedWorkflowRunsRoute: typeof AuthenticatedWorkflowRunsRoute
+  AuthenticatedWorkflowStepsRoute: typeof AuthenticatedWorkflowStepsRouteWithChildren
+  AuthenticatedWorkflowsRoute: typeof AuthenticatedWorkflowsRouteWithChildren
   AuthenticatedProjectsProjectIdRoute: typeof AuthenticatedProjectsProjectIdRouteWithChildren
   AuthenticatedProjectsCreateRoute: typeof AuthenticatedProjectsCreateRoute
   AuthenticatedSettingsIntegrationsRoute: typeof AuthenticatedSettingsIntegrationsRoute
@@ -558,6 +712,9 @@ const AuthenticatedRouteChildren: AuthenticatedRouteChildren = {
   AuthenticatedAiRunsRoute: AuthenticatedAiRunsRoute,
   AuthenticatedDashboardRoute: AuthenticatedDashboardRoute,
   AuthenticatedTeamsRoute: AuthenticatedTeamsRoute,
+  AuthenticatedWorkflowRunsRoute: AuthenticatedWorkflowRunsRoute,
+  AuthenticatedWorkflowStepsRoute: AuthenticatedWorkflowStepsRouteWithChildren,
+  AuthenticatedWorkflowsRoute: AuthenticatedWorkflowsRouteWithChildren,
   AuthenticatedProjectsProjectIdRoute:
     AuthenticatedProjectsProjectIdRouteWithChildren,
   AuthenticatedProjectsCreateRoute: AuthenticatedProjectsCreateRoute,

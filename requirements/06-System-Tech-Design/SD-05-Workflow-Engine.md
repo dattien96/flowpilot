@@ -26,6 +26,8 @@ The workflow `.md` files are **NOT pre-generated and saved** inside `.claude/` o
 User triggers workflow in React UI
         ↓
 Supabase stores: workflow_run + ordered workflow_run_steps
+  - workflow_runs carries run-level state, project_id, provider/model, yolo_mode, started_by, and error_message
+  - workflow_run_steps carries execution-time step state, prompt cache link, artifact link, rejection_note, and retry_count
         ↓
 Go-Runner picks up PENDING step
         ↓
@@ -225,16 +227,49 @@ The Go-Runner reads from these folders when assembling the runtime prompt.
 
 ## 6. UI/UX Design (Frontend - React)
 
-- **Workflow Builder:** A drag-and-drop or list-based UI to construct workflows by combining Steps.
+- **Workflow Definition Index:** A workspace page that lists workflow definitions, not workflow runs. It shows built-in global templates and private project-owned workflows, with filters by scope and project.
+- **Create Workflow Page:** A dedicated page for adding a new workflow definition by choosing an owner project, selecting step definitions, and ordering them.
+- **Workflow Builder Detail Page:** A dedicated workflow detail route owns the composer for one selected workflow definition.
   - Ability to enable/disable steps, re-order them, and add/remove steps.
-- **Templates Menu:** Pre-defined templates for Developers, Solo Devs, Leaders, and PMs (e.g., "Bug Fix Flow", "Full End-to-End Flow").
-- **Execution Dashboard:** A screen to start a workflow and view its real-time progress across steps. Each step shows: status badge (`PENDING`, `RUNNING`, `WAITING_USER_APPROVAL`, `DONE`, `FAILED`, `SKIPPED`), elapsed time, and a link to view the generated artifact.
+  - Per-step controls for approval gate, provider override, and model override.
+  - After save, display the generated prompt cache hash when available.
+- **Step Definition Index:** A workspace page that shows the full list of reusable step definitions.
+- **Create Step Page:** A dedicated page for creating reusable step definitions with `step_type`, `name`, `description`, `required_mcps`, `required_skills`, and `agent_type`.
+- **Templates Menu:** Pre-defined templates for Developers, Solo Devs, Leaders, and PMs.
+- **Execution Dashboard:** A screen to start a workflow and view its real-time progress across steps. Each step shows: status badge (`PENDING`, `RUNNING`, `WAITING_USER_APPROVAL`, `DONE`, `FAILED`, `SKIPPED`), elapsed time, provider/model, prompt file link, and a link to view the generated artifact.
+- **Workflow Run History Page:** A workspace page that shows workflow run history and supports filtering by workflow type, global-vs-private scope, and project.
+- **Realtime Updates:** The frontend subscribes to `workflow_run_steps` updates for the active run and refreshes dashboard data from the updated step payload.
+- **Approval Gate UI:** When a step enters `WAITING_USER_APPROVAL`, show artifact preview plus "Approve & Continue" and "Reject & Retry". Reject requires a rejection note and retries the same `workflow_run_steps` row.
+- **YOLO Mode:** Persisted per run on `workflow_runs.yolo_mode`. The dashboard header exposes the toggle and visual badge. Toggle mutations must go through a trusted Edge Function such as `/workflow-runs/toggle-yolo`, limited to project owners, leaders, or the user who started the run.
+- **Project Trigger Entry:** The project detail workflow tab acts as an entry page, not as an embedded builder. It must expose buttons to browse workflow definitions, create a new private workflow, and review recent run history for that project.
+- **List-to-Builder Flow:** Workflow definition cards in the workspace list must navigate to the dedicated workflow detail/builder route so users can open, inspect, compose, and launch from the item they selected.
+
+### 6.1 Built-In Templates and Private Workflows
+
+Built-in templates are stored as seeded `workflows` rows with `is_template = true`, with their ordered steps stored in `workflow_steps`. Private workflows are also stored in `workflows`, but are owned by one project via `workflows.project_id`. `step_definitions` is the shared catalogue for the 17 MVP step types plus any later custom reusable step definitions, and provides names, descriptions, required MCPs, required skills, and agent type.
+
+| Template | Persona | Steps |
+|----------|---------|-------|
+| Bug Fix Flow | Developer | Traceability -> Issue Analysis -> Tech Spec -> Plan -> Code/Review -> Release |
+| Pre-defined Feature | Developer | Tech Spec -> Plan -> Architecture -> TDD -> Code/Review -> Release -> Notify |
+| Bug Traceability | Developer | Code Traceability |
+| Onboarding | Developer | Onboarding Walkthrough |
+| Full End-to-End | Solo Dev | Business Idea -> Feature Intake -> Business Summary -> Product Spec -> Tech Spec -> Plan -> Arch -> TDD -> Code/Review -> Release -> Notify |
+| Fast-Track Business | Solo Dev | Product Spec -> Tech Spec -> Plan -> Arch -> TDD -> Code/Review -> Release |
+| Task Breakdown | Leader | Tech Spec -> Plan -> Task Breakdown |
+| Root Cause Analysis | Leader | Traceability -> Issue Analysis -> Task Breakdown -> Notify |
+| Analytics & Usage | Leader | Analytics Review |
+| Product Process & Analysis | PM/Owner | Business Idea -> Feature Intake -> Business Summary -> Product Spec -> Project Analysis -> Analytics Review |
 
 ## 7. Database Design (Supabase)
 
 ### 7.1 Workflow Definition Tables
-- `workflows` table: `id`, `project_id`, `name`, `is_template`, `created_at`.
-- `workflow_steps` table: `id`, `workflow_id`, `step_type` (enum for the 17 MVP steps), `order_index`, `is_enabled`, `provider_override`, `model_override`, `requires_approval`.
+- `workflows` table: `id`, `project_id`, `name`, `description`, `is_template`, `provider_override`, `model_override`, `created_by`, `created_at`, `updated_at`.
+- `workflow_steps` table: `id`, `workflow_id`, `step_type` (enum for the 17 MVP steps), `order_index`, `is_enabled`, `provider_override`, `model_override`, `requires_approval`, `created_at`, `updated_at`.
+- `workflow_steps` stores definition-time configuration only. Execution state must never be written here.
+- `workflows.project_id = null` means a global reusable workflow definition.
+- `workflows.project_id = <project uuid>` means a private workflow owned by exactly one project.
+- Seed the 10 built-in templates from SS-04 as `workflows.is_template = true` plus ordered `workflow_steps` rows, with `project_id = null`.
 
 ### 7.2 Workflow Prompt Cache Table
 - `workflow_prompt_cache` table:
@@ -255,65 +290,92 @@ The Go-Runner reads from these folders when assembling the runtime prompt.
 4. When user modifies workflow config → UPDATE all matching records: `SET is_valid = false, invalidated_at = NOW()`.
 
 ### 7.3 Workflow Execution Tables
-- `workflow_runs` table: `id`, `workflow_id`, `status` (PENDING/RUNNING/DONE/FAILED), `provider`, `model`, `started_at`, `finished_at`.
-- `workflow_run_steps` table: `id`, `workflow_run_id`, `workflow_step_id`, `status`, `artifact_id`, `prompt_cache_id` (FK → workflow_prompt_cache), `started_at`, `finished_at`, `error_message`.
-- `workflow_run_logs` table: `id`, `workflow_run_step_id`, `log_level`, `message`, `timestamp`.
+- `workflow_runs` table: `id`, `workflow_id`, `project_id`, `status` (`PENDING`/`RUNNING`/`DONE`/`FAILED`/`CANCELED`), `provider`, `model`, `yolo_mode`, `started_by`, `started_at`, `finished_at`, `error_message`.
+- `workflow_run_steps` table: `id`, `workflow_run_id`, `workflow_step_id`, `step_type`, `status` (`PENDING`/`RUNNING`/`WAITING_USER_APPROVAL`/`DONE`/`FAILED`/`SKIPPED`), `artifact_id`, `prompt_cache_id` (FK -> workflow_prompt_cache), `rejection_note`, `retry_count`, `started_at`, `finished_at`, `error_message`.
+- `workflow_run_logs` table: `id`, `workflow_run_step_id`, `log_level`, `message`, `created_at`.
+- `artifact_id` points to canonical artifacts when the artifacts table exists; CP-06 owns final FK alignment.
+- `workflow_runs.project_id` is always the actual project where execution happens, even when the selected workflow definition is global.
 
-### 7.4 Step Definition Seed Table
-- `step_definitions` (seeded/static): `step_type`, `name`, `description`, `required_mcps` (JSON array), `required_skills` (JSON array), `agent_type`.
+### 7.4 Step Definition Table
+- `step_definitions`: `step_type`, `name`, `description`, `required_mcps` (JSON array), `required_skills` (JSON array), `agent_type`.
+- `step_definitions` must seed all 17 MVP step types from SS-04.
+- Built-in seeded rows and later custom reusable rows live in the same table.
+- The admin workflow UI may create additional reusable step definitions through a dedicated create-step page.
+
+### 7.5 Row-Level Security
+- Enable RLS on `workflows`, `workflow_steps`, `workflow_runs`, `workflow_run_steps`, `workflow_prompt_cache`, `workflow_run_logs`, and `step_definitions`.
+- Global workflows are readable by authenticated users.
+- Private workflows are readable/writable only by members of the owning project team.
+- Workflow run tables are scoped to the project team of `workflow_runs.project_id`.
+- `step_definitions` allows authenticated read plus controlled admin writes for creating reusable custom step definitions.
+- Privileged state transitions, including YOLO toggles and approval/retry updates, must go through Edge Functions or the Go-Runner API so transition rules are validated server-side.
 
 ## 8. Go-Runner Step Execution Algorithm
 
 ```
 function executeWorkflowRun(runId):
+    run = fetchWorkflowRun(runId)
+    if run.status == CANCELED:
+        stop execution
+
     steps = fetchOrderedSteps(runId)  // from Supabase, ordered by order_index
     
     for each step in steps:
+        run = fetchWorkflowRun(runId)  // refresh yolo_mode/cancel state before each step
+        if run.status == CANCELED:
+            stop execution
+
         if step.is_enabled == false:
             skip → mark as SKIPPED
             continue
-        
-        // 1. Validate prerequisites
-        requiredMcps = getStepDefinition(step.step_type).required_mcps
-        projectMcps  = getProjectContexts(step.project_id)
-        if missing MCP → FAIL step with error "Missing required MCP: Jira"
-        
-        // 2. Resolve provider/model
-        provider = step.provider_override ?? run.provider ?? project.default_provider
-        model    = step.model_override ?? run.model ?? project.default_model
-        
-        // 3. Check prompt cache
-        configHash = computeHash(step, provider, model, skills)
-        cached = queryPromptCache(configHash)  // SELECT FROM workflow_prompt_cache
-        
-        if cached != null AND cached.is_valid:
-            // 4a. Reuse cached workflow .md (inject runtime context)
-            promptFile = "/built-in-workflow/" + cached.file_path
-            promptFile = injectRuntimeContext(promptFile, previousArtifacts, mcpData, userContext)
-        else:
-            // 4b. Assemble new prompt and save to /built-in-workflow/
-            prompt = assemblePrompt(step, skills)  // structural template only
-            promptFile = saveToBuiltInWorkflow(configHash, step.step_type, prompt)
-            insertPromptCache(configHash, promptFile, step.step_type, provider)
-            promptFile = injectRuntimeContext(promptFile, previousArtifacts, mcpData, userContext)
-        
-        // 5. Resolve prompt memory
-        promptMemory = resolveContext(step, mcpData, userContext)
-        promptFile = injectPromptMemory(promptFile, promptMemory)
-        
-        // 6. Execute via provider CLI
-        output = executeProvider(provider, model, promptFile)
-        
-        // 7. Parse output → save artifact and working memory
-        artifact = parseAndSaveArtifact(output, step)
-        generateArtifactMemory(artifact)
-        
-        // 8. Check approval gate
-        if step.requires_approval AND NOT yoloMode:
-            updateStatus(step, WAITING_USER_APPROVAL)
-            waitForApproval()  // blocks until user approves in UI
-        
-        // 9. Mark step as DONE
-        updateStatus(step, DONE)
-        previousArtifacts.append(artifact)
+
+        while step.status == PENDING:
+            // 1. Validate prerequisites
+            requiredMcps = getStepDefinition(step.step_type).required_mcps
+            projectMcps  = getProjectContexts(run.project_id)
+            if missing MCP → FAIL step with error "Missing required MCP: Jira"
+
+            // 2. Resolve provider/model
+            provider = step.provider_override ?? run.provider ?? project.default_provider
+            model    = step.model_override ?? run.model ?? project.default_model
+
+            // 3. Check prompt cache
+            configHash = computeHash(step, provider, model, skills)
+            cached = queryPromptCache(configHash)  // SELECT FROM workflow_prompt_cache
+
+            if cached != null AND cached.is_valid:
+                // 4a. Reuse cached workflow .md (inject runtime context)
+                promptFile = "/built-in-workflow/" + cached.file_path
+                promptFile = injectRuntimeContext(promptFile, previousArtifacts, mcpData, userContext)
+            else:
+                // 4b. Assemble new prompt and save to /built-in-workflow/
+                prompt = assemblePrompt(step, skills)  // structural template only
+                promptFile = saveToBuiltInWorkflow(configHash, step.step_type, prompt)
+                insertPromptCache(configHash, promptFile, step.step_type, provider)
+                promptFile = injectRuntimeContext(promptFile, previousArtifacts, mcpData, userContext)
+
+            // 5. Resolve prompt memory
+            promptMemory = resolveContext(step, mcpData, userContext)
+            promptFile = injectPromptMemory(promptFile, promptMemory)
+
+            // 6. Execute via provider CLI
+            output = executeProvider(provider, model, promptFile)
+
+            // 7. Parse output → save artifact and working memory
+            artifact = parseAndSaveArtifact(output, step)
+            generateArtifactMemory(artifact)
+
+            // 8. Check approval gate
+            if step.requires_approval AND NOT run.yolo_mode:
+                updateStatus(step, WAITING_USER_APPROVAL)
+                approval = waitForApproval()  // Edge Function returns approve/reject
+                if approval == rejected:
+                    store rejection_note, increment retry_count, mark step PENDING
+                    step = refetchStep(step.id)
+                    continue
+
+            // 9. Mark step as DONE
+            updateStatus(step, DONE)
+            previousArtifacts.append(artifact)
+            break
 ```

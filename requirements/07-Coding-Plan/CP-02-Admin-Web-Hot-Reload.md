@@ -22,7 +22,7 @@ Current repo state already gives us a partial Docker dev workflow:
 
 - `Justfile` exposes `docker-up`.
 - `docker-compose.yml` bind-mounts the whole repo into `/workspace`.
-- `admin-web` already runs `npm run dev -- --host 0.0.0.0 --port 3001`.
+- `admin-web` already runs `npm run dev -- --host 0.0.0.0 --port 3002`.
 - `CHOKIDAR_USEPOLLING=true` is already set in Compose.
 
 Remaining gaps:
@@ -56,12 +56,12 @@ Optional only if needed:
 Update `apps/admin-web/vite.config.ts` to make dev-server behavior explicit instead of relying on CLI flags alone:
 
 - Set `server.host = "0.0.0.0"`.
-- Set `server.port = 3001`.
+- Set `server.port = 3002`.
 - Set `server.strictPort = true`.
 - Set `server.watch.usePolling = true`.
 - Set a polling interval tuned for Docker bind mounts, such as `300` to `500` ms.
 - Set `server.hmr.host = "localhost"` for the host browser entrypoint.
-- Set `server.hmr.clientPort = 3001` so the browser reconnects through the published port.
+- Set `server.hmr.clientPort = 3002` so the browser reconnects through the published port.
 
 Reference shape:
 
@@ -75,7 +75,7 @@ export default defineConfig({
   },
   server: {
     host: "0.0.0.0",
-    port: 3001,
+    port: 3002,
     strictPort: true,
     watch: {
       usePolling: true,
@@ -83,7 +83,7 @@ export default defineConfig({
     },
     hmr: {
       host: "localhost",
-      clientPort: 3001,
+      clientPort: 3002,
     },
   },
 })
@@ -97,7 +97,7 @@ Keep `docker-compose.yml` aligned with Vite instead of mixed framework assumptio
 - Keep the named volume for `node_modules`.
 - Keep `CHOKIDAR_USEPOLLING=true`.
 - Remove reliance on `WATCHPACK_POLLING` for admin-web because it is not the Vite watcher.
-- Keep port mapping `3001:3001`.
+- Keep port mapping `3002:3002`.
 - Keep admin-web depending on local-runner.
 
 If the Vite config becomes authoritative, the Compose command can stay simple:
@@ -130,7 +130,7 @@ No extra manual commands should be required after startup.
 Update `apps/admin-web/README.md` with a Docker section:
 
 - Start: `just docker-up`
-- Open: `http://localhost:3001`
+- Open: `http://localhost:3002`
 - Edit files under `apps/admin-web/src/**`
 - Expect instant HMR for component/style changes
 - Expect full-page reload for config or route-tree regeneration cases
@@ -142,7 +142,7 @@ Update `apps/admin-web/README.md` with a Docker section:
 Run the following acceptance checks:
 
 1. Start the stack with `just docker-up`.
-2. Open `http://localhost:3001`.
+2. Open `http://localhost:3002`.
 3. Edit a React component under `apps/admin-web/src/` and confirm UI updates without container restart.
 4. Edit a CSS or Tailwind-driven component and confirm browser refresh behavior is automatic.
 5. Edit a route file and confirm the app reloads cleanly.
@@ -153,7 +153,7 @@ Run the following acceptance checks:
 
 ## 6. Definition Of Done
 
-- [ ] `just docker-up` starts admin-web successfully on `localhost:3001`
+- [ ] `just docker-up` starts admin-web successfully on `localhost:3002`
 - [ ] Host file edits under `apps/admin-web/src/**` trigger HMR or full reload automatically
 - [ ] No manual container restart is needed for normal frontend development
 - [ ] Vite watcher settings are explicit in `vite.config.ts`

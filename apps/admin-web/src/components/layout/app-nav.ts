@@ -7,11 +7,17 @@ import {
   Sparkles,
   Users,
   Activity,
+  Workflow,
+  History,
+  ListTree,
 } from "lucide-react";
 
 export const primaryNavItems = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/projects", label: "Projects", icon: FolderKanban },
+  { to: "/workflows", label: "Workflows", icon: Workflow },
+  { to: "/workflow-steps", label: "Workflow Steps", icon: ListTree },
+  { to: "/workflow-runs", label: "Workflow Runs", icon: History },
   { to: "/teams", label: "Teams", icon: Users },
   { to: "/ai-runs", label: "AI Runs", icon: Sparkles },
 ] as const;
