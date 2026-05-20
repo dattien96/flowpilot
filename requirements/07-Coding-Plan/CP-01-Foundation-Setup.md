@@ -3,7 +3,6 @@
 **Maps from:** SD-01 (Tech Stack), SD-02 (Architecture)
 **Phase:** 1 (must be done first)
 **Status:** implemented
-
 ---
 
 ## 1. Scaffold New Vite Project
