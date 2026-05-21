@@ -46,7 +46,7 @@ function ProjectDetailPage() {
   return <ProjectDetailContent detail={detail} key={detail.project.id} />;
 }
 
-export function ProjectDetailContent({ detail }: { detail: ReturnType<typeof Route.useLoaderData> }) {
+function ProjectDetailContent({ detail }: { detail: ReturnType<typeof Route.useLoaderData> }) {
   const location = useLocation();
   const router = useRouter();
   const navigate = useNavigate();
@@ -308,15 +308,13 @@ export function ProjectDetailContent({ detail }: { detail: ReturnType<typeof Rou
             <h2 className="text-xl font-semibold">Features</h2>
             <div className="mt-4 space-y-3">
               {detail.features.map((feature: any) => (
-                <Link
+                <div
                   key={feature.id}
-                  className="block rounded-2xl border border-border bg-card px-4 py-3 transition-colors hover:bg-background"
-                  params={{ featureId: feature.id }}
-                  to="/features/$featureId"
+                  className="rounded-2xl border border-border bg-card px-4 py-3"
                 >
                   <p className="font-medium">{feature.title}</p>
                   <p className="text-sm text-muted-foreground">{feature.status}</p>
-                </Link>
+                </div>
               ))}
             </div>
           </div>

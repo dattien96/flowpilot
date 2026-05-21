@@ -6,18 +6,12 @@ import {
   requireAuthenticatedUser,
   resetStepForRetry,
 } from "../_shared/workflow-engine-runtime.ts";
-import {
-  workflowCorsPreflightResponse,
-  workflowJsonResponse,
-  workflowTextResponse,
-} from "../_shared/cors.ts";
 
 Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return workflowCorsPreflightResponse();
-  if (req.method !== "POST") return workflowTextResponse("Method not allowed", { status: 405 });
+  if (req.method !== "POST") return new Response("Method not allowed", { status: 405 });
 
   const authHeader = req.headers.get("Authorization");
-  if (!authHeader) return workflowTextResponse("Unauthorized", { status: 401 });
+  if (!authHeader) return new Response("Unauthorized", { status: 401 });
 
   try {
     const { authClient, adminClient } = createWorkflowClients(authHeader);
@@ -27,13 +21,13 @@ Deno.serve(async (req) => {
     const stepId = String(body?.stepId ?? "");
     const approve = Boolean(body?.approve);
     const comment = body?.comment ? String(body.comment) : "Rejected by reviewer.";
-    if (!stepId) return workflowTextResponse("Missing stepId", { status: 400 });
+    if (!stepId) return new Response("Missing stepId", { status: 400 });
 
     await assertStepAccess(authClient, stepId);
 
     const currentStep = await getWorkflowRunStep(adminClient, stepId);
     if (currentStep.status !== "WAITING_USER_APPROVAL") {
-      return workflowTextResponse("Step is not waiting for approval.", { status: 400 });
+      return new Response("Step is not waiting for approval.", { status: 400 });
     }
 
     if (approve) {
@@ -48,7 +42,7 @@ Deno.serve(async (req) => {
         })
         .eq("id", stepId);
 
-      if (error) return workflowTextResponse(error.message, { status: 400 });
+      if (error) return new Response(error.message, { status: 400 });
 
       await progressWorkflowRun(adminClient, currentStep.workflow_run_id);
     } else {
@@ -57,10 +51,10 @@ Deno.serve(async (req) => {
     }
 
     const updatedStep = await getWorkflowRunStep(adminClient, stepId);
-    return workflowJsonResponse(updatedStep);
+    return Response.json(updatedStep);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     const status = message === "Unauthorized" ? 401 : message === "Forbidden" ? 403 : 400;
-    return workflowTextResponse(message, { status });
+    return new Response(message, { status });
   }
 });

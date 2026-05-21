@@ -1,76 +1,86 @@
-# Implementation Plan
+# Workflow Artifact Implementation Plan
 
-## Scope
+## Goal
+Implement the artifact model described in:
+- `requirements/05-System-Specs/SS-07-Workflow-Artifact.md`
+- `requirements/06-System-Tech-Design/SD-08-Artifact-Management.md`
+- `requirements/07-Coding-Plan/CP-06-Document-Workflow.md`
 
-Implement the first production-facing slice of CP-09 in `apps/admin-web` while keeping the existing workflow-engine screens backward-compatible:
+The current codebase still uses a temporary JSON-column shortcut on `step_definitions`. This plan replaces that shortcut with a real artifact schema and wires the workflow editor, runtime mapping, and artifact UI to the new model.
 
-1. Replace the placeholder `Prompt Templates` settings page with a working list/create surface.
-2. Replace the placeholder `AI Runs` page with a working monitoring surface.
-3. Add a dedicated AI orchestration domain/gateway layer instead of expanding the already high-risk `WorkflowEngineGateway` interface.
-4. Wire both demo and Supabase implementations so the feature works in local/demo mode and against real tables when available.
-5. Add targeted tests for the new route content and gateway behavior.
+## Target Model
 
-## Constraints
+### Definition layer
+Create a reusable artifact catalog table:
+- `artifact_definitions`
+  - `id`
+  - `key` or `name`
+  - `description`
+  - `local_path_template`
+  - `remote_path_template`
+  - timestamps
 
-- Do not refactor the shared workflow-engine interfaces in this pass unless required for compilation.
-- Keep the implementation additive and backward-compatible because `WorkflowRunStep`, `ArtifactRun`, and `WorkflowEngineGateway` all have `CRITICAL` upstream impact.
-- Align data structures with the revised CP-09 model: `ai_prompt_templates`, `ai_runs`, workflow lineage fields, and prompt template scoping/versioning.
+Create step-to-artifact binding tables:
+- `step_input_artifact_definitions`
+- `step_output_artifact_definitions`
 
-## Design
+These tables let a step bind multiple input and multiple output artifact definitions.
 
-### 1. New domain lane
+### Runtime layer
+Create a runtime artifact table:
+- `artifact_runs`
+  - `id`
+  - `artifact_definition_id`
+  - `workflow_id`
+  - `workflow_run_id`
+  - `workflow_run_step_id`
+  - resolved local path
+  - resolved remote path
+  - status / sync state
+  - timestamps
 
-Create a new AI orchestration domain model and gateway:
+The runner writes local artifacts first. Remote storage is a sync target, not a runtime dependency.
 
-- `AiPromptTemplate`
-- `AiRun`
-- `AiRunSummary`
-- `AiOrchestrationGateway`
+## Code Changes
 
-This isolates CP-09 from the older workflow and output abstractions.
+### Database / Supabase
+- Add a new migration that creates the artifact definition, artifact binding, and artifact run tables.
+- Remove the temporary `input_artifact_definitions` / `output_artifact_definitions` JSONB columns from the final schema path.
+- Add indexes and foreign keys for workflow/run/step lookups.
+- Add RLS policies consistent with the existing workflow tables.
 
-### 2. Repository implementations
+### Domain model
+- Replace the `StepDefinition` artifact arrays with explicit input/output artifact binding collections.
+- Add artifact definition and artifact run entities.
+- Extend workflow run step state to reference generated artifact runs instead of the old generic artifact id.
 
-- Demo implementation with seeded prompt templates and AI run history
-- Supabase implementation that reads/writes:
-  - `ai_prompt_templates`
-  - `ai_runs`
+### Supabase gateway and mappers
+- Update `workflow-engine-mappers.ts` to map the new definition and runtime tables.
+- Update `SupabaseWorkflowEngineGateway` to:
+  - list/save artifact definitions
+  - save step artifact bindings
+  - create and fetch artifact runs
+  - keep workflow/step CRUD behavior intact
 
-The Supabase summary can be computed client-side from fetched runs for the initial slice.
+### UI
+- Update workflow step create/edit pages so artifact bindings are selected from persisted artifact definitions instead of a hardcoded catalog.
+- Add the artifact management page under settings for global artifact/storage configuration.
+- Add the project artifact browser tab that groups artifacts by workflow run.
+- Keep local-first sync actions available from the UI.
 
-### 3. UI routes
+### Runtime / runner flow
+- Resolve input artifact requirements per step from the bound artifact definitions.
+- Fail the step when a required input artifact is missing locally.
+- Create one or more artifact run rows when a step produces output artifacts.
+- Keep remote sync optional and separate from execution.
 
-#### Prompt Templates
+## Validation
 
-- Loader fetches templates and projects
-- Page shows:
-  - template summary cards
-  - list/table of templates
-  - create form for new template
-- Save action writes through `AiOrchestrationGateway` and refreshes local state
+Run the focused test suites for:
+- workflow engine mappers
+- workflow engine gateway
+- workflow step create/detail pages
+- artifact selector / artifact UI
+- any new artifact repository or use case tests
 
-#### AI Runs
-
-- Loader fetches AI runs and summary
-- Page shows:
-  - summary cards
-  - filter controls
-  - run table with lineage references and token/cost details
-
-### 4. Tests
-
-Add focused tests for:
-
-- `PromptTemplatesContent`
-- `AiRunsContent`
-- demo gateway list/save behavior if needed for confidence
-
-## Delivery order
-
-1. Add domain/gateway/usecase files
-2. Add demo and Supabase repository implementations
-3. Expose `aiOrchestrationGateway` from gateway factories
-4. Replace placeholder route pages
-5. Add/adjust tests
-6. Run build/tests
-7. Self-review and produce `walkthrough.md`
+Then run `gitnexus_detect_changes()` before commit to verify the blast radius matches the expected workflow/artifact areas.

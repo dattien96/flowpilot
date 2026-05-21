@@ -26,7 +26,7 @@ CREATE TABLE master_schedules (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   workflow_run_step_id UUID REFERENCES workflow_run_steps(id) ON DELETE SET NULL,
-  coding_plan_artifact_run_id UUID REFERENCES artifact_runs(id) ON DELETE SET NULL,
+  coding_plan_artifact_id UUID REFERENCES artifacts(id) ON DELETE SET NULL,
   title TEXT NOT NULL,
   created_by UUID NOT NULL REFERENCES auth.users(id),
   approved_by UUID REFERENCES auth.users(id),
@@ -188,7 +188,7 @@ export interface MasterSchedule {
   id: string;
   projectId: string;
   workflowRunStepId: string | null;        // FK → workflow_run_steps (owns approval lifecycle)
-  codingPlanArtifactRunId: string | null;  // FK → artifact_runs (the coding plan runtime artifact used as input)
+  codingPlanArtifactId: string | null;     // FK → artifacts (the coding plan this was generated from)
   title: string;
   createdBy: string;                       // UUID → auth.users
   approvedBy: string | null;              // UUID → auth.users
@@ -274,7 +274,7 @@ The system uses the CP-04 five-tier `level_label` vocabulary: `L1_intern | L2_ju
 - "Generate New Schedule" button — triggers the Task Breakdown workflow step (Phase 6)
 
 **Generate Flow:**
-1. Select an approved coding plan artifact run (filtered by the coding plan artifact definition binding and `workflow_run_steps.status = 'DONE'`)
+1. Select an approved coding plan artifact (dropdown filtered by `artifact_type = 'coding_plan'` and `workflow_run_steps.status = 'DONE'`)
 2. System fetches project team members with levels and capacity
 3. "Generate Schedule" → triggers AI via Task Breakdown workflow step (Phase 6 — button disabled in this phase)
 4. AI returns structured JSON → parsed into `schedule_items` rows
@@ -365,7 +365,7 @@ export const taskKeys = {
 ## 7. Definition of Done — Phase 5
 
 ### Database
-- [ ] `master_schedules` table: `project_id UUID`, `workflow_run_step_id UUID`, `coding_plan_artifact_run_id UUID REFERENCES artifact_runs(id)`
+- [ ] `master_schedules` table: `project_id UUID`, `workflow_run_step_id UUID`, `coding_plan_artifact_id UUID REFERENCES artifacts(id)`
 - [ ] `schedule_items` table with `required_level_label CHECK (IN ('L1_intern', 'L2_junior', 'L3_middle', 'L4_senior', 'L5_lead'))`
 - [ ] `tasks` table: `project_id UUID`, `required_level_label CHECK (IN ('L1_intern', 'L2_junior', 'L3_middle', 'L4_senior', 'L5_lead'))`
 - [ ] `task_dependencies` table with `UNIQUE(task_id, depends_on_task_id)`
@@ -373,7 +373,7 @@ export const taskKeys = {
 
 ### Domain & Types
 - [ ] `LevelLabel = 'L1_intern' | 'L2_junior' | 'L3_middle' | 'L4_senior' | 'L5_lead'` type defined (aligned to CP-04)
-- [ ] `MasterSchedule` entity with `workflowRunStepId` and `codingPlanArtifactRunId` fields
+- [ ] `MasterSchedule` entity with `workflowRunStepId` and `codingPlanArtifactId` fields
 - [ ] `Task`, `TaskDependency`, `ScheduleItem` entities defined
 
 ### UI
@@ -390,5 +390,5 @@ export const taskKeys = {
 
 ### Business Rules
 - [ ] Level-based assignment validation: warn if `L1_intern` or `L2_junior` is assigned a high-risk task without an `L4_senior` or `L5_lead` `review_owner_id`
-- [ ] "Generate Schedule" dropdown filters to coding-plan `artifact_runs` only, resolved through the coding plan artifact definition binding
+- [ ] "Generate Schedule" dropdown filters to `artifact_type = 'coding_plan'` artifacts only
 - [ ] "Create Jira Issue" button visible but disabled (Phase 7 dependency)

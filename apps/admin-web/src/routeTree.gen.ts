@@ -16,7 +16,6 @@ import { Route as AuthenticatedWorkflowsRouteImport } from './routes/_authentica
 import { Route as AuthenticatedWorkflowStepsRouteImport } from './routes/_authenticated/workflow-steps'
 import { Route as AuthenticatedWorkflowRunsRouteImport } from './routes/_authenticated/workflow-runs'
 import { Route as AuthenticatedTeamsRouteImport } from './routes/_authenticated/teams'
-import { Route as AuthenticatedFeaturesRouteImport } from './routes/_authenticated/features'
 import { Route as AuthenticatedDashboardRouteImport } from './routes/_authenticated/dashboard'
 import { Route as AuthenticatedArtifactsRouteImport } from './routes/_authenticated/artifacts'
 import { Route as AuthenticatedAiRunsRouteImport } from './routes/_authenticated/ai-runs'
@@ -31,9 +30,7 @@ import { Route as AuthenticatedSettingsMcpServersRouteImport } from './routes/_a
 import { Route as AuthenticatedSettingsArtifactsRouteImport } from './routes/_authenticated/settings/artifacts'
 import { Route as AuthenticatedProjectsCreateRouteImport } from './routes/_authenticated/projects/create'
 import { Route as AuthenticatedProjectsProjectIdRouteImport } from './routes/_authenticated/projects/$projectId'
-import { Route as AuthenticatedFeaturesFeatureIdRouteImport } from './routes/_authenticated/features/$featureId'
 import { Route as AuthenticatedArtifactsCreateRouteImport } from './routes/_authenticated/artifacts/create'
-import { Route as AuthenticatedSettingsPromptTemplatesCreateRouteImport } from './routes/_authenticated/settings/prompt-templates/create'
 import { Route as AuthenticatedSettingsMcpServersMcpConnectTestRouteImport } from './routes/_authenticated/settings/mcp-servers/mcp-connect-test'
 import { Route as AuthenticatedSettingsMcpServersCreateRouteImport } from './routes/_authenticated/settings/mcp-servers/create'
 import { Route as AuthenticatedSettingsArtifactsCreateRouteImport } from './routes/_authenticated/settings/artifacts/create'
@@ -81,11 +78,6 @@ const AuthenticatedWorkflowRunsRoute =
 const AuthenticatedTeamsRoute = AuthenticatedTeamsRouteImport.update({
   id: '/teams',
   path: '/teams',
-  getParentRoute: () => AuthenticatedRoute,
-} as any)
-const AuthenticatedFeaturesRoute = AuthenticatedFeaturesRouteImport.update({
-  id: '/features',
-  path: '/features',
   getParentRoute: () => AuthenticatedRoute,
 } as any)
 const AuthenticatedDashboardRoute = AuthenticatedDashboardRouteImport.update({
@@ -169,23 +161,11 @@ const AuthenticatedProjectsProjectIdRoute =
     path: '/projects/$projectId',
     getParentRoute: () => AuthenticatedRoute,
   } as any)
-const AuthenticatedFeaturesFeatureIdRoute =
-  AuthenticatedFeaturesFeatureIdRouteImport.update({
-    id: '/$featureId',
-    path: '/$featureId',
-    getParentRoute: () => AuthenticatedFeaturesRoute,
-  } as any)
 const AuthenticatedArtifactsCreateRoute =
   AuthenticatedArtifactsCreateRouteImport.update({
     id: '/create',
     path: '/create',
     getParentRoute: () => AuthenticatedArtifactsRoute,
-  } as any)
-const AuthenticatedSettingsPromptTemplatesCreateRoute =
-  AuthenticatedSettingsPromptTemplatesCreateRouteImport.update({
-    id: '/create',
-    path: '/create',
-    getParentRoute: () => AuthenticatedSettingsPromptTemplatesRoute,
   } as any)
 const AuthenticatedSettingsMcpServersMcpConnectTestRoute =
   AuthenticatedSettingsMcpServersMcpConnectTestRouteImport.update({
@@ -266,18 +246,16 @@ export interface FileRoutesByFullPath {
   '/ai-runs': typeof AuthenticatedAiRunsRoute
   '/artifacts': typeof AuthenticatedArtifactsRouteWithChildren
   '/dashboard': typeof AuthenticatedDashboardRoute
-  '/features': typeof AuthenticatedFeaturesRouteWithChildren
   '/teams': typeof AuthenticatedTeamsRoute
   '/workflow-runs': typeof AuthenticatedWorkflowRunsRoute
   '/workflow-steps': typeof AuthenticatedWorkflowStepsRouteWithChildren
   '/workflows': typeof AuthenticatedWorkflowsRouteWithChildren
   '/artifacts/create': typeof AuthenticatedArtifactsCreateRoute
-  '/features/$featureId': typeof AuthenticatedFeaturesFeatureIdRoute
   '/projects/$projectId': typeof AuthenticatedProjectsProjectIdRouteWithChildren
   '/projects/create': typeof AuthenticatedProjectsCreateRoute
   '/settings/artifacts': typeof AuthenticatedSettingsArtifactsRouteWithChildren
   '/settings/mcp-servers': typeof AuthenticatedSettingsMcpServersRouteWithChildren
-  '/settings/prompt-templates': typeof AuthenticatedSettingsPromptTemplatesRouteWithChildren
+  '/settings/prompt-templates': typeof AuthenticatedSettingsPromptTemplatesRoute
   '/settings/runner': typeof AuthenticatedSettingsRunnerRoute
   '/workflow-steps/$stepType': typeof AuthenticatedWorkflowStepsStepTypeRoute
   '/workflow-steps/create': typeof AuthenticatedWorkflowStepsCreateRoute
@@ -296,7 +274,6 @@ export interface FileRoutesByFullPath {
   '/settings/artifacts/create': typeof AuthenticatedSettingsArtifactsCreateRoute
   '/settings/mcp-servers/create': typeof AuthenticatedSettingsMcpServersCreateRoute
   '/settings/mcp-servers/mcp-connect-test': typeof AuthenticatedSettingsMcpServersMcpConnectTestRoute
-  '/settings/prompt-templates/create': typeof AuthenticatedSettingsPromptTemplatesCreateRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -304,18 +281,16 @@ export interface FileRoutesByTo {
   '/ai-runs': typeof AuthenticatedAiRunsRoute
   '/artifacts': typeof AuthenticatedArtifactsRouteWithChildren
   '/dashboard': typeof AuthenticatedDashboardRoute
-  '/features': typeof AuthenticatedFeaturesRouteWithChildren
   '/teams': typeof AuthenticatedTeamsRoute
   '/workflow-runs': typeof AuthenticatedWorkflowRunsRoute
   '/workflow-steps': typeof AuthenticatedWorkflowStepsRouteWithChildren
   '/workflows': typeof AuthenticatedWorkflowsRouteWithChildren
   '/artifacts/create': typeof AuthenticatedArtifactsCreateRoute
-  '/features/$featureId': typeof AuthenticatedFeaturesFeatureIdRoute
   '/projects/$projectId': typeof AuthenticatedProjectsProjectIdRouteWithChildren
   '/projects/create': typeof AuthenticatedProjectsCreateRoute
   '/settings/artifacts': typeof AuthenticatedSettingsArtifactsRouteWithChildren
   '/settings/mcp-servers': typeof AuthenticatedSettingsMcpServersRouteWithChildren
-  '/settings/prompt-templates': typeof AuthenticatedSettingsPromptTemplatesRouteWithChildren
+  '/settings/prompt-templates': typeof AuthenticatedSettingsPromptTemplatesRoute
   '/settings/runner': typeof AuthenticatedSettingsRunnerRoute
   '/workflow-steps/$stepType': typeof AuthenticatedWorkflowStepsStepTypeRoute
   '/workflow-steps/create': typeof AuthenticatedWorkflowStepsCreateRoute
@@ -334,7 +309,6 @@ export interface FileRoutesByTo {
   '/settings/artifacts/create': typeof AuthenticatedSettingsArtifactsCreateRoute
   '/settings/mcp-servers/create': typeof AuthenticatedSettingsMcpServersCreateRoute
   '/settings/mcp-servers/mcp-connect-test': typeof AuthenticatedSettingsMcpServersMcpConnectTestRoute
-  '/settings/prompt-templates/create': typeof AuthenticatedSettingsPromptTemplatesCreateRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -344,18 +318,16 @@ export interface FileRoutesById {
   '/_authenticated/ai-runs': typeof AuthenticatedAiRunsRoute
   '/_authenticated/artifacts': typeof AuthenticatedArtifactsRouteWithChildren
   '/_authenticated/dashboard': typeof AuthenticatedDashboardRoute
-  '/_authenticated/features': typeof AuthenticatedFeaturesRouteWithChildren
   '/_authenticated/teams': typeof AuthenticatedTeamsRoute
   '/_authenticated/workflow-runs': typeof AuthenticatedWorkflowRunsRoute
   '/_authenticated/workflow-steps': typeof AuthenticatedWorkflowStepsRouteWithChildren
   '/_authenticated/workflows': typeof AuthenticatedWorkflowsRouteWithChildren
   '/_authenticated/artifacts/create': typeof AuthenticatedArtifactsCreateRoute
-  '/_authenticated/features/$featureId': typeof AuthenticatedFeaturesFeatureIdRoute
   '/_authenticated/projects/$projectId': typeof AuthenticatedProjectsProjectIdRouteWithChildren
   '/_authenticated/projects/create': typeof AuthenticatedProjectsCreateRoute
   '/_authenticated/settings/artifacts': typeof AuthenticatedSettingsArtifactsRouteWithChildren
   '/_authenticated/settings/mcp-servers': typeof AuthenticatedSettingsMcpServersRouteWithChildren
-  '/_authenticated/settings/prompt-templates': typeof AuthenticatedSettingsPromptTemplatesRouteWithChildren
+  '/_authenticated/settings/prompt-templates': typeof AuthenticatedSettingsPromptTemplatesRoute
   '/_authenticated/settings/runner': typeof AuthenticatedSettingsRunnerRoute
   '/_authenticated/workflow-steps/$stepType': typeof AuthenticatedWorkflowStepsStepTypeRoute
   '/_authenticated/workflow-steps/create': typeof AuthenticatedWorkflowStepsCreateRoute
@@ -374,7 +346,6 @@ export interface FileRoutesById {
   '/_authenticated/settings/artifacts/create': typeof AuthenticatedSettingsArtifactsCreateRoute
   '/_authenticated/settings/mcp-servers/create': typeof AuthenticatedSettingsMcpServersCreateRoute
   '/_authenticated/settings/mcp-servers/mcp-connect-test': typeof AuthenticatedSettingsMcpServersMcpConnectTestRoute
-  '/_authenticated/settings/prompt-templates/create': typeof AuthenticatedSettingsPromptTemplatesCreateRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -384,13 +355,11 @@ export interface FileRouteTypes {
     | '/ai-runs'
     | '/artifacts'
     | '/dashboard'
-    | '/features'
     | '/teams'
     | '/workflow-runs'
     | '/workflow-steps'
     | '/workflows'
     | '/artifacts/create'
-    | '/features/$featureId'
     | '/projects/$projectId'
     | '/projects/create'
     | '/settings/artifacts'
@@ -414,7 +383,6 @@ export interface FileRouteTypes {
     | '/settings/artifacts/create'
     | '/settings/mcp-servers/create'
     | '/settings/mcp-servers/mcp-connect-test'
-    | '/settings/prompt-templates/create'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -422,13 +390,11 @@ export interface FileRouteTypes {
     | '/ai-runs'
     | '/artifacts'
     | '/dashboard'
-    | '/features'
     | '/teams'
     | '/workflow-runs'
     | '/workflow-steps'
     | '/workflows'
     | '/artifacts/create'
-    | '/features/$featureId'
     | '/projects/$projectId'
     | '/projects/create'
     | '/settings/artifacts'
@@ -452,7 +418,6 @@ export interface FileRouteTypes {
     | '/settings/artifacts/create'
     | '/settings/mcp-servers/create'
     | '/settings/mcp-servers/mcp-connect-test'
-    | '/settings/prompt-templates/create'
   id:
     | '__root__'
     | '/'
@@ -461,13 +426,11 @@ export interface FileRouteTypes {
     | '/_authenticated/ai-runs'
     | '/_authenticated/artifacts'
     | '/_authenticated/dashboard'
-    | '/_authenticated/features'
     | '/_authenticated/teams'
     | '/_authenticated/workflow-runs'
     | '/_authenticated/workflow-steps'
     | '/_authenticated/workflows'
     | '/_authenticated/artifacts/create'
-    | '/_authenticated/features/$featureId'
     | '/_authenticated/projects/$projectId'
     | '/_authenticated/projects/create'
     | '/_authenticated/settings/artifacts'
@@ -491,7 +454,6 @@ export interface FileRouteTypes {
     | '/_authenticated/settings/artifacts/create'
     | '/_authenticated/settings/mcp-servers/create'
     | '/_authenticated/settings/mcp-servers/mcp-connect-test'
-    | '/_authenticated/settings/prompt-templates/create'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -549,13 +511,6 @@ declare module '@tanstack/react-router' {
       path: '/teams'
       fullPath: '/teams'
       preLoaderRoute: typeof AuthenticatedTeamsRouteImport
-      parentRoute: typeof AuthenticatedRoute
-    }
-    '/_authenticated/features': {
-      id: '/_authenticated/features'
-      path: '/features'
-      fullPath: '/features'
-      preLoaderRoute: typeof AuthenticatedFeaturesRouteImport
       parentRoute: typeof AuthenticatedRoute
     }
     '/_authenticated/dashboard': {
@@ -656,26 +611,12 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedProjectsProjectIdRouteImport
       parentRoute: typeof AuthenticatedRoute
     }
-    '/_authenticated/features/$featureId': {
-      id: '/_authenticated/features/$featureId'
-      path: '/$featureId'
-      fullPath: '/features/$featureId'
-      preLoaderRoute: typeof AuthenticatedFeaturesFeatureIdRouteImport
-      parentRoute: typeof AuthenticatedFeaturesRoute
-    }
     '/_authenticated/artifacts/create': {
       id: '/_authenticated/artifacts/create'
       path: '/create'
       fullPath: '/artifacts/create'
       preLoaderRoute: typeof AuthenticatedArtifactsCreateRouteImport
       parentRoute: typeof AuthenticatedArtifactsRoute
-    }
-    '/_authenticated/settings/prompt-templates/create': {
-      id: '/_authenticated/settings/prompt-templates/create'
-      path: '/create'
-      fullPath: '/settings/prompt-templates/create'
-      preLoaderRoute: typeof AuthenticatedSettingsPromptTemplatesCreateRouteImport
-      parentRoute: typeof AuthenticatedSettingsPromptTemplatesRoute
     }
     '/_authenticated/settings/mcp-servers/mcp-connect-test': {
       id: '/_authenticated/settings/mcp-servers/mcp-connect-test'
@@ -776,19 +717,6 @@ const AuthenticatedArtifactsRouteChildren: AuthenticatedArtifactsRouteChildren =
 const AuthenticatedArtifactsRouteWithChildren =
   AuthenticatedArtifactsRoute._addFileChildren(
     AuthenticatedArtifactsRouteChildren,
-  )
-
-interface AuthenticatedFeaturesRouteChildren {
-  AuthenticatedFeaturesFeatureIdRoute: typeof AuthenticatedFeaturesFeatureIdRoute
-}
-
-const AuthenticatedFeaturesRouteChildren: AuthenticatedFeaturesRouteChildren = {
-  AuthenticatedFeaturesFeatureIdRoute: AuthenticatedFeaturesFeatureIdRoute,
-}
-
-const AuthenticatedFeaturesRouteWithChildren =
-  AuthenticatedFeaturesRoute._addFileChildren(
-    AuthenticatedFeaturesRouteChildren,
   )
 
 interface AuthenticatedWorkflowStepsRouteChildren {
@@ -898,26 +826,10 @@ const AuthenticatedSettingsMcpServersRouteWithChildren =
     AuthenticatedSettingsMcpServersRouteChildren,
   )
 
-interface AuthenticatedSettingsPromptTemplatesRouteChildren {
-  AuthenticatedSettingsPromptTemplatesCreateRoute: typeof AuthenticatedSettingsPromptTemplatesCreateRoute
-}
-
-const AuthenticatedSettingsPromptTemplatesRouteChildren: AuthenticatedSettingsPromptTemplatesRouteChildren =
-  {
-    AuthenticatedSettingsPromptTemplatesCreateRoute:
-      AuthenticatedSettingsPromptTemplatesCreateRoute,
-  }
-
-const AuthenticatedSettingsPromptTemplatesRouteWithChildren =
-  AuthenticatedSettingsPromptTemplatesRoute._addFileChildren(
-    AuthenticatedSettingsPromptTemplatesRouteChildren,
-  )
-
 interface AuthenticatedRouteChildren {
   AuthenticatedAiRunsRoute: typeof AuthenticatedAiRunsRoute
   AuthenticatedArtifactsRoute: typeof AuthenticatedArtifactsRouteWithChildren
   AuthenticatedDashboardRoute: typeof AuthenticatedDashboardRoute
-  AuthenticatedFeaturesRoute: typeof AuthenticatedFeaturesRouteWithChildren
   AuthenticatedTeamsRoute: typeof AuthenticatedTeamsRoute
   AuthenticatedWorkflowRunsRoute: typeof AuthenticatedWorkflowRunsRoute
   AuthenticatedWorkflowStepsRoute: typeof AuthenticatedWorkflowStepsRouteWithChildren
@@ -926,7 +838,7 @@ interface AuthenticatedRouteChildren {
   AuthenticatedProjectsCreateRoute: typeof AuthenticatedProjectsCreateRoute
   AuthenticatedSettingsArtifactsRoute: typeof AuthenticatedSettingsArtifactsRouteWithChildren
   AuthenticatedSettingsMcpServersRoute: typeof AuthenticatedSettingsMcpServersRouteWithChildren
-  AuthenticatedSettingsPromptTemplatesRoute: typeof AuthenticatedSettingsPromptTemplatesRouteWithChildren
+  AuthenticatedSettingsPromptTemplatesRoute: typeof AuthenticatedSettingsPromptTemplatesRoute
   AuthenticatedSettingsRunnerRoute: typeof AuthenticatedSettingsRunnerRoute
   AuthenticatedProjectsIndexRoute: typeof AuthenticatedProjectsIndexRoute
 }
@@ -935,7 +847,6 @@ const AuthenticatedRouteChildren: AuthenticatedRouteChildren = {
   AuthenticatedAiRunsRoute: AuthenticatedAiRunsRoute,
   AuthenticatedArtifactsRoute: AuthenticatedArtifactsRouteWithChildren,
   AuthenticatedDashboardRoute: AuthenticatedDashboardRoute,
-  AuthenticatedFeaturesRoute: AuthenticatedFeaturesRouteWithChildren,
   AuthenticatedTeamsRoute: AuthenticatedTeamsRoute,
   AuthenticatedWorkflowRunsRoute: AuthenticatedWorkflowRunsRoute,
   AuthenticatedWorkflowStepsRoute: AuthenticatedWorkflowStepsRouteWithChildren,
@@ -948,7 +859,7 @@ const AuthenticatedRouteChildren: AuthenticatedRouteChildren = {
   AuthenticatedSettingsMcpServersRoute:
     AuthenticatedSettingsMcpServersRouteWithChildren,
   AuthenticatedSettingsPromptTemplatesRoute:
-    AuthenticatedSettingsPromptTemplatesRouteWithChildren,
+    AuthenticatedSettingsPromptTemplatesRoute,
   AuthenticatedSettingsRunnerRoute: AuthenticatedSettingsRunnerRoute,
   AuthenticatedProjectsIndexRoute: AuthenticatedProjectsIndexRoute,
 }
