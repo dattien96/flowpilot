@@ -515,81 +515,105 @@ When the Go-Runner receives a successful payload from the AI Provider, it must h
 
 ```go
 // internal/workflow/artifact.go
-func parseAndSaveArtifact(output string, step WorkflowRunStep, project Project) (Artifact, error) {
-    // 1. Extract markdown/json from LLM output block
+func parseAndSaveArtifact(output string, step WorkflowRunStep, project Project, artifactDef ArtifactDefinition) (ArtifactRun, error) {
+    // 1. Extract markdown/json from LLM output block.
     content := extractContent(output)
-    
-    // 2. Save locally to .artifacts/ folder
-    artifactDir := filepath.Join(project.DirectoryPath, ".artifacts")
-    os.MkdirAll(artifactDir, 0755)
-    
-    filename := fmt.Sprintf("%s_%s.md", step.ID, step.StepType)
+
+    // 2. Resolve the canonical local runtime path from the artifact definition.
+    filename := artifactDef.DefaultFileName
+    artifactDir := filepath.Join(
+        artifactDef.LocalOutputRootPath,
+        project.ID,
+        step.WorkflowRunID,
+        step.StepType,
+    )
+    if err := os.MkdirAll(artifactDir, 0755); err != nil {
+        return ArtifactRun{}, err
+    }
+
     localPath := filepath.Join(artifactDir, filename)
-    os.WriteFile(localPath, []byte(content), 0644)
-    
-    // 3. Upload to configured storage backend (Supabase or Google Drive)
-    var storageURL string
+    if err := os.WriteFile(localPath, []byte(content), 0644); err != nil {
+        return ArtifactRun{}, err
+    }
+
+    // 3. Upload to configured storage backend (Supabase or Google Drive).
+    var remotePath string
+    var remoteURL string
     var err error
-    
+
     if project.ArtifactStoragePreference == "google_drive" && project.HasGoogleDriveMCP {
-        // Upload via Google Drive MCP Edge Function
-        storageURL, err = uploadToGoogleDrive(localPath, project.GoogleDriveFolderID)
+        remotePath, remoteURL, err = uploadToGoogleDrive(localPath, project.GoogleDriveFolderID)
     } else {
-        // Default to Supabase Storage Bucket
-        bucketPath := fmt.Sprintf("artifacts/%s/%s", project.ID, filename)
-        storageURL, err = uploadToSupabaseStorage(localPath, bucketPath)
+        remotePath = fmt.Sprintf(
+            "%s/%s/%s/%s/%s",
+            project.ID,
+            step.WorkflowRunID,
+            step.ID,
+            artifactDef.ArtifactKey,
+            filename,
+        )
+        remoteURL, err = uploadToSupabaseStorage(localPath, "flowpilot-artifacts", remotePath)
     }
-    
+
     if err != nil {
-        return Artifact{}, err
+        return ArtifactRun{}, err
     }
-    
-    // 4. Create record in Supabase DB
-    artifact := Artifact{
-        WorkflowRunID: step.WorkflowRunID,
-        StepID:        step.ID,
-        ContentURL:    storageURL,
-        ContentRaw:    content, // Optionally store raw content if small enough
-        Version:       1,
+
+    // 4. Create the canonical artifact_runs row.
+    artifactRun := ArtifactRun{
+        ArtifactDefinitionID: artifactDef.ID,
+        ProjectID:            project.ID,
+        WorkflowRunID:        step.WorkflowRunID,
+        WorkflowRunStepID:    step.ID,
+        ArtifactName:         filename,
+        LocalPath:            localPath,
+        RemotePath:           remotePath,
+        RemoteURL:            remoteURL,
+        SyncStatus:           "synced",
+        Status:               "DONE",
+        Version:              nextArtifactRunVersion(step.WorkflowRunID, step.ID, artifactDef.ID),
+        CreatedBy:            step.StartedBy,
     }
-    insertArtifactRecord(artifact)
+    insertArtifactRunRecord(artifactRun)
+    attachPrimaryArtifactRunToWorkflowStep(step.ID, artifactRun.ID)
 
     // 5. Generate searchable working memory for later prompt retrieval.
     // Failure must not roll back the raw artifact save.
-    if err := generateArtifactMemory(artifact, content, step, project); err != nil {
-        log.Warnf("artifact memory generation failed for %s: %v", artifact.ID, err)
-        markArtifactMemoryFailed(artifact.ID, err)
+    if err := generateArtifactMemory(artifactRun, artifactDef, content, step, project); err != nil {
+        log.Warnf("artifact memory generation failed for %s: %v", artifactRun.ID, err)
+        markArtifactMemoryFailed(artifactRun.ID, err)
     }
-    
-    return artifact, nil
+
+    return artifactRun, nil
 }
 ```
 
 ```go
 // internal/workflow/artifact_memory.go
-func generateArtifactMemory(artifact Artifact, content string, step WorkflowRunStep, project Project) error {
+func generateArtifactMemory(artifactRun ArtifactRun, artifactDef ArtifactDefinition, content string, step WorkflowRunStep, project Project) error {
     memory, err := extractWorkingMemory(content, step)
     if err != nil {
         return err
     }
 
     memoryID, err := insertArtifactMemory(ArtifactMemory{
-        ArtifactID:        artifact.ID,        // FK → artifacts(id) — NOT ai_outputs
-        ProjectID:         project.ID,
-        WorkflowRunID:     step.WorkflowRunID,
-        WorkflowRunStepID: step.ID,
-        ArtifactType:      step.StepType,
-        ArtifactStatus:    artifact.Status,
-        ArtifactVersion:   artifact.Version,
-        Summary:           memory.Summary,
-        KeyDecisions:      memory.KeyDecisions,
-        Constraints:       memory.Constraints,
-        Assumptions:       memory.Assumptions,
-        OpenQuestions:     memory.OpenQuestions,
-        Keywords:          memory.Keywords,
-        SourceRefs:        []string{artifact.ContentURL},
-        TokenEstimate:     estimateTokens(memory.Summary),
-        EmbeddingStatus:   "pending",
+        ArtifactRunID:         artifactRun.ID,
+        ArtifactDefinitionID:  artifactDef.ID,
+        ArtifactDefinitionKey: artifactDef.ArtifactKey,
+        ProjectID:             project.ID,
+        WorkflowRunID:         step.WorkflowRunID,
+        WorkflowRunStepID:     step.ID,
+        ArtifactStatus:        artifactRun.Status,
+        ArtifactVersion:       artifactRun.Version,
+        Summary:               memory.Summary,
+        KeyDecisions:          memory.KeyDecisions,
+        Constraints:           memory.Constraints,
+        Assumptions:           memory.Assumptions,
+        OpenQuestions:         memory.OpenQuestions,
+        Keywords:              memory.Keywords,
+        SourceRefs:            buildSourceRefs(artifactRun),
+        TokenEstimate:         estimateTokens(memory.Summary),
+        EmbeddingStatus:       "pending",
     })
     if err != nil {
         return err
@@ -605,6 +629,16 @@ func generateArtifactMemory(artifact Artifact, content string, step WorkflowRunS
     return updateArtifactMemoryEmbedding(memoryID, embedding, dimensions, "gte-small")
 }
 ```
+
+Storage and lineage rules:
+
+- Go-Runner is the canonical local-first artifact producer.
+- Each durable output must create an `artifact_runs` row, not a legacy `artifacts` row.
+- The runner should also update `workflow_run_steps.artifact_run_id` for the primary output when the step produces one canonical artifact, while multi-artifact steps remain discoverable through `artifact_runs.workflow_run_step_id`.
+- Supabase Storage uploads should use the CP-09 bucket convention:
+  - Bucket: `flowpilot-artifacts`
+  - Path: `{projectId}/{workflowRunId}/{workflowRunStepId}/{artifactKey}/{fileName}`
+- Google Drive uploads should still persist the canonical `artifact_runs.remote_path` and `artifact_runs.remote_url` fields with the provider-specific location values.
 
 ---
 
@@ -712,8 +746,10 @@ Triggered:
 - [ ] Code/Review Loop special case with long-running sub-process
 - [ ] Exit criteria monitoring (build, tests, coverage)
 - [ ] Process isolation via `os/exec.Command` with process group management
-- [ ] Write artifacts locally to `.artifacts/` folder
-- [ ] Upload artifacts to Supabase Storage Bucket via API (or Google Drive if configured)
+- [ ] Write artifacts locally to the canonical runtime path resolved from `artifact_definitions.local_output_root_path`
+- [ ] Persist durable outputs as canonical `artifact_runs` rows with `artifact_definition_id`, `local_path`, `remote_path`, and `remote_url`
+- [ ] Upload artifacts to the `flowpilot-artifacts` Supabase Storage bucket via API (or Google Drive if configured)
+- [ ] Update `workflow_run_steps.artifact_run_id` for the primary output artifact when applicable
 - [ ] Generate `artifact_memories` records after artifact save
 - [ ] Call `generate-embedding` and store embedding status
 

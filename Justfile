@@ -115,3 +115,15 @@ docker-up:
 # Stop Docker Compose services
 docker-down:
     @docker compose down
+
+# ============================================================================
+# SUPABASE
+# ============================================================================
+
+# Deploy workflow engine edge functions to a Supabase project
+supabase-functions-deploy project_ref:
+    @echo "Deploying workflow engine edge functions to project {{project_ref}}..."
+    @supabase functions deploy workflow-engine-start-run --project-ref {{project_ref}}
+    @supabase functions deploy workflow-engine-toggle-yolo-mode --project-ref {{project_ref}}
+    @supabase functions deploy workflow-engine-submit-step-approval --project-ref {{project_ref}}
+    @echo "Done"

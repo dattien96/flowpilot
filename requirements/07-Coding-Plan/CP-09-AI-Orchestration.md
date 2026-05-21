@@ -1,4 +1,4 @@
-# CP-09: AI Orchestration — Prompt Templates & Execution Logs
+# CP-09: AI Orchestration - Prompt Templates & Execution Logs
 
 **Maps from:** SS-05 (AI Provider), SS-06 (Skill Agent), SS-07 (Artifacts), SD-06 (AI Provider Integration), SD-07 (Skill/Agent Runtime), SD-08 (Artifact Management), SD-10 (Context Resolver RAG)
 **Phase:** 6
@@ -8,69 +8,135 @@
 
 ## 1. Core Concept
 
-This phase wires the actual AI execution pipeline. It includes:
-1. **AI Prompt Template Registry** — manage reusable prompts for each workflow step type.
-2. **Supabase Edge Functions** — server-side AI orchestration (never expose API keys to the browser).
-3. **AI Execution Log Viewer** — full auditability for every AI call.
-4. **Artifact Management** — storage, versioning, and annotation of generated outputs.
-5. **Embedding Support** — shared `generate-embedding` Edge Function used by artifact memory and prompt context retrieval.
+This phase wires the AI execution pipeline on top of the verified workflow and artifact model:
+
+1. AI prompt template registry for reusable step-oriented prompts.
+2. Supabase Edge Functions for secure browser-triggered generation.
+3. AI execution logs for call-level auditability.
+4. Artifact management for generated outputs, versioning, and annotations.
+5. Embedding support via a shared `generate-embedding` Edge Function.
+
+Important product rule:
+
+- Any durable generation triggered from the UI must still produce canonical runtime lineage.
+- That means the generation flow should create or reuse a real `workflow_run` and `workflow_run_step`, then write `ai_runs` and `artifact_runs`.
+- CP-09 is not allowed to reintroduce a standalone artifact runtime path outside the CP-06 / CP-07 model.
 
 ---
 
 ## 2. Database Tables
 
 ### 2.1 AI Prompt Templates
+
+Prompt templates are reusable prompt bodies for workflow step types and browser-triggered generation flows.
+
 ```sql
 CREATE TABLE ai_prompt_templates (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID REFERENCES projects(id) ON DELETE CASCADE, -- NULL = global template
+  step_type TEXT NOT NULL,                                   -- maps to workflow step types
   name TEXT NOT NULL,
   description TEXT,
-  category TEXT NOT NULL,           -- business_logic_review, tech_spec_generation, coding_plan_generation,
-                                    -- schedule_generation, task_breakdown, risk_detection, test_plan, code_review
   input_schema JSONB DEFAULT '{}',
   output_schema JSONB DEFAULT '{}',
-  template_content TEXT NOT NULL,   -- The actual prompt markdown template
-  model_preference TEXT,            -- claude, codex, gemini, or null (use project default)
+  template_content TEXT NOT NULL,
+  provider_preference TEXT,                                  -- claude, codex, gemini, or NULL
+  model_preference TEXT,
   version INT NOT NULL DEFAULT 1,
-  status TEXT NOT NULL DEFAULT 'active',  -- active, archived
+  status TEXT NOT NULL DEFAULT 'active',                     -- active, archived
+  created_by UUID REFERENCES auth.users(id),
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
+
+CREATE UNIQUE INDEX ai_prompt_templates_scope_step_version_uniq
+  ON ai_prompt_templates (
+    COALESCE(project_id, '00000000-0000-0000-0000-000000000000'::uuid),
+    step_type,
+    version
+  );
 
 ALTER TABLE ai_prompt_templates ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "ai_prompt_templates_select_authenticated"
   ON ai_prompt_templates FOR SELECT
-  USING (auth.role() = 'authenticated');
+  USING (
+    project_id IS NULL
+    OR project_id IN (
+      SELECT pt.project_id FROM project_teams pt
+      JOIN team_members tm ON tm.team_id = pt.team_id
+      WHERE tm.user_id = auth.uid()
+    )
+  );
 
 CREATE POLICY "ai_prompt_templates_insert_authenticated"
   ON ai_prompt_templates FOR INSERT
   WITH CHECK (auth.role() = 'authenticated');
+
+CREATE POLICY "ai_prompt_templates_update_project_members"
+  ON ai_prompt_templates FOR UPDATE
+  USING (
+    project_id IS NOT NULL
+    AND project_id IN (
+      SELECT pt.project_id FROM project_teams pt
+      JOIN team_members tm ON tm.team_id = pt.team_id
+      WHERE tm.user_id = auth.uid()
+    )
+  )
+  WITH CHECK (
+    project_id IS NOT NULL
+    AND project_id IN (
+      SELECT pt.project_id FROM project_teams pt
+      JOIN team_members tm ON tm.team_id = pt.team_id
+      WHERE tm.user_id = auth.uid()
+    )
+  );
+
+CREATE POLICY "ai_prompt_templates_delete_project_members"
+  ON ai_prompt_templates FOR DELETE
+  USING (
+    project_id IS NOT NULL
+    AND project_id IN (
+      SELECT pt.project_id FROM project_teams pt
+      JOIN team_members tm ON tm.team_id = pt.team_id
+      WHERE tm.user_id = auth.uid()
+    )
+  );
 ```
 
-### 2.2 AI Runs (already exists as `ai_call_logs`, extend for full audit)
-The existing `ai_call_logs` table covers provider/model/tokens/cost. We add an `ai_runs` table for higher-level tracking:
+Version history should be modeled explicitly. For MVP, append-only rows with incremented `version` are acceptable, but the UI must show prior versions from the table history, not from a fake in-row audit field. Template resolution should be deterministic:
 
--- ai_runs tracks DOCUMENT-LEVEL AI calls triggered from the UI.
--- Workflow-step AI execution is tracked in workflow_run_logs (CP-07) and workflow_run_steps.
+- project-specific templates override global templates for the same `step_type`
+- within a scope, the highest active `version` wins by default
+
+### 2.2 AI Runs
+
+`ai_runs` is a call-level audit table. It records each LLM/API execution, including retries and sub-calls, but it is not the owner of workflow state.
+
 ```sql
 CREATE TABLE ai_runs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  run_type TEXT NOT NULL,             -- tech_spec_generation, coding_plan_generation, schedule_generation, business_review
-  input_payload JSONB NOT NULL,       -- The full prompt input that was sent
-  output_payload JSONB,               -- The structured output received (or raw text)
+  run_type TEXT NOT NULL,                  -- tech_spec_generation, coding_plan_generation, schedule_generation, business_review
+  input_payload JSONB NOT NULL,
+  output_payload JSONB,
   model_name TEXT NOT NULL,
-  triggered_by UUID NOT NULL REFERENCES auth.users(id),  -- the user who triggered the run
+  triggered_by UUID NOT NULL REFERENCES auth.users(id),
   status TEXT NOT NULL DEFAULT 'running',  -- running, success, failed
   error_message TEXT,
-  tokens_input INT,                   -- prompt tokens consumed
-  tokens_output INT,                  -- completion tokens generated
-  cost_usd NUMERIC(10,6),             -- estimated cost in USD
+  tokens_input INT,
+  tokens_output INT,
+  cost_usd NUMERIC(10,6),
   prompt_template_id UUID REFERENCES ai_prompt_templates(id),
-  workflow_run_step_id UUID REFERENCES workflow_run_steps(id) ON DELETE SET NULL,  -- set only for workflow-triggered runs
+  workflow_run_id UUID REFERENCES workflow_runs(id) ON DELETE SET NULL,
+  workflow_run_step_id UUID REFERENCES workflow_run_steps(id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ DEFAULT now(),
-  completed_at TIMESTAMPTZ
+  completed_at TIMESTAMPTZ,
+  CHECK (
+    (workflow_run_id IS NULL AND workflow_run_step_id IS NULL)
+    OR
+    (workflow_run_id IS NOT NULL AND workflow_run_step_id IS NOT NULL)
+  )
 );
 
 ALTER TABLE ai_runs ENABLE ROW LEVEL SECURITY;
@@ -88,21 +154,44 @@ CREATE POLICY "ai_runs_select_project_members"
 CREATE POLICY "ai_runs_insert_authenticated"
   ON ai_runs FOR INSERT
   WITH CHECK (auth.role() = 'authenticated');
+
+CREATE POLICY "ai_runs_update_project_members"
+  ON ai_runs FOR UPDATE
+  USING (
+    project_id IN (
+      SELECT pt.project_id FROM project_teams pt
+      JOIN team_members tm ON tm.team_id = pt.team_id
+      WHERE tm.user_id = auth.uid()
+    )
+  )
+  WITH CHECK (
+    project_id IN (
+      SELECT pt.project_id FROM project_teams pt
+      JOIN team_members tm ON tm.team_id = pt.team_id
+      WHERE tm.user_id = auth.uid()
+    )
+  );
 ```
 
-> MVP note: authenticated admin/member inserts are acceptable for this phase. CP-10 hardens these policies for production.
+Rule:
 
-### 2.3 Artifact Annotations (from SD-08)
-Annotations belong to the canonical `artifacts` table (CP-06), not `ai_outputs`. Per SD-08 §1: `artifact_annotations (id, artifact_id, user_id, highlight_range, note_text)`.
+- Workflow-triggered generation must populate both `workflow_run_id` and `workflow_run_step_id`.
+- If a browser-triggered action is persisted, it should still be executed as a single-step workflow run so the lineage stays canonical.
+- Nullable lineage is allowed only for ephemeral or diagnostic calls that do not create durable artifacts.
+
+### 2.3 Artifact Annotations
+
+Annotations belong to the canonical `artifact_runs` table, not a legacy `artifacts` table.
 
 ```sql
 CREATE TABLE artifact_annotations (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  artifact_id UUID NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+  artifact_run_id UUID NOT NULL REFERENCES artifact_runs(id) ON DELETE CASCADE,
   user_id UUID NOT NULL REFERENCES auth.users(id),
-  highlight_range TEXT,               -- e.g., "L15-L22" for line ranges
+  highlight_range TEXT,                  -- e.g. "L15-L22"
   note_text TEXT NOT NULL,
-  created_at TIMESTAMPTZ DEFAULT now()
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
 );
 
 ALTER TABLE artifact_annotations ENABLE ROW LEVEL SECURITY;
@@ -110,9 +199,9 @@ ALTER TABLE artifact_annotations ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "artifact_annotations_select"
   ON artifact_annotations FOR SELECT
   USING (
-    artifact_id IN (
-      SELECT a.id FROM artifacts a
-      WHERE a.project_id IN (
+    artifact_run_id IN (
+      SELECT ar.id FROM artifact_runs ar
+      WHERE ar.project_id IN (
         SELECT pt.project_id FROM project_teams pt
         JOIN team_members tm ON tm.team_id = pt.team_id
         WHERE tm.user_id = auth.uid()
@@ -123,9 +212,45 @@ CREATE POLICY "artifact_annotations_select"
 CREATE POLICY "artifact_annotations_insert"
   ON artifact_annotations FOR INSERT
   WITH CHECK (
-    artifact_id IN (
-      SELECT a.id FROM artifacts a
-      WHERE a.project_id IN (
+    artifact_run_id IN (
+      SELECT ar.id FROM artifact_runs ar
+      WHERE ar.project_id IN (
+        SELECT pt.project_id FROM project_teams pt
+        JOIN team_members tm ON tm.team_id = pt.team_id
+        WHERE tm.user_id = auth.uid()
+      )
+    )
+  );
+
+CREATE POLICY "artifact_annotations_update"
+  ON artifact_annotations FOR UPDATE
+  USING (
+    artifact_run_id IN (
+      SELECT ar.id FROM artifact_runs ar
+      WHERE ar.project_id IN (
+        SELECT pt.project_id FROM project_teams pt
+        JOIN team_members tm ON tm.team_id = pt.team_id
+        WHERE tm.user_id = auth.uid()
+      )
+    )
+  )
+  WITH CHECK (
+    artifact_run_id IN (
+      SELECT ar.id FROM artifact_runs ar
+      WHERE ar.project_id IN (
+        SELECT pt.project_id FROM project_teams pt
+        JOIN team_members tm ON tm.team_id = pt.team_id
+        WHERE tm.user_id = auth.uid()
+      )
+    )
+  );
+
+CREATE POLICY "artifact_annotations_delete"
+  ON artifact_annotations FOR DELETE
+  USING (
+    artifact_run_id IN (
+      SELECT ar.id FROM artifact_runs ar
+      WHERE ar.project_id IN (
         SELECT pt.project_id FROM project_teams pt
         JOIN team_members tm ON tm.team_id = pt.team_id
         WHERE tm.user_id = auth.uid()
@@ -139,89 +264,116 @@ CREATE POLICY "artifact_annotations_insert"
 ## 3. Supabase Edge Functions
 
 ### 3.1 `generate-tech-spec`
-```
+
+```text
 POST /functions/v1/generate-tech-spec
 
 Body: {
   projectId: string,
-  businessLogicArtifactId: string,   // artifacts.id WHERE artifact_type = 'business_logic'
+  sourceArtifactRunId: string,
   promptTemplateId?: string,
   modelOverride?: string
 }
 
 Response: {
   aiRunId: string,
-  artifactId: string,                // the new tech_spec artifact created in artifacts table
+  workflowRunId: string,
+  workflowRunStepId: string,
+  artifactRunId: string,
   content: string
 }
 ```
 
 ### 3.2 `generate-coding-plan`
-```
+
+```text
 POST /functions/v1/generate-coding-plan
 
 Body: {
   projectId: string,
-  techSpecArtifactId: string,        // artifacts.id WHERE artifact_type = 'tech_spec'
+  sourceArtifactRunId: string,
   promptTemplateId?: string,
   modelOverride?: string
 }
 
 Response: {
   aiRunId: string,
-  artifactId: string                 // the new coding_plan artifact
+  workflowRunId: string,
+  workflowRunStepId: string,
+  artifactRunId: string,
+  content: string
 }
 ```
 
-### 3.3b `review-business-logic`
-```
+### 3.3 `review-business-logic`
+
+```text
 POST /functions/v1/review-business-logic
 
 Body: {
   projectId: string,
-  businessLogicArtifactId: string,   // artifacts.id WHERE artifact_type = 'business_logic'
+  sourceArtifactRunId: string,
   promptTemplateId?: string,
   modelOverride?: string
 }
 
 Response: {
   aiRunId: string,
-  reviewNotes: string,               // AI-generated review comments in Markdown
-  ambiguities: string[],             // list of detected ambiguous or missing requirements
-  artifactId: string                 // updated artifact with review annotations
+  workflowRunId: string,
+  workflowRunStepId: string,
+  reviewNotes: string,
+  ambiguities: string[],
+  artifactRunId?: string
 }
 ```
 
 ### 3.4 `generate-master-schedule`
-```
+
+```text
 POST /functions/v1/generate-master-schedule
 
 Body: {
   projectId: string,
-  codingPlanArtifactId: string,    // artifacts.id WHERE artifact_type = 'coding_plan'
-  teamMembers: TeamMember[],       // fetched from project_teams → team_members
+  sourceArtifactRunId: string,
+  teamMembers: TeamMember[],
   sprintLength?: number,
   deadlines?: { name: string, date: string }[],
-  promptTemplateId?: string
+  promptTemplateId?: string,
+  modelOverride?: string
 }
 
 Response: {
   aiRunId: string,
-  masterScheduleId: string,        // the new master_schedules row created
-  scheduleItems: ScheduleItem[]    // structured JSON parsed into schedule_items rows
+  workflowRunId: string,
+  workflowRunStepId: string,
+  masterScheduleId: string,
+  scheduleItems: ScheduleItem[]
 }
 ```
 
 ### 3.5 Edge Function Pattern
-All Edge Functions follow the same pattern:
-1. Validate auth (Supabase Auth JWT)
-2. Fetch input data from DB (using artifact IDs, not eliminated table IDs)
-3. Load prompt template (or use default from `ai_prompt_templates`)
-4. Assemble the prompt
-5. Call AI provider API (API keys stored in Supabase Vault/env — never exposed to browser)
-6. Parse response
-7. Store result in `ai_runs` + save artifact to `artifacts` table (with `content_url` in Supabase Storage)
-8. Return `aiRunId` + `artifactId`
+
+All AI Edge Functions follow the same pattern:
+
+1. Validate auth with the Supabase Auth JWT.
+2. Resolve project access and the source `artifact_run`.
+3. Resolve the prompt template or use the default template for the step type.
+4. Create or reuse the canonical workflow run and workflow run step for this generation.
+5. Assemble the prompt.
+6. Call the AI provider API.
+7. Insert `ai_runs`.
+8. Write the generated output to Supabase Storage, then insert `artifact_runs` with `remote_path` and `remote_url`.
+9. Update `workflow_run_steps.status`.
+10. Return `aiRunId`, `workflowRunId`, `workflowRunStepId`, and `artifactRunId`.
+
+Important storage rule:
+
+- Edge Functions do not have local filesystem access.
+- They create storage-backed artifact runs, not local-first `.artifacts` files.
+- Go-Runner remains the local-first execution path for workflow runs.
+- Storage convention for browser-triggered artifact generation:
+  - Bucket: `flowpilot-artifacts`
+  - Path: `{projectId}/{workflowRunId}/{workflowRunStepId}/{artifactKey}/{version}/{fileName}`
 
 ```typescript
 // supabase/functions/generate-tech-spec/index.ts
@@ -234,22 +386,25 @@ serve(async (req) => {
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
   )
 
-  // 1. Validate auth
-  const authHeader = req.headers.get('Authorization')!
-  const { data: { user } } = await supabase.auth.getUser(authHeader.replace('Bearer ', ''))
+  const authHeader = req.headers.get('Authorization')
+  if (!authHeader) {
+    return new Response(JSON.stringify({ error: 'Missing auth header' }), { status: 401 })
+  }
 
-  // 2. Fetch inputs, assemble prompt, call AI...
-  // 3. Store result in ai_runs + artifacts
-  // 4. Return response
+  const { data: { user } } = await supabase.auth.getUser(authHeader.replace('Bearer ', ''))
+  if (!user) {
+    return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401 })
+  }
+
+  // Resolve source artifact_run, create workflow lineage, call provider, persist ai_runs + artifact_runs.
 })
 ```
 
 ### 3.6 `generate-embedding`
-This shared Edge Function supports artifact working memory search in CP-12.
 
-> **Security note:** The CORS `"Access-Control-Allow-Origin": "*"` wildcard is acceptable for development. In production, restrict to the admin web app's domain.
+This shared Edge Function supports artifact memory search in CP-12.
 
-```
+```text
 POST /functions/v1/generate-embedding
 
 Body: {
@@ -263,224 +418,182 @@ Response: {
 ```
 
 Implementation requirements:
+
+- validate method and input
+- require JWT auth to prevent unauthenticated use
+- support CORS preflight
 - use `new Supabase.ai.Session("gte-small")`
 - call `session.run(text, { mean_pool: true, normalize: true })`
-- validate method and input
-- support CORS preflight
-- return dimensions for debugging and migration validation
+- return `dimensions` for debugging and migration validation
 
-Reference implementation from a previous working Supabase project:
-
-```typescript
-// supabase/functions/generate-embedding/index.ts
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-
-// CORS headers for cross-origin requests
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type",
-};
-
-serve(async (req: Request) => {
-  // Handle CORS preflight requests
-  if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders });
-  }
-
-  try {
-    // Only accept POST requests
-    if (req.method !== "POST") {
-      return new Response(
-        JSON.stringify({ error: "Method not allowed" }),
-        {
-          status: 405,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        }
-      );
-    }
-
-    // Parse request body
-    const { text } = await req.json();
-
-    // Validate input
-    if (!text || typeof text !== "string") {
-      return new Response(
-        JSON.stringify({ error: "Missing or invalid 'text' field" }),
-        {
-          status: 400,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        }
-      );
-    }
-
-    console.log(`Generating embedding for text: ${text.substring(0, 50)}...`);
-
-    // Create session and generate embedding
-    // Note: Session is created per-request to avoid cold start caching issues
-    const session = new Supabase.ai.Session("gte-small");
-
-    const result = await session.run(text, {
-      mean_pool: true,
-      normalize: true,
-    });
-
-    // Debug: Log result type and structure
-    console.log(`Result type: ${typeof result}, constructor: ${result?.constructor?.name}`);
-
-    // Ensure result is an array
-    let embedding: number[];
-
-    if (!result) {
-      throw new Error("session.run() returned null or undefined");
-    }
-
-    if (Array.isArray(result)) {
-      embedding = result;
-    } else if (typeof result === "object" && result !== null) {
-      // Convert TypedArray (Float32Array, etc.) to regular array
-      try {
-        embedding = Array.from(result as any);
-      } catch (e) {
-        // Fallback: try to extract numeric values
-        embedding = Object.values(result).filter((v): v is number => typeof v === "number");
-      }
-    } else {
-      throw new Error(`Unexpected result type: ${typeof result}`);
-    }
-
-    if (!embedding || embedding.length === 0) {
-      throw new Error("Empty embedding array");
-    }
-
-    console.log(`Generated embedding with ${embedding.length} dimensions`);
-    console.log(`First 5 values: ${embedding.slice(0, 5)}`);
-
-    // Return response
-    return new Response(
-      JSON.stringify({
-        embedding: embedding,
-        dimensions: embedding.length,
-      }),
-      {
-        status: 200,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      }
-    );
-  } catch (error) {
-    console.error("Error generating embedding:", error);
-    return new Response(
-      JSON.stringify({
-        error: "Failed to generate embedding",
-        details: error instanceof Error ? error.message : String(error),
-      }),
-      {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      }
-    );
-  }
-});
-```
+`generate-embedding` is a shared utility function. Project access control should be enforced by the caller before sending text to this function. The CORS allowlist is not the security boundary. JWT validation is.
 
 ---
 
 ## 4. UI Components
 
 ### 4.1 AI Prompt Templates (`/settings/prompt-templates`)
-- DataTable: Name, Category (badge), Model Preference, Version, Status
+
+- DataTable: Name, Step Type, Scope, Provider Preference, Model Preference, Version, Status
 - Create/Edit dialog:
   - Name, Description
-  - Category (select from predefined list)
-  - Template Content (large Markdown editor with placeholder syntax: `{{business_logic}}`, `{{tech_spec}}`, `{{team_members}}`)
-  - Input/Output Schema (JSON editor)
-  - Model Preference (dropdown)
-- Version history: show previous versions for each template
+  - Step Type
+  - Scope selector: global or project
+  - Template Content editor with placeholder syntax
+  - Input/Output Schema JSON editor
+  - Provider Preference and Model Preference
+- Version history: show prior versions from the template history rows
 
 ### 4.2 AI Execution Logs (`/ai-runs`)
-- DataTable: Run Type, Project, Model, Status (badge), Tokens, Cost, Triggered By, Date
-- Click row → detail view:
-  - Full input payload (collapsible JSON/Markdown)
+
+- DataTable: Run Type, Project, Model, Status, Tokens, Cost, Triggered By, Date
+- Click row -> detail view:
+  - Full input payload
   - Full output payload
   - Token usage breakdown
   - Cost estimate
-  - Linked workflow run/step (clickable)
-- Filter by: project, status, model, date range
-- "Retry/Regenerate" button → re-runs with same input
+- Linked workflow run and workflow step
+- Linked artifact run
+- Filter by project, status, model, date range
+- Retry/Regenerate creates a new single-step `workflow_run` with new lineage, not an in-place mutation
+- This is different from the CP-07 reject/retry loop, which reuses the existing `workflow_run_step` and increments `retry_count`
 
-### 4.3 Artifact Viewer (updated from Phase 3)
-- Markdown rendering of artifact content loaded from `artifacts.content_url`
-- **Version History:** Sidebar dropdown to select previous versions
-- **Annotations:** Click to highlight text range → add note → saved to `artifact_annotations`
-- **Compare versions:** Side-by-side diff of two artifact versions
+### 4.3 Artifact Viewer
+
+- Markdown rendering of artifact content loaded from `artifact_runs.remote_url`
+- Version history sidebar
+- Annotations saved to `artifact_annotations`
+- Compare versions side-by-side
 
 ### 4.4 AI Generation Trigger Buttons
-Wire the previously-disabled "Generate from..." buttons (Phase 3):
-- Business Logic page → "Ask AI to Review" calls Edge Function
-- Tech Spec page → "Generate from Business Logic" calls `generate-tech-spec`
-- Coding Plan page → "Generate from Tech Spec" calls `generate-coding-plan`
-- Master Schedule page → "Generate Schedule" calls `generate-master-schedule`
 
-All calls go through:
-```typescript
-// src/features/ai-runs/mutations.ts
-export function useGenerateTechSpec() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: async (input: GenerateTechSpecInput) => {
-      const { data, error } = await supabase.functions.invoke('generate-tech-spec', { body: input })
-      if (error) throw error
-      return data
-    },
-    onSuccess: (data, variables) => {
-      queryClient.invalidateQueries({ queryKey: techSpecKeys.byProject(variables.projectId) })
-      queryClient.invalidateQueries({ queryKey: ['aiRuns'] })
-    },
-  })
-}
-```
+Wire the previously-disabled "Generate from..." buttons:
+
+- Business Logic page -> "Ask AI to Review" calls `review-business-logic`
+- Tech Spec page -> "Generate from Business Logic" calls `generate-tech-spec`
+- Coding Plan page -> "Generate from Tech Spec" calls `generate-coding-plan`
+- Master Schedule page -> "Generate Schedule" calls `generate-master-schedule`
+
+All calls go through typed mutations in the app layer, and each generation flow must return the canonical workflow lineage plus the created `artifact_run`.
 
 ---
 
-## 5. Go-Runner ↔ Admin Web Communication
+## 5. Go-Runner <-> Admin Web Communication
 
-For **workflow execution** (Phase 4), the Go-Runner drives the pipeline:
-- The Go-Runner polls **`workflow_run_steps`** for `PENDING` status rows (not `workflow_steps` — the definition table has no status column).
-- It calls the AI provider directly (not through Edge Functions — it has local access to the CLI).
-- It writes results back to `artifacts` table and updates `workflow_run_steps.status`.
-- The Admin Web receives updates via Supabase Realtime subscription on `workflow_run_steps`.
+For workflow execution, the Go-Runner drives the pipeline:
 
-For **document-level AI** (this phase), the Admin Web calls Edge Functions directly:
+- The Go-Runner polls `workflow_run_steps` for `PENDING` rows.
+- It calls the AI provider directly.
+- It writes results back to `artifact_runs` and updates `workflow_run_steps.status`.
+- The Admin Web receives updates via Supabase Realtime on `workflow_run_steps`.
+
+For browser-triggered AI generation, the Admin Web calls Edge Functions directly:
+
 - Edge Functions handle the AI call securely.
-- Results are written to `ai_runs` + `artifacts`.
+- They still create workflow lineage, `ai_runs`, and `artifact_runs`.
 
-This dual-path design keeps the workflow engine independent from the admin UI.
+This keeps the workflow engine independent from the admin UI while preserving one canonical runtime model.
 
 ---
 
-## 6. Definition of Done — Phase 6
+## 6. Definition of Done - Phase 6
 
 ### Database
-- [ ] `ai_prompt_templates` with versioning, RLS SELECT + INSERT policies
-- [ ] `ai_runs` with `UUID` FKs, `tokens_input`, `tokens_output`, `cost_usd` columns, RLS project-member policy
-- [ ] `artifact_annotations` with `artifact_id UUID REFERENCES artifacts(id)`, `user_id UUID REFERENCES auth.users(id)`, RLS project-member policy
+
+- `ai_prompt_templates` with step type, scope, versioning, and RLS SELECT/INSERT/UPDATE/DELETE policies.
+- `ai_runs` with project-scoped audit fields, `workflow_run_id`, `workflow_run_step_id`, token/cost columns, and RLS project-member policy.
+- `artifact_annotations` with `artifact_run_id UUID REFERENCES artifact_runs(id)` and project-member RLS.
 
 ### Edge Functions
-- [ ] `generate-tech-spec` — accepts `businessLogicArtifactId UUID`, writes to `artifacts` table
-- [ ] `generate-coding-plan` — accepts `techSpecArtifactId UUID`, writes to `artifacts` table
-- [ ] `generate-master-schedule` — accepts `codingPlanArtifactId UUID`, writes to `master_schedules` + `schedule_items`
-- [ ] `review-business-logic` — accepts `businessLogicArtifactId UUID`, returns review notes and ambiguities
-- [ ] `generate-embedding` — shared function, returns `{ embedding, dimensions }` for CP-12 RAG
+
+- `generate-tech-spec` accepts `sourceArtifactRunId` and writes `ai_runs` + `artifact_runs`.
+- `generate-coding-plan` accepts `sourceArtifactRunId` and writes `ai_runs` + `artifact_runs`.
+- `generate-master-schedule` accepts `sourceArtifactRunId` and writes the schedule row(s) plus `artifact_runs`.
+- `review-business-logic` accepts `sourceArtifactRunId` and returns review notes and ambiguities.
+- `generate-embedding` is shared and returns `{ embedding, dimensions }` for CP-12 RAG.
 
 ### UI
-- [ ] Prompt Template CRUD with Markdown editor, input/output schema, version history
-- [ ] AI Execution Log viewer with `tokens`, `cost_usd`, `status` filtering and detail drill-down
-- [ ] All "Generate from..." buttons functional and calling correct Edge Functions with artifact IDs
-- [ ] Artifact viewer with version history sidebar and annotation highlighting
-- [ ] Annotation create/edit/delete scoped to project members
+
+- Prompt Template CRUD with markdown editor, schema editors, and version history.
+- AI Execution Log viewer with tokens, cost, status filtering, and detail drill-down.
+- All "Generate from..." buttons call the correct Edge Functions with artifact-run inputs.
+- Artifact viewer with version history and annotation highlighting.
+- Annotation create/edit/delete scoped to project members.
 
 ### Integration
-- [ ] Go-Runner polls `workflow_run_steps` (not `workflow_steps`) for PENDING rows
-- [ ] Go-Runner writes results to `artifacts` table (not `ai_outputs`)
-- [ ] Admin Web reads workflow progress via Supabase Realtime on `workflow_run_steps`
 
+- Go-Runner polls `workflow_run_steps` for `PENDING` rows.
+- Go-Runner writes results to `artifact_runs`.
+- Admin Web reads workflow progress via Supabase Realtime on `workflow_run_steps`.
+- Every durable AI output has traceable workflow lineage and a persisted artifact run.
+
+---
+
+## 7. Manual Verification Guide
+
+Use this checklist after implementation. The main invariant is:
+
+`workflow_run` -> `workflow_run_step` -> `ai_runs` -> `artifact_runs`
+
+Every durable generation should leave this lineage behind.
+
+### 7.1 Database Verification
+
+Run one simple flow first, such as Business Logic -> Generate Tech Spec. Confirm:
+
+- one new `workflow_run` was created
+- one new `workflow_run_step` was created for the generation step
+- one `ai_runs` row points to that `workflow_run` and `workflow_run_step`
+- one `artifact_runs` row points to that same `workflow_run` and `workflow_run_step`
+- `workflow_run_steps.status` ends in `DONE` or `WAITING_USER_APPROVAL`
+- Edge Function-generated artifacts have `remote_url` populated
+
+Suggested SQL:
+
+```sql
+select * from workflow_runs order by started_at desc limit 5;
+select * from workflow_run_steps order by started_at desc limit 10;
+select * from ai_runs order by created_at desc limit 10;
+select * from artifact_runs order by created_at desc limit 10;
+```
+
+### 7.2 Edge Function Verification
+
+Call `generate-tech-spec` directly with a valid `sourceArtifactRunId`. Confirm:
+
+- response returns `workflowRunId`, `workflowRunStepId`, and `artifactRunId`
+- invalid JWT returns `401`
+- invalid or missing `sourceArtifactRunId` returns `400` or `404`
+- unauthorized project access is rejected
+- repeated regenerate calls create a fresh single-step workflow lineage
+
+### 7.3 Go-Runner Verification
+
+Execute one real workflow through the Go-Runner. Confirm:
+
+- the runner claims `PENDING` `workflow_run_steps`
+- the output file is written to the local path resolved from `artifact_definitions`
+- sync populates `artifact_runs.remote_path` and `artifact_runs.remote_url`
+- the step points to the produced `artifact_run`
+- retry behavior follows the workflow engine contract for runner-owned steps
+
+### 7.4 UI Verification
+
+From Admin Web, confirm:
+
+- `Generate from ...` buttons create real lineage-backed outputs
+- `/settings/prompt-templates` can list and save templates
+- `/ai-runs` shows status, tokens, cost, and lineage ids
+- artifact viewer opens the generated artifact version
+- approval-required steps wait for user approval instead of silently completing
+
+### 7.5 Minimum Regression Matrix
+
+Run these cases before closing the feature:
+
+1. Happy-path generation with a valid source artifact run
+2. Invalid source artifact run id
+3. Unauthorized user or missing JWT
+4. Approval-required generation step
+5. Retry or regenerate from AI logs
+6. Artifact save succeeds even if downstream memory extraction fails

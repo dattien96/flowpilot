@@ -6,15 +6,24 @@ import {
   progressWorkflowRun,
   requireAuthenticatedUser,
 } from "../_shared/workflow-engine-runtime.ts";
+import {
+  workflowCorsPreflightResponse,
+  workflowJsonResponse,
+  workflowTextResponse,
+} from "../_shared/cors.ts";
 
 Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") {
+    return workflowCorsPreflightResponse();
+  }
+
   if (req.method !== "POST") {
-    return new Response("Method not allowed", { status: 405 });
+    return workflowTextResponse("Method not allowed", { status: 405 });
   }
 
   const authHeader = req.headers.get("Authorization");
   if (!authHeader) {
-    return new Response("Unauthorized", { status: 401 });
+    return workflowTextResponse("Unauthorized", { status: 401 });
   }
 
   try {
@@ -25,7 +34,7 @@ Deno.serve(async (req) => {
     const projectId = String(body?.projectId ?? "");
 
     if (!workflowId || !projectId) {
-      return new Response("Missing workflowId or projectId", { status: 400 });
+      return workflowTextResponse("Missing workflowId or projectId", { status: 400 });
     }
 
     await assertProjectMembership(adminClient, projectId, user.email);
@@ -47,7 +56,7 @@ Deno.serve(async (req) => {
       .single();
 
     if (runError) {
-      return new Response(runError.message, { status: 400 });
+      return workflowTextResponse(runError.message, { status: 400 });
     }
 
     if (workflowSteps.length > 0) {
@@ -63,15 +72,15 @@ Deno.serve(async (req) => {
       );
 
       if (stepsError) {
-        return new Response(stepsError.message, { status: 400 });
+        return workflowTextResponse(stepsError.message, { status: 400 });
       }
     }
 
     const run = await progressWorkflowRun(adminClient, runData.id);
-    return Response.json(run);
+    return workflowJsonResponse(run);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     const status = message === "Unauthorized" ? 401 : message === "Forbidden" ? 403 : 400;
-    return new Response(message, { status });
+    return workflowTextResponse(message, { status });
   }
 });
