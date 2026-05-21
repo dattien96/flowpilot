@@ -17,8 +17,13 @@ describe("CP-01 route tree", () => {
     expect(routePaths).toContain("/projects/$projectId/tasks");
     expect(routePaths).toContain("/projects/$projectId/members");
     expect(routePaths).toContain("/projects/$projectId/workflows");
+    expect(routePaths).toContain("/projects/$projectId/artifacts");
     expect(routePaths).toContain("/projects/$projectId/settings");
     expect(routePaths).toContain("/ai-runs");
+    expect(routePaths).toContain("/artifacts");
+    expect(routePaths).toContain("/artifacts/create");
+    expect(routePaths).toContain("/settings/artifacts");
+    expect(routePaths).toContain("/settings/artifacts/create");
     expect(routePaths).toContain("/settings/mcp-servers");
     expect(routePaths).toContain("/settings/prompt-templates");
   });

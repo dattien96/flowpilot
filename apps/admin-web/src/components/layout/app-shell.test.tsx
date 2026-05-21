@@ -7,6 +7,9 @@ import { buildMcpServerStatus, buildRunnerStatus } from "@/components/layout/app
 describe("AppShell", () => {
   it("includes the MCP Servers entry in the settings navigation", () => {
     expect(
+      settingsNavItems.some((item) => item.to === "/artifacts" && item.label === "Artifacts"),
+    ).toBe(true);
+    expect(
       settingsNavItems.some(
         (item) => item.to === "/settings/mcp-servers" && item.label === "MCP Servers",
       ),

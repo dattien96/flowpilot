@@ -44,6 +44,7 @@ vi.mock("@tanstack/react-router", async () => {
   );
   return {
     ...actual,
+    Link: ({ children }: { children: ReactNode }) => <>{children}</>,
     useRouter: () => ({
       invalidate: mocks.invalidate,
       navigate: mocks.navigate,
