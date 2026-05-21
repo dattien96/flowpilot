@@ -1,4 +1,6 @@
 import type {
+  ArtifactDefinition,
+  ArtifactRun,
   StepDefinition,
   Workflow,
   WorkflowStep,
@@ -14,6 +16,10 @@ export interface SupabaseRow {
   [key: string]: any;
 }
 
+function toStringArray(value: unknown) {
+  return Array.isArray(value) ? value.map(String).filter(Boolean) : [];
+}
+
 export function mapStepDefinition(row: SupabaseRow): StepDefinition {
   const mcps = Array.isArray(row.required_mcps)
     ? row.required_mcps.map(String)
@@ -21,6 +27,12 @@ export function mapStepDefinition(row: SupabaseRow): StepDefinition {
   const skills = Array.isArray(row.required_skills)
     ? row.required_skills.map(String)
     : [];
+  const inputArtifactDefinitions = toStringArray(
+    row.input_artifact_definition_keys ?? row.input_artifact_definitions,
+  );
+  const outputArtifactDefinitions = toStringArray(
+    row.output_artifact_definition_keys ?? row.output_artifact_definitions,
+  );
 
   return {
     stepType: row.step_type as StepType,
@@ -29,6 +41,39 @@ export function mapStepDefinition(row: SupabaseRow): StepDefinition {
     requiredMcps: mcps,
     requiredSkills: skills,
     agentType: row.agent_type as "standard" | "autonomous",
+    inputArtifactDefinitions,
+    outputArtifactDefinitions,
+    createdAt: row.created_at ? String(row.created_at) : "",
+    updatedAt: row.updated_at ? String(row.updated_at) : "",
+  };
+}
+
+export function mapArtifactDefinition(row: SupabaseRow): ArtifactDefinition {
+  return {
+    key: String(row.key ?? row.artifact_key),
+    name: String(row.name),
+    description: String(row.description),
+    localPathTemplate: String(row.local_path_template),
+    remotePathTemplate: String(row.remote_path_template ?? ""),
+    defaultFileName: String(row.default_file_name ?? ""),
+    createdAt: row.created_at ? String(row.created_at) : "",
+    updatedAt: row.updated_at ? String(row.updated_at) : "",
+  };
+}
+
+export function mapArtifactRun(row: SupabaseRow): ArtifactRun {
+  return {
+    id: String(row.id),
+    artifactDefinitionKey: String(row.artifact_definition_key ?? row.artifact_key),
+    workflowId: String(row.workflow_id),
+    workflowRunId: String(row.workflow_run_id),
+    workflowRunStepId: row.workflow_run_step_id ? String(row.workflow_run_step_id) : null,
+    projectId: row.project_id ? String(row.project_id) : null,
+    title: String(row.title),
+    localPath: String(row.local_path),
+    remotePath: row.remote_path ? String(row.remote_path) : "",
+    remoteUrl: row.remote_url ? String(row.remote_url) : "",
+    syncStatus: row.sync_status as ArtifactRun["syncStatus"],
     createdAt: row.created_at ? String(row.created_at) : "",
     updatedAt: row.updated_at ? String(row.updated_at) : "",
   };
@@ -89,6 +134,7 @@ export function mapWorkflowRunStep(row: SupabaseRow): WorkflowRunStep {
     stepType: row.step_type as StepType,
     status: row.status as WorkflowStepStatus,
     artifactId: row.artifact_id ? String(row.artifact_id) : null,
+    artifactRunId: row.artifact_run_id ? String(row.artifact_run_id) : null,
     promptCacheId: row.prompt_cache_id ? String(row.prompt_cache_id) : null,
     rejectionNote: row.rejection_note ? String(row.rejection_note) : null,
     retryCount: Number(row.retry_count || 0),

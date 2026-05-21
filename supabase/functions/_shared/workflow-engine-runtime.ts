@@ -32,12 +32,27 @@ interface WorkflowRunStepRow {
   retry_count: number;
   started_at: string | null;
   finished_at: string | null;
+  artifact_run_id: string | null;
 }
 
 interface WorkflowStepDefinitionRow {
   id: string;
   is_enabled: boolean;
   requires_approval: boolean;
+}
+
+interface StepArtifactBindingRow {
+  artifact_definition_key: string;
+  order_index: number;
+}
+
+interface ArtifactDefinitionRow {
+  key: string;
+  name: string;
+  description: string;
+  local_path_template: string;
+  remote_path_template: string;
+  default_file_name: string;
 }
 
 export function createWorkflowClients(authHeader: string) {
@@ -259,6 +274,122 @@ async function listRuntimeSteps(
   });
 }
 
+function resolveArtifactPath(
+  template: string,
+  context: {
+    projectId: string;
+    workflowId: string;
+    workflowRunId: string;
+    workflowRunStepId: string;
+    stepType: string;
+    artifactKey: string;
+    defaultFileName: string;
+  }
+) {
+  return template
+    .replaceAll("{projectId}", context.projectId)
+    .replaceAll("{workflowId}", context.workflowId)
+    .replaceAll("{workflowRunId}", context.workflowRunId)
+    .replaceAll("{workflowRunStepId}", context.workflowRunStepId)
+    .replaceAll("{stepType}", context.stepType)
+    .replaceAll("{artifactKey}", context.artifactKey)
+    .replaceAll("{defaultFileName}", context.defaultFileName);
+}
+
+async function createArtifactRunsForStep(
+  adminClient: SupabaseClient,
+  run: WorkflowRunRow,
+  step: RuntimeWorkflowStep
+) {
+  const { data: bindingData, error: bindingError } = await adminClient
+    .from("step_output_artifact_definitions")
+    .select("artifact_definition_key, order_index")
+    .eq("step_type", step.stepType)
+    .order("order_index", { ascending: true });
+
+  if (bindingError) {
+    throw new Error(`Unable to load step artifact outputs: ${bindingError.message}`);
+  }
+
+  const bindings = (bindingData ?? []) as StepArtifactBindingRow[];
+  if (bindings.length === 0) {
+    return;
+  }
+
+  const definitionKeys = bindings.map((binding) => binding.artifact_definition_key);
+  const { data: artifactDefinitions, error: definitionsError } = await adminClient
+    .from("artifact_definitions")
+    .select("key, name, description, local_path_template, remote_path_template, default_file_name")
+    .in("key", definitionKeys);
+
+  if (definitionsError) {
+    throw new Error(`Unable to load artifact definitions: ${definitionsError.message}`);
+  }
+
+  const definitionsByKey = new Map(
+    ((artifactDefinitions ?? []) as ArtifactDefinitionRow[]).map((definition) => [
+      definition.key,
+      definition,
+    ])
+  );
+
+  const now = new Date().toISOString();
+  const artifactRows = bindings.map((binding) => {
+    const definition = definitionsByKey.get(binding.artifact_definition_key);
+    if (!definition) {
+      throw new Error(
+        `Missing artifact definition for key "${binding.artifact_definition_key}".`
+      );
+    }
+
+    const context = {
+      projectId: run.project_id,
+      workflowId: run.workflow_id,
+      workflowRunId: run.id,
+      workflowRunStepId: step.id,
+      stepType: step.stepType,
+      artifactKey: definition.key,
+      defaultFileName: definition.default_file_name || definition.name,
+    };
+
+    return {
+      artifact_definition_key: definition.key,
+      project_id: run.project_id,
+      workflow_id: run.workflow_id,
+      workflow_run_id: run.id,
+      workflow_run_step_id: step.id,
+      title: definition.default_file_name || definition.name,
+      local_path: resolveArtifactPath(definition.local_path_template, context),
+      remote_path: resolveArtifactPath(definition.remote_path_template, context),
+      remote_url: "",
+      sync_status: "local_only",
+      created_at: now,
+      updated_at: now,
+    };
+  });
+
+  const { data: createdArtifacts, error: insertError } = await adminClient
+    .from("artifact_runs")
+    .insert(artifactRows)
+    .select("*");
+
+  if (insertError) {
+    throw new Error(`Unable to create artifact runs: ${insertError.message}`);
+  }
+
+  const firstCreatedArtifact = createdArtifacts?.[0];
+  if (firstCreatedArtifact) {
+    const { error: stepUpdateError } = await adminClient
+      .from("workflow_run_steps")
+      .update({ artifact_run_id: firstCreatedArtifact.id })
+      .eq("id", step.id);
+
+    if (stepUpdateError) {
+      throw new Error(`Unable to attach artifact run to workflow step: ${stepUpdateError.message}`);
+    }
+  }
+}
+
 function toStepDbPatch(patch: WorkflowStepPatch) {
   return {
     status: patch.status,
@@ -315,6 +446,12 @@ export async function progressWorkflowRun(adminClient: SupabaseClient, runId: st
     await applyStepPatch(adminClient, transition.stepId, transition.patch);
     for (const log of transition.logs) {
       await insertWorkflowRunLog(adminClient, transition.stepId, log.logLevel, log.message);
+    }
+    if (transition.patch.status === "DONE") {
+      const completedStep = runtimeSteps.find((step) => step.id === transition.stepId);
+      if (completedStep) {
+        await createArtifactRunsForStep(adminClient, run, completedStep);
+      }
     }
   }
 

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  mapArtifactDefinition,
+  mapArtifactRun,
   mapStepDefinition,
   mapWorkflow,
   mapWorkflowStep,
@@ -18,6 +20,8 @@ describe("WorkflowEngine mappers", () => {
       required_mcps: ["jira"],
       required_skills: ["tech_spec_skill"],
       agent_type: "standard",
+      input_artifact_definitions: ["business_summary_artifact"],
+      output_artifact_definitions: ["tech_spec_artifact"],
       created_at: "2026-05-20T00:00:00Z",
       updated_at: "2026-05-20T01:00:00Z",
     };
@@ -29,6 +33,82 @@ describe("WorkflowEngine mappers", () => {
       requiredMcps: ["jira"],
       requiredSkills: ["tech_spec_skill"],
       agentType: "standard",
+      inputArtifactDefinitions: ["business_summary_artifact"],
+      outputArtifactDefinitions: ["tech_spec_artifact"],
+      createdAt: "2026-05-20T00:00:00Z",
+      updatedAt: "2026-05-20T01:00:00Z",
+    });
+  });
+
+  it("defaults missing artifact bindings to empty arrays", () => {
+    const entity = mapStepDefinition({
+      step_type: "tech_spec",
+      name: "Technical Spec",
+      description: "Produce technical layout",
+      required_mcps: ["jira"],
+      required_skills: ["tech_spec_skill"],
+      agent_type: "standard",
+      created_at: "2026-05-20T00:00:00Z",
+      updated_at: "2026-05-20T01:00:00Z",
+    });
+
+    expect(entity.inputArtifactDefinitions).toEqual([]);
+    expect(entity.outputArtifactDefinitions).toEqual([]);
+  });
+
+  it("maps artifact definitions", () => {
+    const entity = mapArtifactDefinition({
+      key: "plan_artifact",
+      name: "Plan",
+      description: "Planning output",
+      local_path_template: ".flowpilot/artifacts/{projectId}/plan.md",
+      remote_path_template: "artifacts/{projectId}/plan.md",
+      default_file_name: "Plan.md",
+      created_at: "2026-05-20T00:00:00Z",
+      updated_at: "2026-05-20T01:00:00Z",
+    });
+
+    expect(entity).toEqual({
+      key: "plan_artifact",
+      name: "Plan",
+      description: "Planning output",
+      localPathTemplate: ".flowpilot/artifacts/{projectId}/plan.md",
+      remotePathTemplate: "artifacts/{projectId}/plan.md",
+      defaultFileName: "Plan.md",
+      createdAt: "2026-05-20T00:00:00Z",
+      updatedAt: "2026-05-20T01:00:00Z",
+    });
+  });
+
+  it("maps artifact runs", () => {
+    const entity = mapArtifactRun({
+      id: "art-1",
+      artifact_definition_key: "plan_artifact",
+      workflow_id: "wf-1",
+      workflow_run_id: "run-1",
+      workflow_run_step_id: "wrs-1",
+      project_id: "p-123",
+      title: "Plan.md",
+      local_path: ".flowpilot/artifacts/p-123/run-1/plan.md",
+      remote_path: "artifacts/p-123/run-1/plan.md",
+      remote_url: "https://example.com/plan.md",
+      sync_status: "synced",
+      created_at: "2026-05-20T00:00:00Z",
+      updated_at: "2026-05-20T01:00:00Z",
+    });
+
+    expect(entity).toEqual({
+      id: "art-1",
+      artifactDefinitionKey: "plan_artifact",
+      workflowId: "wf-1",
+      workflowRunId: "run-1",
+      workflowRunStepId: "wrs-1",
+      projectId: "p-123",
+      title: "Plan.md",
+      localPath: ".flowpilot/artifacts/p-123/run-1/plan.md",
+      remotePath: "artifacts/p-123/run-1/plan.md",
+      remoteUrl: "https://example.com/plan.md",
+      syncStatus: "synced",
       createdAt: "2026-05-20T00:00:00Z",
       updatedAt: "2026-05-20T01:00:00Z",
     });
@@ -146,6 +226,7 @@ describe("WorkflowEngine mappers", () => {
       step_type: "tech_spec",
       status: "WAITING_USER_APPROVAL",
       artifact_id: "art-1",
+      artifact_run_id: "run-art-1",
       prompt_cache_id: "cache-1",
       rejection_note: "Fix design patterns",
       retry_count: 1,
@@ -162,6 +243,7 @@ describe("WorkflowEngine mappers", () => {
       stepType: "tech_spec",
       status: "WAITING_USER_APPROVAL",
       artifactId: "art-1",
+      artifactRunId: "run-art-1",
       promptCacheId: "cache-1",
       rejectionNote: "Fix design patterns",
       retryCount: 1,

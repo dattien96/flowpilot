@@ -3,6 +3,8 @@ import { invokeSupabaseEdgeFunction } from "@/data/datasource/supabase/edge-func
 
 import type { WorkflowEngineGateway } from "@/domain/gateway/workflow-engine-gateway";
 import type {
+  ArtifactDefinition,
+  ArtifactRun,
   StepDefinition,
   Workflow,
   WorkflowRun,
@@ -11,25 +13,125 @@ import type {
   WorkflowStep,
 } from "@/domain/model/entity/workflow-engine";
 import {
+  mapArtifactDefinition,
+  mapArtifactRun,
   mapStepDefinition,
   mapWorkflow,
-  mapWorkflowStep,
   mapWorkflowRun,
-  mapWorkflowRunStep,
   mapWorkflowRunLog,
+  mapWorkflowRunStep,
+  mapWorkflowStep,
 } from "./workflow-engine-mappers";
+
+function bindingOrder(row: { order_index?: unknown }, fallbackIndex: number) {
+  const raw = Number(row.order_index);
+  return Number.isFinite(raw) ? raw : fallbackIndex;
+}
 
 export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
   constructor(private readonly supabase: SupabaseClient) {}
 
-  async listStepDefinitions(): Promise<StepDefinition[]> {
+  async listArtifactDefinitions(): Promise<ArtifactDefinition[]> {
     const { data, error } = await this.supabase
-      .from("step_definitions")
+      .from("artifact_definitions")
       .select("*")
       .order("name", { ascending: true });
 
-    if (error) throw new Error(`Unable to list step definitions: ${error.message}`);
-    return (data ?? []).map(mapStepDefinition);
+    if (error) throw new Error(`Unable to list artifact definitions: ${error.message}`);
+    return (data ?? []).map(mapArtifactDefinition);
+  }
+
+  async saveArtifactDefinition(definition: ArtifactDefinition): Promise<ArtifactDefinition> {
+    const { data, error } = await this.supabase
+      .from("artifact_definitions")
+      .upsert(
+        {
+          key: definition.key,
+          name: definition.name,
+          description: definition.description,
+          local_path_template: definition.localPathTemplate,
+          remote_path_template: definition.remotePathTemplate,
+          default_file_name: definition.defaultFileName,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "key" }
+      )
+      .select("*")
+      .maybeSingle();
+
+    if (error) throw new Error(`Unable to save artifact definition: ${error.message}`);
+    if (!data) {
+      throw new Error("Unable to save artifact definition: no row was returned.");
+    }
+
+    return mapArtifactDefinition(data);
+  }
+
+  async listArtifactRuns(projectId?: string): Promise<ArtifactRun[]> {
+    let query = this.supabase.from("artifact_runs").select("*");
+
+    if (projectId) {
+      query = query.eq("project_id", projectId);
+    }
+
+    const { data, error } = await query.order("created_at", { ascending: false });
+
+    if (error) throw new Error(`Unable to list artifact runs: ${error.message}`);
+    return (data ?? []).map(mapArtifactRun);
+  }
+
+  async listStepDefinitions(): Promise<StepDefinition[]> {
+    const [definitionsResult, inputBindingsResult, outputBindingsResult] = await Promise.all([
+      this.supabase.from("step_definitions").select("*").order("name", { ascending: true }),
+      this.supabase
+        .from("step_input_artifact_definitions")
+        .select("step_type, artifact_definition_key, order_index")
+        .order("order_index", { ascending: true }),
+      this.supabase
+        .from("step_output_artifact_definitions")
+        .select("step_type, artifact_definition_key, order_index")
+        .order("order_index", { ascending: true }),
+    ]);
+
+    if (definitionsResult.error) {
+      throw new Error(`Unable to list step definitions: ${definitionsResult.error.message}`);
+    }
+    if (inputBindingsResult.error) {
+      throw new Error(
+        `Unable to list step input artifact bindings: ${inputBindingsResult.error.message}`
+      );
+    }
+    if (outputBindingsResult.error) {
+      throw new Error(
+        `Unable to list step output artifact bindings: ${outputBindingsResult.error.message}`
+      );
+    }
+
+    const inputBindings = new Map<string, string[]>();
+    for (const row of inputBindingsResult.data ?? []) {
+      const stepType = String(row.step_type);
+      const current = inputBindings.get(stepType) ?? [];
+      current[bindingOrder(row, current.length)] = String(row.artifact_definition_key);
+      inputBindings.set(stepType, current.filter(Boolean));
+    }
+
+    const outputBindings = new Map<string, string[]>();
+    for (const row of outputBindingsResult.data ?? []) {
+      const stepType = String(row.step_type);
+      const current = outputBindings.get(stepType) ?? [];
+      current[bindingOrder(row, current.length)] = String(row.artifact_definition_key);
+      outputBindings.set(stepType, current.filter(Boolean));
+    }
+
+    return (definitionsResult.data ?? []).map((row) =>
+      mapStepDefinition({
+        ...row,
+        input_artifact_definition_keys:
+          inputBindings.get(String(row.step_type)) ?? row.input_artifact_definitions ?? [],
+        output_artifact_definition_keys:
+          outputBindings.get(String(row.step_type)) ?? row.output_artifact_definitions ?? [],
+      })
+    );
   }
 
   async saveStepDefinition(step: StepDefinition): Promise<StepDefinition> {
@@ -47,10 +149,75 @@ export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
         { onConflict: "step_type" }
       )
       .select("*")
-      .single();
+      .maybeSingle();
 
     if (error) throw new Error(`Unable to save step definition: ${error.message}`);
-    return mapStepDefinition(data);
+    if (!data) {
+      throw new Error("Unable to save step definition: no row was returned.");
+    }
+
+    const stepType = String(data.step_type);
+    const inputArtifactDefinitions = step.inputArtifactDefinitions ?? [];
+    const outputArtifactDefinitions = step.outputArtifactDefinitions ?? [];
+
+    const { error: deleteInputError } = await this.supabase
+      .from("step_input_artifact_definitions")
+      .delete()
+      .eq("step_type", stepType);
+    if (deleteInputError) {
+      throw new Error(`Unable to reset step input artifact bindings: ${deleteInputError.message}`);
+    }
+
+    const { error: deleteOutputError } = await this.supabase
+      .from("step_output_artifact_definitions")
+      .delete()
+      .eq("step_type", stepType);
+    if (deleteOutputError) {
+      throw new Error(
+        `Unable to reset step output artifact bindings: ${deleteOutputError.message}`
+      );
+    }
+
+    if (inputArtifactDefinitions.length > 0) {
+      const { error: inputError } = await this.supabase
+        .from("step_input_artifact_definitions")
+        .insert(
+          inputArtifactDefinitions.map((artifactDefinitionKey, orderIndex) => ({
+            step_type: stepType,
+            artifact_definition_key: artifactDefinitionKey,
+            order_index: orderIndex,
+          }))
+        );
+
+      if (inputError) {
+        throw new Error(`Unable to save step input artifact bindings: ${inputError.message}`);
+      }
+    }
+
+    if (outputArtifactDefinitions.length > 0) {
+      const { error: outputError } = await this.supabase
+        .from("step_output_artifact_definitions")
+        .insert(
+          outputArtifactDefinitions.map((artifactDefinitionKey, orderIndex) => ({
+            step_type: stepType,
+            artifact_definition_key: artifactDefinitionKey,
+            order_index: orderIndex,
+          }))
+        );
+
+      if (outputError) {
+        throw new Error(`Unable to save step output artifact bindings: ${outputError.message}`);
+      }
+    }
+
+    const saved = (await this.listStepDefinitions()).find(
+      (definition) => definition.stepType === stepType
+    );
+    if (!saved) {
+      throw new Error("Saved step definition not found.");
+    }
+
+    return saved;
   }
 
   async listWorkflows(projectId?: string): Promise<Workflow[]> {
@@ -112,7 +279,9 @@ export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
 
       if (error) throw new Error(`Unable to create workflow: ${error.message}`);
       if (!data) {
-        throw new Error("Unable to create workflow: no row was returned. Check workflow write policies.");
+        throw new Error(
+          "Unable to create workflow: no row was returned. Check workflow write policies."
+        );
       }
       savedWorkflowRow = data;
     } else {
@@ -132,14 +301,15 @@ export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
 
       if (error) throw new Error(`Unable to update workflow: ${error.message}`);
       if (!data) {
-        throw new Error("Unable to update workflow: no row was returned. Check workflow write policies.");
+        throw new Error(
+          "Unable to update workflow: no row was returned. Check workflow write policies."
+        );
       }
       savedWorkflowRow = data;
     }
 
     const workflowId = savedWorkflowRow.id;
 
-    // Delete existing steps if updating
     if (!isNew) {
       const { error: deleteError } = await this.supabase
         .from("workflow_steps")
@@ -149,7 +319,6 @@ export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
       if (deleteError) throw new Error(`Unable to clear old steps: ${deleteError.message}`);
     }
 
-    // Insert new steps
     if (workflow.steps && workflow.steps.length > 0) {
       const stepRows = workflow.steps.map((step, idx) => ({
         workflow_id: workflowId,
@@ -161,9 +330,7 @@ export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
         requires_approval: step.requiresApproval ?? true,
       }));
 
-      const { error: stepsError } = await this.supabase
-        .from("workflow_steps")
-        .insert(stepRows);
+      const { error: stepsError } = await this.supabase.from("workflow_steps").insert(stepRows);
 
       if (stepsError) throw new Error(`Unable to save workflow steps: ${stepsError.message}`);
     }

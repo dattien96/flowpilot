@@ -5,7 +5,7 @@ import { SupabaseWorkflowEngineGateway } from "./supabase-workflow-engine-gatewa
 
 describe("SupabaseWorkflowEngineGateway", () => {
   it("lists step definitions ordered by name", async () => {
-    const order = vi.fn().mockResolvedValue({
+    const definitionsOrder = vi.fn().mockResolvedValue({
       data: [
         {
           step_type: "tech_spec",
@@ -18,16 +18,133 @@ describe("SupabaseWorkflowEngineGateway", () => {
       ],
       error: null,
     });
-    const from = vi.fn(() => ({
-      select: () => ({ order }),
-    }));
+    const inputOrder = vi.fn().mockResolvedValue({
+      data: [
+        {
+          step_type: "tech_spec",
+          artifact_definition_key: "business_summary_artifact",
+          order_index: 0,
+        },
+      ],
+      error: null,
+    });
+    const outputOrder = vi.fn().mockResolvedValue({
+      data: [
+        {
+          step_type: "tech_spec",
+          artifact_definition_key: "tech_spec_artifact",
+          order_index: 0,
+        },
+      ],
+      error: null,
+    });
+    const from = vi.fn((table: string) => {
+      if (table === "step_definitions") {
+        return { select: () => ({ order: definitionsOrder }) };
+      }
+      if (table === "step_input_artifact_definitions") {
+        return { select: () => ({ order: inputOrder }) };
+      }
+      if (table === "step_output_artifact_definitions") {
+        return { select: () => ({ order: outputOrder }) };
+      }
+      throw new Error(`Unexpected table ${table}`);
+    });
 
     const gateway = new SupabaseWorkflowEngineGateway({ from } as any);
     const result = await gateway.listStepDefinitions();
 
     expect(from).toHaveBeenCalledWith("step_definitions");
-    expect(order).toHaveBeenCalledWith("name", { ascending: true });
+    expect(definitionsOrder).toHaveBeenCalledWith("name", { ascending: true });
     expect(result[0].stepType).toBe("tech_spec");
+    expect(result[0].inputArtifactDefinitions).toEqual(["business_summary_artifact"]);
+    expect(result[0].outputArtifactDefinitions).toEqual(["tech_spec_artifact"]);
+  });
+
+  it("saves step definition artifact bindings", async () => {
+    const maybeSingle = vi.fn().mockResolvedValue({
+      data: {
+        step_type: "tech_spec",
+        name: "Technical Spec",
+        description: "Generate specs",
+        required_mcps: [],
+        required_skills: [],
+        agent_type: "standard",
+      },
+      error: null,
+    });
+    const select = vi.fn(() => ({ maybeSingle }));
+    const upsert = vi.fn(() => ({ select }));
+    const deleteInputEq = vi.fn().mockResolvedValue({ error: null });
+    const deleteOutputEq = vi.fn().mockResolvedValue({ error: null });
+    const inputInsert = vi.fn().mockResolvedValue({ error: null });
+    const outputInsert = vi.fn().mockResolvedValue({ error: null });
+    const from = vi.fn((table: string) => {
+      if (table === "step_definitions") {
+        return { upsert };
+      }
+      if (table === "step_input_artifact_definitions") {
+        return {
+          delete: () => ({ eq: deleteInputEq }),
+          insert: inputInsert,
+          select: () => ({ order: vi.fn() }),
+        };
+      }
+      if (table === "step_output_artifact_definitions") {
+        return {
+          delete: () => ({ eq: deleteOutputEq }),
+          insert: outputInsert,
+          select: () => ({ order: vi.fn() }),
+        };
+      }
+      throw new Error(`Unexpected table ${table}`);
+    });
+
+    const gateway = new SupabaseWorkflowEngineGateway({ from } as any);
+    vi.spyOn(gateway, "listStepDefinitions").mockResolvedValueOnce([
+      {
+        stepType: "tech_spec",
+        name: "Technical Spec",
+        description: "Generate specs",
+        requiredMcps: [],
+        requiredSkills: [],
+        agentType: "standard",
+        inputArtifactDefinitions: ["business_summary_artifact"],
+        outputArtifactDefinitions: ["tech_spec_artifact"],
+        createdAt: "2026-05-20T00:00:00Z",
+        updatedAt: "2026-05-20T00:00:00Z",
+      },
+    ] as any);
+    const result = await gateway.saveStepDefinition({
+      stepType: "tech_spec",
+      name: "Technical Spec",
+      description: "Generate specs",
+      requiredMcps: [],
+      requiredSkills: [],
+      agentType: "standard",
+      inputArtifactDefinitions: ["business_summary_artifact"],
+      outputArtifactDefinitions: ["tech_spec_artifact"],
+      createdAt: "2026-05-20T00:00:00Z",
+      updatedAt: "2026-05-20T01:00:00Z",
+    });
+
+    expect(upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        step_type: "tech_spec",
+        name: "Technical Spec",
+        description: "Generate specs",
+        required_mcps: [],
+        required_skills: [],
+        agent_type: "standard",
+      }),
+      { onConflict: "step_type" }
+    );
+    expect(deleteInputEq).toHaveBeenCalledWith("step_type", "tech_spec");
+    expect(deleteOutputEq).toHaveBeenCalledWith("step_type", "tech_spec");
+    expect(inputInsert).toHaveBeenCalled();
+    expect(outputInsert).toHaveBeenCalled();
+    expect(result.inputArtifactDefinitions).toEqual(["business_summary_artifact"]);
+    expect(result.outputArtifactDefinitions).toEqual(["tech_spec_artifact"]);
   });
 
   it("lists global and project-private workflows", async () => {
