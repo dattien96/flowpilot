@@ -4,9 +4,11 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { PageFrame } from "@/components/common/page-frame";
 import { Button } from "@/components/ui/button";
 import { createGatewayBundle } from "@/data/repository/browser-factory";
-import type { StepDefinition } from "@/domain/model/entity/workflow-engine";
+import type { ArtifactDefinition, StepDefinition } from "@/domain/model/entity/workflow-engine";
+import { ListArtifactDefinitionsUseCase } from "@/domain/usecase/workflow-engine/list-artifact-definitions-usecase";
 import { ListStepDefinitionsUseCase } from "@/domain/usecase/workflow-engine/list-step-definitions-usecase";
 import { SaveStepDefinitionUseCase } from "@/domain/usecase/workflow-engine/save-step-definition-usecase";
+import { ArtifactDefinitionSelector } from "@/features/workflow-engine/artifact-definition-selector";
 import { integrationTypes, toTitleCase } from "@/features/mcp/integration-config";
 
 export const Route = createFileRoute("/_authenticated/workflow-steps/$stepType")({
@@ -23,18 +25,25 @@ export function WorkflowStepDetailPage() {
   const listStepDefinitionsUseCase = useRef(
     new ListStepDefinitionsUseCase(gatewayBundle.current.workflowEngineGateway)
   );
+  const listArtifactDefinitionsUseCase = useRef(
+    new ListArtifactDefinitionsUseCase(gatewayBundle.current.workflowEngineGateway)
+  );
   const saveStepDefinitionUseCase = useRef(
     new SaveStepDefinitionUseCase(gatewayBundle.current.workflowEngineGateway)
   );
 
   const [loading, setLoading] = useState(true);
+  const [loadingArtifactDefinitions, setLoadingArtifactDefinitions] = useState(true);
   const [saving, setSaving] = useState(false);
   const [step, setStep] = useState<StepDefinition | null>(null);
+  const [artifactDefinitions, setArtifactDefinitions] = useState<ArtifactDefinition[]>([]);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [requiredMcps, setRequiredMcps] = useState<string[]>([]);
   const [selectedMcpType, setSelectedMcpType] = useState(integrationTypes[0] ?? "");
   const [requiredSkills, setRequiredSkills] = useState("");
+  const [inputArtifactDefinitions, setInputArtifactDefinitions] = useState<string[]>([]);
+  const [outputArtifactDefinitions, setOutputArtifactDefinitions] = useState<string[]>([]);
   const [agentType, setAgentType] = useState<"standard" | "autonomous">("standard");
 
   useEffect(() => {
@@ -49,6 +58,8 @@ export function WorkflowStepDetailPage() {
         setRequiredMcps(match?.requiredMcps ?? []);
         setSelectedMcpType(firstAvailableMcpType(match?.requiredMcps ?? []));
         setRequiredSkills(match?.requiredSkills.join(", ") ?? "");
+        setInputArtifactDefinitions(match?.inputArtifactDefinitions ?? []);
+        setOutputArtifactDefinitions(match?.outputArtifactDefinitions ?? []);
         setAgentType(match?.agentType ?? "standard");
       } finally {
         setLoading(false);
@@ -57,6 +68,21 @@ export function WorkflowStepDetailPage() {
 
     void load();
   }, [stepType]);
+
+  useEffect(() => {
+    const loadArtifactDefinitions = async () => {
+      try {
+        const definitions = await listArtifactDefinitionsUseCase.current.execute();
+        setArtifactDefinitions(definitions);
+      } catch {
+        setArtifactDefinitions([]);
+      } finally {
+        setLoadingArtifactDefinitions(false);
+      }
+    };
+
+    void loadArtifactDefinitions();
+  }, []);
 
   const save = async () => {
     if (!step || !name || !description) {
@@ -75,6 +101,8 @@ export function WorkflowStepDetailPage() {
           .split(",")
           .map((item) => item.trim())
           .filter(Boolean),
+        inputArtifactDefinitions,
+        outputArtifactDefinitions,
         agentType,
       });
       setStep(saved);
@@ -83,6 +111,8 @@ export function WorkflowStepDetailPage() {
       setRequiredMcps(saved.requiredMcps);
       setSelectedMcpType(firstAvailableMcpType(saved.requiredMcps));
       setRequiredSkills(saved.requiredSkills.join(", "));
+      setInputArtifactDefinitions(saved.inputArtifactDefinitions ?? []);
+      setOutputArtifactDefinitions(saved.outputArtifactDefinitions ?? []);
       setAgentType(saved.agentType);
       window.alert("Step definition saved.");
     } catch (error) {
@@ -249,6 +279,27 @@ export function WorkflowStepDetailPage() {
             onChange={(event) => setRequiredSkills(event.target.value)}
           />
         </label>
+        <div className="space-y-2 md:col-span-2">
+          <ArtifactDefinitionSelector
+            label="Input artifact definitions"
+            description="Select the artifact definitions this step requires before it can run."
+            selectedArtifactKeys={inputArtifactDefinitions}
+            artifactDefinitions={artifactDefinitions}
+            onChange={setInputArtifactDefinitions}
+          />
+          <ArtifactDefinitionSelector
+            label="Output artifact definitions"
+            description="Select the artifact definitions this step may generate when it completes."
+            selectedArtifactKeys={outputArtifactDefinitions}
+            artifactDefinitions={artifactDefinitions}
+            onChange={setOutputArtifactDefinitions}
+          />
+        </div>
+        {loadingArtifactDefinitions ? (
+          <p className="text-sm text-muted-foreground md:col-span-2">
+            Loading artifact definitions...
+          </p>
+        ) : null}
         <label className="space-y-2 text-sm">
           <span className="font-medium">Agent type</span>
           <select

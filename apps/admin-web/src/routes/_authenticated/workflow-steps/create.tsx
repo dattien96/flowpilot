@@ -1,28 +1,53 @@
-import { useState, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 
 import { PageFrame } from "@/components/common/page-frame";
 import { Button } from "@/components/ui/button";
 import { createGatewayBundle } from "@/data/repository/browser-factory";
+import { ListArtifactDefinitionsUseCase } from "@/domain/usecase/workflow-engine/list-artifact-definitions-usecase";
 import { SaveStepDefinitionUseCase } from "@/domain/usecase/workflow-engine/save-step-definition-usecase";
+import { ArtifactDefinitionSelector } from "@/features/workflow-engine/artifact-definition-selector";
+import type { ArtifactDefinition } from "@/domain/model/entity/workflow-engine";
 
 export const Route = createFileRoute("/_authenticated/workflow-steps/create")({
   component: CreateWorkflowStepPage,
 });
 
-function CreateWorkflowStepPage() {
+export function CreateWorkflowStepPage() {
   const navigate = useNavigate();
   const gatewayBundle = useRef(createGatewayBundle());
   const saveStepDefinitionUseCase = useRef(
     new SaveStepDefinitionUseCase(gatewayBundle.current.workflowEngineGateway)
   );
+  const listArtifactDefinitionsUseCase = useRef(
+    new ListArtifactDefinitionsUseCase(gatewayBundle.current.workflowEngineGateway)
+  );
   const [saving, setSaving] = useState(false);
+  const [loadingArtifactDefinitions, setLoadingArtifactDefinitions] = useState(true);
+  const [artifactDefinitions, setArtifactDefinitions] = useState<ArtifactDefinition[]>([]);
   const [stepType, setStepType] = useState("");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [requiredMcps, setRequiredMcps] = useState("");
   const [requiredSkills, setRequiredSkills] = useState("");
+  const [inputArtifactDefinitions, setInputArtifactDefinitions] = useState<string[]>([]);
+  const [outputArtifactDefinitions, setOutputArtifactDefinitions] = useState<string[]>([]);
   const [agentType, setAgentType] = useState<"standard" | "autonomous">("standard");
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const definitions = await listArtifactDefinitionsUseCase.current.execute();
+        setArtifactDefinitions(definitions);
+      } catch {
+        setArtifactDefinitions([]);
+      } finally {
+        setLoadingArtifactDefinitions(false);
+      }
+    };
+
+    void load();
+  }, []);
 
   const save = async () => {
     if (!stepType || !name || !description) {
@@ -44,6 +69,8 @@ function CreateWorkflowStepPage() {
           .split(",")
           .map((item) => item.trim())
           .filter(Boolean),
+        inputArtifactDefinitions,
+        outputArtifactDefinitions,
         agentType,
       });
       await navigate({ to: "/workflow-steps" as never });
@@ -113,6 +140,27 @@ function CreateWorkflowStepPage() {
             onChange={(event) => setRequiredSkills(event.target.value)}
           />
         </label>
+        <div className="space-y-2 md:col-span-2">
+          <ArtifactDefinitionSelector
+            label="Input artifact definitions"
+            description="Select the artifact definitions this step requires before it can run."
+            selectedArtifactKeys={inputArtifactDefinitions}
+            artifactDefinitions={artifactDefinitions}
+            onChange={setInputArtifactDefinitions}
+          />
+          <ArtifactDefinitionSelector
+            label="Output artifact definitions"
+            description="Select the artifact definitions this step may generate when it completes."
+            selectedArtifactKeys={outputArtifactDefinitions}
+            artifactDefinitions={artifactDefinitions}
+            onChange={setOutputArtifactDefinitions}
+          />
+        </div>
+        {loadingArtifactDefinitions ? (
+          <p className="text-sm text-muted-foreground md:col-span-2">
+            Loading artifact definitions...
+          </p>
+        ) : null}
         <label className="space-y-2 text-sm">
           <span className="font-medium">Agent type</span>
           <select

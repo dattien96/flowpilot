@@ -2,12 +2,12 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { WorkflowStepDetailPage } from "./$stepType";
+import { CreateWorkflowStepPage } from "./create";
 import type { StepDefinition } from "@/domain/model/entity/workflow-engine";
 
 const mocks = vi.hoisted(() => ({
   createGatewayBundle: vi.fn(),
-  params: { stepType: "tech_spec" } as { stepType: string },
+  navigate: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@/data/repository/browser-factory", () => ({
@@ -49,7 +49,7 @@ vi.mock("@/features/workflow-engine/artifact-definition-selector", () => ({
   }) => {
     const nextKey = label.startsWith("Input")
       ? "business_summary_artifact"
-      : "coding_plan_artifact";
+      : "tech_spec_artifact";
 
     return (
       <div>
@@ -70,10 +70,9 @@ vi.mock("@tanstack/react-router", async () => {
   );
   return {
     ...actual,
-    createFileRoute: () => () => ({
-      useParams: () => mocks.params,
-    }),
+    createFileRoute: () => () => ({}),
     Link: ({ children }: { children: ReactNode }) => <>{children}</>,
+    useNavigate: () => mocks.navigate,
   };
 });
 
@@ -84,8 +83,6 @@ function buildStep(overrides: Partial<StepDefinition> = {}): StepDefinition {
     description: "Produce technical layout",
     requiredMcps: ["jira"],
     requiredSkills: ["tech_spec_skill"],
-    inputArtifactDefinitions: ["business_summary_artifact"],
-    outputArtifactDefinitions: ["tech_spec_artifact"],
     agentType: "standard",
     createdAt: "2026-05-20T00:00:00.000Z",
     updatedAt: "2026-05-21T00:00:00.000Z",
@@ -93,15 +90,13 @@ function buildStep(overrides: Partial<StepDefinition> = {}): StepDefinition {
   };
 }
 
-describe("WorkflowStepDetailPage", () => {
+describe("CreateWorkflowStepPage", () => {
   beforeEach(() => {
     mocks.createGatewayBundle.mockReset();
-    mocks.params = { stepType: "tech_spec" };
     vi.spyOn(window, "alert").mockImplementation(() => undefined);
   });
 
-  it("loads and saves an existing step definition", async () => {
-    const step = buildStep();
+  it("saves step definition artifact bindings", async () => {
     const gatewayBundle = {
       workflowEngineGateway: {
         listArtifactDefinitions: vi.fn().mockResolvedValue([
@@ -125,59 +120,51 @@ describe("WorkflowStepDetailPage", () => {
             createdAt: "2026-05-20T00:00:00Z",
             updatedAt: "2026-05-20T00:00:00Z",
           },
-          {
-            key: "coding_plan_artifact",
-            name: "Coding Plan",
-            description: "",
-            localPathTemplate: "",
-            remotePathTemplate: "",
-            defaultFileName: "CodingPlan.md",
-            createdAt: "2026-05-20T00:00:00Z",
-            updatedAt: "2026-05-20T00:00:00Z",
-          },
         ]),
-        listStepDefinitions: vi.fn().mockResolvedValue([step]),
         saveStepDefinition: vi.fn().mockResolvedValue(
           buildStep({
-            name: "Updated Tech Spec",
-            description: "Updated description",
+            stepType: "custom_step",
+            name: "Custom Step",
+            description: "Custom desc",
+            inputArtifactDefinitions: ["business_summary_artifact"],
+            outputArtifactDefinitions: ["tech_spec_artifact"],
           })
         ),
       },
     };
     mocks.createGatewayBundle.mockReturnValue(gatewayBundle);
 
-    render(<WorkflowStepDetailPage />);
+    render(<CreateWorkflowStepPage />);
 
-    expect(await screen.findByDisplayValue("Tech Spec")).toBeInTheDocument();
-    expect(screen.getByDisplayValue("tech_spec")).toBeDisabled();
-    expect(screen.getByText("Jira")).toBeInTheDocument();
-    expect(screen.getByText("Input artifact definitions")).toBeInTheDocument();
-    expect(screen.getByText("Output artifact definitions")).toBeInTheDocument();
-
-    fireEvent.change(screen.getByDisplayValue("Tech Spec"), {
-      target: { value: "Updated Tech Spec" },
+    fireEvent.change(screen.getByLabelText("Step key"), {
+      target: { value: "custom_step" },
     });
-    fireEvent.change(screen.getByDisplayValue("Produce technical layout"), {
-      target: { value: "Updated description" },
+    fireEvent.change(screen.getByLabelText("Display name"), {
+      target: { value: "Custom Step" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
-    fireEvent.change(screen.getByRole("combobox", { name: /available mcp/i }), {
-      target: { value: "figma" },
+    fireEvent.change(screen.getByLabelText("Description"), {
+      target: { value: "Custom desc" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Add MCP" }));
+    fireEvent.change(screen.getByLabelText("Required MCPs"), {
+      target: { value: "jira" },
+    });
+    fireEvent.change(screen.getByLabelText("Required skills"), {
+      target: { value: "skill_a, skill_b" },
+    });
+    fireEvent.click(screen.getAllByRole("button", { name: "Add artifact" })[0]);
     fireEvent.click(screen.getAllByRole("button", { name: "Add artifact" })[1]);
     fireEvent.click(screen.getByRole("button", { name: "Save step" }));
 
     await waitFor(() => {
       expect(gatewayBundle.workflowEngineGateway.saveStepDefinition).toHaveBeenCalledWith(
         expect.objectContaining({
-          stepType: "tech_spec",
-          name: "Updated Tech Spec",
-          description: "Updated description",
-          requiredMcps: ["figma"],
+          stepType: "custom_step",
+          name: "Custom Step",
+          description: "Custom desc",
+          requiredMcps: ["jira"],
+          requiredSkills: ["skill_a", "skill_b"],
           inputArtifactDefinitions: ["business_summary_artifact"],
-          outputArtifactDefinitions: ["tech_spec_artifact", "coding_plan_artifact"],
+          outputArtifactDefinitions: ["tech_spec_artifact"],
         })
       );
     });
