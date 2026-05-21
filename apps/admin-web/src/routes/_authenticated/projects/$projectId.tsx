@@ -58,7 +58,9 @@ function ProjectDetailContent({ detail }: { detail: ReturnType<typeof Route.useL
     status: detail.project.status,
     platform: detail.project.platform,
   });
-  const [selectedTeamIds, setSelectedTeamIds] = useState<string[]>(detail.teams.map((team) => team.id));
+  const [selectedTeamIds, setSelectedTeamIds] = useState<string[]>(
+    detail.teams.map((team: any) => team.id)
+  );
 
   const updateProject = useMutation({
     mutationFn: async () => {
@@ -121,6 +123,12 @@ function ProjectDetailContent({ detail }: { detail: ReturnType<typeof Route.useL
         <div className="flex flex-wrap gap-2">
           <Badge>{detail.project.platform}</Badge>
           <Badge>{detail.project.status}</Badge>
+          <Link to="/projects/$projectId/workflows" params={{ projectId: detail.project.id }}>
+            <Button variant="secondary">Trigger workflow</Button>
+          </Link>
+          <Link to="/workflows/create" search={{ projectId: detail.project.id }}>
+            <Button variant="secondary">Create private workflow</Button>
+          </Link>
         </div>
 
         <section className="rounded-[1.5rem] border border-border bg-background/60 p-5">
@@ -133,7 +141,8 @@ function ProjectDetailContent({ detail }: { detail: ReturnType<typeof Route.useL
             </div>
             <Button
               type="button"
-              variant="destructive"
+              variant="secondary"
+              className="text-red-600"
               onClick={() => {
                 if (window.confirm("Delete this project?")) {
                   deleteProject.mutate();
@@ -213,7 +222,7 @@ function ProjectDetailContent({ detail }: { detail: ReturnType<typeof Route.useL
                 </p>
               ) : (
                 <div className="mt-4 grid gap-3 md:grid-cols-2">
-                  {detail.allTeams.map((team) => {
+                  {detail.allTeams.map((team: any) => {
                     const checked = selectedTeamIds.includes(team.id);
 
                     return (
@@ -254,7 +263,7 @@ function ProjectDetailContent({ detail }: { detail: ReturnType<typeof Route.useL
               {detail.teams.length === 0 ? (
                 <p className="text-sm text-muted-foreground">No teams are linked yet.</p>
               ) : (
-                detail.teams.map((team) => (
+                detail.teams.map((team: any) => (
                   <Link
                     key={team.id}
                     className="flex items-center justify-between rounded-2xl border border-border bg-card px-4 py-3"
@@ -275,7 +284,7 @@ function ProjectDetailContent({ detail }: { detail: ReturnType<typeof Route.useL
               {detail.members.length === 0 ? (
                 <p className="text-sm text-muted-foreground">No members are available yet.</p>
               ) : (
-                detail.members.map((member) => (
+                detail.members.map((member: any) => (
                   <div
                     key={member.id}
                     className="flex items-center justify-between rounded-2xl border border-border bg-card px-4 py-3"
@@ -298,7 +307,7 @@ function ProjectDetailContent({ detail }: { detail: ReturnType<typeof Route.useL
           <div className="rounded-[1.5rem] border border-border bg-background/60 p-5">
             <h2 className="text-xl font-semibold">Features</h2>
             <div className="mt-4 space-y-3">
-              {detail.features.map((feature) => (
+              {detail.features.map((feature: any) => (
                 <div
                   key={feature.id}
                   className="rounded-2xl border border-border bg-card px-4 py-3"
@@ -316,12 +325,11 @@ function ProjectDetailContent({ detail }: { detail: ReturnType<typeof Route.useL
               {detail.workflowRuns.length === 0 ? (
                 <p className="text-sm text-muted-foreground">No workflow runs yet.</p>
               ) : (
-                detail.workflowRuns.map((run) => (
+                detail.workflowRuns.map((run: any) => (
                   <Link
                     key={run.id}
                     className="flex items-center justify-between rounded-2xl border border-border bg-card px-4 py-3"
-                    params={{ runId: run.id }}
-                    to="/workflow-runs/$runId"
+                    to="/workflow-runs"
                   >
                     <span className="font-medium">{run.id}</span>
                     <Badge>{run.status}</Badge>

@@ -331,7 +331,7 @@ function TeamsPage() {
                       key={team.id}
                       className={`rounded-2xl border px-4 py-3 transition-colors ${
                         active
-                          ? "border-accent bg-[#f4ecd7] shadow-[0_14px_32px_rgba(41,94,68,0.14)]"
+                          ? "border-accent/60 bg-accent/10 shadow-[0_14px_32px_rgba(32,79,59,0.14)]"
                           : "border-border bg-card"
                       }`}
                       onClick={() => selectTeam(team.id)}

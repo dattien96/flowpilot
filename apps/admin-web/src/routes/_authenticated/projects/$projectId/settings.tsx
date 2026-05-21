@@ -1,5 +1,5 @@
 import { useMutation } from "@tanstack/react-query";
-import { createFileRoute, useRouter } from "@tanstack/react-router";
+import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 
 import { PageFrame } from "@/components/common/page-frame";
@@ -92,22 +92,7 @@ export function ProjectSettingsContent({
   projectId: string;
 }) {
   const router = useRouter();
-  const [artifactStoragePreference, setArtifactStoragePreference] = useState<"supabase" | "google_drive">(
-    project.artifactStoragePreference ?? "supabase",
-  );
   const [selectedLinks, setSelectedLinks] = useState<Partial<Record<IntegrationType, string>>>({});
-
-  const saveStoragePreference = useMutation({
-    mutationFn: async () => {
-      const gateways = await createGatewayBundle();
-      return gateways.projectGateway.updateProject(projectId, {
-        artifactStoragePreference,
-      });
-    },
-    onSuccess: async () => {
-      await router.invalidate();
-    },
-  });
 
   const linkTeam = useMutation({
     mutationFn: async (teamId: string) => {
@@ -197,42 +182,26 @@ export function ProjectSettingsContent({
           <div className="rounded-[1.5rem] border border-border bg-background/60 p-5">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <h2 className="text-xl font-semibold">Artifact Storage Preference</h2>
+                <h2 className="text-xl font-semibold">Artifact settings</h2>
                 <p className="mt-2 text-sm text-muted-foreground">
-                  Persist the project storage target used for future artifact workflows.
+                  Artifact storage and the catalog now live under the global Settings menu.
                 </p>
               </div>
               <Badge>{project.status}</Badge>
             </div>
             <p className="mt-3 text-sm text-muted-foreground">
-              Select where generated artifacts should be stored for this project.
-            </p>
-            <label className="mt-4 block text-sm font-medium">Storage strategy</label>
-            <select
-              className="mt-2 w-full rounded-2xl border border-border bg-card px-4 py-3"
-              value={artifactStoragePreference}
-              onChange={(event) =>
-                setArtifactStoragePreference(event.target.value as "supabase" | "google_drive")
-              }
-            >
-              <option value="supabase">Supabase</option>
-              <option value="google_drive">Google Drive</option>
-            </select>
-            <p className="mt-3 text-sm text-muted-foreground">
-              Google Drive selection requires a connected Google Drive MCP context.
+              Open the global artifact settings page to edit storage preferences and artifact
+              definitions used by step editors and workflow runs.
             </p>
             <div className="mt-4 flex flex-wrap gap-2">
-              <Badge>{artifactStoragePreference}</Badge>
               <Badge>{project.name}</Badge>
             </div>
             <div className="mt-4 flex justify-end">
-              <Button
-                disabled={saveStoragePreference.isPending}
-                onClick={() => saveStoragePreference.mutate()}
-                type="button"
-              >
-                {saveStoragePreference.isPending ? "Saving..." : "Save storage setting"}
-              </Button>
+              <Link to="/artifacts">
+                <Button type="button" variant="secondary">
+                  Open artifacts settings
+                </Button>
+              </Link>
             </div>
           </div>
 

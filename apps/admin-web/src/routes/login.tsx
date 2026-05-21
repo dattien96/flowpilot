@@ -68,7 +68,7 @@ function LoginPage() {
           <label className="block space-y-2">
             <span className="text-sm text-muted-foreground">Email</span>
             <input
-              className="w-full rounded-2xl border border-border bg-background px-4 py-3 outline-none"
+              className="w-full rounded-2xl border border-border bg-background px-4 py-3 outline-none focus:ring-2 focus:ring-accent focus:border-transparent transition-all"
               disabled={!hasSupabaseEnv() || submitting}
               onChange={(event) => setEmail(event.target.value)}
               placeholder="admin@flowpilot.local"
@@ -79,7 +79,7 @@ function LoginPage() {
           <label className="block space-y-2">
             <span className="text-sm text-muted-foreground">Password</span>
             <input
-              className="w-full rounded-2xl border border-border bg-background px-4 py-3 outline-none"
+              className="w-full rounded-2xl border border-border bg-background px-4 py-3 outline-none focus:ring-2 focus:ring-accent focus:border-transparent transition-all"
               disabled={!hasSupabaseEnv() || submitting}
               onChange={(event) => setPassword(event.target.value)}
               placeholder="Password"

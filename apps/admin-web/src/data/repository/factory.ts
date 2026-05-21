@@ -2,20 +2,26 @@ import { createDemoGatewayBundle } from "@/data/repository/demo/demo-gateway-bun
 import { createSupabaseServerClient } from "@/data/datasource/supabase/client";
 import { HttpLocalRunnerGateway } from "@/data/repository/local-runner/http-local-runner-gateway";
 import { createSupabaseGatewayBundle } from "@/data/repository/supabase/supabase-gateway-bundle";
+import { SupabaseWorkflowEngineGateway } from "@/data/repository/supabase/supabase-workflow-engine-gateway";
+import { InMemoryWorkflowEngineGateway } from "@/data/repository/demo/in-memory-workflow-engine-gateway";
 import { getLocalRunnerBaseUrl, hasSupabaseEnv } from "@/lib/env/app-env";
 
 export async function createGatewayBundle() {
   const localRunnerGateway = new HttpLocalRunnerGateway(getLocalRunnerBaseUrl());
 
   if (hasSupabaseEnv()) {
+    const supabaseClient = createSupabaseServerClient();
     return {
-      ...createSupabaseGatewayBundle(createSupabaseServerClient()),
+      ...createSupabaseGatewayBundle(supabaseClient),
+      workflowEngineGateway: new SupabaseWorkflowEngineGateway(supabaseClient),
       localRunnerGateway,
     };
   }
 
   return {
     ...createDemoGatewayBundle(),
+    workflowEngineGateway: new InMemoryWorkflowEngineGateway(),
     localRunnerGateway,
   };
 }
+

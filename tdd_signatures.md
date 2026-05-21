@@ -1,191 +1,350 @@
-# CP-05 TDD Signatures
+# TDD Signatures - CP-07 Workflow Engine UI & Execution Dashboard
 
-## 1. Route Behavior
+## Rules
 
-### Target File
+- Signatures only.
+- No runnable mocks, assertions, or implementation bodies.
+- Each signature defines what to test, not how to implement it.
 
-- `apps/admin-web/src/routes/_authenticated/projects/$projectId/settings.test.tsx`
+## 1. Domain Use Cases
 
-### Signatures
+### File
+
+- `apps/admin-web/src/domain/usecase/workflow-engine/list-project-workflows-usecase.test.ts`
 
 ```ts
-describe("Project settings MCP section", () => {
-  it("renders project integrations with label, status, last synced, and last error");
-  it("opens the add integration drawer and creates a new integration");
-  it("opens the edit flow for an existing integration and saves the patch");
-  it("deletes an integration from the project settings surface");
-  it("retries a failed integration through the local runner gateway");
-  it("shows the awaiting OAuth state with a waiting label");
+describe("ListProjectWorkflowsUseCase", () => {
+  it("returns project workflows ordered for builder index");
+  // Input:
+  // - projectId with multiple workflows
+  // Expected Output:
+  // - workflows filtered to the project
+  // - stable ordering for UI display
+
+  it("returns template and custom workflow metadata needed by the list page");
+  // Input:
+  // - workflows with isTemplate true/false and override fields
+  // Expected Output:
+  // - list items expose template flag and override summary
 });
 ```
 
-- `renders project integrations with label, status, last synced, and last error`
-  - Input:
-    - loader returns one `connected`, one `awaiting_oauth`, and one `failed` integration
-  - Expected:
-    - each row renders provider type and label
-    - `lastSyncedAt` is visible for connected rows
-    - `lastError` is visible for failed rows
+### File
 
-- `opens the add integration drawer and creates a new integration`
-  - Input:
-    - user clicks `Add MCP`
-    - selects a provider
-    - enters label/config summary
-  - Expected:
-    - route calls `integrationGateway.createIntegration`
-    - route then calls `localRunnerGateway.triggerIntegrationConnection` with `action: "test"`
-    - route invalidation is requested after success
-
-- `opens the edit flow for an existing integration and saves the patch`
-  - Input:
-    - existing integration row selected for edit
-    - label/config changed
-  - Expected:
-    - route calls `integrationGateway.updateIntegration`
-    - route then calls `localRunnerGateway.triggerIntegrationConnection` with `action: "test"`
-
-- `deletes an integration from the project settings surface`
-  - Input:
-    - user confirms delete for a selected integration
-  - Expected:
-    - route calls `integrationGateway.deleteIntegration`
-    - route invalidation is requested
-
-- `retries a failed integration through the local runner gateway`
-  - Input:
-    - row status is `failed`
-    - user clicks retry/reconnect
-  - Expected:
-    - route calls `localRunnerGateway.triggerIntegrationConnection`
-    - request contains the project id, integration id, and `action: "retry"`
-
-- `shows the awaiting OAuth state with a waiting label`
-  - Input:
-    - integration row status is `awaiting_oauth`
-  - Expected:
-    - route renders a waiting indicator
-    - row does not show the row as connected or failed
-
-## 2. Demo Repository Logic
-
-### Target File
-
-- `apps/admin-web/src/data/repository/demo/demo-gateway-bundle.test.ts`
-
-### Signatures
+- `apps/admin-web/src/domain/usecase/workflow-engine/get-workflow-detail-usecase.test.ts`
 
 ```ts
-describe("DemoGatewayBundle integrations", () => {
-  it("lists only integrations belonging to the requested project");
-  it("creates a pending integration with label and config");
-  it("updates integration label, status, and error fields");
-  it("deletes an integration by id");
+describe("GetWorkflowDetailUseCase", () => {
+  it("hydrates workflow definition with ordered step configs and step-definition metadata");
+  // Input:
+  // - workflow with ordered workflow_steps
+  // - step_definitions catalog entries
+  // Expected Output:
+  // - builder-ready detail model with merged metadata
+
+  it("returns null when workflow is not found");
+  // Input:
+  // - unknown workflowId
+  // Expected Output:
+  // - null result
 });
 ```
 
-- `lists only integrations belonging to the requested project`
-  - Input:
-    - seeded demo integrations across multiple projects
-  - Expected:
-    - returned list contains only rows for the requested project id
+### File
 
-- `creates a pending integration with label and config`
-  - Input:
-    - create payload with `projectId`, `type`, `label`, `configEncrypted`
-  - Expected:
-    - created entity is added to the store
-    - `status` defaults to `pending`
-    - `lastError` is `null`
-
-- `updates integration label, status, and error fields`
-  - Input:
-    - patch changes `label`, `status`, and `lastError`
-  - Expected:
-    - stored entity reflects the patch
-    - `updatedAt` changes
-
-- `deletes an integration by id`
-  - Input:
-    - existing integration id
-  - Expected:
-    - entity is removed from the demo store
-
-## 3. Supabase Repository Logic
-
-### Target File
-
-- `apps/admin-web/src/data/repository/supabase/supabase-gateway-bundle.test.ts`
-
-### Signatures
+- `apps/admin-web/src/domain/usecase/workflow-engine/save-workflow-usecase.test.ts`
 
 ```ts
-describe("SupabaseGatewayBundle integrations", () => {
-  it("maps integration rows including label, awaiting_oauth, and last_error");
-  it("inserts the expected integration payload for create");
-  it("updates mutable fields and stamps updated_at");
-  it("deletes the integration row by id");
+describe("SaveWorkflowUseCase", () => {
+  it("creates a workflow and persists ordered step configs");
+  // Input:
+  // - create payload with metadata and multiple step configs
+  // Expected Output:
+  // - workflow saved
+  // - order indexes preserved
+
+  it("updates an existing workflow and replaces reordered step definitions safely");
+  // Input:
+  // - existing workflowId
+  // - reordered, enabled/disabled, override-edited steps
+  // Expected Output:
+  // - workflow metadata updated
+  // - stored step order matches payload
+
+  it("rejects duplicate order indexes in the same workflow payload");
+  // Input:
+  // - two steps with same orderIndex
+  // Expected Output:
+  // - validation failure
 });
 ```
 
-- `maps integration rows including label, awaiting_oauth, and last_error`
-  - Input:
-    - Supabase row with `label`, `status: "awaiting_oauth"`, `last_error`, `last_synced_at`
-  - Expected:
-    - mapped domain entity exposes `label`, `status`, `lastError`, `lastSyncedAt`
+### File
 
-- `inserts the expected integration payload for create`
-  - Input:
-    - create payload with project id, type, label, config envelope, and optional status
-  - Expected:
-    - repository sends `project_id`, `type`, `label`, `config_encrypted`, `status`
-    - inserted row maps back to a domain `Integration`
-
-- `updates mutable fields and stamps updated_at`
-  - Input:
-    - patch updates `label`, `configEncrypted`, `status`, `lastError`
-  - Expected:
-    - repository issues an update with `updated_at`
-    - returned row maps back to the patched entity
-
-- `deletes the integration row by id`
-  - Input:
-    - integration id
-  - Expected:
-    - repository targets the `integrations` table row with that id
-
-## 4. Local Runner HTTP Contract
-
-### Target File
-
-- `apps/admin-web/src/data/repository/local-runner/http-local-runner-gateway.test.ts`
-
-### Signatures
+- `apps/admin-web/src/domain/usecase/workflow-engine/start-workflow-run-usecase.test.ts`
 
 ```ts
-describe("HttpLocalRunnerGateway integration connection", () => {
-  it("posts a test request to the integration connection endpoint");
-  it("posts a retry request to the integration connection endpoint");
-  it("throws a descriptive error when the runner rejects the request");
+describe("StartWorkflowRunUseCase", () => {
+  it("creates a run with run-level provider model and yolo settings");
+  // Input:
+  // - workflowId, projectId, provider/model override, yolo flag
+  // Expected Output:
+  // - workflow_run contains persisted execution settings
+
+  it("materializes workflow_run_steps from workflow step definitions in order");
+  // Input:
+  // - workflow with ordered steps
+  // Expected Output:
+  // - run steps are created in matching order
+  // - each run step references the source workflow_step
+
+  it("marks disabled definition steps as skipped or non-runnable according to repository policy");
+  // Input:
+  // - workflow containing disabled steps
+  // Expected Output:
+  // - disabled steps do not block run progression
 });
 ```
 
-- `posts a test request to the integration connection endpoint`
-  - Input:
-    - request with `projectId`, `integrationId`, `action: "test"`
-  - Expected:
-    - gateway POSTs to `/integrations/{integrationId}/connection`
-    - JSON body contains `projectId` and `action`
+### File
 
-- `posts a retry request to the integration connection endpoint`
-  - Input:
-    - request with `projectId`, `integrationId`, `action: "retry"`
-  - Expected:
-    - gateway POSTs to the same endpoint
-    - response is parsed into the local-runner connection result type
+- `apps/admin-web/src/domain/usecase/workflow-engine/get-workflow-run-detail-usecase.test.ts`
 
-- `throws a descriptive error when the runner rejects the request`
-  - Input:
-    - non-OK HTTP response from the runner
-  - Expected:
-    - thrown error includes endpoint purpose and response status
+```ts
+describe("GetWorkflowRunDetailUseCase", () => {
+  it("returns run header data, ordered run steps, logs, and prompt cache references");
+  // Input:
+  // - run with related workflow_run_steps, workflow_run_logs, workflow_prompt_cache
+  // Expected Output:
+  // - dashboard-ready detail model
+
+  it("includes rejection and retry state for a previously rejected step");
+  // Input:
+  // - run step with rejectionNote and retryCount > 0
+  // Expected Output:
+  // - detail model exposes retry context
+});
+```
+
+### File
+
+- `apps/admin-web/src/domain/usecase/workflow-engine/submit-run-step-approval-decision-usecase.test.ts`
+
+```ts
+describe("SubmitRunStepApprovalDecisionUseCase", () => {
+  it("approves a waiting step and advances the next runnable step");
+  // Input:
+  // - current step in WAITING_USER_APPROVAL
+  // Expected Output:
+  // - current step becomes DONE
+  // - next runnable step becomes PENDING
+
+  it("rejects a waiting step and records rejection note for retry");
+  // Input:
+  // - current step in WAITING_USER_APPROVAL
+  // - rejection reason text
+  // Expected Output:
+  // - same step becomes PENDING
+  // - rejection note stored
+  // - retry count incremented
+
+  it("rejects empty rejection notes for reject-and-retry");
+  // Input:
+  // - reject decision with blank note
+  // Expected Output:
+  // - validation failure
+});
+```
+
+## 2. Repository Mapping
+
+### File
+
+- `apps/admin-web/src/data/repository/supabase/workflow-engine-mappers.test.ts`
+
+```ts
+describe("workflow engine supabase mappers", () => {
+  it("maps canonical workflow rows into domain workflow entities");
+  // Input:
+  // - workflows row with overrides and template flag
+  // Expected Output:
+  // - domain Workflow shape
+
+  it("maps definition-time workflow_steps rows distinctly from execution-time workflow_run_steps rows");
+  // Input:
+  // - one row from each table
+  // Expected Output:
+  // - step config vs run-step entities remain structurally distinct
+
+  it("maps workflow_run_logs and prompt cache records for dashboard rendering");
+  // Input:
+  // - log rows and cache rows
+  // Expected Output:
+  // - UI-ready log/cache entities
+});
+```
+
+### File
+
+- `apps/admin-web/src/data/repository/supabase/supabase-workflow-engine-gateway.test.ts`
+
+```ts
+describe("Supabase workflow engine gateway", () => {
+  it("loads project workflows from canonical workflows table");
+  // Input:
+  // - projectId
+  // Expected Output:
+  // - query targets workflows and returns only project-owned rows
+
+  it("loads workflow detail with workflow_steps and step_definitions");
+  // Input:
+  // - workflowId
+  // Expected Output:
+  // - ordered step configs plus catalog metadata
+
+  it("creates workflow run and workflow_run_steps in one start flow");
+  // Input:
+  // - start run payload
+  // Expected Output:
+  // - workflow_runs insert
+  // - workflow_run_steps inserts
+
+  it("updates waiting approval step to pending with rejection note on retry");
+  // Input:
+  // - reject decision payload
+  // Expected Output:
+  // - status, rejectionNote, retryCount persisted correctly
+});
+```
+
+## 3. Route Loaders and Screen Behavior
+
+### File
+
+- `apps/admin-web/src/routes/_authenticated/projects/$projectId/workflows.test.tsx`
+
+```ts
+describe("project workflows route", () => {
+  it("renders workflow list, create action, and recent run summary");
+  // Input:
+  // - project workflow query with multiple workflows
+  // Expected Output:
+  // - workflow list visible
+  // - create CTA visible
+  // - recent execution summary visible
+
+  it("shows empty state when project has no workflows");
+  // Input:
+  // - empty workflow list
+  // Expected Output:
+  // - onboarding empty state for workflow creation
+});
+```
+
+### File
+
+- `apps/admin-web/src/routes/_authenticated/projects/$projectId/workflows.$workflowId.test.tsx`
+
+```ts
+describe("workflow builder detail route", () => {
+  it("renders ordered step cards from workflow detail");
+  // Input:
+  // - workflow detail with multiple steps
+  // Expected Output:
+  // - step cards appear in order
+
+  it("surfaces step catalog metadata for MCP and skill requirements");
+  // Input:
+  // - step definitions containing requiredMcps and requiredSkills
+  // Expected Output:
+  // - requirement summaries shown in builder
+
+  it("disables invalid save when workflow has no enabled steps");
+  // Input:
+  // - workflow draft with all steps disabled
+  // Expected Output:
+  // - save blocked or validation state shown
+});
+```
+
+### File
+
+- `apps/admin-web/src/routes/_authenticated/projects/$projectId/workflows.runs.$runId.test.tsx`
+
+```ts
+describe("workflow execution dashboard route", () => {
+  it("renders run header and ordered run-step timeline");
+  // Input:
+  // - run detail with ordered run steps
+  // Expected Output:
+  // - timeline mirrors canonical order and statuses
+
+  it("shows approval actions only for waiting-user-approval step");
+  // Input:
+  // - selected run step in WAITING_USER_APPROVAL
+  // Expected Output:
+  // - approve and reject-retry controls visible
+
+  it("shows logs and prompt cache reference for selected step");
+  // Input:
+  // - step with logs and promptCacheId
+  // Expected Output:
+  // - log panel and cache badge visible
+
+  it("shows yolo mode as read-only execution context in run header");
+  // Input:
+  // - run with yoloMode true
+  // Expected Output:
+  // - header communicates approval-skipping mode
+});
+```
+
+## 4. Realtime Behavior
+
+### File
+
+- `apps/admin-web/src/presentation/hooks/use-workflow-run-realtime.test.ts`
+
+```ts
+describe("useWorkflowRunRealtime", () => {
+  it("invalidates active run detail when workflow_run_steps status changes");
+  // Input:
+  // - realtime event for tracked runId
+  // Expected Output:
+  // - run detail query refresh triggered
+
+  it("ignores realtime events for other runs or projects");
+  // Input:
+  // - unrelated run/project event
+  // Expected Output:
+  // - no local invalidation
+
+  it("refreshes logs panel when a new workflow_run_log arrives for the selected run");
+  // Input:
+  // - realtime log insert event for selected run
+  // Expected Output:
+  // - logs query refresh triggered
+});
+```
+
+## 5. Demo Mode Parity
+
+### File
+
+- `apps/admin-web/src/data/repository/demo/demo-workflow-engine-gateway.test.ts`
+
+```ts
+describe("demo workflow engine gateway", () => {
+  it("provides step definitions and project workflows for local exploration");
+  // Input:
+  // - demo mode bootstrapped store
+  // Expected Output:
+  // - builder pages can render without Supabase
+
+  it("simulates approval and reject-retry state transitions consistently with canonical statuses");
+  // Input:
+  // - waiting approval demo run step
+  // Expected Output:
+  // - approve and retry paths match canonical behavior
+});
+```

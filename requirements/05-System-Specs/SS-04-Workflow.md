@@ -19,6 +19,12 @@ In this system, workflow is a collection of steps that are executed in order.
 
 -> That means, we can config many flows base on our step
 
+Workflow definition can exist in 2 scopes:
+- Global workflow: reusable template that any project can pick and run
+- Private workflow: custom workflow owned by a single project
+
+Workflow run is the execution record of a workflow on a specific project.
+
 # 3. Step in workflow - Core component
 
 1 flow created by combining steps
@@ -49,8 +55,13 @@ Reference SS-06-Workflow-Skill-Agent.md
 ## 3.4. Output of step - Artifacts 
 Reference SS-07-Workflow-Artifact.md
 
-- Each step can provide output artifacts that can be used as context for other steps
-- We need to save these artifacts, can view as history and also allow to backup/sync: support sync to DriverMCP or local pc
+- Each step can optionally consume zero or more predefined input artifact definitions
+- Each step can optionally produce zero or more predefined output artifact definitions
+- Artifact definitions are reusable templates, similar to how workflow steps are reusable templates
+- Runtime execution creates real artifact-run records that reference the artifact definition + workflow run + workflow step run
+- Output artifacts can be used as input context for later steps
+- If a step declares one or more required input artifact definitions and any expected local artifact file cannot be resolved, the step must fail
+- We need to save artifact-run history and also allow backup/sync to online storage later
 
 ## 3.5. IMPORTANT - Supported Step for MVP
 
@@ -208,19 +219,61 @@ Expected artifact output is:
 Skill: Onboarding Skill
 This step provides a high-level summary of the product or walks through a specific coding module for a new team member.
 Expected artifact output is:
-1 md file contain:
-- Product/Codebase Summary
+none. This step is side-effect-only and does not need a persistent artifact definition.
+
+## 3.6 Predefined Output Artifact Definitions for MVP
+
+Every built-in step that produces a persistent file-backed output must seed at least one predefined output artifact definition.
+
+Steps that only perform side effects may leave the output artifact empty.
+
+| Step | Predefined output artifact definition | Default file |
+|---|---|---|
+| Business Idea Step | `business_idea_artifact` | `BusinessIdea.md` |
+| Feature Intake Step | `feature_intake_artifact` | `FeatureIntake.md` |
+| Business Summary Step | `business_summary_artifact` | `BusinessSummary.md` |
+| Product Spec Step | `product_spec_artifact` | `ProductSpec.md` |
+| Tech Spec Step | `tech_spec_artifact` | `TechSpec.md` |
+| Make Plan Coding Step | `coding_plan_artifact` | `CodingPlan.md` |
+| Create Architecture Step | `architecture_artifact` | `ArchitecturePlan.md` |
+| TDD Step | `tdd_plan_artifact` | `TddPlan.md` |
+| Task Breakdown Step | `task_breakdown_artifact` | `TaskBreakdown.md` |
+| Code/Review Loop Step | `code_review_summary_artifact` | `CodeReviewSummary.md` |
+| Release Readiness Step | `release_readiness_artifact` | `ReleaseReadiness.md` |
+| Issue Analysis Step | `root_cause_analysis_artifact` | `RootCauseAnalysis.md` |
+| Analytics Review Step | `usage_analytics_artifact` | `UsageAnalytics.md` |
+| Project Analysis Step | `project_analysis_artifact` | `ProjectAnalysis.md` |
+| Telegram Notification Step | none | none |
+| Code Traceability Step | `code_traceability_artifact` | `CodeTraceability.md` |
+| Onboarding Walkthrough Step | none | none |
+
+The product model must support multiple input and output artifact definitions per step now.
+
+For built-in MVP seeds, most steps only need one primary predefined output artifact definition at first, but that is a seed choice, not a platform limitation.
+
+If a step later needs additional persistent outputs, the platform should allow attaching additional predefined artifact definitions without redefining the step model.
 
 
-# 4. Workflow configuration in project
-- Enable/Disable: Approval gate, WAITING USER approval gate or yolo mode from AI
-- Allow user to enable/disable step
-- Allow user to re-order steps
-- Allow user to add/remove steps
+# 4. Workflow usage and configuration in project
+- Allow a project to browse and pick global workflows.
+- Allow a project to create and save private workflows that belong only to that project.
+- Allow a project to start a workflow run from either a global workflow or a private workflow.
+- Allow user to enable/disable approval gate per step.
+- Allow user to toggle YOLO mode per workflow run. When YOLO mode is ON, approval gates are skipped and the workflow continues automatically.
+- Allow user to enable/disable step.
+- Allow user to re-order steps.
+- Allow user to add/remove steps.
+
+## 4.1 Workflow execution states
+- Workflow run status: `PENDING`, `RUNNING`, `DONE`, `FAILED`, `CANCELED`.
+- Workflow step status: `PENDING`, `RUNNING`, `WAITING_USER_APPROVAL`, `DONE`, `FAILED`, `SKIPPED`.
+- If a step is disabled for a run, it becomes `SKIPPED`.
+- If approval gate is enabled and YOLO mode is OFF, the step waits at `WAITING_USER_APPROVAL`.
+- If user rejects an artifact, the same step retries with the rejection note as context.
 
 # 5. Built-in flows for MVP by Persona Use Cases
 
-Based on the supported steps, we provide the following built-in workflows to resolve specific use cases for different roles:
+Based on the supported steps, we provide 10 built-in workflows across 4 personas to resolve specific use cases for different roles:
 
 ## 5.1 As a Developer
 Focused on execution and implementation.
@@ -320,4 +373,3 @@ Focused on product direction, process tracking, and business outcomes.
 -> Product Spec Step
 -> Project Analysis Step (Analyze current progress and bottlenecks)
 -> Analytics Review Step (Review user impact)
-

@@ -1,0 +1,38 @@
+import type {
+  ArtifactDefinition,
+  ArtifactRun,
+  StepDefinition,
+  Workflow,
+  WorkflowRun,
+  WorkflowRunLog,
+  WorkflowRunStep,
+  WorkflowStep,
+} from "@/domain/model/entity/workflow-engine";
+
+export interface WorkflowEngineGateway {
+  listArtifactDefinitions(): Promise<ArtifactDefinition[]>;
+  saveArtifactDefinition(definition: ArtifactDefinition): Promise<ArtifactDefinition>;
+  listArtifactRuns(projectId?: string): Promise<ArtifactRun[]>;
+  listStepDefinitions(): Promise<StepDefinition[]>;
+  saveStepDefinition(step: StepDefinition): Promise<StepDefinition>;
+  listWorkflows(projectId?: string): Promise<Workflow[]>;
+  getWorkflowDetail(workflowId: string): Promise<Workflow | null>;
+  saveWorkflow(
+    workflow: Omit<Partial<Workflow>, "steps"> & { steps: Partial<WorkflowStep>[] }
+  ): Promise<Workflow>;
+  listWorkflowRuns(projectId?: string): Promise<WorkflowRun[]>;
+  getWorkflowRunDetail(
+    runId: string
+  ): Promise<{
+    run: WorkflowRun;
+    steps: WorkflowRunStep[];
+    logs: WorkflowRunLog[];
+  } | null>;
+  startWorkflowRun(workflowId: string, projectId: string): Promise<WorkflowRun>;
+  toggleYoloMode(runId: string, yoloMode: boolean): Promise<WorkflowRun>;
+  submitStepApproval(
+    stepId: string,
+    approve: boolean,
+    comment?: string
+  ): Promise<WorkflowRunStep>;
+}

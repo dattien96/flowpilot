@@ -8,6 +8,27 @@
       name="description"
       content="Admin shell for workflow orchestration, approvals, and artifact review."
     />
+    <script>
+      (function() {
+        try {
+          var stored = localStorage.getItem("flowpilot-theme-preference");
+          var preference = stored === "light" || stored === "dark" || stored === "system" ? stored : "system";
+          var resolved = preference;
+          if (preference === "system") {
+            resolved = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+          }
+          if (resolved === "dark") {
+            document.documentElement.classList.add("dark");
+            document.documentElement.style.colorScheme = "dark";
+          } else {
+            document.documentElement.classList.remove("dark");
+            document.documentElement.style.colorScheme = "light";
+          }
+        } catch (e) {
+          console.error("Theme bootstrap error:", e);
+        }
+      })();
+    </script>
   </head>
   <body class="h-full">
     <div id="root" class="h-full"></div>

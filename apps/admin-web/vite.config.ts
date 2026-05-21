@@ -18,7 +18,7 @@ export default defineConfig({
   },
   server: {
     host: "0.0.0.0",
-    port: 3001,
+    port: 3002,
     strictPort: true,
     watch: {
       usePolling: true,
@@ -26,7 +26,7 @@ export default defineConfig({
     },
     hmr: {
       host: "localhost",
-      clientPort: 3001,
+      clientPort: 3002,
     },
   },
 });

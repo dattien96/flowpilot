@@ -52,7 +52,7 @@ func TestResolveWorkspaceWalksUpToAgentsRoot(t *testing.T) {
 
 func TestWithCORSAllowsDeletePreflight(t *testing.T) {
 	req := httptest.NewRequest(http.MethodOptions, "/integrations/integration-1/connection", nil)
-	req.Header.Set("Origin", "http://localhost:3001")
+	req.Header.Set("Origin", "http://localhost:3002")
 	recorder := httptest.NewRecorder()
 
 	withCORS(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

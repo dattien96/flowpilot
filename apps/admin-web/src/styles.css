@@ -15,6 +15,21 @@
   --success: #20603d;
 }
 
+.dark {
+  --background: #0d110e;
+  --foreground: #e3e8e4;
+  --muted: #1b221d;
+  --muted-foreground: #848c86;
+  --card: #131915;
+  --card-foreground: #e3e8e4;
+  --border: #242f27;
+  --accent: #327e5e;
+  --accent-foreground: #ffffff;
+  --warning: #cf7e2f;
+  --danger: #be4633;
+  --success: #328f5e;
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -47,6 +62,7 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: "Space Grotesk", sans-serif;
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
 
 a {
@@ -71,8 +87,22 @@ input {
     linear-gradient(135deg, rgba(255, 255, 255, 0.6), rgba(255, 250, 240, 0.7));
 }
 
+.dark .noise-bg {
+  background-image:
+    radial-gradient(circle at top left, rgba(50, 126, 94, 0.12), transparent 28%),
+    radial-gradient(circle at bottom right, rgba(207, 126, 47, 0.08), transparent 30%),
+    linear-gradient(135deg, rgba(13, 17, 14, 0.95), rgba(19, 25, 21, 0.97));
+}
+
 .panel-shadow {
   box-shadow:
     0 1px 0 rgba(29, 36, 31, 0.04),
     0 20px 60px rgba(33, 37, 32, 0.12);
+  transition: border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.dark .panel-shadow {
+  box-shadow:
+    0 1px 0 rgba(0, 0, 0, 0.2),
+    0 20px 60px rgba(0, 0, 0, 0.4);
 }

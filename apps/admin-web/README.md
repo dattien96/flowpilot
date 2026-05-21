@@ -36,7 +36,7 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:3001`. If Supabase mode is enabled, create or invite a Supabase Auth user and sign in at `/login`.
+Open `http://localhost:3002`. If Supabase mode is enabled, create or invite a Supabase Auth user and sign in at `/login`.
 
 ## Docker Run
 
@@ -44,7 +44,7 @@ Open `http://localhost:3001`. If Supabase mode is enabled, create or invite a Su
 just docker-up
 ```
 
-Open `http://localhost:3001`.
+Open `http://localhost:3002`.
 
 This Docker workflow is the default frontend dev loop:
 

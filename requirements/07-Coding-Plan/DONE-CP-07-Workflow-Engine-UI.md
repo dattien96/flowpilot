@@ -10,6 +10,8 @@
 
 This phase builds the **Workflow Builder** (design-time) and **Execution Dashboard** (run-time) that allow users to construct custom workflows from the 17 MVP steps defined in SS-04, then monitor their execution in real-time.
 
+This phase also owns the workspace workflow-definition index, the dedicated workflow detail/builder page, the create-workflow page, the step-definition catalog and create-step page, and the workspace workflow-run history page.
+
 ---
 
 ## 2. Database - Canonical Workflow Schema
@@ -19,7 +21,7 @@ The MVP skeleton has legacy `workflow_definitions`, `workflow_runs`, `workflow_s
 ```sql
 CREATE TABLE workflows (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  project_id UUID REFERENCES projects(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   description TEXT,
   is_template BOOLEAN NOT NULL DEFAULT false,
@@ -52,6 +54,7 @@ CREATE TABLE workflow_runs (
   status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'RUNNING', 'DONE', 'FAILED', 'CANCELED')),
   provider TEXT,
   model TEXT,
+  yolo_mode BOOLEAN NOT NULL DEFAULT false, -- persisted per-run for granular control
   started_by UUID REFERENCES auth.users(id),
   started_at TIMESTAMPTZ DEFAULT now(),
   finished_at TIMESTAMPTZ,
@@ -65,7 +68,7 @@ CREATE TABLE workflow_run_steps (
   workflow_step_id UUID NOT NULL REFERENCES workflow_steps(id) ON DELETE CASCADE,
   step_type TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'RUNNING', 'WAITING_USER_APPROVAL', 'DONE', 'FAILED', 'SKIPPED')),
-  artifact_id UUID, -- CP-06 adds FK to artifacts(id) after artifacts table exists
+  artifact_id UUID, -- CP-06 adds FK to artifacts(id) after artifacts table exists. See CP-06 DoD.
   prompt_cache_id UUID,
   rejection_note TEXT,
   retry_count INT NOT NULL DEFAULT 0,
@@ -93,7 +96,11 @@ ALTER TABLE workflow_run_steps
   ADD CONSTRAINT workflow_run_steps_prompt_cache_fk
   FOREIGN KEY (prompt_cache_id) REFERENCES workflow_prompt_cache(id);
 
--- Enable RLS
+-- Enable RLS on core workflow tables
+ALTER TABLE workflows ENABLE ROW LEVEL SECURITY;
+ALTER TABLE workflow_steps ENABLE ROW LEVEL SECURITY;
+ALTER TABLE workflow_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE workflow_run_steps ENABLE ROW LEVEL SECURITY;
 ALTER TABLE workflow_prompt_cache ENABLE ROW LEVEL SECURITY;
 
 -- Read policy: project members can view cache entries for their workflows
@@ -102,7 +109,98 @@ CREATE POLICY "prompt_cache_select_project_members"
   USING (
     workflow_id IN (
       SELECT w.id FROM workflows w
-      WHERE w.project_id IN (
+      WHERE
+        w.project_id IS NULL
+        OR w.project_id IN (
+          SELECT pt.project_id FROM project_teams pt
+          JOIN team_members tm ON tm.team_id = pt.team_id
+          WHERE tm.user_id = auth.uid()
+        )
+    )
+  );
+
+-- Read policy: global workflows for everyone, private workflows for project members only
+CREATE POLICY "workflows_select_global_or_project_members"
+  ON workflows FOR SELECT
+  USING (
+    project_id IS NULL
+    OR project_id IN (
+      SELECT pt.project_id FROM project_teams pt
+      JOIN team_members tm ON tm.team_id = pt.team_id
+      WHERE tm.user_id = auth.uid()
+    )
+  );
+
+-- Write policy: only members of the owning project can mutate private workflows
+CREATE POLICY "workflows_write_private_project_members"
+  ON workflows FOR ALL
+  USING (
+    project_id IS NOT NULL
+    AND project_id IN (
+      SELECT pt.project_id FROM project_teams pt
+      JOIN team_members tm ON tm.team_id = pt.team_id
+      WHERE tm.user_id = auth.uid()
+    )
+  )
+  WITH CHECK (
+    project_id IS NOT NULL
+    AND project_id IN (
+      SELECT pt.project_id FROM project_teams pt
+      JOIN team_members tm ON tm.team_id = pt.team_id
+      WHERE tm.user_id = auth.uid()
+    )
+  );
+
+-- Read policy for workflow_steps follows the workflow scope
+CREATE POLICY "workflow_steps_select_global_or_project_members"
+  ON workflow_steps FOR SELECT
+  USING (
+    workflow_id IN (
+      SELECT w.id FROM workflows w
+      WHERE
+        w.project_id IS NULL
+        OR w.project_id IN (
+          SELECT pt.project_id FROM project_teams pt
+          JOIN team_members tm ON tm.team_id = pt.team_id
+          WHERE tm.user_id = auth.uid()
+        )
+    )
+  );
+
+-- Write policy for workflow_steps is limited to private workflows
+CREATE POLICY "workflow_steps_write_private_project_members"
+  ON workflow_steps FOR ALL
+  USING (
+    workflow_id IN (
+      SELECT w.id FROM workflows w
+      WHERE
+        w.project_id IS NOT NULL
+        AND w.project_id IN (
+          SELECT pt.project_id FROM project_teams pt
+          JOIN team_members tm ON tm.team_id = pt.team_id
+          WHERE tm.user_id = auth.uid()
+        )
+    )
+  );
+
+-- Read/Write policies for workflow_runs
+CREATE POLICY "workflow_runs_all_project_members"
+  ON workflow_runs FOR ALL
+  USING (
+    project_id IN (
+      SELECT pt.project_id FROM project_teams pt
+      JOIN team_members tm ON tm.team_id = pt.team_id
+      WHERE tm.user_id = auth.uid()
+    )
+  );
+
+-- Read/Write policies for workflow_run_steps
+CREATE POLICY "workflow_run_steps_all_project_members"
+  ON workflow_run_steps FOR ALL
+  USING (
+    workflow_run_id IN (
+      SELECT wr.id FROM workflow_runs wr
+      WHERE wr.project_id IN (
         SELECT pt.project_id FROM project_teams pt
         JOIN team_members tm ON tm.team_id = pt.team_id
         WHERE tm.user_id = auth.uid()
@@ -129,8 +227,7 @@ CREATE POLICY "run_logs_select_project_members"
     workflow_run_step_id IN (
       SELECT wrs.id FROM workflow_run_steps wrs
       JOIN workflow_runs wr ON wr.id = wrs.workflow_run_id
-      JOIN workflows w ON w.id = wr.workflow_id
-      WHERE w.project_id IN (
+      WHERE wr.project_id IN (
         SELECT pt.project_id FROM project_teams pt
         JOIN team_members tm ON tm.team_id = pt.team_id
         WHERE tm.user_id = auth.uid()
@@ -149,11 +246,18 @@ CREATE TABLE step_definitions (
   agent_type TEXT NOT NULL DEFAULT 'standard'  -- standard, autonomous (for code/review loop)
 );
 
--- Read policy: any authenticated user can read step definitions (static catalogue)
 ALTER TABLE step_definitions ENABLE ROW LEVEL SECURITY;
+
+-- Read policy: any authenticated user can read step definitions (shared catalogue)
 CREATE POLICY "step_definitions_select_authenticated"
   ON step_definitions FOR SELECT
   USING (auth.role() = 'authenticated');
+
+-- Write policy: authenticated workflow admins can create or update reusable step definitions
+CREATE POLICY "step_definitions_write_authenticated"
+  ON step_definitions FOR ALL
+  USING (auth.role() = 'authenticated')
+  WITH CHECK (auth.role() = 'authenticated');
 
 -- Seed data (insert 17 MVP step types)
 INSERT INTO step_definitions (step_type, name, description, required_mcps, required_skills, agent_type) VALUES
@@ -249,7 +353,7 @@ Examples:
 
 The fetch step must use current data, not stale cached copies, so prompt execution reflects the latest external context.
 
-### 2.1.4 Runtime Placeholder Injection
+### 2.1.5 Runtime Placeholder Injection
 The cached `.md` contains structural template sections. At execution time, the Go-Runner fills:
 ```markdown
 # MCP Context
@@ -267,7 +371,7 @@ The cached `.md` contains structural template sections. At execution time, the G
 
 This means the **structural template is cached**, but **run-specific data is always fresh**.
 
-### 2.1.5 Cache Invalidation Rules
+### 2.1.6 Cache Invalidation Rules
 The cached `.md` is **regenerated** (old record marked `is_valid = false`) when:
 - User modifies the workflow (adds/removes/reorders/enables/disables steps)
 - A skill file (built-in or custom) is updated
@@ -275,7 +379,7 @@ The cached `.md` is **regenerated** (old record marked `is_valid = false`) when:
 
 Any of these changes cause the config_hash to change → new file generated → new DB record.
 
-### 2.1.6 Admin Web Cache Visibility
+### 2.1.7 Admin Web Cache Visibility
 - **Workflow Builder:** After save, display: "This configuration maps to cache hash: `a3f8c2`"
 - **Execution Dashboard:** Step detail shows: "Prompt file: `/built-in-workflow/a3f8c2_tech_spec.md`" (clickable to view the actual assembled prompt)
 - **Settings:** "Clear Prompt Cache" button to invalidate all cached files for a workflow
@@ -380,17 +484,69 @@ export interface PromptCacheEntry {
 - Save as custom workflow
 - Load from built-in template
 
-**Built-in Templates** (per SS-04 §5):
+**Built-in Templates** (per SS-04 §5 — all 10 flows, 4 personas):
 | Template | Persona | Steps |
 |----------|---------|-------|
 | Bug Fix Flow | Developer | Traceability → Issue Analysis → Tech Spec → Plan → Code/Review → Release |
 | Pre-defined Feature | Developer | Tech Spec → Plan → Architecture → TDD → Code/Review → Release → Notify |
+| Bug Traceability | Developer | Code Traceability |
+| Onboarding | Developer | Onboarding Walkthrough |
 | Full End-to-End | Solo Dev | Business Idea → Feature Intake → Business Summary → Product Spec → Tech Spec → Plan → Arch → TDD → Code/Review → Release → Notify |
 | Fast-Track Business | Solo Dev | Product Spec → Tech Spec → Plan → Arch → TDD → Code/Review → Release |
 | Task Breakdown | Leader | Tech Spec → Plan → Task Breakdown |
 | Root Cause Analysis | Leader | Traceability → Issue Analysis → Task Breakdown → Notify |
+| Analytics & Usage | Leader | Analytics Review |
+| Product Process & Analysis | PM/Owner | Business Idea → Feature Intake → Business Summary → Product Spec → Project Analysis → Analytics Review |
 
-### 4.2 Execution Dashboard (`/projects/:projectId/workflows/:runId`)
+### 4.2 Workflow Definition Index (`/workflows`)
+
+- List all workflow definitions, not workflow runs
+- Show built-in global templates and private project-owned workflows
+- Provide filters for scope and owner project
+- Make each workflow item navigate to a dedicated workflow detail/builder page
+- Add CTA to `/workflows/create`
+- Add CTA to `/workflow-steps`
+- Add CTA to `/workflow-runs`
+
+### 4.2.1 Workflow Detail / Builder (`/workflows/:workflowId`)
+
+- Show one selected workflow definition on its own page
+- Allow step composition, reordering, and override editing for private workflows
+- Keep built-in global workflows readable but not directly editable
+- Allow launching the selected workflow against the active project context
+
+### 4.3 Create Workflow Page (`/workflows/create`)
+
+- Allow the user to select the owner project for the new private workflow
+- Allow the user to add reusable step definitions, order them, and remove them
+- Allow a quick link to `/workflow-steps/create`
+- Save through the canonical `workflows` + `workflow_steps` path
+
+### 4.4 Step Definition Index (`/workflow-steps`)
+
+- Show the full list of reusable step definitions
+- Show `step_type`, description, MCP requirements, skill requirements, and agent type
+- Add CTA to `/workflow-steps/create`
+
+### 4.5 Create Step Page (`/workflow-steps/create`)
+
+- Form fields: `step_type`, `name`, `description`, `required_mcps`, `required_skills`, `agent_type`
+- Save to `step_definitions`
+
+### 4.6 Workflow Run History (`/workflow-runs`)
+
+- Show all workflow runs across the workspace
+- Support filters by workflow type, global-vs-private scope, and project
+- Link back to workflow definitions and workflow creation
+
+### 4.6.1 Project Workflow Entry (`/projects/:projectId/workflows`)
+
+- Do not embed the workflow definition list in the project tab
+- Do not embed the workflow builder in the project tab
+- Show actions to browse definitions, create a private workflow, and open run history
+- Show recent run history scoped to the current project
+
+### 4.7 Execution Dashboard (`/projects/:projectId/workflows/:runId`)
 
 **Layout:** Vertical pipeline view showing each step as a card
 
@@ -410,9 +566,11 @@ export interface PromptCacheEntry {
     - On submit: sets status = `PENDING`, stores `rejection_note`, increments `retry_count`
 
 **YOLO Mode:**
-- Toggle at workflow level (not per-step in YOLO mode)
-- When enabled: all approval gates are skipped, pipeline runs continuously
-- Visual indicator: YOLO badge on workflow run header
+- Persisted as `yolo_mode` (BOOLEAN) on the `workflow_runs` table, allowing granular, per-run execution control.
+- Toggle at workflow header level (applies to all remaining steps in the active run).
+- When enabled: all approval gates are skipped, pipeline runs continuously.
+- **Edge Function Guard:** Toggle changes must go through an Edge Function (`/workflow-runs/toggle-yolo`) which ensures that only project owners, leaders, or the user who started the run can mutate `yolo_mode`.
+- Visual indicator: YOLO badge on workflow run header.
 
 ---
 
@@ -444,7 +602,8 @@ export function useWorkflowRealtime(runId: string) {
   const queryClient = useQueryClient()
 
   useEffect(() => {
-    const channel = subscribeToWorkflowRun(runId, () => {
+    const channel = subscribeToWorkflowRun(runId, (updatedStep) => {
+      console.log(`[Realtime] Workflow step ${updatedStep.step_type} updated status to: ${updatedStep.status}`)
       // Invalidate the query to refetch latest step statuses
       queryClient.invalidateQueries({ queryKey: ['workflowRun', runId] })
     })
@@ -481,14 +640,22 @@ User clicks "Reject & Retry"
 ## 7. Definition of Done — Phase 4
 
 ### Database
-- [ ] `workflows` table created with UUID `project_id` FK
+- [ ] `workflows.project_id` is nullable so one table can store both global and private workflow definitions
 - [ ] `workflow_steps` created for definition-time columns: `provider_override`, `model_override`, `requires_approval`, `is_enabled`
 - [ ] `workflow_runs` and `workflow_run_steps` created for execution-time state
+- [ ] `workflow_runs` includes `yolo_mode` BOOLEAN column defaulted to false
 - [ ] `workflow_run_steps` includes `rejection_note`, `retry_count`, `prompt_cache_id`
 - [ ] `workflow_prompt_cache` table created with `config_hash UNIQUE` index and `workflow_id UUID` FK
 - [ ] `workflow_run_logs` table created with `workflow_run_step_id UUID` FK → `workflow_run_steps` (not `workflow_steps`)
 - [ ] `step_definitions` table seeded with all 17 MVP step types
-- [ ] RLS policies on `workflow_prompt_cache`, `workflow_run_logs`, `step_definitions`
+- [ ] `step_definitions` also supports authenticated workflow-admin writes for adding reusable custom step definitions
+- [ ] All 10 built-in workflow templates seeded as `workflows.is_template = true` with ordered `workflow_steps`, using `step_definitions` for step metadata
+- [ ] Global workflows use `project_id IS NULL`
+- [ ] Private workflows use `project_id = <owning project uuid>`
+- [ ] Row Level Security (RLS) enabled and verified on all 6 workflow tables: `workflows`, `workflow_steps`, `workflow_runs`, `workflow_run_steps`, `workflow_prompt_cache`, `workflow_run_logs`
+- [ ] RLS policies allow global workflow reads for authenticated users and restrict private workflow writes to owning project members
+- [ ] Shared catalogue table `step_definitions` has RLS enabled for authenticated reads and controlled workflow-admin writes
+- [ ] CP-06 Artifacts Dependency: `artifact_id` FK dependency to `artifacts(id)` explicitly verified and handled as part of CP-06 alignment
 
 ### Domain & Types
 - [ ] `WorkflowStepStatus` TypeScript enum uses canonical SD-09 values: `PENDING`, `RUNNING`, `WAITING_USER_APPROVAL`, `DONE`, `FAILED`, `SKIPPED`
@@ -497,13 +664,22 @@ User clicks "Reject & Retry"
 
 ### UI
 - [ ] Workflow Builder: list/create/edit workflows with step configuration (enable/disable, reorder, provider override)
-- [ ] Built-in workflow templates loaded from `step_definitions` seed data
-- [ ] Execution Dashboard: real-time step status via Supabase Realtime
+- [ ] Workspace workflow definition index exists at `/workflows`
+- [ ] Dedicated create workflow page exists at `/workflows/create`
+- [ ] Step definition catalog exists at `/workflow-steps`
+- [ ] Dedicated create step page exists at `/workflow-steps/create`
+- [ ] Workflow run history page exists at `/workflow-runs`
+- [ ] Project workflow page lists global workflows plus private workflows owned by the active project
+- [ ] Saving from the project workflow page creates or updates private workflows for the active project only
+- [ ] Workflow Builder can load and apply all 10 built-in templates from seeded template workflows
+- [ ] Execution Dashboard: real-time step status via Supabase Realtime hook utilizing the `updatedStep` payload
 - [ ] Step status badges for all 6 canonical states: `PENDING` (gray) | `RUNNING` (blue pulse) | `WAITING_USER_APPROVAL` (yellow) | `DONE` (green) | `FAILED` (red) | `SKIPPED` (gray strikethrough)
 - [ ] Approval Gate UI: "Approve & Continue" and "Reject & Retry" with rejection note capture
 - [ ] YOLO mode toggle at workflow level with visual badge on run header
+- [ ] YOLO mode status updates go through a secure Edge Function `/workflow-runs/toggle-yolo` with permission checks
 - [ ] Prompt file link visible in Execution Dashboard step detail (reads from `workflow_prompt_cache`)
 - [ ] Cache hash displayed in Workflow Builder after save
+- [ ] Project detail page exposes an entry point to trigger workflows or create a private workflow
 
 ### Reject/Retry
 - [ ] Reject flow writes to `workflow_run_steps` via Edge Function (never direct client write to `workflow_steps`)
@@ -516,6 +692,6 @@ User clicks "Reject & Retry"
 - [ ] Runtime placeholder injection for `{{mcp_context}}`, `{{user_context}}`, `{{previous_artifacts}}`, `{{rejection_note}}`
 - [ ] `/built-in-workflow/` directory created at FlowPilot system root
 
-### Known Dependency (deferred)
+### Known Dependencies (deferred)
 - [ ] User text context input surface for per-run context (SD-05 §3 `# User Context`) — to be addressed in CP-09 or CP-11
-
+- [ ] Prompt Memory sections (`# Selected Working Memory`, `# Source Artifacts`, `# Raw Artifact Excerpts`) defined in SD-05 §3 are intentionally deferred from CP-07 runtime placeholders. These require the Artifact Working Memory system and Context Resolver — to be addressed in a later CP alongside SS-07/SD-07.

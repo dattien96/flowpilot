@@ -9,7 +9,7 @@ set windows-shell := ["C:\\Users\\dat.nguyen\\AppData\\Local\\Programs\\Git\\bin
 
 # --- Variables ---
 ADMIN_WEB_PATH := "apps/admin-web"
-ADMIN_WEB_PORT := "3001"
+ADMIN_WEB_PORT := "3002"
 LOCAL_RUNNER_PATH := "apps/local-runner"
 LOCAL_RUNNER_PORT := "4317"
 

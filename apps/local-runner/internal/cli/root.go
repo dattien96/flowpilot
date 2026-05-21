@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"flowpilot-runner/internal/runner"
+
 	"github.com/spf13/cobra"
 )
 
@@ -522,10 +523,10 @@ func writeHTTPError(w http.ResponseWriter, status int, err error) {
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		if origin == "http://127.0.0.1:3001" || origin == "http://localhost:3001" {
+		if origin == "http://127.0.0.1:3002" || origin == "http://localhost:3002" {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 		} else {
-			w.Header().Set("Access-Control-Allow-Origin", "http://127.0.0.1:3001")
+			w.Header().Set("Access-Control-Allow-Origin", "http://127.0.0.1:3002")
 		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
