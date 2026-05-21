@@ -1,5 +1,7 @@
 import type { WorkflowEngineGateway } from "@/domain/gateway/workflow-engine-gateway";
 import type {
+  ArtifactDefinition,
+  ArtifactRun,
   StepDefinition,
   Workflow,
   WorkflowRun,
@@ -8,10 +10,94 @@ import type {
   WorkflowStep,
   StepType,
 } from "@/domain/model/entity/workflow-engine";
+import { workflowArtifactDefinitionOptions } from "@/features/workflow-engine/workflow-artifact-definitions";
 
 const DEMO_STEP_DEFINITION_CREATED_AT = "2026-05-20T00:00:00.000Z";
 
+const BUILT_IN_STEP_ARTIFACT_BINDINGS: Record<
+  StepType,
+  {
+    inputArtifactDefinitions?: string[];
+    outputArtifactDefinitions?: string[];
+  }
+> = {
+  business_idea: {
+    outputArtifactDefinitions: ["business_idea_artifact"],
+  },
+  feature_intake: {
+    outputArtifactDefinitions: ["feature_intake_artifact"],
+  },
+  business_summary: {
+    inputArtifactDefinitions: ["business_idea_artifact", "feature_intake_artifact"],
+    outputArtifactDefinitions: ["business_summary_artifact"],
+  },
+  product_spec: {
+    inputArtifactDefinitions: ["business_summary_artifact"],
+    outputArtifactDefinitions: ["product_spec_artifact"],
+  },
+  tech_spec: {
+    outputArtifactDefinitions: ["tech_spec_artifact"],
+  },
+  make_plan_coding: {
+    inputArtifactDefinitions: ["tech_spec_artifact"],
+    outputArtifactDefinitions: ["coding_plan_artifact"],
+  },
+  create_architecture: {
+    inputArtifactDefinitions: ["business_summary_artifact"],
+    outputArtifactDefinitions: ["architecture_artifact"],
+  },
+  tdd: {
+    inputArtifactDefinitions: [
+      "tech_spec_artifact",
+      "coding_plan_artifact",
+      "architecture_artifact",
+    ],
+    outputArtifactDefinitions: ["tdd_plan_artifact"],
+  },
+  task_breakdown: {
+    outputArtifactDefinitions: ["task_breakdown_artifact"],
+  },
+  code_review_loop: {
+    inputArtifactDefinitions: ["coding_plan_artifact", "tdd_plan_artifact"],
+    outputArtifactDefinitions: [
+      "coding_implementation_checklist_artifact",
+      "code_review_summary_artifact",
+    ],
+  },
+  release_readiness: {
+    inputArtifactDefinitions: ["code_review_summary_artifact"],
+    outputArtifactDefinitions: ["release_readiness_artifact"],
+  },
+  issue_analysis: {
+    outputArtifactDefinitions: ["root_cause_analysis_artifact"],
+  },
+  analytics_review: {
+    outputArtifactDefinitions: ["usage_analytics_artifact"],
+  },
+  project_analysis: {
+    outputArtifactDefinitions: ["project_analysis_artifact"],
+  },
+  telegram_notification: {},
+  code_traceability: {
+    outputArtifactDefinitions: ["code_traceability_artifact"],
+  },
+  onboarding_walkthrough: {},
+};
+
 export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
+  private artifactDefinitions: ArtifactDefinition[] = workflowArtifactDefinitionOptions.map(
+    (definition) => ({
+      key: definition.key,
+      name: definition.label,
+      description: `${definition.label} workflow artifact`,
+      localPathTemplate: `.flowpilot/artifacts/{projectId}/{workflowRunId}/{stepType}/${definition.defaultFileName}`,
+      remotePathTemplate: `artifacts/{projectId}/{workflowRunId}/{stepType}/${definition.defaultFileName}`,
+      defaultFileName: definition.defaultFileName,
+      createdAt: DEMO_STEP_DEFINITION_CREATED_AT,
+      updatedAt: DEMO_STEP_DEFINITION_CREATED_AT,
+    })
+  );
+
   private stepDefinitions: StepDefinition[] = [
     {
       stepType: "business_idea",
@@ -151,6 +237,7 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
     },
   ].map((step) => ({
     ...step,
+    ...BUILT_IN_STEP_ARTIFACT_BINDINGS[step.stepType],
     createdAt: DEMO_STEP_DEFINITION_CREATED_AT,
     updatedAt: DEMO_STEP_DEFINITION_CREATED_AT,
   }));
@@ -160,6 +247,7 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
   private workflowRuns: WorkflowRun[] = [];
   private workflowRunSteps: WorkflowRunStep[] = [];
   private workflowRunLogs: WorkflowRunLog[] = [];
+  private artifactRuns: ArtifactRun[] = [];
 
   constructor() {
     this.seedTemplates();
@@ -249,6 +337,28 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
         });
       });
     });
+  }
+
+  async listArtifactDefinitions(): Promise<ArtifactDefinition[]> {
+    return this.artifactDefinitions;
+  }
+
+  async saveArtifactDefinition(definition: ArtifactDefinition): Promise<ArtifactDefinition> {
+    const next = { ...definition };
+    const index = this.artifactDefinitions.findIndex((item) => item.key === next.key);
+    if (index >= 0) {
+      this.artifactDefinitions[index] = next;
+    } else {
+      this.artifactDefinitions.unshift(next);
+    }
+    return next;
+  }
+
+  async listArtifactRuns(projectId?: string): Promise<ArtifactRun[]> {
+    if (!projectId) {
+      return this.artifactRuns;
+    }
+    return this.artifactRuns.filter((artifact) => artifact.projectId === projectId);
   }
 
   async listStepDefinitions(): Promise<StepDefinition[]> {
