@@ -1,5 +1,7 @@
 export type StepType = string;
 
+export type ArtifactSyncStatus = "local_only" | "queued" | "syncing" | "synced" | "failed";
+
 export type WorkflowStepStatus =
   | "PENDING"
   | "RUNNING"
@@ -22,6 +24,35 @@ export interface StepDefinition {
   requiredMcps: string[];
   requiredSkills: string[];
   agentType: "standard" | "autonomous";
+  inputArtifactDefinitions?: string[];
+  outputArtifactDefinitions?: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ArtifactDefinition {
+  key: string;
+  name: string;
+  description: string;
+  localPathTemplate: string;
+  remotePathTemplate: string;
+  defaultFileName: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ArtifactRun {
+  id: string;
+  artifactDefinitionKey: string;
+  workflowId: string;
+  workflowRunId: string;
+  workflowRunStepId: string | null;
+  projectId: string | null;
+  title: string;
+  localPath: string;
+  remotePath: string;
+  remoteUrl: string;
+  syncStatus: ArtifactSyncStatus;
   createdAt: string;
   updatedAt: string;
 }
@@ -87,6 +118,7 @@ export interface WorkflowRunStep {
   stepType: StepType;
   status: WorkflowStepStatus;
   artifactId: string | null;
+  artifactRunId?: string | null;
   promptCacheId: string | null;
   rejectionNote: string | null;
   retryCount: number;

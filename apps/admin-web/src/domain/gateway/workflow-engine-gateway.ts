@@ -1,4 +1,6 @@
 import type {
+  ArtifactDefinition,
+  ArtifactRun,
   StepDefinition,
   Workflow,
   WorkflowRun,
@@ -8,6 +10,9 @@ import type {
 } from "@/domain/model/entity/workflow-engine";
 
 export interface WorkflowEngineGateway {
+  listArtifactDefinitions(): Promise<ArtifactDefinition[]>;
+  saveArtifactDefinition(definition: ArtifactDefinition): Promise<ArtifactDefinition>;
+  listArtifactRuns(projectId?: string): Promise<ArtifactRun[]>;
   listStepDefinitions(): Promise<StepDefinition[]>;
   saveStepDefinition(step: StepDefinition): Promise<StepDefinition>;
   listWorkflows(projectId?: string): Promise<Workflow[]>;

@@ -10,6 +10,9 @@ import { StartWorkflowRunUseCase } from "./start-workflow-run-usecase";
 import { ToggleYoloModeUseCase } from "./toggle-yolo-mode-usecase";
 import { SubmitStepApprovalDecisionUseCase } from "./submit-step-approval-decision-usecase";
 import { SaveStepDefinitionUseCase } from "./save-step-definition-usecase";
+import { ListArtifactDefinitionsUseCase } from "./list-artifact-definitions-usecase";
+import { SaveArtifactDefinitionUseCase } from "./save-artifact-definition-usecase";
+import { ListArtifactRunsUseCase } from "./list-artifact-runs-usecase";
 
 describe("WorkflowEngine UseCases", () => {
   const mockGateway = {
@@ -23,6 +26,9 @@ describe("WorkflowEngine UseCases", () => {
     startWorkflowRun: vi.fn(),
     toggleYoloMode: vi.fn(),
     submitStepApproval: vi.fn(),
+    listArtifactDefinitions: vi.fn(),
+    saveArtifactDefinition: vi.fn(),
+    listArtifactRuns: vi.fn(),
   };
 
   it("ListStepDefinitionsUseCase calls gateway", async () => {
@@ -113,5 +119,39 @@ describe("WorkflowEngine UseCases", () => {
     const result = await usecase.execute("wrs-1", true, "Looks good");
     expect(mockGateway.submitStepApproval).toHaveBeenCalledWith("wrs-1", true, "Looks good");
     expect(result.status).toBe("DONE");
+  });
+
+  it("ListArtifactDefinitionsUseCase calls gateway", async () => {
+    mockGateway.listArtifactDefinitions.mockResolvedValueOnce([{ key: "plan_artifact" }]);
+    const usecase = new ListArtifactDefinitionsUseCase(mockGateway as any);
+    const result = await usecase.execute();
+    expect(mockGateway.listArtifactDefinitions).toHaveBeenCalled();
+    expect(result).toEqual([{ key: "plan_artifact" }]);
+  });
+
+  it("SaveArtifactDefinitionUseCase calls gateway with payload", async () => {
+    const payload = {
+      key: "plan_artifact",
+      name: "Plan",
+      description: "",
+      localPathTemplate: "",
+      remotePathTemplate: "",
+      defaultFileName: "Plan.md",
+      createdAt: "2026-05-20T00:00:00Z",
+      updatedAt: "2026-05-20T00:00:00Z",
+    };
+    mockGateway.saveArtifactDefinition.mockResolvedValueOnce(payload);
+    const usecase = new SaveArtifactDefinitionUseCase(mockGateway as any);
+    const result = await usecase.execute(payload);
+    expect(mockGateway.saveArtifactDefinition).toHaveBeenCalledWith(payload);
+    expect(result.key).toBe("plan_artifact");
+  });
+
+  it("ListArtifactRunsUseCase calls gateway", async () => {
+    mockGateway.listArtifactRuns.mockResolvedValueOnce([{ id: "art-1" }]);
+    const usecase = new ListArtifactRunsUseCase(mockGateway as any);
+    const result = await usecase.execute("proj-1");
+    expect(mockGateway.listArtifactRuns).toHaveBeenCalledWith("proj-1");
+    expect(result).toEqual([{ id: "art-1" }]);
   });
 });
