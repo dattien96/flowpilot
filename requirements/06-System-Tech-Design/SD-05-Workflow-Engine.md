@@ -234,7 +234,9 @@ The Go-Runner reads from these folders when assembling the runtime prompt.
   - Per-step controls for approval gate, provider override, and model override.
   - After save, display the generated prompt cache hash when available.
 - **Step Definition Index:** A workspace page that shows the full list of reusable step definitions.
-- **Create Step Page:** A dedicated page for creating reusable step definitions with `step_type`, `name`, `description`, `required_mcps`, `required_skills`, and `agent_type`.
+- **Create Step Page:** A dedicated page for creating reusable step definitions with `step_type`, `name`, `description`, `required_mcps`, `required_skills`, `agent_type`, and artifact bindings for zero-or-more input artifact definitions plus zero-or-more output artifact definitions.
+- **Artifact Definition Index:** A workspace page that shows the reusable artifact definitions catalog.
+- **Create Artifact Definition Page:** A dedicated page for defining artifact name, description, default file name, local output root path, local input lookup path, and remote sync root path.
 - **Templates Menu:** Pre-defined templates for Developers, Solo Devs, Leaders, and PMs.
 - **Execution Dashboard:** A screen to start a workflow and view its real-time progress across steps. Each step shows: status badge (`PENDING`, `RUNNING`, `WAITING_USER_APPROVAL`, `DONE`, `FAILED`, `SKIPPED`), elapsed time, provider/model, prompt file link, and a link to view the generated artifact.
 - **Workflow Run History Page:** A workspace page that shows workflow run history and supports filtering by workflow type, global-vs-private scope, and project.
@@ -246,7 +248,7 @@ The Go-Runner reads from these folders when assembling the runtime prompt.
 
 ### 6.1 Built-In Templates and Private Workflows
 
-Built-in templates are stored as seeded `workflows` rows with `is_template = true`, with their ordered steps stored in `workflow_steps`. Private workflows are also stored in `workflows`, but are owned by one project via `workflows.project_id`. `step_definitions` is the shared catalogue for the 17 MVP step types plus any later custom reusable step definitions, and provides names, descriptions, required MCPs, required skills, and agent type.
+Built-in templates are stored as seeded `workflows` rows with `is_template = true`, with their ordered steps stored in `workflow_steps`. Private workflows are also stored in `workflows`, but are owned by one project via `workflows.project_id`. `step_definitions` is the shared catalogue for the 17 MVP step types plus any later custom reusable step definitions, and provides names, descriptions, required MCPs, required skills, agent type, and zero-or-more input/output artifact definition bindings. `artifact_definitions` is the shared catalogue for reusable artifact templates.
 
 | Template | Persona | Steps |
 |----------|---------|-------|
@@ -291,16 +293,25 @@ Built-in templates are stored as seeded `workflows` rows with `is_template = tru
 
 ### 7.3 Workflow Execution Tables
 - `workflow_runs` table: `id`, `workflow_id`, `project_id`, `status` (`PENDING`/`RUNNING`/`DONE`/`FAILED`/`CANCELED`), `provider`, `model`, `yolo_mode`, `started_by`, `started_at`, `finished_at`, `error_message`.
-- `workflow_run_steps` table: `id`, `workflow_run_id`, `workflow_step_id`, `step_type`, `status` (`PENDING`/`RUNNING`/`WAITING_USER_APPROVAL`/`DONE`/`FAILED`/`SKIPPED`), `artifact_id`, `prompt_cache_id` (FK -> workflow_prompt_cache), `rejection_note`, `retry_count`, `started_at`, `finished_at`, `error_message`.
+- `workflow_run_steps` table: `id`, `workflow_run_id`, `workflow_step_id`, `step_type`, `status` (`PENDING`/`RUNNING`/`WAITING_USER_APPROVAL`/`DONE`/`FAILED`/`SKIPPED`), `artifact_run_id`, `prompt_cache_id` (FK -> workflow_prompt_cache), `rejection_note`, `retry_count`, `started_at`, `finished_at`, `error_message`.
 - `workflow_run_logs` table: `id`, `workflow_run_step_id`, `log_level`, `message`, `created_at`.
-- `artifact_id` points to canonical artifacts when the artifacts table exists; CP-06 owns final FK alignment.
+- `artifact_run_id` can point to the primary runtime artifact instance created by the step for compatibility, but multi-artifact steps should also be discoverable through `artifact_runs.workflow_run_step_id`.
 - `workflow_runs.project_id` is always the actual project where execution happens, even when the selected workflow definition is global.
 
 ### 7.4 Step Definition Table
 - `step_definitions`: `step_type`, `name`, `description`, `required_mcps` (JSON array), `required_skills` (JSON array), `agent_type`.
+- `step_input_artifact_definitions`: `id`, `step_type`, `artifact_definition_id`, `order_index`, `is_required`, `created_at`, `updated_at`.
+- `step_output_artifact_definitions`: `id`, `step_type`, `artifact_definition_id`, `order_index`, `created_at`, `updated_at`.
 - `step_definitions` must seed all 17 MVP step types from SS-04.
 - Built-in seeded rows and later custom reusable rows live in the same table.
 - The admin workflow UI may create additional reusable step definitions through a dedicated create-step page.
+- If the first implementation keeps only one primary input binding and one primary output binding in code, that is an interim persistence shortcut and not the target product model.
+
+### 7.5 Artifact Definition and Artifact Run Tables
+- `artifact_definitions`: `id`, `artifact_key`, `name`, `description`, `default_file_name`, `local_output_root_path`, `local_input_lookup_path`, `remote_sync_root_path`, `created_at`, `updated_at`.
+- `artifact_runs`: `id`, `artifact_definition_id`, `project_id`, `workflow_run_id`, `workflow_run_step_id`, `artifact_name`, `local_path`, `remote_path`, `remote_url`, `sync_status`, `version`, `status`, `created_by`, `approved_by`, `rejection_note`, `created_at`, `updated_at`.
+- `artifact_runs` stores runtime instances only.
+- `artifact_definitions` stores reusable templates only.
 
 ### 7.5 Row-Level Security
 - Enable RLS on `workflows`, `workflow_steps`, `workflow_runs`, `workflow_run_steps`, `workflow_prompt_cache`, `workflow_run_logs`, and `step_definitions`.
@@ -335,6 +346,18 @@ function executeWorkflowRun(runId):
             projectMcps  = getProjectContexts(run.project_id)
             if missing MCP → FAIL step with error "Missing required MCP: Jira"
 
+            // 1b. Resolve input artifact requirements
+            inputArtifactDefs = getStepInputArtifactDefinitions(step.step_type)
+            resolvedInputArtifacts = []
+            for each inputArtifactDef in inputArtifactDefs:
+                inputArtifactRun = findLatestArtifactRun(run.id, inputArtifactDef.artifact_definition_id)
+                if inputArtifactRun == null AND inputArtifactDef.is_required:
+                    FAIL step with error "Missing required input artifact definition"
+                if inputArtifactRun != null:
+                    if fileDoesNotExist(inputArtifactRun.local_path):
+                        FAIL step with error "Required input artifact file not found"
+                    resolvedInputArtifacts.append(inputArtifactRun)
+
             // 2. Resolve provider/model
             provider = step.provider_override ?? run.provider ?? project.default_provider
             model    = step.model_override ?? run.model ?? project.default_model
@@ -361,9 +384,14 @@ function executeWorkflowRun(runId):
             // 6. Execute via provider CLI
             output = executeProvider(provider, model, promptFile)
 
-            // 7. Parse output → save artifact and working memory
-            artifact = parseAndSaveArtifact(output, step)
-            generateArtifactMemory(artifact)
+            // 7. Parse output → save artifact run and working memory
+            outputArtifactDefs = getStepOutputArtifactDefinitions(step.step_type)
+            primaryArtifactRun = null
+            for each outputArtifactDef in outputArtifactDefs:
+                artifactRun = parseAndSaveArtifactRun(output, step, outputArtifactDef.artifact_definition_id, run.project_id, run.id)
+                if primaryArtifactRun == null:
+                    primaryArtifactRun = artifactRun
+                generateArtifactMemory(artifactRun)
 
             // 8. Check approval gate
             if step.requires_approval AND NOT run.yolo_mode:
@@ -375,7 +403,11 @@ function executeWorkflowRun(runId):
                     continue
 
             // 9. Mark step as DONE
+            if primaryArtifactRun != null:
+                attachPrimaryArtifactRun(step.id, primaryArtifactRun.id)
+
             updateStatus(step, DONE)
-            previousArtifacts.append(artifact)
+            if artifactRun != null:
+                previousArtifacts.append(artifactRun)
             break
 ```

@@ -55,8 +55,13 @@ Reference SS-06-Workflow-Skill-Agent.md
 ## 3.4. Output of step - Artifacts 
 Reference SS-07-Workflow-Artifact.md
 
-- Each step can provide output artifacts that can be used as context for other steps
-- We need to save these artifacts, can view as history and also allow to backup/sync: support sync to DriverMCP or local pc
+- Each step can optionally consume zero or more predefined input artifact definitions
+- Each step can optionally produce zero or more predefined output artifact definitions
+- Artifact definitions are reusable templates, similar to how workflow steps are reusable templates
+- Runtime execution creates real artifact-run records that reference the artifact definition + workflow run + workflow step run
+- Output artifacts can be used as input context for later steps
+- If a step declares one or more required input artifact definitions and any expected local artifact file cannot be resolved, the step must fail
+- We need to save artifact-run history and also allow backup/sync to online storage later
 
 ## 3.5. IMPORTANT - Supported Step for MVP
 
@@ -214,8 +219,39 @@ Expected artifact output is:
 Skill: Onboarding Skill
 This step provides a high-level summary of the product or walks through a specific coding module for a new team member.
 Expected artifact output is:
-1 md file contain:
-- Product/Codebase Summary
+none. This step is side-effect-only and does not need a persistent artifact definition.
+
+## 3.6 Predefined Output Artifact Definitions for MVP
+
+Every built-in step that produces a persistent file-backed output must seed at least one predefined output artifact definition.
+
+Steps that only perform side effects may leave the output artifact empty.
+
+| Step | Predefined output artifact definition | Default file |
+|---|---|---|
+| Business Idea Step | `business_idea_artifact` | `BusinessIdea.md` |
+| Feature Intake Step | `feature_intake_artifact` | `FeatureIntake.md` |
+| Business Summary Step | `business_summary_artifact` | `BusinessSummary.md` |
+| Product Spec Step | `product_spec_artifact` | `ProductSpec.md` |
+| Tech Spec Step | `tech_spec_artifact` | `TechSpec.md` |
+| Make Plan Coding Step | `coding_plan_artifact` | `CodingPlan.md` |
+| Create Architecture Step | `architecture_artifact` | `ArchitecturePlan.md` |
+| TDD Step | `tdd_plan_artifact` | `TddPlan.md` |
+| Task Breakdown Step | `task_breakdown_artifact` | `TaskBreakdown.md` |
+| Code/Review Loop Step | `code_review_summary_artifact` | `CodeReviewSummary.md` |
+| Release Readiness Step | `release_readiness_artifact` | `ReleaseReadiness.md` |
+| Issue Analysis Step | `root_cause_analysis_artifact` | `RootCauseAnalysis.md` |
+| Analytics Review Step | `usage_analytics_artifact` | `UsageAnalytics.md` |
+| Project Analysis Step | `project_analysis_artifact` | `ProjectAnalysis.md` |
+| Telegram Notification Step | none | none |
+| Code Traceability Step | `code_traceability_artifact` | `CodeTraceability.md` |
+| Onboarding Walkthrough Step | none | none |
+
+The product model must support multiple input and output artifact definitions per step now.
+
+For built-in MVP seeds, most steps only need one primary predefined output artifact definition at first, but that is a seed choice, not a platform limitation.
+
+If a step later needs additional persistent outputs, the platform should allow attaching additional predefined artifact definitions without redefining the step model.
 
 
 # 4. Workflow usage and configuration in project

@@ -1,6 +1,6 @@
-# CP-06: Document Workflow — Business Logic → Tech Spec → Coding Plan
+# CP-06: Document Workflow - Business Logic -> Tech Spec -> Coding Plan
 
-**Maps from:** SS-04 (Workflow Steps), SS-07 (Artifacts), SS-08 (Approval Gates), SD-05 (Workflow Engine), SD-08 (Artifact Management), SD-09 (Approval Gates)
+**Maps from:** SS-04 (Workflow Steps), SS-07 (Artifacts), SS-08 (Approval Gates), SS-09 (Artifact Memory), SD-05 (Workflow Engine), SD-08 (Artifact Management), SD-09 (Approval Gates), SD-10 (Context Resolver)
 **Phase:** 3
 **Depends on:** CP-07
 
@@ -8,293 +8,370 @@
 
 ## 1. Core Concept
 
-This phase implements the **document pipeline** — the sequential chain of deliverables that flow through human review and AI generation before any code is written:
+This phase implements the document pipeline:
 
+```text
+Business Logic -> Tech Spec -> Coding Plan
 ```
-Business Logic → Tech Spec → Coding Plan
-    (workflow steps producing approved artifacts at each stage)
-```
 
-Each document in this pipeline is an **artifact** — the output of a specific workflow step (SS-04 §3.5). A document cannot advance to the next stage without approval (unless YOLO mode is enabled, per SS-08).
+The document pipeline must use the same pattern as workflows and steps:
 
-**Key design constraint:** Do not create separate document tables. All documents produced in this pipeline are stored in the canonical `artifacts` table (SD-08), distinguished by `artifact_type`. This gives version history, Context Resolver integration (SD-10), and Approval Gate wiring for free.
+- reusable definition layer
+- runtime execution layer
+
+For artifacts this means:
+
+1. `artifact_definitions`
+2. `artifact_runs`
+
+The runner should not treat raw artifact files as anonymous files. It should treat them as runtime instances of predefined artifact definitions.
 
 ---
 
-## 2. Database Migration
+## 2. Product Model
 
-### 2.1 Artifacts Table Extension
+### 2.1 Artifact Definition
 
-CP-06 creates the canonical `artifacts` table defined in SD-08 and used by all later artifact, approval, AI, and memory flows:
+Artifact definitions are reusable templates that describe:
+
+- artifact name
+- description
+- default file name
+- local output root path
+- local input lookup path
+- remote sync root path
+
+Example:
+
+```text
+artifact_key            = plan_artifact
+name                    = Plan Artifact
+description             = Planning output document
+default_file_name       = Plan.md
+local_output_root_path  = /root/plan_architect
+local_input_lookup_path = /root/plan_architect
+remote_sync_root_path   = /artifacts/plan_architect
+```
+
+### 2.2 Artifact Run
+
+Artifact runs are real generated artifact instances created during workflow execution.
+
+Each artifact run must reference:
+
+- artifact definition
+- project
+- workflow run
+- workflow step run
+- resolved local path
+- resolved remote path
+- sync state
+
+### 2.3 Workflow Step binding
+
+Each workflow step definition may bind:
+
+- zero or more input artifact definitions
+- zero or more output artifact definitions
+
+Rules:
+
+- if one or more required input artifact definitions exist, runner must resolve all required local files before executing the step
+- if a required input artifact cannot be resolved, the step fails
+- if one or more output artifact definitions exist, runner must create artifact-runs after generation
+- if output artifact definitions are empty, the step may still run and produce no persistent file
+
+This is required because some built-in steps such as `Telegram Notification Step` do not need output artifacts.
+
+Important implementation note:
+
+- the product model supports multiple input and output artifact bindings now
+- the first code slice may temporarily persist only one primary input binding and one primary output binding internally
+- that temporary storage shortcut must not be treated as the long-term product constraint
+
+---
+
+## 3. Database Plan
+
+### 3.1 Artifact Definitions Table
 
 ```sql
-CREATE TABLE artifacts (
+CREATE TABLE artifact_definitions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  workflow_run_id UUID REFERENCES workflow_runs(id) ON DELETE SET NULL,
-  workflow_run_step_id UUID REFERENCES workflow_run_steps(id) ON DELETE SET NULL,
-  artifact_type TEXT NOT NULL DEFAULT 'generic',
-  parent_artifact_id UUID REFERENCES artifacts(id) ON DELETE SET NULL,
-  version INT NOT NULL DEFAULT 1,
-  title TEXT NOT NULL,
-  content_url TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'RUNNING', 'WAITING_USER_APPROVAL', 'DONE', 'FAILED', 'SKIPPED')),
-  created_by UUID REFERENCES auth.users(id),
-  approved_by UUID REFERENCES auth.users(id),
-  rejection_note TEXT,
-  retry_count INT NOT NULL DEFAULT 0,
+  artifact_key TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL,
+  default_file_name TEXT NOT NULL,
+  local_output_root_path TEXT NOT NULL,
+  local_input_lookup_path TEXT NOT NULL,
+  remote_sync_root_path TEXT,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
-
-ALTER TABLE workflow_run_steps
-  ADD CONSTRAINT workflow_run_steps_artifact_fk
-  FOREIGN KEY (artifact_id) REFERENCES artifacts(id);
-
--- Index for fast project + type queries
-CREATE INDEX IF NOT EXISTS artifacts_project_type_idx ON artifacts(project_id, artifact_type);
-
--- Valid artifact_type values for this phase:
--- 'business_logic', 'tech_spec', 'coding_plan'
--- (plus future types: 'architecture', 'tdd_plan', 'task_breakdown', etc.)
 ```
 
-### 2.2 Artifact Type Reference
-
-| `artifact_type` | Produced by step (SS-04) | Feeds into |
-|---|---|---|
-| `business_logic` | Business Idea / Business Summary / Feature Intake Step | Tech Spec Step |
-| `tech_spec` | Tech Spec Step | Make Plan Coding Step |
-| `coding_plan` | Make Plan Coding Step | Code/Review Loop Step |
-
-### 2.3 How Documents Are Linked
-
-The `parent_artifact_id` column expresses the pipeline chain:
-- A `tech_spec` artifact sets `parent_artifact_id` to the `business_logic` artifact it was generated from.
-- A `coding_plan` artifact sets `parent_artifact_id` to the `tech_spec` artifact.
-
-This replaces the need for `business_logic_doc_id` / `technical_spec_id` foreign keys on separate tables.
-
-### 2.4 RLS Policies
+### 3.2 Artifact Runs Table
 
 ```sql
--- Read: project owners/admin-web only
-CREATE POLICY "artifacts_select_project_members"
-  ON artifacts FOR SELECT
-  USING (
-    project_id IN (
-      SELECT p.id FROM projects p
-      WHERE p.created_by = auth.uid() OR p.owner_id = auth.uid()
-    )
-  );
-
--- Insert: authenticated project owners/admin-web only
-CREATE POLICY "artifacts_insert_project_members"
-  ON artifacts FOR INSERT
-  WITH CHECK (
-    project_id IN (
-      SELECT p.id FROM projects p
-      WHERE p.created_by = auth.uid() OR p.owner_id = auth.uid()
-    )
-  );
-
--- Update: limited to status transitions by project owners/admin-web
-CREATE POLICY "artifacts_update_project_members"
-  ON artifacts FOR UPDATE
-  USING (
-    project_id IN (
-      SELECT p.id FROM projects p
-      WHERE p.created_by = auth.uid() OR p.owner_id = auth.uid()
-    )
-  );
+CREATE TABLE artifact_runs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  artifact_definition_id UUID NOT NULL REFERENCES artifact_definitions(id) ON DELETE RESTRICT,
+  project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  workflow_run_id UUID NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+  workflow_run_step_id UUID NOT NULL REFERENCES workflow_run_steps(id) ON DELETE CASCADE,
+  artifact_name TEXT NOT NULL,
+  local_path TEXT NOT NULL,
+  remote_path TEXT,
+  remote_url TEXT,
+  sync_status TEXT NOT NULL DEFAULT 'local_only'
+    CHECK (sync_status IN ('local_only', 'queued', 'syncing', 'synced', 'failed')),
+  version INT NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'DONE'
+    CHECK (status IN ('PENDING', 'RUNNING', 'WAITING_USER_APPROVAL', 'DONE', 'FAILED', 'SKIPPED')),
+  created_by UUID REFERENCES auth.users(id),
+  approved_by UUID REFERENCES auth.users(id),
+  rejection_note TEXT,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
 ```
 
+### 3.3 Step Definition Extension
+
+Extend the step-definition layer to support multi-bindings:
+
+- `step_input_artifact_definitions`
+- `step_output_artifact_definitions`
+
+Recommended columns:
+
+- `id UUID PRIMARY KEY`
+- `step_type TEXT NOT NULL`
+- `artifact_definition_id UUID NOT NULL`
+- `order_index INT NOT NULL DEFAULT 0`
+- `is_required BOOLEAN NOT NULL DEFAULT true` for inputs
+- `created_at TIMESTAMPTZ DEFAULT now()`
+- `updated_at TIMESTAMPTZ DEFAULT now()`
+
+These references allow workflow steps to bind to reusable artifact templates without limiting a step to only one input or one output artifact.
+
 ---
 
-## 3. Domain Models
+## 4. Built-in Artifact Definitions for the document flow
 
-```typescript
-// src/domain/model/entity/artifact.ts
+This phase must seed predefined artifact definitions for the core document pipeline:
 
-export type ArtifactType = 'business_logic' | 'tech_spec' | 'coding_plan' | 'generic';
+| artifact_key | default_file_name | used by step |
+|---|---|---|
+| `business_logic_artifact` | `BusinessLogic.md` | Business Idea / Business Summary flow |
+| `tech_spec_artifact` | `TechSpec.md` | Tech Spec Step |
+| `coding_plan_artifact` | `CodingPlan.md` | Make Plan Coding Step |
 
-// Artifact status is the workflow step status from SD-09 / SD-05:
-// PENDING → RUNNING → WAITING_USER_APPROVAL → DONE | FAILED | SKIPPED
-export type ArtifactStatus = 'PENDING' | 'RUNNING' | 'WAITING_USER_APPROVAL' | 'DONE' | 'FAILED' | 'SKIPPED';
+Other predefined steps may seed additional artifact definitions when they produce durable outputs.
 
-export interface Artifact {
-  id: string;
-  projectId: string;
-  workflowRunId: string;
-  workflowRunStepId: string;        // maps to workflow_run_step_id in artifacts table
-  artifactType: ArtifactType;
-  parentArtifactId: string | null;  // pipeline chain: tech_spec → business_logic parent
-  version: number;
-  contentUrl: string;               // Supabase Storage URL (SD-08 §2)
-  status: ArtifactStatus;           // mirrors workflow_run_steps.status (SD-09)
-  createdBy: string;                // UUID FK → auth.users
-  approvedBy: string | null;        // UUID FK → auth.users, set on DONE
-  rejectionNote: string | null;     // set on Reject & Retry (SD-09 §4)
-  retryCount: number;
-  createdAt: string;
-  updatedAt: string;
-}
+Example:
+
+- `task_breakdown_artifact`
+- `architecture_artifact`
+- `root_cause_analysis_artifact`
+
+---
+
+## 5. Runtime Behavior
+
+### 5.1 Output flow
+
+When a step defines one or more output artifact definitions:
+
+1. load each artifact definition
+2. resolve final local path per artifact definition
+3. generate output file locally for each produced artifact
+4. create one artifact-run row per produced artifact
+5. mark `sync_status = local_only`
+
+Example runtime output path:
+
+```text
+/root/plan_architect/{projectId}/{workflowRunId}/{stepType}/Plan.md
 ```
 
----
+### 5.2 Input flow
 
-## 4. TanStack Query Hooks
+When a step defines one or more input artifact definitions:
 
-```typescript
-// src/features/documents/queries.ts
+1. load each artifact definition
+2. query `artifact_runs` for the latest matching artifact for each requested definition in the current workflow run
+3. verify each required file exists at `artifact_runs.local_path`
+4. load the file contents
 
-export const documentKeys = {
-  byProjectAndType: (projectId: string, type: ArtifactType) =>
-    ['artifacts', projectId, type] as const,
-  detail: (id: string) =>
-    ['artifact', id] as const,
-  versionHistory: (projectId: string, workflowRunStepId: string) =>
-    ['artifactVersions', projectId, workflowRunStepId] as const,
-}
+If any required artifact-run does not exist, or the local file is missing, fail the step.
 
-// Example hook — same pattern for tech_spec and coding_plan
-export function useBusinessLogicDocs(projectId: string) {
-  return useQuery({
-    queryKey: documentKeys.byProjectAndType(projectId, 'business_logic'),
-    queryFn: () =>
-      supabase
-        .from('artifacts')
-        .select('*')
-        .eq('project_id', projectId)
-        .eq('artifact_type', 'business_logic')
-        .order('created_at', { ascending: false }),
-  });
-}
-```
+### 5.3 No-input steps
+
+If a step does not define input artifacts:
+
+- skip artifact lookup
+- continue normally
+
+### 5.4 No-output steps
+
+If a step does not define output artifacts:
+
+- do not create artifact-run
+- continue normally
+
+This supports steps such as `Telegram Notification Step`.
 
 ---
 
-## 5. UI Components
+## 6. UI Scope
 
-### 5.1 Business Logic Editor (`/projects/:projectId/business-logic`)
+### 6.1 Settings -> Artifacts
 
-- **List view:** DataTable of all `artifact_type = 'business_logic'` artifacts for this project (title, status badge, version, created date, approved by)
-- **Editor view:** Full Markdown editor (lightweight, e.g. `@uiw/react-md-editor` or custom `<textarea>` + preview). Content is fetched from `contentUrl` (Supabase Storage).
-- **Suggested sections within editor:**
-  - Requirements
-  - Acceptance Criteria
-  - Constraints
-  - Edge Cases
-- **Actions:**
-  - "Save Draft" → uploads content to Supabase Storage, updates `content_url`
-  - "Ask AI to Review" → triggers AI review step (Phase 6 — disabled in this phase)
-  - "Approve" → calls the approval Edge Function (sets `workflow_run_steps.status = DONE`, marks next step `PENDING`)
-  - "Reject & Retry" → prompts for rejection reason, calls rejection Edge Function (SD-09 §4)
-- **Version history:** Sidebar dropdown listing previous `version` records for the same `workflow_run_step_id`
+Add a new settings page:
 
-### 5.2 Technical Spec Viewer/Editor (`/projects/:projectId/tech-specs`)
+- `/settings/artifacts`
 
-- **List view:** DataTable of all `artifact_type = 'tech_spec'` artifacts for this project
-- **Spec detail view:** Read-only Markdown render + inline edit mode. Shows parent Business Logic doc link (`parent_artifact_id`).
-- **Suggested sections** (per SS-04 §3.5.5):
-  - Overview
-  - Scope
-  - User Flows
-  - Data Model
-  - API/Edge Function Design
-  - Frontend Component Plan
-  - Permissions and RLS
-  - Error Handling
-  - Logging and Monitoring
-  - Testing Strategy
-- **Actions:**
-  - "Generate from Business Logic" → calls AI via workflow step (Phase 6 — button visible but disabled)
-  - "Approve" / "Reject & Retry" → same approval gate pattern as §5.1
+This page should manage:
 
-### 5.3 Coding Plan Viewer/Editor (`/projects/:projectId/coding-plan`)
+- artifact definition catalog
+- storage driver config
+- sync defaults
+- backup and validation controls
 
-- **List view:** All `artifact_type = 'coding_plan'` artifacts for this project
-- **Plan detail:** Markdown render with suggested sections:
-  - Feature Breakdown
-  - Repository Structure Changes
-  - Frontend Tasks
-  - Backend/Edge Function Tasks
-  - Database Migration Tasks
-  - Test Tasks
-  - Review Tasks
-  - Deployment Tasks
-- **Actions:**
-  - "Generate from Tech Spec" → calls AI (Phase 6 — disabled)
-  - "Mark Ready for Scheduling" → approval action that advances status to `DONE`, enabling the Task Breakdown step to proceed
-- **Parent link:** Shows the Tech Spec this coding plan was generated from (`parent_artifact_id`)
+### 6.2 Project -> Artifacts
 
----
+Add a new project tab:
 
-## 6. Status Transition Flow
+- `/projects/$projectId/artifacts`
 
-Document artifacts follow the **canonical workflow step state machine** (SD-09 / SD-05), not a separate document lifecycle. The Go-Runner and approval Edge Functions control all transitions — the frontend is read-only via Supabase Realtime.
+This page should show artifact runs grouped by:
 
-```mermaid
-stateDiagram-v2
-    [*] --> PENDING: Step created
-    PENDING --> RUNNING: Go-Runner picks up step
-    RUNNING --> WAITING_USER_APPROVAL: AI generates artifact (YOLO OFF)
-    RUNNING --> DONE: AI generates artifact (YOLO ON)
-    WAITING_USER_APPROVAL --> DONE: User clicks Approve
-    WAITING_USER_APPROVAL --> PENDING: User clicks Reject & Retry
-    PENDING --> RUNNING: Go-Runner retries with rejection_note
-    DONE --> [*]: Ready for next stage
-    RUNNING --> FAILED: Error during generation
-```
+1. workflow run
+2. workflow step
+3. artifact run
 
-### 6.1 YOLO Mode
+Each artifact run should show:
 
-When YOLO mode is enabled (project or workflow level, per SS-08 §3–4):
-- The Go-Runner transitions `RUNNING → DONE` directly, skipping `WAITING_USER_APPROVAL`.
-- The "Approve" / "Reject & Retry" buttons are hidden in the UI.
-- The next step is marked `PENDING` immediately.
+- artifact definition name
+- runtime artifact file name
+- local path
+- remote URL if synced
+- sync status
+- timestamps
 
-### 6.2 Approval Gate (Safe Mode)
+Actions:
 
-When YOLO mode is OFF (default):
-1. Go-Runner sets step to `WAITING_USER_APPROVAL` after generating the artifact.
-2. Frontend shows "Approve" and "Reject & Retry" buttons (sourced from Supabase Realtime).
-3. On Approve: an Edge Function sets `workflow_run_steps.status = DONE`, marks next step `PENDING`.
-4. On Reject & Retry: Edge Function stores `rejection_note`, resets step to `PENDING`. Go-Runner retries with the note appended to the prompt (SD-09 §4).
+- view file content
+- sync artifact
+- sync all artifacts in the run
 
-**Important:** Status transitions are **never enforced purely client-side**. The frontend calls a Supabase Edge Function or the Go-Runner API. The Edge Function validates the transition and applies it.
+### 6.3 Step create/edit
+
+Workflow step create/edit pages must change from free-text artifact fields to artifact-definition linking:
+
+- input artifact definition multi-select or add-list
+- output artifact definition multi-select or add-list
+
+Artifact definition pages must allow defining:
+
+- name
+- description
+- default file name
+- local output root path
+- local input lookup path
+- remote sync root path
 
 ---
 
-## 7. Definition of Done — Phase 3
+## 7. Sync Model
 
-- [ ] `artifacts` table created with UUID project/workflow/run-step FKs
-- [ ] `artifacts.artifact_type` column exists with index
-- [ ] `artifacts.parent_artifact_id` column exists (FK, nullable)
-- [ ] RLS policies enforce project-scoped read/write on `artifacts`
+Execution must remain local-first.
 
-### Domain & Data Layer
-- [ ] `ArtifactType` and `ArtifactStatus` TypeScript types defined
-- [ ] TanStack Query hooks for listing and fetching artifacts by type
-- [ ] Version history query by `project_id` + `workflow_run_step_id`
+Remote sync is a separate concern used for:
+
+- persistent backup
+- stakeholder sharing
+- audit access outside local machine
+
+Suggested sync states:
+
+- `local_only`
+- `queued`
+- `syncing`
+- `synced`
+- `failed`
+
+For MVP:
+
+- manual sync per artifact run
+- manual sync per workflow run
+
+Remote sync must not block workflow progression.
+
+---
+
+## 8. Tests
+
+### 8.1 Step definition tests
+
+- create/edit step saves one or more input artifact definition bindings
+- create/edit step saves one or more output artifact definition bindings
+- input artifacts may be empty
+- output artifacts may be empty for side-effect-only steps
+- required input artifact bindings fail when any required artifact is unresolved
+
+### 8.2 Artifact definition tests
+
+- create artifact definition
+- edit artifact definition
+- validate required root paths and file name
+
+### 8.3 Artifact run tests
+
+- output step creates artifact-run with resolved local path
+- input step resolves the correct prior artifact-run
+- missing input artifact file fails the step
+- sync updates remote metadata and sync state
+
+### 8.4 Project artifact browser tests
+
+- lists artifact runs grouped by workflow run
+- shows local path and remote status
+- sync action works at artifact level and run level
+
+---
+
+## 9. Definition of Done
+
+### Data Layer
+
+- [ ] `artifact_definitions` table exists
+- [ ] `artifact_runs` table exists
+- [ ] step-definition artifact binding tables exist for multi-input and multi-output relationships
+
+### Workflow Engine
+
+- [ ] output artifact definitions create runtime artifact-run rows
+- [ ] input artifact definitions resolve prior local files
+- [ ] missing required input artifact fails the step
+- [ ] no-output steps can run without artifact-run creation
 
 ### UI
-- [ ] Business Logic list and editor view with Markdown editor
-- [ ] Tech Spec list and detail view with section-based rendering
-- [ ] Coding Plan list and detail view with task-oriented sections
-- [ ] Status badges: `PENDING` (gray), `RUNNING` (blue spinner), `WAITING_USER_APPROVAL` (yellow), `DONE` (green), `FAILED` (red)
-- [ ] Parent document link shown on Tech Spec and Coding Plan detail views
-- [ ] Version history sidebar on all document detail views
-- [ ] "Generate from..." buttons visible but disabled (AI integration in Phase 6)
 
-### Approval Gate
-- [ ] "Approve" and "Reject & Retry" buttons wired to Edge Function (not client-side state mutation)
-- [ ] Rejection note prompt and submission flow implemented
-- [ ] YOLO mode hides approval buttons and auto-advances status
-- [ ] Supabase Realtime subscription updates UI when `workflow_run_steps.status` changes
+- [ ] new `Settings -> Artifacts` page exists
+- [ ] project artifact browser exists and groups by workflow run
+- [ ] step create/edit pages use artifact-definition multi-selects or add-lists
+- [ ] artifact definition create/edit UI exists
 
-### Tests
-- [ ] Tests cover document listing filtered by `artifact_type`
-- [ ] Tests cover parent-child chain resolution (`parent_artifact_id`)
-- [ ] Tests cover approval transition (DONE) and rejection (PENDING + rejection_note)
-- [ ] Tests cover YOLO mode auto-advance
+### Sync
+
+- [ ] artifact-run tracks `local_path`, `remote_path`, `remote_url`, `sync_status`
+- [ ] manual sync is possible per artifact and per run
+- [ ] remote sync does not block workflow execution
+
+### Document Flow
+
+- [ ] business logic step uses predefined artifact definition when needed
+- [ ] tech spec step uses predefined artifact definition
+- [ ] coding plan step uses predefined artifact definition
