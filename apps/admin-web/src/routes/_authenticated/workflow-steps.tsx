@@ -5,8 +5,10 @@ import { ArrowRight } from "lucide-react";
 import { PageFrame } from "@/components/common/page-frame";
 import { Button } from "@/components/ui/button";
 import { createGatewayBundle } from "@/data/repository/browser-factory";
+import type { ArtifactDefinition } from "@/domain/model/entity/workflow-engine";
 import { ListStepDefinitionsUseCase } from "@/domain/usecase/workflow-engine/list-step-definitions-usecase";
 import type { StepDefinition } from "@/domain/model/entity/workflow-engine";
+import { ListArtifactDefinitionsUseCase } from "@/domain/usecase/workflow-engine/list-artifact-definitions-usecase";
 
 type StepSortOption = "name-asc" | "name-desc" | "updated-asc" | "updated-desc";
 
@@ -20,12 +22,26 @@ export function WorkflowStepsPage() {
   const listStepDefinitionsUseCase = useRef(
     new ListStepDefinitionsUseCase(gatewayBundle.current.workflowEngineGateway)
   );
+  const listArtifactDefinitionsUseCase = useRef(
+    new ListArtifactDefinitionsUseCase(gatewayBundle.current.workflowEngineGateway)
+  );
   const [steps, setSteps] = useState<StepDefinition[]>([]);
+  const [artifactDefinitions, setArtifactDefinitions] = useState<ArtifactDefinition[]>([]);
   const [sortBy, setSortBy] = useState<StepSortOption>("updated-desc");
 
   useEffect(() => {
-    void listStepDefinitionsUseCase.current.execute().then(setSteps);
+    void Promise.all([
+      listStepDefinitionsUseCase.current.execute(),
+      listArtifactDefinitionsUseCase.current.execute().catch(() => []),
+    ]).then(([nextSteps, nextArtifactDefinitions]) => {
+      setSteps(nextSteps);
+      setArtifactDefinitions(nextArtifactDefinitions);
+    });
   }, []);
+
+  const artifactDefinitionNames = useMemo(() => {
+    return new Map(artifactDefinitions.map((definition) => [definition.key, definition.name]));
+  }, [artifactDefinitions]);
 
   const sortedSteps = useMemo(() => {
     return steps.slice().sort((left, right) => {
@@ -47,6 +63,16 @@ export function WorkflowStepsPage() {
     return <Outlet />;
   }
 
+  const formatArtifactSummary = (artifactKeys: string[] | undefined) => {
+    if (!artifactKeys || artifactKeys.length === 0) {
+      return "None";
+    }
+
+    return artifactKeys
+      .map((artifactKey) => artifactDefinitionNames.get(artifactKey) ?? artifactKey)
+      .join(", ");
+  };
+
   return (
     <PageFrame
       title="Step Definitions"
@@ -62,6 +88,16 @@ export function WorkflowStepsPage() {
         </div>
       }
     >
+      <div className="rounded-[1.5rem] border border-border bg-background/60 p-5">
+        <p className="font-mono text-xs uppercase tracking-[0.28em] text-muted-foreground">
+          Main Workflow Reference
+        </p>
+        <p className="mt-3 text-sm text-muted-foreground">
+          Idea - Business - Architecture - Tech Spec - Code Plan - TDD - Coding
+          Implementation Checklist - Review
+        </p>
+      </div>
+
       <div className="rounded-[1.5rem] border border-border bg-background/60 p-5">
         <label className="space-y-2 text-sm">
           <span className="font-medium">Sort by</span>
@@ -99,6 +135,12 @@ export function WorkflowStepsPage() {
             </p>
             <p className="mt-2 text-xs text-muted-foreground">
               Skills: {step.requiredSkills.length > 0 ? step.requiredSkills.join(", ") : "None"}
+            </p>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Input artifacts: {formatArtifactSummary(step.inputArtifactDefinitions)}
+            </p>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Output artifacts: {formatArtifactSummary(step.outputArtifactDefinitions)}
             </p>
             <div className="mt-4 flex flex-wrap gap-2">
               <Link params={{ stepType: step.stepType }} to="/workflow-steps/$stepType">

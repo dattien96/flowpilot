@@ -54,6 +54,8 @@ function buildStep(overrides: Partial<StepDefinition> = {}): StepDefinition {
     description: "Produce technical layout",
     requiredMcps: [],
     requiredSkills: [],
+    inputArtifactDefinitions: [],
+    outputArtifactDefinitions: ["tech_spec_artifact"],
     agentType: "standard",
     createdAt: "2026-05-20T00:00:00.000Z",
     updatedAt: "2026-05-20T00:00:00.000Z",
@@ -73,15 +75,49 @@ describe("WorkflowStepsPage", () => {
           buildStep({
             stepType: "zeta",
             name: "Zeta Step",
+            outputArtifactDefinitions: ["coding_plan_artifact"],
             createdAt: "2026-05-18T00:00:00.000Z",
             updatedAt: "2026-05-18T00:00:00.000Z",
           }),
           buildStep({
             stepType: "alpha",
             name: "Alpha Step",
+            inputArtifactDefinitions: ["business_summary_artifact"],
             createdAt: "2026-05-20T00:00:00.000Z",
             updatedAt: "2026-05-20T00:00:00.000Z",
           }),
+        ]),
+        listArtifactDefinitions: vi.fn().mockResolvedValue([
+          {
+            key: "business_summary_artifact",
+            name: "Business Summary",
+            description: "",
+            localPathTemplate: "",
+            remotePathTemplate: "",
+            defaultFileName: "BusinessSummary.md",
+            createdAt: "2026-05-20T00:00:00Z",
+            updatedAt: "2026-05-20T00:00:00Z",
+          },
+          {
+            key: "coding_plan_artifact",
+            name: "Coding Plan",
+            description: "",
+            localPathTemplate: "",
+            remotePathTemplate: "",
+            defaultFileName: "CodingPlan.md",
+            createdAt: "2026-05-20T00:00:00Z",
+            updatedAt: "2026-05-20T00:00:00Z",
+          },
+          {
+            key: "tech_spec_artifact",
+            name: "Tech Spec",
+            description: "",
+            localPathTemplate: "",
+            remotePathTemplate: "",
+            defaultFileName: "TechSpec.md",
+            createdAt: "2026-05-20T00:00:00Z",
+            updatedAt: "2026-05-20T00:00:00Z",
+          },
         ]),
       },
     });
@@ -89,6 +125,11 @@ describe("WorkflowStepsPage", () => {
     render(<WorkflowStepsPage />);
 
     expect(await screen.findByText("Zeta Step")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Idea - Business - Architecture - Tech Spec - Code Plan - TDD - Coding Implementation Checklist - Review"
+      )
+    ).toBeInTheDocument();
 
     let names = screen
       .getAllByRole("heading", { level: 3 })
@@ -103,5 +144,8 @@ describe("WorkflowStepsPage", () => {
       .getAllByRole("heading", { level: 3 })
       .map((heading) => heading.textContent);
     expect(names).toEqual(["Zeta Step", "Alpha Step"]);
+
+    expect(screen.getByText("Input artifacts: Business Summary")).toBeInTheDocument();
+    expect(screen.getByText("Output artifacts: Coding Plan")).toBeInTheDocument();
   });
 });
