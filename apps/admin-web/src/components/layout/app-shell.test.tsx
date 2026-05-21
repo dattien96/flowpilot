@@ -63,6 +63,8 @@ describe("AppShell", () => {
       online: true,
       toneClass: "bg-success",
       textClass: "text-success",
+      activeToneClass: "bg-emerald-300",
+      activeTextClass: "text-emerald-50",
     });
 
     expect(
@@ -80,6 +82,8 @@ describe("AppShell", () => {
       online: false,
       toneClass: "bg-danger",
       textClass: "text-danger",
+      activeToneClass: "bg-rose-300",
+      activeTextClass: "text-rose-50",
     });
   });
 
@@ -119,6 +123,8 @@ describe("AppShell", () => {
       label: "Offline",
       toneClass: "bg-danger",
       textClass: "text-danger",
+      activeToneClass: "bg-rose-300",
+      activeTextClass: "text-rose-50",
     });
   });
 });

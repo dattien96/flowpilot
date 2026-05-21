@@ -27,6 +27,8 @@ type SettingsNavStatusMap = Partial<
       label: string;
       toneClass?: string;
       textClass?: string;
+      activeToneClass?: string;
+      activeTextClass?: string;
     }
   >
 >;
@@ -93,10 +95,15 @@ function NavSection({
                   <span
                     className={cn(
                       "size-2.5 rounded-full shadow-sm",
-                      active ? "bg-emerald-300" : status.toneClass,
+                      active ? status.activeToneClass : status.toneClass,
                     )}
                   />
-                  <span className={cn("truncate", active ? "text-white" : status.textClass)}>
+                  <span
+                    className={cn(
+                      "truncate",
+                      active ? status.activeTextClass ?? "text-white" : status.textClass,
+                    )}
+                  >
                     {status.label}
                   </span>
                 </span>
@@ -231,6 +238,8 @@ export function createSettingsNavStatuses(
       label: runnerStatus.label,
       toneClass: runnerStatus.toneClass,
       textClass: runnerStatus.textClass,
+      activeToneClass: runnerStatus.activeToneClass,
+      activeTextClass: runnerStatus.activeTextClass,
     },
   };
 }

@@ -20,5 +20,7 @@ export function buildRunnerStatus(health: LocalRunnerHealth | null) {
     label: online ? "Online" : "Offline",
     toneClass: online ? "bg-success" : "bg-danger",
     textClass: online ? "text-success" : "text-danger",
+    activeToneClass: online ? "bg-emerald-300" : "bg-rose-300",
+    activeTextClass: online ? "text-emerald-50" : "text-rose-50",
   };
 }
