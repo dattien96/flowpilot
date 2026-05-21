@@ -88,6 +88,7 @@ describe("WorkflowStepDetailPage", () => {
 
     expect(await screen.findByDisplayValue("Tech Spec")).toBeInTheDocument();
     expect(screen.getByDisplayValue("tech_spec")).toBeDisabled();
+    expect(screen.getByText("Jira")).toBeInTheDocument();
 
     fireEvent.change(screen.getByDisplayValue("Tech Spec"), {
       target: { value: "Updated Tech Spec" },
@@ -95,6 +96,11 @@ describe("WorkflowStepDetailPage", () => {
     fireEvent.change(screen.getByDisplayValue("Produce technical layout"), {
       target: { value: "Updated description" },
     });
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    fireEvent.change(screen.getByRole("combobox", { name: /available mcp/i }), {
+      target: { value: "figma" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add MCP" }));
     fireEvent.click(screen.getByRole("button", { name: "Save step" }));
 
     await waitFor(() => {
@@ -103,6 +109,7 @@ describe("WorkflowStepDetailPage", () => {
           stepType: "tech_spec",
           name: "Updated Tech Spec",
           description: "Updated description",
+          requiredMcps: ["figma"],
         })
       );
     });

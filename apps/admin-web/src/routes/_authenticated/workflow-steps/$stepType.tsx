@@ -7,10 +7,15 @@ import { createGatewayBundle } from "@/data/repository/browser-factory";
 import type { StepDefinition } from "@/domain/model/entity/workflow-engine";
 import { ListStepDefinitionsUseCase } from "@/domain/usecase/workflow-engine/list-step-definitions-usecase";
 import { SaveStepDefinitionUseCase } from "@/domain/usecase/workflow-engine/save-step-definition-usecase";
+import { integrationTypes, toTitleCase } from "@/features/mcp/integration-config";
 
 export const Route = createFileRoute("/_authenticated/workflow-steps/$stepType")({
   component: WorkflowStepDetailPage,
 });
+
+function firstAvailableMcpType(selectedMcps: string[]) {
+  return integrationTypes.find((type) => !selectedMcps.includes(type)) ?? "";
+}
 
 export function WorkflowStepDetailPage() {
   const { stepType } = Route.useParams();
@@ -27,7 +32,8 @@ export function WorkflowStepDetailPage() {
   const [step, setStep] = useState<StepDefinition | null>(null);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [requiredMcps, setRequiredMcps] = useState("");
+  const [requiredMcps, setRequiredMcps] = useState<string[]>([]);
+  const [selectedMcpType, setSelectedMcpType] = useState(integrationTypes[0] ?? "");
   const [requiredSkills, setRequiredSkills] = useState("");
   const [agentType, setAgentType] = useState<"standard" | "autonomous">("standard");
 
@@ -40,7 +46,8 @@ export function WorkflowStepDetailPage() {
         setStep(match);
         setName(match?.name ?? "");
         setDescription(match?.description ?? "");
-        setRequiredMcps(match?.requiredMcps.join(", ") ?? "");
+        setRequiredMcps(match?.requiredMcps ?? []);
+        setSelectedMcpType(firstAvailableMcpType(match?.requiredMcps ?? []));
         setRequiredSkills(match?.requiredSkills.join(", ") ?? "");
         setAgentType(match?.agentType ?? "standard");
       } finally {
@@ -63,10 +70,7 @@ export function WorkflowStepDetailPage() {
         ...step,
         name,
         description,
-        requiredMcps: requiredMcps
-          .split(",")
-          .map((item) => item.trim())
-          .filter(Boolean),
+        requiredMcps,
         requiredSkills: requiredSkills
           .split(",")
           .map((item) => item.trim())
@@ -76,7 +80,8 @@ export function WorkflowStepDetailPage() {
       setStep(saved);
       setName(saved.name);
       setDescription(saved.description);
-      setRequiredMcps(saved.requiredMcps.join(", "));
+      setRequiredMcps(saved.requiredMcps);
+      setSelectedMcpType(firstAvailableMcpType(saved.requiredMcps));
       setRequiredSkills(saved.requiredSkills.join(", "));
       setAgentType(saved.agentType);
       window.alert("Step definition saved.");
@@ -86,6 +91,23 @@ export function WorkflowStepDetailPage() {
       setSaving(false);
     }
   };
+
+  const addRequiredMcp = () => {
+    if (!selectedMcpType || requiredMcps.includes(selectedMcpType)) {
+      return;
+    }
+
+    setRequiredMcps((current) => [...current, selectedMcpType]);
+    setSelectedMcpType(firstAvailableMcpType([...requiredMcps, selectedMcpType]));
+  };
+
+  const removeRequiredMcp = (mcpType: string) => {
+    const nextRequiredMcps = requiredMcps.filter((current) => current !== mcpType);
+    setRequiredMcps(nextRequiredMcps);
+    setSelectedMcpType(firstAvailableMcpType(nextRequiredMcps));
+  };
+
+  const availableMcpOptions = integrationTypes.filter((type) => !requiredMcps.includes(type));
 
   if (loading) {
     return <PageFrame title="Step Definition" description="Loading step definition..." />;
@@ -168,12 +190,55 @@ export function WorkflowStepDetailPage() {
         </label>
         <label className="space-y-2 text-sm">
           <span className="font-medium">Required MCPs</span>
-          <input
-            className="w-full rounded-2xl border border-border bg-card px-4 py-3"
-            placeholder="jira, figma"
-            value={requiredMcps}
-            onChange={(event) => setRequiredMcps(event.target.value)}
-          />
+          <div className="space-y-3 rounded-2xl border border-border bg-card p-3">
+            <div className="flex flex-wrap items-end gap-3">
+              <label className="min-w-[220px] flex-1 space-y-2 text-sm">
+                <span className="font-medium">Available MCP</span>
+                <select
+                  className="w-full rounded-2xl border border-border bg-background px-4 py-3"
+                  value={selectedMcpType}
+                  onChange={(event) => setSelectedMcpType(event.target.value)}
+                >
+                  {availableMcpOptions.length === 0 ? (
+                    <option value="">No more MCP types available</option>
+                  ) : null}
+                  {availableMcpOptions.map((mcpType) => (
+                    <option key={mcpType} value={mcpType}>
+                      {toTitleCase(mcpType)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <Button
+                disabled={!selectedMcpType || availableMcpOptions.length === 0}
+                type="button"
+                variant="secondary"
+                onClick={addRequiredMcp}
+              >
+                Add MCP
+              </Button>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {requiredMcps.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No required MCPs selected.</p>
+              ) : null}
+              {requiredMcps.map((mcpType) => (
+                <span
+                  key={mcpType}
+                  className="inline-flex items-center gap-2 rounded-full border border-border bg-background px-3 py-1 text-xs font-medium"
+                >
+                  {toTitleCase(mcpType)}
+                  <button
+                    className="text-muted-foreground hover:text-foreground"
+                    type="button"
+                    onClick={() => removeRequiredMcp(mcpType)}
+                  >
+                    Remove
+                  </button>
+                </span>
+              ))}
+            </div>
+          </div>
         </label>
         <label className="space-y-2 text-sm">
           <span className="font-medium">Required skills</span>
