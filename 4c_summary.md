@@ -1,103 +1,131 @@
-# CP-05 Project MCP Context - 4C Summary
+# 4C Summary - CP-07 Workflow Engine UI & Execution Dashboard
 
 ## Context
 
-- Active implementation surface: `apps/admin-web/src/routes/_authenticated/projects/$projectId/settings.tsx`
-- Current page already owns:
-  - artifact storage preference
-  - MCP placeholder content
-  - project-team link management
-- Current data access pattern in admin-web:
-  - route `loader` reads via `createGatewayBundle()`
-  - route-local `useMutation()` performs writes
-  - `router.invalidate()` refreshes the page after mutation
-- Existing domain/repository state:
-  - `apps/admin-web/src/domain/model/entity/integration.ts` exists but is incomplete for CP-05
-  - there is no dedicated integration gateway yet
-  - `apps/admin-web/src/data/repository/browser-factory.ts` already composes project, team, workflow, and local-runner gateways
-- Migration baseline:
-  - `20260519070000_projects_uuid_baseline.sql` is present and must be applied before CP-05
-  - `integrations.project_id` should reference `projects(id)` as `UUID`
-- Local runner state:
-  - current HTTP API supports `/health`, `/providers`, `/skills`, `/flows`, `/storage-driver`, `/backup`, `/artifacts`, `/execute`
-  - there is no MCP integration trigger endpoint yet
+- Feature area: `apps/admin-web`
+- Primary concern: replace the current project workflows placeholder and legacy workflow surfaces with a project-scoped Workflow Builder and Execution Dashboard.
+- Current repo baseline:
+  - Routing already exists in TanStack Router under `apps/admin-web/src/routes/_authenticated/projects/$projectId/**`.
+  - `apps/admin-web/src/routes/_authenticated/projects/$projectId/workflows.tsx` is only a placeholder.
+  - Workflow domain/repository code still targets the legacy MVP schema:
+    - `workflow_definitions`
+    - runtime `workflow_steps`
+    - `workflow_runs`
+    - `ai_outputs`
+    - `approvals`
+    - `approval_decisions`
+  - CP-07 explicitly replaces that runtime model with canonical:
+    - `workflows`
+    - definition-time `workflow_steps`
+    - `workflow_runs`
+    - execution-time `workflow_run_steps`
+    - `workflow_prompt_cache`
+    - `workflow_run_logs`
+    - `step_definitions`
+  - The frontend stack is React + TanStack Router + TanStack Query + Supabase.
 
 ## Command
 
-- Design CP-05 on top of the existing project settings route, not a new settings surface.
-- Scope must cover:
-  - `integrations` table migration owned by CP-05
-  - domain model updates for `label`, `status`, `lastError`
-  - gateway contract for project integration CRUD
-  - demo and Supabase repository support
-  - project settings UI for list/add/edit/delete/retry connection
-  - local-runner trigger contract for connection test/retry
-  - route-behavior and gateway-logic tests
+- Produce planning, architecture, and TDD artifacts for implementing:
+  - site-wide Workflow Builder UI
+  - Execution Dashboard UI
+  - canonical workflow state integration
+  - approval gate / reject-retry / YOLO controls
+  - realtime monitoring of workflow runs and run steps
+- Deliverables requested by user:
+  - `4c_summary.md`
+  - `task.md`
+  - `implementation_plan.md`
+  - `tdd_signatures.md`
+- All files must be written directly to the project root.
 
 ## Constraints
 
-- Do not create a duplicate integration manager under `/_authenticated/settings/integrations`.
-- `team_members` remains planning-only and not auth-bound; CP-05 must not try to re-scope it.
-- CP-10 owns later hardening; CP-05 should only add MVP-safe authenticated RLS for `integrations`.
-- `ProjectGateway` is high-risk to widen:
-  - GitNexus impact on `ProjectGateway`: `CRITICAL`
-  - direct blast radius includes both gateway bundles and multiple project/context/dashboard usecases
-- `ProjectSettingsContent` and current `Integration` entity are low-risk extension points.
-- UI component inventory is small (`Button`, `Badge`); modal/drawer UX will need a lightweight route-local implementation.
-- Current admin-web project flows still use direct gateway calls rather than dedicated TanStack Query feature hooks; CP-05 should follow that pattern.
+- Scope is planning/architecture/TDD only. No implementation code is requested in this task.
+- Planning must align to actual repo structure, not the older Android-oriented skill defaults.
+- CP-07 must treat canonical workflow state as the source of truth and avoid extending the legacy `ai_outputs` runtime path.
+- The design must preserve:
+  - project-scoped routing
+  - Supabase demo/supabase gateway split
+  - TanStack Query data loading
+  - Realtime updates from Supabase for run-step execution state
+- Known dependency boundaries:
+  - Depends on CP-05 baseline app shell and project navigation
+  - Must leave room for CP-06 canonical artifacts and CP-11 Go-Runner integration
+  - Must anticipate CP-12 prompt-context and artifact-memory inspection
+- GitNexus instructions are present in project docs, but no GitNexus tool surface is available in this session. Planning therefore relies on direct repo inspection only.
 
 ## Criteria
 
-- Reuse `apps/admin-web/src/routes/_authenticated/projects/$projectId/settings.tsx` as the only CP-05 UI surface.
-- Create a CP-05 migration after the UUID baseline migration.
-- Persist and display:
-  - provider `type`
-  - user `label`
-  - `status` including `awaiting_oauth`
-  - `last_synced_at`
-  - `last_error`
-- Keep persistence and orchestration separated:
-  - integration CRUD in a repository gateway
-  - connection test/retry in the local-runner gateway
-- Provide concrete test targets for:
-  - settings route behavior
-  - demo repository logic
-  - Supabase repository mapping
-  - local-runner HTTP contract
+- Planning output is correct when it:
+  - maps CP-07 requirements into concrete admin-web modules, routes, domain models, and repository changes
+  - defines at least two architectural approaches and selects one with rationale
+  - breaks work into implementation phases that are executable by later coding/review agents
+  - defines TDD signatures before implementation, covering:
+    - workflow definition CRUD/listing
+    - run start and run progression views
+    - approval and reject-retry behavior
+    - YOLO mode behavior
+    - realtime state updates
+    - prompt cache/log visibility
+- Expected review mode:
+  - self-review against CP-07, SD-05, SD-09, SS-04, and current admin-web structure
 
-## Options
+## Assumptions Recorded
 
-### Option A: Extend `ProjectGateway`
+- The primary user-facing entry point for CP-07 should remain `/projects/$projectId/workflows`.
+- Site-wide means the workflow engine becomes a first-class project area, while summary widgets can surface on dashboard/project overview pages later.
+- CP-07 should define new canonical gateway/entity contracts rather than trying to stretch the current legacy workflow entity model.
+- Approval actions may remain UI-driven over Supabase state transitions for MVP, with the runner consuming the resulting state changes.
 
-- Pros:
-  - fewer new files
-  - route can stay on one gateway name
-- Cons:
-  - `ProjectGateway` is already `CRITICAL` blast-radius
-  - mixes MCP integration lifecycle into generic project CRUD
-  - forces both demo and Supabase bundles to grow a shared high-risk interface
+## Approach Options
 
-### Option B: Add `IntegrationGateway` and keep test/retry on `LocalRunnerGateway`
+### Option A - In-place evolution of current legacy workflow domain
 
-- Pros:
-  - isolates CP-05 persistence from shared project CRUD
-  - fits existing bundle composition pattern (`projectGateway`, `teamGateway`, `localRunnerGateway`, etc.)
-  - keeps orchestration responsibility with the local runner instead of the database gateway
-- Cons:
-  - introduces one new gateway file and one new payload contract file
+- Keep existing `WorkflowGateway`, `WorkflowRun`, `WorkflowStep`, and approval/output models.
+- Add compatibility fields and progressively point repository methods to canonical tables.
 
-### Option C: Build the full manager in `/_authenticated/settings/integrations`
+Pros:
+- Lowest short-term churn in route code.
+- Smaller first coding pass.
 
-- Pros:
-  - route already exists
-- Cons:
-  - violates the "no duplicate settings surface" constraint
-  - breaks the CP-04 requirement that project settings is the active surface
+Cons:
+- Confuses definition-time vs execution-time step concepts.
+- Keeps `ai_outputs` and approval-era naming in the main surface longer.
+- Increases migration risk and makes CP-06/CP-11/CP-12 harder to reason about.
 
-## Recommendation
+### Option B - Introduce canonical workflow engine slice alongside legacy surfaces
+
+- Add a new workflow-engine domain slice with canonical models and use cases.
+- Build the new `/projects/$projectId/workflows` experience on the canonical slice.
+- Keep legacy routes/use cases only for untouched old surfaces until they are retired.
+
+Pros:
+- Clean separation between old MVP skeleton and CP-07 architecture.
+- Matches SD-05/SD-09 terminology exactly.
+- Safer foundation for CP-06, CP-11, and CP-12.
+
+Cons:
+- More upfront modeling and repository work.
+- Temporary duplication while legacy pages still exist.
+
+### Option C - UI-first implementation with adapter layer over legacy gateway
+
+- Build new builder/dashboard UI now, backed by adapter mappers on top of the existing workflow gateway.
+- Delay full domain migration to a later CP.
+
+Pros:
+- Fast visible UI progress.
+- Lower immediate data-layer disruption.
+
+Cons:
+- High technical debt.
+- Direct conflict with CP-07 requirement to replace the runtime model with canonical schema.
+
+## Recommended Approach
 
 - Choose **Option B**.
-- Keep CP-05 storage and UI work anchored to the project settings route.
-- Add a new `IntegrationGateway` for CRUD.
-- Extend `LocalRunnerGateway` with a connection trigger contract for `test` and `retry`.
-- Leave `ProjectGateway` focused on project CRUD and project metadata.
+- Reason:
+  - CP-07 is not a cosmetic route change. It is the foundation for later artifact, runner, approval, and prompt-memory phases.
+  - Canonical separation of workflow definition, run state, and run-step state is the main architectural requirement.
+  - A parallel canonical slice lets the team ship the new builder/dashboard without destabilizing every legacy workflow page at once.

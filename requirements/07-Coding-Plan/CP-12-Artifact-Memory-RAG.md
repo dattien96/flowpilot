@@ -89,8 +89,7 @@ CREATE POLICY "prompt_context_items_select_project_members"
     workflow_run_step_id IN (
       SELECT wrs.id FROM workflow_run_steps wrs
       JOIN workflow_runs wr ON wr.id = wrs.workflow_run_id
-      JOIN workflows w ON w.id = wr.workflow_id
-      WHERE w.project_id IN (
+      WHERE wr.project_id IN (
         SELECT pt.project_id FROM project_teams pt
         JOIN team_members tm ON tm.team_id = pt.team_id
         WHERE tm.user_id = auth.uid()
@@ -278,4 +277,3 @@ Manual validation:
 - [ ] Prompt Assembler receives packed prompt memory (not all raw artifacts).
 - [ ] Each workflow step records the memory items used in `workflow_prompt_context_items`.
 - [ ] Admin Web can inspect artifacts, working memory, embedding status, and prompt context usage.
-

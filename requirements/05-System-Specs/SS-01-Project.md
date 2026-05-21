@@ -10,14 +10,22 @@ See workflow in [SS-04-Workflow.md](./SS-04-Workflow.md)
 
 Basically i can have many projects.
 
-Each project i can have many workflows.
+Each project can use many workflows.
+
+Workflow definitions can be:
+- Global workflows: reusable templates visible to many projects
+- Private workflows: custom workflows owned by one specific project
+
+Workflow run is different from workflow definition:
+- Workflow = saved definition of ordered steps
+- Workflow run = 1 actual execution of that workflow on a project
 
 Example:
 
-Go to project Backend ABC - create a workflow to implement API authentication
-Go to project Mobile App XYZ - create a workflow to implement payment gateway integration
+Go to project Backend ABC - pick a global workflow to implement API authentication
+Go to project Mobile App XYZ - create a private workflow for payment gateway integration
 
-**1 Project can has many workflows**
+**1 Project can use many workflow definitions and can start many workflow runs**
 
 # 3. Project Structure
 
