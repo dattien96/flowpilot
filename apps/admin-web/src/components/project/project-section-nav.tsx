@@ -11,6 +11,7 @@ const tabs = [
   { label: "Tasks", suffix: "/tasks" },
   { label: "Members", suffix: "/members" },
   { label: "Workflows", suffix: "/workflows" },
+  { label: "Artifacts", suffix: "/artifacts" },
   { label: "Settings", suffix: "/settings" },
 ];
 
