@@ -2,9 +2,13 @@ import type { ApprovalStatus } from "@/domain/constant/status";
 import type { AiOutput } from "@/domain/model/entity/workflow";
 
 export interface StartWorkflowRunPayload {
-  featureId: string;
+  projectId: string;
   workflowDefinitionId: string;
   contextSourceIds: string[];
+  beginPrompt?: string;
+  startMode?: "workflow-definition" | "single-step" | "new-workflow";
+  stepType?: string;
+  reasoningEffort?: string | null;
 }
 
 export interface SubmitApprovalDecisionPayload {
@@ -15,7 +19,6 @@ export interface SubmitApprovalDecisionPayload {
 
 export interface ListOutputsFilters {
   projectId?: string;
-  featureId?: string;
   workflowRunId?: string;
   outputType?: AiOutput["outputType"];
   approvalState?: "approved" | "pending";
