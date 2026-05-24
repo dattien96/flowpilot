@@ -399,6 +399,18 @@ func (r *Runner) readArtifactDetail(manifestPath string) (ArtifactDetail, error)
 		detail.ContentMarkdown = strings.TrimSpace(string(contentBytes))
 		detail.PreviewMarkdown = readPreview(detail.ContentMarkdown)
 	}
+	if promptBytes, err := os.ReadFile(detail.PromptPath); err == nil {
+		detail.PromptText = strings.TrimSpace(string(promptBytes))
+	}
+	if stdoutBytes, err := os.ReadFile(detail.StdoutPath); err == nil {
+		detail.StdoutText = strings.TrimSpace(string(stdoutBytes))
+	}
+	if stderrBytes, err := os.ReadFile(detail.StderrPath); err == nil {
+		detail.StderrText = strings.TrimSpace(string(stderrBytes))
+	}
+	if commandBytes, err := os.ReadFile(detail.CommandPath); err == nil {
+		detail.CommandText = strings.TrimSpace(string(commandBytes))
+	}
 
 	if detail.SyncStatus == "" {
 		detail.SyncStatus = artifactSyncStatusLocalOnly
