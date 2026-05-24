@@ -1,3 +1,5 @@
+import type { ReasoningEffort } from "@/domain/model/entity/workflow-engine";
+
 export interface Project {
   id: string;
   name: string;
@@ -8,6 +10,9 @@ export interface Project {
   ownerId: string | null;
   status: string;
   artifactStoragePreference: "supabase" | "google_drive";
+  defaultProvider?: string | null;
+  defaultModel?: string | null;
+  defaultReasoningEffort?: ReasoningEffort | null;
   createdBy: string;
   createdAt: string;
   updatedAt: string;
