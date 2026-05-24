@@ -21,6 +21,12 @@ interface WorkflowRunRow {
   error_message: string | null;
 }
 
+interface ProjectSettingsRow {
+  default_provider: string | null;
+  default_model: string | null;
+  default_reasoning_effort: string | null;
+}
+
 interface WorkflowRunStepRow {
   id: string;
   workflow_run_id: string;
@@ -36,9 +42,10 @@ interface WorkflowRunStepRow {
 }
 
 interface WorkflowStepDefinitionRow {
-  id: string;
-  is_enabled: boolean;
-  requires_approval: boolean;
+  step_type: string;
+  name: string;
+  model: string | null;
+  reasoning_effort: string | null;
 }
 
 interface StepArtifactBindingRow {
@@ -54,6 +61,10 @@ interface ArtifactDefinitionRow {
   remote_path_template: string;
   default_file_name: string;
 }
+
+const SINGLE_STEP_RUNTIME_CREATED_BY = "flowpilot-runtime";
+const DEFAULT_MODEL = "gpt-5.4";
+const DEFAULT_REASONING_EFFORT = "medium";
 
 export function createWorkflowClients(authHeader: string) {
   const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
@@ -86,24 +97,52 @@ export async function assertProjectMembership(
   projectId: string,
   email: string | null | undefined
 ) {
-  if (!email) {
-    throw new Error("Authenticated user must have an email address.");
-  }
-
+  // Since this is the admin app, authenticated users have access to all projects.
+  // We just verify that the project actually exists.
   const { data, error } = await adminClient
-    .from("project_teams")
-    .select("project_id, team_members!inner(email)")
-    .eq("project_id", projectId)
-    .ilike("team_members.email", email)
-    .limit(1);
+    .from("projects")
+    .select("id")
+    .eq("id", projectId)
+    .maybeSingle();
 
   if (error) {
-    throw new Error(`Unable to verify project access: ${error.message}`);
+    throw new Error(`Unable to verify project: ${error.message}`);
   }
 
-  if (!data || data.length === 0) {
-    throw new Error("Forbidden");
+  if (!data) {
+    throw new Error("Project not found");
   }
+}
+
+export async function loadProjectDefaults(
+  adminClient: SupabaseClient,
+  projectId: string
+): Promise<ProjectSettingsRow> {
+  const { data, error } = await adminClient
+    .from("projects")
+    .select("default_provider, default_model, default_reasoning_effort")
+    .eq("id", projectId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Unable to load project defaults: ${error.message}`);
+  }
+
+  return (data ?? { default_provider: null, default_model: null, default_reasoning_effort: null }) as ProjectSettingsRow;
+}
+
+export function resolveProviderKeyFromModel(model: string) {
+  if (model.startsWith("gpt-")) {
+    return "codex";
+  }
+  if (model.startsWith("gemini-")) {
+    return "gemini";
+  }
+  if (model.startsWith("claude-")) {
+    return "claude";
+  }
+
+  throw new Error(`Model "${model}" is not supported by the workflow runner.`);
 }
 
 export async function assertRunAccess(authClient: SupabaseClient, runId: string) {
@@ -176,10 +215,15 @@ export async function getWorkflowDefinition(
   adminClient: SupabaseClient,
   workflowId: string,
   projectId: string
-): Promise<{ id: string; provider_override: string | null; model_override: string | null }> {
+): Promise<{
+  id: string;
+  provider_override: string | null;
+  model_override: string | null;
+  reasoning_effort_override: string | null;
+}> {
   const { data, error } = await adminClient
     .from("workflows")
-    .select("id, provider_override, model_override")
+    .select("id, provider_override, model_override, reasoning_effort_override")
     .eq("id", workflowId)
     .or(`project_id.is.null,project_id.eq.${projectId}`)
     .single();
@@ -201,11 +245,13 @@ export async function getWorkflowDefinitionSteps(
     order_index: number;
     is_enabled: boolean;
     requires_approval: boolean;
+    model_override: string | null;
+    reasoning_effort_override: string | null;
   }>
 > {
   const { data, error } = await adminClient
     .from("workflow_steps")
-    .select("id, step_type, order_index, is_enabled, requires_approval")
+    .select("id, step_type, order_index, is_enabled, requires_approval, model_override, reasoning_effort_override")
     .eq("workflow_id", workflowId)
     .order("order_index", { ascending: true });
 
@@ -219,7 +265,101 @@ export async function getWorkflowDefinitionSteps(
     order_index: number;
     is_enabled: boolean;
     requires_approval: boolean;
+    model_override: string | null;
+    reasoning_effort_override: string | null;
   }>;
+}
+
+export async function createSingleStepWorkflow(
+  adminClient: SupabaseClient,
+  projectId: string,
+  stepType: string
+): Promise<{
+  workflow: {
+    id: string;
+    provider_override: string | null;
+    model_override: string | null;
+    reasoning_effort_override: string | null;
+  };
+  workflowSteps: Array<{
+    id: string;
+    step_type: string;
+    order_index: number;
+    is_enabled: boolean;
+    requires_approval: boolean;
+  }>;
+}> {
+  const { data: definitionData, error: definitionError } = await adminClient
+    .from("step_definitions")
+    .select("step_type, name, model, reasoning_effort")
+    .eq("step_type", stepType)
+    .maybeSingle();
+
+  if (definitionError) {
+    throw new Error(`Unable to load step definition: ${definitionError.message}`);
+  }
+  if (!definitionData) {
+    throw new Error(`Step definition "${stepType}" was not found.`);
+  }
+
+  const definition = definitionData as WorkflowStepDefinitionRow;
+  const resolvedModel = definition.model ?? DEFAULT_MODEL;
+  const resolvedReasoningEffort = definition.reasoning_effort ?? DEFAULT_REASONING_EFFORT;
+  const { data: workflowData, error: workflowError } = await adminClient
+    .from("workflows")
+    .insert({
+      project_id: projectId,
+      name: `Single Step: ${definition.name}`,
+      description: `Runtime-generated single-step workflow for ${definition.step_type}.`,
+      is_template: false,
+      provider_override: resolveProviderKeyFromModel(resolvedModel),
+      model_override: resolvedModel,
+      reasoning_effort_override: resolvedReasoningEffort,
+      created_by: SINGLE_STEP_RUNTIME_CREATED_BY,
+    })
+    .select("id, provider_override, model_override, reasoning_effort_override")
+    .single();
+
+  if (workflowError) {
+    throw new Error(`Unable to create single-step workflow: ${workflowError.message}`);
+  }
+
+  const { data: workflowStepData, error: workflowStepError } = await adminClient
+    .from("workflow_steps")
+    .insert({
+      workflow_id: workflowData.id,
+      step_type: definition.step_type,
+      order_index: 0,
+      is_enabled: true,
+      provider_override: resolveProviderKeyFromModel(resolvedModel),
+      model_override: resolvedModel,
+      reasoning_effort_override: resolvedReasoningEffort,
+      requires_approval: false,
+    })
+    .select("id, step_type, order_index, is_enabled, requires_approval")
+    .single();
+
+  if (workflowStepError) {
+    throw new Error(`Unable to create single-step workflow step: ${workflowStepError.message}`);
+  }
+
+  return {
+    workflow: workflowData as {
+      id: string;
+      provider_override: string | null;
+      model_override: string | null;
+      reasoning_effort_override: string | null;
+    },
+    workflowSteps: [
+      workflowStepData as {
+        id: string;
+        step_type: string;
+        order_index: number;
+        is_enabled: boolean;
+        requires_approval: boolean;
+      },
+    ],
+  };
 }
 
 async function listRuntimeSteps(
