@@ -142,52 +142,164 @@ func (r *Runner) Health() Health {
 	}
 }
 
-func (r *Runner) DetectProviders(ctx context.Context) ([]Provider, error) {
-	specs := []providerSpec{
-		{
-			Key:         "codex",
-			Label:       "Codex",
-			BinaryName:  "codex",
-			InstallHint: "Install the Codex CLI, log in, and restart the runner.",
-		},
-		{
-			Key:         "claude",
-			Label:       "Claude Code",
-			BinaryName:  "claude",
-			InstallHint: "Install the Claude Code CLI, log in, and restart the runner.",
-		},
-		{
-			Key:         "gemini",
-			Label:       "Gemini",
-			BinaryName:  "gemini",
-			InstallHint: "Install the Gemini CLI, log in, and restart the runner.",
-		},
+func (r *Runner) PickDirectory(ctx context.Context) (DirectorySelection, error) {
+	var command string
+	var args []string
+
+	switch runtime.GOOS {
+	case "darwin":
+		command = "osascript"
+		args = []string{
+			"-e",
+			`POSIX path of (choose folder with prompt "Select project folder")`,
+		}
+	case "linux":
+		command = "zenity"
+		args = []string{
+			"--file-selection",
+			"--directory",
+			"--title=Select project folder",
+		}
+	case "windows":
+		command = "powershell"
+		args = []string{
+			"-NoProfile",
+			"-Command",
+			`Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.FolderBrowserDialog; $dialog.Description = 'Select project folder'; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $dialog.SelectedPath }`,
+		}
+	default:
+		return DirectorySelection{}, fmt.Errorf("directory picker is not supported on %s", runtime.GOOS)
 	}
 
-	providers := make([]Provider, 0, len(specs))
-	for _, spec := range specs {
-		provider := Provider{
-			Key:         spec.Key,
-			Label:       spec.Label,
-			AuthStatus:  "unknown",
-			InstallHint: spec.InstallHint,
-		}
+	output, err := runCommandFn(ctx, command, args...)
+	if err != nil {
+		return DirectorySelection{}, err
+	}
 
-		binaryPath, err := exec.LookPath(spec.BinaryName)
-		if err != nil {
-			provider.BinaryPath = ""
-			provider.Installed = false
-			providers = append(providers, provider)
-			continue
-		}
+	selectedPath := filepath.Clean(strings.TrimSpace(string(output)))
+	if selectedPath == "." || selectedPath == "" {
+		return DirectorySelection{}, errors.New("no directory was selected")
+	}
 
-		provider.Installed = true
-		provider.BinaryPath = binaryPath
-		provider.Version = resolveVersion(ctx, binaryPath)
-		providers = append(providers, provider)
+	return DirectorySelection{Path: selectedPath}, nil
+}
+
+func (r *Runner) ValidateDirectory(path string) DirectoryValidationResult {
+	candidate := strings.TrimSpace(path)
+	if candidate == "" {
+		return DirectoryValidationResult{
+			Path:   candidate,
+			Usable: false,
+			Reason: "path is empty",
+		}
+	}
+
+	resolved, err := filepath.Abs(candidate)
+	if err != nil {
+		return DirectoryValidationResult{
+			Path:   candidate,
+			Usable: false,
+			Reason: fmt.Sprintf("could not resolve path: %v", err),
+		}
+	}
+
+	info, err := os.Stat(resolved)
+	if err != nil {
+		reason := err.Error()
+		if errors.Is(err, os.ErrNotExist) {
+			reason = "path does not exist"
+		}
+		return DirectoryValidationResult{
+			Path:   resolved,
+			Usable: false,
+			Reason: reason,
+		}
+	}
+
+	if !info.IsDir() {
+		return DirectoryValidationResult{
+			Path:   resolved,
+			Usable: false,
+			Reason: "path is not a directory",
+		}
+	}
+
+	return DirectoryValidationResult{
+		Path:   resolved,
+		Usable: true,
+		Reason: "",
+	}
+}
+
+func (r *Runner) DetectProviders(ctx context.Context) ([]Provider, error) {
+	providers := make([]Provider, 0, len(providerSpecs()))
+	for _, spec := range providerSpecs() {
+		providers = append(providers, detectProvider(ctx, spec))
 	}
 
 	return providers, nil
+}
+
+func (r *Runner) ListProviders(ctx context.Context) (ProviderInventory, error) {
+	providers, err := r.DetectProviders(ctx)
+	if err != nil {
+		return ProviderInventory{}, err
+	}
+
+	return ProviderInventory{Providers: providers}, nil
+}
+
+func (r *Runner) InstallProvider(ctx context.Context, providerName string) (ProviderInventory, error) {
+	spec, ok := lookupProviderSpec(providerName)
+	if !ok {
+		return ProviderInventory{}, fmt.Errorf("unsupported AI provider %q", providerName)
+	}
+
+	current := detectProvider(ctx, spec)
+	if current.InstallStatus == "INSTALLED" {
+		return r.ListProviders(ctx)
+	}
+
+	if current.InstallStatus == "UNSUPPORTED_OS" {
+		inventory, err := r.ListProviders(ctx)
+		if err != nil {
+			return ProviderInventory{}, err
+		}
+		message := stringValueOrFallback(current.LastError, "provider installation is not supported on this operating system")
+		annotateProviderInventory(&inventory, spec.Key, "UNSUPPORTED_OS", &message, false, "UNKNOWN")
+		return inventory, errors.New(message)
+	}
+
+	if err := runProviderInstallCommand(ctx, spec); err != nil {
+		inventory, listErr := r.ListProviders(ctx)
+		if listErr != nil {
+			return ProviderInventory{}, listErr
+		}
+		message := err.Error()
+		status := "FAILED"
+		if strings.Contains(strings.ToLower(message), "not supported") {
+			status = "UNSUPPORTED_OS"
+		}
+		annotateProviderInventory(&inventory, spec.Key, status, &message, false, "UNKNOWN")
+		return inventory, err
+	}
+
+	inventory, err := r.ListProviders(ctx)
+	if err != nil {
+		return ProviderInventory{}, err
+	}
+
+	refreshed := findProvider(inventory.Providers, spec.Key)
+	if refreshed == nil {
+		return inventory, fmt.Errorf("provider %q was not found after installation refresh", spec.Key)
+	}
+	if refreshed.InstallStatus != "INSTALLED" {
+		message := stringValueOrFallback(refreshed.LastError, fmt.Sprintf("%s install did not complete", spec.Label))
+		annotateProviderInventory(&inventory, spec.Key, "FAILED", &message, false, "UNKNOWN")
+		return inventory, errors.New(message)
+	}
+
+	return inventory, nil
 }
 
 func (r *Runner) ListMcpBackends(ctx context.Context) ([]McpBackend, error) {
@@ -536,13 +648,73 @@ func (r *Runner) DeleteIntegrationConnection(ctx context.Context, integrationID 
 	return nil
 }
 
+func resolvePromptExecutionAdapter(request PromptExecutionRequest, outputPath string) (string, []string, string, error) {
+	modelName := strings.TrimSpace(request.ModelName)
+	providerKey := strings.TrimSpace(request.ProviderKey)
+	lowerModel := strings.ToLower(modelName)
+
+	resolvedProvider := providerKey
+	switch {
+	case strings.HasPrefix(lowerModel, "gpt-"):
+		resolvedProvider = "codex"
+	case strings.HasPrefix(lowerModel, "gemini-"):
+		resolvedProvider = "gemini"
+	case strings.HasPrefix(lowerModel, "claude-"):
+		resolvedProvider = "claude"
+	case resolvedProvider == "":
+		return "", nil, "", errors.New("model or provider is required")
+	}
+
+	switch resolvedProvider {
+	case "codex":
+		sandboxMode := "read-only"
+		if request.AllowWrite {
+			sandboxMode = "workspace-write"
+		}
+		args := []string{"--sandbox", sandboxMode, "exec"}
+		if modelName != "" {
+			args = append(args, "--model", modelName)
+		}
+		if request.ReasoningEffort != "" {
+			args = append(args, "-c", fmt.Sprintf("reasoning_effort=%s", strings.ToLower(request.ReasoningEffort)))
+		}
+		args = append(args, "--output-last-message", outputPath, "-")
+		return "codex", args, resolvedProvider, nil
+	case "claude":
+		args := []string{"--print"}
+		if modelName != "" {
+			cliModel := modelName
+			if strings.HasPrefix(lowerModel, "claude-") {
+				cliModel = strings.TrimPrefix(lowerModel, "claude-")
+			}
+			args = append(args, "--model", cliModel)
+		}
+		if request.ReasoningEffort != "" {
+			effort := strings.ToLower(request.ReasoningEffort)
+			if effort == "xhigh" {
+				effort = "max"
+			}
+			args = append(args, "--effort", effort)
+		}
+		return "claude", args, resolvedProvider, nil
+	case "gemini":
+		args := []string{}
+		if modelName != "" {
+			cliModel := modelName
+			if strings.HasPrefix(lowerModel, "gemini-") {
+				cliModel = strings.TrimPrefix(lowerModel, "gemini-")
+			}
+			args = append(args, "--model", cliModel)
+		}
+		return "gemini", args, resolvedProvider, nil
+	default:
+		return "", nil, "", fmt.Errorf("provider %q is not supported", resolvedProvider)
+	}
+}
+
 func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionRequest) (PromptExecutionResult, error) {
 	if strings.TrimSpace(request.Prompt) == "" {
 		return PromptExecutionResult{}, errors.New("prompt is required")
-	}
-
-	if strings.TrimSpace(request.ProviderKey) != "codex" {
-		return PromptExecutionResult{}, fmt.Errorf("provider %q is not supported in the MVP runner", request.ProviderKey)
 	}
 
 	workspace := r.workspace
@@ -576,14 +748,12 @@ func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionReque
 		return PromptExecutionResult{}, err
 	}
 
-	args := []string{
-		"--sandbox", "read-only",
-		"--cd", workspace,
-		"exec",
-		"--output-last-message", outputPath,
-		"-",
+	binary, args, resolvedProvider, err := resolvePromptExecutionAdapter(request, outputPath)
+	if err != nil {
+		return PromptExecutionResult{}, err
 	}
-	command := "codex " + strings.Join(args, " ")
+
+	command := binary + " " + strings.Join(args, " ")
 	if err := os.WriteFile(commandPath, []byte(command), 0o644); err != nil {
 		return PromptExecutionResult{}, err
 	}
@@ -591,7 +761,7 @@ func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionReque
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(execCtx, "codex", args...)
+	cmd := exec.CommandContext(execCtx, binary, args...)
 	promptFile, err := os.Open(promptPath)
 	if err != nil {
 		return PromptExecutionResult{}, err
@@ -629,23 +799,28 @@ func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionReque
 	stdoutSummary := readTextWithLimit(stdoutPath, 4000)
 	stderrSummary := readTextWithLimit(stderrPath, 4000)
 	outputMarkdown := readTextWithLimit(outputPath, 12000)
+	if strings.TrimSpace(outputMarkdown) == "" && strings.TrimSpace(stdoutSummary) != "" {
+		outputMarkdown = stdoutSummary
+		_ = os.WriteFile(outputPath, []byte(outputMarkdown), 0o644)
+	}
 	status := "success"
 	errorMessage := ""
+	var modelName *string
+	if strings.TrimSpace(request.ModelName) != "" {
+		name := strings.TrimSpace(request.ModelName)
+		modelName = &name
+	}
 
 	if runErr != nil || exitCode != 0 {
 		status = "failed"
-		if runErr != nil {
-			errorMessage = runErr.Error()
-		}
-		if errorMessage == "" {
-			errorMessage = stderrSummary
-		}
+		errorMessage = summarizeCommandFailure(runErr, stderrSummary)
 	}
 
 	result := PromptExecutionResult{
 		Status:         status,
 		RunID:          runID,
-		ProviderKey:    request.ProviderKey,
+		ProviderKey:    resolvedProvider,
+		ModelName:      modelName,
 		Command:        command,
 		StdoutSummary:  stdoutSummary,
 		StderrSummary:  stderrSummary,
@@ -680,6 +855,24 @@ func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionReque
 	}
 
 	return result, nil
+}
+
+func summarizeCommandFailure(runErr error, stderrSummary string) string {
+	errorMessage := ""
+	if runErr != nil {
+		errorMessage = strings.TrimSpace(runErr.Error())
+	}
+
+	stderrSummary = strings.TrimSpace(stderrSummary)
+	if stderrSummary == "" {
+		return errorMessage
+	}
+
+	if errorMessage == "" || strings.HasPrefix(errorMessage, "exit status ") {
+		return stderrSummary
+	}
+
+	return errorMessage
 }
 
 func (r *Runner) RunMcpTest(ctx context.Context, request McpTestRequest) (McpTestResult, error) {
@@ -870,6 +1063,7 @@ type providerSpec struct {
 	Label       string
 	BinaryName  string
 	InstallHint string
+	Models      []ProviderModel
 }
 
 type mcpBackendSpec struct {
@@ -890,6 +1084,269 @@ type markdownEntry struct {
 	Description string
 	Tags        []string
 	Steps       []string
+}
+
+func providerSpecs() []providerSpec {
+	return []providerSpec{
+		{
+			Key:         "codex",
+			Label:       "Codex",
+			BinaryName:  "codex",
+			InstallHint: "Install the Codex CLI, log in, and restart the runner.",
+			Models: []ProviderModel{
+				{ID: "gpt-5.5", DisplayName: "gpt-5.5", Source: "registry"},
+				{ID: "gpt-5.4", DisplayName: "gpt-5.4", Source: "registry"},
+				{ID: "gpt-5.4-mini", DisplayName: "gpt-5.4-mini", Source: "registry"},
+			},
+		},
+		{
+			Key:         "claude",
+			Label:       "Claude Code",
+			BinaryName:  "claude",
+			InstallHint: "Install the Claude Code CLI, log in, and restart the runner.",
+			Models: []ProviderModel{
+				{ID: "claude-opus", DisplayName: "claude-opus", Source: "registry"},
+				{ID: "claude-sonnet", DisplayName: "claude-sonnet", Source: "registry"},
+				{ID: "claude-haiku", DisplayName: "claude-haiku", Source: "registry"},
+			},
+		},
+		{
+			Key:         "gemini",
+			Label:       "Gemini",
+			BinaryName:  "gemini",
+			InstallHint: "Install the Gemini CLI, log in, and restart the runner.",
+			Models: []ProviderModel{
+				{ID: "gemini-pro", DisplayName: "gemini-pro", Source: "registry"},
+				{ID: "gemini-flash", DisplayName: "gemini-flash", Source: "registry"},
+			},
+		},
+	}
+}
+
+func lookupProviderSpec(key string) (providerSpec, bool) {
+	normalized := strings.ToLower(strings.TrimSpace(key))
+	for _, spec := range providerSpecs() {
+		if spec.Key == normalized {
+			return spec, true
+		}
+	}
+
+	return providerSpec{}, false
+}
+
+func detectProvider(ctx context.Context, spec providerSpec) Provider {
+	provider := Provider{
+		ID:            strings.ToUpper(spec.Key),
+		Key:           spec.Key,
+		Label:         spec.Label,
+		Supported:     true,
+		AuthStatus:    "UNKNOWN",
+		InstallStatus: "NOT_INSTALLED",
+		InstallHint:   spec.InstallHint,
+		Models:        buildProviderModels(spec, false),
+	}
+
+	binaryPath, err := lookPathFn(spec.BinaryName)
+	if err != nil {
+		notFound := fmt.Sprintf("%s binary was not found on PATH", spec.Label)
+		provider.LastError = &notFound
+		return provider
+	}
+
+	version := resolveVersion(ctx, binaryPath)
+	if strings.TrimSpace(version) == "" {
+		provider.Installed = true
+		provider.BinaryPath = binaryPath
+		provider.DetectedBinary = spec.BinaryName
+		provider.InstallStatus = "FAILED"
+		provider.Version = ""
+		provider.DetectedVersion = ""
+		versionError := fmt.Sprintf("%s version check failed", spec.Label)
+		provider.LastError = &versionError
+		return provider
+	}
+
+	provider.Installed = true
+	provider.InstallStatus = "INSTALLED"
+	provider.BinaryPath = binaryPath
+	provider.DetectedBinary = spec.BinaryName
+	provider.Version = version
+	provider.DetectedVersion = version
+	provider.AuthStatus = providerAuthStatus(spec)
+	provider.Models = buildProviderModels(spec, provider.AuthStatus == "READY")
+	if provider.AuthStatus == "AUTH_REQUIRED" {
+		authError := fmt.Sprintf("%s authentication is required", spec.Label)
+		provider.LastError = &authError
+	}
+
+	return provider
+}
+
+func buildProviderModels(spec providerSpec, available bool) []ProviderModel {
+	models := make([]ProviderModel, 0, len(spec.Models))
+	for _, model := range spec.Models {
+		model.Available = available
+		models = append(models, model)
+	}
+
+	return models
+}
+
+func getPossibleHomeDirs() []string {
+	var dirs []string
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		dirs = append(dirs, home)
+	}
+	if userProfile := os.Getenv("USERPROFILE"); userProfile != "" {
+		dirs = append(dirs, userProfile)
+	}
+	if homeEnv := os.Getenv("HOME"); homeEnv != "" {
+		dirs = append(dirs, homeEnv)
+	}
+	if appData := os.Getenv("APPDATA"); appData != "" {
+		dirs = append(dirs, appData)
+	}
+	return dirs
+}
+
+func hasLocalAuth(providerKey string) bool {
+	dirs := getPossibleHomeDirs()
+	for _, dir := range dirs {
+		var paths []string
+		switch providerKey {
+		case "codex":
+			paths = []string{
+				filepath.Join(dir, ".codex", "auth.json"),
+				filepath.Join(dir, "codex", "auth.json"),
+			}
+		case "claude":
+			paths = []string{
+				filepath.Join(dir, ".claude.json"),
+				filepath.Join(dir, "claude", "auth.json"),
+				filepath.Join(dir, ".config", "claude", "auth.json"),
+			}
+		case "gemini":
+			paths = []string{
+				filepath.Join(dir, ".gemini", "oauth_creds.json"),
+				filepath.Join(dir, "gemini", "oauth_creds.json"),
+			}
+		}
+
+		for _, path := range paths {
+			if info, err := os.Stat(path); err == nil && info.Size() > 0 {
+				if data, err := os.ReadFile(path); err == nil {
+					content := string(data)
+					switch providerKey {
+					case "codex":
+						if strings.Contains(content, `"id_token"`) || strings.Contains(content, `"OPENAI_API_KEY"`) {
+							return true
+						}
+					case "claude":
+						if strings.Contains(content, `"emailAddress"`) {
+							return true
+						}
+					case "gemini":
+						if strings.Contains(content, `"access_token"`) || strings.Contains(content, `"refresh_token"`) {
+							return true
+						}
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+func providerAuthStatus(spec providerSpec) string {
+	switch spec.Key {
+	case "codex":
+		if hasAnyEnv("OPENAI_API_KEY", "OPENAI_API_BASE") || hasLocalAuth("codex") {
+			return "READY"
+		}
+	case "claude":
+		if hasAnyEnv("ANTHROPIC_API_KEY") || hasLocalAuth("claude") {
+			return "READY"
+		}
+	case "gemini":
+		if hasAnyEnv("GOOGLE_API_KEY", "GEMINI_API_KEY") || hasLocalAuth("gemini") {
+			return "READY"
+		}
+	}
+
+	return "AUTH_REQUIRED"
+}
+
+func hasAnyEnv(keys ...string) bool {
+	for _, key := range keys {
+		if strings.TrimSpace(os.Getenv(key)) != "" {
+			return true
+		}
+	}
+
+	return false
+}
+
+func runProviderInstallCommand(ctx context.Context, spec providerSpec) error {
+	command, args, err := providerInstallCommand(spec)
+	if err != nil {
+		return err
+	}
+
+	output, runErr := runCommandFn(ctx, command, args...)
+	if runErr != nil {
+		message := strings.TrimSpace(string(output))
+		if message != "" {
+			return fmt.Errorf("%s: %w", message, runErr)
+		}
+		return runErr
+	}
+
+	return nil
+}
+
+func providerInstallCommand(spec providerSpec) (string, []string, error) {
+	switch spec.Key {
+	case "claude":
+		switch runtime.GOOS {
+		case "darwin", "linux":
+			return "sh", []string{"-c", "curl -fsSL https://claude.ai/install.sh | bash"}, nil
+		case "windows":
+			return "powershell", []string{"-NoProfile", "-Command", "irm https://claude.ai/install.ps1 | iex"}, nil
+		default:
+			return "", nil, fmt.Errorf("%s install is not supported on %s", spec.Label, runtime.GOOS)
+		}
+	case "codex":
+		return "npm", []string{"install", "-g", "@openai/codex"}, nil
+	case "gemini":
+		return "npm", []string{"install", "-g", "@google/gemini-cli"}, nil
+	default:
+		return "", nil, fmt.Errorf("unsupported provider %q", spec.Key)
+	}
+}
+
+func findProvider(providers []Provider, key string) *Provider {
+	normalized := strings.ToLower(strings.TrimSpace(key))
+	for idx := range providers {
+		if providers[idx].Key == normalized {
+			return &providers[idx]
+		}
+	}
+
+	return nil
+}
+
+func annotateProviderInventory(inventory *ProviderInventory, key string, status string, lastError *string, installed bool, authStatus string) {
+	provider := findProvider(inventory.Providers, key)
+	if provider == nil {
+		return
+	}
+
+	models := provider.Models
+	provider.InstallStatus = status
+	provider.Installed = installed
+	provider.AuthStatus = authStatus
+	provider.Models = buildProviderModels(providerSpec{Models: models}, status == "INSTALLED" && authStatus == "READY")
+	provider.LastError = lastError
 }
 
 func ResolveWorkspace(workspace string) (string, error) {
@@ -1326,6 +1783,13 @@ func backendErrorMessage(err error, output []byte) string {
 func nonEmptyOrFallback(value, fallback string) string {
 	if strings.TrimSpace(value) != "" {
 		return value
+	}
+	return fallback
+}
+
+func stringValueOrFallback(value *string, fallback string) string {
+	if value != nil && strings.TrimSpace(*value) != "" {
+		return *value
 	}
 	return fallback
 }
@@ -2054,3 +2518,61 @@ func readJSONFile(path string, target any) error {
 	}
 	return json.Unmarshal(raw, target)
 }
+
+func LaunchTerminalWithCommand(command string) error {
+	osType := runtime.GOOS
+	switch osType {
+	case "windows":
+		cmd := exec.Command("cmd.exe", "/c", "start", "cmd.exe", "/k", command)
+		return cmd.Run()
+	case "darwin":
+		script := fmt.Sprintf(`tell app "Terminal" to do script "%s"`, command)
+		cmd := exec.Command("osascript", "-e", script)
+		return cmd.Run()
+	case "linux":
+		terminals := []struct {
+			name string
+			args []string
+		}{
+			{"x-terminal-emulator", []string{"-e", command}},
+			{"gnome-terminal", []string{"--", "sh", "-c", command}},
+			{"konsole", []string{"-e", command}},
+			{"xfce4-terminal", []string{"-e", command}},
+			{"alacritty", []string{"-e", "sh", "-c", command}},
+		}
+
+		for _, t := range terminals {
+			if path, err := exec.LookPath(t.name); err == nil {
+				cmd := exec.Command(path, t.args...)
+				if err := cmd.Start(); err == nil {
+					return nil
+				}
+			}
+		}
+		return fmt.Errorf("no supported terminal emulator found")
+	default:
+		return fmt.Errorf("unsupported operating system %q for terminal spawning", osType)
+	}
+}
+
+func (r *Runner) AuthenticateProvider(ctx context.Context, providerName string) error {
+	spec, ok := lookupProviderSpec(providerName)
+	if !ok {
+		return fmt.Errorf("unsupported AI provider %q", providerName)
+	}
+
+	var authCommand string
+	switch spec.Key {
+	case "codex":
+		authCommand = "codex login"
+	case "claude":
+		authCommand = "claude auth login"
+	case "gemini":
+		authCommand = "gemini"
+	default:
+		return fmt.Errorf("no auth command configured for provider %q", providerName)
+	}
+
+	return LaunchTerminalWithCommand(authCommand)
+}
+

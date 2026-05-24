@@ -36,6 +36,7 @@ func NewRootCommand() *cobra.Command {
 
 	rootCmd.AddCommand(newRunnerCommand(cfg))
 	rootCmd.AddCommand(newProvidersCommand(cfg))
+	rootCmd.AddCommand(newInstallProviderCommand(cfg))
 	rootCmd.AddCommand(newBackendsCommand(cfg))
 	rootCmd.AddCommand(newSkillsCommand(cfg))
 	rootCmd.AddCommand(newFlowsCommand(cfg))
@@ -89,6 +90,79 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 					return
 				}
 				writeHTTPJSON(w, providers)
+			})
+			mux.HandleFunc("/providers/install", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+
+				var payload struct {
+					ProviderName string `json:"providerName"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+
+				inventory, err := instance.InstallProvider(r.Context(), payload.ProviderName)
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+
+				writeHTTPJSON(w, inventory)
+			})
+			mux.HandleFunc("/providers/auth", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+
+				var payload struct {
+					ProviderName string `json:"providerName"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+
+				err := instance.AuthenticateProvider(r.Context(), payload.ProviderName)
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(`{"status":"success"}`))
+			})
+			mux.HandleFunc("/directories/pick", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+
+				selection, err := instance.PickDirectory(r.Context())
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+
+				writeHTTPJSON(w, selection)
+			})
+			mux.HandleFunc("/directories/validate", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+
+				var payload runner.DirectoryValidationRequest
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+
+				writeHTTPJSON(w, instance.ValidateDirectory(payload.Path))
 			})
 			mux.HandleFunc("/mcp-backends", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodGet {
@@ -409,6 +483,24 @@ func newProvidersCommand(cfg *config) *cobra.Command {
 		Short: "Inspect AI provider CLI installations",
 	}
 
+	listCmd := &cobra.Command{
+		Use:   "list",
+		Short: "Print discovered providers as JSON",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			instance, err := runner.New(cfg.workspace)
+			if err != nil {
+				return err
+			}
+			inventory, err := instance.ListProviders(cmd.Context())
+			if err != nil {
+				return err
+			}
+			return writeJSON(os.Stdout, inventory)
+		},
+	}
+	listCmd.Flags().Bool("json", true, "Emit JSON output")
+	providersCmd.AddCommand(listCmd)
+
 	providersCmd.AddCommand(&cobra.Command{
 		Use:   "detect",
 		Short: "Print installed provider CLI information as JSON",
@@ -417,7 +509,7 @@ func newProvidersCommand(cfg *config) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			providers, err := instance.DetectProviders(context.Background())
+			providers, err := instance.DetectProviders(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -426,6 +518,33 @@ func newProvidersCommand(cfg *config) *cobra.Command {
 	})
 
 	return providersCmd
+}
+
+func newInstallProviderCommand(cfg *config) *cobra.Command {
+	installCmd := &cobra.Command{
+		Use:   "install-provider <provider_name>",
+		Short: "Install a provider CLI and refresh the provider inventory",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			instance, err := runner.New(cfg.workspace)
+			if err != nil {
+				return err
+			}
+
+			inventory, installErr := instance.InstallProvider(cmd.Context(), args[0])
+			if writeErr := writeJSON(os.Stdout, inventory); writeErr != nil {
+				return writeErr
+			}
+			if installErr != nil {
+				return installErr
+			}
+
+			return nil
+		},
+	}
+	installCmd.Flags().Bool("json", true, "Emit JSON output")
+
+	return installCmd
 }
 
 func newBackendsCommand(cfg *config) *cobra.Command {
