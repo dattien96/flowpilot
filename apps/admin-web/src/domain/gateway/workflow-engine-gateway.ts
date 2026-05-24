@@ -3,6 +3,7 @@ import type {
   ArtifactRun,
   StepDefinition,
   Workflow,
+  WorkflowRunStartRequest,
   WorkflowRun,
   WorkflowRunLog,
   WorkflowRunStep,
@@ -28,7 +29,7 @@ export interface WorkflowEngineGateway {
     steps: WorkflowRunStep[];
     logs: WorkflowRunLog[];
   } | null>;
-  startWorkflowRun(workflowId: string, projectId: string): Promise<WorkflowRun>;
+  startWorkflowRun(request: WorkflowRunStartRequest): Promise<WorkflowRun>;
   toggleYoloMode(runId: string, yoloMode: boolean): Promise<WorkflowRun>;
   submitStepApproval(
     stepId: string,
