@@ -754,7 +754,7 @@ func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionReque
 		return PromptExecutionResult{}, err
 	}
 
-	command := binary + " " + strings.Join(args, " ")
+	command := binary + " " + strings.Join(args, " ") + " < prompt.txt"
 	if err := os.WriteFile(commandPath, []byte(command), 0o644); err != nil {
 		return PromptExecutionResult{}, err
 	}
