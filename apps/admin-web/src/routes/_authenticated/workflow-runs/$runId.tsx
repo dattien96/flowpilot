@@ -774,9 +774,11 @@ function WorkflowRunDetailPage() {
             const latestStep = detail.steps?.at(-1);
             if (!latestStep) return null;
             
-            const isWaiting = latestStep.status === "WAITING_USER_APPROVAL";
-            const isDone = latestStep.status === "DONE";
-            const canContinue = (isWaiting || isDone) && detail.run.status !== "rejected";
+            const stepStatus = latestStep.status?.toUpperCase();
+            const runStatus = detail.run.status?.toUpperCase();
+            const isWaiting = stepStatus === "WAITING_USER_APPROVAL";
+            const isDone = stepStatus === "DONE" || stepStatus === "COMPLETED";
+            const canContinue = (isWaiting || isDone) && runStatus !== "REJECTED" && runStatus !== "FAILED";
 
             if (!canContinue) return null;
 
