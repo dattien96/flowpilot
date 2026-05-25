@@ -7,11 +7,23 @@ import { createGatewayBundle } from "@/data/repository/browser-factory";
 import { ListArtifactDefinitionsUseCase } from "@/domain/usecase/workflow-engine/list-artifact-definitions-usecase";
 import { SaveStepDefinitionUseCase } from "@/domain/usecase/workflow-engine/save-step-definition-usecase";
 import { ArtifactDefinitionSelector } from "@/features/workflow-engine/artifact-definition-selector";
-import type { ArtifactDefinition } from "@/domain/model/entity/workflow-engine";
+import {
+  deriveStepPromptBase,
+  isSupportedStepModel,
+  REASONING_EFFORT_OPTIONS,
+  STEP_MODEL_OPTIONS,
+  type ArtifactDefinition,
+} from "@/domain/model/entity/workflow-engine";
+import { integrationTypes } from "@/features/mcp/integration-config";
 
 export const Route = createFileRoute("/_authenticated/workflow-steps/create")({
   component: CreateWorkflowStepPage,
 });
+
+const DEFAULT_STEP_MODEL =
+  STEP_MODEL_OPTIONS.find((option) => option.value === "gpt-5.4")?.value ??
+  STEP_MODEL_OPTIONS[0].value;
+const DEFAULT_REASONING_EFFORT = "medium";
 
 export function CreateWorkflowStepPage() {
   const navigate = useNavigate();
@@ -30,6 +42,11 @@ export function CreateWorkflowStepPage() {
   const [description, setDescription] = useState("");
   const [requiredMcps, setRequiredMcps] = useState("");
   const [requiredSkills, setRequiredSkills] = useState("");
+  const [teamRole, setTeamRole] = useState("");
+  const [promptBase, setPromptBase] = useState("");
+  const [subagent, setSubagent] = useState("");
+  const [model, setModel] = useState<string>(DEFAULT_STEP_MODEL);
+  const [reasoningEffort, setReasoningEffort] = useState(DEFAULT_REASONING_EFFORT);
   const [inputArtifactDefinitions, setInputArtifactDefinitions] = useState<string[]>([]);
   const [outputArtifactDefinitions, setOutputArtifactDefinitions] = useState<string[]>([]);
   const [agentType, setAgentType] = useState<"standard" | "autonomous">("standard");
@@ -54,24 +71,45 @@ export function CreateWorkflowStepPage() {
       window.alert("Step key, name, and description are required.");
       return;
     }
+    if (!isSupportedStepModel(model)) {
+      window.alert("Select a supported model.");
+      return;
+    }
+
+    const parsedRequiredMcps = requiredMcps
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    const unknownMcp = parsedRequiredMcps.find(
+      (mcp) => !integrationTypes.includes(mcp as (typeof integrationTypes)[number]),
+    );
+    if (unknownMcp) {
+      window.alert(`Unknown MCP type "${unknownMcp}". Use a known MCP key.`);
+      return;
+    }
 
     setSaving(true);
     try {
+      const now = new Date().toISOString();
       await saveStepDefinitionUseCase.current.execute({
         stepType,
         name,
         description,
-        requiredMcps: requiredMcps
-          .split(",")
-          .map((item) => item.trim())
-          .filter(Boolean),
+        promptBase: promptBase.trim() || deriveStepPromptBase({ stepType, name, description }),
+        requiredMcps: parsedRequiredMcps,
         requiredSkills: requiredSkills
           .split(",")
           .map((item) => item.trim())
           .filter(Boolean),
+        teamRole: teamRole.trim() || null,
+        subagent: subagent.trim() || null,
+        model,
+        reasoningEffort: reasoningEffort || DEFAULT_REASONING_EFFORT,
         inputArtifactDefinitions,
         outputArtifactDefinitions,
         agentType,
+        createdAt: now,
+        updatedAt: now,
       });
       await navigate({ to: "/workflow-steps" as never });
     } catch (error) {
@@ -139,6 +177,61 @@ export function CreateWorkflowStepPage() {
             value={requiredSkills}
             onChange={(event) => setRequiredSkills(event.target.value)}
           />
+        </label>
+        <label className="space-y-2 text-sm">
+          <span className="font-medium">Team role</span>
+          <input
+            className="w-full rounded-2xl border border-border bg-card px-4 py-3"
+            placeholder="design_lead"
+            value={teamRole}
+            onChange={(event) => setTeamRole(event.target.value)}
+          />
+        </label>
+        <label className="space-y-2 text-sm md:col-span-2">
+          <span className="font-medium">Prompt base</span>
+          <textarea
+            className="min-h-28 w-full rounded-2xl border border-border bg-card px-4 py-3"
+            placeholder="Describe the execution intent for this step."
+            value={promptBase}
+            onChange={(event) => setPromptBase(event.target.value)}
+          />
+        </label>
+        <label className="space-y-2 text-sm">
+          <span className="font-medium">Subagent</span>
+          <input
+            className="w-full rounded-2xl border border-border bg-card px-4 py-3"
+            placeholder="codex-reviewer"
+            value={subagent}
+            onChange={(event) => setSubagent(event.target.value)}
+          />
+        </label>
+        <label className="space-y-2 text-sm">
+          <span className="font-medium">Model</span>
+          <select
+            className="w-full rounded-2xl border border-border bg-card px-4 py-3"
+            value={model}
+            onChange={(event) => setModel(event.target.value)}
+          >
+            {STEP_MODEL_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="space-y-2 text-sm">
+          <span className="font-medium">Reasoning effort</span>
+          <select
+            className="w-full rounded-2xl border border-border bg-card px-4 py-3"
+            value={reasoningEffort}
+            onChange={(event) => setReasoningEffort(event.target.value)}
+          >
+            {REASONING_EFFORT_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
         </label>
         <div className="space-y-2 md:col-span-2">
           <ArtifactDefinitionSelector
