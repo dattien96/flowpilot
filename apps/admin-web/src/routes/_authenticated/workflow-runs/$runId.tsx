@@ -795,6 +795,19 @@ function WorkflowRunDetailPage() {
               />
             </CollapsibleSection>
 
+            <CollapsibleSection
+              title="Provider Command"
+              subtitle="The exact CLI command executed by the local runner."
+              defaultOpen={false}
+            >
+              <CollapsibleTextBlock
+                title="Execution Command"
+                value={latestOutput?.commandText}
+                emptyLabel="No command captured."
+                defaultOpen
+              />
+            </CollapsibleSection>
+
             {/* Latest Output Panel */}
             <CollapsibleSection title="Latest Execution Output" defaultOpen>
               <div className="rounded-2xl border border-border/40 bg-card/60 p-5">
