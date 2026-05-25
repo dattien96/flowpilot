@@ -744,7 +744,8 @@ func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionReque
 	commandPath := filepath.Join(runDir, "command.txt")
 	metadataPath := filepath.Join(runDir, "metadata.json")
 
-	if err := os.WriteFile(promptPath, []byte(request.Prompt), 0o644); err != nil {
+	finalPrompt := r.injectSkillContent(workspace, request.Prompt, request.SkillIds)
+	if err := os.WriteFile(promptPath, []byte(finalPrompt), 0o644); err != nil {
 		return PromptExecutionResult{}, err
 	}
 
@@ -855,6 +856,35 @@ func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionReque
 	}
 
 	return result, nil
+}
+
+func (r *Runner) injectSkillContent(workspace string, prompt string, skillIds []string) string {
+	if len(skillIds) == 0 {
+		return prompt
+	}
+
+	skills, err := r.ListSkills()
+	if err != nil || len(skills) == 0 {
+		return prompt
+	}
+
+	var injected []string
+	injected = append(injected, prompt)
+	injected = append(injected, "\n\n## Included Skills\n\nThe following skills are provided as reference to help you complete your task:\n")
+
+	for _, reqSkill := range skillIds {
+		for _, skill := range skills {
+			if skill.ID == reqSkill {
+				contentBytes, err := os.ReadFile(skill.FilePath)
+				if err == nil {
+					injected = append(injected, fmt.Sprintf("\n### Skill: %s\n```markdown\n%s\n```\n", skill.Name, string(contentBytes)))
+				}
+				break
+			}
+		}
+	}
+
+	return strings.Join(injected, "")
 }
 
 func summarizeCommandFailure(runErr error, stderrSummary string) string {
