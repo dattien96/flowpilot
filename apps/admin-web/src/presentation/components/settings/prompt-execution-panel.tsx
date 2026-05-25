@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 
 import { Button } from "@/presentation/components/ui/button";
 import { Badge } from "@/presentation/components/ui/badge";
+import { REASONING_EFFORT_OPTIONS } from "@/domain/model/entity/workflow-engine";
 
 type ProviderOption = {
   key: string;
@@ -52,6 +53,7 @@ export function PromptExecutionPanel({
     [providers],
   );
   const [providerKey, setProviderKey] = useState(defaultProvider?.key ?? "");
+  const [reasoningEffort, setReasoningEffort] = useState("");
   const [skillId, setSkillId] = useState(skills[0]?.id ?? "");
   const [flowId, setFlowId] = useState(flows[0]?.id ?? "");
   const [prompt, setPrompt] = useState("");
@@ -70,11 +72,12 @@ export function PromptExecutionPanel({
         headers: {
           "content-type": "application/json",
         },
-        body: JSON.stringify({
-          providerKey,
-          prompt,
-          skillIds: skillId ? [skillId] : [],
-          flowId: flowId || null,
+          body: JSON.stringify({
+            providerKey,
+            reasoningEffort: reasoningEffort || null,
+            prompt,
+            skillIds: skillId ? [skillId] : [],
+            flowId: flowId || null,
           contextSourceIds: [],
           timeoutMs: 600000,
           workingDirectory: null,
@@ -143,6 +146,22 @@ export function PromptExecutionPanel({
               {skills.map((skill) => (
                 <option key={skill.id} value={skill.id}>
                   {skill.name}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="space-y-2">
+            <span className="text-sm font-medium">Reasoning</span>
+            <select
+              className="w-full rounded-2xl border border-border bg-card px-4 py-3 text-sm outline-none"
+              value={reasoningEffort}
+              onChange={(event) => setReasoningEffort(event.target.value)}
+            >
+              <option value="">Inherited</option>
+              {REASONING_EFFORT_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
                 </option>
               ))}
             </select>
