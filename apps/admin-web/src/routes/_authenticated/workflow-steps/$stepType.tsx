@@ -4,7 +4,14 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { PageFrame } from "@/components/common/page-frame";
 import { Button } from "@/components/ui/button";
 import { createGatewayBundle } from "@/data/repository/browser-factory";
-import type { ArtifactDefinition, StepDefinition } from "@/domain/model/entity/workflow-engine";
+import {
+  deriveStepPromptBase,
+  isSupportedStepModel,
+  REASONING_EFFORT_OPTIONS,
+  STEP_MODEL_OPTIONS,
+  type ArtifactDefinition,
+  type StepDefinition,
+} from "@/domain/model/entity/workflow-engine";
 import { ListArtifactDefinitionsUseCase } from "@/domain/usecase/workflow-engine/list-artifact-definitions-usecase";
 import { ListStepDefinitionsUseCase } from "@/domain/usecase/workflow-engine/list-step-definitions-usecase";
 import { SaveStepDefinitionUseCase } from "@/domain/usecase/workflow-engine/save-step-definition-usecase";
@@ -14,6 +21,11 @@ import { integrationTypes, toTitleCase } from "@/features/mcp/integration-config
 export const Route = createFileRoute("/_authenticated/workflow-steps/$stepType")({
   component: WorkflowStepDetailPage,
 });
+
+const DEFAULT_STEP_MODEL =
+  STEP_MODEL_OPTIONS.find((option) => option.value === "gpt-5.4")?.value ??
+  STEP_MODEL_OPTIONS[0].value;
+const DEFAULT_REASONING_EFFORT = "medium";
 
 function firstAvailableMcpType(selectedMcps: string[]) {
   return integrationTypes.find((type) => !selectedMcps.includes(type)) ?? "";
@@ -40,8 +52,13 @@ export function WorkflowStepDetailPage() {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [requiredMcps, setRequiredMcps] = useState<string[]>([]);
-  const [selectedMcpType, setSelectedMcpType] = useState(integrationTypes[0] ?? "");
+  const [selectedMcpType, setSelectedMcpType] = useState<string>(integrationTypes[0] ?? "");
   const [requiredSkills, setRequiredSkills] = useState("");
+  const [teamRole, setTeamRole] = useState("");
+  const [promptBase, setPromptBase] = useState("");
+  const [subagent, setSubagent] = useState("");
+  const [model, setModel] = useState<string>(DEFAULT_STEP_MODEL);
+  const [reasoningEffort, setReasoningEffort] = useState(DEFAULT_REASONING_EFFORT);
   const [inputArtifactDefinitions, setInputArtifactDefinitions] = useState<string[]>([]);
   const [outputArtifactDefinitions, setOutputArtifactDefinitions] = useState<string[]>([]);
   const [agentType, setAgentType] = useState<"standard" | "autonomous">("standard");
@@ -58,6 +75,11 @@ export function WorkflowStepDetailPage() {
         setRequiredMcps(match?.requiredMcps ?? []);
         setSelectedMcpType(firstAvailableMcpType(match?.requiredMcps ?? []));
         setRequiredSkills(match?.requiredSkills.join(", ") ?? "");
+        setTeamRole(match?.teamRole ?? "");
+        setPromptBase(match?.promptBase ?? "");
+        setSubagent(match?.subagent ?? "");
+        setModel(match?.model ?? DEFAULT_STEP_MODEL);
+        setReasoningEffort(match?.reasoningEffort ?? DEFAULT_REASONING_EFFORT);
         setInputArtifactDefinitions(match?.inputArtifactDefinitions ?? []);
         setOutputArtifactDefinitions(match?.outputArtifactDefinitions ?? []);
         setAgentType(match?.agentType ?? "standard");
@@ -89,6 +111,10 @@ export function WorkflowStepDetailPage() {
       window.alert("Step name and description are required.");
       return;
     }
+    if (!isSupportedStepModel(model)) {
+      window.alert("Select a supported model.");
+      return;
+    }
 
     setSaving(true);
     try {
@@ -96,11 +122,16 @@ export function WorkflowStepDetailPage() {
         ...step,
         name,
         description,
+        promptBase: promptBase.trim() || deriveStepPromptBase({ stepType: step.stepType, name, description }),
         requiredMcps,
         requiredSkills: requiredSkills
           .split(",")
           .map((item) => item.trim())
           .filter(Boolean),
+        teamRole: teamRole.trim() || null,
+        subagent: subagent.trim() || null,
+        model,
+        reasoningEffort: reasoningEffort || DEFAULT_REASONING_EFFORT,
         inputArtifactDefinitions,
         outputArtifactDefinitions,
         agentType,
@@ -111,6 +142,11 @@ export function WorkflowStepDetailPage() {
       setRequiredMcps(saved.requiredMcps);
       setSelectedMcpType(firstAvailableMcpType(saved.requiredMcps));
       setRequiredSkills(saved.requiredSkills.join(", "));
+      setTeamRole(saved.teamRole ?? "");
+      setPromptBase(saved.promptBase ?? "");
+      setSubagent(saved.subagent ?? "");
+      setModel(saved.model ?? DEFAULT_STEP_MODEL);
+      setReasoningEffort(saved.reasoningEffort ?? DEFAULT_REASONING_EFFORT);
       setInputArtifactDefinitions(saved.inputArtifactDefinitions ?? []);
       setOutputArtifactDefinitions(saved.outputArtifactDefinitions ?? []);
       setAgentType(saved.agentType);
@@ -278,6 +314,61 @@ export function WorkflowStepDetailPage() {
             value={requiredSkills}
             onChange={(event) => setRequiredSkills(event.target.value)}
           />
+        </label>
+        <label className="space-y-2 text-sm">
+          <span className="font-medium">Team role</span>
+          <input
+            className="w-full rounded-2xl border border-border bg-card px-4 py-3"
+            placeholder="design_lead"
+            value={teamRole}
+            onChange={(event) => setTeamRole(event.target.value)}
+          />
+        </label>
+        <label className="space-y-2 text-sm md:col-span-2">
+          <span className="font-medium">Prompt base</span>
+          <textarea
+            className="min-h-28 w-full rounded-2xl border border-border bg-card px-4 py-3"
+            placeholder="Describe the execution intent for this step."
+            value={promptBase}
+            onChange={(event) => setPromptBase(event.target.value)}
+          />
+        </label>
+        <label className="space-y-2 text-sm">
+          <span className="font-medium">Subagent</span>
+          <input
+            className="w-full rounded-2xl border border-border bg-card px-4 py-3"
+            placeholder="codex-reviewer"
+            value={subagent}
+            onChange={(event) => setSubagent(event.target.value)}
+          />
+        </label>
+        <label className="space-y-2 text-sm">
+          <span className="font-medium">Model</span>
+          <select
+            className="w-full rounded-2xl border border-border bg-card px-4 py-3"
+            value={model}
+            onChange={(event) => setModel(event.target.value)}
+          >
+            {STEP_MODEL_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="space-y-2 text-sm">
+          <span className="font-medium">Reasoning effort</span>
+          <select
+            className="w-full rounded-2xl border border-border bg-card px-4 py-3"
+            value={reasoningEffort}
+            onChange={(event) => setReasoningEffort(event.target.value)}
+          >
+            {REASONING_EFFORT_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
         </label>
         <div className="space-y-2 md:col-span-2">
           <ArtifactDefinitionSelector
