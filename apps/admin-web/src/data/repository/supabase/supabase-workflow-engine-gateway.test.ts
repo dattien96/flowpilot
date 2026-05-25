@@ -1,9 +1,14 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import * as edgeClient from "@/data/datasource/supabase/edge-function-client";
 
 import { SupabaseWorkflowEngineGateway } from "./supabase-workflow-engine-gateway";
 
 describe("SupabaseWorkflowEngineGateway", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
   it("lists step definitions ordered by name", async () => {
     const definitionsOrder = vi.fn().mockResolvedValue({
       data: [
@@ -11,8 +16,11 @@ describe("SupabaseWorkflowEngineGateway", () => {
           step_type: "tech_spec",
           name: "Technical Spec",
           description: "Generate specs",
+          prompt_base: "Generate specs carefully.",
           required_mcps: [],
           required_skills: [],
+          model: "gpt-5.5",
+          reasoning_effort: "medium",
           agent_type: "standard",
         },
       ],
@@ -57,6 +65,7 @@ describe("SupabaseWorkflowEngineGateway", () => {
     expect(from).toHaveBeenCalledWith("step_definitions");
     expect(definitionsOrder).toHaveBeenCalledWith("name", { ascending: true });
     expect(result[0].stepType).toBe("tech_spec");
+    expect(result[0].reasoningEffort).toBe("medium");
     expect(result[0].inputArtifactDefinitions).toEqual(["business_summary_artifact"]);
     expect(result[0].outputArtifactDefinitions).toEqual(["tech_spec_artifact"]);
   });
@@ -67,8 +76,11 @@ describe("SupabaseWorkflowEngineGateway", () => {
         step_type: "tech_spec",
         name: "Technical Spec",
         description: "Generate specs",
+        prompt_base: "Generate specs carefully.",
         required_mcps: [],
         required_skills: [],
+        model: "gpt-5.5",
+        reasoning_effort: "high",
         agent_type: "standard",
       },
       error: null,
@@ -106,8 +118,11 @@ describe("SupabaseWorkflowEngineGateway", () => {
         stepType: "tech_spec",
         name: "Technical Spec",
         description: "Generate specs",
+        promptBase: "Generate specs carefully.",
         requiredMcps: [],
         requiredSkills: [],
+        model: "gpt-5.5",
+        reasoningEffort: "high",
         agentType: "standard",
         inputArtifactDefinitions: ["business_summary_artifact"],
         outputArtifactDefinitions: ["tech_spec_artifact"],
@@ -119,8 +134,11 @@ describe("SupabaseWorkflowEngineGateway", () => {
       stepType: "tech_spec",
       name: "Technical Spec",
       description: "Generate specs",
+      promptBase: "Generate specs carefully.",
       requiredMcps: [],
       requiredSkills: [],
+      model: "gpt-5.5",
+      reasoningEffort: "high",
       agentType: "standard",
       inputArtifactDefinitions: ["business_summary_artifact"],
       outputArtifactDefinitions: ["tech_spec_artifact"],
@@ -133,8 +151,11 @@ describe("SupabaseWorkflowEngineGateway", () => {
         step_type: "tech_spec",
         name: "Technical Spec",
         description: "Generate specs",
+        prompt_base: "Generate specs carefully.",
         required_mcps: [],
         required_skills: [],
+        model: "gpt-5.5",
+        reasoning_effort: "high",
         agent_type: "standard",
       }),
       { onConflict: "step_type" }
@@ -166,14 +187,16 @@ describe("SupabaseWorkflowEngineGateway", () => {
       error: null,
     });
     const orSpy = vi.fn(() => ({ order: orderSpy }));
+    const neqSpy = vi.fn(() => ({ or: orSpy, order: orderSpy }));
     const from = vi.fn(() => ({
-      select: () => ({ or: orSpy }),
+      select: () => ({ neq: neqSpy }),
     }));
 
     const gateway = new SupabaseWorkflowEngineGateway({ from } as any);
     const result = await gateway.listWorkflows("p-1");
 
     expect(from).toHaveBeenCalledWith("workflows");
+    expect(neqSpy).toHaveBeenCalledWith("created_by", "flowpilot-runtime");
     expect(orSpy).toHaveBeenCalledWith("project_id.is.null,project_id.eq.p-1");
     expect(result[0].projectId).toBe(null);
   });
@@ -195,18 +218,19 @@ describe("SupabaseWorkflowEngineGateway", () => {
 
     const gateway = new SupabaseWorkflowEngineGateway({ from } as any);
 
-    await expect(
-      gateway.saveWorkflow({
-        id: "wf-1",
-        projectId: null,
-        name: "Global workflow",
-        description: "Reusable",
-        isTemplate: false,
-        providerOverride: null,
-        modelOverride: null,
-        steps: [],
-      })
-    ).rejects.toThrow("Unable to update workflow: no row was returned. Check workflow write policies.");
+      await expect(
+        gateway.saveWorkflow({
+          id: "wf-1",
+          projectId: null,
+          name: "Global workflow",
+          description: "Reusable",
+          isTemplate: false,
+          providerOverride: null,
+          modelOverride: null,
+          reasoningEffortOverride: null,
+          steps: [],
+        })
+      ).rejects.toThrow("Unable to update workflow: no row was returned. Check workflow write policies.");
   });
 
   it("toggles YOLO mode via edge function", async () => {
@@ -233,28 +257,149 @@ describe("SupabaseWorkflowEngineGateway", () => {
     expect(result.yoloMode).toBe(true);
   });
 
-  it("starts workflow runs via edge function", async () => {
-    vi.spyOn(edgeClient, "invokeSupabaseEdgeFunction").mockResolvedValueOnce(
-      {
-        id: "run-999",
-        workflow_id: "w-1",
-        project_id: "p-1",
-        status: "RUNNING",
-        yolo_mode: false,
-        started_by: "dev",
-        started_at: "2026-05-20T00:00:00Z",
-      } as any
+  it("starts workflow runs via the local runtime API when running in the browser", async () => {
+    const edgeSpy = vi.spyOn(edgeClient, "invokeSupabaseEdgeFunction");
+    vi.stubGlobal("window", {} as Window & typeof globalThis);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            id: "run-999",
+            workflow_id: "w-1",
+            project_id: "p-1",
+            status: "RUNNING",
+            yolo_mode: false,
+            started_by: "dev",
+            started_at: "2026-05-20T00:00:00Z",
+          }),
+          { status: 200 },
+        ),
+      ),
     );
     const from = vi.fn(() => ({}));
+    const auth = {
+      getSession: vi.fn().mockResolvedValue({
+        data: { session: { access_token: "token-123" } },
+        error: null,
+      }),
+    };
 
-    const gateway = new SupabaseWorkflowEngineGateway({ from } as any);
-    const result = await gateway.startWorkflowRun("w-1", "p-1");
+    const gateway = new SupabaseWorkflowEngineGateway({ from, auth } as any);
+    const result = await gateway.startWorkflowRun({
+      workflowId: "w-1",
+      projectId: "p-1",
+      startMode: "workflow-definition",
+      beginPrompt: "Build the result.",
+    });
 
-    expect(edgeClient.invokeSupabaseEdgeFunction).toHaveBeenCalledWith(
-      "workflow-engine-start-run",
-      { workflowId: "w-1", projectId: "p-1" }
-    );
+    expect(fetch).toHaveBeenCalledWith("/api/workflow-engine/start-run", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer token-123",
+      },
+      body: JSON.stringify({
+        workflowId: "w-1",
+        projectId: "p-1",
+        startMode: "workflow-definition",
+        beginPrompt: "Build the result.",
+      }),
+    });
+    expect(auth.getSession).toHaveBeenCalled();
+    expect(edgeSpy).not.toHaveBeenCalled();
     expect(result.status).toBe("RUNNING");
+  });
+
+  it("starts single-step workflow runs without a workflow id", async () => {
+    vi.stubGlobal("window", {} as Window & typeof globalThis);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            id: "run-1000",
+            workflow_id: "runtime-workflow",
+            project_id: "p-1",
+            status: "RUNNING",
+            yolo_mode: false,
+            started_by: "dev",
+            started_at: "2026-05-20T00:00:00Z",
+          }),
+          { status: 200 },
+        ),
+      ),
+    );
+    const from = vi.fn(() => ({}));
+    const auth = {
+      getSession: vi.fn().mockResolvedValue({
+        data: { session: { access_token: "token-123" } },
+        error: null,
+      }),
+    };
+
+    const gateway = new SupabaseWorkflowEngineGateway({ from, auth } as any);
+    await gateway.startWorkflowRun({
+      projectId: "p-1",
+      startMode: "single-step",
+      beginPrompt: "Build the result.",
+      stepType: "business_idea",
+    });
+
+    expect(fetch).toHaveBeenCalledWith("/api/workflow-engine/start-run", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer token-123",
+      },
+      body: JSON.stringify({
+        projectId: "p-1",
+        startMode: "single-step",
+        beginPrompt: "Build the result.",
+        stepType: "business_idea",
+      }),
+    });
+  });
+
+  it("surfaces an error when the local runtime endpoint is missing", async () => {
+    const edgeSpy = vi.spyOn(edgeClient, "invokeSupabaseEdgeFunction");
+    vi.stubGlobal("window", {} as Window & typeof globalThis);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(Response.json({ error: "Not Found" }, { status: 404 })),
+    );
+    const from = vi.fn(() => ({}));
+    const auth = {
+      getSession: vi.fn().mockResolvedValue({
+        data: { session: { access_token: "token-123" } },
+        error: null,
+      }),
+    };
+
+    const gateway = new SupabaseWorkflowEngineGateway({ from, auth } as any);
+    await expect(
+      gateway.startWorkflowRun({
+        workflowId: "w-1",
+        projectId: "p-1",
+        startMode: "workflow-definition",
+        beginPrompt: "Build the result.",
+      }),
+    ).rejects.toThrow("Not Found");
+
+    expect(fetch).toHaveBeenCalledWith("/api/workflow-engine/start-run", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer token-123",
+      },
+      body: JSON.stringify({
+        workflowId: "w-1",
+        projectId: "p-1",
+        startMode: "workflow-definition",
+        beginPrompt: "Build the result.",
+      }),
+    });
+    expect(edgeSpy).not.toHaveBeenCalledWith("workflow-engine-start-run", expect.anything());
   });
 
   it("submits approval/rejection decision via edge function", async () => {

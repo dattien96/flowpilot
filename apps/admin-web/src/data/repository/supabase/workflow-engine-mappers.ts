@@ -1,6 +1,8 @@
 import type {
   ArtifactDefinition,
   ArtifactRun,
+  ReasoningEffort,
+  SupportedStepModel,
   StepDefinition,
   Workflow,
   WorkflowStep,
@@ -11,6 +13,7 @@ import type {
   WorkflowRunStatus,
   WorkflowStepStatus,
 } from "@/domain/model/entity/workflow-engine";
+import { STEP_MODEL_OPTIONS } from "@/domain/model/entity/workflow-engine";
 
 export interface SupabaseRow {
   [key: string]: any;
@@ -38,8 +41,16 @@ export function mapStepDefinition(row: SupabaseRow): StepDefinition {
     stepType: row.step_type as StepType,
     name: String(row.name),
     description: String(row.description),
+    promptBase: row.prompt_base ? String(row.prompt_base) : null,
     requiredMcps: mcps,
     requiredSkills: skills,
+    teamRole: row.team_role ? String(row.team_role) : null,
+    subagent: row.subagent ? String(row.subagent) : null,
+    model: (row.model
+      ? String(row.model)
+      : STEP_MODEL_OPTIONS.find((option) => option.value === "gpt-5.4")?.value ??
+        STEP_MODEL_OPTIONS[0].value) as SupportedStepModel,
+    reasoningEffort: row.reasoning_effort ? (String(row.reasoning_effort) as ReasoningEffort) : null,
     agentType: row.agent_type as "standard" | "autonomous",
     inputArtifactDefinitions,
     outputArtifactDefinitions,
@@ -88,6 +99,7 @@ export function mapWorkflow(row: SupabaseRow): Workflow {
     isTemplate: Boolean(row.is_template),
     providerOverride: row.provider_override ? String(row.provider_override) : null,
     modelOverride: row.model_override ? String(row.model_override) : null,
+    reasoningEffortOverride: row.reasoning_effort_override ? String(row.reasoning_effort_override) : null,
     createdBy: String(row.created_by),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
@@ -103,6 +115,7 @@ export function mapWorkflowStep(row: SupabaseRow): WorkflowStep {
     isEnabled: Boolean(row.is_enabled),
     providerOverride: row.provider_override ? String(row.provider_override) : null,
     modelOverride: row.model_override ? String(row.model_override) : null,
+    reasoningEffortOverride: row.reasoning_effort_override ? String(row.reasoning_effort_override) : null,
     requiresApproval: Boolean(row.requires_approval),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
@@ -117,6 +130,7 @@ export function mapWorkflowRun(row: SupabaseRow): WorkflowRun {
     status: row.status as WorkflowRunStatus,
     provider: row.provider ? String(row.provider) : null,
     model: row.model ? String(row.model) : null,
+    reasoningEffort: row.reasoning_effort ? (String(row.reasoning_effort) as ReasoningEffort) : null,
     yoloMode: Boolean(row.yolo_mode),
     startedBy: String(row.started_by),
     startedAt: String(row.started_at),
