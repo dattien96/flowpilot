@@ -2,7 +2,6 @@ type WorkflowArtifactInput = {
   artifactId: string;
   title: string;
   projectId: string;
-  featureId: string;
   workflowRunId: string;
   workflowStepKey: string;
   providerKey: string;
@@ -19,7 +18,6 @@ type WorkflowArtifactManifest = {
   title: string;
   sourceKind: string;
   projectId: string;
-  featureId: string;
   workflowRunId: string;
   workflowStepKey: string;
   providerKey: string;
@@ -113,7 +111,6 @@ export async function saveWorkflowArtifact(input: WorkflowArtifactInput) {
     ".flowpilot",
     "artifacts",
     sanitize(input.projectId),
-    sanitize(input.featureId),
     sanitize(input.workflowRunId),
     sanitize(input.workflowStepKey),
     sanitize(input.artifactId),
@@ -132,7 +129,6 @@ export async function saveWorkflowArtifact(input: WorkflowArtifactInput) {
     title: input.title,
     sourceKind: input.sourceKind ?? "workflow_output",
     projectId: input.projectId,
-    featureId: input.featureId,
     workflowRunId: input.workflowRunId,
     workflowStepKey: input.workflowStepKey,
     providerKey: input.providerKey,
