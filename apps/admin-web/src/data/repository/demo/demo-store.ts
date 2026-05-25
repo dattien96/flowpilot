@@ -1,7 +1,7 @@
 import type { ContextSource } from "@/domain/model/entity/context-source";
-import type { Feature } from "@/domain/model/entity/feature";
 import type { Integration } from "@/domain/model/entity/integration";
 import type { Project } from "@/domain/model/entity/project";
+import type { ProjectWorkspaceBinding } from "@/domain/model/entity/project-workspace-binding";
 import type { Team, TeamMember } from "@/domain/model/entity/team";
 import type {
   AiCallLog,
@@ -30,6 +30,9 @@ export const demoProjects: Project[] = [
     ownerId: "demo-user",
     status: "active",
     artifactStoragePreference: "supabase",
+    defaultProvider: "claude",
+    defaultModel: "claude-sonnet",
+    defaultReasoningEffort: "high",
     createdBy: "demo-user",
     createdAt: now,
     updatedAt: now,
@@ -45,7 +48,29 @@ export const demoProjects: Project[] = [
     ownerId: "demo-user",
     status: "active",
     artifactStoragePreference: "supabase",
+    defaultProvider: "codex",
+    defaultModel: "gpt-5.4",
+    defaultReasoningEffort: "medium",
     createdBy: "demo-user",
+    createdAt: now,
+    updatedAt: now,
+  },
+];
+
+export const demoProjectWorkspaceBindings: ProjectWorkspaceBinding[] = [
+  {
+    id: "binding_meal_primary",
+    projectId: "project_meal_suggestion",
+    localPath: "/projects/meal-suggestion",
+    label: "Primary",
+    createdAt: now,
+    updatedAt: now,
+  },
+  {
+    id: "binding_admin_primary",
+    projectId: "project_flowpilot_admin",
+    localPath: "/projects/flowpilot-admin",
+    label: "Primary",
     createdAt: now,
     updatedAt: now,
   },
@@ -122,62 +147,10 @@ export const demoIntegrations: Integration[] = [
   },
 ];
 
-export const demoFeatures: Feature[] = [
-  {
-    id: "feature_widget_refresh",
-    projectId: "project_meal_suggestion",
-    title: "Home Widget Meal Card Refresh",
-    businessGoal: "Increase home screen engagement with glanceable meal content.",
-    userProblem: "Users want a fresh meal suggestion without opening the app.",
-    expectedFlow:
-      "Widget displays meal image, title, and type. Refresh swaps the content in place.",
-    acceptanceCriteria:
-      "Refresh updates content, loading is graceful, and analytics capture interaction.",
-    priority: "high",
-    status: "active",
-    ownerId: "demo-user",
-    createdAt: now,
-    updatedAt: now,
-  },
-  {
-    id: "feature_release_readiness",
-    projectId: "project_meal_suggestion",
-    title: "Release Readiness Report",
-    businessGoal: "Reduce risky Android releases with a structured AI-assisted preflight report.",
-    userProblem: "Tech leads spend too much time manually stitching risk notes before release.",
-    expectedFlow:
-      "Owner selects the feature branch, test signals, and release notes to generate a decision-ready summary.",
-    acceptanceCriteria:
-      "Report covers blockers, rollout plan, analytics checks, and unresolved defects.",
-    priority: "medium",
-    status: "active",
-    ownerId: "demo-user",
-    createdAt: now,
-    updatedAt: now,
-  },
-  {
-    id: "feature_admin_approval_center",
-    projectId: "project_flowpilot_admin",
-    title: "Approval Center Queue",
-    businessGoal: "Make pending workflow approvals visible in one place.",
-    userProblem: "The owner loses track of workflow pauses spread across multiple features and runs.",
-    expectedFlow:
-      "Approval queue highlights which output is blocked, why it matters, and what happens after approval.",
-    acceptanceCriteria:
-      "Queue can deep link to the related run and clearly show approval urgency.",
-    priority: "high",
-    status: "active",
-    ownerId: "demo-user",
-    createdAt: now,
-    updatedAt: now,
-  },
-];
-
 export const demoContextSources: ContextSource[] = [
   {
     id: "context_widget_goals",
     projectId: "project_meal_suggestion",
-    featureId: "feature_widget_refresh",
     type: "manual_text",
     title: "Business and UX notes",
     rawContent:
@@ -189,7 +162,6 @@ export const demoContextSources: ContextSource[] = [
   {
     id: "context_release_rules",
     projectId: "project_meal_suggestion",
-    featureId: "feature_release_readiness",
     type: "manual_text",
     title: "Release guardrails",
     rawContent:
@@ -201,7 +173,6 @@ export const demoContextSources: ContextSource[] = [
   {
     id: "context_admin_review",
     projectId: "project_flowpilot_admin",
-    featureId: "feature_admin_approval_center",
     type: "manual_text",
     title: "Approval center UX notes",
     rawContent:
@@ -213,7 +184,6 @@ export const demoContextSources: ContextSource[] = [
   {
     id: "context_admin_scope",
     projectId: "project_flowpilot_admin",
-    featureId: "feature_admin_approval_center",
     type: "url",
     title: "Planning reference",
     rawContent: "Google Doc reference for Admin MVP Skeleton and approval model.",
@@ -288,7 +258,6 @@ function createTimestamp(minutesAgo: number) {
 }
 
 export function buildWorkflowRun(
-  featureId: string,
   projectId: string,
   workflowDefinitionId: string,
   contextSourceIds: string[],
@@ -297,7 +266,6 @@ export function buildWorkflowRun(
     id: createId("run"),
     workflowDefinitionId,
     projectId,
-    featureId,
     status: "running",
     currentStepKey: null,
     selectedContextSourceIds: contextSourceIds,
@@ -338,7 +306,6 @@ function seedCompletedRun() {
     id: runId,
     workflowDefinitionId: definition.id,
     projectId: "project_meal_suggestion",
-    featureId: "feature_widget_refresh",
     status: "completed",
     currentStepKey: null,
     selectedContextSourceIds: ["context_widget_goals"],
@@ -362,12 +329,11 @@ function seedCompletedRun() {
         workflowRunId: runId,
         workflowStepId: step.id,
         projectId: "project_meal_suggestion",
-        featureId: "feature_widget_refresh",
         outputType: step.stepKey.replace("generate_", "") as AiOutput["outputType"],
         version: 1,
         title: step.stepName,
         contentMarkdown:
-          `# ${step.stepName}\n\nThis seeded output demonstrates a completed workflow artifact for the Android widget initiative.\n\n- Feature: Home Widget Meal Card Refresh\n- Focus: repeatable approvals and stored outputs\n- State: completed seed run`,
+          `# ${step.stepName}\n\nThis seeded output demonstrates a completed workflow artifact for the Android widget initiative.\n\n- Focus: repeatable approvals and stored outputs\n- State: completed seed run`,
         isApproved: true,
         createdAt: createTimestamp(200 - step.sequenceIndex * 2),
       });
@@ -414,7 +380,6 @@ function seedWaitingApprovalRun() {
     id: runId,
     workflowDefinitionId: definition.id,
     projectId: "project_flowpilot_admin",
-    featureId: "feature_admin_approval_center",
     status: "waiting_approval",
     currentStepKey: "approval_business_summary",
     selectedContextSourceIds: ["context_admin_review", "context_admin_scope"],
@@ -440,7 +405,6 @@ function seedWaitingApprovalRun() {
         workflowRunId: runId,
         workflowStepId: step.id,
         projectId: "project_flowpilot_admin",
-        featureId: "feature_admin_approval_center",
         outputType: "business_summary",
         version: 1,
         title: "Approval Center Business Summary",
@@ -493,7 +457,6 @@ function seedRunningRun() {
     id: runId,
     workflowDefinitionId: definition.id,
     projectId: "project_meal_suggestion",
-    featureId: "feature_release_readiness",
     status: "running",
     currentStepKey: "generate_business_summary",
     selectedContextSourceIds: ["context_release_rules"],

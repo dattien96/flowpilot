@@ -1,13 +1,12 @@
 import type { ContextSourceGateway } from "@/domain/gateway/context-source-gateway";
-import type { FeatureGateway } from "@/domain/gateway/feature-gateway";
 import type { IntegrationGateway } from "@/domain/gateway/integration-gateway";
 import type { ProjectGateway } from "@/domain/gateway/project-gateway";
 import type { TeamGateway } from "@/domain/gateway/team-gateway";
 import type { WorkflowExecutorGateway, WorkflowGateway } from "@/domain/gateway/workflow-gateway";
 import type { ContextSource } from "@/domain/model/entity/context-source";
-import type { Feature } from "@/domain/model/entity/feature";
 import type { Integration } from "@/domain/model/entity/integration";
 import type { Project } from "@/domain/model/entity/project";
+import type { ProjectWorkspaceBinding } from "@/domain/model/entity/project-workspace-binding";
 import type { Team, TeamMember } from "@/domain/model/entity/team";
 import type {
   AiCallLog,
@@ -22,12 +21,15 @@ import type {
   CreateContextSourcePayload,
   UpdateContextSourcePayload,
 } from "@/domain/model/payload/context-source-payload";
-import type { CreateFeaturePayload } from "@/domain/model/payload/feature-payload";
 import type {
   CreateIntegrationPayload,
   UpdateIntegrationPayload,
 } from "@/domain/model/payload/integration-payload";
 import type { CreateProjectPayload, UpdateProjectPayload } from "@/domain/model/payload/project-payload";
+import type {
+  CreateProjectWorkspaceBindingPayload,
+  UpdateProjectWorkspaceBindingPayload,
+} from "@/domain/model/payload/project-workspace-binding-payload";
 import type { StartWorkflowRunPayload } from "@/domain/model/payload/workflow-payload";
 import type { ListOutputsFilters } from "@/domain/model/payload/workflow-payload";
 import {
@@ -36,12 +38,12 @@ import {
   demoApprovalDecisions,
   demoApprovals,
   demoContextSources,
-  demoFeatures,
   demoIntegrations,
   demoLogs,
   demoOutputs,
   demoProjectMcpLinks,
   demoProjects,
+  demoProjectWorkspaceBindings,
   demoProjectTeamLinks,
   demoTeamMembers,
   demoTeams,
@@ -62,7 +64,6 @@ function activeContextSources() {
 class DemoGatewayBundle
   implements
     ProjectGateway,
-    FeatureGateway,
     ContextSourceGateway,
     WorkflowGateway,
     TeamGateway,
@@ -79,28 +80,52 @@ class DemoGatewayBundle
   }
 
   async createProject(payload: CreateProjectPayload) {
+    const primaryPath = payload.directoryPath.trim();
     const project: Project = {
       id: createId("project"),
       name: payload.name,
       description: payload.description,
       platform: payload.platform,
       repositoryUrl: payload.repositoryUrl,
-      directoryPath: payload.directoryPath ?? null,
+      directoryPath: primaryPath || null,
       ownerId: payload.ownerId ?? null,
       status: payload.status ?? "active",
       artifactStoragePreference: payload.artifactStoragePreference ?? "supabase",
+      defaultProvider: payload.defaultProvider ?? null,
+      defaultModel: payload.defaultModel ?? null,
+      defaultReasoningEffort: payload.defaultReasoningEffort ?? null,
       createdBy: "demo-user",
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
     demoProjects.unshift(project);
+    if (primaryPath) {
+      demoProjectWorkspaceBindings.unshift({
+        id: createId("binding"),
+        projectId: project.id,
+        localPath: primaryPath,
+        label: "Primary",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+    }
     return project;
   }
 
   async updateProject(projectId: string, patch: Partial<UpdateProjectPayload>) {
     const project = demoProjects.find((item) => item.id === projectId);
     if (!project) throw new Error("Project not found.");
-    Object.assign(project, patch);
+    Object.assign(
+      project,
+      Object.fromEntries(
+        Object.entries({
+          ...patch,
+          defaultProvider: patch.defaultProvider,
+          defaultModel: patch.defaultModel,
+          defaultReasoningEffort: patch.defaultReasoningEffort,
+        }).filter(([, value]) => value !== undefined),
+      ),
+    );
     return project;
   }
 
@@ -117,39 +142,46 @@ class DemoGatewayBundle
     return demoTeams.filter((team) => teamIds.has(team.id));
   }
 
-  listFeatures() {
-    return Promise.resolve(demoFeatures);
+  async listProjectWorkspaceBindings(projectId: string) {
+    return demoProjectWorkspaceBindings
+      .filter((binding) => binding.projectId === projectId)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 
-  listFeaturesByProject(projectId: string) {
-    return Promise.resolve(
-      demoFeatures.filter((feature) => feature.projectId === projectId),
-    );
-  }
-
-  getFeatureById(featureId: string) {
-    return Promise.resolve(
-      demoFeatures.find((feature) => feature.id === featureId) ?? null,
-    );
-  }
-
-  async createFeature(payload: CreateFeaturePayload) {
-    const feature: Feature = {
-      id: createId("feature"),
-      projectId: payload.projectId,
-      title: payload.title,
-      businessGoal: payload.businessGoal,
-      userProblem: payload.userProblem,
-      expectedFlow: payload.expectedFlow,
-      acceptanceCriteria: payload.acceptanceCriteria,
-      priority: payload.priority,
-      status: "draft",
-      ownerId: "demo-user",
+  async createProjectWorkspaceBinding(
+    projectId: string,
+    payload: CreateProjectWorkspaceBindingPayload,
+  ) {
+    const localPath = payload.localPath.trim();
+    const label = payload.label?.trim() || null;
+    const binding: ProjectWorkspaceBinding = {
+      id: createId("binding"),
+      projectId,
+      localPath,
+      label,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
-    demoFeatures.unshift(feature);
-    return feature;
+    demoProjectWorkspaceBindings.unshift(binding);
+    return binding;
+  }
+
+  async updateProjectWorkspaceBinding(
+    bindingId: string,
+    patch: Partial<UpdateProjectWorkspaceBindingPayload>,
+  ) {
+    const binding = demoProjectWorkspaceBindings.find((item) => item.id === bindingId);
+    if (!binding) throw new Error("Binding not found.");
+    if (patch.localPath !== undefined) binding.localPath = patch.localPath.trim();
+    if (patch.label !== undefined) binding.label = patch.label?.trim() || null;
+    binding.updatedAt = new Date().toISOString();
+    return binding;
+  }
+
+  async deleteProjectWorkspaceBinding(bindingId: string) {
+    const index = demoProjectWorkspaceBindings.findIndex((item) => item.id === bindingId);
+    if (index === -1) throw new Error("Binding not found.");
+    demoProjectWorkspaceBindings.splice(index, 1);
   }
 
   async listTeams() {
@@ -316,12 +348,6 @@ class DemoGatewayBundle
     return Promise.resolve(activeContextSources());
   }
 
-  listContextSourcesByFeature(featureId: string) {
-    return Promise.resolve(
-      activeContextSources().filter((context) => context.featureId === featureId),
-    );
-  }
-
   listContextSourcesByProject(projectId: string) {
     return Promise.resolve(
       activeContextSources().filter((context) => context.projectId === projectId),
@@ -338,7 +364,6 @@ class DemoGatewayBundle
     const contextSource: ContextSource = {
       id: createId("context"),
       projectId: payload.projectId,
-      featureId: payload.featureId,
       type: payload.type,
       title: payload.title,
       rawContent: payload.rawContent,
@@ -420,7 +445,6 @@ class DemoGatewayBundle
       selectedContextSources: activeContextSources().filter((context) =>
         run.selectedContextSourceIds.includes(context.id),
       ),
-      feature: demoFeatures.find((feature) => feature.id === run.featureId) ?? null,
       project: demoProjects.find((project) => project.id === run.projectId) ?? null,
       definition:
         demoWorkflowDefinitions.find(
@@ -430,15 +454,14 @@ class DemoGatewayBundle
   }
 
   async createWorkflowRun(payload: StartWorkflowRunPayload, definition: WorkflowDefinition) {
-    const feature = demoFeatures.find((item) => item.id === payload.featureId);
+    const project = demoProjects.find((item) => item.id === payload.projectId);
 
-    if (!feature) {
-      throw new Error("Feature not found.");
+    if (!project) {
+      throw new Error("Project not found.");
     }
 
     const run = buildWorkflowRun(
-      feature.id,
-      feature.projectId,
+      project.id,
       definition.id,
       payload.contextSourceIds,
     );
@@ -509,7 +532,6 @@ class DemoGatewayBundle
             null,
           output:
             demoOutputs.find((output) => output.id === approval.aiOutputId) ?? null,
-          feature: demoFeatures.find((feature) => feature.id === run.featureId) ?? null,
           project: demoProjects.find((project) => project.id === run.projectId) ?? null,
         };
       })
@@ -558,7 +580,6 @@ class DemoGatewayBundle
     return Promise.resolve(
       [...demoOutputs]
         .filter((output) => !filters?.projectId || output.projectId === filters.projectId)
-        .filter((output) => !filters?.featureId || output.featureId === filters.featureId)
         .filter(
           (output) =>
             !filters?.workflowRunId || output.workflowRunId === filters.workflowRunId,
@@ -588,7 +609,6 @@ class DemoGatewayBundle
       output,
       run,
       step: demoWorkflowSteps.find((step) => step.id === output.workflowStepId) ?? null,
-      feature: demoFeatures.find((feature) => feature.id === output.featureId) ?? null,
       project: demoProjects.find((project) => project.id === output.projectId) ?? null,
       approvals: demoApprovals.filter((approval) => approval.aiOutputId === output.id),
       approvalDecisions: demoApprovalDecisions.filter(
@@ -632,12 +652,10 @@ export function createDemoGatewayBundle() {
   const workflowExecutor: WorkflowExecutorGateway = new MockWorkflowExecutor(
     demoGatewayBundle,
     (projectId) => demoGatewayBundle.getProjectById(projectId),
-    (featureId) => demoGatewayBundle.getFeatureById(featureId),
   );
 
   return {
     projectGateway: demoGatewayBundle,
-    featureGateway: demoGatewayBundle,
     integrationGateway: demoGatewayBundle,
     contextSourceGateway: demoGatewayBundle,
     workflowGateway: demoGatewayBundle,
