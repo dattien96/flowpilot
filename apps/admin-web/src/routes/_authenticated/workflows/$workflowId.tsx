@@ -5,11 +5,33 @@ import { PageFrame } from "@/components/common/page-frame";
 import { Button } from "@/components/ui/button";
 import { createGatewayBundle } from "@/data/repository/browser-factory";
 import type { Project } from "@/domain/model/entity/project";
+import { ensureProjectHasUsableBinding } from "@/features/projects/project-binding-launch-guard";
 import type { StepDefinition, Workflow, WorkflowStep } from "@/domain/model/entity/workflow-engine";
+import {
+  REASONING_EFFORT_OPTIONS,
+  STEP_MODEL_OPTIONS,
+} from "@/domain/model/entity/workflow-engine";
 import { GetWorkflowDetailUseCase } from "@/domain/usecase/workflow-engine/get-workflow-detail-usecase";
 import { ListStepDefinitionsUseCase } from "@/domain/usecase/workflow-engine/list-step-definitions-usecase";
 import { SaveWorkflowUseCase } from "@/domain/usecase/workflow-engine/save-workflow-usecase";
 import { StartWorkflowRunUseCase } from "@/domain/usecase/workflow-engine/start-workflow-run-usecase";
+
+const DEFAULT_MODEL = "gpt-5.4";
+const DEFAULT_REASONING_EFFORT = "medium";
+
+function providerForModel(model: string) {
+  if (model.startsWith("gpt-")) {
+    return "codex";
+  }
+  if (model.startsWith("gemini-")) {
+    return "gemini";
+  }
+  if (model.startsWith("claude-")) {
+    return "claude";
+  }
+
+  return "";
+}
 
 export const Route = createFileRoute("/_authenticated/workflows/$workflowId")({
   validateSearch: (search: Record<string, unknown>) => ({
@@ -44,11 +66,12 @@ export function WorkflowDetailPage() {
   const [runStarting, setRunStarting] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [providerOverride, setProviderOverride] = useState("");
-  const [modelOverride, setModelOverride] = useState("");
+  const [modelOverride, setModelOverride] = useState(DEFAULT_MODEL);
+  const [reasoningEffortOverride, setReasoningEffortOverride] = useState(DEFAULT_REASONING_EFFORT);
   const [selectedStepType, setSelectedStepType] = useState("");
   const [steps, setSteps] = useState<Partial<WorkflowStep>[]>([]);
   const [runProjectId, setRunProjectId] = useState(searchProjectId ?? "");
+  const [beginPrompt, setBeginPrompt] = useState("");
 
   useEffect(() => {
     const load = async () => {
@@ -68,8 +91,8 @@ export function WorkflowDetailPage() {
         if (detail) {
           setName(detail.name);
           setDescription(detail.description);
-          setProviderOverride(detail.providerOverride ?? "");
-          setModelOverride(detail.modelOverride ?? "");
+          setModelOverride(detail.modelOverride ?? DEFAULT_MODEL);
+          setReasoningEffortOverride(detail.reasoningEffortOverride ?? DEFAULT_REASONING_EFFORT);
           setSteps(
             (detail.steps ?? [])
               .slice()
@@ -96,6 +119,10 @@ export function WorkflowDetailPage() {
     () => new Map(catalog.map((step) => [step.stepType, step.name])),
     [catalog]
   );
+  const stepByType = useMemo(
+    () => new Map(catalog.map((step) => [step.stepType, step])),
+    [catalog]
+  );
   const projectNameById = useMemo(
     () => new Map(projects.map((project) => [project.id, project.name])),
     [projects]
@@ -106,6 +133,7 @@ export function WorkflowDetailPage() {
 
   const addStep = () => {
     if (!canEdit || !selectedStepType) return;
+    const selectedStep = stepByType.get(selectedStepType);
     setSteps((current) => [
       ...current,
       {
@@ -113,8 +141,8 @@ export function WorkflowDetailPage() {
         orderIndex: current.length,
         isEnabled: true,
         requiresApproval: true,
-        providerOverride: null,
-        modelOverride: null,
+        modelOverride: selectedStep?.model ?? DEFAULT_MODEL,
+        reasoningEffortOverride: selectedStep?.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
       },
     ]);
   };
@@ -155,8 +183,8 @@ export function WorkflowDetailPage() {
         name,
         description,
         isTemplate: workflow.isTemplate,
-        providerOverride: providerOverride || null,
-        modelOverride: modelOverride || null,
+        modelOverride: modelOverride || DEFAULT_MODEL,
+        reasoningEffortOverride: reasoningEffortOverride || DEFAULT_REASONING_EFFORT,
         steps,
       });
       setWorkflow(saved);
@@ -181,10 +209,23 @@ export function WorkflowDetailPage() {
       window.alert("Please choose a project to run this workflow.");
       return;
     }
+    if (!beginPrompt.trim()) {
+      window.alert("Begin prompt is required.");
+      return;
+    }
 
     setRunStarting(true);
     try {
-      await startWorkflowRunUseCase.current.execute(workflow.id, effectiveRunProjectId);
+      const bindings = await gatewayBundle.current.projectGateway.listProjectWorkspaceBindings(
+        effectiveRunProjectId,
+      );
+      await ensureProjectHasUsableBinding(effectiveRunProjectId, bindings);
+      await startWorkflowRunUseCase.current.execute({
+        workflowId: workflow.id,
+        projectId: effectiveRunProjectId,
+        startMode: "workflow-definition",
+        beginPrompt,
+      });
       await navigate({
         to: "/projects/$projectId/workflows",
         params: { projectId: effectiveRunProjectId },
@@ -279,22 +320,37 @@ export function WorkflowDetailPage() {
           />
         </label>
         <label className="space-y-2 text-sm">
-          <span className="font-medium">Provider override</span>
-          <input
-            className="w-full rounded-2xl border border-border bg-card px-4 py-3"
-            disabled={!canEdit}
-            value={providerOverride}
-            onChange={(event) => setProviderOverride(event.target.value)}
-          />
-        </label>
-        <label className="space-y-2 text-sm">
           <span className="font-medium">Model override</span>
-          <input
+          <select
             className="w-full rounded-2xl border border-border bg-card px-4 py-3"
             disabled={!canEdit}
             value={modelOverride}
             onChange={(event) => setModelOverride(event.target.value)}
-          />
+          >
+            {STEP_MODEL_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <p className="text-xs text-muted-foreground">
+            Derived provider: {providerForModel(modelOverride) || "unknown"}
+          </p>
+        </label>
+        <label className="space-y-2 text-sm">
+          <span className="font-medium">Reasoning effort override</span>
+          <select
+            className="w-full rounded-2xl border border-border bg-card px-4 py-3"
+            disabled={!canEdit}
+            value={reasoningEffortOverride}
+            onChange={(event) => setReasoningEffortOverride(event.target.value)}
+          >
+            {REASONING_EFFORT_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
         </label>
       </div>
 
@@ -325,6 +381,15 @@ export function WorkflowDetailPage() {
             Launch run
           </Button>
         </div>
+        <label className="mt-4 block space-y-2 text-sm">
+          <span className="font-medium">Begin prompt</span>
+          <textarea
+            className="min-h-28 w-full rounded-2xl border border-border bg-card px-4 py-3"
+            placeholder="Describe what this workflow should accomplish."
+            value={beginPrompt}
+            onChange={(event) => setBeginPrompt(event.target.value)}
+          />
+        </label>
         <p className="mt-3 text-sm text-muted-foreground">
           {isPrivateWorkflow
             ? "Private workflows always launch in their owner project."
@@ -363,24 +428,77 @@ export function WorkflowDetailPage() {
           {steps.map((step, index) => (
             <div
               key={`${step.stepType}-${index}`}
-              className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border bg-card px-4 py-3"
+              className="space-y-4 rounded-2xl border border-border bg-card px-4 py-3"
             >
-              <div>
-                <p className="font-medium">
-                  {index + 1}. {stepNameByType.get(step.stepType ?? "") ?? step.stepType}
-                </p>
-                <p className="text-xs text-muted-foreground">{step.stepType}</p>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="font-medium">
+                    {index + 1}. {stepNameByType.get(step.stepType ?? "") ?? step.stepType}
+                  </p>
+                  <p className="text-xs text-muted-foreground">{step.stepType}</p>
+                </div>
+                <div className="flex gap-2">
+                  <Button disabled={!canEdit} variant="secondary" onClick={() => moveStep(index, "up")}>
+                    Up
+                  </Button>
+                  <Button disabled={!canEdit} variant="secondary" onClick={() => moveStep(index, "down")}>
+                    Down
+                  </Button>
+                  <Button disabled={!canEdit} variant="secondary" onClick={() => removeStep(index)}>
+                    Remove
+                  </Button>
+                </div>
               </div>
-              <div className="flex gap-2">
-                <Button disabled={!canEdit} variant="secondary" onClick={() => moveStep(index, "up")}>
-                  Up
-                </Button>
-                <Button disabled={!canEdit} variant="secondary" onClick={() => moveStep(index, "down")}>
-                  Down
-                </Button>
-                <Button disabled={!canEdit} variant="secondary" onClick={() => removeStep(index)}>
-                  Remove
-                </Button>
+              <div className="grid gap-3 md:grid-cols-3">
+                <label className="space-y-2 text-sm">
+                  <span className="font-medium">Model</span>
+                  <select
+                    className="w-full rounded-2xl border border-border bg-background px-4 py-3"
+                    disabled={!canEdit}
+                    value={step.modelOverride ?? DEFAULT_MODEL}
+                    onChange={(event) =>
+                      setSteps((current) =>
+                        current.map((item, currentIndex) =>
+                          currentIndex === index
+                            ? { ...item, modelOverride: event.target.value || DEFAULT_MODEL }
+                            : item,
+                        ),
+                      )
+                    }
+                  >
+                    {STEP_MODEL_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="space-y-2 text-sm">
+                  <span className="font-medium">Reasoning</span>
+                  <select
+                    className="w-full rounded-2xl border border-border bg-background px-4 py-3"
+                    disabled={!canEdit}
+                    value={step.reasoningEffortOverride ?? DEFAULT_REASONING_EFFORT}
+                    onChange={(event) =>
+                      setSteps((current) =>
+                        current.map((item, currentIndex) =>
+                          currentIndex === index
+                            ? {
+                                ...item,
+                                reasoningEffortOverride: event.target.value || DEFAULT_REASONING_EFFORT,
+                              }
+                            : item,
+                        ),
+                      )
+                    }
+                  >
+                    {REASONING_EFFORT_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
               </div>
             </div>
           ))}

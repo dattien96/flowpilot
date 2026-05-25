@@ -78,12 +78,14 @@ function buildProject(overrides: Partial<Project> = {}): Project {
 
 function buildStepDefinition(overrides: Partial<StepDefinition> = {}): StepDefinition {
   return {
-    id: "step-1",
     stepType: "generate_spec",
     name: "Generate spec",
     description: "Builds the initial spec",
-    defaultConfig: {},
-    createdBy: "demo-user",
+    promptBase: "Generate the initial project spec.",
+    requiredMcps: [],
+    requiredSkills: [],
+    model: "gpt-5.4",
+    agentType: "standard",
     createdAt: "2026-05-20T00:00:00.000Z",
     updatedAt: "2026-05-20T00:00:00.000Z",
     ...overrides,
@@ -100,6 +102,7 @@ function buildWorkflowStep(overrides: Partial<WorkflowStep> = {}): WorkflowStep 
     requiresApproval: true,
     providerOverride: null,
     modelOverride: null,
+    reasoningEffortOverride: null,
     createdAt: "2026-05-20T00:00:00.000Z",
     updatedAt: "2026-05-20T00:00:00.000Z",
     ...overrides,
@@ -115,6 +118,7 @@ function buildWorkflow(overrides: Partial<Workflow> = {}): Workflow {
     isTemplate: false,
     providerOverride: null,
     modelOverride: null,
+    reasoningEffortOverride: null,
     createdBy: "demo-user",
     createdAt: "2026-05-20T00:00:00.000Z",
     updatedAt: "2026-05-20T00:00:00.000Z",
@@ -134,7 +138,7 @@ function buildWorkflowRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
     yoloMode: false,
     startedBy: "demo-user",
     startedAt: "2026-05-20T00:00:00.000Z",
-    completedAt: null,
+    finishedAt: null,
     errorMessage: null,
     ...overrides,
   };
@@ -181,6 +185,8 @@ describe("WorkflowDetailPage", () => {
         expect.objectContaining({
           id: "wf-global",
           projectId: null,
+          modelOverride: "gpt-5.4",
+          reasoningEffortOverride: "medium",
         })
       );
     });
