@@ -15,7 +15,6 @@ export default async function ProjectDetailPage({
   const gateways = await createGatewayBundle();
   const detail = await new GetProjectDetailUseCase(
     gateways.projectGateway,
-    gateways.featureGateway,
     gateways.workflowGateway,
     gateways.teamGateway,
   ).execute(projectId);
@@ -48,18 +47,24 @@ export default async function ProjectDetailPage({
 
       <section className="grid gap-4 xl:grid-cols-2">
         <div className="rounded-[1.6rem] border border-border bg-background/70 p-6">
-          <h2 className="text-xl font-semibold">Features</h2>
+          <h2 className="text-xl font-semibold">Workflow Runs</h2>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Workflow runs are the execution sections inside this project.
+          </p>
           <div className="mt-4 space-y-3">
-            {detail.features.map((feature) => (
-              <Link
-                key={feature.id}
-                className="block rounded-2xl border border-border bg-card px-4 py-3"
-                href={`/features/${feature.id}`}
-              >
-                <p className="font-semibold">{feature.title}</p>
-                <p className="text-sm text-muted-foreground">{feature.businessGoal}</p>
-              </Link>
-            ))}
+            {detail.workflowRuns.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No workflow runs yet.</p>
+            ) : (
+              detail.workflowRuns.map((run) => (
+                <div
+                  key={run.id}
+                  className="flex items-center justify-between rounded-2xl border border-border bg-card px-4 py-3"
+                >
+                  <span className="font-semibold">{run.id}</span>
+                  <Badge>{run.status}</Badge>
+                </div>
+              ))
+            )}
           </div>
         </div>
         <div className="rounded-[1.6rem] border border-border bg-background/70 p-6">
