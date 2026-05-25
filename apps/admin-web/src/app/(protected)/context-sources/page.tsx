@@ -1,15 +1,13 @@
 import { createGatewayBundle } from "@/data/repository/factory";
 import { ListContextSourcesUseCase } from "@/domain/usecase/context-sources/list-context-sources-usecase";
-import { ListFeaturesUseCase } from "@/domain/usecase/features/list-features-usecase";
 import { ListProjectsUseCase } from "@/domain/usecase/projects/list-projects-usecase";
 import { Button } from "@/presentation/components/ui/button";
 
 export default async function ContextSourcesPage() {
   const gateways = await createGatewayBundle();
-  const [contexts, projects, features] = await Promise.all([
+  const [contexts, projects] = await Promise.all([
     new ListContextSourcesUseCase(gateways.contextSourceGateway).execute(),
     new ListProjectsUseCase(gateways.projectGateway).execute(),
-    new ListFeaturesUseCase(gateways.featureGateway).execute(),
   ]);
 
   return (
@@ -23,7 +21,7 @@ export default async function ContextSourcesPage() {
       <section className="rounded-[1.6rem] border border-border bg-background/70 p-6">
         <h2 className="text-xl font-semibold">Create context source</h2>
         <form action="/api/context-sources" method="post" className="mt-4 grid gap-3">
-          <div className="grid gap-3 lg:grid-cols-3">
+          <div className="grid gap-3 lg:grid-cols-2">
             <select
               className="rounded-2xl border border-border bg-card px-4 py-3"
               name="projectId"
@@ -33,14 +31,6 @@ export default async function ContextSourcesPage() {
               {projects.map((project) => (
                 <option key={project.id} value={project.id}>
                   {project.name}
-                </option>
-              ))}
-            </select>
-            <select className="rounded-2xl border border-border bg-card px-4 py-3" name="featureId">
-              <option value="">Project-level context</option>
-              {features.map((feature) => (
-                <option key={feature.id} value={feature.id}>
-                  {feature.title}
                 </option>
               ))}
             </select>

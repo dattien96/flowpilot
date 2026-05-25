@@ -8,7 +8,6 @@ import { CreateContextSourceUseCase } from "@/domain/usecase/context-sources/cre
 
 const createContextSourceSchema = z.object({
   projectId: z.string().min(1),
-  featureId: z.string().nullable().default(null),
   type: z.enum(["manual_text", "url", "api_note", "file"]),
   title: z.string().min(3),
   rawContent: z.string().min(1),
@@ -31,15 +30,11 @@ export async function POST(request: Request) {
   const input = contentType.includes("application/json")
     ? await request.json()
     : Object.fromEntries((await request.formData()).entries());
-  const payload = createContextSourceSchema.parse({
-    ...input,
-    featureId: input.featureId ? String(input.featureId) : null,
-  });
+  const payload = createContextSourceSchema.parse(input);
   const gateways = await createGatewayBundle();
   const contextSource = await new CreateContextSourceUseCase(
     gateways.contextSourceGateway,
     gateways.projectGateway,
-    gateways.featureGateway,
   ).execute(payload);
 
   if (contentType.includes("application/json")) {

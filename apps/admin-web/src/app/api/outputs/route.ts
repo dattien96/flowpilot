@@ -7,7 +7,6 @@ import { ListOutputsUseCase } from "@/domain/usecase/outputs/list-outputs-usecas
 
 const outputFiltersSchema = z.object({
   projectId: z.string().optional(),
-  featureId: z.string().optional(),
   workflowRunId: z.string().optional(),
   outputType: z
     .enum([
@@ -26,7 +25,6 @@ function readFilters(request: Request) {
   const url = new URL(request.url);
   return outputFiltersSchema.parse({
     projectId: url.searchParams.get("projectId") || undefined,
-    featureId: url.searchParams.get("featureId") || undefined,
     workflowRunId: url.searchParams.get("workflowRunId") || undefined,
     outputType: url.searchParams.get("outputType") || undefined,
     approvalState: url.searchParams.get("approvalState") || undefined,
