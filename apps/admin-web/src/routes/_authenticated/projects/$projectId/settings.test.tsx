@@ -63,6 +63,9 @@ function buildProject() {
     ownerId: null,
     status: "active",
     artifactStoragePreference: "supabase" as const,
+    defaultProvider: "codex",
+    defaultModel: "gpt-5.4",
+    defaultReasoningEffort: "medium",
     createdBy: "demo-user",
     createdAt: "2026-05-19T00:00:00.000Z",
     updatedAt: "2026-05-19T00:00:00.000Z",
@@ -202,5 +205,33 @@ describe("Project settings MCP links", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create new MCP" }));
 
     expect(mocks.navigate).toHaveBeenCalledWith({ to: "/settings/mcp-servers" });
+  });
+
+  it("saves project-level AI provider defaults", async () => {
+    const updateProject = vi.fn().mockResolvedValue(buildProject());
+    mocks.createGatewayBundle.mockReturnValue({
+      integrationGateway: {
+        linkIntegrationToProject: vi.fn(),
+        unlinkIntegrationFromProject: vi.fn(),
+      },
+      projectGateway: { updateProject },
+      teamGateway: {
+        linkTeamToProject: vi.fn(),
+        unlinkTeamFromProject: vi.fn(),
+      },
+    });
+
+    renderSubject();
+
+    fireEvent.click(screen.getByRole("button", { name: "Save defaults" }));
+
+    await waitFor(() => {
+      expect(updateProject).toHaveBeenCalledWith("project-alpha", {
+        defaultProvider: "codex",
+        defaultModel: "gpt-5.4",
+        defaultReasoningEffort: "medium",
+      });
+      expect(mocks.invalidate).toHaveBeenCalled();
+    });
   });
 });

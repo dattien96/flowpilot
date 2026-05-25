@@ -8,11 +8,32 @@ import { Button } from "@/components/ui/button";
 import { createGatewayBundle } from "@/data/repository/browser-factory";
 import type { Integration, IntegrationStatus, IntegrationType } from "@/domain/model/entity/integration";
 import {
+  REASONING_EFFORT_OPTIONS,
+  STEP_MODEL_OPTIONS,
+} from "@/domain/model/entity/workflow-engine";
+import {
   formatTimestamp,
   integrationTypes,
   toTitleCase,
 } from "@/features/mcp/integration-config";
 import { Badge } from "@/presentation/components/ui/badge";
+
+const DEFAULT_MODEL = "gpt-5.4";
+const DEFAULT_REASONING_EFFORT = "medium";
+
+function providerForModel(model: string) {
+  if (model.startsWith("gpt-")) {
+    return "codex";
+  }
+  if (model.startsWith("gemini-")) {
+    return "gemini";
+  }
+  if (model.startsWith("claude-")) {
+    return "claude";
+  }
+
+  return "";
+}
 
 function integrationTone(status: IntegrationStatus) {
   switch (status) {
@@ -93,6 +114,17 @@ export function ProjectSettingsContent({
 }) {
   const router = useRouter();
   const [selectedLinks, setSelectedLinks] = useState<Partial<Record<IntegrationType, string>>>({});
+  const [providerDefaults, setProviderDefaults] = useState({
+    defaultModel: project.defaultModel ?? DEFAULT_MODEL,
+    defaultReasoningEffort: project.defaultReasoningEffort ?? DEFAULT_REASONING_EFFORT,
+  });
+
+  useEffect(() => {
+    setProviderDefaults({
+      defaultModel: project.defaultModel ?? DEFAULT_MODEL,
+      defaultReasoningEffort: project.defaultReasoningEffort ?? DEFAULT_REASONING_EFFORT,
+    });
+  }, [project.defaultModel, project.defaultReasoningEffort]);
 
   const linkTeam = useMutation({
     mutationFn: async (teamId: string) => {
@@ -141,6 +173,28 @@ export function ProjectSettingsContent({
     },
   });
 
+  const updateProjectDefaults = useMutation({
+    mutationFn: async () => {
+      const gateways = await createGatewayBundle();
+      const defaultModel = providerDefaults.defaultModel.trim() || DEFAULT_MODEL;
+      const defaultReasoningEffort =
+        providerDefaults.defaultReasoningEffort.trim() || DEFAULT_REASONING_EFFORT;
+      const resolvedProvider = providerForModel(defaultModel);
+      if (!resolvedProvider) {
+        throw new Error("Default model must start with gpt-, gemini-, or claude-.");
+      }
+
+      await gateways.projectGateway.updateProject(projectId, {
+        defaultProvider: resolvedProvider,
+        defaultModel,
+        defaultReasoningEffort: defaultReasoningEffort || null,
+      });
+    },
+    onSuccess: async () => {
+      await router.invalidate();
+    },
+  });
+
   const linkedTeamIds = useMemo(() => new Set(teams.map((team) => team.id)), [teams]);
   const linkedByType = useMemo(
     () => new Map(linkedIntegrations.map((integration) => [integration.type, integration])),
@@ -179,6 +233,77 @@ export function ProjectSettingsContent({
         <ProjectSectionNav projectId={projectId} />
 
         <section className="grid gap-4 xl:grid-cols-2">
+          <div className="rounded-[1.5rem] border border-border bg-background/60 p-5">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-xl font-semibold">AI Provider Defaults</h2>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  Model is the user-editable source of truth. Provider is derived automatically
+                  from the selected model and stored only as a reference field.
+                </p>
+              </div>
+              <Badge tone={providerDefaults.defaultModel ? "success" : "neutral"}>
+                {providerForModel(providerDefaults.defaultModel) || "unknown"}
+              </Badge>
+            </div>
+
+            <div className="mt-4 grid gap-3 md:grid-cols-2">
+              <label className="space-y-2 text-sm">
+                <span className="font-medium">Default model</span>
+                <select
+                  className="w-full rounded-2xl border border-border bg-background px-4 py-3"
+                  value={providerDefaults.defaultModel}
+                  onChange={(event) =>
+                    setProviderDefaults((current) => ({
+                      ...current,
+                      defaultModel: event.target.value,
+                    }))
+                  }
+                >
+                  {STEP_MODEL_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="space-y-2 text-sm">
+                <span className="font-medium">Default reasoning effort</span>
+                <select
+                  className="w-full rounded-2xl border border-border bg-background px-4 py-3"
+                  value={providerDefaults.defaultReasoningEffort}
+                  onChange={(event) =>
+                    setProviderDefaults((current) => ({
+                      ...current,
+                      defaultReasoningEffort: event.target.value,
+                    }))
+                  }
+                >
+                  {REASONING_EFFORT_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+              <p className="text-sm text-muted-foreground">
+                Select a model and the provider is derived automatically. Reasoning effort is
+                stored independently and defaults to medium when not overridden.
+              </p>
+              <Button
+                disabled={updateProjectDefaults.isPending}
+                type="button"
+                onClick={() => updateProjectDefaults.mutate()}
+              >
+                {updateProjectDefaults.isPending ? "Saving..." : "Save defaults"}
+              </Button>
+            </div>
+          </div>
+
           <div className="rounded-[1.5rem] border border-border bg-background/60 p-5">
             <div className="flex items-center justify-between gap-3">
               <div>
