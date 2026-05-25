@@ -187,6 +187,17 @@ const ArtifactContentViewer = ({ content, gateway }: { content: string, gateway:
   const isLong = content.length > TRUNCATE_LENGTH;
   const displayContent = (!expanded && isLong) ? content.substring(0, TRUNCATE_LENGTH) + "..." : content;
 
+  const onOpenClick = () => {
+    if (!match) return;
+    let path = match[2];
+    if (path.startsWith("/abs/path/")) {
+      path = path.substring(10);
+    } else if (path.startsWith("file:///")) {
+      path = path.substring(8);
+    }
+    handleLoadFile(path);
+  };
+
   return (
     <div className="space-y-4">
       <article className="whitespace-pre-wrap text-foreground font-mono text-sm leading-relaxed">
@@ -203,7 +214,7 @@ const ArtifactContentViewer = ({ content, gateway }: { content: string, gateway:
         {match && (
           <Button 
             disabled={loading} 
-            onClick={() => handleLoadFile(match[2])}
+            onClick={onOpenClick}
             className="text-xs h-8"
           >
             {loading ? <RefreshCw className="mr-2 h-3 w-3 animate-spin" /> : <FileText className="mr-2 h-3 w-3" />}
