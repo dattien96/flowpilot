@@ -7,6 +7,38 @@ describe("HttpLocalRunnerGateway integration connection", () => {
     vi.unstubAllGlobals();
   });
 
+  it("posts a directory picker request and returns the selected path", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          path: "/Users/tiendat/Desktop/flowpilot/backend-abc",
+        }),
+        { status: 200 },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const gateway = new HttpLocalRunnerGateway("http://127.0.0.1:4317");
+    const result = await gateway.pickDirectory();
+
+    const [input, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    expect(String(input)).toBe("http://127.0.0.1:4317/directories/pick");
+    expect(init.method).toBe("POST");
+    expect(init.body).toBe(JSON.stringify({}));
+    expect(result.path).toBe("/Users/tiendat/Desktop/flowpilot/backend-abc");
+  });
+
+  it("reports a clear error when the local runner is offline", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError("Failed to fetch"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const gateway = new HttpLocalRunnerGateway("http://127.0.0.1:4317");
+
+    await expect(gateway.pickDirectory()).rejects.toThrow(
+      "Local runner is unreachable at http://127.0.0.1:4317. Start it with 'just runner-dev' or 'just dev' and try again.",
+    );
+  });
+
   it("posts a test request to the integration connection endpoint", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(

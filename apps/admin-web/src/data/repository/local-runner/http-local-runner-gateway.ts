@@ -1,7 +1,9 @@
+import { mapProvider, type RawProvider } from "./local-runner-mappers";
 import type { LocalRunnerGateway } from "@/domain/gateway/local-runner-gateway";
 import type {
   LocalRunnerArtifact,
   LocalRunnerBackupResult,
+  LocalRunnerDirectorySelection,
   LocalRunnerFlow,
   LocalRunnerHealth,
   LocalRunnerIntegrationConnectionRequest,
@@ -64,9 +66,34 @@ export class HttpLocalRunnerGateway implements LocalRunnerGateway {
     }
   }
 
+  async pickDirectory() {
+    let response: Response;
+    try {
+      response = await fetch(new URL("/directories/pick", this.baseUrl), {
+        method: "POST",
+        cache: "no-store",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({}),
+      });
+    } catch (error) {
+      throw new Error(
+        `Local runner is unreachable at ${this.baseUrl}. Start it with 'just runner-dev' or 'just dev' and try again.`,
+      );
+    }
+
+    if (!response.ok) {
+      throw new Error(`Directory picker failed: ${response.status} ${response.statusText}`);
+    }
+
+    return (await response.json()) as LocalRunnerDirectorySelection;
+  }
+
   async listProviders() {
     try {
-      return await readJson<LocalRunnerProvider[]>(this.baseUrl, "/providers");
+      const rawProviders = await readJson<RawProvider[]>(this.baseUrl, "/providers");
+      return rawProviders.map(mapProvider);
     } catch {
       return [];
     }
@@ -337,5 +364,20 @@ export class HttpLocalRunnerGateway implements LocalRunnerGateway {
     }
 
     return (await response.json()) as LocalRunnerPromptExecutionResult;
+  }
+
+  async authenticateProvider(providerName: string) {
+    const response = await fetch(new URL("/providers/auth", this.baseUrl), {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ providerName }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Provider authentication trigger failed: ${response.status} ${response.statusText}`);
+    }
   }
 }
