@@ -31,8 +31,7 @@ export default async function OutputDetailPage({
             {detail.output.title}
           </h1>
           <p className="mt-3 text-sm text-muted-foreground">
-            {detail.project?.name ?? detail.output.projectId} ·{" "}
-            {detail.feature?.title ?? detail.output.featureId}
+            {detail.project?.name ?? detail.output.projectId}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">

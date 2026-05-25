@@ -9,13 +9,31 @@ type Health struct {
 }
 
 type Provider struct {
-	Key         string `json:"key"`
-	Label       string `json:"label"`
-	Installed   bool   `json:"installed"`
-	Version     string `json:"version"`
-	BinaryPath  string `json:"binaryPath"`
-	AuthStatus  string `json:"authStatus"`
-	InstallHint string `json:"installHint"`
+	ID              string          `json:"id,omitempty"`
+	Key             string          `json:"key"`
+	Label           string          `json:"label"`
+	Supported       bool            `json:"supported"`
+	Installed       bool            `json:"installed"`
+	InstallStatus   string          `json:"install_status,omitempty"`
+	AuthStatus      string          `json:"auth_status"`
+	DetectedBinary  string          `json:"detected_binary,omitempty"`
+	DetectedVersion string          `json:"detected_version,omitempty"`
+	Models          []ProviderModel `json:"models,omitempty"`
+	LastError       *string         `json:"last_error,omitempty"`
+	Version         string          `json:"version"`
+	BinaryPath      string          `json:"binaryPath"`
+	InstallHint     string          `json:"installHint"`
+}
+
+type ProviderModel struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+	Available   bool   `json:"available"`
+	Source      string `json:"source"`
+}
+
+type ProviderInventory struct {
+	Providers []Provider `json:"providers"`
 }
 
 type McpBackend struct {
@@ -80,6 +98,10 @@ type ArtifactDetail struct {
 	CommandPath  string `json:"commandPath"`
 	ContentPath  string `json:"contentPath"`
 	Checksum     string `json:"checksum"`
+	PromptText   string `json:"promptText,omitempty"`
+	StdoutText   string `json:"stdoutText,omitempty"`
+	StderrText   string `json:"stderrText,omitempty"`
+	CommandText  string `json:"commandText,omitempty"`
 }
 
 type StorageDriverConfig struct {
@@ -91,6 +113,20 @@ type StorageDriverConfig struct {
 	LastSyncedAt     string `json:"lastSyncedAt"`
 	LastError        string `json:"lastError"`
 	UpdatedAt        string `json:"updatedAt"`
+}
+
+type DirectorySelection struct {
+	Path string `json:"path"`
+}
+
+type DirectoryValidationRequest struct {
+	Path string `json:"path"`
+}
+
+type DirectoryValidationResult struct {
+	Path   string `json:"path"`
+	Usable bool   `json:"usable"`
+	Reason string `json:"reason"`
 }
 
 type BackupRequest struct {
@@ -171,18 +207,22 @@ type IntegrationConnectionResult struct {
 
 type PromptExecutionRequest struct {
 	ProviderKey      string   `json:"providerKey"`
+	ModelName        string   `json:"modelName,omitempty"`
+	ReasoningEffort  string   `json:"reasoningEffort,omitempty"`
 	Prompt           string   `json:"prompt"`
 	SkillIds         []string `json:"skillIds"`
 	FlowId           string   `json:"flowId"`
 	ContextSourceIds []string `json:"contextSourceIds"`
 	TimeoutMs        int      `json:"timeoutMs"`
 	WorkingDirectory string   `json:"workingDirectory"`
+	AllowWrite       bool     `json:"allowWrite,omitempty"`
 }
 
 type PromptExecutionResult struct {
 	Status         string   `json:"status"`
 	RunID          string   `json:"runId"`
 	ProviderKey    string   `json:"providerKey"`
+	ModelName      *string  `json:"modelName"`
 	Command        string   `json:"command"`
 	StdoutSummary  string   `json:"stdoutSummary"`
 	StderrSummary  string   `json:"stderrSummary"`

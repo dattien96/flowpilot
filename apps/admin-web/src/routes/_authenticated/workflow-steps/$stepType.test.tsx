@@ -82,10 +82,13 @@ function buildStep(overrides: Partial<StepDefinition> = {}): StepDefinition {
     stepType: "tech_spec",
     name: "Tech Spec",
     description: "Produce technical layout",
+    promptBase: "Produce technical layout for the workflow.",
     requiredMcps: ["jira"],
     requiredSkills: ["tech_spec_skill"],
     inputArtifactDefinitions: ["business_summary_artifact"],
     outputArtifactDefinitions: ["tech_spec_artifact"],
+    model: "gpt-5.4",
+    reasoningEffort: "medium",
     agentType: "standard",
     createdAt: "2026-05-20T00:00:00.000Z",
     updatedAt: "2026-05-21T00:00:00.000Z",
@@ -154,12 +157,16 @@ describe("WorkflowStepDetailPage", () => {
     expect(screen.getByText("Jira")).toBeInTheDocument();
     expect(screen.getByText("Input artifact definitions")).toBeInTheDocument();
     expect(screen.getByText("Output artifact definitions")).toBeInTheDocument();
+    expect(screen.getByLabelText("Reasoning effort")).toHaveValue("medium");
 
     fireEvent.change(screen.getByDisplayValue("Tech Spec"), {
       target: { value: "Updated Tech Spec" },
     });
     fireEvent.change(screen.getByDisplayValue("Produce technical layout"), {
       target: { value: "Updated description" },
+    });
+    fireEvent.change(screen.getByDisplayValue("Produce technical layout for the workflow."), {
+      target: { value: "Updated prompt base" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Remove" }));
     fireEvent.change(screen.getByRole("combobox", { name: /available mcp/i }), {
@@ -175,9 +182,12 @@ describe("WorkflowStepDetailPage", () => {
           stepType: "tech_spec",
           name: "Updated Tech Spec",
           description: "Updated description",
+          promptBase: "Updated prompt base",
           requiredMcps: ["figma"],
           inputArtifactDefinitions: ["business_summary_artifact"],
           outputArtifactDefinitions: ["tech_spec_artifact", "coding_plan_artifact"],
+          model: "gpt-5.4",
+          reasoningEffort: "medium",
         })
       );
     });

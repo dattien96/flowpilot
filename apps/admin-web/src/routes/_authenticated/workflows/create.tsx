@@ -8,6 +8,13 @@ import { ListStepDefinitionsUseCase } from "@/domain/usecase/workflow-engine/lis
 import { SaveWorkflowUseCase } from "@/domain/usecase/workflow-engine/save-workflow-usecase";
 import type { Project } from "@/domain/model/entity/project";
 import type { StepDefinition, WorkflowStep } from "@/domain/model/entity/workflow-engine";
+import {
+  REASONING_EFFORT_OPTIONS,
+  STEP_MODEL_OPTIONS,
+} from "@/domain/model/entity/workflow-engine";
+
+const DEFAULT_MODEL = "gpt-5.4";
+const DEFAULT_REASONING_EFFORT = "medium";
 
 export const Route = createFileRoute("/_authenticated/workflows/create")({
   validateSearch: (search: Record<string, unknown>) => ({
@@ -34,8 +41,8 @@ export function CreateWorkflowPage() {
   const [projectId, setProjectId] = useState("");
   const [name, setName] = useState("New Private Workflow");
   const [description, setDescription] = useState("");
-  const [providerOverride, setProviderOverride] = useState("");
-  const [modelOverride, setModelOverride] = useState("");
+  const [modelOverride, setModelOverride] = useState(DEFAULT_MODEL);
+  const [reasoningEffortOverride, setReasoningEffortOverride] = useState(DEFAULT_REASONING_EFFORT);
   const [selectedStepType, setSelectedStepType] = useState("");
   const [steps, setSteps] = useState<Partial<WorkflowStep>[]>([]);
 
@@ -68,9 +75,14 @@ export function CreateWorkflowPage() {
     () => new Map(catalog.map((step) => [step.stepType, step.name])),
     [catalog]
   );
+  const stepByType = useMemo(
+    () => new Map(catalog.map((step) => [step.stepType, step])),
+    [catalog]
+  );
 
   const addStep = () => {
     if (!selectedStepType) return;
+    const selectedStep = stepByType.get(selectedStepType);
     setSteps((current) => [
       ...current,
       {
@@ -78,8 +90,8 @@ export function CreateWorkflowPage() {
         orderIndex: current.length,
         isEnabled: true,
         requiresApproval: true,
-        providerOverride: null,
-        modelOverride: null,
+        modelOverride: selectedStep?.model ?? DEFAULT_MODEL,
+        reasoningEffortOverride: selectedStep?.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
       },
     ]);
   };
@@ -112,8 +124,8 @@ export function CreateWorkflowPage() {
         name,
         description,
         isTemplate: false,
-        providerOverride: providerOverride || null,
-        modelOverride: modelOverride || null,
+        modelOverride: modelOverride || DEFAULT_MODEL,
+        reasoningEffortOverride: reasoningEffortOverride || DEFAULT_REASONING_EFFORT,
         steps,
       });
       await navigate({
@@ -182,20 +194,32 @@ export function CreateWorkflowPage() {
           />
         </label>
         <label className="space-y-2 text-sm">
-          <span className="font-medium">Provider override</span>
-          <input
-            className="w-full rounded-2xl border border-border bg-card px-4 py-3"
-            value={providerOverride}
-            onChange={(event) => setProviderOverride(event.target.value)}
-          />
-        </label>
-        <label className="space-y-2 text-sm">
           <span className="font-medium">Model override</span>
-          <input
+          <select
             className="w-full rounded-2xl border border-border bg-card px-4 py-3"
             value={modelOverride}
             onChange={(event) => setModelOverride(event.target.value)}
-          />
+          >
+            {STEP_MODEL_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="space-y-2 text-sm">
+          <span className="font-medium">Reasoning effort override</span>
+          <select
+            className="w-full rounded-2xl border border-border bg-card px-4 py-3"
+            value={reasoningEffortOverride}
+            onChange={(event) => setReasoningEffortOverride(event.target.value)}
+          >
+            {REASONING_EFFORT_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
         </label>
       </div>
 

@@ -19,6 +19,7 @@ Use this skill for small features or bug fixes where a full TDD/Planning overhea
 
 - **Delegation**: When a phase is assigned to `codex exec`, the Main Agent must construct a precise prompt containing all relevant local context and file paths.
 - **Artifacts**: `implementation_plan.md` and `walkthrough.md` MUST be written directly to the project root directory.
+- **Audit Logging**: After review passes and before the final commit or handoff, the Main Agent MUST use `audit-logging-skill` to create or update the relevant `change-audit/` entry.
 - **Approval**: Wait for user confirmation after Phase 1 (`implementation_plan.md`) before proceeding to implementation.
 - **Feedback Loop**: If Phase 3 (Review) identifies bugs or missing parts, the Main Agent MUST fix them and re-trigger Phase 3 **only after** verifying that the build is successful and all unit tests pass.
 
@@ -40,3 +41,8 @@ Use this skill for small features or bug fixes where a full TDD/Planning overhea
 ## Phase 3: Review (Codex)
 - **Action**: Run `codex exec -m gpt-5.4 -c reasoning_effort=high "Review implementation in [FILES] against implementation_plan.md. Produce walkthrough.md in the project root. Check for missing parts, bugs, or edge cases."`
 - **Goal**: Fast adversarial review.
+
+## Phase 4: Audit Logging
+- **Action**: Use `audit-logging-skill` to create or update the detailed `change-audit/` entry for the completed task.
+- **Constraint**: Do not finish the flow without this step when the task delivered a real fix or feature.
+- **Goal**: Keep a durable audit record even in the fast path.

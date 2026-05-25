@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import { settingsNavItems } from "@/components/layout/app-nav";
-import { createSettingsNavStatuses } from "@/components/layout/app-shell";
+import {
+  APP_SHELL_LAYOUT_CLASSES,
+  createSettingsNavStatuses,
+} from "@/components/layout/app-shell";
 import { buildMcpServerStatus, buildRunnerStatus } from "@/components/layout/app-shell-status";
 
 describe("AppShell", () => {
@@ -129,5 +132,14 @@ describe("AppShell", () => {
       activeToneClass: "bg-rose-300",
       activeTextClass: "text-rose-50",
     });
+  });
+
+  it("keeps the shell scrollable only in the right pane on desktop", () => {
+    expect(APP_SHELL_LAYOUT_CLASSES.outer).toContain("lg:overflow-hidden");
+    expect(APP_SHELL_LAYOUT_CLASSES.grid).toContain("lg:h-full");
+    expect(APP_SHELL_LAYOUT_CLASSES.sidebar).toContain("lg:sticky");
+    expect(APP_SHELL_LAYOUT_CLASSES.sidebar).toContain("lg:overflow-y-auto");
+    expect(APP_SHELL_LAYOUT_CLASSES.main).toContain("lg:overflow-y-auto");
+    expect(APP_SHELL_LAYOUT_CLASSES.main).toContain("lg:min-h-0");
   });
 });

@@ -1,6 +1,7 @@
 import type {
   LocalRunnerArtifact,
   LocalRunnerBackupResult,
+  LocalRunnerDirectorySelection,
   LocalRunnerFlow,
   LocalRunnerHealth,
   LocalRunnerIntegrationConnectionRequest,
@@ -20,6 +21,7 @@ import type {
 
 export interface LocalRunnerGateway {
   getHealth(): Promise<LocalRunnerHealth>;
+  pickDirectory(): Promise<LocalRunnerDirectorySelection>;
   listProviders(): Promise<LocalRunnerProvider[]>;
   listSkills(): Promise<LocalRunnerSkill[]>;
   listFlows(): Promise<LocalRunnerFlow[]>;
@@ -50,4 +52,5 @@ export interface LocalRunnerGateway {
   executePrompt(
     request: LocalRunnerPromptExecutionRequest,
   ): Promise<LocalRunnerPromptExecutionResult>;
+  authenticateProvider(providerName: string): Promise<void>;
 }

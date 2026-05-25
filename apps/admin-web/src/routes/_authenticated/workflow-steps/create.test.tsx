@@ -81,8 +81,11 @@ function buildStep(overrides: Partial<StepDefinition> = {}): StepDefinition {
     stepType: "tech_spec",
     name: "Tech Spec",
     description: "Produce technical layout",
+    promptBase: "Produce technical layout for the workflow.",
     requiredMcps: ["jira"],
     requiredSkills: ["tech_spec_skill"],
+    model: "gpt-5.4",
+    reasoningEffort: "medium",
     agentType: "standard",
     createdAt: "2026-05-20T00:00:00.000Z",
     updatedAt: "2026-05-21T00:00:00.000Z",
@@ -151,6 +154,12 @@ describe("CreateWorkflowStepPage", () => {
     fireEvent.change(screen.getByLabelText("Required skills"), {
       target: { value: "skill_a, skill_b" },
     });
+    fireEvent.change(screen.getByLabelText("Prompt base"), {
+      target: { value: "Drive the custom step execution." },
+    });
+    fireEvent.change(screen.getByLabelText("Reasoning effort"), {
+      target: { value: "medium" },
+    });
     fireEvent.click(screen.getAllByRole("button", { name: "Add artifact" })[0]);
     fireEvent.click(screen.getAllByRole("button", { name: "Add artifact" })[1]);
     fireEvent.click(screen.getByRole("button", { name: "Save step" }));
@@ -161,8 +170,11 @@ describe("CreateWorkflowStepPage", () => {
           stepType: "custom_step",
           name: "Custom Step",
           description: "Custom desc",
+          promptBase: "Drive the custom step execution.",
           requiredMcps: ["jira"],
           requiredSkills: ["skill_a", "skill_b"],
+          model: "gpt-5.4",
+          reasoningEffort: "medium",
           inputArtifactDefinitions: ["business_summary_artifact"],
           outputArtifactDefinitions: ["tech_spec_artifact"],
         })

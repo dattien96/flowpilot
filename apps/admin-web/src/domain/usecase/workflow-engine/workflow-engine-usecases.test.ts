@@ -52,9 +52,13 @@ describe("WorkflowEngine UseCases", () => {
       stepType: "custom_step" as const,
       name: "Custom Step",
       description: "Do custom work",
+      promptBase: "Do custom work carefully.",
       requiredMcps: [],
       requiredSkills: [],
+      model: "gpt-5.5" as const,
       agentType: "standard" as const,
+      createdAt: "2026-05-20T00:00:00.000Z",
+      updatedAt: "2026-05-20T00:00:00.000Z",
     };
     mockGateway.saveStepDefinition.mockResolvedValueOnce(payload);
     const usecase = new SaveStepDefinitionUseCase(mockGateway as any);
@@ -97,12 +101,41 @@ describe("WorkflowEngine UseCases", () => {
     expect(result).toEqual(detail);
   });
 
-  it("StartWorkflowRunUseCase calls gateway with workflowId & projectId", async () => {
+  it("StartWorkflowRunUseCase calls gateway with runtime payload", async () => {
     mockGateway.startWorkflowRun.mockResolvedValueOnce({ id: "run-1", status: "PENDING" });
     const usecase = new StartWorkflowRunUseCase(mockGateway as any);
-    const result = await usecase.execute("wf-1", "proj-1");
-    expect(mockGateway.startWorkflowRun).toHaveBeenCalledWith("wf-1", "proj-1");
+    const result = await usecase.execute({
+      workflowId: "wf-1",
+      projectId: "proj-1",
+      startMode: "workflow-definition",
+      beginPrompt: "Build the workflow result.",
+    });
+    expect(mockGateway.startWorkflowRun).toHaveBeenCalledWith({
+      workflowId: "wf-1",
+      projectId: "proj-1",
+      startMode: "workflow-definition",
+      beginPrompt: "Build the workflow result.",
+    });
     expect(result.status).toBe("PENDING");
+  });
+
+  it("StartWorkflowRunUseCase accepts single-step payloads without workflow ids", async () => {
+    mockGateway.startWorkflowRun.mockResolvedValueOnce({ id: "run-2", status: "PENDING" });
+    const usecase = new StartWorkflowRunUseCase(mockGateway as any);
+
+    await usecase.execute({
+      projectId: "proj-1",
+      startMode: "single-step",
+      beginPrompt: "Draft the single-step result.",
+      stepType: "business_idea",
+    });
+
+    expect(mockGateway.startWorkflowRun).toHaveBeenCalledWith({
+      projectId: "proj-1",
+      startMode: "single-step",
+      beginPrompt: "Draft the single-step result.",
+      stepType: "business_idea",
+    });
   });
 
   it("ToggleYoloModeUseCase calls gateway with runId & value", async () => {

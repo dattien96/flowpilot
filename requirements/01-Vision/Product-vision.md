@@ -6,9 +6,20 @@ The key problem when using AI (LLM) in software development is:
 - Prompts are hard to reuse.
 - Review quality depends on how much context is manually supplied.
 - There is no persistent workflow history.
+- There is no reliable cross-device project/context continuity for local-first coding tools.
 - There is no approval gate.
 - There is no cost tracking, model routing, or production monitoring.
 - There is no connection between planning, coding, review, release, and runtime feedback.
+
+Example:
+
+- ChatGPT can share conversation history across devices, but it is still chat-first and weak for structured engineering workflow.
+- Codex-style local coding tools keep much of the useful context on each machine, so when you move to a new PC, important project context can be missing or lost.
+
+FlowPilot should combine the strengths of both:
+
+- shared project and workflow context like a cloud product
+- real local execution against real project folders like a local coding tool
 
 Therefore, the project should become a structured AI workflow platform.
 
@@ -32,12 +43,27 @@ Meaning:
 
 The final system should not be a better ChatGPT window. It should be an operating layer around engineering work.
 
+It should also preserve project memory across machines.
+
+That means:
+
+- project data is shared
+- workflow definitions are shared
+- run history is shared
+- artifacts and decision history are shared
+- local directories can differ per machine without losing the shared project context
+
 # 3. Vision
 
 FlowPilot is an intelligent engineering platform that helps developers build better software faster.
 
 Vision statement:
 Build a production-ready AI workflow platform that helps an engineering team convert business ideas into product specs, technical specs, implementation plans, coding tasks, AI reviews, release checks, and runtime feedback reports.
+
+FlowPilot should give users one major advantage over local-only coding tools:
+
+- you can move to another machine and keep the same project, workflow history, artifacts, and context
+- you only need to bind a new local directory path, not recreate the project or lose the engineering memory
 
 The system should help answer these questions clearly:
 - What is the business goal of this feature?

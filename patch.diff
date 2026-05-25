@@ -1,0 +1,111 @@
+diff --git a/supabase/functions/_shared/workflow-engine-runtime.ts b/supabase/functions/_shared/workflow-engine-runtime.ts
+index 05ab569..b3c006b 100644
+--- a/supabase/functions/_shared/workflow-engine-runtime.ts
++++ b/supabase/functions/_shared/workflow-engine-runtime.ts
+@@ -36,9 +36,9 @@ interface WorkflowRunStepRow {
+ }
+ 
+ interface WorkflowStepDefinitionRow {
+-  id: string;
+-  is_enabled: boolean;
+-  requires_approval: boolean;
++  step_type: string;
++  name: string;
++  model: string | null;
+ }
+ 
+ interface StepArtifactBindingRow {
+@@ -55,6 +55,8 @@ interface ArtifactDefinitionRow {
+   default_file_name: string;
+ }
+ 
++const SINGLE_STEP_RUNTIME_CREATED_BY = "flowpilot-runtime";
++
+ export function createWorkflowClients(authHeader: string) {
+   const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
+   const anonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+@@ -222,6 +224,84 @@ export async function getWorkflowDefinitionSteps(
+   }>;
+ }
+ 
++export async function createSingleStepWorkflow(
++  adminClient: SupabaseClient,
++  projectId: string,
++  stepType: string
++): Promise<{
++  workflow: { id: string; provider_override: string | null; model_override: string | null };
++  workflowSteps: Array<{
++    id: string;
++    step_type: string;
++    order_index: number;
++    is_enabled: boolean;
++    requires_approval: boolean;
++  }>;
++}> {
++  const { data: definitionData, error: definitionError } = await adminClient
++    .from("step_definitions")
++    .select("step_type, name, model")
++    .eq("step_type", stepType)
++    .maybeSingle();
++
++  if (definitionError) {
++    throw new Error(`Unable to load step definition: ${definitionError.message}`);
++  }
++  if (!definitionData) {
++    throw new Error(`Step definition "${stepType}" was not found.`);
++  }
++
++  const definition = definitionData as WorkflowStepDefinitionRow;
++  const { data: workflowData, error: workflowError } = await adminClient
++    .from("workflows")
++    .insert({
++      project_id: projectId,
++      name: `Single Step: ${definition.name}`,
++      description: `Runtime-generated single-step workflow for ${definition.step_type}.`,
++      is_template: false,
++      provider_override: null,
++      model_override: definition.model,
++      created_by: SINGLE_STEP_RUNTIME_CREATED_BY,
++    })
++    .select("id, provider_override, model_override")
++    .single();
++
++  if (workflowError) {
++    throw new Error(`Unable to create single-step workflow: ${workflowError.message}`);
++  }
++
++  const { data: workflowStepData, error: workflowStepError } = await adminClient
++    .from("workflow_steps")
++    .insert({
++      workflow_id: workflowData.id,
++      step_type: definition.step_type,
++      order_index: 0,
++      is_enabled: true,
++      provider_override: null,
++      model_override: definition.model,
++      requires_approval: false,
++    })
++    .select("id, step_type, order_index, is_enabled, requires_approval")
++    .single();
++
++  if (workflowStepError) {
++    throw new Error(`Unable to create single-step workflow step: ${workflowStepError.message}`);
++  }
++
++  return {
++    workflow: workflowData as { id: string; provider_override: string | null; model_override: string | null },
++    workflowSteps: [
++      workflowStepData as {
++        id: string;
++        step_type: string;
++        order_index: number;
++        is_enabled: boolean;
++        requires_approval: boolean;
++      },
++    ],
++  };
++}
++
+ async function listRuntimeSteps(
+   adminClient: SupabaseClient,
+   runId: string

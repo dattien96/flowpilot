@@ -21,12 +21,11 @@ const approval: Approval = {
   createdAt: "2026-05-15T00:00:00.000Z",
 };
 
-const run: WorkflowRun = {
-  id: "run_1",
-  workflowDefinitionId: "workflow_1",
-  projectId: "project_1",
-  featureId: "feature_1",
-  status: "waiting_approval",
+  const run: WorkflowRun = {
+    id: "run_1",
+    workflowDefinitionId: "workflow_1",
+    projectId: "project_1",
+    status: "waiting_approval",
   currentStepKey: "approval_business_summary",
   selectedContextSourceIds: [],
   startedBy: "test",

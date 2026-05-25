@@ -7,6 +7,7 @@ import type {
   ArtifactRun,
   StepDefinition,
   Workflow,
+  WorkflowRunStartRequest,
   WorkflowRun,
   WorkflowRunLog,
   WorkflowRunStep,
@@ -23,9 +24,76 @@ import {
   mapWorkflowStep,
 } from "./workflow-engine-mappers";
 
+const DEFAULT_MODEL = "gpt-5.4";
+const DEFAULT_REASONING_EFFORT = "medium";
+
 function bindingOrder(row: { order_index?: unknown }, fallbackIndex: number) {
   const raw = Number(row.order_index);
   return Number.isFinite(raw) ? raw : fallbackIndex;
+}
+
+function resolveProviderKeyFromModel(model: string) {
+  if (model.startsWith("gpt-")) {
+    return "codex";
+  }
+  if (model.startsWith("gemini-")) {
+    return "gemini";
+  }
+  if (model.startsWith("claude-")) {
+    return "claude";
+  }
+
+  throw new Error(`Model "${model}" is not supported by the workflow runner.`);
+}
+
+function normalizeModel(model: string | null | undefined, fallback = DEFAULT_MODEL) {
+  return model?.trim() || fallback;
+}
+
+function normalizeReasoningEffort(
+  reasoningEffort: string | null | undefined,
+  fallback = DEFAULT_REASONING_EFFORT,
+) {
+  return reasoningEffort?.trim() || fallback;
+}
+
+async function invokeWorkflowStartRuntime<TResponse>(
+  supabase: SupabaseClient,
+  payload: WorkflowRunStartRequest,
+) {
+  if (typeof window === "undefined") {
+    return invokeSupabaseEdgeFunction<TResponse>("workflow-engine-start-run", payload);
+  }
+
+  const accessToken = (await supabase.auth.getSession()).data.session?.access_token ?? null;
+  let response: Response;
+  try {
+    response = await fetch("/api/workflow-engine/start-run", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch (error) {
+    throw new Error(
+      error instanceof Error
+        ? `Workflow start runtime is unavailable: ${error.message}`
+        : "Workflow start runtime is unavailable.",
+    );
+  }
+
+  if (response.ok) {
+    return (await response.json()) as TResponse;
+  }
+
+  const body = await response.json().catch(() => null);
+  throw new Error(
+    typeof body?.error === "string"
+      ? body.error
+      : `Workflow start runtime failed (${response.status}).`,
+  );
 }
 
 export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
@@ -142,8 +210,13 @@ export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
           step_type: step.stepType,
           name: step.name,
           description: step.description,
+          prompt_base: step.promptBase,
           required_mcps: step.requiredMcps,
           required_skills: step.requiredSkills,
+          team_role: step.teamRole ?? null,
+          subagent: step.subagent ?? null,
+          model: step.model,
+          reasoning_effort: normalizeReasoningEffort(step.reasoningEffort),
           agent_type: step.agentType,
         },
         { onConflict: "step_type" }
@@ -221,7 +294,7 @@ export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
   }
 
   async listWorkflows(projectId?: string): Promise<Workflow[]> {
-    let query = this.supabase.from("workflows").select("*");
+    let query = this.supabase.from("workflows").select("*").neq("created_by", "flowpilot-runtime");
 
     if (projectId) {
       query = query.or(`project_id.is.null,project_id.eq.${projectId}`);
@@ -262,6 +335,9 @@ export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
   ): Promise<Workflow> {
     const isNew = !workflow.id;
     let savedWorkflowRow: any;
+    const resolvedWorkflowModel = normalizeModel(workflow.modelOverride);
+    const resolvedWorkflowReasoning = normalizeReasoningEffort(workflow.reasoningEffortOverride);
+    const resolvedWorkflowProvider = resolveProviderKeyFromModel(resolvedWorkflowModel);
 
     if (isNew) {
       const { data, error } = await this.supabase
@@ -271,8 +347,9 @@ export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
           name: workflow.name || "Untitled Workflow",
           description: workflow.description || "",
           is_template: workflow.isTemplate ?? false,
-          provider_override: workflow.providerOverride || null,
-          model_override: workflow.modelOverride || null,
+          provider_override: resolvedWorkflowProvider,
+          model_override: resolvedWorkflowModel,
+          reasoning_effort_override: resolvedWorkflowReasoning,
         })
         .select("*")
         .maybeSingle();
@@ -291,8 +368,9 @@ export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
           name: workflow.name,
           description: workflow.description,
           is_template: workflow.isTemplate,
-          provider_override: workflow.providerOverride,
-          model_override: workflow.modelOverride,
+          provider_override: resolvedWorkflowProvider,
+          model_override: resolvedWorkflowModel,
+          reasoning_effort_override: resolvedWorkflowReasoning,
           updated_at: new Date().toISOString(),
         })
         .eq("id", workflow.id)
@@ -325,8 +403,14 @@ export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
         step_type: step.stepType,
         order_index: step.orderIndex ?? idx,
         is_enabled: step.isEnabled ?? true,
-        provider_override: step.providerOverride || null,
-        model_override: step.modelOverride || null,
+        provider_override: resolveProviderKeyFromModel(
+          normalizeModel(step.modelOverride, resolvedWorkflowModel),
+        ),
+        model_override: normalizeModel(step.modelOverride, resolvedWorkflowModel),
+        reasoning_effort_override: normalizeReasoningEffort(
+          step.reasoningEffortOverride,
+          resolvedWorkflowReasoning,
+        ),
         requires_approval: step.requiresApproval ?? true,
       }));
 
@@ -396,11 +480,8 @@ export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
     return { run, steps, logs };
   }
 
-  async startWorkflowRun(workflowId: string, projectId: string): Promise<WorkflowRun> {
-    const data = await invokeSupabaseEdgeFunction<any>("workflow-engine-start-run", {
-      workflowId,
-      projectId,
-    });
+  async startWorkflowRun(request: WorkflowRunStartRequest): Promise<WorkflowRun> {
+    const data = await invokeWorkflowStartRuntime<any>(this.supabase, request);
     return mapWorkflowRun(data);
   }
 

@@ -7,12 +7,15 @@ import { RunPromptUseCase } from "@/domain/usecase/local-runner/run-prompt-useca
 
 const executeSchema = z.object({
   providerKey: z.string().min(1),
+  modelName: z.string().nullable().optional(),
+  reasoningEffort: z.string().nullable().optional(),
   prompt: z.string().min(1),
   skillIds: z.array(z.string()).default([]),
   flowId: z.string().nullable().optional(),
   contextSourceIds: z.array(z.string()).default([]),
   timeoutMs: z.number().int().positive().max(1_800_000).optional(),
   workingDirectory: z.string().nullable().optional(),
+  allowWrite: z.boolean().optional(),
 });
 
 export async function POST(request: Request) {
@@ -24,12 +27,15 @@ export async function POST(request: Request) {
     const gateways = await createGatewayBundle();
     const result = await new RunPromptUseCase(gateways.localRunnerGateway).execute({
       providerKey: payload.providerKey,
+      modelName: payload.modelName ?? undefined,
+      reasoningEffort: payload.reasoningEffort ?? undefined,
       prompt: payload.prompt,
       skillIds: payload.skillIds,
       flowId: payload.flowId ?? null,
       contextSourceIds: payload.contextSourceIds,
       timeoutMs: payload.timeoutMs ?? 600000,
       workingDirectory: payload.workingDirectory ?? null,
+      allowWrite: payload.allowWrite ?? false,
     });
 
     return NextResponse.json(result);

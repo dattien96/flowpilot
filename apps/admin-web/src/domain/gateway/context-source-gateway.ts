@@ -6,7 +6,6 @@ import type {
 
 export interface ContextSourceGateway {
   listContextSources(): Promise<ContextSource[]>;
-  listContextSourcesByFeature(featureId: string): Promise<ContextSource[]>;
   listContextSourcesByProject(projectId: string): Promise<ContextSource[]>;
   getContextSourceById(contextSourceId: string): Promise<ContextSource | null>;
   createContextSource(payload: CreateContextSourcePayload): Promise<ContextSource>;

@@ -10,7 +10,6 @@ export default async function OutputsPage({
 }: {
   searchParams: Promise<{
     projectId?: string;
-    featureId?: string;
     workflowRunId?: string;
     outputType?: string;
     approvalState?: string;
@@ -29,7 +28,6 @@ export default async function OutputsPage({
     : undefined;
   const filters: ListOutputsFilters = {
     projectId: params.projectId || undefined,
-    featureId: params.featureId || undefined,
     workflowRunId: params.workflowRunId || undefined,
     outputType,
     approvalState:
@@ -56,12 +54,6 @@ export default async function OutputsPage({
           defaultValue={filters.projectId ?? ""}
           name="projectId"
           placeholder="Project id"
-        />
-        <input
-          className="rounded-2xl border border-border bg-card px-4 py-3"
-          defaultValue={filters.featureId ?? ""}
-          name="featureId"
-          placeholder="Feature id"
         />
         <input
           className="rounded-2xl border border-border bg-card px-4 py-3"

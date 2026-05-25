@@ -10,6 +10,7 @@ const tabs = [
   { label: "Master Schedule", suffix: "/master-schedule" },
   { label: "Tasks", suffix: "/tasks" },
   { label: "Members", suffix: "/members" },
+  { label: "Directory Binding", suffix: "/directory-bindings" },
   { label: "Workflows", suffix: "/workflows" },
   { label: "Artifacts", suffix: "/artifacts" },
   { label: "Settings", suffix: "/settings" },

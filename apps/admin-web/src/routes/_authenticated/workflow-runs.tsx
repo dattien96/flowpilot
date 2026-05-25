@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { createFileRoute, Link } from "@tanstack/react-router";
+import {
+  createFileRoute,
+  Link,
+  Outlet,
+  useLocation,
+} from "@tanstack/react-router";
 
 import { PageFrame } from "@/components/common/page-frame";
 import { Button } from "@/components/ui/button";
@@ -7,25 +12,33 @@ import { createGatewayBundle } from "@/data/repository/browser-factory";
 import { ListWorkflowRunsUseCase } from "@/domain/usecase/workflow-engine/list-workflow-runs-usecase";
 import { ListWorkflowsUseCase } from "@/domain/usecase/workflow-engine/list-workflows-usecase";
 import type { Project } from "@/domain/model/entity/project";
-import type { Workflow, WorkflowRun } from "@/domain/model/entity/workflow-engine";
+import type {
+  Workflow,
+  WorkflowRun,
+} from "@/domain/model/entity/workflow-engine";
+import { loadWorkflowRunTitleMap } from "@/lib/workflow-run-title";
 
 export const Route = createFileRoute("/_authenticated/workflow-runs")({
   component: WorkflowRunHistoryPage,
 });
 
 function WorkflowRunHistoryPage() {
+  const location = useLocation();
   const gatewayBundle = useRef(createGatewayBundle());
   const listWorkflowRunsUseCase = useRef(
-    new ListWorkflowRunsUseCase(gatewayBundle.current.workflowEngineGateway)
+    new ListWorkflowRunsUseCase(gatewayBundle.current.workflowEngineGateway),
   );
   const listWorkflowsUseCase = useRef(
-    new ListWorkflowsUseCase(gatewayBundle.current.workflowEngineGateway)
+    new ListWorkflowsUseCase(gatewayBundle.current.workflowEngineGateway),
   );
   const [runs, setRuns] = useState<WorkflowRun[]>([]);
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
+  const [runTitles, setRunTitles] = useState<Map<string, string>>(new Map());
   const [projectFilter, setProjectFilter] = useState("all");
-  const [scopeFilter, setScopeFilter] = useState<"all" | "global" | "private">("all");
+  const [scopeFilter, setScopeFilter] = useState<"all" | "global" | "private">(
+    "all",
+  );
   const [workflowFilter, setWorkflowFilter] = useState("all");
 
   useEffect(() => {
@@ -35,9 +48,14 @@ function WorkflowRunHistoryPage() {
         listWorkflowsUseCase.current.execute(),
         gatewayBundle.current.projectGateway.listProjects(),
       ]);
+      const titles = await loadWorkflowRunTitleMap(
+        gatewayBundle.current.localRunnerGateway,
+        runRows.map((run) => run.id),
+      );
       setRuns(runRows);
       setWorkflows(workflowRows);
       setProjects(projectRows);
+      setRunTitles(titles);
     };
 
     void load();
@@ -45,18 +63,20 @@ function WorkflowRunHistoryPage() {
 
   const workflowById = useMemo(
     () => new Map(workflows.map((workflow) => [workflow.id, workflow])),
-    [workflows]
+    [workflows],
   );
   const projectNameById = useMemo(
     () => new Map(projects.map((project) => [project.id, project.name])),
-    [projects]
+    [projects],
   );
 
   const visibleRuns = useMemo(() => {
     return runs.filter((run) => {
       const workflow = workflowById.get(run.workflowId);
-      const matchesProject = projectFilter === "all" || run.projectId === projectFilter;
-      const matchesWorkflow = workflowFilter === "all" || run.workflowId === workflowFilter;
+      const matchesProject =
+        projectFilter === "all" || run.projectId === projectFilter;
+      const matchesWorkflow =
+        workflowFilter === "all" || run.workflowId === workflowFilter;
       const matchesScope =
         scopeFilter === "all" ||
         (scopeFilter === "global" && workflow?.projectId == null) ||
@@ -65,6 +85,13 @@ function WorkflowRunHistoryPage() {
       return matchesProject && matchesWorkflow && matchesScope;
     });
   }, [projectFilter, runs, scopeFilter, workflowById, workflowFilter]);
+
+  if (
+    location.pathname !== "/workflow-runs" &&
+    location.pathname !== "/workflow-runs/"
+  ) {
+    return <Outlet />;
+  }
 
   return (
     <PageFrame
@@ -102,7 +129,9 @@ function WorkflowRunHistoryPage() {
           <select
             className="w-full rounded-2xl border border-border bg-card px-4 py-3"
             value={scopeFilter}
-            onChange={(event) => setScopeFilter(event.target.value as typeof scopeFilter)}
+            onChange={(event) =>
+              setScopeFilter(event.target.value as typeof scopeFilter)
+            }
           >
             <option value="all">All scopes</option>
             <option value="global">Global workflow runs</option>
@@ -134,34 +163,45 @@ function WorkflowRunHistoryPage() {
         ) : null}
         {visibleRuns.map((run) => {
           const workflow = workflowById.get(run.workflowId);
+          const runTitle = runTitles.get(run.id);
 
           return (
-            <div
+            <Link
               key={run.id}
-              className="rounded-[1.5rem] border border-border bg-background/60 p-5"
+              to="/workflow-runs/$runId"
+              params={{ runId: run.id }}
+              className="block transition-all hover:opacity-90 hover:-translate-y-0.5"
             >
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <h3 className="text-xl font-semibold">
-                    {workflow?.name ?? run.workflowId}
-                  </h3>
-                  <p className="mt-2 text-sm text-muted-foreground">
-                    Project: {projectNameById.get(run.projectId) ?? run.projectId}
-                  </p>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    Started: {new Date(run.startedAt).toLocaleString()}
-                  </p>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <span className="rounded-full border border-border px-3 py-1 text-xs font-semibold text-muted-foreground">
-                    {workflow?.projectId ? "Private" : "Global"}
-                  </span>
-                  <span className="rounded-full bg-accent px-3 py-1 text-xs font-semibold text-accent-foreground">
-                    {run.status}
-                  </span>
+              <div className="rounded-[1.5rem] border border-border bg-background/60 p-5">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h3 className="text-xl font-semibold">
+                      {runTitle ?? workflow?.name ?? run.workflowId}
+                    </h3>
+                    {runTitle ? (
+                      <p className="mt-2 break-all font-mono text-xs text-muted-foreground">
+                        Run ID: {run.id}
+                      </p>
+                    ) : null}
+                    <p className="mt-2 text-sm text-muted-foreground">
+                      Project:{" "}
+                      {projectNameById.get(run.projectId) ?? run.projectId}
+                    </p>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Started: {new Date(run.startedAt).toLocaleString()}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <span className="rounded-full border border-border px-3 py-1 text-xs font-semibold text-muted-foreground">
+                      {workflow?.projectId ? "Private" : "Global"}
+                    </span>
+                    <span className="rounded-full bg-accent px-3 py-1 text-xs font-semibold text-accent-foreground">
+                      {run.status}
+                    </span>
+                  </div>
                 </div>
               </div>
-            </div>
+            </Link>
           );
         })}
       </div>

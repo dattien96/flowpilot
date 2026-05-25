@@ -11,7 +11,6 @@ export default async function DashboardPage() {
   const gateways = await createGatewayBundle();
   const summary = await new GetDashboardSummaryUseCase(
     gateways.projectGateway,
-    gateways.featureGateway,
     gateways.contextSourceGateway,
     gateways.workflowGateway,
   ).execute();

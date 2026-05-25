@@ -17,12 +17,77 @@ export type WorkflowRunStatus =
   | "FAILED"
   | "CANCELED";
 
+export const STEP_MODEL_OPTIONS = [
+  { value: "gemini-flash", label: "Gemini Flash" },
+  { value: "gemini-pro", label: "Gemini Pro" },
+  { value: "claude-haiku", label: "Claude Haiku" },
+  { value: "claude-sonnet", label: "Claude Sonnet" },
+  { value: "claude-opus", label: "Claude Opus" },
+  { value: "gpt-5.4-mini", label: "GPT 5.4 Mini" },
+  { value: "gpt-5.4", label: "GPT 5.4" },
+  { value: "gpt-5.5", label: "GPT 5.5" },
+] as const;
+
+export type SupportedStepModel = (typeof STEP_MODEL_OPTIONS)[number]["value"];
+
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
+
+export const REASONING_EFFORT_OPTIONS = [
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+  { value: "xhigh", label: "Extra High" },
+] as const;
+
+export type WorkflowStartMode = "workflow-definition" | "single-step";
+
+export type WorkflowRunStartRequest =
+  | {
+      workflowId: string;
+      projectId: string;
+      startMode: "workflow-definition";
+      beginPrompt: string;
+      stepType?: null;
+    }
+  | {
+      workflowId?: string | null;
+      projectId: string;
+      startMode: "single-step";
+      beginPrompt: string;
+      stepType: StepType;
+    };
+
+export function isSupportedStepModel(value: string): value is SupportedStepModel {
+  return STEP_MODEL_OPTIONS.some((option) => option.value === value);
+}
+
+export function deriveStepPromptBase({
+  description,
+  name,
+  stepType,
+}: {
+  stepType: StepType;
+  name: string;
+  description: string;
+}) {
+  const trimmedDescription = description.trim();
+  if (trimmedDescription) {
+    return `You are executing the "${name}" workflow step.\n\n${trimmedDescription}`;
+  }
+
+  return `You are executing the "${name}" workflow step (${stepType}). Produce the expected deliverable for this stage.`;
+}
+
 export interface StepDefinition {
   stepType: StepType;
   name: string;
   description: string;
+  promptBase: string | null;
   requiredMcps: string[];
   requiredSkills: string[];
+  teamRole?: string | null;
+  subagent?: string | null;
+  model: SupportedStepModel;
   agentType: "standard" | "autonomous";
   inputArtifactDefinitions?: string[];
   outputArtifactDefinitions?: string[];
@@ -65,6 +130,7 @@ export interface Workflow {
   isTemplate: boolean;
   providerOverride: string | null;
   modelOverride: string | null;
+  reasoningEffortOverride?: string | null;
   createdBy: string;
   createdAt: string;
   updatedAt: string;
@@ -79,6 +145,7 @@ export interface WorkflowStep {
   isEnabled: boolean;
   providerOverride: string | null;
   modelOverride: string | null;
+  reasoningEffortOverride?: string | null;
   requiresApproval: boolean;
   createdAt: string;
   updatedAt: string;
@@ -103,6 +170,7 @@ export interface WorkflowRun {
   status: WorkflowRunStatus;
   provider: string | null;
   model: string | null;
+  reasoningEffort?: string | null;
   yoloMode: boolean;
   startedBy: string;
   startedAt: string;

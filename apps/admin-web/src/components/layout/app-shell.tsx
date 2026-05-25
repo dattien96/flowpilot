@@ -33,6 +33,16 @@ type SettingsNavStatusMap = Partial<
   >
 >;
 
+export const APP_SHELL_LAYOUT_CLASSES = {
+  outer: "noise-bg min-h-screen lg:h-screen lg:overflow-hidden",
+  grid:
+    "mx-auto grid min-h-screen max-w-[1500px] grid-cols-1 gap-4 px-4 py-4 lg:h-full lg:min-h-0 lg:grid-cols-[280px_minmax(0,1fr)]",
+  sidebar:
+    "panel-shadow flex flex-col justify-between rounded-[2rem] border border-border/80 bg-card/90 p-5 backdrop-blur lg:sticky lg:top-4 lg:h-[calc(100vh-2rem)] lg:self-start lg:overflow-y-auto",
+  main:
+    "panel-shadow rounded-[2rem] border border-border/80 bg-card/90 p-5 backdrop-blur lg:h-[calc(100vh-2rem)] lg:min-h-0 lg:overflow-y-auto lg:p-7",
+} as const;
+
 function NavSection({
   items,
   itemStatuses,
@@ -170,9 +180,9 @@ export function AppShell({ children }: { children: ReactNode }) {
   }, [pathname]);
 
   return (
-    <div className="noise-bg min-h-screen">
-      <div className="mx-auto grid min-h-screen max-w-[1500px] grid-cols-1 gap-4 px-4 py-4 lg:grid-cols-[280px_minmax(0,1fr)]">
-        <aside className="panel-shadow flex flex-col justify-between rounded-[2rem] border border-border/80 bg-card/90 p-5 backdrop-blur">
+    <div className={APP_SHELL_LAYOUT_CLASSES.outer}>
+      <div className={APP_SHELL_LAYOUT_CLASSES.grid}>
+        <aside className={APP_SHELL_LAYOUT_CLASSES.sidebar}>
           <div>
             <div className="mb-8">
               <p className="font-mono text-xs uppercase tracking-[0.28em] text-muted-foreground">
@@ -213,7 +223,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           </div>
         </aside>
 
-        <main className="panel-shadow rounded-[2rem] border border-border/80 bg-card/90 p-5 backdrop-blur lg:p-7">
+        <main className={APP_SHELL_LAYOUT_CLASSES.main}>
           {children}
         </main>
       </div>

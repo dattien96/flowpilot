@@ -22,7 +22,6 @@ export function ArtifactBrowserPanel({
   const [query, setQuery] = useState("");
   const [sourceKind, setSourceKind] = useState("all");
   const [projectId, setProjectId] = useState("all");
-  const [featureId, setFeatureId] = useState("all");
   const [runId, setRunId] = useState("all");
   const [selectedArtifactId, setSelectedArtifactId] = useState(artifacts[0]?.artifactId ?? "");
   const [backupScope, setBackupScope] = useState<"all" | "run">("all");
@@ -45,10 +44,9 @@ export function ArtifactBrowserPanel({
         .includes(query.toLowerCase());
     const matchesSource = sourceKind === "all" || artifact.sourceKind === sourceKind;
     const matchesProject = projectId === "all" || artifact.projectId === projectId;
-    const matchesFeature = featureId === "all" || artifact.featureId === featureId;
     const matchesRun = runId === "all" || artifact.workflowRunId === runId;
 
-    return matchesQuery && matchesSource && matchesProject && matchesFeature && matchesRun;
+    return matchesQuery && matchesSource && matchesProject && matchesRun;
   });
 
   const selectedArtifact =
@@ -101,7 +99,6 @@ export function ArtifactBrowserPanel({
   }
 
   const projectOptions = uniqueValues(artifacts.map((artifact) => artifact.projectId));
-  const featureOptions = uniqueValues(artifacts.map((artifact) => artifact.featureId));
   const runOptions = uniqueValues(artifacts.map((artifact) => artifact.workflowRunId));
   const sourceOptions = uniqueValues(artifacts.map((artifact) => artifact.sourceKind));
 
@@ -151,15 +148,6 @@ export function ArtifactBrowserPanel({
         <FilterSelect label="Project" value={projectId} onChange={setProjectId}>
           <option value="all">All projects</option>
           {projectOptions.map((item) => (
-            <option key={item} value={item}>
-              {item}
-            </option>
-          ))}
-        </FilterSelect>
-
-        <FilterSelect label="Feature" value={featureId} onChange={setFeatureId}>
-          <option value="all">All features</option>
-          {featureOptions.map((item) => (
             <option key={item} value={item}>
               {item}
             </option>
@@ -238,7 +226,7 @@ export function ArtifactBrowserPanel({
                     <div>
                       <p className="text-base font-semibold">{artifact.title}</p>
                       <p className="mt-1 text-xs text-muted-foreground">
-                        {artifact.projectId} / {artifact.featureId} / {artifact.workflowRunId}
+                        {artifact.projectId} / {artifact.workflowRunId}
                       </p>
                     </div>
                     <Badge tone={artifact.syncStatus === "synced" ? "success" : "warning"}>
@@ -271,8 +259,7 @@ export function ArtifactBrowserPanel({
                 <div>
                   <h3 className="text-xl font-semibold">{selectedArtifact.title}</h3>
                   <p className="mt-1 text-sm text-muted-foreground">
-                    {selectedArtifact.projectId} / {selectedArtifact.featureId} /{" "}
-                    {selectedArtifact.workflowRunId}
+                    {selectedArtifact.projectId} / {selectedArtifact.workflowRunId}
                   </p>
                 </div>
                 <Badge tone={selectedArtifact.syncStatus === "synced" ? "success" : "warning"}>

@@ -5,7 +5,10 @@ import { ArrowRight } from "lucide-react";
 import { PageFrame } from "@/components/common/page-frame";
 import { Button } from "@/components/ui/button";
 import { createGatewayBundle } from "@/data/repository/browser-factory";
-import type { ArtifactDefinition } from "@/domain/model/entity/workflow-engine";
+import {
+  REASONING_EFFORT_OPTIONS,
+  type ArtifactDefinition,
+} from "@/domain/model/entity/workflow-engine";
 import { ListStepDefinitionsUseCase } from "@/domain/usecase/workflow-engine/list-step-definitions-usecase";
 import type { StepDefinition } from "@/domain/model/entity/workflow-engine";
 import { ListArtifactDefinitionsUseCase } from "@/domain/usecase/workflow-engine/list-artifact-definitions-usecase";
@@ -73,6 +76,17 @@ export function WorkflowStepsPage() {
       .join(", ");
   };
 
+  const formatReasoningSummary = (reasoningEffort?: string | null) => {
+    if (!reasoningEffort) {
+      return "Inherited";
+    }
+
+    return (
+      REASONING_EFFORT_OPTIONS.find((option) => option.value === reasoningEffort)?.label ??
+      reasoningEffort
+    );
+  };
+
   return (
     <PageFrame
       title="Step Definitions"
@@ -136,6 +150,10 @@ export function WorkflowStepsPage() {
             <p className="mt-2 text-xs text-muted-foreground">
               Skills: {step.requiredSkills.length > 0 ? step.requiredSkills.join(", ") : "None"}
             </p>
+            <div className="mt-2 grid gap-2 text-xs text-muted-foreground md:grid-cols-2">
+              <p>Model: {step.model}</p>
+              <p>Reasoning: {formatReasoningSummary(step.reasoningEffort)}</p>
+            </div>
             <p className="mt-2 text-xs text-muted-foreground">
               Input artifacts: {formatArtifactSummary(step.inputArtifactDefinitions)}
             </p>

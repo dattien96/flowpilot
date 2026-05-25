@@ -33,8 +33,7 @@ export default async function ApprovalsPage() {
                     {item.step?.stepName ?? item.approval.workflowStepId}
                   </p>
                   <p className="mt-2 text-sm text-muted-foreground">
-                    {item.project?.name ?? item.run.projectId} ·{" "}
-                    {item.feature?.title ?? item.run.featureId}
+                    {item.project?.name ?? item.run.projectId}
                   </p>
                 </div>
                 <Link className="text-sm font-medium text-accent" href={`/workflow-runs/${item.run.id}`}>

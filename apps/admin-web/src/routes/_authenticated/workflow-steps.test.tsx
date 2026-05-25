@@ -52,10 +52,13 @@ function buildStep(overrides: Partial<StepDefinition> = {}): StepDefinition {
     stepType: "tech_spec",
     name: "Tech Spec",
     description: "Produce technical layout",
+    promptBase: "Produce technical layout for the workflow.",
     requiredMcps: [],
     requiredSkills: [],
     inputArtifactDefinitions: [],
     outputArtifactDefinitions: ["tech_spec_artifact"],
+    model: "gpt-5.5",
+    reasoningEffort: "high",
     agentType: "standard",
     createdAt: "2026-05-20T00:00:00.000Z",
     updatedAt: "2026-05-20T00:00:00.000Z",
@@ -130,6 +133,7 @@ describe("WorkflowStepsPage", () => {
         "Idea - Business - Architecture - Tech Spec - Code Plan - TDD - Coding Implementation Checklist - Review"
       )
     ).toBeInTheDocument();
+    expect(screen.getAllByText("Reasoning: High")).toHaveLength(2);
 
     let names = screen
       .getAllByRole("heading", { level: 3 })

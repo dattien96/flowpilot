@@ -3,10 +3,13 @@ export interface CreateProjectPayload {
   description: string;
   platform: "android" | "ios" | "web" | "multi";
   repositoryUrl: string;
-  directoryPath?: string | null;
+  directoryPath: string;
   ownerId?: string | null;
   status?: string;
   artifactStoragePreference?: "supabase" | "google_drive";
+  defaultProvider?: string | null;
+  defaultModel?: string | null;
+  defaultReasoningEffort?: string | null;
 }
 
 export interface UpdateProjectPayload {
@@ -18,4 +21,7 @@ export interface UpdateProjectPayload {
   ownerId?: string | null;
   status?: string;
   artifactStoragePreference?: "supabase" | "google_drive";
+  defaultProvider?: string | null;
+  defaultModel?: string | null;
+  defaultReasoningEffort?: string | null;
 }

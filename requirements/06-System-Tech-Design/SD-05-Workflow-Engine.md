@@ -25,6 +25,12 @@ The workflow `.md` files are **NOT pre-generated and saved** inside `.claude/` o
 ```
 User triggers workflow in React UI
         ↓
+Project detail page collects:
+  - trigger mode
+  - selected workflow or selected step
+  - begin prompt
+  - project directory bindings
+        ↓
 Supabase stores: workflow_run + ordered workflow_run_steps
   - workflow_runs carries run-level state, project_id, provider/model, yolo_mode, started_by, and error_message
   - workflow_run_steps carries execution-time step state, prompt cache link, artifact link, rejection_note, and retry_count
@@ -32,20 +38,28 @@ Supabase stores: workflow_run + ordered workflow_run_steps
 Go-Runner picks up PENDING step
         ↓
 Go-Runner assembles the prompt:
-  1. Load the Step's built-in SKILL.md template
-  2. Load any custom SKILL.md files attached to this step
-  3. Load the MCP context data (Jira ticket, Figma link, etc.)
-  4. Resolve prompt memory from artifact working memory, previous approved outputs, pinned notes, and retrieval policy
-  5. Inject the user's text-based context
+  1. Load all directory bindings for the project
+  2. Check each bound local path and choose one usable path
+  3. Read the Step Definition
+  4. Resolve the step's team_role
+  5. Resolve the step's selected model
+  6. Resolve the step's linked subagent if any
+  7. Load the Step's built-in SKILL.md template
+  8. Load any custom SKILL.md files attached to this step
+  9. Validate required MCPs against the current project
+  10. Load the MCP context data (Jira ticket, Figma link, etc.)
+  11. Resolve prompt memory from artifact working memory, previous approved outputs, pinned notes, and retrieval policy
+  12. Resolve input/output artifact paths
+  13. Inject the user's begin prompt or current text-based context
         ↓
 Go-Runner checks: does a cached .md already exist for this config?
   - YES → reuse /built-in-workflow/<hash>_<step_type>.md
   - NO  → assemble a new .md and save it to /built-in-workflow/
         ↓
-Go-Runner invokes the AI provider CLI with this file:
-  - Claude: `claude --print < /built-in-workflow/<hash>_<step_type>.md`
-  - Codex: `codex exec --prompt-file /built-in-workflow/<hash>_<step_type>.md`
-  - Gemini: `gemini < /built-in-workflow/<hash>_<step_type>.md`
+Go-Runner switches to the chosen valid bound local path and invokes the correct provider command for the selected model family:
+  - Claude-family model -> `claude ...`
+  - GPT-family model -> `codex ...`
+  - Gemini-family model -> `gemini ...`
         ↓
 AI processes and returns output
         ↓
@@ -120,6 +134,7 @@ When the Go-Runner assembles the prompt for a step, it follows this structure:
 ```markdown
 # System Instruction
 You are a [Agent Role] working on project [Project Name].
+Project path: [Chosen Valid Bound Local Path]
 Provider: [Claude/Codex/Gemini]
 Model: [model-version]
 
@@ -137,7 +152,7 @@ Previous steps completed: [list of completed steps and their artifact summaries]
 [Other MCP data]
 
 # User Context
-[User-provided text, uploaded files, pasted links]
+[User-provided begin prompt, uploaded files, pasted links]
 
 # Selected Working Memory
 [Structured summaries, decisions, constraints, and source references selected by the Context Resolver]
@@ -148,6 +163,9 @@ Previous steps completed: [list of completed steps and their artifact summaries]
 # Raw Artifact Excerpts
 [Only included when required by step policy or when summary memory is insufficient]
 
+# Subagent
+[Subagent role if the step defines one]
+
 # Task
 Execute the [Step Name] according to the skills and rules above.
 Output your result as a structured Markdown artifact.
@@ -155,32 +173,38 @@ Output your result as a structured Markdown artifact.
 
 ---
 
-## 4. Provider-Specific Execution
+## 4. Model-to-Provider Execution
 
-The Go-Runner adapts the execution command based on the resolved provider:
+The Go-Runner adapts the execution command based on the resolved step model.
+
+Routing rules:
+
+- `gpt-*` models must use the Codex command adapter
+- `gemini-*` models must use the Gemini command adapter
+- `claude-*` models must use the Claude command adapter
 
 ### 4.1 Claude
 ```bash
 # Option A: Pipe prompt via stdin
-claude --print --model claude-sonnet-4 < /built-in-workflow/a3f8c2_tech_spec.md
+cd /resolved/local/path && claude --print --model claude-sonnet < /built-in-workflow/a3f8c2_tech_spec.md
 
 # Option B: Use claude with explicit instruction file
-claude --print --system-prompt "$(cat /built-in-workflow/a3f8c2_tech_spec.md)"
+cd /resolved/local/path && claude --print --system-prompt "$(cat /built-in-workflow/a3f8c2_tech_spec.md)"
 ```
 
 ### 4.2 Codex
 ```bash
-# Use exec mode for non-interactive execution
-codex exec --model codex-5.5 --prompt "$(cat /built-in-workflow/a3f8c2_tech_spec.md)"
+# GPT-family models route here
+cd /resolved/local/path && codex exec --model gpt-5.5 --prompt "$(cat /built-in-workflow/a3f8c2_tech_spec.md)"
 
 # Or with full-auto for autonomous coding steps
-codex exec --full-auto --model codex-5.3 --prompt "$(cat /built-in-workflow/a3f8c2_tech_spec.md)"
+cd /resolved/local/path && codex exec --full-auto --model gpt-5.4 --prompt "$(cat /built-in-workflow/a3f8c2_tech_spec.md)"
 ```
 
 ### 4.3 Gemini
 ```bash
 # Pipe prompt via stdin
-gemini --model gemini-2.5-pro < /built-in-workflow/a3f8c2_tech_spec.md
+cd /resolved/local/path && gemini --model gemini-pro < /built-in-workflow/a3f8c2_tech_spec.md
 ```
 
 ### 4.4 Special Case: Code/Review Loop Step
@@ -231,10 +255,10 @@ The Go-Runner reads from these folders when assembling the runtime prompt.
 - **Create Workflow Page:** A dedicated page for adding a new workflow definition by choosing an owner project, selecting step definitions, and ordering them.
 - **Workflow Builder Detail Page:** A dedicated workflow detail route owns the composer for one selected workflow definition.
   - Ability to enable/disable steps, re-order them, and add/remove steps.
-  - Per-step controls for approval gate, provider override, and model override.
+  - Per-step controls for approval gate, model dropdown, subagent, and other execution overrides.
   - After save, display the generated prompt cache hash when available.
 - **Step Definition Index:** A workspace page that shows the full list of reusable step definitions.
-- **Create Step Page:** A dedicated page for creating reusable step definitions with `step_type`, `name`, `description`, `required_mcps`, `required_skills`, `agent_type`, and artifact bindings for zero-or-more input artifact definitions plus zero-or-more output artifact definitions.
+- **Create Step Page:** A dedicated page for creating reusable step definitions with `step_type`, `name`, `description`, `team_role`, `required_mcps`, `required_skills`, `subagent`, `model`, and artifact bindings for zero-or-more input artifact definitions plus zero-or-more output artifact definitions.
 - **Artifact Definition Index:** A workspace page that shows the reusable artifact definitions catalog.
 - **Create Artifact Definition Page:** A dedicated page for defining artifact name, description, default file name, local output root path, local input lookup path, and remote sync root path.
 - **Templates Menu:** Pre-defined templates for Developers, Solo Devs, Leaders, and PMs.
@@ -243,7 +267,12 @@ The Go-Runner reads from these folders when assembling the runtime prompt.
 - **Realtime Updates:** The frontend subscribes to `workflow_run_steps` updates for the active run and refreshes dashboard data from the updated step payload.
 - **Approval Gate UI:** When a step enters `WAITING_USER_APPROVAL`, show artifact preview plus "Approve & Continue" and "Reject & Retry". Reject requires a rejection note and retries the same `workflow_run_steps` row.
 - **YOLO Mode:** Persisted per run on `workflow_runs.yolo_mode`. The dashboard header exposes the toggle and visual badge. Toggle mutations must go through a trusted Edge Function such as `/workflow-runs/toggle-yolo`, limited to project owners, leaders, or the user who started the run.
-- **Project Trigger Entry:** The project detail workflow tab acts as an entry page, not as an embedded builder. It must expose buttons to browse workflow definitions, create a new private workflow, and review recent run history for that project.
+- **Project Trigger Entry:** The project detail workflow tab acts as an entry page, not as an embedded builder. It must expose:
+  - start from workflow definition
+  - start from single step
+  - create a new private workflow
+  - begin prompt input
+  - recent run history for that project
 - **List-to-Builder Flow:** Workflow definition cards in the workspace list must navigate to the dedicated workflow detail/builder route so users can open, inspect, compose, and launch from the item they selected.
 
 ### 6.1 Built-In Templates and Private Workflows

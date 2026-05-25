@@ -8,7 +8,6 @@ import type {
   WorkflowStep,
 } from "@/domain/model/entity/workflow";
 import type { ContextSource } from "@/domain/model/entity/context-source";
-import type { Feature } from "@/domain/model/entity/feature";
 import type { Project } from "@/domain/model/entity/project";
 
 export interface WorkflowRunDetail {
@@ -19,7 +18,6 @@ export interface WorkflowRunDetail {
   logs: AiCallLog[];
   approvalDecisions?: ApprovalDecision[];
   selectedContextSources?: ContextSource[];
-  feature?: Feature | null;
   project?: Project | null;
   definition?: WorkflowDefinition | null;
 }
@@ -29,7 +27,6 @@ export interface PendingApprovalDetail {
   run: WorkflowRun;
   step: WorkflowStep | null;
   output: AiOutput | null;
-  feature: Feature | null;
   project: Project | null;
 }
 
@@ -37,7 +34,6 @@ export interface AiOutputDetail {
   output: AiOutput;
   run: WorkflowRun | null;
   step: WorkflowStep | null;
-  feature: Feature | null;
   project: Project | null;
   approvals: Approval[];
   approvalDecisions: ApprovalDecision[];

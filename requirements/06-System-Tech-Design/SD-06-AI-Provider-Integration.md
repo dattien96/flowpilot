@@ -3,19 +3,117 @@
 This document translates `SS-05-Workflow-Ai-Provider` into technical implementation details.
 
 ## 1. UI/UX Design (Frontend - React)
-- **Settings Screen:** 
-  - UI to list installed providers (Gemini, Claude, Codex) and their models.
-  - Global project defaults for Provider and Model.
-- **Workflow / Step Override UI:** Dropdowns within the Workflow Builder to override the Provider/Model at the Workflow level or the individual Step level.
+- **Settings Screen:**
+  - Show the three supported providers: `GEMINI`, `CLAUDE`, `CODEX`.
+  - Show host-machine detection status per provider: `INSTALLED`, `NOT_INSTALLED`, `FAILED`, `AUTH_REQUIRED`, or `UNSUPPORTED_OS`.
+  - Show detected CLI version when installed.
+  - Show the exact selectable models for each provider.
+  - Show and persist project-level defaults for Model and Reasoning Effort.
+  - Show the derived provider as a read-only badge or label next to the selected model.
+  - Expose actions to `Refresh Detection` and `Install`; show `Authenticate` only when the selected provider exposes an explicit auth flow, otherwise surface auth readiness and the next required host-side step.
+- **Workflow Launch UI:**
+  - When starting a workflow run, let the user override the project default Model and Reasoning Effort for that run.
+  - The selected run-level values become the baseline for that `workflow_run`.
+- **Workflow / Step Override UI:**
+  - In the Workflow Builder, allow override of Model and Reasoning Effort at the workflow-definition level and the individual-step level.
+  - The model dropdown is the source of truth; provider is derived automatically from the selected model.
+  - The reasoning-effort selector must be visible alongside the model selector.
+  - If a step has no override, the UI should show that it inherits from workflow/run/project defaults, with `gpt-5.4` and `medium` as the final fallbacks.
+- **Validation UX:**
+  - Prevent save/start when a selected model is not supported by the selected provider inventory.
+  - Warn before run start when the derived provider is not installed or still requires authentication.
+  - Validate that reasoning effort, when provided, is one of the supported levels.
 
 ---
 
-## 2. Provider Installation Commands
+## 2. Provider Listing and Detection Contract
 
-The Go-Runner's Cobra CLI will implement a sub-command: `flowpilot install-provider <provider_name>`.
-Before installing, the runner uses `exec.LookPath` (Go) to auto-detect if the CLI is already present.
+The Go-Runner's Cobra CLI must expose a machine-readable command for the frontend:
 
-### 2.1 Claude Code (Anthropic)
+```bash
+flowpilot providers list --json
+```
+
+This command is the source of truth for "installed and supported providers". It must not rely on stale frontend cache.
+
+### 2.1 Detection Rules
+- Supported providers are hardcoded in the product: `GEMINI`, `CLAUDE`, `CODEX`.
+- Installed state is detected on the host machine by using `exec.LookPath(...)` against the provider CLI binary.
+- Version is resolved by invoking `<provider-binary> --version` after detection.
+- Authentication state is resolved by a lightweight provider-specific readiness check when possible.
+- Detection is host-level state, not project-level state. Do not persist install/auth state in `projects`.
+
+### 2.2 Response Contract
+
+`flowpilot providers list --json` returns:
+
+```json
+{
+  "providers": [
+    {
+      "id": "CODEX",
+      "key": "codex",
+      "label": "Codex",
+      "supported": true,
+      "installed": true,
+      "install_status": "INSTALLED",
+      "auth_status": "READY",
+      "detected_binary": "codex",
+      "detected_version": "x.y.z",
+      "version": "x.y.z",
+      "binaryPath": "C:\\Users\\you\\AppData\\Local\\Programs\\codex\\codex.exe",
+      "installHint": "npm install -g @openai/codex",
+      "models": [
+        {
+          "id": "codex-5.5",
+          "display_name": "codex-5.5",
+          "available": true,
+          "source": "registry"
+        }
+      ],
+      "last_error": null
+    }
+  ]
+}
+```
+
+The Admin Web provider settings page may normalize this payload into its UI model, but the runner contract above is the source of truth.
+
+### 2.3 Status Semantics
+- `supported`: FlowPilot knows how to install, detect, and execute this provider on the current app version.
+- `install_status`:
+  - `INSTALLED`: CLI found and version check passed.
+  - `NOT_INSTALLED`: CLI not found.
+  - `FAILED`: install or verification failed.
+  - `UNSUPPORTED_OS`: FlowPilot does not have a valid install path for the current OS.
+- `auth_status`:
+  - `READY`: provider is installed and usable.
+  - `AUTH_REQUIRED`: provider CLI exists but still needs login or API key setup.
+  - `UNKNOWN`: FlowPilot cannot reliably determine auth state without a real execution.
+
+---
+
+## 3. Provider Installation Commands
+
+The Go-Runner's Cobra CLI will implement:
+
+```bash
+flowpilot install-provider <provider_name>
+```
+
+Before installing, the runner uses `exec.LookPath` to auto-detect whether the CLI is already present. If detection succeeds, installation is skipped and verification still runs.
+
+### 3.1 OS Selection Rules
+- Resolve OS using Go runtime detection:
+  - `windows` -> Windows install branch
+  - `darwin` -> macOS install branch
+  - `linux` -> Linux install branch
+- Treat WSL as Linux for shell-based installers.
+- Prefer an official native installer when the provider publishes one for the current OS.
+- Use npm-based installation only for providers whose official distribution path is npm-based on that platform.
+- If the current OS has no supported install path, return `UNSUPPORTED_OS` without mutating project data.
+
+### 3.2 Claude Code (Anthropic)
 - **Official docs:** https://code.claude.com/docs/en/overview
 - **macOS / Linux / WSL:**
   ```bash
@@ -37,9 +135,9 @@ Before installing, the runner uses `exec.LookPath` (Go) to auto-detect if the CL
   ```bash
   claude --version
   ```
-- **Prerequisites:** Anthropic account with Claude Pro, Team, or Enterprise subscription (or API key via Anthropic Console).
+- **Prerequisites:** Anthropic account with Claude Pro, Team, or Enterprise subscription, or API key via Anthropic Console.
 
-### 2.2 Codex CLI (OpenAI)
+### 3.3 Codex CLI (OpenAI)
 - **All platforms (npm):**
   ```bash
   npm install -g @openai/codex
@@ -54,7 +152,7 @@ Before installing, the runner uses `exec.LookPath` (Go) to auto-detect if the CL
   codex --version
   ```
 
-### 2.3 Gemini CLI (Google)
+### 3.4 Gemini CLI (Google)
 - **All platforms (npm):**
   ```bash
   npm install -g @google/gemini-cli
@@ -71,32 +169,143 @@ Before installing, the runner uses `exec.LookPath` (Go) to auto-detect if the CL
 
 ---
 
-## 3. Provider Instruction Files
+## 4. Model Registry and Discovery
+
+### 4.1 Model Selection
+- The system stores the exact provider-native model identifier selected by the user.
+- FlowPilot does not normalize model names across providers. `codex-5.5` and `gemini-1.5-pro` are provider-specific IDs and must be stored verbatim.
+
+### 4.2 Model Source of Truth
+- Each provider returned by `flowpilot providers list --json` must include a model list.
+- The runner builds that model list using this priority:
+  1. Provider-specific runtime introspection, if the CLI exposes a safe model-list capability.
+  2. Bundled FlowPilot registry of known supported model IDs for that provider.
+  3. User-entered exact model string only as a manual fallback for advanced settings.
+- If a provider CLI does not support runtime model discovery, FlowPilot still works by using the bundled registry.
+
+### 4.3 Availability Rules
+- A model is selectable only when it belongs to the currently selected provider.
+- A model may be shown but marked unavailable when:
+  - the provider is not authenticated yet,
+  - the provider account tier does not expose that model,
+  - the bundled registry knows the model but the runner cannot verify access yet.
+- At execution time, the runner must re-validate that the resolved model belongs to the resolved provider before making the LLM call.
+
+---
+
+## 5. Provider Instruction Files
 
 Each AI provider uses a different file to receive persistent project-level instructions:
 
 | Provider | Instruction File | Location | Skills Location |
-|----------|-----------------|----------|-----------------|
-| Claude   | `CLAUDE.md`     | Project root | `.claude/skills/<name>/SKILL.md` |
-| Codex    | `AGENTS.md`     | Project root | `.codex/skills/<name>/SKILL.md` (or via `config.toml`) |
-| Gemini   | `GEMINI.md`     | Project root | `.gemini/skills/<name>/SKILL.md` |
+|----------|------------------|----------|-----------------|
+| Claude   | `CLAUDE.md`      | Project root | `.claude/skills/<name>/SKILL.md` |
+| Codex    | `AGENTS.md`      | Project root | `.codex/skills/<name>/SKILL.md` (or via `config.toml`) |
+| Gemini   | `GEMINI.md`      | Project root | `.gemini/skills/<name>/SKILL.md` |
 
-**This is critical for the Workflow Engine** — FlowPilot must generate and write to the correct file depending on which provider is selected for a step.
-
----
-
-## 4. Configuration Resolution Logic
-Before making an LLM call, the Go-runner resolves the model configuration by checking:
-1. Does the specific `workflow_run_step` have a provider/model override? (Highest priority)
-2. Does the `workflow_run` have an override?
-3. Fallback to `project` default provider/model. (Lowest priority)
+This is critical for the Workflow Engine. FlowPilot must generate and write to the correct file depending on which provider is selected for a step. This behavior must stay aligned with `SD-05-Workflow-Engine`, section `5. Persistent Files That DO Live in LLM Folders`.
 
 ---
 
-## 5. Go-Runner Installation Flow
-1. User selects a Provider in the React UI → writes to `project_settings.default_provider`.
-2. Go-runner receives the config → runs `exec.LookPath("claude")` (or `codex`, `gemini`).
-3. If NOT found → Go-runner executes the OS-appropriate install command (Section 2).
-4. After install → runs `<provider> --version` to verify.
-5. Updates `project_settings.provider_status` to `INSTALLED` or `FAILED`.
-6. If auth is needed → opens browser for OAuth/login and waits for confirmation.
+## 6. Configuration Resolution Logic
+
+### 6.1 Persistence Locations
+- `projects.default_provider`, `projects.default_model` and `projects.default_reasoning_effort` store project-wide defaults.
+- `workflows.provider_override`, `workflows.model_override` and `workflows.reasoning_effort_override` store workflow-definition-level data, with provider derived from model.
+- `workflow_steps.provider_override`, `workflow_steps.model_override` and `workflow_steps.reasoning_effort_override` store definition-time per-step data, with provider derived from model.
+- `workflow_runs.provider`, `workflow_runs.model` and `workflow_runs.reasoning_effort` store the resolved run-level baseline chosen when a workflow starts.
+- `ai_runs.provider`, `ai_runs.model_name` and `ai_runs.reasoning_effort` store the actual parameters used for each individual model invocation.
+
+### 6.2 Resolution Order
+Before making an LLM call for a step, the Go-Runner resolves Model and Reasoning Effort in this order, then derives Provider from the resolved model:
+1. `workflow_steps.model_override` / `workflow_steps.reasoning_effort_override`
+2. `workflow_runs.model` / `workflow_runs.reasoning_effort`
+3. `projects.default_model` / `projects.default_reasoning_effort`
+4. Final defaults: `gpt-5.4` and `medium`
+
+Definition-time workflow overrides are applied when creating the run. In other words:
+- If the user starts a workflow without manual run overrides, the run parameters (`model`, `reasoning_effort`) inherit from workflow overrides when present, otherwise from project defaults, otherwise from the final defaults above.
+- Step overrides always win at execution time.
+- Provider is never edited independently; it is derived from the resolved model.
+
+### 6.3 Runner Pseudocode
+
+```text
+runModel = launchOverride.model
+    ?? workflow.model_override
+    ?? project.default_model
+    ?? "gpt-5.4"
+
+runReasoning = launchOverride.reasoning_effort
+    ?? workflow.reasoning_effort_override
+    ?? project.default_reasoning_effort
+    ?? "medium"
+
+stepModel = step.model_override ?? runModel
+stepReasoning = step.reasoning_effort_override ?? runReasoning
+stepProvider = providerFrom(stepModel)
+```
+
+### 6.4 Validation Rules
+- Reject run start if the resolved run-level model is not supported.
+- Reject step execution if the resolved step-level model is not supported.
+- Reject run start if no model/reasoning combination can be resolved after applying the fallback chain.
+- Reject step execution or run start if the resolved reasoning effort level is invalid (not low, medium, high, or xhigh).
+
+---
+
+## 7. Persistence and Data Contract Alignment
+
+This document must stay aligned with `SD-05-Workflow-Engine`.
+
+### 7.1 Required Stored Fields
+- `projects` must contain at least:
+  - `id`
+  - `default_model`
+  - `default_reasoning_effort`
+  - `default_provider` as a derived reference field
+- `workflows` must contain:
+  - `model_override`
+  - `reasoning_effort_override`
+  - `provider_override` as a derived reference field
+- `workflow_steps` must contain:
+  - `model_override`
+  - `reasoning_effort_override`
+  - `provider_override` as a derived reference field
+- `workflow_runs` must contain:
+  - `model`
+  - `reasoning_effort`
+  - `provider` as a derived reference field
+
+### 7.2 Host-State vs Project-State Boundary
+- Provider installation state, binary path, detected version, and auth readiness are host-machine concerns owned by the Go-Runner.
+- They must be returned by `flowpilot providers list --json`.
+- They should not be treated as project configuration fields because one machine can host many projects, and one project can be opened on many machines.
+
+### 7.3 Step Runtime Display
+- The execution dashboard may show Provider/Model/Reasoning per step without adding new step-runtime columns.
+- For MVP, the UI can derive the displayed step Provider/Model/Reasoning by combining:
+  - `workflow_steps.model_override` / `workflow_steps.reasoning_effort_override`
+  - `workflow_runs.model` / `workflow_runs.reasoning_effort`
+  - `projects.default_model` / `projects.default_reasoning_effort`
+- If later audit requirements demand immutable per-step runtime tracing, add `resolved_provider`, `resolved_model`, and `resolved_reasoning_effort` to `workflow_run_steps`.
+
+---
+
+## 8. Go-Runner Installation and Execution Flow
+
+1. Frontend loads provider inventory by calling `flowpilot providers list --json`.
+2. User selects project default Model/Reasoning in Settings -> persist to `projects.default_model` and `projects.default_reasoning_effort`, then derive `projects.default_provider` from the model.
+3. User optionally sets workflow-definition overrides in `workflows.model_override` / `workflows.reasoning_effort_override`.
+4. User optionally sets per-step overrides in `workflow_steps.model_override` / `workflow_steps.reasoning_effort_override`.
+5. When starting a run, the frontend may pass launch-time overrides.
+6. The Go-Runner resolves `workflow_runs.model` and `workflow_runs.reasoning_effort` using the precedence rules in Section 6, derives `workflow_runs.provider` from the model, then persists the run.
+7. Before the first LLM call, the runner checks whether the resolved provider is installed and authenticated.
+8. If not installed, the runner executes the OS-appropriate install command from Section 3.
+9. After install, the runner runs `<provider> --version` to verify detection, then refreshes provider inventory.
+10. If authentication is still required, the runner launches the provider-specific login flow and marks the provider `AUTH_REQUIRED` until the next successful readiness check.
+11. Before each step execution, the runner resolves the final step Model and Reasoning Effort, derives Provider from the model, and validates the parameters.
+12. The runner writes prompts to the provider-specific instruction and skill locations, then executes the step with the resolved parameters. If reasoning effort is set:
+    - For **Codex**: appends `-c reasoning_effort=<level>` to the `codex exec` call.
+    - For **Claude Code**: appends `--effort <level>` to the `claude` CLI call (with `xhigh` mapped to `max`).
+    - For other CLI providers: appends the provider-specific flag if supported.

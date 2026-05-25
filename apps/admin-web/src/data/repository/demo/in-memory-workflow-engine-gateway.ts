@@ -3,16 +3,46 @@ import type {
   ArtifactDefinition,
   ArtifactRun,
   StepDefinition,
+  SupportedStepModel,
   Workflow,
+  WorkflowRunStartRequest,
   WorkflowRun,
   WorkflowRunLog,
   WorkflowRunStep,
   WorkflowStep,
   StepType,
 } from "@/domain/model/entity/workflow-engine";
+import { deriveStepPromptBase } from "@/domain/model/entity/workflow-engine";
 import { workflowArtifactDefinitionOptions } from "@/features/workflow-engine/workflow-artifact-definitions";
 
 const DEMO_STEP_DEFINITION_CREATED_AT = "2026-05-20T00:00:00.000Z";
+const DEFAULT_STEP_MODEL: SupportedStepModel = "gpt-5.4";
+const DEFAULT_REASONING_EFFORT = "medium";
+
+function resolveProviderKeyFromModel(model: string) {
+  if (model.startsWith("gpt-")) {
+    return "codex";
+  }
+  if (model.startsWith("gemini-")) {
+    return "gemini";
+  }
+  if (model.startsWith("claude-")) {
+    return "claude";
+  }
+
+  return "codex";
+}
+
+function normalizeModel(model: string | null | undefined, fallback: SupportedStepModel = DEFAULT_STEP_MODEL) {
+  return (model?.trim() as SupportedStepModel) || fallback;
+}
+
+function normalizeReasoningEffort(
+  reasoningEffort: string | null | undefined,
+  fallback: string = DEFAULT_REASONING_EFFORT,
+) {
+  return reasoningEffort?.trim() || fallback;
+}
 
 const BUILT_IN_STEP_ARTIFACT_BINDINGS: Record<
   StepType,
@@ -106,6 +136,7 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
       requiredMcps: [],
       requiredSkills: ["business_analyst_skill"],
       agentType: "standard",
+      reasoningEffort: DEFAULT_REASONING_EFFORT,
     },
     {
       stepType: "feature_intake",
@@ -114,6 +145,7 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
       requiredMcps: ["jira"],
       requiredSkills: ["feature_intake_skill"],
       agentType: "standard",
+      reasoningEffort: DEFAULT_REASONING_EFFORT,
     },
     {
       stepType: "business_summary",
@@ -122,6 +154,7 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
       requiredMcps: [],
       requiredSkills: ["business_summary_skill"],
       agentType: "standard",
+      reasoningEffort: DEFAULT_REASONING_EFFORT,
     },
     {
       stepType: "product_spec",
@@ -130,6 +163,7 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
       requiredMcps: [],
       requiredSkills: ["product_spec_skill"],
       agentType: "standard",
+      reasoningEffort: DEFAULT_REASONING_EFFORT,
     },
     {
       stepType: "tech_spec",
@@ -138,6 +172,7 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
       requiredMcps: [],
       requiredSkills: ["tech_spec_skill"],
       agentType: "standard",
+      reasoningEffort: DEFAULT_REASONING_EFFORT,
     },
     {
       stepType: "make_plan_coding",
@@ -146,6 +181,7 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
       requiredMcps: [],
       requiredSkills: ["make_plan_coding_skill"],
       agentType: "standard",
+      reasoningEffort: DEFAULT_REASONING_EFFORT,
     },
     {
       stepType: "create_architecture",
@@ -154,6 +190,7 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
       requiredMcps: [],
       requiredSkills: ["create_architecture_skill"],
       agentType: "standard",
+      reasoningEffort: DEFAULT_REASONING_EFFORT,
     },
     {
       stepType: "tdd",
@@ -162,6 +199,7 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
       requiredMcps: [],
       requiredSkills: ["tdd_skill"],
       agentType: "standard",
+      reasoningEffort: DEFAULT_REASONING_EFFORT,
     },
     {
       stepType: "task_breakdown",
@@ -170,6 +208,7 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
       requiredMcps: [],
       requiredSkills: ["task_breakdown_skill"],
       agentType: "standard",
+      reasoningEffort: DEFAULT_REASONING_EFFORT,
     },
     {
       stepType: "code_review_loop",
@@ -178,6 +217,7 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
       requiredMcps: [],
       requiredSkills: ["coding_skill", "review_skill"],
       agentType: "autonomous",
+      reasoningEffort: DEFAULT_REASONING_EFFORT,
     },
     {
       stepType: "release_readiness",
@@ -186,6 +226,7 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
       requiredMcps: [],
       requiredSkills: ["release_readiness_skill"],
       agentType: "standard",
+      reasoningEffort: DEFAULT_REASONING_EFFORT,
     },
     {
       stepType: "issue_analysis",
@@ -194,6 +235,7 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
       requiredMcps: ["firebase", "jira"],
       requiredSkills: ["issue_analysis_skill"],
       agentType: "standard",
+      reasoningEffort: DEFAULT_REASONING_EFFORT,
     },
     {
       stepType: "analytics_review",
@@ -202,6 +244,7 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
       requiredMcps: ["firebase"],
       requiredSkills: ["analytics_review_skill"],
       agentType: "standard",
+      reasoningEffort: DEFAULT_REASONING_EFFORT,
     },
     {
       stepType: "project_analysis",
@@ -210,6 +253,7 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
       requiredMcps: ["google_drive"],
       requiredSkills: ["project_analysis_skill"],
       agentType: "standard",
+      reasoningEffort: DEFAULT_REASONING_EFFORT,
     },
     {
       stepType: "telegram_notification",
@@ -218,6 +262,7 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
       requiredMcps: ["telegram"],
       requiredSkills: ["notification_skill"],
       agentType: "standard",
+      reasoningEffort: DEFAULT_REASONING_EFFORT,
     },
     {
       stepType: "code_traceability",
@@ -226,6 +271,7 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
       requiredMcps: ["jira"],
       requiredSkills: ["code_traceability_skill"],
       agentType: "standard",
+      reasoningEffort: DEFAULT_REASONING_EFFORT,
     },
     {
       stepType: "onboarding_walkthrough",
@@ -234,13 +280,16 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
       requiredMcps: ["google_drive"],
       requiredSkills: ["onboarding_skill"],
       agentType: "standard",
+      reasoningEffort: DEFAULT_REASONING_EFFORT,
     },
   ].map((step) => ({
     ...step,
+    promptBase: deriveStepPromptBase(step),
+    model: DEFAULT_STEP_MODEL,
     ...BUILT_IN_STEP_ARTIFACT_BINDINGS[step.stepType],
     createdAt: DEMO_STEP_DEFINITION_CREATED_AT,
     updatedAt: DEMO_STEP_DEFINITION_CREATED_AT,
-  }));
+  }) as StepDefinition);
 
   private workflows: Workflow[] = [];
   private workflowSteps: WorkflowStep[] = [];
@@ -366,23 +415,33 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
   }
 
   async saveStepDefinition(step: StepDefinition): Promise<StepDefinition> {
+    const next = {
+      ...step,
+      promptBase: step.promptBase ?? deriveStepPromptBase(step),
+      teamRole: step.teamRole ?? null,
+      subagent: step.subagent ?? null,
+      model: step.model,
+    };
     const existingIndex = this.stepDefinitions.findIndex(
-      (current) => current.stepType === step.stepType
+      (current) => current.stepType === next.stepType
     );
 
     if (existingIndex >= 0) {
-      this.stepDefinitions[existingIndex] = step;
+      this.stepDefinitions[existingIndex] = next;
     } else {
-      this.stepDefinitions.unshift(step);
+      this.stepDefinitions.unshift(next);
     }
 
-    return step;
+    return next;
   }
 
   async listWorkflows(projectId?: string): Promise<Workflow[]> {
-    if (!projectId) return this.workflows;
+    const visibleWorkflows = this.workflows.filter(
+      (workflow) => workflow.createdBy !== "flowpilot-runtime"
+    );
+    if (!projectId) return visibleWorkflows;
 
-    return this.workflows.filter(
+    return visibleWorkflows.filter(
       (workflow) => workflow.projectId === null || workflow.projectId === projectId
     );
   }
@@ -401,6 +460,9 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
   ): Promise<Workflow> {
     const isNew = !workflow.id;
     const wId = workflow.id || `wf-${Math.random().toString(36).slice(2, 9)}`;
+    const resolvedWorkflowModel = normalizeModel(workflow.modelOverride);
+    const resolvedWorkflowReasoning = normalizeReasoningEffort(workflow.reasoningEffortOverride);
+    const resolvedWorkflowProvider = resolveProviderKeyFromModel(resolvedWorkflowModel);
 
     if (isNew) {
       const newW: Workflow = {
@@ -409,8 +471,9 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
         name: workflow.name || "Untitled",
         description: workflow.description || "",
         isTemplate: workflow.isTemplate ?? false,
-        providerOverride: workflow.providerOverride || null,
-        modelOverride: workflow.modelOverride || null,
+        providerOverride: resolvedWorkflowProvider,
+        modelOverride: resolvedWorkflowModel,
+        reasoningEffortOverride: resolvedWorkflowReasoning,
         createdBy: "demo-user",
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -419,7 +482,13 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
     } else {
       const match = this.workflows.find((item) => item.id === wId);
       if (match) {
-        Object.assign(match, workflow);
+        match.projectId = workflow.projectId ?? match.projectId;
+        match.name = workflow.name ?? match.name;
+        match.description = workflow.description ?? match.description;
+        match.isTemplate = workflow.isTemplate ?? match.isTemplate;
+        match.providerOverride = resolvedWorkflowProvider;
+        match.modelOverride = resolvedWorkflowModel;
+        match.reasoningEffortOverride = resolvedWorkflowReasoning;
         match.updatedAt = new Date().toISOString();
       }
     }
@@ -434,8 +503,14 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
           stepType: step.stepType!,
           orderIndex: step.orderIndex ?? idx,
           isEnabled: step.isEnabled ?? true,
-          providerOverride: step.providerOverride || null,
-          modelOverride: step.modelOverride || null,
+          providerOverride: resolveProviderKeyFromModel(
+            normalizeModel(step.modelOverride, resolvedWorkflowModel),
+          ),
+          modelOverride: normalizeModel(step.modelOverride, resolvedWorkflowModel),
+          reasoningEffortOverride: normalizeReasoningEffort(
+            step.reasoningEffortOverride,
+            resolvedWorkflowReasoning,
+          ),
           requiresApproval: step.requiresApproval ?? true,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
@@ -469,18 +544,70 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
     return { run, steps, logs };
   }
 
-  async startWorkflowRun(workflowId: string, projectId: string): Promise<WorkflowRun> {
-    const w = await this.getWorkflowDetail(workflowId);
-    if (!w) throw new Error("Workflow not found.");
+  async startWorkflowRun(request: WorkflowRunStartRequest): Promise<WorkflowRun> {
+    let workflowId = request.workflowId ?? null;
+    let workflowDetail =
+      request.startMode === "workflow-definition" && workflowId
+        ? await this.getWorkflowDetail(workflowId)
+        : null;
+
+    if (request.startMode === "single-step") {
+      const selectedStep = this.stepDefinitions.find((step) => step.stepType === request.stepType);
+      if (!selectedStep) {
+        throw new Error("Workflow not found.");
+      }
+      const selectedModel = normalizeModel(selectedStep.model);
+      const selectedReasoningEffort = normalizeReasoningEffort(selectedStep.reasoningEffort);
+
+      workflowId = `runtime-${request.stepType}-${Math.random().toString(36).slice(2, 9)}`;
+      const workflow: Workflow = {
+        id: workflowId,
+        projectId: request.projectId,
+        name: `Single Step: ${selectedStep.name}`,
+        description: `Runtime-generated single-step workflow for ${request.stepType}.`,
+        isTemplate: false,
+        providerOverride: resolveProviderKeyFromModel(selectedModel),
+        modelOverride: selectedModel,
+        reasoningEffortOverride: selectedReasoningEffort,
+        createdBy: "flowpilot-runtime",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      const workflowStep: WorkflowStep = {
+        id: `wfs-${workflowId}-0`,
+        workflowId,
+        stepType: selectedStep.stepType,
+        orderIndex: 0,
+        isEnabled: true,
+        providerOverride: resolveProviderKeyFromModel(selectedModel),
+        modelOverride: selectedModel,
+        reasoningEffortOverride: selectedReasoningEffort,
+        requiresApproval: false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      this.workflows.unshift(workflow);
+      this.workflowSteps.push(workflowStep);
+      workflowDetail = {
+        ...workflow,
+        steps: [workflowStep],
+      };
+    }
+
+    if (!workflowDetail || !workflowId) throw new Error("Workflow not found.");
 
     const runId = `run-${Math.random().toString(36).slice(2, 9)}`;
     const newRun: WorkflowRun = {
       id: runId,
       workflowId,
-      projectId,
+      projectId: request.projectId,
       status: "PENDING",
-      provider: w.providerOverride,
-      model: w.modelOverride,
+      provider: resolveProviderKeyFromModel(
+        normalizeModel(workflowDetail.modelOverride),
+      ),
+      model: normalizeModel(workflowDetail.modelOverride),
+      reasoningEffort: normalizeReasoningEffort(workflowDetail.reasoningEffortOverride),
       yoloMode: false,
       startedBy: "demo-user",
       startedAt: new Date().toISOString(),
@@ -489,8 +616,8 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
     };
     this.workflowRuns.unshift(newRun);
 
-    if (w.steps) {
-      w.steps.forEach((step, idx) => {
+    if (workflowDetail.steps) {
+      workflowDetail.steps.forEach((step, idx) => {
         const wrsId = `wrs-${runId}-${idx}`;
         this.workflowRunSteps.push({
           id: wrsId,
@@ -514,6 +641,13 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
             workflowRunStepId: wrsId,
             logLevel: "info",
             message: `Materialized step ${step.stepType} in execution pipeline.`,
+            createdAt: new Date().toISOString(),
+          });
+          this.workflowRunLogs.push({
+            id: `log-${wrsId}-begin`,
+            workflowRunStepId: wrsId,
+            logLevel: "info",
+            message: `Begin prompt: ${request.beginPrompt}`,
             createdAt: new Date().toISOString(),
           });
         }

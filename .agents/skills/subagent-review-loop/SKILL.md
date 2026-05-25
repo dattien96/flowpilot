@@ -15,7 +15,7 @@ main agent plans, `coder-agent` codes, `reviewer-agent` audits, and the process 
 3. Main agent delegates the bounded implementation to `coder-agent`.
 4. `coder-agent` edits only the assigned scope and reports changed files, tests run, and open risks.
 5. Main agent starts `reviewer-agent` and waits for the result.
-6. If `reviewer-agent` returns pass, the loop ends.
+6. If `reviewer-agent` returns pass, main agent runs `audit-logging-skill` and records the completed scope in `change-audit/`.
 7. If `reviewer-agent` returns findings, main agent sends a narrow fix request back to `coder-agent`.
 8. Repeat from step 4 until `reviewer-agent` returns pass.
 
@@ -34,7 +34,8 @@ main agent plans, `coder-agent` codes, `reviewer-agent` audits, and the process 
 - Run impact analysis before editing any symbol.
 - Decide whether `coder-agent`, `reviewer-agent`, or another coding pass is needed.
 - Do not perform the final code review yourself; wait for `reviewer-agent`.
-- Stop only when `reviewer-agent` returns pass and no further issues are found.
+- Use `audit-logging-skill` after the review passes and before the final commit or handoff.
+- Stop only when `reviewer-agent` returns pass, the audit note is updated, and no further issues are found.
 
 ## Sub-Agent Prompt Template
 
@@ -54,7 +55,7 @@ Use this after the sub-agent returns:
 2. Verify behavior against the acceptance criteria.
 3. Check for regressions, missing tests, and edge cases.
 4. If anything is off, issue a targeted fix request to `coder-agent`.
-5. Otherwise, finalize.
+5. Otherwise, update `change-audit/` via `audit-logging-skill` and then finalize.
 
 ## Good Fit
 

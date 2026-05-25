@@ -24,6 +24,34 @@ Workflow definition can exist in 2 scopes:
 - Private workflow: custom workflow owned by a single project
 
 Workflow run is the execution record of a workflow on a specific project.
+Workflow run is started from the project detail page, not from a chat thread.
+Workflow run must execute against one valid bound local path for that project.
+
+## 2.1 Workflow Start Model
+
+The project detail page must support 3 workflow trigger modes:
+
+1. Start from workflow definition
+2. Start from single step
+3. Create new workflow
+
+Before the run starts, the user enters one begin prompt.
+
+Example:
+
+```text
+I want to implement the login feature
+```
+
+This prompt is passed to:
+
+- the first step of the selected workflow definition
+- or the selected single step
+
+This input is execution context, not chat history.
+
+Before a workflow run can complete startup, the Golang runner must confirm that at least one bound local path for the project is valid and accessible.
+If not, the trigger must fail and return the root cause to the user.
 
 # 3. Step in workflow - Core component
 
@@ -35,8 +63,25 @@ That mean we need to have to enable/disable step and also re-oder steps
 ## 3.1 Basic info of step
 - Name
 - Description
+- Team role
 - Skills required
-- Agents required
+- Subagent
+- Model
+
+`Subagent` is a text-linked execution field similar to `skills`, but it means delegated execution role, not supporting context.
+
+`Model` is a step-level runtime selection and must be configurable from a dropdown list.
+
+Supported model options:
+
+- `gemini-flash`
+- `gemini-pro`
+- `claude-haiku`
+- `claude-sonnet`
+- `claude-opus`
+- `gpt-5.4-mini`
+- `gpt-5.4`
+- `gpt-5.5`
 
 ## 3.2 MCP in Step
 
@@ -50,7 +95,42 @@ If MCP was added in 1 step -> added to the flow then if project use this flow ->
 ## 3.3 Skills/Agents in Step
 Reference SS-06-Workflow-Skill-Agent.md
 
-- Each step can belong with 1-n SKILL, 1-n AGENT
+- Each step can belong with 1-n SKILL
+- Each step can optionally define 1 subagent
+- Each step can optionally define a step-specific prompt base
+
+Meaning:
+
+- `prompt_base` defines the core instruction for the step
+- `skills` provide guidance and reusable prompt context
+- `subagent` tells the runner which delegated execution role should be used for that step
+
+## 3.3.1 Model Routing Rule
+
+The selected model controls which provider command the Golang runner must use.
+
+Routing rules:
+
+- `gpt-*` models route to Codex command execution
+- `gemini-*` models route to Gemini command execution
+- `claude-*` models route to Claude command execution
+
+Example:
+
+- if step model is `gpt-5.4`, the runner must call the Codex command adapter
+- if step model is `gemini-pro`, the runner must call the Gemini command adapter
+- if step model is `claude-opus`, the runner must call the Claude command adapter
+
+## 3.3.2 Directory binding rule
+
+Step execution must never assume one globally shared project path.
+
+The runner must resolve the local path in this order:
+
+1. load all directory bindings for the project
+2. check each bound `local_path`
+3. compatibility fallback only if a legacy global `project_path` still exists during migration
+4. otherwise stop execution and fail the trigger with clear guidance
 
 ## 3.4. Output of step - Artifacts 
 Reference SS-07-Workflow-Artifact.md
@@ -253,16 +333,42 @@ For built-in MVP seeds, most steps only need one primary predefined output artif
 
 If a step later needs additional persistent outputs, the platform should allow attaching additional predefined artifact definitions without redefining the step model.
 
+## 3.7 Step Runtime Contract
+
+When a workflow step starts, the Golang runner must read the step definition and resolve:
+
+1. required MCPs
+2. skills
+3. subagent
+4. input artifacts
+5. output artifacts
+6. selected model
+
+Then the runner assembles the prompt with:
+
+- team role
+- project path
+- selected model
+- begin prompt or current user input
+- input artifact paths
+- skills
+- subagent if defined
+- output artifact path
+
+If a required MCP is missing on the project, the runner must stop the step and show the user which MCP needs to be enabled.
+
 
 # 4. Workflow usage and configuration in project
 - Allow a project to browse and pick global workflows.
 - Allow a project to create and save private workflows that belong only to that project.
 - Allow a project to start a workflow run from either a global workflow or a private workflow.
+- Allow a project to start a single step without creating a full workflow definition first.
 - Allow user to enable/disable approval gate per step.
 - Allow user to toggle YOLO mode per workflow run. When YOLO mode is ON, approval gates are skipped and the workflow continues automatically.
 - Allow user to enable/disable step.
 - Allow user to re-order steps.
 - Allow user to add/remove steps.
+- Allow user to select a step model from the supported model dropdown list.
 
 ## 4.1 Workflow execution states
 - Workflow run status: `PENDING`, `RUNNING`, `DONE`, `FAILED`, `CANCELED`.

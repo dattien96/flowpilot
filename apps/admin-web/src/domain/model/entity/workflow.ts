@@ -25,7 +25,6 @@ export interface WorkflowRun {
   id: string;
   workflowDefinitionId: string;
   projectId: string;
-  featureId: string;
   status: WorkflowRunStatus;
   currentStepKey: string | null;
   selectedContextSourceIds: string[];
@@ -54,7 +53,6 @@ export interface AiOutput {
   workflowRunId: string;
   workflowStepId: string;
   projectId: string;
-  featureId: string;
   outputType: OutputType;
   version: number;
   title: string;

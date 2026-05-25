@@ -1,3 +1,5 @@
+import type { ReasoningEffort } from "@/domain/model/entity/workflow-engine";
+
 export interface LocalRunnerHealth {
   status: "online" | "offline";
   runnerVersion: string | null;
@@ -14,8 +16,21 @@ export interface LocalRunnerProvider {
   installed: boolean;
   version: string | null;
   binaryPath: string | null;
-  authStatus: "authenticated" | "unauthenticated" | "unknown" | "missing";
+  supported?: boolean;
+  installStatus?: "NOT_INSTALLED" | "INSTALLED" | "FAILED" | "UNSUPPORTED_OS";
+  authStatus?: "READY" | "AUTH_REQUIRED" | "UNKNOWN";
+  detectedBinary?: string | null;
+  detectedVersion?: string | null;
+  models?: LocalRunnerProviderModel[];
+  lastError?: string | null;
   installHint: string | null;
+}
+
+export interface LocalRunnerProviderModel {
+  id: string;
+  displayName: string;
+  available: boolean;
+  source: string;
 }
 
 export interface LocalRunnerMcpBackend {
@@ -102,7 +117,6 @@ export interface LocalRunnerArtifact {
   title: string;
   sourceKind: string;
   projectId: string;
-  featureId: string;
   workflowRunId: string;
   workflowStepKey: string;
   providerKey: string;
@@ -114,6 +128,17 @@ export interface LocalRunnerArtifact {
   updatedAt: string;
   contentMarkdown: string;
   previewMarkdown: string;
+  manifestPath?: string;
+  promptPath?: string;
+  stdoutPath?: string;
+  stderrPath?: string;
+  commandPath?: string;
+  contentPath?: string;
+  checksum?: string;
+  promptText?: string;
+  stdoutText?: string;
+  stderrText?: string;
+  commandText?: string;
 }
 
 export interface LocalRunnerStorageDriver {
@@ -140,20 +165,28 @@ export interface LocalRunnerStorageDriverRequest {
   remoteFolderName: string;
 }
 
+export interface LocalRunnerDirectorySelection {
+  path: string;
+}
+
 export interface LocalRunnerPromptExecutionRequest {
   providerKey: string;
+  modelName?: string;
+  reasoningEffort?: ReasoningEffort | null;
   prompt: string;
   skillIds: string[];
   flowId: string | null;
   contextSourceIds: string[];
   timeoutMs: number;
   workingDirectory: string | null;
+  allowWrite?: boolean;
 }
 
 export interface LocalRunnerPromptExecutionResult {
   status: "success" | "failed";
   runId: string;
   providerKey: string;
+  modelName: string | null;
   command: string;
   stdoutSummary: string;
   stderrSummary: string;

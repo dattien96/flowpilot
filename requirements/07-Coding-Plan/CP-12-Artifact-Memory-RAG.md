@@ -29,7 +29,7 @@ Create a new Supabase migration for:
 - vector index for artifact memory embeddings
 - RLS policies matching project/team access rules
 
-> **Important:** After the CP-06 redesign, all generated artifacts are stored in the canonical `artifacts` table (with `artifact_type`), not `ai_outputs`. The `artifact_memories` FK must reference `artifacts(id)`, not `ai_outputs(id)`.
+> **Important:** After the CP-06 redesign, all generated artifacts are stored as canonical `artifact_runs` linked to `artifact_definitions`, not `ai_outputs`. The `artifact_memories` FK must reference `artifact_runs(id)`.
 > Use `vector(384)` when using Supabase `gte-small`. If another model is selected, align the vector dimension with that model.
 
 Key DDL (refer to SD-10 §2 for full schema, update FKs as noted):
@@ -38,12 +38,13 @@ CREATE EXTENSION IF NOT EXISTS vector;
 
 CREATE TABLE artifact_memories (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  artifact_id UUID NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,  -- NOT ai_outputs
+  artifact_run_id UUID NOT NULL REFERENCES artifact_runs(id) ON DELETE CASCADE,
+  artifact_definition_id UUID REFERENCES artifact_definitions(id) ON DELETE SET NULL,
+  artifact_definition_key TEXT NOT NULL,
   project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   workflow_id UUID REFERENCES workflows(id) ON DELETE SET NULL,
   workflow_run_id UUID REFERENCES workflow_runs(id) ON DELETE SET NULL,
   workflow_run_step_id UUID REFERENCES workflow_run_steps(id) ON DELETE SET NULL,
-  artifact_type TEXT NOT NULL,
   artifact_status TEXT NOT NULL,
   artifact_version INT NOT NULL,
   summary TEXT NOT NULL,
@@ -63,7 +64,7 @@ CREATE TABLE artifact_memories (
 
 CREATE INDEX artifact_memories_project_idx ON artifact_memories(project_id);
 CREATE INDEX artifact_memories_workflow_idx ON artifact_memories(workflow_id);
-CREATE INDEX artifact_memories_artifact_type_idx ON artifact_memories(artifact_type);
+CREATE INDEX artifact_memories_artifact_definition_key_idx ON artifact_memories(artifact_definition_key);
 CREATE INDEX artifact_memories_embedding_idx
   ON artifact_memories
   USING ivfflat (embedding vector_cosine_ops)
@@ -118,6 +119,8 @@ Requirements:
 The Edge Function should be used for:
 - embedding working memory records
 - embedding step queries before vector search
+- JWT auth is required to prevent unauthenticated use.
+- Project access control remains the responsibility of the caller before sending text to `generate-embedding`.
 
 ---
 
@@ -178,8 +181,8 @@ Extend step definitions with context policy fields:
 
 ```ts
 type StepContextPolicy = {
-  requiredArtifactTypes: string[];
-  optionalArtifactTypes: string[];
+  requiredArtifactDefinitionKeys: string[];
+  optionalArtifactDefinitionKeys: string[];
   requirePreviousArtifactFullContent: boolean;
   allowCrossWorkflowRetrieval: boolean;
   approvedOnly: boolean;
@@ -194,7 +197,7 @@ type StepContextPolicy = {
 Default policy:
 - include previous approved artifact summary
 - search same workflow only
-- approved artifacts only
+- approved artifact runs only
 - max 8 retrieved memory records
 - prefer summaries over raw content
 
@@ -226,7 +229,7 @@ The model prompt should include source references so generated output can be aud
 
 Add Artifact Management:
 - artifact table with filters
-- raw artifact detail view
+- artifact run detail view
 - working memory detail view
 - embedding/indexing status
 - version history
@@ -237,7 +240,7 @@ Update Workflow Execution Dashboard:
 - show prompt context drawer per step
 - list memory items used in prompt
 - show token estimates
-- link memory records back to raw artifacts
+- link memory records back to artifact runs and their raw storage locations
 
 ---
 
@@ -267,7 +270,7 @@ Manual validation:
 
 ## 10. Definition of Done
 
-- [ ] `artifact_memories` table exists with `artifact_id UUID REFERENCES artifacts(id)` FK and vector search support.
+- [ ] `artifact_memories` table exists with `artifact_run_id UUID REFERENCES artifact_runs(id)` FK and vector search support.
 - [ ] `workflow_prompt_context_items` table exists with `workflow_run_step_id UUID` FK.
 - [ ] RLS SELECT policies on both tables (project-member scoped).
 - [ ] `generate-embedding` Edge Function returns normalized embeddings.

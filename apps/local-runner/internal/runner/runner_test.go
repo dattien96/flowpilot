@@ -3,11 +3,13 @@ package runner
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -62,6 +64,364 @@ func TestTriggerIntegrationConnectionAcceptsValidRequest(t *testing.T) {
 	}
 	if result.Message == nil || !strings.Contains(*result.Message, "project-alpha") {
 		t.Fatalf("expected message to mention project id, got %#v", result.Message)
+	}
+}
+
+func TestPickDirectoryReturnsSelectedPath(t *testing.T) {
+	instance := &Runner{workspace: t.TempDir()}
+
+	originalRunCommand := runCommandFn
+	t.Cleanup(func() {
+		runCommandFn = originalRunCommand
+	})
+
+	var observedName string
+	var observedArgs []string
+	runCommandFn = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		observedName = name
+		observedArgs = append([]string(nil), args...)
+		return []byte("  /tmp/project-alpha \n"), nil
+	}
+
+	result, err := instance.PickDirectory(context.Background())
+	if err != nil {
+		t.Fatalf("pick directory: %v", err)
+	}
+
+	if result.Path != filepath.Clean("/tmp/project-alpha") {
+		t.Fatalf("expected cleaned selected path, got %q", result.Path)
+	}
+
+	switch runtime.GOOS {
+	case "darwin":
+		if observedName != "osascript" {
+			t.Fatalf("expected osascript on darwin, got %q", observedName)
+		}
+		if len(observedArgs) != 2 || observedArgs[0] != "-e" {
+			t.Fatalf("expected AppleScript arguments, got %v", observedArgs)
+		}
+	case "linux":
+		if observedName != "zenity" {
+			t.Fatalf("expected zenity on linux, got %q", observedName)
+		}
+		if !slices.Equal(observedArgs, []string{"--file-selection", "--directory", "--title=Select project folder"}) {
+			t.Fatalf("unexpected zenity args: %v", observedArgs)
+		}
+	case "windows":
+		if observedName != "powershell" {
+			t.Fatalf("expected powershell on windows, got %q", observedName)
+		}
+		if len(observedArgs) == 0 {
+			t.Fatal("expected powershell arguments for folder browser")
+		}
+	default:
+		t.Fatalf("unexpected runtime.GOOS in test: %s", runtime.GOOS)
+	}
+}
+
+func TestPickDirectoryRejectsEmptySelection(t *testing.T) {
+	instance := &Runner{workspace: t.TempDir()}
+
+	originalRunCommand := runCommandFn
+	t.Cleanup(func() {
+		runCommandFn = originalRunCommand
+	})
+
+	runCommandFn = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		return []byte(" \n "), nil
+	}
+
+	_, err := instance.PickDirectory(context.Background())
+	if err == nil {
+		t.Fatal("expected empty selection to return an error")
+	}
+	if !strings.Contains(err.Error(), "no directory was selected") {
+		t.Fatalf("expected no-selection error, got %v", err)
+	}
+}
+
+func TestValidateDirectoryReportsUsableDirectory(t *testing.T) {
+	instance := &Runner{workspace: t.TempDir()}
+	projectDir := filepath.Join(t.TempDir(), "project-alpha")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir project dir: %v", err)
+	}
+
+	result := instance.ValidateDirectory(projectDir)
+	if !result.Usable {
+		t.Fatalf("expected directory to be usable, got %#v", result)
+	}
+	if result.Reason != "" {
+		t.Fatalf("expected empty reason for usable directory, got %q", result.Reason)
+	}
+}
+
+func TestValidateDirectoryReportsMissingOrInvalidPath(t *testing.T) {
+	instance := &Runner{workspace: t.TempDir()}
+
+	missing := instance.ValidateDirectory(filepath.Join(t.TempDir(), "missing-project"))
+	if missing.Usable {
+		t.Fatalf("expected missing path to be unusable, got %#v", missing)
+	}
+	if missing.Reason != "path does not exist" {
+		t.Fatalf("expected missing-path reason, got %q", missing.Reason)
+	}
+
+	filePath := filepath.Join(t.TempDir(), "notes.txt")
+	if err := os.WriteFile(filePath, []byte("demo"), 0o644); err != nil {
+		t.Fatalf("write file path: %v", err)
+	}
+
+	notDirectory := instance.ValidateDirectory(filePath)
+	if notDirectory.Usable {
+		t.Fatalf("expected file path to be unusable, got %#v", notDirectory)
+	}
+	if notDirectory.Reason != "path is not a directory" {
+		t.Fatalf("expected not-a-directory reason, got %q", notDirectory.Reason)
+	}
+}
+
+func TestExecutePromptPrefersStderrSummaryOverGenericExitStatus(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture is unix-only")
+	}
+
+	workspace := t.TempDir()
+	binDir := filepath.Join(workspace, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir bin dir: %v", err)
+	}
+
+	binaryPath := filepath.Join(binDir, "codex")
+	script := "#!/bin/sh\n" +
+		"echo 'provider validation failed: missing API token' >&2\n" +
+		"exit 1\n"
+	if err := os.WriteFile(binaryPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex binary: %v", err)
+	}
+
+	originalPath := os.Getenv("PATH")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+originalPath)
+
+	instance := &Runner{workspace: workspace}
+	result, err := instance.ExecutePrompt(context.Background(), PromptExecutionRequest{
+		ProviderKey: "codex",
+		Prompt:      "Test prompt",
+	})
+	if err != nil {
+		t.Fatalf("execute prompt: %v", err)
+	}
+
+	if result.Status != "failed" {
+		t.Fatalf("expected failed status, got %q", result.Status)
+	}
+	if result.ExitCode != 1 {
+		t.Fatalf("expected exit code 1, got %d", result.ExitCode)
+	}
+	if result.StderrSummary != "provider validation failed: missing API token" {
+		t.Fatalf("expected stderr summary to be captured, got %q", result.StderrSummary)
+	}
+	if result.ErrorMessage != result.StderrSummary {
+		t.Fatalf("expected error message to prefer stderr summary, got %q", result.ErrorMessage)
+	}
+}
+
+func TestResolvePromptExecutionAdapterUsesWorkspaceWriteWhenAllowed(t *testing.T) {
+	binary, args, provider, err := resolvePromptExecutionAdapter(
+		PromptExecutionRequest{
+			ProviderKey: "codex",
+			ModelName:   "gpt-5.5",
+			AllowWrite:  true,
+		},
+		"/tmp/output.md",
+	)
+	if err != nil {
+		t.Fatalf("resolve prompt execution adapter: %v", err)
+	}
+
+	if binary != "codex" {
+		t.Fatalf("expected codex binary, got %q", binary)
+	}
+	if provider != "codex" {
+		t.Fatalf("expected codex provider, got %q", provider)
+	}
+	if !slices.Equal(args[:3], []string{"--sandbox", "workspace-write", "exec"}) {
+		t.Fatalf("expected workspace-write sandbox, got %v", args)
+	}
+}
+
+func TestResolvePromptExecutionAdapterMapsModelNames(t *testing.T) {
+	tests := []struct {
+		provider      string
+		model         string
+		expectedBin   string
+		expectedModel string
+	}{
+		{"claude", "claude-sonnet", "claude", "sonnet"},
+		{"claude", "claude-opus", "claude", "opus"},
+		{"claude", "sonnet", "claude", "sonnet"},
+		{"gemini", "gemini-pro", "gemini", "pro"},
+		{"gemini", "gemini-flash", "gemini", "flash"},
+		{"gemini", "flash", "gemini", "flash"},
+		{"codex", "gpt-5.4", "codex", "gpt-5.4"},
+	}
+
+	for _, tc := range tests {
+		t.Run(fmt.Sprintf("%s/%s", tc.provider, tc.model), func(t *testing.T) {
+			binary, args, _, err := resolvePromptExecutionAdapter(
+				PromptExecutionRequest{
+					ProviderKey: tc.provider,
+					ModelName:   tc.model,
+				},
+				"/tmp/output.md",
+			)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if binary != tc.expectedBin {
+				t.Fatalf("expected binary %q, got %q", tc.expectedBin, binary)
+			}
+
+			// Find "--model" index in args and verify next arg
+			found := false
+			for i, arg := range args {
+				if arg == "--model" {
+					if i+1 >= len(args) {
+						t.Fatalf("missing value after --model flag")
+					}
+					if args[i+1] != tc.expectedModel {
+						t.Fatalf("expected model value %q, got %q", tc.expectedModel, args[i+1])
+					}
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("expected --model flag in args: %v", args)
+			}
+		})
+	}
+}
+
+func TestResolvePromptExecutionAdapterReasoningEffort(t *testing.T) {
+	tests := []struct {
+		provider       string
+		model          string
+		effort         string
+		expectedBin    string
+		expectedFlags  []string
+	}{
+		{"codex", "gpt-5.4", "high", "codex", []string{"-c", "reasoning_effort=high"}},
+		{"codex", "gpt-5.5", "low", "codex", []string{"-c", "reasoning_effort=low"}},
+		{"claude", "claude-sonnet", "high", "claude", []string{"--effort", "high"}},
+		{"claude", "claude-opus", "xhigh", "claude", []string{"--effort", "max"}},
+		{"gemini", "gemini-pro", "high", "gemini", []string{}}, // gemini doesn't append reasoning flags
+	}
+
+	for _, tc := range tests {
+		t.Run(fmt.Sprintf("%s/%s/%s", tc.provider, tc.model, tc.effort), func(t *testing.T) {
+			binary, args, _, err := resolvePromptExecutionAdapter(
+				PromptExecutionRequest{
+					ProviderKey:     tc.provider,
+					ModelName:       tc.model,
+					ReasoningEffort: tc.effort,
+				},
+				"/tmp/output.md",
+			)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if binary != tc.expectedBin {
+				t.Fatalf("expected binary %q, got %q", tc.expectedBin, binary)
+			}
+
+			for i := 0; i < len(tc.expectedFlags); i += 2 {
+				flag := tc.expectedFlags[i]
+				val := tc.expectedFlags[i+1]
+				found := false
+				for idx, arg := range args {
+					if arg == flag {
+						if idx+1 >= len(args) {
+							t.Fatalf("missing value after flag %s", flag)
+						}
+						if args[idx+1] != val {
+							t.Fatalf("expected value %q for flag %s, got %q", val, flag, args[idx+1])
+						}
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Fatalf("expected flag %s with value %s in args: %v", flag, val, args)
+				}
+			}
+		})
+	}
+}
+
+func TestReadArtifactDetailLoadsPromptAndDiagnostics(t *testing.T) {
+	instance := &Runner{workspace: t.TempDir()}
+	artifactDir := filepath.Join(instance.workspace, ".flowpilot", "artifacts", "project", "feature", "run", "step", "artifact")
+	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+		t.Fatalf("mkdir artifact dir: %v", err)
+	}
+
+	files := map[string]string{
+		filepath.Join(artifactDir, "content.md"):  "Generated business idea",
+		filepath.Join(artifactDir, "prompt.md"):   "Prompt used for the run",
+		filepath.Join(artifactDir, "stdout.txt"):  "stdout summary",
+		filepath.Join(artifactDir, "stderr.txt"):  "stderr summary",
+		filepath.Join(artifactDir, "command.txt"): "codex --sandbox workspace-write exec",
+	}
+	for path, contents := range files {
+		if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+			t.Fatalf("write fixture %s: %v", path, err)
+		}
+	}
+
+	manifestPath := filepath.Join(artifactDir, "manifest.json")
+	manifestLocalPath := filepath.ToSlash(artifactDir)
+	manifest := `{
+  "artifactId": "artifact-1",
+  "title": "Business Idea",
+  "sourceKind": "workflow_output",
+  "projectId": "project",
+  "featureId": "feature",
+  "workflowRunId": "run",
+  "workflowStepKey": "business_idea",
+  "providerKey": "codex",
+  "localPath": "` + manifestLocalPath + `",
+  "remotePath": "",
+  "remoteUrl": "",
+  "syncStatus": "local_only",
+  "createdAt": "2026-05-23T00:00:00Z",
+  "updatedAt": "2026-05-23T00:00:01Z"
+}`
+	if err := os.WriteFile(manifestPath, []byte(manifest), 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	detail, err := instance.readArtifactDetail(manifestPath)
+	if err != nil {
+		t.Fatalf("read artifact detail: %v", err)
+	}
+
+	if detail.ContentMarkdown != "Generated business idea" {
+		t.Fatalf("expected content markdown, got %q", detail.ContentMarkdown)
+	}
+	if detail.PromptText != "Prompt used for the run" {
+		t.Fatalf("expected prompt text, got %q", detail.PromptText)
+	}
+	if detail.StdoutText != "stdout summary" {
+		t.Fatalf("expected stdout text, got %q", detail.StdoutText)
+	}
+	if detail.StderrText != "stderr summary" {
+		t.Fatalf("expected stderr text, got %q", detail.StderrText)
+	}
+	if detail.CommandText != "codex --sandbox workspace-write exec" {
+		t.Fatalf("expected command text, got %q", detail.CommandText)
 	}
 }
 
@@ -1133,4 +1493,276 @@ func TestListMcpTestRunsAppliesFilterAndLimit(t *testing.T) {
 	if !strings.HasSuffix(runs[0].ArtifactDir, "mcp_20260519_101011_0002") {
 		t.Fatalf("expected artifact dir to point at latest Jira run, got %q", runs[0].ArtifactDir)
 	}
+}
+
+func TestDetectProvidersPopulatesInventoryShape(t *testing.T) {
+	workspace := t.TempDir()
+	binDir := filepath.Join(workspace, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir bin dir: %v", err)
+	}
+
+	t.Setenv("PATH", binDir)
+	t.Setenv("OPENAI_API_KEY", "test-openai-key")
+	t.Setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+	t.Setenv("GEMINI_API_KEY", "test-gemini-key")
+
+	writeMockProviderBinary(t, binDir, "codex", "codex 1.2.3")
+	writeMockProviderBinary(t, binDir, "claude", "claude 4.5.6")
+	writeMockProviderBinary(t, binDir, "gemini", "gemini 7.8.9")
+
+	instance := &Runner{workspace: workspace}
+	providers, err := instance.DetectProviders(context.Background())
+	if err != nil {
+		t.Fatalf("detect providers: %v", err)
+	}
+
+	raw, err := json.Marshal(struct {
+		Providers []Provider `json:"providers"`
+	}{Providers: providers})
+	if err != nil {
+		t.Fatalf("marshal provider inventory: %v", err)
+	}
+
+	var payload struct {
+		Providers []map[string]any `json:"providers"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("unmarshal provider inventory: %v", err)
+	}
+
+	cases := []struct {
+		key     string
+		version string
+		models  []string
+	}{
+		{key: "codex", version: "codex 1.2.3", models: []string{"gpt-5.5", "gpt-5.4", "gpt-5.4-mini"}},
+		{key: "claude", version: "claude 4.5.6", models: []string{"claude-opus", "claude-sonnet", "claude-haiku"}},
+		{key: "gemini", version: "gemini 7.8.9", models: []string{"gemini-pro", "gemini-flash"}},
+	}
+
+	if len(payload.Providers) != len(cases) {
+		t.Fatalf("expected %d providers in inventory, got %d", len(cases), len(payload.Providers))
+	}
+
+	for _, want := range cases {
+		provider := findProviderJSON(payload.Providers, want.key)
+		if provider == nil {
+			t.Fatalf("expected provider %q in inventory", want.key)
+		}
+		if provider["supported"] != true {
+			t.Fatalf("expected provider %q to be supported, got %#v", want.key, provider["supported"])
+		}
+		if provider["install_status"] != "INSTALLED" {
+			t.Fatalf("expected provider %q to be installed, got %#v", want.key, provider["install_status"])
+		}
+		if provider["auth_status"] != "READY" {
+			t.Fatalf("expected provider %q to be ready, got %#v", want.key, provider["auth_status"])
+		}
+		if provider["detected_binary"] != want.key {
+			t.Fatalf("expected provider %q binary %q, got %#v", want.key, want.key, provider["detected_binary"])
+		}
+		if provider["detected_version"] != want.version {
+			t.Fatalf("expected provider %q version %q, got %#v", want.key, want.version, provider["detected_version"])
+		}
+		if _, ok := provider["last_error"]; ok {
+			t.Fatalf("expected provider %q to omit last_error when ready", want.key)
+		}
+
+		models, ok := provider["models"].([]any)
+		if !ok {
+			t.Fatalf("expected provider %q models array, got %#v", want.key, provider["models"])
+		}
+		if len(models) != len(want.models) {
+			t.Fatalf("expected provider %q to expose %d models, got %d", want.key, len(want.models), len(models))
+		}
+		for idx, modelID := range want.models {
+			model, ok := models[idx].(map[string]any)
+			if !ok {
+				t.Fatalf("expected provider %q model %d to be an object, got %#v", want.key, idx, models[idx])
+			}
+			if model["id"] != modelID {
+				t.Fatalf("expected provider %q model %d id %q, got %#v", want.key, idx, modelID, model["id"])
+			}
+			if model["display_name"] != modelID {
+				t.Fatalf("expected provider %q model %d display name %q, got %#v", want.key, idx, modelID, model["display_name"])
+			}
+			if model["available"] != true {
+				t.Fatalf("expected provider %q model %d to be available, got %#v", want.key, idx, model["available"])
+			}
+			if model["source"] != "registry" {
+				t.Fatalf("expected provider %q model %d source registry, got %#v", want.key, idx, model["source"])
+			}
+		}
+	}
+}
+
+func TestInstallProviderUsesOSAwareInstallAndRefreshesInventory(t *testing.T) {
+	workspace := t.TempDir()
+	binDir := filepath.Join(workspace, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir bin dir: %v", err)
+	}
+
+	t.Setenv("PATH", binDir)
+	t.Setenv("OPENAI_API_KEY", "test-openai-key")
+	t.Setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+	t.Setenv("GEMINI_API_KEY", "test-gemini-key")
+
+	installTriggered := false
+
+	originalRunCommand := runCommandFn
+	t.Cleanup(func() {
+		runCommandFn = originalRunCommand
+	})
+	runCommandFn = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		installTriggered = true
+		switch runtime.GOOS {
+		case "windows":
+			if name != "npm" || !slices.Equal(args, []string{"install", "-g", "@openai/codex"}) {
+				t.Fatalf("unexpected codex install command on windows: %s %v", name, args)
+			}
+		default:
+			if name != "npm" || !slices.Equal(args, []string{"install", "-g", "@openai/codex"}) {
+				t.Fatalf("unexpected codex install command: %s %v", name, args)
+			}
+		}
+		createdBinary := writeMockProviderBinary(t, binDir, "codex", "codex 1.2.3")
+		if _, err := os.Stat(createdBinary); err != nil {
+			t.Fatalf("expected codex binary to be created during install: %v", err)
+		}
+		return []byte("installed"), nil
+	}
+
+	instance := &Runner{workspace: workspace}
+	inventory, err := instance.InstallProvider(context.Background(), "codex")
+	if err != nil {
+		t.Fatalf("install provider: %v", err)
+	}
+	if !installTriggered {
+		t.Fatal("expected codex install command to run")
+	}
+
+	provider := findProviderInventory(inventory.Providers, "codex")
+	if provider == nil {
+		t.Fatal("expected codex provider in refreshed inventory")
+	}
+	if provider.InstallStatus != "INSTALLED" {
+		t.Fatalf("expected installed status after refresh, got %q", provider.InstallStatus)
+	}
+	if provider.AuthStatus != "READY" {
+		t.Fatalf("expected ready auth status after refresh, got %q", provider.AuthStatus)
+	}
+	if provider.DetectedBinary != "codex" {
+		t.Fatalf("expected detected binary codex, got %q", provider.DetectedBinary)
+	}
+	if provider.DetectedVersion != "codex 1.2.3" {
+		t.Fatalf("expected detected version from installed binary, got %q", provider.DetectedVersion)
+	}
+	if provider.LastError != nil {
+		t.Fatalf("expected last error to be nil after successful refresh, got %q", *provider.LastError)
+	}
+}
+
+func TestProviderInstallCommandMatrix(t *testing.T) {
+	cases := []struct {
+		key         string
+		wantCommand string
+		wantArgs    []string
+	}{
+		{key: "codex", wantCommand: "npm", wantArgs: []string{"install", "-g", "@openai/codex"}},
+		{key: "gemini", wantCommand: "npm", wantArgs: []string{"install", "-g", "@google/gemini-cli"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.key, func(t *testing.T) {
+			spec, ok := lookupProviderSpec(tc.key)
+			if !ok {
+				t.Fatalf("expected provider spec for %q", tc.key)
+			}
+
+			command, args, err := providerInstallCommand(spec)
+			if err != nil {
+				t.Fatalf("provider install command: %v", err)
+			}
+			if command != tc.wantCommand {
+				t.Fatalf("expected command %q, got %q", tc.wantCommand, command)
+			}
+			if !slices.Equal(args, tc.wantArgs) {
+				t.Fatalf("expected args %v, got %v", tc.wantArgs, args)
+			}
+		})
+	}
+
+	t.Run("claude", func(t *testing.T) {
+		spec, ok := lookupProviderSpec("claude")
+		if !ok {
+			t.Fatal("expected provider spec for claude")
+		}
+
+		command, args, err := providerInstallCommand(spec)
+		if err != nil {
+			t.Fatalf("provider install command: %v", err)
+		}
+
+		switch runtime.GOOS {
+		case "darwin", "linux":
+			if command != "sh" {
+				t.Fatalf("expected sh install command on %s, got %q", runtime.GOOS, command)
+			}
+			if !slices.Equal(args, []string{"-c", "curl -fsSL https://claude.ai/install.sh | bash"}) {
+				t.Fatalf("unexpected claude args on %s: %v", runtime.GOOS, args)
+			}
+		case "windows":
+			if command != "powershell" {
+				t.Fatalf("expected powershell install command on windows, got %q", command)
+			}
+			if !slices.Equal(args, []string{"-NoProfile", "-Command", "irm https://claude.ai/install.ps1 | iex"}) {
+				t.Fatalf("unexpected claude args on windows: %v", args)
+			}
+		default:
+			if err == nil {
+				t.Fatalf("expected unsupported OS error for claude on %s", runtime.GOOS)
+			}
+		}
+	})
+}
+
+func writeMockProviderBinary(t *testing.T, dir, name, version string) string {
+	t.Helper()
+
+	switch runtime.GOOS {
+	case "windows":
+		path := filepath.Join(dir, name+".cmd")
+		script := fmt.Sprintf("@echo off\r\nif \"%%~1\"==\"--version\" (\r\n  echo %s\r\n  exit /b 0\r\n)\r\nif \"%%~1\"==\"auth\" (\r\n  exit /b 0\r\n)\r\nexit /b 0\r\n", version)
+		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+			t.Fatalf("write mock provider binary: %v", err)
+		}
+		return path
+	default:
+		path := filepath.Join(dir, name)
+		script := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  echo \"%s\"\n  exit 0\nfi\nif [ \"$1\" = \"auth\" ]; then\n  exit 0\nfi\nexit 0\n", version)
+		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+			t.Fatalf("write mock provider binary: %v", err)
+		}
+		return path
+	}
+}
+
+func findProviderJSON(providers []map[string]any, key string) map[string]any {
+	for _, provider := range providers {
+		if provider["key"] == key {
+			return provider
+		}
+	}
+	return nil
+}
+
+func findProviderInventory(providers []Provider, key string) *Provider {
+	for idx := range providers {
+		if providers[idx].Key == key {
+			return &providers[idx]
+		}
+	}
+	return nil
 }

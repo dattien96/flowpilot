@@ -1,13 +1,11 @@
 import type { OutputType } from "@/domain/constant/status";
 import type { WorkflowExecutorGateway, WorkflowGateway } from "@/domain/gateway/workflow-gateway";
-import type { Feature } from "@/domain/model/entity/feature";
 import type { Project } from "@/domain/model/entity/project";
 import { saveWorkflowArtifact } from "@/data/repository/artifacts/local-artifact-store";
 
 function buildOutputMarkdown(
   outputType: OutputType,
   project: Project,
-  feature: Feature,
 ) {
   const titleMap: Record<OutputType, string> = {
     business_summary: "Business Summary",
@@ -23,16 +21,8 @@ function buildOutputMarkdown(
 ## Project
 ${project.name}
 
-## Feature
-${feature.title}
-
-## Objective
-${feature.businessGoal}
-
 ## Working Notes
-- Address the user problem: ${feature.userProblem}
-- Respect the intended flow: ${feature.expectedFlow}
-- Validate against acceptance criteria: ${feature.acceptanceCriteria}
+- Continue the workflow using project context, prior outputs, and any selected runtime context.
 `;
 }
 
@@ -40,7 +30,6 @@ export class MockWorkflowExecutor implements WorkflowExecutorGateway {
   constructor(
     private readonly workflowGateway: WorkflowGateway,
     private readonly projectLookup: (projectId: string) => Promise<Project | null>,
-    private readonly featureLookup: (featureId: string) => Promise<Feature | null>,
   ) {}
 
   async executeUntilPause(runId: string) {
@@ -51,10 +40,8 @@ export class MockWorkflowExecutor implements WorkflowExecutorGateway {
     }
 
     const project = await this.projectLookup(detail.run.projectId);
-    const feature = await this.featureLookup(detail.run.featureId);
-
-    if (!project || !feature) {
-      throw new Error("Project or feature missing for workflow execution.");
+    if (!project) {
+      throw new Error("Project missing for workflow execution.");
     }
 
     for (const step of detail.steps) {
@@ -76,18 +63,6 @@ export class MockWorkflowExecutor implements WorkflowExecutorGateway {
       }
 
       if (step.stepType === "approval") {
-        await this.workflowGateway.createApproval({
-          id: `approval_${step.id}`,
-          workflowRunId: runId,
-          workflowStepId: step.id,
-          aiOutputId: detail.outputs.at(-1)?.id ?? null,
-          status: "pending",
-          reviewerId: null,
-          comment: null,
-          decidedAt: null,
-          createdAt: new Date().toISOString(),
-        });
-
         await this.workflowGateway.updateWorkflowRun(runId, {
           status: "waiting_approval",
           currentStepKey: step.stepKey,
@@ -115,14 +90,12 @@ export class MockWorkflowExecutor implements WorkflowExecutorGateway {
         workflowRunId: runId,
         workflowStepId: step.id,
         projectId: detail.run.projectId,
-        featureId: detail.run.featureId,
         outputType: outputType ?? normalizedOutputType,
         version: 1,
         title: step.stepName,
         contentMarkdown: buildOutputMarkdown(
           outputType ?? normalizedOutputType,
           project,
-          feature,
         ),
         isApproved: false,
         createdAt: new Date().toISOString(),
@@ -132,16 +105,14 @@ export class MockWorkflowExecutor implements WorkflowExecutorGateway {
         artifactId: outputId,
         title: step.stepName,
         projectId: detail.run.projectId,
-        featureId: detail.run.featureId,
         workflowRunId: runId,
         workflowStepKey: step.stepKey,
         providerKey: "mock",
         contentMarkdown: buildOutputMarkdown(
           outputType ?? normalizedOutputType,
           project,
-          feature,
         ),
-        promptText: `Generate ${step.stepName} for ${project.name} / ${feature.title}`,
+        promptText: `Generate ${step.stepName} for ${project.name}`,
         stdoutText: "",
         stderrText: "",
         commandText: "mock-executor",
