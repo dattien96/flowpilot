@@ -454,14 +454,18 @@ function WorkflowRunDetailPage() {
   }, [detail?.approvals]);
 
   const handleDecision = async (
+    stepId: string,
     decision: "approved" | "changes_requested" | "rejected",
   ) => {
-    if (!pendingApproval) return;
+    if (decision === "rejected" && !pendingApproval) {
+      alert("Cannot reject an already completed step.");
+      return;
+    }
     setSubmittingDecision(true);
     try {
       if (decision === "approved" || decision === "changes_requested") {
         await submitStepApprovalDecisionUseCase.current.execute(
-          pendingApproval.workflowStepId,
+          stepId,
           decision === "approved",
           decisionComment || undefined,
         );
@@ -669,294 +673,163 @@ function WorkflowRunDetailPage() {
           </div>
         </header>
 
-        <section className="grid gap-6 xl:grid-cols-[1fr_1.1fr]">
-          {/* Left Column: Timeline & Step outputs */}
-          <div className="space-y-6">
-            <CollapsibleSection
-              title="Step Timeline"
-              subtitle="Expand each area below to inspect the prompt, output, and diagnostics for this run."
-              defaultOpen
-            >
-              <WorkflowTimeline steps={detail.steps} />
-            </CollapsibleSection>
-
-            <div className="space-y-4">
-              <h2 className="text-xl font-bold tracking-tight pl-2">
-                Timeline Output Records
-              </h2>
-              {detail.steps.map((step: any) => {
-                const output = outputByStepId.get(step.id) as
-                  | WorkflowOutputRecord
-                  | undefined;
-                return (
-                  <details
-                    key={step.id}
-                    className="rounded-[1.6rem] border border-border bg-background/50 shadow-sm transition-all hover:border-border/80"
-                    open={Boolean(
-                      output?.contentMarkdown ||
-                      output?.promptText ||
-                      step.errorMessage,
-                    )}
-                  >
-                    <summary className="flex cursor-pointer list-none items-start justify-between gap-3 px-5 py-5">
-                      <div>
-                        <p className="font-bold text-foreground">
-                          {step.stepName}
-                        </p>
-                        <p className="mt-1 text-xs font-mono text-muted-foreground">
-                          {step.stepKey} · {step.status}
-                        </p>
-                      </div>
-                      {output ? (
-                        <span className="rounded-full bg-success/10 border border-success/20 px-2.5 py-0.5 text-xs font-medium text-success uppercase tracking-wider">
-                          Output ready
-                        </span>
-                      ) : (
-                        <span className="rounded-full bg-muted border border-border px-2.5 py-0.5 text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                          No output
-                        </span>
-                      )}
-                    </summary>
-
-                    <div className="space-y-4 border-t border-border/60 px-5 py-5">
-                      {output?.localPath ? (
-                        <div className="rounded-2xl border border-border/60 bg-card/40 px-4 py-3">
-                          <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">
-                            Local Artifact Path
-                          </p>
-                          <p className="mt-2 break-words font-mono text-xs text-foreground">
-                            {output.localPath}
-                          </p>
-                        </div>
-                      ) : null}
-
-                      <div className="space-y-3">
-                        <CollapsibleTextBlock
-                          title="Prompt Used"
-                          value={output?.promptText}
-                          emptyLabel="No prompt was captured for this step."
-                          defaultOpen
-                        />
-                        <CollapsibleTextBlock
-                          title="Generated Output"
-                          value={output?.contentMarkdown}
-                          emptyLabel="No output was generated for this step."
-                          defaultOpen={Boolean(output?.contentMarkdown)}
-                        />
-                        <CollapsibleTextBlock
-                          title="Error / Stderr"
-                          value={output?.stderrText ?? step.errorMessage}
-                          emptyLabel="No stderr was captured."
-                        />
-                        <CollapsibleTextBlock
-                          title="Stdout"
-                          value={output?.stdoutText}
-                          emptyLabel="No stdout was captured."
-                        />
-                        <CollapsibleTextBlock
-                          title="Command"
-                          value={output?.commandText}
-                          emptyLabel="No command was captured."
-                        />
-                      </div>
-                    </div>
-                  </details>
-                );
-              })}
+        <section className="max-w-4xl mx-auto space-y-8 pb-32">
+          
+          {/* 1. Initial Prompt */}
+          <div className="flex justify-end">
+            <div className="max-w-[85%] rounded-[1.6rem] bg-accent text-accent-foreground px-6 py-5 whitespace-pre-wrap text-sm shadow-sm">
+              <p className="text-[10px] opacity-70 mb-2 font-mono tracking-widest uppercase flex items-center gap-1.5">
+                Initial Prompt
+              </p>
+              {runPromptText || latestOutput?.promptText || "No initial prompt captured."}
             </div>
           </div>
 
-          {/* Right Column: Dynamic Panel details */}
-          <div className="space-y-6">
-            {/* Selected Context Sources */}
-            <CollapsibleSection title="Selected Context Sources" defaultOpen>
-              <div className="space-y-3">
-                {(detail.selectedContextSources ?? []).length === 0 ? (
-                  <p className="text-sm text-muted-foreground italic">
-                    No context selected.
-                  </p>
-                ) : (
-                  detail.selectedContextSources?.map((context: any) => (
-                    <div
-                      key={context.id}
-                      className="rounded-2xl border border-border/80 bg-card/40 p-4 shadow-sm"
-                    >
-                      <p className="font-bold text-foreground text-sm">
-                        {context.title}
-                      </p>
-                      <p className="mt-2 text-xs leading-relaxed text-muted-foreground font-mono">
-                        {context.summarizedContent ?? context.rawContent}
-                      </p>
+          {/* 2. Step Outputs */}
+          {detail.steps.map((step: any, index: number) => {
+            const output = outputByStepId.get(step.id) as WorkflowOutputRecord | undefined;
+            const decisions = (detail.approvalDecisions ?? []).filter((d: any) => d.workflowStepId === step.id);
+            
+            return (
+              <div key={step.id} className="space-y-4">
+                {/* AI / System Response Bubble */}
+                <div className="flex justify-start">
+                  <div className="max-w-[90%] w-full rounded-[1.6rem] border border-border/80 bg-card/40 p-6 shadow-sm backdrop-blur-sm transition-all hover:bg-card/60">
+                    
+                    <div className="flex flex-wrap items-center justify-between gap-3 mb-5 border-b border-border/40 pb-4">
+                      <div>
+                        <span className="font-bold text-foreground flex items-center gap-2">
+                          {step.stepName}
+                          <Badge tone={statusTone(step.status)} className="ml-2 px-2 py-0.5 text-[10px]">
+                            {step.status}
+                          </Badge>
+                        </span>
+                        <p className="mt-1 text-[11px] font-mono text-muted-foreground uppercase tracking-wider">
+                          Step {index + 1}
+                        </p>
+                      </div>
+                      
+                      <div className="text-right">
+                        {output ? (
+                          <span className="rounded-full bg-success/10 border border-success/20 px-3 py-1 text-[10px] font-medium text-success uppercase tracking-widest">
+                            Artifact Generated
+                          </span>
+                        ) : (
+                          <span className="rounded-full bg-muted border border-border/60 px-3 py-1 text-[10px] font-medium text-muted-foreground uppercase tracking-widest">
+                            {step.status === "PENDING" || step.status === "RUNNING" ? "Processing..." : "No Artifact"}
+                          </span>
+                        )}
+                      </div>
                     </div>
-                  ))
-                )}
+
+                    {output ? (
+                      <div className="mb-6">
+                        <ArtifactContentViewer 
+                          content={output.contentMarkdown || "No output content."}
+                          gateway={gatewayBundle.current.localRunnerGateway}
+                        />
+                      </div>
+                    ) : step.errorMessage ? (
+                      <div className="mb-6 rounded-2xl bg-destructive/10 border border-destructive/20 p-4 text-sm text-destructive">
+                        {step.errorMessage}
+                      </div>
+                    ) : null}
+
+                    <details className="mt-4 pt-4 border-t border-border/30">
+                      <summary className="text-[11px] font-medium uppercase tracking-[0.2em] text-muted-foreground cursor-pointer hover:text-foreground transition-colors inline-flex items-center gap-2">
+                        Developer Diagnostics
+                      </summary>
+                      <div className="mt-4 space-y-3 pl-2 border-l-2 border-border/50">
+                        {output?.localPath && (
+                          <CollapsibleTextBlock title="Artifact Path" value={output.localPath} emptyLabel="" />
+                        )}
+                        <CollapsibleTextBlock title="Prompt Override" value={output?.promptText} emptyLabel="Inherited from run prompt." />
+                        <CollapsibleTextBlock title="Stdout" value={output?.stdoutText} emptyLabel="No stdout." />
+                        <CollapsibleTextBlock title="Stderr" value={output?.stderrText} emptyLabel="No stderr." />
+                        <CollapsibleTextBlock title="CLI Command" value={output?.commandText} emptyLabel="No command captured." />
+                      </div>
+                    </details>
+
+                  </div>
+                </div>
+
+                {/* Follow-up / Decision Logs rendered as user messages */}
+                {decisions.map((decision: any) => (
+                  <div key={decision.id} className="flex justify-end mt-4">
+                    <div className="max-w-[85%] rounded-[1.6rem] bg-accent/90 text-accent-foreground px-6 py-4 whitespace-pre-wrap text-sm shadow-sm">
+                      <p className="text-[10px] opacity-70 mb-2 font-mono tracking-widest uppercase flex items-center justify-between">
+                        <span>Follow-up</span>
+                        <span className="text-[9px]">{new Date(decision.createdAt).toLocaleTimeString()}</span>
+                      </p>
+                      {decision.comment || `Decision: ${decision.decision}`}
+                    </div>
+                  </div>
+                ))}
               </div>
-            </CollapsibleSection>
+            );
+          })}
 
-            <CollapsibleSection
-              title="Prompt Used For This Run"
-              subtitle="This is the latest captured step prompt sent to the local runner."
-              defaultOpen
-            >
-              <CollapsibleTextBlock
-                title="Latest Prompt"
-                value={runPromptText ?? latestOutput?.promptText}
-                emptyLabel="No prompt has been captured for this run yet."
-                defaultOpen
-              />
-            </CollapsibleSection>
+          {/* 3. Follow-up Chat Input */}
+          {(() => {
+            const latestStep = detail.steps?.at(-1);
+            if (!latestStep) return null;
+            
+            const isWaiting = latestStep.status === "WAITING_USER_APPROVAL";
+            const isDone = latestStep.status === "DONE";
+            const canContinue = (isWaiting || isDone) && detail.run.status !== "rejected";
 
-            <CollapsibleSection
-              title="Provider Command"
-              subtitle="The exact CLI command executed by the local runner."
-              defaultOpen={false}
-            >
-              <CollapsibleTextBlock
-                title="Execution Command"
-                value={latestOutput?.commandText}
-                emptyLabel="No command captured."
-                defaultOpen
-              />
-            </CollapsibleSection>
+            if (!canContinue) return null;
 
-            {/* Latest Output Panel */}
-            <CollapsibleSection title="Latest Execution Output" defaultOpen>
-              <div className="rounded-2xl border border-border/40 bg-card/60 p-5">
-                {latestOutput ? (
-                  <ArtifactContentViewer 
-                    content={latestOutput.contentMarkdown || "No output generated yet."}
-                    gateway={gatewayBundle.current.localRunnerGateway}
-                  />
-                ) : (
-                  <p className="text-muted-foreground italic font-mono text-sm">
-                    No output generated yet.
-                  </p>
-                )}
-              </div>
-            </CollapsibleSection>
-
-            {/* Approval Gate Panel */}
-            <CollapsibleSection title="Approval Panel" defaultOpen>
-              {pendingApproval ? (
-                <div className="space-y-4">
-                  <div className="rounded-2xl border border-warning/20 bg-warning/5 p-4 text-sm text-warning/90">
-                    <p className="font-semibold flex items-center gap-2">
-                      <ShieldAlert className="h-4 w-4" /> Approval requested
-                    </p>
-                    <p className="mt-1 text-xs">
-                      A step requires manual confirmation. Provide review notes
-                      and authorize.
+            return (
+              <div className="sticky bottom-6 mx-auto max-w-3xl mt-12 bg-card/90 backdrop-blur-xl p-3 rounded-[2rem] border border-border shadow-2xl transition-all">
+                {isWaiting && (
+                  <div className="px-4 pt-2 pb-3 mb-2 border-b border-border/50">
+                    <p className="text-xs font-semibold text-warning flex items-center gap-2 uppercase tracking-wider">
+                      <ShieldAlert className="h-3.5 w-3.5" /> Approval Required to proceed
                     </p>
                   </div>
+                )}
+                
+                <div className="flex items-end gap-3 px-2 pb-1">
                   <textarea
-                    className="min-h-24 w-full rounded-2xl border border-border bg-card/60 px-4 py-3 text-sm focus:border-accent focus:ring-1 focus:ring-accent outline-none"
+                    className="flex-1 max-h-[200px] min-h-[50px] resize-none bg-transparent px-3 py-2 text-sm text-foreground focus:outline-none placeholder:text-muted-foreground/60"
+                    placeholder={isWaiting ? "Provide revision notes..." : "Follow up with more instructions to refine this artifact..."}
                     value={decisionComment}
-                    onChange={(e) => setDecisionComment(e.target.value)}
-                    placeholder="Provide comments or revision notes..."
+                    onChange={(e) => {
+                      e.target.style.height = "auto";
+                      e.target.style.height = `${e.target.scrollHeight}px`;
+                      setDecisionComment(e.target.value);
+                    }}
+                    rows={1}
                   />
-                  <div className="grid grid-cols-3 gap-2.5">
-                    <Button
-                      disabled={submittingDecision}
-                      onClick={() => void handleDecision("approved")}
-                      className="bg-success text-success-foreground hover:bg-success/90"
+                  
+                  <div className="flex flex-col gap-2 shrink-0">
+                    <Button 
+                      size="sm"
+                      className="rounded-xl px-5 h-9"
+                      disabled={submittingDecision || !decisionComment.trim()}
+                      onClick={() => handleDecision(latestStep.id, "changes_requested")}
                     >
-                      <Check className="mr-1.5 h-4 w-4" /> Approve
+                      {submittingDecision ? <RefreshCw className="h-4 w-4 animate-spin" /> : "Send"}
                     </Button>
-                    <Button
-                      variant="secondary"
-                      disabled={submittingDecision}
-                      onClick={() => void handleDecision("changes_requested")}
-                    >
-                      Request Changes
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      disabled={submittingDecision}
-                      onClick={() => void handleDecision("rejected")}
-                      className="text-destructive hover:bg-destructive/10"
-                    >
-                      <X className="mr-1.5 h-4 w-4" /> Reject
-                    </Button>
+                    
+                    {isWaiting && (
+                      <Button 
+                        size="sm"
+                        variant="secondary"
+                        className="rounded-xl px-5 h-9 bg-success/20 text-success hover:bg-success/30 border border-success/30"
+                        disabled={submittingDecision}
+                        onClick={() => handleDecision(latestStep.id, "approved")}
+                      >
+                        <Check className="mr-1.5 h-4 w-4" /> Approve
+                      </Button>
+                    )}
                   </div>
                 </div>
-              ) : (
-                <p className="text-sm text-muted-foreground italic">
-                  No pending approval triggers found.
-                </p>
-              )}
-
-              {/* Decision History */}
-              {(detail.approvalDecisions ?? []).length > 0 ? (
-                <div className="mt-6 border-t border-border pt-4 space-y-3">
-                  <p className="text-sm font-bold text-foreground">
-                    Decision Logs
-                  </p>
-                  {detail.approvalDecisions?.map((decision: any) => (
-                    <div
-                      key={decision.id}
-                      className="rounded-2xl border border-border bg-card/35 p-3 text-xs shadow-sm"
-                    >
-                      <div className="flex items-center justify-between mb-2">
-                        <Badge
-                          tone={
-                            decision.decision === "approved"
-                              ? "success"
-                              : decision.decision === "rejected"
-                                ? "danger"
-                                : "warning"
-                          }
-                        >
-                          {decision.decision}
-                        </Badge>
-                        <span className="text-[10px] text-muted-foreground font-mono">
-                          {new Date(decision.createdAt).toLocaleDateString()}
-                        </span>
-                      </div>
-                      <p className="text-muted-foreground font-mono bg-background/25 p-2 rounded-xl border border-border/20">
-                        {decision.comment ?? "No comment."}
-                      </p>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-            </CollapsibleSection>
-
-            {/* AI Engine & Metrics Logs */}
-            <CollapsibleSection title="Engine Calls & Metrics">
-              <div className="space-y-3">
-                {detail.logs.length === 0 ? (
-                  <p className="text-sm text-muted-foreground italic">
-                    No metrics reported yet.
-                  </p>
-                ) : (
-                  detail.logs.map((log: any) => (
-                    <div
-                      key={log.id}
-                      className="rounded-2xl border border-border bg-card/40 p-4 text-xs font-mono shadow-sm"
-                    >
-                      <div className="flex items-center justify-between font-bold text-foreground">
-                        <span>
-                          {log.provider}/{log.model}
-                        </span>
-                        <span className="text-success">
-                          ${log.costEstimate.toFixed(4)}
-                        </span>
-                      </div>
-                      <div className="mt-2 grid grid-cols-3 gap-2 text-muted-foreground text-[10px]">
-                        <div>Tokens: {log.inputTokens + log.outputTokens}</div>
-                        <div className="text-center">
-                          Latency: {log.latencyMs}ms
-                        </div>
-                        <div className="text-right uppercase">
-                          Status: {log.status}
-                        </div>
-                      </div>
-                    </div>
-                  ))
-                )}
               </div>
-            </CollapsibleSection>
-          </div>
+            );
+          })()}
+
         </section>
       </div>
     </PageFrame>
