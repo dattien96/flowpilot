@@ -413,6 +413,23 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 
 				http.NotFound(w, r)
 			})
+			mux.HandleFunc("/files/read", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				path := r.URL.Query().Get("path")
+				if path == "" {
+					http.Error(w, "path is required", http.StatusBadRequest)
+					return
+				}
+				content, err := os.ReadFile(path)
+				if err != nil {
+					writeHTTPError(w, http.StatusInternalServerError, err)
+					return
+				}
+				writeHTTPJSON(w, map[string]string{"content": string(content)})
+			})
 			mux.HandleFunc("/integrations/", func(w http.ResponseWriter, r *http.Request) {
 				trimmed := strings.TrimPrefix(r.URL.Path, "/integrations/")
 				parts := strings.Split(trimmed, "/")

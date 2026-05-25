@@ -380,4 +380,20 @@ export class HttpLocalRunnerGateway implements LocalRunnerGateway {
       throw new Error(`Provider authentication trigger failed: ${response.status} ${response.statusText}`);
     }
   }
+
+  async readFile(path: string): Promise<string> {
+    const url = new URL("/files/read", this.baseUrl);
+    url.searchParams.set("path", path);
+    const response = await fetch(url, {
+      method: "GET",
+      cache: "no-store",
+    });
+
+    if (!response.ok) {
+      throw new Error(`File read failed: ${response.status} ${response.statusText}`);
+    }
+
+    const json = await response.json() as { content: string };
+    return json.content;
+  }
 }

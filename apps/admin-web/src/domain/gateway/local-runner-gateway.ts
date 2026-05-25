@@ -53,4 +53,5 @@ export interface LocalRunnerGateway {
     request: LocalRunnerPromptExecutionRequest,
   ): Promise<LocalRunnerPromptExecutionResult>;
   authenticateProvider(providerName: string): Promise<void>;
+  readFile(path: string): Promise<string>;
 }

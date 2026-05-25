@@ -7,6 +7,7 @@ import {
   ShieldAlert,
   Check,
   RefreshCw,
+  FileText,
 } from "lucide-react";
 
 import { PageFrame } from "@/components/common/page-frame";
@@ -144,6 +145,75 @@ function CollapsibleTextBlock({
     </details>
   );
 }
+
+
+
+const ArtifactContentViewer = ({ content, gateway }: { content: string, gateway: any }) => {
+  const [expanded, setExpanded] = useState(false);
+  const [fileContent, setFileContent] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const TRUNCATE_LENGTH = 300;
+  
+  const handleLoadFile = async (path: string) => {
+    setLoading(true);
+    try {
+      const data = await gateway.readFile(path);
+      setFileContent(data);
+    } catch (e) {
+      window.alert("Failed to load file: " + (e instanceof Error ? e.message : "Unknown error"));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (fileContent !== null) {
+    return (
+      <div className="space-y-4">
+        <Button variant="secondary" onClick={() => setFileContent(null)}>
+          &larr; Back to output
+        </Button>
+        <div className="rounded-2xl border border-border bg-card p-5 overflow-auto max-h-[600px] whitespace-pre-wrap font-mono text-sm">
+          {fileContent}
+        </div>
+      </div>
+    );
+  }
+
+  // Parse markdown link
+  const linkRegex = /\[(.*?)\]\((.*?)\)/;
+  const match = linkRegex.exec(content);
+
+  const isLong = content.length > TRUNCATE_LENGTH;
+  const displayContent = (!expanded && isLong) ? content.substring(0, TRUNCATE_LENGTH) + "..." : content;
+
+  return (
+    <div className="space-y-4">
+      <article className="whitespace-pre-wrap text-foreground font-mono text-sm leading-relaxed">
+        {displayContent}
+      </article>
+      
+      <div className="flex flex-wrap gap-2 items-center pt-2">
+        {isLong && (
+          <Button variant="ghost" onClick={() => setExpanded(!expanded)} className="text-xs h-8">
+            {expanded ? "Show less" : "Show more"}
+          </Button>
+        )}
+        
+        {match && (
+          <Button 
+            disabled={loading} 
+            onClick={() => handleLoadFile(match[2])}
+            className="text-xs h-8"
+          >
+            {loading ? <RefreshCw className="mr-2 h-3 w-3 animate-spin" /> : <FileText className="mr-2 h-3 w-3" />}
+            View {match[1]}
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+};
 
 export const Route = createFileRoute("/_authenticated/workflow-runs/$runId")({
   component: WorkflowRunDetailPage,
@@ -727,13 +797,14 @@ function WorkflowRunDetailPage() {
 
             {/* Latest Output Panel */}
             <CollapsibleSection title="Latest Execution Output" defaultOpen>
-              <div className="rounded-2xl border border-border/40 bg-card/60 p-5 font-mono text-sm leading-relaxed overflow-auto max-h-[400px]">
+              <div className="rounded-2xl border border-border/40 bg-card/60 p-5">
                 {latestOutput ? (
-                  <article className="whitespace-pre-wrap text-foreground">
-                    {latestOutput.contentMarkdown || "No output generated yet."}
-                  </article>
+                  <ArtifactContentViewer 
+                    content={latestOutput.contentMarkdown || "No output generated yet."}
+                    gateway={gatewayBundle.current.localRunnerGateway}
+                  />
                 ) : (
-                  <p className="text-muted-foreground italic">
+                  <p className="text-muted-foreground italic font-mono text-sm">
                     No output generated yet.
                   </p>
                 )}
