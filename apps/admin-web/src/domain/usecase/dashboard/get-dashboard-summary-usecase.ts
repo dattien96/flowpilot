@@ -1,5 +1,4 @@
 import type { ContextSourceGateway } from "@/domain/gateway/context-source-gateway";
-import type { FeatureGateway } from "@/domain/gateway/feature-gateway";
 import type { ProjectGateway } from "@/domain/gateway/project-gateway";
 import type { WorkflowGateway } from "@/domain/gateway/workflow-gateway";
 import type { DashboardSummary } from "@/domain/model/response/dashboard-response";
@@ -7,15 +6,13 @@ import type { DashboardSummary } from "@/domain/model/response/dashboard-respons
 export class GetDashboardSummaryUseCase {
   constructor(
     private readonly projectGateway: ProjectGateway,
-    private readonly featureGateway: FeatureGateway,
     private readonly contextGateway: ContextSourceGateway,
     private readonly workflowGateway: WorkflowGateway,
   ) {}
 
   async execute(): Promise<DashboardSummary> {
-    const [projects, features, runs, outputs] = await Promise.all([
+    const [projects, runs, outputs] = await Promise.all([
       this.projectGateway.listProjects(),
-      this.featureGateway.listFeatures(),
       this.workflowGateway.listWorkflowRuns(),
       this.workflowGateway.listOutputs(),
     ]);
@@ -33,7 +30,7 @@ export class GetDashboardSummaryUseCase {
       projectCount: projects.length,
       recentRuns: [...runs]
         .sort((left, right) => right.startedAt.localeCompare(left.startedAt))
-        .slice(0, Math.max(features.length > 0 ? 4 : 0, 4)),
+        .slice(0, 4),
     };
   }
 }

@@ -40,7 +40,6 @@ export class ListArtifactsUseCase {
           title: output.title,
           sourceKind: "workflow_output",
           projectId: output.projectId,
-          featureId: output.featureId,
           workflowRunId: output.workflowRunId,
           workflowStepKey: step?.stepKey ?? output.workflowStepId,
           providerKey: "mock",

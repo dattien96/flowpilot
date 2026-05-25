@@ -1,11 +1,29 @@
 import type { WorkflowEngineGateway } from "@/domain/gateway/workflow-engine-gateway";
-import type { WorkflowRun } from "@/domain/model/entity/workflow-engine";
+import type {
+  WorkflowRun,
+  WorkflowRunStartRequest,
+} from "@/domain/model/entity/workflow-engine";
 
 export class StartWorkflowRunUseCase {
   constructor(private readonly gateway: WorkflowEngineGateway) {}
 
-  async execute(workflowId: string, projectId: string): Promise<WorkflowRun> {
-    if (!workflowId || !projectId) throw new Error("Workflow ID and Project ID are required.");
-    return this.gateway.startWorkflowRun(workflowId, projectId);
+  async execute(request: WorkflowRunStartRequest): Promise<WorkflowRun> {
+    if (!request.projectId) {
+      throw new Error("Project ID is required.");
+    }
+    if (!request.beginPrompt.trim()) {
+      throw new Error("Begin prompt is required.");
+    }
+    if (request.startMode === "workflow-definition" && !request.workflowId) {
+      throw new Error("Workflow ID is required for workflow definition launches.");
+    }
+    if (request.startMode === "single-step" && !request.stepType) {
+      throw new Error("Step type is required for single-step launches.");
+    }
+
+    return this.gateway.startWorkflowRun({
+      ...request,
+      beginPrompt: request.beginPrompt.trim(),
+    });
   }
 }
