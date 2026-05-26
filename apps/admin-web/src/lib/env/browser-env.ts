@@ -34,5 +34,5 @@ export function getSupabaseEdgeFunctionUrl() {
 }
 
 export function getLocalRunnerBaseUrl() {
-  return currentEnv().VITE_LOCAL_RUNNER_URL ?? "http://localhost:4317";
+  return currentEnv().VITE_LOCAL_RUNNER_URL ?? "http://127.0.0.1:4317";
 }

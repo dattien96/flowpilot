@@ -7,7 +7,6 @@ import {
   ShieldAlert,
   Check,
   RefreshCw,
-  FileText,
 } from "lucide-react";
 
 import { PageFrame } from "@/components/common/page-frame";
@@ -210,55 +209,12 @@ function CollapsibleChatBubble({
   );
 }
 
-const ArtifactContentViewer = ({ content, gateway }: { content: string, gateway: any }) => {
+const ArtifactContentViewer = ({ content }: { content: string }) => {
   const [expanded, setExpanded] = useState(false);
-  const [fileContent, setFileContent] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-
   const TRUNCATE_LENGTH = 300;
-  
-  const handleLoadFile = async (path: string) => {
-    setLoading(true);
-    try {
-      const data = await gateway.readFile(path);
-      setFileContent(data);
-    } catch (e) {
-      window.alert("Failed to load file: " + (e instanceof Error ? e.message : "Unknown error"));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  if (fileContent !== null) {
-    return (
-      <div className="space-y-4">
-        <Button variant="secondary" onClick={() => setFileContent(null)}>
-          &larr; Back to output
-        </Button>
-        <div className="rounded-2xl border border-border bg-card p-5 overflow-auto max-h-[600px] whitespace-pre-wrap font-mono text-sm">
-          {fileContent}
-        </div>
-      </div>
-    );
-  }
-
-  // Parse markdown link
-  const linkRegex = /\[(.*?)\]\((.*?)\)/;
-  const match = linkRegex.exec(content);
 
   const isLong = content.length > TRUNCATE_LENGTH;
   const displayContent = (!expanded && isLong) ? content.substring(0, TRUNCATE_LENGTH) + "..." : content;
-
-  const onOpenClick = () => {
-    if (!match) return;
-    let path = match[2];
-    if (path.startsWith("/abs/path/")) {
-      path = path.substring(10);
-    } else if (path.startsWith("file:///")) {
-      path = path.substring(8);
-    }
-    handleLoadFile(path);
-  };
 
   return (
     <div className="space-y-4">
@@ -270,17 +226,6 @@ const ArtifactContentViewer = ({ content, gateway }: { content: string, gateway:
         {isLong && (
           <Button variant="ghost" onClick={() => setExpanded(!expanded)} className="text-xs h-8">
             {expanded ? "Show less" : "Show more"}
-          </Button>
-        )}
-        
-        {match && (
-          <Button 
-            disabled={loading} 
-            onClick={onOpenClick}
-            className="text-xs h-8"
-          >
-            {loading ? <RefreshCw className="mr-2 h-3 w-3 animate-spin" /> : <FileText className="mr-2 h-3 w-3" />}
-            View {match[1]}
           </Button>
         )}
       </div>
@@ -306,6 +251,13 @@ function StepOutputTabs({
   const [artifactExpanded, setArtifactExpanded] = useState(false);
 
   useEffect(() => {
+    setArtifactContent(null);
+    setArtifactError(null);
+    setArtifactLoading(false);
+    setArtifactExpanded(false);
+  }, [artifactRun?.id]);
+
+  useEffect(() => {
     if (activeTab !== "artifact" || !artifactRun || artifactContent !== null || artifactLoading) {
       return;
     }
@@ -314,8 +266,21 @@ function StepOutputTabs({
     setArtifactLoading(true);
     setArtifactError(null);
 
-    void localRunnerGateway
-      .readFile(artifactRun.localPath)
+    let timeoutId: number | undefined;
+    const loadArtifactPromise = Promise.race<string>([
+      localRunnerGateway.readFile(artifactRun.localPath),
+      new Promise<string>((_, reject) => {
+        timeoutId = window.setTimeout(() => {
+          reject(
+            new Error(
+              "Timed out while loading artifact content. Check that the local runner is reachable.",
+            ),
+          );
+        }, 8000);
+      }),
+    ]);
+
+    void loadArtifactPromise
       .then((content) => {
         if (!cancelled) {
           setArtifactContent(content);
@@ -336,6 +301,9 @@ function StepOutputTabs({
 
     return () => {
       cancelled = true;
+      if (timeoutId !== undefined) {
+        window.clearTimeout(timeoutId);
+      }
     };
   }, [activeTab, artifactContent, artifactLoading, artifactRun, localRunnerGateway]);
 
@@ -349,6 +317,7 @@ function StepOutputTabs({
   const lineCount = artifactBody ? artifactBody.split("\n").length : 0;
   const characterCount = artifactBody.length;
   const normalizedPrompt = normalizePromptDisplay(output.promptText);
+  const canToggleArtifactExpand = Boolean(artifactBody);
 
   return (
     <div className="space-y-4">
@@ -373,10 +342,7 @@ function StepOutputTabs({
       </div>
 
       {activeTab === "response" ? (
-        <ArtifactContentViewer
-          content={output.contentMarkdown || "No response captured."}
-          gateway={localRunnerGateway}
-        />
+        <ArtifactContentViewer content={output.contentMarkdown || "No response captured."} />
       ) : null}
 
       {activeTab === "prompt" ? (
@@ -417,14 +383,15 @@ function StepOutputTabs({
                   <span>{characterCount.toLocaleString()} chars</span>
                 </>
               ) : null}
-              <Button
-                className="h-8 px-3 text-[11px]"
-                disabled={!artifactBody}
-                onClick={() => setArtifactExpanded((current) => !current)}
-                variant="secondary"
-              >
-                {artifactExpanded ? "Collapse" : "Expand"}
-              </Button>
+              {canToggleArtifactExpand ? (
+                <Button
+                  className="h-8 px-3 text-[11px]"
+                  onClick={() => setArtifactExpanded((current) => !current)}
+                  variant="secondary"
+                >
+                  {artifactExpanded ? "Collapse" : "Expand"}
+                </Button>
+              ) : null}
             </div>
           </div>
 
@@ -439,7 +406,21 @@ function StepOutputTabs({
                 Loading artifact content...
               </div>
             ) : artifactError ? (
-              <p className="text-sm text-destructive">{artifactError}</p>
+              <div className="space-y-3">
+                <p className="text-sm text-destructive">{artifactError}</p>
+                <Button
+                  className="h-8 px-3 text-[11px]"
+                  onClick={() => {
+                    setArtifactContent(null);
+                    setArtifactError(null);
+                    setArtifactLoading(false);
+                  }}
+                  type="button"
+                  variant="secondary"
+                >
+                  Retry
+                </Button>
+              </div>
             ) : artifactBody ? (
               <pre className="whitespace-pre-wrap break-words font-mono text-sm leading-relaxed text-foreground">
                 {artifactBody}
