@@ -226,6 +226,61 @@ func TestExecutePromptPrefersStderrSummaryOverGenericExitStatus(t *testing.T) {
 	}
 }
 
+func TestExecutePromptCapturesAbsoluteProviderCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture is unix-only")
+	}
+
+	workspace := t.TempDir()
+	binDir := filepath.Join(workspace, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir bin dir: %v", err)
+	}
+
+	binaryPath := filepath.Join(binDir, "codex")
+	script := "#!/bin/sh\n" +
+		"output=''\n" +
+		"while [ \"$#\" -gt 0 ]; do\n" +
+		"  if [ \"$1\" = \"--output-last-message\" ]; then\n" +
+		"    shift\n" +
+		"    output=\"$1\"\n" +
+		"  fi\n" +
+		"  shift\n" +
+		"done\n" +
+		"cat >/dev/null\n" +
+		"printf 'updated artifact' > \"$output\"\n"
+	if err := os.WriteFile(binaryPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex binary: %v", err)
+	}
+
+	originalPath := os.Getenv("PATH")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+originalPath)
+
+	instance := &Runner{workspace: workspace}
+	result, err := instance.ExecutePrompt(context.Background(), PromptExecutionRequest{
+		ProviderKey: "codex",
+		ModelName:   "gpt-5.4-mini",
+		Prompt:      "Tighten the artifact wording.",
+		AllowWrite:  true,
+	})
+	if err != nil {
+		t.Fatalf("execute prompt: %v", err)
+	}
+
+	if result.Status != "success" {
+		t.Fatalf("expected success status, got %q", result.Status)
+	}
+	if strings.Contains(result.Command, "< prompt.txt") {
+		t.Fatalf("expected absolute prompt path in command, got %q", result.Command)
+	}
+	if !strings.Contains(result.Command, "--output-last-message") {
+		t.Fatalf("expected command to include output flag, got %q", result.Command)
+	}
+	if !strings.Contains(result.Command, ".flowpilot/runs/") || !strings.Contains(result.Command, "/prompt.txt") {
+		t.Fatalf("expected command to point at the real run prompt file, got %q", result.Command)
+	}
+}
+
 func TestResolvePromptExecutionAdapterUsesWorkspaceWriteWhenAllowed(t *testing.T) {
 	binary, args, provider, err := resolvePromptExecutionAdapter(
 		PromptExecutionRequest{

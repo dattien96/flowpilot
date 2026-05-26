@@ -18,27 +18,17 @@ import { createGatewayBundle } from "@/data/repository/browser-factory";
 import { GetWorkflowRunDetailUseCase } from "@/domain/usecase/workflow-runs/get-workflow-run-detail-usecase";
 import { SubmitStepApprovalDecisionUseCase } from "@/domain/usecase/workflow-engine/submit-step-approval-decision-usecase";
 import { createSupabaseBrowserClient } from "@/data/datasource/supabase/client";
+import { applyOptimisticWorkflowFollowUp } from "@/features/workflow-engine/workflow-run-detail-optimistic";
+import {
+  buildWorkflowStepTimeline,
+  groupOutputsByStep,
+  mapArtifactsToWorkflowOutputs,
+  mergeWorkflowOutputs,
+  type WorkflowOutputRecord,
+} from "@/features/workflow-engine/workflow-run-detail-timeline";
 import { statusTone } from "@/presentation/view-models/factories";
 import type { LocalRunnerArtifact } from "@/domain/model/entity/local-runner";
 import { loadWorkflowRunPromptText } from "@/lib/workflow-run-prompt";
-
-type WorkflowOutputRecord = {
-  id: string;
-  workflowRunId: string;
-  workflowStepId: string;
-  projectId: string;
-  outputType: string;
-  version: number;
-  title: string;
-  contentMarkdown: string;
-  isApproved: boolean;
-  createdAt: string;
-  promptText?: string;
-  stdoutText?: string;
-  stderrText?: string;
-  commandText?: string;
-  localPath?: string;
-};
 
 function summarizeRunPrompt(promptText?: string) {
   const normalized = promptText?.trim() ?? "";
@@ -266,34 +256,13 @@ function WorkflowRunDetailPage() {
             (await gatewayBundle.current.localRunnerGateway.getArtifactById(
               artifact.artifactId,
             )) ?? artifact,
-        ),
-      );
-
-      mappedOutputs = artifactDetails.map((art: LocalRunnerArtifact) => {
-        const step = data.steps?.find(
-          (s: any) =>
-            s.stepKey?.toLowerCase() === art.workflowStepKey?.toLowerCase() ||
-            s.stepType?.toLowerCase() === art.workflowStepKey?.toLowerCase(),
+          ),
         );
 
-        return {
-          id: art.artifactId,
-          workflowRunId: art.workflowRunId,
-          workflowStepId: step ? step.id : art.workflowStepKey,
-          projectId: art.projectId,
-          outputType: "document",
-          version: 1,
-          title: art.title,
-          contentMarkdown: art.contentMarkdown,
-          isApproved: true,
-          createdAt: art.createdAt,
-          promptText: art.promptText,
-          stdoutText: art.stdoutText,
-          stderrText: art.stderrText,
-          commandText: art.commandText,
-          localPath: art.localPath,
-        };
-      });
+      mappedOutputs = mapArtifactsToWorkflowOutputs(
+        artifactDetails as LocalRunnerArtifact[],
+        data.steps ?? [],
+      );
     } catch (artifactErr) {
       console.warn(
         "Failed to fetch local runner artifacts, using DB outputs only:",
@@ -301,26 +270,10 @@ function WorkflowRunDetailPage() {
       );
     }
 
-    const combinedOutputs = [...(data.outputs || [])];
-    for (const localOut of mappedOutputs) {
-      const exists = combinedOutputs.some(
-        (out: any) =>
-          out.id === localOut.id ||
-          out.workflowStepId === localOut.workflowStepId,
-      );
-      if (!exists) {
-        combinedOutputs.push(localOut);
-      } else {
-        const idx = combinedOutputs.findIndex(
-          (out: any) =>
-            out.id === localOut.id ||
-            out.workflowStepId === localOut.workflowStepId,
-        );
-        if (idx !== -1) {
-          combinedOutputs[idx] = { ...combinedOutputs[idx], ...localOut };
-        }
-      }
-    }
+    const combinedOutputs = mergeWorkflowOutputs(
+      (data.outputs ?? []) as WorkflowOutputRecord[],
+      mappedOutputs,
+    );
 
     return {
       ...data,
@@ -423,27 +376,14 @@ function WorkflowRunDetailPage() {
     };
   }, [runId, detail?.run?.status]);
 
-  const outputByStepId = useMemo(() => {
+  const outputsByStepId = useMemo(() => {
     if (!detail?.outputs) return new Map();
-    return new Map(
-      detail.outputs.map((output: WorkflowOutputRecord) => [
-        output.workflowStepId,
-        output,
-      ]),
-    );
-  }, [detail?.outputs]);
-
-  const latestOutput = useMemo<WorkflowOutputRecord | null>(() => {
-    if (!detail?.outputs || detail.outputs.length === 0) {
-      return null;
-    }
-
-    return detail.outputs.at(-1) ?? null;
+    return groupOutputsByStep(detail.outputs as WorkflowOutputRecord[]);
   }, [detail?.outputs]);
 
   const runTitle = useMemo(
-    () => summarizeRunPrompt(runPromptText ?? latestOutput?.promptText),
-    [latestOutput?.promptText, runPromptText],
+    () => summarizeRunPrompt(runPromptText),
+    [runPromptText],
   );
 
   const pendingApproval = useMemo(() => {
@@ -462,12 +402,32 @@ function WorkflowRunDetailPage() {
       return;
     }
     setSubmittingDecision(true);
+    const followUpComment = decisionComment.trim();
+    const canOptimisticallyContinue =
+      decision === "changes_requested" &&
+      followUpComment.length > 0 &&
+      detail;
+    const previousDetail = detail;
+    let submitted = false;
     try {
+      if (canOptimisticallyContinue) {
+        const createdAt = new Date().toISOString();
+        setDetail(
+          applyOptimisticWorkflowFollowUp(
+            detail,
+            stepId,
+            followUpComment,
+            createdAt,
+          ),
+        );
+        setDecisionComment("");
+      }
+
       if (decision === "approved" || decision === "changes_requested") {
         await submitStepApprovalDecisionUseCase.current.execute(
           stepId,
           decision === "approved",
-          decisionComment || undefined,
+          followUpComment || undefined,
         );
       } else {
         const now = new Date().toISOString();
@@ -496,10 +456,22 @@ function WorkflowRunDetailPage() {
           errorSummary: decisionComment || "Rejected by reviewer.",
         });
       }
+      submitted = true;
       await loadData();
-      setDecisionComment("");
+      if (!canOptimisticallyContinue) {
+        setDecisionComment("");
+      }
     } catch (err: any) {
-      alert(`Decision submission failed: ${err.message}`);
+      if (!submitted && canOptimisticallyContinue) {
+        setDetail(previousDetail);
+        setDecisionComment(followUpComment);
+      }
+      if (submitted) {
+        void loadData();
+        alert(`Follow-up started, but refreshing the run detail failed: ${err.message}`);
+      } else {
+        alert(`Decision submission failed: ${err.message}`);
+      }
     } finally {
       setSubmittingDecision(false);
     }
@@ -681,90 +653,112 @@ function WorkflowRunDetailPage() {
               <p className="text-[10px] opacity-70 mb-2 font-mono tracking-widest uppercase flex items-center gap-1.5">
                 Initial Prompt
               </p>
-              {runPromptText || latestOutput?.promptText || "No initial prompt captured."}
+              {runPromptText || "No initial prompt captured."}
             </div>
           </div>
 
           {/* 2. Step Outputs */}
           {detail.steps.map((step: any, index: number) => {
-            const output = outputByStepId.get(step.id) as WorkflowOutputRecord | undefined;
-            const decisions = (detail.approvalDecisions ?? []).filter((d: any) => d.workflowStepId === step.id);
-            
+            const outputs =
+              (outputsByStepId.get(step.id) as WorkflowOutputRecord[] | undefined) ?? [];
+            const decisions = ((detail.approvalDecisions ?? []).filter(
+              (d: any) => d.workflowStepId === step.id,
+            ) as any[]).sort((left, right) =>
+              left.createdAt.localeCompare(right.createdAt),
+            );
+            const timelineItems = buildWorkflowStepTimeline(outputs, decisions);
+             
             return (
               <div key={step.id} className="space-y-4">
-                {/* AI / System Response Bubble */}
-                <div className="flex justify-start">
-                  <div className="max-w-[90%] w-full rounded-[1.6rem] border border-border/80 bg-card/40 p-6 shadow-sm backdrop-blur-sm transition-all hover:bg-card/60">
-                    
-                    <div className="flex flex-wrap items-center justify-between gap-3 mb-5 border-b border-border/40 pb-4">
-                      <div>
-                        <span className="font-bold text-foreground flex items-center gap-2">
-                          {step.stepName}
-                          <Badge tone={statusTone(step.status)} className="ml-2 px-2 py-0.5 text-[10px]">
-                            {step.status}
-                          </Badge>
+                {timelineItems.length === 0 ? (
+                  <div className="flex justify-start">
+                    <div className="max-w-[90%] w-full rounded-[1.6rem] border border-border/80 bg-card/40 p-6 shadow-sm backdrop-blur-sm">
+                      <div className="flex flex-wrap items-center justify-between gap-3 mb-5 border-b border-border/40 pb-4">
+                        <div>
+                          <span className="font-bold text-foreground flex items-center gap-2">
+                            {step.stepName}
+                            <Badge tone={statusTone(step.status)} className="ml-2 px-2 py-0.5 text-[10px]">
+                              {step.status}
+                            </Badge>
+                          </span>
+                          <p className="mt-1 text-[11px] font-mono text-muted-foreground uppercase tracking-wider">
+                            Step {index + 1}
+                          </p>
+                        </div>
+
+                        <span className="rounded-full bg-muted border border-border/60 px-3 py-1 text-[10px] font-medium text-muted-foreground uppercase tracking-widest">
+                          {step.status === "PENDING" || step.status === "RUNNING" ? "Processing..." : "No Artifact"}
                         </span>
-                        <p className="mt-1 text-[11px] font-mono text-muted-foreground uppercase tracking-wider">
-                          Step {index + 1}
-                        </p>
                       </div>
-                      
-                      <div className="text-right">
-                        {output ? (
-                          <span className="rounded-full bg-success/10 border border-success/20 px-3 py-1 text-[10px] font-medium text-success uppercase tracking-widest">
-                            Artifact Generated
-                          </span>
-                        ) : (
-                          <span className="rounded-full bg-muted border border-border/60 px-3 py-1 text-[10px] font-medium text-muted-foreground uppercase tracking-widest">
-                            {step.status === "PENDING" || step.status === "RUNNING" ? "Processing..." : "No Artifact"}
-                          </span>
-                        )}
-                      </div>
-                    </div>
 
-                    {output ? (
-                      <div className="mb-6">
-                        <ArtifactContentViewer 
-                          content={output.contentMarkdown || "No output content."}
-                          gateway={gatewayBundle.current.localRunnerGateway}
-                        />
-                      </div>
-                    ) : step.errorMessage ? (
-                      <div className="mb-6 rounded-2xl bg-destructive/10 border border-destructive/20 p-4 text-sm text-destructive">
-                        {step.errorMessage}
-                      </div>
-                    ) : null}
-
-                    <details className="mt-4 pt-4 border-t border-border/30">
-                      <summary className="text-[11px] font-medium uppercase tracking-[0.2em] text-muted-foreground cursor-pointer hover:text-foreground transition-colors inline-flex items-center gap-2">
-                        Developer Diagnostics
-                      </summary>
-                      <div className="mt-4 space-y-3 pl-2 border-l-2 border-border/50">
-                        {output?.localPath && (
-                          <CollapsibleTextBlock title="Artifact Path" value={output.localPath} emptyLabel="" />
-                        )}
-                        <CollapsibleTextBlock title="Prompt Override" value={output?.promptText} emptyLabel="Inherited from run prompt." />
-                        <CollapsibleTextBlock title="Stdout" value={output?.stdoutText} emptyLabel="No stdout." />
-                        <CollapsibleTextBlock title="Stderr" value={output?.stderrText} emptyLabel="No stderr." />
-                        <CollapsibleTextBlock title="CLI Command" value={output?.commandText} emptyLabel="No command captured." />
-                      </div>
-                    </details>
-
-                  </div>
-                </div>
-
-                {/* Follow-up / Decision Logs rendered as user messages */}
-                {decisions.map((decision: any) => (
-                  <div key={decision.id} className="flex justify-end mt-4">
-                    <div className="max-w-[85%] rounded-[1.6rem] bg-accent/90 text-accent-foreground px-6 py-4 whitespace-pre-wrap text-sm shadow-sm">
-                      <p className="text-[10px] opacity-70 mb-2 font-mono tracking-widest uppercase flex items-center justify-between">
-                        <span>Follow-up</span>
-                        <span className="text-[9px]">{new Date(decision.createdAt).toLocaleTimeString()}</span>
-                      </p>
-                      {decision.comment || `Decision: ${decision.decision}`}
+                      {step.errorMessage ? (
+                        <div className="rounded-2xl bg-destructive/10 border border-destructive/20 p-4 text-sm text-destructive">
+                          {step.errorMessage}
+                        </div>
+                      ) : null}
                     </div>
                   </div>
-                ))}
+                ) : (
+                  timelineItems.map((item) =>
+                    item.kind === "decision" ? (
+                      <div key={item.key} className="flex justify-end mt-4">
+                        <div className="max-w-[85%] rounded-[1.6rem] bg-accent/90 text-accent-foreground px-6 py-4 whitespace-pre-wrap text-sm shadow-sm">
+                          <p className="text-[10px] opacity-70 mb-2 font-mono tracking-widest uppercase flex items-center justify-between">
+                            <span>Follow-up</span>
+                            <span className="text-[9px]">{new Date(item.decision.createdAt).toLocaleTimeString()}</span>
+                          </p>
+                          {item.decision.comment || `Decision: ${item.decision.decision}`}
+                        </div>
+                      </div>
+                    ) : (
+                      <div key={item.key} className="flex justify-start">
+                        <div className="max-w-[90%] w-full rounded-[1.6rem] border border-border/80 bg-card/40 p-6 shadow-sm backdrop-blur-sm transition-all hover:bg-card/60">
+                          <div className="flex flex-wrap items-center justify-between gap-3 mb-5 border-b border-border/40 pb-4">
+                            <div>
+                              <span className="font-bold text-foreground flex items-center gap-2">
+                                {step.stepName}
+                                <Badge tone={statusTone(step.status)} className="ml-2 px-2 py-0.5 text-[10px]">
+                                  {step.status}
+                                </Badge>
+                              </span>
+                              <p className="mt-1 text-[11px] font-mono text-muted-foreground uppercase tracking-wider">
+                                Step {index + 1}
+                              </p>
+                            </div>
+
+                            <div className="text-right">
+                              <span className="rounded-full bg-success/10 border border-success/20 px-3 py-1 text-[10px] font-medium text-success uppercase tracking-widest">
+                                Artifact Generated
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="mb-6">
+                            <ArtifactContentViewer
+                              content={item.output.contentMarkdown || "No output content."}
+                              gateway={gatewayBundle.current.localRunnerGateway}
+                            />
+                          </div>
+
+                          <details className="mt-4 pt-4 border-t border-border/30">
+                            <summary className="text-[11px] font-medium uppercase tracking-[0.2em] text-muted-foreground cursor-pointer hover:text-foreground transition-colors inline-flex items-center gap-2">
+                              Developer Diagnostics
+                            </summary>
+                            <div className="mt-4 space-y-3 pl-2 border-l-2 border-border/50">
+                              {item.output.localPath && (
+                                <CollapsibleTextBlock title="Artifact Path" value={item.output.localPath} emptyLabel="" />
+                              )}
+                              <CollapsibleTextBlock title="Prompt Override" value={item.output.promptText} emptyLabel="Inherited from run prompt." />
+                              <CollapsibleTextBlock title="Stdout" value={item.output.stdoutText} emptyLabel="No stdout." />
+                              <CollapsibleTextBlock title="Stderr" value={item.output.stderrText} emptyLabel="No stderr." />
+                              <CollapsibleTextBlock title="CLI Command" value={item.output.commandText} emptyLabel="No command captured." />
+                            </div>
+                          </details>
+                        </div>
+                      </div>
+                    ),
+                  )
+                )}
               </div>
             );
           })}

@@ -62,6 +62,22 @@ type ArtifactRunRow = {
   title: string;
 };
 
+type WorkflowRunRow = {
+  id: string;
+  workflow_id: string;
+  project_id: string;
+};
+
+type WorkflowRunStepExecutionRow = {
+  id: string;
+  workflow_run_id: string;
+  workflow_step_id: string | null;
+  execution_order_index: number;
+  step_type: string;
+  status: string;
+  retry_count: number;
+};
+
 type DirectoryValidationResult = {
   path: string;
   usable: boolean;
@@ -289,6 +305,39 @@ export function buildWorkflowStepPrompt({
   return sections.join("\n");
 }
 
+export function buildWorkflowStepFollowUpPrompt({
+  followUpPrompt,
+  inputArtifactPaths,
+  outputArtifactPaths,
+  workingDirectory,
+}: {
+  followUpPrompt: string;
+  inputArtifactPaths: string[];
+  outputArtifactPaths: string[];
+  workingDirectory: string;
+}) {
+  const sections = [
+    followUpPrompt.trim(),
+    "",
+    buildPromptSection(
+      "Artifacts To Review",
+      outputArtifactPaths.length === 0
+        ? ["- None"]
+        : outputArtifactPaths.map((outputPath) => `- ${outputPath}`),
+    ),
+    buildPromptSection(
+      "Related Input Artifacts",
+      inputArtifactPaths.length === 0
+        ? ["- None"]
+        : inputArtifactPaths.map((inputPath) => `- ${inputPath}`),
+    ),
+    buildPromptSection("Execution Context", [`- Working directory: ${workingDirectory}`]),
+    "Revise the current artifact according to the follow-up prompt and return the updated final result in Markdown.",
+  ];
+
+  return sections.join("\n");
+}
+
 async function assertProjectMembership(
   adminClient: SupabaseClient,
   projectId: string,
@@ -330,6 +379,54 @@ async function loadWorkflowDefinition(
   return data as WorkflowDefinitionRow;
 }
 
+async function loadWorkflowRun(adminClient: SupabaseClient, runId: string) {
+  const { data, error } = await adminClient
+    .from("workflow_runs")
+    .select("id, workflow_id, project_id")
+    .eq("id", runId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Unable to load workflow run: ${error.message}`);
+  }
+  if (!data) {
+    throw new Error("Workflow run not found.");
+  }
+
+  return data as WorkflowRunRow;
+}
+
+async function loadWorkflowRunStep(adminClient: SupabaseClient, stepRunId: string) {
+  const { data, error } = await adminClient
+    .from("workflow_run_steps")
+    .select("id, workflow_run_id, workflow_step_id, execution_order_index, step_type, status, retry_count")
+    .eq("id", stepRunId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Unable to load workflow run step: ${error.message}`);
+  }
+  if (!data) {
+    throw new Error("Workflow step run not found.");
+  }
+
+  return data as WorkflowRunStepExecutionRow;
+}
+
+async function loadWorkflowRunSteps(adminClient: SupabaseClient, runId: string) {
+  const { data, error } = await adminClient
+    .from("workflow_run_steps")
+    .select("id, workflow_run_id, workflow_step_id, execution_order_index, step_type, status, retry_count")
+    .eq("workflow_run_id", runId)
+    .order("execution_order_index", { ascending: true });
+
+  if (error) {
+    throw new Error(`Unable to load workflow run steps: ${error.message}`);
+  }
+
+  return (data ?? []) as WorkflowRunStepExecutionRow[];
+}
+
 async function loadWorkflowSteps(adminClient: SupabaseClient, workflowId: string) {
   const { data, error } = await adminClient
     .from("workflow_steps")
@@ -342,6 +439,23 @@ async function loadWorkflowSteps(adminClient: SupabaseClient, workflowId: string
   }
 
   return (data ?? []) as WorkflowStepRow[];
+}
+
+async function loadWorkflowStepById(adminClient: SupabaseClient, workflowStepId: string) {
+  const { data, error } = await adminClient
+    .from("workflow_steps")
+    .select("id, step_type, order_index, is_enabled, provider_override, model_override, reasoning_effort_override, requires_approval")
+    .eq("id", workflowStepId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Unable to load workflow step definition: ${error.message}`);
+  }
+  if (!data) {
+    throw new Error("Workflow step definition not found.");
+  }
+
+  return data as WorkflowStepRow;
 }
 
 async function loadStepDefinitions(adminClient: SupabaseClient, stepTypes: string[]) {
@@ -573,19 +687,26 @@ async function createArtifactOutputs({
     const localPath = resolveArtifactPath(definition.local_path_template, context);
     const absoluteOutputPath = normalizeAbsolutePath(workingDirectory, localPath);
     const artifactDirectory = path.dirname(absoluteOutputPath);
+    const artifactId = randomUUID();
+    const snapshotDirectory = path.join(artifactDirectory, ".snapshots", artifactId);
     await mkdir(path.dirname(absoluteOutputPath), { recursive: true });
+    await mkdir(snapshotDirectory, { recursive: true });
     await writeFile(absoluteOutputPath, outputMarkdown, "utf8");
 
-    const absolutePromptPath = path.join(artifactDirectory, "prompt.md");
-    const absoluteStdoutPath = path.join(artifactDirectory, "stdout.txt");
-    const absoluteStderrPath = path.join(artifactDirectory, "stderr.txt");
-    const absoluteCommandPath = path.join(artifactDirectory, "command.txt");
+    const absoluteSnapshotContentPath = path.join(
+      snapshotDirectory,
+      path.basename(absoluteOutputPath),
+    );
+    const absolutePromptPath = path.join(snapshotDirectory, "prompt.md");
+    const absoluteStdoutPath = path.join(snapshotDirectory, "stdout.txt");
+    const absoluteStderrPath = path.join(snapshotDirectory, "stderr.txt");
+    const absoluteCommandPath = path.join(snapshotDirectory, "command.txt");
+    await writeFile(absoluteSnapshotContentPath, outputMarkdown, "utf8");
     await writeFile(absolutePromptPath, promptText, "utf8");
     await writeFile(absoluteStdoutPath, stdoutText, "utf8");
     await writeFile(absoluteStderrPath, stderrText, "utf8");
     await writeFile(absoluteCommandPath, commandText, "utf8");
 
-    const artifactId = randomUUID();
     const manifest = {
       artifactId,
       title: definition.default_file_name || definition.name,
@@ -595,7 +716,7 @@ async function createArtifactOutputs({
       workflowRunId,
       workflowStepKey: stepType,
       providerKey,
-      localPath: path.dirname(localPath),
+      localPath: snapshotDirectory,
       remotePath: resolveArtifactPath(definition.remote_path_template, context),
       remoteUrl: "",
       syncStatus: "local_only",
@@ -605,10 +726,10 @@ async function createArtifactOutputs({
       stdoutPath: absoluteStdoutPath,
       stderrPath: absoluteStderrPath,
       commandPath: absoluteCommandPath,
-      contentPath: absoluteOutputPath,
+      contentPath: absoluteSnapshotContentPath,
     };
 
-    const absoluteManifestPath = path.join(path.dirname(absoluteOutputPath), "manifest.json");
+    const absoluteManifestPath = path.join(snapshotDirectory, "manifest.json");
     await writeFile(absoluteManifestPath, JSON.stringify(manifest, null, 2), "utf8");
 
     rows.push({
@@ -634,6 +755,257 @@ async function createArtifactOutputs({
   }
 
   return data?.[0]?.id ? String(data[0].id) : null;
+}
+
+export async function submitWorkflowStepFollowUpRuntime({
+  adminClient,
+  localRunnerGateway,
+  stepId,
+  comment,
+}: {
+  adminClient: SupabaseClient;
+  localRunnerGateway: Pick<LocalRunnerGateway, "executePrompt" | "listMcpBackends">;
+  stepId: string;
+  comment: string;
+}) {
+  const trimmedComment = comment.trim();
+  if (!trimmedComment) {
+    throw new Error("Follow-up prompt is required.");
+  }
+
+  const stepRun = await loadWorkflowRunStep(adminClient, stepId);
+  if (stepRun.status !== "DONE" && stepRun.status !== "WAITING_USER_APPROVAL") {
+    throw new Error("Follow-up is only supported for completed steps.");
+  }
+
+  const allRunSteps = await loadWorkflowRunSteps(adminClient, stepRun.workflow_run_id);
+  const latestExecutableStep = [...allRunSteps]
+    .filter((step) => step.status !== "SKIPPED")
+    .sort((left, right) => left.execution_order_index - right.execution_order_index)
+    .at(-1);
+
+  if (!latestExecutableStep || latestExecutableStep.id !== stepRun.id) {
+    throw new Error("Follow-up is only supported for the latest workflow step in the run.");
+  }
+
+  if (!stepRun.workflow_step_id) {
+    throw new Error("Workflow step definition is missing for this run step.");
+  }
+
+  const run = await loadWorkflowRun(adminClient, stepRun.workflow_run_id);
+  const projectDefaults = await loadProjectDefaults(adminClient, run.project_id);
+  const workflow = await loadWorkflowDefinition(adminClient, run.workflow_id, run.project_id);
+  const workflowStep = await loadWorkflowStepById(adminClient, stepRun.workflow_step_id);
+  const stepDefinitions = await loadStepDefinitions(adminClient, [stepRun.step_type]);
+  const definition = stepDefinitions.get(stepRun.step_type);
+  if (!definition) {
+    throw new Error(`Step definition "${stepRun.step_type}" could not be loaded.`);
+  }
+
+  const inputBindings = await loadArtifactBindings(adminClient, "step_input_artifact_definitions", [stepRun.step_type]);
+  const outputBindings = await loadArtifactBindings(adminClient, "step_output_artifact_definitions", [stepRun.step_type]);
+  const inputArtifactKeys = inputBindings.get(stepRun.step_type) ?? [];
+  const outputArtifactKeys = outputBindings.get(stepRun.step_type) ?? [];
+  const artifactDefinitionKeys = Array.from(new Set([...inputArtifactKeys, ...outputArtifactKeys]));
+  const artifactDefinitions = await loadArtifactDefinitions(adminClient, artifactDefinitionKeys);
+  const workingDirectory = await resolveWorkingDirectory(adminClient, run.project_id);
+  const installedBackends = await localRunnerGateway.listMcpBackends();
+  const usableMcpKeys = new Set(
+    installedBackends
+      .filter((backend) => backend.installed || backend.state === "installed" || backend.state === "launcher_available")
+      .flatMap((backend) => [backend.key, backend.providerType])
+      .map((value) => value.toLowerCase()),
+  );
+
+  const missingMcps = (definition.required_mcps ?? []).filter(
+    (mcp) => !usableMcpKeys.has(String(mcp).toLowerCase()),
+  );
+  if (missingMcps.length > 0) {
+    throw new Error(`Missing required MCPs for ${stepRun.step_type}: ${missingMcps.join(", ")}`);
+  }
+
+  const existingArtifacts = await listExistingArtifacts(
+    adminClient,
+    run.id,
+    artifactDefinitionKeys,
+  );
+  const artifactsByKey = new Map(existingArtifacts.map((artifact) => [artifact.artifact_definition_key, artifact]));
+  const missingArtifacts = inputArtifactKeys.filter((key) => !artifactsByKey.has(key));
+  if (missingArtifacts.length > 0) {
+    throw new Error(
+      `Step ${stepRun.step_type} is missing required input artifacts: ${missingArtifacts.join(", ")}`,
+    );
+  }
+
+  const inputArtifactPaths = inputArtifactKeys.map((artifactKey) =>
+    normalizeAbsolutePath(workingDirectory, artifactsByKey.get(artifactKey)!.local_path),
+  );
+  const outputArtifactPaths = outputArtifactKeys.map((artifactKey) => {
+    const definitionRow = artifactDefinitions.get(artifactKey);
+    if (!definitionRow) {
+      throw new Error(`Artifact definition "${artifactKey}" is missing.`);
+    }
+
+    return normalizeAbsolutePath(
+      workingDirectory,
+      resolveArtifactPath(definitionRow.local_path_template, {
+        projectId: run.project_id,
+        workflowId: run.workflow_id,
+        workflowRunId: run.id,
+        workflowRunStepId: stepRun.id,
+        stepType: stepRun.step_type,
+        artifactKey,
+        defaultFileName: definitionRow.default_file_name || definitionRow.name,
+      }),
+    );
+  });
+
+  const execution = resolvePlannedStepExecution(workflowStep, workflow, projectDefaults, definition);
+  const finalPrompt = buildWorkflowStepFollowUpPrompt({
+    followUpPrompt: trimmedComment,
+    inputArtifactPaths,
+    outputArtifactPaths,
+    workingDirectory,
+  });
+
+  const decisionTimestamp = new Date().toISOString();
+  await adminClient
+    .from("workflow_runs")
+    .update({
+      status: "RUNNING",
+      finished_at: null,
+      error_message: null,
+    })
+    .eq("id", run.id);
+
+  await adminClient
+    .from("workflow_run_steps")
+    .update({
+      status: "RUNNING",
+      retry_count: stepRun.retry_count + 1,
+      rejection_note: trimmedComment,
+      started_at: decisionTimestamp,
+      finished_at: null,
+      error_message: null,
+    })
+    .eq("id", stepRun.id);
+
+  await insertLog(
+    adminClient,
+    stepRun.id,
+    "info",
+    `approval_decision:${JSON.stringify({
+      id: randomUUID(),
+      approvalId: `approval_${stepRun.id}`,
+      workflowRunId: run.id,
+      workflowStepId: stepRun.id,
+      aiOutputId: null,
+      decision: "changes_requested",
+      reviewerId: null,
+      comment: trimmedComment,
+      createdAt: decisionTimestamp,
+    })}`,
+  );
+  await insertLog(adminClient, stepRun.id, "info", `Follow-up prompt: ${trimmedComment}`);
+  await insertLog(adminClient, stepRun.id, "info", `Launching follow-up for ${stepRun.step_type} in ${workingDirectory}.`);
+
+  try {
+    const result = await localRunnerGateway.executePrompt({
+      providerKey: execution.providerKey,
+      modelName: execution.model,
+      ...(execution.reasoningEffort ? { reasoningEffort: execution.reasoningEffort } : {}),
+      prompt: finalPrompt,
+      skillIds: definition.required_skills ?? [],
+      flowId: null,
+      contextSourceIds: [],
+      timeoutMs: 600000,
+      workingDirectory,
+      allowWrite: true,
+    });
+
+    if (result.status !== "success") {
+      throw new Error(result.errorMessage || `Local runner execution failed for ${stepRun.step_type}.`);
+    }
+
+    const artifactRunId = await createArtifactOutputs({
+      adminClient,
+      artifactDefinitions,
+      outputArtifactKeys,
+      outputMarkdown: result.outputMarkdown,
+      promptText: finalPrompt,
+      projectId: run.project_id,
+      stepRunId: stepRun.id,
+      stepType: stepRun.step_type,
+      stderrText: result.stderrSummary,
+      stdoutText: result.stdoutSummary,
+      workflowId: run.workflow_id,
+      workflowRunId: run.id,
+      workingDirectory,
+      commandText: result.command,
+      providerKey: execution.providerKey,
+    });
+
+    await adminClient
+      .from("workflow_run_steps")
+      .update({
+        status: "DONE",
+        started_at: result.startedAt,
+        finished_at: result.completedAt,
+        artifact_run_id: artifactRunId,
+        rejection_note: null,
+        error_message: null,
+      })
+      .eq("id", stepRun.id);
+    await insertLog(adminClient, stepRun.id, "info", `Command: ${result.command}`);
+    if (result.stdoutSummary) {
+      await insertLog(adminClient, stepRun.id, "debug", result.stdoutSummary);
+    }
+    if (result.stderrSummary) {
+      await insertLog(adminClient, stepRun.id, "warn", result.stderrSummary);
+    }
+    await insertLog(adminClient, stepRun.id, "info", `Completed follow-up for ${stepRun.step_type} with model ${execution.model}.`);
+
+    await adminClient
+      .from("workflow_runs")
+      .update({
+        status: "DONE",
+        finished_at: new Date().toISOString(),
+        error_message: null,
+      })
+      .eq("id", run.id);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : `Follow-up execution failed for ${stepRun.step_type}.`;
+    await adminClient
+      .from("workflow_run_steps")
+      .update({
+        status: "FAILED",
+        finished_at: new Date().toISOString(),
+        error_message: message,
+      })
+      .eq("id", stepRun.id);
+    await insertLog(adminClient, stepRun.id, "error", message);
+    await adminClient
+      .from("workflow_runs")
+      .update({
+        status: "FAILED",
+        finished_at: new Date().toISOString(),
+        error_message: message,
+      })
+      .eq("id", run.id);
+    throw error;
+  }
+
+  const { data: updatedStep, error: updatedStepError } = await adminClient
+    .from("workflow_run_steps")
+    .select("*")
+    .eq("id", stepRun.id)
+    .single();
+
+  if (updatedStepError) {
+    throw new Error(`Unable to load updated workflow step: ${updatedStepError.message}`);
+  }
+
+  return updatedStep;
 }
 
 export async function runWorkflowStartRuntime({

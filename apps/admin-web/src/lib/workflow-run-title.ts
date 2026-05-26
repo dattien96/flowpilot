@@ -2,7 +2,7 @@ import type { LocalRunnerGateway } from "@/domain/gateway/local-runner-gateway";
 import type { LocalRunnerArtifact } from "@/domain/model/entity/local-runner";
 
 const workflowRunPathPattern =
-  /\.flowpilot\/artifacts\/[^/\s]+\/([0-9a-f-]{36})\//gi;
+  /\.flowpilot[\\/]+artifacts[\\/]+[^/\\\s]+[\\/]+([0-9a-f-]{36})[\\/]+/gi;
 
 function normalize(value: string | null | undefined) {
   return (value ?? "").trim().toLowerCase();

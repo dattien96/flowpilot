@@ -2,7 +2,7 @@ import type { LocalRunnerGateway } from "@/domain/gateway/local-runner-gateway";
 import type { LocalRunnerArtifact } from "@/domain/model/entity/local-runner";
 
 const workflowRunPathPattern =
-  /\.flowpilot\/artifacts\/[^/\s]+\/([0-9a-f-]{36})\//gi;
+  /\.flowpilot[\\/]+artifacts[\\/]+[^/\\\s]+[\\/]+([0-9a-f-]{36})[\\/]+/gi;
 
 function normalize(value: string | null | undefined) {
   return (value ?? "").trim().toLowerCase();
@@ -34,6 +34,18 @@ function extractWorkflowRunIdFromPrompt(promptText?: string) {
   }
 
   return null;
+}
+
+function hasStructuredBeginPrompt(promptText?: string) {
+  return normalize(promptText).includes("## begin prompt");
+}
+
+function isFollowUpPrompt(promptText?: string) {
+  const normalizedPrompt = normalize(promptText);
+  return (
+    normalizedPrompt.includes("## artifacts to review") &&
+    normalizedPrompt.includes("revise the current artifact according to the follow-up prompt")
+  );
 }
 
 function sortByUpdatedAtDesc(left: LocalRunnerArtifact, right: LocalRunnerArtifact) {
@@ -68,7 +80,17 @@ export async function loadWorkflowRunPromptText(
         (await localRunnerGateway.getArtifactById(artifact.artifactId)) ??
         artifact;
       const promptText = artifactDetail.promptText?.trim();
-      if (promptText) {
+      if (promptText && hasStructuredBeginPrompt(promptText)) {
+        return promptText;
+      }
+    }
+
+    for (const artifact of workflowOutputArtifacts) {
+      const artifactDetail =
+        (await localRunnerGateway.getArtifactById(artifact.artifactId)) ??
+        artifact;
+      const promptText = artifactDetail.promptText?.trim();
+      if (promptText && !isFollowUpPrompt(promptText)) {
         return promptText;
       }
     }

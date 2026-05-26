@@ -111,6 +111,7 @@ var (
 
 		return responseBody, nil
 	}
+	safeShellTokenPattern = regexp.MustCompile(`^[A-Za-z0-9_./:=+-]+$`)
 )
 
 type Runner struct {
@@ -712,6 +713,25 @@ func resolvePromptExecutionAdapter(request PromptExecutionRequest, outputPath st
 	}
 }
 
+func shellQuote(value string) string {
+	if value == "" {
+		return "''"
+	}
+	if safeShellTokenPattern.MatchString(value) {
+		return value
+	}
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
+func formatShellCommand(binary string, args []string, stdinPath string) string {
+	parts := make([]string, 0, len(args)+1)
+	parts = append(parts, shellQuote(binary))
+	for _, arg := range args {
+		parts = append(parts, shellQuote(arg))
+	}
+	return strings.Join(parts, " ") + " < " + shellQuote(stdinPath)
+}
+
 func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionRequest) (PromptExecutionResult, error) {
 	if strings.TrimSpace(request.Prompt) == "" {
 		return PromptExecutionResult{}, errors.New("prompt is required")
@@ -754,7 +774,7 @@ func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionReque
 		return PromptExecutionResult{}, err
 	}
 
-	command := binary + " " + strings.Join(args, " ") + " < prompt.txt"
+	command := formatShellCommand(binary, args, promptPath)
 	if err := os.WriteFile(commandPath, []byte(command), 0o644); err != nil {
 		return PromptExecutionResult{}, err
 	}
@@ -2605,4 +2625,3 @@ func (r *Runner) AuthenticateProvider(ctx context.Context, providerName string) 
 
 	return LaunchTerminalWithCommand(authCommand)
 }
-

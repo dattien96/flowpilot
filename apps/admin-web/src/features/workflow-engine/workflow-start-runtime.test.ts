@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildWorkflowStepFollowUpPrompt,
   buildWorkflowStepPrompt,
   resolveProviderKeyFromModel,
 } from "./workflow-start-runtime";
@@ -33,5 +34,20 @@ describe("workflow-start-runtime", () => {
     expect(prompt).toContain("planner-agent");
     expect(prompt).toContain("C:/repo/.flowpilot/artifacts/input.md");
     expect(prompt).toContain("C:/repo/.flowpilot/artifacts/output.md");
+  });
+
+  it("builds follow-up prompts without replaying the initial begin prompt", () => {
+    const prompt = buildWorkflowStepFollowUpPrompt({
+      followUpPrompt: "Make the artifact shorter.",
+      inputArtifactPaths: ["C:/repo/.flowpilot/artifacts/input.md"],
+      outputArtifactPaths: ["C:/repo/.flowpilot/artifacts/output.md"],
+      workingDirectory: "C:/repo",
+    });
+
+    expect(prompt).toContain("Make the artifact shorter.");
+    expect(prompt).toContain("Artifacts To Review");
+    expect(prompt).toContain("C:/repo/.flowpilot/artifacts/output.md");
+    expect(prompt).not.toContain("## Begin Prompt");
+    expect(prompt).not.toContain("## Prompt Base");
   });
 });

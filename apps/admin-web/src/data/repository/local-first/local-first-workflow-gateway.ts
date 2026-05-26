@@ -52,17 +52,6 @@ function mapLocalArtifactToOutput(
   };
 }
 
-function buildMergeKey(output: AiOutput) {
-  return `${normalize(output.workflowRunId)}:${normalize(output.title)}:${normalize(output.workflowStepId)}`;
-}
-
-function buildArtifactMergeKey(
-  artifact: LocalRunnerArtifact,
-  workflowStepId?: string | null,
-) {
-  return `${normalize(artifact.workflowRunId)}:${normalize(artifact.title)}:${normalize(workflowStepId ?? artifact.workflowStepKey)}`;
-}
-
 function findStepForArtifact(
   steps: WorkflowStep[],
   artifact: LocalRunnerArtifact,
@@ -319,19 +308,19 @@ export class LocalFirstWorkflowGateway implements WorkflowGateway {
       if (!hasReadableContent(output.contentMarkdown)) {
         continue;
       }
-      merged.set(buildMergeKey(output), output);
+      merged.set(output.id, output);
     }
 
     for (const artifact of localArtifacts) {
       const step = steps ? findStepForArtifact(steps, artifact) : null;
       const localOutput = mapLocalArtifactToOutput(artifact, step?.id ?? null);
-      merged.set(
-        buildArtifactMergeKey(artifact, step?.id ?? null),
-        localOutput,
-      );
+      const current = merged.get(localOutput.id);
+      merged.set(localOutput.id, current ? { ...current, ...localOutput } : localOutput);
     }
 
-    return Array.from(merged.values());
+    return Array.from(merged.values()).sort((left, right) =>
+      left.createdAt.localeCompare(right.createdAt),
+    );
   }
 
   private async buildLocalOutputDetail(
