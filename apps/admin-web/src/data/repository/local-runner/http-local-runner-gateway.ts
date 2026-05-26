@@ -38,6 +38,36 @@ async function readJson<T>(baseUrl: string, path: string): Promise<T> {
   return (await response.json()) as T;
 }
 
+async function fetchWithTimeout(
+  input: URL,
+  init: RequestInit,
+  {
+    timeoutMs,
+    timeoutMessage,
+  }: {
+    timeoutMs: number;
+    timeoutMessage: string;
+  },
+) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(timeoutMessage), timeoutMs);
+
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (controller.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
+      throw new Error(timeoutMessage);
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 function offlineHealth(baseUrl: string, errorMessage: string): LocalRunnerHealth {
   return {
     status: "offline",
@@ -436,10 +466,17 @@ export class HttpLocalRunnerGateway implements LocalRunnerGateway {
   async readFile(path: string): Promise<string> {
     const url = new URL("/files/read", this.baseUrl);
     url.searchParams.set("path", path);
-    const response = await fetch(url, {
-      method: "GET",
-      cache: "no-store",
-    });
+    const response = await fetchWithTimeout(
+      url,
+      {
+        method: "GET",
+        cache: "no-store",
+      },
+      {
+        timeoutMs: 8000,
+        timeoutMessage: `Timed out reading file from local runner at ${this.baseUrl}.`,
+      },
+    );
 
     if (!response.ok) {
       throw new Error(`File read failed: ${response.status} ${response.statusText}`);

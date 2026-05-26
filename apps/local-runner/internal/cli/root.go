@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -420,12 +421,16 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 					return
 				}
-				path := r.URL.Query().Get("path")
-				if path == "" {
+				requestPath := r.URL.Query().Get("path")
+				if requestPath == "" {
 					http.Error(w, "path is required", http.StatusBadRequest)
 					return
 				}
-				content, err := os.ReadFile(path)
+				resolvedPath := requestPath
+				if !filepath.IsAbs(resolvedPath) {
+					resolvedPath = filepath.Join(instance.Health().Cwd, requestPath)
+				}
+				content, err := os.ReadFile(resolvedPath)
 				if err != nil {
 					writeHTTPError(w, http.StatusInternalServerError, err)
 					return

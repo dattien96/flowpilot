@@ -517,4 +517,34 @@ describe("HttpLocalRunnerGateway integration connection", () => {
       }),
     );
   });
+
+  it("times out file reads that do not respond", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      return new Promise((_, reject) => {
+        const signal = init?.signal;
+        if (signal) {
+          signal.addEventListener(
+            "abort",
+            () => {
+              reject(new DOMException("Aborted", "AbortError"));
+            },
+            { once: true },
+          );
+        }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const gateway = new HttpLocalRunnerGateway("http://127.0.0.1:4317");
+    const readPromise = gateway.readFile("/tmp/example.md");
+    const rejectionExpectation = expect(readPromise).rejects.toThrow(
+      "Timed out reading file from local runner at http://127.0.0.1:4317.",
+    );
+
+    await vi.advanceTimersByTimeAsync(8000);
+
+    await rejectionExpectation;
+    vi.useRealTimers();
+  });
 });

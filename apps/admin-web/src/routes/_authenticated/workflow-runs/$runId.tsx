@@ -7,6 +7,7 @@ import {
   ShieldAlert,
   Check,
   RefreshCw,
+  ExternalLink,
 } from "lucide-react";
 
 import { PageFrame } from "@/components/common/page-frame";
@@ -35,6 +36,7 @@ import { statusTone } from "@/presentation/view-models/factories";
 import type { LocalRunnerArtifact } from "@/domain/model/entity/local-runner";
 import type { ArtifactRun } from "@/domain/model/entity/workflow-engine";
 import { loadWorkflowRunPromptText } from "@/lib/workflow-run-prompt";
+import { openMarkdownPreviewInNewTab } from "@/lib/markdown-preview";
 
 function summarizeRunPrompt(promptText?: string) {
   const normalized = promptText?.trim() ?? "";
@@ -248,64 +250,34 @@ function StepOutputTabs({
   const [artifactContent, setArtifactContent] = useState<string | null>(null);
   const [artifactError, setArtifactError] = useState<string | null>(null);
   const [artifactLoading, setArtifactLoading] = useState(false);
-  const [artifactExpanded, setArtifactExpanded] = useState(false);
+
+  const loadArtifactContent = async () => {
+    if (!artifactRun) {
+      throw new Error("Artifact metadata is unavailable.");
+    }
+
+    setArtifactLoading(true);
+    setArtifactError(null);
+
+    try {
+      const content = await localRunnerGateway.readFile(artifactRun.localPath);
+      setArtifactContent(content);
+      return content;
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Unable to load artifact content.";
+      setArtifactError(message);
+      throw error instanceof Error ? error : new Error(message);
+    } finally {
+      setArtifactLoading(false);
+    }
+  };
 
   useEffect(() => {
     setArtifactContent(null);
     setArtifactError(null);
     setArtifactLoading(false);
-    setArtifactExpanded(false);
   }, [artifactRun?.id]);
-
-  useEffect(() => {
-    if (activeTab !== "artifact" || !artifactRun || artifactContent !== null || artifactLoading) {
-      return;
-    }
-
-    let cancelled = false;
-    setArtifactLoading(true);
-    setArtifactError(null);
-
-    let timeoutId: number | undefined;
-    const loadArtifactPromise = Promise.race<string>([
-      localRunnerGateway.readFile(artifactRun.localPath),
-      new Promise<string>((_, reject) => {
-        timeoutId = window.setTimeout(() => {
-          reject(
-            new Error(
-              "Timed out while loading artifact content. Check that the local runner is reachable.",
-            ),
-          );
-        }, 8000);
-      }),
-    ]);
-
-    void loadArtifactPromise
-      .then((content) => {
-        if (!cancelled) {
-          setArtifactContent(content);
-        }
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) {
-          setArtifactError(
-            error instanceof Error ? error.message : "Unable to load artifact content.",
-          );
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setArtifactLoading(false);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-      if (timeoutId !== undefined) {
-        window.clearTimeout(timeoutId);
-      }
-    };
-  }, [activeTab, artifactContent, artifactLoading, artifactRun, localRunnerGateway]);
 
   const tabs = [
     { key: "response" as const, label: "Response" },
@@ -313,11 +285,7 @@ function StepOutputTabs({
     ...(artifactRun ? [{ key: "artifact" as const, label: "Artifact" }] : []),
   ];
 
-  const artifactBody = artifactContent?.trim() ?? "";
-  const lineCount = artifactBody ? artifactBody.split("\n").length : 0;
-  const characterCount = artifactBody.length;
   const normalizedPrompt = normalizePromptDisplay(output.promptText);
-  const canToggleArtifactExpand = Boolean(artifactBody);
 
   return (
     <div className="space-y-4">
@@ -375,62 +343,47 @@ function StepOutputTabs({
                 {artifactRun.localPath}
               </p>
             </div>
-            <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono text-muted-foreground">
-              {artifactBody ? (
-                <>
-                  <span>{lineCount} lines</span>
-                  <span>&bull;</span>
-                  <span>{characterCount.toLocaleString()} chars</span>
-                </>
-              ) : null}
-              {canToggleArtifactExpand ? (
-                <Button
-                  className="h-8 px-3 text-[11px]"
-                  onClick={() => setArtifactExpanded((current) => !current)}
-                  variant="secondary"
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                className="h-8 px-3 text-[11px]"
+                disabled={artifactLoading}
+                onClick={() => {
+                  const openPreview = (content: string) => {
+                    const opened = openMarkdownPreviewInNewTab(
+                      content.trim() || content,
+                      artifactRun.title,
+                    );
+                    if (!opened) {
+                      window.alert(
+                        "The browser blocked the preview tab. Allow popups for FlowPilot and try again.",
+                      );
+                    }
+                  };
+
+                  if (artifactContent) {
+                    openPreview(artifactContent);
+                    return;
+                  }
+
+                  void loadArtifactContent()
+                    .then((content) => {
+                      openPreview(content);
+                    })
+                    .catch(() => {
+                      // Error state is already surfaced in the artifact panel.
+                    });
+                }}
+                variant="secondary"
                 >
-                  {artifactExpanded ? "Collapse" : "Expand"}
+                  <ExternalLink className="mr-2 h-3.5 w-3.5" />
+                  {artifactLoading ? "Opening..." : "Open in new tab"}
                 </Button>
-              ) : null}
             </div>
           </div>
 
-          <div
-            className={`rounded-2xl border border-border bg-card p-5 ${
-              artifactExpanded ? "max-h-none" : "max-h-[28rem] overflow-auto"
-            }`}
-          >
-            {artifactLoading ? (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <RefreshCw className="h-4 w-4 animate-spin" />
-                Loading artifact content...
-              </div>
-            ) : artifactError ? (
-              <div className="space-y-3">
-                <p className="text-sm text-destructive">{artifactError}</p>
-                <Button
-                  className="h-8 px-3 text-[11px]"
-                  onClick={() => {
-                    setArtifactContent(null);
-                    setArtifactError(null);
-                    setArtifactLoading(false);
-                  }}
-                  type="button"
-                  variant="secondary"
-                >
-                  Retry
-                </Button>
-              </div>
-            ) : artifactBody ? (
-              <pre className="whitespace-pre-wrap break-words font-mono text-sm leading-relaxed text-foreground">
-                {artifactBody}
-              </pre>
-            ) : (
-              <p className="text-sm italic text-muted-foreground">
-                No artifact content available.
-              </p>
-            )}
-          </div>
+          {artifactError ? (
+            <p className="text-sm text-destructive">{artifactError}</p>
+          ) : null}
         </div>
       ) : null}
     </div>
