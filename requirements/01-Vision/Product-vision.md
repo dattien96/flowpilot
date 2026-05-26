@@ -123,6 +123,9 @@ FlowPilot treats tools like Codex CLI and Claude Code as subprocess execution un
 The platform constructs the prompt and context, invokes the tool, captures the output (stdout, files), and persists the result.
 This means FlowPilot can evolve its AI backend (swap models, tools, providers) without changing the workflow definition.
 
+## 5.5 Strict Step Adherence
+With structured workflows and distinct steps, we ensure that the AI cannot skip or miss any rule or requirement. This is a massive improvement compared to a traditional markdown workflow file (where steps 1, 2, and 3 are defined, but there is no mechanism to guarantee the AI will actually follow all of them without ignoring parts of the prompt).
+
 ## What this means in practice
 
 | Property | Ad-hoc workflow file | FlowPilot |
@@ -134,3 +137,4 @@ This means FlowPilot can evolve its AI backend (swap models, tools, providers) w
 | Context from past runs | Starts fresh every time | pgvector semantic retrieval |
 | Audit trail | Chat history only | Full step log per run |
 | AI tool backend | Fixed (one tool) | Swappable execution units |
+| Step adherence | AI might skip rules | Enforced step-by-step execution |
