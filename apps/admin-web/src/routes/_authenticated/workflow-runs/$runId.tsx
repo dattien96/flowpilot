@@ -29,10 +29,12 @@ import {
   type WorkflowOutputRecord,
 } from "@/features/workflow-engine/workflow-run-detail-timeline";
 import {
+  buildFallbackApprovalDecisionsFromLogs,
   buildFallbackOutputsFromLogs,
   extractBeginPromptFromLogs,
 } from "@/features/workflow-engine/workflow-run-log-fallback";
 import { statusTone } from "@/presentation/view-models/factories";
+import type { ApprovalDecision } from "@/domain/model/entity/workflow";
 import type { LocalRunnerArtifact } from "@/domain/model/entity/local-runner";
 import type { ArtifactRun } from "@/domain/model/entity/workflow-engine";
 import { loadWorkflowRunPromptText } from "@/lib/workflow-run-prompt";
@@ -104,6 +106,66 @@ function normalizePromptDisplay(promptText?: string | null) {
   });
 
   return cleanedSections.join("\n\n").trim();
+}
+
+function normalizeFollowUpComment(comment: string | null | undefined) {
+  return (comment ?? "").trim();
+}
+
+function mergeApprovalDecisions(
+  baseDecisions: ApprovalDecision[],
+  overlayDecisions: ApprovalDecision[],
+) {
+  const merged = new Map<string, ApprovalDecision>();
+
+  for (const decision of baseDecisions) {
+    merged.set(decision.id, decision);
+  }
+
+  for (const decision of overlayDecisions) {
+    const hasMatchingDecision = Array.from(merged.values()).some(
+      (candidate) =>
+        candidate.workflowStepId === decision.workflowStepId &&
+        candidate.decision === decision.decision &&
+        normalizeFollowUpComment(candidate.comment) ===
+          normalizeFollowUpComment(decision.comment),
+    );
+
+    if (!hasMatchingDecision) {
+      merged.set(decision.id, decision);
+    }
+  }
+
+  return Array.from(merged.values()).sort((left, right) =>
+    left.createdAt.localeCompare(right.createdAt),
+  );
+}
+
+function pruneResolvedOptimisticFollowUps(
+  optimisticDecisions: ApprovalDecision[],
+  persistedDecisions: ApprovalDecision[],
+  outputs: WorkflowOutputRecord[],
+) {
+  return optimisticDecisions.filter((decision) => {
+    const hasPersistedMatch = persistedDecisions.some(
+      (candidate) =>
+        candidate.workflowStepId === decision.workflowStepId &&
+        candidate.decision === decision.decision &&
+        normalizeFollowUpComment(candidate.comment) ===
+          normalizeFollowUpComment(decision.comment),
+    );
+    if (hasPersistedMatch) {
+      return false;
+    }
+
+    const hasNewerOutput = outputs.some(
+      (output) =>
+        output.workflowStepId === decision.workflowStepId &&
+        output.createdAt >= decision.createdAt,
+    );
+
+    return !hasNewerOutput;
+  });
 }
 
 function CollapsibleSection({
@@ -426,6 +488,9 @@ function WorkflowRunDetailPage() {
   const [togglingYolo, setTogglingYolo] = useState(false);
   const [processingAction, setProcessingAction] = useState(false);
   const [runPromptText, setRunPromptText] = useState<string | null>(null);
+  const [optimisticFollowUps, setOptimisticFollowUps] = useState<
+    ApprovalDecision[]
+  >([]);
 
   const processDetailData = async (data: any) => {
     if (!data) return null;
@@ -502,12 +567,26 @@ function WorkflowRunDetailPage() {
               steps: processed.steps ?? [],
             })
           : [];
+        const logBackedDecisions = buildFallbackApprovalDecisionsFromLogs(
+          engineLogs,
+        );
+        const mergedApprovalDecisions = mergeApprovalDecisions(
+          ((processed?.approvalDecisions ?? []) as ApprovalDecision[]) ?? [],
+          logBackedDecisions,
+        );
         const mergedOutputs = processed
           ? mergeWorkflowOutputs(
               (processed.outputs ?? []) as WorkflowOutputRecord[],
               logBackedOutputs,
             )
           : [];
+        setOptimisticFollowUps((previous) =>
+          pruneResolvedOptimisticFollowUps(
+            previous,
+            mergedApprovalDecisions,
+            mergedOutputs,
+          ),
+        );
         setDetail(
           processed
             ? {
@@ -516,6 +595,7 @@ function WorkflowRunDetailPage() {
                 logs: engineDetail?.logs ?? [],
                 sessions: engineDetail?.sessions ?? processed.sessions ?? [],
                 artifactRuns: stepArtifactRuns,
+                approvalDecisions: mergedApprovalDecisions,
                 runPromptText: resolvedRunPromptText,
               }
             : processed,
@@ -637,6 +717,15 @@ function WorkflowRunDetailPage() {
     );
   }, [detail?.approvals]);
 
+  const timelineApprovalDecisions = useMemo(
+    () =>
+      mergeApprovalDecisions(
+        ((detail?.approvalDecisions ?? []) as ApprovalDecision[]) ?? [],
+        optimisticFollowUps,
+      ),
+    [detail?.approvalDecisions, optimisticFollowUps],
+  );
+
   const handleDecision = async (
     stepId: string,
     decision: "approved" | "changes_requested" | "rejected",
@@ -652,10 +741,22 @@ function WorkflowRunDetailPage() {
       followUpComment.length > 0 &&
       detail;
     const previousDetail = detail;
+    const createdAt = new Date().toISOString();
+    const optimisticDecision: ApprovalDecision = {
+      id: `optimistic-follow-up-${stepId}-${createdAt}`,
+      approvalId: `approval_${stepId}`,
+      workflowRunId: detail.run.id,
+      workflowStepId: stepId,
+      aiOutputId: null,
+      decision: "changes_requested",
+      reviewerId: null,
+      comment: followUpComment,
+      createdAt,
+    };
     let submitted = false;
     try {
       if (canOptimisticallyContinue) {
-        const createdAt = new Date().toISOString();
+        setOptimisticFollowUps((current) => [...current, optimisticDecision]);
         setDetail(
           applyOptimisticWorkflowFollowUp(
             detail,
@@ -708,6 +809,9 @@ function WorkflowRunDetailPage() {
     } catch (err: any) {
       if (!submitted && canOptimisticallyContinue) {
         setDetail(previousDetail);
+        setOptimisticFollowUps((current) =>
+          current.filter((candidate) => candidate.id !== optimisticDecision.id),
+        );
         setDecisionComment(followUpComment);
       }
       if (submitted) {
@@ -907,7 +1011,7 @@ function WorkflowRunDetailPage() {
               ((detail.artifactRuns ?? []) as ArtifactRun[]).find(
                 (artifactRun) => artifactRun.workflowRunStepId === step.id,
               ) ?? null;
-            const decisions = ((detail.approvalDecisions ?? []).filter(
+            const decisions = (timelineApprovalDecisions.filter(
               (d: any) => d.workflowStepId === step.id,
             ) as any[]).sort((left, right) =>
               left.createdAt.localeCompare(right.createdAt),

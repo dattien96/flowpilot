@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { buildFallbackOutputsFromLogs, extractBeginPromptFromLogs } from "./workflow-run-log-fallback";
+import {
+  buildFallbackApprovalDecisionsFromLogs,
+  buildFallbackOutputsFromLogs,
+  extractBeginPromptFromLogs,
+} from "./workflow-run-log-fallback";
 
 describe("workflow-run-log-fallback", () => {
   it("extracts the begin prompt from workflow logs", () => {
@@ -153,5 +157,31 @@ describe("workflow-run-log-fallback", () => {
     expect(outputs[0].contentMarkdown).toBe("first response");
     expect(outputs[1].id).toBe("artifact-2");
     expect(outputs[1].contentMarkdown).toBe("latest response only");
+  });
+
+  it("extracts follow-up approval decisions from workflow logs", () => {
+    const decisions = buildFallbackApprovalDecisionsFromLogs([
+      {
+        workflowRunStepId: "step-1",
+        logLevel: "info",
+        message:
+          'approval_decision:{"id":"decision-1","approvalId":"approval-step-1","workflowRunId":"run-1","workflowStepId":"step-1","aiOutputId":null,"decision":"changes_requested","reviewerId":null,"comment":"Tighten the scope.","createdAt":"2026-05-27T15:03:00.000Z"}',
+        createdAt: "2026-05-27T15:03:00.000Z",
+      },
+    ]);
+
+    expect(decisions).toEqual([
+      {
+        id: "decision-1",
+        approvalId: "approval-step-1",
+        workflowRunId: "run-1",
+        workflowStepId: "step-1",
+        aiOutputId: null,
+        decision: "changes_requested",
+        reviewerId: null,
+        comment: "Tighten the scope.",
+        createdAt: "2026-05-27T15:03:00.000Z",
+      },
+    ]);
   });
 });

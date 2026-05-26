@@ -1,7 +1,9 @@
+import type { ApprovalDecision } from "@/domain/model/entity/workflow";
 import type { WorkflowOutputRecord } from "@/features/workflow-engine/workflow-run-detail-timeline";
 
 const BEGIN_PROMPT_PREFIX = "Begin prompt:";
 const AI_OUTPUT_PREFIX = "ai_output:";
+const APPROVAL_DECISION_PREFIX = "approval_decision:";
 
 type WorkflowRunLogLike = {
   workflowRunStepId: string;
@@ -42,6 +44,59 @@ export function extractBeginPromptFromLogs(logs: WorkflowRunLogLike[]) {
   }
 
   return null;
+}
+
+function extractApprovalDecisionPayload(message: string) {
+  const normalizedMessage = normalize(message);
+  if (!normalizedMessage.startsWith(APPROVAL_DECISION_PREFIX)) {
+    return null;
+  }
+
+  return normalizedMessage.slice(APPROVAL_DECISION_PREFIX.length).trimStart();
+}
+
+export function buildFallbackApprovalDecisionsFromLogs(
+  logs: WorkflowRunLogLike[],
+): ApprovalDecision[] {
+  const merged = new Map<string, ApprovalDecision>();
+
+  for (const log of logs) {
+    const payload = extractApprovalDecisionPayload(log.message);
+    if (!payload) {
+      continue;
+    }
+
+    try {
+      const parsed = JSON.parse(payload) as Partial<ApprovalDecision>;
+      const id = normalize(parsed.id);
+      const workflowRunId = normalize(parsed.workflowRunId);
+      const workflowStepId = normalize(parsed.workflowStepId);
+      const decision = normalize(parsed.decision) as ApprovalDecision["decision"];
+      const createdAt = normalize(parsed.createdAt);
+
+      if (!id || !workflowRunId || !workflowStepId || !decision || !createdAt) {
+        continue;
+      }
+
+      merged.set(id, {
+        id,
+        approvalId: normalize(parsed.approvalId) || `approval_${workflowStepId}`,
+        workflowRunId,
+        workflowStepId,
+        aiOutputId: parsed.aiOutputId ?? null,
+        decision,
+        reviewerId: parsed.reviewerId ?? null,
+        comment: parsed.comment ?? null,
+        createdAt,
+      });
+    } catch {
+      continue;
+    }
+  }
+
+  return Array.from(merged.values()).sort((left, right) =>
+    left.createdAt.localeCompare(right.createdAt),
+  );
 }
 
 function extractRenderableStepOutput(log: WorkflowRunLogLike) {
