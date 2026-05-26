@@ -16,6 +16,7 @@ import { Badge } from "@/presentation/components/ui/badge";
 import { WorkflowTimeline } from "@/presentation/components/workflow-runs/workflow-timeline";
 import { createGatewayBundle } from "@/data/repository/browser-factory";
 import { GetWorkflowRunDetailUseCase } from "@/domain/usecase/workflow-runs/get-workflow-run-detail-usecase";
+import { GetWorkflowRunDetailUseCase as GetWorkflowEngineRunDetailUseCase } from "@/domain/usecase/workflow-engine/get-workflow-run-detail-usecase";
 import { SubmitStepApprovalDecisionUseCase } from "@/domain/usecase/workflow-engine/submit-step-approval-decision-usecase";
 import { createSupabaseBrowserClient } from "@/data/datasource/supabase/client";
 import { applyOptimisticWorkflowFollowUp } from "@/features/workflow-engine/workflow-run-detail-optimistic";
@@ -254,14 +255,23 @@ const ArtifactContentViewer = ({ content, gateway }: { content: string, gateway:
 };
 
 export const Route = createFileRoute("/_authenticated/workflow-runs/$runId")({
+  validateSearch: (search: Record<string, unknown>) => ({
+    logView: search.logView === "session" ? "session" : undefined,
+  }),
   component: WorkflowRunDetailPage,
 });
 
 function WorkflowRunDetailPage() {
   const { runId } = Route.useParams();
+  const { logView } = Route.useSearch();
   const gatewayBundle = useRef(createGatewayBundle());
   const getWorkflowRunDetailUseCase = useRef(
     new GetWorkflowRunDetailUseCase(gatewayBundle.current.workflowGateway),
+  );
+  const getWorkflowEngineRunDetailUseCase = useRef(
+    new GetWorkflowEngineRunDetailUseCase(
+      gatewayBundle.current.workflowEngineGateway,
+    ),
   );
   const submitStepApprovalDecisionUseCase = useRef(
     new SubmitStepApprovalDecisionUseCase(
@@ -321,16 +331,29 @@ function WorkflowRunDetailPage() {
   const loadData = async () => {
     if (!runId) return;
     try {
-      const [data, promptText] = await Promise.all([
+      const [data, promptText, engineDetailRaw] = await Promise.all([
         getWorkflowRunDetailUseCase.current.execute(runId),
         loadWorkflowRunPromptText(
           gatewayBundle.current.localRunnerGateway,
           runId,
         ),
+        getWorkflowEngineRunDetailUseCase.current.execute(runId),
       ]);
+      const engineDetail = engineDetailRaw as
+        | { logs: any[]; sessions?: any[] | null }
+        | null;
       if (data) {
         const processed = await processDetailData(data);
-        setDetail(processed ? { ...processed, runPromptText: promptText } : processed);
+        setDetail(
+          processed
+            ? {
+                ...processed,
+                logs: engineDetail?.logs ?? [],
+                sessions: engineDetail?.sessions ?? processed.sessions ?? [],
+                runPromptText: promptText,
+              }
+            : processed,
+        );
         setRunPromptText(promptText);
       }
     } catch (err: any) {
@@ -417,6 +440,24 @@ function WorkflowRunDetailPage() {
     if (!detail?.outputs) return new Map();
     return groupOutputsByStep(detail.outputs as WorkflowOutputRecord[]);
   }, [detail?.outputs]);
+
+  const allLogs = useMemo(
+    () => (Array.isArray(detail?.logs) ? detail.logs : []),
+    [detail?.logs],
+  );
+
+  const sessionEventLogs = useMemo(
+    () =>
+      allLogs.filter(
+        (log: any) =>
+          typeof log?.message === "string" &&
+          log.message.startsWith("session_event:"),
+      ),
+    [allLogs],
+  );
+
+  const visibleLogs = logView === "session" ? sessionEventLogs : allLogs;
+  const isSessionLogView = logView === "session";
 
   const runTitle = useMemo(
     () => summarizeRunPrompt(runPromptText),
@@ -743,6 +784,14 @@ function WorkflowRunDetailPage() {
                               <span className={`font-semibold ${stepSession.status === "active" ? "text-success" : "text-muted-foreground"}`}>
                                 {stepSession.status}
                               </span>
+                              {stepSession.providerSessionId ? (
+                                <>
+                                  <span>&bull;</span>
+                                  <span className="font-mono text-[10px] text-foreground/80">
+                                    {stepSession.providerSessionId}
+                                  </span>
+                                </>
+                              ) : null}
                             </p>
                           )}
                         </div>
@@ -798,6 +847,14 @@ function WorkflowRunDetailPage() {
                                   <span className={`font-semibold ${stepSession.status === "active" ? "text-success" : "text-muted-foreground"}`}>
                                     {stepSession.status}
                                   </span>
+                                  {stepSession.providerSessionId ? (
+                                    <>
+                                      <span>&bull;</span>
+                                      <span className="font-mono text-[10px] text-foreground/80">
+                                        {stepSession.providerSessionId}
+                                      </span>
+                                    </>
+                                  ) : null}
                                 </p>
                               )}
                             </div>
@@ -838,6 +895,93 @@ function WorkflowRunDetailPage() {
               </div>
             );
           })}
+
+          <section className="max-w-4xl mx-auto">
+            <CollapsibleSection
+              title="Run Logs"
+              subtitle="Use the filter to isolate runner session lifecycle events while testing provider reuse and restart recovery."
+              defaultOpen={false}
+            >
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div className="flex flex-wrap gap-2">
+                  <Link
+                    to="/workflow-runs/$runId"
+                    params={{ runId }}
+                    search={{ logView: undefined }}
+                    className={`rounded-full border px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] transition-colors ${
+                      !isSessionLogView
+                        ? "border-accent bg-accent/10 text-accent"
+                        : "border-border bg-card text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    All logs
+                    <span className="ml-2 text-[10px] font-bold normal-case tracking-normal opacity-70">
+                      {allLogs.length}
+                    </span>
+                  </Link>
+                  <Link
+                    to="/workflow-runs/$runId"
+                    params={{ runId }}
+                    search={{ logView: "session" }}
+                    className={`rounded-full border px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] transition-colors ${
+                      isSessionLogView
+                        ? "border-accent bg-accent/10 text-accent"
+                        : "border-border bg-card text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    Session events
+                    <span className="ml-2 text-[10px] font-bold normal-case tracking-normal opacity-70">
+                      {sessionEventLogs.length}
+                    </span>
+                  </Link>
+                </div>
+              </div>
+
+              <div className="mt-4 space-y-3">
+                {visibleLogs.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    {isSessionLogView
+                      ? "No session_event logs yet."
+                      : "No logs yet."}
+                  </p>
+                ) : (
+                  visibleLogs.map((log: any) => {
+                    const isSessionEvent =
+                      typeof log?.message === "string" &&
+                      log.message.startsWith("session_event:");
+                    return (
+                      <div
+                        key={log.id}
+                        className="rounded-2xl border border-border bg-card p-4 text-sm"
+                      >
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="space-y-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="font-semibold">
+                                {isSessionEvent ? "session_event" : log.logLevel}
+                              </p>
+                              <Badge>
+                                {isSessionEvent ? "session" : log.logLevel}
+                              </Badge>
+                            </div>
+                            <p className="font-mono text-[11px] text-muted-foreground">
+                              {new Date(log.createdAt).toLocaleString()}
+                            </p>
+                          </div>
+                          <p className="break-all font-mono text-[11px] text-muted-foreground">
+                            {log.workflowRunStepId}
+                          </p>
+                        </div>
+                        <pre className="mt-3 whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-foreground">
+                          {log.message}
+                        </pre>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </CollapsibleSection>
+          </section>
 
           {/* 3. Follow-up Chat Input */}
           {(() => {

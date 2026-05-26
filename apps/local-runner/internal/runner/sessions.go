@@ -63,6 +63,92 @@ func readJsonRpcMessage(scanner *bufio.Scanner) (map[string]interface{}, error) 
 	return msg, nil
 }
 
+func readJsonRpcResponse(scanner *bufio.Scanner, expectedID interface{}) (map[string]interface{}, error) {
+	for {
+		msg, err := readJsonRpcMessage(scanner)
+		if err != nil {
+			return nil, err
+		}
+
+		if expectedID == nil {
+			return msg, nil
+		}
+
+		if msgID, ok := msg["id"]; ok && jsonRpcIDsEqual(msgID, expectedID) {
+			return msg, nil
+		}
+	}
+}
+
+func jsonRpcIDsEqual(left interface{}, right interface{}) bool {
+	switch leftValue := left.(type) {
+	case float64:
+		switch rightValue := right.(type) {
+		case int:
+			return leftValue == float64(rightValue)
+		case int64:
+			return leftValue == float64(rightValue)
+		case float64:
+			return leftValue == rightValue
+		}
+	case int:
+		switch rightValue := right.(type) {
+		case int:
+			return leftValue == rightValue
+		case int64:
+			return int64(leftValue) == rightValue
+		case float64:
+			return float64(leftValue) == rightValue
+		}
+	case int64:
+		switch rightValue := right.(type) {
+		case int:
+			return leftValue == int64(rightValue)
+		case int64:
+			return leftValue == rightValue
+		case float64:
+			return float64(leftValue) == rightValue
+		}
+	case string:
+		if rightValue, ok := right.(string); ok {
+			return leftValue == rightValue
+		}
+	}
+
+	return false
+}
+
+func extractCodexMcpResponse(result map[string]interface{}) (string, string) {
+	threadID := ""
+	if value, ok := result["threadId"].(string); ok {
+		threadID = value
+	}
+
+	output := ""
+	if content, ok := result["content"].([]interface{}); ok && len(content) > 0 {
+		if first, ok := content[0].(map[string]interface{}); ok {
+			if text, ok := first["text"].(string); ok {
+				output = text
+			}
+		}
+	}
+
+	if structuredContent, ok := result["structuredContent"].(map[string]interface{}); ok {
+		if threadID == "" {
+			if value, ok := structuredContent["threadId"].(string); ok {
+				threadID = value
+			}
+		}
+		if output == "" {
+			if text, ok := structuredContent["content"].(string); ok {
+				output = text
+			}
+		}
+	}
+
+	return threadID, output
+}
+
 func resolveBinaryAndArgs(provider string, model string, reasoningEffort string) (string, []string, string) {
 	switch provider {
 	case "codex":
@@ -134,6 +220,9 @@ func (r *Runner) StartSession(ctx context.Context, req AiSessionStartRequest) (A
 	}
 
 	stdoutScanner := bufio.NewScanner(stdout)
+	// Buffer allocation allowing up to 10 MB responses
+	buf := make([]byte, 64*1024)
+	stdoutScanner.Buffer(buf, 10*1024*1024)
 	processKey := newRunID()
 
 	session := &LiveSession{
@@ -164,7 +253,7 @@ func (r *Runner) StartSession(ctx context.Context, req AiSessionStartRequest) (A
 			cmd.Process.Kill()
 			return AiSessionHandle{}, fmt.Errorf("failed to write initialize request: %w", err)
 		}
-		resp, err := readJsonRpcMessage(stdoutScanner)
+		resp, err := readJsonRpcResponse(stdoutScanner, 1)
 		if err != nil {
 			cmd.Process.Kill()
 			return AiSessionHandle{}, fmt.Errorf("failed to read initialize response: %w", err)
@@ -186,7 +275,7 @@ func (r *Runner) StartSession(ctx context.Context, req AiSessionStartRequest) (A
 			cmd.Process.Kill()
 			return AiSessionHandle{}, fmt.Errorf("failed to write ACP initialize request: %w", err)
 		}
-		_, err := readJsonRpcMessage(stdoutScanner)
+		_, err := readJsonRpcResponse(stdoutScanner, 1)
 		if err != nil {
 			cmd.Process.Kill()
 			return AiSessionHandle{}, fmt.Errorf("failed to read ACP initialize response: %w", err)
@@ -195,7 +284,7 @@ func (r *Runner) StartSession(ctx context.Context, req AiSessionStartRequest) (A
 			cmd.Process.Kill()
 			return AiSessionHandle{}, fmt.Errorf("failed to write session/new request: %w", err)
 		}
-		resp, err := readJsonRpcMessage(stdoutScanner)
+		resp, err := readJsonRpcResponse(stdoutScanner, 2)
 		if err != nil {
 			cmd.Process.Kill()
 			return AiSessionHandle{}, fmt.Errorf("failed to read session/new response: %w", err)
@@ -223,6 +312,10 @@ func (r *Runner) StartSession(ctx context.Context, req AiSessionStartRequest) (A
 }
 
 func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (PromptExecutionResult, error) {
+	if req.Session.ProcessKey == nil {
+		return PromptExecutionResult{}, fmt.Errorf("session process key is required")
+	}
+
 	r.sessionsMu.Lock()
 	session, exists := r.sessions[*req.Session.ProcessKey]
 	r.sessionsMu.Unlock()
@@ -253,20 +346,15 @@ func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (
 		if err := writeJsonRpcRequest(session.Stdin, "tools/call", params, 3); err != nil {
 			return PromptExecutionResult{}, fmt.Errorf("failed to send MCP tool call: %w", err)
 		}
-		resp, err := readJsonRpcMessage(session.StdoutScanner)
+		resp, err := readJsonRpcResponse(session.StdoutScanner, 3)
 		if err != nil {
 			return PromptExecutionResult{}, fmt.Errorf("failed to read MCP tool response: %w", err)
 		}
 		if result, ok := resp["result"].(map[string]interface{}); ok {
-			if content, ok := result["content"].([]interface{}); ok && len(content) > 0 {
-				if first, ok := content[0].(map[string]interface{}); ok {
-					if text, ok := first["text"].(string); ok {
-						outputMarkdown = text
-					}
-				}
-			}
-			if threadId, ok := result["threadId"].(string); ok {
-				session.ProviderSessionID = threadId
+			threadID, output := extractCodexMcpResponse(result)
+			outputMarkdown = output
+			if threadID != "" {
+				session.ProviderSessionID = threadID
 			}
 		}
 	} else if session.TransportType == "gemini_acp" {
@@ -277,7 +365,7 @@ func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (
 		if err := writeJsonRpcRequest(session.Stdin, "session/prompt", params, 3); err != nil {
 			return PromptExecutionResult{}, fmt.Errorf("failed to send Gemini ACP prompt: %w", err)
 		}
-		resp, err := readJsonRpcMessage(session.StdoutScanner)
+		resp, err := readJsonRpcResponse(session.StdoutScanner, 3)
 		if err != nil {
 			return PromptExecutionResult{}, fmt.Errorf("failed to read Gemini ACP response: %w", err)
 		}
@@ -297,7 +385,7 @@ func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (
 		if _, err := session.Stdin.Write(append(data, '\n')); err != nil {
 			return PromptExecutionResult{}, fmt.Errorf("failed to write Claude stream JSON: %w", err)
 		}
-		resp, err := readJsonRpcMessage(session.StdoutScanner)
+		resp, err := readJsonRpcResponse(session.StdoutScanner, nil)
 		if err != nil {
 			return PromptExecutionResult{}, fmt.Errorf("failed to read Claude stream response: %w", err)
 		}
@@ -316,14 +404,15 @@ func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (
 	completedAt := time.Now().UTC()
 
 	return PromptExecutionResult{
-		Status:         "success",
-		RunID:          newRunID(),
-		ProviderKey:    session.Provider,
-		ModelName:      &session.Model,
-		Command:        session.Provider + " session message",
-		OutputMarkdown: outputMarkdown,
-		StartedAt:      startedAt.Format(time.RFC3339Nano),
-		CompletedAt:    completedAt.Format(time.RFC3339Nano),
+		Status:            "success",
+		RunID:             newRunID(),
+		ProviderKey:       session.Provider,
+		ModelName:         &session.Model,
+		ProviderSessionID: session.ProviderSessionID,
+		Command:           session.Provider + " session message",
+		OutputMarkdown:    outputMarkdown,
+		StartedAt:         startedAt.Format(time.RFC3339Nano),
+		CompletedAt:       completedAt.Format(time.RFC3339Nano),
 	}, nil
 }
 

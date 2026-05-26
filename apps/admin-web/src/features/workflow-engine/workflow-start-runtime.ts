@@ -126,23 +126,75 @@ async function getOrCreateSession({
   let sessionRow = null;
 
   if (!subagent) {
-    const { data } = await adminClient
+    const { data, error } = await adminClient
       .from("workflow_run_sessions")
       .select("*")
       .eq("workflow_run_id", workflowRunId)
       .eq("status", "active")
       .filter("metadata_json->>is_main", "eq", "true")
       .maybeSingle();
+    if (error) {
+      throw new Error(`Failed to query main session: ${error.message}`);
+    }
     sessionRow = data;
   } else {
-    const { data } = await adminClient
+    const { data, error } = await adminClient
       .from("workflow_run_sessions")
       .select("*")
       .eq("workflow_run_id", workflowRunId)
       .eq("status", "active")
       .filter("metadata_json->>step_run_id", "eq", stepRunId)
       .maybeSingle();
+    if (error) {
+      throw new Error(`Failed to query isolated session: ${error.message}`);
+    }
     sessionRow = data;
+  }
+
+  if (sessionRow) {
+    // If the provider or model doesn't match, we must close this session and start a new one.
+    if (sessionRow.provider !== providerKey || sessionRow.model !== modelName) {
+      await writeWorkflowSessionLog({
+        adminClient,
+        workflowRunStepId: stepRunId,
+        logLevel: "warn",
+        event: "session_replaced",
+        details: {
+          workflowRunId,
+          stepRunId,
+          sessionKind: subagent ? "subagent" : "main",
+          provider: sessionRow.provider,
+          model: sessionRow.model,
+          requestedProvider: providerKey,
+          requestedModel: modelName,
+          providerSessionId: sessionRow.provider_session_id,
+          processKey: sessionRow.process_key,
+          reason: "provider_or_model_mismatch",
+        },
+      });
+      if (sessionRow.process_key) {
+        try {
+          await localRunnerGateway.closeSession({
+            transportType: sessionRow.transport_type,
+            providerSessionId: sessionRow.provider_session_id,
+            processKey: sessionRow.process_key,
+          });
+        } catch (closeErr) {
+          console.error(`Failed to close incompatible session ${sessionRow.process_key}:`, closeErr);
+        }
+      }
+      const { error: updateErr } = await adminClient
+        .from("workflow_run_sessions")
+        .update({
+          status: "completed",
+          completed_at: new Date().toISOString(),
+        })
+        .eq("id", sessionRow.id);
+      if (updateErr) {
+        throw new Error(`Failed to mark incompatible session as completed: ${updateErr.message}`);
+      }
+      sessionRow = null;
+    }
   }
 
   let handle: { transportType: string; providerSessionId: string; processKey: string | null } | null = null;
@@ -153,6 +205,22 @@ async function getOrCreateSession({
       providerSessionId: sessionRow.provider_session_id,
       processKey: sessionRow.process_key,
     };
+    await writeWorkflowSessionLog({
+      adminClient,
+      workflowRunStepId: stepRunId,
+      logLevel: "info",
+      event: "session_reused",
+      details: {
+        workflowRunId,
+        stepRunId,
+        sessionKind: subagent ? "subagent" : "main",
+        provider: providerKey,
+        model: modelName,
+        transportType: sessionRow.transport_type,
+        providerSessionId: sessionRow.provider_session_id,
+        processKey: sessionRow.process_key,
+      },
+    });
   }
 
   if (!handle) {
@@ -168,7 +236,7 @@ async function getOrCreateSession({
     handle = startResult;
 
     if (sessionRow) {
-      await adminClient
+      const { error: updateErr } = await adminClient
         .from("workflow_run_sessions")
         .update({
           process_key: handle.processKey,
@@ -178,6 +246,9 @@ async function getOrCreateSession({
           model: modelName,
         })
         .eq("id", sessionRow.id);
+      if (updateErr) {
+        throw new Error(`Failed to update session in DB: ${updateErr.message}`);
+      }
     } else {
       const metadata = !subagent ? { is_main: true } : { step_run_id: stepRunId };
       const { data: newRow, error: newRowErr } = await adminClient
@@ -198,10 +269,218 @@ async function getOrCreateSession({
         throw new Error(`Failed to save session to DB: ${newRowErr.message}`);
       }
     }
+
+    await writeWorkflowSessionLog({
+      adminClient,
+      workflowRunStepId: stepRunId,
+      logLevel: "info",
+      event: "session_created",
+      details: {
+        workflowRunId,
+        stepRunId,
+        sessionKind: subagent ? "subagent" : "main",
+        provider: providerKey,
+        model: modelName,
+        transportType: handle.transportType,
+        providerSessionId: handle.providerSessionId,
+        processKey: handle.processKey,
+      },
+    });
   }
 
   return handle;
 }
+
+type WorkflowSessionHandle = {
+  transportType: string;
+  providerSessionId: string;
+  processKey: string | null;
+};
+
+async function updateWorkflowRunSessionByScope({
+  adminClient,
+  workflowRunId,
+  stepRunId,
+  subagent,
+  updates,
+}: {
+  adminClient: SupabaseClient;
+  workflowRunId: string;
+  stepRunId: string;
+  subagent: string | null;
+  updates: Record<string, unknown>;
+}) {
+  let query = adminClient.from("workflow_run_sessions").update(updates).eq("workflow_run_id", workflowRunId);
+  if (!subagent) {
+    query = query.filter("metadata_json->>is_main", "eq", "true");
+  } else {
+    query = query.filter("metadata_json->>step_run_id", "eq", stepRunId);
+  }
+
+  const { error } = await query;
+  if (error) {
+    throw new Error(`Failed to update workflow session state: ${error.message}`);
+  }
+}
+
+export async function syncWorkflowRunSessionProviderSessionId({
+  adminClient,
+  workflowRunId,
+  stepRunId,
+  subagent,
+  providerKey,
+  modelName,
+  handle,
+  providerSessionId,
+}: {
+  adminClient: SupabaseClient;
+  workflowRunId: string;
+  stepRunId: string;
+  subagent: string | null;
+  providerKey: string;
+  modelName: string;
+  handle: WorkflowSessionHandle;
+  providerSessionId: string | null | undefined;
+}) {
+  const nextProviderSessionId =
+    providerSessionId && providerSessionId.trim().length > 0
+      ? providerSessionId
+      : handle.providerSessionId;
+
+  try {
+    await updateWorkflowRunSessionByScope({
+      adminClient,
+      workflowRunId,
+      stepRunId,
+      subagent,
+      updates: {
+        provider: providerKey,
+        model: modelName,
+        transport_type: handle.transportType,
+        provider_session_id: nextProviderSessionId,
+        process_key: handle.processKey,
+        status: "active",
+      },
+    });
+  } catch (error) {
+    console.error("Failed to persist provider session id for workflow session:", error);
+  }
+}
+
+export async function deactivateWorkflowRunSession({
+  adminClient,
+  workflowRunId,
+  stepRunId,
+  subagent,
+  localRunnerGateway,
+  handle,
+}: {
+  adminClient: SupabaseClient;
+  workflowRunId: string;
+  stepRunId: string;
+  subagent: string | null;
+  localRunnerGateway: LocalRunnerGateway;
+  handle: WorkflowSessionHandle | null;
+}) {
+  if (handle?.processKey) {
+    try {
+      await localRunnerGateway.closeSession({
+        transportType: handle.transportType,
+        providerSessionId: handle.providerSessionId,
+        processKey: handle.processKey,
+      });
+    } catch (closeErr) {
+      console.error(`Failed to close workflow session ${handle.processKey}:`, closeErr);
+    }
+  }
+
+  await updateWorkflowRunSessionByScope({
+    adminClient,
+    workflowRunId,
+    stepRunId,
+    subagent,
+    updates: {
+      status: "completed",
+      completed_at: new Date().toISOString(),
+      process_key: null,
+    },
+  });
+
+  await writeWorkflowSessionLog({
+    adminClient,
+    workflowRunStepId: stepRunId,
+    logLevel: "info",
+    event: "session_completed",
+    details: {
+      workflowRunId,
+      stepRunId,
+      sessionKind: subagent ? "subagent" : "main",
+      providerSessionId: handle?.providerSessionId ?? null,
+      processKey: handle?.processKey ?? null,
+    },
+  });
+}
+
+export async function finalizeWorkflowRunSessions(
+  adminClient: SupabaseClient,
+  localRunnerGateway: LocalRunnerGateway,
+  workflowRunId: string,
+  options?: {
+    preserveMainSession?: boolean;
+  },
+) {
+  try {
+    const { data: sessions, error } = await adminClient
+      .from("workflow_run_sessions")
+      .select("*")
+      .eq("workflow_run_id", workflowRunId)
+      .eq("status", "active");
+
+    if (error) {
+      console.error(`Failed to fetch active sessions for cleanup: ${error.message}`);
+      return;
+    }
+
+    if (!sessions || sessions.length === 0) {
+      return;
+    }
+
+    for (const sessionRow of sessions) {
+      const isMainSession =
+        sessionRow.metadata_json?.is_main === true ||
+        sessionRow.metadata_json?.is_main === "true";
+      if (options?.preserveMainSession && isMainSession) {
+        continue;
+      }
+
+      if (sessionRow.process_key) {
+        try {
+          await localRunnerGateway.closeSession({
+            transportType: sessionRow.transport_type,
+            providerSessionId: sessionRow.provider_session_id,
+            processKey: sessionRow.process_key,
+          });
+        } catch (closeErr) {
+          console.error(`Failed to close session ${sessionRow.process_key} in runner:`, closeErr);
+        }
+      }
+
+      const { error: updateErr } = await adminClient
+        .from("workflow_run_sessions")
+        .update({
+          status: "completed",
+          completed_at: new Date().toISOString(),
+        })
+        .eq("id", sessionRow.id);
+      if (updateErr) {
+        console.error(`Failed to update session status to completed: ${updateErr.message}`);
+      }
+    }
+  } catch (err) {
+    console.error("Error finalizing workflow run sessions:", err);
+  }
+}
+
 
 async function sendMessageWithRetry({
   adminClient,
@@ -228,8 +507,9 @@ async function sendMessageWithRetry({
   prompt: string;
   skillIds: string[];
 }) {
+  let handle: WorkflowSessionHandle | null = null;
   try {
-    let handle = await getOrCreateSession({
+    handle = await getOrCreateSession({
       adminClient,
       localRunnerGateway,
       workflowRunId,
@@ -248,24 +528,59 @@ async function sendMessageWithRetry({
         skillIds,
         contextSourceIds: [],
       });
+      await syncWorkflowRunSessionProviderSessionId({
+        adminClient,
+        workflowRunId,
+        stepRunId,
+        subagent,
+        providerKey,
+        modelName,
+        handle,
+        providerSessionId: result.providerSessionId ?? null,
+      });
+      await writeWorkflowSessionLog({
+        adminClient,
+        workflowRunStepId: stepRunId,
+        logLevel: "info",
+        event: "session_message_sent",
+        details: {
+          workflowRunId,
+          stepRunId,
+          sessionKind: subagent ? "subagent" : "main",
+          provider: providerKey,
+          model: modelName,
+          providerSessionId: result.providerSessionId ?? handle.providerSessionId,
+          processKey: handle.processKey,
+        },
+      });
       return result;
     } catch (error) {
-      const isSessionDead = error instanceof Error && 
+      const isSessionDead = error instanceof Error &&
         (error.message.includes("session") || error.message.includes("not found") || error.message.includes("expired"));
       if (isSessionDead) {
-        if (!subagent) {
-          await adminClient
-            .from("workflow_run_sessions")
-            .update({ process_key: null })
-            .eq("workflow_run_id", workflowRunId)
-            .filter("metadata_json->>is_main", "eq", "true");
-        } else {
-          await adminClient
-            .from("workflow_run_sessions")
-            .update({ process_key: null })
-            .eq("workflow_run_id", workflowRunId)
-            .filter("metadata_json->>step_run_id", "eq", stepRunId);
-        }
+        await writeWorkflowSessionLog({
+          adminClient,
+          workflowRunStepId: stepRunId,
+          logLevel: "warn",
+          event: "session_dead",
+          details: {
+            workflowRunId,
+            stepRunId,
+            sessionKind: subagent ? "subagent" : "main",
+            provider: providerKey,
+            model: modelName,
+            providerSessionId: handle?.providerSessionId ?? null,
+            processKey: handle?.processKey ?? null,
+          },
+        });
+        await deactivateWorkflowRunSession({
+          adminClient,
+          workflowRunId,
+          stepRunId,
+          subagent,
+          localRunnerGateway,
+          handle,
+        });
 
         handle = await getOrCreateSession({
           adminClient,
@@ -285,11 +600,57 @@ async function sendMessageWithRetry({
           skillIds,
           contextSourceIds: [],
         });
+        await syncWorkflowRunSessionProviderSessionId({
+          adminClient,
+          workflowRunId,
+          stepRunId,
+          subagent,
+          providerKey,
+          modelName,
+          handle,
+          providerSessionId: result.providerSessionId ?? null,
+        });
+        await writeWorkflowSessionLog({
+          adminClient,
+          workflowRunStepId: stepRunId,
+          logLevel: "info",
+          event: "session_message_sent",
+          details: {
+            workflowRunId,
+            stepRunId,
+            sessionKind: subagent ? "subagent" : "main",
+            provider: providerKey,
+            model: modelName,
+            providerSessionId: result.providerSessionId ?? handle.providerSessionId,
+            processKey: handle.processKey,
+          },
+        });
         return result;
       }
       throw error;
     }
-  } catch (sessError) {
+  } catch {
+    await writeWorkflowSessionLog({
+      adminClient,
+      workflowRunStepId: stepRunId,
+      logLevel: "warn",
+      event: "session_fallback_one_shot",
+      details: {
+        workflowRunId,
+        stepRunId,
+        sessionKind: subagent ? "subagent" : "main",
+        provider: providerKey,
+        model: modelName,
+      },
+    });
+    await deactivateWorkflowRunSession({
+      adminClient,
+      workflowRunId,
+      stepRunId,
+      subagent,
+      localRunnerGateway,
+      handle,
+    });
     const result = await localRunnerGateway.executePrompt({
       providerKey,
       modelName,
@@ -351,6 +712,35 @@ async function insertLog(
 
   if (error) {
     throw new Error(`Unable to write workflow run log: ${error.message}`);
+  }
+}
+
+function buildWorkflowSessionLogMessage(event: string, details: Record<string, unknown>) {
+  return `session_event:${JSON.stringify({ event, ...details })}`;
+}
+
+async function writeWorkflowSessionLog({
+  adminClient,
+  workflowRunStepId,
+  logLevel,
+  event,
+  details,
+}: {
+  adminClient: SupabaseClient;
+  workflowRunStepId: string;
+  logLevel: "info" | "warn" | "error" | "debug";
+  event: string;
+  details: Record<string, unknown>;
+}) {
+  try {
+    await insertLog(
+      adminClient,
+      workflowRunStepId,
+      logLevel,
+      buildWorkflowSessionLogMessage(event, details),
+    );
+  } catch (error) {
+    console.error("Failed to write workflow session log:", error);
   }
 }
 
@@ -1489,6 +1879,13 @@ export async function runWorkflowStartRuntime({
     }
 
     const finishedAt = new Date().toISOString();
+    await finalizeWorkflowRunSessions(
+      adminClient,
+      localRunnerGateway as any,
+      String(runRow.id),
+      { preserveMainSession: true },
+    );
+
     const { data: completedRun, error: completedRunError } = await adminClient
       .from("workflow_runs")
       .update({
@@ -1507,6 +1904,12 @@ export async function runWorkflowStartRuntime({
     return completedRun;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Workflow execution failed.";
+    await finalizeWorkflowRunSessions(
+      adminClient,
+      localRunnerGateway as any,
+      String(runRow.id),
+    );
+
     if (activeStepRunId) {
       await adminClient
         .from("workflow_run_steps")

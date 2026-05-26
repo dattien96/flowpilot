@@ -187,6 +187,7 @@ export interface LocalRunnerPromptExecutionResult {
   runId: string;
   providerKey: string;
   modelName: string | null;
+  providerSessionId?: string | null;
   command: string;
   stdoutSummary: string;
   stderrSummary: string;
