@@ -213,3 +213,38 @@ This keeps the separation clear:
 - artifact definition = reusable contract
 - artifact run = real generated file instance
 - artifact memory = searchable summary/embedding layer
+
+## 10. Context Slot Integration
+
+Artifact runs are the primary source for two context slot resolver types:
+
+### 10.1 Deterministic artifact input (`artifact.required` resolver)
+
+When a step declares an input artifact definition (e.g. `tech_spec_artifact`), the runner resolves the latest approved artifact-run for that definition within the current workflow run. This is deterministic — the step knows exactly which artifact it needs by name.
+
+This is different from semantic search. The step is saying: "I must have the TechSpec document. Fail if it is missing."
+
+### 10.2 Semantic memory retrieval (`semantic.search` resolver)
+
+After an artifact run is created and its file is saved, the system generates a working memory record in `artifact_memories` with a structured summary and a vector embedding.
+
+Later steps can use `semantic.search` context slots to retrieve the most relevant working memory records across past runs via pgvector similarity search. This is dynamic — the step does not know in advance which specific artifact it will retrieve.
+
+### 10.3 Previous step continuity (`step.previous.brief` resolver)
+
+This resolver automatically injects the working memory summary of the immediately preceding step's artifact run. It gives AI continuity without requiring the full artifact content.
+
+### 10.4 The chain
+
+```text
+Step completes
+  → artifact_run created (local file + DB record)
+  → artifact_memory generated (structured summary)
+  → embedding generated and stored in artifact_memories.embedding
+  → available to next steps via context slot resolvers:
+      - artifact.required (by definition key, deterministic)
+      - step.previous.brief (by step position, automatic)
+      - semantic.search (by vector similarity, dynamic)
+```
+
+All three resolvers ultimately draw from artifact runs as their data source. The difference is only in how they select which artifact run to use.

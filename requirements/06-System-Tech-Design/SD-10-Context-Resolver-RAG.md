@@ -145,7 +145,7 @@ Inputs:
 - project ID
 - workflow ID
 - workflow run ID
-- current step definition
+- current step definition (including `context_slots` JSONB and `step_input_artifact_definitions`)
 - current task text
 - user context
 - MCP context
@@ -159,18 +159,102 @@ Output:
 - audit records for `workflow_prompt_context_items`
 
 Selection order:
-- required step context
-- latest approved immediate previous-step artifact
-- pinned user annotations or pinned artifact memories
-- workflow run summary memory
-- top vector search results from `artifact_memories`
+- required step context (skills, prompt_base, step rules)
+- deterministic artifact inputs (`artifact.required` resolver)
+- priority 1 context slots (project.brief, run.input)
+- priority 2 context slots (step.previous.brief, mcp.context)
+- priority 3 context slots (semantic.search, step.{n}.brief)
 - raw excerpts only for selected items that need full detail
 
-## 6. Vector Search
+## 5a. Context Slot Model
 
-The resolver should generate an embedding for the current step query and search `artifact_memories`.
+Context slots are the primary mechanism for flexible, per-step context configuration. A slot is a named resolver — a rule the Go-Runner uses to fetch a specific type of context.
 
-Example RPC shape:
+Slots are stored as rows in the `step_context_slots` table — one row per slot per step definition. The Admin UI exposes them as a configurable list with dropdowns, not as raw JSON editors.
+
+### Supported Resolver Types
+
+| Resolver | Fetch Source | Behavior |
+|---|---|---|
+| `project.brief` | `projects.brief` column | Always available. Short project summary. |
+| `run.input` | Workflow run intake form | The user's original task/feature description. |
+| `step.previous.brief` | Previous step's `artifact_memories.summary` | Automatic continuity. |
+| `step.n.brief` | Step N's `artifact_memories.summary` | Non-adjacent step reference by index. |
+| `artifact.required` | `artifact_runs` lookup by definition key | Deterministic. Fails step if missing. |
+| `semantic.search` | pgvector search over `artifact_memories` | Dynamic. Uses HyperRAG query construction. |
+| `drive.file` | Google Drive or local filesystem | Specific document reference. |
+| `mcp.context` | Live MCP call (Jira, Figma, Firebase, etc.) | Real-time external data. |
+| `static` | Hardcoded string in slot config | Shared prompt rules or fragments. |
+
+### step_context_slots table (see SD-08 §9.1 for full DDL)
+
+Key columns:
+- `resolver` — the resolver type key (dropdown in UI)
+- `priority` — 1 = always, 2 = if budget, 3 = trim first
+- `max_tokens` — soft cap for this slot's content
+- `required` — if true, step fails if resolver returns nothing
+- `order_index` — controls ordering within same priority tier
+- `resolver_config` JSONB — resolver-specific params, set by UI form fields (not hand-edited)
+
+### resolver_config shape per resolver type
+
+| Resolver | resolver_config |
+|---|---|
+| `project.brief` / `run.input` / `step.previous.brief` | `{}` — no extra config needed |
+| `step.n.brief` | `{ "step_index": 2 }` |
+| `artifact.required` | `{ "artifact_key": "tech_spec_artifact" }` |
+| `semantic.search` | `{ "query_template": "...", "top_k": 3, "use_hyperrag": false }` |
+| `drive.file` | `{ "file_path": "docs/arch.md" }` |
+| `mcp.context` | `{ "mcp_provider": "jira" }` |
+| `static` | `{ "content": "Always respond in English." }` |
+
+- `priority`: 1 = always include, 2 = include if budget allows, 3 = trim if budget exceeded.
+- `max_tokens`: soft cap on tokens this slot may contribute.
+- `required`: if true, step fails if resolver returns no result.
+
+## 6. Vector Search & HyperRAG Query Construction
+
+Vector search is triggered by `semantic.search` context slots. Before calling pgvector, the resolver must construct a short, focused query (10–50 tokens). Embedding a long prompt produces a blurry, averaged vector that matches everything and nothing precisely.
+
+### 6.1 Query Construction Strategy
+
+The resolver constructs the search query using the slot's `query_template` with runtime variable substitution:
+
+```text
+Slot config:     "{{step.description}} {{run.feature_name}}"
+Resolved query:  "Design system architecture for Real-time notifications"
+Embedded:        vector(384)
+Search:          artifact_memories WHERE project_id = ? ORDER BY cosine_distance
+```
+
+Supported template variables:
+
+| Variable | Source |
+|---|---|
+| `{{step.description}}` | Step definition description field |
+| `{{run.feature_name}}` | Workflow run intake form field |
+| `{{run.goal}}` | Workflow run intake form field |
+| `{{project.name}}` | Project record name |
+| `{{artifact.type}}` | Step's primary output artifact definition key |
+
+### 6.2 AI-Reformulated Query (Optional HyperRAG)
+
+For steps that need higher retrieval precision, the resolver can optionally make a cheap micro-call (Gemini Flash / GPT-mini) to generate the search query before the main AI call:
+
+```text
+Micro-prompt (~100 tokens):
+"In 10 words or less, what past decisions or context would help with:
+[step description] for [run.feature_name]?"
+
+Response: "notification backend websocket architecture previous decisions"
+→ Use this as the vector search query
+```
+
+This is controlled by a per-slot `use_hyperrag: true` flag. It is off by default for MVP to avoid extra API calls.
+
+### 6.3 Vector Search RPC
+
+The resolver calls the `match_artifact_memories` RPC:
 
 ```sql
 CREATE OR REPLACE FUNCTION match_artifact_memories(
@@ -205,12 +289,13 @@ $$;
 ```
 
 Ranking should combine:
-- semantic similarity
-- approved/latest status
-- required artifact type match
-- recency
-- pinned context boost
-- same workflow/run boost
+- semantic similarity score (cosine distance)
+- approved/latest artifact status boost
+- required artifact type match boost
+- recency boost (newer artifacts ranked higher)
+- pinned context boost (user-pinned memories always ranked first)
+- same workflow/run boost (prefer context from the current run)
+- cross-workflow retrieval allowed only if `allowCrossWorkflowRetrieval: true` in step policy
 
 ## 7. Prompt Packing
 
