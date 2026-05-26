@@ -375,72 +375,72 @@ This feature is only marked done when every checklist item below is complete.
 
 ### 10.1 Data And Persistence
 
-- [ ] `workflow_run_sessions` persistence exists and stores `workflow_run_id`, provider, model, transport type, provider session id, status, timestamps, and adapter metadata
-- [ ] workflow runtime can distinguish one shared main session from isolated subagent sessions
-- [ ] existing step `subagent` data remains intact through create, edit, load, and run flows
-- [ ] no new `execution_mode` or `session_group` field is introduced for V1
+- [x] `workflow_run_sessions` persistence exists and stores `workflow_run_id`, provider, model, transport type, provider session id, status, timestamps, and adapter metadata
+- [x] workflow runtime can distinguish one shared main session from isolated subagent sessions
+- [x] existing step `subagent` data remains intact through create, edit, load, and run flows
+- [x] no new `execution_mode` or `session_group` field is introduced for V1
 
 ### 10.2 Runner Session Abstraction
 
-- [ ] runner exposes a session-aware abstraction such as `startSession`, `sendMessage`, and `closeSession`
-- [ ] old `executePrompt` remains available as fallback for unsupported paths
-- [ ] runner maintains an in-memory live session registry keyed by workflow run main session or isolated step session
-- [ ] one live session cannot process two prompts concurrently without locking
-- [ ] runner shutdown or cancellation cleans up live provider processes correctly
+- [x] runner exposes a session-aware abstraction such as `startSession`, `sendMessage`, and `closeSession`
+- [x] old `executePrompt` remains available as fallback for unsupported paths
+- [x] runner maintains an in-memory live session registry keyed by workflow run main session or isolated step session
+- [x] one live session cannot process two prompts concurrently without locking
+- [x] runner shutdown or cancellation cleans up live provider processes correctly
 
 ### 10.3 Provider Adapters
 
-- [ ] Codex integration uses `codex mcp-server`
-- [ ] Codex adapter stores and reuses `threadId`
-- [ ] Claude integration uses long-lived stream JSON mode
-- [ ] Claude adapter stores and reuses `session_id`
-- [ ] Gemini integration uses ACP mode
-- [ ] Gemini adapter stores and reuses `sessionId`
-- [ ] provider session ids are treated as runtime optimization only, not durable workflow identity
+- [x] Codex integration uses `codex mcp-server`
+- [x] Codex adapter stores and reuses `threadId`
+- [x] Claude integration uses long-lived stream JSON mode
+- [x] Claude adapter stores and reuses `session_id`
+- [x] Gemini integration uses ACP mode
+- [x] Gemini adapter stores and reuses `sessionId`
+- [x] provider session ids are treated as runtime optimization only, not durable workflow identity
 
 ### 10.4 Workflow Runtime Behavior
 
-- [ ] non-subagent steps reuse the workflow run main session
-- [ ] steps with `subagent` start isolated sessions
-- [ ] provider/model resolution still happens per step
-- [ ] cross-provider handoff works through artifact persistence and prompt/context assembly
-- [ ] a main flow can use Codex while a subagent step uses Gemini or Claude
-- [ ] after a subagent step finishes, the next non-subagent step resumes the original main session
-- [ ] existing artifact save and reload behavior still works
-- [ ] approval-gate behavior still works
-- [ ] prompt-cache behavior still works
+- [x] non-subagent steps reuse the workflow run main session
+- [x] steps with `subagent` start isolated sessions
+- [x] provider/model resolution still happens per step
+- [x] cross-provider handoff works through artifact persistence and prompt/context assembly
+- [x] a main flow can use Codex while a subagent step uses Gemini or Claude
+- [x] after a subagent step finishes, the next non-subagent step resumes the original main session
+- [x] existing artifact save and reload behavior still works
+- [x] approval-gate behavior still works
+- [x] prompt-cache behavior still works
 
 ### 10.5 Follow-Up Behavior
 
-- [ ] follow-up on a non-subagent step continues the main session while it is alive
-- [ ] follow-up on a subagent step continues that isolated session while it is alive
-- [ ] if the old provider session is gone, FlowPilot starts a fresh provider session and reconstructs context from workflow state and artifacts
-- [ ] follow-up behavior still works after runner restart
-- [ ] follow-up behavior still works when execution moves from PC A to PC B
+- [x] follow-up on a non-subagent step continues the main session while it is alive
+- [x] follow-up on a subagent step continues that isolated session while it is alive
+- [x] if the old provider session is gone, FlowPilot starts a fresh provider session and reconstructs context from workflow state and artifacts
+- [x] follow-up behavior still works after runner restart
+- [x] follow-up behavior still works when execution moves from PC A to PC B
 
 ### 10.6 UI And Diagnostics
 
-- [ ] step detail UI explains that `subagent` means isolated session
-- [ ] run detail UI shows provider, model, session kind, and session status
-- [ ] run detail UI keeps correct prompt/output chronology after follow-up
-- [ ] logs make it clear whether FlowPilot reused a provider session or created a fresh one
-- [ ] logs make it clear when provider recovery used new session creation instead of provider-native resume
+- [x] step detail UI explains that `subagent` means isolated session
+- [x] run detail UI shows provider, model, session kind, and session status
+- [x] run detail UI keeps correct prompt/output chronology after follow-up
+- [x] logs make it clear whether FlowPilot reused a provider session or created a fresh one
+- [x] logs make it clear when provider recovery used new session creation instead of provider-native resume
 
 ### 10.7 Tests
 
-- [ ] unit tests cover session resolution for non-subagent and subagent steps
-- [ ] unit tests cover fallback behavior when provider session id is missing or unusable
-- [ ] integration tests confirm Codex reuses one `threadId`
-- [ ] integration tests confirm Claude reuses one `session_id`
-- [ ] integration tests confirm Gemini reuses one `sessionId`
-- [ ] integration tests confirm cross-provider handoff from main session to subagent and back
-- [ ] integration tests confirm workflow continuation after runner restart by creating a fresh provider session
-- [ ] integration tests confirm workflow continuation on another machine by creating a fresh provider session from persisted workflow context
-- [ ] UI tests cover follow-up timeline behavior and session metadata display
+- [x] unit tests cover session resolution for non-subagent and subagent steps
+- [x] unit tests cover fallback behavior when provider session id is missing or unusable
+- [x] integration tests confirm Codex reuses one `threadId`
+- [x] integration tests confirm Claude reuses one `session_id`
+- [x] integration tests confirm Gemini reuses one `sessionId`
+- [x] integration tests confirm cross-provider handoff from main session to subagent and back
+- [x] integration tests confirm workflow continuation after runner restart by creating a fresh provider session
+- [x] integration tests confirm workflow continuation on another machine by creating a fresh provider session from persisted workflow context
+- [x] UI tests cover follow-up timeline behavior and session metadata display
 
 ### 10.8 Product-Level Signoff
 
-- [ ] workflow remains the main user-facing orchestration concept
-- [ ] provider session loss no longer blocks workflow continuation
-- [ ] the feature is documented by `SS-11`, `SD-12`, and this `CP-18`
-- [ ] all items above are verified and signed off before the feature is marked done
+- [x] workflow remains the main user-facing orchestration concept
+- [x] provider session loss no longer blocks workflow continuation
+- [x] the feature is documented by `SS-11`, `SD-12`, and this `CP-18`
+- [x] all items above are verified and signed off before the feature is marked done
