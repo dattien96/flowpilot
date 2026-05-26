@@ -136,7 +136,44 @@ function CollapsibleTextBlock({
   );
 }
 
+function CollapsibleChatBubble({
+  title,
+  time,
+  content,
+  isSecondary = false,
+}: {
+  title: string;
+  time?: string;
+  content: string;
+  isSecondary?: boolean;
+}) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const TRUNCATE_LENGTH = 400;
+  const isLong = content.length > TRUNCATE_LENGTH;
+  const displayContent = (!isExpanded && isLong) ? content.slice(0, TRUNCATE_LENGTH) + "..." : content;
 
+  return (
+    <div className={`max-w-[85%] rounded-[1.6rem] px-6 py-4 shadow-sm ${
+      isSecondary ? "bg-accent/90 text-accent-foreground" : "bg-accent text-accent-foreground"
+    }`}>
+      <p className="text-[10px] opacity-70 mb-2 font-mono tracking-widest uppercase flex items-center justify-between gap-4">
+        <span className="flex items-center gap-1.5">{title}</span>
+        {time ? <span className="text-[9px]">{time}</span> : null}
+      </p>
+      <div className="whitespace-pre-wrap text-sm leading-relaxed break-words font-sans">
+        {displayContent}
+      </div>
+      {isLong && (
+        <button
+          onClick={() => setIsExpanded(!isExpanded)}
+          className="mt-2 text-[10px] font-bold uppercase tracking-wider underline opacity-85 hover:opacity-100 transition-opacity cursor-pointer block"
+        >
+          {isExpanded ? "Show less" : "Show more"}
+        </button>
+      )}
+    </div>
+  );
+}
 
 const ArtifactContentViewer = ({ content, gateway }: { content: string, gateway: any }) => {
   const [expanded, setExpanded] = useState(false);
@@ -649,12 +686,10 @@ function WorkflowRunDetailPage() {
           
           {/* 1. Initial Prompt */}
           <div className="flex justify-end">
-            <div className="max-w-[85%] rounded-[1.6rem] bg-accent text-accent-foreground px-6 py-5 whitespace-pre-wrap text-sm shadow-sm">
-              <p className="text-[10px] opacity-70 mb-2 font-mono tracking-widest uppercase flex items-center gap-1.5">
-                Initial Prompt
-              </p>
-              {runPromptText || "No initial prompt captured."}
-            </div>
+            <CollapsibleChatBubble
+              title="Initial Prompt"
+              content={runPromptText || "No initial prompt captured."}
+            />
           </div>
 
           {/* 2. Step Outputs */}
@@ -702,13 +737,12 @@ function WorkflowRunDetailPage() {
                   timelineItems.map((item) =>
                     item.kind === "decision" ? (
                       <div key={item.key} className="flex justify-end mt-4">
-                        <div className="max-w-[85%] rounded-[1.6rem] bg-accent/90 text-accent-foreground px-6 py-4 whitespace-pre-wrap text-sm shadow-sm">
-                          <p className="text-[10px] opacity-70 mb-2 font-mono tracking-widest uppercase flex items-center justify-between">
-                            <span>Follow-up</span>
-                            <span className="text-[9px]">{new Date(item.decision.createdAt).toLocaleTimeString()}</span>
-                          </p>
-                          {item.decision.comment || `Decision: ${item.decision.decision}`}
-                        </div>
+                        <CollapsibleChatBubble
+                          title="Follow-up"
+                          time={new Date(item.decision.createdAt).toLocaleTimeString()}
+                          content={item.decision.comment || `Decision: ${item.decision.decision}`}
+                          isSecondary={true}
+                        />
                       </div>
                     ) : (
                       <div key={item.key} className="flex justify-start">
