@@ -19,6 +19,9 @@ import type {
   LocalRunnerStorageDriver,
   LocalRunnerStorageDriverRequest,
   LocalRunnerSkill,
+  LocalRunnerAiSessionStartRequest,
+  LocalRunnerAiSessionHandle,
+  LocalRunnerAiSessionMessageRequest,
 } from "@/domain/model/entity/local-runner";
 
 type HealthResponse = Omit<LocalRunnerHealth, "baseUrl" | "errorMessage">;
@@ -364,6 +367,55 @@ export class HttpLocalRunnerGateway implements LocalRunnerGateway {
     }
 
     return (await response.json()) as LocalRunnerPromptExecutionResult;
+  }
+
+  async startSession(request: LocalRunnerAiSessionStartRequest) {
+    const response = await fetch(new URL("/sessions/start", this.baseUrl), {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(request),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Local runner start session failed: ${response.status} ${response.statusText}`);
+    }
+
+    return (await response.json()) as LocalRunnerAiSessionHandle;
+  }
+
+  async sendMessage(request: LocalRunnerAiSessionMessageRequest) {
+    const response = await fetch(new URL("/sessions/message", this.baseUrl), {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(request),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Local runner session message failed: ${response.status} ${response.statusText}`);
+    }
+
+    return (await response.json()) as LocalRunnerPromptExecutionResult;
+  }
+
+  async closeSession(session: LocalRunnerAiSessionHandle) {
+    const response = await fetch(new URL("/sessions/close", this.baseUrl), {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(session),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Local runner close session failed: ${response.status} ${response.statusText}`);
+    }
   }
 
   async authenticateProvider(providerName: string) {

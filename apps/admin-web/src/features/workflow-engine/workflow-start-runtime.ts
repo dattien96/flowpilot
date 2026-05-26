@@ -102,6 +102,210 @@ type StepExecutionPlan = {
   outputArtifactKeys: string[];
 };
 
+async function getOrCreateSession({
+  adminClient,
+  localRunnerGateway,
+  workflowRunId,
+  stepRunId,
+  providerKey,
+  modelName,
+  reasoningEffort,
+  workingDirectory,
+  subagent,
+}: {
+  adminClient: SupabaseClient;
+  localRunnerGateway: LocalRunnerGateway;
+  workflowRunId: string;
+  stepRunId: string;
+  providerKey: string;
+  modelName: string;
+  reasoningEffort: string | null;
+  workingDirectory: string;
+  subagent: string | null;
+}) {
+  let sessionRow = null;
+
+  if (!subagent) {
+    const { data } = await adminClient
+      .from("workflow_run_sessions")
+      .select("*")
+      .eq("workflow_run_id", workflowRunId)
+      .eq("status", "active")
+      .filter("metadata_json->>is_main", "eq", "true")
+      .maybeSingle();
+    sessionRow = data;
+  } else {
+    const { data } = await adminClient
+      .from("workflow_run_sessions")
+      .select("*")
+      .eq("workflow_run_id", workflowRunId)
+      .eq("status", "active")
+      .filter("metadata_json->>step_run_id", "eq", stepRunId)
+      .maybeSingle();
+    sessionRow = data;
+  }
+
+  let handle: { transportType: string; providerSessionId: string; processKey: string | null } | null = null;
+
+  if (sessionRow && sessionRow.process_key) {
+    handle = {
+      transportType: sessionRow.transport_type,
+      providerSessionId: sessionRow.provider_session_id,
+      processKey: sessionRow.process_key,
+    };
+  }
+
+  if (!handle) {
+    const startResult = await localRunnerGateway.startSession({
+      providerKey,
+      modelName,
+      reasoningEffort: reasoningEffort as any,
+      workingDirectory,
+      approvalMode: null,
+      allowWrite: true,
+    });
+
+    handle = startResult;
+
+    if (sessionRow) {
+      await adminClient
+        .from("workflow_run_sessions")
+        .update({
+          process_key: handle.processKey,
+          provider_session_id: handle.providerSessionId,
+          transport_type: handle.transportType,
+          provider: providerKey,
+          model: modelName,
+        })
+        .eq("id", sessionRow.id);
+    } else {
+      const metadata = !subagent ? { is_main: true } : { step_run_id: stepRunId };
+      const { data: newRow, error: newRowErr } = await adminClient
+        .from("workflow_run_sessions")
+        .insert({
+          workflow_run_id: workflowRunId,
+          provider: providerKey,
+          model: modelName,
+          transport_type: handle.transportType,
+          provider_session_id: handle.providerSessionId,
+          process_key: handle.processKey,
+          status: "active",
+          metadata_json: metadata,
+        })
+        .select("*")
+        .single();
+      if (newRowErr) {
+        throw new Error(`Failed to save session to DB: ${newRowErr.message}`);
+      }
+    }
+  }
+
+  return handle;
+}
+
+async function sendMessageWithRetry({
+  adminClient,
+  localRunnerGateway,
+  workflowRunId,
+  stepRunId,
+  providerKey,
+  modelName,
+  reasoningEffort,
+  workingDirectory,
+  subagent,
+  prompt,
+  skillIds,
+}: {
+  adminClient: SupabaseClient;
+  localRunnerGateway: LocalRunnerGateway;
+  workflowRunId: string;
+  stepRunId: string;
+  providerKey: string;
+  modelName: string;
+  reasoningEffort: string | null;
+  workingDirectory: string;
+  subagent: string | null;
+  prompt: string;
+  skillIds: string[];
+}) {
+  try {
+    let handle = await getOrCreateSession({
+      adminClient,
+      localRunnerGateway,
+      workflowRunId,
+      stepRunId,
+      providerKey,
+      modelName,
+      reasoningEffort,
+      workingDirectory,
+      subagent,
+    });
+
+    try {
+      const result = await localRunnerGateway.sendMessage({
+        session: handle,
+        prompt,
+        skillIds,
+        contextSourceIds: [],
+      });
+      return result;
+    } catch (error) {
+      const isSessionDead = error instanceof Error && 
+        (error.message.includes("session") || error.message.includes("not found") || error.message.includes("expired"));
+      if (isSessionDead) {
+        if (!subagent) {
+          await adminClient
+            .from("workflow_run_sessions")
+            .update({ process_key: null })
+            .eq("workflow_run_id", workflowRunId)
+            .filter("metadata_json->>is_main", "eq", "true");
+        } else {
+          await adminClient
+            .from("workflow_run_sessions")
+            .update({ process_key: null })
+            .eq("workflow_run_id", workflowRunId)
+            .filter("metadata_json->>step_run_id", "eq", stepRunId);
+        }
+
+        handle = await getOrCreateSession({
+          adminClient,
+          localRunnerGateway,
+          workflowRunId,
+          stepRunId,
+          providerKey,
+          modelName,
+          reasoningEffort,
+          workingDirectory,
+          subagent,
+        });
+
+        const result = await localRunnerGateway.sendMessage({
+          session: handle,
+          prompt,
+          skillIds,
+          contextSourceIds: [],
+        });
+        return result;
+      }
+      throw error;
+    }
+  } catch (sessError) {
+    const result = await localRunnerGateway.executePrompt({
+      providerKey,
+      modelName,
+      reasoningEffort: reasoningEffort as any,
+      prompt,
+      skillIds,
+      flowId: null,
+      contextSourceIds: [],
+      timeoutMs: 600000,
+      workingDirectory,
+      allowWrite: true,
+    });
+    return result;
+  }
+}
+
 const SINGLE_STEP_RUNTIME_CREATED_BY = "flowpilot-runtime";
 const SUPPORTED_REASONING_EFFORTS = new Set(REASONING_EFFORT_OPTIONS.map((option) => option.value));
 const DEFAULT_MODEL = "gpt-5.4";
@@ -764,7 +968,10 @@ export async function submitWorkflowStepFollowUpRuntime({
   comment,
 }: {
   adminClient: SupabaseClient;
-  localRunnerGateway: Pick<LocalRunnerGateway, "executePrompt" | "listMcpBackends">;
+  localRunnerGateway: Pick<
+    LocalRunnerGateway,
+    "executePrompt" | "listMcpBackends" | "startSession" | "sendMessage" | "closeSession"
+  >;
   stepId: string;
   comment: string;
 }) {
@@ -910,17 +1117,18 @@ export async function submitWorkflowStepFollowUpRuntime({
   await insertLog(adminClient, stepRun.id, "info", `Launching follow-up for ${stepRun.step_type} in ${workingDirectory}.`);
 
   try {
-    const result = await localRunnerGateway.executePrompt({
+    const result = await sendMessageWithRetry({
+      adminClient,
+      localRunnerGateway: localRunnerGateway as any,
+      workflowRunId: run.id,
+      stepRunId: stepRun.id,
       providerKey: execution.providerKey,
       modelName: execution.model,
-      ...(execution.reasoningEffort ? { reasoningEffort: execution.reasoningEffort } : {}),
+      reasoningEffort: execution.reasoningEffort ?? null,
+      workingDirectory,
+      subagent: definition.subagent ?? null,
       prompt: finalPrompt,
       skillIds: definition.required_skills ?? [],
-      flowId: null,
-      contextSourceIds: [],
-      timeoutMs: 600000,
-      workingDirectory,
-      allowWrite: true,
     });
 
     if (result.status !== "success") {
@@ -1015,7 +1223,10 @@ export async function runWorkflowStartRuntime({
   user,
 }: {
   adminClient: SupabaseClient;
-  localRunnerGateway: Pick<LocalRunnerGateway, "executePrompt" | "listMcpBackends">;
+  localRunnerGateway: Pick<
+    LocalRunnerGateway,
+    "executePrompt" | "listMcpBackends" | "startSession" | "sendMessage" | "closeSession"
+  >;
   request: WorkflowRunStartRequest;
   user: { id: string; email: string | null };
 }) {
@@ -1221,17 +1432,18 @@ export async function runWorkflowStartRuntime({
       await insertLog(adminClient, stepRunId, "info", `Launching ${stepPlan.stepType} in ${workingDirectory}.`);
       await insertLog(adminClient, stepRunId, "info", `Begin prompt: ${request.beginPrompt}`);
 
-      const result = await localRunnerGateway.executePrompt({
+      const result = await sendMessageWithRetry({
+        adminClient,
+        localRunnerGateway: localRunnerGateway as any,
+        workflowRunId: String(runRow.id),
+        stepRunId,
         providerKey: stepPlan.providerKey,
         modelName: stepPlan.model,
-        ...(stepPlan.reasoningEffort ? { reasoningEffort: stepPlan.reasoningEffort } : {}),
+        reasoningEffort: stepPlan.reasoningEffort ?? null,
+        workingDirectory,
+        subagent: stepPlan.definition.subagent ?? null,
         prompt: finalPrompt,
         skillIds: stepPlan.definition.required_skills ?? [],
-        flowId: null,
-        contextSourceIds: [],
-        timeoutMs: 600000,
-        workingDirectory,
-        allowWrite: true,
       });
 
       if (result.status !== "success") {

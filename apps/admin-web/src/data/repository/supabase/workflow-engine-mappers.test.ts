@@ -9,6 +9,7 @@ import {
   mapWorkflowRun,
   mapWorkflowRunStep,
   mapWorkflowRunLog,
+  mapWorkflowRunSession,
 } from "./workflow-engine-mappers";
 
 describe("WorkflowEngine mappers", () => {
@@ -285,6 +286,36 @@ describe("WorkflowEngine mappers", () => {
       logLevel: "info",
       message: "Started assembling prompt",
       createdAt: "2026-05-20T03:05:01Z",
+    });
+  });
+
+  it("maps workflow run sessions", () => {
+    const row = {
+      id: "sess-1",
+      workflow_run_id: "run-1",
+      provider: "claude",
+      model: "claude-sonnet",
+      transport_type: "claude_stream_json",
+      provider_session_id: "prov-sess-123",
+      process_key: "proc-456",
+      status: "active",
+      metadata_json: { custom: "field" },
+      started_at: "2026-05-20T03:05:00Z",
+      completed_at: null,
+    };
+    const entity = mapWorkflowRunSession(row);
+    expect(entity).toEqual({
+      id: "sess-1",
+      workflowRunId: "run-1",
+      provider: "claude",
+      model: "claude-sonnet",
+      transportType: "claude_stream_json",
+      providerSessionId: "prov-sess-123",
+      processKey: "proc-456",
+      status: "active",
+      metadataJson: { custom: "field" },
+      startedAt: "2026-05-20T03:05:00Z",
+      completedAt: null,
     });
   });
 });

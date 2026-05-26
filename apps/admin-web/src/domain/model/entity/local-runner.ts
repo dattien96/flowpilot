@@ -214,3 +214,25 @@ export interface LocalRunnerIntegrationConnectionResult {
   runId: string | null;
   message: string | null;
 }
+
+export interface LocalRunnerAiSessionStartRequest {
+  providerKey: string;
+  modelName: string;
+  reasoningEffort: ReasoningEffort | null;
+  workingDirectory: string;
+  approvalMode: string | null;
+  allowWrite: boolean;
+}
+
+export interface LocalRunnerAiSessionHandle {
+  transportType: string;
+  providerSessionId: string;
+  processKey: string | null;
+}
+
+export interface LocalRunnerAiSessionMessageRequest {
+  session: LocalRunnerAiSessionHandle;
+  prompt: string;
+  skillIds: string[];
+  contextSourceIds: string[];
+}

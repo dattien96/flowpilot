@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -118,6 +119,8 @@ type Runner struct {
 	workspace   string
 	startedAt   time.Time
 	secretStore SecretStore
+	sessionsMu  sync.Mutex
+	sessions    map[string]*LiveSession
 }
 
 func New(workspace string) (*Runner, error) {
@@ -130,6 +133,7 @@ func New(workspace string) (*Runner, error) {
 		workspace:   resolved,
 		startedAt:   time.Now().UTC(),
 		secretStore: newDefaultSecretStore(),
+		sessions:    make(map[string]*LiveSession),
 	}, nil
 }
 

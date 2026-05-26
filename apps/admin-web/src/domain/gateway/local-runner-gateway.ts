@@ -17,6 +17,9 @@ import type {
   LocalRunnerStorageDriver,
   LocalRunnerStorageDriverRequest,
   LocalRunnerSkill,
+  LocalRunnerAiSessionStartRequest,
+  LocalRunnerAiSessionHandle,
+  LocalRunnerAiSessionMessageRequest,
 } from "@/domain/model/entity/local-runner";
 
 export interface LocalRunnerGateway {
@@ -52,6 +55,15 @@ export interface LocalRunnerGateway {
   executePrompt(
     request: LocalRunnerPromptExecutionRequest,
   ): Promise<LocalRunnerPromptExecutionResult>;
+  startSession(
+    request: LocalRunnerAiSessionStartRequest,
+  ): Promise<LocalRunnerAiSessionHandle>;
+  sendMessage(
+    request: LocalRunnerAiSessionMessageRequest,
+  ): Promise<LocalRunnerPromptExecutionResult>;
+  closeSession(
+    session: LocalRunnerAiSessionHandle,
+  ): Promise<void>;
   authenticateProvider(providerName: string): Promise<void>;
   readFile(path: string): Promise<string>;
 }

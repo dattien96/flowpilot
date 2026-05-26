@@ -341,6 +341,9 @@ export function WorkflowStepDetailPage() {
             value={subagent}
             onChange={(event) => setSubagent(event.target.value)}
           />
+          <p className="text-[11px] text-muted-foreground mt-1 leading-normal">
+            Specifying a subagent configures an isolated execution session for this step. Leave empty to reuse the main workflow session.
+          </p>
         </label>
         <label className="space-y-2 text-sm">
           <span className="font-medium">Model</span>

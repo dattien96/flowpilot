@@ -24,6 +24,7 @@ import type {
   WorkflowRun,
   WorkflowStep,
 } from "@/domain/model/entity/workflow";
+import type { WorkflowRunSession } from "@/domain/model/entity/workflow-engine";
 import type {
   CreateContextSourcePayload,
   UpdateContextSourcePayload,
@@ -253,6 +254,7 @@ function mapCanonicalWorkflowDefinition(
         (stepRow as any).requires_approval,
       ),
       outputType: undefined,
+      subagent: (stepRow.step_definitions as any)?.subagent ?? null,
     })),
   };
 }
@@ -316,6 +318,22 @@ function mapWorkflowRun(row: SupabaseRow): WorkflowRun {
     startedAt: String(row.started_at || ""),
     completedAt: row.finished_at ? String(row.finished_at) : null,
     errorSummary: row.error_message ? String(row.error_message) : null,
+  };
+}
+
+function mapWorkflowRunSession(row: SupabaseRow): WorkflowRunSession {
+  return {
+    id: String(row.id),
+    workflowRunId: String(row.workflow_run_id),
+    provider: String(row.provider),
+    model: String(row.model),
+    transportType: String(row.transport_type),
+    providerSessionId: row.provider_session_id ? String(row.provider_session_id) : null,
+    processKey: row.process_key ? String(row.process_key) : null,
+    status: String(row.status),
+    metadataJson: row.metadata_json ? (row.metadata_json as Record<string, any>) : null,
+    startedAt: String(row.started_at),
+    completedAt: row.completed_at ? String(row.completed_at) : null,
   };
 }
 
@@ -935,7 +953,7 @@ class SupabaseGatewayBundle
         this.supabase.from("workflows").select("*").order("created_at", { ascending: false }),
         this.supabase
           .from("workflow_steps")
-          .select("workflow_id, step_type, order_index, requires_approval, step_definitions(name)")
+          .select("workflow_id, step_type, order_index, requires_approval, step_definitions(name, subagent)")
           .order("order_index", { ascending: true }),
       ]);
 
@@ -971,7 +989,7 @@ class SupabaseGatewayBundle
 
     const { data: stepRows, error: stepsError } = await this.supabase
       .from("workflow_steps")
-      .select("workflow_id, step_type, order_index, requires_approval, step_definitions(name)")
+      .select("workflow_id, step_type, order_index, requires_approval, step_definitions(name, subagent)")
       .eq("workflow_id", workflowDefinitionId)
       .order("order_index", { ascending: true });
     assertNoError(stepsError, "Unable to load workflow definition steps.");
@@ -1008,7 +1026,7 @@ class SupabaseGatewayBundle
       return null;
     }
 
-    const [steps, outputs, logs, approvalDecisions, contexts, project, definition] =
+    const [steps, outputs, logs, approvalDecisions, contexts, project, definition, sessions] =
       await Promise.all([
         this.listStepsByRun(run.id),
         this.listOutputsByRun(run.id),
@@ -1017,6 +1035,7 @@ class SupabaseGatewayBundle
         this.listContextSourcesByIds(run.selectedContextSourceIds),
         this.getProjectById(run.projectId),
         this.getWorkflowDefinitionById(run.workflowDefinitionId),
+        this.listSessionsByRun(run.id),
       ]);
 
     const approvals = this.buildApprovals(steps, outputs, approvalDecisions);
@@ -1031,6 +1050,7 @@ class SupabaseGatewayBundle
       selectedContextSources: contexts,
       project,
       definition,
+      sessions,
     };
   }
 
@@ -1372,6 +1392,16 @@ class SupabaseGatewayBundle
       .order("created_at", { ascending: true });
     assertNoError(error, "Unable to list run logs.");
     return (data ?? []).map(mapLog);
+  }
+
+  private async listSessionsByRun(runId: string) {
+    const { data, error } = await this.supabase
+      .from("workflow_run_sessions")
+      .select("*")
+      .eq("workflow_run_id", runId)
+      .order("started_at", { ascending: true });
+    assertNoError(error, "Unable to list run sessions.");
+    return (data ?? []).map(mapWorkflowRunSession);
   }
 
   private async listContextSourcesByIds(contextSourceIds: string[]) {

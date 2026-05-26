@@ -233,3 +233,25 @@ type PromptExecutionResult struct {
 	ExitCode       int      `json:"exitCode"`
 	ErrorMessage   string   `json:"errorMessage"`
 }
+
+type AiSessionStartRequest struct {
+	ProviderKey      string  `json:"providerKey"`
+	ModelName        string  `json:"modelName"`
+	ReasoningEffort  *string `json:"reasoningEffort"`
+	WorkingDirectory string  `json:"workingDirectory"`
+	ApprovalMode     *string `json:"approvalMode"`
+	AllowWrite       bool    `json:"allowWrite"`
+}
+
+type AiSessionHandle struct {
+	TransportType     string  `json:"transportType"`
+	ProviderSessionID string  `json:"providerSessionId"`
+	ProcessKey        *string `json:"processKey"`
+}
+
+type AiSessionMessageRequest struct {
+	Session          AiSessionHandle `json:"session"`
+	Prompt           string          `json:"prompt"`
+	SkillIds         []string        `json:"skillIds"`
+	ContextSourceIds []string        `json:"contextSourceIds"`
+}

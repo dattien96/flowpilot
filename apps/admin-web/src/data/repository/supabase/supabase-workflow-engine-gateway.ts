@@ -12,6 +12,7 @@ import type {
   WorkflowRunLog,
   WorkflowRunStep,
   WorkflowStep,
+  WorkflowRunSession,
 } from "@/domain/model/entity/workflow-engine";
 import {
   mapArtifactDefinition,
@@ -22,6 +23,7 @@ import {
   mapWorkflowRunLog,
   mapWorkflowRunStep,
   mapWorkflowStep,
+  mapWorkflowRunSession,
 } from "./workflow-engine-mappers";
 
 const DEFAULT_MODEL = "gpt-5.4";
@@ -520,7 +522,16 @@ export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
       logs = (logsData ?? []).map(mapWorkflowRunLog);
     }
 
-    return { run, steps, logs };
+    const { data: sessionsData, error: sessionsError } = await this.supabase
+      .from("workflow_run_sessions")
+      .select("*")
+      .eq("workflow_run_id", runId)
+      .order("started_at", { ascending: true });
+
+    if (sessionsError) throw new Error(`Unable to load sessions: ${sessionsError.message}`);
+    const sessions = (sessionsData ?? []).map(mapWorkflowRunSession);
+
+    return { run, steps, logs, sessions };
   }
 
   async startWorkflowRun(request: WorkflowRunStartRequest): Promise<WorkflowRun> {

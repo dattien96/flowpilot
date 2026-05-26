@@ -10,6 +10,7 @@ export interface WorkflowDefinitionStep {
   name: string;
   type: "tool" | "ai_mock" | "approval";
   outputType?: OutputType;
+  subagent?: string | null;
 }
 
 export interface WorkflowDefinition {

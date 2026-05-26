@@ -702,6 +702,16 @@ function WorkflowRunDetailPage() {
               left.createdAt.localeCompare(right.createdAt),
             );
             const timelineItems = buildWorkflowStepTimeline(outputs, decisions);
+            const definitionStep = detail.definition?.steps?.find((ds: any) => ds.key === step.stepKey);
+            const subagent = definitionStep?.subagent ?? null;
+            const stepSession = (() => {
+              if (!detail.sessions) return null;
+              if (subagent) {
+                return detail.sessions.find((s: any) => s.metadataJson?.step_run_id === step.id);
+              } else {
+                return detail.sessions.find((s: any) => s.metadataJson?.is_main === true || s.metadataJson?.is_main === "true");
+              }
+            })();
              
             return (
               <div key={step.id} className="space-y-4">
@@ -719,6 +729,22 @@ function WorkflowRunDetailPage() {
                           <p className="mt-1 text-[11px] font-mono text-muted-foreground uppercase tracking-wider">
                             Step {index + 1}
                           </p>
+                          {stepSession && (
+                            <p className="mt-1 text-[10px] font-mono text-muted-foreground flex items-center gap-1.5 flex-wrap">
+                              <span>Session:</span>
+                              <span className="bg-accent/40 text-accent-foreground px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">
+                                {subagent ? `Isolated (${subagent})` : "Shared Main"}
+                              </span>
+                              <span>&bull;</span>
+                              <span className="text-foreground/90 font-medium">
+                                {stepSession.provider} ({stepSession.model})
+                              </span>
+                              <span>&bull;</span>
+                              <span className={`font-semibold ${stepSession.status === "active" ? "text-success" : "text-muted-foreground"}`}>
+                                {stepSession.status}
+                              </span>
+                            </p>
+                          )}
                         </div>
 
                         <span className="rounded-full bg-muted border border-border/60 px-3 py-1 text-[10px] font-medium text-muted-foreground uppercase tracking-widest">
@@ -758,6 +784,22 @@ function WorkflowRunDetailPage() {
                               <p className="mt-1 text-[11px] font-mono text-muted-foreground uppercase tracking-wider">
                                 Step {index + 1}
                               </p>
+                              {stepSession && (
+                                <p className="mt-1 text-[10px] font-mono text-muted-foreground flex items-center gap-1.5 flex-wrap">
+                                  <span>Session:</span>
+                                  <span className="bg-accent/40 text-accent-foreground px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">
+                                    {subagent ? `Isolated (${subagent})` : "Shared Main"}
+                                  </span>
+                                  <span>&bull;</span>
+                                  <span className="text-foreground/90 font-medium">
+                                    {stepSession.provider} ({stepSession.model})
+                                  </span>
+                                  <span>&bull;</span>
+                                  <span className={`font-semibold ${stepSession.status === "active" ? "text-success" : "text-muted-foreground"}`}>
+                                    {stepSession.status}
+                                  </span>
+                                </p>
+                              )}
                             </div>
 
                             <div className="text-right">

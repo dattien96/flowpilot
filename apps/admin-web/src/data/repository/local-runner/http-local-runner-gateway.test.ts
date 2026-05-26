@@ -399,4 +399,122 @@ describe("HttpLocalRunnerGateway integration connection", () => {
     expect(String(input)).toBe("http://127.0.0.1:4317/integrations/integration-1/connection");
     expect(init.method).toBe("DELETE");
   });
+
+  it("posts a start session request", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          transportType: "claude_stream_json",
+          providerSessionId: "sess-123",
+          processKey: "proc-456",
+        }),
+        { status: 200 },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const gateway = new HttpLocalRunnerGateway("http://127.0.0.1:4317");
+    const result = await gateway.startSession({
+      providerKey: "claude",
+      modelName: "claude-sonnet",
+      reasoningEffort: "medium",
+      workingDirectory: "/workspace",
+      approvalMode: null,
+      allowWrite: true,
+    });
+
+    const [input, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    expect(String(input)).toBe("http://127.0.0.1:4317/sessions/start");
+    expect(init.method).toBe("POST");
+    expect(init.body).toBe(
+      JSON.stringify({
+        providerKey: "claude",
+        modelName: "claude-sonnet",
+        reasoningEffort: "medium",
+        workingDirectory: "/workspace",
+        approvalMode: null,
+        allowWrite: true,
+      }),
+    );
+    expect(result.providerSessionId).toBe("sess-123");
+  });
+
+  it("posts a send message request to an active session", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          status: "success",
+          runId: "run-999",
+          providerKey: "claude",
+          modelName: "claude-sonnet",
+          command: "claude message",
+          stdoutSummary: "done",
+          stderrSummary: "",
+          outputMarkdown: "Hello user",
+          artifactPaths: [],
+          startedAt: "2026-05-20T03:00:00Z",
+          completedAt: "2026-05-20T03:01:00Z",
+          exitCode: 0,
+          errorMessage: "",
+        }),
+        { status: 200 },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const gateway = new HttpLocalRunnerGateway("http://127.0.0.1:4317");
+    const result = await gateway.sendMessage({
+      session: {
+        transportType: "claude_stream_json",
+        providerSessionId: "sess-123",
+        processKey: "proc-456",
+      },
+      prompt: "Hello",
+      skillIds: [],
+      contextSourceIds: [],
+    });
+
+    const [input, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    expect(String(input)).toBe("http://127.0.0.1:4317/sessions/message");
+    expect(init.method).toBe("POST");
+    expect(init.body).toBe(
+      JSON.stringify({
+        session: {
+          transportType: "claude_stream_json",
+          providerSessionId: "sess-123",
+          processKey: "proc-456",
+        },
+        prompt: "Hello",
+        skillIds: [],
+        contextSourceIds: [],
+      }),
+    );
+    expect(result.status).toBe("success");
+    expect(result.outputMarkdown).toBe("Hello user");
+  });
+
+  it("posts a close session request", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(null, { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const gateway = new HttpLocalRunnerGateway("http://127.0.0.1:4317");
+    await gateway.closeSession({
+      transportType: "claude_stream_json",
+      providerSessionId: "sess-123",
+      processKey: "proc-456",
+    });
+
+    const [input, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    expect(String(input)).toBe("http://127.0.0.1:4317/sessions/close");
+    expect(init.method).toBe("POST");
+    expect(init.body).toBe(
+      JSON.stringify({
+        transportType: "claude_stream_json",
+        providerSessionId: "sess-123",
+        processKey: "proc-456",
+      }),
+    );
+  });
 });

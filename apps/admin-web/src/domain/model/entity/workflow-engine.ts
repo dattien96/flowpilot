@@ -203,6 +203,20 @@ export interface WorkflowRunLog {
   createdAt: string;
 }
 
+export interface WorkflowRunSession {
+  id: string;
+  workflowRunId: string;
+  provider: string;
+  model: string;
+  transportType: string;
+  providerSessionId: string | null;
+  processKey: string | null;
+  status: string;
+  metadataJson?: Record<string, any> | null;
+  startedAt: string;
+  completedAt: string | null;
+}
+
 export interface WorkflowTemplate {
   id: string;
   name: string;
