@@ -88,6 +88,10 @@ export class LocalFirstWorkflowGateway implements WorkflowGateway {
     return this.base.getWorkflowRunById(runId);
   }
 
+  deleteWorkflowRuns(runIds: string[]): Promise<void> {
+    return this.base.deleteWorkflowRuns(runIds);
+  }
+
   async getWorkflowRunDetail(runId: string): Promise<WorkflowRunDetail | null> {
     const detail = await this.base.getWorkflowRunDetail(runId);
     if (!detail) {

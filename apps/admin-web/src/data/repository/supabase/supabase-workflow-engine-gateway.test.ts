@@ -201,6 +201,23 @@ describe("SupabaseWorkflowEngineGateway", () => {
     expect(result[0].projectId).toBe(null);
   });
 
+  it("deletes workflow runs by id list", async () => {
+    const inSpy = vi.fn().mockResolvedValue({ error: null });
+    const deleteSpy = vi.fn(() => ({ in: inSpy }));
+    const from = vi.fn((table: string) => {
+      if (table === "workflow_runs") {
+        return { delete: deleteSpy };
+      }
+      throw new Error(`Unexpected table ${table}`);
+    });
+
+    const gateway = new SupabaseWorkflowEngineGateway({ from } as any);
+    await gateway.deleteWorkflowRuns(["run-1", "run-2"]);
+
+    expect(from).toHaveBeenCalledWith("workflow_runs");
+    expect(inSpy).toHaveBeenCalledWith("id", ["run-1", "run-2"]);
+  });
+
   it("throws a clear error when workflow update returns no row", async () => {
     const maybeSingle = vi.fn().mockResolvedValue({
       data: null,

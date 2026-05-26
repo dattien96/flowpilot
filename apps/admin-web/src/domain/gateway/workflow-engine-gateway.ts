@@ -29,6 +29,7 @@ export interface WorkflowEngineGateway {
     steps: WorkflowRunStep[];
     logs: WorkflowRunLog[];
   } | null>;
+  deleteWorkflowRuns(runIds: string[]): Promise<void>;
   startWorkflowRun(request: WorkflowRunStartRequest): Promise<WorkflowRun>;
   toggleYoloMode(runId: string, yoloMode: boolean): Promise<WorkflowRun>;
   submitStepApproval(

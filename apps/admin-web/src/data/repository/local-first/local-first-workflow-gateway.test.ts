@@ -11,6 +11,7 @@ function createBaseGatewayMock(): WorkflowGateway {
     listWorkflowRuns: vi.fn(async () => []),
     getWorkflowRunById: vi.fn(async () => null),
     getWorkflowRunDetail: vi.fn(async () => null),
+    deleteWorkflowRuns: vi.fn(async () => {}),
     createWorkflowRun: vi.fn(async () => {
       throw new Error("not implemented");
     }),
@@ -231,6 +232,16 @@ describe("LocalFirstWorkflowGateway", () => {
     expect(outputs).toHaveLength(1);
     expect(outputs[0]?.id).toBe("artifact-local-1");
     expect(outputs[0]?.contentMarkdown).toContain("Real local content");
+  });
+
+  it("delegates workflow run deletions to the base gateway", async () => {
+    const base = createBaseGatewayMock();
+    const localRunner = createLocalRunnerMock();
+    const gateway = new LocalFirstWorkflowGateway(base, localRunner);
+
+    await gateway.deleteWorkflowRuns(["run-1", "run-2"]);
+
+    expect(base.deleteWorkflowRuns).toHaveBeenCalledWith(["run-1", "run-2"]);
   });
 
   it("preserves earlier step outputs when a follow-up creates a new artifact version", async () => {

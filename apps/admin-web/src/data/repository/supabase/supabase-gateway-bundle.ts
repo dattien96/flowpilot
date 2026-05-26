@@ -1019,6 +1019,16 @@ class SupabaseGatewayBundle
     return data ? mapWorkflowRun(data) : null;
   }
 
+  async deleteWorkflowRuns(runIds: string[]) {
+    const ids = [...new Set(runIds)].filter((runId) => runId.trim().length > 0);
+    if (ids.length === 0) {
+      return;
+    }
+
+    const { error } = await this.supabase.from("workflow_runs").delete().in("id", ids);
+    assertNoError(error, "Unable to delete workflow runs.");
+  }
+
   async getWorkflowRunDetail(runId: string) {
     const run = await this.getWorkflowRunById(runId);
 

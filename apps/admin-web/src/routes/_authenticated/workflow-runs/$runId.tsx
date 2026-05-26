@@ -17,6 +17,7 @@ import { WorkflowTimeline } from "@/presentation/components/workflow-runs/workfl
 import { createGatewayBundle } from "@/data/repository/browser-factory";
 import { GetWorkflowRunDetailUseCase } from "@/domain/usecase/workflow-runs/get-workflow-run-detail-usecase";
 import { GetWorkflowRunDetailUseCase as GetWorkflowEngineRunDetailUseCase } from "@/domain/usecase/workflow-engine/get-workflow-run-detail-usecase";
+import { ListArtifactRunsUseCase } from "@/domain/usecase/workflow-engine/list-artifact-runs-usecase";
 import { SubmitStepApprovalDecisionUseCase } from "@/domain/usecase/workflow-engine/submit-step-approval-decision-usecase";
 import { createSupabaseBrowserClient } from "@/data/datasource/supabase/client";
 import { applyOptimisticWorkflowFollowUp } from "@/features/workflow-engine/workflow-run-detail-optimistic";
@@ -27,8 +28,13 @@ import {
   mergeWorkflowOutputs,
   type WorkflowOutputRecord,
 } from "@/features/workflow-engine/workflow-run-detail-timeline";
+import {
+  buildFallbackOutputsFromLogs,
+  extractBeginPromptFromLogs,
+} from "@/features/workflow-engine/workflow-run-log-fallback";
 import { statusTone } from "@/presentation/view-models/factories";
 import type { LocalRunnerArtifact } from "@/domain/model/entity/local-runner";
+import type { ArtifactRun } from "@/domain/model/entity/workflow-engine";
 import { loadWorkflowRunPromptText } from "@/lib/workflow-run-prompt";
 
 function summarizeRunPrompt(promptText?: string) {
@@ -69,6 +75,34 @@ function summarizeRunPrompt(promptText?: string) {
   return firstLine.length > 88
     ? `${firstLine.slice(0, 85).trimEnd()}...`
     : firstLine;
+}
+
+function normalizePromptDisplay(promptText?: string | null) {
+  const normalized = promptText?.trim() ?? "";
+  if (!normalized) {
+    return "";
+  }
+
+  const sections = normalized.split(/\n(?=## )/);
+  const cleanedSections = sections.filter((section, index) => {
+    if (index === 0 && !section.startsWith("## ")) {
+      return true;
+    }
+
+    const lines = section.trim().split("\n");
+    const body = lines.slice(1).join("\n").trim();
+    if (!body) {
+      return false;
+    }
+
+    const compactBody = body.replace(/\s+/g, " ").trim().toLowerCase();
+    return (
+      compactBody !== "- none" &&
+      compactBody !== "- no artifact output configured for this step."
+    );
+  });
+
+  return cleanedSections.join("\n\n").trim();
 }
 
 function CollapsibleSection({
@@ -254,6 +288,174 @@ const ArtifactContentViewer = ({ content, gateway }: { content: string, gateway:
   );
 };
 
+function StepOutputTabs({
+  artifactRun,
+  output,
+  localRunnerGateway,
+}: {
+  artifactRun?: ArtifactRun | null;
+  output: WorkflowOutputRecord;
+  localRunnerGateway: {
+    readFile(path: string): Promise<string>;
+  };
+}) {
+  const [activeTab, setActiveTab] = useState<"response" | "prompt" | "artifact">("response");
+  const [artifactContent, setArtifactContent] = useState<string | null>(null);
+  const [artifactError, setArtifactError] = useState<string | null>(null);
+  const [artifactLoading, setArtifactLoading] = useState(false);
+  const [artifactExpanded, setArtifactExpanded] = useState(false);
+
+  useEffect(() => {
+    if (activeTab !== "artifact" || !artifactRun || artifactContent !== null || artifactLoading) {
+      return;
+    }
+
+    let cancelled = false;
+    setArtifactLoading(true);
+    setArtifactError(null);
+
+    void localRunnerGateway
+      .readFile(artifactRun.localPath)
+      .then((content) => {
+        if (!cancelled) {
+          setArtifactContent(content);
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setArtifactError(
+            error instanceof Error ? error.message : "Unable to load artifact content.",
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setArtifactLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, artifactContent, artifactLoading, artifactRun, localRunnerGateway]);
+
+  const tabs = [
+    { key: "response" as const, label: "Response" },
+    { key: "prompt" as const, label: "Prompt" },
+    ...(artifactRun ? [{ key: "artifact" as const, label: "Artifact" }] : []),
+  ];
+
+  const artifactBody = artifactContent?.trim() ?? "";
+  const lineCount = artifactBody ? artifactBody.split("\n").length : 0;
+  const characterCount = artifactBody.length;
+  const normalizedPrompt = normalizePromptDisplay(output.promptText);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        {tabs.map((tab) => {
+          const isActive = activeTab === tab.key;
+          return (
+            <button
+              key={tab.key}
+              className={`rounded-full border px-2 py-0.5 text-[9px] font-medium uppercase tracking-[0.12em] transition-colors ${
+                isActive
+                  ? "border-accent bg-accent/10 text-accent"
+                  : "border-border bg-card text-muted-foreground hover:text-foreground"
+              }`}
+              onClick={() => setActiveTab(tab.key)}
+              type="button"
+            >
+              {tab.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {activeTab === "response" ? (
+        <ArtifactContentViewer
+          content={output.contentMarkdown || "No response captured."}
+          gateway={localRunnerGateway}
+        />
+      ) : null}
+
+      {activeTab === "prompt" ? (
+        <div className="space-y-3">
+          <div className="rounded-2xl border border-border/60 bg-card/60 px-4 py-3 text-[11px] font-mono uppercase tracking-[0.2em] text-muted-foreground">
+            prompt.md
+          </div>
+          <div className="max-h-[28rem] overflow-auto rounded-2xl border border-border bg-card p-5">
+            {normalizedPrompt ? (
+              <pre className="whitespace-pre-wrap break-words font-mono text-sm leading-relaxed text-foreground">
+                {normalizedPrompt}
+              </pre>
+            ) : (
+              <p className="text-sm italic text-muted-foreground">
+                No prompt file captured for this output.
+              </p>
+            )}
+          </div>
+        </div>
+      ) : null}
+
+      {activeTab === "artifact" && artifactRun ? (
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border/60 bg-card/60 px-4 py-3">
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold text-foreground">
+                {artifactRun.title}
+              </p>
+              <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground">
+                {artifactRun.localPath}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono text-muted-foreground">
+              {artifactBody ? (
+                <>
+                  <span>{lineCount} lines</span>
+                  <span>&bull;</span>
+                  <span>{characterCount.toLocaleString()} chars</span>
+                </>
+              ) : null}
+              <Button
+                className="h-8 px-3 text-[11px]"
+                disabled={!artifactBody}
+                onClick={() => setArtifactExpanded((current) => !current)}
+                variant="secondary"
+              >
+                {artifactExpanded ? "Collapse" : "Expand"}
+              </Button>
+            </div>
+          </div>
+
+          <div
+            className={`rounded-2xl border border-border bg-card p-5 ${
+              artifactExpanded ? "max-h-none" : "max-h-[28rem] overflow-auto"
+            }`}
+          >
+            {artifactLoading ? (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <RefreshCw className="h-4 w-4 animate-spin" />
+                Loading artifact content...
+              </div>
+            ) : artifactError ? (
+              <p className="text-sm text-destructive">{artifactError}</p>
+            ) : artifactBody ? (
+              <pre className="whitespace-pre-wrap break-words font-mono text-sm leading-relaxed text-foreground">
+                {artifactBody}
+              </pre>
+            ) : (
+              <p className="text-sm italic text-muted-foreground">
+                No artifact content available.
+              </p>
+            )}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export const Route = createFileRoute("/_authenticated/workflow-runs/$runId")({
   validateSearch: (search: Record<string, unknown>) => ({
     logView: search.logView === "session" ? "session" : undefined,
@@ -272,6 +474,9 @@ function WorkflowRunDetailPage() {
     new GetWorkflowEngineRunDetailUseCase(
       gatewayBundle.current.workflowEngineGateway,
     ),
+  );
+  const listArtifactRunsUseCase = useRef(
+    new ListArtifactRunsUseCase(gatewayBundle.current.workflowEngineGateway),
   );
   const submitStepApprovalDecisionUseCase = useRef(
     new SubmitStepApprovalDecisionUseCase(
@@ -344,17 +549,44 @@ function WorkflowRunDetailPage() {
         | null;
       if (data) {
         const processed = await processDetailData(data);
+        const engineLogs = engineDetail?.logs ?? [];
+        const promptFromLogs = extractBeginPromptFromLogs(engineLogs);
+        const resolvedRunPromptText = promptFromLogs ?? promptText;
+        const artifactRuns = await listArtifactRunsUseCase.current.execute(
+          processed.run.projectId,
+        );
+        const stepArtifactRuns = artifactRuns.filter(
+          (artifactRun) => artifactRun.workflowRunId === runId,
+        );
+        const logBackedOutputs = processed
+          ? buildFallbackOutputsFromLogs({
+              existingOutputs:
+                (processed.outputs ?? []) as WorkflowOutputRecord[],
+              logs: engineLogs,
+              projectId: processed.run.projectId,
+              runId,
+              steps: processed.steps ?? [],
+            })
+          : [];
+        const mergedOutputs = processed
+          ? mergeWorkflowOutputs(
+              (processed.outputs ?? []) as WorkflowOutputRecord[],
+              logBackedOutputs,
+            )
+          : [];
         setDetail(
           processed
             ? {
                 ...processed,
+                outputs: mergedOutputs,
                 logs: engineDetail?.logs ?? [],
                 sessions: engineDetail?.sessions ?? processed.sessions ?? [],
-                runPromptText: promptText,
+                artifactRuns: stepArtifactRuns,
+                runPromptText: resolvedRunPromptText,
               }
             : processed,
         );
-        setRunPromptText(promptText);
+        setRunPromptText(resolvedRunPromptText);
       }
     } catch (err: any) {
       console.error("Error loading run detail:", err);
@@ -737,6 +969,10 @@ function WorkflowRunDetailPage() {
           {detail.steps.map((step: any, index: number) => {
             const outputs =
               (outputsByStepId.get(step.id) as WorkflowOutputRecord[] | undefined) ?? [];
+            const stepArtifactRun =
+              ((detail.artifactRuns ?? []) as ArtifactRun[]).find(
+                (artifactRun) => artifactRun.workflowRunStepId === step.id,
+              ) ?? null;
             const decisions = ((detail.approvalDecisions ?? []).filter(
               (d: any) => d.workflowStepId === step.id,
             ) as any[]).sort((left, right) =>
@@ -809,8 +1045,13 @@ function WorkflowRunDetailPage() {
                     </div>
                   </div>
                 ) : (
-                  timelineItems.map((item) =>
-                    item.kind === "decision" ? (
+                  timelineItems.map((item) => {
+                    const outputAttempt =
+                      item.kind === "output"
+                        ? outputs.findIndex((output) => output.id === item.output.id) + 1
+                        : 0;
+
+                    return item.kind === "decision" ? (
                       <div key={item.key} className="flex justify-end mt-4">
                         <CollapsibleChatBubble
                           title="Follow-up"
@@ -832,6 +1073,7 @@ function WorkflowRunDetailPage() {
                               </span>
                               <p className="mt-1 text-[11px] font-mono text-muted-foreground uppercase tracking-wider">
                                 Step {index + 1}
+                                {outputAttempt > 1 ? ` • Attempt ${outputAttempt}` : ""}
                               </p>
                               {stepSession && (
                                 <p className="mt-1 text-[10px] font-mono text-muted-foreground flex items-center gap-1.5 flex-wrap">
@@ -860,16 +1102,23 @@ function WorkflowRunDetailPage() {
                             </div>
 
                             <div className="text-right">
-                              <span className="rounded-full bg-success/10 border border-success/20 px-3 py-1 text-[10px] font-medium text-success uppercase tracking-widest">
-                                Artifact Generated
+                              <span className={`rounded-full border px-3 py-1 text-[10px] font-medium uppercase tracking-widest ${
+                                stepArtifactRun
+                                  ? "bg-success/10 border-success/20 text-success"
+                                  : "bg-accent/10 border-accent/20 text-accent"
+                              }`}>
+                                {stepArtifactRun ? "Artifact Generated" : "Response Captured"}
                               </span>
                             </div>
                           </div>
 
                           <div className="mb-6">
-                            <ArtifactContentViewer
-                              content={item.output.contentMarkdown || "No output content."}
-                              gateway={gatewayBundle.current.localRunnerGateway}
+                            <StepOutputTabs
+                              artifactRun={stepArtifactRun}
+                              localRunnerGateway={
+                                gatewayBundle.current.localRunnerGateway
+                              }
+                              output={item.output}
                             />
                           </div>
 
@@ -889,8 +1138,8 @@ function WorkflowRunDetailPage() {
                           </details>
                         </div>
                       </div>
-                    ),
-                  )
+                    );
+                  })
                 )}
               </div>
             );

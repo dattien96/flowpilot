@@ -698,6 +698,101 @@ function normalizeAbsolutePath(workingDirectory: string, localPath: string) {
   return path.isAbsolute(localPath) ? localPath : path.join(workingDirectory, localPath);
 }
 
+type LocalWorkflowOutputArtifactSnapshot = {
+  artifactId: string;
+  snapshotDirectory: string;
+  manifestPath: string;
+  contentPath: string;
+};
+
+export async function createLocalWorkflowOutputArtifactSnapshot({
+  outputMarkdown,
+  promptText,
+  projectId,
+  stepType,
+  stderrText,
+  stdoutText,
+  workflowRunId,
+  workingDirectory,
+  commandText,
+  providerKey,
+  title = "Response.md",
+}: {
+  outputMarkdown: string;
+  promptText: string;
+  projectId: string;
+  stepType: string;
+  stderrText: string;
+  stdoutText: string;
+  workflowRunId: string;
+  workingDirectory: string;
+  commandText: string;
+  providerKey: string;
+  title?: string;
+}): Promise<LocalWorkflowOutputArtifactSnapshot> {
+  const artifactId = randomUUID();
+  const snapshotDirectory = path.join(
+    workingDirectory,
+    ".flowpilot",
+    "artifacts",
+    projectId,
+    workflowRunId,
+    stepType,
+    ".snapshots",
+    artifactId,
+  );
+  const contentPath = path.join(snapshotDirectory, title);
+  const promptPath = path.join(snapshotDirectory, "prompt.md");
+  const stdoutPath = path.join(snapshotDirectory, "stdout.txt");
+  const stderrPath = path.join(snapshotDirectory, "stderr.txt");
+  const commandPath = path.join(snapshotDirectory, "command.txt");
+  const manifestPath = path.join(snapshotDirectory, "manifest.json");
+  const now = new Date().toISOString();
+
+  await mkdir(snapshotDirectory, { recursive: true });
+  await writeFile(contentPath, outputMarkdown, "utf8");
+  await writeFile(promptPath, promptText, "utf8");
+  await writeFile(stdoutPath, stdoutText, "utf8");
+  await writeFile(stderrPath, stderrText, "utf8");
+  await writeFile(commandPath, commandText, "utf8");
+  await writeFile(
+    manifestPath,
+    JSON.stringify(
+      {
+        artifactId,
+        title,
+        sourceKind: "workflow_output",
+        projectId,
+        featureId: stepType,
+        workflowRunId,
+        workflowStepKey: stepType,
+        providerKey,
+        localPath: snapshotDirectory,
+        remotePath: "",
+        remoteUrl: "",
+        syncStatus: "local_only",
+        createdAt: now,
+        updatedAt: now,
+        promptPath,
+        stdoutPath,
+        stderrPath,
+        commandPath,
+        contentPath,
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+
+  return {
+    artifactId,
+    snapshotDirectory,
+    manifestPath,
+    contentPath,
+  };
+}
+
 async function insertLog(
   adminClient: SupabaseClient,
   workflowRunStepId: string,
@@ -713,6 +808,10 @@ async function insertLog(
   if (error) {
     throw new Error(`Unable to write workflow run log: ${error.message}`);
   }
+}
+
+function buildAiOutputLogMessage(outputMarkdown: string) {
+  return `ai_output:${outputMarkdown}`;
 }
 
 function buildWorkflowSessionLogMessage(event: string, details: Record<string, unknown>) {
@@ -842,6 +941,10 @@ function buildPromptSection(title: string, lines: string[]) {
   return [`## ${title}`, ...lines, ""].join("\n");
 }
 
+function buildOptionalPromptSection(title: string, lines: string[]) {
+  return lines.length > 0 ? buildPromptSection(title, lines) : null;
+}
+
 export function buildWorkflowStepPrompt({
   beginPrompt,
   inputArtifactPaths,
@@ -913,23 +1016,19 @@ export function buildWorkflowStepFollowUpPrompt({
   const sections = [
     followUpPrompt.trim(),
     "",
-    buildPromptSection(
+    buildOptionalPromptSection(
       "Artifacts To Review",
-      outputArtifactPaths.length === 0
-        ? ["- None"]
-        : outputArtifactPaths.map((outputPath) => `- ${outputPath}`),
+      outputArtifactPaths.map((outputPath) => `- ${outputPath}`),
     ),
-    buildPromptSection(
+    buildOptionalPromptSection(
       "Related Input Artifacts",
-      inputArtifactPaths.length === 0
-        ? ["- None"]
-        : inputArtifactPaths.map((inputPath) => `- ${inputPath}`),
+      inputArtifactPaths.map((inputPath) => `- ${inputPath}`),
     ),
     buildPromptSection("Execution Context", [`- Working directory: ${workingDirectory}`]),
     "Revise the current artifact according to the follow-up prompt and return the updated final result in Markdown.",
   ];
 
-  return sections.join("\n");
+  return sections.filter(Boolean).join("\n");
 }
 
 async function assertProjectMembership(
@@ -1257,6 +1356,18 @@ async function createArtifactOutputs({
   providerKey: string;
 }) {
   if (outputArtifactKeys.length === 0) {
+    await createLocalWorkflowOutputArtifactSnapshot({
+      outputMarkdown,
+      promptText,
+      projectId,
+      stepType,
+      stderrText,
+      stdoutText,
+      workflowRunId,
+      workingDirectory,
+      commandText,
+      providerKey,
+    });
     return null;
   }
 
@@ -1524,6 +1635,13 @@ export async function submitWorkflowStepFollowUpRuntime({
     if (result.status !== "success") {
       throw new Error(result.errorMessage || `Local runner execution failed for ${stepRun.step_type}.`);
     }
+
+    await insertLog(
+      adminClient,
+      stepRun.id,
+      "debug",
+      buildAiOutputLogMessage(result.outputMarkdown),
+    );
 
     const artifactRunId = await createArtifactOutputs({
       adminClient,
@@ -1839,6 +1957,13 @@ export async function runWorkflowStartRuntime({
       if (result.status !== "success") {
         throw new Error(result.errorMessage || `Local runner execution failed for ${stepPlan.stepType}.`);
       }
+
+      await insertLog(
+        adminClient,
+        stepRunId,
+        "debug",
+        buildAiOutputLogMessage(result.outputMarkdown),
+      );
 
       const artifactRunId = await createArtifactOutputs({
         adminClient,

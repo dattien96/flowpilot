@@ -424,6 +424,49 @@ class DemoGatewayBundle
     return Promise.resolve(demoWorkflowRuns.find((run) => run.id === runId) ?? null);
   }
 
+  async deleteWorkflowRuns(runIds: string[]) {
+    const ids = new Set(runIds);
+    if (ids.size === 0) {
+      return;
+    }
+
+    for (let index = demoWorkflowRuns.length - 1; index >= 0; index -= 1) {
+      if (ids.has(demoWorkflowRuns[index].id)) {
+        demoWorkflowRuns.splice(index, 1);
+      }
+    }
+
+    for (let index = demoWorkflowSteps.length - 1; index >= 0; index -= 1) {
+      if (ids.has(demoWorkflowSteps[index].workflowRunId)) {
+        demoWorkflowSteps.splice(index, 1);
+      }
+    }
+
+    for (let index = demoOutputs.length - 1; index >= 0; index -= 1) {
+      if (ids.has(demoOutputs[index].workflowRunId)) {
+        demoOutputs.splice(index, 1);
+      }
+    }
+
+    for (let index = demoApprovals.length - 1; index >= 0; index -= 1) {
+      if (ids.has(demoApprovals[index].workflowRunId)) {
+        demoApprovals.splice(index, 1);
+      }
+    }
+
+    for (let index = demoApprovalDecisions.length - 1; index >= 0; index -= 1) {
+      if (ids.has(demoApprovalDecisions[index].workflowRunId)) {
+        demoApprovalDecisions.splice(index, 1);
+      }
+    }
+
+    for (let index = demoLogs.length - 1; index >= 0; index -= 1) {
+      if (ids.has(demoLogs[index].workflowRunId)) {
+        demoLogs.splice(index, 1);
+      }
+    }
+  }
+
   async getWorkflowRunDetail(runId: string) {
     const run = demoWorkflowRuns.find((item) => item.id === runId);
 

@@ -22,6 +22,7 @@ export interface WorkflowGateway {
   listWorkflowRuns(): Promise<WorkflowRun[]>;
   getWorkflowRunById(runId: string): Promise<WorkflowRun | null>;
   getWorkflowRunDetail(runId: string): Promise<WorkflowRunDetail | null>;
+  deleteWorkflowRuns(runIds: string[]): Promise<void>;
   createWorkflowRun(payload: StartWorkflowRunPayload, definition: WorkflowDefinition): Promise<WorkflowRun>;
   updateWorkflowRun(runId: string, patch: Partial<WorkflowRun>): Promise<WorkflowRun>;
   updateWorkflowStep(stepId: string, patch: Partial<WorkflowStep>): Promise<WorkflowStep>;

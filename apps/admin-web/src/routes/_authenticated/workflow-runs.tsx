@@ -40,6 +40,9 @@ function WorkflowRunHistoryPage() {
     "all",
   );
   const [workflowFilter, setWorkflowFilter] = useState("all");
+  const [selectedRunIds, setSelectedRunIds] = useState<string[]>([]);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   useEffect(() => {
     const load = async () => {
@@ -60,6 +63,10 @@ function WorkflowRunHistoryPage() {
 
     void load();
   }, []);
+
+  useEffect(() => {
+    setSelectedRunIds([]);
+  }, [projectFilter, scopeFilter, workflowFilter]);
 
   const workflowById = useMemo(
     () => new Map(workflows.map((workflow) => [workflow.id, workflow])),
@@ -85,6 +92,48 @@ function WorkflowRunHistoryPage() {
       return matchesProject && matchesWorkflow && matchesScope;
     });
   }, [projectFilter, runs, scopeFilter, workflowById, workflowFilter]);
+
+  const selectedVisibleRunIds = useMemo(
+    () =>
+      visibleRuns
+        .filter((run) => selectedRunIds.includes(run.id))
+        .map((run) => run.id),
+    [selectedRunIds, visibleRuns],
+  );
+
+  const allVisibleSelected =
+    visibleRuns.length > 0 && selectedVisibleRunIds.length === visibleRuns.length;
+
+  async function deleteWorkflowRuns(runIds: string[]) {
+    const uniqueRunIds = [...new Set(runIds)].filter((runId) => runId.trim().length > 0);
+    if (uniqueRunIds.length === 0 || isDeleting) {
+      return;
+    }
+
+    const confirmationLabel =
+      uniqueRunIds.length === runs.length
+        ? "all workflow runs"
+        : `${uniqueRunIds.length} selected workflow run${uniqueRunIds.length === 1 ? "" : "s"}`;
+
+    if (!window.confirm(`Delete ${confirmationLabel}? This cannot be undone.`)) {
+      return;
+    }
+
+    setIsDeleting(true);
+    setDeleteError(null);
+
+    try {
+      await gatewayBundle.current.workflowEngineGateway.deleteWorkflowRuns(uniqueRunIds);
+      setRuns((current) => current.filter((run) => !uniqueRunIds.includes(run.id)));
+      setSelectedRunIds((current) => current.filter((runId) => !uniqueRunIds.includes(runId)));
+    } catch (error) {
+      setDeleteError(
+        error instanceof Error ? error.message : "Unable to delete workflow runs.",
+      );
+    } finally {
+      setIsDeleting(false);
+    }
+  }
 
   if (
     location.pathname !== "/workflow-runs" &&
@@ -155,6 +204,50 @@ function WorkflowRunHistoryPage() {
         </label>
       </div>
 
+      <div className="flex flex-wrap items-center gap-3 rounded-[1.5rem] border border-border bg-background/60 p-4">
+        <label className="flex items-center gap-3 text-sm text-muted-foreground">
+          <input
+            checked={allVisibleSelected}
+            className="h-4 w-4"
+            disabled={visibleRuns.length === 0 || isDeleting}
+            onChange={() =>
+              setSelectedRunIds(
+                allVisibleSelected ? [] : visibleRuns.map((run) => run.id),
+              )
+            }
+            type="checkbox"
+          />
+          <span>Select all visible</span>
+        </label>
+
+        <div className="ml-auto flex flex-wrap gap-2">
+          <Button
+            className="border border-red-500/30 text-red-600 hover:bg-red-500/10"
+            disabled={selectedVisibleRunIds.length === 0 || isDeleting}
+            onClick={() => void deleteWorkflowRuns(selectedVisibleRunIds)}
+            variant="secondary"
+          >
+            {isDeleting
+              ? "Deleting..."
+              : `Delete selected${selectedVisibleRunIds.length > 0 ? ` (${selectedVisibleRunIds.length})` : ""}`}
+          </Button>
+          <Button
+            className="border border-red-500/30 text-red-600 hover:bg-red-500/10"
+            disabled={runs.length === 0 || isDeleting}
+            onClick={() => void deleteWorkflowRuns(runs.map((run) => run.id))}
+            variant="secondary"
+          >
+            Delete all
+          </Button>
+        </div>
+      </div>
+
+      {deleteError ? (
+        <div className="rounded-[1.5rem] border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-700">
+          {deleteError}
+        </div>
+      ) : null}
+
       <div className="space-y-4">
         {visibleRuns.length === 0 ? (
           <div className="rounded-[1.5rem] border border-dashed border-border bg-background/60 p-5 text-sm text-muted-foreground">
@@ -164,17 +257,34 @@ function WorkflowRunHistoryPage() {
         {visibleRuns.map((run) => {
           const workflow = workflowById.get(run.workflowId);
           const runTitle = runTitles.get(run.id);
+          const selected = selectedRunIds.includes(run.id);
 
           return (
-            <Link
+            <div
               key={run.id}
-              to="/workflow-runs/$runId"
-              params={{ runId: run.id }}
-              className="block transition-all hover:opacity-90 hover:-translate-y-0.5"
             >
               <div className="rounded-[1.5rem] border border-border bg-background/60 p-5">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
+                <div className="flex flex-wrap items-start gap-3">
+                  <label className="mt-1 flex shrink-0 items-center">
+                    <input
+                      checked={selected}
+                      className="h-4 w-4"
+                      disabled={isDeleting}
+                      onChange={() =>
+                        setSelectedRunIds((current) =>
+                          current.includes(run.id)
+                            ? current.filter((id) => id !== run.id)
+                            : [...current, run.id],
+                        )
+                      }
+                      type="checkbox"
+                    />
+                  </label>
+                  <Link
+                    to="/workflow-runs/$runId"
+                    params={{ runId: run.id }}
+                    className="min-w-0 flex-1 transition-all hover:opacity-90 hover:-translate-y-0.5"
+                  >
                     <h3 className="text-xl font-semibold">
                       {runTitle ?? workflow?.name ?? run.workflowId}
                     </h3>
@@ -190,18 +300,26 @@ function WorkflowRunHistoryPage() {
                     <p className="mt-1 text-sm text-muted-foreground">
                       Started: {new Date(run.startedAt).toLocaleString()}
                     </p>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
+                  </Link>
+                  <div className="flex flex-wrap items-center gap-2">
                     <span className="rounded-full border border-border px-3 py-1 text-xs font-semibold text-muted-foreground">
                       {workflow?.projectId ? "Private" : "Global"}
                     </span>
                     <span className="rounded-full bg-accent px-3 py-1 text-xs font-semibold text-accent-foreground">
                       {run.status}
                     </span>
+                    <Button
+                      className="border border-red-500/30 text-red-600 hover:bg-red-500/10"
+                      disabled={isDeleting}
+                      onClick={() => void deleteWorkflowRuns([run.id])}
+                      variant="secondary"
+                    >
+                      Delete
+                    </Button>
                   </div>
                 </div>
               </div>
-            </Link>
+            </div>
           );
         })}
       </div>

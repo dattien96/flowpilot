@@ -1,8 +1,13 @@
-import { describe, expect, it, vi } from "vitest";
+import { mkdtemp, readFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   buildWorkflowStepFollowUpPrompt,
   buildWorkflowStepPrompt,
+  createLocalWorkflowOutputArtifactSnapshot,
   deactivateWorkflowRunSession,
   finalizeWorkflowRunSessions,
   resolveProviderKeyFromModel,
@@ -10,6 +15,10 @@ import {
 } from "./workflow-start-runtime";
 
 describe("workflow-start-runtime", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("routes supported models to the correct local provider", () => {
     expect(resolveProviderKeyFromModel("gpt-5.5")).toBe("codex");
     expect(resolveProviderKeyFromModel("gemini-pro")).toBe("gemini");
@@ -52,6 +61,47 @@ describe("workflow-start-runtime", () => {
     expect(prompt).toContain("C:/repo/.flowpilot/artifacts/output.md");
     expect(prompt).not.toContain("## Begin Prompt");
     expect(prompt).not.toContain("## Prompt Base");
+  });
+
+  it("omits empty follow-up prompt sections instead of rendering none markers", () => {
+    const prompt = buildWorkflowStepFollowUpPrompt({
+      followUpPrompt: "Make the artifact shorter.",
+      inputArtifactPaths: [],
+      outputArtifactPaths: [],
+      workingDirectory: "C:/repo",
+    });
+
+    expect(prompt).not.toContain("## Artifacts To Review");
+    expect(prompt).not.toContain("## Related Input Artifacts");
+    expect(prompt).not.toContain("- None");
+    expect(prompt).toContain("## Execution Context");
+  });
+
+  it("captures a local artifact snapshot even when a step has no output binding", async () => {
+    const workingDirectory = await mkdtemp(path.join(os.tmpdir(), "flowpilot-runtime-"));
+    const snapshot = await createLocalWorkflowOutputArtifactSnapshot({
+      outputMarkdown: "# Result\n\nHello from the step.",
+      promptText: "## Begin Prompt\nsay hello",
+      projectId: "project-1",
+      stepType: "test_codex_step",
+      stderrText: "",
+      stdoutText: "Hello from the step.",
+      workflowRunId: "run-123",
+      workingDirectory,
+      commandText: "codex exec < /tmp/prompt.txt",
+      providerKey: "codex",
+    });
+
+    const manifest = JSON.parse(await readFile(snapshot.manifestPath, "utf8"));
+    const content = await readFile(snapshot.contentPath, "utf8");
+
+    expect(snapshot.snapshotDirectory).toContain(
+      path.join(".flowpilot", "artifacts", "project-1", "run-123", "test_codex_step"),
+    );
+    expect(manifest.workflowRunId).toBe("run-123");
+    expect(manifest.sourceKind).toBe("workflow_output");
+    expect(manifest.title).toBe("Response.md");
+    expect(content).toContain("Hello from the step.");
   });
 
   it("persists the real provider session id back to the workflow session row", async () => {
