@@ -35,7 +35,12 @@ Deno.serve(async (req) => {
 
     const currentStep = await getWorkflowRunStep(adminClient, stepId);
     if (currentStep.status !== "WAITING_USER_APPROVAL") {
-      return workflowTextResponse("Step is not waiting for approval.", { status: 400 });
+      if (approve) {
+        return workflowTextResponse("Step is not waiting for approval.", { status: 400 });
+      }
+      if (currentStep.status !== "DONE") {
+        return workflowTextResponse("Can only request changes on waiting or completed steps.", { status: 400 });
+      }
     }
 
     if (approve) {

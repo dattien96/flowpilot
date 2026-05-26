@@ -115,3 +115,68 @@ Examples:
 - send Telegram notifications from workflow steps
 
 The system must not pretend an MCP is available if the runner cannot actually use it.
+
+---
+
+# 8. Context Memory Model
+
+Beyond MCP and text-based context, FlowPilot maintains a three-tier memory model for workflow-generated content.
+
+This is critical because AI providers cannot receive every artifact ever produced. The system must intelligently select the smallest useful context set per step.
+
+## 8.1 Durable Memory
+
+The raw artifact file — the complete output of a workflow step — stored as the source of truth.
+
+- Stored in Supabase Storage (primary) and optionally synced to Google Drive.
+- Used for full viewing, audit, export, and re-indexing.
+- Never modified after creation. Retries create new versions.
+
+## 8.2 Working Memory
+
+A compact, structured summary derived from the raw artifact after each step completes.
+
+- Stored in the `artifact_memories` table in Supabase Postgres.
+- Contains: summary, key decisions, constraints, assumptions, open questions, keywords, source refs, token estimate, and a vector embedding.
+- The embedding allows semantic similarity search across all past artifact outputs.
+- Fast to query. Supports search, filtering, ranking, and prompt assembly without loading full files.
+
+## 8.3 Prompt Memory
+
+The final runtime context assembled and injected into the AI provider prompt for one specific workflow step.
+
+- Assembled by the Context Resolver immediately before each step executes.
+- Controlled by per-step context slots and token budgets.
+- Never a dump of all artifacts — always a selective, ranked, budget-constrained set.
+- Audited in `workflow_prompt_context_items` so every step records what memory was actually used.
+
+## 8.4 Context Slots
+
+Each workflow step declares its context needs through named context slots. A context slot is a named resolver — a rule that says "go get this kind of context."
+
+Slot resolver types:
+
+| Resolver | Source | When to use |
+|---|---|---|
+| `project.brief` | Project record | Always — gives AI the project summary |
+| `run.input` | Workflow run intake form | Always — the user's original task description |
+| `step.previous.brief` | Previous step's artifact memory summary | Always — gives continuity |
+| `step.{n}.brief` | Specific step N artifact memory summary | When a non-adjacent step output is needed |
+| `artifact.required` | Input artifact definitions declared on the step | Deterministic — step needs this specific artifact |
+| `semantic.search` | pgvector search over `artifact_memories` | Dynamic — find the most relevant past context |
+| `drive.file` | Google Drive or local file path | When a specific document must be included |
+| `mcp.context` | Live MCP data (Jira ticket, Figma spec, etc.) | When step requires real-time external data |
+| `static` | Hardcoded text in step definition | Shared prompt fragments, step rules |
+
+Slots are configured per step definition as JSONB, not hardcoded in application logic. This means context requirements are flexible and editable without code changes.
+
+## 8.5 HyperRAG Query Construction
+
+For `semantic.search` slots, the system must construct a short, focused query (10–50 tokens) before calling pgvector. Embedding a long prompt produces a blurry result. The query is constructed from structured metadata:
+
+1. **Template-based (default):** use a `query_template` field in the slot config, e.g. `"{{feature_name}} {{step.description}}"`.
+2. **AI-reformulated (optional):** a cheap micro-call (Gemini Flash / GPT-mini) generates a focused search query from the step context before the main AI call.
+
+The resolved short query is then embedded and used to search `artifact_memories` for the top-K relevant working memory records.
+
+In short: we have a prompt -> use 1 prelight AI (small model) to summary it, use for search RAG before include to main prompt

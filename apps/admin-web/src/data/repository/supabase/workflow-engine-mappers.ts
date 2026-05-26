@@ -9,6 +9,7 @@ import type {
   WorkflowRun,
   WorkflowRunStep,
   WorkflowRunLog,
+  WorkflowRunSession,
   StepType,
   WorkflowRunStatus,
   WorkflowStepStatus,
@@ -165,5 +166,21 @@ export function mapWorkflowRunLog(row: SupabaseRow): WorkflowRunLog {
     logLevel: row.log_level as "info" | "warn" | "error" | "debug",
     message: String(row.message),
     createdAt: String(row.created_at),
+  };
+}
+
+export function mapWorkflowRunSession(row: SupabaseRow): WorkflowRunSession {
+  return {
+    id: String(row.id),
+    workflowRunId: String(row.workflow_run_id),
+    provider: String(row.provider),
+    model: String(row.model),
+    transportType: String(row.transport_type),
+    providerSessionId: row.provider_session_id ? String(row.provider_session_id) : null,
+    processKey: row.process_key ? String(row.process_key) : null,
+    status: String(row.status),
+    metadataJson: row.metadata_json ? (row.metadata_json as Record<string, any>) : null,
+    startedAt: String(row.started_at),
+    completedAt: row.completed_at ? String(row.completed_at) : null,
   };
 }

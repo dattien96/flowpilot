@@ -219,17 +219,40 @@ type PromptExecutionRequest struct {
 }
 
 type PromptExecutionResult struct {
-	Status         string   `json:"status"`
-	RunID          string   `json:"runId"`
-	ProviderKey    string   `json:"providerKey"`
-	ModelName      *string  `json:"modelName"`
-	Command        string   `json:"command"`
-	StdoutSummary  string   `json:"stdoutSummary"`
-	StderrSummary  string   `json:"stderrSummary"`
-	OutputMarkdown string   `json:"outputMarkdown"`
-	ArtifactPaths  []string `json:"artifactPaths"`
-	StartedAt      string   `json:"startedAt"`
-	CompletedAt    string   `json:"completedAt"`
-	ExitCode       int      `json:"exitCode"`
-	ErrorMessage   string   `json:"errorMessage"`
+	Status            string   `json:"status"`
+	RunID             string   `json:"runId"`
+	ProviderKey       string   `json:"providerKey"`
+	ModelName         *string  `json:"modelName"`
+	ProviderSessionID string   `json:"providerSessionId,omitempty"`
+	Command           string   `json:"command"`
+	StdoutSummary     string   `json:"stdoutSummary"`
+	StderrSummary     string   `json:"stderrSummary"`
+	OutputMarkdown    string   `json:"outputMarkdown"`
+	ArtifactPaths     []string `json:"artifactPaths"`
+	StartedAt         string   `json:"startedAt"`
+	CompletedAt       string   `json:"completedAt"`
+	ExitCode          int      `json:"exitCode"`
+	ErrorMessage      string   `json:"errorMessage"`
+}
+
+type AiSessionStartRequest struct {
+	ProviderKey      string  `json:"providerKey"`
+	ModelName        string  `json:"modelName"`
+	ReasoningEffort  *string `json:"reasoningEffort"`
+	WorkingDirectory string  `json:"workingDirectory"`
+	ApprovalMode     *string `json:"approvalMode"`
+	AllowWrite       bool    `json:"allowWrite"`
+}
+
+type AiSessionHandle struct {
+	TransportType     string  `json:"transportType"`
+	ProviderSessionID string  `json:"providerSessionId"`
+	ProcessKey        *string `json:"processKey"`
+}
+
+type AiSessionMessageRequest struct {
+	Session          AiSessionHandle `json:"session"`
+	Prompt           string          `json:"prompt"`
+	SkillIds         []string        `json:"skillIds"`
+	ContextSourceIds []string        `json:"contextSourceIds"`
 }

@@ -203,6 +203,20 @@ describe("SupabaseGatewayBundle integrations", () => {
   });
 });
 
+describe("SupabaseGatewayBundle workflow runs", () => {
+  it("deletes workflow runs by id list", async () => {
+    const inFn = vi.fn().mockResolvedValue({ error: null });
+    const deleteFn = vi.fn(() => ({ in: inFn }));
+    const from = vi.fn(() => ({ delete: deleteFn }));
+
+    const gateway = createSupabaseGatewayBundle({ from } as never).workflowGateway;
+    await gateway.deleteWorkflowRuns(["run-1", "run-2"]);
+
+    expect(from).toHaveBeenCalledWith("workflow_runs");
+    expect(inFn).toHaveBeenCalledWith("id", ["run-1", "run-2"]);
+  });
+});
+
 describe("SupabaseGatewayBundle project workspace bindings", () => {
   it("lists bindings ordered by creation time", async () => {
     const order = vi.fn().mockResolvedValue({

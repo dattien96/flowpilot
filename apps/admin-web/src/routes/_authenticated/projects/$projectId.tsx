@@ -22,6 +22,8 @@ import type { ProjectWorkspaceBinding } from "@/domain/model/entity/project-work
 import type { StepDefinition, Workflow } from "@/domain/model/entity/workflow-engine";
 import { ensureProjectHasUsableBinding } from "@/features/projects/project-binding-launch-guard";
 
+import { RefreshCw } from "lucide-react";
+
 export const Route = createFileRoute("/_authenticated/projects/$projectId")({
   loader: async ({ params }) => {
     const gateways = await createGatewayBundle();
@@ -213,7 +215,15 @@ function ProjectExecutionLauncher({
   };
 
   return (
-    <section className="rounded-[1.5rem] border border-border bg-background/60 p-5">
+    <section className="relative overflow-hidden rounded-[1.5rem] border border-border bg-background/60 p-5">
+      {launching && (
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-background/50 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-3 rounded-2xl border border-border bg-card p-6 shadow-lg">
+            <RefreshCw className="h-8 w-8 animate-spin text-accent" />
+            <p className="font-medium">Starting execution...</p>
+          </div>
+        </div>
+      )}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h2 className="text-xl font-semibold">Launch Execution</h2>

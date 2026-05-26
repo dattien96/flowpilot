@@ -5,6 +5,7 @@ import {
   Outlet,
   useLocation,
 } from "@tanstack/react-router";
+import { ArrowRight } from "lucide-react";
 
 import { PageFrame } from "@/components/common/page-frame";
 import { Button } from "@/components/ui/button";
@@ -40,6 +41,9 @@ function WorkflowRunHistoryPage() {
     "all",
   );
   const [workflowFilter, setWorkflowFilter] = useState("all");
+  const [selectedRunIds, setSelectedRunIds] = useState<string[]>([]);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   useEffect(() => {
     const load = async () => {
@@ -60,6 +64,10 @@ function WorkflowRunHistoryPage() {
 
     void load();
   }, []);
+
+  useEffect(() => {
+    setSelectedRunIds([]);
+  }, [projectFilter, scopeFilter, workflowFilter]);
 
   const workflowById = useMemo(
     () => new Map(workflows.map((workflow) => [workflow.id, workflow])),
@@ -86,6 +94,48 @@ function WorkflowRunHistoryPage() {
     });
   }, [projectFilter, runs, scopeFilter, workflowById, workflowFilter]);
 
+  const selectedVisibleRunIds = useMemo(
+    () =>
+      visibleRuns
+        .filter((run) => selectedRunIds.includes(run.id))
+        .map((run) => run.id),
+    [selectedRunIds, visibleRuns],
+  );
+
+  const allVisibleSelected =
+    visibleRuns.length > 0 && selectedVisibleRunIds.length === visibleRuns.length;
+
+  async function deleteWorkflowRuns(runIds: string[]) {
+    const uniqueRunIds = [...new Set(runIds)].filter((runId) => runId.trim().length > 0);
+    if (uniqueRunIds.length === 0 || isDeleting) {
+      return;
+    }
+
+    const confirmationLabel =
+      uniqueRunIds.length === runs.length
+        ? "all workflow runs"
+        : `${uniqueRunIds.length} selected workflow run${uniqueRunIds.length === 1 ? "" : "s"}`;
+
+    if (!window.confirm(`Delete ${confirmationLabel}? This cannot be undone.`)) {
+      return;
+    }
+
+    setIsDeleting(true);
+    setDeleteError(null);
+
+    try {
+      await gatewayBundle.current.workflowEngineGateway.deleteWorkflowRuns(uniqueRunIds);
+      setRuns((current) => current.filter((run) => !uniqueRunIds.includes(run.id)));
+      setSelectedRunIds((current) => current.filter((runId) => !uniqueRunIds.includes(runId)));
+    } catch (error) {
+      setDeleteError(
+        error instanceof Error ? error.message : "Unable to delete workflow runs.",
+      );
+    } finally {
+      setIsDeleting(false);
+    }
+  }
+
   if (
     location.pathname !== "/workflow-runs" &&
     location.pathname !== "/workflow-runs/"
@@ -100,19 +150,23 @@ function WorkflowRunHistoryPage() {
       actions={
         <div className="flex flex-wrap gap-2">
           <Link to="/workflows" search={{ projectId: undefined }}>
-            <Button variant="secondary">Workflow definitions</Button>
+            <Button variant="secondary" className="rounded-xl border border-border bg-background/50 hover:bg-muted/80 backdrop-blur-sm transition-all duration-300">
+              Workflow definitions
+            </Button>
           </Link>
           <Link to="/workflows/create" search={{ projectId: undefined }}>
-            <Button>Create workflow</Button>
+            <Button className="rounded-xl shadow-sm hover:shadow-md hover:opacity-90 transition-all duration-300">
+              Create workflow
+            </Button>
           </Link>
         </div>
       }
     >
-      <div className="grid gap-4 rounded-[1.5rem] border border-border bg-background/60 p-5 md:grid-cols-3">
-        <label className="space-y-2 text-sm">
-          <span className="font-medium">Project</span>
+      <div className="grid gap-4 rounded-[1.5rem] border border-border/60 bg-card/45 p-5 backdrop-blur-sm md:grid-cols-3">
+        <label className="space-y-2 text-sm flex flex-col">
+          <span className="font-semibold text-muted-foreground mb-1">Project</span>
           <select
-            className="w-full rounded-2xl border border-border bg-card px-4 py-3"
+            className="w-full rounded-xl border border-border/80 bg-background/50 px-4 py-2.5 focus:outline-none focus:ring-1 focus:ring-primary/40 transition-all cursor-pointer font-medium"
             value={projectFilter}
             onChange={(event) => setProjectFilter(event.target.value)}
           >
@@ -124,10 +178,10 @@ function WorkflowRunHistoryPage() {
             ))}
           </select>
         </label>
-        <label className="space-y-2 text-sm">
-          <span className="font-medium">Scope</span>
+        <label className="space-y-2 text-sm flex flex-col">
+          <span className="font-semibold text-muted-foreground mb-1">Scope</span>
           <select
-            className="w-full rounded-2xl border border-border bg-card px-4 py-3"
+            className="w-full rounded-xl border border-border/80 bg-background/50 px-4 py-2.5 focus:outline-none focus:ring-1 focus:ring-primary/40 transition-all cursor-pointer font-medium"
             value={scopeFilter}
             onChange={(event) =>
               setScopeFilter(event.target.value as typeof scopeFilter)
@@ -138,10 +192,10 @@ function WorkflowRunHistoryPage() {
             <option value="private">Private workflow runs</option>
           </select>
         </label>
-        <label className="space-y-2 text-sm">
-          <span className="font-medium">Workflow type</span>
+        <label className="space-y-2 text-sm flex flex-col">
+          <span className="font-semibold text-muted-foreground mb-1">Workflow type</span>
           <select
-            className="w-full rounded-2xl border border-border bg-card px-4 py-3"
+            className="w-full rounded-xl border border-border/80 bg-background/50 px-4 py-2.5 focus:outline-none focus:ring-1 focus:ring-primary/40 transition-all cursor-pointer font-medium"
             value={workflowFilter}
             onChange={(event) => setWorkflowFilter(event.target.value)}
           >
@@ -155,53 +209,161 @@ function WorkflowRunHistoryPage() {
         </label>
       </div>
 
-      <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-4 rounded-[1.5rem] border border-border/60 bg-card/45 p-4 backdrop-blur-sm shadow-sm">
+        <label className="flex items-center gap-3 text-sm font-medium text-muted-foreground cursor-pointer select-none">
+          <input
+            checked={allVisibleSelected}
+            className="h-4 w-4 rounded border-border/80 bg-background/50 text-primary focus:ring-primary/40 transition-all cursor-pointer"
+            disabled={visibleRuns.length === 0 || isDeleting}
+            onChange={() =>
+              setSelectedRunIds(
+                allVisibleSelected ? [] : visibleRuns.map((run) => run.id),
+              )
+            }
+            type="checkbox"
+          />
+          <span>Select all visible</span>
+        </label>
+
+        <div className="ml-auto flex flex-wrap gap-2">
+          <Button
+            className="border border-red-500/20 text-red-600 hover:bg-red-500/10 hover:border-red-500/40 rounded-xl px-4 py-2 text-sm font-semibold transition-all duration-300"
+            disabled={selectedVisibleRunIds.length === 0 || isDeleting}
+            onClick={() => void deleteWorkflowRuns(selectedVisibleRunIds)}
+            variant="secondary"
+          >
+            {isDeleting
+              ? "Deleting..."
+              : `Delete selected${selectedVisibleRunIds.length > 0 ? ` (${selectedVisibleRunIds.length})` : ""}`}
+          </Button>
+          <Button
+            className="border border-red-500/20 text-red-600 hover:bg-red-500/10 hover:border-red-500/40 rounded-xl px-4 py-2 text-sm font-semibold transition-all duration-300"
+            disabled={runs.length === 0 || isDeleting}
+            onClick={() => void deleteWorkflowRuns(runs.map((run) => run.id))}
+            variant="secondary"
+          >
+            Delete all
+          </Button>
+        </div>
+      </div>
+
+      {deleteError ? (
+        <div className="rounded-[1.5rem] border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-700 font-medium">
+          {deleteError}
+        </div>
+      ) : null}
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {visibleRuns.length === 0 ? (
-          <div className="rounded-[1.5rem] border border-dashed border-border bg-background/60 p-5 text-sm text-muted-foreground">
+          <div className="rounded-[1.5rem] border border-dashed border-border bg-background/60 p-6 text-sm text-muted-foreground md:col-span-2 lg:col-span-3">
             No workflow runs match the current filters.
           </div>
         ) : null}
         {visibleRuns.map((run) => {
           const workflow = workflowById.get(run.workflowId);
           const runTitle = runTitles.get(run.id);
+          const selected = selectedRunIds.includes(run.id);
+          const status = (run.status || "").toLowerCase();
+
+          let gradientClass = "from-violet-500/80 via-purple-500/80 to-blue-500/80";
+          let statusBadgeClass = "bg-muted/50 text-muted-foreground border-border/50";
+          if (status === "completed" || status === "success") {
+            gradientClass = "from-emerald-500/80 via-teal-500/80 to-cyan-500/80";
+            statusBadgeClass = "bg-emerald-500/10 text-emerald-500 border-emerald-500/20";
+          } else if (status === "running" || status === "active" || status === "pending") {
+            gradientClass = "from-blue-500/80 via-sky-500/80 to-cyan-500/80";
+            statusBadgeClass = "bg-blue-500/10 text-blue-500 border-blue-500/20";
+          } else if (status === "failed" || status === "error") {
+            gradientClass = "from-red-500/80 via-rose-500/80 to-orange-500/80";
+            statusBadgeClass = "bg-red-500/10 text-red-500 border-red-500/20";
+          }
 
           return (
-            <Link
+            <div
               key={run.id}
-              to="/workflow-runs/$runId"
-              params={{ runId: run.id }}
-              className="block transition-all hover:opacity-90 hover:-translate-y-0.5"
+              className={`group relative flex flex-col justify-between overflow-hidden rounded-[1.8rem] border bg-gradient-to-b from-card/90 to-background/40 backdrop-blur-md p-6 shadow-sm hover:shadow-xl hover:border-primary/20 hover:-translate-y-1 transition-all duration-300 ${
+                selected ? "border-primary/40 shadow-md ring-1 ring-primary/25" : "border-border/60"
+              }`}
             >
-              <div className="rounded-[1.5rem] border border-border bg-background/60 p-5">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <h3 className="text-xl font-semibold">
-                      {runTitle ?? workflow?.name ?? run.workflowId}
-                    </h3>
-                    {runTitle ? (
-                      <p className="mt-2 break-all font-mono text-xs text-muted-foreground">
-                        Run ID: {run.id}
+              {/* Dynamic top gradient line based on status */}
+              <div className={`absolute top-0 left-0 right-0 h-[3px] opacity-70 group-hover:opacity-100 transition-opacity bg-gradient-to-r ${gradientClass}`} />
+
+              <div className="flex flex-col h-full">
+                {/* Header with selection checkbox */}
+                <div className="flex items-start justify-between gap-3 mb-4">
+                  <div className="flex items-start gap-2.5 min-w-0">
+                    <label className="mt-1 flex shrink-0 items-center cursor-pointer">
+                      <input
+                        checked={selected}
+                        className="h-4 w-4 rounded border-border/80 bg-background/50 text-primary focus:ring-primary/40 transition-all cursor-pointer"
+                        disabled={isDeleting}
+                        onChange={() =>
+                          setSelectedRunIds((current) =>
+                            current.includes(run.id)
+                              ? current.filter((id) => id !== run.id)
+                              : [...current, run.id],
+                          )
+                        }
+                        type="checkbox"
+                      />
+                    </label>
+                    <div className="min-w-0">
+                      <Link
+                        to="/workflow-runs/$runId"
+                        params={{ runId: run.id }}
+                        className="block hover:underline"
+                      >
+                        <h3 className="text-lg font-bold tracking-tight text-foreground group-hover:text-primary transition-colors duration-300 truncate">
+                          {runTitle ?? workflow?.name ?? run.workflowId}
+                        </h3>
+                      </Link>
+                      <p className="font-mono text-[9px] tracking-wider text-muted-foreground uppercase mt-1 truncate">
+                        ID: {run.id}
                       </p>
-                    ) : null}
-                    <p className="mt-2 text-sm text-muted-foreground">
-                      Project:{" "}
-                      {projectNameById.get(run.projectId) ?? run.projectId}
-                    </p>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      Started: {new Date(run.startedAt).toLocaleString()}
-                    </p>
+                    </div>
                   </div>
-                  <div className="flex flex-wrap gap-2">
-                    <span className="rounded-full border border-border px-3 py-1 text-xs font-semibold text-muted-foreground">
-                      {workflow?.projectId ? "Private" : "Global"}
-                    </span>
-                    <span className="rounded-full bg-accent px-3 py-1 text-xs font-semibold text-accent-foreground">
+                  <div className="flex flex-col items-end gap-1.5 shrink-0">
+                    <span className={`rounded-full px-2.5 py-0.5 text-[10px] font-semibold border uppercase tracking-wider ${statusBadgeClass}`}>
                       {run.status}
+                    </span>
+                    <span className={`rounded-full px-2.5 py-0.5 text-[10px] font-semibold border border-border/50 bg-muted/30 text-muted-foreground uppercase tracking-wider`}>
+                      {workflow?.projectId ? "Private" : "Global"}
                     </span>
                   </div>
                 </div>
+
+                {/* Details Area */}
+                <div className="space-y-2.5 border-t border-border/40 pt-4 mb-6 text-xs text-muted-foreground/90">
+                  <p className="font-medium text-foreground/75 truncate">
+                    Project: <span className="font-normal text-muted-foreground">{projectNameById.get(run.projectId) ?? run.projectId}</span>
+                  </p>
+                  <p className="font-medium text-foreground/75 truncate">
+                    Started: <span className="font-normal text-muted-foreground">{new Date(run.startedAt).toLocaleString()}</span>
+                  </p>
+                </div>
               </div>
-            </Link>
+
+              {/* Actions Footer */}
+              <div className="flex items-center justify-between pt-2 border-t border-border/40 mt-auto">
+                <Button
+                  className="border border-red-500/20 text-red-600 hover:bg-red-500/10 hover:border-red-500/40 rounded-xl px-2.5 py-1 h-8 text-[11px] font-semibold transition-all duration-300"
+                  disabled={isDeleting}
+                  onClick={() => void deleteWorkflowRuns([run.id])}
+                  variant="secondary"
+                >
+                  Delete
+                </Button>
+                <Link
+                  to="/workflow-runs/$runId"
+                  params={{ runId: run.id }}
+                >
+                  <Button size="sm" variant="secondary" className="rounded-xl bg-muted/60 hover:bg-primary hover:text-primary-foreground border border-border/40 h-8 text-xs transition-all duration-300 group/btn">
+                    Open run
+                    <ArrowRight className="ml-1.5 h-3.5 w-3.5 group-hover/btn:translate-x-1 transition-transform duration-300" />
+                  </Button>
+                </Link>
+              </div>
+            </div>
           );
         })}
       </div>

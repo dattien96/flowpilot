@@ -201,6 +201,23 @@ describe("SupabaseWorkflowEngineGateway", () => {
     expect(result[0].projectId).toBe(null);
   });
 
+  it("deletes workflow runs by id list", async () => {
+    const inSpy = vi.fn().mockResolvedValue({ error: null });
+    const deleteSpy = vi.fn(() => ({ in: inSpy }));
+    const from = vi.fn((table: string) => {
+      if (table === "workflow_runs") {
+        return { delete: deleteSpy };
+      }
+      throw new Error(`Unexpected table ${table}`);
+    });
+
+    const gateway = new SupabaseWorkflowEngineGateway({ from } as any);
+    await gateway.deleteWorkflowRuns(["run-1", "run-2"]);
+
+    expect(from).toHaveBeenCalledWith("workflow_runs");
+    expect(inSpy).toHaveBeenCalledWith("id", ["run-1", "run-2"]);
+  });
+
   it("throws a clear error when workflow update returns no row", async () => {
     const maybeSingle = vi.fn().mockResolvedValue({
       data: null,
@@ -402,28 +419,74 @@ describe("SupabaseWorkflowEngineGateway", () => {
     expect(edgeSpy).not.toHaveBeenCalledWith("workflow-engine-start-run", expect.anything());
   });
 
-  it("submits approval/rejection decision via edge function", async () => {
-    vi.spyOn(edgeClient, "invokeSupabaseEdgeFunction").mockResolvedValueOnce(
+  it("submits approval decisions via edge function", async () => {
+    const edgeSpy = vi.spyOn(edgeClient, "invokeSupabaseEdgeFunction").mockResolvedValueOnce(
       {
         id: "wrs-1",
         workflow_run_id: "run-1",
         step_type: "tech_spec",
-        status: "PENDING",
+        status: "DONE",
         retry_count: 3,
-        rejection_note: "Improve detail",
+        rejection_note: null,
       } as any
     );
     const from = vi.fn(() => ({}));
 
     const gateway = new SupabaseWorkflowEngineGateway({ from } as any);
-    const result = await gateway.submitStepApproval("wrs-1", false, "Improve detail");
+    const result = await gateway.submitStepApproval("wrs-1", true, "Looks good");
 
-    expect(edgeClient.invokeSupabaseEdgeFunction).toHaveBeenCalledWith(
+    expect(edgeSpy).toHaveBeenCalledWith(
       "workflow-engine-submit-step-approval",
-      { stepId: "wrs-1", approve: false, comment: "Improve detail" }
+      { stepId: "wrs-1", approve: true, comment: "Looks good" }
     );
-    expect(result.status).toBe("PENDING");
+    expect(result.status).toBe("DONE");
     expect(result.retryCount).toBe(3);
-    expect(result.rejectionNote).toBe("Improve detail");
+    expect(result.rejectionNote).toBeNull();
+  });
+
+  it("submits follow-up prompts through the local runtime API in the browser", async () => {
+    vi.stubGlobal("window", {});
+    const edgeSpy = vi.spyOn(edgeClient, "invokeSupabaseEdgeFunction");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          id: "wrs-1",
+          workflow_run_id: "run-1",
+          step_type: "tech_spec",
+          status: "DONE",
+          retry_count: 4,
+          rejection_note: null,
+        }),
+      }),
+    );
+    const from = vi.fn(() => ({}));
+
+    const gateway = new SupabaseWorkflowEngineGateway({
+      from,
+      auth: {
+        getSession: vi.fn(async () => ({
+          data: { session: { access_token: "token-123" } },
+        })),
+      },
+    } as any);
+    const result = await gateway.submitStepApproval("wrs-1", false, "Make it shorter");
+
+    expect(fetch).toHaveBeenCalledWith("/api/workflow-engine/submit-step-approval", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer token-123",
+      },
+      body: JSON.stringify({
+        stepId: "wrs-1",
+        approve: false,
+        comment: "Make it shorter",
+      }),
+    });
+    expect(edgeSpy).not.toHaveBeenCalled();
+    expect(result.status).toBe("DONE");
+    expect(result.retryCount).toBe(4);
   });
 });

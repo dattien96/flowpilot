@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -111,12 +112,15 @@ var (
 
 		return responseBody, nil
 	}
+	safeShellTokenPattern = regexp.MustCompile(`^[A-Za-z0-9_./:=+-]+$`)
 )
 
 type Runner struct {
 	workspace   string
 	startedAt   time.Time
 	secretStore SecretStore
+	sessionsMu  sync.Mutex
+	sessions    map[string]*LiveSession
 }
 
 func New(workspace string) (*Runner, error) {
@@ -129,6 +133,7 @@ func New(workspace string) (*Runner, error) {
 		workspace:   resolved,
 		startedAt:   time.Now().UTC(),
 		secretStore: newDefaultSecretStore(),
+		sessions:    make(map[string]*LiveSession),
 	}, nil
 }
 
@@ -712,6 +717,25 @@ func resolvePromptExecutionAdapter(request PromptExecutionRequest, outputPath st
 	}
 }
 
+func shellQuote(value string) string {
+	if value == "" {
+		return "''"
+	}
+	if safeShellTokenPattern.MatchString(value) {
+		return value
+	}
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
+func formatShellCommand(binary string, args []string, stdinPath string) string {
+	parts := make([]string, 0, len(args)+1)
+	parts = append(parts, shellQuote(binary))
+	for _, arg := range args {
+		parts = append(parts, shellQuote(arg))
+	}
+	return strings.Join(parts, " ") + " < " + shellQuote(stdinPath)
+}
+
 func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionRequest) (PromptExecutionResult, error) {
 	if strings.TrimSpace(request.Prompt) == "" {
 		return PromptExecutionResult{}, errors.New("prompt is required")
@@ -744,7 +768,8 @@ func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionReque
 	commandPath := filepath.Join(runDir, "command.txt")
 	metadataPath := filepath.Join(runDir, "metadata.json")
 
-	if err := os.WriteFile(promptPath, []byte(request.Prompt), 0o644); err != nil {
+	finalPrompt := r.injectSkillContent(workspace, request.Prompt, request.SkillIds)
+	if err := os.WriteFile(promptPath, []byte(finalPrompt), 0o644); err != nil {
 		return PromptExecutionResult{}, err
 	}
 
@@ -753,7 +778,7 @@ func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionReque
 		return PromptExecutionResult{}, err
 	}
 
-	command := binary + " " + strings.Join(args, " ")
+	command := formatShellCommand(binary, args, promptPath)
 	if err := os.WriteFile(commandPath, []byte(command), 0o644); err != nil {
 		return PromptExecutionResult{}, err
 	}
@@ -855,6 +880,35 @@ func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionReque
 	}
 
 	return result, nil
+}
+
+func (r *Runner) injectSkillContent(workspace string, prompt string, skillIds []string) string {
+	if len(skillIds) == 0 {
+		return prompt
+	}
+
+	skills, err := r.ListSkills()
+	if err != nil || len(skills) == 0 {
+		return prompt
+	}
+
+	var injected []string
+	injected = append(injected, prompt)
+	injected = append(injected, "\n\n## Included Skills\n\nThe following skills are provided as reference to help you complete your task:\n")
+
+	for _, reqSkill := range skillIds {
+		for _, skill := range skills {
+			if skill.ID == reqSkill {
+				contentBytes, err := os.ReadFile(skill.FilePath)
+				if err == nil {
+					injected = append(injected, fmt.Sprintf("\n### Skill: %s\n```markdown\n%s\n```\n", skill.Name, string(contentBytes)))
+				}
+				break
+			}
+		}
+	}
+
+	return strings.Join(injected, "")
 }
 
 func summarizeCommandFailure(runErr error, stderrSummary string) string {
@@ -2575,4 +2629,3 @@ func (r *Runner) AuthenticateProvider(ctx context.Context, providerName string) 
 
 	return LaunchTerminalWithCommand(authCommand)
 }
-

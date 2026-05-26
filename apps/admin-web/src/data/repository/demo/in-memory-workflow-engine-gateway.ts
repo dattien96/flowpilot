@@ -544,6 +544,40 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
     return { run, steps, logs };
   }
 
+  async deleteWorkflowRuns(runIds: string[]): Promise<void> {
+    const ids = new Set(runIds.filter((runId) => runId.trim().length > 0));
+    if (ids.size === 0) {
+      return;
+    }
+
+    const stepIdsToDelete = new Set<string>();
+    for (let index = this.workflowRunSteps.length - 1; index >= 0; index -= 1) {
+      const step = this.workflowRunSteps[index];
+      if (ids.has(step.workflowRunId)) {
+        stepIdsToDelete.add(step.id);
+        this.workflowRunSteps.splice(index, 1);
+      }
+    }
+
+    for (let index = this.workflowRuns.length - 1; index >= 0; index -= 1) {
+      if (ids.has(this.workflowRuns[index].id)) {
+        this.workflowRuns.splice(index, 1);
+      }
+    }
+
+    for (let index = this.workflowRunLogs.length - 1; index >= 0; index -= 1) {
+      if (stepIdsToDelete.has(this.workflowRunLogs[index].workflowRunStepId)) {
+        this.workflowRunLogs.splice(index, 1);
+      }
+    }
+
+    for (let index = this.artifactRuns.length - 1; index >= 0; index -= 1) {
+      if (ids.has(this.artifactRuns[index].workflowRunId)) {
+        this.artifactRuns.splice(index, 1);
+      }
+    }
+  }
+
   async startWorkflowRun(request: WorkflowRunStartRequest): Promise<WorkflowRun> {
     let workflowId = request.workflowId ?? null;
     let workflowDetail =

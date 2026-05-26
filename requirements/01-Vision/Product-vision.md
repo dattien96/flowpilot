@@ -92,3 +92,49 @@ Good output is not only code. Good output includes:
 - release risk report,
 - production health report,
 - decision history.
+
+# 5. Core Differentiators
+
+FlowPilot is NOT just a prompt template or a workflow file you follow inside one AI chat session.
+Tools like Codex and Claude Code already support slash-command workflows (e.g. `/codex-fast-orchestrator`).
+Those are recipes — useful, but stateless and single-session.
+
+FlowPilot is the engine that runs the recipe, remembers what was produced, and feeds it forward.
+
+The four real differentiators are:
+
+## 5.1 Context Accumulation
+Each workflow run saves its outputs (full artifacts to Drive, brief summaries to Supabase).
+The next run — whether tomorrow or on a different machine — can retrieve relevant past context via semantic search.
+Over time, the system gets smarter about your project. Each AI call is not starting from zero.
+
+## 5.2 Persistent Approval Gates
+Any workflow step can require human approval before proceeding.
+The approval state is saved in Supabase — not in someone's memory or a chat thread.
+This means approval is async (you don't have to be present), team-aware (anyone with access can approve), and auditable (who approved what and when is recorded).
+
+## 5.3 Cross-Session Resumability
+A workflow run can be paused, interrupted, or left overnight and resumed exactly where it stopped.
+This works because all run state — current step, inputs, outputs, approval status — lives in the database, not in a chat context or local process.
+You can stop today and continue tomorrow, or hand off to a teammate.
+
+## 5.4 Wrapping External AI CLI Tools as Execution Units
+FlowPilot treats tools like Codex CLI and Claude Code as subprocess execution units inside a managed pipeline.
+The platform constructs the prompt and context, invokes the tool, captures the output (stdout, files), and persists the result.
+This means FlowPilot can evolve its AI backend (swap models, tools, providers) without changing the workflow definition.
+
+## 5.5 Strict Step Adherence
+With structured workflows and distinct steps, we ensure that the AI cannot skip or miss any rule or requirement. This is a massive improvement compared to a traditional markdown workflow file (where steps 1, 2, and 3 are defined, but there is no mechanism to guarantee the AI will actually follow all of them without ignoring parts of the prompt).
+
+## What this means in practice
+
+| Property | Ad-hoc workflow file | FlowPilot |
+|---|---|---|
+| State persistence | Dies when chat ends | Supabase — survives forever |
+| Multi-session | Single conversation | Resumable across days/machines |
+| Team visibility | Private to one user | Shared dashboard |
+| Approval gates | Manual, no record | Persisted and auditable |
+| Context from past runs | Starts fresh every time | pgvector semantic retrieval |
+| Audit trail | Chat history only | Full step log per run |
+| AI tool backend | Fixed (one tool) | Swappable execution units |
+| Step adherence | AI might skip rules | Enforced step-by-step execution |

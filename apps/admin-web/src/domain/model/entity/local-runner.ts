@@ -187,6 +187,7 @@ export interface LocalRunnerPromptExecutionResult {
   runId: string;
   providerKey: string;
   modelName: string | null;
+  providerSessionId?: string | null;
   command: string;
   stdoutSummary: string;
   stderrSummary: string;
@@ -213,4 +214,26 @@ export interface LocalRunnerIntegrationConnectionResult {
   integrationStatus: "pending" | "awaiting_oauth" | "connected" | "failed";
   runId: string | null;
   message: string | null;
+}
+
+export interface LocalRunnerAiSessionStartRequest {
+  providerKey: string;
+  modelName: string;
+  reasoningEffort: ReasoningEffort | null;
+  workingDirectory: string;
+  approvalMode: string | null;
+  allowWrite: boolean;
+}
+
+export interface LocalRunnerAiSessionHandle {
+  transportType: string;
+  providerSessionId: string;
+  processKey: string | null;
+}
+
+export interface LocalRunnerAiSessionMessageRequest {
+  session: LocalRunnerAiSessionHandle;
+  prompt: string;
+  skillIds: string[];
+  contextSourceIds: string[];
 }

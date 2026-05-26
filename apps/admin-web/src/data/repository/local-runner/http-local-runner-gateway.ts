@@ -19,6 +19,9 @@ import type {
   LocalRunnerStorageDriver,
   LocalRunnerStorageDriverRequest,
   LocalRunnerSkill,
+  LocalRunnerAiSessionStartRequest,
+  LocalRunnerAiSessionHandle,
+  LocalRunnerAiSessionMessageRequest,
 } from "@/domain/model/entity/local-runner";
 
 type HealthResponse = Omit<LocalRunnerHealth, "baseUrl" | "errorMessage">;
@@ -33,6 +36,36 @@ async function readJson<T>(baseUrl: string, path: string): Promise<T> {
   }
 
   return (await response.json()) as T;
+}
+
+async function fetchWithTimeout(
+  input: URL,
+  init: RequestInit,
+  {
+    timeoutMs,
+    timeoutMessage,
+  }: {
+    timeoutMs: number;
+    timeoutMessage: string;
+  },
+) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(timeoutMessage), timeoutMs);
+
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (controller.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
+      throw new Error(timeoutMessage);
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 function offlineHealth(baseUrl: string, errorMessage: string): LocalRunnerHealth {
@@ -366,6 +399,55 @@ export class HttpLocalRunnerGateway implements LocalRunnerGateway {
     return (await response.json()) as LocalRunnerPromptExecutionResult;
   }
 
+  async startSession(request: LocalRunnerAiSessionStartRequest) {
+    const response = await fetch(new URL("/sessions/start", this.baseUrl), {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(request),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Local runner start session failed: ${response.status} ${response.statusText}`);
+    }
+
+    return (await response.json()) as LocalRunnerAiSessionHandle;
+  }
+
+  async sendMessage(request: LocalRunnerAiSessionMessageRequest) {
+    const response = await fetch(new URL("/sessions/message", this.baseUrl), {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(request),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Local runner session message failed: ${response.status} ${response.statusText}`);
+    }
+
+    return (await response.json()) as LocalRunnerPromptExecutionResult;
+  }
+
+  async closeSession(session: LocalRunnerAiSessionHandle) {
+    const response = await fetch(new URL("/sessions/close", this.baseUrl), {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(session),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Local runner close session failed: ${response.status} ${response.statusText}`);
+    }
+  }
+
   async authenticateProvider(providerName: string) {
     const response = await fetch(new URL("/providers/auth", this.baseUrl), {
       method: "POST",
@@ -379,5 +461,28 @@ export class HttpLocalRunnerGateway implements LocalRunnerGateway {
     if (!response.ok) {
       throw new Error(`Provider authentication trigger failed: ${response.status} ${response.statusText}`);
     }
+  }
+
+  async readFile(path: string): Promise<string> {
+    const url = new URL("/files/read", this.baseUrl);
+    url.searchParams.set("path", path);
+    const response = await fetchWithTimeout(
+      url,
+      {
+        method: "GET",
+        cache: "no-store",
+      },
+      {
+        timeoutMs: 8000,
+        timeoutMessage: `Timed out reading file from local runner at ${this.baseUrl}.`,
+      },
+    );
+
+    if (!response.ok) {
+      throw new Error(`File read failed: ${response.status} ${response.statusText}`);
+    }
+
+    const json = await response.json() as { content: string };
+    return json.content;
   }
 }

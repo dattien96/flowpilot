@@ -10,12 +10,15 @@ import type {
 import type { ContextSource } from "@/domain/model/entity/context-source";
 import type { Project } from "@/domain/model/entity/project";
 
+import type { WorkflowRunSession } from "@/domain/model/entity/workflow-engine";
+
 export interface WorkflowRunDetail {
   run: WorkflowRun;
   steps: WorkflowStep[];
   approvals: Approval[];
   outputs: AiOutput[];
   logs: AiCallLog[];
+  sessions?: WorkflowRunSession[] | null;
   approvalDecisions?: ApprovalDecision[];
   selectedContextSources?: ContextSource[];
   project?: Project | null;

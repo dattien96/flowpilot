@@ -7,6 +7,7 @@ import {
   ShieldAlert,
   Check,
   RefreshCw,
+  ExternalLink,
 } from "lucide-react";
 
 import { PageFrame } from "@/components/common/page-frame";
@@ -15,29 +16,29 @@ import { Badge } from "@/presentation/components/ui/badge";
 import { WorkflowTimeline } from "@/presentation/components/workflow-runs/workflow-timeline";
 import { createGatewayBundle } from "@/data/repository/browser-factory";
 import { GetWorkflowRunDetailUseCase } from "@/domain/usecase/workflow-runs/get-workflow-run-detail-usecase";
+import { GetWorkflowRunDetailUseCase as GetWorkflowEngineRunDetailUseCase } from "@/domain/usecase/workflow-engine/get-workflow-run-detail-usecase";
+import { ListArtifactRunsUseCase } from "@/domain/usecase/workflow-engine/list-artifact-runs-usecase";
 import { SubmitStepApprovalDecisionUseCase } from "@/domain/usecase/workflow-engine/submit-step-approval-decision-usecase";
 import { createSupabaseBrowserClient } from "@/data/datasource/supabase/client";
+import { applyOptimisticWorkflowFollowUp } from "@/features/workflow-engine/workflow-run-detail-optimistic";
+import {
+  buildWorkflowStepTimeline,
+  groupOutputsByStep,
+  mapArtifactsToWorkflowOutputs,
+  mergeWorkflowOutputs,
+  type WorkflowOutputRecord,
+} from "@/features/workflow-engine/workflow-run-detail-timeline";
+import {
+  buildFallbackApprovalDecisionsFromLogs,
+  buildFallbackOutputsFromLogs,
+  extractBeginPromptFromLogs,
+} from "@/features/workflow-engine/workflow-run-log-fallback";
 import { statusTone } from "@/presentation/view-models/factories";
+import type { ApprovalDecision } from "@/domain/model/entity/workflow";
 import type { LocalRunnerArtifact } from "@/domain/model/entity/local-runner";
+import type { ArtifactRun } from "@/domain/model/entity/workflow-engine";
 import { loadWorkflowRunPromptText } from "@/lib/workflow-run-prompt";
-
-type WorkflowOutputRecord = {
-  id: string;
-  workflowRunId: string;
-  workflowStepId: string;
-  projectId: string;
-  outputType: string;
-  version: number;
-  title: string;
-  contentMarkdown: string;
-  isApproved: boolean;
-  createdAt: string;
-  promptText?: string;
-  stdoutText?: string;
-  stderrText?: string;
-  commandText?: string;
-  localPath?: string;
-};
+import { openMarkdownPreviewInNewTab } from "@/lib/markdown-preview";
 
 function summarizeRunPrompt(promptText?: string) {
   const normalized = promptText?.trim() ?? "";
@@ -77,6 +78,94 @@ function summarizeRunPrompt(promptText?: string) {
   return firstLine.length > 88
     ? `${firstLine.slice(0, 85).trimEnd()}...`
     : firstLine;
+}
+
+function normalizePromptDisplay(promptText?: string | null) {
+  const normalized = promptText?.trim() ?? "";
+  if (!normalized) {
+    return "";
+  }
+
+  const sections = normalized.split(/\n(?=## )/);
+  const cleanedSections = sections.filter((section, index) => {
+    if (index === 0 && !section.startsWith("## ")) {
+      return true;
+    }
+
+    const lines = section.trim().split("\n");
+    const body = lines.slice(1).join("\n").trim();
+    if (!body) {
+      return false;
+    }
+
+    const compactBody = body.replace(/\s+/g, " ").trim().toLowerCase();
+    return (
+      compactBody !== "- none" &&
+      compactBody !== "- no artifact output configured for this step."
+    );
+  });
+
+  return cleanedSections.join("\n\n").trim();
+}
+
+function normalizeFollowUpComment(comment: string | null | undefined) {
+  return (comment ?? "").trim();
+}
+
+function mergeApprovalDecisions(
+  baseDecisions: ApprovalDecision[],
+  overlayDecisions: ApprovalDecision[],
+) {
+  const merged = new Map<string, ApprovalDecision>();
+
+  for (const decision of baseDecisions) {
+    merged.set(decision.id, decision);
+  }
+
+  for (const decision of overlayDecisions) {
+    const hasMatchingDecision = Array.from(merged.values()).some(
+      (candidate) =>
+        candidate.workflowStepId === decision.workflowStepId &&
+        candidate.decision === decision.decision &&
+        normalizeFollowUpComment(candidate.comment) ===
+          normalizeFollowUpComment(decision.comment),
+    );
+
+    if (!hasMatchingDecision) {
+      merged.set(decision.id, decision);
+    }
+  }
+
+  return Array.from(merged.values()).sort((left, right) =>
+    left.createdAt.localeCompare(right.createdAt),
+  );
+}
+
+function pruneResolvedOptimisticFollowUps(
+  optimisticDecisions: ApprovalDecision[],
+  persistedDecisions: ApprovalDecision[],
+  outputs: WorkflowOutputRecord[],
+) {
+  return optimisticDecisions.filter((decision) => {
+    const hasPersistedMatch = persistedDecisions.some(
+      (candidate) =>
+        candidate.workflowStepId === decision.workflowStepId &&
+        candidate.decision === decision.decision &&
+        normalizeFollowUpComment(candidate.comment) ===
+          normalizeFollowUpComment(decision.comment),
+    );
+    if (hasPersistedMatch) {
+      return false;
+    }
+
+    const hasNewerOutput = outputs.some(
+      (output) =>
+        output.workflowStepId === decision.workflowStepId &&
+        output.createdAt >= decision.createdAt,
+    );
+
+    return !hasNewerOutput;
+  });
 }
 
 function CollapsibleSection({
@@ -145,15 +234,245 @@ function CollapsibleTextBlock({
   );
 }
 
+function CollapsibleChatBubble({
+  title,
+  time,
+  content,
+  isSecondary = false,
+}: {
+  title: string;
+  time?: string;
+  content: string;
+  isSecondary?: boolean;
+}) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const TRUNCATE_LENGTH = 400;
+  const isLong = content.length > TRUNCATE_LENGTH;
+  const displayContent = (!isExpanded && isLong) ? content.slice(0, TRUNCATE_LENGTH) + "..." : content;
+
+  return (
+    <div className={`max-w-[85%] rounded-[1.6rem] px-6 py-4 shadow-sm ${
+      isSecondary ? "bg-accent/90 text-accent-foreground" : "bg-accent text-accent-foreground"
+    }`}>
+      <p className="text-[10px] opacity-70 mb-2 font-mono tracking-widest uppercase flex items-center justify-between gap-4">
+        <span className="flex items-center gap-1.5">{title}</span>
+        {time ? <span className="text-[9px]">{time}</span> : null}
+      </p>
+      <div className="whitespace-pre-wrap text-sm leading-relaxed break-words font-sans">
+        {displayContent}
+      </div>
+      {isLong && (
+        <button
+          onClick={() => setIsExpanded(!isExpanded)}
+          className="mt-2 text-[10px] font-bold uppercase tracking-wider underline opacity-85 hover:opacity-100 transition-opacity cursor-pointer block"
+        >
+          {isExpanded ? "Show less" : "Show more"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+const ArtifactContentViewer = ({ content }: { content: string }) => {
+  const [expanded, setExpanded] = useState(false);
+  const TRUNCATE_LENGTH = 300;
+
+  const isLong = content.length > TRUNCATE_LENGTH;
+  const displayContent = (!expanded && isLong) ? content.substring(0, TRUNCATE_LENGTH) + "..." : content;
+
+  return (
+    <div className="space-y-4">
+      <article className="whitespace-pre-wrap text-foreground font-mono text-sm leading-relaxed">
+        {displayContent}
+      </article>
+      
+      <div className="flex flex-wrap gap-2 items-center pt-2">
+        {isLong && (
+          <Button variant="ghost" onClick={() => setExpanded(!expanded)} className="text-xs h-8">
+            {expanded ? "Show less" : "Show more"}
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+};
+
+function StepOutputTabs({
+  artifactRun,
+  output,
+  localRunnerGateway,
+}: {
+  artifactRun?: ArtifactRun | null;
+  output: WorkflowOutputRecord;
+  localRunnerGateway: {
+    readFile(path: string): Promise<string>;
+  };
+}) {
+  const [activeTab, setActiveTab] = useState<"response" | "prompt" | "artifact">("response");
+  const [artifactContent, setArtifactContent] = useState<string | null>(null);
+  const [artifactError, setArtifactError] = useState<string | null>(null);
+  const [artifactLoading, setArtifactLoading] = useState(false);
+
+  const loadArtifactContent = async () => {
+    if (!artifactRun) {
+      throw new Error("Artifact metadata is unavailable.");
+    }
+
+    setArtifactLoading(true);
+    setArtifactError(null);
+
+    try {
+      const content = await localRunnerGateway.readFile(artifactRun.localPath);
+      setArtifactContent(content);
+      return content;
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Unable to load artifact content.";
+      setArtifactError(message);
+      throw error instanceof Error ? error : new Error(message);
+    } finally {
+      setArtifactLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    setArtifactContent(null);
+    setArtifactError(null);
+    setArtifactLoading(false);
+  }, [artifactRun?.id]);
+
+  const tabs = [
+    { key: "response" as const, label: "Response" },
+    { key: "prompt" as const, label: "Prompt" },
+    ...(artifactRun ? [{ key: "artifact" as const, label: "Artifact" }] : []),
+  ];
+
+  const normalizedPrompt = normalizePromptDisplay(output.promptText);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        {tabs.map((tab) => {
+          const isActive = activeTab === tab.key;
+          return (
+            <button
+              key={tab.key}
+              className={`rounded-full border px-2 py-0.5 text-[9px] font-medium uppercase tracking-[0.12em] transition-colors ${
+                isActive
+                  ? "border-accent bg-accent/10 text-accent"
+                  : "border-border bg-card text-muted-foreground hover:text-foreground"
+              }`}
+              onClick={() => setActiveTab(tab.key)}
+              type="button"
+            >
+              {tab.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {activeTab === "response" ? (
+        <ArtifactContentViewer content={output.contentMarkdown || "No response captured."} />
+      ) : null}
+
+      {activeTab === "prompt" ? (
+        <div className="space-y-3">
+          <div className="rounded-2xl border border-border/60 bg-card/60 px-4 py-3 text-[11px] font-mono uppercase tracking-[0.2em] text-muted-foreground">
+            prompt.md
+          </div>
+          <div className="max-h-[28rem] overflow-auto rounded-2xl border border-border bg-card p-5">
+            {normalizedPrompt ? (
+              <pre className="whitespace-pre-wrap break-words font-mono text-sm leading-relaxed text-foreground">
+                {normalizedPrompt}
+              </pre>
+            ) : (
+              <p className="text-sm italic text-muted-foreground">
+                No prompt file captured for this output.
+              </p>
+            )}
+          </div>
+        </div>
+      ) : null}
+
+      {activeTab === "artifact" && artifactRun ? (
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border/60 bg-card/60 px-4 py-3">
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold text-foreground">
+                {artifactRun.title}
+              </p>
+              <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground">
+                {artifactRun.localPath}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                className="h-8 px-3 text-[11px]"
+                disabled={artifactLoading}
+                onClick={() => {
+                  const openPreview = (content: string) => {
+                    const opened = openMarkdownPreviewInNewTab(
+                      content.trim() || content,
+                      artifactRun.title,
+                    );
+                    if (!opened) {
+                      window.alert(
+                        "The browser blocked the preview tab. Allow popups for FlowPilot and try again.",
+                      );
+                    }
+                  };
+
+                  if (artifactContent) {
+                    openPreview(artifactContent);
+                    return;
+                  }
+
+                  void loadArtifactContent()
+                    .then((content) => {
+                      openPreview(content);
+                    })
+                    .catch(() => {
+                      // Error state is already surfaced in the artifact panel.
+                    });
+                }}
+                variant="secondary"
+                >
+                  <ExternalLink className="mr-2 h-3.5 w-3.5" />
+                  {artifactLoading ? "Opening..." : "Open in new tab"}
+                </Button>
+            </div>
+          </div>
+
+          {artifactError ? (
+            <p className="text-sm text-destructive">{artifactError}</p>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export const Route = createFileRoute("/_authenticated/workflow-runs/$runId")({
+  validateSearch: (search: Record<string, unknown>) => ({
+    logView: search.logView === "session" ? "session" : undefined,
+  }),
   component: WorkflowRunDetailPage,
 });
 
 function WorkflowRunDetailPage() {
   const { runId } = Route.useParams();
+  const { logView } = Route.useSearch();
   const gatewayBundle = useRef(createGatewayBundle());
   const getWorkflowRunDetailUseCase = useRef(
     new GetWorkflowRunDetailUseCase(gatewayBundle.current.workflowGateway),
+  );
+  const getWorkflowEngineRunDetailUseCase = useRef(
+    new GetWorkflowEngineRunDetailUseCase(
+      gatewayBundle.current.workflowEngineGateway,
+    ),
+  );
+  const listArtifactRunsUseCase = useRef(
+    new ListArtifactRunsUseCase(gatewayBundle.current.workflowEngineGateway),
   );
   const submitStepApprovalDecisionUseCase = useRef(
     new SubmitStepApprovalDecisionUseCase(
@@ -169,6 +488,9 @@ function WorkflowRunDetailPage() {
   const [togglingYolo, setTogglingYolo] = useState(false);
   const [processingAction, setProcessingAction] = useState(false);
   const [runPromptText, setRunPromptText] = useState<string | null>(null);
+  const [optimisticFollowUps, setOptimisticFollowUps] = useState<
+    ApprovalDecision[]
+  >([]);
 
   const processDetailData = async (data: any) => {
     if (!data) return null;
@@ -185,34 +507,13 @@ function WorkflowRunDetailPage() {
             (await gatewayBundle.current.localRunnerGateway.getArtifactById(
               artifact.artifactId,
             )) ?? artifact,
-        ),
-      );
-
-      mappedOutputs = artifactDetails.map((art: LocalRunnerArtifact) => {
-        const step = data.steps?.find(
-          (s: any) =>
-            s.stepKey?.toLowerCase() === art.workflowStepKey?.toLowerCase() ||
-            s.stepType?.toLowerCase() === art.workflowStepKey?.toLowerCase(),
+          ),
         );
 
-        return {
-          id: art.artifactId,
-          workflowRunId: art.workflowRunId,
-          workflowStepId: step ? step.id : art.workflowStepKey,
-          projectId: art.projectId,
-          outputType: "document",
-          version: 1,
-          title: art.title,
-          contentMarkdown: art.contentMarkdown,
-          isApproved: true,
-          createdAt: art.createdAt,
-          promptText: art.promptText,
-          stdoutText: art.stdoutText,
-          stderrText: art.stderrText,
-          commandText: art.commandText,
-          localPath: art.localPath,
-        };
-      });
+      mappedOutputs = mapArtifactsToWorkflowOutputs(
+        artifactDetails as LocalRunnerArtifact[],
+        data.steps ?? [],
+      );
     } catch (artifactErr) {
       console.warn(
         "Failed to fetch local runner artifacts, using DB outputs only:",
@@ -220,26 +521,10 @@ function WorkflowRunDetailPage() {
       );
     }
 
-    const combinedOutputs = [...(data.outputs || [])];
-    for (const localOut of mappedOutputs) {
-      const exists = combinedOutputs.some(
-        (out: any) =>
-          out.id === localOut.id ||
-          out.workflowStepId === localOut.workflowStepId,
-      );
-      if (!exists) {
-        combinedOutputs.push(localOut);
-      } else {
-        const idx = combinedOutputs.findIndex(
-          (out: any) =>
-            out.id === localOut.id ||
-            out.workflowStepId === localOut.workflowStepId,
-        );
-        if (idx !== -1) {
-          combinedOutputs[idx] = { ...combinedOutputs[idx], ...localOut };
-        }
-      }
-    }
+    const combinedOutputs = mergeWorkflowOutputs(
+      (data.outputs ?? []) as WorkflowOutputRecord[],
+      mappedOutputs,
+    );
 
     return {
       ...data,
@@ -250,17 +535,72 @@ function WorkflowRunDetailPage() {
   const loadData = async () => {
     if (!runId) return;
     try {
-      const [data, promptText] = await Promise.all([
+      const [data, promptText, engineDetailRaw] = await Promise.all([
         getWorkflowRunDetailUseCase.current.execute(runId),
         loadWorkflowRunPromptText(
           gatewayBundle.current.localRunnerGateway,
           runId,
         ),
+        getWorkflowEngineRunDetailUseCase.current.execute(runId),
       ]);
+      const engineDetail = engineDetailRaw as
+        | { logs: any[]; sessions?: any[] | null }
+        | null;
       if (data) {
         const processed = await processDetailData(data);
-        setDetail(processed ? { ...processed, runPromptText: promptText } : processed);
-        setRunPromptText(promptText);
+        const engineLogs = engineDetail?.logs ?? [];
+        const promptFromLogs = extractBeginPromptFromLogs(engineLogs);
+        const resolvedRunPromptText = promptFromLogs ?? promptText;
+        const artifactRuns = await listArtifactRunsUseCase.current.execute(
+          processed.run.projectId,
+        );
+        const stepArtifactRuns = artifactRuns.filter(
+          (artifactRun) => artifactRun.workflowRunId === runId,
+        );
+        const logBackedOutputs = processed
+          ? buildFallbackOutputsFromLogs({
+              existingOutputs:
+                (processed.outputs ?? []) as WorkflowOutputRecord[],
+              logs: engineLogs,
+              projectId: processed.run.projectId,
+              runId,
+              steps: processed.steps ?? [],
+            })
+          : [];
+        const logBackedDecisions = buildFallbackApprovalDecisionsFromLogs(
+          engineLogs,
+        );
+        const mergedApprovalDecisions = mergeApprovalDecisions(
+          ((processed?.approvalDecisions ?? []) as ApprovalDecision[]) ?? [],
+          logBackedDecisions,
+        );
+        const mergedOutputs = processed
+          ? mergeWorkflowOutputs(
+              (processed.outputs ?? []) as WorkflowOutputRecord[],
+              logBackedOutputs,
+            )
+          : [];
+        setOptimisticFollowUps((previous) =>
+          pruneResolvedOptimisticFollowUps(
+            previous,
+            mergedApprovalDecisions,
+            mergedOutputs,
+          ),
+        );
+        setDetail(
+          processed
+            ? {
+                ...processed,
+                outputs: mergedOutputs,
+                logs: engineDetail?.logs ?? [],
+                sessions: engineDetail?.sessions ?? processed.sessions ?? [],
+                artifactRuns: stepArtifactRuns,
+                approvalDecisions: mergedApprovalDecisions,
+                runPromptText: resolvedRunPromptText,
+              }
+            : processed,
+        );
+        setRunPromptText(resolvedRunPromptText);
       }
     } catch (err: any) {
       console.error("Error loading run detail:", err);
@@ -342,27 +682,32 @@ function WorkflowRunDetailPage() {
     };
   }, [runId, detail?.run?.status]);
 
-  const outputByStepId = useMemo(() => {
+  const outputsByStepId = useMemo(() => {
     if (!detail?.outputs) return new Map();
-    return new Map(
-      detail.outputs.map((output: WorkflowOutputRecord) => [
-        output.workflowStepId,
-        output,
-      ]),
-    );
+    return groupOutputsByStep(detail.outputs as WorkflowOutputRecord[]);
   }, [detail?.outputs]);
 
-  const latestOutput = useMemo<WorkflowOutputRecord | null>(() => {
-    if (!detail?.outputs || detail.outputs.length === 0) {
-      return null;
-    }
+  const allLogs = useMemo(
+    () => (Array.isArray(detail?.logs) ? detail.logs : []),
+    [detail?.logs],
+  );
 
-    return detail.outputs.at(-1) ?? null;
-  }, [detail?.outputs]);
+  const sessionEventLogs = useMemo(
+    () =>
+      allLogs.filter(
+        (log: any) =>
+          typeof log?.message === "string" &&
+          log.message.startsWith("session_event:"),
+      ),
+    [allLogs],
+  );
+
+  const visibleLogs = logView === "session" ? sessionEventLogs : allLogs;
+  const isSessionLogView = logView === "session";
 
   const runTitle = useMemo(
-    () => summarizeRunPrompt(runPromptText ?? latestOutput?.promptText),
-    [latestOutput?.promptText, runPromptText],
+    () => summarizeRunPrompt(runPromptText),
+    [runPromptText],
   );
 
   const pendingApproval = useMemo(() => {
@@ -372,17 +717,62 @@ function WorkflowRunDetailPage() {
     );
   }, [detail?.approvals]);
 
+  const timelineApprovalDecisions = useMemo(
+    () =>
+      mergeApprovalDecisions(
+        ((detail?.approvalDecisions ?? []) as ApprovalDecision[]) ?? [],
+        optimisticFollowUps,
+      ),
+    [detail?.approvalDecisions, optimisticFollowUps],
+  );
+
   const handleDecision = async (
+    stepId: string,
     decision: "approved" | "changes_requested" | "rejected",
   ) => {
-    if (!pendingApproval) return;
+    if (decision === "rejected" && !pendingApproval) {
+      alert("Cannot reject an already completed step.");
+      return;
+    }
     setSubmittingDecision(true);
+    const followUpComment = decisionComment.trim();
+    const canOptimisticallyContinue =
+      decision === "changes_requested" &&
+      followUpComment.length > 0 &&
+      detail;
+    const previousDetail = detail;
+    const createdAt = new Date().toISOString();
+    const optimisticDecision: ApprovalDecision = {
+      id: `optimistic-follow-up-${stepId}-${createdAt}`,
+      approvalId: `approval_${stepId}`,
+      workflowRunId: detail.run.id,
+      workflowStepId: stepId,
+      aiOutputId: null,
+      decision: "changes_requested",
+      reviewerId: null,
+      comment: followUpComment,
+      createdAt,
+    };
+    let submitted = false;
     try {
+      if (canOptimisticallyContinue) {
+        setOptimisticFollowUps((current) => [...current, optimisticDecision]);
+        setDetail(
+          applyOptimisticWorkflowFollowUp(
+            detail,
+            stepId,
+            followUpComment,
+            createdAt,
+          ),
+        );
+        setDecisionComment("");
+      }
+
       if (decision === "approved" || decision === "changes_requested") {
         await submitStepApprovalDecisionUseCase.current.execute(
-          pendingApproval.workflowStepId,
+          stepId,
           decision === "approved",
-          decisionComment || undefined,
+          followUpComment || undefined,
         );
       } else {
         const now = new Date().toISOString();
@@ -411,10 +801,25 @@ function WorkflowRunDetailPage() {
           errorSummary: decisionComment || "Rejected by reviewer.",
         });
       }
+      submitted = true;
       await loadData();
-      setDecisionComment("");
+      if (!canOptimisticallyContinue) {
+        setDecisionComment("");
+      }
     } catch (err: any) {
-      alert(`Decision submission failed: ${err.message}`);
+      if (!submitted && canOptimisticallyContinue) {
+        setDetail(previousDetail);
+        setOptimisticFollowUps((current) =>
+          current.filter((candidate) => candidate.id !== optimisticDecision.id),
+        );
+        setDecisionComment(followUpComment);
+      }
+      if (submitted) {
+        void loadData();
+        alert(`Follow-up started, but refreshing the run detail failed: ${err.message}`);
+      } else {
+        alert(`Decision submission failed: ${err.message}`);
+      }
     } finally {
       setSubmittingDecision(false);
     }
@@ -588,280 +993,346 @@ function WorkflowRunDetailPage() {
           </div>
         </header>
 
-        <section className="grid gap-6 xl:grid-cols-[1fr_1.1fr]">
-          {/* Left Column: Timeline & Step outputs */}
-          <div className="space-y-6">
-            <CollapsibleSection
-              title="Step Timeline"
-              subtitle="Expand each area below to inspect the prompt, output, and diagnostics for this run."
-              defaultOpen
-            >
-              <WorkflowTimeline steps={detail.steps} />
-            </CollapsibleSection>
+        <section className="max-w-4xl mx-auto space-y-8 pb-32">
+          
+          {/* 1. Initial Prompt */}
+          <div className="flex justify-end">
+            <CollapsibleChatBubble
+              title="Initial Prompt"
+              content={runPromptText || "No initial prompt captured."}
+            />
+          </div>
 
-            <div className="space-y-4">
-              <h2 className="text-xl font-bold tracking-tight pl-2">
-                Timeline Output Records
-              </h2>
-              {detail.steps.map((step: any) => {
-                const output = outputByStepId.get(step.id) as
-                  | WorkflowOutputRecord
-                  | undefined;
-                return (
-                  <details
-                    key={step.id}
-                    className="rounded-[1.6rem] border border-border bg-background/50 shadow-sm transition-all hover:border-border/80"
-                    open={Boolean(
-                      output?.contentMarkdown ||
-                      output?.promptText ||
-                      step.errorMessage,
-                    )}
-                  >
-                    <summary className="flex cursor-pointer list-none items-start justify-between gap-3 px-5 py-5">
-                      <div>
-                        <p className="font-bold text-foreground">
-                          {step.stepName}
-                        </p>
-                        <p className="mt-1 text-xs font-mono text-muted-foreground">
-                          {step.stepKey} · {step.status}
-                        </p>
+          {/* 2. Step Outputs */}
+          {detail.steps.map((step: any, index: number) => {
+            const outputs =
+              (outputsByStepId.get(step.id) as WorkflowOutputRecord[] | undefined) ?? [];
+            const stepArtifactRun =
+              ((detail.artifactRuns ?? []) as ArtifactRun[]).find(
+                (artifactRun) => artifactRun.workflowRunStepId === step.id,
+              ) ?? null;
+            const decisions = (timelineApprovalDecisions.filter(
+              (d: any) => d.workflowStepId === step.id,
+            ) as any[]).sort((left, right) =>
+              left.createdAt.localeCompare(right.createdAt),
+            );
+            const timelineItems = buildWorkflowStepTimeline(outputs, decisions);
+            const definitionStep = detail.definition?.steps?.find((ds: any) => ds.key === step.stepKey);
+            const subagent = definitionStep?.subagent ?? null;
+            const stepSession = (() => {
+              if (!detail.sessions) return null;
+              if (subagent) {
+                return detail.sessions.find((s: any) => s.metadataJson?.step_run_id === step.id);
+              } else {
+                return detail.sessions.find((s: any) => s.metadataJson?.is_main === true || s.metadataJson?.is_main === "true");
+              }
+            })();
+             
+            return (
+              <div key={step.id} className="space-y-4">
+                {timelineItems.length === 0 ? (
+                  <div className="flex justify-start">
+                    <div className="max-w-[90%] w-full rounded-[1.6rem] border border-border/80 bg-card/40 p-6 shadow-sm backdrop-blur-sm">
+                      <div className="flex flex-wrap items-center justify-between gap-3 mb-5 border-b border-border/40 pb-4">
+                        <div>
+                          <span className="font-bold text-foreground flex items-center gap-2">
+                            {step.stepName}
+                            <Badge tone={statusTone(step.status)} className="ml-2 px-2 py-0.5 text-[10px]">
+                              {step.status}
+                            </Badge>
+                          </span>
+                          <p className="mt-1 text-[11px] font-mono text-muted-foreground uppercase tracking-wider">
+                            Step {index + 1}
+                          </p>
+                          {stepSession && (
+                            <p className="mt-1 text-[10px] font-mono text-muted-foreground flex items-center gap-1.5 flex-wrap">
+                              <span>Session:</span>
+                              <span className="bg-accent/40 text-accent-foreground px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">
+                                {subagent ? `Isolated (${subagent})` : "Shared Main"}
+                              </span>
+                              <span>&bull;</span>
+                              <span className="text-foreground/90 font-medium">
+                                {stepSession.provider} ({stepSession.model})
+                              </span>
+                              <span>&bull;</span>
+                              <span className={`font-semibold ${stepSession.status === "active" ? "text-success" : "text-muted-foreground"}`}>
+                                {stepSession.status}
+                              </span>
+                              {stepSession.providerSessionId ? (
+                                <>
+                                  <span>&bull;</span>
+                                  <span className="font-mono text-[10px] text-foreground/80">
+                                    {stepSession.providerSessionId}
+                                  </span>
+                                </>
+                              ) : null}
+                            </p>
+                          )}
+                        </div>
+
+                        <span className="rounded-full bg-muted border border-border/60 px-3 py-1 text-[10px] font-medium text-muted-foreground uppercase tracking-widest">
+                          {step.status === "PENDING" || step.status === "RUNNING" ? "Processing..." : "No Artifact"}
+                        </span>
                       </div>
-                      {output ? (
-                        <span className="rounded-full bg-success/10 border border-success/20 px-2.5 py-0.5 text-xs font-medium text-success uppercase tracking-wider">
-                          Output ready
-                        </span>
-                      ) : (
-                        <span className="rounded-full bg-muted border border-border px-2.5 py-0.5 text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                          No output
-                        </span>
-                      )}
-                    </summary>
 
-                    <div className="space-y-4 border-t border-border/60 px-5 py-5">
-                      {output?.localPath ? (
-                        <div className="rounded-2xl border border-border/60 bg-card/40 px-4 py-3">
-                          <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">
-                            Local Artifact Path
-                          </p>
-                          <p className="mt-2 break-words font-mono text-xs text-foreground">
-                            {output.localPath}
-                          </p>
+                      {step.errorMessage ? (
+                        <div className="rounded-2xl bg-destructive/10 border border-destructive/20 p-4 text-sm text-destructive">
+                          {step.errorMessage}
                         </div>
                       ) : null}
+                    </div>
+                  </div>
+                ) : (
+                  timelineItems.map((item) => {
+                    const outputAttempt =
+                      item.kind === "output"
+                        ? outputs.findIndex((output) => output.id === item.output.id) + 1
+                        : 0;
 
-                      <div className="space-y-3">
-                        <CollapsibleTextBlock
-                          title="Prompt Used"
-                          value={output?.promptText}
-                          emptyLabel="No prompt was captured for this step."
-                          defaultOpen
-                        />
-                        <CollapsibleTextBlock
-                          title="Generated Output"
-                          value={output?.contentMarkdown}
-                          emptyLabel="No output was generated for this step."
-                          defaultOpen={Boolean(output?.contentMarkdown)}
-                        />
-                        <CollapsibleTextBlock
-                          title="Error / Stderr"
-                          value={output?.stderrText ?? step.errorMessage}
-                          emptyLabel="No stderr was captured."
-                        />
-                        <CollapsibleTextBlock
-                          title="Stdout"
-                          value={output?.stdoutText}
-                          emptyLabel="No stdout was captured."
-                        />
-                        <CollapsibleTextBlock
-                          title="Command"
-                          value={output?.commandText}
-                          emptyLabel="No command was captured."
+                    return item.kind === "decision" ? (
+                      <div key={item.key} className="flex justify-end mt-4">
+                        <CollapsibleChatBubble
+                          title="Follow-up"
+                          time={new Date(item.decision.createdAt).toLocaleTimeString()}
+                          content={item.decision.comment || `Decision: ${item.decision.decision}`}
+                          isSecondary={true}
                         />
                       </div>
-                    </div>
-                  </details>
-                );
-              })}
-            </div>
-          </div>
+                    ) : (
+                      <div key={item.key} className="flex justify-start">
+                        <div className="max-w-[90%] w-full rounded-[1.6rem] border border-border/80 bg-card/40 p-6 shadow-sm backdrop-blur-sm transition-all hover:bg-card/60">
+                          <div className="flex flex-wrap items-center justify-between gap-3 mb-5 border-b border-border/40 pb-4">
+                            <div>
+                              <span className="font-bold text-foreground flex items-center gap-2">
+                                {step.stepName}
+                                <Badge tone={statusTone(step.status)} className="ml-2 px-2 py-0.5 text-[10px]">
+                                  {step.status}
+                                </Badge>
+                              </span>
+                              <p className="mt-1 text-[11px] font-mono text-muted-foreground uppercase tracking-wider">
+                                Step {index + 1}
+                                {outputAttempt > 1 ? ` • Attempt ${outputAttempt}` : ""}
+                              </p>
+                              {stepSession && (
+                                <p className="mt-1 text-[10px] font-mono text-muted-foreground flex items-center gap-1.5 flex-wrap">
+                                  <span>Session:</span>
+                                  <span className="bg-accent/40 text-accent-foreground px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">
+                                    {subagent ? `Isolated (${subagent})` : "Shared Main"}
+                                  </span>
+                                  <span>&bull;</span>
+                                  <span className="text-foreground/90 font-medium">
+                                    {stepSession.provider} ({stepSession.model})
+                                  </span>
+                                  <span>&bull;</span>
+                                  <span className={`font-semibold ${stepSession.status === "active" ? "text-success" : "text-muted-foreground"}`}>
+                                    {stepSession.status}
+                                  </span>
+                                  {stepSession.providerSessionId ? (
+                                    <>
+                                      <span>&bull;</span>
+                                      <span className="font-mono text-[10px] text-foreground/80">
+                                        {stepSession.providerSessionId}
+                                      </span>
+                                    </>
+                                  ) : null}
+                                </p>
+                              )}
+                            </div>
 
-          {/* Right Column: Dynamic Panel details */}
-          <div className="space-y-6">
-            {/* Selected Context Sources */}
-            <CollapsibleSection title="Selected Context Sources" defaultOpen>
-              <div className="space-y-3">
-                {(detail.selectedContextSources ?? []).length === 0 ? (
-                  <p className="text-sm text-muted-foreground italic">
-                    No context selected.
-                  </p>
-                ) : (
-                  detail.selectedContextSources?.map((context: any) => (
-                    <div
-                      key={context.id}
-                      className="rounded-2xl border border-border/80 bg-card/40 p-4 shadow-sm"
-                    >
-                      <p className="font-bold text-foreground text-sm">
-                        {context.title}
-                      </p>
-                      <p className="mt-2 text-xs leading-relaxed text-muted-foreground font-mono">
-                        {context.summarizedContent ?? context.rawContent}
-                      </p>
-                    </div>
-                  ))
+                            <div className="text-right">
+                              <span className={`rounded-full border px-3 py-1 text-[10px] font-medium uppercase tracking-widest ${
+                                stepArtifactRun
+                                  ? "bg-success/10 border-success/20 text-success"
+                                  : "bg-accent/10 border-accent/20 text-accent"
+                              }`}>
+                                {stepArtifactRun ? "Artifact Generated" : "Response Captured"}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="mb-6">
+                            <StepOutputTabs
+                              artifactRun={stepArtifactRun}
+                              localRunnerGateway={
+                                gatewayBundle.current.localRunnerGateway
+                              }
+                              output={item.output}
+                            />
+                          </div>
+
+                          <details className="mt-4 pt-4 border-t border-border/30">
+                            <summary className="text-[11px] font-medium uppercase tracking-[0.2em] text-muted-foreground cursor-pointer hover:text-foreground transition-colors inline-flex items-center gap-2">
+                              Developer Diagnostics
+                            </summary>
+                            <div className="mt-4 space-y-3 pl-2 border-l-2 border-border/50">
+                              {item.output.localPath && (
+                                <CollapsibleTextBlock title="Artifact Path" value={item.output.localPath} emptyLabel="" />
+                              )}
+                              <CollapsibleTextBlock title="Prompt Override" value={item.output.promptText} emptyLabel="Inherited from run prompt." />
+                              <CollapsibleTextBlock title="Stdout" value={item.output.stdoutText} emptyLabel="No stdout." />
+                              <CollapsibleTextBlock title="Stderr" value={item.output.stderrText} emptyLabel="No stderr." />
+                              <CollapsibleTextBlock title="CLI Command" value={item.output.commandText} emptyLabel="No command captured." />
+                            </div>
+                          </details>
+                        </div>
+                      </div>
+                    );
+                  })
                 )}
               </div>
-            </CollapsibleSection>
+            );
+          })}
 
+          <section className="max-w-4xl mx-auto">
             <CollapsibleSection
-              title="Prompt Used For This Run"
-              subtitle="This is the latest captured step prompt sent to the local runner."
-              defaultOpen
+              title="Run Logs"
+              subtitle="Use the filter to isolate runner session lifecycle events while testing provider reuse and restart recovery."
+              defaultOpen={false}
             >
-              <CollapsibleTextBlock
-                title="Latest Prompt"
-                value={runPromptText ?? latestOutput?.promptText}
-                emptyLabel="No prompt has been captured for this run yet."
-                defaultOpen
-              />
-            </CollapsibleSection>
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div className="flex flex-wrap gap-2">
+                  <Link
+                    to="/workflow-runs/$runId"
+                    params={{ runId }}
+                    search={{ logView: undefined }}
+                    className={`rounded-full border px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] transition-colors ${
+                      !isSessionLogView
+                        ? "border-accent bg-accent/10 text-accent"
+                        : "border-border bg-card text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    All logs
+                    <span className="ml-2 text-[10px] font-bold normal-case tracking-normal opacity-70">
+                      {allLogs.length}
+                    </span>
+                  </Link>
+                  <Link
+                    to="/workflow-runs/$runId"
+                    params={{ runId }}
+                    search={{ logView: "session" }}
+                    className={`rounded-full border px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] transition-colors ${
+                      isSessionLogView
+                        ? "border-accent bg-accent/10 text-accent"
+                        : "border-border bg-card text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    Session events
+                    <span className="ml-2 text-[10px] font-bold normal-case tracking-normal opacity-70">
+                      {sessionEventLogs.length}
+                    </span>
+                  </Link>
+                </div>
+              </div>
 
-            {/* Latest Output Panel */}
-            <CollapsibleSection title="Latest Execution Output" defaultOpen>
-              <div className="rounded-2xl border border-border/40 bg-card/60 p-5 font-mono text-sm leading-relaxed overflow-auto max-h-[400px]">
-                {latestOutput ? (
-                  <article className="whitespace-pre-wrap text-foreground">
-                    {latestOutput.contentMarkdown || "No output generated yet."}
-                  </article>
-                ) : (
-                  <p className="text-muted-foreground italic">
-                    No output generated yet.
+              <div className="mt-4 space-y-3">
+                {visibleLogs.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    {isSessionLogView
+                      ? "No session_event logs yet."
+                      : "No logs yet."}
                   </p>
+                ) : (
+                  visibleLogs.map((log: any) => {
+                    const isSessionEvent =
+                      typeof log?.message === "string" &&
+                      log.message.startsWith("session_event:");
+                    return (
+                      <div
+                        key={log.id}
+                        className="rounded-2xl border border-border bg-card p-4 text-sm"
+                      >
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="space-y-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="font-semibold">
+                                {isSessionEvent ? "session_event" : log.logLevel}
+                              </p>
+                              <Badge>
+                                {isSessionEvent ? "session" : log.logLevel}
+                              </Badge>
+                            </div>
+                            <p className="font-mono text-[11px] text-muted-foreground">
+                              {new Date(log.createdAt).toLocaleString()}
+                            </p>
+                          </div>
+                          <p className="break-all font-mono text-[11px] text-muted-foreground">
+                            {log.workflowRunStepId}
+                          </p>
+                        </div>
+                        <pre className="mt-3 whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-foreground">
+                          {log.message}
+                        </pre>
+                      </div>
+                    );
+                  })
                 )}
               </div>
             </CollapsibleSection>
+          </section>
 
-            {/* Approval Gate Panel */}
-            <CollapsibleSection title="Approval Panel" defaultOpen>
-              {pendingApproval ? (
-                <div className="space-y-4">
-                  <div className="rounded-2xl border border-warning/20 bg-warning/5 p-4 text-sm text-warning/90">
-                    <p className="font-semibold flex items-center gap-2">
-                      <ShieldAlert className="h-4 w-4" /> Approval requested
-                    </p>
-                    <p className="mt-1 text-xs">
-                      A step requires manual confirmation. Provide review notes
-                      and authorize.
+          {/* 3. Follow-up Chat Input */}
+          {(() => {
+            const latestStep = detail.steps?.at(-1);
+            if (!latestStep) return null;
+            
+            const stepStatus = latestStep.status?.toUpperCase();
+            const runStatus = detail.run.status?.toUpperCase();
+            const isWaiting = stepStatus === "WAITING_USER_APPROVAL";
+            const isDone = stepStatus === "DONE" || stepStatus === "COMPLETED";
+            const canContinue = (isWaiting || isDone) && runStatus !== "REJECTED" && runStatus !== "FAILED";
+
+            if (!canContinue) return null;
+
+            return (
+              <div className="sticky bottom-6 mx-auto max-w-3xl mt-12 bg-card/90 backdrop-blur-xl p-3 rounded-[2rem] border border-border shadow-2xl transition-all">
+                {isWaiting && (
+                  <div className="px-4 pt-2 pb-3 mb-2 border-b border-border/50">
+                    <p className="text-xs font-semibold text-warning flex items-center gap-2 uppercase tracking-wider">
+                      <ShieldAlert className="h-3.5 w-3.5" /> Approval Required to proceed
                     </p>
                   </div>
+                )}
+                
+                <div className="flex items-end gap-3 px-2 pb-1">
                   <textarea
-                    className="min-h-24 w-full rounded-2xl border border-border bg-card/60 px-4 py-3 text-sm focus:border-accent focus:ring-1 focus:ring-accent outline-none"
+                    className="flex-1 max-h-[200px] min-h-[50px] resize-none bg-transparent px-3 py-2 text-sm text-foreground focus:outline-none placeholder:text-muted-foreground/60"
+                    placeholder={isWaiting ? "Provide revision notes..." : "Follow up with more instructions to refine this artifact..."}
                     value={decisionComment}
-                    onChange={(e) => setDecisionComment(e.target.value)}
-                    placeholder="Provide comments or revision notes..."
+                    onChange={(e) => {
+                      e.target.style.height = "auto";
+                      e.target.style.height = `${e.target.scrollHeight}px`;
+                      setDecisionComment(e.target.value);
+                    }}
+                    rows={1}
                   />
-                  <div className="grid grid-cols-3 gap-2.5">
-                    <Button
-                      disabled={submittingDecision}
-                      onClick={() => void handleDecision("approved")}
-                      className="bg-success text-success-foreground hover:bg-success/90"
+                  
+                  <div className="flex flex-col gap-2 shrink-0">
+                    <Button 
+                      size="sm"
+                      className="rounded-xl px-5 h-9"
+                      disabled={submittingDecision || !decisionComment.trim()}
+                      onClick={() => handleDecision(latestStep.id, "changes_requested")}
                     >
-                      <Check className="mr-1.5 h-4 w-4" /> Approve
+                      {submittingDecision ? <RefreshCw className="h-4 w-4 animate-spin" /> : "Send"}
                     </Button>
-                    <Button
-                      variant="secondary"
-                      disabled={submittingDecision}
-                      onClick={() => void handleDecision("changes_requested")}
-                    >
-                      Request Changes
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      disabled={submittingDecision}
-                      onClick={() => void handleDecision("rejected")}
-                      className="text-destructive hover:bg-destructive/10"
-                    >
-                      <X className="mr-1.5 h-4 w-4" /> Reject
-                    </Button>
+                    
+                    {isWaiting && (
+                      <Button 
+                        size="sm"
+                        variant="secondary"
+                        className="rounded-xl px-5 h-9 bg-success/20 text-success hover:bg-success/30 border border-success/30"
+                        disabled={submittingDecision}
+                        onClick={() => handleDecision(latestStep.id, "approved")}
+                      >
+                        <Check className="mr-1.5 h-4 w-4" /> Approve
+                      </Button>
+                    )}
                   </div>
                 </div>
-              ) : (
-                <p className="text-sm text-muted-foreground italic">
-                  No pending approval triggers found.
-                </p>
-              )}
-
-              {/* Decision History */}
-              {(detail.approvalDecisions ?? []).length > 0 ? (
-                <div className="mt-6 border-t border-border pt-4 space-y-3">
-                  <p className="text-sm font-bold text-foreground">
-                    Decision Logs
-                  </p>
-                  {detail.approvalDecisions?.map((decision: any) => (
-                    <div
-                      key={decision.id}
-                      className="rounded-2xl border border-border bg-card/35 p-3 text-xs shadow-sm"
-                    >
-                      <div className="flex items-center justify-between mb-2">
-                        <Badge
-                          tone={
-                            decision.decision === "approved"
-                              ? "success"
-                              : decision.decision === "rejected"
-                                ? "danger"
-                                : "warning"
-                          }
-                        >
-                          {decision.decision}
-                        </Badge>
-                        <span className="text-[10px] text-muted-foreground font-mono">
-                          {new Date(decision.createdAt).toLocaleDateString()}
-                        </span>
-                      </div>
-                      <p className="text-muted-foreground font-mono bg-background/25 p-2 rounded-xl border border-border/20">
-                        {decision.comment ?? "No comment."}
-                      </p>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-            </CollapsibleSection>
-
-            {/* AI Engine & Metrics Logs */}
-            <CollapsibleSection title="Engine Calls & Metrics">
-              <div className="space-y-3">
-                {detail.logs.length === 0 ? (
-                  <p className="text-sm text-muted-foreground italic">
-                    No metrics reported yet.
-                  </p>
-                ) : (
-                  detail.logs.map((log: any) => (
-                    <div
-                      key={log.id}
-                      className="rounded-2xl border border-border bg-card/40 p-4 text-xs font-mono shadow-sm"
-                    >
-                      <div className="flex items-center justify-between font-bold text-foreground">
-                        <span>
-                          {log.provider}/{log.model}
-                        </span>
-                        <span className="text-success">
-                          ${log.costEstimate.toFixed(4)}
-                        </span>
-                      </div>
-                      <div className="mt-2 grid grid-cols-3 gap-2 text-muted-foreground text-[10px]">
-                        <div>Tokens: {log.inputTokens + log.outputTokens}</div>
-                        <div className="text-center">
-                          Latency: {log.latencyMs}ms
-                        </div>
-                        <div className="text-right uppercase">
-                          Status: {log.status}
-                        </div>
-                      </div>
-                    </div>
-                  ))
-                )}
               </div>
-            </CollapsibleSection>
-          </div>
+            );
+          })()}
+
         </section>
       </div>
     </PageFrame>

@@ -11,6 +11,7 @@ function createBaseGatewayMock(): WorkflowGateway {
     listWorkflowRuns: vi.fn(async () => []),
     getWorkflowRunById: vi.fn(async () => null),
     getWorkflowRunDetail: vi.fn(async () => null),
+    deleteWorkflowRuns: vi.fn(async () => {}),
     createWorkflowRun: vi.fn(async () => {
       throw new Error("not implemented");
     }),
@@ -231,5 +232,113 @@ describe("LocalFirstWorkflowGateway", () => {
     expect(outputs).toHaveLength(1);
     expect(outputs[0]?.id).toBe("artifact-local-1");
     expect(outputs[0]?.contentMarkdown).toContain("Real local content");
+  });
+
+  it("delegates workflow run deletions to the base gateway", async () => {
+    const base = createBaseGatewayMock();
+    const localRunner = createLocalRunnerMock();
+    const gateway = new LocalFirstWorkflowGateway(base, localRunner);
+
+    await gateway.deleteWorkflowRuns(["run-1", "run-2"]);
+
+    expect(base.deleteWorkflowRuns).toHaveBeenCalledWith(["run-1", "run-2"]);
+  });
+
+  it("preserves earlier step outputs when a follow-up creates a new artifact version", async () => {
+    const base = createBaseGatewayMock();
+    const localRunner = createLocalRunnerMock();
+    const gateway = new LocalFirstWorkflowGateway(base, localRunner);
+
+    vi.mocked(base.getWorkflowRunDetail).mockResolvedValue({
+      run: {
+        id: "run-1",
+        workflowDefinitionId: "workflow-1",
+        projectId: "project-1",
+        status: "completed",
+        currentStepKey: null,
+        selectedContextSourceIds: [],
+        startedBy: "admin",
+        startedAt: "2026-05-23T00:00:00Z",
+        completedAt: "2026-05-23T00:02:00Z",
+        errorSummary: null,
+      },
+      steps: [
+        {
+          id: "step-run-1",
+          workflowRunId: "run-1",
+          stepKey: "business_idea",
+          stepName: "Business Idea",
+          stepType: "ai_mock",
+          status: "completed",
+          sequenceIndex: 0,
+          outputId: null,
+          startedAt: null,
+          completedAt: null,
+          errorMessage: null,
+        },
+      ],
+      approvals: [],
+      outputs: [
+        {
+          id: "artifact-db-1",
+          workflowRunId: "run-1",
+          workflowStepId: "step-run-1",
+          projectId: "project-1",
+          outputType: "document",
+          version: 1,
+          title: "BusinessIdea.md",
+          contentMarkdown: "# Business Idea\n\nInitial output",
+          isApproved: false,
+          createdAt: "2026-05-23T00:01:00Z",
+        },
+        {
+          id: "artifact-db-2",
+          workflowRunId: "run-1",
+          workflowStepId: "step-run-1",
+          projectId: "project-1",
+          outputType: "document",
+          version: 2,
+          title: "BusinessIdea.md",
+          contentMarkdown: "",
+          isApproved: false,
+          createdAt: "2026-05-23T00:02:00Z",
+        },
+      ],
+      logs: [],
+      approvalDecisions: [],
+      selectedContextSources: [],
+      project: null,
+      definition: null,
+    });
+
+    vi.mocked(localRunner.listArtifacts).mockResolvedValue([
+      {
+        artifactId: "artifact-db-2",
+        title: "BusinessIdea.md",
+        sourceKind: "workflow_output",
+        projectId: "project-1",
+        workflowRunId: "run-1",
+        workflowStepKey: "business_idea",
+        providerKey: "codex",
+        localPath: ".flowpilot/artifacts/project-1/run-1/business_idea",
+        remotePath: "",
+        remoteUrl: "",
+        syncStatus: "local_only",
+        createdAt: "2026-05-23T00:02:00Z",
+        updatedAt: "2026-05-23T00:02:00Z",
+        contentMarkdown: "# Business Idea\n\nFollow-up output",
+        previewMarkdown: "Follow-up output",
+      },
+    ]);
+
+    const detail = await gateway.getWorkflowRunDetail("run-1");
+
+    expect(detail?.outputs).toHaveLength(2);
+    expect(detail?.outputs.map((output) => output.id)).toEqual([
+      "artifact-db-1",
+      "artifact-db-2",
+    ]);
+    expect(detail?.outputs[0]?.contentMarkdown).toContain("Initial output");
+    expect(detail?.outputs[1]?.contentMarkdown).toContain("Follow-up output");
   });
 });

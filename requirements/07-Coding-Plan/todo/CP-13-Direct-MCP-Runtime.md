@@ -2,7 +2,7 @@
 
 **Maps from:** SD-11, CP-05, CP-07
 **Phase:** Later improvement
-**Depends on:** CP-11, CP-12
+**Depends on:** CP-11, CP-10 (mcp.context resolver and MCP integration hardening)
 
 ---
 

@@ -12,6 +12,7 @@ import type {
   WorkflowRunLog,
   WorkflowRunStep,
   WorkflowStep,
+  WorkflowRunSession,
 } from "@/domain/model/entity/workflow-engine";
 import {
   mapArtifactDefinition,
@@ -22,6 +23,7 @@ import {
   mapWorkflowRunLog,
   mapWorkflowRunStep,
   mapWorkflowStep,
+  mapWorkflowRunSession,
 } from "./workflow-engine-mappers";
 
 const DEFAULT_MODEL = "gpt-5.4";
@@ -93,6 +95,49 @@ async function invokeWorkflowStartRuntime<TResponse>(
     typeof body?.error === "string"
       ? body.error
       : `Workflow start runtime failed (${response.status}).`,
+  );
+}
+
+async function invokeWorkflowSubmitStepApprovalRuntime<TResponse>(
+  supabase: SupabaseClient,
+  payload: {
+    stepId: string;
+    approve: boolean;
+    comment?: string;
+  },
+) {
+  if (typeof window === "undefined") {
+    return invokeSupabaseEdgeFunction<TResponse>("workflow-engine-submit-step-approval", payload);
+  }
+
+  const accessToken = (await supabase.auth.getSession()).data.session?.access_token ?? null;
+  let response: Response;
+  try {
+    response = await fetch("/api/workflow-engine/submit-step-approval", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch (error) {
+    throw new Error(
+      error instanceof Error
+        ? `Workflow follow-up runtime is unavailable: ${error.message}`
+        : "Workflow follow-up runtime is unavailable.",
+    );
+  }
+
+  if (response.ok) {
+    return (await response.json()) as TResponse;
+  }
+
+  const body = await response.json().catch(() => null);
+  throw new Error(
+    typeof body?.error === "string"
+      ? body.error
+      : `Workflow follow-up runtime failed (${response.status}).`,
   );
 }
 
@@ -477,7 +522,32 @@ export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
       logs = (logsData ?? []).map(mapWorkflowRunLog);
     }
 
-    return { run, steps, logs };
+    const { data: sessionsData, error: sessionsError } = await this.supabase
+      .from("workflow_run_sessions")
+      .select("*")
+      .eq("workflow_run_id", runId)
+      .order("started_at", { ascending: true });
+
+    if (sessionsError) throw new Error(`Unable to load sessions: ${sessionsError.message}`);
+    const sessions = (sessionsData ?? []).map(mapWorkflowRunSession);
+
+    return { run, steps, logs, sessions };
+  }
+
+  async deleteWorkflowRuns(runIds: string[]): Promise<void> {
+    const ids = [...new Set(runIds)].filter((runId) => runId.trim().length > 0);
+    if (ids.length === 0) {
+      return;
+    }
+
+    const { error } = await this.supabase
+      .from("workflow_runs")
+      .delete()
+      .in("id", ids);
+
+    if (error) {
+      throw new Error(`Unable to delete workflow runs: ${error.message}`);
+    }
   }
 
   async startWorkflowRun(request: WorkflowRunStartRequest): Promise<WorkflowRun> {
@@ -498,11 +568,17 @@ export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
     approve: boolean,
     comment?: string
   ): Promise<WorkflowRunStep> {
-    const data = await invokeSupabaseEdgeFunction<any>("workflow-engine-submit-step-approval", {
-      stepId,
-      approve,
-      comment,
-    });
+    const data = approve
+      ? await invokeSupabaseEdgeFunction<any>("workflow-engine-submit-step-approval", {
+          stepId,
+          approve,
+          comment,
+        })
+      : await invokeWorkflowSubmitStepApprovalRuntime<any>(this.supabase, {
+          stepId,
+          approve,
+          comment,
+        });
     return mapWorkflowRunStep(data);
   }
 }
