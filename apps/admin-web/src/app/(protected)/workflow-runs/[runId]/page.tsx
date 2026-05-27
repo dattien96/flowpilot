@@ -125,6 +125,14 @@ export default async function WorkflowRunDetailPage({
                 </Button>
               </form>
               <form
+                action={`/api/workflow-runs/${detail.run.id}/terminate-session`}
+                method="post"
+              >
+                <Button type="submit" variant="secondary">
+                  Terminate session
+                </Button>
+              </form>
+              <form
                 action={`/api/workflow-runs/${detail.run.id}/cancel`}
                 method="post"
               >

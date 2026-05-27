@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 )
@@ -27,6 +28,8 @@ type LiveSession struct {
 	Stdout            io.ReadCloser
 	Stderr            io.ReadCloser
 	Status            string
+	LastUsedAt        time.Time
+	IdleTTL           time.Duration
 	Mu                sync.Mutex
 }
 
@@ -58,7 +61,7 @@ func readJsonRpcMessage(scanner *bufio.Scanner) (map[string]interface{}, error) 
 	}
 	var msg map[string]interface{}
 	if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parse_error: %w", err)
 	}
 	return msg, nil
 }
@@ -237,6 +240,13 @@ func (r *Runner) StartSession(ctx context.Context, req AiSessionStartRequest) (A
 		Stdout:        stdout,
 		Stderr:        stderr,
 		Status:        "active",
+		LastUsedAt:    time.Now().UTC(),
+	}
+
+	if req.IdleTTLSeconds != nil && *req.IdleTTLSeconds > 0 {
+		session.IdleTTL = time.Duration(*req.IdleTTLSeconds) * time.Second
+	} else {
+		session.IdleTTL = 2 * time.Hour
 	}
 
 	providerSessionID := ""
@@ -294,13 +304,8 @@ func (r *Runner) StartSession(ctx context.Context, req AiSessionStartRequest) (A
 				providerSessionID = sId
 			}
 		}
-		if providerSessionID == "" {
-			providerSessionID = "gemini_acp_session_" + session.SessionID
-		}
-	} else if transportType == "claude_stream_json" {
-		providerSessionID = "claude_stream_session_" + session.SessionID
 	}
-
+	providerSessionID = DetermineProviderSessionID(transportType, session.Provider, session.SessionID, providerSessionID, req.ResumeProviderSessionID)
 	session.ProviderSessionID = providerSessionID
 	r.sessions[processKey] = session
 
@@ -321,11 +326,16 @@ func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (
 	r.sessionsMu.Unlock()
 
 	if !exists {
-		return PromptExecutionResult{}, fmt.Errorf("session %q not found or expired", *req.Session.ProcessKey)
+		return PromptExecutionResult{}, fmt.Errorf("session_dead: session %q not found or expired", *req.Session.ProcessKey)
 	}
 
 	session.Mu.Lock()
 	defer session.Mu.Unlock()
+	
+	session.LastUsedAt = time.Now().UTC()
+	if req.IdleTTLSeconds != nil && *req.IdleTTLSeconds > 0 {
+		session.IdleTTL = time.Duration(*req.IdleTTLSeconds) * time.Second
+	}
 
 	startedAt := time.Now().UTC()
 	var outputMarkdown string
@@ -344,11 +354,23 @@ func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (
 			"arguments": args,
 		}
 		if err := writeJsonRpcRequest(session.Stdin, "tools/call", params, 3); err != nil {
-			return PromptExecutionResult{}, fmt.Errorf("failed to send MCP tool call: %w", err)
+			return PromptExecutionResult{}, fmt.Errorf("session_dead: failed to send MCP tool call: %w", err)
 		}
 		resp, err := readJsonRpcResponse(session.StdoutScanner, 3)
 		if err != nil {
-			return PromptExecutionResult{}, fmt.Errorf("failed to read MCP tool response: %w", err)
+			if strings.HasPrefix(err.Error(), "parse_error:") {
+				return PromptExecutionResult{}, fmt.Errorf("provider error: invalid json response: %v", err)
+			}
+			return PromptExecutionResult{}, fmt.Errorf("session_dead: failed to read MCP tool response: %w", err)
+		}
+		if errObj, ok := resp["error"].(map[string]interface{}); ok {
+			errMsg := "unknown provider error"
+			if msg, ok := errObj["message"].(string); ok {
+				errMsg = msg
+			}
+			return PromptExecutionResult{}, fmt.Errorf("provider error: %s", errMsg)
+		} else if errStr, ok := resp["error"].(string); ok {
+			return PromptExecutionResult{}, fmt.Errorf("provider error: %s", errStr)
 		}
 		if result, ok := resp["result"].(map[string]interface{}); ok {
 			threadID, output := extractCodexMcpResponse(result)
@@ -363,11 +385,23 @@ func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (
 			"prompt":    req.Prompt,
 		}
 		if err := writeJsonRpcRequest(session.Stdin, "session/prompt", params, 3); err != nil {
-			return PromptExecutionResult{}, fmt.Errorf("failed to send Gemini ACP prompt: %w", err)
+			return PromptExecutionResult{}, fmt.Errorf("session_dead: failed to send Gemini ACP prompt: %w", err)
 		}
 		resp, err := readJsonRpcResponse(session.StdoutScanner, 3)
 		if err != nil {
-			return PromptExecutionResult{}, fmt.Errorf("failed to read Gemini ACP response: %w", err)
+			if strings.HasPrefix(err.Error(), "parse_error:") {
+				return PromptExecutionResult{}, fmt.Errorf("provider error: invalid json response: %v", err)
+			}
+			return PromptExecutionResult{}, fmt.Errorf("session_dead: failed to read Gemini ACP response: %w", err)
+		}
+		if errObj, ok := resp["error"].(map[string]interface{}); ok {
+			errMsg := "unknown provider error"
+			if msg, ok := errObj["message"].(string); ok {
+				errMsg = msg
+			}
+			return PromptExecutionResult{}, fmt.Errorf("provider error: %s", errMsg)
+		} else if errStr, ok := resp["error"].(string); ok {
+			return PromptExecutionResult{}, fmt.Errorf("provider error: %s", errStr)
 		}
 		if result, ok := resp["result"].(map[string]interface{}); ok {
 			if text, ok := result["text"].(string); ok {
@@ -383,11 +417,23 @@ func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (
 			return PromptExecutionResult{}, err
 		}
 		if _, err := session.Stdin.Write(append(data, '\n')); err != nil {
-			return PromptExecutionResult{}, fmt.Errorf("failed to write Claude stream JSON: %w", err)
+			return PromptExecutionResult{}, fmt.Errorf("session_dead: failed to write Claude stream JSON: %w", err)
 		}
 		resp, err := readJsonRpcResponse(session.StdoutScanner, nil)
 		if err != nil {
-			return PromptExecutionResult{}, fmt.Errorf("failed to read Claude stream response: %w", err)
+			if strings.HasPrefix(err.Error(), "parse_error:") {
+				return PromptExecutionResult{}, fmt.Errorf("provider error: invalid json response: %v", err)
+			}
+			return PromptExecutionResult{}, fmt.Errorf("session_dead: failed to read Claude stream response: %w", err)
+		}
+		if errObj, ok := resp["error"].(map[string]interface{}); ok {
+			errMsg := "unknown provider error"
+			if msg, ok := errObj["message"].(string); ok {
+				errMsg = msg
+			}
+			return PromptExecutionResult{}, fmt.Errorf("provider error: %s", errMsg)
+		} else if errStr, ok := resp["error"].(string); ok {
+			return PromptExecutionResult{}, fmt.Errorf("provider error: %s", errStr)
 		}
 		if text, ok := resp["text"].(string); ok {
 			outputMarkdown = text
@@ -474,4 +520,66 @@ func (r *Runner) CleanupSessions() {
 		}
 		session.Mu.Unlock()
 	}
+}
+
+func (r *Runner) StartIdleSweeper(ctx context.Context) {
+	ticker := time.NewTicker(1 * time.Minute)
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				r.sweepIdleSessions()
+			}
+		}
+	}()
+}
+
+func (r *Runner) sweepIdleSessions() {
+	r.sessionsMu.Lock()
+	var staleSessions []*LiveSession
+	var staleKeys []string
+	for key, sess := range r.sessions {
+		sess.Mu.Lock()
+		idle := time.Since(sess.LastUsedAt) > sess.IdleTTL
+		sess.Mu.Unlock()
+		if idle {
+			staleKeys = append(staleKeys, key)
+			staleSessions = append(staleSessions, sess)
+		}
+	}
+	for _, key := range staleKeys {
+		delete(r.sessions, key)
+	}
+	r.sessionsMu.Unlock()
+
+	for _, session := range staleSessions {
+		session.Mu.Lock()
+		session.Status = "completed"
+		if session.Stdin != nil {
+			session.Stdin.Close()
+		}
+		if session.Cmd != nil && session.Cmd.Process != nil {
+			session.Cmd.Process.Kill()
+			go session.Cmd.Wait()
+		}
+		session.Mu.Unlock()
+	}
+}
+
+func DetermineProviderSessionID(transportType, provider, sessionID, currentProviderSessionID string, resumeProviderSessionID *string) string {
+	if transportType == "gemini_acp" {
+		if currentProviderSessionID == "" {
+			currentProviderSessionID = "gemini_acp_session_" + sessionID
+		}
+	} else if transportType == "claude_stream_json" {
+		currentProviderSessionID = "claude_stream_session_" + sessionID
+	}
+
+	if resumeProviderSessionID != nil && *resumeProviderSessionID != "" && provider == "codex" {
+		currentProviderSessionID = *resumeProviderSessionID
+	}
+	return currentProviderSessionID
 }

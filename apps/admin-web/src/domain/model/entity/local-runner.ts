@@ -130,12 +130,14 @@ export interface LocalRunnerArtifact {
   previewMarkdown: string;
   manifestPath?: string;
   promptPath?: string;
+  actualPromptPath?: string;
   stdoutPath?: string;
   stderrPath?: string;
   commandPath?: string;
   contentPath?: string;
   checksum?: string;
   promptText?: string;
+  actualPromptText?: string;
   stdoutText?: string;
   stderrText?: string;
   commandText?: string;
@@ -223,6 +225,8 @@ export interface LocalRunnerAiSessionStartRequest {
   workingDirectory: string;
   approvalMode: string | null;
   allowWrite: boolean;
+  idleTTLSeconds?: number;
+  resumeProviderSessionId?: string;
 }
 
 export interface LocalRunnerAiSessionHandle {
@@ -236,4 +240,5 @@ export interface LocalRunnerAiSessionMessageRequest {
   prompt: string;
   skillIds: string[];
   contextSourceIds: string[];
+  idleTTLSeconds?: number | null;
 }

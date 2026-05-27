@@ -1,20 +1,18 @@
 import { redirect } from "next/navigation";
 import { NextResponse } from "next/server";
-
 import { assertAdminApiSession } from "@/data/auth/session";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createGatewayBundle } from "@/data/repository/factory";
+import { finalizeWorkflowRunSessions } from "@/features/workflow-engine/workflow-start-runtime";
 
-type RouteContext = {
-  params: Promise<{
-    runId: string;
-  }>;
-};
-
-export async function POST(request: Request, context: RouteContext) {
+export async function POST(
+  request: Request,
+  { params }: { params: Promise<{ runId: string }> },
+) {
   const auth = await assertAdminApiSession();
   if (!auth.ok) return auth.response;
 
-  const { runId } = await context.params;
+  const { runId } = await params;
   const gateways = await createGatewayBundle();
   const run = await gateways.workflowGateway.getWorkflowRunById(runId);
 
@@ -24,16 +22,13 @@ export async function POST(request: Request, context: RouteContext) {
 
   if (run.status === "completed" || run.status === "rejected" || run.status === "failed") {
     return NextResponse.json(
-      { error: "Terminal workflow runs cannot be cancelled." },
+      { error: "Session cannot be terminated on a finished run." },
       { status: 409 },
     );
   }
 
-  await gateways.workflowGateway.updateWorkflowRun(runId, {
-    status: "rejected",
-    completedAt: new Date().toISOString(),
-    errorSummary: "Cancelled by admin.",
-  });
+  const adminClient = createSupabaseAdminClient();
+  await finalizeWorkflowRunSessions(adminClient, gateways.localRunnerGateway, runId);
 
   if ((request.headers.get("content-type") ?? "").includes("application/json")) {
     return NextResponse.json({ ok: true });

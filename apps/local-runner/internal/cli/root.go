@@ -74,6 +74,11 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				return err
 			}
 
+			// Start the idle sweeper
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			instance.StartIdleSweeper(ctx)
+
 			mux := http.NewServeMux()
 			mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodGet {
@@ -520,6 +525,17 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				}
 				result, err := instance.SendMessage(r.Context(), payload)
 				if err != nil {
+					// Structured session_dead error contract
+					if strings.HasPrefix(err.Error(), "session_dead:") {
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(http.StatusBadRequest)
+						json.NewEncoder(w).Encode(map[string]string{
+							"code":    "session_dead",
+							"message": "session process exited or is no longer registered",
+							"details": err.Error(),
+						})
+						return
+					}
 					writeHTTPError(w, http.StatusBadRequest, err)
 					return
 				}

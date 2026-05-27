@@ -9,6 +9,7 @@ import {
   Workflow,
   History,
   ListTree,
+  BookOpen,
 } from "lucide-react";
 
 export const primaryNavItems = [
@@ -19,6 +20,7 @@ export const primaryNavItems = [
   { to: "/workflow-runs", label: "Workflow Runs", icon: History },
   { to: "/teams", label: "Teams", icon: Users },
   { to: "/ai-runs", label: "AI Runs", icon: Sparkles },
+  { to: "/guide", label: "FlowPilot Guide", icon: BookOpen },
 ] as const;
 
 export const settingsNavItems = [

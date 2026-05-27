@@ -92,7 +92,8 @@ function mapProject(row: SupabaseRow): Project {
     artifactStoragePreference: (row.artifact_storage_preference ?? "supabase") as Project["artifactStoragePreference"],
     defaultProvider: row.default_provider ? String(row.default_provider) : null,
     defaultModel: row.default_model ? String(row.default_model) : null,
-    defaultReasoningEffort: row.default_reasoning_effort ? String(row.default_reasoning_effort) : null,
+    defaultReasoningEffort: row.default_reasoning_effort ? (row.default_reasoning_effort as Project["defaultReasoningEffort"]) : null,
+    sessionIdleTtlMinutes: row.session_idle_ttl_minutes ? Number(row.session_idle_ttl_minutes) : null,
     createdBy: String(row.created_by),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
@@ -114,6 +115,7 @@ function buildProjectUpdatePayload(patch: Partial<UpdateProjectPayload>) {
       default_provider: nextModel ? resolveProviderKeyFromModel(nextModel) : patch.defaultProvider,
       default_model: nextModel,
       default_reasoning_effort: patch.defaultReasoningEffort,
+      session_idle_ttl_minutes: patch.sessionIdleTtlMinutes,
     }).filter(([, value]) => value !== undefined),
   );
 }

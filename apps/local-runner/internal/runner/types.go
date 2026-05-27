@@ -91,17 +91,19 @@ type ArtifactSummary struct {
 
 type ArtifactDetail struct {
 	ArtifactSummary
-	ManifestPath string `json:"manifestPath"`
-	PromptPath   string `json:"promptPath"`
-	StdoutPath   string `json:"stdoutPath"`
-	StderrPath   string `json:"stderrPath"`
-	CommandPath  string `json:"commandPath"`
-	ContentPath  string `json:"contentPath"`
-	Checksum     string `json:"checksum"`
-	PromptText   string `json:"promptText,omitempty"`
-	StdoutText   string `json:"stdoutText,omitempty"`
-	StderrText   string `json:"stderrText,omitempty"`
-	CommandText  string `json:"commandText,omitempty"`
+	ManifestPath     string `json:"manifestPath"`
+	PromptPath       string `json:"promptPath"`
+	ActualPromptPath string `json:"actualPromptPath,omitempty"`
+	StdoutPath       string `json:"stdoutPath"`
+	StderrPath       string `json:"stderrPath"`
+	CommandPath      string `json:"commandPath"`
+	ContentPath      string `json:"contentPath"`
+	Checksum         string `json:"checksum"`
+	PromptText       string `json:"promptText,omitempty"`
+	ActualPromptText string `json:"actualPromptText,omitempty"`
+	StdoutText       string `json:"stdoutText,omitempty"`
+	StderrText       string `json:"stderrText,omitempty"`
+	CommandText      string `json:"commandText,omitempty"`
 }
 
 type StorageDriverConfig struct {
@@ -236,12 +238,14 @@ type PromptExecutionResult struct {
 }
 
 type AiSessionStartRequest struct {
-	ProviderKey      string  `json:"providerKey"`
-	ModelName        string  `json:"modelName"`
-	ReasoningEffort  *string `json:"reasoningEffort"`
-	WorkingDirectory string  `json:"workingDirectory"`
-	ApprovalMode     *string `json:"approvalMode"`
-	AllowWrite       bool    `json:"allowWrite"`
+	ProviderKey             string  `json:"providerKey"`
+	ModelName               string  `json:"modelName"`
+	ReasoningEffort         *string `json:"reasoningEffort"`
+	WorkingDirectory        string  `json:"workingDirectory"`
+	ApprovalMode            *string `json:"approvalMode"`
+	AllowWrite              bool    `json:"allowWrite"`
+	IdleTTLSeconds          *int    `json:"idleTTLSeconds,omitempty"`
+	ResumeProviderSessionID *string `json:"resumeProviderSessionId,omitempty"`
 }
 
 type AiSessionHandle struct {
@@ -255,4 +259,5 @@ type AiSessionMessageRequest struct {
 	Prompt           string          `json:"prompt"`
 	SkillIds         []string        `json:"skillIds"`
 	ContextSourceIds []string        `json:"contextSourceIds"`
+	IdleTTLSeconds   *int            `json:"idleTTLSeconds,omitempty"`
 }

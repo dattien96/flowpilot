@@ -1,6 +1,8 @@
 import { createGatewayBundle } from "@/data/repository/factory";
 import { Badge } from "@/presentation/components/ui/badge";
 import { ProjectSectionNav } from "@/components/project/project-section-nav";
+import { updateSessionTtlAction } from "./actions";
+import { Button } from "@/presentation/components/ui/button";
 
 export default async function ProjectSettingsPage({
   params,
@@ -49,6 +51,36 @@ export default async function ProjectSettingsPage({
               ))
             )}
           </div>
+        </div>
+      </section>
+
+      <section className="grid gap-4 xl:grid-cols-2 mt-6">
+        <div className="rounded-[1.6rem] border border-border bg-background/70 p-6">
+          <p className="font-mono text-xs uppercase tracking-[0.28em] text-muted-foreground">
+            Session Configuration
+          </p>
+          <h2 className="mt-3 text-3xl font-semibold tracking-tight">Idle Timeout</h2>
+          <p className="mt-3 text-sm text-muted-foreground">
+            Configure how long a terminal session process should stay alive while waiting for follow-up prompts before being terminated (in minutes). Default is 120 (2 hours).
+          </p>
+          <form
+            className="mt-4 flex gap-2 items-center"
+            action={async (formData: FormData) => {
+              "use server";
+              await updateSessionTtlAction(projectId, formData);
+            }}
+          >
+            <input
+              name="sessionIdleTtlMinutes"
+              type="number"
+              defaultValue={project?.sessionIdleTtlMinutes ?? 120}
+              className="w-24 rounded-lg border border-border bg-background px-3 py-2 text-sm"
+              min="1"
+            />
+            <Button type="submit" variant="secondary">
+              Save
+            </Button>
+          </form>
         </div>
       </section>
     </div>

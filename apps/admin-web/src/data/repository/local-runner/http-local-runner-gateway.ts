@@ -26,6 +26,18 @@ import type {
 
 type HealthResponse = Omit<LocalRunnerHealth, "baseUrl" | "errorMessage">;
 
+export class LocalRunnerError extends Error {
+  code?: string;
+  details?: string;
+
+  constructor(message: string, code?: string, details?: string) {
+    super(message);
+    this.name = "LocalRunnerError";
+    this.code = code;
+    this.details = details;
+  }
+}
+
 async function readJson<T>(baseUrl: string, path: string): Promise<T> {
   const response = await fetch(new URL(path, baseUrl), {
     cache: "no-store",
@@ -427,7 +439,20 @@ export class HttpLocalRunnerGateway implements LocalRunnerGateway {
     });
 
     if (!response.ok) {
-      throw new Error(`Local runner session message failed: ${response.status} ${response.statusText}`);
+      let code: string | undefined;
+      let details: string | undefined;
+      let message = `Local runner session message failed: ${response.status} ${response.statusText}`;
+      try {
+        const errorBody = await response.json();
+        if (errorBody && typeof errorBody === "object" && errorBody.code) {
+          code = errorBody.code;
+          if (errorBody.message) message = errorBody.message;
+          if (errorBody.details) details = errorBody.details;
+        }
+      } catch (e) {
+        // Fallback to text or generic message
+      }
+      throw new LocalRunnerError(message, code, details);
     }
 
     return (await response.json()) as LocalRunnerPromptExecutionResult;

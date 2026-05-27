@@ -118,6 +118,9 @@ export function ProjectSettingsContent({
     defaultModel: project.defaultModel ?? DEFAULT_MODEL,
     defaultReasoningEffort: project.defaultReasoningEffort ?? DEFAULT_REASONING_EFFORT,
   });
+  const [sessionIdleTtlMinutes, setSessionIdleTtlMinutes] = useState(
+    project.sessionIdleTtlMinutes ?? 120,
+  );
 
   useEffect(() => {
     setProviderDefaults({
@@ -125,6 +128,10 @@ export function ProjectSettingsContent({
       defaultReasoningEffort: project.defaultReasoningEffort ?? DEFAULT_REASONING_EFFORT,
     });
   }, [project.defaultModel, project.defaultReasoningEffort]);
+
+  useEffect(() => {
+    setSessionIdleTtlMinutes(project.sessionIdleTtlMinutes ?? 120);
+  }, [project.sessionIdleTtlMinutes]);
 
   const linkTeam = useMutation({
     mutationFn: async (teamId: string) => {
@@ -188,6 +195,23 @@ export function ProjectSettingsContent({
         defaultProvider: resolvedProvider,
         defaultModel,
         defaultReasoningEffort: defaultReasoningEffort || null,
+      });
+    },
+    onSuccess: async () => {
+      await router.invalidate();
+    },
+  });
+
+  const updateSessionTtl = useMutation({
+    mutationFn: async () => {
+      const gateways = await createGatewayBundle();
+      const ttl = Number(sessionIdleTtlMinutes);
+      if (!Number.isFinite(ttl) || ttl < 1) {
+        throw new Error("Idle timeout must be at least 1 minute.");
+      }
+
+      await gateways.projectGateway.updateProject(projectId, {
+        sessionIdleTtlMinutes: ttl,
       });
     },
     onSuccess: async () => {
@@ -439,6 +463,51 @@ export function ProjectSettingsContent({
                 </div>
               ) : null}
             </div>
+          </div>
+        </section>
+
+        <section className="rounded-[1.5rem] border border-border bg-background/60 p-5">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h2 className="text-xl font-semibold">Session idle timeout</h2>
+              <p className="mt-2 text-sm text-muted-foreground">
+                Controls how long the local runner keeps an idle terminal session alive before it
+                is swept and marked dead for the next use. The value is shared across machines
+                through Supabase.
+              </p>
+            </div>
+            <Badge tone="neutral">{sessionIdleTtlMinutes} min</Badge>
+          </div>
+
+          <div className="mt-4 max-w-sm space-y-2">
+            <label className="space-y-2 text-sm">
+              <span className="font-medium">Idle timeout in minutes</span>
+              <input
+                aria-label="Idle timeout in minutes"
+                className="w-full rounded-2xl border border-border bg-background px-4 py-3"
+                min={1}
+                name="sessionIdleTtlMinutes"
+                type="number"
+                value={sessionIdleTtlMinutes}
+                onChange={(event) =>
+                  setSessionIdleTtlMinutes(event.target.valueAsNumber || 120)
+                }
+              />
+            </label>
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+            <p className="text-sm text-muted-foreground">
+              Default is 120 minutes. This value is used by the runner when starting and
+              sweeping live sessions.
+            </p>
+            <Button
+              disabled={updateSessionTtl.isPending}
+              type="button"
+              onClick={() => updateSessionTtl.mutate()}
+            >
+              {updateSessionTtl.isPending ? "Saving..." : "Save timeout"}
+            </Button>
           </div>
         </section>
 

@@ -381,6 +381,9 @@ func (r *Runner) readArtifactDetail(manifestPath string) (ArtifactDetail, error)
 	if detail.PromptPath == "" {
 		detail.PromptPath = filepath.Join(filepath.Dir(manifestPath), "prompt.md")
 	}
+	if detail.ActualPromptPath == "" {
+		detail.ActualPromptPath = filepath.Join(filepath.Dir(manifestPath), "actual-prompt.md")
+	}
 	if detail.StdoutPath == "" {
 		detail.StdoutPath = filepath.Join(filepath.Dir(manifestPath), "stdout.txt")
 	}
@@ -401,6 +404,11 @@ func (r *Runner) readArtifactDetail(manifestPath string) (ArtifactDetail, error)
 	}
 	if promptBytes, err := os.ReadFile(detail.PromptPath); err == nil {
 		detail.PromptText = strings.TrimSpace(string(promptBytes))
+	}
+	if promptBytes, err := os.ReadFile(detail.ActualPromptPath); err == nil {
+		detail.ActualPromptText = strings.TrimSpace(string(promptBytes))
+	} else {
+		detail.ActualPromptText = detail.PromptText
 	}
 	if stdoutBytes, err := os.ReadFile(detail.StdoutPath); err == nil {
 		detail.StdoutText = strings.TrimSpace(string(stdoutBytes))
