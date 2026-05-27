@@ -127,6 +127,20 @@ export function WorkflowDetailPage() {
     () => new Map(projects.map((project) => [project.id, project.name])),
     [projects]
   );
+
+  const availableSteps = useMemo(() => {
+    return catalog.filter((def) => !steps.some((step) => step.stepType === def.stepType));
+  }, [catalog, steps]);
+
+  useEffect(() => {
+    if (availableSteps.length > 0) {
+      if (!selectedStepType || !availableSteps.some((step) => step.stepType === selectedStepType)) {
+        setSelectedStepType(availableSteps[0].stepType);
+      }
+    } else {
+      setSelectedStepType("");
+    }
+  }, [availableSteps, selectedStepType]);
   const isPrivateWorkflow = workflow?.projectId != null;
   const canEdit = Boolean(workflow);
   const effectiveRunProjectId = isPrivateWorkflow ? workflow?.projectId ?? "" : runProjectId;
@@ -407,7 +421,7 @@ export function WorkflowDetailPage() {
               value={selectedStepType}
               onChange={(event) => setSelectedStepType(event.target.value)}
             >
-              {catalog.map((step) => (
+              {availableSteps.map((step) => (
                 <option key={step.stepType} value={step.stepType}>
                   {step.name}
                 </option>

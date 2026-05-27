@@ -80,6 +80,21 @@ export function CreateWorkflowPage() {
     [catalog]
   );
 
+  const availableSteps = useMemo(() => {
+    return catalog.filter((def) => !steps.some((step) => step.stepType === def.stepType));
+  }, [catalog, steps]);
+
+  useEffect(() => {
+    if (availableSteps.length > 0) {
+      if (!selectedStepType || !availableSteps.some((step) => step.stepType === selectedStepType)) {
+        setSelectedStepType(availableSteps[0].stepType);
+      }
+    } else {
+      setSelectedStepType("");
+    }
+  }, [availableSteps, selectedStepType]);
+
+
   const addStep = () => {
     if (!selectedStepType) return;
     const selectedStep = stepByType.get(selectedStepType);
@@ -232,7 +247,7 @@ export function CreateWorkflowPage() {
               value={selectedStepType}
               onChange={(event) => setSelectedStepType(event.target.value)}
             >
-              {catalog.map((step) => (
+              {availableSteps.map((step) => (
                 <option key={step.stepType} value={step.stepType}>
                   {step.name}
                 </option>
