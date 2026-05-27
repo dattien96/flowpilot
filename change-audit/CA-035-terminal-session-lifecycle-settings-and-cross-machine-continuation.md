@@ -14,12 +14,14 @@ This audit records the full CP-21 terminal-session change set, not just Task-02b
 - Added structured `session_dead` error handling across the local runner and HTTP gateway so retry paths can distinguish dead transport from other provider failures.
 - Added idle-session tracking in the runner with `LastUsedAt`, a background sweeper, and configured TTL support.
 - Updated the CP-21 checklist to mark the terminal-session delivery items complete.
+- Added collapsible session headers and nested Prompts + Attempts chronologically (`Session > Prompt > Attempt`) to resolve cross-machine timeline visualization discrepancies.
+- Refactored the Developer Diagnostics section and Attempt headers to use state-controlled chevron up/down arrows, removing all "Expand" and "Collapse" text labels.
 
 ## Verification
 
 - Ran `go test ./internal/runner ./internal/cli` in `apps/local-runner`.
-- Ran `npm test -- --run src/features/workflow-engine/workflow-start-runtime.test.ts src/data/repository/local-runner/http-local-runner-gateway.test.ts` in `apps/admin-web`.
-- Confirmed the workflow-runtime tests cover dead-session reconnect, non-`session_dead` failures, and the cross-machine bootstrap replay path.
+- Ran `npm test -- --run src/features/workflow-engine/workflow-start-runtime.test.ts src/data/repository/local-runner/http-local-runner-gateway.test.ts src/features/workflow-engine/workflow-run-detail-timeline.test.ts` in `apps/admin-web`.
+- Confirmed the workflow-runtime tests cover dead-session reconnect, non-`session_dead` failures, the cross-machine bootstrap replay path, and the nested timeline hierarchy mapping.
 - Confirmed the runner tests cover provider-session resume seeding and idle-sweeper behavior.
 
 ## Residual Notes
