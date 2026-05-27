@@ -10,6 +10,7 @@ export interface CreateProjectPayload {
   defaultProvider?: string | null;
   defaultModel?: string | null;
   defaultReasoningEffort?: string | null;
+  sessionIdleTtlMinutes?: number | null;
 }
 
 export interface UpdateProjectPayload {
@@ -24,4 +25,5 @@ export interface UpdateProjectPayload {
   defaultProvider?: string | null;
   defaultModel?: string | null;
   defaultReasoningEffort?: string | null;
+  sessionIdleTtlMinutes?: number | null;
 }

@@ -5,6 +5,7 @@ import path from "node:path";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type { LocalRunnerGateway } from "@/domain/gateway/local-runner-gateway";
+import type { LocalRunnerPromptExecutionResult } from "@/domain/model/entity/local-runner";
 import {
   deriveStepPromptBase,
   isSupportedStepModel,
@@ -21,6 +22,7 @@ type WorkflowDefinitionRow = {
   provider_override: string | null;
   model_override: string | null;
   reasoning_effort_override: string | null;
+  session_idle_ttl_minutes?: number | null;
 };
 
 type WorkflowStepRow = {
@@ -88,6 +90,7 @@ type ProjectSettingsRow = {
   default_provider: string | null;
   default_model: string | null;
   default_reasoning_effort: string | null;
+  session_idle_ttl_minutes: number | null;
 };
 
 type StepExecutionPlan = {
@@ -102,6 +105,8 @@ type StepExecutionPlan = {
   outputArtifactKeys: string[];
 };
 
+type WorkflowSessionRecoveryMode = "resumed_thread" | "bootstrap_replay";
+
 async function getOrCreateSession({
   adminClient,
   localRunnerGateway,
@@ -112,6 +117,13 @@ async function getOrCreateSession({
   reasoningEffort,
   workingDirectory,
   subagent,
+  idleTTLSeconds,
+  resumeProviderSessionId,
+  forceNewProviderSession,
+  recoveryMode,
+  recoveredFromSessionId,
+  recoveredFromProviderSessionId,
+  replayCheckpointCount,
 }: {
   adminClient: SupabaseClient;
   localRunnerGateway: LocalRunnerGateway;
@@ -122,6 +134,13 @@ async function getOrCreateSession({
   reasoningEffort: string | null;
   workingDirectory: string;
   subagent: string | null;
+  idleTTLSeconds?: number | null;
+  resumeProviderSessionId?: string | null;
+  forceNewProviderSession?: boolean;
+  recoveryMode?: WorkflowSessionRecoveryMode | null;
+  recoveredFromSessionId?: string | null;
+  recoveredFromProviderSessionId?: string | null;
+  replayCheckpointCount?: number | null;
 }) {
   let sessionRow = null;
 
@@ -130,8 +149,9 @@ async function getOrCreateSession({
       .from("workflow_run_sessions")
       .select("*")
       .eq("workflow_run_id", workflowRunId)
-      .eq("status", "active")
       .filter("metadata_json->>is_main", "eq", "true")
+      .order("started_at", { ascending: false })
+      .limit(1)
       .maybeSingle();
     if (error) {
       throw new Error(`Failed to query main session: ${error.message}`);
@@ -142,8 +162,9 @@ async function getOrCreateSession({
       .from("workflow_run_sessions")
       .select("*")
       .eq("workflow_run_id", workflowRunId)
-      .eq("status", "active")
       .filter("metadata_json->>step_run_id", "eq", stepRunId)
+      .order("started_at", { ascending: false })
+      .limit(1)
       .maybeSingle();
     if (error) {
       throw new Error(`Failed to query isolated session: ${error.message}`);
@@ -151,9 +172,34 @@ async function getOrCreateSession({
     sessionRow = data;
   }
 
+  let previousCheckpoints: any[] = [];
+  let resolvedRecoveryMode = recoveryMode ?? null;
+  let resolvedRecoveredFromSessionId = recoveredFromSessionId ?? null;
+  let resolvedRecoveredFromProviderSessionId =
+    recoveredFromProviderSessionId ?? null;
+  let resolvedReplayCheckpointCount = replayCheckpointCount ?? null;
   if (sessionRow) {
-    // If the provider or model doesn't match, we must close this session and start a new one.
-    if (sessionRow.provider !== providerKey || sessionRow.model !== modelName) {
+    if (sessionRow.status !== "active") {
+      previousCheckpoints = sessionRow.metadata_json?.checkpoints || [];
+      // It's a completed/terminated session. We can try to resume its provider thread.
+      if (
+        !forceNewProviderSession &&
+        sessionRow.provider === providerKey &&
+        sessionRow.model === modelName
+      ) {
+        resumeProviderSessionId = resumeProviderSessionId ?? sessionRow.provider_session_id;
+        resolvedRecoveryMode = resolvedRecoveryMode ?? "resumed_thread";
+        resolvedRecoveredFromSessionId =
+          resolvedRecoveredFromSessionId ?? sessionRow.id;
+        resolvedRecoveredFromProviderSessionId =
+          resolvedRecoveredFromProviderSessionId ??
+          sessionRow.provider_session_id;
+        resolvedReplayCheckpointCount =
+          resolvedReplayCheckpointCount ?? previousCheckpoints.length;
+      }
+      sessionRow = null;
+    } else if (forceNewProviderSession || sessionRow.provider !== providerKey || sessionRow.model !== modelName) {
+      previousCheckpoints = sessionRow.metadata_json?.checkpoints || [];
       await writeWorkflowSessionLog({
         adminClient,
         workflowRunStepId: stepRunId,
@@ -197,13 +243,14 @@ async function getOrCreateSession({
     }
   }
 
-  let handle: { transportType: string; providerSessionId: string; processKey: string | null } | null = null;
+  let handle: WorkflowSessionHandle | null = null;
 
   if (sessionRow && sessionRow.process_key) {
     handle = {
       transportType: sessionRow.transport_type,
       providerSessionId: sessionRow.provider_session_id,
       processKey: sessionRow.process_key,
+      dbId: sessionRow.id,
     };
     await writeWorkflowSessionLog({
       adminClient,
@@ -231,43 +278,73 @@ async function getOrCreateSession({
       workingDirectory,
       approvalMode: null,
       allowWrite: true,
+      idleTTLSeconds: idleTTLSeconds ?? undefined,
+      resumeProviderSessionId: resumeProviderSessionId ?? undefined,
     });
 
     handle = startResult;
 
-    if (sessionRow) {
-      const { error: updateErr } = await adminClient
-        .from("workflow_run_sessions")
-        .update({
-          process_key: handle.processKey,
-          provider_session_id: handle.providerSessionId,
-          transport_type: handle.transportType,
-          provider: providerKey,
-          model: modelName,
-        })
-        .eq("id", sessionRow.id);
-      if (updateErr) {
-        throw new Error(`Failed to update session in DB: ${updateErr.message}`);
+    try {
+      if (sessionRow) {
+        const { error: updateErr } = await adminClient
+          .from("workflow_run_sessions")
+          .update({
+            process_key: handle.processKey,
+            provider_session_id: handle.providerSessionId,
+            transport_type: handle.transportType,
+            provider: providerKey,
+            model: modelName,
+          })
+          .eq("id", sessionRow.id);
+        if (updateErr) {
+          throw new Error(`Failed to update session in DB: ${updateErr.message}`);
+        }
+        (handle as WorkflowSessionHandle).dbId = sessionRow.id;
+      } else {
+        const metadata = !subagent ? { is_main: true } : { step_run_id: stepRunId };
+        const recoveryMetadata = resolvedRecoveryMode
+          ? {
+              recovery: {
+                mode: resolvedRecoveryMode,
+                recoveredFromSessionId: resolvedRecoveredFromSessionId,
+                recoveredFromProviderSessionId:
+                  resolvedRecoveredFromProviderSessionId,
+                replayCheckpointCount: resolvedReplayCheckpointCount,
+              },
+            }
+          : {};
+        const { data: newRow, error: newRowErr } = await adminClient
+          .from("workflow_run_sessions")
+          .insert({
+            workflow_run_id: workflowRunId,
+            provider: providerKey,
+            model: modelName,
+            transport_type: handle.transportType,
+            provider_session_id: handle.providerSessionId,
+            process_key: handle.processKey,
+            status: "active",
+            metadata_json: {
+              ...metadata,
+              checkpoints: previousCheckpoints,
+              ...recoveryMetadata,
+            },
+          })
+          .select("*")
+          .single();
+        if (newRowErr) {
+          throw new Error(`Failed to save session to DB: ${newRowErr.message}`);
+        }
+        (handle as WorkflowSessionHandle).dbId = newRow.id;
       }
-    } else {
-      const metadata = !subagent ? { is_main: true } : { step_run_id: stepRunId };
-      const { data: newRow, error: newRowErr } = await adminClient
-        .from("workflow_run_sessions")
-        .insert({
-          workflow_run_id: workflowRunId,
-          provider: providerKey,
-          model: modelName,
-          transport_type: handle.transportType,
-          provider_session_id: handle.providerSessionId,
-          process_key: handle.processKey,
-          status: "active",
-          metadata_json: metadata,
-        })
-        .select("*")
-        .single();
-      if (newRowErr) {
-        throw new Error(`Failed to save session to DB: ${newRowErr.message}`);
+    } catch (dbErr) {
+      if (handle.processKey) {
+        await localRunnerGateway.closeSession({
+          transportType: handle.transportType,
+          providerSessionId: handle.providerSessionId,
+          processKey: handle.processKey,
+        }).catch(console.error);
       }
+      throw dbErr;
     }
 
     await writeWorkflowSessionLog({
@@ -295,26 +372,35 @@ type WorkflowSessionHandle = {
   transportType: string;
   providerSessionId: string;
   processKey: string | null;
+  dbId?: string;
 };
 
-async function updateWorkflowRunSessionByScope({
+async function updateWorkflowRunSessionById({
   adminClient,
   workflowRunId,
   stepRunId,
   subagent,
   updates,
+  dbId,
 }: {
   adminClient: SupabaseClient;
   workflowRunId: string;
   stepRunId: string;
   subagent: string | null;
   updates: Record<string, unknown>;
+  dbId?: string;
 }) {
-  let query = adminClient.from("workflow_run_sessions").update(updates).eq("workflow_run_id", workflowRunId);
-  if (!subagent) {
-    query = query.filter("metadata_json->>is_main", "eq", "true");
+  let query = adminClient.from("workflow_run_sessions").update(updates);
+  if (dbId) {
+    query = query.eq("id", dbId);
   } else {
-    query = query.filter("metadata_json->>step_run_id", "eq", stepRunId);
+    // Fallback for tests or legacy callers
+    query = query.eq("workflow_run_id", workflowRunId);
+    if (!subagent) {
+      query = query.filter("metadata_json->>is_main", "eq", "true");
+    } else {
+      query = query.filter("metadata_json->>step_run_id", "eq", stepRunId);
+    }
   }
 
   const { error } = await query;
@@ -348,11 +434,12 @@ export async function syncWorkflowRunSessionProviderSessionId({
       : handle.providerSessionId;
 
   try {
-    await updateWorkflowRunSessionByScope({
+    await updateWorkflowRunSessionById({
       adminClient,
       workflowRunId,
       stepRunId,
       subagent,
+      dbId: handle.dbId,
       updates: {
         provider: providerKey,
         model: modelName,
@@ -394,11 +481,12 @@ export async function deactivateWorkflowRunSession({
     }
   }
 
-  await updateWorkflowRunSessionByScope({
+  await updateWorkflowRunSessionById({
     adminClient,
     workflowRunId,
     stepRunId,
     subagent,
+    dbId: handle?.dbId,
     updates: {
       status: "completed",
       completed_at: new Date().toISOString(),
@@ -470,6 +558,8 @@ export async function finalizeWorkflowRunSessions(
         .update({
           status: "completed",
           completed_at: new Date().toISOString(),
+          provider_session_id: null,
+          process_key: null,
         })
         .eq("id", sessionRow.id);
       if (updateErr) {
@@ -481,8 +571,122 @@ export async function finalizeWorkflowRunSessions(
   }
 }
 
+async function appendSessionCheckpoint(
+  adminClient: SupabaseClient,
+  dbId: string,
+  checkpoint: {
+    promptPath: string;
+    outputContentPath: string;
+    artifactOutputPaths?: string[];
+  },
+) {
+  const { data, error } = await adminClient
+    .from("workflow_run_sessions")
+    .select("metadata_json")
+    .eq("id", dbId)
+    .single();
+  if (error) {
+    throw new Error(`Failed to read session checkpoints: ${error.message}`);
+  }
 
-async function sendMessageWithRetry({
+  const metadata = data?.metadata_json || {};
+  const checkpoints = Array.isArray(metadata.checkpoints) ? metadata.checkpoints : [];
+  checkpoints.push({
+    promptPath: checkpoint.promptPath,
+    outputContentPath: checkpoint.outputContentPath,
+    artifactOutputPaths: (checkpoint.artifactOutputPaths ?? []).filter(
+      (value) => value.trim().length > 0,
+    ),
+  });
+
+  const { error: updateError } = await adminClient
+    .from("workflow_run_sessions")
+    .update({ metadata_json: { ...metadata, checkpoints } })
+    .eq("id", dbId);
+  if (updateError) {
+    throw new Error(`Failed to write session checkpoints: ${updateError.message}`);
+  }
+}
+
+function buildBootstrapPrompt(
+  checkpoints: Array<{
+    prompt?: string;
+    output?: string;
+    artifactPaths?: string[];
+    promptPath?: string;
+    outputContentPath?: string;
+    artifactOutputPaths?: string[];
+  }>,
+  newPrompt: string,
+) {
+  if (!checkpoints || checkpoints.length === 0) return newPrompt;
+  const recentCheckpoints = checkpoints.slice(-5);
+  const visibleCheckpoints = recentCheckpoints.filter((checkpoint) => {
+    const promptPath = checkpoint.promptPath?.trim() ?? "";
+    const outputContentPath = checkpoint.outputContentPath?.trim() ?? "";
+    const artifactOutputPaths = Array.isArray(checkpoint.artifactOutputPaths)
+      ? checkpoint.artifactOutputPaths.filter(
+          (value) => typeof value === "string" && value.trim().length > 0,
+        )
+      : [];
+
+    return Boolean(promptPath || outputContentPath || artifactOutputPaths.length > 0);
+  });
+
+  if (visibleCheckpoints.length === 0) {
+    return newPrompt;
+  }
+
+  const parts = [
+    "# Previous Conversation Context",
+    `(Carry only the latest ${visibleCheckpoints.length} prompt context entries from the previous session.)`,
+  ];
+  visibleCheckpoints.forEach((checkpoint, i) => {
+    const promptPath = checkpoint.promptPath?.trim() ?? "";
+    const outputContentPath = checkpoint.outputContentPath?.trim() ?? "";
+    const artifactOutputPaths = Array.isArray(checkpoint.artifactOutputPaths)
+      ? checkpoint.artifactOutputPaths.filter(
+          (value) => typeof value === "string" && value.trim().length > 0,
+        )
+      : [];
+
+    if (promptPath) {
+      parts.push(`## Prompt Path ${i + 1}\n- ${promptPath}`);
+    }
+
+    if (outputContentPath) {
+      parts.push(`## Output Content Path ${i + 1}\n- ${outputContentPath}`);
+    }
+
+    if (artifactOutputPaths.length > 0) {
+      parts.push(
+        `## Artifact Output Path ${i + 1}\n${artifactOutputPaths.map((artifactPath) => `- ${artifactPath}`).join("\n")}`,
+      );
+    }
+  });
+  parts.push(`# Current Request\n${newPrompt}`);
+  return parts.join("\n\n");
+}
+
+function isThreadMissingOutput(outputMarkdown: string | null | undefined) {
+  const normalized = (outputMarkdown ?? "").trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  return (
+    normalized.includes("session not found for thread_id") ||
+    normalized.includes("session not found for thread id") ||
+    normalized.includes("thread not found")
+  );
+}
+
+type WorkflowSessionSendResult = LocalRunnerPromptExecutionResult & {
+  actualPromptText: string;
+  sessionDbId?: string;
+};
+
+export async function sendMessageWithRetry({
   adminClient,
   localRunnerGateway,
   workflowRunId,
@@ -494,6 +698,7 @@ async function sendMessageWithRetry({
   subagent,
   prompt,
   skillIds,
+  idleTTLSeconds,
 }: {
   adminClient: SupabaseClient;
   localRunnerGateway: LocalRunnerGateway;
@@ -506,28 +711,39 @@ async function sendMessageWithRetry({
   subagent: string | null;
   prompt: string;
   skillIds: string[];
-}) {
-  let handle: WorkflowSessionHandle | null = null;
-  try {
-    handle = await getOrCreateSession({
-      adminClient,
-      localRunnerGateway,
-      workflowRunId,
-      stepRunId,
-      providerKey,
-      modelName,
-      reasoningEffort,
-      workingDirectory,
-      subagent,
-    });
+  idleTTLSeconds?: number | null;
+}): Promise<WorkflowSessionSendResult> {
+  let handle = await getOrCreateSession({
+    adminClient,
+    localRunnerGateway,
+    workflowRunId,
+    stepRunId,
+    providerKey,
+    modelName,
+    reasoningEffort,
+    workingDirectory,
+    subagent,
+    idleTTLSeconds,
+  });
 
+  let attempt = 1;
+  const maxAttempts = 3;
+  let currentPrompt = prompt;
+
+  while (attempt <= maxAttempts) {
     try {
       const result = await localRunnerGateway.sendMessage({
         session: handle,
-        prompt,
+        prompt: currentPrompt,
         skillIds,
         contextSourceIds: [],
+        idleTTLSeconds,
       });
+
+      if (isThreadMissingOutput(result.outputMarkdown)) {
+        throw new Error(`provider error: ${result.outputMarkdown}`);
+      }
+
       await syncWorkflowRunSessionProviderSessionId({
         adminClient,
         workflowRunId,
@@ -538,6 +754,7 @@ async function sendMessageWithRetry({
         handle,
         providerSessionId: result.providerSessionId ?? null,
       });
+
       await writeWorkflowSessionLog({
         adminClient,
         workflowRunStepId: stepRunId,
@@ -553,10 +770,23 @@ async function sendMessageWithRetry({
           processKey: handle.processKey,
         },
       });
-      return result;
+
+      return {
+        ...result,
+        actualPromptText: currentPrompt,
+        sessionDbId: handle.dbId,
+      };
     } catch (error) {
-      const isSessionDead = error instanceof Error &&
-        (error.message.includes("session") || error.message.includes("not found") || error.message.includes("expired"));
+      const msg = String((error as any).message || "").toLowerCase();
+      const isSessionDead = (error as any).code === "session_dead";
+      const isThreadMissing =
+        msg.includes("provider error:") &&
+        (msg.includes("thread") || msg.includes("not found") || msg.includes("invalid"));
+
+      if (attempt >= maxAttempts) {
+        throw error;
+      }
+
       if (isSessionDead) {
         await writeWorkflowSessionLog({
           adminClient,
@@ -582,6 +812,7 @@ async function sendMessageWithRetry({
           handle,
         });
 
+        // First fallback: same-machine resume
         handle = await getOrCreateSession({
           adminClient,
           localRunnerGateway,
@@ -592,79 +823,71 @@ async function sendMessageWithRetry({
           reasoningEffort,
           workingDirectory,
           subagent,
+          idleTTLSeconds,
+          resumeProviderSessionId: handle?.providerSessionId ?? null,
+          recoveryMode: "resumed_thread",
+          recoveredFromSessionId: handle?.dbId ?? null,
+          recoveredFromProviderSessionId: handle?.providerSessionId ?? null,
+        });
+        attempt++;
+        continue;
+      }
+
+      if (isThreadMissing) {
+        // Second fallback: cross-machine bootstrap
+        await writeWorkflowSessionLog({
+          adminClient,
+          workflowRunStepId: stepRunId,
+          logLevel: "warn",
+          event: "session_bootstrap_replay",
+          details: { reason: "thread_not_found" },
         });
 
-        const result = await localRunnerGateway.sendMessage({
-          session: handle,
-          prompt,
-          skillIds,
-          contextSourceIds: [],
-        });
-        await syncWorkflowRunSessionProviderSessionId({
+        const { data: sessionRow } = await adminClient
+          .from("workflow_run_sessions")
+          .select("metadata_json")
+          .eq("id", handle.dbId)
+          .single();
+
+        const checkpoints = sessionRow?.metadata_json?.checkpoints || [];
+        currentPrompt = buildBootstrapPrompt(checkpoints, prompt);
+
+        await deactivateWorkflowRunSession({
           adminClient,
           workflowRunId,
           stepRunId,
           subagent,
+          localRunnerGateway,
+          handle,
+        });
+
+        // Force new session without resumeProviderSessionId
+        handle = await getOrCreateSession({
+          adminClient,
+          localRunnerGateway,
+          workflowRunId,
+          stepRunId,
           providerKey,
           modelName,
-          handle,
-          providerSessionId: result.providerSessionId ?? null,
+          reasoningEffort,
+          workingDirectory,
+          subagent,
+          idleTTLSeconds,
+          forceNewProviderSession: true,
+          recoveryMode: "bootstrap_replay",
+          recoveredFromSessionId: handle?.dbId ?? null,
+          recoveredFromProviderSessionId: handle?.providerSessionId ?? null,
+          replayCheckpointCount: checkpoints.length,
         });
-        await writeWorkflowSessionLog({
-          adminClient,
-          workflowRunStepId: stepRunId,
-          logLevel: "info",
-          event: "session_message_sent",
-          details: {
-            workflowRunId,
-            stepRunId,
-            sessionKind: subagent ? "subagent" : "main",
-            provider: providerKey,
-            model: modelName,
-            providerSessionId: result.providerSessionId ?? handle.providerSessionId,
-            processKey: handle.processKey,
-          },
-        });
-        return result;
+        attempt++;
+        continue;
       }
+
       throw error;
     }
-  } catch {
-    await writeWorkflowSessionLog({
-      adminClient,
-      workflowRunStepId: stepRunId,
-      logLevel: "warn",
-      event: "session_fallback_one_shot",
-      details: {
-        workflowRunId,
-        stepRunId,
-        sessionKind: subagent ? "subagent" : "main",
-        provider: providerKey,
-        model: modelName,
-      },
-    });
-    await deactivateWorkflowRunSession({
-      adminClient,
-      workflowRunId,
-      stepRunId,
-      subagent,
-      localRunnerGateway,
-      handle,
-    });
-    const result = await localRunnerGateway.executePrompt({
-      providerKey,
-      modelName,
-      reasoningEffort: reasoningEffort as any,
-      prompt,
-      skillIds,
-      flowId: null,
-      contextSourceIds: [],
-      timeoutMs: 600000,
-      workingDirectory,
-      allowWrite: true,
-    });
-    return result;
   }
+
+  throw new Error("sendMessageWithRetry exceeded max attempts");
 }
 
 const SINGLE_STEP_RUNTIME_CREATED_BY = "flowpilot-runtime";
@@ -708,6 +931,7 @@ type LocalWorkflowOutputArtifactSnapshot = {
 export async function createLocalWorkflowOutputArtifactSnapshot({
   outputMarkdown,
   promptText,
+  actualPromptText = promptText,
   projectId,
   stepType,
   stderrText,
@@ -720,6 +944,7 @@ export async function createLocalWorkflowOutputArtifactSnapshot({
 }: {
   outputMarkdown: string;
   promptText: string;
+  actualPromptText?: string;
   projectId: string;
   stepType: string;
   stderrText: string;
@@ -743,6 +968,7 @@ export async function createLocalWorkflowOutputArtifactSnapshot({
   );
   const contentPath = path.join(snapshotDirectory, title);
   const promptPath = path.join(snapshotDirectory, "prompt.md");
+  const actualPromptPath = path.join(snapshotDirectory, "actual-prompt.md");
   const stdoutPath = path.join(snapshotDirectory, "stdout.txt");
   const stderrPath = path.join(snapshotDirectory, "stderr.txt");
   const commandPath = path.join(snapshotDirectory, "command.txt");
@@ -752,6 +978,7 @@ export async function createLocalWorkflowOutputArtifactSnapshot({
   await mkdir(snapshotDirectory, { recursive: true });
   await writeFile(contentPath, outputMarkdown, "utf8");
   await writeFile(promptPath, promptText, "utf8");
+  await writeFile(actualPromptPath, actualPromptText, "utf8");
   await writeFile(stdoutPath, stdoutText, "utf8");
   await writeFile(stderrPath, stderrText, "utf8");
   await writeFile(commandPath, commandText, "utf8");
@@ -774,6 +1001,7 @@ export async function createLocalWorkflowOutputArtifactSnapshot({
         createdAt: now,
         updatedAt: now,
         promptPath,
+        actualPromptPath,
         stdoutPath,
         stderrPath,
         commandPath,
@@ -908,7 +1136,7 @@ async function resolveWorkingDirectory(adminClient: SupabaseClient, projectId: s
 async function loadProjectDefaults(adminClient: SupabaseClient, projectId: string) {
   const { data, error } = await adminClient
     .from("projects")
-    .select("default_provider, default_model, default_reasoning_effort")
+    .select("default_provider, default_model, default_reasoning_effort, session_idle_ttl_minutes")
     .eq("id", projectId)
     .maybeSingle();
 
@@ -920,6 +1148,7 @@ async function loadProjectDefaults(adminClient: SupabaseClient, projectId: strin
     default_provider: null,
     default_model: null,
     default_reasoning_effort: null,
+    session_idle_ttl_minutes: null,
   }) as ProjectSettingsRow;
 }
 
@@ -1322,12 +1551,13 @@ function resolvePlannedStepExecution(
   };
 }
 
-async function createArtifactOutputs({
+export async function createArtifactOutputs({
   adminClient,
   artifactDefinitions,
   outputArtifactKeys,
   outputMarkdown,
   promptText,
+  actualPromptText = promptText,
   projectId,
   stepRunId,
   stepType,
@@ -1344,6 +1574,7 @@ async function createArtifactOutputs({
   outputArtifactKeys: string[];
   outputMarkdown: string;
   promptText: string;
+  actualPromptText?: string;
   projectId: string;
   stepRunId: string;
   stepType: string;
@@ -1355,10 +1586,15 @@ async function createArtifactOutputs({
   commandText: string;
   providerKey: string;
 }) {
+  const checkpointArtifactOutputPaths: string[] = [];
+  let checkpointPromptPath = "";
+  let checkpointOutputContentPath = "";
+
   if (outputArtifactKeys.length === 0) {
-    await createLocalWorkflowOutputArtifactSnapshot({
+    const snapshot = await createLocalWorkflowOutputArtifactSnapshot({
       outputMarkdown,
       promptText,
+      actualPromptText,
       projectId,
       stepType,
       stderrText,
@@ -1368,7 +1604,14 @@ async function createArtifactOutputs({
       commandText,
       providerKey,
     });
-    return null;
+    return {
+      artifactRunId: null,
+      checkpoint: {
+        promptPath: path.join(snapshot.snapshotDirectory, "prompt.md"),
+        outputContentPath: snapshot.contentPath,
+        artifactOutputPaths: [] as string[],
+      },
+    };
   }
 
   const now = new Date().toISOString();
@@ -1391,6 +1634,7 @@ async function createArtifactOutputs({
 
     const localPath = resolveArtifactPath(definition.local_path_template, context);
     const absoluteOutputPath = normalizeAbsolutePath(workingDirectory, localPath);
+    checkpointArtifactOutputPaths.push(absoluteOutputPath);
     const artifactDirectory = path.dirname(absoluteOutputPath);
     const artifactId = randomUUID();
     const snapshotDirectory = path.join(artifactDirectory, ".snapshots", artifactId);
@@ -1402,12 +1646,20 @@ async function createArtifactOutputs({
       snapshotDirectory,
       path.basename(absoluteOutputPath),
     );
+    const snapshotLocalPath = path.join(
+      path.dirname(localPath),
+      ".snapshots",
+      artifactId,
+      path.basename(localPath),
+    );
     const absolutePromptPath = path.join(snapshotDirectory, "prompt.md");
+    const absoluteActualPromptPath = path.join(snapshotDirectory, "actual-prompt.md");
     const absoluteStdoutPath = path.join(snapshotDirectory, "stdout.txt");
     const absoluteStderrPath = path.join(snapshotDirectory, "stderr.txt");
     const absoluteCommandPath = path.join(snapshotDirectory, "command.txt");
     await writeFile(absoluteSnapshotContentPath, outputMarkdown, "utf8");
     await writeFile(absolutePromptPath, promptText, "utf8");
+    await writeFile(absoluteActualPromptPath, actualPromptText, "utf8");
     await writeFile(absoluteStdoutPath, stdoutText, "utf8");
     await writeFile(absoluteStderrPath, stderrText, "utf8");
     await writeFile(absoluteCommandPath, commandText, "utf8");
@@ -1428,6 +1680,7 @@ async function createArtifactOutputs({
       createdAt: now,
       updatedAt: now,
       promptPath: absolutePromptPath,
+      actualPromptPath: absoluteActualPromptPath,
       stdoutPath: absoluteStdoutPath,
       stderrPath: absoluteStderrPath,
       commandPath: absoluteCommandPath,
@@ -1437,6 +1690,11 @@ async function createArtifactOutputs({
     const absoluteManifestPath = path.join(snapshotDirectory, "manifest.json");
     await writeFile(absoluteManifestPath, JSON.stringify(manifest, null, 2), "utf8");
 
+    if (!checkpointPromptPath) {
+      checkpointPromptPath = absolutePromptPath;
+      checkpointOutputContentPath = absoluteSnapshotContentPath;
+    }
+
     rows.push({
       id: artifactId,
       artifact_definition_key: artifactKey,
@@ -1445,7 +1703,7 @@ async function createArtifactOutputs({
       workflow_run_id: workflowRunId,
       workflow_run_step_id: stepRunId,
       title: definition.default_file_name || definition.name,
-      local_path: localPath,
+      local_path: snapshotLocalPath,
       remote_path: resolveArtifactPath(definition.remote_path_template, context),
       remote_url: "",
       sync_status: "local_only",
@@ -1459,7 +1717,14 @@ async function createArtifactOutputs({
     throw new Error(`Unable to create artifact outputs: ${error.message}`);
   }
 
-  return data?.[0]?.id ? String(data[0].id) : null;
+  return {
+    artifactRunId: data?.[0]?.id ? String(data[0].id) : null,
+    checkpoint: {
+      promptPath: checkpointPromptPath,
+      outputContentPath: checkpointOutputContentPath,
+      artifactOutputPaths: checkpointArtifactOutputPaths,
+    },
+  };
 }
 
 export async function submitWorkflowStepFollowUpRuntime({
@@ -1630,6 +1895,7 @@ export async function submitWorkflowStepFollowUpRuntime({
       subagent: definition.subagent ?? null,
       prompt: finalPrompt,
       skillIds: definition.required_skills ?? [],
+      idleTTLSeconds: projectDefaults.session_idle_ttl_minutes ? projectDefaults.session_idle_ttl_minutes * 60 : undefined,
     });
 
     if (result.status !== "success") {
@@ -1643,12 +1909,13 @@ export async function submitWorkflowStepFollowUpRuntime({
       buildAiOutputLogMessage(result.outputMarkdown),
     );
 
-    const artifactRunId = await createArtifactOutputs({
+    const artifactOutputResult = await createArtifactOutputs({
       adminClient,
       artifactDefinitions,
       outputArtifactKeys,
       outputMarkdown: result.outputMarkdown,
       promptText: finalPrompt,
+      actualPromptText: result.actualPromptText,
       projectId: run.project_id,
       stepRunId: stepRun.id,
       stepType: stepRun.step_type,
@@ -1660,6 +1927,15 @@ export async function submitWorkflowStepFollowUpRuntime({
       commandText: result.command,
       providerKey: execution.providerKey,
     });
+    const artifactRunId = artifactOutputResult.artifactRunId;
+
+    if (result.sessionDbId) {
+      await appendSessionCheckpoint(
+        adminClient,
+        result.sessionDbId,
+        artifactOutputResult.checkpoint,
+      );
+    }
 
     await adminClient
       .from("workflow_run_steps")
@@ -1952,6 +2228,7 @@ export async function runWorkflowStartRuntime({
         subagent: stepPlan.definition.subagent ?? null,
         prompt: finalPrompt,
         skillIds: stepPlan.definition.required_skills ?? [],
+        idleTTLSeconds: projectDefaults.session_idle_ttl_minutes ? projectDefaults.session_idle_ttl_minutes * 60 : undefined,
       });
 
       if (result.status !== "success") {
@@ -1965,12 +2242,13 @@ export async function runWorkflowStartRuntime({
         buildAiOutputLogMessage(result.outputMarkdown),
       );
 
-      const artifactRunId = await createArtifactOutputs({
+      const artifactOutputResult = await createArtifactOutputs({
         adminClient,
         artifactDefinitions,
         outputArtifactKeys: stepPlan.outputArtifactKeys,
         outputMarkdown: result.outputMarkdown,
         promptText: finalPrompt,
+        actualPromptText: result.actualPromptText,
         projectId: request.projectId,
         stepRunId,
         stepType: stepPlan.stepType,
@@ -1982,6 +2260,15 @@ export async function runWorkflowStartRuntime({
         commandText: result.command,
         providerKey: stepPlan.providerKey,
       });
+      const artifactRunId = artifactOutputResult.artifactRunId;
+
+      if (result.sessionDbId) {
+        await appendSessionCheckpoint(
+          adminClient,
+          result.sessionDbId,
+          artifactOutputResult.checkpoint,
+        );
+      }
 
       await adminClient
         .from("workflow_run_steps")

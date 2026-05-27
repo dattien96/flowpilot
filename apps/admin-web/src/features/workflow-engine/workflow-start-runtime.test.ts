@@ -7,11 +7,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildWorkflowStepFollowUpPrompt,
   buildWorkflowStepPrompt,
+  createArtifactOutputs,
   createLocalWorkflowOutputArtifactSnapshot,
   deactivateWorkflowRunSession,
   finalizeWorkflowRunSessions,
   resolveProviderKeyFromModel,
   syncWorkflowRunSessionProviderSessionId,
+  sendMessageWithRetry,
 } from "./workflow-start-runtime";
 
 describe("workflow-start-runtime", () => {
@@ -82,6 +84,7 @@ describe("workflow-start-runtime", () => {
     const snapshot = await createLocalWorkflowOutputArtifactSnapshot({
       outputMarkdown: "# Result\n\nHello from the step.",
       promptText: "## Begin Prompt\nsay hello",
+      actualPromptText: "# Previous Conversation Context\n\n## User Prompt 1\nhello",
       projectId: "project-1",
       stepType: "test_codex_step",
       stderrText: "",
@@ -94,6 +97,7 @@ describe("workflow-start-runtime", () => {
 
     const manifest = JSON.parse(await readFile(snapshot.manifestPath, "utf8"));
     const content = await readFile(snapshot.contentPath, "utf8");
+    const actualPrompt = await readFile(manifest.actualPromptPath, "utf8");
 
     expect(snapshot.snapshotDirectory).toContain(
       path.join(".flowpilot", "artifacts", "project-1", "run-123", "test_codex_step"),
@@ -102,6 +106,63 @@ describe("workflow-start-runtime", () => {
     expect(manifest.sourceKind).toBe("workflow_output");
     expect(manifest.title).toBe("Response.md");
     expect(content).toContain("Hello from the step.");
+    expect(actualPrompt).toContain("# Previous Conversation Context");
+  });
+
+  it("stores workflow step artifact local_path inside the snapshot folder", async () => {
+    const workingDirectory = await mkdtemp(path.join(os.tmpdir(), "flowpilot-artifact-output-"));
+    const insertedRows: Array<Record<string, unknown>> = [];
+    const adminClient = {
+      from: vi.fn(() => ({
+        insert(rows: Array<Record<string, unknown>>) {
+          insertedRows.push(...rows);
+          return {
+            select() {
+              return Promise.resolve({ data: [{ id: "artifact-1" }], error: null });
+            },
+          };
+        },
+      })),
+    } as any;
+
+    await createArtifactOutputs({
+      adminClient,
+      artifactDefinitions: new Map([
+        [
+          "business_idea_artifact",
+          {
+            key: "business_idea_artifact",
+            name: "Business Idea",
+            local_path_template:
+              ".flowpilot/artifacts/{projectId}/{workflowRunId}/{stepType}/{defaultFileName}",
+            remote_path_template: "",
+            default_file_name: "BusinessIdea.md",
+          } as any,
+        ],
+      ]),
+      outputArtifactKeys: ["business_idea_artifact"],
+      outputMarkdown: "# Result",
+      promptText: "Prompt",
+      actualPromptText: "Bootstrap Prompt",
+      projectId: "project-1",
+      stepRunId: "step-run-1",
+      stepType: "business_idea",
+      stderrText: "",
+      stdoutText: "ok",
+      workflowId: "workflow-1",
+      workflowRunId: "run-1",
+      workingDirectory,
+      commandText: "codex exec",
+      providerKey: "codex",
+    });
+
+    expect(insertedRows).toHaveLength(1);
+    expect(String(insertedRows[0]?.local_path)).toMatch(
+      /\.flowpilot[\\/]artifacts[\\/]project-1[\\/]run-1[\\/]business_idea[\\/]\.snapshots[\\/][^\\/]+[\\/]BusinessIdea\.md$/,
+    );
+    const snapshotFilePath = path.join(workingDirectory, String(insertedRows[0]?.local_path));
+    const actualPromptPath = path.join(path.dirname(snapshotFilePath), "actual-prompt.md");
+    await expect(readFile(actualPromptPath, "utf8")).resolves.toBe("Bootstrap Prompt");
   });
 
   it("persists the real provider session id back to the workflow session row", async () => {
@@ -305,5 +366,453 @@ describe("workflow-start-runtime", () => {
       },
     ]);
     expect(updatedIds).toEqual(["session-subagent"]);
+  });
+
+  describe("sendMessageWithRetry", () => {
+    it("reconnects with old thread on session_dead", async () => {
+      let callCount = 0;
+      const mockSendMessage = vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          const err = new Error("Local runner session message failed: session process exited or is no longer registered");
+          (err as any).code = "session_dead";
+          throw err;
+        }
+        return Promise.resolve({ outputMarkdown: "success" });
+      });
+      const mockCloseSession = vi.fn().mockResolvedValue(undefined);
+      const mockStartSession = vi.fn().mockResolvedValue({
+        processKey: "proc-new",
+        providerSessionId: "thread-old",
+        transportType: "codex_mcp"
+      });
+
+      const localRunnerGateway = {
+        sendMessage: mockSendMessage,
+        closeSession: mockCloseSession,
+        startSession: mockStartSession
+      } as any;
+
+      const mockQueryBuilder = {
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        filter: vi.fn().mockReturnThis(),
+        order: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({ data: { id: "session-old", process_key: "proc-old", provider_session_id: "thread-old", transport_type: "codex_mcp", status: "completed", provider: "codex", model: "codex-mcp" }, error: null }),
+        insert: vi.fn().mockReturnThis(),
+        update: vi.fn().mockReturnThis(),
+        single: vi.fn().mockResolvedValue({ data: { id: "session-new" }, error: null })
+      };
+      const adminClient = {
+        from: vi.fn(() => mockQueryBuilder)
+      } as any;
+
+      const result = await sendMessageWithRetry({
+        adminClient,
+        localRunnerGateway,
+        workflowRunId: "run-123",
+        stepRunId: "step-456",
+        providerKey: "codex",
+        modelName: "codex-mcp",
+        reasoningEffort: null,
+        workingDirectory: "/repo",
+        subagent: null,
+        prompt: "hello",
+        skillIds: [],
+        idleTTLSeconds: 60,
+      });
+
+      expect(callCount).toBe(2);
+      expect(mockStartSession).toHaveBeenCalledWith(expect.objectContaining({
+        resumeProviderSessionId: "thread-old",
+      }));
+      expect(mockSendMessage).toHaveBeenNthCalledWith(1, expect.objectContaining({
+        idleTTLSeconds: 60,
+      }));
+      expect(mockSendMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
+        idleTTLSeconds: 60,
+      }));
+      expect(result.outputMarkdown).toBe("success");
+      expect(result.actualPromptText).toBe("hello");
+    });
+
+    it("throws directly without reconnect on non-session_dead error", async () => {
+      const mockSendMessage = vi.fn().mockRejectedValue(new Error("Some other error"));
+      const mockCloseSession = vi.fn().mockResolvedValue(undefined);
+      const mockStartSession = vi.fn().mockResolvedValue({
+        processKey: "proc-new",
+        providerSessionId: "thread-old",
+        transportType: "codex_mcp"
+      });
+
+      const localRunnerGateway = {
+        sendMessage: mockSendMessage,
+        closeSession: mockCloseSession,
+        startSession: mockStartSession
+      } as any;
+
+      const mockQueryBuilder2 = {
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        filter: vi.fn().mockReturnThis(),
+        order: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({ data: { id: "sess-id", process_key: "proc-old", provider_session_id: "thread-old", transport_type: "codex_mcp", status: "active", provider: "codex", model: "codex-mcp" }, error: null }),
+        insert: vi.fn().mockReturnThis(),
+        update: vi.fn().mockReturnThis(),
+        single: vi.fn().mockResolvedValue({ data: { id: "session-new" }, error: null })
+      };
+      const adminClient = {
+        from: vi.fn(() => mockQueryBuilder2)
+      } as any;
+
+      await expect(sendMessageWithRetry({
+        adminClient,
+        localRunnerGateway,
+        workflowRunId: "run-123",
+        stepRunId: "step-456",
+        providerKey: "codex",
+        modelName: "codex-mcp",
+        reasoningEffort: null,
+        workingDirectory: "/repo",
+        subagent: null,
+        prompt: "hello",
+        skillIds: [],
+        idleTTLSeconds: 60,
+      })).rejects.toThrow("Some other error");
+
+      expect(mockStartSession).not.toHaveBeenCalled();
+    });
+
+    it("bootstraps context cross-machine when provider thread is missing", async () => {
+      const mockSendMessage = vi.fn()
+        .mockRejectedValueOnce(new Error("provider error: thread not found"))
+        .mockResolvedValueOnce({
+          providerSessionId: "thread-bootstrap",
+          outputMarkdown: "ok"
+        });
+
+      let sessionCloseCount = 0;
+      const mockCloseSession = vi.fn().mockImplementation(() => {
+        sessionCloseCount++;
+        return Promise.resolve();
+      });
+
+      let startSessionCount = 0;
+      const mockStartSession = vi.fn().mockImplementation(() => {
+        startSessionCount++;
+        return Promise.resolve({
+          processKey: "proc-new",
+          providerSessionId: "thread-bootstrap",
+          transportType: "codex_mcp"
+        });
+      });
+
+      const localRunnerGateway = {
+        sendMessage: mockSendMessage,
+        closeSession: mockCloseSession,
+        startSession: mockStartSession
+      } as any;
+
+      const mockQueryBuilder = {
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        filter: vi.fn().mockReturnThis(),
+        order: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: {
+            id: "sess-id",
+            process_key: "proc-old",
+            provider_session_id: "thread-old",
+            transport_type: "codex_mcp",
+            status: "active",
+            provider: "codex",
+            model: "codex-mcp",
+            metadata_json: {
+              checkpoints: [
+                {
+                  promptPath: "/repo/.flowpilot/artifacts/run-1/step-1/.snapshots/snap-1/prompt.md",
+                  outputContentPath:
+                    "/repo/.flowpilot/artifacts/run-1/step-1/.snapshots/snap-1/BusinessIdea.md",
+                  artifactOutputPaths: ["/repo/.flowpilot/artifacts/run-1/step-1/BusinessIdea.md"],
+                },
+              ]
+            }
+          },
+          error: null
+        }),
+        insert: vi.fn().mockReturnThis(),
+        update: vi.fn().mockReturnThis(),
+        single: vi.fn().mockImplementation(() => {
+          return Promise.resolve({
+            data: {
+              id: "sess-new",
+              metadata_json: {
+                checkpoints: [
+                  {
+                    promptPath: "/repo/.flowpilot/artifacts/run-1/step-1/.snapshots/snap-1/prompt.md",
+                    outputContentPath:
+                      "/repo/.flowpilot/artifacts/run-1/step-1/.snapshots/snap-1/BusinessIdea.md",
+                    artifactOutputPaths: ["/repo/.flowpilot/artifacts/run-1/step-1/BusinessIdea.md"],
+                  },
+                ]
+              }
+            }, error: null
+          });
+        })
+      };
+      
+      const adminClient = {
+        from: vi.fn(() => mockQueryBuilder)
+      } as any;
+
+      const result = await sendMessageWithRetry({
+        adminClient,
+        localRunnerGateway,
+        workflowRunId: "run-123",
+        stepRunId: "step-456",
+        providerKey: "codex",
+        modelName: "codex-mcp",
+        reasoningEffort: null,
+        workingDirectory: "/repo",
+        subagent: null,
+        prompt: "new-prompt",
+        skillIds: [],
+        idleTTLSeconds: 60,
+      });
+
+      expect(result.outputMarkdown).toBe("ok");
+      expect(mockStartSession).toHaveBeenCalledTimes(1);
+      expect(mockStartSession).toHaveBeenCalledWith(expect.not.objectContaining({
+        resumeProviderSessionId: expect.any(String)
+      }));
+      expect(mockSendMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
+        prompt: expect.stringContaining("# Previous Conversation Context")
+      }));
+      expect(mockSendMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
+        prompt: expect.stringContaining("## Prompt Path 1")
+      }));
+      expect(mockSendMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
+        prompt: expect.stringContaining("## Output Content Path 1")
+      }));
+      expect(mockSendMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
+        prompt: expect.stringContaining("/repo/.flowpilot/artifacts/run-1/step-1/.snapshots/snap-1/prompt.md")
+      }));
+      expect(mockSendMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
+        prompt: expect.stringContaining("/repo/.flowpilot/artifacts/run-1/step-1/.snapshots/snap-1/BusinessIdea.md")
+      }));
+      expect(mockSendMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
+        prompt: expect.stringContaining("## Artifact Output Path 1")
+      }));
+      expect(mockSendMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
+        prompt: expect.stringContaining("/repo/.flowpilot/artifacts/run-1/step-1/BusinessIdea.md")
+      }));
+      expect(mockSendMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
+        prompt: expect.stringContaining("new-prompt")
+      }));
+      expect(mockSendMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
+        prompt: expect.not.stringContaining("## Assistant Reply")
+      }));
+      expect(result.actualPromptText).toContain("# Previous Conversation Context");
+    });
+
+    it("treats 'session not found for thread_id' output as a bootstrap retry signal", async () => {
+      const mockSendMessage = vi.fn()
+        .mockResolvedValueOnce({
+          outputMarkdown: "Session not found for thread_id: 019e6879-60d2-77c0-a264-2c1bd689550e",
+        })
+        .mockResolvedValueOnce({
+          providerSessionId: "thread-bootstrap",
+          outputMarkdown: "ok",
+        });
+
+      const mockCloseSession = vi.fn().mockResolvedValue(undefined);
+      const mockStartSession = vi.fn().mockResolvedValue({
+        processKey: "proc-new",
+        providerSessionId: "thread-bootstrap",
+        transportType: "codex_mcp",
+      });
+
+      const localRunnerGateway = {
+        sendMessage: mockSendMessage,
+        closeSession: mockCloseSession,
+        startSession: mockStartSession,
+      } as any;
+
+      const mockQueryBuilder = {
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        filter: vi.fn().mockReturnThis(),
+        order: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: {
+            id: "sess-id",
+            process_key: "proc-old",
+            provider_session_id: "thread-old",
+            transport_type: "codex_mcp",
+            status: "active",
+            provider: "codex",
+            model: "codex-mcp",
+            metadata_json: {
+              checkpoints: [
+                {
+                  promptPath: "/repo/.flowpilot/artifacts/run-1/step-1/.snapshots/snap-1/prompt.md",
+                  outputContentPath:
+                    "/repo/.flowpilot/artifacts/run-1/step-1/.snapshots/snap-1/BusinessIdea.md",
+                  artifactOutputPaths: ["/repo/.flowpilot/artifacts/run-1/step-1/BusinessIdea.md"],
+                },
+              ],
+            },
+          },
+          error: null,
+        }),
+        insert: vi.fn().mockReturnThis(),
+        update: vi.fn().mockReturnThis(),
+        single: vi.fn().mockResolvedValue({
+          data: {
+            id: "sess-new",
+            metadata_json: {
+              checkpoints: [
+                {
+                  promptPath: "/repo/.flowpilot/artifacts/run-1/step-1/.snapshots/snap-1/prompt.md",
+                  outputContentPath:
+                    "/repo/.flowpilot/artifacts/run-1/step-1/.snapshots/snap-1/BusinessIdea.md",
+                  artifactOutputPaths: ["/repo/.flowpilot/artifacts/run-1/step-1/BusinessIdea.md"],
+                },
+              ],
+            },
+          },
+          error: null,
+        }),
+      };
+
+      const adminClient = {
+        from: vi.fn(() => mockQueryBuilder),
+      } as any;
+
+      const result = await sendMessageWithRetry({
+        adminClient,
+        localRunnerGateway,
+        workflowRunId: "run-123",
+        stepRunId: "step-456",
+        providerKey: "codex",
+        modelName: "codex-mcp",
+        reasoningEffort: null,
+        workingDirectory: "/repo",
+        subagent: null,
+        prompt: "new-prompt",
+        skillIds: [],
+        idleTTLSeconds: 60,
+      });
+
+      expect(result.outputMarkdown).toBe("ok");
+      expect(mockCloseSession).toHaveBeenCalled();
+      expect(mockStartSession).toHaveBeenCalledWith(
+        expect.not.objectContaining({
+          resumeProviderSessionId: expect.any(String),
+        }),
+      );
+      expect(mockSendMessage).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          prompt: expect.stringContaining("# Previous Conversation Context"),
+        }),
+      );
+      expect(mockSendMessage).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          prompt: expect.stringContaining("/repo/.flowpilot/artifacts/run-1/step-1/.snapshots/snap-1/prompt.md"),
+        }),
+      );
+      expect(result.actualPromptText).toContain("# Previous Conversation Context");
+    });
+
+    it("limits bootstrap replay context to the latest five checkpoints", async () => {
+      const mockSendMessage = vi.fn()
+        .mockResolvedValueOnce({
+          outputMarkdown: "Session not found for thread_id: missing",
+        })
+        .mockResolvedValueOnce({
+          providerSessionId: "thread-bootstrap",
+          outputMarkdown: "ok",
+        });
+
+      const localRunnerGateway = {
+        sendMessage: mockSendMessage,
+        closeSession: vi.fn().mockResolvedValue(undefined),
+        startSession: vi.fn().mockResolvedValue({
+          processKey: "proc-new",
+          providerSessionId: "thread-bootstrap",
+          transportType: "codex_mcp",
+        }),
+      } as any;
+
+      const checkpoints = Array.from({ length: 6 }, (_, index) => ({
+        promptPath: `/repo/snap-${index + 1}/prompt.md`,
+        outputContentPath: `/repo/snap-${index + 1}/output.md`,
+        artifactOutputPaths: [`/repo/artifact-${index + 1}.md`],
+      }));
+
+      const mockQueryBuilder = {
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        filter: vi.fn().mockReturnThis(),
+        order: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: {
+            id: "sess-id",
+            process_key: "proc-old",
+            provider_session_id: "thread-old",
+            transport_type: "codex_mcp",
+            status: "active",
+            provider: "codex",
+            model: "codex-mcp",
+            metadata_json: { checkpoints },
+          },
+          error: null,
+        }),
+        insert: vi.fn().mockReturnThis(),
+        update: vi.fn().mockReturnThis(),
+        single: vi.fn().mockResolvedValue({
+          data: {
+            id: "sess-new",
+            metadata_json: { checkpoints },
+          },
+          error: null,
+        }),
+      };
+
+      const adminClient = {
+        from: vi.fn(() => mockQueryBuilder),
+      } as any;
+
+      await sendMessageWithRetry({
+        adminClient,
+        localRunnerGateway,
+        workflowRunId: "run-123",
+        stepRunId: "step-456",
+        providerKey: "codex",
+        modelName: "codex-mcp",
+        reasoningEffort: null,
+        workingDirectory: "/repo",
+        subagent: null,
+        prompt: "new-prompt",
+        skillIds: [],
+        idleTTLSeconds: 60,
+      });
+
+      const replayPrompt = mockSendMessage.mock.calls[1]?.[0]?.prompt as string;
+      expect(replayPrompt).toContain("/repo/snap-2/prompt.md");
+      expect(replayPrompt).toContain("/repo/snap-6/prompt.md");
+      expect(replayPrompt).not.toContain("/repo/snap-1/prompt.md");
+      expect(replayPrompt).toContain("/repo/snap-6/output.md");
+      expect(replayPrompt).not.toContain("/repo/snap-1/output.md");
+      expect(replayPrompt).toContain("/repo/artifact-6.md");
+      expect(replayPrompt).not.toContain("/repo/artifact-1.md");
+    });
   });
 });

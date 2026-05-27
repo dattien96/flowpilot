@@ -321,7 +321,7 @@ The implementation may add a probe later, but the typed error path is mandatory.
 `Task-02` remains the umbrella requirement for terminal session lifecycle durability.
 It is only fully complete when both sub-phases below are done.
 
-**Task-02a — Local process lifecycle and same-machine recovery**
+**[DONE] Task-02a — Local process lifecycle and same-machine recovery**
 
 Scope:
 
@@ -336,7 +336,7 @@ Goal:
 - recover when the local runner process or child provider process dies on the same machine
 - avoid leaking long-lived child processes
 
-**Task-02b — Cross-machine continuation**
+**[DONE] Task-02b — Cross-machine continuation**
 
 Scope:
 
@@ -359,37 +359,46 @@ Delivery rule:
 
 ### Issue 1 — Idle sweep
 
-- [ ] `LiveSession` has a `LastUsedAt time.Time` field initialized on `StartSession`
+- [x] `LiveSession` has a `LastUsedAt time.Time` field initialized on `StartSession`
       and updated on every `SendMessage`.
-- [ ] Runner starts exactly one idle-sweeper goroutine on startup.
-- [ ] Sessions idle longer than the configured TTL (default: 30 min) are automatically
+- [x] Runner starts exactly one idle-sweeper goroutine on startup.
+- [x] Sessions idle longer than the configured TTL (default: 2 hours) are automatically
       killed and removed from the in-memory map.
-- [ ] The idle TTL is configurable via a CLI flag `--session-idle-ttl`.
-- [ ] Killed idle sessions do NOT update Supabase (the frontend is responsible for
+- [x] The idle TTL is configurable from the Settings menu and persisted in Supabase so the value
+      is shared across machines.
+- [x] The runner reads the shared configured TTL for session lifecycle behavior.
+- [x] Users can manually terminate a live workflow session/process from the workflow-run detail
+      page before the idle timeout is reached.
+- [x] Killed idle sessions do NOT update Supabase (the frontend is responsible for
       detecting dead sessions on next use).
 
 ### Issue 2a — Same-machine recovery
 
-- [ ] When a session's `processKey` is stale/dead, the recovery path starts a new
+- [x] When a session's `processKey` is stale/dead, the recovery path starts a new
       process and injects the saved `providerSessionId` inside the **runner session state**
       so Codex resumes the thread on the same machine.
-- [ ] The runner exposes a deterministic `session_dead` error code, and the HTTP gateway
+- [x] The runner exposes a deterministic `session_dead` error code, and the HTTP gateway
       preserves it to the frontend.
-- [ ] A follow-up prompt after a same-machine process restart receives a response with
-      Codex's awareness of previous conversation turns.
-- [ ] Unit tests cover: dead-session detection → reconnect → message sent with old `threadId`.
+- [x] Non-session runner/provider failures do **not** deactivate or replace a healthy
+      session; reconnect is attempted only for typed `session_dead` failures.
+- [x] A follow-up prompt after a same-machine process restart receives a response with
+      Codex's awareness of previous conversation turns when the same machine still has the
+      original local Codex thread store.
+- [x] Unit tests cover: dead-session detection → reconnect → message sent with old `threadId`.
+- [x] Unit tests cover: a non-`session_dead` `/sessions/message` failure is surfaced to the
+      caller and does not trigger session teardown/reconnect.
 
 ### Issue 2b — Cross-machine continuation
 
-- [ ] A follow-up prompt after machine handoff (PC A → PC B) still receives a response
+- [x] A follow-up prompt after machine handoff (PC A → PC B) still receives a response
       with prior workflow context by replaying persisted conversation checkpoints, even if
       the original local Codex thread store is unavailable.
-- [ ] Portable conversation checkpoint data is persisted after each successful turn.
-- [ ] Recovery prefers same-machine `resumeProviderSessionId` when available, then falls
+- [x] Portable conversation checkpoint data is persisted after each successful turn.
+- [x] Recovery prefers same-machine `resumeProviderSessionId` when available, then falls
       back to bootstrap replay when it is not.
-- [ ] Unit tests cover: cross-machine bootstrap path when `resumeProviderSessionId`
+- [x] Unit tests cover: cross-machine bootstrap path when `resumeProviderSessionId`
       cannot be used.
-- [ ] `Task-02` is considered complete only when both Issue 2a and Issue 2b are done.
+- [x] `Task-02` is considered complete only when both Issue 2a and Issue 2b are done.
 
 ---
 

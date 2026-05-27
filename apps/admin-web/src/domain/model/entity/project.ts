@@ -13,6 +13,7 @@ export interface Project {
   defaultProvider?: string | null;
   defaultModel?: string | null;
   defaultReasoningEffort?: ReasoningEffort | null;
+  sessionIdleTtlMinutes?: number | null;
   createdBy: string;
   createdAt: string;
   updatedAt: string;

@@ -361,11 +361,11 @@ func TestResolvePromptExecutionAdapterMapsModelNames(t *testing.T) {
 
 func TestResolvePromptExecutionAdapterReasoningEffort(t *testing.T) {
 	tests := []struct {
-		provider       string
-		model          string
-		effort         string
-		expectedBin    string
-		expectedFlags  []string
+		provider      string
+		model         string
+		effort        string
+		expectedBin   string
+		expectedFlags []string
 	}{
 		{"codex", "gpt-5.4", "high", "codex", []string{"-c", "reasoning_effort=high"}},
 		{"codex", "gpt-5.5", "low", "codex", []string{"-c", "reasoning_effort=low"}},
@@ -424,11 +424,12 @@ func TestReadArtifactDetailLoadsPromptAndDiagnostics(t *testing.T) {
 	}
 
 	files := map[string]string{
-		filepath.Join(artifactDir, "content.md"):  "Generated business idea",
-		filepath.Join(artifactDir, "prompt.md"):   "Prompt used for the run",
-		filepath.Join(artifactDir, "stdout.txt"):  "stdout summary",
-		filepath.Join(artifactDir, "stderr.txt"):  "stderr summary",
-		filepath.Join(artifactDir, "command.txt"): "codex --sandbox workspace-write exec",
+		filepath.Join(artifactDir, "content.md"):       "Generated business idea",
+		filepath.Join(artifactDir, "prompt.md"):        "Prompt used for the run",
+		filepath.Join(artifactDir, "actual-prompt.md"): "Bootstrap replay prompt sent to the provider",
+		filepath.Join(artifactDir, "stdout.txt"):       "stdout summary",
+		filepath.Join(artifactDir, "stderr.txt"):       "stderr summary",
+		filepath.Join(artifactDir, "command.txt"):      "codex --sandbox workspace-write exec",
 	}
 	for path, contents := range files {
 		if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
@@ -468,6 +469,9 @@ func TestReadArtifactDetailLoadsPromptAndDiagnostics(t *testing.T) {
 	}
 	if detail.PromptText != "Prompt used for the run" {
 		t.Fatalf("expected prompt text, got %q", detail.PromptText)
+	}
+	if detail.ActualPromptText != "Bootstrap replay prompt sent to the provider" {
+		t.Fatalf("expected actual prompt text, got %q", detail.ActualPromptText)
 	}
 	if detail.StdoutText != "stdout summary" {
 		t.Fatalf("expected stdout text, got %q", detail.StdoutText)

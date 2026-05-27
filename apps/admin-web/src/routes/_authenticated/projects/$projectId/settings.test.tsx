@@ -66,6 +66,7 @@ function buildProject() {
     defaultProvider: "codex",
     defaultModel: "gpt-5.4",
     defaultReasoningEffort: "medium",
+    sessionIdleTtlMinutes: 120,
     createdBy: "demo-user",
     createdAt: "2026-05-19T00:00:00.000Z",
     updatedAt: "2026-05-19T00:00:00.000Z",
@@ -230,6 +231,35 @@ describe("Project settings MCP links", () => {
         defaultProvider: "codex",
         defaultModel: "gpt-5.4",
         defaultReasoningEffort: "medium",
+      });
+      expect(mocks.invalidate).toHaveBeenCalled();
+    });
+  });
+
+  it("saves the session idle timeout", async () => {
+    const updateProject = vi.fn().mockResolvedValue(buildProject());
+    mocks.createGatewayBundle.mockReturnValue({
+      integrationGateway: {
+        linkIntegrationToProject: vi.fn(),
+        unlinkIntegrationFromProject: vi.fn(),
+      },
+      projectGateway: { updateProject },
+      teamGateway: {
+        linkTeamToProject: vi.fn(),
+        unlinkTeamFromProject: vi.fn(),
+      },
+    });
+
+    renderSubject();
+
+    fireEvent.change(screen.getByLabelText("Idle timeout in minutes"), {
+      target: { value: "45" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save timeout" }));
+
+    await waitFor(() => {
+      expect(updateProject).toHaveBeenCalledWith("project-alpha", {
+        sessionIdleTtlMinutes: 45,
       });
       expect(mocks.invalidate).toHaveBeenCalled();
     });
