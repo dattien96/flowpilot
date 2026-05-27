@@ -18,7 +18,6 @@ import {
 import { PageFrame } from "@/components/common/page-frame";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/presentation/components/ui/badge";
-import { WorkflowTimeline } from "@/presentation/components/workflow-runs/workflow-timeline";
 import { createGatewayBundle } from "@/data/repository/browser-factory";
 import { GetWorkflowRunDetailUseCase } from "@/domain/usecase/workflow-runs/get-workflow-run-detail-usecase";
 import { GetWorkflowRunDetailUseCase as GetWorkflowEngineRunDetailUseCase } from "@/domain/usecase/workflow-engine/get-workflow-run-detail-usecase";
@@ -27,18 +26,20 @@ import { SubmitStepApprovalDecisionUseCase } from "@/domain/usecase/workflow-eng
 import { createSupabaseBrowserClient } from "@/data/datasource/supabase/client";
 import { applyOptimisticWorkflowFollowUp } from "@/features/workflow-engine/workflow-run-detail-optimistic";
 import {
-  buildWorkflowStepTimeline,
+  buildWorkflowStepSessionGroups,
   groupOutputsByStep,
   mapArtifactsToWorkflowOutputs,
   mergeWorkflowOutputs,
   type WorkflowOutputRecord,
+  type WorkflowStepSessionGroup,
+  type WorkflowStepSessionItem,
+  type WorkflowStepSessionStart,
 } from "@/features/workflow-engine/workflow-run-detail-timeline";
 import {
   buildFallbackApprovalDecisionsFromLogs,
   buildFallbackOutputsFromLogs,
   extractBeginPromptFromLogs,
 } from "@/features/workflow-engine/workflow-run-log-fallback";
-import { statusTone } from "@/presentation/view-models/factories";
 import type { ApprovalDecision } from "@/domain/model/entity/workflow";
 import type { LocalRunnerArtifact } from "@/domain/model/entity/local-runner";
 import type { ArtifactRun } from "@/domain/model/entity/workflow-engine";
@@ -244,11 +245,13 @@ function CollapsibleChatBubble({
   time,
   content,
   isSecondary = false,
+  metaNote,
 }: {
   title: string;
   time?: string;
   content: string;
   isSecondary?: boolean;
+  metaNote?: string;
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
   const TRUNCATE_LENGTH = 400;
@@ -256,23 +259,65 @@ function CollapsibleChatBubble({
   const displayContent = (!isExpanded && isLong) ? content.slice(0, TRUNCATE_LENGTH) + "..." : content;
 
   return (
-    <div className={`max-w-[85%] rounded-[1.6rem] px-6 py-4 shadow-sm ${isSecondary ? "bg-accent/90 text-accent-foreground" : "bg-accent text-accent-foreground"
-      }`}>
-      <p className="text-[10px] opacity-70 mb-2 font-mono tracking-widest uppercase flex items-center justify-between gap-4">
-        <span className="flex items-center gap-1.5">{title}</span>
-        {time ? <span className="text-[9px]">{time}</span> : null}
-      </p>
-      <div className="whitespace-pre-wrap text-sm leading-relaxed break-words font-sans">
-        {displayContent}
+    <div className="flex max-w-[85%] flex-col items-end gap-2">
+      <div className={`w-full rounded-[1.6rem] px-6 py-4 shadow-sm ${isSecondary ? "bg-accent/90 text-accent-foreground" : "bg-accent text-accent-foreground"
+        }`}>
+        <p className="text-[10px] opacity-70 mb-2 font-mono tracking-widest uppercase flex items-center justify-between gap-4">
+          <span className="flex items-center gap-1.5">{title}</span>
+          {time ? <span className="text-[9px]">{time}</span> : null}
+        </p>
+        <div className="whitespace-pre-wrap text-sm leading-relaxed break-words font-sans">
+          {displayContent}
+        </div>
+        {isLong && (
+          <button
+            onClick={() => setIsExpanded(!isExpanded)}
+            className="mt-2 text-[10px] font-bold uppercase tracking-wider underline opacity-85 hover:opacity-100 transition-opacity cursor-pointer block"
+          >
+            {isExpanded ? "Show less" : "Show more"}
+          </button>
+        )}
       </div>
-      {isLong && (
-        <button
-          onClick={() => setIsExpanded(!isExpanded)}
-          className="mt-2 text-[10px] font-bold uppercase tracking-wider underline opacity-85 hover:opacity-100 transition-opacity cursor-pointer block"
-        >
-          {isExpanded ? "Show less" : "Show more"}
-        </button>
-      )}
+      {metaNote ? (
+        <div className="max-w-full px-1 text-right text-[8px] font-semibold tracking-[0.12em] text-amber-300/95">
+          {metaNote}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function CollapsibleAttemptPanel({
+  title,
+  defaultOpen = true,
+  children,
+}: {
+  title: string;
+  defaultOpen?: boolean;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+
+  return (
+    <div className="rounded-[1.25rem] border border-border/25 bg-[#0f1119]/70 shadow-sm">
+      <button
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        className="flex w-full items-center justify-between gap-3 px-6 py-4 text-left"
+      >
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          {title}
+        </span>
+        <span className="text-muted-foreground transition-colors shrink-0">
+          {open ? (
+            <ChevronUp className="h-4 w-4" />
+          ) : (
+            <ChevronDown className="h-4 w-4" />
+          )}
+        </span>
+      </button>
+
+      {open ? <div className="border-t border-border/20 px-6 py-4">{children}</div> : null}
     </div>
   );
 }
@@ -311,7 +356,8 @@ const ArtifactContentViewer = ({ content }: { content: string }) => {
           <Button
             variant="ghost"
             onClick={() => setExpanded(!expanded)}
-            className="text-xs h-8 text-accent hover:text-accent/80 font-bold uppercase tracking-wider bg-[#090a0f]/90 hover:bg-[#090a0f] border border-border/20 rounded-lg px-4 shadow-sm"
+            className="text-[10px] text-accent hover:text-accent/80 font-bold uppercase tracking-wider bg-[#090a0f]/90 hover:bg-[#090a0f] border border-border/20 rounded-lg px-4 shadow-sm"
+            style={{ fontSize: "10px" }}
           >
             {expanded ? "Show less" : "Show more"}
           </Button>
@@ -336,6 +382,7 @@ function StepOutputTabs({
   const [artifactContent, setArtifactContent] = useState<string | null>(null);
   const [artifactError, setArtifactError] = useState<string | null>(null);
   const [artifactLoading, setArtifactLoading] = useState(false);
+  const [copiedTab, setCopiedTab] = useState<"response" | "prompt" | null>(null);
 
   const loadArtifactContent = async () => {
     if (!artifactRun) {
@@ -371,7 +418,19 @@ function StepOutputTabs({
     ...(artifactRun ? [{ key: "artifact" as const, label: "ARTIFACT" }] : []),
   ];
 
-  const normalizedPrompt = normalizePromptDisplay(output.promptText);
+  const normalizedActualPrompt = normalizePromptDisplay(
+    output.actualPromptText ?? output.promptText,
+  );
+
+  const handleCopyTabContent = (tab: "response" | "prompt") => {
+    const content =
+      tab === "response"
+        ? (output.contentMarkdown || "No response captured.")
+        : (normalizedActualPrompt || "No prompt was captured for this output.");
+    navigator.clipboard.writeText(content);
+    setCopiedTab(tab);
+    setTimeout(() => setCopiedTab((current) => (current === tab ? null : current)), 2000);
+  };
 
   return (
     <div className="space-y-5">
@@ -404,13 +463,24 @@ function StepOutputTabs({
 
       {activeTab === "prompt" ? (
         <div className="relative rounded-xl border border-border/45 bg-[#090a0f] p-6 overflow-auto max-h-[28rem]">
-          {normalizedPrompt ? (
+          <button
+            onClick={() => handleCopyTabContent("prompt")}
+            className="absolute top-4 right-4 text-muted-foreground hover:text-foreground transition-colors p-1.5 rounded-lg hover:bg-muted/10 z-10"
+            title="Copy prompt"
+            type="button"
+          >
+            {copiedTab === "prompt" ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+          </button>
+          <p className="mb-4 text-[10px] font-bold uppercase tracking-[0.22em] text-muted-foreground">
+            Prompt Sent
+          </p>
+          {normalizedActualPrompt ? (
             <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-[#d1d5db]">
-              {normalizedPrompt}
+              {normalizedActualPrompt}
             </pre>
           ) : (
             <p className="text-xs italic text-muted-foreground">
-              No prompt file captured for this output.
+              No prompt was captured for this output.
             </p>
           )}
         </div>
@@ -471,6 +541,296 @@ function StepOutputTabs({
         </div>
       ) : null}
     </div>
+  );
+}
+
+function formatBubbleTime(value?: string | null) {
+  const normalized = value?.trim() ?? "";
+  if (!normalized) {
+    return null;
+  }
+
+  const timestamp = new Date(normalized);
+  if (Number.isNaN(timestamp.getTime())) {
+    return null;
+  }
+
+  return timestamp.toLocaleTimeString();
+}
+
+type SessionRecoveryDisplay = {
+  label: string;
+  title: string;
+};
+
+function parseSessionEventPayload(message: string | null | undefined) {
+  const normalized = message?.trim() ?? "";
+  if (!normalized.startsWith("session_event:")) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(normalized.slice("session_event:".length)) as {
+      event?: string;
+      providerSessionId?: string | null;
+      recoveredFromSessionId?: string | null;
+      recoveredFromProviderSessionId?: string | null;
+    };
+  } catch {
+    return null;
+  }
+}
+
+function resolveSessionRecoveryDisplay(session: any): SessionRecoveryDisplay | null {
+  const recoveryMode = session?.metadataJson?.recovery?.mode;
+  if (recoveryMode === "bootstrap_replay") {
+    return {
+      label: "New Session + Replay",
+      title: "A new session was created and previous checkpoints were replayed into the prompt.",
+    };
+  }
+
+  if (recoveryMode === "resumed_thread") {
+    return {
+      label: "New Session",
+      title: "A new session was created for this step after the previous session ended.",
+    };
+  }
+
+  return null;
+}
+
+function getSessionsForScope(
+  sessions: any[] | null | undefined,
+  selectedStepId: string | undefined,
+  subagent: string | null,
+) {
+  if (!sessions || sessions.length === 0) {
+    return [];
+  }
+
+  const scopedSessions = sessions.filter((session: any) => {
+    if (subagent) {
+      return session.metadataJson?.step_run_id === selectedStepId;
+    }
+
+    return (
+      session.metadataJson?.is_main === true ||
+      session.metadataJson?.is_main === "true"
+    );
+  });
+
+  if (scopedSessions.length === 0) {
+    return [];
+  }
+
+  return [...scopedSessions].sort((left: any, right: any) =>
+    left.startedAt.localeCompare(right.startedAt),
+  );
+}
+
+function getSessionScopeLabel(subagent: string | null) {
+  return subagent ? `Isolated (${subagent})` : "Session Main";
+}
+
+function getSessionStartsForScope({
+  logs,
+  sessions,
+  selectedStepId,
+}: {
+  logs: any[];
+  sessions: any[];
+  selectedStepId: string | undefined;
+}): WorkflowStepSessionStart[] {
+  const sessionStarts: WorkflowStepSessionStart[] = [];
+
+  for (const log of logs) {
+    if (selectedStepId && log.workflowRunStepId !== selectedStepId) {
+      continue;
+    }
+
+    const payload = parseSessionEventPayload(log.message);
+    if (!payload) {
+      continue;
+    }
+
+    if (payload.event !== "session_created" && payload.event !== "session_reused") {
+      continue;
+    }
+
+    const matchedSession =
+      sessions.find(
+        (session: any) =>
+          payload.providerSessionId &&
+          session.providerSessionId === payload.providerSessionId,
+      ) ?? null;
+
+    sessionStarts.push({
+      createdAt: log.createdAt,
+      providerSessionId: payload.providerSessionId ?? null,
+      sessionId: matchedSession?.id ?? null,
+    });
+  }
+
+  return sessionStarts.sort((left, right) =>
+    left.createdAt.localeCompare(right.createdAt),
+  );
+}
+
+function DeveloperDiagnosticsSection({ output }: { output: WorkflowOutputRecord }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="mt-4 border-t border-border/30 pt-4">
+      <button
+        type="button"
+        onClick={() => setOpen((prev) => !prev)}
+        className="text-[10px] inline-flex w-full cursor-pointer items-center justify-between font-bold uppercase tracking-[0.2em] text-muted-foreground transition-colors hover:text-foreground select-none"
+      >
+        <span className="text-[10px]">Developer Diagnostics</span>
+        <span className="text-muted-foreground transition-colors shrink-0">
+          {open ? (
+            <ChevronUp className="h-4 w-4" />
+          ) : (
+            <ChevronDown className="h-4 w-4" />
+          )}
+        </span>
+      </button>
+
+      {open && (
+        <div className="mt-4 space-y-3 border-l-2 border-border/50 pl-2">
+          {output.localPath ? (
+            <CollapsibleTextBlock title="Artifact Path" value={output.localPath} emptyLabel="" />
+          ) : null}
+          <CollapsibleTextBlock title="Planned Prompt" value={output.promptText} emptyLabel="Inherited from run prompt." />
+          <CollapsibleTextBlock title="Actual Sent Prompt" value={output.actualPromptText ?? output.promptText} emptyLabel="No actual prompt captured." />
+          <CollapsibleTextBlock title="Stdout" value={output.stdoutText} emptyLabel="No stdout." />
+          <CollapsibleTextBlock title="Stderr" value={output.stderrText} emptyLabel="No stderr." />
+          <CollapsibleTextBlock title="CLI Command" value={output.commandText} emptyLabel="No command captured." />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SessionGroupSection({
+  group,
+  subagent,
+  stepOutputs,
+  detail,
+  gatewayBundle,
+}: {
+  group: WorkflowStepSessionGroup;
+  subagent: string | null;
+  stepOutputs: WorkflowOutputRecord[];
+  detail: any;
+  gatewayBundle: React.MutableRefObject<ReturnType<typeof createGatewayBundle>>;
+}) {
+  const [isCollapsed, setIsCollapsed] = useState(false);
+  const sessionRecovery = resolveSessionRecoveryDisplay(group.session);
+
+  return (
+    <section className="space-y-4">
+      {group.session ? (
+        <div
+          onClick={() => setIsCollapsed(!isCollapsed)}
+          className="group/session rounded-xl border border-border/40 bg-[#161d28]/35 px-5 py-4 cursor-pointer hover:bg-[#161d28]/55 transition-colors flex items-center justify-between gap-4 select-none shadow-sm"
+        >
+          <p className="flex flex-wrap items-center gap-1.5 text-xs font-mono text-muted-foreground">
+            <span className="font-bold text-foreground">Session:</span>
+            <span className="bg-accent/40 text-accent-foreground px-1.5 py-0.5 rounded font-bold uppercase tracking-wider text-[9px]">
+              {getSessionScopeLabel(subagent)}
+            </span>
+            <span>&bull;</span>
+            <span className="text-foreground/90 font-medium font-sans">
+              {group.session.provider} ({group.session.model})
+            </span>
+            <span>&bull;</span>
+            <span className={`font-semibold ${group.session.status === "active" ? "text-success" : "text-muted-foreground"}`}>
+              {group.session.status}
+            </span>
+            {sessionRecovery ? (
+              <>
+                <span>&bull;</span>
+                <span
+                  className="rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-amber-300"
+                  title={sessionRecovery.title}
+                >
+                  {sessionRecovery.label}
+                </span>
+              </>
+            ) : null}
+            {group.session.providerSessionId ? (
+              <>
+                <span>&bull;</span>
+                <span className="font-mono text-[9px] text-foreground/80">
+                  {group.session.providerSessionId}
+                </span>
+              </>
+            ) : null}
+          </p>
+          <span className="text-muted-foreground group-hover/session:text-foreground transition-colors shrink-0">
+            {isCollapsed ? (
+              <ChevronDown className="h-4 w-4" />
+            ) : (
+              <ChevronUp className="h-4 w-4" />
+            )}
+          </span>
+        </div>
+      ) : null}
+
+      {!isCollapsed && (
+        <div className="ml-4 space-y-6 border-l border-border/20 pl-5">
+          {group.promptGroups.map((pg) => {
+            return (
+              <div key={pg.key} className="space-y-5 bg-[#0f111a]/45 border border-border/10 p-6 rounded-2xl shadow-inner">
+                {/* Prompt Chat Bubble */}
+                <div className="flex justify-end">
+                  <CollapsibleChatBubble
+                    title={pg.prompt.title}
+                    time={formatBubbleTime(pg.prompt.createdAt) ?? undefined}
+                    content={pg.prompt.content}
+                    isSecondary={pg.prompt.isSecondary}
+                    metaNote={pg.prompt.metaNote}
+                  />
+                </div>
+
+                {/* Attempts/Outputs belonging to this Prompt */}
+                {pg.attempts.length > 0 && (
+                  <div className="space-y-4 pl-4 border-l border-emerald-500/25">
+                    {pg.attempts.map((attemptItem) => {
+                      const outputAttempt =
+                        stepOutputs.findIndex((output) => output.id === attemptItem.output.id) + 1;
+                      const itemArtifactRun = (((detail.artifactRuns ?? []) as ArtifactRun[]).find(
+                        (artifactRun) => artifactRun.id === attemptItem.output.id,
+                      ) ?? null);
+
+                      return (
+                        <div key={attemptItem.key} className="space-y-3">
+                          <CollapsibleAttemptPanel
+                            title={stepOutputs.length > 1 ? `Attempt ${outputAttempt}` : "Output"}
+                          >
+                            <div className="space-y-4">
+                              <StepOutputTabs
+                                artifactRun={itemArtifactRun}
+                                localRunnerGateway={gatewayBundle.current.localRunnerGateway}
+                                output={attemptItem.output}
+                              />
+
+                              <DeveloperDiagnosticsSection output={attemptItem.output} />
+                            </div>
+                          </CollapsibleAttemptPanel>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -747,7 +1107,7 @@ function WorkflowRunDetailPage() {
   const isSessionLogView = logView === "session";
 
   const runTitle = useMemo(
-    () => summarizeRunPrompt(runPromptText),
+    () => summarizeRunPrompt(runPromptText ?? undefined),
     [runPromptText],
   );
 
@@ -972,17 +1332,31 @@ function WorkflowRunDetailPage() {
   ) as any[]).sort((left, right) =>
     left.createdAt.localeCompare(right.createdAt),
   );
-  const stepTimelineItems = buildWorkflowStepTimeline(stepOutputs, stepDecisions);
   const definitionStep = detail.definition?.steps?.find((ds: any) => ds.key === selectedStep?.stepKey);
   const subagent = definitionStep?.subagent ?? null;
-  const stepSession = (() => {
-    if (!selectedStep || !detail.sessions) return null;
-    if (subagent) {
-      return detail.sessions.find((s: any) => s.metadataJson?.step_run_id === selectedStep.id);
-    } else {
-      return detail.sessions.find((s: any) => s.metadataJson?.is_main === true || s.metadataJson?.is_main === "true");
-    }
-  })();
+  const stepSessions = getSessionsForScope(
+    detail.sessions as any[] | null | undefined,
+    selectedStep?.id,
+    subagent,
+  );
+  const stepSessionStarts = getSessionStartsForScope({
+    logs: allLogs,
+    sessions: stepSessions,
+    selectedStepId: selectedStep?.id,
+  });
+  const stepSessionGroups = buildWorkflowStepSessionGroups({
+    outputs: stepOutputs,
+    decisions: stepDecisions,
+    sessions: stepSessions,
+    sessionStarts: stepSessionStarts,
+    initialPrompt:
+      selectedStepIndex === 0 && runPromptText
+        ? {
+          createdAt: detail.run.startedAt,
+          content: runPromptText,
+        }
+        : null,
+  });
 
   return (
     <div className="fixed inset-0 z-50 bg-[#0c0d12] flex flex-col lg:flex-row overflow-hidden text-foreground">
@@ -1102,7 +1476,6 @@ function WorkflowRunDetailPage() {
                   <>
                     <Button
                       variant="secondary"
-                      size="sm"
                       className="h-8 rounded-lg px-3 text-xs font-semibold"
                       disabled={processingAction || detail.run.status === "running"}
                       onClick={handleResume}
@@ -1111,7 +1484,6 @@ function WorkflowRunDetailPage() {
                     </Button>
                     <Button
                       variant="ghost"
-                      size="sm"
                       className="h-8 rounded-lg px-3 text-xs"
                       disabled={processingAction}
                       onClick={handleCancel}
@@ -1142,47 +1514,7 @@ function WorkflowRunDetailPage() {
               </div>
             </div>
 
-            {/* Initial Run Prompt (only show on step 1 details) */}
-            {selectedStepIndex === 0 && runPromptText && (
-              <div className="flex justify-end mb-4">
-                <div className="bg-[#1b2b24] border border-emerald-500/20 p-4 rounded-xl space-y-1 max-w-[85%] text-left">
-                  <span className="text-[9px] font-bold text-emerald-400 tracking-wider uppercase font-mono">
-                    Initial Prompt
-                  </span>
-                  <p className="text-sm text-foreground leading-relaxed break-words font-sans">
-                    {runPromptText}
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {/* Session & Output Badges */}
             <div className="space-y-3">
-              {stepSession && (
-                <p className="text-xs font-mono text-muted-foreground flex items-center gap-1.5 flex-wrap">
-                  <span>Session:</span>
-                  <span className="bg-accent/40 text-accent-foreground px-1.5 py-0.5 rounded font-bold uppercase tracking-wider text-[9px]">
-                    {subagent ? `Isolated (${subagent})` : "Shared Main"}
-                  </span>
-                  <span>&bull;</span>
-                  <span className="text-foreground/90 font-medium font-sans">
-                    {stepSession.provider} ({stepSession.model})
-                  </span>
-                  <span>&bull;</span>
-                  <span className={`font-semibold ${stepSession.status === "active" ? "text-success" : "text-muted-foreground"}`}>
-                    {stepSession.status}
-                  </span>
-                  {stepSession.providerSessionId ? (
-                    <>
-                      <span>&bull;</span>
-                      <span className="font-mono text-[9px] text-foreground/80">
-                        {stepSession.providerSessionId}
-                      </span>
-                    </>
-                  ) : null}
-                </p>
-              )}
-
               <div>
                 <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full border text-[10px] font-semibold uppercase tracking-wider ${stepArtifactRun
                   ? "bg-emerald-500/5 border-emerald-500/20 text-emerald-400"
@@ -1196,7 +1528,7 @@ function WorkflowRunDetailPage() {
 
             {/* Step contents timeline */}
             <div className="pt-4">
-              {stepTimelineItems.length === 0 ? (
+              {stepSessionGroups.length === 0 ? (
                 <div className="rounded-xl border border-border/80 bg-card/25 p-6">
                   <p className="text-sm text-muted-foreground text-center py-4">
                     {selectedStep.status === "PENDING" || selectedStep.status === "RUNNING"
@@ -1210,62 +1542,102 @@ function WorkflowRunDetailPage() {
                   ) : null}
                 </div>
               ) : (
-                stepTimelineItems.map((item: any) => {
-                  const outputAttempt =
-                    item.kind === "output"
-                      ? stepOutputs.findIndex((output) => output.id === item.output.id) + 1
-                      : 0;
-
-                  return item.kind === "decision" ? (
-                    <div key={item.key} className="flex justify-end mt-4">
-                      <CollapsibleChatBubble
-                        title="Follow-up"
-                        time={new Date(item.decision.createdAt).toLocaleTimeString()}
-                        content={item.decision.comment || `Decision: ${item.decision.decision}`}
-                        isSecondary={true}
-                      />
-                    </div>
-                  ) : (
-                    <div key={item.key} className="space-y-4">
-                      {stepOutputs.length > 1 && (
-                        <div className="flex items-center justify-between pb-2 border-b border-border/30">
-                          <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                            Attempt {outputAttempt}
-                          </span>
-                        </div>
-                      )}
-
-                      <StepOutputTabs
-                        artifactRun={stepArtifactRun}
-                        localRunnerGateway={
-                          gatewayBundle.current.localRunnerGateway
-                        }
-                        output={item.output}
-                      />
-
-                      <details className="mt-4 pt-4 border-t border-border/30">
-                        <summary className="text-[11px] font-bold uppercase tracking-[0.2em] text-muted-foreground cursor-pointer hover:text-foreground transition-colors inline-flex items-center justify-between w-full">
-                          <span>DEVELOPER DIAGNOSTICS</span>
-                          <span className="text-[9px] font-mono opacity-60">Expand</span>
-                        </summary>
-                        <div className="mt-4 space-y-3 pl-2 border-l-2 border-border/50">
-                          {item.output.localPath && (
-                            <CollapsibleTextBlock title="Artifact Path" value={item.output.localPath} emptyLabel="" />
-                          )}
-                          <CollapsibleTextBlock title="Prompt Override" value={item.output.promptText} emptyLabel="Inherited from run prompt." />
-                          <CollapsibleTextBlock title="Stdout" value={item.output.stdoutText} emptyLabel="No stdout." />
-                          <CollapsibleTextBlock title="Stderr" value={item.output.stderrText} emptyLabel="No stderr." />
-                          <CollapsibleTextBlock title="CLI Command" value={item.output.commandText} emptyLabel="No command captured." />
-                        </div>
-                      </details>
-                    </div>
-                  );
-                })
+                <div className="space-y-5">
+                  {stepSessionGroups.map((group) => (
+                    <SessionGroupSection
+                      key={group.key}
+                      detail={detail}
+                      gatewayBundle={gatewayBundle}
+                      group={group}
+                      stepOutputs={stepOutputs}
+                      subagent={subagent}
+                    />
+                  ))}
+                </div>
               )}
             </div>
 
             {/* Collapsible Run Logs & Safe Gate & Follow-up Chat */}
             <div className="pt-4 border-t border-border/30">
+
+              {/* Always-Visible Send Prompt / Safe Gate Section inside the card footer */}
+              <div className="p-6 bg-[#11131c] border-t border-border/10">
+                {(() => {
+                  const stepStatus = selectedStep.status?.toUpperCase();
+                  const runStatus = detail.run.status?.toUpperCase();
+                  const isWaiting = stepStatus === "WAITING_USER_APPROVAL";
+                  const isDone = stepStatus === "DONE" || stepStatus === "COMPLETED";
+                  const canContinue = (isWaiting || isDone) && runStatus !== "REJECTED" && runStatus !== "FAILED";
+
+                  if (!canContinue) return null;
+
+                  if (isWaiting) {
+                    return (
+                      <div className="border border-border/80 bg-card/45 p-6 rounded-2xl shadow-xl space-y-4">
+                        <div className="flex items-center gap-2 pb-2 border-b border-border/30">
+                          <ShieldAlert className="h-5 w-5 text-warning shrink-0" />
+                          <span className="text-sm font-semibold text-warning">
+                            Safe Gate: Approving compiles files & begins coding stage
+                          </span>
+                        </div>
+
+                        <div className="space-y-3">
+                          <textarea
+                            className="w-full min-h-[70px] max-h-[200px] resize-none bg-[#090a0f] border border-border/60 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-1 focus:ring-accent/50 placeholder:text-muted-foreground/60 text-[#eaeaea]"
+                            placeholder="Provide revision notes for Reject & Retry..."
+                            value={decisionComment}
+                            onChange={(e) => {
+                              setDecisionComment(e.target.value);
+                            }}
+                            rows={2}
+                          />
+
+                          <div className="flex flex-wrap items-center justify-end gap-3 pt-1">
+                            <Button
+                              variant="secondary"
+                              className="h-10 rounded-xl border-border/80 px-5 text-foreground hover:bg-muted"
+                              disabled={submittingDecision || !decisionComment.trim()}
+                              onClick={() => handleDecision(selectedStep.id, "changes_requested")}
+                            >
+                              {submittingDecision ? <RefreshCw className="h-4 w-4 animate-spin" /> : "Reject & Retry"}
+                            </Button>
+                            <Button
+                              className="rounded-xl px-5 h-10 bg-emerald-600 text-white hover:bg-emerald-700 border-none flex items-center gap-1.5"
+                              disabled={submittingDecision}
+                              onClick={() => handleDecision(selectedStep.id, "approved")}
+                            >
+                              {submittingDecision ? <RefreshCw className="h-4 w-4 animate-spin" /> : <>Approve & Continue &rarr;</>}
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  } else {
+                    return (
+                      <div className="relative border border-border/60 bg-[#090a0f] rounded-xl p-3 focus-within:border-emerald-500/50 transition-colors">
+                        <textarea
+                          className="w-full min-h-[60px] pb-12 resize-none bg-transparent text-sm text-foreground focus:outline-none placeholder:text-muted-foreground/60 leading-relaxed"
+                          placeholder="Type chat for follow-up interactions..."
+                          value={decisionComment}
+                          onChange={(e) => {
+                            setDecisionComment(e.target.value);
+                          }}
+                          rows={2}
+                        />
+                        <div className="absolute bottom-3 right-3">
+                          <Button
+                            className="rounded-lg px-4 h-8 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs transition-colors"
+                            disabled={submittingDecision || !decisionComment.trim()}
+                            onClick={() => handleDecision(selectedStep.id, "changes_requested")}
+                          >
+                            {submittingDecision ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : "Send"}
+                          </Button>
+                        </div>
+                      </div>
+                    );
+                  }
+                })()}
+              </div>
 
               {/* Custom Run Logs Collapsible Card */}
               <div className="border border-border/20 bg-[#11131c] rounded-[1.6rem] overflow-hidden shadow-lg">
@@ -1372,85 +1744,7 @@ function WorkflowRunDetailPage() {
                   </div>
                 )}
 
-                {/* Always-Visible Send Prompt / Safe Gate Section inside the card footer */}
-                <div className="p-6 bg-[#11131c] border-t border-border/10">
-                  {(() => {
-                    const stepStatus = selectedStep.status?.toUpperCase();
-                    const runStatus = detail.run.status?.toUpperCase();
-                    const isWaiting = stepStatus === "WAITING_USER_APPROVAL";
-                    const isDone = stepStatus === "DONE" || stepStatus === "COMPLETED";
-                    const canContinue = (isWaiting || isDone) && runStatus !== "REJECTED" && runStatus !== "FAILED";
 
-                    if (!canContinue) return null;
-
-                    if (isWaiting) {
-                      return (
-                        <div className="border border-border/80 bg-card/45 p-6 rounded-2xl shadow-xl space-y-4">
-                          <div className="flex items-center gap-2 pb-2 border-b border-border/30">
-                            <ShieldAlert className="h-5 w-5 text-warning shrink-0" />
-                            <span className="text-sm font-semibold text-warning">
-                              Safe Gate: Approving compiles files & begins coding stage
-                            </span>
-                          </div>
-
-                          <div className="space-y-3">
-                            <textarea
-                              className="w-full min-h-[70px] max-h-[200px] resize-none bg-[#090a0f] border border-border/60 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-1 focus:ring-accent/50 placeholder:text-muted-foreground/60 text-[#eaeaea]"
-                              placeholder="Provide revision notes for Reject & Retry..."
-                              value={decisionComment}
-                              onChange={(e) => {
-                                setDecisionComment(e.target.value);
-                              }}
-                              rows={2}
-                            />
-
-                            <div className="flex flex-wrap items-center justify-end gap-3 pt-1">
-                              <Button
-                                variant="outline"
-                                className="rounded-xl px-5 h-10 border-border/80 hover:bg-muted text-foreground"
-                                disabled={submittingDecision || !decisionComment.trim()}
-                                onClick={() => handleDecision(selectedStep.id, "changes_requested")}
-                              >
-                                {submittingDecision ? <RefreshCw className="h-4 w-4 animate-spin" /> : "Reject & Retry"}
-                              </Button>
-                              <Button
-                                className="rounded-xl px-5 h-10 bg-emerald-600 text-white hover:bg-emerald-700 border-none flex items-center gap-1.5"
-                                disabled={submittingDecision}
-                                onClick={() => handleDecision(selectedStep.id, "approved")}
-                              >
-                                {submittingDecision ? <RefreshCw className="h-4 w-4 animate-spin" /> : <>Approve & Continue &rarr;</>}
-                              </Button>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    } else {
-                      return (
-                        <div className="relative border border-border/60 bg-[#090a0f] rounded-xl p-3 focus-within:border-emerald-500/50 transition-colors">
-                          <textarea
-                            className="w-full min-h-[60px] pb-12 resize-none bg-transparent text-sm text-foreground focus:outline-none placeholder:text-muted-foreground/60 leading-relaxed"
-                            placeholder="Type chat for follow-up interactions..."
-                            value={decisionComment}
-                            onChange={(e) => {
-                              setDecisionComment(e.target.value);
-                            }}
-                            rows={2}
-                          />
-                          <div className="absolute bottom-3 right-3">
-                            <Button
-                              size="sm"
-                              className="rounded-lg px-4 h-8 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs transition-colors"
-                              disabled={submittingDecision || !decisionComment.trim()}
-                              onClick={() => handleDecision(selectedStep.id, "changes_requested")}
-                            >
-                              {submittingDecision ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : "Send"}
-                            </Button>
-                          </div>
-                        </div>
-                      );
-                    }
-                  })()}
-                </div>
               </div>
             </div>
 
