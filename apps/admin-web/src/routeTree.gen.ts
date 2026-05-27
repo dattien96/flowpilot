@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as GuideRouteImport } from './routes/guide'
 import { Route as AuthenticatedRouteImport } from './routes/_authenticated'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthenticatedWorkflowsRouteImport } from './routes/_authenticated/workflows'
@@ -51,6 +52,11 @@ import { Route as AuthenticatedProjectsProjectIdArtifactsRouteImport } from './r
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const GuideRoute = GuideRouteImport.update({
+  id: '/guide',
+  path: '/guide',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AuthenticatedRoute = AuthenticatedRouteImport.update({
@@ -270,6 +276,7 @@ const AuthenticatedProjectsProjectIdArtifactsRoute =
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/guide': typeof GuideRoute
   '/login': typeof LoginRoute
   '/ai-runs': typeof AuthenticatedAiRunsRoute
   '/artifacts': typeof AuthenticatedArtifactsRouteWithChildren
@@ -309,6 +316,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/guide': typeof GuideRoute
   '/login': typeof LoginRoute
   '/ai-runs': typeof AuthenticatedAiRunsRoute
   '/artifacts': typeof AuthenticatedArtifactsRouteWithChildren
@@ -350,6 +358,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/_authenticated': typeof AuthenticatedRouteWithChildren
+  '/guide': typeof GuideRoute
   '/login': typeof LoginRoute
   '/_authenticated/ai-runs': typeof AuthenticatedAiRunsRoute
   '/_authenticated/artifacts': typeof AuthenticatedArtifactsRouteWithChildren
@@ -391,6 +400,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/guide'
     | '/login'
     | '/ai-runs'
     | '/artifacts'
@@ -430,6 +440,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/guide'
     | '/login'
     | '/ai-runs'
     | '/artifacts'
@@ -470,6 +481,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/_authenticated'
+    | '/guide'
     | '/login'
     | '/_authenticated/ai-runs'
     | '/_authenticated/artifacts'
@@ -511,6 +523,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AuthenticatedRoute: typeof AuthenticatedRouteWithChildren
+  GuideRoute: typeof GuideRoute
   LoginRoute: typeof LoginRoute
 }
 
@@ -521,6 +534,13 @@ declare module '@tanstack/react-router' {
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/guide': {
+      id: '/guide'
+      path: '/guide'
+      fullPath: '/guide'
+      preLoaderRoute: typeof GuideRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_authenticated': {
@@ -985,6 +1005,7 @@ const AuthenticatedRouteWithChildren = AuthenticatedRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuthenticatedRoute: AuthenticatedRouteWithChildren,
+  GuideRoute: GuideRoute,
   LoginRoute: LoginRoute,
 }
 export const routeTree = rootRouteImport

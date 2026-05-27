@@ -8,6 +8,11 @@ import {
   Check,
   RefreshCw,
   ExternalLink,
+  MoreVertical,
+  FileText,
+  Copy,
+  ChevronUp,
+  ChevronDown,
 } from "lucide-react";
 
 import { PageFrame } from "@/components/common/page-frame";
@@ -128,7 +133,7 @@ function mergeApprovalDecisions(
         candidate.workflowStepId === decision.workflowStepId &&
         candidate.decision === decision.decision &&
         normalizeFollowUpComment(candidate.comment) ===
-          normalizeFollowUpComment(decision.comment),
+        normalizeFollowUpComment(decision.comment),
     );
 
     if (!hasMatchingDecision) {
@@ -152,7 +157,7 @@ function pruneResolvedOptimisticFollowUps(
         candidate.workflowStepId === decision.workflowStepId &&
         candidate.decision === decision.decision &&
         normalizeFollowUpComment(candidate.comment) ===
-          normalizeFollowUpComment(decision.comment),
+        normalizeFollowUpComment(decision.comment),
     );
     if (hasPersistedMatch) {
       return false;
@@ -251,9 +256,8 @@ function CollapsibleChatBubble({
   const displayContent = (!isExpanded && isLong) ? content.slice(0, TRUNCATE_LENGTH) + "..." : content;
 
   return (
-    <div className={`max-w-[85%] rounded-[1.6rem] px-6 py-4 shadow-sm ${
-      isSecondary ? "bg-accent/90 text-accent-foreground" : "bg-accent text-accent-foreground"
-    }`}>
+    <div className={`max-w-[85%] rounded-[1.6rem] px-6 py-4 shadow-sm ${isSecondary ? "bg-accent/90 text-accent-foreground" : "bg-accent text-accent-foreground"
+      }`}>
       <p className="text-[10px] opacity-70 mb-2 font-mono tracking-widest uppercase flex items-center justify-between gap-4">
         <span className="flex items-center gap-1.5">{title}</span>
         {time ? <span className="text-[9px]">{time}</span> : null}
@@ -275,24 +279,44 @@ function CollapsibleChatBubble({
 
 const ArtifactContentViewer = ({ content }: { content: string }) => {
   const [expanded, setExpanded] = useState(false);
-  const TRUNCATE_LENGTH = 300;
+  const [copied, setCopied] = useState(false);
+  const TRUNCATE_LENGTH = 350;
 
   const isLong = content.length > TRUNCATE_LENGTH;
-  const displayContent = (!expanded && isLong) ? content.substring(0, TRUNCATE_LENGTH) + "..." : content;
+  const displayContent = (!expanded && isLong) ? content.substring(0, TRUNCATE_LENGTH) : content;
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(content);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
 
   return (
-    <div className="space-y-4">
-      <article className="whitespace-pre-wrap text-foreground font-mono text-sm leading-relaxed">
+    <div className="relative rounded-xl border border-border/45 bg-[#090a0f] p-6 overflow-hidden">
+      <button
+        onClick={handleCopy}
+        className="absolute top-4 right-4 text-muted-foreground hover:text-foreground transition-colors p-1.5 rounded-lg hover:bg-muted/10 z-10"
+        title="Copy content"
+      >
+        {copied ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+      </button>
+
+      <article className={`whitespace-pre-wrap text-[#d1d5db] font-mono text-xs leading-relaxed break-words pr-8 ${!expanded && isLong ? "pb-12" : ""}`}>
         {displayContent}
       </article>
-      
-      <div className="flex flex-wrap gap-2 items-center pt-2">
-        {isLong && (
-          <Button variant="ghost" onClick={() => setExpanded(!expanded)} className="text-xs h-8">
+
+      {isLong && (
+        <div className={`absolute bottom-0 left-0 right-0 flex items-end justify-center pb-3 pt-10 ${!expanded ? "bg-gradient-to-t from-[#090a0f] via-[#090a0f]/90 to-transparent h-20" : "relative h-auto pt-4 bg-none"
+          }`}>
+          <Button
+            variant="ghost"
+            onClick={() => setExpanded(!expanded)}
+            className="text-xs h-8 text-accent hover:text-accent/80 font-bold uppercase tracking-wider bg-[#090a0f]/90 hover:bg-[#090a0f] border border-border/20 rounded-lg px-4 shadow-sm"
+          >
             {expanded ? "Show less" : "Show more"}
           </Button>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -342,30 +366,33 @@ function StepOutputTabs({
   }, [artifactRun?.id]);
 
   const tabs = [
-    { key: "response" as const, label: "Response" },
-    { key: "prompt" as const, label: "Prompt" },
-    ...(artifactRun ? [{ key: "artifact" as const, label: "Artifact" }] : []),
+    { key: "response" as const, label: "RESPONSE" },
+    { key: "prompt" as const, label: "PROMPT" },
+    ...(artifactRun ? [{ key: "artifact" as const, label: "ARTIFACT" }] : []),
   ];
 
   const normalizedPrompt = normalizePromptDisplay(output.promptText);
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-2">
+    <div className="space-y-5">
+      <div className="flex border border-border/30 bg-[#090a0f] rounded-lg p-0.5 gap-1.5 w-fit shrink-0">
         {tabs.map((tab) => {
           const isActive = activeTab === tab.key;
           return (
             <button
               key={tab.key}
-              className={`rounded-full border px-2 py-0.5 text-[9px] font-medium uppercase tracking-[0.12em] transition-colors ${
-                isActive
-                  ? "border-accent bg-accent/10 text-accent"
-                  : "border-border bg-card text-muted-foreground hover:text-foreground"
-              }`}
+              style={{ fontSize: "10px" }}
+              className={`px-3 py-1 font-extrabold uppercase tracking-wider text-center transition-all rounded-md relative ${isActive
+                ? "text-emerald-400 bg-emerald-500/5 shadow-sm"
+                : "text-muted-foreground hover:text-foreground"
+                }`}
               onClick={() => setActiveTab(tab.key)}
               type="button"
             >
               {tab.label}
+              {isActive && (
+                <span className="absolute bottom-0 left-1/2 -translate-x-1/2 w-6 h-[1.5px] bg-emerald-400 rounded-full" />
+              )}
             </button>
           );
         })}
@@ -376,38 +403,33 @@ function StepOutputTabs({
       ) : null}
 
       {activeTab === "prompt" ? (
-        <div className="space-y-3">
-          <div className="rounded-2xl border border-border/60 bg-card/60 px-4 py-3 text-[11px] font-mono uppercase tracking-[0.2em] text-muted-foreground">
-            prompt.md
-          </div>
-          <div className="max-h-[28rem] overflow-auto rounded-2xl border border-border bg-card p-5">
-            {normalizedPrompt ? (
-              <pre className="whitespace-pre-wrap break-words font-mono text-sm leading-relaxed text-foreground">
-                {normalizedPrompt}
-              </pre>
-            ) : (
-              <p className="text-sm italic text-muted-foreground">
-                No prompt file captured for this output.
-              </p>
-            )}
-          </div>
+        <div className="relative rounded-xl border border-border/45 bg-[#090a0f] p-6 overflow-auto max-h-[28rem]">
+          {normalizedPrompt ? (
+            <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-[#d1d5db]">
+              {normalizedPrompt}
+            </pre>
+          ) : (
+            <p className="text-xs italic text-muted-foreground">
+              No prompt file captured for this output.
+            </p>
+          )}
         </div>
       ) : null}
 
       {activeTab === "artifact" && artifactRun ? (
         <div className="space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border/60 bg-card/60 px-4 py-3">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/45 bg-[#090a0f] p-5">
             <div className="min-w-0">
               <p className="truncate text-sm font-semibold text-foreground">
                 {artifactRun.title}
               </p>
-              <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground">
+              <p className="mt-1 break-all font-mono text-[10px] text-muted-foreground">
                 {artifactRun.localPath}
               </p>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
               <Button
-                className="h-8 px-3 text-[11px]"
+                className="h-8 px-4 text-xs font-bold uppercase tracking-wider bg-accent/10 border border-accent/20 hover:bg-accent/20 text-accent rounded-lg shadow-sm"
                 disabled={artifactLoading}
                 onClick={() => {
                   const openPreview = (content: string) => {
@@ -436,10 +458,10 @@ function StepOutputTabs({
                     });
                 }}
                 variant="secondary"
-                >
-                  <ExternalLink className="mr-2 h-3.5 w-3.5" />
-                  {artifactLoading ? "Opening..." : "Open in new tab"}
-                </Button>
+              >
+                <ExternalLink className="mr-2 h-3.5 w-3.5 text-sm" />
+                {artifactLoading ? "Opening..." : "Open in new tab"}
+              </Button>
             </div>
           </div>
 
@@ -491,6 +513,8 @@ function WorkflowRunDetailPage() {
   const [optimisticFollowUps, setOptimisticFollowUps] = useState<
     ApprovalDecision[]
   >([]);
+  const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
+  const [logsExpanded, setLogsExpanded] = useState(true);
 
   const processDetailData = async (data: any) => {
     if (!data) return null;
@@ -507,8 +531,8 @@ function WorkflowRunDetailPage() {
             (await gatewayBundle.current.localRunnerGateway.getArtifactById(
               artifact.artifactId,
             )) ?? artifact,
-          ),
-        );
+        ),
+      );
 
       mappedOutputs = mapArtifactsToWorkflowOutputs(
         artifactDetails as LocalRunnerArtifact[],
@@ -559,13 +583,13 @@ function WorkflowRunDetailPage() {
         );
         const logBackedOutputs = processed
           ? buildFallbackOutputsFromLogs({
-              existingOutputs:
-                (processed.outputs ?? []) as WorkflowOutputRecord[],
-              logs: engineLogs,
-              projectId: processed.run.projectId,
-              runId,
-              steps: processed.steps ?? [],
-            })
+            existingOutputs:
+              (processed.outputs ?? []) as WorkflowOutputRecord[],
+            logs: engineLogs,
+            projectId: processed.run.projectId,
+            runId,
+            steps: processed.steps ?? [],
+          })
           : [];
         const logBackedDecisions = buildFallbackApprovalDecisionsFromLogs(
           engineLogs,
@@ -576,9 +600,9 @@ function WorkflowRunDetailPage() {
         );
         const mergedOutputs = processed
           ? mergeWorkflowOutputs(
-              (processed.outputs ?? []) as WorkflowOutputRecord[],
-              logBackedOutputs,
-            )
+            (processed.outputs ?? []) as WorkflowOutputRecord[],
+            logBackedOutputs,
+          )
           : [];
         setOptimisticFollowUps((previous) =>
           pruneResolvedOptimisticFollowUps(
@@ -590,14 +614,14 @@ function WorkflowRunDetailPage() {
         setDetail(
           processed
             ? {
-                ...processed,
-                outputs: mergedOutputs,
-                logs: engineDetail?.logs ?? [],
-                sessions: engineDetail?.sessions ?? processed.sessions ?? [],
-                artifactRuns: stepArtifactRuns,
-                approvalDecisions: mergedApprovalDecisions,
-                runPromptText: resolvedRunPromptText,
-              }
+              ...processed,
+              outputs: mergedOutputs,
+              logs: engineDetail?.logs ?? [],
+              sessions: engineDetail?.sessions ?? processed.sessions ?? [],
+              artifactRuns: stepArtifactRuns,
+              approvalDecisions: mergedApprovalDecisions,
+              runPromptText: resolvedRunPromptText,
+            }
             : processed,
         );
         setRunPromptText(resolvedRunPromptText);
@@ -681,6 +705,23 @@ function WorkflowRunDetailPage() {
       clearInterval(interval);
     };
   }, [runId, detail?.run?.status]);
+
+  useEffect(() => {
+    if (detail?.steps && detail.steps.length > 0 && !selectedStepId) {
+      const activeStep = detail.steps.find(
+        (s: any) =>
+          s.status === "RUNNING" || s.status === "WAITING_USER_APPROVAL",
+      );
+      const pendingStep = detail.steps.find((s: any) => s.status === "PENDING");
+      if (activeStep) {
+        setSelectedStepId(activeStep.id);
+      } else if (pendingStep) {
+        setSelectedStepId(pendingStep.id);
+      } else {
+        setSelectedStepId(detail.steps[detail.steps.length - 1].id);
+      }
+    }
+  }, [detail?.steps, selectedStepId]);
 
   const outputsByStepId = useMemo(() => {
     if (!detail?.outputs) return new Map();
@@ -919,422 +960,507 @@ function WorkflowRunDetailPage() {
     );
   }
 
+  const selectedStep = detail.steps.find((s: any) => s.id === selectedStepId) || detail.steps[0];
+  const selectedStepIndex = detail.steps.findIndex((s: any) => s.id === selectedStepId);
+
+  const stepOutputs = (outputsByStepId.get(selectedStep?.id) as WorkflowOutputRecord[] | undefined) ?? [];
+  const stepArtifactRun = ((detail.artifactRuns ?? []) as ArtifactRun[]).find(
+    (artifactRun) => artifactRun.workflowRunStepId === selectedStep?.id,
+  ) ?? null;
+  const stepDecisions = (timelineApprovalDecisions.filter(
+    (d: any) => d.workflowStepId === selectedStep?.id,
+  ) as any[]).sort((left, right) =>
+    left.createdAt.localeCompare(right.createdAt),
+  );
+  const stepTimelineItems = buildWorkflowStepTimeline(stepOutputs, stepDecisions);
+  const definitionStep = detail.definition?.steps?.find((ds: any) => ds.key === selectedStep?.stepKey);
+  const subagent = definitionStep?.subagent ?? null;
+  const stepSession = (() => {
+    if (!selectedStep || !detail.sessions) return null;
+    if (subagent) {
+      return detail.sessions.find((s: any) => s.metadataJson?.step_run_id === selectedStep.id);
+    } else {
+      return detail.sessions.find((s: any) => s.metadataJson?.is_main === true || s.metadataJson?.is_main === "true");
+    }
+  })();
+
   return (
-    <PageFrame
-      title={runTitle ?? `Run Detail: ${detail.run.id.slice(0, 8)}...`}
-      description={`Workspace execution run of template definition.`}
-      actions={
-        <div className="flex flex-wrap items-center gap-2">
-          <Link to="/workflow-runs">
-            <Button variant="ghost">
-              <ArrowLeft className="mr-2 h-4 w-4" /> History
-            </Button>
-          </Link>
-          {detail.run.status !== "completed" &&
-          detail.run.status !== "rejected" ? (
-            <>
-              <Button
-                variant="secondary"
-                disabled={processingAction || detail.run.status === "running"}
-                onClick={handleResume}
-              >
-                <Play className="mr-2 h-4 w-4 fill-current" /> Resume
-              </Button>
-              <Button
-                variant="ghost"
-                disabled={processingAction}
-                onClick={handleCancel}
-              >
-                <X className="mr-2 h-4 w-4" /> Cancel
-              </Button>
-            </>
-          ) : null}
-        </div>
-      }
-    >
-      <div className="space-y-8">
-        <header className="flex flex-col gap-3 rounded-[1.6rem] border border-border bg-background/40 p-6 md:flex-row md:items-center md:justify-between">
-          <div>
-            <p className="font-mono text-xs uppercase tracking-[0.28em] text-muted-foreground">
-              Execution Instance
-            </p>
-            <h1 className="mt-1 text-2xl font-bold tracking-tight md:text-3xl">
-              {runTitle ?? detail.run.id}
-            </h1>
-            <p className="mt-1.5 break-all text-xs text-muted-foreground font-mono">
-              Run ID: {detail.run.id}
-            </p>
-            <p className="mt-1 text-xs text-muted-foreground font-mono">
-              Started At: {new Date(detail.run.startedAt).toLocaleString()}
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-3">
-            <Badge tone={statusTone(detail.run.status)}>
-              {detail.run.status}
-            </Badge>
-            <div className="flex items-center gap-2 rounded-full border border-border bg-card/60 px-4 py-1.5 text-xs">
-              <span className="font-medium text-muted-foreground">
-                YOLO Mode
-              </span>
-              <button
-                disabled={togglingYolo}
-                onClick={handleToggleYolo}
-                className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                  detail.run.yoloMode ? "bg-accent" : "bg-muted"
-                }`}
-              >
-                <span
-                  className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-background shadow ring-0 transition duration-200 ease-in-out ${
-                    detail.run.yoloMode ? "translate-x-4" : "translate-x-0"
-                  }`}
-                />
-              </button>
+    <div className="fixed inset-0 z-50 bg-[#0c0d12] flex flex-col lg:flex-row overflow-hidden text-foreground">
+      {/* Left Sidebar: Pipeline Steps */}
+      <aside className="w-full lg:w-80 shrink-0 bg-[#0e1017] border-r border-border/10 flex flex-col h-72 lg:h-full">
+        {/* Sidebar Header */}
+        <div className="flex items-center justify-between px-6 py-5 border-b border-border/10 shrink-0">
+          <div className="flex items-center gap-2">
+            {/* Brand Logo/Mark */}
+            <div className="flex h-6 w-6 items-center justify-center rounded-lg bg-emerald-500/20 text-emerald-400 font-bold text-xs border border-emerald-500/30">
+              FP
             </div>
+            <span className="font-bold tracking-tight text-lg text-foreground">FlowPilot</span>
           </div>
-        </header>
+          <button className="text-muted-foreground hover:text-foreground transition-colors p-1 rounded-lg hover:bg-muted/10">
+            <MoreVertical className="h-4 w-4" />
+          </button>
+        </div>
 
-        <section className="max-w-4xl mx-auto space-y-8 pb-32">
-          
-          {/* 1. Initial Prompt */}
-          <div className="flex justify-end">
-            <CollapsibleChatBubble
-              title="Initial Prompt"
-              content={runPromptText || "No initial prompt captured."}
-            />
-          </div>
+        {/* Section title */}
+        <div className="px-6 pt-5 pb-2 shrink-0">
+          <h2 className="text-[10px] font-bold tracking-widest text-muted-foreground/60 uppercase">
+            PIPELINE STEPS
+          </h2>
+        </div>
 
-          {/* 2. Step Outputs */}
-          {detail.steps.map((step: any, index: number) => {
-            const outputs =
-              (outputsByStepId.get(step.id) as WorkflowOutputRecord[] | undefined) ?? [];
-            const stepArtifactRun =
-              ((detail.artifactRuns ?? []) as ArtifactRun[]).find(
-                (artifactRun) => artifactRun.workflowRunStepId === step.id,
-              ) ?? null;
-            const decisions = (timelineApprovalDecisions.filter(
-              (d: any) => d.workflowStepId === step.id,
-            ) as any[]).sort((left, right) =>
-              left.createdAt.localeCompare(right.createdAt),
-            );
-            const timelineItems = buildWorkflowStepTimeline(outputs, decisions);
-            const definitionStep = detail.definition?.steps?.find((ds: any) => ds.key === step.stepKey);
-            const subagent = definitionStep?.subagent ?? null;
-            const stepSession = (() => {
-              if (!detail.sessions) return null;
-              if (subagent) {
-                return detail.sessions.find((s: any) => s.metadataJson?.step_run_id === step.id);
-              } else {
-                return detail.sessions.find((s: any) => s.metadataJson?.is_main === true || s.metadataJson?.is_main === "true");
-              }
-            })();
-             
+        {/* Scrollable Step list */}
+        <div className="flex-1 overflow-y-auto px-4 pb-6 space-y-2">
+          {detail.steps.map((step: any, idx: number) => {
+            const isSelected = step.id === selectedStepId;
+            const status = step.status?.toUpperCase();
+
+            let statusIcon = null;
+            if (status === "DONE" || status === "COMPLETED") {
+              statusIcon = <Check className="h-4 w-4 text-emerald-400 bg-emerald-950/40 rounded-full p-0.5 border border-emerald-500/20" />;
+            } else if (status === "RUNNING") {
+              statusIcon = <RefreshCw className="h-3.5 w-3.5 animate-spin text-accent" />;
+            } else if (status === "WAITING_USER_APPROVAL") {
+              statusIcon = <ShieldAlert className="h-4 w-4 text-amber-500 animate-pulse" />;
+            } else if (status === "FAILED" || status === "REJECTED") {
+              statusIcon = <X className="h-4 w-4 text-destructive bg-destructive/10 rounded-full p-0.5 border border-destructive/20" />;
+            } else {
+              statusIcon = <div className="h-3.5 w-3.5 rounded-full border-2 border-muted-foreground/30" />;
+            }
+
             return (
-              <div key={step.id} className="space-y-4">
-                {timelineItems.length === 0 ? (
-                  <div className="flex justify-start">
-                    <div className="max-w-[90%] w-full rounded-[1.6rem] border border-border/80 bg-card/40 p-6 shadow-sm backdrop-blur-sm">
-                      <div className="flex flex-wrap items-center justify-between gap-3 mb-5 border-b border-border/40 pb-4">
-                        <div>
-                          <span className="font-bold text-foreground flex items-center gap-2">
-                            {step.stepName}
-                            <Badge tone={statusTone(step.status)} className="ml-2 px-2 py-0.5 text-[10px]">
-                              {step.status}
-                            </Badge>
-                          </span>
-                          <p className="mt-1 text-[11px] font-mono text-muted-foreground uppercase tracking-wider">
-                            Step {index + 1}
-                          </p>
-                          {stepSession && (
-                            <p className="mt-1 text-[10px] font-mono text-muted-foreground flex items-center gap-1.5 flex-wrap">
-                              <span>Session:</span>
-                              <span className="bg-accent/40 text-accent-foreground px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">
-                                {subagent ? `Isolated (${subagent})` : "Shared Main"}
-                              </span>
-                              <span>&bull;</span>
-                              <span className="text-foreground/90 font-medium">
-                                {stepSession.provider} ({stepSession.model})
-                              </span>
-                              <span>&bull;</span>
-                              <span className={`font-semibold ${stepSession.status === "active" ? "text-success" : "text-muted-foreground"}`}>
-                                {stepSession.status}
-                              </span>
-                              {stepSession.providerSessionId ? (
-                                <>
-                                  <span>&bull;</span>
-                                  <span className="font-mono text-[10px] text-foreground/80">
-                                    {stepSession.providerSessionId}
-                                  </span>
-                                </>
-                              ) : null}
-                            </p>
-                          )}
-                        </div>
-
-                        <span className="rounded-full bg-muted border border-border/60 px-3 py-1 text-[10px] font-medium text-muted-foreground uppercase tracking-widest">
-                          {step.status === "PENDING" || step.status === "RUNNING" ? "Processing..." : "No Artifact"}
-                        </span>
-                      </div>
-
-                      {step.errorMessage ? (
-                        <div className="rounded-2xl bg-destructive/10 border border-destructive/20 p-4 text-sm text-destructive">
-                          {step.errorMessage}
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-                ) : (
-                  timelineItems.map((item) => {
-                    const outputAttempt =
-                      item.kind === "output"
-                        ? outputs.findIndex((output) => output.id === item.output.id) + 1
-                        : 0;
-
-                    return item.kind === "decision" ? (
-                      <div key={item.key} className="flex justify-end mt-4">
-                        <CollapsibleChatBubble
-                          title="Follow-up"
-                          time={new Date(item.decision.createdAt).toLocaleTimeString()}
-                          content={item.decision.comment || `Decision: ${item.decision.decision}`}
-                          isSecondary={true}
-                        />
-                      </div>
-                    ) : (
-                      <div key={item.key} className="flex justify-start">
-                        <div className="max-w-[90%] w-full rounded-[1.6rem] border border-border/80 bg-card/40 p-6 shadow-sm backdrop-blur-sm transition-all hover:bg-card/60">
-                          <div className="flex flex-wrap items-center justify-between gap-3 mb-5 border-b border-border/40 pb-4">
-                            <div>
-                              <span className="font-bold text-foreground flex items-center gap-2">
-                                {step.stepName}
-                                <Badge tone={statusTone(step.status)} className="ml-2 px-2 py-0.5 text-[10px]">
-                                  {step.status}
-                                </Badge>
-                              </span>
-                              <p className="mt-1 text-[11px] font-mono text-muted-foreground uppercase tracking-wider">
-                                Step {index + 1}
-                                {outputAttempt > 1 ? ` • Attempt ${outputAttempt}` : ""}
-                              </p>
-                              {stepSession && (
-                                <p className="mt-1 text-[10px] font-mono text-muted-foreground flex items-center gap-1.5 flex-wrap">
-                                  <span>Session:</span>
-                                  <span className="bg-accent/40 text-accent-foreground px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">
-                                    {subagent ? `Isolated (${subagent})` : "Shared Main"}
-                                  </span>
-                                  <span>&bull;</span>
-                                  <span className="text-foreground/90 font-medium">
-                                    {stepSession.provider} ({stepSession.model})
-                                  </span>
-                                  <span>&bull;</span>
-                                  <span className={`font-semibold ${stepSession.status === "active" ? "text-success" : "text-muted-foreground"}`}>
-                                    {stepSession.status}
-                                  </span>
-                                  {stepSession.providerSessionId ? (
-                                    <>
-                                      <span>&bull;</span>
-                                      <span className="font-mono text-[10px] text-foreground/80">
-                                        {stepSession.providerSessionId}
-                                      </span>
-                                    </>
-                                  ) : null}
-                                </p>
-                              )}
-                            </div>
-
-                            <div className="text-right">
-                              <span className={`rounded-full border px-3 py-1 text-[10px] font-medium uppercase tracking-widest ${
-                                stepArtifactRun
-                                  ? "bg-success/10 border-success/20 text-success"
-                                  : "bg-accent/10 border-accent/20 text-accent"
-                              }`}>
-                                {stepArtifactRun ? "Artifact Generated" : "Response Captured"}
-                              </span>
-                            </div>
-                          </div>
-
-                          <div className="mb-6">
-                            <StepOutputTabs
-                              artifactRun={stepArtifactRun}
-                              localRunnerGateway={
-                                gatewayBundle.current.localRunnerGateway
-                              }
-                              output={item.output}
-                            />
-                          </div>
-
-                          <details className="mt-4 pt-4 border-t border-border/30">
-                            <summary className="text-[11px] font-medium uppercase tracking-[0.2em] text-muted-foreground cursor-pointer hover:text-foreground transition-colors inline-flex items-center gap-2">
-                              Developer Diagnostics
-                            </summary>
-                            <div className="mt-4 space-y-3 pl-2 border-l-2 border-border/50">
-                              {item.output.localPath && (
-                                <CollapsibleTextBlock title="Artifact Path" value={item.output.localPath} emptyLabel="" />
-                              )}
-                              <CollapsibleTextBlock title="Prompt Override" value={item.output.promptText} emptyLabel="Inherited from run prompt." />
-                              <CollapsibleTextBlock title="Stdout" value={item.output.stdoutText} emptyLabel="No stdout." />
-                              <CollapsibleTextBlock title="Stderr" value={item.output.stderrText} emptyLabel="No stderr." />
-                              <CollapsibleTextBlock title="CLI Command" value={item.output.commandText} emptyLabel="No command captured." />
-                            </div>
-                          </details>
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
+              <button
+                key={step.id}
+                onClick={() => setSelectedStepId(step.id)}
+                className={`w-full flex items-center justify-between p-4 rounded-xl border text-left transition-all ${isSelected
+                  ? "border-emerald-500/30 bg-[#161d28] shadow-md"
+                  : "border-transparent bg-transparent hover:bg-[#161d28]/30"
+                  }`}
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="text-[10px] font-mono text-muted-foreground uppercase tracking-wider">
+                    Step {idx + 1}
+                  </p>
+                  <h3 className={`text-sm font-semibold truncate mt-0.5 ${isSelected ? "text-accent font-bold" : "text-foreground"
+                    }`}>
+                    {step.stepName}
+                  </h3>
+                  <p className="text-[10px] text-muted-foreground uppercase mt-1">
+                    {status}
+                  </p>
+                </div>
+                <div className="ml-3 shrink-0">{statusIcon}</div>
+              </button>
             );
           })}
+        </div>
+      </aside>
 
-          <section className="max-w-4xl mx-auto">
-            <CollapsibleSection
-              title="Run Logs"
-              subtitle="Use the filter to isolate runner session lifecycle events while testing provider reuse and restart recovery."
-              defaultOpen={false}
-            >
-              <div className="flex flex-wrap items-start justify-between gap-4">
-                <div className="flex flex-wrap gap-2">
-                  <Link
-                    to="/workflow-runs/$runId"
-                    params={{ runId }}
-                    search={{ logView: undefined }}
-                    className={`rounded-full border px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] transition-colors ${
-                      !isSessionLogView
-                        ? "border-accent bg-accent/10 text-accent"
-                        : "border-border bg-card text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    All logs
-                    <span className="ml-2 text-[10px] font-bold normal-case tracking-normal opacity-70">
-                      {allLogs.length}
+      {/* Right Details Workspace */}
+      <main className="flex-grow flex flex-col h-full bg-[#0c0d12] overflow-y-auto p-6 lg:p-8">
+        {selectedStep ? (
+          <div className="max-w-4xl w-full mx-auto bg-[#11131c] border border-border/20 rounded-[1.6rem] p-8 shadow-2xl space-y-6 relative">
+
+            {/* Top Right Close & Help buttons */}
+            <div className="absolute top-8 right-8 flex items-center gap-3">
+              <button className="text-muted-foreground hover:text-foreground transition-colors p-1.5 rounded-lg hover:bg-muted/10">
+                <span className="text-sm font-semibold">?</span>
+              </button>
+              <Link to="/workflow-runs">
+                <button className="text-muted-foreground hover:text-foreground transition-colors p-1.5 rounded-lg hover:bg-muted/15">
+                  <X className="h-5 w-5" />
+                </button>
+              </Link>
+            </div>
+
+            {/* Header: Step Index, Title, and Action Buttons */}
+            <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border/10 pb-4 pr-20">
+              <div>
+                <span className="text-[10px] font-bold text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded uppercase tracking-widest">
+                  STEP {selectedStepIndex + 1}
+                </span>
+                <h2 className="text-2xl font-bold tracking-tight text-foreground flex items-center gap-2.5 flex-wrap mt-1">
+                  {selectedStep.stepName}
+                  {selectedStep.status === "WAITING_USER_APPROVAL" ? (
+                    <span className="bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2.5 py-0.5 rounded-full text-xs font-semibold uppercase tracking-wider animate-pulse">
+                      Awaiting Safe-Gate Approval
                     </span>
-                  </Link>
-                  <Link
-                    to="/workflow-runs/$runId"
-                    params={{ runId }}
-                    search={{ logView: "session" }}
-                    className={`rounded-full border px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] transition-colors ${
-                      isSessionLogView
-                        ? "border-accent bg-accent/10 text-accent"
-                        : "border-border bg-card text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    Session events
-                    <span className="ml-2 text-[10px] font-bold normal-case tracking-normal opacity-70">
-                      {sessionEventLogs.length}
+                  ) : (
+                    <span className={`px-2.5 py-0.5 rounded-full text-xs font-semibold uppercase tracking-wider ${selectedStep.status === "DONE" || selectedStep.status === "COMPLETED"
+                      ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                      : "bg-accent/10 text-accent border border-accent/20"
+                      }`}>
+                      {selectedStep.status}
                     </span>
-                  </Link>
-                </div>
+                  )}
+                </h2>
               </div>
 
-              <div className="mt-4 space-y-3">
-                {visibleLogs.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">
-                    {isSessionLogView
-                      ? "No session_event logs yet."
-                      : "No logs yet."}
-                  </p>
-                ) : (
-                  visibleLogs.map((log: any) => {
-                    const isSessionEvent =
-                      typeof log?.message === "string" &&
-                      log.message.startsWith("session_event:");
-                    return (
-                      <div
-                        key={log.id}
-                        className="rounded-2xl border border-border bg-card p-4 text-sm"
-                      >
-                        <div className="flex flex-wrap items-start justify-between gap-3">
-                          <div className="space-y-1">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <p className="font-semibold">
-                                {isSessionEvent ? "session_event" : log.logLevel}
-                              </p>
-                              <Badge>
-                                {isSessionEvent ? "session" : log.logLevel}
-                              </Badge>
-                            </div>
-                            <p className="font-mono text-[11px] text-muted-foreground">
-                              {new Date(log.createdAt).toLocaleString()}
-                            </p>
-                          </div>
-                          <p className="break-all font-mono text-[11px] text-muted-foreground">
-                            {log.workflowRunStepId}
-                          </p>
-                        </div>
-                        <pre className="mt-3 whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-foreground">
-                          {log.message}
-                        </pre>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </CollapsibleSection>
-          </section>
-
-          {/* 3. Follow-up Chat Input */}
-          {(() => {
-            const latestStep = detail.steps?.at(-1);
-            if (!latestStep) return null;
-            
-            const stepStatus = latestStep.status?.toUpperCase();
-            const runStatus = detail.run.status?.toUpperCase();
-            const isWaiting = stepStatus === "WAITING_USER_APPROVAL";
-            const isDone = stepStatus === "DONE" || stepStatus === "COMPLETED";
-            const canContinue = (isWaiting || isDone) && runStatus !== "REJECTED" && runStatus !== "FAILED";
-
-            if (!canContinue) return null;
-
-            return (
-              <div className="sticky bottom-6 mx-auto max-w-3xl mt-12 bg-card/90 backdrop-blur-xl p-3 rounded-[2rem] border border-border shadow-2xl transition-all">
-                {isWaiting && (
-                  <div className="px-4 pt-2 pb-3 mb-2 border-b border-border/50">
-                    <p className="text-xs font-semibold text-warning flex items-center gap-2 uppercase tracking-wider">
-                      <ShieldAlert className="h-3.5 w-3.5" /> Approval Required to proceed
-                    </p>
-                  </div>
-                )}
-                
-                <div className="flex items-end gap-3 px-2 pb-1">
-                  <textarea
-                    className="flex-1 max-h-[200px] min-h-[50px] resize-none bg-transparent px-3 py-2 text-sm text-foreground focus:outline-none placeholder:text-muted-foreground/60"
-                    placeholder={isWaiting ? "Provide revision notes..." : "Follow up with more instructions to refine this artifact..."}
-                    value={decisionComment}
-                    onChange={(e) => {
-                      e.target.style.height = "auto";
-                      e.target.style.height = `${e.target.scrollHeight}px`;
-                      setDecisionComment(e.target.value);
-                    }}
-                    rows={1}
-                  />
-                  
-                  <div className="flex flex-col gap-2 shrink-0">
-                    <Button 
+              {/* Action Buttons: Resume, Cancel, YOLO */}
+              <div className="flex items-center gap-3 shrink-0">
+                {detail.run.status !== "completed" && detail.run.status !== "rejected" ? (
+                  <>
+                    <Button
+                      variant="secondary"
                       size="sm"
-                      className="rounded-xl px-5 h-9"
-                      disabled={submittingDecision || !decisionComment.trim()}
-                      onClick={() => handleDecision(latestStep.id, "changes_requested")}
+                      className="h-8 rounded-lg px-3 text-xs font-semibold"
+                      disabled={processingAction || detail.run.status === "running"}
+                      onClick={handleResume}
                     >
-                      {submittingDecision ? <RefreshCw className="h-4 w-4 animate-spin" /> : "Send"}
+                      <Play className="mr-1.5 h-3.5 w-3.5 fill-current" /> Resume
                     </Button>
-                    
-                    {isWaiting && (
-                      <Button 
-                        size="sm"
-                        variant="secondary"
-                        className="rounded-xl px-5 h-9 bg-success/20 text-success hover:bg-success/30 border border-success/30"
-                        disabled={submittingDecision}
-                        onClick={() => handleDecision(latestStep.id, "approved")}
-                      >
-                        <Check className="mr-1.5 h-4 w-4" /> Approve
-                      </Button>
-                    )}
-                  </div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 rounded-lg px-3 text-xs"
+                      disabled={processingAction}
+                      onClick={handleCancel}
+                    >
+                      <X className="mr-1.5 h-3.5 w-3.5" /> Cancel
+                    </Button>
+                  </>
+                ) : null}
+
+                <div className="h-4 w-[1px] bg-border/20" />
+
+                <div className="flex items-center gap-2 rounded-full border border-border bg-card/60 px-3 py-1 text-[11px]">
+                  <span className="font-medium text-muted-foreground uppercase tracking-wider">
+                    YOLO
+                  </span>
+                  <button
+                    disabled={togglingYolo}
+                    onClick={handleToggleYolo}
+                    className={`relative inline-flex h-4 w-7 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${detail.run.yoloMode ? "bg-accent" : "bg-muted"
+                      }`}
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-3 w-3 transform rounded-full bg-background shadow ring-0 transition duration-200 ease-in-out ${detail.run.yoloMode ? "translate-x-3" : "translate-x-0"
+                        }`}
+                    />
+                  </button>
                 </div>
               </div>
-            );
-          })()}
+            </div>
 
-        </section>
-      </div>
-    </PageFrame>
+            {/* Initial Run Prompt (only show on step 1 details) */}
+            {selectedStepIndex === 0 && runPromptText && (
+              <div className="flex justify-end mb-4">
+                <div className="bg-[#1b2b24] border border-emerald-500/20 p-4 rounded-xl space-y-1 max-w-[85%] text-left">
+                  <span className="text-[9px] font-bold text-emerald-400 tracking-wider uppercase font-mono">
+                    Initial Prompt
+                  </span>
+                  <p className="text-sm text-foreground leading-relaxed break-words font-sans">
+                    {runPromptText}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Session & Output Badges */}
+            <div className="space-y-3">
+              {stepSession && (
+                <p className="text-xs font-mono text-muted-foreground flex items-center gap-1.5 flex-wrap">
+                  <span>Session:</span>
+                  <span className="bg-accent/40 text-accent-foreground px-1.5 py-0.5 rounded font-bold uppercase tracking-wider text-[9px]">
+                    {subagent ? `Isolated (${subagent})` : "Shared Main"}
+                  </span>
+                  <span>&bull;</span>
+                  <span className="text-foreground/90 font-medium font-sans">
+                    {stepSession.provider} ({stepSession.model})
+                  </span>
+                  <span>&bull;</span>
+                  <span className={`font-semibold ${stepSession.status === "active" ? "text-success" : "text-muted-foreground"}`}>
+                    {stepSession.status}
+                  </span>
+                  {stepSession.providerSessionId ? (
+                    <>
+                      <span>&bull;</span>
+                      <span className="font-mono text-[9px] text-foreground/80">
+                        {stepSession.providerSessionId}
+                      </span>
+                    </>
+                  ) : null}
+                </p>
+              )}
+
+              <div>
+                <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full border text-[10px] font-semibold uppercase tracking-wider ${stepArtifactRun
+                  ? "bg-emerald-500/5 border-emerald-500/20 text-emerald-400"
+                  : "bg-accent/5 border-accent/20 text-accent"
+                  }`}>
+                  <FileText className="h-3.5 w-3.5" />
+                  {stepArtifactRun ? "Artifact Generated" : "Response Captured"}
+                </span>
+              </div>
+            </div>
+
+            {/* Step contents timeline */}
+            <div className="pt-4">
+              {stepTimelineItems.length === 0 ? (
+                <div className="rounded-xl border border-border/80 bg-card/25 p-6">
+                  <p className="text-sm text-muted-foreground text-center py-4">
+                    {selectedStep.status === "PENDING" || selectedStep.status === "RUNNING"
+                      ? "Step is processing..."
+                      : "No outputs generated for this step yet."}
+                  </p>
+                  {selectedStep.errorMessage ? (
+                    <div className="mt-4 rounded-xl bg-destructive/10 border border-destructive/20 p-4 text-sm text-destructive">
+                      {selectedStep.errorMessage}
+                    </div>
+                  ) : null}
+                </div>
+              ) : (
+                stepTimelineItems.map((item: any) => {
+                  const outputAttempt =
+                    item.kind === "output"
+                      ? stepOutputs.findIndex((output) => output.id === item.output.id) + 1
+                      : 0;
+
+                  return item.kind === "decision" ? (
+                    <div key={item.key} className="flex justify-end mt-4">
+                      <CollapsibleChatBubble
+                        title="Follow-up"
+                        time={new Date(item.decision.createdAt).toLocaleTimeString()}
+                        content={item.decision.comment || `Decision: ${item.decision.decision}`}
+                        isSecondary={true}
+                      />
+                    </div>
+                  ) : (
+                    <div key={item.key} className="space-y-4">
+                      {stepOutputs.length > 1 && (
+                        <div className="flex items-center justify-between pb-2 border-b border-border/30">
+                          <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                            Attempt {outputAttempt}
+                          </span>
+                        </div>
+                      )}
+
+                      <StepOutputTabs
+                        artifactRun={stepArtifactRun}
+                        localRunnerGateway={
+                          gatewayBundle.current.localRunnerGateway
+                        }
+                        output={item.output}
+                      />
+
+                      <details className="mt-4 pt-4 border-t border-border/30">
+                        <summary className="text-[11px] font-bold uppercase tracking-[0.2em] text-muted-foreground cursor-pointer hover:text-foreground transition-colors inline-flex items-center justify-between w-full">
+                          <span>DEVELOPER DIAGNOSTICS</span>
+                          <span className="text-[9px] font-mono opacity-60">Expand</span>
+                        </summary>
+                        <div className="mt-4 space-y-3 pl-2 border-l-2 border-border/50">
+                          {item.output.localPath && (
+                            <CollapsibleTextBlock title="Artifact Path" value={item.output.localPath} emptyLabel="" />
+                          )}
+                          <CollapsibleTextBlock title="Prompt Override" value={item.output.promptText} emptyLabel="Inherited from run prompt." />
+                          <CollapsibleTextBlock title="Stdout" value={item.output.stdoutText} emptyLabel="No stdout." />
+                          <CollapsibleTextBlock title="Stderr" value={item.output.stderrText} emptyLabel="No stderr." />
+                          <CollapsibleTextBlock title="CLI Command" value={item.output.commandText} emptyLabel="No command captured." />
+                        </div>
+                      </details>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            {/* Collapsible Run Logs & Safe Gate & Follow-up Chat */}
+            <div className="pt-4 border-t border-border/30">
+
+              {/* Custom Run Logs Collapsible Card */}
+              <div className="border border-border/20 bg-[#11131c] rounded-[1.6rem] overflow-hidden shadow-lg">
+                <button
+                  type="button"
+                  onClick={() => setLogsExpanded(!logsExpanded)}
+                  className="w-full flex items-center justify-between px-6 py-4 bg-[#0e1017]/60 hover:bg-[#0e1017] transition-all border-b border-border/10 animate-fade-in"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <FileText className="h-4 w-4 text-emerald-400" />
+                    <span className="text-sm font-bold text-foreground">Run Logs</span>
+                  </div>
+                  {logsExpanded ? (
+                    <ChevronUp className="h-4 w-4 text-muted-foreground" />
+                  ) : (
+                    <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                  )}
+                </button>
+
+                {logsExpanded && (
+                  <div className="p-6 pb-2 border-b border-border/10 space-y-4">
+                    <div>
+                      <p className="text-xs text-muted-foreground mb-4">
+                        Use the filter to isolate runner session lifecycle events while testing provider reuse and restart recovery.
+                      </p>
+
+                      <div className="flex flex-wrap items-start justify-between gap-4">
+                        <div className="flex flex-wrap gap-2">
+                          <Link
+                            to="/workflow-runs/$runId"
+                            params={{ runId }}
+                            search={{ logView: undefined }}
+                            className={`rounded-full border px-4 py-2 text-[10px] font-bold uppercase tracking-wider transition-colors ${!isSessionLogView
+                              ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-400"
+                              : "border-border/70 bg-card text-muted-foreground hover:text-foreground"
+                              }`}
+                          >
+                            All logs
+                            <span className="ml-2 text-[10px] font-bold normal-case tracking-normal opacity-70">
+                              {allLogs.length}
+                            </span>
+                          </Link>
+                          <Link
+                            to="/workflow-runs/$runId"
+                            params={{ runId }}
+                            search={{ logView: "session" }}
+                            className={`rounded-full border px-4 py-2 text-[10px] font-bold uppercase tracking-wider transition-colors ${isSessionLogView
+                              ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-400"
+                              : "border-border/70 bg-card text-muted-foreground hover:text-foreground"
+                              }`}
+                          >
+                            Session events
+                            <span className="ml-2 text-[10px] font-bold normal-case tracking-normal opacity-70">
+                              {sessionEventLogs.length}
+                            </span>
+                          </Link>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="space-y-3 max-h-72 overflow-y-auto pr-1">
+                      {visibleLogs.length === 0 ? (
+                        <p className="text-sm text-muted-foreground">
+                          {isSessionLogView
+                            ? "No session_event logs yet."
+                            : "No logs yet."}
+                        </p>
+                      ) : (
+                        visibleLogs.map((log: any) => {
+                          const isSessionEvent =
+                            typeof log?.message === "string" &&
+                            log.message.startsWith("session_event:");
+                          return (
+                            <div
+                              key={log.id}
+                              className="rounded-2xl border border-border bg-card p-4 text-sm"
+                            >
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div className="space-y-1">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <p className="font-semibold">
+                                      {isSessionEvent ? "session_event" : log.logLevel}
+                                    </p>
+                                    <Badge>
+                                      {isSessionEvent ? "session" : log.logLevel}
+                                    </Badge>
+                                  </div>
+                                  <p className="font-mono text-[11px] text-muted-foreground">
+                                    {new Date(log.createdAt).toLocaleString()}
+                                  </p>
+                                </div>
+                                <p className="break-all font-mono text-[11px] text-muted-foreground">
+                                  {log.workflowRunStepId}
+                                </p>
+                              </div>
+                              <pre className="mt-3 whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-foreground">
+                                {log.message}
+                              </pre>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Always-Visible Send Prompt / Safe Gate Section inside the card footer */}
+                <div className="p-6 bg-[#11131c] border-t border-border/10">
+                  {(() => {
+                    const stepStatus = selectedStep.status?.toUpperCase();
+                    const runStatus = detail.run.status?.toUpperCase();
+                    const isWaiting = stepStatus === "WAITING_USER_APPROVAL";
+                    const isDone = stepStatus === "DONE" || stepStatus === "COMPLETED";
+                    const canContinue = (isWaiting || isDone) && runStatus !== "REJECTED" && runStatus !== "FAILED";
+
+                    if (!canContinue) return null;
+
+                    if (isWaiting) {
+                      return (
+                        <div className="border border-border/80 bg-card/45 p-6 rounded-2xl shadow-xl space-y-4">
+                          <div className="flex items-center gap-2 pb-2 border-b border-border/30">
+                            <ShieldAlert className="h-5 w-5 text-warning shrink-0" />
+                            <span className="text-sm font-semibold text-warning">
+                              Safe Gate: Approving compiles files & begins coding stage
+                            </span>
+                          </div>
+
+                          <div className="space-y-3">
+                            <textarea
+                              className="w-full min-h-[70px] max-h-[200px] resize-none bg-[#090a0f] border border-border/60 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-1 focus:ring-accent/50 placeholder:text-muted-foreground/60 text-[#eaeaea]"
+                              placeholder="Provide revision notes for Reject & Retry..."
+                              value={decisionComment}
+                              onChange={(e) => {
+                                setDecisionComment(e.target.value);
+                              }}
+                              rows={2}
+                            />
+
+                            <div className="flex flex-wrap items-center justify-end gap-3 pt-1">
+                              <Button
+                                variant="outline"
+                                className="rounded-xl px-5 h-10 border-border/80 hover:bg-muted text-foreground"
+                                disabled={submittingDecision || !decisionComment.trim()}
+                                onClick={() => handleDecision(selectedStep.id, "changes_requested")}
+                              >
+                                {submittingDecision ? <RefreshCw className="h-4 w-4 animate-spin" /> : "Reject & Retry"}
+                              </Button>
+                              <Button
+                                className="rounded-xl px-5 h-10 bg-emerald-600 text-white hover:bg-emerald-700 border-none flex items-center gap-1.5"
+                                disabled={submittingDecision}
+                                onClick={() => handleDecision(selectedStep.id, "approved")}
+                              >
+                                {submittingDecision ? <RefreshCw className="h-4 w-4 animate-spin" /> : <>Approve & Continue &rarr;</>}
+                              </Button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    } else {
+                      return (
+                        <div className="relative border border-border/60 bg-[#090a0f] rounded-xl p-3 focus-within:border-emerald-500/50 transition-colors">
+                          <textarea
+                            className="w-full min-h-[60px] pb-12 resize-none bg-transparent text-sm text-foreground focus:outline-none placeholder:text-muted-foreground/60 leading-relaxed"
+                            placeholder="Type chat for follow-up interactions..."
+                            value={decisionComment}
+                            onChange={(e) => {
+                              setDecisionComment(e.target.value);
+                            }}
+                            rows={2}
+                          />
+                          <div className="absolute bottom-3 right-3">
+                            <Button
+                              size="sm"
+                              className="rounded-lg px-4 h-8 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs transition-colors"
+                              disabled={submittingDecision || !decisionComment.trim()}
+                              onClick={() => handleDecision(selectedStep.id, "changes_requested")}
+                            >
+                              {submittingDecision ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : "Send"}
+                            </Button>
+                          </div>
+                        </div>
+                      );
+                    }
+                  })()}
+                </div>
+              </div>
+            </div>
+
+          </div>
+        ) : (
+          <div className="rounded-[1.6rem] border border-border bg-background/50 p-6 text-center text-muted-foreground">
+            Select a step from the pipeline steps list to view details.
+          </div>
+        )}
+      </main>
+    </div>
   );
 }
