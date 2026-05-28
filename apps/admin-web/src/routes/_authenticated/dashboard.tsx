@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 
 import { PageFrame } from "@/components/common/page-frame";
 import { Button } from "@/components/ui/button";
+import { DashboardFavorites } from "@/components/dashboard/dashboard-favorites";
 
 export const Route = createFileRoute("/_authenticated/dashboard")({
   component: DashboardPage,
@@ -9,9 +10,14 @@ export const Route = createFileRoute("/_authenticated/dashboard")({
 
 function DashboardPage() {
   return (
-    <PageFrame
-      actions={<Button>Foundation Ready</Button>}
-      description="The shell, router, and auth guard are active. This dashboard acts as the authenticated landing page for CP-01."
+    <>
+      <PageFrame
+        actions={
+          <div className="flex items-center gap-2">
+            <Button variant="outline" className="rounded-xl">Foundation Ready</Button>
+          </div>
+        }
+        description="The shell, router, and auth guard are active. This dashboard acts as the authenticated landing page for CP-01."
       title="Dashboard"
     >
       <div className="grid gap-4 md:grid-cols-3">
@@ -25,6 +31,8 @@ function DashboardPage() {
           </div>
         ))}
       </div>
-    </PageFrame>
+      <DashboardFavorites />
+      </PageFrame>
+    </>
   );
 }

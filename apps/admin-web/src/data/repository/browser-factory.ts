@@ -8,6 +8,8 @@ import { SupabaseWorkflowEngineGateway } from "@/data/repository/supabase/supaba
 import { InMemoryWorkflowEngineGateway } from "@/data/repository/demo/in-memory-workflow-engine-gateway";
 import { LocalFirstWorkflowGateway } from "@/data/repository/local-first/local-first-workflow-gateway";
 import { getLocalRunnerBaseUrl, hasSupabaseEnv } from "@/lib/env/browser-env";
+import { SupabaseUserFavoriteGateway } from "@/data/repository/supabase/supabase-user-favorite-gateway";
+import { InMemoryUserFavoriteGateway } from "@/data/repository/demo/in-memory-user-favorite-gateway";
 
 export function createGatewayBundle() {
   const localRunnerGateway = new HttpLocalRunnerGateway(
@@ -27,6 +29,7 @@ export function createGatewayBundle() {
       aiOrchestrationGateway: new SupabaseAiOrchestrationGateway(
         supabaseClient,
       ),
+      userFavoriteGateway: new SupabaseUserFavoriteGateway(supabaseClient),
       localRunnerGateway,
     };
   }
@@ -35,6 +38,7 @@ export function createGatewayBundle() {
     ...createDemoGatewayBundle(),
     workflowEngineGateway: new InMemoryWorkflowEngineGateway(),
     aiOrchestrationGateway: new InMemoryAiOrchestrationGateway(),
+    userFavoriteGateway: new InMemoryUserFavoriteGateway(),
     localRunnerGateway,
   };
 }

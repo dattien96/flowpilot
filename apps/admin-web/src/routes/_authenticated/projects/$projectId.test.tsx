@@ -210,7 +210,7 @@ describe("ProjectDetailContent", () => {
       });
     });
     await waitFor(() => {
-      expect(mocks.navigate).toHaveBeenCalledWith({ to: "/workflow-runs" });
+      expect(mocks.navigate).toHaveBeenCalledWith({ to: "/workflow-runs/$runId", params: { runId: "run-1" } });
     });
   });
 });
