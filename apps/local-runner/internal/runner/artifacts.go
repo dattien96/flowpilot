@@ -249,6 +249,98 @@ func (r *Runner) SyncArtifact(artifactID string) (ArtifactDetail, error) {
 	return artifact, nil
 }
 
+func (r *Runner) DeleteArtifactsByWorkflowRunIDs(runIDs []string) error {
+	targets := make(map[string]struct{}, len(runIDs))
+	for _, runID := range runIDs {
+		trimmed := strings.TrimSpace(runID)
+		if trimmed == "" {
+			continue
+		}
+		targets[trimmed] = struct{}{}
+	}
+	if len(targets) == 0 {
+		return nil
+	}
+
+	artifactRoot := filepath.Clean(r.artifactRoot())
+	info, err := os.Stat(artifactRoot)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if !info.IsDir() {
+		return nil
+	}
+
+	removedPaths := make(map[string]struct{})
+	walkErr := filepath.WalkDir(artifactRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !entry.IsDir() || path == artifactRoot {
+			return nil
+		}
+		if _, ok := targets[strings.TrimSpace(entry.Name())]; !ok {
+			return nil
+		}
+		if _, alreadyRemoved := removedPaths[path]; alreadyRemoved {
+			return filepath.SkipDir
+		}
+
+		if err := os.RemoveAll(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		removedPaths[path] = struct{}{}
+
+		if err := pruneEmptyArtifactParents(artifactRoot, filepath.Dir(path)); err != nil {
+			return err
+		}
+
+		return filepath.SkipDir
+	})
+	if walkErr != nil {
+		return walkErr
+	}
+
+	return nil
+}
+
+func pruneEmptyArtifactParents(rootPath, startPath string) error {
+	root := filepath.Clean(rootPath)
+	current := filepath.Clean(startPath)
+
+	for current != root && current != "." {
+		entries, err := os.ReadDir(current)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				current = filepath.Dir(current)
+				continue
+			}
+			return err
+		}
+		if len(entries) > 0 {
+			return nil
+		}
+		if err := os.Remove(current); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				current = filepath.Dir(current)
+				continue
+			}
+			return err
+		}
+
+		next := filepath.Dir(current)
+		if next == current {
+			return nil
+		}
+		current = next
+	}
+
+	return nil
+}
+
 func (r *Runner) CreateBackup(request BackupRequest) (BackupResult, error) {
 	artifacts, err := r.loadArtifactDetails()
 	if err != nil {

@@ -88,8 +88,14 @@ export class LocalFirstWorkflowGateway implements WorkflowGateway {
     return this.base.getWorkflowRunById(runId);
   }
 
-  deleteWorkflowRuns(runIds: string[]): Promise<void> {
-    return this.base.deleteWorkflowRuns(runIds);
+  async deleteWorkflowRuns(runIds: string[]): Promise<void> {
+    const uniqueRunIds = [...new Set(runIds)].map((runId) => runId.trim()).filter(Boolean);
+    if (uniqueRunIds.length === 0) {
+      return;
+    }
+
+    await this.localRunnerGateway.deleteArtifactsByWorkflowRunIds(uniqueRunIds);
+    await this.base.deleteWorkflowRuns(uniqueRunIds);
   }
 
   async getWorkflowRunDetail(runId: string): Promise<WorkflowRunDetail | null> {
