@@ -1,3 +1,0 @@
-- Time loading o detail project page lau qua
-- Nen start o dau
-- Sau khi start phai nav qua detail workflow run luon chu khong phai workflow list page nhu hien tai
