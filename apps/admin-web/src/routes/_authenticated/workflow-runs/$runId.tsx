@@ -1351,6 +1351,10 @@ function WorkflowRunDetailPage() {
   }, [runId, detail?.run?.status]);
 
   useEffect(() => {
+    setSelectedStepId(null);
+  }, [runId]);
+
+  useEffect(() => {
     if (detail?.steps && detail.steps.length > 0 && !selectedStepId) {
       const activeStep = detail.steps.find(
         (s: any) =>
@@ -1362,7 +1366,7 @@ function WorkflowRunDetailPage() {
       } else if (pendingStep) {
         setSelectedStepId(pendingStep.id);
       } else {
-        setSelectedStepId(detail.steps[detail.steps.length - 1].id);
+        setSelectedStepId(detail.steps[0].id);
       }
     }
   }, [detail?.steps, selectedStepId]);
