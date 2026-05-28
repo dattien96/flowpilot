@@ -22,6 +22,7 @@ type LiveSession struct {
 	TransportType     string
 	ProviderSessionID string
 	ProcessKey        string
+	Pid               int
 	Cmd               *exec.Cmd
 	Stdin             io.WriteCloser
 	StdoutScanner     *bufio.Scanner
@@ -307,12 +308,18 @@ func (r *Runner) StartSession(ctx context.Context, req AiSessionStartRequest) (A
 	}
 	providerSessionID = DetermineProviderSessionID(transportType, session.Provider, session.SessionID, providerSessionID, req.ResumeProviderSessionID)
 	session.ProviderSessionID = providerSessionID
+	pid := 0
+	if cmd.Process != nil {
+		pid = cmd.Process.Pid
+	}
+	session.Pid = pid
 	r.sessions[processKey] = session
 
 	return AiSessionHandle{
 		TransportType:     transportType,
 		ProviderSessionID: providerSessionID,
 		ProcessKey:        &processKey,
+		ProcessPid:        &pid,
 	}, nil
 }
 
@@ -331,7 +338,7 @@ func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (
 
 	session.Mu.Lock()
 	defer session.Mu.Unlock()
-	
+
 	session.LastUsedAt = time.Now().UTC()
 	if req.IdleTTLSeconds != nil && *req.IdleTTLSeconds > 0 {
 		session.IdleTTL = time.Duration(*req.IdleTTLSeconds) * time.Second

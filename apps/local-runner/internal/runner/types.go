@@ -252,6 +252,7 @@ type AiSessionHandle struct {
 	TransportType     string  `json:"transportType"`
 	ProviderSessionID string  `json:"providerSessionId"`
 	ProcessKey        *string `json:"processKey"`
+	ProcessPid        *int    `json:"processPid,omitempty"`
 }
 
 type AiSessionMessageRequest struct {

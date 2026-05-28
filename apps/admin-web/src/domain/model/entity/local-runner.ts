@@ -233,6 +233,7 @@ export interface LocalRunnerAiSessionHandle {
   transportType: string;
   providerSessionId: string;
   processKey: string | null;
+  processPid?: number | null;
 }
 
 export interface LocalRunnerAiSessionMessageRequest {
