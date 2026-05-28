@@ -1573,13 +1573,20 @@ function WorkflowRunDetailPage() {
                   }`}
               >
                 <div className="min-w-0 flex-1">
-                  <p className="text-[10px] font-mono text-muted-foreground uppercase tracking-wider">
-                    {isSummaryItem ? "Final step" : `Step ${idx + 1}`}
-                  </p>
-                  <h3 className={`text-sm font-semibold truncate mt-0.5 ${isSelected ? "text-accent font-bold" : "text-foreground"
-                    }`}>
-                    {isSummaryItem ? RESULT_SUMMARY_STEP_NAME : step.stepName}
-                  </h3>
+                  {isSummaryItem ? (
+                    <h3 className={`text-sm font-semibold truncate mt-0.5 ${isSelected ? "text-accent font-bold" : "text-foreground"}`}>
+                      Final Step
+                    </h3>
+                  ) : (
+                    <>
+                      <p className="text-[10px] font-mono text-muted-foreground uppercase tracking-wider">
+                        Step {idx + 1}
+                      </p>
+                      <h3 className={`text-sm font-semibold truncate mt-0.5 ${isSelected ? "text-accent font-bold" : "text-foreground"}`}>
+                        {step.stepName}
+                      </h3>
+                    </>
+                  )}
                   <p className="text-[10px] text-muted-foreground uppercase mt-1">
                     {status}
                   </p>

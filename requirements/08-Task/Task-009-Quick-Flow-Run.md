@@ -1,4 +1,0 @@
-- Can co 1 page setting cac favorite flow hoac step
-- Show o dashboard
-- Khi code chi can press step/flow do - Select Project + input prompt - run
-- Fav co the luu thong tin project. co the change. Lan sau run k can chon project neu k can thiet doi project

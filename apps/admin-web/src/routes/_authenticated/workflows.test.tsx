@@ -94,6 +94,9 @@ describe("WorkflowDefinitionsPage", () => {
 
   it("sorts workflows by the selected order", async () => {
     mocks.createGatewayBundle.mockReturnValue({
+      userFavoriteGateway: {
+        listFavorites: vi.fn().mockResolvedValue([]),
+      },
       projectGateway: {
         listProjects: vi.fn().mockResolvedValue([buildProject()]),
       },

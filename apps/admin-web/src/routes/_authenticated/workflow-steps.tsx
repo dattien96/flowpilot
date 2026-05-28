@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createFileRoute, Link, Outlet, useLocation } from "@tanstack/react-router";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, Star } from "lucide-react";
 
 import { PageFrame } from "@/components/common/page-frame";
 import { Button } from "@/components/ui/button";
@@ -31,11 +31,35 @@ export function WorkflowStepsPage() {
   const [steps, setSteps] = useState<StepDefinition[]>([]);
   const [artifactDefinitions, setArtifactDefinitions] = useState<ArtifactDefinition[]>([]);
   const [sortBy, setSortBy] = useState<StepSortOption>("updated-desc");
+  const [favorites, setFavorites] = useState<Set<string>>(new Set());
+
+  const loadFavorites = async () => {
+    try {
+      const favs = await gatewayBundle.current.userFavoriteGateway.listFavorites();
+      setFavorites(new Set(favs.filter(f => f.targetType === "step").map(f => f.targetId)));
+    } catch (e) {
+      console.error("Failed to load favorites", e);
+    }
+  };
+
+  const toggleFavorite = async (stepType: string) => {
+    const isCurrentlyFav = favorites.has(stepType);
+    try {
+      await gatewayBundle.current.userFavoriteGateway.toggleFavorite("step", stepType, !isCurrentlyFav);
+      const next = new Set(favorites);
+      if (!isCurrentlyFav) next.add(stepType);
+      else next.delete(stepType);
+      setFavorites(next);
+    } catch (e) {
+      console.error("Failed to toggle favorite", e);
+    }
+  };
 
   useEffect(() => {
     void Promise.all([
       listStepDefinitionsUseCase.current.execute(),
       listArtifactDefinitionsUseCase.current.execute().catch(() => []),
+      loadFavorites(),
     ]).then(([nextSteps, nextArtifactDefinitions]) => {
       setSteps(nextSteps);
       setArtifactDefinitions(nextArtifactDefinitions);
@@ -135,6 +159,7 @@ export function WorkflowStepsPage() {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {sortedSteps.map((step) => {
           const isStandard = step.agentType === "standard";
+          const isFav = favorites.has(step.stepType);
           return (
             <div
               key={step.stepType}
@@ -160,13 +185,26 @@ export function WorkflowStepsPage() {
                       Key: {step.stepType}
                     </p>
                   </div>
-                  <span className={`shrink-0 rounded-full px-2.5 py-0.5 text-[10px] font-semibold tracking-wider uppercase border ${
-                    isStandard 
-                      ? "bg-violet-500/10 text-violet-500 border-violet-500/20" 
-                      : "bg-cyan-500/10 text-cyan-500 border-cyan-500/20"
-                  }`}>
-                    {step.agentType}
-                  </span>
+                  <div className="flex flex-col items-end gap-1 shrink-0">
+                    <button
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        void toggleFavorite(step.stepType);
+                      }}
+                      className={`mb-1 transition-colors ${isFav ? 'text-yellow-400 hover:text-yellow-500' : 'text-muted-foreground/40 hover:text-yellow-400/70'}`}
+                      title={isFav ? "Remove from quick run" : "Add to quick run"}
+                    >
+                      <Star className="h-5 w-5" fill={isFav ? "currentColor" : "none"} />
+                    </button>
+                    <span className={`rounded-full px-2.5 py-0.5 text-[10px] font-semibold tracking-wider uppercase border ${
+                      isStandard 
+                        ? "bg-violet-500/10 text-violet-500 border-violet-500/20" 
+                        : "bg-cyan-500/10 text-cyan-500 border-cyan-500/20"
+                    }`}>
+                      {step.agentType}
+                    </span>
+                  </div>
                 </div>
 
                 {/* Description */}

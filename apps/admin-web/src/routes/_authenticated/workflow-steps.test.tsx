@@ -73,6 +73,9 @@ describe("WorkflowStepsPage", () => {
 
   it("sorts step definitions by the selected order", async () => {
     mocks.createGatewayBundle.mockReturnValue({
+      userFavoriteGateway: {
+        listFavorites: vi.fn().mockResolvedValue([]),
+      },
       workflowEngineGateway: {
         listStepDefinitions: vi.fn().mockResolvedValue([
           buildStep({

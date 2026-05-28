@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createFileRoute, Link, Outlet, useLocation } from "@tanstack/react-router";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, Star } from "lucide-react";
 
 import { PageFrame } from "@/components/common/page-frame";
 import { Button } from "@/components/ui/button";
@@ -31,6 +31,29 @@ export function WorkflowDefinitionsPage() {
   const [scopeFilter, setScopeFilter] = useState<"all" | "global" | "private">("all");
   const [projectFilter, setProjectFilter] = useState(searchProjectId ?? "all");
   const [sortBy, setSortBy] = useState<WorkflowSortOption>("updated-desc");
+  const [favorites, setFavorites] = useState<Set<string>>(new Set());
+
+  const loadFavorites = async () => {
+    try {
+      const favs = await gatewayBundle.current.userFavoriteGateway.listFavorites();
+      setFavorites(new Set(favs.filter(f => f.targetType === "workflow").map(f => f.targetId)));
+    } catch (e) {
+      console.error("Failed to load favorites", e);
+    }
+  };
+
+  const toggleFavorite = async (workflowId: string) => {
+    const isCurrentlyFav = favorites.has(workflowId);
+    try {
+      await gatewayBundle.current.userFavoriteGateway.toggleFavorite("workflow", workflowId, !isCurrentlyFav);
+      const next = new Set(favorites);
+      if (!isCurrentlyFav) next.add(workflowId);
+      else next.delete(workflowId);
+      setFavorites(next);
+    } catch (e) {
+      console.error("Failed to toggle favorite", e);
+    }
+  };
 
   useEffect(() => {
     setProjectFilter(searchProjectId ?? "all");
@@ -46,6 +69,7 @@ export function WorkflowDefinitionsPage() {
         ]);
         setWorkflows(workflowRows);
         setProjects(projectRows);
+        await loadFavorites();
       } finally {
         setLoading(false);
       }
@@ -171,6 +195,7 @@ export function WorkflowDefinitionsPage() {
         {visibleWorkflows.map((workflow) => {
           const isBuiltIn = workflow.isTemplate;
           const isPrivate = !!workflow.projectId;
+          const isFav = favorites.has(workflow.id);
           return (
             <div
               key={workflow.id}
@@ -197,6 +222,17 @@ export function WorkflowDefinitionsPage() {
                     </p>
                   </div>
                   <div className="flex flex-col items-end gap-1 shrink-0">
+                    <button
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        void toggleFavorite(workflow.id);
+                      }}
+                      className={`mb-1 transition-colors ${isFav ? 'text-yellow-400 hover:text-yellow-500' : 'text-muted-foreground/40 hover:text-yellow-400/70'}`}
+                      title={isFav ? "Remove from quick run" : "Add to quick run"}
+                    >
+                      <Star className="h-5 w-5" fill={isFav ? "currentColor" : "none"} />
+                    </button>
                     {isBuiltIn ? (
                       <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 uppercase tracking-wider">
                         Built-in
