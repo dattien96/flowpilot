@@ -135,7 +135,12 @@ export function resolveProviderKeyFromModel(model: string) {
   if (model.startsWith("gpt-")) {
     return "codex";
   }
-  if (model.startsWith("gemini-")) {
+  if (
+    model.startsWith("gemini-") ||
+    model.startsWith("auto-gemini-") ||
+    model === "gemini-pro" ||
+    model === "gemini-flash"
+  ) {
     return "gemini";
   }
   if (model.startsWith("claude-")) {

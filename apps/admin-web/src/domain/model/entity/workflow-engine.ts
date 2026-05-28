@@ -18,8 +18,14 @@ export type WorkflowRunStatus =
   | "CANCELED";
 
 export const STEP_MODEL_OPTIONS = [
-  { value: "gemini-flash", label: "Gemini Flash" },
-  { value: "gemini-pro", label: "Gemini Pro" },
+  { value: "auto-gemini-3", label: "Auto (Gemini 3)" },
+  { value: "auto-gemini-2.5", label: "Auto (Gemini 2.5)" },
+  { value: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro Preview" },
+  { value: "gemini-3-flash-preview", label: "Gemini 3 Flash Preview" },
+  { value: "gemini-3.1-flash-lite-preview", label: "Gemini 3.1 Flash Lite Preview" },
+  { value: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
+  { value: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
+  { value: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
   { value: "claude-haiku", label: "Claude Haiku" },
   { value: "claude-sonnet", label: "Claude Sonnet" },
   { value: "claude-opus", label: "Claude Opus" },
@@ -41,6 +47,13 @@ export const REASONING_EFFORT_OPTIONS = [
 
 export type WorkflowStartMode = "workflow-definition" | "single-step";
 
+const LEGACY_STEP_MODEL_ALIASES: Record<string, SupportedStepModel> = {
+  flash: "gemini-2.5-flash",
+  "gemini-flash": "gemini-2.5-flash",
+  pro: "gemini-2.5-pro",
+  "gemini-pro": "gemini-2.5-pro",
+};
+
 export type WorkflowRunStartRequest =
   | {
       workflowId: string;
@@ -57,8 +70,32 @@ export type WorkflowRunStartRequest =
       stepType: StepType;
     };
 
-export function isSupportedStepModel(value: string): value is SupportedStepModel {
-  return STEP_MODEL_OPTIONS.some((option) => option.value === value);
+export function normalizeStepModel(value: string | null | undefined) {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  return LEGACY_STEP_MODEL_ALIASES[trimmed.toLowerCase()] ?? trimmed;
+}
+
+export function coerceSupportedStepModel(
+  value: string | null | undefined,
+  fallback: SupportedStepModel,
+): SupportedStepModel {
+  const normalized = normalizeStepModel(value);
+  if (!normalized) {
+    return fallback;
+  }
+
+  return (
+    STEP_MODEL_OPTIONS.find((option) => option.value === normalized)?.value ?? fallback
+  ) as SupportedStepModel;
+}
+
+export function isSupportedStepModel(value: string) {
+  const normalized = normalizeStepModel(value);
+  return STEP_MODEL_OPTIONS.some((option) => option.value === normalized);
 }
 
 export function deriveStepPromptBase({

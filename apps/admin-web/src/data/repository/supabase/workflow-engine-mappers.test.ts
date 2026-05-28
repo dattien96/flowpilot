@@ -68,6 +68,40 @@ describe("WorkflowEngine mappers", () => {
     expect(entity.outputArtifactDefinitions).toEqual([]);
   });
 
+  it("normalizes legacy Gemini aliases when mapping workflow config rows", () => {
+    expect(
+      mapStepDefinition({
+        step_type: "tech_spec",
+        name: "Technical Spec",
+        description: "Produce technical layout",
+        prompt_base: null,
+        required_mcps: [],
+        required_skills: [],
+        model: "gemini-flash",
+        reasoning_effort: "medium",
+        agent_type: "standard",
+        created_at: "2026-05-20T00:00:00Z",
+        updated_at: "2026-05-20T01:00:00Z",
+      }).model,
+    ).toBe("gemini-2.5-flash");
+
+    expect(
+      mapWorkflow({
+        id: "wf-gemini",
+        project_id: null,
+        name: "Gemini Workflow",
+        description: "Uses legacy model aliases",
+        is_template: false,
+        provider_override: "gemini",
+        model_override: "gemini-pro",
+        reasoning_effort_override: null,
+        created_by: "dev-1",
+        created_at: "2026-05-20T00:00:00Z",
+        updated_at: "2026-05-20T01:00:00Z",
+      }).modelOverride,
+    ).toBe("gemini-2.5-pro");
+  });
+
   it("maps artifact definitions", () => {
     const entity = mapArtifactDefinition({
       key: "plan_artifact",

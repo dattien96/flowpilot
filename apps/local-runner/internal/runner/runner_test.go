@@ -315,9 +315,9 @@ func TestResolvePromptExecutionAdapterMapsModelNames(t *testing.T) {
 		{"claude", "claude-sonnet", "claude", "sonnet"},
 		{"claude", "claude-opus", "claude", "opus"},
 		{"claude", "sonnet", "claude", "sonnet"},
-		{"gemini", "gemini-pro", "gemini", "pro"},
-		{"gemini", "gemini-flash", "gemini", "flash"},
-		{"gemini", "flash", "gemini", "flash"},
+		{"gemini", "gemini-pro", "gemini", "gemini-2.5-pro"},
+		{"gemini", "gemini-flash", "gemini", "gemini-2.5-flash"},
+		{"gemini", "flash", "gemini", "gemini-2.5-flash"},
 		{"codex", "gpt-5.4", "codex", "gpt-5.4"},
 	}
 
@@ -1597,7 +1597,20 @@ func TestDetectProvidersPopulatesInventoryShape(t *testing.T) {
 	}{
 		{key: "codex", version: "codex 1.2.3", models: []string{"gpt-5.5", "gpt-5.4", "gpt-5.4-mini"}},
 		{key: "claude", version: "claude 4.5.6", models: []string{"claude-opus", "claude-sonnet", "claude-haiku"}},
-		{key: "gemini", version: "gemini 7.8.9", models: []string{"gemini-pro", "gemini-flash"}},
+		{
+			key:     "gemini",
+			version: "gemini 7.8.9",
+			models: []string{
+				"auto-gemini-3",
+				"auto-gemini-2.5",
+				"gemini-3.1-pro-preview",
+				"gemini-3-flash-preview",
+				"gemini-3.1-flash-lite-preview",
+				"gemini-2.5-pro",
+				"gemini-2.5-flash",
+				"gemini-2.5-flash-lite",
+			},
+		},
 	}
 
 	if len(payload.Providers) != len(cases) {

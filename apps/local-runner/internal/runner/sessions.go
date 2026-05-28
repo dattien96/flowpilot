@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -80,6 +81,14 @@ func readJsonRpcMessage(scanner *bufio.Scanner) (map[string]interface{}, error) 
 }
 
 func readJsonRpcResponse(scanner *bufio.Scanner, expectedID interface{}) (map[string]interface{}, error) {
+	return readJsonRpcResponseWithHandler(scanner, expectedID, nil)
+}
+
+func readJsonRpcResponseWithHandler(
+	scanner *bufio.Scanner,
+	expectedID interface{},
+	handler func(map[string]interface{}),
+) (map[string]interface{}, error) {
 	for {
 		msg, err := readJsonRpcMessage(scanner)
 		if err != nil {
@@ -92,6 +101,10 @@ func readJsonRpcResponse(scanner *bufio.Scanner, expectedID interface{}) (map[st
 
 		if msgID, ok := msg["id"]; ok && jsonRpcIDsEqual(msgID, expectedID) {
 			return msg, nil
+		}
+
+		if handler != nil {
+			handler(msg)
 		}
 	}
 }
@@ -165,6 +178,88 @@ func extractCodexMcpResponse(result map[string]interface{}) (string, string) {
 	return threadID, output
 }
 
+func jsonRpcErrorMessage(message map[string]interface{}) string {
+	if errObj, ok := message["error"].(map[string]interface{}); ok {
+		if msg, ok := errObj["message"].(string); ok && strings.TrimSpace(msg) != "" {
+			return msg
+		}
+	}
+
+	if errStr, ok := message["error"].(string); ok && strings.TrimSpace(errStr) != "" {
+		return errStr
+	}
+
+	return ""
+}
+
+func geminiACPInitializeParams() map[string]interface{} {
+	return map[string]interface{}{
+		"protocolVersion": 1,
+		"capabilities":    map[string]interface{}{},
+		"clientInfo": map[string]interface{}{
+			"name":    "flowpilot",
+			"version": "1.0",
+		},
+	}
+}
+
+func geminiACPSessionNewParams(cwd string) map[string]interface{} {
+	return map[string]interface{}{
+		"cwd":        cwd,
+		"mcpServers": []interface{}{},
+	}
+}
+
+func geminiACPPromptParams(sessionID string, prompt string) map[string]interface{} {
+	return map[string]interface{}{
+		"sessionId": sessionID,
+		"prompt": []map[string]string{
+			{
+				"type": "text",
+				"text": prompt,
+			},
+		},
+	}
+}
+
+func appendGeminiACPText(output *strings.Builder, message map[string]interface{}) {
+	if output == nil {
+		return
+	}
+
+	method, _ := message["method"].(string)
+	if method != "session/update" {
+		return
+	}
+
+	params, ok := message["params"].(map[string]interface{})
+	if !ok {
+		return
+	}
+
+	update, ok := params["update"].(map[string]interface{})
+	if !ok {
+		return
+	}
+
+	if updateType, _ := update["sessionUpdate"].(string); updateType != "agent_message_chunk" {
+		return
+	}
+
+	content, ok := update["content"].(map[string]interface{})
+	if !ok {
+		return
+	}
+
+	if contentType, _ := content["type"].(string); contentType != "text" {
+		return
+	}
+
+	if text, ok := content["text"].(string); ok {
+		output.WriteString(text)
+	}
+}
+
 func resolveBinaryAndArgs(provider string, model string, reasoningEffort string) (string, []string, string) {
 	switch provider {
 	case "codex":
@@ -181,7 +276,7 @@ func resolveBinaryAndArgs(provider string, model string, reasoningEffort string)
 	case "gemini":
 		args := []string{"--acp"}
 		if model != "" {
-			args = append(args, "--model", model)
+			args = append(args, "--model", normalizeGeminiModelName(model))
 		}
 		return "gemini", args, "gemini_acp"
 	default:
@@ -208,7 +303,17 @@ func (r *Runner) StartSession(ctx context.Context, req AiSessionStartRequest) (A
 	}
 
 	cmd := commandContextFn(ctx, binaryPath, args...)
-	cmd.Dir = req.WorkingDirectory
+	workingDirectory := strings.TrimSpace(req.WorkingDirectory)
+	if workingDirectory == "" {
+		workingDirectory = r.workspace
+	}
+
+	resolvedWorkingDirectory, err := filepath.Abs(workingDirectory)
+	if err != nil {
+		return AiSessionHandle{}, fmt.Errorf("failed to resolve working directory: %w", err)
+	}
+
+	cmd.Dir = resolvedWorkingDirectory
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -294,28 +399,40 @@ func (r *Runner) StartSession(ctx context.Context, req AiSessionStartRequest) (A
 			providerSessionID = "codex_mcp_session_" + session.SessionID
 		}
 	} else if transportType == "gemini_acp" {
-		if err := writeJsonRpcRequest(stdin, "initialize", map[string]interface{}{}, 1); err != nil {
+		if err := writeJsonRpcRequest(stdin, "initialize", geminiACPInitializeParams(), 1); err != nil {
 			cmd.Process.Kill()
 			return AiSessionHandle{}, fmt.Errorf("failed to write ACP initialize request: %w", err)
 		}
-		_, err := readJsonRpcResponse(stdoutScanner, 1)
+		resp, err := readJsonRpcResponse(stdoutScanner, 1)
 		if err != nil {
 			cmd.Process.Kill()
 			return AiSessionHandle{}, fmt.Errorf("failed to read ACP initialize response: %w", err)
 		}
-		if err := writeJsonRpcRequest(stdin, "session/new", map[string]interface{}{}, 2); err != nil {
+		if errMsg := jsonRpcErrorMessage(resp); errMsg != "" {
+			cmd.Process.Kill()
+			return AiSessionHandle{}, fmt.Errorf("failed Gemini ACP initialize: %s", errMsg)
+		}
+		if err := writeJsonRpcRequest(stdin, "session/new", geminiACPSessionNewParams(resolvedWorkingDirectory), 2); err != nil {
 			cmd.Process.Kill()
 			return AiSessionHandle{}, fmt.Errorf("failed to write session/new request: %w", err)
 		}
-		resp, err := readJsonRpcResponse(stdoutScanner, 2)
+		resp, err = readJsonRpcResponse(stdoutScanner, 2)
 		if err != nil {
 			cmd.Process.Kill()
 			return AiSessionHandle{}, fmt.Errorf("failed to read session/new response: %w", err)
+		}
+		if errMsg := jsonRpcErrorMessage(resp); errMsg != "" {
+			cmd.Process.Kill()
+			return AiSessionHandle{}, fmt.Errorf("failed Gemini ACP session/new: %s", errMsg)
 		}
 		if result, ok := resp["result"].(map[string]interface{}); ok {
 			if sId, ok := result["sessionId"].(string); ok {
 				providerSessionID = sId
 			}
+		}
+		if providerSessionID == "" {
+			cmd.Process.Kill()
+			return AiSessionHandle{}, fmt.Errorf("failed Gemini ACP session/new: missing sessionId")
 		}
 	}
 	providerSessionID = DetermineProviderSessionID(transportType, session.Provider, session.SessionID, providerSessionID, req.ResumeProviderSessionID)
@@ -399,14 +516,14 @@ func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (
 			}
 		}
 	} else if session.TransportType == "gemini_acp" {
-		params := map[string]interface{}{
-			"sessionId": session.ProviderSessionID,
-			"prompt":    req.Prompt,
-		}
+		params := geminiACPPromptParams(session.ProviderSessionID, req.Prompt)
 		if err := writeJsonRpcRequest(session.Stdin, "session/prompt", params, 3); err != nil {
 			return PromptExecutionResult{}, fmt.Errorf("session_dead: failed to send Gemini ACP prompt: %w", err)
 		}
-		resp, err := readJsonRpcResponse(session.StdoutScanner, 3)
+		var streamedOutput strings.Builder
+		resp, err := readJsonRpcResponseWithHandler(session.StdoutScanner, 3, func(msg map[string]interface{}) {
+			appendGeminiACPText(&streamedOutput, msg)
+		})
 		if err != nil {
 			if strings.HasPrefix(err.Error(), "parse_error:") {
 				return PromptExecutionResult{}, fmt.Errorf("provider error: invalid json response: %v", err)
@@ -422,8 +539,33 @@ func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (
 		} else if errStr, ok := resp["error"].(string); ok {
 			return PromptExecutionResult{}, fmt.Errorf("provider error: %s", errStr)
 		}
+		outputMarkdown = streamedOutput.String()
 		if result, ok := resp["result"].(map[string]interface{}); ok {
-			if text, ok := result["text"].(string); ok {
+			if outputMarkdown == "" {
+				if text, ok := result["text"].(string); ok {
+					outputMarkdown = text
+				}
+			}
+			if outputMarkdown == "" {
+				if content, ok := result["content"].([]interface{}); ok {
+					for _, entry := range content {
+						block, ok := entry.(map[string]interface{})
+						if !ok {
+							continue
+						}
+						if blockType, _ := block["type"].(string); blockType != "text" {
+							continue
+						}
+						if text, ok := block["text"].(string); ok {
+							outputMarkdown += text
+						}
+					}
+				}
+			}
+			if providerSessionID, ok := result["sessionId"].(string); ok && strings.TrimSpace(providerSessionID) != "" {
+				session.ProviderSessionID = providerSessionID
+			}
+			if text, ok := result["text"].(string); ok && outputMarkdown == "" {
 				outputMarkdown = text
 			}
 		}

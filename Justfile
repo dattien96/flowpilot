@@ -30,6 +30,12 @@ web-install:
     @cd {{ADMIN_WEB_PATH}} && npm install
     @echo "Done"
 
+# Install admin web dependencies from the repo root with an explicit command name
+admin-web-install:
+    @echo "Installing admin web dependencies..."
+    @cd {{ADMIN_WEB_PATH}} && npm install
+    @echo "Done"
+
 # Start admin web on the default local port
 web-dev:
     @echo "Starting admin web on port {{ADMIN_WEB_PORT}}..."
