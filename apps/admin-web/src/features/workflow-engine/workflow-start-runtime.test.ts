@@ -505,6 +505,7 @@ describe("workflow-start-runtime", () => {
         return Promise.resolve({
           processKey: "proc-new",
           providerSessionId: "thread-bootstrap",
+          processPid: 4321,
           transportType: "codex_mcp"
         });
       });
@@ -587,6 +588,9 @@ describe("workflow-start-runtime", () => {
       expect(mockStartSession).toHaveBeenCalledTimes(1);
       expect(mockStartSession).toHaveBeenCalledWith(expect.not.objectContaining({
         resumeProviderSessionId: expect.any(String)
+      }));
+      expect(mockQueryBuilder.update).toHaveBeenCalledWith(expect.objectContaining({
+        process_pid: 4321,
       }));
       expect(mockSendMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
         prompt: expect.stringContaining("# Previous Conversation Context")

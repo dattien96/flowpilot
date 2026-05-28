@@ -332,6 +332,7 @@ function mapWorkflowRunSession(row: SupabaseRow): WorkflowRunSession {
     transportType: String(row.transport_type),
     providerSessionId: row.provider_session_id ? String(row.provider_session_id) : null,
     processKey: row.process_key ? String(row.process_key) : null,
+    processPid: row.process_pid ? Number(row.process_pid) : null,
     status: String(row.status),
     metadataJson: row.metadata_json ? (row.metadata_json as Record<string, any>) : null,
     startedAt: String(row.started_at),

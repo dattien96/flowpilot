@@ -211,6 +211,7 @@ export interface WorkflowRunSession {
   transportType: string;
   providerSessionId: string | null;
   processKey: string | null;
+  processPid?: number | null;
   status: string;
   metadataJson?: Record<string, any> | null;
   startedAt: string;

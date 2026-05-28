@@ -250,6 +250,7 @@ async function getOrCreateSession({
       transportType: sessionRow.transport_type,
       providerSessionId: sessionRow.provider_session_id,
       processKey: sessionRow.process_key,
+      processPid: sessionRow.process_pid ? Number(sessionRow.process_pid) : null,
       dbId: sessionRow.id,
     };
     await writeWorkflowSessionLog({
@@ -294,6 +295,7 @@ async function getOrCreateSession({
             transport_type: handle.transportType,
             provider: providerKey,
             model: modelName,
+            process_pid: handle.processPid ?? null,
           })
           .eq("id", sessionRow.id);
         if (updateErr) {
@@ -322,6 +324,7 @@ async function getOrCreateSession({
             transport_type: handle.transportType,
             provider_session_id: handle.providerSessionId,
             process_key: handle.processKey,
+            process_pid: handle.processPid ?? null,
             status: "active",
             metadata_json: {
               ...metadata,
@@ -372,6 +375,7 @@ type WorkflowSessionHandle = {
   transportType: string;
   providerSessionId: string;
   processKey: string | null;
+  processPid?: number | null;
   dbId?: string;
 };
 
@@ -446,6 +450,7 @@ export async function syncWorkflowRunSessionProviderSessionId({
         transport_type: handle.transportType,
         provider_session_id: nextProviderSessionId,
         process_key: handle.processKey,
+        process_pid: handle.processPid ?? null,
         status: "active",
       },
     });

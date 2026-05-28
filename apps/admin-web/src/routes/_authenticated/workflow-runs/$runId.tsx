@@ -723,14 +723,17 @@ function SessionGroupSection({
   stepOutputs,
   detail,
   gatewayBundle,
+  onKillSession,
 }: {
   group: WorkflowStepSessionGroup;
   subagent: string | null;
   stepOutputs: WorkflowOutputRecord[];
   detail: any;
   gatewayBundle: React.MutableRefObject<ReturnType<typeof createGatewayBundle>>;
+  onKillSession: (session: WorkflowRunSession) => Promise<void>;
 }) {
   const [isCollapsed, setIsCollapsed] = useState(false);
+  const [isKilling, setIsKilling] = useState(false);
   const sessionRecovery = resolveSessionRecoveryDisplay(group.session);
 
   return (
@@ -740,39 +743,77 @@ function SessionGroupSection({
           onClick={() => setIsCollapsed(!isCollapsed)}
           className="group/session rounded-xl border border-border/40 bg-[#161d28]/35 px-5 py-4 cursor-pointer hover:bg-[#161d28]/55 transition-colors flex items-center justify-between gap-4 select-none shadow-sm"
         >
-          <p className="flex flex-wrap items-center gap-1.5 text-xs font-mono text-muted-foreground">
-            <span className="font-bold text-foreground">Session:</span>
-            <span className="bg-accent/40 text-accent-foreground px-1.5 py-0.5 rounded font-bold uppercase tracking-wider text-[9px]">
-              {getSessionScopeLabel(subagent)}
-            </span>
-            <span>&bull;</span>
-            <span className="text-foreground/90 font-medium font-sans">
-              {group.session.provider} ({group.session.model})
-            </span>
-            <span>&bull;</span>
-            <span className={`font-semibold ${group.session.status === "active" ? "text-success" : "text-muted-foreground"}`}>
-              {group.session.status}
-            </span>
-            {sessionRecovery ? (
-              <>
-                <span>&bull;</span>
-                <span
-                  className="rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-amber-300"
-                  title={sessionRecovery.title}
-                >
-                  {sessionRecovery.label}
+          <div className="flex flex-col gap-1.5">
+            <p className="flex flex-wrap items-center gap-1.5 text-xs font-mono text-muted-foreground">
+              <span className="font-bold text-foreground">Session:</span>
+              <span className="bg-accent/40 text-accent-foreground px-1.5 py-0.5 rounded font-bold uppercase tracking-wider text-[9px]">
+                {getSessionScopeLabel(subagent)}
+              </span>
+              <span>&bull;</span>
+              <span className="text-foreground/90 font-medium font-sans">
+                {group.session.provider} ({group.session.model})
+              </span>
+              <span>&bull;</span>
+              <span className={`font-semibold ${group.session.status === "active" ? "text-success" : "text-muted-foreground"}`}>
+                {group.session.status}
+              </span>
+
+
+              {sessionRecovery ? (
+                <>
+                  <span>&bull;</span>
+                  <span
+                    className="rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-amber-300"
+                    title={sessionRecovery.title}
+                  >
+                    {sessionRecovery.label}
+                  </span>
+                </>
+              ) : null}
+            </p>
+            {group.session.status === "active" && group.session.processPid != null ? (
+              <p className="flex flex-wrap items-center gap-1.5 text-xs font-mono text-muted-foreground">
+                <span className="font-mono text-[9px] text-foreground/80 flex items-center">
+                  <span className="text-muted-foreground/70 mr-1 font-semibold uppercase tracking-wider">PID</span>
+                  {group.session.processPid}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={isKilling || !group.session.processKey}
+                    className="h-5 px-2 hover:bg-destructive/10 text-[9px] font-bold uppercase tracking-wider text-destructive border border-destructive/40 hover:border-destructive/60 transition-colors ml-3"
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      if (!group.session.processKey || isKilling) {
+                        return;
+                      }
+                      if (!window.confirm(`Are you sure you want to kill PID ${group.session.processPid}?`)) {
+                        return;
+                      }
+                      setIsKilling(true);
+                      try {
+                        await onKillSession(group.session);
+                      } catch (error: any) {
+                        console.error("Failed to manually kill workflow session:", error);
+                        alert(error?.message ?? "Failed to kill the workflow session.");
+                      } finally {
+                        setIsKilling(false);
+                      }
+                    }}
+                  >
+                    {isKilling ? "Killing..." : "Kill Process"}
+                  </Button>
                 </span>
-              </>
+              </p>
             ) : null}
             {group.session.providerSessionId ? (
-              <>
-                <span>&bull;</span>
+              <p className="flex flex-wrap items-center gap-1.5 text-xs font-mono text-muted-foreground">
                 <span className="font-mono text-[9px] text-foreground/80">
+                  <span className="text-muted-foreground/70 mr-1 font-semibold uppercase tracking-wider">Session ID</span>
                   {group.session.providerSessionId}
                 </span>
-              </>
+              </p>
             ) : null}
-          </p>
+          </div>
           <span className="text-muted-foreground group-hover/session:text-foreground transition-colors shrink-0">
             {isCollapsed ? (
               <ChevronDown className="h-4 w-4" />
@@ -920,6 +961,52 @@ function WorkflowRunDetailPage() {
     }
 
     return nextSessions;
+  };
+
+  const handleKillSession = async (session: WorkflowRunSession) => {
+    if (session.status !== "active") {
+      return;
+    }
+
+    if (!session.processKey) {
+      throw new Error("Session process key is missing. The runner cannot kill this session.");
+    }
+
+    const completedAt = new Date().toISOString();
+
+    await gatewayBundle.current.localRunnerGateway.closeSession({
+      transportType: session.transportType,
+      providerSessionId: session.providerSessionId ?? "",
+      processKey: session.processKey,
+      processPid: session.processPid ?? null,
+    });
+
+    const supabase = createSupabaseBrowserClient();
+    const { error } = await supabase
+      .from("workflow_run_sessions")
+      .update({
+        status: "completed",
+        completed_at: completedAt,
+        process_key: null,
+      })
+      .eq("id", session.id);
+
+    if (error) {
+      throw new Error(`Failed to persist killed workflow session: ${error.message}`);
+    }
+
+    setDetail((previousDetail: any) =>
+      previousDetail
+        ? {
+            ...previousDetail,
+            sessions: markWorkflowRunSessionsCompleted(
+              Array.isArray(previousDetail.sessions) ? previousDetail.sessions : [],
+              [session.id],
+              completedAt,
+            ),
+          }
+        : previousDetail,
+    );
   };
 
   const processDetailData = async (data: any) => {
@@ -1601,6 +1688,7 @@ function WorkflowRunDetailPage() {
                       detail={detail}
                       gatewayBundle={gatewayBundle}
                       group={group}
+                      onKillSession={handleKillSession}
                       stepOutputs={stepOutputs}
                       subagent={subagent}
                     />

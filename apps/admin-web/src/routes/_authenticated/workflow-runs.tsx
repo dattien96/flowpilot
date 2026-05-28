@@ -9,6 +9,7 @@ import { ArrowRight } from "lucide-react";
 
 import { PageFrame } from "@/components/common/page-frame";
 import { Button } from "@/components/ui/button";
+import { createSupabaseBrowserClient } from "@/data/datasource/supabase/client";
 import { createGatewayBundle } from "@/data/repository/browser-factory";
 import { ListWorkflowRunsUseCase } from "@/domain/usecase/workflow-engine/list-workflow-runs-usecase";
 import { ListWorkflowsUseCase } from "@/domain/usecase/workflow-engine/list-workflows-usecase";
@@ -16,12 +17,43 @@ import type { Project } from "@/domain/model/entity/project";
 import type {
   Workflow,
   WorkflowRun,
+  WorkflowRunSession,
 } from "@/domain/model/entity/workflow-engine";
 import { loadWorkflowRunTitleMap } from "@/lib/workflow-run-title";
 
 export const Route = createFileRoute("/_authenticated/workflow-runs")({
   component: WorkflowRunHistoryPage,
 });
+
+type WorkflowRunSessionRow = {
+  id: string;
+  workflow_run_id: string;
+  provider: string;
+  model: string;
+  transport_type: string;
+  provider_session_id: string | null;
+  process_key: string | null;
+  status: string;
+  started_at: string;
+  completed_at: string | null;
+};
+
+function mapWorkflowRunSessionRow(row: WorkflowRunSessionRow): WorkflowRunSession {
+  return {
+    id: row.id,
+    workflowRunId: row.workflow_run_id,
+    provider: row.provider,
+    model: row.model,
+    transportType: row.transport_type,
+    providerSessionId: row.provider_session_id,
+    processKey: row.process_key,
+    processPid: null,
+    status: row.status,
+    metadataJson: null,
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+  };
+}
 
 function WorkflowRunHistoryPage() {
   const location = useLocation();
@@ -44,6 +76,26 @@ function WorkflowRunHistoryPage() {
   const [selectedRunIds, setSelectedRunIds] = useState<string[]>([]);
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [activeSessions, setActiveSessions] = useState<WorkflowRunSession[]>([]);
+  const [isKillingAllProcesses, setIsKillingAllProcesses] = useState(false);
+  const [processActionError, setProcessActionError] = useState<string | null>(null);
+
+  async function loadActiveSessions() {
+    const supabase = createSupabaseBrowserClient();
+    const { data, error } = await supabase
+      .from("workflow_run_sessions")
+      .select(
+        "id, workflow_run_id, provider, model, transport_type, provider_session_id, process_key, status, started_at, completed_at",
+      )
+      .eq("status", "active")
+      .not("process_key", "is", null);
+
+    if (error) {
+      throw new Error(`Unable to load active workflow sessions: ${error.message}`);
+    }
+
+    return ((data ?? []) as WorkflowRunSessionRow[]).map(mapWorkflowRunSessionRow);
+  }
 
   useEffect(() => {
     const load = async () => {
@@ -60,9 +112,27 @@ function WorkflowRunHistoryPage() {
       setWorkflows(workflowRows);
       setProjects(projectRows);
       setRunTitles(titles);
+      try {
+        const activeSessionRows = await loadActiveSessions();
+        setActiveSessions(activeSessionRows);
+      } catch (error) {
+        console.error("Unable to load active workflow sessions:", error);
+      }
     };
 
     void load();
+  }, []);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      void loadActiveSessions()
+        .then((sessions) => setActiveSessions(sessions))
+        .catch((error) => {
+          console.error("Unable to refresh active workflow sessions:", error);
+        });
+    }, 5000);
+
+    return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -136,6 +206,77 @@ function WorkflowRunHistoryPage() {
     }
   }
 
+  async function killAllProcesses() {
+    const killableSessions = activeSessions.filter((session) => session.processKey);
+    if (killableSessions.length === 0 || isKillingAllProcesses) {
+      return;
+    }
+
+    const label = `${killableSessions.length} active process${killableSessions.length === 1 ? "" : "es"}`;
+    if (!window.confirm(`Kill ${label}? This will stop every active main and replay session in the workspace.`)) {
+      return;
+    }
+
+    setIsKillingAllProcesses(true);
+    setProcessActionError(null);
+
+    const completedAt = new Date().toISOString();
+    const closeResults = await Promise.allSettled(
+      killableSessions.map((session) =>
+        gatewayBundle.current.localRunnerGateway.closeSession({
+          transportType: session.transportType,
+          providerSessionId: session.providerSessionId ?? "",
+          processKey: session.processKey,
+          processPid: session.processPid ?? null,
+        }),
+      ),
+    );
+
+    const closedSessionIds = killableSessions
+      .filter((_, index) => closeResults[index]?.status === "fulfilled")
+      .map((session) => session.id);
+    const failedCount = killableSessions.length - closedSessionIds.length;
+
+    try {
+      if (closedSessionIds.length > 0) {
+        const supabase = createSupabaseBrowserClient();
+        const { error } = await supabase
+          .from("workflow_run_sessions")
+          .update({
+            status: "completed",
+            completed_at: completedAt,
+            process_key: null,
+          })
+          .in("id", closedSessionIds);
+
+        if (error) {
+          throw new Error(`Unable to persist killed workflow sessions: ${error.message}`);
+        }
+      }
+
+      setActiveSessions((current) =>
+        current.filter((session) => !closedSessionIds.includes(session.id)),
+      );
+
+      if (failedCount > 0) {
+        setProcessActionError(
+          `Killed ${closedSessionIds.length} process${closedSessionIds.length === 1 ? "" : "es"}, but ${failedCount} failed.`,
+        );
+      }
+    } catch (error) {
+      setProcessActionError(
+        error instanceof Error ? error.message : "Unable to kill all active processes.",
+      );
+      void loadActiveSessions()
+        .then((sessions) => setActiveSessions(sessions))
+        .catch((refreshError) => {
+          console.error("Unable to reload active workflow sessions after kill failure:", refreshError);
+        });
+    } finally {
+      setIsKillingAllProcesses(false);
+    }
+  }
+
   if (
     location.pathname !== "/workflow-runs" &&
     location.pathname !== "/workflow-runs/"
@@ -145,10 +286,25 @@ function WorkflowRunHistoryPage() {
 
   return (
     <PageFrame
+
       title="Workflow Run History"
       description="Workspace-level history of workflow runs, with filters for workflow type, scope, and project."
       actions={
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-2 items-center">
+          <div className="flex items-center gap-2 mr-2">
+            <span className="text-sm font-medium text-success bg-background/50 border border-border/50 px-3 py-1.5 rounded-xl shadow-sm">
+              <span className="text-foreground font-bold">{activeSessions.length}</span>{" "}
+              active process{activeSessions.length === 1 ? "" : "es"}
+            </span>
+            <Button
+              variant="outline"
+              className="rounded-full border border-destructive/40 text-destructive hover:bg-destructive/10 hover:border-destructive/60 shadow-sm hover:shadow-md transition-all duration-300 text-[10px] font-bold uppercase tracking-wider h-7 px-3"
+              disabled={activeSessions.length === 0 || isKillingAllProcesses}
+              onClick={() => void killAllProcesses()}
+            >
+              {isKillingAllProcesses ? "Killing processes..." : "Kill All Processes"}
+            </Button>
+          </div>
           <Link to="/workflows" search={{ projectId: undefined }}>
             <Button variant="secondary" className="rounded-xl border border-border bg-background/50 hover:bg-muted/80 backdrop-blur-sm transition-all duration-300">
               Workflow definitions
@@ -250,6 +406,12 @@ function WorkflowRunHistoryPage() {
       {deleteError ? (
         <div className="rounded-[1.5rem] border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-700 font-medium">
           {deleteError}
+        </div>
+      ) : null}
+
+      {processActionError ? (
+        <div className="rounded-[1.5rem] border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-700 font-medium">
+          {processActionError}
         </div>
       ) : null}
 
