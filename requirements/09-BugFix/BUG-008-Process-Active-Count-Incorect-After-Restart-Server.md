@@ -1,0 +1,5 @@
+- Start 1 workflow
+- 1 active process trigger
+- Turnoff the server rightaway
+- Open OS task and manually KILL the process
+- Start sever again we still see 1 active session counted

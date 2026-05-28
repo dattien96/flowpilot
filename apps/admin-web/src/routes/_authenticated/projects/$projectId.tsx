@@ -179,13 +179,13 @@ function ProjectExecutionLauncher({
           return;
         }
 
-        await startWorkflowRunUseCase.current.execute({
+        const run = await startWorkflowRunUseCase.current.execute({
           workflowId,
           projectId,
           startMode: "workflow-definition",
           beginPrompt: prompt,
         });
-        await navigate({ to: "/workflow-runs" });
+        await navigate({ to: "/workflow-runs/$runId", params: { runId: run.id } });
         return;
       }
 
@@ -200,13 +200,13 @@ function ProjectExecutionLauncher({
         return;
       }
 
-      await startWorkflowRunUseCase.current.execute({
+      const run = await startWorkflowRunUseCase.current.execute({
         projectId,
         startMode: "single-step",
         beginPrompt: prompt,
         stepType: selectedStep.stepType,
       });
-      await navigate({ to: "/workflow-runs" });
+      await navigate({ to: "/workflow-runs/$runId", params: { runId: run.id } });
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "Unable to start execution.");
     } finally {

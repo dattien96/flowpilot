@@ -234,15 +234,15 @@ export function WorkflowDetailPage() {
         effectiveRunProjectId,
       );
       await ensureProjectHasUsableBinding(effectiveRunProjectId, bindings);
-      await startWorkflowRunUseCase.current.execute({
+      const run = await startWorkflowRunUseCase.current.execute({
         workflowId: workflow.id,
         projectId: effectiveRunProjectId,
         startMode: "workflow-definition",
         beginPrompt,
       });
       await navigate({
-        to: "/projects/$projectId/workflows",
-        params: { projectId: effectiveRunProjectId },
+        to: "/workflow-runs/$runId",
+        params: { runId: run.id },
       });
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "Unable to start workflow run.");
