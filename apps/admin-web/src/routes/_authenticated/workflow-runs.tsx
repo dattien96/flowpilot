@@ -19,6 +19,8 @@ import type {
   WorkflowRun,
   WorkflowRunSession,
 } from "@/domain/model/entity/workflow-engine";
+import { getMissingWorkflowRunSessionIds } from "@/features/workflow-engine/workflow-run-session-liveness";
+import { markWorkflowRunSessionsCompleted } from "@/features/workflow-engine/workflow-run-session-timeout";
 import { loadWorkflowRunTitleMap } from "@/lib/workflow-run-title";
 
 export const Route = createFileRoute("/_authenticated/workflow-runs")({
@@ -33,6 +35,7 @@ type WorkflowRunSessionRow = {
   transport_type: string;
   provider_session_id: string | null;
   process_key: string | null;
+  process_pid: number | null;
   status: string;
   started_at: string;
   completed_at: string | null;
@@ -47,7 +50,7 @@ function mapWorkflowRunSessionRow(row: WorkflowRunSessionRow): WorkflowRunSessio
     transportType: row.transport_type,
     providerSessionId: row.provider_session_id,
     processKey: row.process_key,
-    processPid: null,
+    processPid: row.process_pid,
     status: row.status,
     metadataJson: null,
     startedAt: row.started_at,
@@ -80,12 +83,75 @@ function WorkflowRunHistoryPage() {
   const [isKillingAllProcesses, setIsKillingAllProcesses] = useState(false);
   const [processActionError, setProcessActionError] = useState<string | null>(null);
 
+  async function reconcileLiveSessions(sessions: WorkflowRunSession[]) {
+    if (sessions.length === 0) {
+      return sessions;
+    }
+
+    let liveSessions: Array<{ processKey: string | null }> = [];
+    try {
+      liveSessions = await gatewayBundle.current.localRunnerGateway.listSessions();
+    } catch (error) {
+      console.warn("Unable to load live runner sessions for reconciliation:", error);
+      return sessions;
+    }
+
+    const staleSessionIds = getMissingWorkflowRunSessionIds({
+      sessions,
+      liveProcessKeys: liveSessions
+        .map((session) => session.processKey ?? "")
+        .filter((processKey) => processKey.length > 0),
+    });
+    if (staleSessionIds.length === 0) {
+      return sessions;
+    }
+
+    const completedAt = new Date().toISOString();
+    const staleSessions = sessions.filter((session) => staleSessionIds.includes(session.id));
+    try {
+      await Promise.allSettled(
+        staleSessions.map((session) =>
+          gatewayBundle.current.localRunnerGateway.closeSession({
+            transportType: session.transportType,
+            providerSessionId: session.providerSessionId ?? "",
+            processKey: session.processKey,
+            processPid: session.processPid ?? null,
+          }),
+        ),
+      );
+
+      const supabase = createSupabaseBrowserClient();
+      const { error } = await supabase
+        .from("workflow_run_sessions")
+        .update({
+          status: "completed",
+          completed_at: completedAt,
+          process_key: null,
+          process_pid: null,
+        })
+        .in("id", staleSessionIds);
+
+      if (error) {
+        throw new Error(error.message);
+      }
+    } catch (error) {
+      console.warn("Unable to reconcile stale workflow sessions:", error);
+      return sessions;
+    }
+
+    return markWorkflowRunSessionsCompleted(
+      sessions,
+      staleSessionIds,
+      completedAt,
+    ).filter((session) => session.status === "active" && Boolean(session.processKey));
+  }
+
   async function loadActiveSessions() {
     const supabase = createSupabaseBrowserClient();
     const { data, error } = await supabase
       .from("workflow_run_sessions")
       .select(
-        "id, workflow_run_id, provider, model, transport_type, provider_session_id, process_key, status, started_at, completed_at",
+        "id, workflow_run_id, provider, model, transport_type, provider_session_id, process_key, process_pid, status, started_at, completed_at",
       )
       .eq("status", "active")
       .not("process_key", "is", null);
@@ -94,7 +160,9 @@ function WorkflowRunHistoryPage() {
       throw new Error(`Unable to load active workflow sessions: ${error.message}`);
     }
 
-    return ((data ?? []) as WorkflowRunSessionRow[]).map(mapWorkflowRunSessionRow);
+    return await reconcileLiveSessions(
+      ((data ?? []) as WorkflowRunSessionRow[]).map(mapWorkflowRunSessionRow),
+    );
   }
 
   useEffect(() => {

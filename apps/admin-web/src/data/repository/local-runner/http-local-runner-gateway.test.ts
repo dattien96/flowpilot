@@ -42,6 +42,37 @@ describe("HttpLocalRunnerGateway", () => {
     });
   });
 
+  describe("listSessions", () => {
+    it("loads live sessions from the runner", async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve([
+            {
+              transportType: "codex_mcp",
+              providerSessionId: "thread-1",
+              processKey: "proc-1",
+              processPid: 4321,
+            },
+          ]),
+      });
+      global.fetch = mockFetch;
+
+      const sessions = await gateway.listSessions();
+
+      expect(sessions).toEqual([
+        {
+          transportType: "codex_mcp",
+          providerSessionId: "thread-1",
+          processKey: "proc-1",
+          processPid: 4321,
+        },
+      ]);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(String(mockFetch.mock.calls[0][0])).toBe("http://localhost:8080/sessions");
+    });
+  });
+
   describe("deleteArtifactsByWorkflowRunIds", () => {
     it("posts the workflow run ids to the cleanup endpoint", async () => {
       const mockFetch = vi.fn().mockResolvedValue({

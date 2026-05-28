@@ -448,6 +448,10 @@ export class HttpLocalRunnerGateway implements LocalRunnerGateway {
     return (await response.json()) as LocalRunnerAiSessionHandle;
   }
 
+  async listSessions() {
+    return await readJson<LocalRunnerAiSessionHandle[]>(this.baseUrl, "/sessions");
+  }
+
   async sendMessage(request: LocalRunnerAiSessionMessageRequest) {
     const response = await fetch(new URL("/sessions/message", this.baseUrl), {
       method: "POST",

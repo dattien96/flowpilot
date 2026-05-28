@@ -20,6 +20,10 @@ import {
   shouldAppendResultSummaryStep,
   type ResultSummarySourceStep,
 } from "@/features/workflow-engine/workflow-result-summary";
+import {
+  INTERRUPTED_RUN_ERROR,
+  isInterruptedWorkflowStep,
+} from "@/features/workflow-engine/workflow-run-interruption";
 import { getLocalRunnerBaseUrl } from "@/lib/env/app-env";
 
 type WorkflowDefinitionRow = {
@@ -85,6 +89,7 @@ type WorkflowRunStepExecutionRow = {
   step_type: string;
   status: string;
   retry_count: number;
+  error_message?: string | null;
 };
 
 type DirectoryValidationResult = {
@@ -712,6 +717,7 @@ export async function sendMessageWithRetry({
   prompt,
   skillIds,
   idleTTLSeconds,
+  forceNewProviderSession,
 }: {
   adminClient: SupabaseClient;
   localRunnerGateway: LocalRunnerGateway;
@@ -725,6 +731,7 @@ export async function sendMessageWithRetry({
   prompt: string;
   skillIds: string[];
   idleTTLSeconds?: number | null;
+  forceNewProviderSession?: boolean;
 }): Promise<WorkflowSessionSendResult> {
   let handle = await getOrCreateSession({
     adminClient,
@@ -737,6 +744,7 @@ export async function sendMessageWithRetry({
     workingDirectory,
     subagent,
     idleTTLSeconds,
+    forceNewProviderSession,
   });
 
   let attempt = 1;
@@ -1334,7 +1342,9 @@ async function loadWorkflowRun(adminClient: SupabaseClient, runId: string) {
 async function loadWorkflowRunStep(adminClient: SupabaseClient, stepRunId: string) {
   const { data, error } = await adminClient
     .from("workflow_run_steps")
-    .select("id, workflow_run_id, workflow_step_id, execution_order_index, step_type, status, retry_count")
+    .select(
+      "id, workflow_run_id, workflow_step_id, execution_order_index, step_type, status, retry_count, error_message",
+    )
     .eq("id", stepRunId)
     .maybeSingle();
 
@@ -1854,8 +1864,16 @@ export async function submitWorkflowStepFollowUpRuntime({
   }
 
   const stepRun = await loadWorkflowRunStep(adminClient, stepId);
-  if (stepRun.status !== "DONE" && stepRun.status !== "WAITING_USER_APPROVAL") {
-    throw new Error("Follow-up is only supported for completed steps.");
+  const canReplayInterruptedFailedStep = isInterruptedWorkflowStep({
+    status: stepRun.status,
+    errorMessage: stepRun.error_message,
+  });
+  if (
+    stepRun.status !== "DONE" &&
+    stepRun.status !== "WAITING_USER_APPROVAL" &&
+    !canReplayInterruptedFailedStep
+  ) {
+    throw new Error("Follow-up is only supported for completed or interrupted steps.");
   }
 
   const allRunSteps = await loadWorkflowRunSteps(adminClient, stepRun.workflow_run_id);
@@ -2003,6 +2021,7 @@ export async function submitWorkflowStepFollowUpRuntime({
       prompt: finalPrompt,
       skillIds: definition.required_skills ?? [],
       idleTTLSeconds: projectDefaults.session_idle_ttl_minutes ? projectDefaults.session_idle_ttl_minutes * 60 : undefined,
+      forceNewProviderSession: canReplayInterruptedFailedStep,
     });
 
     if (result.status !== "success") {

@@ -532,6 +532,13 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				}
 				writeHTTPJSON(w, result)
 			})
+			mux.HandleFunc("/sessions", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				writeHTTPJSON(w, instance.ListSessions())
+			})
 			mux.HandleFunc("/sessions/message", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -590,7 +597,9 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 
 			addr := netJoinHostPort(cfg.host, cfg.port)
 			fmt.Fprintf(os.Stdout, "FlowPilot runner listening on http://%s\n", addr)
-			return http.ListenAndServe(addr, withCORS(mux))
+			listenErr := http.ListenAndServe(addr, withCORS(mux))
+			instance.CleanupSessions()
+			return listenErr
 		},
 	})
 

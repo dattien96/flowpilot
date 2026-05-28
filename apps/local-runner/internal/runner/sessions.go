@@ -3,16 +3,28 @@ package runner
 import (
 	"bufio"
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
 var commandContextFn = exec.CommandContext
+var lookupProcessNameFn = lookupProcessName
+var killProcessByPIDFn = func(pid int) error {
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+	return process.Kill()
+}
 
 type LiveSession struct {
 	SessionID         string
@@ -480,6 +492,12 @@ func (r *Runner) CloseSession(ctx context.Context, handle AiSessionHandle) error
 	r.sessionsMu.Unlock()
 
 	if !exists {
+		if handle.ProcessPid != nil {
+			processName, err := lookupProcessNameFn(ctx, *handle.ProcessPid)
+			if err == nil && processNameMatchesTransport(processName, handle.TransportType) {
+				_ = killProcessByPIDFn(*handle.ProcessPid)
+			}
+		}
 		return nil
 	}
 
@@ -508,6 +526,25 @@ func (r *Runner) CloseSession(ctx context.Context, handle AiSessionHandle) error
 	return nil
 }
 
+func (r *Runner) ListSessions() []AiSessionHandle {
+	r.sessionsMu.Lock()
+	defer r.sessionsMu.Unlock()
+
+	sessions := make([]AiSessionHandle, 0, len(r.sessions))
+	for processKey, session := range r.sessions {
+		processKeyCopy := processKey
+		processPid := session.Pid
+		sessions = append(sessions, AiSessionHandle{
+			TransportType:     session.TransportType,
+			ProviderSessionID: session.ProviderSessionID,
+			ProcessKey:        &processKeyCopy,
+			ProcessPid:        &processPid,
+		})
+	}
+
+	return sessions
+}
+
 func (r *Runner) CleanupSessions() {
 	r.sessionsMu.Lock()
 	activeSessions := make([]*LiveSession, 0, len(r.sessions))
@@ -522,8 +559,11 @@ func (r *Runner) CleanupSessions() {
 		if session.Stdin != nil {
 			session.Stdin.Close()
 		}
-		if session.Cmd != nil && session.Cmd.Process != nil {
-			session.Cmd.Process.Kill()
+		if session.Cmd != nil {
+			if session.Cmd.Process != nil {
+				session.Cmd.Process.Kill()
+			}
+			go session.Cmd.Wait()
 		}
 		session.Mu.Unlock()
 	}
@@ -589,4 +629,84 @@ func DetermineProviderSessionID(transportType, provider, sessionID, currentProvi
 		currentProviderSessionID = *resumeProviderSessionID
 	}
 	return currentProviderSessionID
+}
+
+func expectedProcessNamesForTransport(transportType string) []string {
+	switch transportType {
+	case "codex_mcp":
+		return []string{"codex", "codex.exe"}
+	case "claude_stream_json":
+		return []string{"claude", "claude.exe"}
+	case "gemini_acp":
+		return []string{"gemini", "gemini.exe"}
+	default:
+		return nil
+	}
+}
+
+func processNameMatchesTransport(processName string, transportType string) bool {
+	normalizedProcessName := strings.ToLower(strings.TrimSpace(processName))
+	if normalizedProcessName == "" {
+		return false
+	}
+
+	for _, expectedName := range expectedProcessNamesForTransport(transportType) {
+		if normalizedProcessName == expectedName {
+			return true
+		}
+	}
+
+	return false
+}
+
+func lookupProcessName(ctx context.Context, pid int) (string, error) {
+	if pid <= 0 {
+		return "", fmt.Errorf("invalid pid %d", pid)
+	}
+
+	if strings.EqualFold(runtimeGOOS(), "windows") {
+		output, err := runCommandFn(
+			ctx,
+			"tasklist",
+			"/FI",
+			fmt.Sprintf("PID eq %d", pid),
+			"/FO",
+			"CSV",
+			"/NH",
+		)
+		if err != nil {
+			return "", err
+		}
+
+		line := strings.TrimSpace(string(output))
+		if line == "" || strings.Contains(strings.ToLower(line), "no tasks are running") {
+			return "", fmt.Errorf("process %d not found", pid)
+		}
+
+		record, err := csv.NewReader(strings.NewReader(line)).Read()
+		if err != nil {
+			return "", err
+		}
+		if len(record) == 0 {
+			return "", fmt.Errorf("process %d not found", pid)
+		}
+
+		return strings.ToLower(strings.TrimSpace(record[0])), nil
+	}
+
+	output, err := runCommandFn(ctx, "ps", "-p", strconv.Itoa(pid), "-o", "comm=")
+	if err != nil {
+		return "", err
+	}
+
+	processName := strings.ToLower(strings.TrimSpace(string(output)))
+	if processName == "" {
+		return "", fmt.Errorf("process %d not found", pid)
+	}
+
+	return processName, nil
+}
+
+func runtimeGOOS() string {
+	return strings.ToLower(strings.TrimSpace(runtime.GOOS))
 }

@@ -12,9 +12,11 @@ import {
   deactivateWorkflowRunSession,
   finalizeWorkflowRunSessions,
   resolveProviderKeyFromModel,
+  submitWorkflowStepFollowUpRuntime,
   syncWorkflowRunSessionProviderSessionId,
   sendMessageWithRetry,
 } from "./workflow-start-runtime";
+import { INTERRUPTED_RUN_ERROR } from "./workflow-run-interruption";
 
 describe("workflow-start-runtime", () => {
   afterEach(() => {
@@ -77,6 +79,61 @@ describe("workflow-start-runtime", () => {
     expect(prompt).not.toContain("## Related Input Artifacts");
     expect(prompt).not.toContain("- None");
     expect(prompt).toContain("## Execution Context");
+  });
+
+  it("allows replay gating for interrupted failed steps", async () => {
+    const stepRow = {
+      id: "step-run-1",
+      workflow_run_id: "run-1",
+      workflow_step_id: null,
+      execution_order_index: 0,
+      step_type: "test_codex_step",
+      status: "FAILED",
+      retry_count: 0,
+      error_message: INTERRUPTED_RUN_ERROR,
+    };
+    const runSteps = [stepRow];
+    const adminClient = {
+      from: vi.fn((table: string) => {
+        if (table !== "workflow_run_steps") {
+          throw new Error(`Unexpected table ${table}`);
+        }
+
+        return {
+          select: vi.fn().mockReturnThis(),
+          eq(column: string, value: string) {
+            if (column === "id") {
+              return {
+                maybeSingle: vi.fn().mockResolvedValue({
+                  data: stepRow,
+                  error: null,
+                }),
+              };
+            }
+
+            if (column === "workflow_run_id") {
+              return {
+                order: vi.fn().mockResolvedValue({
+                  data: runSteps,
+                  error: null,
+                }),
+              };
+            }
+
+            throw new Error(`Unexpected eq filter ${column}=${value}`);
+          },
+        };
+      }),
+    } as any;
+
+    await expect(
+      submitWorkflowStepFollowUpRuntime({
+        adminClient,
+        localRunnerGateway: {} as any,
+        stepId: "step-run-1",
+        comment: "Replay the prompt.",
+      }),
+    ).rejects.toThrow("Workflow step definition is missing for this run step.");
   });
 
   it("captures a local artifact snapshot even when a step has no output binding", async () => {
@@ -435,6 +492,72 @@ describe("workflow-start-runtime", () => {
       }));
       expect(result.outputMarkdown).toBe("success");
       expect(result.actualPromptText).toBe("hello");
+    });
+
+    it("starts a fresh provider session when forced instead of resuming the old thread", async () => {
+      const mockSendMessage = vi.fn().mockResolvedValue({ outputMarkdown: "success" });
+      const mockStartSession = vi.fn().mockResolvedValue({
+        processKey: "proc-new",
+        providerSessionId: "thread-new",
+        transportType: "codex_mcp",
+      });
+
+      const localRunnerGateway = {
+        sendMessage: mockSendMessage,
+        closeSession: vi.fn().mockResolvedValue(undefined),
+        startSession: mockStartSession,
+      } as any;
+
+      const mockQueryBuilder = {
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        filter: vi.fn().mockReturnThis(),
+        order: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: {
+            id: "session-old",
+            process_key: null,
+            provider_session_id: "codex_mcp_session_prompt_20260528_072228_2900",
+            transport_type: "codex_mcp",
+            status: "completed",
+            provider: "codex",
+            model: "codex-mcp",
+            metadata_json: {},
+          },
+          error: null,
+        }),
+        insert: vi.fn().mockReturnThis(),
+        update: vi.fn().mockReturnThis(),
+        single: vi.fn().mockResolvedValue({ data: { id: "session-new" }, error: null }),
+      };
+      const adminClient = {
+        from: vi.fn(() => mockQueryBuilder),
+      } as any;
+
+      const result = await sendMessageWithRetry({
+        adminClient,
+        localRunnerGateway,
+        workflowRunId: "run-123",
+        stepRunId: "step-456",
+        providerKey: "codex",
+        modelName: "codex-mcp",
+        reasoningEffort: null,
+        workingDirectory: "/repo",
+        subagent: null,
+        prompt: "try again",
+        skillIds: [],
+        idleTTLSeconds: 60,
+        forceNewProviderSession: true,
+      });
+
+      expect(mockStartSession).toHaveBeenCalledWith(
+        expect.not.objectContaining({
+          resumeProviderSessionId: expect.any(String),
+        }),
+      );
+      expect(result.outputMarkdown).toBe("success");
+      expect(result.actualPromptText).toBe("try again");
     });
 
     it("throws directly without reconnect on non-session_dead error", async () => {
