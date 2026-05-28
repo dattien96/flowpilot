@@ -13,6 +13,13 @@ import {
   type StepType,
   type WorkflowRunStartRequest,
 } from "@/domain/model/entity/workflow-engine";
+import {
+  buildResultSummaryPrompt,
+  RESULT_SUMMARY_STEP_NAME,
+  RESULT_SUMMARY_STEP_TYPE,
+  shouldAppendResultSummaryStep,
+  type ResultSummarySourceStep,
+} from "@/features/workflow-engine/workflow-result-summary";
 import { getLocalRunnerBaseUrl } from "@/lib/env/app-env";
 
 type WorkflowDefinitionRow = {
@@ -94,7 +101,8 @@ type ProjectSettingsRow = {
 };
 
 type StepExecutionPlan = {
-  workflowStepId: string;
+  planKey: string;
+  workflowStepId: string | null;
   stepType: string;
   orderIndex: number;
   definition: StepDefinitionRow;
@@ -1556,6 +1564,100 @@ function resolvePlannedStepExecution(
   };
 }
 
+function createBuiltInResultSummaryDefinition({
+  workflow,
+  projectDefaults,
+}: {
+  workflow: WorkflowDefinitionRow;
+  projectDefaults: ProjectSettingsRow;
+}): StepDefinitionRow {
+  return {
+    step_type: RESULT_SUMMARY_STEP_TYPE,
+    name: RESULT_SUMMARY_STEP_NAME,
+    description: "Runtime-generated final workflow summary step.",
+    prompt_base: null,
+    required_mcps: [],
+    required_skills: [],
+    team_role: null,
+    subagent: null,
+    model: workflow.model_override || projectDefaults.default_model || DEFAULT_MODEL,
+    reasoning_effort:
+      workflow.reasoning_effort_override ||
+      projectDefaults.default_reasoning_effort ||
+      DEFAULT_REASONING_EFFORT,
+  };
+}
+
+async function ensureBuiltInResultSummaryStepDefinition({
+  adminClient,
+  workflow,
+  projectDefaults,
+}: {
+  adminClient: SupabaseClient;
+  workflow: WorkflowDefinitionRow;
+  projectDefaults: ProjectSettingsRow;
+}) {
+  const definition = createBuiltInResultSummaryDefinition({
+    workflow,
+    projectDefaults,
+  });
+
+  const { error } = await adminClient
+    .from("step_definitions")
+    .upsert(
+      {
+        step_type: RESULT_SUMMARY_STEP_TYPE,
+        name: definition.name,
+        description: definition.description,
+        prompt_base: definition.prompt_base,
+        required_mcps: definition.required_mcps ?? [],
+        required_skills: definition.required_skills ?? [],
+        team_role: definition.team_role,
+        subagent: definition.subagent,
+        model: definition.model,
+        reasoning_effort: definition.reasoning_effort,
+        agent_type: "standard",
+      },
+      { onConflict: "step_type" },
+    );
+
+  if (error) {
+    throw new Error(`Unable to ensure built-in step definition "${RESULT_SUMMARY_STEP_TYPE}": ${error.message}`);
+  }
+
+  return definition;
+}
+
+function resolveBuiltInStepExecution(
+  workflow: WorkflowDefinitionRow,
+  projectDefaults: ProjectSettingsRow,
+  definition: StepDefinitionRow,
+) {
+  const resolvedReasoningEffort =
+    definition.reasoning_effort ||
+    workflow.reasoning_effort_override ||
+    projectDefaults.default_reasoning_effort ||
+    DEFAULT_REASONING_EFFORT;
+  if (resolvedReasoningEffort && !SUPPORTED_REASONING_EFFORTS.has(resolvedReasoningEffort)) {
+    throw new Error(`Step ${definition.step_type} is configured with an unsupported reasoning effort.`);
+  }
+
+  const resolvedModel =
+    definition.model ||
+    workflow.model_override ||
+    projectDefaults.default_model ||
+    DEFAULT_MODEL;
+  if (!resolvedModel || !isSupportedStepModel(resolvedModel)) {
+    throw new Error(`Step ${definition.step_type} is configured with an unsupported model.`);
+  }
+
+  return {
+    model: resolvedModel,
+    providerKey: resolveProviderKeyFromModel(resolvedModel),
+    reasoningEffort: resolvedReasoningEffort,
+  };
+}
+
 export async function createArtifactOutputs({
   adminClient,
   artifactDefinitions,
@@ -2055,8 +2157,17 @@ export async function runWorkflowStartRuntime({
       .map((value) => value.toLowerCase()),
   );
 
-  const stepPlans = workflowSteps
-    .filter((step) => step.is_enabled)
+  const enabledWorkflowSteps = workflowSteps.filter((step) => step.is_enabled);
+  const shouldAddResultSummary = shouldAppendResultSummaryStep(enabledWorkflowSteps);
+  if (shouldAddResultSummary) {
+    const builtInDefinition = await ensureBuiltInResultSummaryStepDefinition({
+      adminClient,
+      workflow,
+      projectDefaults,
+    });
+    stepDefinitions.set(RESULT_SUMMARY_STEP_TYPE, builtInDefinition);
+  }
+  const stepPlans = enabledWorkflowSteps
     .map((step) => {
       const definition = stepDefinitions.get(step.step_type);
       if (!definition) {
@@ -2064,6 +2175,7 @@ export async function runWorkflowStartRuntime({
       }
 
       return {
+        planKey: step.id,
         workflowStepId: step.id,
         stepType: step.step_type,
         orderIndex: step.order_index,
@@ -2073,6 +2185,29 @@ export async function runWorkflowStartRuntime({
         outputArtifactKeys: outputBindings.get(step.step_type) ?? [],
       } satisfies StepExecutionPlan;
     });
+
+  if (shouldAddResultSummary) {
+    const definition = stepDefinitions.get(RESULT_SUMMARY_STEP_TYPE);
+    if (!definition) {
+      throw new Error(`Step definition "${RESULT_SUMMARY_STEP_TYPE}" could not be loaded.`);
+    }
+    const nextOrderIndex =
+      enabledWorkflowSteps.reduce(
+        (highest, step) => Math.max(highest, step.order_index),
+        -1,
+      ) + 1;
+
+    stepPlans.push({
+      planKey: `__builtin_${RESULT_SUMMARY_STEP_TYPE}`,
+      workflowStepId: null,
+      stepType: RESULT_SUMMARY_STEP_TYPE,
+      orderIndex: nextOrderIndex,
+      definition,
+      ...resolveBuiltInStepExecution(workflow, projectDefaults, definition),
+      inputArtifactKeys: [],
+      outputArtifactKeys: [],
+    });
+  }
 
   const firstStepModel =
     stepPlans[0]?.model || workflow.model_override || projectDefaults.default_model || DEFAULT_MODEL;
@@ -2104,30 +2239,46 @@ export async function runWorkflowStartRuntime({
   const { data: insertedSteps, error: stepInsertError } = await adminClient
     .from("workflow_run_steps")
     .insert(
-      workflowSteps.map((step) => ({
+      stepPlans.map((step) => ({
         workflow_run_id: runRow.id,
-        workflow_step_id: step.id,
-        execution_order_index: step.order_index,
-        step_type: step.step_type,
-        status: step.is_enabled ? "PENDING" : "SKIPPED",
+        workflow_step_id: step.workflowStepId,
+        execution_order_index: step.orderIndex,
+        step_type: step.stepType,
+        status: "PENDING",
         retry_count: 0,
       })),
     )
-    .select("id, workflow_step_id, step_type, status");
+    .select("id, workflow_step_id, step_type, execution_order_index, status");
 
   if (stepInsertError) {
     throw new Error(`Unable to create workflow run steps: ${stepInsertError.message}`);
   }
 
-  const stepRunIds = new Map(
-    (insertedSteps ?? []).map((row) => [String(row.workflow_step_id), String(row.id)]),
-  );
+  const stepRunIds = new Map<string, string>();
+  for (const row of insertedSteps ?? []) {
+    const matchedPlan = stepPlans.find((step) => {
+      if (step.workflowStepId) {
+        return step.workflowStepId === String(row.workflow_step_id);
+      }
+
+      return (
+        row.workflow_step_id == null &&
+        step.stepType === String(row.step_type) &&
+        step.orderIndex === Number(row.execution_order_index ?? 0)
+      );
+    });
+
+    if (matchedPlan) {
+      stepRunIds.set(matchedPlan.planKey, String(row.id));
+    }
+  }
 
   let activeStepRunId: string | null = null;
+  const completedSummarySteps: ResultSummarySourceStep[] = [];
 
   try {
     for (const stepPlan of stepPlans) {
-      const stepRunId = stepRunIds.get(stepPlan.workflowStepId);
+      const stepRunId = stepRunIds.get(stepPlan.planKey);
       if (!stepRunId) {
         throw new Error(`Workflow run step for ${stepPlan.stepType} was not created.`);
       }
@@ -2190,25 +2341,35 @@ export async function runWorkflowStartRuntime({
         );
       });
 
-      const promptBase = stepPlan.definition.prompt_base?.trim()
-        ? stepPlan.definition.prompt_base.trim()
-        : deriveStepPromptBase({
-            stepType: stepPlan.definition.step_type as StepType,
-            name: stepPlan.definition.name,
-            description: stepPlan.definition.description,
-          });
-      const finalPrompt = buildWorkflowStepPrompt({
-        beginPrompt: request.beginPrompt,
-        inputArtifactPaths,
-        model: stepPlan.model,
-        outputArtifactPaths,
-        promptBase,
-        stepType: stepPlan.stepType,
-        subagent: stepPlan.definition.subagent,
-        teamRole: stepPlan.definition.team_role,
-        workingDirectory,
-        requiredSkills: stepPlan.definition.required_skills ?? [],
-      });
+      const finalPrompt = stepPlan.stepType === RESULT_SUMMARY_STEP_TYPE
+        ? buildResultSummaryPrompt({
+            beginPrompt: request.beginPrompt,
+            workflowName: workflow.name,
+            workingDirectory,
+            steps: completedSummarySteps,
+          })
+        : (() => {
+            const promptBase = stepPlan.definition.prompt_base?.trim()
+              ? stepPlan.definition.prompt_base.trim()
+              : deriveStepPromptBase({
+                  stepType: stepPlan.definition.step_type as StepType,
+                  name: stepPlan.definition.name,
+                  description: stepPlan.definition.description,
+                });
+
+            return buildWorkflowStepPrompt({
+              beginPrompt: request.beginPrompt,
+              inputArtifactPaths,
+              model: stepPlan.model,
+              outputArtifactPaths,
+              promptBase,
+              stepType: stepPlan.stepType,
+              subagent: stepPlan.definition.subagent,
+              teamRole: stepPlan.definition.team_role,
+              workingDirectory,
+              requiredSkills: stepPlan.definition.required_skills ?? [],
+            });
+          })();
 
       await adminClient
         .from("workflow_run_steps")
@@ -2293,6 +2454,17 @@ export async function runWorkflowStartRuntime({
         await insertLog(adminClient, stepRunId, "warn", result.stderrSummary);
       }
       await insertLog(adminClient, stepRunId, "info", `Completed ${stepPlan.stepType} with model ${stepPlan.model}.`);
+
+      if (stepPlan.stepType !== RESULT_SUMMARY_STEP_TYPE) {
+        completedSummarySteps.push({
+          stepName: stepPlan.definition.name,
+          stepType: stepPlan.stepType,
+          outputMarkdown: result.outputMarkdown,
+          artifactOutputPaths: artifactOutputResult.checkpoint.artifactOutputPaths,
+          startedAt: result.startedAt,
+          completedAt: result.completedAt,
+        });
+      }
     }
 
     const finishedAt = new Date().toISOString();
