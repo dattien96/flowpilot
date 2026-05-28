@@ -94,6 +94,28 @@ export class LocalFirstWorkflowGateway implements WorkflowGateway {
       return;
     }
 
+    const details = await Promise.all(
+      uniqueRunIds.map((runId) => this.base.getWorkflowRunDetail(runId)),
+    );
+    const sessionsToClose = new Map<string, WorkflowRunDetail["sessions"][number]>();
+    for (const detail of details) {
+      for (const session of detail?.sessions ?? []) {
+        if (session.status !== "active" || !session.processKey) {
+          continue;
+        }
+        sessionsToClose.set(session.processKey, session);
+      }
+    }
+
+    for (const session of sessionsToClose.values()) {
+      await this.localRunnerGateway.closeSession({
+        transportType: session.transportType,
+        providerSessionId: session.providerSessionId ?? "",
+        processKey: session.processKey,
+        processPid: session.processPid ?? null,
+      });
+    }
+
     await this.localRunnerGateway.deleteArtifactsByWorkflowRunIds(uniqueRunIds);
     await this.base.deleteWorkflowRuns(uniqueRunIds);
   }

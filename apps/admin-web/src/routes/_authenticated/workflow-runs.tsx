@@ -197,6 +197,9 @@ function WorkflowRunHistoryPage() {
       await gatewayBundle.current.workflowGateway.deleteWorkflowRuns(uniqueRunIds);
       setRuns((current) => current.filter((run) => !uniqueRunIds.includes(run.id)));
       setSelectedRunIds((current) => current.filter((runId) => !uniqueRunIds.includes(runId)));
+      setActiveSessions((current) =>
+        current.filter((session) => !uniqueRunIds.includes(session.workflowRunId)),
+      );
     } catch (error) {
       setDeleteError(
         error instanceof Error ? error.message : "Unable to delete workflow runs.",
