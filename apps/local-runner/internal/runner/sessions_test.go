@@ -1,11 +1,23 @@
 package runner
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"io"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 )
+
+type nopWriteCloser struct {
+	io.Writer
+}
+
+func (n nopWriteCloser) Close() error {
+	return nil
+}
 
 func TestSweepIdleSessions(t *testing.T) {
 	r, _ := New(".")
@@ -94,6 +106,116 @@ func TestStartSessionResumesProviderSessionID(t *testing.T) {
 		r.sessionsMu.Lock()
 		delete(r.sessions, *handle.ProcessKey)
 		r.sessionsMu.Unlock()
+	}
+}
+
+func TestStartSessionGeminiACPUsesCurrentHandshake(t *testing.T) {
+	originalCmdCtx := commandContextFn
+	defer func() { commandContextFn = originalCmdCtx }()
+	var startedArgs []string
+	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+		startedArgs = append([]string{}, arg...)
+		return exec.CommandContext(
+			ctx,
+			"powershell",
+			"-NoProfile",
+			"-Command",
+			"Write-Output '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1}}'; Write-Output '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"gemini-live-session\"}}'",
+		)
+	}
+
+	r, _ := New(".")
+
+	handle, err := r.StartSession(context.Background(), AiSessionStartRequest{
+		ProviderKey:      "gemini",
+		ModelName:        "gemini-flash",
+		WorkingDirectory: ".",
+	})
+	if err != nil {
+		t.Fatalf("StartSession failed: %v", err)
+	}
+
+	if handle.ProviderSessionID != "gemini-live-session" {
+		t.Fatalf("expected Gemini provider session id to come from ACP session/new, got %q", handle.ProviderSessionID)
+	}
+
+	if !strings.Contains(strings.Join(startedArgs, " "), "--model gemini-2.5-flash") {
+		t.Fatalf("expected Gemini ACP session to normalize legacy model alias, got args %v", startedArgs)
+	}
+}
+
+func TestStartSessionGeminiACPRejectsInitializeErrors(t *testing.T) {
+	originalCmdCtx := commandContextFn
+	defer func() { commandContextFn = originalCmdCtx }()
+	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+		return exec.CommandContext(
+			ctx,
+			"powershell",
+			"-NoProfile",
+			"-Command",
+			"Write-Output '{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"message\":\"bad initialize\"}}'",
+		)
+	}
+
+	r, _ := New(".")
+
+	_, err := r.StartSession(context.Background(), AiSessionStartRequest{
+		ProviderKey:      "gemini",
+		ModelName:        "gemini-flash",
+		WorkingDirectory: ".",
+	})
+	if err == nil {
+		t.Fatal("expected StartSession to fail when Gemini initialize returns an error")
+	}
+	if !strings.Contains(err.Error(), "failed Gemini ACP initialize: bad initialize") {
+		t.Fatalf("expected initialize error to be surfaced, got %v", err)
+	}
+}
+
+func TestSendMessageGeminiACPUsesContentBlocksAndStreamsText(t *testing.T) {
+	r, _ := New(".")
+
+	var stdin bytes.Buffer
+	processKey := "gemini-proc"
+	r.sessions[processKey] = &LiveSession{
+		SessionID:         "session-1",
+		Provider:          "gemini",
+		Model:             "gemini-flash",
+		TransportType:     "gemini_acp",
+		ProviderSessionID: "gemini-live-session",
+		Stdin:             nopWriteCloser{Writer: &stdin},
+		StdoutScanner: bufio.NewScanner(strings.NewReader(strings.Join([]string{
+			`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"gemini-live-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Hello "}}}}`,
+			`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"gemini-live-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"world"}}}}`,
+			`{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}`,
+		}, "\n"))),
+		LastUsedAt: time.Now().UTC(),
+		IdleTTL:    time.Hour,
+		Status:     "active",
+	}
+
+	result, err := r.SendMessage(context.Background(), AiSessionMessageRequest{
+		Session: AiSessionHandle{
+			TransportType:     "gemini_acp",
+			ProviderSessionID: "gemini-live-session",
+			ProcessKey:        &processKey,
+		},
+		Prompt: "Reply with just OK",
+	})
+	if err != nil {
+		t.Fatalf("SendMessage failed: %v", err)
+	}
+
+	if result.OutputMarkdown != "Hello world" {
+		t.Fatalf("expected streamed Gemini output to be collected, got %q", result.OutputMarkdown)
+	}
+
+	written := stdin.String()
+	if !strings.Contains(written, `"method":"session/prompt"`) {
+		t.Fatalf("expected Gemini prompt request to be written, got %q", written)
+	}
+	if !strings.Contains(written, `"prompt":[{"text":"Reply with just OK","type":"text"}]`) {
+		t.Fatalf("expected Gemini prompt payload to use ACP content blocks, got %q", written)
 	}
 }
 

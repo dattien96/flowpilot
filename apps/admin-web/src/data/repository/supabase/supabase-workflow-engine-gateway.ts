@@ -14,6 +14,7 @@ import type {
   WorkflowStep,
   WorkflowRunSession,
 } from "@/domain/model/entity/workflow-engine";
+import { normalizeStepModel } from "@/domain/model/entity/workflow-engine";
 import {
   mapArtifactDefinition,
   mapArtifactRun,
@@ -38,7 +39,7 @@ function resolveProviderKeyFromModel(model: string) {
   if (model.startsWith("gpt-")) {
     return "codex";
   }
-  if (model.startsWith("gemini-")) {
+  if (model.startsWith("gemini-") || model.startsWith("auto-gemini-")) {
     return "gemini";
   }
   if (model.startsWith("claude-")) {
@@ -49,7 +50,7 @@ function resolveProviderKeyFromModel(model: string) {
 }
 
 function normalizeModel(model: string | null | undefined, fallback = DEFAULT_MODEL) {
-  return model?.trim() || fallback;
+  return (normalizeStepModel(model) ?? model?.trim()) || fallback;
 }
 
 function normalizeReasoningEffort(

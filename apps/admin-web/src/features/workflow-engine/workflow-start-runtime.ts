@@ -9,6 +9,7 @@ import type { LocalRunnerPromptExecutionResult } from "@/domain/model/entity/loc
 import {
   deriveStepPromptBase,
   isSupportedStepModel,
+  normalizeStepModel,
   REASONING_EFFORT_OPTIONS,
   type StepType,
   type WorkflowRunStartRequest,
@@ -1177,7 +1178,12 @@ export function resolveProviderKeyFromModel(model: string) {
   if (model.startsWith("gpt-")) {
     return "codex";
   }
-  if (model.startsWith("gemini-")) {
+  if (
+    model.startsWith("gemini-") ||
+    model.startsWith("auto-gemini-") ||
+    model === "gemini-pro" ||
+    model === "gemini-flash"
+  ) {
     return "gemini";
   }
   if (model.startsWith("claude-")) {
@@ -1561,14 +1567,16 @@ function resolvePlannedStepExecution(
     definition.model ||
     DEFAULT_MODEL;
 
-  if (!resolvedModel || !isSupportedStepModel(resolvedModel)) {
+  const normalizedModel = normalizeStepModel(resolvedModel) ?? resolvedModel;
+
+  if (!normalizedModel || !isSupportedStepModel(normalizedModel)) {
     throw new Error(`Step ${definition.step_type} is configured with an unsupported model.`);
   }
 
-  const resolvedProvider = resolveProviderKeyFromModel(resolvedModel);
+  const resolvedProvider = resolveProviderKeyFromModel(normalizedModel);
 
   return {
-    model: resolvedModel,
+    model: normalizedModel,
     providerKey: resolvedProvider,
     reasoningEffort: resolvedReasoningEffort,
   };
@@ -1657,13 +1665,14 @@ function resolveBuiltInStepExecution(
     workflow.model_override ||
     projectDefaults.default_model ||
     DEFAULT_MODEL;
-  if (!resolvedModel || !isSupportedStepModel(resolvedModel)) {
+  const normalizedModel = normalizeStepModel(resolvedModel) ?? resolvedModel;
+  if (!normalizedModel || !isSupportedStepModel(normalizedModel)) {
     throw new Error(`Step ${definition.step_type} is configured with an unsupported model.`);
   }
 
   return {
-    model: resolvedModel,
-    providerKey: resolveProviderKeyFromModel(resolvedModel),
+    model: normalizedModel,
+    providerKey: resolveProviderKeyFromModel(normalizedModel),
     reasoningEffort: resolvedReasoningEffort,
   };
 }

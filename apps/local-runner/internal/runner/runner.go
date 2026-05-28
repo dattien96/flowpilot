@@ -705,15 +705,26 @@ func resolvePromptExecutionAdapter(request PromptExecutionRequest, outputPath st
 	case "gemini":
 		args := []string{}
 		if modelName != "" {
-			cliModel := modelName
-			if strings.HasPrefix(lowerModel, "gemini-") {
-				cliModel = strings.TrimPrefix(lowerModel, "gemini-")
-			}
+			cliModel := normalizeGeminiModelName(modelName)
 			args = append(args, "--model", cliModel)
 		}
 		return "gemini", args, resolvedProvider, nil
 	default:
 		return "", nil, "", fmt.Errorf("provider %q is not supported", resolvedProvider)
+	}
+}
+
+func normalizeGeminiModelName(modelName string) string {
+	trimmed := strings.TrimSpace(modelName)
+	lowerModel := strings.ToLower(trimmed)
+
+	switch lowerModel {
+	case "flash", "gemini-flash":
+		return "gemini-2.5-flash"
+	case "pro", "gemini-pro":
+		return "gemini-2.5-pro"
+	default:
+		return trimmed
 	}
 }
 
@@ -1170,8 +1181,14 @@ func providerSpecs() []providerSpec {
 			BinaryName:  "gemini",
 			InstallHint: "Install the Gemini CLI, log in, and restart the runner.",
 			Models: []ProviderModel{
-				{ID: "gemini-pro", DisplayName: "gemini-pro", Source: "registry"},
-				{ID: "gemini-flash", DisplayName: "gemini-flash", Source: "registry"},
+				{ID: "auto-gemini-3", DisplayName: "auto-gemini-3", Source: "registry"},
+				{ID: "auto-gemini-2.5", DisplayName: "auto-gemini-2.5", Source: "registry"},
+				{ID: "gemini-3.1-pro-preview", DisplayName: "gemini-3.1-pro-preview", Source: "registry"},
+				{ID: "gemini-3-flash-preview", DisplayName: "gemini-3-flash-preview", Source: "registry"},
+				{ID: "gemini-3.1-flash-lite-preview", DisplayName: "gemini-3.1-flash-lite-preview", Source: "registry"},
+				{ID: "gemini-2.5-pro", DisplayName: "gemini-2.5-pro", Source: "registry"},
+				{ID: "gemini-2.5-flash", DisplayName: "gemini-2.5-flash", Source: "registry"},
+				{ID: "gemini-2.5-flash-lite", DisplayName: "gemini-2.5-flash-lite", Source: "registry"},
 			},
 		},
 	}

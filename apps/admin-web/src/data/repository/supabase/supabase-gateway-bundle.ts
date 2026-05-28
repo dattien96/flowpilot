@@ -25,6 +25,7 @@ import type {
   WorkflowStep,
 } from "@/domain/model/entity/workflow";
 import type { WorkflowRunSession } from "@/domain/model/entity/workflow-engine";
+import { normalizeStepModel } from "@/domain/model/entity/workflow-engine";
 import type {
   CreateContextSourcePayload,
   UpdateContextSourcePayload,
@@ -55,7 +56,7 @@ function resolveProviderKeyFromModel(model: string) {
   if (model.startsWith("gpt-")) {
     return "codex";
   }
-  if (model.startsWith("gemini-")) {
+  if (model.startsWith("gemini-") || model.startsWith("auto-gemini-")) {
     return "gemini";
   }
   if (model.startsWith("claude-")) {
@@ -91,7 +92,9 @@ function mapProject(row: SupabaseRow): Project {
     status: String(row.status ?? "active"),
     artifactStoragePreference: (row.artifact_storage_preference ?? "supabase") as Project["artifactStoragePreference"],
     defaultProvider: row.default_provider ? String(row.default_provider) : null,
-    defaultModel: row.default_model ? String(row.default_model) : null,
+    defaultModel: row.default_model
+      ? normalizeStepModel(String(row.default_model)) ?? String(row.default_model)
+      : null,
     defaultReasoningEffort: row.default_reasoning_effort ? (row.default_reasoning_effort as Project["defaultReasoningEffort"]) : null,
     sessionIdleTtlMinutes: row.session_idle_ttl_minutes ? Number(row.session_idle_ttl_minutes) : null,
     createdBy: String(row.created_by),

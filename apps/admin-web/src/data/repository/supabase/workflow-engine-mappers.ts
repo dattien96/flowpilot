@@ -14,7 +14,11 @@ import type {
   WorkflowRunStatus,
   WorkflowStepStatus,
 } from "@/domain/model/entity/workflow-engine";
-import { STEP_MODEL_OPTIONS } from "@/domain/model/entity/workflow-engine";
+import {
+  STEP_MODEL_OPTIONS,
+  coerceSupportedStepModel,
+  normalizeStepModel,
+} from "@/domain/model/entity/workflow-engine";
 
 export interface SupabaseRow {
   [key: string]: any;
@@ -47,10 +51,14 @@ export function mapStepDefinition(row: SupabaseRow): StepDefinition {
     requiredSkills: skills,
     teamRole: row.team_role ? String(row.team_role) : null,
     subagent: row.subagent ? String(row.subagent) : null,
-    model: (row.model
-      ? String(row.model)
+    model: coerceSupportedStepModel(
+      row.model
+        ? String(row.model)
       : STEP_MODEL_OPTIONS.find((option) => option.value === "gpt-5.4")?.value ??
-        STEP_MODEL_OPTIONS[0].value) as SupportedStepModel,
+        STEP_MODEL_OPTIONS[0].value,
+      STEP_MODEL_OPTIONS.find((option) => option.value === "gpt-5.4")?.value ??
+        STEP_MODEL_OPTIONS[0].value,
+    ) as SupportedStepModel,
     reasoningEffort: row.reasoning_effort ? (String(row.reasoning_effort) as ReasoningEffort) : null,
     agentType: row.agent_type as "standard" | "autonomous",
     inputArtifactDefinitions,
@@ -99,7 +107,9 @@ export function mapWorkflow(row: SupabaseRow): Workflow {
     description: String(row.description),
     isTemplate: Boolean(row.is_template),
     providerOverride: row.provider_override ? String(row.provider_override) : null,
-    modelOverride: row.model_override ? String(row.model_override) : null,
+    modelOverride: row.model_override
+      ? normalizeStepModel(String(row.model_override)) ?? String(row.model_override)
+      : null,
     reasoningEffortOverride: row.reasoning_effort_override ? String(row.reasoning_effort_override) : null,
     createdBy: String(row.created_by),
     createdAt: String(row.created_at),
@@ -115,7 +125,9 @@ export function mapWorkflowStep(row: SupabaseRow): WorkflowStep {
     orderIndex: Number(row.order_index),
     isEnabled: Boolean(row.is_enabled),
     providerOverride: row.provider_override ? String(row.provider_override) : null,
-    modelOverride: row.model_override ? String(row.model_override) : null,
+    modelOverride: row.model_override
+      ? normalizeStepModel(String(row.model_override)) ?? String(row.model_override)
+      : null,
     reasoningEffortOverride: row.reasoning_effort_override ? String(row.reasoning_effort_override) : null,
     requiresApproval: Boolean(row.requires_approval),
     createdAt: String(row.created_at),
@@ -130,7 +142,7 @@ export function mapWorkflowRun(row: SupabaseRow): WorkflowRun {
     projectId: String(row.project_id),
     status: row.status as WorkflowRunStatus,
     provider: row.provider ? String(row.provider) : null,
-    model: row.model ? String(row.model) : null,
+    model: row.model ? normalizeStepModel(String(row.model)) ?? String(row.model) : null,
     reasoningEffort: row.reasoning_effort ? (String(row.reasoning_effort) as ReasoningEffort) : null,
     yoloMode: Boolean(row.yolo_mode),
     startedBy: String(row.started_by),

@@ -26,6 +26,8 @@ describe("workflow-start-runtime", () => {
   it("routes supported models to the correct local provider", () => {
     expect(resolveProviderKeyFromModel("gpt-5.5")).toBe("codex");
     expect(resolveProviderKeyFromModel("gemini-pro")).toBe("gemini");
+    expect(resolveProviderKeyFromModel("auto-gemini-3")).toBe("gemini");
+    expect(resolveProviderKeyFromModel("gemini-2.5-flash")).toBe("gemini");
     expect(resolveProviderKeyFromModel("claude-sonnet")).toBe("claude");
   });
 

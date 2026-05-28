@@ -12,7 +12,7 @@ import type {
   WorkflowStep,
   StepType,
 } from "@/domain/model/entity/workflow-engine";
-import { deriveStepPromptBase } from "@/domain/model/entity/workflow-engine";
+import { deriveStepPromptBase, normalizeStepModel } from "@/domain/model/entity/workflow-engine";
 import { workflowArtifactDefinitionOptions } from "@/features/workflow-engine/workflow-artifact-definitions";
 
 const DEMO_STEP_DEFINITION_CREATED_AT = "2026-05-20T00:00:00.000Z";
@@ -23,7 +23,7 @@ function resolveProviderKeyFromModel(model: string) {
   if (model.startsWith("gpt-")) {
     return "codex";
   }
-  if (model.startsWith("gemini-")) {
+  if (model.startsWith("gemini-") || model.startsWith("auto-gemini-")) {
     return "gemini";
   }
   if (model.startsWith("claude-")) {
@@ -34,7 +34,7 @@ function resolveProviderKeyFromModel(model: string) {
 }
 
 function normalizeModel(model: string | null | undefined, fallback: SupportedStepModel = DEFAULT_STEP_MODEL) {
-  return (model?.trim() as SupportedStepModel) || fallback;
+  return ((normalizeStepModel(model) ?? model?.trim()) || fallback) as SupportedStepModel;
 }
 
 function normalizeReasoningEffort(
