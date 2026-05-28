@@ -1700,7 +1700,7 @@ function WorkflowRunDetailPage() {
             {/* Collapsible Run Logs & Safe Gate & Follow-up Chat */}
             <div className="pt-4 border-t border-border/30">
 
-              {/* Always-Visible Send Prompt / Safe Gate Section inside the card footer */}
+              {/* Safe Gate / Follow-up Section inside the card footer */}
               <div className="p-6 bg-[#11131c] border-t border-border/10">
                 {(() => {
                   const stepStatus = selectedStep.status?.toUpperCase();
@@ -1753,6 +1753,10 @@ function WorkflowRunDetailPage() {
                       </div>
                     );
                   } else {
+                    if (subagent) {
+                      return null;
+                    }
+
                     return (
                       <div className="relative border border-border/60 bg-[#090a0f] rounded-xl p-3 focus-within:border-emerald-500/50 transition-colors">
                         <textarea
