@@ -36,13 +36,17 @@ import {
   type WorkflowStepSessionStart,
 } from "@/features/workflow-engine/workflow-run-detail-timeline";
 import {
+  getExpiredWorkflowRunSessionIds,
+  markWorkflowRunSessionsCompleted,
+} from "@/features/workflow-engine/workflow-run-session-timeout";
+import {
   buildFallbackApprovalDecisionsFromLogs,
   buildFallbackOutputsFromLogs,
   extractBeginPromptFromLogs,
 } from "@/features/workflow-engine/workflow-run-log-fallback";
 import type { ApprovalDecision } from "@/domain/model/entity/workflow";
 import type { LocalRunnerArtifact } from "@/domain/model/entity/local-runner";
-import type { ArtifactRun } from "@/domain/model/entity/workflow-engine";
+import type { ArtifactRun, WorkflowRunSession } from "@/domain/model/entity/workflow-engine";
 import { loadWorkflowRunPromptText } from "@/lib/workflow-run-prompt";
 import { openMarkdownPreviewInNewTab } from "@/lib/markdown-preview";
 
@@ -876,6 +880,48 @@ function WorkflowRunDetailPage() {
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
   const [logsExpanded, setLogsExpanded] = useState(true);
 
+  const reconcileTimedOutSessions = async ({
+    sessionIdleTtlMinutes,
+    sessions,
+  }: {
+    sessionIdleTtlMinutes: number | null | undefined;
+    sessions: WorkflowRunSession[];
+  }) => {
+    const expiredSessionIds = getExpiredWorkflowRunSessionIds({
+      sessionIdleTtlMinutes,
+      sessions,
+    });
+    if (expiredSessionIds.length === 0) {
+      return sessions;
+    }
+
+    const completedAt = new Date().toISOString();
+    const nextSessions = markWorkflowRunSessionsCompleted(
+      sessions,
+      expiredSessionIds,
+      completedAt,
+    );
+
+    try {
+      const supabase = createSupabaseBrowserClient();
+      const { error } = await supabase
+        .from("workflow_run_sessions")
+        .update({
+          status: "completed",
+          completed_at: completedAt,
+          process_key: null,
+        })
+        .in("id", expiredSessionIds);
+      if (error) {
+        console.warn("Failed to reconcile timed-out workflow sessions:", error);
+      }
+    } catch (error) {
+      console.warn("Failed to persist timed-out workflow session reconciliation:", error);
+    }
+
+    return nextSessions;
+  };
+
   const processDetailData = async (data: any) => {
     if (!data) return null;
     let mappedOutputs: WorkflowOutputRecord[] = [];
@@ -964,6 +1010,12 @@ function WorkflowRunDetailPage() {
             logBackedOutputs,
           )
           : [];
+        const mergedSessions = await reconcileTimedOutSessions({
+          sessionIdleTtlMinutes: processed?.project?.sessionIdleTtlMinutes ?? null,
+          sessions: (
+            (engineDetail?.sessions ?? processed.sessions ?? []) as WorkflowRunSession[]
+          ),
+        });
         setOptimisticFollowUps((previous) =>
           pruneResolvedOptimisticFollowUps(
             previous,
@@ -977,7 +1029,7 @@ function WorkflowRunDetailPage() {
               ...processed,
               outputs: mergedOutputs,
               logs: engineDetail?.logs ?? [],
-              sessions: engineDetail?.sessions ?? processed.sessions ?? [],
+              sessions: mergedSessions,
               artifactRuns: stepArtifactRuns,
               approvalDecisions: mergedApprovalDecisions,
               runPromptText: resolvedRunPromptText,
