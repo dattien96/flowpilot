@@ -136,6 +136,10 @@ type BackupRequest struct {
 	RunID string `json:"runId"`
 }
 
+type ArtifactDeletionRequest struct {
+	WorkflowRunIDs []string `json:"workflowRunIds"`
+}
+
 type BackupResult struct {
 	BackupPath  string `json:"backupPath"`
 	ArchiveName string `json:"archiveName"`

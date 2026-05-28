@@ -421,6 +421,25 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 
 				http.NotFound(w, r)
 			})
+			mux.HandleFunc("/artifacts/delete-by-run-ids", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+
+				var payload runner.ArtifactDeletionRequest
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+
+				if err := instance.DeleteArtifactsByWorkflowRunIDs(payload.WorkflowRunIDs); err != nil {
+					writeHTTPError(w, http.StatusInternalServerError, err)
+					return
+				}
+
+				w.WriteHeader(http.StatusNoContent)
+			})
 			mux.HandleFunc("/files/read", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodGet {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

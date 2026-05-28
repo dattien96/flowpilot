@@ -48,6 +48,7 @@ export interface LocalRunnerGateway {
   runMcpTest(request: LocalRunnerMcpTestRequest): Promise<LocalRunnerMcpTestResult>;
   deleteIntegrationConnection(integrationId: string): Promise<void>;
   syncArtifact(artifactId: string): Promise<LocalRunnerArtifact>;
+  deleteArtifactsByWorkflowRunIds(runIds: string[]): Promise<void>;
   createBackup(scope: string, runId: string | null): Promise<LocalRunnerBackupResult>;
   triggerIntegrationConnection(
     request: LocalRunnerIntegrationConnectionRequest,

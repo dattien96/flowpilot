@@ -41,4 +41,27 @@ describe("HttpLocalRunnerGateway", () => {
       }
     });
   });
+
+  describe("deleteArtifactsByWorkflowRunIds", () => {
+    it("posts the workflow run ids to the cleanup endpoint", async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 204,
+        statusText: "No Content",
+      });
+      global.fetch = mockFetch;
+
+      await gateway.deleteArtifactsByWorkflowRunIds(["run-1", " run-2 ", "run-1", ""]);
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      const [url, init] = mockFetch.mock.calls[0];
+      expect(String(url)).toBe("http://localhost:8080/artifacts/delete-by-run-ids");
+      expect(init).toMatchObject({
+        method: "POST",
+      });
+      expect(JSON.parse(init.body as string)).toEqual({
+        workflowRunIds: ["run-1", "run-2"],
+      });
+    });
+  });
 });

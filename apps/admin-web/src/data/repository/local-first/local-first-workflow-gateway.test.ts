@@ -92,6 +92,7 @@ function createLocalRunnerMock(): LocalRunnerGateway {
     syncArtifact: vi.fn(async () => {
       throw new Error("not implemented");
     }),
+    deleteArtifactsByWorkflowRunIds: vi.fn(async () => {}),
     createBackup: vi.fn(async () => {
       throw new Error("not implemented");
     }),
@@ -99,6 +100,19 @@ function createLocalRunnerMock(): LocalRunnerGateway {
       throw new Error("not implemented");
     }),
     executePrompt: vi.fn(async () => {
+      throw new Error("not implemented");
+    }),
+    startSession: vi.fn(async () => {
+      throw new Error("not implemented");
+    }),
+    sendMessage: vi.fn(async () => {
+      throw new Error("not implemented");
+    }),
+    closeSession: vi.fn(async () => {}),
+    authenticateProvider: vi.fn(async () => {
+      throw new Error("not implemented");
+    }),
+    readFile: vi.fn(async () => {
       throw new Error("not implemented");
     }),
   };
@@ -234,13 +248,74 @@ describe("LocalFirstWorkflowGateway", () => {
     expect(outputs[0]?.contentMarkdown).toContain("Real local content");
   });
 
-  it("delegates workflow run deletions to the base gateway", async () => {
+  it("closes active sessions before cleaning artifacts and deleting workflow runs", async () => {
     const base = createBaseGatewayMock();
     const localRunner = createLocalRunnerMock();
     const gateway = new LocalFirstWorkflowGateway(base, localRunner);
 
+    vi.mocked(base.getWorkflowRunDetail).mockResolvedValue({
+      run: {
+        id: "run-1",
+        workflowDefinitionId: "workflow-1",
+        projectId: "project-1",
+        status: "running",
+        currentStepKey: "business_idea",
+        selectedContextSourceIds: [],
+        startedBy: "admin",
+        startedAt: "2026-05-23T00:00:00Z",
+        completedAt: null,
+        errorSummary: null,
+      },
+      steps: [],
+      approvals: [],
+      outputs: [],
+      logs: [],
+      sessions: [
+        {
+          id: "session-1",
+          workflowRunId: "run-1",
+          provider: "codex",
+          model: "gpt-5.4",
+          transportType: "codex_mcp",
+          providerSessionId: "thread-1",
+          processKey: "proc-1",
+          processPid: 1234,
+          status: "active",
+          startedAt: "2026-05-23T00:00:00Z",
+          completedAt: null,
+        },
+        {
+          id: "session-2",
+          workflowRunId: "run-1",
+          provider: "codex",
+          model: "gpt-5.4",
+          transportType: "codex_mcp",
+          providerSessionId: "thread-2",
+          processKey: "proc-2",
+          processPid: 5678,
+          status: "completed",
+          startedAt: "2026-05-23T00:00:00Z",
+          completedAt: "2026-05-23T00:01:00Z",
+        },
+      ],
+      approvalDecisions: [],
+      selectedContextSources: [],
+      project: null,
+      definition: null,
+    });
+
     await gateway.deleteWorkflowRuns(["run-1", "run-2"]);
 
+    expect(base.getWorkflowRunDetail).toHaveBeenCalledWith("run-1");
+    expect(base.getWorkflowRunDetail).toHaveBeenCalledWith("run-2");
+    expect(localRunner.closeSession).toHaveBeenCalledTimes(1);
+    expect(localRunner.closeSession).toHaveBeenCalledWith({
+      transportType: "codex_mcp",
+      providerSessionId: "thread-1",
+      processKey: "proc-1",
+      processPid: 1234,
+    });
+    expect(localRunner.deleteArtifactsByWorkflowRunIds).toHaveBeenCalledWith(["run-1", "run-2"]);
     expect(base.deleteWorkflowRuns).toHaveBeenCalledWith(["run-1", "run-2"]);
   });
 

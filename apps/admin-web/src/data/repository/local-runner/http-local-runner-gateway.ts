@@ -327,6 +327,26 @@ export class HttpLocalRunnerGateway implements LocalRunnerGateway {
     return (await response.json()) as LocalRunnerArtifact;
   }
 
+  async deleteArtifactsByWorkflowRunIds(runIds: string[]) {
+    const uniqueRunIds = [...new Set(runIds)].map((runId) => runId.trim()).filter(Boolean);
+    if (uniqueRunIds.length === 0) {
+      return;
+    }
+
+    const response = await fetch(new URL("/artifacts/delete-by-run-ids", this.baseUrl), {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ workflowRunIds: uniqueRunIds }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Local runner artifact cleanup failed: ${response.status} ${response.statusText}`);
+    }
+  }
+
   async createBackup(scope: string, runId: string | null) {
     const response = await fetch(new URL("/backup", this.baseUrl), {
       method: "POST",
