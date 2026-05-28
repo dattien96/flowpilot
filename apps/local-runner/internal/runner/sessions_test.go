@@ -69,18 +69,18 @@ func TestStartSessionResumesProviderSessionID(t *testing.T) {
 	}
 
 	r, _ := New(".")
-	
+
 	resumeID := "old-codex-thread-123"
-	
+
 	req := AiSessionStartRequest{
-		ProviderKey: "codex",
-		ModelName:   "codex-mcp",
-		WorkingDirectory: ".",
+		ProviderKey:             "codex",
+		ModelName:               "codex-mcp",
+		WorkingDirectory:        ".",
 		ResumeProviderSessionID: &resumeID,
 	}
 
 	handle, err := r.StartSession(context.Background(), req)
-	
+
 	if err != nil {
 		t.Fatalf("StartSession failed: %v", err)
 	}
@@ -88,11 +88,85 @@ func TestStartSessionResumesProviderSessionID(t *testing.T) {
 	if handle.ProviderSessionID != "old-codex-thread-123" {
 		t.Errorf("Expected StartSession to seed handle with old-codex-thread-123, got %s", handle.ProviderSessionID)
 	}
-	
+
 	// Clean up
 	if handle.ProcessKey != nil {
 		r.sessionsMu.Lock()
 		delete(r.sessions, *handle.ProcessKey)
 		r.sessionsMu.Unlock()
+	}
+}
+
+func TestCloseSessionKillsMatchingOrphanProcessByPID(t *testing.T) {
+	originalLookupProcessName := lookupProcessNameFn
+	originalKillProcessByPID := killProcessByPIDFn
+	defer func() {
+		lookupProcessNameFn = originalLookupProcessName
+		killProcessByPIDFn = originalKillProcessByPID
+	}()
+
+	lookupProcessNameFn = func(ctx context.Context, pid int) (string, error) {
+		return "codex.exe", nil
+	}
+
+	killedPID := 0
+	killProcessByPIDFn = func(pid int) error {
+		killedPID = pid
+		return nil
+	}
+
+	r, _ := New(".")
+	processKey := "missing-proc"
+	processPid := 4321
+
+	err := r.CloseSession(context.Background(), AiSessionHandle{
+		TransportType:     "codex_mcp",
+		ProviderSessionID: "thread-1",
+		ProcessKey:        &processKey,
+		ProcessPid:        &processPid,
+	})
+	if err != nil {
+		t.Fatalf("CloseSession failed: %v", err)
+	}
+
+	if killedPID != 4321 {
+		t.Fatalf("expected orphan PID 4321 to be killed, got %d", killedPID)
+	}
+}
+
+func TestCloseSessionDoesNotKillMismatchedOrphanProcessByPID(t *testing.T) {
+	originalLookupProcessName := lookupProcessNameFn
+	originalKillProcessByPID := killProcessByPIDFn
+	defer func() {
+		lookupProcessNameFn = originalLookupProcessName
+		killProcessByPIDFn = originalKillProcessByPID
+	}()
+
+	lookupProcessNameFn = func(ctx context.Context, pid int) (string, error) {
+		return "powershell.exe", nil
+	}
+
+	killed := false
+	killProcessByPIDFn = func(pid int) error {
+		killed = true
+		return nil
+	}
+
+	r, _ := New(".")
+	processKey := "missing-proc"
+	processPid := 4321
+
+	err := r.CloseSession(context.Background(), AiSessionHandle{
+		TransportType:     "codex_mcp",
+		ProviderSessionID: "thread-1",
+		ProcessKey:        &processKey,
+		ProcessPid:        &processPid,
+	})
+	if err != nil {
+		t.Fatalf("CloseSession failed: %v", err)
+	}
+
+	if killed {
+		t.Fatal("expected mismatched orphan process to be left untouched")
 	}
 }

@@ -36,9 +36,17 @@ import {
   type WorkflowStepSessionStart,
 } from "@/features/workflow-engine/workflow-run-detail-timeline";
 import {
+  canCancelWorkflowRun,
+  canResumeWorkflowRun,
+  getInterruptedWorkflowRunStepIds,
+  INTERRUPTED_RUN_ERROR,
+  isInterruptedWorkflowStep,
+} from "@/features/workflow-engine/workflow-run-interruption";
+import {
   getExpiredWorkflowRunSessionIds,
   markWorkflowRunSessionsCompleted,
 } from "@/features/workflow-engine/workflow-run-session-timeout";
+import { getMissingWorkflowRunSessionIds } from "@/features/workflow-engine/workflow-run-session-liveness";
 import {
   buildFallbackApprovalDecisionsFromLogs,
   buildFallbackOutputsFromLogs,
@@ -968,6 +976,72 @@ function WorkflowRunDetailPage() {
     return nextSessions;
   };
 
+  const reconcileLiveSessions = async ({
+    sessions,
+  }: {
+    sessions: WorkflowRunSession[];
+  }) => {
+    if (sessions.length === 0) {
+      return sessions;
+    }
+
+    let liveSessions: Array<{ processKey: string | null }> = [];
+    try {
+      liveSessions = await gatewayBundle.current.localRunnerGateway.listSessions();
+    } catch (error) {
+      console.warn("Unable to load live runner sessions for detail reconciliation:", error);
+      return sessions;
+    }
+
+    const staleSessionIds = getMissingWorkflowRunSessionIds({
+      sessions,
+      liveProcessKeys: liveSessions
+        .map((session) => session.processKey ?? "")
+        .filter((processKey) => processKey.length > 0),
+    });
+    if (staleSessionIds.length === 0) {
+      return sessions;
+    }
+
+    const completedAt = new Date().toISOString();
+    const staleSessions = sessions.filter((session) => staleSessionIds.includes(session.id));
+    try {
+      await Promise.allSettled(
+        staleSessions.map((session) =>
+          gatewayBundle.current.localRunnerGateway.closeSession({
+            transportType: session.transportType,
+            providerSessionId: session.providerSessionId ?? "",
+            processKey: session.processKey,
+            processPid: session.processPid ?? null,
+          }),
+        ),
+      );
+
+      const supabase = createSupabaseBrowserClient();
+      const { error } = await supabase
+        .from("workflow_run_sessions")
+        .update({
+          status: "completed",
+          completed_at: completedAt,
+          process_key: null,
+          process_pid: null,
+        })
+        .in("id", staleSessionIds);
+      if (error) {
+        throw new Error(error.message);
+      }
+    } catch (error) {
+      console.warn("Unable to reconcile stale workflow sessions in detail view:", error);
+      return sessions;
+    }
+
+    return markWorkflowRunSessionsCompleted(
+      sessions,
+      staleSessionIds,
+      completedAt,
+    );
+  };
+
   const handleKillSession = async (session: WorkflowRunSession) => {
     if (session.status !== "active") {
       return;
@@ -1069,11 +1143,11 @@ function WorkflowRunDetailPage() {
         | { steps?: any[]; logs: any[]; sessions?: any[] | null }
         | null;
       if (data) {
-        const processed = await processDetailData(data);
+        let processed = await processDetailData(data);
         const engineLogs = engineDetail?.logs ?? [];
         const promptFromLogs = extractBeginPromptFromLogs(engineLogs);
         const resolvedRunPromptText = promptFromLogs ?? promptText;
-        const mergedSteps = appendSyntheticResultSummarySteps({
+        let mergedSteps = appendSyntheticResultSummarySteps({
           baseSteps: processed.steps ?? [],
           engineSteps: (engineDetail?.steps ?? []) as any[],
           runId,
@@ -1107,12 +1181,72 @@ function WorkflowRunDetailPage() {
             logBackedOutputs,
           )
           : [];
-        const mergedSessions = await reconcileTimedOutSessions({
+        let mergedSessions = await reconcileTimedOutSessions({
           sessionIdleTtlMinutes: processed?.project?.sessionIdleTtlMinutes ?? null,
           sessions: (
             (engineDetail?.sessions ?? processed.sessions ?? []) as WorkflowRunSession[]
           ),
         });
+        mergedSessions = await reconcileLiveSessions({
+          sessions: mergedSessions,
+        });
+
+        const interruptedStepIds = getInterruptedWorkflowRunStepIds({
+          run: processed?.run,
+          steps: mergedSteps,
+          sessions: mergedSessions,
+        });
+        if (processed && interruptedStepIds.length > 0) {
+          const failedAt = new Date().toISOString();
+          try {
+            const supabase = createSupabaseBrowserClient();
+            const { error: stepsError } = await supabase
+              .from("workflow_run_steps")
+              .update({
+                status: "FAILED",
+                finished_at: failedAt,
+                error_message: INTERRUPTED_RUN_ERROR,
+              })
+              .in("id", interruptedStepIds);
+            if (stepsError) {
+              throw new Error(stepsError.message);
+            }
+
+            const { error: runError } = await supabase
+              .from("workflow_runs")
+              .update({
+                status: "FAILED",
+                finished_at: failedAt,
+                error_message: INTERRUPTED_RUN_ERROR,
+              })
+              .eq("id", processed.run.id);
+            if (runError) {
+              throw new Error(runError.message);
+            }
+          } catch (error) {
+            console.warn("Unable to reconcile interrupted workflow run:", error);
+          }
+
+          mergedSteps = mergedSteps.map((step: any) =>
+            interruptedStepIds.includes(step.id)
+              ? {
+                  ...step,
+                  status: "FAILED",
+                  finishedAt: failedAt,
+                  errorMessage: INTERRUPTED_RUN_ERROR,
+                }
+              : step,
+          );
+          processed = {
+            ...processed,
+            run: {
+              ...processed.run,
+              status: "failed",
+              completedAt: failedAt,
+              errorSummary: INTERRUPTED_RUN_ERROR,
+            },
+          };
+        }
         setOptimisticFollowUps((previous) =>
           pruneResolvedOptimisticFollowUps(
             previous,
@@ -1255,6 +1389,27 @@ function WorkflowRunDetailPage() {
 
   const visibleLogs = logView === "session" ? sessionEventLogs : allLogs;
   const isSessionLogView = logView === "session";
+  const canResumeRun = useMemo(
+    () =>
+      canResumeWorkflowRun({
+        run: detail?.run,
+        steps: (detail?.steps as Array<{ id: string; status: string }> | undefined) ?? [],
+      }),
+    [detail?.run, detail?.steps],
+  );
+  const canCancelRun = useMemo(
+    () => canCancelWorkflowRun(detail?.run),
+    [detail?.run],
+  );
+  const selectedStep =
+    detail?.steps.find((step: any) => step.id === selectedStepId) ??
+    detail?.steps[0];
+  const selectedStepIndex =
+    detail?.steps.findIndex((step: any) => step.id === selectedStepId) ?? -1;
+  const isInterruptedFailedStep = isInterruptedWorkflowStep({
+    status: selectedStep?.status,
+    errorMessage: selectedStep?.errorMessage,
+  });
 
   const runTitle = useMemo(
     () => summarizeRunPrompt(runPromptText ?? undefined),
@@ -1376,6 +1531,32 @@ function WorkflowRunDetailPage() {
     }
   };
 
+  const handleReplayInterruptedStep = async () => {
+    if (!selectedStep) {
+      return;
+    }
+
+    const replayPrompt =
+      decisionComment.trim() ||
+      runPromptText?.trim() ||
+      "Replay the previous prompt in a new session.";
+
+    setSubmittingDecision(true);
+    try {
+      await submitStepApprovalDecisionUseCase.current.execute(
+        selectedStep.id,
+        false,
+        replayPrompt,
+      );
+      setDecisionComment("");
+      await loadData();
+    } catch (err: any) {
+      alert(`Replay failed: ${err.message}`);
+    } finally {
+      setSubmittingDecision(false);
+    }
+  };
+
   const handleToggleYolo = async () => {
     if (!detail?.run) return;
     setTogglingYolo(true);
@@ -1470,8 +1651,6 @@ function WorkflowRunDetailPage() {
     );
   }
 
-  const selectedStep = detail.steps.find((s: any) => s.id === selectedStepId) || detail.steps[0];
-  const selectedStepIndex = detail.steps.findIndex((s: any) => s.id === selectedStepId);
   const isSummaryStep =
     isResultSummaryStepType(selectedStep?.stepKey) ||
     isResultSummaryStepType(selectedStep?.stepType);
@@ -1720,28 +1899,34 @@ function WorkflowRunDetailPage() {
 
               {/* Action Buttons: Resume, Cancel, YOLO */}
               <div className="flex items-center gap-3 shrink-0">
-                {detail.run.status !== "completed" && detail.run.status !== "rejected" ? (
+                {canResumeRun || canCancelRun ? (
                   <>
-                    <Button
-                      variant="secondary"
-                      className="h-8 rounded-lg px-3 text-xs font-semibold"
-                      disabled={processingAction || detail.run.status === "running"}
-                      onClick={handleResume}
-                    >
-                      <Play className="mr-1.5 h-3.5 w-3.5 fill-current" /> Resume
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      className="h-8 rounded-lg px-3 text-xs"
-                      disabled={processingAction}
-                      onClick={handleCancel}
-                    >
-                      <X className="mr-1.5 h-3.5 w-3.5" /> Cancel
-                    </Button>
+                    {canResumeRun ? (
+                      <Button
+                        variant="secondary"
+                        className="h-8 rounded-lg px-3 text-xs font-semibold"
+                        disabled={processingAction}
+                        onClick={handleResume}
+                      >
+                        <Play className="mr-1.5 h-3.5 w-3.5 fill-current" /> Resume
+                      </Button>
+                    ) : null}
+                    {canCancelRun ? (
+                      <Button
+                        variant="ghost"
+                        className="h-8 rounded-lg px-3 text-xs"
+                        disabled={processingAction}
+                        onClick={handleCancel}
+                      >
+                        <X className="mr-1.5 h-3.5 w-3.5" /> Cancel
+                      </Button>
+                    ) : null}
                   </>
                 ) : null}
 
-                <div className="h-4 w-[1px] bg-border/20" />
+                {canResumeRun || canCancelRun ? (
+                  <div className="h-4 w-[1px] bg-border/20" />
+                ) : null}
 
                 <div className="flex items-center gap-2 rounded-full border border-border bg-card/60 px-3 py-1 text-[11px]">
                   <span className="font-medium text-muted-foreground uppercase tracking-wider">
@@ -1763,15 +1948,17 @@ function WorkflowRunDetailPage() {
             </div>
 
             <div className="space-y-3">
-              <div>
-                <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full border text-[10px] font-semibold uppercase tracking-wider ${stepArtifactRun
-                  ? "bg-emerald-500/5 border-emerald-500/20 text-emerald-400"
-                  : "bg-accent/5 border-accent/20 text-accent"
-                  }`}>
-                  <FileText className="h-3.5 w-3.5" />
-                  {stepArtifactRun ? "Artifact Generated" : "Response Captured"}
-                </span>
-              </div>
+              {stepArtifactRun || stepOutputs.length > 0 ? (
+                <div>
+                  <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full border text-[10px] font-semibold uppercase tracking-wider ${stepArtifactRun
+                    ? "bg-emerald-500/5 border-emerald-500/20 text-emerald-400"
+                    : "bg-accent/5 border-accent/20 text-accent"
+                    }`}>
+                    <FileText className="h-3.5 w-3.5" />
+                    {stepArtifactRun ? "Artifact Generated" : "Response Captured"}
+                  </span>
+                </div>
+              ) : null}
             </div>
 
             {/* Step contents timeline */}
@@ -1816,7 +2003,11 @@ function WorkflowRunDetailPage() {
                   const runStatus = detail.run.status?.toUpperCase();
                   const isWaiting = stepStatus === "WAITING_USER_APPROVAL";
                   const isDone = stepStatus === "DONE" || stepStatus === "COMPLETED";
-                  const canContinue = (isWaiting || isDone) && runStatus !== "REJECTED" && runStatus !== "FAILED";
+                  const canContinue =
+                    ((isWaiting || isDone) &&
+                      runStatus !== "REJECTED" &&
+                      runStatus !== "FAILED") ||
+                    isInterruptedFailedStep;
 
                   if (!canContinue) return null;
 
@@ -1870,7 +2061,11 @@ function WorkflowRunDetailPage() {
                       <div className="relative border border-border/60 bg-[#090a0f] rounded-xl p-3 focus-within:border-emerald-500/50 transition-colors">
                         <textarea
                           className="w-full min-h-[60px] pb-12 resize-none bg-transparent text-sm text-foreground focus:outline-none placeholder:text-muted-foreground/60 leading-relaxed"
-                          placeholder="Type chat for follow-up interactions..."
+                          placeholder={
+                            isInterruptedFailedStep
+                              ? "Replay the prompt in a new session, or edit it before sending..."
+                              : "Type chat for follow-up interactions..."
+                          }
                           value={decisionComment}
                           onChange={(e) => {
                             setDecisionComment(e.target.value);
@@ -1880,10 +2075,23 @@ function WorkflowRunDetailPage() {
                         <div className="absolute bottom-3 right-3">
                           <Button
                             className="rounded-lg px-4 h-8 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs transition-colors"
-                            disabled={submittingDecision || !decisionComment.trim()}
-                            onClick={() => handleDecision(selectedStep.id, "changes_requested")}
+                            disabled={
+                              submittingDecision ||
+                              (!isInterruptedFailedStep && !decisionComment.trim())
+                            }
+                            onClick={() =>
+                              isInterruptedFailedStep
+                                ? handleReplayInterruptedStep()
+                                : handleDecision(selectedStep.id, "changes_requested")
+                            }
                           >
-                            {submittingDecision ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : "Send"}
+                            {submittingDecision ? (
+                              <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                            ) : isInterruptedFailedStep ? (
+                              "Replay"
+                            ) : (
+                              "Send"
+                            )}
                           </Button>
                         </div>
                       </div>
