@@ -885,7 +885,7 @@ function SessionGroupSection({
 }
 
 export const Route = createFileRoute("/_authenticated/workflow-runs/$runId")({
-  validateSearch: (search: Record<string, unknown>) => ({
+  validateSearch: (search: Record<string, unknown>): { logView?: "session" } => ({
     logView: search.logView === "session" ? "session" : undefined,
   }),
   component: WorkflowRunDetailPage,

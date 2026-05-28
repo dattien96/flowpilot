@@ -2273,10 +2273,11 @@ export async function runWorkflowStartRuntime({
     }
   }
 
-  let activeStepRunId: string | null = null;
-  const completedSummarySteps: ResultSummarySourceStep[] = [];
+  const executeWorkflow = async () => {
+    let activeStepRunId: string | null = null;
+    const completedSummarySteps: ResultSummarySourceStep[] = [];
 
-  try {
+    try {
     for (const stepPlan of stepPlans) {
       const stepRunId = stepRunIds.get(stepPlan.planKey);
       if (!stepRunId) {
@@ -2489,8 +2490,6 @@ export async function runWorkflowStartRuntime({
     if (completedRunError) {
       throw new Error(`Unable to finalize workflow run: ${completedRunError.message}`);
     }
-
-    return completedRun;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Workflow execution failed.";
     await finalizeWorkflowRunSessions(
@@ -2518,6 +2517,12 @@ export async function runWorkflowStartRuntime({
         error_message: message,
       })
       .eq("id", runRow.id);
-    throw error;
   }
+  };
+
+  void executeWorkflow().catch((err) => {
+    console.error("Failed to execute background workflow:", err);
+  });
+
+  return runRow;
 }
