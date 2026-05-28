@@ -44,6 +44,11 @@ import {
   buildFallbackOutputsFromLogs,
   extractBeginPromptFromLogs,
 } from "@/features/workflow-engine/workflow-run-log-fallback";
+import {
+  appendSyntheticResultSummarySteps,
+  isResultSummaryStepType,
+  RESULT_SUMMARY_STEP_NAME,
+} from "@/features/workflow-engine/workflow-result-summary";
 import type { ApprovalDecision } from "@/domain/model/entity/workflow";
 import type { LocalRunnerArtifact } from "@/domain/model/entity/local-runner";
 import type { ArtifactRun, WorkflowRunSession } from "@/domain/model/entity/workflow-engine";
@@ -1061,13 +1066,18 @@ function WorkflowRunDetailPage() {
         getWorkflowEngineRunDetailUseCase.current.execute(runId),
       ]);
       const engineDetail = engineDetailRaw as
-        | { logs: any[]; sessions?: any[] | null }
+        | { steps?: any[]; logs: any[]; sessions?: any[] | null }
         | null;
       if (data) {
         const processed = await processDetailData(data);
         const engineLogs = engineDetail?.logs ?? [];
         const promptFromLogs = extractBeginPromptFromLogs(engineLogs);
         const resolvedRunPromptText = promptFromLogs ?? promptText;
+        const mergedSteps = appendSyntheticResultSummarySteps({
+          baseSteps: processed.steps ?? [],
+          engineSteps: (engineDetail?.steps ?? []) as any[],
+          runId,
+        });
         const artifactRuns = await listArtifactRunsUseCase.current.execute(
           processed.run.projectId,
         );
@@ -1081,7 +1091,7 @@ function WorkflowRunDetailPage() {
             logs: engineLogs,
             projectId: processed.run.projectId,
             runId,
-            steps: processed.steps ?? [],
+            steps: mergedSteps,
           })
           : [];
         const logBackedDecisions = buildFallbackApprovalDecisionsFromLogs(
@@ -1114,6 +1124,7 @@ function WorkflowRunDetailPage() {
           processed
             ? {
               ...processed,
+              steps: mergedSteps,
               outputs: mergedOutputs,
               logs: engineDetail?.logs ?? [],
               sessions: mergedSessions,
@@ -1461,8 +1472,16 @@ function WorkflowRunDetailPage() {
 
   const selectedStep = detail.steps.find((s: any) => s.id === selectedStepId) || detail.steps[0];
   const selectedStepIndex = detail.steps.findIndex((s: any) => s.id === selectedStepId);
+  const isSummaryStep =
+    isResultSummaryStepType(selectedStep?.stepKey) ||
+    isResultSummaryStepType(selectedStep?.stepType);
 
   const stepOutputs = (outputsByStepId.get(selectedStep?.id) as WorkflowOutputRecord[] | undefined) ?? [];
+  const summaryOutput = isSummaryStep
+    ? [...stepOutputs]
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+      .at(-1)
+    : null;
   const stepArtifactRun = ((detail.artifactRuns ?? []) as ArtifactRun[]).find(
     (artifactRun) => artifactRun.workflowRunStepId === selectedStep?.id,
   ) ?? null;
@@ -1527,6 +1546,9 @@ function WorkflowRunDetailPage() {
           {detail.steps.map((step: any, idx: number) => {
             const isSelected = step.id === selectedStepId;
             const status = step.status?.toUpperCase();
+            const isSummaryItem =
+              isResultSummaryStepType(step.stepKey) ||
+              isResultSummaryStepType(step.stepType);
 
             let statusIcon = null;
             if (status === "DONE" || status === "COMPLETED") {
@@ -1552,11 +1574,11 @@ function WorkflowRunDetailPage() {
               >
                 <div className="min-w-0 flex-1">
                   <p className="text-[10px] font-mono text-muted-foreground uppercase tracking-wider">
-                    Step {idx + 1}
+                    {isSummaryItem ? "Final step" : `Step ${idx + 1}`}
                   </p>
                   <h3 className={`text-sm font-semibold truncate mt-0.5 ${isSelected ? "text-accent font-bold" : "text-foreground"
                     }`}>
-                    {step.stepName}
+                    {isSummaryItem ? RESULT_SUMMARY_STEP_NAME : step.stepName}
                   </h3>
                   <p className="text-[10px] text-muted-foreground uppercase mt-1">
                     {status}
@@ -1572,6 +1594,86 @@ function WorkflowRunDetailPage() {
       {/* Right Details Workspace */}
       <main className="flex-grow flex flex-col h-full bg-[#0c0d12] overflow-y-auto p-6 lg:p-8">
         {selectedStep ? (
+          isSummaryStep ? (
+            <div className="max-w-4xl w-full mx-auto bg-[#11131c] border border-border/20 rounded-[1.6rem] p-8 shadow-2xl space-y-6 relative">
+              <div className="absolute top-8 right-8 flex items-center gap-3">
+                <button className="text-muted-foreground hover:text-foreground transition-colors p-1.5 rounded-lg hover:bg-muted/10">
+                  <span className="text-sm font-semibold">?</span>
+                </button>
+                <Link to="/workflow-runs">
+                  <button className="text-muted-foreground hover:text-foreground transition-colors p-1.5 rounded-lg hover:bg-muted/15">
+                    <X className="h-5 w-5" />
+                  </button>
+                </Link>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border/10 pb-4 pr-20">
+                <div>
+                  <span className="text-[10px] font-bold text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded uppercase tracking-widest">
+                    SUMMARY
+                  </span>
+                  <h2 className="mt-1 text-2xl font-bold tracking-tight text-foreground flex items-center gap-2.5 flex-wrap">
+                    {RESULT_SUMMARY_STEP_NAME}
+                    <span className={`px-2.5 py-0.5 rounded-full text-xs font-semibold uppercase tracking-wider ${selectedStep.status === "DONE" || selectedStep.status === "COMPLETED"
+                      ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                      : "bg-accent/10 text-accent border border-accent/20"
+                      }`}>
+                      {selectedStep.status}
+                    </span>
+                  </h2>
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    Final workflow-level summary generated from the completed steps in this run.
+                  </p>
+                </div>
+
+                {summaryOutput?.contentMarkdown?.trim() ? (
+                  <div className="flex items-center gap-2 shrink-0">
+                    <Button
+                      variant="secondary"
+                      className="h-8 rounded-lg px-3 text-xs font-semibold"
+                      onClick={() => {
+                        navigator.clipboard.writeText(summaryOutput.contentMarkdown);
+                      }}
+                    >
+                      <Copy className="mr-1.5 h-3.5 w-3.5" /> Copy
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      className="h-8 rounded-lg px-3 text-xs font-semibold"
+                      onClick={() =>
+                        openMarkdownPreviewInNewTab(
+                          summaryOutput.contentMarkdown,
+                          `${detail.run.title || detail.run.id} Summary`,
+                        )
+                      }
+                    >
+                      <ExternalLink className="mr-1.5 h-3.5 w-3.5" /> Open
+                    </Button>
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="rounded-2xl border border-border/70 bg-[#0c0f16] p-6">
+                {summaryOutput?.contentMarkdown?.trim() ? (
+                  <pre className="whitespace-pre-wrap break-words font-mono text-sm leading-7 text-foreground">
+                    {summaryOutput.contentMarkdown}
+                  </pre>
+                ) : selectedStep.status === "PENDING" || selectedStep.status === "RUNNING" ? (
+                  <p className="text-sm text-muted-foreground">
+                    Summary is being generated...
+                  </p>
+                ) : selectedStep.errorMessage ? (
+                  <div className="rounded-xl bg-destructive/10 border border-destructive/20 p-4 text-sm text-destructive">
+                    {selectedStep.errorMessage}
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    No summary text generated yet.
+                  </p>
+                )}
+              </div>
+            </div>
+          ) : (
           <div className="max-w-4xl w-full mx-auto bg-[#11131c] border border-border/20 rounded-[1.6rem] p-8 shadow-2xl space-y-6 relative">
 
             {/* Top Right Close & Help buttons */}
@@ -1893,6 +1995,7 @@ function WorkflowRunDetailPage() {
             </div>
 
           </div>
+          )
         ) : (
           <div className="rounded-[1.6rem] border border-border bg-background/50 p-6 text-center text-muted-foreground">
             Select a step from the pipeline steps list to view details.
