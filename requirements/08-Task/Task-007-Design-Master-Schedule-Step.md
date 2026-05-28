@@ -1,4 +1,4 @@
-# CP-08: Master Schedule & Task Board
+# Task-007: Master Schedule & Task Board
 
 **Maps from:** SS-03 (Team & Members), SS-04 §3.5.9 (Task Breakdown Step), SD-04 (Project Management DB)
 **Phase:** 5
