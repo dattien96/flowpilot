@@ -282,10 +282,10 @@ export function AppShell({ children }: { children: ReactNode }) {
                     Restarting...
                   </div>
                 ) : (
-                  <div className="grid grid-cols-2 items-stretch gap-1 rounded-[1.25rem] border border-border/80 bg-background/50 p-1 backdrop-blur-sm transition-all">
+                  <div className="grid grid-cols-2 gap-2">
                     <button
                       onClick={handleShutdown}
-                      className="flex min-w-0 items-center justify-center rounded-[1rem] py-2 text-muted-foreground hover:bg-destructive hover:text-white active:scale-95 transition-all duration-200 outline-none focus-visible:ring-1 focus-visible:ring-accent"
+                      className="flex min-w-0 items-center justify-center rounded-[1rem] border border-emerald-500/30 bg-emerald-500/5 py-2 text-muted-foreground hover:bg-destructive hover:border-destructive hover:text-white active:scale-95 transition-all duration-200 outline-none focus-visible:ring-1 focus-visible:ring-accent"
                       title="Shutdown Dev Stack"
                       type="button"
                     >
@@ -293,7 +293,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                     </button>
                     <button
                       onClick={handleRestart}
-                      className="flex min-w-0 items-center justify-center rounded-[1rem] py-2 text-muted-foreground hover:bg-muted/70 hover:text-foreground active:scale-95 transition-all duration-200 outline-none focus-visible:ring-1 focus-visible:ring-accent"
+                      className="flex min-w-0 items-center justify-center rounded-[1rem] border border-emerald-500/30 bg-emerald-500/5 py-2 text-muted-foreground hover:bg-muted/70 hover:text-foreground active:scale-95 transition-all duration-200 outline-none focus-visible:ring-1 focus-visible:ring-accent"
                       title="Restart Dev Stack"
                       type="button"
                     >
