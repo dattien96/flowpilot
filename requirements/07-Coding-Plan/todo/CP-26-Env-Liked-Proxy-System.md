@@ -304,3 +304,148 @@ Create a user interface inside the Settings area of the Admin web app:
 | `apps/local-runner/internal/cli/root.go` | Auth trigger HTTP REST endpoint registration |
 | `supabase/migrations/20260528120000_create_local_environments.sql` | Database schema migrations |
 | `apps/admin-web/src/features/workflow-engine/workflow-start-runtime.ts` | Step environment routing and rotation executor |
+
+# DEMO
+
+Use three separate Codex homes and log into each one independently.
+
+**Create the three homes**
+Open PowerShell:
+
+```powershell
+$codexHome1 = "$HOME\.codexHome1"
+$codexHome2 = "$HOME\.codexHome2"
+$codexHome3 = "$HOME\.codexHome3"
+
+New-Item -ItemType Directory -Force -Path $codexHome1 | Out-Null
+New-Item -ItemType Directory -Force -Path $codexHome2 | Out-Null
+New-Item -ItemType Directory -Force -Path $codexHome3 | Out-Null
+```
+
+**Login to account 1**
+Open a fresh PowerShell window and run:
+
+```powershell
+$env:CODEX_HOME = "$HOME\.codexHome1"
+codex login
+```
+
+When the browser opens, sign in with account 1.
+
+Verify:
+
+```powershell
+$env:CODEX_HOME
+Test-Path "$env:CODEX_HOME\auth.json"
+```
+
+You want:
+- `CODEX_HOME` = `C:\Users\<your-user>\.codexHome1`
+- `Test-Path` = `True`
+
+**Login to account 2**
+Open another fresh PowerShell window:
+
+```powershell
+$env:CODEX_HOME = "$HOME\.codexHome2"
+codex login
+```
+
+Sign in with account 2.
+
+Verify:
+
+```powershell
+$env:CODEX_HOME
+Test-Path "$env:CODEX_HOME\auth.json"
+```
+
+**Login to account 3**
+Open another fresh PowerShell window:
+
+```powershell
+$env:CODEX_HOME = "$HOME\.codexHome3"
+codex login
+```
+
+Sign in with account 3.
+
+Verify:
+
+```powershell
+$env:CODEX_HOME
+Test-Path "$env:CODEX_HOME\auth.json"
+```
+
+**Important browser note**
+If the browser auto-signs you into the wrong ChatGPT account, use one of these:
+- incognito/private window
+- different browser profile
+- log out of ChatGPT first in that browser session
+
+Otherwise account 2 or 3 may accidentally become the same as account 1.
+
+**Use each account later**
+Account 1 shell:
+
+```powershell
+$env:CODEX_HOME = "$HOME\.codexHome1"
+codex
+```
+
+Account 2 shell:
+
+```powershell
+$env:CODEX_HOME = "$HOME\.codexHome2"
+codex
+```
+
+Account 3 shell:
+
+```powershell
+$env:CODEX_HOME = "$HOME\.codexHome3"
+codex
+```
+
+For one-off commands:
+
+```powershell
+$env:CODEX_HOME = "$HOME\.codexHome1"; codex exec "hello"
+$env:CODEX_HOME = "$HOME\.codexHome2"; codex exec "hello"
+$env:CODEX_HOME = "$HOME\.codexHome3"; codex exec "hello"
+```
+
+**Check the auth files directly**
+You can confirm the three homes are separate:
+
+```powershell
+Test-Path "$HOME\.codexHome1\auth.json"
+Test-Path "$HOME\.codexHome2\auth.json"
+Test-Path "$HOME\.codexHome3\auth.json"
+```
+
+All three should return `True`.
+
+**What not to do**
+- Do not copy `auth.json` from one home to another.
+- Do not log in once and duplicate the file.
+- Do not leave `CODEX_HOME` unset if you intend to use one of these accounts.
+
+**Return to default Codex behavior**
+In a shell where you want normal `~/.codex` again:
+
+```powershell
+Remove-Item Env:CODEX_HOME
+```
+
+**Success means**
+You are done if:
+1. `C:\Users\<you>\.codexHome1\auth.json` exists
+2. `C:\Users\<you>\.codexHome2\auth.json` exists
+3. `C:\Users\<you>\.codexHome3\auth.json` exists
+4. `codex` runs from each `CODEX_HOME` without forcing re-login
+
+If you want, next I can give you permanent launcher scripts:
+- `codex1.ps1`
+- `codex2.ps1`
+- `codex3.ps1`

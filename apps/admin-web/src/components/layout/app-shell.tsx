@@ -132,6 +132,9 @@ export function AppShell({ children }: { children: ReactNode }) {
     select: (state) => state.location.pathname,
   });
   const [settingsStatuses, setSettingsStatuses] = useState<SettingsNavStatusMap>({});
+  const [runnerOnline, setRunnerOnline] = useState<boolean>(false);
+  const [isPending, setIsPending] = useState<"shutdown" | "restart" | null>(null);
+
 
   useEffect(() => {
     let cancelled = false;
@@ -149,6 +152,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         }
 
         setSettingsStatuses(createSettingsNavStatuses(integrations, runnerHealth));
+        setRunnerOnline(runnerHealth.status === "online");
       } catch {
         if (cancelled) {
           return;
@@ -165,6 +169,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             errorMessage: null,
           }),
         );
+        setRunnerOnline(false);
       }
     }
 
@@ -178,6 +183,53 @@ export function AppShell({ children }: { children: ReactNode }) {
       window.clearInterval(intervalId);
     };
   }, [pathname]);
+
+  const handleShutdown = async () => {
+    if (!window.confirm("Are you sure you want to shut down the dev stack?")) return;
+    setIsPending("shutdown");
+    try {
+      const gateways = createGatewayBundle();
+      await gateways.localRunnerGateway.shutdownStack();
+    } catch (err) {
+      console.error("Shutdown failed", err);
+      setIsPending(null);
+    }
+  };
+
+  const handleRestart = async () => {
+    if (!window.confirm("Are you sure you want to restart the dev stack?")) return;
+    setIsPending("restart");
+    try {
+      const gateways = createGatewayBundle();
+      await gateways.localRunnerGateway.restartStack();
+      
+      // Poll runner health
+      const interval = setInterval(async () => {
+        try {
+          const innerGateways = createGatewayBundle();
+          const health = await new CheckLocalRunnerHealthUseCase(innerGateways.localRunnerGateway).execute();
+          if (health.status === "online") {
+            clearInterval(interval);
+            setIsPending(null);
+            const integrations = await innerGateways.integrationGateway.listAllIntegrations();
+            setSettingsStatuses(createSettingsNavStatuses(integrations, health));
+            setRunnerOnline(true);
+          }
+        } catch (e) {
+          // keep polling
+        }
+      }, 2000);
+      
+      setTimeout(() => {
+        clearInterval(interval);
+        setIsPending((current) => current === "restart" ? null : current);
+      }, 30000);
+    } catch (err) {
+      console.error("Restart failed", err);
+      setIsPending(null);
+    }
+  };
+
 
   return (
     <div className={APP_SHELL_LAYOUT_CLASSES.outer}>
@@ -215,12 +267,47 @@ export function AppShell({ children }: { children: ReactNode }) {
               <ThemeSwitcher className="w-full" compact />
             </div>
 
+            {runnerOnline && (
+              <div className="flex flex-col gap-2 rounded-2xl border border-border/60 bg-background/40 p-3">
+                <p className="font-mono text-[9px] uppercase tracking-[0.28em] text-muted-foreground">
+                  Dev Stack
+                </p>
+                {isPending === "shutdown" ? (
+                  <Button disabled className="w-full justify-center" variant="destructive">
+                    Shutting down...
+                  </Button>
+                ) : isPending === "restart" ? (
+                  <Button disabled className="w-full justify-center" variant="secondary">
+                    Restarting...
+                  </Button>
+                ) : (
+                  <div className="flex gap-2">
+                    <Button
+                      className="flex-1 justify-center text-xs font-bold uppercase tracking-wider"
+                      onClick={handleShutdown}
+                      variant="destructive"
+                    >
+                      Shutdown
+                    </Button>
+                    <Button
+                      className="flex-1 justify-center text-xs font-bold uppercase tracking-wider"
+                      onClick={handleRestart}
+                      variant="secondary"
+                    >
+                      Restart
+                    </Button>
+                  </div>
+                )}
+              </div>
+            )}
+
             {session?.mode === "supabase" ? (
               <Button className="w-full justify-center" onClick={() => void signOut()} variant="secondary">
                 Sign out
               </Button>
             ) : null}
           </div>
+
         </aside>
 
         <main className={APP_SHELL_LAYOUT_CLASSES.main}>

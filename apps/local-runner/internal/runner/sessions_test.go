@@ -423,3 +423,112 @@ func TestCloseSessionDoesNotKillMismatchedOrphanProcessByPID(t *testing.T) {
 		t.Fatal("expected mismatched orphan process to be left untouched")
 	}
 }
+
+func TestCloseSessionKillsActiveClaudeCommand(t *testing.T) {
+	originalCmdCtx := commandContextFn
+	originalLookPath := lookPathFn
+	defer func() {
+		commandContextFn = originalCmdCtx
+		lookPathFn = originalLookPath
+	}()
+
+	lookPathFn = func(file string) (string, error) {
+		return file, nil
+	}
+
+	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+		script := "Start-Sleep -Seconds 10"
+		return exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
+	}
+
+	r, _ := New(".")
+	handle, err := r.StartSession(context.Background(), AiSessionStartRequest{
+		ProviderKey:      "claude",
+		ModelName:        "claude-haiku",
+		WorkingDirectory: ".",
+	})
+	if err != nil {
+		t.Fatalf("StartSession failed: %v", err)
+	}
+
+	errChan := make(chan error, 1)
+	go func() {
+		_, err := r.SendMessage(context.Background(), AiSessionMessageRequest{
+			Session: handle,
+			Prompt:  "simulate message execution",
+		})
+		errChan <- err
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+
+	startTime := time.Now()
+	err = r.CloseSession(context.Background(), handle)
+	if err != nil {
+		t.Fatalf("CloseSession failed: %v", err)
+	}
+
+	select {
+	case sendErr := <-errChan:
+		if sendErr == nil {
+			t.Fatal("expected SendMessage to fail after CloseSession killed it")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("SendMessage did not exit within 3 seconds after CloseSession")
+	}
+
+	if time.Since(startTime) > 2*time.Second {
+		t.Errorf("expected CloseSession to finish quickly, took %v", time.Since(startTime))
+	}
+}
+
+func TestCleanupSessionsKillsActiveClaudeCommand(t *testing.T) {
+	originalCmdCtx := commandContextFn
+	originalLookPath := lookPathFn
+	defer func() {
+		commandContextFn = originalCmdCtx
+		lookPathFn = originalLookPath
+	}()
+
+	lookPathFn = func(file string) (string, error) {
+		return file, nil
+	}
+
+	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+		script := "Start-Sleep -Seconds 10"
+		return exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
+	}
+
+	r, _ := New(".")
+	handle, err := r.StartSession(context.Background(), AiSessionStartRequest{
+		ProviderKey:      "claude",
+		ModelName:        "claude-haiku",
+		WorkingDirectory: ".",
+	})
+	if err != nil {
+		t.Fatalf("StartSession failed: %v", err)
+	}
+
+	errChan := make(chan error, 1)
+	go func() {
+		_, err := r.SendMessage(context.Background(), AiSessionMessageRequest{
+			Session: handle,
+			Prompt:  "simulate message execution",
+		})
+		errChan <- err
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+
+	r.CleanupSessions()
+
+	select {
+	case sendErr := <-errChan:
+		if sendErr == nil {
+			t.Fatal("expected SendMessage to fail after CleanupSessions")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("SendMessage did not exit within 3 seconds after CleanupSessions")
+	}
+}
+

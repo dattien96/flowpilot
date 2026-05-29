@@ -793,11 +793,17 @@ function SessionGroupSection({
                 </>
               ) : null}
             </p>
-            {group.session.status === "active" && group.session.processPid != null ? (
+            {group.session.status === "active" && group.session.processKey != null ? (
               <p className="flex flex-wrap items-center gap-1.5 text-xs font-mono text-muted-foreground">
                 <span className="font-mono text-[9px] text-foreground/80 flex items-center">
-                  <span className="text-muted-foreground/70 mr-1 font-semibold uppercase tracking-wider">PID</span>
-                  {group.session.processPid}
+                  {group.session.processPid != null ? (
+                    <>
+                      <span className="text-muted-foreground/70 mr-1 font-semibold uppercase tracking-wider">PID</span>
+                      {group.session.processPid}
+                    </>
+                  ) : (
+                    <span className="text-muted-foreground/70 mr-1 font-semibold uppercase tracking-wider">Active Session</span>
+                  )}
                   <Button
                     variant="outline"
                     size="sm"
@@ -808,7 +814,10 @@ function SessionGroupSection({
                       if (!group.session.processKey || isKilling) {
                         return;
                       }
-                      if (!window.confirm(`Are you sure you want to kill PID ${group.session.processPid}?`)) {
+                      const confirmMsg = group.session.processPid != null
+                        ? `Are you sure you want to kill PID ${group.session.processPid}?`
+                        : "Are you sure you want to terminate this active session?";
+                      if (!window.confirm(confirmMsg)) {
                         return;
                       }
                       setIsKilling(true);
@@ -827,6 +836,7 @@ function SessionGroupSection({
                 </span>
               </p>
             ) : null}
+
             {group.session.providerSessionId ? (
               <p className="flex flex-wrap items-center gap-1.5 text-xs font-mono text-muted-foreground">
                 <span className="font-mono text-[9px] text-foreground/80">

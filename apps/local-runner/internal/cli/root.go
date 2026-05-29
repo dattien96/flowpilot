@@ -584,6 +584,45 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				}
 				w.WriteHeader(http.StatusOK)
 			})
+			mux.HandleFunc("/system/shutdown", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				instance.CleanupSessions()
+
+				err := writeSupervisorCommand(instance.Health().Cwd, "shutdown")
+				if err != nil {
+					writeHTTPError(w, http.StatusInternalServerError, err)
+					return
+				}
+
+				w.WriteHeader(http.StatusAccepted)
+				w.Write([]byte(`{"status":"accepted"}`))
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+			})
+			mux.HandleFunc("/system/restart", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				instance.CleanupSessions()
+
+				err := writeSupervisorCommand(instance.Health().Cwd, "restart")
+				if err != nil {
+					writeHTTPError(w, http.StatusInternalServerError, err)
+					return
+				}
+
+				w.WriteHeader(http.StatusAccepted)
+				w.Write([]byte(`{"status":"accepted"}`))
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+			})
+
 
 			// Graceful shutdown on SIGINT/SIGTERM
 			sigChan := make(chan os.Signal, 1)
@@ -791,3 +830,12 @@ func withCORS(next http.Handler) http.Handler {
 func netJoinHostPort(host string, port int) string {
 	return host + ":" + strconv.Itoa(port)
 }
+
+func writeSupervisorCommand(workspace string, command string) error {
+	cmdPath := filepath.Join(workspace, ".flowpilot", "supervisor.cmd")
+	if err := os.MkdirAll(filepath.Dir(cmdPath), 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(cmdPath, []byte(command), 0644)
+}
+

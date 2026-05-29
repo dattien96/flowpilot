@@ -50,6 +50,7 @@ type LiveSession struct {
 	LastUsedAt        time.Time
 	IdleTTL           time.Duration
 	Mu                sync.Mutex
+	SendMu            sync.Mutex
 }
 
 func writeJsonRpcRequest(w io.Writer, method string, params interface{}, id interface{}) error {
@@ -523,13 +524,19 @@ func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (
 		return PromptExecutionResult{}, fmt.Errorf("session_dead: session %q not found or expired", *req.Session.ProcessKey)
 	}
 
-	session.Mu.Lock()
-	defer session.Mu.Unlock()
+	session.SendMu.Lock()
+	defer session.SendMu.Unlock()
 
+	session.Mu.Lock()
+	if session.Status == "completed" {
+		session.Mu.Unlock()
+		return PromptExecutionResult{}, fmt.Errorf("session_dead: session %q has been closed", *req.Session.ProcessKey)
+	}
 	session.LastUsedAt = time.Now().UTC()
 	if req.IdleTTLSeconds != nil && *req.IdleTTLSeconds > 0 {
 		session.IdleTTL = time.Duration(*req.IdleTTLSeconds) * time.Second
 	}
+	session.Mu.Unlock()
 
 	startedAt := time.Now().UTC()
 	var outputMarkdown string
@@ -539,9 +546,14 @@ func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (
 		args := map[string]interface{}{
 			"prompt": req.Prompt,
 		}
-		if session.ProviderSessionID != "" && session.ProviderSessionID != "codex_mcp_session_"+session.SessionID {
+		session.Mu.Lock()
+		providerSessionID := session.ProviderSessionID
+		sessionID := session.SessionID
+		session.Mu.Unlock()
+
+		if providerSessionID != "" && providerSessionID != "codex_mcp_session_"+sessionID {
 			toolName = "codex-reply"
-			args["threadId"] = session.ProviderSessionID
+			args["threadId"] = providerSessionID
 		}
 		params := map[string]interface{}{
 			"name":      toolName,
@@ -570,11 +582,17 @@ func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (
 			threadID, output := extractCodexMcpResponse(result)
 			outputMarkdown = output
 			if threadID != "" {
+				session.Mu.Lock()
 				session.ProviderSessionID = threadID
+				session.Mu.Unlock()
 			}
 		}
 	} else if session.TransportType == "gemini_acp" {
-		params := geminiACPPromptParams(session.ProviderSessionID, req.Prompt)
+		session.Mu.Lock()
+		providerSessionID := session.ProviderSessionID
+		session.Mu.Unlock()
+
+		params := geminiACPPromptParams(providerSessionID, req.Prompt)
 		if err := writeJsonRpcRequest(session.Stdin, "session/prompt", params, 3); err != nil {
 			return PromptExecutionResult{}, fmt.Errorf("session_dead: failed to send Gemini ACP prompt: %w", err)
 		}
@@ -620,15 +638,23 @@ func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (
 					}
 				}
 			}
-			if providerSessionID, ok := result["sessionId"].(string); ok && strings.TrimSpace(providerSessionID) != "" {
-				session.ProviderSessionID = providerSessionID
+			if pSessionID, ok := result["sessionId"].(string); ok && strings.TrimSpace(pSessionID) != "" {
+				session.Mu.Lock()
+				session.ProviderSessionID = pSessionID
+				session.Mu.Unlock()
 			}
 			if text, ok := result["text"].(string); ok && outputMarkdown == "" {
 				outputMarkdown = text
 			}
 		}
 	} else if session.TransportType == "claude_stream_json" {
-		args := buildClaudePrintArgs(session.Model, session.ReasoningEffort, session.ProviderSessionID)
+		session.Mu.Lock()
+		model := session.Model
+		reasoningEffort := session.ReasoningEffort
+		providerSessionID := session.ProviderSessionID
+		session.Mu.Unlock()
+
+		args := buildClaudePrintArgs(model, reasoningEffort, providerSessionID)
 		cmd := commandContextFn(ctx, session.BinaryPath, args...)
 		cmd.Dir = session.WorkingDirectory
 
@@ -646,6 +672,13 @@ func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (
 			return PromptExecutionResult{}, fmt.Errorf("provider error: failed to start Claude print command: %w", err)
 		}
 
+		session.Mu.Lock()
+		session.Cmd = cmd
+		if cmd.Process != nil {
+			session.Pid = cmd.Process.Pid
+		}
+		session.Mu.Unlock()
+
 		msg := map[string]interface{}{
 			"type": "user",
 			"message": map[string]interface{}{
@@ -660,20 +693,39 @@ func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (
 		}
 		data, err := json.Marshal(msg)
 		if err != nil {
+			session.Mu.Lock()
+			session.Cmd = nil
+			session.Pid = 0
+			session.Mu.Unlock()
 			return PromptExecutionResult{}, err
 		}
 
 		if _, err := stdin.Write(append(data, '\n')); err != nil {
 			_ = stdin.Close()
 			_ = cmd.Wait()
+			session.Mu.Lock()
+			session.Cmd = nil
+			session.Pid = 0
+			session.Mu.Unlock()
 			return PromptExecutionResult{}, fmt.Errorf("provider error: failed to write Claude stream JSON: %w", err)
 		}
 		if err := stdin.Close(); err != nil {
 			_ = cmd.Wait()
+			session.Mu.Lock()
+			session.Cmd = nil
+			session.Pid = 0
+			session.Mu.Unlock()
 			return PromptExecutionResult{}, fmt.Errorf("provider error: failed to close Claude stdin: %w", err)
 		}
 
-		if err := cmd.Wait(); err != nil {
+		err = cmd.Wait()
+
+		session.Mu.Lock()
+		session.Cmd = nil
+		session.Pid = 0
+		session.Mu.Unlock()
+
+		if err != nil {
 			stderrText := strings.TrimSpace(stderr.String())
 			if stderrText != "" {
 				return PromptExecutionResult{}, fmt.Errorf("provider error: %s", stderrText)
@@ -711,7 +763,9 @@ func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (
 			outputMarkdown = resultText
 		}
 		if sID, ok := resp["session_id"].(string); ok && strings.TrimSpace(sID) != "" {
+			session.Mu.Lock()
 			session.ProviderSessionID = sID
+			session.Mu.Unlock()
 		}
 		if outputMarkdown == "" {
 			if text, ok := resp["text"].(string); ok {
@@ -725,12 +779,16 @@ func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (
 
 	completedAt := time.Now().UTC()
 
+	session.Mu.Lock()
+	pSessionID := session.ProviderSessionID
+	session.Mu.Unlock()
+
 	return PromptExecutionResult{
 		Status:            "success",
 		RunID:             newRunID(),
 		ProviderKey:       session.Provider,
 		ModelName:         &session.Model,
-		ProviderSessionID: session.ProviderSessionID,
+		ProviderSessionID: pSessionID,
 		Command:           session.Provider + " session message",
 		OutputMarkdown:    outputMarkdown,
 		StartedAt:         startedAt.Format(time.RFC3339Nano),
@@ -759,27 +817,32 @@ func (r *Runner) CloseSession(ctx context.Context, handle AiSessionHandle) error
 	}
 
 	session.Mu.Lock()
-	defer session.Mu.Unlock()
-
 	session.Status = "completed"
+	stdin := session.Stdin
+	cmd := session.Cmd
+	transport := session.TransportType
+	session.Mu.Unlock()
 
-	if session.Stdin != nil {
-		session.Stdin.Close()
+	if stdin != nil {
+		stdin.Close()
 	}
-	if session.Cmd == nil {
+	if cmd == nil {
 		return nil
 	}
 
-	done := make(chan error, 1)
-	go func() {
-		done <- session.Cmd.Wait()
-	}()
+	if cmd.Process != nil {
+		cmd.Process.Kill()
+	}
 
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		if session.Cmd.Process != nil {
-			session.Cmd.Process.Kill()
+	if transport != "claude_stream_json" {
+		done := make(chan error, 1)
+		go func() {
+			done <- cmd.Wait()
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(200 * time.Millisecond):
 		}
 	}
 
@@ -816,16 +879,23 @@ func (r *Runner) CleanupSessions() {
 
 	for _, session := range activeSessions {
 		session.Mu.Lock()
-		if session.Stdin != nil {
-			session.Stdin.Close()
-		}
-		if session.Cmd != nil {
-			if session.Cmd.Process != nil {
-				session.Cmd.Process.Kill()
-			}
-			go session.Cmd.Wait()
-		}
+		session.Status = "completed"
+		stdin := session.Stdin
+		cmd := session.Cmd
+		transport := session.TransportType
 		session.Mu.Unlock()
+
+		if stdin != nil {
+			stdin.Close()
+		}
+		if cmd != nil {
+			if cmd.Process != nil {
+				cmd.Process.Kill()
+			}
+			if transport != "claude_stream_json" {
+				go cmd.Wait()
+			}
+		}
 	}
 }
 
@@ -865,14 +935,22 @@ func (r *Runner) sweepIdleSessions() {
 	for _, session := range staleSessions {
 		session.Mu.Lock()
 		session.Status = "completed"
-		if session.Stdin != nil {
-			session.Stdin.Close()
-		}
-		if session.Cmd != nil && session.Cmd.Process != nil {
-			session.Cmd.Process.Kill()
-			go session.Cmd.Wait()
-		}
+		stdin := session.Stdin
+		cmd := session.Cmd
+		transport := session.TransportType
 		session.Mu.Unlock()
+
+		if stdin != nil {
+			stdin.Close()
+		}
+		if cmd != nil {
+			if cmd.Process != nil {
+				cmd.Process.Kill()
+			}
+			if transport != "claude_stream_json" {
+				go cmd.Wait()
+			}
+		}
 	}
 }
 
