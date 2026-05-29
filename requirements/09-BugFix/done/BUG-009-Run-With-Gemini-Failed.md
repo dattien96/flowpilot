@@ -1,1 +1,1 @@
-Local runner session message failed: 400 Bad Request
+Local runner session message failed: 400 Bad Request. Failed to process "run_session.session_message". Error: "Unsupported model: gemini-3.1-flash. Please use one of the supported models: auto-gemini-3, auto-gemini-2.5, gemini-3.1-pro-preview, gemini-3-flash-preview, gemini-3.1-flash-lite-preview, gemini-2.5-pro, gemini-2.5-flash, gemini-2.5-flash-lite, gemini-flash, gemini-pro, claude-haiku, claude-sonnet, claude-opus, gpt-5.4-mini, gpt-5.4, gpt-5.5". Local runner session message failed: 400 Bad Request

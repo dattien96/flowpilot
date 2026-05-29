@@ -2,9 +2,11 @@ package runner
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -32,10 +34,13 @@ type LiveSession struct {
 	WorkflowRunID     string
 	Provider          string
 	Model             string
+	ReasoningEffort   string
 	TransportType     string
 	ProviderSessionID string
 	ProcessKey        string
 	Pid               int
+	BinaryPath        string
+	WorkingDirectory  string
 	Cmd               *exec.Cmd
 	Stdin             io.WriteCloser
 	StdoutScanner     *bufio.Scanner
@@ -260,6 +265,39 @@ func appendGeminiACPText(output *strings.Builder, message map[string]interface{}
 	}
 }
 
+func readClaudeStreamResult(output []byte) (map[string]interface{}, error) {
+	scanner := bufio.NewScanner(bytes.NewReader(output))
+	buf := make([]byte, 64*1024)
+	scanner.Buffer(buf, 10*1024*1024)
+
+	var lastResult map[string]interface{}
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+
+		var msg map[string]interface{}
+		if err := json.Unmarshal(line, &msg); err != nil {
+			return nil, fmt.Errorf("parse_error: %w", err)
+		}
+
+		msgType, _ := msg["type"].(string)
+		if msgType == "result" {
+			lastResult = msg
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	if lastResult == nil {
+		return nil, io.EOF
+	}
+
+	return lastResult, nil
+}
+
 func resolveBinaryAndArgs(provider string, model string, reasoningEffort string) (string, []string, string) {
 	switch provider {
 	case "codex":
@@ -267,10 +305,10 @@ func resolveBinaryAndArgs(provider string, model string, reasoningEffort string)
 	case "claude":
 		args := []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--tools", "default"}
 		if model != "" {
-			args = append(args, "--model", model)
+			args = append(args, "--model", normalizeClaudeModelName(model))
 		}
 		if reasoningEffort != "" {
-			args = append(args, "--effort", reasoningEffort)
+			args = append(args, "--effort", normalizeClaudeEffort(reasoningEffort))
 		}
 		return "claude", args, "claude_stream_json"
 	case "gemini":
@@ -302,7 +340,6 @@ func (r *Runner) StartSession(ctx context.Context, req AiSessionStartRequest) (A
 		return AiSessionHandle{}, fmt.Errorf("provider binary %q not found: %w", binary, err)
 	}
 
-	cmd := commandContextFn(ctx, binaryPath, args...)
 	workingDirectory := strings.TrimSpace(req.WorkingDirectory)
 	if workingDirectory == "" {
 		workingDirectory = r.workspace
@@ -313,6 +350,44 @@ func (r *Runner) StartSession(ctx context.Context, req AiSessionStartRequest) (A
 		return AiSessionHandle{}, fmt.Errorf("failed to resolve working directory: %w", err)
 	}
 
+	processKey := newRunID()
+	session := &LiveSession{
+		SessionID:        newRunID(),
+		Provider:         req.ProviderKey,
+		Model:            req.ModelName,
+		ReasoningEffort:  reasoningEffortVal,
+		TransportType:    transportType,
+		ProcessKey:       processKey,
+		BinaryPath:       binaryPath,
+		WorkingDirectory: resolvedWorkingDirectory,
+		Status:           "active",
+		LastUsedAt:       time.Now().UTC(),
+	}
+
+	if req.IdleTTLSeconds != nil && *req.IdleTTLSeconds > 0 {
+		session.IdleTTL = time.Duration(*req.IdleTTLSeconds) * time.Second
+	} else {
+		session.IdleTTL = 2 * time.Hour
+	}
+
+	if transportType == "claude_stream_json" {
+		providerSessionID := DetermineProviderSessionID(
+			transportType,
+			session.Provider,
+			session.SessionID,
+			"",
+			req.ResumeProviderSessionID,
+		)
+		session.ProviderSessionID = providerSessionID
+		r.sessions[processKey] = session
+		return AiSessionHandle{
+			TransportType:     transportType,
+			ProviderSessionID: providerSessionID,
+			ProcessKey:        &processKey,
+		}, nil
+	}
+
+	cmd := commandContextFn(ctx, binaryPath, args...)
 	cmd.Dir = resolvedWorkingDirectory
 
 	stdin, err := cmd.StdinPipe()
@@ -344,28 +419,11 @@ func (r *Runner) StartSession(ctx context.Context, req AiSessionStartRequest) (A
 	// Buffer allocation allowing up to 10 MB responses
 	buf := make([]byte, 64*1024)
 	stdoutScanner.Buffer(buf, 10*1024*1024)
-	processKey := newRunID()
-
-	session := &LiveSession{
-		SessionID:     newRunID(),
-		Provider:      req.ProviderKey,
-		Model:         req.ModelName,
-		TransportType: transportType,
-		ProcessKey:    processKey,
-		Cmd:           cmd,
-		Stdin:         stdin,
-		StdoutScanner: stdoutScanner,
-		Stdout:        stdout,
-		Stderr:        stderr,
-		Status:        "active",
-		LastUsedAt:    time.Now().UTC(),
-	}
-
-	if req.IdleTTLSeconds != nil && *req.IdleTTLSeconds > 0 {
-		session.IdleTTL = time.Duration(*req.IdleTTLSeconds) * time.Second
-	} else {
-		session.IdleTTL = 2 * time.Hour
-	}
+	session.Cmd = cmd
+	session.Stdin = stdin
+	session.StdoutScanner = stdoutScanner
+	session.Stdout = stdout
+	session.Stderr = stderr
 
 	providerSessionID := ""
 	if transportType == "codex_mcp" {
@@ -570,41 +628,98 @@ func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (
 			}
 		}
 	} else if session.TransportType == "claude_stream_json" {
+		args := buildClaudePrintArgs(session.Model, session.ReasoningEffort, session.ProviderSessionID)
+		cmd := commandContextFn(ctx, session.BinaryPath, args...)
+		cmd.Dir = session.WorkingDirectory
+
+		stdin, err := cmd.StdinPipe()
+		if err != nil {
+			return PromptExecutionResult{}, fmt.Errorf("provider error: failed to create Claude stdin pipe: %w", err)
+		}
+
+		var stdout bytes.Buffer
+		var stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+
+		if err := cmd.Start(); err != nil {
+			return PromptExecutionResult{}, fmt.Errorf("provider error: failed to start Claude print command: %w", err)
+		}
+
 		msg := map[string]interface{}{
-			"prompt": req.Prompt,
+			"type": "user",
+			"message": map[string]interface{}{
+				"role": "user",
+				"content": []map[string]string{
+					{
+						"type": "text",
+						"text": req.Prompt,
+					},
+				},
+			},
 		}
 		data, err := json.Marshal(msg)
 		if err != nil {
 			return PromptExecutionResult{}, err
 		}
-		if _, err := session.Stdin.Write(append(data, '\n')); err != nil {
-			return PromptExecutionResult{}, fmt.Errorf("session_dead: failed to write Claude stream JSON: %w", err)
+
+		if _, err := stdin.Write(append(data, '\n')); err != nil {
+			_ = stdin.Close()
+			_ = cmd.Wait()
+			return PromptExecutionResult{}, fmt.Errorf("provider error: failed to write Claude stream JSON: %w", err)
 		}
-		resp, err := readJsonRpcResponse(session.StdoutScanner, nil)
+		if err := stdin.Close(); err != nil {
+			_ = cmd.Wait()
+			return PromptExecutionResult{}, fmt.Errorf("provider error: failed to close Claude stdin: %w", err)
+		}
+
+		if err := cmd.Wait(); err != nil {
+			stderrText := strings.TrimSpace(stderr.String())
+			if stderrText != "" {
+				return PromptExecutionResult{}, fmt.Errorf("provider error: %s", stderrText)
+			}
+			return PromptExecutionResult{}, fmt.Errorf("provider error: Claude print command failed: %w", err)
+		}
+
+		outputBytes := bytes.TrimSpace(stdout.Bytes())
+		if len(outputBytes) == 0 {
+			if stderrText := strings.TrimSpace(stderr.String()); stderrText != "" {
+				return PromptExecutionResult{}, fmt.Errorf("provider error: %s", stderrText)
+			}
+			return PromptExecutionResult{}, fmt.Errorf("provider error: Claude response was empty")
+		}
+
+		resp, err := readClaudeStreamResult(outputBytes)
 		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return PromptExecutionResult{}, fmt.Errorf("provider error: Claude response did not include a result event")
+			}
 			if strings.HasPrefix(err.Error(), "parse_error:") {
 				return PromptExecutionResult{}, fmt.Errorf("provider error: invalid json response: %v", err)
 			}
-			return PromptExecutionResult{}, fmt.Errorf("session_dead: failed to read Claude stream response: %w", err)
+			return PromptExecutionResult{}, fmt.Errorf("provider error: failed to parse Claude stream response: %v", err)
 		}
-		if errObj, ok := resp["error"].(map[string]interface{}); ok {
-			errMsg := "unknown provider error"
-			if msg, ok := errObj["message"].(string); ok {
-				errMsg = msg
+
+		if isError, _ := resp["is_error"].(bool); isError {
+			if resultText, ok := resp["result"].(string); ok && strings.TrimSpace(resultText) != "" {
+				return PromptExecutionResult{}, fmt.Errorf("provider error: %s", resultText)
 			}
-			return PromptExecutionResult{}, fmt.Errorf("provider error: %s", errMsg)
-		} else if errStr, ok := resp["error"].(string); ok {
-			return PromptExecutionResult{}, fmt.Errorf("provider error: %s", errStr)
+			return PromptExecutionResult{}, fmt.Errorf("provider error: Claude request failed")
 		}
-		if text, ok := resp["text"].(string); ok {
-			outputMarkdown = text
-		} else if result, ok := resp["result"].(map[string]interface{}); ok {
-			if text, ok := result["text"].(string); ok {
+
+		if resultText, ok := resp["result"].(string); ok {
+			outputMarkdown = resultText
+		}
+		if sID, ok := resp["session_id"].(string); ok && strings.TrimSpace(sID) != "" {
+			session.ProviderSessionID = sID
+		}
+		if outputMarkdown == "" {
+			if text, ok := resp["text"].(string); ok {
 				outputMarkdown = text
 			}
-			if sId, ok := result["session_id"].(string); ok {
-				session.ProviderSessionID = sId
-			}
+		}
+		if outputMarkdown == "" {
+			return PromptExecutionResult{}, fmt.Errorf("provider error: Claude response did not include any text output")
 		}
 	}
 
@@ -650,6 +765,9 @@ func (r *Runner) CloseSession(ctx context.Context, handle AiSessionHandle) error
 
 	if session.Stdin != nil {
 		session.Stdin.Close()
+	}
+	if session.Cmd == nil {
+		return nil
 	}
 
 	done := make(chan error, 1)
@@ -767,10 +885,45 @@ func DetermineProviderSessionID(transportType, provider, sessionID, currentProvi
 		currentProviderSessionID = "claude_stream_session_" + sessionID
 	}
 
-	if resumeProviderSessionID != nil && *resumeProviderSessionID != "" && provider == "codex" {
+	if resumeProviderSessionID != nil && *resumeProviderSessionID != "" && (provider == "codex" || provider == "claude") {
 		currentProviderSessionID = *resumeProviderSessionID
 	}
 	return currentProviderSessionID
+}
+
+func normalizeClaudeEffort(reasoningEffort string) string {
+	normalized := strings.ToLower(strings.TrimSpace(reasoningEffort))
+	if normalized == "xhigh" {
+		return "max"
+	}
+	return normalized
+}
+
+func normalizeClaudeModelName(model string) string {
+	trimmed := strings.TrimSpace(model)
+	lowerModel := strings.ToLower(trimmed)
+	if strings.HasPrefix(lowerModel, "claude-") {
+		return strings.TrimPrefix(lowerModel, "claude-")
+	}
+	return trimmed
+}
+
+func isSyntheticClaudeSessionID(providerSessionID string) bool {
+	return strings.HasPrefix(strings.TrimSpace(providerSessionID), "claude_stream_session_")
+}
+
+func buildClaudePrintArgs(model string, reasoningEffort string, providerSessionID string) []string {
+	args := []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--tools", "default"}
+	if strings.TrimSpace(model) != "" {
+		args = append(args, "--model", normalizeClaudeModelName(model))
+	}
+	if effort := normalizeClaudeEffort(reasoningEffort); effort != "" {
+		args = append(args, "--effort", effort)
+	}
+	if strings.TrimSpace(providerSessionID) != "" && !isSyntheticClaudeSessionID(providerSessionID) {
+		args = append(args, "--resume", providerSessionID)
+	}
+	return args
 }
 
 func expectedProcessNamesForTransport(transportType string) []string {
