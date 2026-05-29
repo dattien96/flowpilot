@@ -1,6 +1,8 @@
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const net = require('net');
+const http = require('http');
 
 // Parse arguments
 let webPort = '3002';
@@ -32,9 +34,34 @@ function ensureDirectoryExists(dir) {
   }
 }
 
-function startServices() {
-  console.log(`[Supervisor] Starting services: web on port ${webPort}, runner on port ${runnerPort}...`);
+function isPortInUse(port) {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once('error', (err) => {
+      if (err.code === 'EADDRINUSE') {
+        resolve(true);
+      } else {
+        resolve(false);
+      }
+    });
+    server.once('listening', () => {
+      server.close();
+      resolve(false);
+    });
+    server.listen(port, '127.0.0.1');
+  });
+}
+
+async function startServices() {
   ensureDirectoryExists(flowpilotDir);
+
+  const webInUse = await isPortInUse(parseInt(webPort, 10));
+  const runnerInUse = await isPortInUse(parseInt(runnerPort, 10));
+
+  if (webInUse && runnerInUse) {
+    console.log('[Supervisor] Both services are already running.');
+    process.exit(0);
+  }
 
   // Clear any stale command file
   if (fs.existsSync(controlPath)) {
@@ -43,47 +70,56 @@ function startServices() {
     } catch (e) {}
   }
 
-  // Spawn web app
-  const webCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-  webProcess = spawn(webCmd, ['run', 'dev', '--', '--port', webPort], {
-    cwd: path.join(rootDir, 'apps', 'admin-web'),
-    shell: true,
-    stdio: 'inherit',
-    detached: process.platform !== 'win32',
-  });
+  // Spawn web app if not running
+  if (!webInUse) {
+    console.log(`[Supervisor] Starting web service on port ${webPort}...`);
+    const webCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+    webProcess = spawn(webCmd, ['run', 'dev', '--', '--port', webPort], {
+      cwd: path.join(rootDir, 'apps', 'admin-web'),
+      shell: true,
+      stdio: 'inherit',
+      detached: process.platform !== 'win32',
+    });
 
-  // Spawn runner
-  const runnerCmd = process.platform === 'win32' ? 'go.exe' : 'go';
-  runnerProcess = spawn(runnerCmd, ['run', './cmd/flowpilot', 'runner', 'serve', '--port', runnerPort], {
-    cwd: path.join(rootDir, 'apps', 'local-runner'),
-    shell: true,
-    stdio: 'inherit',
-    detached: process.platform !== 'win32',
-  });
+    webProcess.on('exit', (code) => {
+      if (!isExiting && !isRestarting) {
+        console.log(`[Supervisor] Web process exited with code ${code}. Exiting...`);
+        cleanupAndExit();
+      }
+    });
+  } else {
+    console.log(`[Supervisor] Web service is already running on port ${webPort}, skipping start.`);
+  }
+
+  // Spawn runner if not running
+  if (!runnerInUse) {
+    console.log(`[Supervisor] Starting runner service on port ${runnerPort}...`);
+    const runnerCmd = process.platform === 'win32' ? 'go.exe' : 'go';
+    runnerProcess = spawn(runnerCmd, ['run', './cmd/flowpilot', 'runner', 'serve', '--port', runnerPort], {
+      cwd: path.join(rootDir, 'apps', 'local-runner'),
+      shell: true,
+      stdio: 'inherit',
+      detached: process.platform !== 'win32',
+    });
+
+    runnerProcess.on('exit', (code) => {
+      if (!isExiting && !isRestarting) {
+        console.log(`[Supervisor] Runner process exited with code ${code}. Exiting...`);
+        cleanupAndExit();
+      }
+    });
+  } else {
+    console.log(`[Supervisor] Runner service is already running on port ${runnerPort}, skipping start.`);
+  }
 
   // Write supervisor metadata
   const metadata = {
     supervisorPid: process.pid,
-    webPid: webProcess.pid,
-    runnerPid: runnerProcess.pid,
+    webPid: webProcess ? webProcess.pid : null,
+    runnerPid: runnerProcess ? runnerProcess.pid : null,
     controlPath: controlPath,
   };
   fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2));
-
-  // Handle unexpected exits
-  webProcess.on('exit', (code) => {
-    if (!isExiting && !isRestarting) {
-      console.log(`[Supervisor] Web process exited with code ${code}. Exiting...`);
-      cleanupAndExit();
-    }
-  });
-
-  runnerProcess.on('exit', (code) => {
-    if (!isExiting && !isRestarting) {
-      console.log(`[Supervisor] Runner process exited with code ${code}. Exiting...`);
-      cleanupAndExit();
-    }
-  });
 }
 
 function killProcessTree(child) {
@@ -97,7 +133,8 @@ function killProcessTree(child) {
     } catch (e) {}
   } else {
     try {
-      // With detached: true, process.kill(-pid) signals the process group
+      // With detached: true on Unix, pid is the process group ID.
+      // -pid signals the process group.
       process.kill(-pid, 'SIGKILL');
     } catch (e) {
       try {
@@ -107,10 +144,24 @@ function killProcessTree(child) {
   }
 }
 
+function triggerHTTPShutdown() {
+  const req = http.request({
+    hostname: '127.0.0.1',
+    port: parseInt(runnerPort, 10),
+    path: '/system/shutdown',
+    method: 'POST'
+  }, () => {});
+  req.on('error', () => {});
+  req.end();
+}
+
 function cleanupAndExit() {
   if (isExiting) return;
   isExiting = true;
   console.log('[Supervisor] Shutting down stack...');
+
+  // Request runner to clean up sessions via HTTP
+  triggerHTTPShutdown();
 
   // Signal the process groups on Unix to let them shut down gracefully
   if (process.platform !== 'win32') {
@@ -159,6 +210,9 @@ function handleRestart() {
   if (isRestarting) return;
   isRestarting = true;
   console.log('[Supervisor] Restarting stack...');
+
+  // Request runner to clean up sessions via HTTP
+  triggerHTTPShutdown();
 
   // Signal the process groups on Unix first
   if (process.platform !== 'win32') {

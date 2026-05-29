@@ -532,3 +532,91 @@ func TestCleanupSessionsKillsActiveClaudeCommand(t *testing.T) {
 	}
 }
 
+func TestCloseSessionRacingWithClaudeStart(t *testing.T) {
+	originalCmdCtx := commandContextFn
+	originalLookPath := lookPathFn
+	defer func() {
+		commandContextFn = originalCmdCtx
+		lookPathFn = originalLookPath
+	}()
+
+	lookPathFn = func(file string) (string, error) {
+		return file, nil
+	}
+
+	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+		script := "Start-Sleep -Seconds 10"
+		return exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
+	}
+
+	r, _ := New(".")
+	handle, err := r.StartSession(context.Background(), AiSessionStartRequest{
+		ProviderKey:      "claude",
+		ModelName:        "claude-haiku",
+		WorkingDirectory: ".",
+	})
+	if err != nil {
+		t.Fatalf("StartSession failed: %v", err)
+	}
+
+	err = r.CloseSession(context.Background(), handle)
+	if err != nil {
+		t.Fatalf("CloseSession failed: %v", err)
+	}
+
+	_, err = r.SendMessage(context.Background(), AiSessionMessageRequest{
+		Session: handle,
+		Prompt:  "hello",
+	})
+	if err == nil || !strings.Contains(err.Error(), "session_dead") {
+		t.Fatalf("expected session_dead error, got: %v", err)
+	}
+}
+
+func TestSweepIdleSessionsSkipsInFlightSession(t *testing.T) {
+	r, _ := New(".")
+	handle, err := r.StartSession(context.Background(), AiSessionStartRequest{
+		ProviderKey:      "claude",
+		ModelName:        "claude-haiku",
+		WorkingDirectory: ".",
+	})
+	if err != nil {
+		t.Fatalf("StartSession failed: %v", err)
+	}
+
+	r.sessionsMu.Lock()
+	sess := r.sessions[*handle.ProcessKey]
+	r.sessionsMu.Unlock()
+
+	sess.Mu.Lock()
+	sess.InFlight = true
+	sess.LastUsedAt = time.Now().Add(-2 * time.Hour)
+	sess.IdleTTL = 1 * time.Hour
+	sess.Mu.Unlock()
+
+	r.sweepIdleSessions()
+
+	r.sessionsMu.Lock()
+	_, exists := r.sessions[*handle.ProcessKey]
+	r.sessionsMu.Unlock()
+
+	if !exists {
+		t.Fatal("expected session to not be swept because InFlight is true")
+	}
+
+	sess.Mu.Lock()
+	sess.InFlight = false
+	sess.Mu.Unlock()
+
+	r.sweepIdleSessions()
+
+	r.sessionsMu.Lock()
+	_, exists = r.sessions[*handle.ProcessKey]
+	r.sessionsMu.Unlock()
+
+	if exists {
+		t.Fatal("expected session to be swept because InFlight is false")
+	}
+}
+
+

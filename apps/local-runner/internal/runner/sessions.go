@@ -51,6 +51,7 @@ type LiveSession struct {
 	IdleTTL           time.Duration
 	Mu                sync.Mutex
 	SendMu            sync.Mutex
+	InFlight          bool
 }
 
 func writeJsonRpcRequest(w io.Writer, method string, params interface{}, id interface{}) error {
@@ -536,7 +537,14 @@ func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (
 	if req.IdleTTLSeconds != nil && *req.IdleTTLSeconds > 0 {
 		session.IdleTTL = time.Duration(*req.IdleTTLSeconds) * time.Second
 	}
+	session.InFlight = true
 	session.Mu.Unlock()
+
+	defer func() {
+		session.Mu.Lock()
+		session.InFlight = false
+		session.Mu.Unlock()
+	}()
 
 	startedAt := time.Now().UTC()
 	var outputMarkdown string
@@ -668,11 +676,17 @@ func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (
 		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr
 
+		session.Mu.Lock()
+		if session.Status == "completed" {
+			session.Mu.Unlock()
+			_ = stdin.Close()
+			return PromptExecutionResult{}, fmt.Errorf("session_dead: session has been closed")
+		}
 		if err := cmd.Start(); err != nil {
+			session.Mu.Unlock()
+			_ = stdin.Close()
 			return PromptExecutionResult{}, fmt.Errorf("provider error: failed to start Claude print command: %w", err)
 		}
-
-		session.Mu.Lock()
 		session.Cmd = cmd
 		if cmd.Process != nil {
 			session.Pid = cmd.Process.Pid
@@ -920,7 +934,7 @@ func (r *Runner) sweepIdleSessions() {
 	var staleKeys []string
 	for key, sess := range r.sessions {
 		sess.Mu.Lock()
-		idle := time.Since(sess.LastUsedAt) > sess.IdleTTL
+		idle := !sess.InFlight && time.Since(sess.LastUsedAt) > sess.IdleTTL
 		sess.Mu.Unlock()
 		if idle {
 			staleKeys = append(staleKeys, key)
