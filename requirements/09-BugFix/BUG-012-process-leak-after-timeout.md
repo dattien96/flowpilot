@@ -13,3 +13,7 @@ Wait for more a bit time then the process was killed
 I think due to the golang background process run
 
 BUt the timming is not correct, it does not kill process at the same time sync with UI/supabase
+
+So i mean, i was killed but not same time with UI, need a delay time.
+
+STATE: Wont Do
