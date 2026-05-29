@@ -1,0 +1,1 @@
+how can we stream the thinking process back to user

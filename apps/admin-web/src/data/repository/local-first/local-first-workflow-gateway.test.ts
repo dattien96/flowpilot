@@ -115,8 +115,11 @@ function createLocalRunnerMock(): LocalRunnerGateway {
     readFile: vi.fn(async () => {
       throw new Error("not implemented");
     }),
+    shutdownStack: vi.fn(async () => {}),
+    restartStack: vi.fn(async () => {}),
   };
 }
+
 
 describe("LocalFirstWorkflowGateway", () => {
   it("hydrates workflow run detail outputs from local artifacts before DB placeholders", async () => {

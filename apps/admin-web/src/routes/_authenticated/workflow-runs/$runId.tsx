@@ -306,10 +306,12 @@ function CollapsibleChatBubble({
 
 function CollapsibleAttemptPanel({
   title,
+  time,
   defaultOpen = true,
   children,
 }: {
   title: string;
+  time?: string;
   defaultOpen?: boolean;
   children: ReactNode;
 }) {
@@ -322,9 +324,16 @@ function CollapsibleAttemptPanel({
         onClick={() => setOpen((current) => !current)}
         className="flex w-full items-center justify-between gap-3 px-6 py-4 text-left"
       >
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-          {title}
-        </span>
+        <div className="flex items-center gap-3">
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            {title}
+          </span>
+          {time ? (
+            <span className="text-[9px] font-mono text-muted-foreground/60">
+              {time}
+            </span>
+          ) : null}
+        </div>
         <span className="text-muted-foreground transition-colors shrink-0">
           {open ? (
             <ChevronUp className="h-4 w-4" />
@@ -784,11 +793,17 @@ function SessionGroupSection({
                 </>
               ) : null}
             </p>
-            {group.session.status === "active" && group.session.processPid != null ? (
+            {group.session.status === "active" && group.session.processKey != null ? (
               <p className="flex flex-wrap items-center gap-1.5 text-xs font-mono text-muted-foreground">
                 <span className="font-mono text-[9px] text-foreground/80 flex items-center">
-                  <span className="text-muted-foreground/70 mr-1 font-semibold uppercase tracking-wider">PID</span>
-                  {group.session.processPid}
+                  {group.session.processPid != null ? (
+                    <>
+                      <span className="text-muted-foreground/70 mr-1 font-semibold uppercase tracking-wider">PID</span>
+                      {group.session.processPid}
+                    </>
+                  ) : (
+                    <span className="text-muted-foreground/70 mr-1 font-semibold uppercase tracking-wider">Active Session</span>
+                  )}
                   <Button
                     variant="outline"
                     size="sm"
@@ -799,7 +814,10 @@ function SessionGroupSection({
                       if (!group.session.processKey || isKilling) {
                         return;
                       }
-                      if (!window.confirm(`Are you sure you want to kill PID ${group.session.processPid}?`)) {
+                      const confirmMsg = group.session.processPid != null
+                        ? `Are you sure you want to kill PID ${group.session.processPid}?`
+                        : "Are you sure you want to terminate this active session?";
+                      if (!window.confirm(confirmMsg)) {
                         return;
                       }
                       setIsKilling(true);
@@ -818,6 +836,7 @@ function SessionGroupSection({
                 </span>
               </p>
             ) : null}
+
             {group.session.providerSessionId ? (
               <p className="flex flex-wrap items-center gap-1.5 text-xs font-mono text-muted-foreground">
                 <span className="font-mono text-[9px] text-foreground/80">
@@ -867,6 +886,7 @@ function SessionGroupSection({
                         <div key={attemptItem.key} className="space-y-3">
                           <CollapsibleAttemptPanel
                             title={stepOutputs.length > 1 ? `Attempt ${outputAttempt}` : "Output"}
+                            time={formatBubbleTime(attemptItem.output.createdAt) ?? undefined}
                           >
                             <div className="space-y-4">
                               <StepOutputTabs

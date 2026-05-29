@@ -67,4 +67,6 @@ export interface LocalRunnerGateway {
   ): Promise<void>;
   authenticateProvider(providerName: string): Promise<void>;
   readFile(path: string): Promise<string>;
+  shutdownStack(): Promise<void>;
+  restartStack(): Promise<void>;
 }

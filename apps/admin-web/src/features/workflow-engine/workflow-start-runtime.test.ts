@@ -496,6 +496,69 @@ describe("workflow-start-runtime", () => {
       expect(result.actualPromptText).toBe("hello");
     });
 
+    it("does not reconnect when the session was intentionally terminated", async () => {
+      const err = new Error("session was intentionally terminated");
+      (err as any).code = "session_terminated";
+
+      const mockSendMessage = vi.fn().mockRejectedValue(err);
+      const mockStartSession = vi.fn().mockResolvedValue({
+        processKey: "proc-old",
+        providerSessionId: "thread-old",
+        transportType: "codex_mcp",
+      });
+
+      const localRunnerGateway = {
+        sendMessage: mockSendMessage,
+        closeSession: vi.fn().mockResolvedValue(undefined),
+        startSession: mockStartSession,
+      } as any;
+
+      const mockQueryBuilder = {
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        filter: vi.fn().mockReturnThis(),
+        order: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: {
+            id: "session-old",
+            process_key: "proc-old",
+            provider_session_id: "codex_mcp_session_prompt_20260529_072201_3000",
+            transport_type: "codex_mcp",
+            status: "active",
+            provider: "codex",
+            model: "codex-mcp",
+            metadata_json: {},
+          },
+          error: null,
+        }),
+        insert: vi.fn().mockReturnThis(),
+        update: vi.fn().mockReturnThis(),
+        single: vi.fn().mockResolvedValue({ data: { id: "session-old" }, error: null }),
+      };
+      const adminClient = {
+        from: vi.fn(() => mockQueryBuilder),
+      } as any;
+
+      await expect(sendMessageWithRetry({
+        adminClient,
+        localRunnerGateway,
+        workflowRunId: "run-123",
+        stepRunId: "step-456",
+        providerKey: "codex",
+        modelName: "codex-mcp",
+        reasoningEffort: null,
+        workingDirectory: "/repo",
+        subagent: null,
+        prompt: "hello",
+        skillIds: [],
+        idleTTLSeconds: 60,
+      })).rejects.toThrow("session was intentionally terminated");
+
+      expect(mockSendMessage).toHaveBeenCalledTimes(1);
+      expect(mockStartSession).not.toHaveBeenCalled();
+    });
+
     it("starts a fresh provider session when forced instead of resuming the old thread", async () => {
       const mockSendMessage = vi.fn().mockResolvedValue({ outputMarkdown: "success" });
       const mockStartSession = vi.fn().mockResolvedValue({

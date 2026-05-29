@@ -1,6 +1,7 @@
 import { Link, useLocation, useRouterState } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
+import { Power, RotateCw } from "lucide-react";
 
 import { primaryNavItems, settingsNavItems } from "@/components/layout/app-nav";
 import { buildMcpServerStatus, buildRunnerStatus } from "@/components/layout/app-shell-status";
@@ -132,6 +133,9 @@ export function AppShell({ children }: { children: ReactNode }) {
     select: (state) => state.location.pathname,
   });
   const [settingsStatuses, setSettingsStatuses] = useState<SettingsNavStatusMap>({});
+  const [runnerOnline, setRunnerOnline] = useState<boolean>(false);
+  const [isPending, setIsPending] = useState<"shutdown" | "restart" | null>(null);
+
 
   useEffect(() => {
     let cancelled = false;
@@ -149,6 +153,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         }
 
         setSettingsStatuses(createSettingsNavStatuses(integrations, runnerHealth));
+        setRunnerOnline(runnerHealth.status === "online");
       } catch {
         if (cancelled) {
           return;
@@ -165,6 +170,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             errorMessage: null,
           }),
         );
+        setRunnerOnline(false);
       }
     }
 
@@ -178,6 +184,53 @@ export function AppShell({ children }: { children: ReactNode }) {
       window.clearInterval(intervalId);
     };
   }, [pathname]);
+
+  const handleShutdown = async () => {
+    if (!window.confirm("Are you sure you want to shut down the dev stack?")) return;
+    setIsPending("shutdown");
+    try {
+      const gateways = createGatewayBundle();
+      await gateways.localRunnerGateway.shutdownStack();
+    } catch (err) {
+      console.error("Shutdown failed", err);
+      setIsPending(null);
+    }
+  };
+
+  const handleRestart = async () => {
+    if (!window.confirm("Are you sure you want to restart the dev stack?")) return;
+    setIsPending("restart");
+    try {
+      const gateways = createGatewayBundle();
+      await gateways.localRunnerGateway.restartStack();
+      
+      // Poll runner health
+      const interval = setInterval(async () => {
+        try {
+          const innerGateways = createGatewayBundle();
+          const health = await new CheckLocalRunnerHealthUseCase(innerGateways.localRunnerGateway).execute();
+          if (health.status === "online") {
+            clearInterval(interval);
+            setIsPending(null);
+            const integrations = await innerGateways.integrationGateway.listAllIntegrations();
+            setSettingsStatuses(createSettingsNavStatuses(integrations, health));
+            setRunnerOnline(true);
+          }
+        } catch (e) {
+          // keep polling
+        }
+      }, 2000);
+      
+      setTimeout(() => {
+        clearInterval(interval);
+        setIsPending((current) => current === "restart" ? null : current);
+      }, 30000);
+    } catch (err) {
+      console.error("Restart failed", err);
+      setIsPending(null);
+    }
+  };
+
 
   return (
     <div className={APP_SHELL_LAYOUT_CLASSES.outer}>
@@ -215,12 +268,49 @@ export function AppShell({ children }: { children: ReactNode }) {
               <ThemeSwitcher className="w-full" compact />
             </div>
 
+            {runnerOnline && (
+              <div className="flex flex-col gap-2 rounded-2xl border border-border/60 bg-background/40 p-3">
+                <p className="font-mono text-[9px] uppercase tracking-[0.28em] text-muted-foreground">
+                  Dev Stack
+                </p>
+                {isPending === "shutdown" ? (
+                  <div className="flex h-9 w-full items-center justify-center rounded-[1.25rem] border border-border/80 bg-background/50 px-3 text-[10px] font-medium text-destructive backdrop-blur-sm">
+                    Shutting down...
+                  </div>
+                ) : isPending === "restart" ? (
+                  <div className="flex h-9 w-full items-center justify-center rounded-[1.25rem] border border-border/80 bg-background/50 px-3 text-[10px] font-medium text-muted-foreground backdrop-blur-sm">
+                    Restarting...
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={handleShutdown}
+                      className="flex min-w-0 items-center justify-center rounded-[1rem] border border-emerald-500/30 bg-emerald-500/5 py-2 text-muted-foreground hover:bg-destructive hover:border-destructive hover:text-white active:scale-95 transition-all duration-200 outline-none focus-visible:ring-1 focus-visible:ring-accent"
+                      title="Shutdown Dev Stack"
+                      type="button"
+                    >
+                      <Power className="size-4" />
+                    </button>
+                    <button
+                      onClick={handleRestart}
+                      className="flex min-w-0 items-center justify-center rounded-[1rem] border border-emerald-500/30 bg-emerald-500/5 py-2 text-muted-foreground hover:bg-muted/70 hover:text-foreground active:scale-95 transition-all duration-200 outline-none focus-visible:ring-1 focus-visible:ring-accent"
+                      title="Restart Dev Stack"
+                      type="button"
+                    >
+                      <RotateCw className="size-4" />
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
             {session?.mode === "supabase" ? (
               <Button className="w-full justify-center" onClick={() => void signOut()} variant="secondary">
                 Sign out
               </Button>
             ) : null}
           </div>
+
         </aside>
 
         <main className={APP_SHELL_LAYOUT_CLASSES.main}>

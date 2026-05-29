@@ -534,4 +534,27 @@ export class HttpLocalRunnerGateway implements LocalRunnerGateway {
     const json = await response.json() as { content: string };
     return json.content;
   }
+
+  async shutdownStack() {
+    const response = await fetch(new URL("/system/shutdown", this.baseUrl), {
+      method: "POST",
+      cache: "no-store",
+    });
+
+    if (!response.ok) {
+      throw new Error(`Local runner shutdown stack failed: ${response.status} ${response.statusText}`);
+    }
+  }
+
+  async restartStack() {
+    const response = await fetch(new URL("/system/restart", this.baseUrl), {
+      method: "POST",
+      cache: "no-store",
+    });
+
+    if (!response.ok) {
+      throw new Error(`Local runner restart stack failed: ${response.status} ${response.statusText}`);
+    }
+  }
 }
+

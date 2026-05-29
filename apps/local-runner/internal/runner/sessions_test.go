@@ -69,6 +69,12 @@ func TestDetermineProviderSessionID(t *testing.T) {
 	if geminiIgnoreID != "current-thread" {
 		t.Errorf("Expected current-thread, got %s", geminiIgnoreID)
 	}
+
+	// Test Claude resume
+	claudeResumeID := DetermineProviderSessionID("claude_stream_json", "claude", "456", "", &resumeID)
+	if claudeResumeID != "old-codex-thread" {
+		t.Errorf("Expected old-codex-thread, got %s", claudeResumeID)
+	}
 }
 
 func TestStartSessionResumesProviderSessionID(t *testing.T) {
@@ -172,6 +178,49 @@ func TestStartSessionGeminiACPRejectsInitializeErrors(t *testing.T) {
 	}
 }
 
+func TestStartSessionClaudeUsesVirtualSessionState(t *testing.T) {
+	originalCmdCtx := commandContextFn
+	originalLookPath := lookPathFn
+	defer func() {
+		commandContextFn = originalCmdCtx
+		lookPathFn = originalLookPath
+	}()
+
+	commandStarted := false
+	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+		commandStarted = true
+		return exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", "Write-Output unexpected")
+	}
+	lookPathFn = func(file string) (string, error) {
+		return file, nil
+	}
+
+	r, _ := New(".")
+	resumeID := "claude-session-old"
+	handle, err := r.StartSession(context.Background(), AiSessionStartRequest{
+		ProviderKey:             "claude",
+		ModelName:               "claude-haiku",
+		WorkingDirectory:        ".",
+		ResumeProviderSessionID: &resumeID,
+	})
+	if err != nil {
+		t.Fatalf("StartSession failed: %v", err)
+	}
+
+	if commandStarted {
+		t.Fatal("expected Claude StartSession to avoid starting a long-lived process")
+	}
+	if handle.ProviderSessionID != "claude-session-old" {
+		t.Fatalf("expected Claude StartSession to seed the resume session id, got %q", handle.ProviderSessionID)
+	}
+	if handle.ProcessPid != nil {
+		t.Fatalf("expected virtual Claude session to have no pid, got %v", *handle.ProcessPid)
+	}
+	if handle.ProcessKey == nil {
+		t.Fatal("expected Claude StartSession to return a process key")
+	}
+}
+
 func TestSendMessageGeminiACPUsesContentBlocksAndStreamsText(t *testing.T) {
 	r, _ := New(".")
 
@@ -216,6 +265,88 @@ func TestSendMessageGeminiACPUsesContentBlocksAndStreamsText(t *testing.T) {
 	}
 	if !strings.Contains(written, `"prompt":[{"text":"Reply with just OK","type":"text"}]`) {
 		t.Fatalf("expected Gemini prompt payload to use ACP content blocks, got %q", written)
+	}
+}
+
+func TestSendMessageClaudeRespawnsPrintCommandPerTurnAndResumesSession(t *testing.T) {
+	originalCmdCtx := commandContextFn
+	originalLookPath := lookPathFn
+	defer func() {
+		commandContextFn = originalCmdCtx
+		lookPathFn = originalLookPath
+	}()
+
+	lookPathFn = func(file string) (string, error) {
+		return file, nil
+	}
+
+	var startedArgs [][]string
+	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+		startedArgs = append(startedArgs, append([]string{name}, arg...))
+		output := strings.Join([]string{
+			`{"type":"system","subtype":"init","session_id":"claude-real-session"}`,
+			`{"type":"assistant","message":{"content":[{"type":"text","text":"ignored"}]}}`,
+			`{"type":"result","subtype":"success","is_error":false,"result":"first reply","session_id":"claude-real-session"}`,
+		}, "\n")
+		if len(startedArgs) == 2 {
+			output = strings.Join([]string{
+				`{"type":"system","subtype":"init","session_id":"claude-real-session"}`,
+				`{"type":"result","subtype":"success","is_error":false,"result":"second reply","session_id":"claude-real-session"}`,
+			}, "\n")
+		}
+		script := "$input | Out-Null; Write-Output '" + output + "'"
+		return exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
+	}
+
+	r, _ := New(".")
+	handle, err := r.StartSession(context.Background(), AiSessionStartRequest{
+		ProviderKey:      "claude",
+		ModelName:        "claude-haiku",
+		WorkingDirectory: ".",
+	})
+	if err != nil {
+		t.Fatalf("StartSession failed: %v", err)
+	}
+
+	resultOne, err := r.SendMessage(context.Background(), AiSessionMessageRequest{
+		Session: handle,
+		Prompt:  "First prompt",
+	})
+	if err != nil {
+		t.Fatalf("first Claude SendMessage failed: %v", err)
+	}
+
+	resultTwo, err := r.SendMessage(context.Background(), AiSessionMessageRequest{
+		Session: handle,
+		Prompt:  "Second prompt",
+	})
+	if err != nil {
+		t.Fatalf("second Claude SendMessage failed: %v", err)
+	}
+
+	if resultOne.OutputMarkdown != "first reply" {
+		t.Fatalf("expected first Claude output, got %q", resultOne.OutputMarkdown)
+	}
+	if resultTwo.OutputMarkdown != "second reply" {
+		t.Fatalf("expected second Claude output, got %q", resultTwo.OutputMarkdown)
+	}
+	if resultTwo.ProviderSessionID != "claude-real-session" {
+		t.Fatalf("expected persisted Claude session id, got %q", resultTwo.ProviderSessionID)
+	}
+	if len(startedArgs) != 2 {
+		t.Fatalf("expected two Claude print invocations, got %d", len(startedArgs))
+	}
+	if !strings.Contains(strings.Join(startedArgs[0], " "), "--output-format stream-json") {
+		t.Fatalf("expected Claude stream-json output mode, got args %v", startedArgs[0])
+	}
+	if !strings.Contains(strings.Join(startedArgs[0], " "), "--model haiku") {
+		t.Fatalf("expected Claude model name to be normalized for CLI, got args %v", startedArgs[0])
+	}
+	if strings.Contains(strings.Join(startedArgs[0], " "), "--resume claude-real-session") {
+		t.Fatalf("expected first Claude turn to avoid resume with synthetic session id, got args %v", startedArgs[0])
+	}
+	if !strings.Contains(strings.Join(startedArgs[1], " "), "--resume claude-real-session") {
+		t.Fatalf("expected second Claude turn to resume the real session id, got args %v", startedArgs[1])
 	}
 }
 
@@ -290,5 +421,266 @@ func TestCloseSessionDoesNotKillMismatchedOrphanProcessByPID(t *testing.T) {
 
 	if killed {
 		t.Fatal("expected mismatched orphan process to be left untouched")
+	}
+}
+
+func TestCloseSessionKillsActiveClaudeCommand(t *testing.T) {
+	originalCmdCtx := commandContextFn
+	originalLookPath := lookPathFn
+	defer func() {
+		commandContextFn = originalCmdCtx
+		lookPathFn = originalLookPath
+	}()
+
+	lookPathFn = func(file string) (string, error) {
+		return file, nil
+	}
+
+	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+		script := "Start-Sleep -Seconds 10"
+		return exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
+	}
+
+	r, _ := New(".")
+	handle, err := r.StartSession(context.Background(), AiSessionStartRequest{
+		ProviderKey:      "claude",
+		ModelName:        "claude-haiku",
+		WorkingDirectory: ".",
+	})
+	if err != nil {
+		t.Fatalf("StartSession failed: %v", err)
+	}
+
+	errChan := make(chan error, 1)
+	go func() {
+		_, err := r.SendMessage(context.Background(), AiSessionMessageRequest{
+			Session: handle,
+			Prompt:  "simulate message execution",
+		})
+		errChan <- err
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+
+	startTime := time.Now()
+	err = r.CloseSession(context.Background(), handle)
+	if err != nil {
+		t.Fatalf("CloseSession failed: %v", err)
+	}
+
+	select {
+	case sendErr := <-errChan:
+		if sendErr == nil {
+			t.Fatal("expected SendMessage to fail after CloseSession killed it")
+		}
+		if !strings.Contains(sendErr.Error(), "session_terminated:") {
+			t.Fatalf("expected intentional shutdown error, got %v", sendErr)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("SendMessage did not exit within 3 seconds after CloseSession")
+	}
+
+	if time.Since(startTime) > 2*time.Second {
+		t.Errorf("expected CloseSession to finish quickly, took %v", time.Since(startTime))
+	}
+}
+
+func TestCleanupSessionsKillsActiveClaudeCommand(t *testing.T) {
+	originalCmdCtx := commandContextFn
+	originalLookPath := lookPathFn
+	defer func() {
+		commandContextFn = originalCmdCtx
+		lookPathFn = originalLookPath
+	}()
+
+	lookPathFn = func(file string) (string, error) {
+		return file, nil
+	}
+
+	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+		script := "Start-Sleep -Seconds 10"
+		return exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
+	}
+
+	r, _ := New(".")
+	handle, err := r.StartSession(context.Background(), AiSessionStartRequest{
+		ProviderKey:      "claude",
+		ModelName:        "claude-haiku",
+		WorkingDirectory: ".",
+	})
+	if err != nil {
+		t.Fatalf("StartSession failed: %v", err)
+	}
+
+	errChan := make(chan error, 1)
+	go func() {
+		_, err := r.SendMessage(context.Background(), AiSessionMessageRequest{
+			Session: handle,
+			Prompt:  "simulate message execution",
+		})
+		errChan <- err
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+
+	r.CleanupSessions()
+
+	select {
+	case sendErr := <-errChan:
+		if sendErr == nil {
+			t.Fatal("expected SendMessage to fail after CleanupSessions")
+		}
+		if !strings.Contains(sendErr.Error(), "session_terminated:") {
+			t.Fatalf("expected intentional shutdown error, got %v", sendErr)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("SendMessage did not exit within 3 seconds after CleanupSessions")
+	}
+}
+
+func TestCloseSessionMarksInFlightCodexBootstrapSessionTerminated(t *testing.T) {
+	originalCmdCtx := commandContextFn
+	originalLookPath := lookPathFn
+	defer func() {
+		commandContextFn = originalCmdCtx
+		lookPathFn = originalLookPath
+	}()
+
+	lookPathFn = func(file string) (string, error) {
+		return file, nil
+	}
+
+	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+		script := "$null = [Console]::In.ReadLine(); Write-Output '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}'; $null = [Console]::In.ReadLine(); Start-Sleep -Seconds 10"
+		return exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
+	}
+
+	r, _ := New(".")
+	handle, err := r.StartSession(context.Background(), AiSessionStartRequest{
+		ProviderKey:      "codex",
+		ModelName:        "codex-mcp",
+		WorkingDirectory: ".",
+	})
+	if err != nil {
+		t.Fatalf("StartSession failed: %v", err)
+	}
+
+	if !strings.HasPrefix(handle.ProviderSessionID, "codex_mcp_session_") {
+		t.Fatalf("expected synthetic bootstrap provider session id, got %q", handle.ProviderSessionID)
+	}
+
+	errChan := make(chan error, 1)
+	go func() {
+		_, err := r.SendMessage(context.Background(), AiSessionMessageRequest{
+			Session: handle,
+			Prompt:  "simulate first codex prompt",
+		})
+		errChan <- err
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+
+	err = r.CloseSession(context.Background(), handle)
+	if err != nil {
+		t.Fatalf("CloseSession failed: %v", err)
+	}
+
+	select {
+	case sendErr := <-errChan:
+		if sendErr == nil {
+			t.Fatal("expected SendMessage to fail after CloseSession killed bootstrap codex session")
+		}
+		if !strings.Contains(sendErr.Error(), "session_terminated:") {
+			t.Fatalf("expected intentional shutdown error, got %v", sendErr)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("SendMessage did not exit within 3 seconds after CloseSession")
+	}
+}
+
+func TestCloseSessionRacingWithClaudeStart(t *testing.T) {
+	originalCmdCtx := commandContextFn
+	originalLookPath := lookPathFn
+	defer func() {
+		commandContextFn = originalCmdCtx
+		lookPathFn = originalLookPath
+	}()
+
+	lookPathFn = func(file string) (string, error) {
+		return file, nil
+	}
+
+	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+		script := "Start-Sleep -Seconds 10"
+		return exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
+	}
+
+	r, _ := New(".")
+	handle, err := r.StartSession(context.Background(), AiSessionStartRequest{
+		ProviderKey:      "claude",
+		ModelName:        "claude-haiku",
+		WorkingDirectory: ".",
+	})
+	if err != nil {
+		t.Fatalf("StartSession failed: %v", err)
+	}
+
+	err = r.CloseSession(context.Background(), handle)
+	if err != nil {
+		t.Fatalf("CloseSession failed: %v", err)
+	}
+
+	_, err = r.SendMessage(context.Background(), AiSessionMessageRequest{
+		Session: handle,
+		Prompt:  "hello",
+	})
+	if err == nil || !strings.Contains(err.Error(), "session_dead") {
+		t.Fatalf("expected session_dead error, got: %v", err)
+	}
+}
+
+func TestSweepIdleSessionsSkipsInFlightSession(t *testing.T) {
+	r, _ := New(".")
+	handle, err := r.StartSession(context.Background(), AiSessionStartRequest{
+		ProviderKey:      "claude",
+		ModelName:        "claude-haiku",
+		WorkingDirectory: ".",
+	})
+	if err != nil {
+		t.Fatalf("StartSession failed: %v", err)
+	}
+
+	r.sessionsMu.Lock()
+	sess := r.sessions[*handle.ProcessKey]
+	r.sessionsMu.Unlock()
+
+	sess.Mu.Lock()
+	sess.InFlight = true
+	sess.LastUsedAt = time.Now().Add(-2 * time.Hour)
+	sess.IdleTTL = 1 * time.Hour
+	sess.Mu.Unlock()
+
+	r.sweepIdleSessions()
+
+	r.sessionsMu.Lock()
+	_, exists := r.sessions[*handle.ProcessKey]
+	r.sessionsMu.Unlock()
+
+	if !exists {
+		t.Fatal("expected session to not be swept because InFlight is true")
+	}
+
+	sess.Mu.Lock()
+	sess.InFlight = false
+	sess.Mu.Unlock()
+
+	r.sweepIdleSessions()
+
+	r.sessionsMu.Lock()
+	_, exists = r.sessions[*handle.ProcessKey]
+	r.sessionsMu.Unlock()
+
+	if exists {
+		t.Fatal("expected session to be swept because InFlight is false")
 	}
 }

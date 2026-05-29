@@ -58,7 +58,7 @@ function mapWorkflowRunSessionRow(row: WorkflowRunSessionRow): WorkflowRunSessio
   };
 }
 
-function WorkflowRunHistoryPage() {
+export function WorkflowRunHistoryPage() {
   const location = useLocation();
   const gatewayBundle = useRef(createGatewayBundle());
   const listWorkflowRunsUseCase = useRef(
@@ -165,31 +165,38 @@ function WorkflowRunHistoryPage() {
     );
   }
 
-  useEffect(() => {
-    const load = async () => {
-      const [runRows, workflowRows, projectRows] = await Promise.all([
-        listWorkflowRunsUseCase.current.execute(),
-        listWorkflowsUseCase.current.execute(),
-        gatewayBundle.current.projectGateway.listProjects(),
-      ]);
-      const titles = await loadWorkflowRunTitleMap(
-        gatewayBundle.current.localRunnerGateway,
-        runRows.map((run) => run.id),
-      );
-      setRuns(runRows);
-      setWorkflows(workflowRows);
-      setProjects(projectRows);
-      setRunTitles(titles);
-      try {
-        const activeSessionRows = await loadActiveSessions();
-        setActiveSessions(activeSessionRows);
-      } catch (error) {
-        console.error("Unable to load active workflow sessions:", error);
-      }
-    };
+  async function loadRunHistory() {
+    const [runRows, workflowRows, projectRows] = await Promise.all([
+      listWorkflowRunsUseCase.current.execute(),
+      listWorkflowsUseCase.current.execute(),
+      gatewayBundle.current.projectGateway.listProjects(),
+    ]);
+    const titles = await loadWorkflowRunTitleMap(
+      gatewayBundle.current.localRunnerGateway,
+      runRows.map((run) => run.id),
+    );
+    setRuns(runRows);
+    setWorkflows(workflowRows);
+    setProjects(projectRows);
+    setRunTitles(titles);
+    try {
+      const activeSessionRows = await loadActiveSessions();
+      setActiveSessions(activeSessionRows);
+    } catch (error) {
+      console.error("Unable to load active workflow sessions:", error);
+    }
+  }
 
-    void load();
-  }, []);
+  useEffect(() => {
+    if (
+      location.pathname !== "/workflow-runs" &&
+      location.pathname !== "/workflow-runs/"
+    ) {
+      return;
+    }
+
+    void loadRunHistory();
+  }, [location.pathname]);
 
   useEffect(() => {
     const interval = setInterval(() => {
