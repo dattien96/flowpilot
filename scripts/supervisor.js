@@ -52,15 +52,51 @@ function isPortInUse(port) {
   });
 }
 
+function isPidAlive(pid) {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 async function startServices() {
   ensureDirectoryExists(flowpilotDir);
+
+  // Try to read existing metadata to adopt PIDs of already running processes
+  let adoptedWebPid = null;
+  let adoptedRunnerPid = null;
+  if (fs.existsSync(metadataPath)) {
+    try {
+      const oldMeta = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+      if (oldMeta.webPid) adoptedWebPid = oldMeta.webPid;
+      if (oldMeta.runnerPid) adoptedRunnerPid = oldMeta.runnerPid;
+    } catch (e) {}
+  }
 
   const webInUse = await isPortInUse(parseInt(webPort, 10));
   const runnerInUse = await isPortInUse(parseInt(runnerPort, 10));
 
   if (webInUse && runnerInUse) {
-    console.log('[Supervisor] Both services are already running.');
-    process.exit(0);
+    console.log('[Supervisor] Both services are already running. Watching for control commands...');
+    
+    if (adoptedWebPid && isPidAlive(adoptedWebPid)) {
+      webProcess = { pid: adoptedWebPid, exitCode: null, killed: false };
+    }
+    if (adoptedRunnerPid && isPidAlive(adoptedRunnerPid)) {
+      runnerProcess = { pid: adoptedRunnerPid, exitCode: null, killed: false };
+    }
+
+    const metadata = {
+      supervisorPid: process.pid,
+      webPid: adoptedWebPid,
+      runnerPid: adoptedRunnerPid,
+      controlPath: controlPath,
+    };
+    fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2));
+    return;
   }
 
   // Clear any stale command file
@@ -89,6 +125,9 @@ async function startServices() {
     });
   } else {
     console.log(`[Supervisor] Web service is already running on port ${webPort}, skipping start.`);
+    if (adoptedWebPid && isPidAlive(adoptedWebPid)) {
+      webProcess = { pid: adoptedWebPid, exitCode: null, killed: false };
+    }
   }
 
   // Spawn runner if not running
@@ -110,6 +149,9 @@ async function startServices() {
     });
   } else {
     console.log(`[Supervisor] Runner service is already running on port ${runnerPort}, skipping start.`);
+    if (adoptedRunnerPid && isPidAlive(adoptedRunnerPid)) {
+      runnerProcess = { pid: adoptedRunnerPid, exitCode: null, killed: false };
+    }
   }
 
   // Write supervisor metadata
@@ -177,8 +219,8 @@ function cleanupAndExit() {
   let checks = 0;
   const maxChecks = 15; // 15 * 200ms = 3000ms
   const interval = setInterval(() => {
-    const runnerAlive = runnerProcess && runnerProcess.exitCode === null && !runnerProcess.killed;
-    const webAlive = webProcess && webProcess.exitCode === null && !webProcess.killed;
+    const runnerAlive = runnerProcess && runnerProcess.exitCode === null && !runnerProcess.killed && isPidAlive(runnerProcess.pid);
+    const webAlive = webProcess && webProcess.exitCode === null && !webProcess.killed && isPidAlive(webProcess.pid);
 
     if (!runnerAlive && !webAlive) {
       clearInterval(interval);
@@ -211,9 +253,6 @@ function handleRestart() {
   isRestarting = true;
   console.log('[Supervisor] Restarting stack...');
 
-  // Request runner to clean up sessions via HTTP
-  triggerHTTPShutdown();
-
   // Signal the process groups on Unix first
   if (process.platform !== 'win32') {
     if (runnerProcess && runnerProcess.pid) {
@@ -228,8 +267,8 @@ function handleRestart() {
   let checks = 0;
   const maxChecks = 10; // 10 * 200ms = 2000ms
   const interval = setInterval(() => {
-    const runnerAlive = runnerProcess && runnerProcess.exitCode === null && !runnerProcess.killed;
-    const webAlive = webProcess && webProcess.exitCode === null && !webProcess.killed;
+    const runnerAlive = runnerProcess && runnerProcess.exitCode === null && !runnerProcess.killed && isPidAlive(runnerProcess.pid);
+    const webAlive = webProcess && webProcess.exitCode === null && !webProcess.killed && isPidAlive(webProcess.pid);
 
     if (!runnerAlive && !webAlive) {
       clearInterval(interval);
