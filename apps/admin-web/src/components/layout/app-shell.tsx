@@ -1,6 +1,7 @@
 import { Link, useLocation, useRouterState } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
+import { Power, RotateCw } from "lucide-react";
 
 import { primaryNavItems, settingsNavItems } from "@/components/layout/app-nav";
 import { buildMcpServerStatus, buildRunnerStatus } from "@/components/layout/app-shell-status";
@@ -273,29 +274,31 @@ export function AppShell({ children }: { children: ReactNode }) {
                   Dev Stack
                 </p>
                 {isPending === "shutdown" ? (
-                  <Button disabled className="w-full justify-center" variant="destructive">
+                  <div className="flex h-9 w-full items-center justify-center rounded-[1.25rem] border border-border/80 bg-background/50 px-3 text-[10px] font-medium text-destructive backdrop-blur-sm">
                     Shutting down...
-                  </Button>
+                  </div>
                 ) : isPending === "restart" ? (
-                  <Button disabled className="w-full justify-center" variant="secondary">
+                  <div className="flex h-9 w-full items-center justify-center rounded-[1.25rem] border border-border/80 bg-background/50 px-3 text-[10px] font-medium text-muted-foreground backdrop-blur-sm">
                     Restarting...
-                  </Button>
+                  </div>
                 ) : (
-                  <div className="flex gap-2">
-                    <Button
-                      className="flex-1 justify-center text-xs font-bold uppercase tracking-wider"
+                  <div className="grid grid-cols-2 items-stretch gap-1 rounded-[1.25rem] border border-border/80 bg-background/50 p-1 backdrop-blur-sm transition-all">
+                    <button
                       onClick={handleShutdown}
-                      variant="destructive"
+                      className="flex min-w-0 items-center justify-center rounded-[1rem] py-2 text-muted-foreground hover:bg-destructive hover:text-white active:scale-95 transition-all duration-200 outline-none focus-visible:ring-1 focus-visible:ring-accent"
+                      title="Shutdown Dev Stack"
+                      type="button"
                     >
-                      Shutdown
-                    </Button>
-                    <Button
-                      className="flex-1 justify-center text-xs font-bold uppercase tracking-wider"
+                      <Power className="size-4" />
+                    </button>
+                    <button
                       onClick={handleRestart}
-                      variant="secondary"
+                      className="flex min-w-0 items-center justify-center rounded-[1rem] py-2 text-muted-foreground hover:bg-muted/70 hover:text-foreground active:scale-95 transition-all duration-200 outline-none focus-visible:ring-1 focus-visible:ring-accent"
+                      title="Restart Dev Stack"
+                      type="button"
                     >
-                      Restart
-                    </Button>
+                      <RotateCw className="size-4" />
+                    </button>
                   </div>
                 )}
               </div>
