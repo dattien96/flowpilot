@@ -306,10 +306,12 @@ function CollapsibleChatBubble({
 
 function CollapsibleAttemptPanel({
   title,
+  time,
   defaultOpen = true,
   children,
 }: {
   title: string;
+  time?: string;
   defaultOpen?: boolean;
   children: ReactNode;
 }) {
@@ -322,9 +324,16 @@ function CollapsibleAttemptPanel({
         onClick={() => setOpen((current) => !current)}
         className="flex w-full items-center justify-between gap-3 px-6 py-4 text-left"
       >
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-          {title}
-        </span>
+        <div className="flex items-center gap-3">
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            {title}
+          </span>
+          {time ? (
+            <span className="text-[9px] font-mono text-muted-foreground/60">
+              {time}
+            </span>
+          ) : null}
+        </div>
         <span className="text-muted-foreground transition-colors shrink-0">
           {open ? (
             <ChevronUp className="h-4 w-4" />
@@ -867,6 +876,7 @@ function SessionGroupSection({
                         <div key={attemptItem.key} className="space-y-3">
                           <CollapsibleAttemptPanel
                             title={stepOutputs.length > 1 ? `Attempt ${outputAttempt}` : "Output"}
+                            time={formatBubbleTime(attemptItem.output.createdAt) ?? undefined}
                           >
                             <div className="space-y-4">
                               <StepOutputTabs
