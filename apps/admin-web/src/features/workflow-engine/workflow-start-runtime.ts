@@ -801,9 +801,14 @@ export async function sendMessageWithRetry({
     } catch (error) {
       const msg = String((error as any).message || "").toLowerCase();
       const isSessionDead = (error as any).code === "session_dead";
+      const isSessionTerminated = (error as any).code === "session_terminated";
       const isThreadMissing =
         msg.includes("provider error:") &&
         (msg.includes("thread") || msg.includes("not found") || msg.includes("invalid"));
+
+      if (isSessionTerminated) {
+        throw error;
+      }
 
       if (attempt >= maxAttempts) {
         throw error;
@@ -1056,7 +1061,18 @@ async function insertLog(
   });
 
   if (error) {
-    throw new Error(`Unable to write workflow run log: ${error.message}`);
+    const errorCode = typeof (error as any)?.code === "string" ? String((error as any).code) : "";
+    const errorMessage = String((error as any)?.message ?? error);
+    if (errorCode === "23503" || errorMessage.includes("workflow_run_logs_workflow_run_step_id_fkey")) {
+      console.warn("Skipping workflow run log write for missing step row:", {
+        workflowRunStepId,
+        logLevel,
+        message,
+      });
+      return;
+    }
+
+    throw new Error(`Unable to write workflow run log: ${errorMessage}`);
   }
 }
 

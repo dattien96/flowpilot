@@ -473,6 +473,9 @@ func TestCloseSessionKillsActiveClaudeCommand(t *testing.T) {
 		if sendErr == nil {
 			t.Fatal("expected SendMessage to fail after CloseSession killed it")
 		}
+		if !strings.Contains(sendErr.Error(), "session_terminated:") {
+			t.Fatalf("expected intentional shutdown error, got %v", sendErr)
+		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("SendMessage did not exit within 3 seconds after CloseSession")
 	}
@@ -527,8 +530,71 @@ func TestCleanupSessionsKillsActiveClaudeCommand(t *testing.T) {
 		if sendErr == nil {
 			t.Fatal("expected SendMessage to fail after CleanupSessions")
 		}
+		if !strings.Contains(sendErr.Error(), "session_terminated:") {
+			t.Fatalf("expected intentional shutdown error, got %v", sendErr)
+		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("SendMessage did not exit within 3 seconds after CleanupSessions")
+	}
+}
+
+func TestCloseSessionMarksInFlightCodexBootstrapSessionTerminated(t *testing.T) {
+	originalCmdCtx := commandContextFn
+	originalLookPath := lookPathFn
+	defer func() {
+		commandContextFn = originalCmdCtx
+		lookPathFn = originalLookPath
+	}()
+
+	lookPathFn = func(file string) (string, error) {
+		return file, nil
+	}
+
+	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+		script := "$null = [Console]::In.ReadLine(); Write-Output '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}'; $null = [Console]::In.ReadLine(); Start-Sleep -Seconds 10"
+		return exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
+	}
+
+	r, _ := New(".")
+	handle, err := r.StartSession(context.Background(), AiSessionStartRequest{
+		ProviderKey:      "codex",
+		ModelName:        "codex-mcp",
+		WorkingDirectory: ".",
+	})
+	if err != nil {
+		t.Fatalf("StartSession failed: %v", err)
+	}
+
+	if !strings.HasPrefix(handle.ProviderSessionID, "codex_mcp_session_") {
+		t.Fatalf("expected synthetic bootstrap provider session id, got %q", handle.ProviderSessionID)
+	}
+
+	errChan := make(chan error, 1)
+	go func() {
+		_, err := r.SendMessage(context.Background(), AiSessionMessageRequest{
+			Session: handle,
+			Prompt:  "simulate first codex prompt",
+		})
+		errChan <- err
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+
+	err = r.CloseSession(context.Background(), handle)
+	if err != nil {
+		t.Fatalf("CloseSession failed: %v", err)
+	}
+
+	select {
+	case sendErr := <-errChan:
+		if sendErr == nil {
+			t.Fatal("expected SendMessage to fail after CloseSession killed bootstrap codex session")
+		}
+		if !strings.Contains(sendErr.Error(), "session_terminated:") {
+			t.Fatalf("expected intentional shutdown error, got %v", sendErr)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("SendMessage did not exit within 3 seconds after CloseSession")
 	}
 }
 
@@ -618,5 +684,3 @@ func TestSweepIdleSessionsSkipsInFlightSession(t *testing.T) {
 		t.Fatal("expected session to be swept because InFlight is false")
 	}
 }
-
-

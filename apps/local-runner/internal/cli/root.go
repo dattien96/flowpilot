@@ -562,6 +562,16 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 						})
 						return
 					}
+					if strings.HasPrefix(err.Error(), "session_terminated:") {
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(http.StatusConflict)
+						json.NewEncoder(w).Encode(map[string]string{
+							"code":    "session_terminated",
+							"message": "session was intentionally terminated",
+							"details": err.Error(),
+						})
+						return
+					}
 					writeHTTPError(w, http.StatusBadRequest, err)
 					return
 				}
@@ -622,7 +632,6 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 					f.Flush()
 				}
 			})
-
 
 			// Graceful shutdown on SIGINT/SIGTERM
 			sigChan := make(chan os.Signal, 1)
@@ -838,4 +847,3 @@ func writeSupervisorCommand(workspace string, command string) error {
 	}
 	return os.WriteFile(cmdPath, []byte(command), 0644)
 }
-

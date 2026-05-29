@@ -49,9 +49,38 @@ type LiveSession struct {
 	Status            string
 	LastUsedAt        time.Time
 	IdleTTL           time.Duration
+	TerminationReason string
 	Mu                sync.Mutex
 	SendMu            sync.Mutex
 	InFlight          bool
+}
+
+func sessionTerminationError(session *LiveSession) error {
+	session.Mu.Lock()
+	defer session.Mu.Unlock()
+
+	return sessionTerminationErrorLocked(session)
+}
+
+func sessionTerminationErrorLocked(session *LiveSession) error {
+	if strings.TrimSpace(session.TerminationReason) == "" {
+		return nil
+	}
+
+	return fmt.Errorf("session_terminated: session %q was intentionally terminated", session.ProcessKey)
+}
+
+func markSessionTerminated(session *LiveSession, reason string) (io.WriteCloser, *exec.Cmd, string) {
+	session.Mu.Lock()
+	session.Status = "completed"
+	if session.TerminationReason == "" {
+		session.TerminationReason = reason
+	}
+	stdin := session.Stdin
+	cmd := session.Cmd
+	transport := session.TransportType
+	session.Mu.Unlock()
+	return stdin, cmd, transport
 }
 
 func writeJsonRpcRequest(w io.Writer, method string, params interface{}, id interface{}) error {
@@ -530,7 +559,11 @@ func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (
 
 	session.Mu.Lock()
 	if session.Status == "completed" {
+		terminationErr := sessionTerminationErrorLocked(session)
 		session.Mu.Unlock()
+		if terminationErr != nil {
+			return PromptExecutionResult{}, terminationErr
+		}
 		return PromptExecutionResult{}, fmt.Errorf("session_dead: session %q has been closed", *req.Session.ProcessKey)
 	}
 	session.LastUsedAt = time.Now().UTC()
@@ -568,10 +601,16 @@ func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (
 			"arguments": args,
 		}
 		if err := writeJsonRpcRequest(session.Stdin, "tools/call", params, 3); err != nil {
+			if terminationErr := sessionTerminationError(session); terminationErr != nil {
+				return PromptExecutionResult{}, terminationErr
+			}
 			return PromptExecutionResult{}, fmt.Errorf("session_dead: failed to send MCP tool call: %w", err)
 		}
 		resp, err := readJsonRpcResponse(session.StdoutScanner, 3)
 		if err != nil {
+			if terminationErr := sessionTerminationError(session); terminationErr != nil {
+				return PromptExecutionResult{}, terminationErr
+			}
 			if strings.HasPrefix(err.Error(), "parse_error:") {
 				return PromptExecutionResult{}, fmt.Errorf("provider error: invalid json response: %v", err)
 			}
@@ -602,6 +641,9 @@ func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (
 
 		params := geminiACPPromptParams(providerSessionID, req.Prompt)
 		if err := writeJsonRpcRequest(session.Stdin, "session/prompt", params, 3); err != nil {
+			if terminationErr := sessionTerminationError(session); terminationErr != nil {
+				return PromptExecutionResult{}, terminationErr
+			}
 			return PromptExecutionResult{}, fmt.Errorf("session_dead: failed to send Gemini ACP prompt: %w", err)
 		}
 		var streamedOutput strings.Builder
@@ -609,6 +651,9 @@ func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (
 			appendGeminiACPText(&streamedOutput, msg)
 		})
 		if err != nil {
+			if terminationErr := sessionTerminationError(session); terminationErr != nil {
+				return PromptExecutionResult{}, terminationErr
+			}
 			if strings.HasPrefix(err.Error(), "parse_error:") {
 				return PromptExecutionResult{}, fmt.Errorf("provider error: invalid json response: %v", err)
 			}
@@ -678,8 +723,12 @@ func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (
 
 		session.Mu.Lock()
 		if session.Status == "completed" {
+			terminationErr := sessionTerminationErrorLocked(session)
 			session.Mu.Unlock()
 			_ = stdin.Close()
+			if terminationErr != nil {
+				return PromptExecutionResult{}, terminationErr
+			}
 			return PromptExecutionResult{}, fmt.Errorf("session_dead: session has been closed")
 		}
 		if err := cmd.Start(); err != nil {
@@ -721,6 +770,9 @@ func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (
 			session.Cmd = nil
 			session.Pid = 0
 			session.Mu.Unlock()
+			if terminationErr := sessionTerminationError(session); terminationErr != nil {
+				return PromptExecutionResult{}, terminationErr
+			}
 			return PromptExecutionResult{}, fmt.Errorf("provider error: failed to write Claude stream JSON: %w", err)
 		}
 		if err := stdin.Close(); err != nil {
@@ -729,6 +781,9 @@ func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (
 			session.Cmd = nil
 			session.Pid = 0
 			session.Mu.Unlock()
+			if terminationErr := sessionTerminationError(session); terminationErr != nil {
+				return PromptExecutionResult{}, terminationErr
+			}
 			return PromptExecutionResult{}, fmt.Errorf("provider error: failed to close Claude stdin: %w", err)
 		}
 
@@ -740,6 +795,9 @@ func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (
 		session.Mu.Unlock()
 
 		if err != nil {
+			if terminationErr := sessionTerminationError(session); terminationErr != nil {
+				return PromptExecutionResult{}, terminationErr
+			}
 			stderrText := strings.TrimSpace(stderr.String())
 			if stderrText != "" {
 				return PromptExecutionResult{}, fmt.Errorf("provider error: %s", stderrText)
@@ -830,12 +888,7 @@ func (r *Runner) CloseSession(ctx context.Context, handle AiSessionHandle) error
 		return nil
 	}
 
-	session.Mu.Lock()
-	session.Status = "completed"
-	stdin := session.Stdin
-	cmd := session.Cmd
-	transport := session.TransportType
-	session.Mu.Unlock()
+	stdin, cmd, transport := markSessionTerminated(session, "manual_close")
 
 	if stdin != nil {
 		stdin.Close()
@@ -892,12 +945,7 @@ func (r *Runner) CleanupSessions() {
 	r.sessionsMu.Unlock()
 
 	for _, session := range activeSessions {
-		session.Mu.Lock()
-		session.Status = "completed"
-		stdin := session.Stdin
-		cmd := session.Cmd
-		transport := session.TransportType
-		session.Mu.Unlock()
+		stdin, cmd, transport := markSessionTerminated(session, "runner_cleanup")
 
 		if stdin != nil {
 			stdin.Close()
@@ -947,12 +995,7 @@ func (r *Runner) sweepIdleSessions() {
 	r.sessionsMu.Unlock()
 
 	for _, session := range staleSessions {
-		session.Mu.Lock()
-		session.Status = "completed"
-		stdin := session.Stdin
-		cmd := session.Cmd
-		transport := session.TransportType
-		session.Mu.Unlock()
+		stdin, cmd, transport := markSessionTerminated(session, "idle_timeout")
 
 		if stdin != nil {
 			stdin.Close()
