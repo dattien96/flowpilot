@@ -1,4 +1,4 @@
-const { spawn } = require('child_process');
+const { spawn, execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const net = require('net');
@@ -62,30 +62,109 @@ function isPidAlive(pid) {
   }
 }
 
+function getPidUsingPort(port) {
+  try {
+    if (process.platform === 'win32') {
+      const output = execSync('netstat -ano', { encoding: 'utf8' });
+      const lines = output.split('\n');
+      for (const line of lines) {
+        if (line.includes(`:${port}`) && line.includes('LISTENING')) {
+          const parts = line.trim().split(/\s+/);
+          const pid = parseInt(parts[parts.length - 1], 10);
+          if (pid && pid > 0) return pid;
+        }
+      }
+    } else {
+      try {
+        const output = execSync(`lsof -t -i tcp:${port}`, { encoding: 'utf8' }).trim();
+        const pid = parseInt(output, 10);
+        if (pid && pid > 0) return pid;
+      } catch (e) {
+        // Fallback for Linux using ss or netstat if lsof is missing
+        try {
+          const output = execSync(`ss -lptn 'sport = :${port}'`, { encoding: 'utf8' });
+          const match = output.match(/pid=(\d+)/);
+          if (match && match[1]) return parseInt(match[1], 10);
+        } catch (err) {}
+      }
+    }
+  } catch (e) {}
+  return null;
+}
+
+function verifyProcessOwner(pid, type) {
+  if (!pid) return false;
+  try {
+    let cmd = '';
+    if (process.platform === 'win32') {
+      cmd = execSync(`wmic process where processid=${pid} get commandline`, { encoding: 'utf8' }).toLowerCase();
+    } else {
+      try {
+        cmd = execSync(`ps -p ${pid} -o command=`, { encoding: 'utf8' }).toLowerCase();
+      } catch (pe) {
+        try {
+          cmd = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').toLowerCase();
+        } catch (fe) {}
+      }
+    }
+    if (type === 'web') {
+      return cmd.includes('node') || cmd.includes('npm') || cmd.includes('next');
+    } else if (type === 'runner') {
+      return cmd.includes('flowpilot') || cmd.includes('go') || cmd.includes('runner') || cmd.includes('serve');
+    }
+  } catch (e) {}
+  return false;
+}
+
 async function startServices() {
   ensureDirectoryExists(flowpilotDir);
 
-  // Try to read existing metadata to adopt PIDs of already running processes
-  let adoptedWebPid = null;
-  let adoptedRunnerPid = null;
+  // Read old metadata as a hint
+  let hintWebPid = null;
+  let hintRunnerPid = null;
   if (fs.existsSync(metadataPath)) {
     try {
       const oldMeta = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
-      if (oldMeta.webPid) adoptedWebPid = oldMeta.webPid;
-      if (oldMeta.runnerPid) adoptedRunnerPid = oldMeta.runnerPid;
+      if (oldMeta.webPid) hintWebPid = oldMeta.webPid;
+      if (oldMeta.runnerPid) hintRunnerPid = oldMeta.runnerPid;
     } catch (e) {}
   }
 
   const webInUse = await isPortInUse(parseInt(webPort, 10));
   const runnerInUse = await isPortInUse(parseInt(runnerPort, 10));
 
+  // Resolve actual PIDs if in use and verify their ownership to prevent PID reuse issues
+  let adoptedWebPid = null;
+  if (webInUse) {
+    if (hintWebPid && isPidAlive(hintWebPid) && verifyProcessOwner(hintWebPid, 'web')) {
+      adoptedWebPid = hintWebPid;
+    } else {
+      const portPid = getPidUsingPort(parseInt(webPort, 10));
+      if (portPid && verifyProcessOwner(portPid, 'web')) {
+        adoptedWebPid = portPid;
+      }
+    }
+  }
+
+  let adoptedRunnerPid = null;
+  if (runnerInUse) {
+    if (hintRunnerPid && isPidAlive(hintRunnerPid) && verifyProcessOwner(hintRunnerPid, 'runner')) {
+      adoptedRunnerPid = hintRunnerPid;
+    } else {
+      const portPid = getPidUsingPort(parseInt(runnerPort, 10));
+      if (portPid && verifyProcessOwner(portPid, 'runner')) {
+        adoptedRunnerPid = portPid;
+      }
+    }
+  }
+
   if (webInUse && runnerInUse) {
     console.log('[Supervisor] Both services are already running. Watching for control commands...');
     
-    if (adoptedWebPid && isPidAlive(adoptedWebPid)) {
+    if (adoptedWebPid) {
       webProcess = { pid: adoptedWebPid, exitCode: null, killed: false };
     }
-    if (adoptedRunnerPid && isPidAlive(adoptedRunnerPid)) {
+    if (adoptedRunnerPid) {
       runnerProcess = { pid: adoptedRunnerPid, exitCode: null, killed: false };
     }
 
@@ -125,7 +204,7 @@ async function startServices() {
     });
   } else {
     console.log(`[Supervisor] Web service is already running on port ${webPort}, skipping start.`);
-    if (adoptedWebPid && isPidAlive(adoptedWebPid)) {
+    if (adoptedWebPid) {
       webProcess = { pid: adoptedWebPid, exitCode: null, killed: false };
     }
   }
@@ -149,7 +228,7 @@ async function startServices() {
     });
   } else {
     console.log(`[Supervisor] Runner service is already running on port ${runnerPort}, skipping start.`);
-    if (adoptedRunnerPid && isPidAlive(adoptedRunnerPid)) {
+    if (adoptedRunnerPid) {
       runnerProcess = { pid: adoptedRunnerPid, exitCode: null, killed: false };
     }
   }
