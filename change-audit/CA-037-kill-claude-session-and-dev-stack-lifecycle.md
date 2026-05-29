@@ -15,7 +15,7 @@ Implement reliable session/process killing for AI provider executions (such as v
 - **Session Mutual Exclusion, Interruptibility & Concurrent Wait Fix**:
   - Added `SendMu` lock to Go runner `LiveSession` to serialize prompt/message sends while freeing the `Mu` lock during slow command runtimes. This prevents deadlocking the session object during long runs and allows `CloseSession(...)` to execute immediately.
   - Tracked transient processes (`Cmd` and `Pid`) in `LiveSession` during Claude executions to enable explicit interrupt requests.
-  - Prevented racing `cmd.Wait()` calls concurrently across different goroutines by checking `TransportType != "claude_stream_json"` before calling `Wait()` in `CloseSession`, `CleanupSessions`, and `sweepIdleSessions`. Since Claude sessions run as short-lived executions inside `SendMessage()`, `SendMessage()` is already waiting on them and cleans them up.
+  - Prevented racing `cmd.Wait()` calls concurrently across different goroutines by checking `TransportType != "claude_stream_json"` before calling `Wait()` in `CloseSession`, `CleanupSessions`, and `sweepIdleSessions`. Since Claude sessions run as short-lived commands inside `SendMessage()`, `SendMessage()` is already waiting on them and cleans them up.
   - Decreased `CloseSession` wait timeout to `200ms` to quickly terminate lingering provider processes.
 - **System API Endpoints**:
   - Registered `POST /system/shutdown` and `POST /system/restart` HTTP endpoints on the local runner.
@@ -24,6 +24,7 @@ Implement reliable session/process killing for AI provider executions (such as v
   - Created `scripts/supervisor.js` process supervisor. It launches the Next.js web application and Go local-runner, writes process PIDs to `.flowpilot/supervisor.json`, and handles terminal shutdown/restart signals.
   - **Graceful Termination & Signal Trapping**: When a `SIGINT` (Ctrl+C) or `SIGTERM` is received, the supervisor gives child processes a 3-second grace period to shut down cleanly on their own before force-killing them.
   - **Detached Process Groups on Unix**: Spawned processes with `detached: true` on Unix and targeted their process groups (`-pid`) during kills to prevent orphaned child processes.
+  - **Active Port PID Discovery & Ownership Checks**: Added port PID lookup using `netstat` (Windows) and `lsof`/`ss` (Unix) to dynamically resolve PIDs of pre-existing stack processes if the supervisor is restarted. Verified the PIDs' command line commands (`wmic` on Windows, `ps`/`/proc` on Unix) to prevent signaling/killing unrelated processes on PID reuse.
 - **Web Interface Updates**:
   - Added `shutdownStack()` and `restartStack()` endpoints to `LocalRunnerGateway` interface, `HttpLocalRunnerGateway` implementation, and `local-first-workflow-gateway.test.ts` test double.
   - Rendered `Shutdown` and `Restart` buttons in the sidebar footer of `app-shell.tsx` when `runnerOnline` is true, handling pending states and health polling loops.
@@ -32,7 +33,7 @@ Implement reliable session/process killing for AI provider executions (such as v
 ## Verification
 
 - **Automated Tests**:
-  - Added Go unit tests `TestCloseSessionKillsActiveClaudeCommand` and `TestCleanupSessionsKillsActiveClaudeCommand` to verify termination.
+  - Added Go unit tests `TestCloseSessionRacingWithClaudeStart` and `TestSweepIdleSessionsSkipsInFlightSession` to `sessions_test.go` to verify execution safeties.
   - Verified that all Go runner tests passed (`go test -v -count=1 ./internal/runner`).
   - Verified that all admin-web frontend Vitest tests passed (`npm run test`).
   - Verified that Go runner builds successfully (`go build ./...`).
