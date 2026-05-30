@@ -8,9 +8,20 @@ import type {
   WorkflowRunLog,
   WorkflowRunStep,
   WorkflowStep,
+  SupportedModel,
 } from "@/domain/model/entity/workflow-engine";
 
 export interface WorkflowEngineGateway {
+  listSupportedModels(): Promise<SupportedModel[]>;
+  createSupportedModel(
+    model: Omit<SupportedModel, "id" | "createdAt" | "updatedAt">
+  ): Promise<SupportedModel>;
+  updateSupportedModel(
+    id: string,
+    model: Partial<Omit<SupportedModel, "id" | "createdAt" | "updatedAt">>
+  ): Promise<SupportedModel>;
+  deleteSupportedModel(id: string): Promise<void>;
+
   listArtifactDefinitions(): Promise<ArtifactDefinition[]>;
   saveArtifactDefinition(definition: ArtifactDefinition): Promise<ArtifactDefinition>;
   listArtifactRuns(projectId?: string): Promise<ArtifactRun[]>;

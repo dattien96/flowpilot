@@ -13,6 +13,7 @@ import type {
   WorkflowRunStep,
   WorkflowStep,
   WorkflowRunSession,
+  SupportedModel,
 } from "@/domain/model/entity/workflow-engine";
 import { normalizeStepModel } from "@/domain/model/entity/workflow-engine";
 import {
@@ -25,6 +26,7 @@ import {
   mapWorkflowRunStep,
   mapWorkflowStep,
   mapWorkflowRunSession,
+  mapSupportedModel,
 } from "./workflow-engine-mappers";
 
 const DEFAULT_MODEL = "gpt-5.4";
@@ -35,19 +37,7 @@ function bindingOrder(row: { order_index?: unknown }, fallbackIndex: number) {
   return Number.isFinite(raw) ? raw : fallbackIndex;
 }
 
-function resolveProviderKeyFromModel(model: string) {
-  if (model.startsWith("gpt-")) {
-    return "codex";
-  }
-  if (model.startsWith("gemini-") || model.startsWith("auto-gemini-")) {
-    return "gemini";
-  }
-  if (model.startsWith("claude-")) {
-    return "claude";
-  }
 
-  throw new Error(`Model "${model}" is not supported by the workflow runner.`);
-}
 
 function normalizeModel(model: string | null | undefined, fallback = DEFAULT_MODEL) {
   return (normalizeStepModel(model) ?? model?.trim()) || fallback;
@@ -383,7 +373,7 @@ export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
     let savedWorkflowRow: any;
     const resolvedWorkflowModel = normalizeModel(workflow.modelOverride);
     const resolvedWorkflowReasoning = normalizeReasoningEffort(workflow.reasoningEffortOverride);
-    const resolvedWorkflowProvider = resolveProviderKeyFromModel(resolvedWorkflowModel);
+    const resolvedWorkflowProvider = await this.resolveProviderKeyFromModel(resolvedWorkflowModel);
 
     if (isNew) {
       const { data, error } = await this.supabase
@@ -444,21 +434,23 @@ export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
     }
 
     if (workflow.steps && workflow.steps.length > 0) {
-      const stepRows = workflow.steps.map((step, idx) => ({
-        workflow_id: workflowId,
-        step_type: step.stepType,
-        order_index: step.orderIndex ?? idx,
-        is_enabled: step.isEnabled ?? true,
-        provider_override: resolveProviderKeyFromModel(
-          normalizeModel(step.modelOverride, resolvedWorkflowModel),
-        ),
-        model_override: normalizeModel(step.modelOverride, resolvedWorkflowModel),
-        reasoning_effort_override: normalizeReasoningEffort(
-          step.reasoningEffortOverride,
-          resolvedWorkflowReasoning,
-        ),
-        requires_approval: step.requiresApproval ?? true,
-      }));
+      const stepRows = await Promise.all(
+        workflow.steps.map(async (step, idx) => ({
+          workflow_id: workflowId,
+          step_type: step.stepType,
+          order_index: step.orderIndex ?? idx,
+          is_enabled: step.isEnabled ?? true,
+          provider_override: await this.resolveProviderKeyFromModel(
+            normalizeModel(step.modelOverride, resolvedWorkflowModel),
+          ),
+          model_override: normalizeModel(step.modelOverride, resolvedWorkflowModel),
+          reasoning_effort_override: normalizeReasoningEffort(
+            step.reasoningEffortOverride,
+            resolvedWorkflowReasoning,
+          ),
+          requires_approval: step.requiresApproval ?? true,
+        }))
+      );
 
       const { error: stepsError } = await this.supabase.from("workflow_steps").insert(stepRows);
 
@@ -581,5 +573,166 @@ export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
           comment,
         });
     return mapWorkflowRunStep(data);
+  }
+
+  private async resolveProviderKeyFromModel(model: string): Promise<string> {
+    const normalized = normalizeStepModel(model) ?? model;
+
+    // Check database first to see if it exists and is enabled/disabled
+    const { data } = await this.supabase
+      .from("ai_supported_models")
+      .select("provider_key, is_enabled")
+      .eq("model_id", normalized)
+      .maybeSingle();
+
+    if (data) {
+      if (!data.is_enabled) {
+        throw new Error(`Model "${model}" is registered but currently disabled.`);
+      }
+      return data.provider_key;
+    }
+
+    // Prefix-based fallback for unregistered or legacy models
+    if (normalized.startsWith("gpt-")) {
+      return "codex";
+    }
+    if (
+      normalized.startsWith("gemini-") ||
+      normalized.startsWith("auto-gemini-") ||
+      normalized === "gemini-pro" ||
+      normalized === "gemini-flash"
+    ) {
+      return "gemini";
+    }
+    if (normalized.startsWith("claude-")) {
+      return "claude";
+    }
+
+    throw new Error(`Model "${model}" is not supported by the workflow runner.`);
+  }
+
+  async listSupportedModels(): Promise<SupportedModel[]> {
+    const { data, error } = await this.supabase
+      .from("ai_supported_models")
+      .select("*")
+      .order("sort_order", { ascending: true })
+      .order("created_at", { ascending: true });
+
+    if (error) throw new Error(`Unable to list supported models: ${error.message}`);
+    return (data ?? []).map(mapSupportedModel);
+  }
+
+  async createSupportedModel(
+    model: Omit<SupportedModel, "id" | "createdAt" | "updatedAt">
+  ): Promise<SupportedModel> {
+    const { data: existing } = await this.supabase
+      .from("ai_supported_models")
+      .select("id")
+      .eq("model_id", model.modelId)
+      .maybeSingle();
+
+    if (existing) {
+      throw new Error(`Model "${model.modelId}" is already registered.`);
+    }
+
+    const { data, error } = await this.supabase
+      .from("ai_supported_models")
+      .insert({
+        provider_key: model.providerKey,
+        model_id: model.modelId,
+        display_name: model.displayName,
+        is_enabled: model.isEnabled,
+        sort_order: model.sortOrder,
+        source: model.source,
+        detection_method: model.detectionMethod,
+        detected_cli_version: model.detectedCliVersion,
+        last_detected_at: model.lastDetectedAt,
+      })
+      .select("*")
+      .maybeSingle();
+
+    if (error) throw new Error(`Unable to create supported model: ${error.message}`);
+    if (!data) throw new Error("Unable to create supported model: no row was returned.");
+    return mapSupportedModel(data);
+  }
+
+  async updateSupportedModel(
+    id: string,
+    model: Partial<Omit<SupportedModel, "id" | "createdAt" | "updatedAt">>
+  ): Promise<SupportedModel> {
+    const updateObj: Record<string, any> = {
+      updated_at: new Date().toISOString(),
+    };
+    if (model.providerKey !== undefined) updateObj.provider_key = model.providerKey;
+    if (model.modelId !== undefined) updateObj.model_id = model.modelId;
+    if (model.displayName !== undefined) updateObj.display_name = model.displayName;
+    if (model.isEnabled !== undefined) updateObj.is_enabled = model.isEnabled;
+    if (model.sortOrder !== undefined) updateObj.sort_order = model.sortOrder;
+    if (model.source !== undefined) updateObj.source = model.source;
+    if (model.detectionMethod !== undefined) updateObj.detection_method = model.detectionMethod;
+    if (model.detectedCliVersion !== undefined) updateObj.detected_cli_version = model.detectedCliVersion;
+    if (model.lastDetectedAt !== undefined) updateObj.last_detected_at = model.lastDetectedAt;
+
+    const { data, error } = await this.supabase
+      .from("ai_supported_models")
+      .update(updateObj)
+      .eq("id", id)
+      .select("*")
+      .maybeSingle();
+
+    if (error) throw new Error(`Unable to update supported model: ${error.message}`);
+    if (!data) throw new Error("Unable to update supported model: no row was returned.");
+    return mapSupportedModel(data);
+  }
+
+  async deleteSupportedModel(id: string): Promise<void> {
+    const { data: modelRow } = await this.supabase
+      .from("ai_supported_models")
+      .select("model_id")
+      .eq("id", id)
+      .maybeSingle();
+
+    if (modelRow?.model_id) {
+      const modelId = modelRow.model_id;
+
+      const { count: projectCount } = await this.supabase
+        .from("projects")
+        .select("id", { count: "exact", head: true })
+        .eq("default_model", modelId);
+      if (projectCount && projectCount > 0) {
+        throw new Error(`Cannot delete model "${modelId}" because it is currently referenced as the default model for one or more projects.`);
+      }
+
+      const { count: workflowCount } = await this.supabase
+        .from("workflows")
+        .select("id", { count: "exact", head: true })
+        .eq("model_override", modelId);
+      if (workflowCount && workflowCount > 0) {
+        throw new Error(`Cannot delete model "${modelId}" because it is currently referenced as the model override for one or more workflows.`);
+      }
+
+      const { count: defCount } = await this.supabase
+        .from("step_definitions")
+        .select("step_type", { count: "exact", head: true })
+        .eq("model", modelId);
+      if (defCount && defCount > 0) {
+        throw new Error(`Cannot delete model "${modelId}" because it is currently referenced by one or more step definitions.`);
+      }
+
+      const { count: stepCount } = await this.supabase
+        .from("workflow_steps")
+        .select("id", { count: "exact", head: true })
+        .eq("model_override", modelId);
+      if (stepCount && stepCount > 0) {
+        throw new Error(`Cannot delete model "${modelId}" because it is currently referenced as the model override for one or more workflow steps.`);
+      }
+    }
+
+    const { error } = await this.supabase
+      .from("ai_supported_models")
+      .delete()
+      .eq("id", id);
+
+    if (error) throw new Error(`Unable to delete supported model: ${error.message}`);
   }
 }

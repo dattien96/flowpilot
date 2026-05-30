@@ -52,14 +52,26 @@ function createUuid() {
   return crypto.randomUUID();
 }
 
-function resolveProviderKeyFromModel(model: string) {
-  if (model.startsWith("gpt-")) {
+async function resolveProviderKeyFromModelAsync(supabase: SupabaseClient, model: string): Promise<string> {
+  const normalized = normalizeStepModel(model) ?? model;
+
+  const { data } = await supabase
+    .from("ai_supported_models")
+    .select("provider_key")
+    .eq("model_id", normalized)
+    .maybeSingle();
+
+  if (data?.provider_key) {
+    return data.provider_key;
+  }
+
+  if (normalized.startsWith("gpt-")) {
     return "codex";
   }
-  if (model.startsWith("gemini-") || model.startsWith("auto-gemini-")) {
+  if (normalized.startsWith("gemini-") || normalized.startsWith("auto-gemini-")) {
     return "gemini";
   }
-  if (model.startsWith("claude-")) {
+  if (normalized.startsWith("claude-")) {
     return "claude";
   }
 
@@ -103,8 +115,10 @@ function mapProject(row: SupabaseRow): Project {
   };
 }
 
-function buildProjectUpdatePayload(patch: Partial<UpdateProjectPayload>) {
+async function buildProjectUpdatePayloadAsync(supabase: SupabaseClient, patch: Partial<UpdateProjectPayload>) {
   const nextModel = patch.defaultModel?.trim() || null;
+  const derivedProvider = nextModel ? await resolveProviderKeyFromModelAsync(supabase, nextModel) : patch.defaultProvider;
+
   return Object.fromEntries(
     Object.entries({
       name: patch.name,
@@ -115,7 +129,7 @@ function buildProjectUpdatePayload(patch: Partial<UpdateProjectPayload>) {
       owner_id: patch.ownerId,
       status: patch.status,
       artifact_storage_preference: patch.artifactStoragePreference,
-      default_provider: nextModel ? resolveProviderKeyFromModel(nextModel) : patch.defaultProvider,
+      default_provider: derivedProvider,
       default_model: nextModel,
       default_reasoning_effort: patch.defaultReasoningEffort,
       session_idle_ttl_minutes: patch.sessionIdleTtlMinutes,
@@ -503,9 +517,10 @@ class SupabaseGatewayBundle
   }
 
   async updateProject(projectId: string, patch: Partial<UpdateProjectPayload>) {
+    const updatePayload = await buildProjectUpdatePayloadAsync(this.supabase, patch);
     const { data, error } = await this.supabase
       .from("projects")
-      .update(buildProjectUpdatePayload(patch))
+      .update(updatePayload)
       .eq("id", projectId)
       .select("*")
       .single();
@@ -590,6 +605,7 @@ class SupabaseGatewayBundle
     const defaultReasoningEffort = payload.defaultReasoningEffort?.trim() || "medium";
     const projectId = createUuid();
     const legacyProjectId = createId("project");
+    const defaultProvider = await resolveProviderKeyFromModelAsync(this.supabase, defaultModel);
     const { data, error } = await this.supabase
       .from("projects")
       .insert({
@@ -600,7 +616,7 @@ class SupabaseGatewayBundle
         platform: payload.platform,
         repository_url: payload.repositoryUrl,
         directory_path: primaryPath,
-        default_provider: resolveProviderKeyFromModel(defaultModel),
+        default_provider: defaultProvider,
         default_model: defaultModel,
         default_reasoning_effort: defaultReasoningEffort,
         created_by: "supabase-admin",

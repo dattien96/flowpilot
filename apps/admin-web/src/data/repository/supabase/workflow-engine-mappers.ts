@@ -13,6 +13,7 @@ import type {
   StepType,
   WorkflowRunStatus,
   WorkflowStepStatus,
+  SupportedModel,
 } from "@/domain/model/entity/workflow-engine";
 import {
   STEP_MODEL_OPTIONS,
@@ -195,5 +196,22 @@ export function mapWorkflowRunSession(row: SupabaseRow): WorkflowRunSession {
     metadataJson: row.metadata_json ? (row.metadata_json as Record<string, any>) : null,
     startedAt: String(row.started_at),
     completedAt: row.completed_at ? String(row.completed_at) : null,
+  };
+}
+
+export function mapSupportedModel(row: SupabaseRow): SupportedModel {
+  return {
+    id: String(row.id),
+    providerKey: row.provider_key as "codex" | "claude" | "gemini",
+    modelId: String(row.model_id),
+    displayName: String(row.display_name),
+    isEnabled: Boolean(row.is_enabled),
+    sortOrder: Number(row.sort_order),
+    source: String(row.source),
+    detectionMethod: row.detection_method ? String(row.detection_method) : null,
+    detectedCliVersion: row.detected_cli_version ? String(row.detected_cli_version) : null,
+    lastDetectedAt: row.last_detected_at ? String(row.last_detected_at) : null,
+    createdAt: row.created_at ? String(row.created_at) : "",
+    updatedAt: row.updated_at ? String(row.updated_at) : "",
   };
 }
