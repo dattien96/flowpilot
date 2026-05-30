@@ -93,6 +93,21 @@ function buildStep(overrides: Partial<StepDefinition> = {}): StepDefinition {
   };
 }
 
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+
+function renderWithQuery(ui: ReactNode) {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false },
+    },
+  });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      {ui}
+    </QueryClientProvider>
+  );
+}
+
 describe("CreateWorkflowStepPage", () => {
   beforeEach(() => {
     mocks.createGatewayBundle.mockReset();
@@ -124,6 +139,7 @@ describe("CreateWorkflowStepPage", () => {
             updatedAt: "2026-05-20T00:00:00Z",
           },
         ]),
+        listSupportedModels: vi.fn().mockResolvedValue([]),
         saveStepDefinition: vi.fn().mockResolvedValue(
           buildStep({
             stepType: "custom_step",
@@ -137,7 +153,7 @@ describe("CreateWorkflowStepPage", () => {
     };
     mocks.createGatewayBundle.mockReturnValue(gatewayBundle);
 
-    render(<CreateWorkflowStepPage />);
+    renderWithQuery(<CreateWorkflowStepPage />);
 
     fireEvent.change(screen.getByLabelText("Step key"), {
       target: { value: "custom_step" },

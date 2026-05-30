@@ -289,6 +289,15 @@ describe("SupabaseGatewayBundle project workspace bindings", () => {
       if (table === "project_workspace_bindings") {
         return { insert: bindingInsert };
       }
+      if (table === "ai_supported_models") {
+        return {
+          select: vi.fn(() => ({
+            eq: vi.fn(() => ({
+              maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
+            })),
+          })),
+        };
+      }
       throw new Error(`Unexpected table ${table}`);
     });
 

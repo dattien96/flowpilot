@@ -152,10 +152,26 @@ function buildGatewayBundle() {
     workflowEngineGateway: {
       getWorkflowDetail: vi.fn().mockResolvedValue(buildWorkflow()),
       listStepDefinitions: vi.fn().mockResolvedValue([buildStepDefinition()]),
+      listSupportedModels: vi.fn().mockResolvedValue([]),
       saveWorkflow: vi.fn().mockResolvedValue(buildWorkflow()),
       startWorkflowRun: vi.fn().mockResolvedValue(buildWorkflowRun()),
     },
   };
+}
+
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+
+function renderWithQuery(ui: ReactNode) {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false },
+    },
+  });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      {ui}
+    </QueryClientProvider>
+  );
 }
 
 describe("WorkflowDetailPage", () => {
@@ -171,7 +187,7 @@ describe("WorkflowDetailPage", () => {
     const gatewayBundle = buildGatewayBundle();
     mocks.createGatewayBundle.mockReturnValue(gatewayBundle);
 
-    render(<WorkflowDetailPage />);
+    renderWithQuery(<WorkflowDetailPage />);
 
     expect(await screen.findByDisplayValue("Workspace workflow")).toBeInTheDocument();
     expect(screen.queryByText("Run in project")).not.toBeInTheDocument();
