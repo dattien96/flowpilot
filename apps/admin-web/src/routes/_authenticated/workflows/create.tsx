@@ -10,8 +10,8 @@ import type { Project } from "@/domain/model/entity/project";
 import type { StepDefinition, WorkflowStep } from "@/domain/model/entity/workflow-engine";
 import {
   REASONING_EFFORT_OPTIONS,
-  STEP_MODEL_OPTIONS,
 } from "@/domain/model/entity/workflow-engine";
+import { useSupportedModels } from "@/presentation/hooks/use-supported-models";
 
 const DEFAULT_MODEL = "gpt-5.4";
 const DEFAULT_REASONING_EFFORT = "medium";
@@ -34,6 +34,19 @@ export function CreateWorkflowPage() {
     new SaveWorkflowUseCase(gatewayBundle.current.workflowEngineGateway)
   );
 
+  const { data: supportedModels = [] } = useSupportedModels();
+
+  const modelOptions = useMemo(() => {
+    const enabledModels = supportedModels.filter((m) => m.isEnabled);
+    if (enabledModels.length === 0) {
+      return [{ value: DEFAULT_MODEL, label: "GPT 4o (Legacy)" }];
+    }
+    return enabledModels.map((m) => ({
+      value: m.modelId,
+      label: m.displayName,
+    }));
+  }, [supportedModels]);
+
   const [projects, setProjects] = useState<Project[]>([]);
   const [catalog, setCatalog] = useState<StepDefinition[]>([]);
   const [loading, setLoading] = useState(true);
@@ -45,6 +58,13 @@ export function CreateWorkflowPage() {
   const [reasoningEffortOverride, setReasoningEffortOverride] = useState(DEFAULT_REASONING_EFFORT);
   const [selectedStepType, setSelectedStepType] = useState("");
   const [steps, setSteps] = useState<Partial<WorkflowStep>[]>([]);
+
+  // Sync model override if current selection is not in list
+  useEffect(() => {
+    if (modelOptions.length > 0 && !modelOptions.some((opt) => opt.value === modelOverride)) {
+      setModelOverride(modelOptions[0].value);
+    }
+  }, [modelOptions, modelOverride]);
 
   useEffect(() => {
     const load = async () => {
@@ -215,7 +235,7 @@ export function CreateWorkflowPage() {
             value={modelOverride}
             onChange={(event) => setModelOverride(event.target.value)}
           >
-            {STEP_MODEL_OPTIONS.map((option) => (
+            {modelOptions.map((option) => (
               <option key={option.value} value={option.value}>
                 {option.label}
               </option>

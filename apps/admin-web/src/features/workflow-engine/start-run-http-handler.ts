@@ -62,8 +62,12 @@ export async function handleWorkflowStartRun(request: Request) {
   try {
     const user = await requireApiUser(request);
     const payload = startRunSchema.parse(await request.json());
-    const supportedModels = STEP_MODEL_OPTIONS.map((option) => option.value).join(", ");
     const gateways = await createGatewayBundle();
+    const dbSupportedModels = await gateways.workflowEngineGateway.listSupportedModels();
+    const supportedModels = dbSupportedModels.length > 0
+      ? dbSupportedModels.map((m) => m.modelId).join(", ")
+      : STEP_MODEL_OPTIONS.map((option) => option.value).join(", ");
+    
     const run = await runWorkflowStartRuntime({
       adminClient: createAdminClient(),
       localRunnerGateway: gateways.localRunnerGateway,

@@ -6,12 +6,13 @@ import { Button } from "@/components/ui/button";
 import { createGatewayBundle } from "@/data/repository/browser-factory";
 import {
   deriveStepPromptBase,
-  isSupportedStepModel,
   REASONING_EFFORT_OPTIONS,
   STEP_MODEL_OPTIONS,
   type ArtifactDefinition,
   type StepDefinition,
 } from "@/domain/model/entity/workflow-engine";
+import { useSupportedModels } from "@/presentation/hooks/use-supported-models";
+import { useMemo } from "react";
 import { ListArtifactDefinitionsUseCase } from "@/domain/usecase/workflow-engine/list-artifact-definitions-usecase";
 import { ListStepDefinitionsUseCase } from "@/domain/usecase/workflow-engine/list-step-definitions-usecase";
 import { SaveStepDefinitionUseCase } from "@/domain/usecase/workflow-engine/save-step-definition-usecase";
@@ -43,6 +44,14 @@ export function WorkflowStepDetailPage() {
   const saveStepDefinitionUseCase = useRef(
     new SaveStepDefinitionUseCase(gatewayBundle.current.workflowEngineGateway)
   );
+
+  const { data: supportedModels } = useSupportedModels();
+  const modelsList = useMemo(() => {
+    if (!supportedModels || supportedModels.length === 0) return STEP_MODEL_OPTIONS;
+    return supportedModels
+      .filter((m) => m.isEnabled)
+      .map((m) => ({ value: m.modelId, label: m.displayName }));
+  }, [supportedModels]);
 
   const [loading, setLoading] = useState(true);
   const [loadingArtifactDefinitions, setLoadingArtifactDefinitions] = useState(true);
@@ -111,7 +120,8 @@ export function WorkflowStepDetailPage() {
       window.alert("Step name and description are required.");
       return;
     }
-    if (!isSupportedStepModel(model)) {
+    const isSupported = modelsList.some((option) => option.value === model);
+    if (!isSupported) {
       window.alert("Select a supported model.");
       return;
     }
@@ -352,7 +362,7 @@ export function WorkflowStepDetailPage() {
             value={model}
             onChange={(event) => setModel(event.target.value)}
           >
-            {STEP_MODEL_OPTIONS.map((option) => (
+            {modelsList.map((option) => (
               <option key={option.value} value={option.value}>
                 {option.label}
               </option>
