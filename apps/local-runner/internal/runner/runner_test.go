@@ -1561,6 +1561,24 @@ func TestDetectProvidersPopulatesInventoryShape(t *testing.T) {
 		t.Fatalf("mkdir bin dir: %v", err)
 	}
 
+	originalRunCommand := runCommandFn
+	t.Cleanup(func() {
+		runCommandFn = originalRunCommand
+	})
+	runCommandFn = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if strings.HasSuffix(name, "codex") && len(args) == 2 && args[0] == "debug" && args[1] == "models" {
+			return []byte(`{"models":[
+				{"slug":"gpt-5.5","display_name":"GPT-5.5","visibility":"list","supported_in_api":true},
+				{"slug":"gpt-5.4","display_name":"GPT-5.4","visibility":"list","supported_in_api":true},
+				{"slug":"gpt-5.4-mini","display_name":"GPT-5.4-Mini","visibility":"list","supported_in_api":true},
+				{"slug":"gpt-5.3-codex","display_name":"GPT-5.3-Codex","visibility":"list","supported_in_api":true},
+				{"slug":"gpt-5.2","display_name":"GPT-5.2","visibility":"list","supported_in_api":true},
+				{"slug":"codex-auto-review","display_name":"Codex Auto Review","visibility":"hide","supported_in_api":true}
+			]}`), nil
+		}
+		return originalRunCommand(ctx, name, args...)
+	}
+
 	t.Setenv("PATH", binDir)
 	t.Setenv("OPENAI_API_KEY", "test-openai-key")
 	t.Setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
@@ -1569,6 +1587,7 @@ func TestDetectProvidersPopulatesInventoryShape(t *testing.T) {
 	writeMockProviderBinary(t, binDir, "codex", "codex 1.2.3")
 	writeMockProviderBinary(t, binDir, "claude", "claude 4.5.6")
 	writeMockProviderBinary(t, binDir, "gemini", "gemini 7.8.9")
+	writeMockGeminiBundleCatalog(t, workspace)
 
 	instance := &Runner{workspace: workspace}
 	providers, err := instance.DetectProviders(context.Background())
@@ -1595,20 +1614,21 @@ func TestDetectProvidersPopulatesInventoryShape(t *testing.T) {
 		version string
 		models  []string
 	}{
-		{key: "codex", version: "codex 1.2.3", models: []string{"gpt-5.5", "gpt-5.4", "gpt-5.4-mini"}},
+		{key: "codex", version: "codex 1.2.3", models: []string{"gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"}},
 		{key: "claude", version: "claude 4.5.6", models: []string{"claude-opus", "claude-sonnet", "claude-haiku"}},
 		{
 			key:     "gemini",
 			version: "gemini 7.8.9",
 			models: []string{
-				"auto-gemini-3",
-				"auto-gemini-2.5",
+				"gemini-3-pro-preview",
 				"gemini-3.1-pro-preview",
 				"gemini-3-flash-preview",
 				"gemini-3.1-flash-lite-preview",
 				"gemini-2.5-pro",
 				"gemini-2.5-flash",
 				"gemini-2.5-flash-lite",
+				"auto-gemini-3",
+				"auto-gemini-2.5",
 			},
 		},
 	}
@@ -1657,15 +1677,72 @@ func TestDetectProvidersPopulatesInventoryShape(t *testing.T) {
 				t.Fatalf("expected provider %q model %d id %q, got %#v", want.key, idx, modelID, model["id"])
 			}
 			if model["display_name"] != modelID {
-				t.Fatalf("expected provider %q model %d display name %q, got %#v", want.key, idx, modelID, model["display_name"])
+				if want.key != "codex" {
+					t.Fatalf("expected provider %q model %d display name %q, got %#v", want.key, idx, modelID, model["display_name"])
+				}
 			}
 			if model["available"] != true {
 				t.Fatalf("expected provider %q model %d to be available, got %#v", want.key, idx, model["available"])
 			}
-			if model["source"] != "registry" {
-				t.Fatalf("expected provider %q model %d source registry, got %#v", want.key, idx, model["source"])
+			expectedSource := "registry"
+			if want.key == "codex" {
+				expectedSource = "codex_debug_models"
+			}
+			if want.key == "gemini" {
+				expectedSource = "gemini_bundle_registry"
+			}
+			if model["source"] != expectedSource {
+				t.Fatalf("expected provider %q model %d source %s, got %#v", want.key, idx, expectedSource, model["source"])
 			}
 		}
+	}
+}
+
+func TestDetectProvidersFallsBackToStaticCodexModelsWhenDebugCatalogFails(t *testing.T) {
+	workspace := t.TempDir()
+	binDir := filepath.Join(workspace, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir bin dir: %v", err)
+	}
+
+	originalRunCommand := runCommandFn
+	t.Cleanup(func() {
+		runCommandFn = originalRunCommand
+	})
+	runCommandFn = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if strings.HasSuffix(name, "codex") && len(args) == 2 && args[0] == "debug" && args[1] == "models" {
+			return nil, errors.New("catalog unavailable")
+		}
+		return originalRunCommand(ctx, name, args...)
+	}
+
+	t.Setenv("PATH", binDir)
+	t.Setenv("OPENAI_API_KEY", "test-openai-key")
+
+	writeMockProviderBinary(t, binDir, "codex", "codex 1.2.3")
+
+	instance := &Runner{workspace: workspace}
+	providers, err := instance.DetectProviders(context.Background())
+	if err != nil {
+		t.Fatalf("detect providers: %v", err)
+	}
+
+	codex := findProviderInventory(providers, "codex")
+	if codex == nil {
+		t.Fatal("expected codex provider in inventory")
+	}
+
+	got := make([]string, 0, len(codex.Models))
+	for _, model := range codex.Models {
+		got = append(got, model.ID)
+		if model.Source != "registry" {
+			t.Fatalf("expected fallback codex model %q source registry, got %q", model.ID, model.Source)
+		}
+	}
+
+	want := []string{"gpt-5.5", "gpt-5.4", "gpt-5.4-mini"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("expected fallback codex models %v, got %v", want, got)
 	}
 }
 
@@ -1688,6 +1765,14 @@ func TestInstallProviderUsesOSAwareInstallAndRefreshesInventory(t *testing.T) {
 		runCommandFn = originalRunCommand
 	})
 	runCommandFn = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if strings.HasSuffix(name, "codex") && len(args) == 2 && args[0] == "debug" && args[1] == "models" {
+			return []byte(`{"models":[
+				{"slug":"gpt-5.5","display_name":"GPT-5.5","visibility":"list","supported_in_api":true},
+				{"slug":"gpt-5.4","display_name":"GPT-5.4","visibility":"list","supported_in_api":true},
+				{"slug":"gpt-5.4-mini","display_name":"GPT-5.4-Mini","visibility":"list","supported_in_api":true}
+			]}`), nil
+		}
+
 		installTriggered = true
 		switch runtime.GOOS {
 		case "windows":
@@ -1819,6 +1904,43 @@ func writeMockProviderBinary(t *testing.T, dir, name, version string) string {
 		}
 		return path
 	}
+}
+
+func writeMockGeminiBundleCatalog(t *testing.T, workspace string) string {
+	t.Helper()
+
+	dir := filepath.Join(workspace, "libexec", "lib", "node_modules", "@google", "gemini-cli", "bundle")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir gemini bundle dir: %v", err)
+	}
+
+	path := filepath.Join(dir, "chunk-test.js")
+	content := `var PREVIEW_GEMINI_MODEL = "gemini-3-pro-preview";
+var PREVIEW_GEMINI_3_1_MODEL = "gemini-3.1-pro-preview";
+var PREVIEW_GEMINI_3_1_CUSTOM_TOOLS_MODEL = "gemini-3.1-pro-preview-customtools";
+var PREVIEW_GEMINI_FLASH_MODEL = "gemini-3-flash-preview";
+var PREVIEW_GEMINI_3_1_FLASH_LITE_MODEL = "gemini-3.1-flash-lite-preview";
+var DEFAULT_GEMINI_MODEL = "gemini-2.5-pro";
+var DEFAULT_GEMINI_FLASH_MODEL = "gemini-2.5-flash";
+var DEFAULT_GEMINI_FLASH_LITE_MODEL = "gemini-2.5-flash-lite";
+var VALID_GEMINI_MODELS = /* @__PURE__ */ new Set([
+  PREVIEW_GEMINI_MODEL,
+  PREVIEW_GEMINI_3_1_MODEL,
+  PREVIEW_GEMINI_3_1_CUSTOM_TOOLS_MODEL,
+  PREVIEW_GEMINI_FLASH_MODEL,
+  PREVIEW_GEMINI_3_1_FLASH_LITE_MODEL,
+  DEFAULT_GEMINI_MODEL,
+  DEFAULT_GEMINI_FLASH_MODEL,
+  DEFAULT_GEMINI_FLASH_LITE_MODEL
+]);
+var PREVIEW_GEMINI_MODEL_AUTO = "auto-gemini-3";
+var DEFAULT_GEMINI_MODEL_AUTO = "auto-gemini-2.5";
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write gemini catalog: %v", err)
+	}
+
+	return path
 }
 
 func findProviderJSON(providers []map[string]any, key string) map[string]any {
