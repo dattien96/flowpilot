@@ -96,6 +96,21 @@ function buildStep(overrides: Partial<StepDefinition> = {}): StepDefinition {
   };
 }
 
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+
+function renderWithQuery(ui: ReactNode) {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false },
+    },
+  });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      {ui}
+    </QueryClientProvider>
+  );
+}
+
 describe("WorkflowStepDetailPage", () => {
   beforeEach(() => {
     mocks.createGatewayBundle.mockReset();
@@ -140,6 +155,7 @@ describe("WorkflowStepDetailPage", () => {
           },
         ]),
         listStepDefinitions: vi.fn().mockResolvedValue([step]),
+        listSupportedModels: vi.fn().mockResolvedValue([]),
         saveStepDefinition: vi.fn().mockResolvedValue(
           buildStep({
             name: "Updated Tech Spec",
@@ -150,7 +166,7 @@ describe("WorkflowStepDetailPage", () => {
     };
     mocks.createGatewayBundle.mockReturnValue(gatewayBundle);
 
-    render(<WorkflowStepDetailPage />);
+    renderWithQuery(<WorkflowStepDetailPage />);
 
     expect(await screen.findByDisplayValue("Tech Spec")).toBeInTheDocument();
     expect(screen.getByDisplayValue("tech_spec")).toBeDisabled();

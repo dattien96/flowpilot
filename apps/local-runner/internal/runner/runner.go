@@ -1131,6 +1131,22 @@ type providerSpec struct {
 	Models      []ProviderModel
 }
 
+type codexDebugModelsPayload struct {
+	Models []codexDebugModel `json:"models"`
+}
+
+type codexDebugModel struct {
+	Slug           string `json:"slug"`
+	DisplayName    string `json:"display_name"`
+	Visibility     string `json:"visibility"`
+	SupportedInAPI bool   `json:"supported_in_api"`
+}
+
+var (
+	geminiValidModelsPattern   = regexp.MustCompile(`(?s)var\s+VALID_GEMINI_MODELS\s*=\s*/\*.*?\*/\s*new Set\(\[(.*?)\]\);`)
+	geminiVarAssignmentPattern = regexp.MustCompile(`var\s+([A-Z0-9_]+)\s*=\s*"([^"]+)";`)
+)
+
 type mcpBackendSpec struct {
 	Key          string
 	ProviderType string
@@ -1187,8 +1203,6 @@ func providerSpecs() []providerSpec {
 				{ID: "gemini-3-flash-preview", DisplayName: "gemini-3-flash-preview", Source: "registry"},
 				{ID: "gemini-3.1-flash-lite-preview", DisplayName: "gemini-3.1-flash-lite-preview", Source: "registry"},
 				{ID: "gemini-2.5-pro", DisplayName: "gemini-2.5-pro", Source: "registry"},
-				{ID: "gemini-2.5-flash", DisplayName: "gemini-2.5-flash", Source: "registry"},
-				{ID: "gemini-2.5-flash-lite", DisplayName: "gemini-2.5-flash-lite", Source: "registry"},
 			},
 		},
 	}
@@ -1214,7 +1228,7 @@ func detectProvider(ctx context.Context, spec providerSpec) Provider {
 		AuthStatus:    "UNKNOWN",
 		InstallStatus: "NOT_INSTALLED",
 		InstallHint:   spec.InstallHint,
-		Models:        buildProviderModels(spec, false),
+		Models:        buildProviderModels(spec.Models, false),
 	}
 
 	binaryPath, err := lookPathFn(spec.BinaryName)
@@ -1244,7 +1258,7 @@ func detectProvider(ctx context.Context, spec providerSpec) Provider {
 	provider.Version = version
 	provider.DetectedVersion = version
 	provider.AuthStatus = providerAuthStatus(spec)
-	provider.Models = buildProviderModels(spec, provider.AuthStatus == "READY")
+	provider.Models = buildProviderModels(resolveProviderModels(ctx, spec, binaryPath), provider.AuthStatus == "READY")
 	if provider.AuthStatus == "AUTH_REQUIRED" {
 		authError := fmt.Sprintf("%s authentication is required", spec.Label)
 		provider.LastError = &authError
@@ -1253,14 +1267,211 @@ func detectProvider(ctx context.Context, spec providerSpec) Provider {
 	return provider
 }
 
-func buildProviderModels(spec providerSpec, available bool) []ProviderModel {
-	models := make([]ProviderModel, 0, len(spec.Models))
-	for _, model := range spec.Models {
+func buildProviderModels(source []ProviderModel, available bool) []ProviderModel {
+	models := make([]ProviderModel, 0, len(source))
+	for _, model := range source {
 		model.Available = available
 		models = append(models, model)
 	}
 
 	return models
+}
+
+func resolveProviderModels(ctx context.Context, spec providerSpec, binaryPath string) []ProviderModel {
+	if spec.Key == "codex" {
+		if models, err := detectCodexModels(ctx, binaryPath); err == nil && len(models) > 0 {
+			return models
+		}
+	}
+	if spec.Key == "gemini" {
+		if models, err := detectGeminiModels(binaryPath); err == nil && len(models) > 0 {
+			return models
+		}
+	}
+
+	return spec.Models
+}
+
+func detectCodexModels(ctx context.Context, binaryPath string) ([]ProviderModel, error) {
+	output, err := runCommandFn(ctx, binaryPath, "debug", "models")
+	if err != nil {
+		return nil, err
+	}
+
+	var payload codexDebugModelsPayload
+	if err := json.Unmarshal(output, &payload); err != nil {
+		return nil, err
+	}
+
+	models := make([]ProviderModel, 0, len(payload.Models))
+	for _, model := range payload.Models {
+		if strings.TrimSpace(model.Slug) == "" {
+			continue
+		}
+		if model.Visibility != "list" || !model.SupportedInAPI {
+			continue
+		}
+
+		displayName := strings.TrimSpace(model.DisplayName)
+		if displayName == "" {
+			displayName = model.Slug
+		}
+
+		models = append(models, ProviderModel{
+			ID:          model.Slug,
+			DisplayName: displayName,
+			Source:      "codex_debug_models",
+		})
+	}
+
+	return models, nil
+}
+
+func detectGeminiModels(binaryPath string) ([]ProviderModel, error) {
+	catalogPath, err := findGeminiCatalogPath(binaryPath)
+	if err != nil {
+		return nil, err
+	}
+
+	raw, err := os.ReadFile(catalogPath)
+	if err != nil {
+		return nil, err
+	}
+
+	return parseGeminiModelsFromBundle(string(raw))
+}
+
+func findGeminiCatalogPath(binaryPath string) (string, error) {
+	resolvedPath := binaryPath
+	if resolved, err := filepath.EvalSymlinks(binaryPath); err == nil && strings.TrimSpace(resolved) != "" {
+		resolvedPath = resolved
+	}
+
+	searchRoots := make([]string, 0, 8)
+	seen := make(map[string]struct{})
+	addRoot := func(root string) {
+		cleaned := filepath.Clean(root)
+		if cleaned == "." || cleaned == "" {
+			return
+		}
+		if _, ok := seen[cleaned]; ok {
+			return
+		}
+		seen[cleaned] = struct{}{}
+		searchRoots = append(searchRoots, cleaned)
+	}
+
+	current := filepath.Dir(resolvedPath)
+	for i := 0; i < 6; i++ {
+		addRoot(filepath.Join(current, "libexec", "lib", "node_modules", "@google", "gemini-cli", "bundle"))
+		addRoot(filepath.Join(current, "lib", "node_modules", "@google", "gemini-cli", "bundle"))
+		addRoot(filepath.Join(current, "node_modules", "@google", "gemini-cli", "bundle"))
+
+		parent := filepath.Dir(current)
+		if parent == current {
+			break
+		}
+		current = parent
+	}
+
+	for _, root := range searchRoots {
+		info, err := os.Stat(root)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+
+		var match string
+		walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return nil
+			}
+			if d.IsDir() {
+				return nil
+			}
+			if !strings.HasSuffix(d.Name(), ".js") {
+				return nil
+			}
+
+			raw, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return nil
+			}
+			if strings.Contains(string(raw), "VALID_GEMINI_MODELS") {
+				match = path
+				return fs.SkipAll
+			}
+			return nil
+		})
+		if walkErr != nil && !errors.Is(walkErr, fs.SkipAll) {
+			continue
+		}
+		if match != "" {
+			return match, nil
+		}
+	}
+
+	return "", errors.New("gemini model catalog not found")
+}
+
+func parseGeminiModelsFromBundle(raw string) ([]ProviderModel, error) {
+	setMatch := geminiValidModelsPattern.FindStringSubmatch(raw)
+	if len(setMatch) < 2 {
+		return nil, errors.New("VALID_GEMINI_MODELS declaration not found")
+	}
+
+	assignments := geminiVarAssignmentPattern.FindAllStringSubmatch(raw, -1)
+	if len(assignments) == 0 {
+		return nil, errors.New("gemini model assignments not found")
+	}
+
+	values := make(map[string]string, len(assignments))
+	for _, match := range assignments {
+		if len(match) < 3 {
+			continue
+		}
+		values[match[1]] = match[2]
+	}
+
+	modelIDs := make([]string, 0, 10)
+	seen := make(map[string]struct{})
+	addModel := func(modelID string) {
+		modelID = strings.TrimSpace(modelID)
+		if modelID == "" {
+			return
+		}
+		if strings.Contains(modelID, "customtools") {
+			return
+		}
+		if _, ok := seen[modelID]; ok {
+			return
+		}
+		seen[modelID] = struct{}{}
+		modelIDs = append(modelIDs, modelID)
+	}
+
+	for _, token := range strings.Split(setMatch[1], ",") {
+		name := strings.TrimSpace(token)
+		if name == "" {
+			continue
+		}
+		if modelID, ok := values[name]; ok {
+			addModel(modelID)
+		}
+	}
+
+	addModel(values["PREVIEW_GEMINI_MODEL_AUTO"])
+	addModel(values["DEFAULT_GEMINI_MODEL_AUTO"])
+
+	models := make([]ProviderModel, 0, len(modelIDs))
+	for _, modelID := range modelIDs {
+		models = append(models, ProviderModel{
+			ID:          modelID,
+			DisplayName: modelID,
+			Source:      "gemini_bundle_registry",
+		})
+	}
+
+	return models, nil
 }
 
 func getPossibleHomeDirs() []string {
@@ -1416,7 +1627,7 @@ func annotateProviderInventory(inventory *ProviderInventory, key string, status 
 	provider.InstallStatus = status
 	provider.Installed = installed
 	provider.AuthStatus = authStatus
-	provider.Models = buildProviderModels(providerSpec{Models: models}, status == "INSTALLED" && authStatus == "READY")
+	provider.Models = buildProviderModels(models, status == "INSTALLED" && authStatus == "READY")
 	provider.LastError = lastError
 }
 

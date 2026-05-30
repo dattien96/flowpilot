@@ -11,6 +11,7 @@ import {
   REASONING_EFFORT_OPTIONS,
   STEP_MODEL_OPTIONS,
 } from "@/domain/model/entity/workflow-engine";
+import { useSupportedModels } from "@/presentation/hooks/use-supported-models";
 import { GetWorkflowDetailUseCase } from "@/domain/usecase/workflow-engine/get-workflow-detail-usecase";
 import { ListStepDefinitionsUseCase } from "@/domain/usecase/workflow-engine/list-step-definitions-usecase";
 import { SaveWorkflowUseCase } from "@/domain/usecase/workflow-engine/save-workflow-usecase";
@@ -57,6 +58,14 @@ export function WorkflowDetailPage() {
   const startWorkflowRunUseCase = useRef(
     new StartWorkflowRunUseCase(gatewayBundle.current.workflowEngineGateway)
   );
+
+  const { data: supportedModels } = useSupportedModels();
+  const modelsList = useMemo(() => {
+    if (!supportedModels || supportedModels.length === 0) return STEP_MODEL_OPTIONS;
+    return supportedModels
+      .filter((m) => m.isEnabled)
+      .map((m) => ({ value: m.modelId, label: m.displayName }));
+  }, [supportedModels]);
 
   const [workflow, setWorkflow] = useState<Workflow | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -341,7 +350,7 @@ export function WorkflowDetailPage() {
             value={modelOverride}
             onChange={(event) => setModelOverride(event.target.value)}
           >
-            {STEP_MODEL_OPTIONS.map((option) => (
+            {modelsList.map((option) => (
               <option key={option.value} value={option.value}>
                 {option.label}
               </option>
@@ -480,7 +489,7 @@ export function WorkflowDetailPage() {
                       )
                     }
                   >
-                    {STEP_MODEL_OPTIONS.map((option) => (
+                    {modelsList.map((option) => (
                       <option key={option.value} value={option.value}>
                         {option.label}
                       </option>

@@ -34,7 +34,22 @@ export const STEP_MODEL_OPTIONS = [
   { value: "gpt-5.5", label: "GPT 5.5" },
 ] as const;
 
-export type SupportedStepModel = (typeof STEP_MODEL_OPTIONS)[number]["value"];
+export type SupportedStepModel = string;
+
+export interface SupportedModel {
+  id: string;
+  providerKey: "codex" | "claude" | "gemini";
+  modelId: string;
+  displayName: string;
+  isEnabled: boolean;
+  sortOrder: number;
+  source: string;
+  detectionMethod?: string | null;
+  detectedCliVersion?: string | null;
+  lastDetectedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
 
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 
@@ -47,7 +62,7 @@ export const REASONING_EFFORT_OPTIONS = [
 
 export type WorkflowStartMode = "workflow-definition" | "single-step";
 
-const LEGACY_STEP_MODEL_ALIASES: Record<string, SupportedStepModel> = {
+const LEGACY_STEP_MODEL_ALIASES: Record<string, string> = {
   flash: "gemini-2.5-flash",
   "gemini-flash": "gemini-2.5-flash",
   pro: "gemini-2.5-pro",
@@ -81,16 +96,14 @@ export function normalizeStepModel(value: string | null | undefined) {
 
 export function coerceSupportedStepModel(
   value: string | null | undefined,
-  fallback: SupportedStepModel,
-): SupportedStepModel {
+  fallback: string,
+): string {
   const normalized = normalizeStepModel(value);
   if (!normalized) {
     return fallback;
   }
 
-  return (
-    STEP_MODEL_OPTIONS.find((option) => option.value === normalized)?.value ?? fallback
-  ) as SupportedStepModel;
+  return normalized;
 }
 
 export function isSupportedStepModel(value: string) {

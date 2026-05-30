@@ -9,11 +9,12 @@ import { SaveStepDefinitionUseCase } from "@/domain/usecase/workflow-engine/save
 import { ArtifactDefinitionSelector } from "@/features/workflow-engine/artifact-definition-selector";
 import {
   deriveStepPromptBase,
-  isSupportedStepModel,
   REASONING_EFFORT_OPTIONS,
   STEP_MODEL_OPTIONS,
   type ArtifactDefinition,
 } from "@/domain/model/entity/workflow-engine";
+import { useSupportedModels } from "@/presentation/hooks/use-supported-models";
+import { useMemo } from "react";
 import { integrationTypes } from "@/features/mcp/integration-config";
 
 export const Route = createFileRoute("/_authenticated/workflow-steps/create")({
@@ -34,6 +35,14 @@ export function CreateWorkflowStepPage() {
   const listArtifactDefinitionsUseCase = useRef(
     new ListArtifactDefinitionsUseCase(gatewayBundle.current.workflowEngineGateway)
   );
+  const { data: supportedModels } = useSupportedModels();
+  const modelsList = useMemo(() => {
+    if (!supportedModels || supportedModels.length === 0) return STEP_MODEL_OPTIONS;
+    return supportedModels
+      .filter((m) => m.isEnabled)
+      .map((m) => ({ value: m.modelId, label: m.displayName }));
+  }, [supportedModels]);
+
   const [saving, setSaving] = useState(false);
   const [loadingArtifactDefinitions, setLoadingArtifactDefinitions] = useState(true);
   const [artifactDefinitions, setArtifactDefinitions] = useState<ArtifactDefinition[]>([]);
@@ -71,7 +80,8 @@ export function CreateWorkflowStepPage() {
       window.alert("Step key, name, and description are required.");
       return;
     }
-    if (!isSupportedStepModel(model)) {
+    const isSupported = modelsList.some((option) => option.value === model);
+    if (!isSupported) {
       window.alert("Select a supported model.");
       return;
     }
@@ -215,7 +225,7 @@ export function CreateWorkflowStepPage() {
             value={model}
             onChange={(event) => setModel(event.target.value)}
           >
-            {STEP_MODEL_OPTIONS.map((option) => (
+            {modelsList.map((option) => (
               <option key={option.value} value={option.value}>
                 {option.label}
               </option>

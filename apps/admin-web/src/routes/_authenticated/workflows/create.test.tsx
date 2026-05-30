@@ -110,9 +110,25 @@ function buildGatewayBundle() {
     },
     workflowEngineGateway: {
       listStepDefinitions: vi.fn().mockResolvedValue([buildStepDefinition()]),
+      listSupportedModels: vi.fn().mockResolvedValue([]),
       saveWorkflow: vi.fn().mockResolvedValue(buildWorkflow()),
     },
   };
+}
+
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+
+function renderWithQuery(ui: ReactNode) {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false },
+    },
+  });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      {ui}
+    </QueryClientProvider>
+  );
 }
 
 describe("CreateWorkflowPage", () => {
@@ -126,7 +142,7 @@ describe("CreateWorkflowPage", () => {
     const gatewayBundle = buildGatewayBundle();
     mocks.createGatewayBundle.mockReturnValue(gatewayBundle);
 
-    render(<CreateWorkflowPage />);
+    renderWithQuery(<CreateWorkflowPage />);
 
     expect(await screen.findByRole("option", { name: "Workspace global" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: /owner project/i })).toHaveValue("");

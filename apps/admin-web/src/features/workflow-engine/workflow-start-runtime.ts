@@ -1190,23 +1190,66 @@ async function loadProjectDefaults(adminClient: SupabaseClient, projectId: strin
   }) as ProjectSettingsRow;
 }
 
-export function resolveProviderKeyFromModel(model: string) {
-  if (model.startsWith("gpt-")) {
+export function resolveProviderKeyFromModel(model: string, adminClient?: SupabaseClient): string | Promise<string> {
+  const normalized = normalizeStepModel(model) ?? model;
+  if (normalized.startsWith("gpt-")) {
     return "codex";
   }
   if (
-    model.startsWith("gemini-") ||
-    model.startsWith("auto-gemini-") ||
-    model === "gemini-pro" ||
-    model === "gemini-flash"
+    normalized.startsWith("gemini-") ||
+    normalized.startsWith("auto-gemini-") ||
+    normalized === "gemini-pro" ||
+    normalized === "gemini-flash"
   ) {
     return "gemini";
   }
-  if (model.startsWith("claude-")) {
+  if (normalized.startsWith("claude-")) {
     return "claude";
   }
 
-  throw new Error(`Model "${model}" is not supported by the workflow runner.`);
+  if (adminClient) {
+    return (async () => {
+      const { data } = await adminClient
+        .from("ai_supported_models")
+        .select("provider_key")
+        .eq("model_id", normalized)
+        .maybeSingle();
+      if (data?.provider_key) {
+        return data.provider_key;
+      }
+      throw new Error(`Model "${model}" is not supported by the workflow runner.`);
+    })();
+  }
+
+}
+
+async function validateStepModel(adminClient: SupabaseClient, model: string, stepType: string) {
+  const normalizedModel = normalizeStepModel(model) ?? model;
+  if (!normalizedModel) {
+    throw new Error(`Step ${stepType} is configured with an unsupported model.`);
+  }
+
+  // Check database first
+  const { data, error } = await adminClient
+    .from("ai_supported_models")
+    .select("model_id, is_enabled")
+    .eq("model_id", normalizedModel)
+    .maybeSingle();
+
+  if (data) {
+    if (!data.is_enabled) {
+      throw new Error(`Step ${stepType} is configured with an unsupported model.`);
+    }
+    return;
+  }
+
+  // Fallback to local constants only if not present in DB (e.g. during unit tests)
+  const isSeeded = isSupportedStepModel(normalizedModel);
+  if (isSeeded) {
+    return;
+  }
+
+  throw new Error(`Step ${stepType} is configured with an unsupported model.`);
 }
 
 function buildPromptSection(title: string, lines: string[]) {
@@ -1461,7 +1504,7 @@ async function createSingleStepWorkflow(
       name: `Single Step: ${definition.name}`,
       description: `Runtime-generated single-step workflow for ${stepType}.`,
       is_template: false,
-      provider_override: resolveProviderKeyFromModel(definition.model ?? DEFAULT_MODEL),
+      provider_override: await resolveProviderKeyFromModel(definition.model ?? DEFAULT_MODEL, adminClient),
       model_override: definition.model ?? DEFAULT_MODEL,
       reasoning_effort_override: definition.reasoning_effort ?? DEFAULT_REASONING_EFFORT,
       created_by: SINGLE_STEP_RUNTIME_CREATED_BY,
@@ -1480,7 +1523,7 @@ async function createSingleStepWorkflow(
       step_type: stepType,
       order_index: 0,
       is_enabled: true,
-      provider_override: resolveProviderKeyFromModel(definition.model ?? DEFAULT_MODEL),
+      provider_override: await resolveProviderKeyFromModel(definition.model ?? DEFAULT_MODEL, adminClient),
       model_override: definition.model ?? DEFAULT_MODEL,
       reasoning_effort_override: definition.reasoning_effort ?? DEFAULT_REASONING_EFFORT,
       requires_approval: false,
@@ -1562,11 +1605,12 @@ async function listExistingArtifacts(
   return (data ?? []) as ArtifactRunRow[];
 }
 
-function resolvePlannedStepExecution(
+async function resolvePlannedStepExecution(
   step: WorkflowStepRow,
   workflow: WorkflowDefinitionRow,
   projectDefaults: ProjectSettingsRow,
   definition: StepDefinitionRow,
+  adminClient: SupabaseClient,
 ) {
   const resolvedReasoningEffort =
     step.reasoning_effort_override ||
@@ -1585,11 +1629,9 @@ function resolvePlannedStepExecution(
 
   const normalizedModel = normalizeStepModel(resolvedModel) ?? resolvedModel;
 
-  if (!normalizedModel || !isSupportedStepModel(normalizedModel)) {
-    throw new Error(`Step ${definition.step_type} is configured with an unsupported model.`);
-  }
+  await validateStepModel(adminClient, normalizedModel, definition.step_type);
 
-  const resolvedProvider = resolveProviderKeyFromModel(normalizedModel);
+  const resolvedProvider = await resolveProviderKeyFromModel(normalizedModel, adminClient);
 
   return {
     model: normalizedModel,
@@ -1662,10 +1704,11 @@ async function ensureBuiltInResultSummaryStepDefinition({
   return definition;
 }
 
-function resolveBuiltInStepExecution(
+async function resolveBuiltInStepExecution(
   workflow: WorkflowDefinitionRow,
   projectDefaults: ProjectSettingsRow,
   definition: StepDefinitionRow,
+  adminClient: SupabaseClient,
 ) {
   const resolvedReasoningEffort =
     definition.reasoning_effort ||
@@ -1682,13 +1725,11 @@ function resolveBuiltInStepExecution(
     projectDefaults.default_model ||
     DEFAULT_MODEL;
   const normalizedModel = normalizeStepModel(resolvedModel) ?? resolvedModel;
-  if (!normalizedModel || !isSupportedStepModel(normalizedModel)) {
-    throw new Error(`Step ${definition.step_type} is configured with an unsupported model.`);
-  }
+  await validateStepModel(adminClient, normalizedModel, definition.step_type);
 
   return {
     model: normalizedModel,
-    providerKey: resolveProviderKeyFromModel(normalizedModel),
+    providerKey: await resolveProviderKeyFromModel(normalizedModel, adminClient),
     reasoningEffort: resolvedReasoningEffort,
   };
 }
@@ -1983,7 +2024,7 @@ export async function submitWorkflowStepFollowUpRuntime({
     );
   });
 
-  const execution = resolvePlannedStepExecution(workflowStep, workflow, projectDefaults, definition);
+  const execution = await resolvePlannedStepExecution(workflowStep, workflow, projectDefaults, definition, adminClient);
   const finalPrompt = buildWorkflowStepFollowUpPrompt({
     followUpPrompt: trimmedComment,
     inputArtifactPaths,
@@ -2211,8 +2252,8 @@ export async function runWorkflowStartRuntime({
     });
     stepDefinitions.set(RESULT_SUMMARY_STEP_TYPE, builtInDefinition);
   }
-  const stepPlans = enabledWorkflowSteps
-    .map((step) => {
+  const stepPlans: StepExecutionPlan[] = await Promise.all(
+    enabledWorkflowSteps.map(async (step) => {
       const definition = stepDefinitions.get(step.step_type);
       if (!definition) {
         throw new Error(`Step definition "${step.step_type}" could not be loaded.`);
@@ -2224,11 +2265,12 @@ export async function runWorkflowStartRuntime({
         stepType: step.step_type,
         orderIndex: step.order_index,
         definition,
-        ...resolvePlannedStepExecution(step, workflow, projectDefaults, definition),
+        ...(await resolvePlannedStepExecution(step, workflow, projectDefaults, definition, adminClient)),
         inputArtifactKeys: inputBindings.get(step.step_type) ?? [],
         outputArtifactKeys: outputBindings.get(step.step_type) ?? [],
       } satisfies StepExecutionPlan;
-    });
+    })
+  );
 
   if (shouldAddResultSummary) {
     const definition = stepDefinitions.get(RESULT_SUMMARY_STEP_TYPE);
@@ -2247,7 +2289,7 @@ export async function runWorkflowStartRuntime({
       stepType: RESULT_SUMMARY_STEP_TYPE,
       orderIndex: nextOrderIndex,
       definition,
-      ...resolveBuiltInStepExecution(workflow, projectDefaults, definition),
+      ...(await resolveBuiltInStepExecution(workflow, projectDefaults, definition, adminClient)),
       inputArtifactKeys: [],
       outputArtifactKeys: [],
     });
@@ -2255,7 +2297,7 @@ export async function runWorkflowStartRuntime({
 
   const firstStepModel =
     stepPlans[0]?.model || workflow.model_override || projectDefaults.default_model || DEFAULT_MODEL;
-  const firstStepProvider = resolveProviderKeyFromModel(firstStepModel);
+  const firstStepProvider = await resolveProviderKeyFromModel(firstStepModel, adminClient);
   const firstStepReasoningEffort =
     stepPlans[0]?.reasoningEffort ||
     workflow.reasoning_effort_override ||

@@ -11,6 +11,7 @@ import type {
   WorkflowRunStep,
   WorkflowStep,
   StepType,
+  SupportedModel,
 } from "@/domain/model/entity/workflow-engine";
 import { deriveStepPromptBase, normalizeStepModel } from "@/domain/model/entity/workflow-engine";
 import { workflowArtifactDefinitionOptions } from "@/features/workflow-engine/workflow-artifact-definitions";
@@ -820,5 +821,60 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
     }
 
     return step;
+  }
+
+  private supportedModels: SupportedModel[] = [
+    { id: "1", providerKey: "gemini", modelId: "auto-gemini-3", displayName: "Auto (Gemini 3)", isEnabled: true, sortOrder: 1, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    { id: "2", providerKey: "gemini", modelId: "auto-gemini-2.5", displayName: "Auto (Gemini 2.5)", isEnabled: true, sortOrder: 2, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    { id: "3", providerKey: "gemini", modelId: "gemini-3.1-pro-preview", displayName: "Gemini 3.1 Pro Preview", isEnabled: true, sortOrder: 3, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    { id: "4", providerKey: "gemini", modelId: "gemini-3-flash-preview", displayName: "Gemini 3 Flash Preview", isEnabled: true, sortOrder: 4, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    { id: "5", providerKey: "gemini", modelId: "gemini-3.1-flash-lite-preview", displayName: "Gemini 3.1 Flash Lite Preview", isEnabled: true, sortOrder: 5, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    { id: "6", providerKey: "gemini", modelId: "gemini-2.5-pro", displayName: "Gemini 2.5 Pro", isEnabled: true, sortOrder: 6, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    { id: "7", providerKey: "gemini", modelId: "gemini-2.5-flash", displayName: "Gemini 2.5 Flash", isEnabled: true, sortOrder: 7, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    { id: "8", providerKey: "gemini", modelId: "gemini-2.5-flash-lite", displayName: "Gemini 2.5 Flash Lite", isEnabled: true, sortOrder: 8, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    { id: "9", providerKey: "claude", modelId: "claude-haiku", displayName: "Claude Haiku", isEnabled: true, sortOrder: 9, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    { id: "10", providerKey: "claude", modelId: "claude-sonnet", displayName: "Claude Sonnet", isEnabled: true, sortOrder: 10, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    { id: "11", providerKey: "claude", modelId: "claude-opus", displayName: "Claude Opus", isEnabled: true, sortOrder: 11, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    { id: "12", providerKey: "codex", modelId: "gpt-5.4-mini", displayName: "GPT 5.4 Mini", isEnabled: true, sortOrder: 12, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    { id: "13", providerKey: "codex", modelId: "gpt-5.4", displayName: "GPT 5.4", isEnabled: true, sortOrder: 13, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    { id: "14", providerKey: "codex", modelId: "gpt-5.5", displayName: "GPT 5.5", isEnabled: true, sortOrder: 14, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+  ];
+
+  async listSupportedModels(): Promise<SupportedModel[]> {
+    return this.supportedModels;
+  }
+
+  async createSupportedModel(
+    model: Omit<SupportedModel, "id" | "createdAt" | "updatedAt">
+  ): Promise<SupportedModel> {
+    const newModel: SupportedModel = {
+      ...model,
+      id: Math.random().toString(36).slice(2, 9),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    this.supportedModels.push(newModel);
+    return newModel;
+  }
+
+  async updateSupportedModel(
+    id: string,
+    model: Partial<Omit<SupportedModel, "id" | "createdAt" | "updatedAt">>
+  ): Promise<SupportedModel> {
+    const idx = this.supportedModels.findIndex((m) => m.id === id);
+    if (idx < 0) {
+      throw new Error("Supported model not found");
+    }
+    const updated = {
+      ...this.supportedModels[idx],
+      ...model,
+      updatedAt: new Date().toISOString(),
+    };
+    this.supportedModels[idx] = updated;
+    return updated;
+  }
+
+  async deleteSupportedModel(id: string): Promise<void> {
+    this.supportedModels = this.supportedModels.filter((m) => m.id !== id);
   }
 }

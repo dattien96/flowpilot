@@ -50,6 +50,9 @@ vi.mock("@/data/repository/browser-factory", () => ({
     localRunnerGateway: {
       listProviders: mocks.listProviders,
     },
+    workflowEngineGateway: {
+      listSupportedModels: vi.fn().mockResolvedValue([]),
+    },
   })),
 }));
 

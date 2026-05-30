@@ -11,6 +11,7 @@ import {
   REASONING_EFFORT_OPTIONS,
   STEP_MODEL_OPTIONS,
 } from "@/domain/model/entity/workflow-engine";
+import { useSupportedModels } from "@/presentation/hooks/use-supported-models";
 import {
   formatTimestamp,
   integrationTypes,
@@ -21,7 +22,7 @@ import { Badge } from "@/presentation/components/ui/badge";
 const DEFAULT_MODEL = "gpt-5.4";
 const DEFAULT_REASONING_EFFORT = "medium";
 
-function providerForModel(model: string) {
+function providerForModel(model: string, supportedModels: Array<{ modelId: string; providerKey: string }> = []) {
   if (model.startsWith("gpt-")) {
     return "codex";
   }
@@ -30,6 +31,12 @@ function providerForModel(model: string) {
   }
   if (model.startsWith("claude-")) {
     return "claude";
+  }
+
+  // Fallback to registry mapping
+  const match = supportedModels.find((m) => m.modelId === model);
+  if (match) {
+    return match.providerKey;
   }
 
   return "";
@@ -113,6 +120,14 @@ export function ProjectSettingsContent({
   projectId: string;
 }) {
   const router = useRouter();
+  const { data: supportedModels } = useSupportedModels();
+  const modelsList = useMemo(() => {
+    if (!supportedModels) return STEP_MODEL_OPTIONS;
+    return supportedModels
+      .filter((m) => m.isEnabled)
+      .map((m) => ({ value: m.modelId, label: m.displayName }));
+  }, [supportedModels]);
+
   const [selectedLinks, setSelectedLinks] = useState<Partial<Record<IntegrationType, string>>>({});
   const [providerDefaults, setProviderDefaults] = useState({
     defaultModel: project.defaultModel ?? DEFAULT_MODEL,
@@ -186,9 +201,9 @@ export function ProjectSettingsContent({
       const defaultModel = providerDefaults.defaultModel.trim() || DEFAULT_MODEL;
       const defaultReasoningEffort =
         providerDefaults.defaultReasoningEffort.trim() || DEFAULT_REASONING_EFFORT;
-      const resolvedProvider = providerForModel(defaultModel);
+      const resolvedProvider = providerForModel(defaultModel, supportedModels);
       if (!resolvedProvider) {
-        throw new Error("Default model must start with gpt-, gemini-, or claude-.");
+        throw new Error("Default model must start with gpt-, gemini-, or claude-, or be registered as a supported model.");
       }
 
       await gateways.projectGateway.updateProject(projectId, {
@@ -284,7 +299,7 @@ export function ProjectSettingsContent({
                     }))
                   }
                 >
-                  {STEP_MODEL_OPTIONS.map((option) => (
+                  {modelsList.map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
                     </option>
