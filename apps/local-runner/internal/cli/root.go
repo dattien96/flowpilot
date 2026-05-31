@@ -144,6 +144,224 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				w.WriteHeader(http.StatusOK)
 				w.Write([]byte(`{"status":"success"}`))
 			})
+
+			mux.HandleFunc("/provider-accounts", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+
+				accounts, err := instance.ListProviderAccounts()
+				if err != nil {
+					writeHTTPError(w, http.StatusInternalServerError, err)
+					return
+				}
+
+				writeHTTPJSON(w, map[string]any{"accounts": accounts})
+			})
+			mux.HandleFunc("/provider-accounts/allocate-slot", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				var payload struct {
+					ProviderKey   string   `json:"providerKey"`
+					ExistingPaths []string `json:"existingPaths"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+
+				homePath, slotIndex, err := runner.NextAccountHomePath(payload.ProviderKey, payload.ExistingPaths)
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"homePath":  homePath,
+					"slotIndex": slotIndex,
+				})
+			})
+			mux.HandleFunc("/provider-accounts/connect", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				var payload struct {
+					ProviderKey string `json:"providerKey"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+				account, err := instance.ConnectProviderAccount(payload.ProviderKey)
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+				writeHTTPJSON(w, account)
+			})
+			mux.HandleFunc("/provider-accounts/defaults", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+
+				defaults := make([]map[string]string, 0, 3)
+				for _, providerKey := range []string{"codex", "claude", "gemini"} {
+					homePath, ok := runner.DetectDefaultAccountHomePath(providerKey)
+					if !ok {
+						continue
+					}
+
+					defaults = append(defaults, map[string]string{
+						"providerKey": providerKey,
+						"homePath":    homePath,
+					})
+				}
+
+				writeHTTPJSON(w, map[string]any{"defaults": defaults})
+			})
+			mux.HandleFunc("/provider-accounts/context", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+
+				defaults := make([]map[string]string, 0, 3)
+				for _, providerKey := range []string{"codex", "claude", "gemini"} {
+					homePath, ok := runner.DetectDefaultAccountHomePath(providerKey)
+					if !ok {
+						continue
+					}
+
+					defaults = append(defaults, map[string]string{
+						"providerKey": providerKey,
+						"homePath":    homePath,
+					})
+				}
+
+				writeHTTPJSON(w, map[string]any{
+					"defaults":       defaults,
+					"runnerInstance": runner.CurrentRunnerInstanceContext(),
+				})
+			})
+			mux.HandleFunc("/provider-accounts/verify", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				var payload struct {
+					AccountID       string `json:"accountId"`
+					ProviderKey     string `json:"providerKey"`
+					AccountHomePath string `json:"accountHomePath"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+				if strings.TrimSpace(payload.AccountID) != "" {
+					account, verified, err := instance.VerifyProviderAccount(payload.AccountID)
+					if err != nil {
+						writeHTTPError(w, http.StatusBadRequest, err)
+						return
+					}
+					writeHTTPJSON(w, map[string]any{
+						"verified": verified,
+						"account":  account,
+					})
+					return
+				}
+
+				hasAuth := runner.HasLocalAuthAtPath(payload.ProviderKey, payload.AccountHomePath)
+				writeHTTPJSON(w, map[string]bool{"verified": hasAuth})
+			})
+			mux.HandleFunc("/provider-accounts/activate", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				var payload struct {
+					AccountID string `json:"accountId"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+
+				account, err := instance.ActivateProviderAccount(payload.AccountID)
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+
+				writeHTTPJSON(w, map[string]any{"account": account})
+			})
+			mux.HandleFunc("/provider-accounts/test", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				var payload struct {
+					AccountID string `json:"accountId"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+
+				account, err := instance.TestProviderAccount(payload.AccountID)
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+
+				writeHTTPJSON(w, map[string]any{"account": account})
+			})
+			mux.HandleFunc("/provider-accounts/resolve", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				var payload struct {
+					ProviderKey string `json:"providerKey"`
+					AccountID   string `json:"accountId"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+
+				account, err := instance.ResolveProviderAccount(payload.ProviderKey, payload.AccountID)
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+
+				writeHTTPJSON(w, map[string]any{"account": account})
+			})
+			mux.HandleFunc("/provider-accounts/", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodDelete {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+
+				accountID := strings.TrimPrefix(r.URL.Path, "/provider-accounts/")
+				if strings.TrimSpace(accountID) == "" {
+					http.Error(w, "account id is required", http.StatusBadRequest)
+					return
+				}
+
+				if err := instance.DeleteProviderAccount(accountID); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+
+				w.WriteHeader(http.StatusNoContent)
+			})
 			mux.HandleFunc("/directories/pick", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
