@@ -419,6 +419,7 @@ func (r *Runner) StartSession(ctx context.Context, req AiSessionStartRequest) (A
 	}
 
 	cmd := commandContextFn(ctx, binaryPath, args...)
+	cmd.Env = r.getEnvForExecution(req.ProviderKey, req.AccountHomePath, req.CustomEnv, req.ProxyURL)
 	cmd.Dir = resolvedWorkingDirectory
 
 	stdin, err := cmd.StdinPipe()

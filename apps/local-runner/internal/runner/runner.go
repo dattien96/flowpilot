@@ -2,7 +2,9 @@ package runner
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -796,8 +798,8 @@ func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionReque
 
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-
 	cmd := exec.CommandContext(execCtx, binary, args...)
+	cmd.Env = r.getEnvForExecution(request.ProviderKey, request.AccountHomePath, request.CustomEnv, request.ProxyURL)
 	promptFile, err := os.Open(promptPath)
 	if err != nil {
 		return PromptExecutionResult{}, err
@@ -1491,52 +1493,127 @@ func getPossibleHomeDirs() []string {
 	return dirs
 }
 
-func hasLocalAuth(providerKey string) bool {
-	dirs := getPossibleHomeDirs()
-	for _, dir := range dirs {
-		var paths []string
-		switch providerKey {
-		case "codex":
-			paths = []string{
-				filepath.Join(dir, ".codex", "auth.json"),
-				filepath.Join(dir, "codex", "auth.json"),
-			}
-		case "claude":
-			paths = []string{
-				filepath.Join(dir, ".claude.json"),
-				filepath.Join(dir, "claude", "auth.json"),
-				filepath.Join(dir, ".config", "claude", "auth.json"),
-			}
-		case "gemini":
-			paths = []string{
-				filepath.Join(dir, ".gemini", "oauth_creds.json"),
-				filepath.Join(dir, "gemini", "oauth_creds.json"),
-			}
-		}
+type RunnerInstanceContext struct {
+	MachineFingerprint string `json:"machineFingerprint"`
+	HostName           string `json:"hostName"`
+	OSName             string `json:"osName"`
+}
 
-		for _, path := range paths {
-			if info, err := os.Stat(path); err == nil && info.Size() > 0 {
-				if data, err := os.ReadFile(path); err == nil {
-					content := string(data)
-					switch providerKey {
-					case "codex":
-						if strings.Contains(content, `"id_token"`) || strings.Contains(content, `"OPENAI_API_KEY"`) {
-							return true
-						}
-					case "claude":
-						if strings.Contains(content, `"emailAddress"`) {
-							return true
-						}
-					case "gemini":
-						if strings.Contains(content, `"access_token"`) || strings.Contains(content, `"refresh_token"`) {
-							return true
-						}
-					}
-				}
+func CurrentRunnerInstanceContext() RunnerInstanceContext {
+	hostName, err := os.Hostname()
+	if err != nil || strings.TrimSpace(hostName) == "" {
+		hostName = "unknown-host"
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		homeDir = ""
+	}
+
+	fingerprintSeed := strings.Join(
+		[]string{runtime.GOOS, strings.TrimSpace(hostName), filepath.Clean(homeDir)},
+		"|",
+	)
+	hash := sha256.Sum256([]byte(fingerprintSeed))
+
+	return RunnerInstanceContext{
+		MachineFingerprint: hex.EncodeToString(hash[:16]),
+		HostName:           hostName,
+		OSName:             runtime.GOOS,
+	}
+}
+
+type authCandidate struct {
+	homePath string
+	authPath string
+}
+
+func defaultAuthCandidates(providerKey, dir string) []authCandidate {
+	switch providerKey {
+	case "codex":
+		return []authCandidate{
+			{homePath: filepath.Join(dir, ".codex"), authPath: filepath.Join(dir, ".codex", "auth.json")},
+			{homePath: filepath.Join(dir, "codex"), authPath: filepath.Join(dir, "codex", "auth.json")},
+		}
+	case "claude":
+		return []authCandidate{
+			{homePath: dir, authPath: filepath.Join(dir, ".claude.json")},
+			{homePath: dir, authPath: filepath.Join(dir, "claude", "auth.json")},
+			{homePath: dir, authPath: filepath.Join(dir, ".config", "claude", "auth.json")},
+		}
+	case "gemini":
+		return []authCandidate{
+			{homePath: dir, authPath: filepath.Join(dir, ".gemini", "oauth_creds.json")},
+			{homePath: dir, authPath: filepath.Join(dir, "gemini", "oauth_creds.json")},
+		}
+	default:
+		return nil
+	}
+}
+
+func accountAuthPaths(providerKey, homePath string) []string {
+	switch providerKey {
+	case "codex":
+		return []string{
+			filepath.Join(homePath, ".codex", "auth.json"),
+			filepath.Join(homePath, "codex", "auth.json"),
+			filepath.Join(homePath, "auth.json"),
+		}
+	case "claude":
+		return []string{
+			filepath.Join(homePath, ".claude.json"),
+			filepath.Join(homePath, "claude", "auth.json"),
+			filepath.Join(homePath, ".config", "claude", "auth.json"),
+		}
+	case "gemini":
+		return []string{
+			filepath.Join(homePath, ".gemini", "oauth_creds.json"),
+			filepath.Join(homePath, "gemini", "oauth_creds.json"),
+		}
+	default:
+		return nil
+	}
+}
+
+func hasValidProviderAuthFile(providerKey, path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || info.Size() <= 0 {
+		return false
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+
+	content := string(data)
+	switch providerKey {
+	case "codex":
+		return strings.Contains(content, `"id_token"`) || strings.Contains(content, `"OPENAI_API_KEY"`)
+	case "claude":
+		return strings.Contains(content, `"emailAddress"`)
+	case "gemini":
+		return strings.Contains(content, `"access_token"`) || strings.Contains(content, `"refresh_token"`)
+	default:
+		return false
+	}
+}
+
+func DetectDefaultAccountHomePath(providerKey string) (string, bool) {
+	for _, dir := range getPossibleHomeDirs() {
+		for _, candidate := range defaultAuthCandidates(providerKey, dir) {
+			if hasValidProviderAuthFile(providerKey, candidate.authPath) {
+				return candidate.homePath, true
 			}
 		}
 	}
-	return false
+
+	return "", false
+}
+
+func hasLocalAuth(providerKey string) bool {
+	_, ok := DetectDefaultAccountHomePath(providerKey)
+	return ok
 }
 
 func providerAuthStatus(spec providerSpec) string {
@@ -2837,6 +2914,98 @@ func LaunchTerminalWithCommand(command string) error {
 	}
 }
 
+func launchProviderTerminalCommand(providerKey, accountHomePath, command string, keepShellOpen bool) error {
+	if strings.TrimSpace(command) == "" {
+		return errors.New("terminal command is empty")
+	}
+
+	switch runtime.GOOS {
+	case "windows":
+		envPrefix := providerEnvSetCommand(providerKey, accountHomePath, "windows")
+		fullCommand := fmt.Sprintf("%s && %s", envPrefix, command)
+		cmd := exec.Command("cmd.exe", "/c", "start", "", "cmd.exe", "/k", fullCommand)
+		if err := cmd.Start(); err != nil {
+			return err
+		}
+		return cmd.Process.Release()
+	case "darwin":
+		envExport := providerEnvSetCommand(providerKey, accountHomePath, "posix")
+		shellCommand := fmt.Sprintf("%s && %s", envExport, command)
+		if keepShellOpen {
+			shellCommand += `; exec "$SHELL" -l`
+		}
+		escaped := escapeAppleScriptString(shellCommand)
+		script := fmt.Sprintf(
+			`tell application "Terminal"
+activate
+do script "%s"
+end tell`,
+			escaped,
+		)
+		cmd := exec.Command("osascript", "-e", script)
+		cmd.Env = (&Runner{}).getEnvForExecution(providerKey, accountHomePath, nil, "")
+		if err := cmd.Start(); err != nil {
+			return err
+		}
+		return cmd.Process.Release()
+	case "linux":
+		envExport := providerEnvSetCommand(providerKey, accountHomePath, "posix")
+		shellCommand := fmt.Sprintf("%s && %s", envExport, command)
+		if keepShellOpen {
+			shellCommand += "; exec bash"
+		}
+		launchCommand := fmt.Sprintf("bash -lc %s", singleQuoteForShell(shellCommand))
+		terminals := []struct {
+			name string
+			args []string
+		}{
+			{"x-terminal-emulator", []string{"-e", launchCommand}},
+			{"gnome-terminal", []string{"--", "bash", "-lc", shellCommand}},
+			{"konsole", []string{"-e", "bash", "-lc", shellCommand}},
+			{"xfce4-terminal", []string{"-e", launchCommand}},
+			{"alacritty", []string{"-e", "bash", "-lc", shellCommand}},
+		}
+
+		for _, terminal := range terminals {
+			path, err := exec.LookPath(terminal.name)
+			if err != nil {
+				continue
+			}
+			cmd := exec.Command(path, terminal.args...)
+			cmd.Env = (&Runner{}).getEnvForExecution(providerKey, accountHomePath, nil, "")
+			if err := cmd.Start(); err == nil {
+				return cmd.Process.Release()
+			}
+		}
+		return fmt.Errorf("no supported terminal emulator found")
+	default:
+		return fmt.Errorf("unsupported operating system %q for terminal spawning", runtime.GOOS)
+	}
+}
+
+func escapeAppleScriptString(value string) string {
+	replacer := strings.NewReplacer(`\`, `\\`, `"`, `\"`)
+	return replacer.Replace(value)
+}
+
+func singleQuoteForShell(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
+}
+
+func commandWithWorkingDirectory(command, workingDir string) string {
+	trimmedDir := strings.TrimSpace(workingDir)
+	if trimmedDir == "" {
+		return command
+	}
+
+	switch runtime.GOOS {
+	case "windows":
+		return fmt.Sprintf("cd /d %s && %s", trimmedDir, command)
+	default:
+		return fmt.Sprintf("cd %s && %s", singleQuoteForShell(trimmedDir), command)
+	}
+}
+
 func (r *Runner) AuthenticateProvider(ctx context.Context, providerName string) error {
 	spec, ok := lookupProviderSpec(providerName)
 	if !ok {
@@ -2856,4 +3025,180 @@ func (r *Runner) AuthenticateProvider(ctx context.Context, providerName string) 
 	}
 
 	return LaunchTerminalWithCommand(authCommand)
+}
+
+func (r *Runner) getEnvForExecution(
+	providerKey string,
+	accountHomePath string,
+	customEnv map[string]string,
+	proxyURL string,
+) []string {
+	baseEnv := os.Environ()
+	if strings.TrimSpace(accountHomePath) == "" {
+		return baseEnv
+	}
+
+	_ = os.MkdirAll(filepath.Join(accountHomePath, "AppData", "Roaming"), 0755)
+	_ = os.MkdirAll(filepath.Join(accountHomePath, "AppData", "Local"), 0755)
+	_ = os.MkdirAll(filepath.Join(accountHomePath, ".config"), 0755)
+
+	var newEnv []string
+	for _, envVar := range baseEnv {
+		parts := strings.SplitN(envVar, "=", 2)
+		if len(parts) == 0 {
+			continue
+		}
+		key := parts[0]
+		if key == "HOME" || key == "USERPROFILE" || key == "APPDATA" || key == "LOCALAPPDATA" || key == "HOMEPATH" || key == "HOMEDRIVE" || key == "XDG_CONFIG_HOME" || key == "CODEX_HOME" || key == "HTTP_PROXY" || key == "HTTPS_PROXY" {
+			continue
+		}
+		if _, exists := customEnv[key]; exists {
+			continue
+		}
+		newEnv = append(newEnv, envVar)
+	}
+
+	switch strings.ToLower(providerKey) {
+	case "codex":
+		newEnv = append(newEnv, fmt.Sprintf("CODEX_HOME=%s", accountHomePath))
+		newEnv = append(newEnv, fmt.Sprintf("HOME=%s", accountHomePath))
+		newEnv = append(newEnv, fmt.Sprintf("XDG_CONFIG_HOME=%s/.config", accountHomePath))
+	default:
+		newEnv = append(newEnv, fmt.Sprintf("HOME=%s", accountHomePath))
+		newEnv = append(newEnv, fmt.Sprintf("XDG_CONFIG_HOME=%s/.config", accountHomePath))
+	}
+
+	if runtime.GOOS == "windows" {
+		newEnv = append(newEnv, fmt.Sprintf("USERPROFILE=%s", accountHomePath))
+		newEnv = append(newEnv, fmt.Sprintf("APPDATA=%s\\AppData\\Roaming", accountHomePath))
+		newEnv = append(newEnv, fmt.Sprintf("LOCALAPPDATA=%s\\AppData\\Local", accountHomePath))
+
+		drive := "C:"
+		path := strings.TrimPrefix(accountHomePath, "C:")
+		if strings.Contains(accountHomePath, ":") {
+			parts := strings.SplitN(accountHomePath, ":", 2)
+			drive = parts[0] + ":"
+			path = parts[1]
+		}
+		newEnv = append(newEnv, fmt.Sprintf("HOMEDRIVE=%s", drive))
+		newEnv = append(newEnv, fmt.Sprintf("HOMEPATH=%s", path))
+	}
+
+	if strings.TrimSpace(proxyURL) != "" {
+		newEnv = append(newEnv, fmt.Sprintf("HTTP_PROXY=%s", proxyURL))
+		newEnv = append(newEnv, fmt.Sprintf("HTTPS_PROXY=%s", proxyURL))
+	}
+
+	for k, v := range customEnv {
+		newEnv = append(newEnv, fmt.Sprintf("%s=%s", k, v))
+	}
+
+	return newEnv
+}
+
+func NextAccountHomePath(providerKey string, existing []string) (string, int, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", 0, err
+	}
+
+	prefix := ""
+	switch strings.ToLower(providerKey) {
+	case "codex":
+		prefix = ".codexHome"
+	case "claude":
+		prefix = ".claudeHome"
+	case "gemini":
+		prefix = ".geminiHome"
+	default:
+		return "", 0, fmt.Errorf("unsupported provider %q", providerKey)
+	}
+
+	existingPaths := make(map[string]bool)
+	for _, p := range existing {
+		existingPaths[filepath.Clean(p)] = true
+	}
+
+	for i := 1; i < 1000; i++ {
+		path := filepath.Join(home, fmt.Sprintf("%s%d", prefix, i))
+		if existingPaths[path] {
+			continue
+		}
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			return path, i, nil
+		}
+	}
+	return "", 0, errors.New("no free slot found")
+}
+
+func (r *Runner) StartInteractiveAuth(providerKey string, accountHomePath string) error {
+	spec, ok := lookupProviderSpec(providerKey)
+	if !ok {
+		return fmt.Errorf("unsupported provider %q", providerKey)
+	}
+
+	binaryPath, err := lookPathFn(spec.BinaryName)
+	if err != nil {
+		return fmt.Errorf("provider binary %q not found: %w", spec.BinaryName, err)
+	}
+
+	var authCommand string
+	switch strings.ToLower(providerKey) {
+	case "claude":
+		authCommand = fmt.Sprintf("%s login", binaryPath)
+	case "codex":
+		authCommand = fmt.Sprintf("%s login", binaryPath)
+	case "gemini":
+		authCommand = binaryPath
+	default:
+		return fmt.Errorf("provider %s does not support interactive CLI login", providerKey)
+	}
+
+	return launchProviderTerminalCommand(providerKey, accountHomePath, authCommand, true)
+}
+
+func (r *Runner) StartInteractiveTest(providerKey string, accountHomePath string) error {
+	spec, ok := lookupProviderSpec(providerKey)
+	if !ok {
+		return fmt.Errorf("unsupported provider %q", providerKey)
+	}
+
+	binaryPath, err := lookPathFn(spec.BinaryName)
+	if err != nil {
+		return fmt.Errorf("provider binary %q not found: %w", spec.BinaryName, err)
+	}
+
+	testCommand := commandWithWorkingDirectory(binaryPath, r.workspace)
+	return launchProviderTerminalCommand(providerKey, accountHomePath, testCommand, true)
+}
+
+func providerEnvSetCommand(providerKey, homePath, shellType string) string {
+	switch shellType {
+	case "posix":
+		switch strings.ToLower(providerKey) {
+		case "codex":
+			return fmt.Sprintf("export CODEX_HOME='%s' && export HOME='%s' && export XDG_CONFIG_HOME='%s/.config'", homePath, homePath, homePath)
+		default:
+			return fmt.Sprintf("export HOME='%s' && export XDG_CONFIG_HOME='%s/.config'", homePath, homePath)
+		}
+	case "windows":
+		switch strings.ToLower(providerKey) {
+		case "codex":
+			return fmt.Sprintf("set CODEX_HOME=%s && set HOME=%s", homePath, homePath)
+		default:
+			return fmt.Sprintf("set USERPROFILE=%s && set APPDATA=%s\\AppData\\Roaming", homePath, homePath)
+		}
+	default:
+		return ""
+	}
+}
+
+func HasLocalAuthAtPath(providerKey string, homePath string) bool {
+	for _, path := range accountAuthPaths(providerKey, homePath) {
+		if hasValidProviderAuthFile(providerKey, path) {
+			return true
+		}
+	}
+
+	return false
 }
