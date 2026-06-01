@@ -56,6 +56,47 @@ const SUPPORTED_PROVIDERS = [
   { key: "gemini", label: "Gemini" },
 ];
 
+function AccountsSkeleton() {
+  return (
+    <div className="flex flex-col gap-6 animate-pulse">
+      {[1, 2, 3].map((i) => (
+        <div key={i} className="rounded-[1.4rem] border border-border bg-card/80 overflow-hidden">
+          <div className="p-5 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-full bg-muted" />
+              <div className="space-y-2">
+                <div className="h-5 w-24 bg-muted rounded" />
+                <div className="h-3 w-16 bg-muted rounded" />
+              </div>
+            </div>
+            <div className="h-9 w-44 bg-muted rounded-md" />
+          </div>
+          <div className="border-t border-border p-5">
+            <div className="flex items-center justify-between p-4 rounded-xl border border-border bg-background/50">
+              <div className="flex items-center gap-4">
+                <div className="w-6 h-6 rounded-full bg-muted" />
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <div className="h-4 w-32 bg-muted rounded font-mono" />
+                    <div className="h-4 w-16 bg-muted rounded-full" />
+                  </div>
+                  <div className="h-3 w-48 bg-muted rounded" />
+                  <div className="h-3 w-36 bg-muted rounded" />
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="h-9 w-24 bg-muted rounded-md" />
+                <div className="h-9 w-16 bg-muted rounded-md" />
+                <div className="h-9 w-16 bg-muted rounded-md" />
+              </div>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function AccountsPage() {
   const queryClient = useQueryClient();
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -254,46 +295,45 @@ function AccountsPage() {
       title="Provider Accounts"
       description="Manage multiple accounts for AI providers. Select an active account to use."
     >
-      <div className="flex flex-col gap-6">
-        {isLoading ? (
-          <div className="rounded-xl border border-border bg-background/60 p-4 text-sm text-muted-foreground">
-            Loading provider accounts...
-          </div>
-        ) : null}
-        {error ? (
-          <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
-            {error instanceof Error
-              ? error.message
-              : "Failed to load provider accounts."}
-          </div>
-        ) : null}
-        {statusMessage ? (
-          <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm text-emerald-200">
-            {statusMessage}
-          </div>
-        ) : null}
-        {errorMessage ? (
-          <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
-            {errorMessage}
-          </div>
-        ) : null}
-        {SUPPORTED_PROVIDERS.map((provider) => (
-          <ProviderAccountGroup
-            key={provider.key}
-            provider={provider}
-            accounts={accounts.filter((a) => a.provider_key === provider.key)}
-            onConnect={() => connectAccount.mutate(provider.key)}
-            onTest={(id) => testAccount.mutate(id)}
-            onVerify={(id) => verifyAccount.mutate(id)}
-            onActivate={(id) => activateAccount.mutate(id)}
-            onDelete={(id) => deleteAccount.mutate(id)}
-            isConnecting={
-              connectAccount.isPending &&
-              connectAccount.variables === provider.key
-            }
-          />
-        ))}
-      </div>
+      {isLoading ? (
+        <AccountsSkeleton />
+      ) : (
+        <div className="flex flex-col gap-6">
+          {error ? (
+            <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
+              {error instanceof Error
+                ? error.message
+                : "Failed to load provider accounts."}
+            </div>
+          ) : null}
+          {statusMessage ? (
+            <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm text-emerald-200">
+              {statusMessage}
+            </div>
+          ) : null}
+          {errorMessage ? (
+            <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
+              {errorMessage}
+            </div>
+          ) : null}
+          {SUPPORTED_PROVIDERS.map((provider) => (
+            <ProviderAccountGroup
+              key={provider.key}
+              provider={provider}
+              accounts={accounts.filter((a) => a.provider_key === provider.key)}
+              onConnect={() => connectAccount.mutate(provider.key)}
+              onTest={(id) => testAccount.mutate(id)}
+              onVerify={(id) => verifyAccount.mutate(id)}
+              onActivate={(id) => activateAccount.mutate(id)}
+              onDelete={(id) => deleteAccount.mutate(id)}
+              isConnecting={
+                connectAccount.isPending &&
+                connectAccount.variables === provider.key
+              }
+            />
+          ))}
+        </div>
+      )}
     </PageFrame>
   );
 }
