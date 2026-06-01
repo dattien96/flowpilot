@@ -14,6 +14,7 @@ import type {
   LocalRunnerProvider,
   LocalRunnerPromptExecutionRequest,
   LocalRunnerPromptExecutionResult,
+  LocalRunnerStreamOptions,
   LocalRunnerStorageDriver,
   LocalRunnerStorageDriverRequest,
   LocalRunnerSkill,
@@ -61,6 +62,7 @@ export interface LocalRunnerGateway {
   ): Promise<LocalRunnerAiSessionHandle>;
   sendMessage(
     request: LocalRunnerAiSessionMessageRequest,
+    options?: LocalRunnerStreamOptions,
   ): Promise<LocalRunnerPromptExecutionResult>;
   closeSession(
     session: LocalRunnerAiSessionHandle,

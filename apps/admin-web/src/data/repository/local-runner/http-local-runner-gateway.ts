@@ -16,6 +16,8 @@ import type {
   LocalRunnerProvider,
   LocalRunnerPromptExecutionRequest,
   LocalRunnerPromptExecutionResult,
+  LocalRunnerSessionStreamEvent,
+  LocalRunnerStreamOptions,
   LocalRunnerStorageDriver,
   LocalRunnerStorageDriverRequest,
   LocalRunnerSkill,
@@ -452,7 +454,14 @@ export class HttpLocalRunnerGateway implements LocalRunnerGateway {
     return await readJson<LocalRunnerAiSessionHandle[]>(this.baseUrl, "/sessions");
   }
 
-  async sendMessage(request: LocalRunnerAiSessionMessageRequest) {
+  async sendMessage(
+    request: LocalRunnerAiSessionMessageRequest,
+    options?: LocalRunnerStreamOptions,
+  ) {
+    if (options?.onStream) {
+      return this.sendMessageStream(request, options);
+    }
+
     const response = await fetch(new URL("/sessions/message", this.baseUrl), {
       method: "POST",
       cache: "no-store",
@@ -480,6 +489,73 @@ export class HttpLocalRunnerGateway implements LocalRunnerGateway {
     }
 
     return (await response.json()) as LocalRunnerPromptExecutionResult;
+  }
+
+  private async sendMessageStream(
+    request: LocalRunnerAiSessionMessageRequest,
+    options: LocalRunnerStreamOptions,
+  ) {
+    const response = await fetch(
+      new URL("/sessions/message/stream", this.baseUrl),
+      {
+        method: "POST",
+        cache: "no-store",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(request),
+      },
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `Local runner session message stream failed: ${response.status} ${response.statusText}`,
+      );
+    }
+    if (!response.body) {
+      throw new Error("Local runner session message stream returned no body.");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffered = "";
+    let finalResult: LocalRunnerPromptExecutionResult | null = null;
+
+    const handleLine = async (line: string) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      const event = JSON.parse(trimmed) as LocalRunnerSessionStreamEvent;
+      if (event.type === "error") {
+        throw new LocalRunnerError(
+          event.error || "Local runner session message stream failed.",
+          event.code,
+          event.details,
+        );
+      }
+      if (event.type === "result") {
+        finalResult = event.result ?? null;
+        return;
+      }
+      await options.onStream?.(event);
+    };
+
+    while (true) {
+      const { done, value } = await reader.read();
+      buffered += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+      const lines = buffered.split("\n");
+      buffered = lines.pop() ?? "";
+      for (const line of lines) {
+        await handleLine(line);
+      }
+      if (done) break;
+    }
+    await handleLine(buffered);
+
+    if (!finalResult) {
+      throw new Error("Local runner session message stream ended without a result.");
+    }
+
+    return finalResult;
   }
 
   async closeSession(session: LocalRunnerAiSessionHandle) {
@@ -557,4 +633,3 @@ export class HttpLocalRunnerGateway implements LocalRunnerGateway {
     }
   }
 }
-

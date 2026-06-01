@@ -607,6 +607,22 @@ function parseSessionEventPayload(message: string | null | undefined) {
   }
 }
 
+function parseProviderStreamPayload(message: string | null | undefined) {
+  const normalized = message?.trim() ?? "";
+  if (!normalized.startsWith("provider_stream:")) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(normalized.slice("provider_stream:".length)) as {
+      stream?: string;
+      text?: string;
+    };
+  } catch {
+    return null;
+  }
+}
+
 function resolveSessionRecoveryDisplay(session: any): SessionRecoveryDisplay | null {
   const recoveryMode = session?.metadataJson?.recovery?.mode;
   if (recoveryMode === "bootstrap_replay") {
@@ -2195,6 +2211,19 @@ function WorkflowRunDetailPage() {
                           const isSessionEvent =
                             typeof log?.message === "string" &&
                             log.message.startsWith("session_event:");
+                          const providerStreamPayload = parseProviderStreamPayload(log.message);
+                          const isProviderStream = Boolean(providerStreamPayload);
+                          let logLabel = log.logLevel;
+                          let badgeLabel = log.logLevel;
+                          if (isSessionEvent) {
+                            logLabel = "session_event";
+                            badgeLabel = "session";
+                          } else if (isProviderStream) {
+                            logLabel = "provider_stream";
+                            badgeLabel = providerStreamPayload?.stream || "stream";
+                          }
+                          const logMessage =
+                            providerStreamPayload?.text ?? log.message;
                           return (
                             <div
                               key={log.id}
@@ -2204,10 +2233,10 @@ function WorkflowRunDetailPage() {
                                 <div className="space-y-1">
                                   <div className="flex flex-wrap items-center gap-2">
                                     <p className="font-semibold">
-                                      {isSessionEvent ? "session_event" : log.logLevel}
+                                      {logLabel}
                                     </p>
                                     <Badge>
-                                      {isSessionEvent ? "session" : log.logLevel}
+                                      {badgeLabel}
                                     </Badge>
                                   </div>
                                   <p className="font-mono text-[11px] text-muted-foreground">
@@ -2219,7 +2248,7 @@ function WorkflowRunDetailPage() {
                                 </p>
                               </div>
                               <pre className="mt-3 whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-foreground">
-                                {log.message}
+                                {logMessage}
                               </pre>
                             </div>
                           );

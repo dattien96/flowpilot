@@ -795,6 +795,50 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				}
 				writeHTTPJSON(w, result)
 			})
+			mux.HandleFunc("/sessions/message/stream", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				flusher, ok := w.(http.Flusher)
+				if !ok {
+					writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("streaming is not supported by this response writer"))
+					return
+				}
+				var payload runner.AiSessionMessageRequest
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+
+				w.Header().Set("Content-Type", "application/x-ndjson")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("X-Accel-Buffering", "no")
+				encoder := json.NewEncoder(w)
+				writeEvent := func(event runner.SessionStreamEvent) {
+					_ = encoder.Encode(event)
+					flusher.Flush()
+				}
+
+				result, err := instance.SendMessageWithCallback(r.Context(), payload, writeEvent)
+				if err != nil {
+					event := runner.SessionStreamEvent{
+						Type:    "error",
+						Error:   err.Error(),
+						Details: err.Error(),
+					}
+					if strings.HasPrefix(err.Error(), "session_dead:") {
+						event.Code = "session_dead"
+						event.Error = "session process exited or is no longer registered"
+					} else if strings.HasPrefix(err.Error(), "session_terminated:") {
+						event.Code = "session_terminated"
+						event.Error = "session was intentionally terminated"
+					}
+					writeEvent(event)
+					return
+				}
+				writeEvent(runner.SessionStreamEvent{Type: "result", Result: &result})
+			})
 			mux.HandleFunc("/sessions/close", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
