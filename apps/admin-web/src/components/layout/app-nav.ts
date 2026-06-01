@@ -26,6 +26,7 @@ export const primaryNavItems = [
 export const settingsNavItems = [
   { to: "/artifacts", label: "Artifacts", icon: Sparkles },
   { to: "/settings/ai-providers", label: "AI Providers", icon: Sparkles },
+  { to: "/settings/accounts", label: "Accounts", icon: Users },
   { to: "/settings/mcp-servers", label: "MCP Servers", icon: PlugZap },
   { to: "/settings/runner", label: "Runner", icon: Activity },
   { to: "/settings/prompt-templates", label: "Prompt Templates", icon: Bot },
