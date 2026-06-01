@@ -73,6 +73,8 @@ interface RouteInfo {
   filePath: string;
   pattern: RegExp;
   paramNames: string[];
+  segmentCount: number;
+  staticSegmentCount: number;
 }
 
 function scanRoutes(dir: string, baseDir: string = dir): RouteInfo[] {
@@ -97,11 +99,14 @@ function scanRoutes(dir: string, baseDir: string = dir): RouteInfo[] {
         return seg.replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&");
       });
       const pattern = new RegExp(`^/api/${regexParts.join("/")}$`);
-      const projectRelPath = "/src/app/api/" + (relPath ? relPath + "/" : "") + entry.name;
+      const projectRelPath =
+        "/src/app/api/" + (relPath ? relPath + "/" : "") + entry.name;
       routes.push({
         filePath: projectRelPath,
         pattern,
         paramNames,
+        segmentCount: segments.length,
+        staticSegmentCount: segments.length - paramNames.length,
       });
     }
   }
@@ -120,7 +125,15 @@ function flowPilotApiRuntime(): Plugin {
         }
 
         const apiDir = path.resolve(__dirname, "./src/app/api");
-        const routes = scanRoutes(apiDir);
+        const routes = scanRoutes(apiDir).sort((left, right) => {
+          if (left.staticSegmentCount !== right.staticSegmentCount) {
+            return right.staticSegmentCount - left.staticSegmentCount;
+          }
+          if (left.segmentCount !== right.segmentCount) {
+            return right.segmentCount - left.segmentCount;
+          }
+          return left.paramNames.length - right.paramNames.length;
+        });
 
         let matchedRoute: RouteInfo | null = null;
         const params: Record<string, string> = {};
@@ -162,7 +175,11 @@ function flowPilotApiRuntime(): Plugin {
           const response = await handler(request, context);
           await writeFetchResponse(res, response);
         } catch (error) {
-          if (error && typeof error === "object" && ("url" in error || error.constructor.name === "RedirectError")) {
+          if (
+            error &&
+            typeof error === "object" &&
+            ("url" in error || error.constructor.name === "RedirectError")
+          ) {
             const redirectUrl = (error as any).url;
             res.statusCode = 302;
             res.setHeader("location", redirectUrl);
@@ -174,7 +191,10 @@ function flowPilotApiRuntime(): Plugin {
           res.setHeader("content-type", "application/json");
           res.end(
             JSON.stringify({
-              error: error instanceof Error ? error.message : "API execution failed.",
+              error:
+                error instanceof Error
+                  ? error.message
+                  : "API execution failed.",
             }),
           );
         }
@@ -201,7 +221,10 @@ export default defineConfig(({ mode }) => {
       alias: {
         "@": path.resolve(__dirname, "./src"),
         "next/server": path.resolve(__dirname, "./src/lib/shims/next-shim.ts"),
-        "next/navigation": path.resolve(__dirname, "./src/lib/shims/next-shim.ts"),
+        "next/navigation": path.resolve(
+          __dirname,
+          "./src/lib/shims/next-shim.ts",
+        ),
       },
     },
     server: {
