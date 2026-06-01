@@ -182,6 +182,10 @@ export interface LocalRunnerPromptExecutionRequest {
   timeoutMs: number;
   workingDirectory: string | null;
   allowWrite?: boolean;
+  providerAccountId?: string;
+  providerAccountHomePath?: string;
+  proxyUrl?: string;
+  customEnv?: Record<string, string>;
 }
 
 export interface LocalRunnerPromptExecutionResult {
@@ -227,6 +231,10 @@ export interface LocalRunnerAiSessionStartRequest {
   allowWrite: boolean;
   idleTTLSeconds?: number;
   resumeProviderSessionId?: string;
+  providerAccountId?: string;
+  providerAccountHomePath?: string;
+  proxyUrl?: string;
+  customEnv?: Record<string, string>;
 }
 
 export interface LocalRunnerAiSessionHandle {

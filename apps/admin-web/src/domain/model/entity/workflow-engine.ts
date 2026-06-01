@@ -138,6 +138,7 @@ export interface StepDefinition {
   teamRole?: string | null;
   subagent?: string | null;
   model: SupportedStepModel;
+  reasoningEffort?: string | null;
   agentType: "standard" | "autonomous";
   inputArtifactDefinitions?: string[];
   outputArtifactDefinitions?: string[];
