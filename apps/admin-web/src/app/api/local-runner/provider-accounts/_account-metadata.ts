@@ -1,0 +1,684 @@
+import fs from "node:fs";
+import path from "node:path";
+
+type ProviderKey = "codex" | "claude" | "gemini";
+
+type ProviderAccountRow = {
+  id: string;
+  provider_key: string;
+  display_name: string;
+  home_path: string;
+  slot_index: number;
+  is_active: boolean;
+  auth_status: "pending" | "connecting" | "connected" | "failed";
+  created_at: string;
+  last_authenticated_at: string | null;
+};
+
+export type EnrichedProviderAccountRow = ProviderAccountRow & {
+  auth_store_path: string | null;
+  account_email: string | null;
+  account_name: string | null;
+  usage_summary: string | null;
+  remaining_5h_percent: number | null;
+  remaining_7d_percent: number | null;
+  remaining_5h_reset_at: string | null;
+  remaining_7d_reset_at: string | null;
+  usage_source: "provider_api" | "unavailable";
+  access_token_expires_at: string | null;
+  refresh_token_expires_at: string | null;
+  refresh_token_expiry_note: string | null;
+  usage_detail_lines: Array<{
+    label: string;
+    remaining_percent: number;
+    reset_at: string | null;
+  }>;
+  display_label: string;
+};
+
+type AccountMetadata = {
+  authStorePath: string | null;
+  accountEmail: string | null;
+  accountName: string | null;
+  usageSummary: string | null;
+  remaining5hPercent: number | null;
+  remaining7dPercent: number | null;
+  remaining5hResetAt: string | null;
+  remaining7dResetAt: string | null;
+  usageSource: "provider_api" | "unavailable";
+  accessTokenExpiresAt: string | null;
+  refreshTokenExpiresAt: string | null;
+  refreshTokenExpiryNote: string | null;
+  usageDetailLines: Array<{
+    label: string;
+    remainingPercent: number;
+    resetAt: string | null;
+  }>;
+};
+
+const GEMINI_CONFIG = {
+  clientId:
+    "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com",
+  clientSecret: "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",
+  tokenUrl: "https://oauth2.googleapis.com/token",
+  loadCodeAssistUrl:
+    "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
+  retrieveQuotaUrl:
+    "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota",
+};
+
+function decodeJwtPayload(token: string | null | undefined) {
+  const parts = String(token ?? "").split(".");
+  if (parts.length < 2) {
+    return null;
+  }
+
+  try {
+    const normalized = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    return JSON.parse(
+      Buffer.from(normalized, "base64").toString("utf8"),
+    ) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function firstExistingPath(paths: string[]) {
+  for (const candidate of paths) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function getOAuthPlatformEnum() {
+  switch (process.platform) {
+    case "darwin":
+      return process.arch === "arm64" ? 2 : 1;
+    case "linux":
+      return process.arch === "arm64" ? 4 : 3;
+    case "win32":
+      return 5;
+    default:
+      return 0;
+  }
+}
+
+function parseResetTime(resetValue: unknown) {
+  if (!resetValue) {
+    return null;
+  }
+
+  try {
+    if (typeof resetValue === "number" && Number.isFinite(resetValue)) {
+      return new Date(
+        resetValue < 1e12 ? resetValue * 1000 : resetValue,
+      ).toISOString();
+    }
+
+    if (typeof resetValue === "string" && resetValue.trim().length > 0) {
+      if (/^\d+$/.test(resetValue)) {
+        const numericValue = Number(resetValue);
+        return new Date(
+          numericValue < 1e12 ? numericValue * 1000 : numericValue,
+        ).toISOString();
+      }
+      return new Date(resetValue).toISOString();
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+function parseJwtExpiry(token: string | null | undefined) {
+  const payload = decodeJwtPayload(token);
+  if (typeof payload?.exp !== "number" || !Number.isFinite(payload.exp)) {
+    return null;
+  }
+
+  try {
+    return new Date(payload.exp * 1000).toISOString();
+  } catch {
+    return null;
+  }
+}
+
+function codexQuotaFromWindow(window: unknown) {
+  if (!window || typeof window !== "object" || Array.isArray(window)) {
+    return null;
+  }
+
+  const windowRecord = window as Record<string, unknown>;
+  const usedPercentRaw =
+    typeof windowRecord.used_percent === "number"
+      ? windowRecord.used_percent
+      : typeof windowRecord.percent_used === "number"
+        ? windowRecord.percent_used
+        : null;
+  const windowSeconds =
+    typeof windowRecord.limit_window_seconds === "number"
+      ? windowRecord.limit_window_seconds
+      : null;
+
+  if (usedPercentRaw === null || windowSeconds === null) {
+    return null;
+  }
+
+  return {
+    windowSeconds,
+    remainingPercent: Math.max(0, Math.min(100, 100 - usedPercentRaw)),
+    resetAt: parseResetTime(
+      windowRecord.reset_at ?? windowRecord.resets_at ?? null,
+    ),
+  };
+}
+
+async function codexMetadata(homePath: string): Promise<AccountMetadata> {
+  const authPath = firstExistingPath([
+    path.join(homePath, "auth.json"),
+    path.join(homePath, ".codex", "auth.json"),
+    path.join(homePath, "codex", "auth.json"),
+  ]);
+  if (!authPath) {
+    return {
+      authStorePath: homePath,
+      accountEmail: null,
+      accountName: null,
+      usageSummary: null,
+      remaining5hPercent: null,
+      remaining7dPercent: null,
+      remaining5hResetAt: null,
+      remaining7dResetAt: null,
+      usageSource: "unavailable",
+      accessTokenExpiresAt: null,
+      refreshTokenExpiresAt: null,
+      refreshTokenExpiryNote: null,
+      usageDetailLines: [],
+    };
+  }
+
+  try {
+    const auth = JSON.parse(fs.readFileSync(authPath, "utf8")) as {
+      tokens?: {
+        id_token?: string | null;
+        access_token?: string | null;
+      };
+    };
+    const payload = decodeJwtPayload(auth.tokens?.id_token);
+    const openAiAuth =
+      payload?.["https://api.openai.com/auth"] &&
+      typeof payload["https://api.openai.com/auth"] === "object"
+        ? (payload["https://api.openai.com/auth"] as Record<string, unknown>)
+        : null;
+
+    let usageSummary: string | null = null;
+    const planType =
+      typeof openAiAuth?.chatgpt_plan_type === "string"
+        ? openAiAuth.chatgpt_plan_type
+        : null;
+    const activeUntil =
+      typeof openAiAuth?.chatgpt_subscription_active_until === "string"
+        ? openAiAuth.chatgpt_subscription_active_until
+        : null;
+    if (planType && activeUntil) {
+      usageSummary = `${planType} until ${activeUntil.slice(0, 10)}`;
+    } else if (planType) {
+      usageSummary = planType;
+    }
+
+    let remaining5hPercent: number | null = null;
+    let remaining7dPercent: number | null = null;
+    let remaining5hResetAt: string | null = null;
+    let remaining7dResetAt: string | null = null;
+    let usageSource: "provider_api" | "unavailable" = "unavailable";
+    const accessTokenExpiresAt = parseJwtExpiry(auth.tokens?.access_token);
+    const usageDetailLines: AccountMetadata["usageDetailLines"] = [];
+
+    if (
+      typeof auth.tokens?.access_token === "string" &&
+      auth.tokens.access_token
+    ) {
+      try {
+        const response = await fetch(
+          "https://chatgpt.com/backend-api/wham/usage",
+          {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${auth.tokens.access_token}`,
+              Accept: "application/json",
+            },
+            cache: "no-store",
+          },
+        );
+
+        if (response.ok) {
+          const usage = (await response.json()) as {
+            rate_limit?: {
+              primary_window?: unknown;
+              secondary_window?: unknown;
+            };
+          };
+          const primaryQuota = codexQuotaFromWindow(
+            usage.rate_limit?.primary_window,
+          );
+          const secondaryQuota = codexQuotaFromWindow(
+            usage.rate_limit?.secondary_window,
+          );
+
+          for (const quota of [primaryQuota, secondaryQuota]) {
+            if (!quota) {
+              continue;
+            }
+            if (quota.windowSeconds === 18000) {
+              remaining5hPercent = quota.remainingPercent;
+              remaining5hResetAt = quota.resetAt;
+              usageDetailLines.push({
+                label: "Remaining 5h",
+                remainingPercent: quota.remainingPercent,
+                resetAt: quota.resetAt,
+              });
+            } else if (quota.windowSeconds === 604800) {
+              remaining7dPercent = quota.remainingPercent;
+              remaining7dResetAt = quota.resetAt;
+              usageDetailLines.push({
+                label: "Remaining 7d",
+                remainingPercent: quota.remainingPercent,
+                resetAt: quota.resetAt,
+              });
+            }
+          }
+
+          if (remaining5hPercent !== null || remaining7dPercent !== null) {
+            usageSource = "provider_api";
+          }
+        }
+      } catch {
+        usageSource = "unavailable";
+      }
+    }
+
+    return {
+      authStorePath: path.dirname(authPath),
+      accountEmail: typeof payload?.email === "string" ? payload.email : null,
+      accountName: typeof payload?.name === "string" ? payload.name : null,
+      usageSummary,
+      remaining5hPercent,
+      remaining7dPercent,
+      remaining5hResetAt,
+      remaining7dResetAt,
+      usageSource,
+      accessTokenExpiresAt,
+      refreshTokenExpiresAt: null,
+      refreshTokenExpiryNote:
+        "Unknown. Codex refresh token expiry is not exposed in local auth data; re-login is required only when a refresh attempt fails.",
+      usageDetailLines,
+    };
+  } catch {
+    return {
+      authStorePath: path.dirname(authPath),
+      accountEmail: null,
+      accountName: null,
+      usageSummary: null,
+      remaining5hPercent: null,
+      remaining7dPercent: null,
+      remaining5hResetAt: null,
+      remaining7dResetAt: null,
+      usageSource: "unavailable",
+      accessTokenExpiresAt: null,
+      refreshTokenExpiresAt: null,
+      refreshTokenExpiryNote: null,
+      usageDetailLines: [],
+    };
+  }
+}
+
+function claudeMetadata(homePath: string): AccountMetadata {
+  const authPath = firstExistingPath([
+    path.join(homePath, ".claude.json"),
+    path.join(homePath, "claude", "auth.json"),
+    path.join(homePath, ".config", "claude", "auth.json"),
+  ]);
+  if (!authPath) {
+    return {
+      authStorePath: path.join(homePath, ".claude"),
+      accountEmail: null,
+      accountName: null,
+      usageSummary: null,
+      remaining5hPercent: null,
+      remaining7dPercent: null,
+      remaining5hResetAt: null,
+      remaining7dResetAt: null,
+      usageSource: "unavailable",
+      accessTokenExpiresAt: null,
+      refreshTokenExpiresAt: null,
+      refreshTokenExpiryNote: null,
+      usageDetailLines: [],
+    };
+  }
+
+  try {
+    const auth = JSON.parse(fs.readFileSync(authPath, "utf8")) as {
+      oauthAccount?: {
+        emailAddress?: string | null;
+        displayName?: string | null;
+        organizationBillingType?: string | null;
+        hasExtraUsageEnabled?: boolean;
+      };
+    };
+    const account = auth.oauthAccount;
+    let usageSummary: string | null = null;
+    if (account?.organizationBillingType) {
+      usageSummary = account.organizationBillingType;
+      if (account.hasExtraUsageEnabled) {
+        usageSummary += " + extra usage";
+      }
+    }
+
+    return {
+      authStorePath: path.join(homePath, ".claude"),
+      accountEmail: account?.emailAddress ?? null,
+      accountName: account?.displayName ?? null,
+      usageSummary,
+      remaining5hPercent: null,
+      remaining7dPercent: null,
+      remaining5hResetAt: null,
+      remaining7dResetAt: null,
+      usageSource: "unavailable",
+      accessTokenExpiresAt: null,
+      refreshTokenExpiresAt: null,
+      refreshTokenExpiryNote: null,
+      usageDetailLines: [],
+    };
+  } catch {
+    return {
+      authStorePath: path.join(homePath, ".claude"),
+      accountEmail: null,
+      accountName: null,
+      usageSummary: null,
+      remaining5hPercent: null,
+      remaining7dPercent: null,
+      remaining5hResetAt: null,
+      remaining7dResetAt: null,
+      usageSource: "unavailable",
+      accessTokenExpiresAt: null,
+      refreshTokenExpiresAt: null,
+      refreshTokenExpiryNote: null,
+      usageDetailLines: [],
+    };
+  }
+}
+
+async function refreshGeminiAccessToken(refreshToken: string) {
+  const response = await fetch(GEMINI_CONFIG.tokenUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      Accept: "application/json",
+    },
+    body: new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+      client_id: GEMINI_CONFIG.clientId,
+      client_secret: GEMINI_CONFIG.clientSecret,
+    }),
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    return null;
+  }
+
+  const payload = (await response.json()) as { access_token?: string | null };
+  return typeof payload.access_token === "string" && payload.access_token
+    ? payload.access_token
+    : null;
+}
+
+async function loadGeminiQuota(accessToken: string) {
+  const metadata = {
+    ideType: 9,
+    platform: getOAuthPlatformEnum(),
+    pluginType: 2,
+  };
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+    "Content-Type": "application/json",
+    "User-Agent": "google-api-nodejs-client/9.15.1",
+    "X-Goog-Api-Client": "google-cloud-sdk vscode_cloudshelleditor/0.1",
+    "Client-Metadata": JSON.stringify(metadata),
+  };
+
+  const loadResponse = await fetch(GEMINI_CONFIG.loadCodeAssistUrl, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ metadata }),
+    cache: "no-store",
+  });
+  if (!loadResponse.ok) {
+    return null;
+  }
+
+  const loadPayload = (await loadResponse.json()) as {
+    currentTier?: { name?: string | null };
+    cloudaicompanionProject?: string | { id?: string | null } | null;
+  };
+  const projectId =
+    typeof loadPayload.cloudaicompanionProject === "string"
+      ? loadPayload.cloudaicompanionProject
+      : (loadPayload.cloudaicompanionProject?.id ?? null);
+
+  if (!projectId) {
+    return {
+      usageSummary: loadPayload.currentTier?.name ?? null,
+      usageDetailLines: [] as AccountMetadata["usageDetailLines"],
+      usageSource: "unavailable" as const,
+      accessTokenExpiresAt: null,
+      refreshTokenExpiresAt: null,
+      refreshTokenExpiryNote: null,
+    };
+  }
+
+  const quotaResponse = await fetch(GEMINI_CONFIG.retrieveQuotaUrl, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ project: projectId }),
+    cache: "no-store",
+  });
+  if (!quotaResponse.ok) {
+    return {
+      usageSummary: loadPayload.currentTier?.name ?? null,
+      usageDetailLines: [] as AccountMetadata["usageDetailLines"],
+      usageSource: "unavailable" as const,
+      accessTokenExpiresAt: null,
+      refreshTokenExpiresAt: null,
+      refreshTokenExpiryNote: null,
+    };
+  }
+
+  const quotaPayload = (await quotaResponse.json()) as {
+    buckets?: Array<{
+      modelId?: string | null;
+      remainingFraction?: number | null;
+      resetTime?: string | null;
+    }>;
+  };
+
+  const usageDetailLines = (quotaPayload.buckets ?? [])
+    .filter(
+      (bucket) =>
+        typeof bucket.modelId === "string" &&
+        typeof bucket.remainingFraction === "number",
+    )
+    .sort((a, b) => String(a.modelId).localeCompare(String(b.modelId)))
+    .slice(0, 3)
+    .map((bucket) => ({
+      label: bucket.modelId as string,
+      remainingPercent: Math.max(
+        0,
+        Math.min(100, Math.round((bucket.remainingFraction as number) * 100)),
+      ),
+      resetAt: parseResetTime(bucket.resetTime ?? null),
+    }));
+
+  return {
+    usageSummary: loadPayload.currentTier?.name ?? null,
+    usageDetailLines,
+    usageSource:
+      usageDetailLines.length > 0
+        ? ("provider_api" as const)
+        : ("unavailable" as const),
+    accessTokenExpiresAt: null,
+    refreshTokenExpiresAt: null,
+    refreshTokenExpiryNote: null,
+  };
+}
+
+async function geminiMetadata(homePath: string): Promise<AccountMetadata> {
+  const authPath = firstExistingPath([
+    path.join(homePath, ".gemini", "oauth_creds.json"),
+    path.join(homePath, "gemini", "oauth_creds.json"),
+    path.join(homePath, "oauth_creds.json"),
+  ]);
+  const googleAccountsPath = firstExistingPath([
+    path.join(homePath, ".gemini", "google_accounts.json"),
+    path.join(homePath, "google_accounts.json"),
+  ]);
+
+  let accountEmail: string | null = null;
+  let accountName: string | null = null;
+  if (googleAccountsPath) {
+    try {
+      const accounts = JSON.parse(
+        fs.readFileSync(googleAccountsPath, "utf8"),
+      ) as {
+        active?: string | null;
+      };
+      accountEmail = accounts.active ?? null;
+    } catch {
+      accountEmail = null;
+    }
+  }
+
+  if (authPath) {
+    try {
+      const auth = JSON.parse(fs.readFileSync(authPath, "utf8")) as {
+        id_token?: string | null;
+        refresh_token?: string | null;
+      };
+      const payload = decodeJwtPayload(auth.id_token);
+      if (!accountEmail && typeof payload?.email === "string") {
+        accountEmail = payload.email;
+      }
+      if (typeof payload?.name === "string") {
+        accountName = payload.name;
+      }
+
+      let usageSummary: string | null = null;
+      let usageDetailLines: AccountMetadata["usageDetailLines"] = [];
+      let usageSource: "provider_api" | "unavailable" = "unavailable";
+
+      if (
+        typeof auth.refresh_token === "string" &&
+        auth.refresh_token.trim().length > 0
+      ) {
+        try {
+          const accessToken = await refreshGeminiAccessToken(
+            auth.refresh_token,
+          );
+          if (accessToken) {
+            const quota = await loadGeminiQuota(accessToken);
+            usageSummary = quota?.usageSummary ?? null;
+            usageDetailLines = quota?.usageDetailLines ?? [];
+            usageSource = quota?.usageSource ?? "unavailable";
+          }
+        } catch {
+          usageSource = "unavailable";
+        }
+      }
+
+      return {
+        authStorePath: path.join(homePath, ".gemini"),
+        accountEmail,
+        accountName,
+        usageSummary,
+        remaining5hPercent: null,
+        remaining7dPercent: null,
+        remaining5hResetAt: null,
+        remaining7dResetAt: null,
+        usageSource,
+        accessTokenExpiresAt: null,
+        refreshTokenExpiresAt: null,
+        refreshTokenExpiryNote: null,
+        usageDetailLines,
+      };
+    } catch {
+      // Ignore parse errors and keep partial metadata.
+    }
+  }
+
+  return {
+    authStorePath: path.join(homePath, ".gemini"),
+    accountEmail,
+    accountName,
+    usageSummary: null,
+    remaining5hPercent: null,
+    remaining7dPercent: null,
+    remaining5hResetAt: null,
+    remaining7dResetAt: null,
+    usageSource: "unavailable",
+    accessTokenExpiresAt: null,
+    refreshTokenExpiresAt: null,
+    refreshTokenExpiryNote: null,
+    usageDetailLines: [],
+  };
+}
+
+function metadataForAccount(providerKey: ProviderKey, homePath: string) {
+  switch (providerKey) {
+    case "codex":
+      return codexMetadata(homePath);
+    case "claude":
+      return claudeMetadata(homePath);
+    case "gemini":
+      return geminiMetadata(homePath);
+  }
+}
+
+export async function enrichProviderAccounts(accounts: ProviderAccountRow[]) {
+  return Promise.all(
+    accounts.map(async (account) => {
+      const metadata = await metadataForAccount(
+        account.provider_key as ProviderKey,
+        account.home_path,
+      );
+      const displayLabel =
+        metadata.accountEmail ?? metadata.accountName ?? account.display_name;
+
+      return {
+        ...account,
+        auth_store_path: metadata.authStorePath,
+        account_email: metadata.accountEmail,
+        account_name: metadata.accountName,
+        usage_summary: metadata.usageSummary,
+        remaining_5h_percent: metadata.remaining5hPercent,
+        remaining_7d_percent: metadata.remaining7dPercent,
+        remaining_5h_reset_at: metadata.remaining5hResetAt,
+        remaining_7d_reset_at: metadata.remaining7dResetAt,
+        usage_source: metadata.usageSource,
+        access_token_expires_at: metadata.accessTokenExpiresAt,
+        refresh_token_expires_at: metadata.refreshTokenExpiresAt,
+        refresh_token_expiry_note: metadata.refreshTokenExpiryNote,
+        usage_detail_lines: metadata.usageDetailLines.map((line) => ({
+          label: line.label,
+          remaining_percent: line.remainingPercent,
+          reset_at: line.resetAt,
+        })),
+        display_label: displayLabel,
+      } satisfies EnrichedProviderAccountRow;
+    }),
+  );
+}

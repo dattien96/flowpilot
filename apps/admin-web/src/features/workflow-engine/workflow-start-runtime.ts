@@ -11,6 +11,7 @@ import {
   isSupportedStepModel,
   normalizeStepModel,
   REASONING_EFFORT_OPTIONS,
+  type ReasoningEffort,
   type StepType,
   type WorkflowRunStartRequest,
 } from "@/domain/model/entity/workflow-engine";
@@ -45,6 +46,7 @@ type WorkflowStepRow = {
   provider_override: string | null;
   model_override: string | null;
   reasoning_effort_override: string | null;
+  provider_account_override_id: string | null;
   requires_approval: boolean;
 };
 
@@ -80,6 +82,7 @@ type WorkflowRunRow = {
   id: string;
   workflow_id: string;
   project_id: string;
+  provider_account_id: string | null;
 };
 
 type WorkflowRunStepExecutionRow = {
@@ -115,11 +118,59 @@ type StepExecutionPlan = {
   providerKey: string;
   model: string;
   reasoningEffort: string | null;
+  providerAccountId: string | null;
   inputArtifactKeys: string[];
   outputArtifactKeys: string[];
 };
 
 type WorkflowSessionRecoveryMode = "resumed_thread" | "bootstrap_replay";
+
+type ResolvedLocalProviderAccount = {
+  id: string;
+  provider_key: string;
+  home_path: string;
+  proxy_url?: string | null;
+  extra_env?: Record<string, string> | null;
+};
+
+async function resolveLocalProviderAccount(
+  providerKey: string,
+  providerAccountId?: string | null,
+) {
+  const response = await fetch(
+    new URL("/provider-accounts/resolve", getLocalRunnerBaseUrl()),
+    {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        providerKey,
+        accountId: providerAccountId ?? undefined,
+      }),
+    },
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(
+      errorText ||
+        `Failed to resolve local provider account: ${response.status} ${response.statusText}`,
+    );
+  }
+
+  const payload = (await response.json()) as {
+    account?: ResolvedLocalProviderAccount;
+  };
+  if (!payload.account) {
+    throw new Error(
+      `No active local account found for provider '${providerKey}'.`,
+    );
+  }
+
+  return payload.account;
+}
 
 async function getOrCreateSession({
   adminClient,
@@ -138,6 +189,7 @@ async function getOrCreateSession({
   recoveredFromSessionId,
   recoveredFromProviderSessionId,
   replayCheckpointCount,
+  providerAccountId,
 }: {
   adminClient: SupabaseClient;
   localRunnerGateway: LocalRunnerGateway;
@@ -155,6 +207,7 @@ async function getOrCreateSession({
   recoveredFromSessionId?: string | null;
   recoveredFromProviderSessionId?: string | null;
   replayCheckpointCount?: number | null;
+  providerAccountId?: string | null;
 }) {
   let sessionRow = null;
 
@@ -201,7 +254,8 @@ async function getOrCreateSession({
         sessionRow.provider === providerKey &&
         sessionRow.model === modelName
       ) {
-        resumeProviderSessionId = resumeProviderSessionId ?? sessionRow.provider_session_id;
+        resumeProviderSessionId =
+          resumeProviderSessionId ?? sessionRow.provider_session_id;
         resolvedRecoveryMode = resolvedRecoveryMode ?? "resumed_thread";
         resolvedRecoveredFromSessionId =
           resolvedRecoveredFromSessionId ?? sessionRow.id;
@@ -212,7 +266,11 @@ async function getOrCreateSession({
           resolvedReplayCheckpointCount ?? previousCheckpoints.length;
       }
       sessionRow = null;
-    } else if (forceNewProviderSession || sessionRow.provider !== providerKey || sessionRow.model !== modelName) {
+    } else if (
+      forceNewProviderSession ||
+      sessionRow.provider !== providerKey ||
+      sessionRow.model !== modelName
+    ) {
       previousCheckpoints = sessionRow.metadata_json?.checkpoints || [];
       await writeWorkflowSessionLog({
         adminClient,
@@ -240,7 +298,10 @@ async function getOrCreateSession({
             processKey: sessionRow.process_key,
           });
         } catch (closeErr) {
-          console.error(`Failed to close incompatible session ${sessionRow.process_key}:`, closeErr);
+          console.error(
+            `Failed to close incompatible session ${sessionRow.process_key}:`,
+            closeErr,
+          );
         }
       }
       const { error: updateErr } = await adminClient
@@ -251,7 +312,9 @@ async function getOrCreateSession({
         })
         .eq("id", sessionRow.id);
       if (updateErr) {
-        throw new Error(`Failed to mark incompatible session as completed: ${updateErr.message}`);
+        throw new Error(
+          `Failed to mark incompatible session as completed: ${updateErr.message}`,
+        );
       }
       sessionRow = null;
     }
@@ -264,7 +327,9 @@ async function getOrCreateSession({
       transportType: sessionRow.transport_type,
       providerSessionId: sessionRow.provider_session_id,
       processKey: sessionRow.process_key,
-      processPid: sessionRow.process_pid ? Number(sessionRow.process_pid) : null,
+      processPid: sessionRow.process_pid
+        ? Number(sessionRow.process_pid)
+        : null,
       dbId: sessionRow.id,
     };
     await writeWorkflowSessionLog({
@@ -286,6 +351,11 @@ async function getOrCreateSession({
   }
 
   if (!handle) {
+    const activeAccount = await resolveLocalProviderAccount(
+      providerKey,
+      providerAccountId,
+    );
+
     const startResult = await localRunnerGateway.startSession({
       providerKey,
       modelName,
@@ -295,6 +365,10 @@ async function getOrCreateSession({
       allowWrite: true,
       idleTTLSeconds: idleTTLSeconds ?? undefined,
       resumeProviderSessionId: resumeProviderSessionId ?? undefined,
+      providerAccountId: activeAccount?.id,
+      providerAccountHomePath: activeAccount?.home_path,
+      proxyUrl: activeAccount?.proxy_url || undefined,
+      customEnv: activeAccount?.extra_env || undefined,
     });
 
     handle = startResult;
@@ -313,11 +387,15 @@ async function getOrCreateSession({
           })
           .eq("id", sessionRow.id);
         if (updateErr) {
-          throw new Error(`Failed to update session in DB: ${updateErr.message}`);
+          throw new Error(
+            `Failed to update session in DB: ${updateErr.message}`,
+          );
         }
         (handle as WorkflowSessionHandle).dbId = sessionRow.id;
       } else {
-        const metadata = !subagent ? { is_main: true } : { step_run_id: stepRunId };
+        const metadata = !subagent
+          ? { is_main: true }
+          : { step_run_id: stepRunId };
         const recoveryMetadata = resolvedRecoveryMode
           ? {
               recovery: {
@@ -355,11 +433,13 @@ async function getOrCreateSession({
       }
     } catch (dbErr) {
       if (handle.processKey) {
-        await localRunnerGateway.closeSession({
-          transportType: handle.transportType,
-          providerSessionId: handle.providerSessionId,
-          processKey: handle.processKey,
-        }).catch(console.error);
+        await localRunnerGateway
+          .closeSession({
+            transportType: handle.transportType,
+            providerSessionId: handle.providerSessionId,
+            processKey: handle.processKey,
+          })
+          .catch(console.error);
       }
       throw dbErr;
     }
@@ -423,7 +503,9 @@ async function updateWorkflowRunSessionById({
 
   const { error } = await query;
   if (error) {
-    throw new Error(`Failed to update workflow session state: ${error.message}`);
+    throw new Error(
+      `Failed to update workflow session state: ${error.message}`,
+    );
   }
 }
 
@@ -469,7 +551,10 @@ export async function syncWorkflowRunSessionProviderSessionId({
       },
     });
   } catch (error) {
-    console.error("Failed to persist provider session id for workflow session:", error);
+    console.error(
+      "Failed to persist provider session id for workflow session:",
+      error,
+    );
   }
 }
 
@@ -496,7 +581,10 @@ export async function deactivateWorkflowRunSession({
         processKey: handle.processKey,
       });
     } catch (closeErr) {
-      console.error(`Failed to close workflow session ${handle.processKey}:`, closeErr);
+      console.error(
+        `Failed to close workflow session ${handle.processKey}:`,
+        closeErr,
+      );
     }
   }
 
@@ -544,7 +632,9 @@ export async function finalizeWorkflowRunSessions(
       .eq("status", "active");
 
     if (error) {
-      console.error(`Failed to fetch active sessions for cleanup: ${error.message}`);
+      console.error(
+        `Failed to fetch active sessions for cleanup: ${error.message}`,
+      );
       return;
     }
 
@@ -568,7 +658,10 @@ export async function finalizeWorkflowRunSessions(
             processKey: sessionRow.process_key,
           });
         } catch (closeErr) {
-          console.error(`Failed to close session ${sessionRow.process_key} in runner:`, closeErr);
+          console.error(
+            `Failed to close session ${sessionRow.process_key} in runner:`,
+            closeErr,
+          );
         }
       }
 
@@ -582,7 +675,9 @@ export async function finalizeWorkflowRunSessions(
         })
         .eq("id", sessionRow.id);
       if (updateErr) {
-        console.error(`Failed to update session status to completed: ${updateErr.message}`);
+        console.error(
+          `Failed to update session status to completed: ${updateErr.message}`,
+        );
       }
     }
   } catch (err) {
@@ -609,7 +704,9 @@ async function appendSessionCheckpoint(
   }
 
   const metadata = data?.metadata_json || {};
-  const checkpoints = Array.isArray(metadata.checkpoints) ? metadata.checkpoints : [];
+  const checkpoints = Array.isArray(metadata.checkpoints)
+    ? metadata.checkpoints
+    : [];
   checkpoints.push({
     promptPath: checkpoint.promptPath,
     outputContentPath: checkpoint.outputContentPath,
@@ -623,7 +720,9 @@ async function appendSessionCheckpoint(
     .update({ metadata_json: { ...metadata, checkpoints } })
     .eq("id", dbId);
   if (updateError) {
-    throw new Error(`Failed to write session checkpoints: ${updateError.message}`);
+    throw new Error(
+      `Failed to write session checkpoints: ${updateError.message}`,
+    );
   }
 }
 
@@ -649,7 +748,9 @@ function buildBootstrapPrompt(
         )
       : [];
 
-    return Boolean(promptPath || outputContentPath || artifactOutputPaths.length > 0);
+    return Boolean(
+      promptPath || outputContentPath || artifactOutputPaths.length > 0,
+    );
   });
 
   if (visibleCheckpoints.length === 0) {
@@ -719,6 +820,7 @@ export async function sendMessageWithRetry({
   skillIds,
   idleTTLSeconds,
   forceNewProviderSession,
+  providerAccountId,
 }: {
   adminClient: SupabaseClient;
   localRunnerGateway: LocalRunnerGateway;
@@ -733,6 +835,7 @@ export async function sendMessageWithRetry({
   skillIds: string[];
   idleTTLSeconds?: number | null;
   forceNewProviderSession?: boolean;
+  providerAccountId?: string | null;
 }): Promise<WorkflowSessionSendResult> {
   let handle = await getOrCreateSession({
     adminClient,
@@ -746,6 +849,7 @@ export async function sendMessageWithRetry({
     subagent,
     idleTTLSeconds,
     forceNewProviderSession,
+    providerAccountId,
   });
 
   let attempt = 1;
@@ -788,7 +892,8 @@ export async function sendMessageWithRetry({
           sessionKind: subagent ? "subagent" : "main",
           provider: providerKey,
           model: modelName,
-          providerSessionId: result.providerSessionId ?? handle.providerSessionId,
+          providerSessionId:
+            result.providerSessionId ?? handle.providerSessionId,
           processKey: handle.processKey,
         },
       });
@@ -804,7 +909,9 @@ export async function sendMessageWithRetry({
       const isSessionTerminated = (error as any).code === "session_terminated";
       const isThreadMissing =
         msg.includes("provider error:") &&
-        (msg.includes("thread") || msg.includes("not found") || msg.includes("invalid"));
+        (msg.includes("thread") ||
+          msg.includes("not found") ||
+          msg.includes("invalid"));
 
       if (isSessionTerminated) {
         throw error;
@@ -900,6 +1007,7 @@ export async function sendMessageWithRetry({
           workingDirectory,
           subagent,
           idleTTLSeconds,
+          providerAccountId,
           forceNewProviderSession: true,
           recoveryMode: "bootstrap_replay",
           recoveredFromSessionId: handle?.dbId ?? null,
@@ -918,7 +1026,9 @@ export async function sendMessageWithRetry({
 }
 
 const SINGLE_STEP_RUNTIME_CREATED_BY = "flowpilot-runtime";
-const SUPPORTED_REASONING_EFFORTS = new Set(REASONING_EFFORT_OPTIONS.map((option) => option.value));
+const SUPPORTED_REASONING_EFFORTS = new Set(
+  REASONING_EFFORT_OPTIONS.map((option) => option.value),
+);
 const DEFAULT_MODEL = "gpt-5.4";
 const DEFAULT_REASONING_EFFORT = "medium";
 
@@ -945,7 +1055,9 @@ function resolveArtifactPath(
 }
 
 function normalizeAbsolutePath(workingDirectory: string, localPath: string) {
-  return path.isAbsolute(localPath) ? localPath : path.join(workingDirectory, localPath);
+  return path.isAbsolute(localPath)
+    ? localPath
+    : path.join(workingDirectory, localPath);
 }
 
 type LocalWorkflowOutputArtifactSnapshot = {
@@ -1061,9 +1173,15 @@ async function insertLog(
   });
 
   if (error) {
-    const errorCode = typeof (error as any)?.code === "string" ? String((error as any).code) : "";
+    const errorCode =
+      typeof (error as any)?.code === "string"
+        ? String((error as any).code)
+        : "";
     const errorMessage = String((error as any)?.message ?? error);
-    if (errorCode === "23503" || errorMessage.includes("workflow_run_logs_workflow_run_step_id_fkey")) {
+    if (
+      errorCode === "23503" ||
+      errorMessage.includes("workflow_run_logs_workflow_run_step_id_fkey")
+    ) {
       console.warn("Skipping workflow run log write for missing step row:", {
         workflowRunStepId,
         logLevel,
@@ -1080,7 +1198,10 @@ function buildAiOutputLogMessage(outputMarkdown: string) {
   return `ai_output:${outputMarkdown}`;
 }
 
-function buildWorkflowSessionLogMessage(event: string, details: Record<string, unknown>) {
+function buildWorkflowSessionLogMessage(
+  event: string,
+  details: Record<string, unknown>,
+) {
   return `session_event:${JSON.stringify({ event, ...details })}`;
 }
 
@@ -1109,7 +1230,9 @@ async function writeWorkflowSessionLog({
   }
 }
 
-async function validateLocalDirectory(pathToValidate: string): Promise<DirectoryValidationResult> {
+async function validateLocalDirectory(
+  pathToValidate: string,
+): Promise<DirectoryValidationResult> {
   const baseUrl = getLocalRunnerBaseUrl();
   let response: Response;
 
@@ -1137,14 +1260,19 @@ async function validateLocalDirectory(pathToValidate: string): Promise<Directory
   return (await response.json()) as DirectoryValidationResult;
 }
 
-async function resolveWorkingDirectory(adminClient: SupabaseClient, projectId: string) {
+async function resolveWorkingDirectory(
+  adminClient: SupabaseClient,
+  projectId: string,
+) {
   const { data, error } = await adminClient
     .from("project_workspace_bindings")
     .select("local_path")
     .eq("project_id", projectId)
     .order("created_at", { ascending: true });
   if (error) {
-    throw new Error(`Unable to load project directory bindings: ${error.message}`);
+    throw new Error(
+      `Unable to load project directory bindings: ${error.message}`,
+    );
   }
 
   const bindings = (data ?? []).map((row) => String(row.local_path));
@@ -1154,13 +1282,17 @@ async function resolveWorkingDirectory(adminClient: SupabaseClient, projectId: s
     );
   }
 
-  const results = await Promise.all(bindings.map((binding) => validateLocalDirectory(binding)));
+  const results = await Promise.all(
+    bindings.map((binding) => validateLocalDirectory(binding)),
+  );
   const usableBinding = results.find((result) => result.usable);
   if (usableBinding) {
     return usableBinding.path;
   }
 
-  const details = results.map((result) => `- ${result.path}: ${result.reason || "unusable path"}`);
+  const details = results.map(
+    (result) => `- ${result.path}: ${result.reason || "unusable path"}`,
+  );
   throw new Error(
     [
       "Unable to start execution because the local runner could not open any bound directory for this project.",
@@ -1171,10 +1303,15 @@ async function resolveWorkingDirectory(adminClient: SupabaseClient, projectId: s
   );
 }
 
-async function loadProjectDefaults(adminClient: SupabaseClient, projectId: string) {
+async function loadProjectDefaults(
+  adminClient: SupabaseClient,
+  projectId: string,
+) {
   const { data, error } = await adminClient
     .from("projects")
-    .select("default_provider, default_model, default_reasoning_effort, session_idle_ttl_minutes")
+    .select(
+      "default_provider, default_model, default_reasoning_effort, session_idle_ttl_minutes",
+    )
     .eq("id", projectId)
     .maybeSingle();
 
@@ -1190,7 +1327,10 @@ async function loadProjectDefaults(adminClient: SupabaseClient, projectId: strin
   }) as ProjectSettingsRow;
 }
 
-export function resolveProviderKeyFromModel(model: string, adminClient?: SupabaseClient): string | Promise<string> {
+export function resolveProviderKeyFromModel(
+  model: string,
+  adminClient?: SupabaseClient,
+): string | Promise<string> {
   const normalized = normalizeStepModel(model) ?? model;
   if (normalized.startsWith("gpt-")) {
     return "codex";
@@ -1217,16 +1357,25 @@ export function resolveProviderKeyFromModel(model: string, adminClient?: Supabas
       if (data?.provider_key) {
         return data.provider_key;
       }
-      throw new Error(`Model "${model}" is not supported by the workflow runner.`);
+      throw new Error(
+        `Model "${model}" is not supported by the workflow runner.`,
+      );
     })();
   }
 
+  throw new Error(`Model "${model}" is not supported by the workflow runner.`);
 }
 
-async function validateStepModel(adminClient: SupabaseClient, model: string, stepType: string) {
+async function validateStepModel(
+  adminClient: SupabaseClient,
+  model: string,
+  stepType: string,
+) {
   const normalizedModel = normalizeStepModel(model) ?? model;
   if (!normalizedModel) {
-    throw new Error(`Step ${stepType} is configured with an unsupported model.`);
+    throw new Error(
+      `Step ${stepType} is configured with an unsupported model.`,
+    );
   }
 
   // Check database first
@@ -1238,7 +1387,9 @@ async function validateStepModel(adminClient: SupabaseClient, model: string, ste
 
   if (data) {
     if (!data.is_enabled) {
-      throw new Error(`Step ${stepType} is configured with an unsupported model.`);
+      throw new Error(
+        `Step ${stepType} is configured with an unsupported model.`,
+      );
     }
     return;
   }
@@ -1303,7 +1454,9 @@ export function buildWorkflowStepPrompt({
     ),
     buildPromptSection(
       "Required Skills",
-      requiredSkills.length === 0 ? ["- None"] : requiredSkills.map((skill) => `- ${skill}`),
+      requiredSkills.length === 0
+        ? ["- None"]
+        : requiredSkills.map((skill) => `- ${skill}`),
     ),
     buildPromptSection(
       "Output Targets",
@@ -1339,7 +1492,9 @@ export function buildWorkflowStepFollowUpPrompt({
       "Related Input Artifacts",
       inputArtifactPaths.map((inputPath) => `- ${inputPath}`),
     ),
-    buildPromptSection("Execution Context", [`- Working directory: ${workingDirectory}`]),
+    buildPromptSection("Execution Context", [
+      `- Working directory: ${workingDirectory}`,
+    ]),
     "Revise the current artifact according to the follow-up prompt and return the updated final result in Markdown.",
   ];
 
@@ -1372,7 +1527,9 @@ async function loadWorkflowDefinition(
 ) {
   const { data, error } = await adminClient
     .from("workflows")
-    .select("id, name, project_id, provider_override, model_override, reasoning_effort_override")
+    .select(
+      "id, name, project_id, provider_override, model_override, reasoning_effort_override",
+    )
     .eq("id", workflowId)
     .or(`project_id.is.null,project_id.eq.${projectId}`)
     .maybeSingle();
@@ -1390,7 +1547,7 @@ async function loadWorkflowDefinition(
 async function loadWorkflowRun(adminClient: SupabaseClient, runId: string) {
   const { data, error } = await adminClient
     .from("workflow_runs")
-    .select("id, workflow_id, project_id")
+    .select("id, workflow_id, project_id, provider_account_id")
     .eq("id", runId)
     .maybeSingle();
 
@@ -1404,11 +1561,15 @@ async function loadWorkflowRun(adminClient: SupabaseClient, runId: string) {
   return data as WorkflowRunRow;
 }
 
-async function loadWorkflowRunStep(adminClient: SupabaseClient, stepRunId: string) {
+async function loadWorkflowRunStep(
+  adminClient: SupabaseClient,
+  stepRunId: string,
+) {
   const { data, error } = await adminClient
     .from("workflow_run_steps")
     .select(
-      "id, workflow_run_id, workflow_step_id, execution_order_index, step_type, status, retry_count, error_message",
+      "id, workflow_run_id, workflow_step_id, execution_order_index, step_type, status, retry_count, error_message, " +
+        "workflow_steps ( id, step_type, order_index, is_enabled, provider_override, model_override, reasoning_effort_override, provider_account_override_id, requires_approval )",
     )
     .eq("id", stepRunId)
     .maybeSingle();
@@ -1420,13 +1581,18 @@ async function loadWorkflowRunStep(adminClient: SupabaseClient, stepRunId: strin
     throw new Error("Workflow step run not found.");
   }
 
-  return data as WorkflowRunStepExecutionRow;
+  return data as unknown as WorkflowRunStepExecutionRow;
 }
 
-async function loadWorkflowRunSteps(adminClient: SupabaseClient, runId: string) {
+async function loadWorkflowRunSteps(
+  adminClient: SupabaseClient,
+  runId: string,
+) {
   const { data, error } = await adminClient
     .from("workflow_run_steps")
-    .select("id, workflow_run_id, workflow_step_id, execution_order_index, step_type, status, retry_count")
+    .select(
+      "id, workflow_run_id, workflow_step_id, execution_order_index, step_type, status, retry_count",
+    )
     .eq("workflow_run_id", runId)
     .order("execution_order_index", { ascending: true });
 
@@ -1437,10 +1603,15 @@ async function loadWorkflowRunSteps(adminClient: SupabaseClient, runId: string) 
   return (data ?? []) as WorkflowRunStepExecutionRow[];
 }
 
-async function loadWorkflowSteps(adminClient: SupabaseClient, workflowId: string) {
+async function loadWorkflowSteps(
+  adminClient: SupabaseClient,
+  workflowId: string,
+) {
   const { data, error } = await adminClient
     .from("workflow_steps")
-    .select("id, step_type, order_index, is_enabled, provider_override, model_override, reasoning_effort_override, requires_approval")
+    .select(
+      "id, step_type, order_index, is_enabled, provider_override, model_override, reasoning_effort_override, requires_approval",
+    )
     .eq("workflow_id", workflowId)
     .order("order_index", { ascending: true });
 
@@ -1451,15 +1622,22 @@ async function loadWorkflowSteps(adminClient: SupabaseClient, workflowId: string
   return (data ?? []) as WorkflowStepRow[];
 }
 
-async function loadWorkflowStepById(adminClient: SupabaseClient, workflowStepId: string) {
+async function loadWorkflowStepById(
+  adminClient: SupabaseClient,
+  workflowStepId: string,
+) {
   const { data, error } = await adminClient
     .from("workflow_steps")
-    .select("id, step_type, order_index, is_enabled, provider_override, model_override, reasoning_effort_override, requires_approval")
+    .select(
+      "id, step_type, order_index, is_enabled, provider_override, model_override, reasoning_effort_override, requires_approval",
+    )
     .eq("id", workflowStepId)
     .maybeSingle();
 
   if (error) {
-    throw new Error(`Unable to load workflow step definition: ${error.message}`);
+    throw new Error(
+      `Unable to load workflow step definition: ${error.message}`,
+    );
   }
   if (!data) {
     throw new Error("Workflow step definition not found.");
@@ -1468,17 +1646,24 @@ async function loadWorkflowStepById(adminClient: SupabaseClient, workflowStepId:
   return data as WorkflowStepRow;
 }
 
-async function loadStepDefinitions(adminClient: SupabaseClient, stepTypes: string[]) {
+async function loadStepDefinitions(
+  adminClient: SupabaseClient,
+  stepTypes: string[],
+) {
   const { data, error } = await adminClient
     .from("step_definitions")
-    .select("step_type, name, description, prompt_base, required_mcps, required_skills, team_role, subagent, model, reasoning_effort")
+    .select(
+      "step_type, name, description, prompt_base, required_mcps, required_skills, team_role, subagent, model, reasoning_effort",
+    )
     .in("step_type", stepTypes);
 
   if (error) {
     throw new Error(`Unable to load step definitions: ${error.message}`);
   }
 
-  return new Map(((data ?? []) as StepDefinitionRow[]).map((row) => [row.step_type, row]));
+  return new Map(
+    ((data ?? []) as StepDefinitionRow[]).map((row) => [row.step_type, row]),
+  );
 }
 
 async function createSingleStepWorkflow(
@@ -1504,16 +1689,24 @@ async function createSingleStepWorkflow(
       name: `Single Step: ${definition.name}`,
       description: `Runtime-generated single-step workflow for ${stepType}.`,
       is_template: false,
-      provider_override: await resolveProviderKeyFromModel(definition.model ?? DEFAULT_MODEL, adminClient),
+      provider_override: await resolveProviderKeyFromModel(
+        definition.model ?? DEFAULT_MODEL,
+        adminClient,
+      ),
       model_override: definition.model ?? DEFAULT_MODEL,
-      reasoning_effort_override: definition.reasoning_effort ?? DEFAULT_REASONING_EFFORT,
+      reasoning_effort_override:
+        definition.reasoning_effort ?? DEFAULT_REASONING_EFFORT,
       created_by: SINGLE_STEP_RUNTIME_CREATED_BY,
     })
-    .select("id, name, project_id, provider_override, model_override, reasoning_effort_override")
+    .select(
+      "id, name, project_id, provider_override, model_override, reasoning_effort_override",
+    )
     .single();
 
   if (workflowError) {
-    throw new Error(`Unable to create single-step workflow: ${workflowError.message}`);
+    throw new Error(
+      `Unable to create single-step workflow: ${workflowError.message}`,
+    );
   }
 
   const { data: workflowStepData, error: workflowStepError } = await adminClient
@@ -1523,16 +1716,24 @@ async function createSingleStepWorkflow(
       step_type: stepType,
       order_index: 0,
       is_enabled: true,
-      provider_override: await resolveProviderKeyFromModel(definition.model ?? DEFAULT_MODEL, adminClient),
+      provider_override: await resolveProviderKeyFromModel(
+        definition.model ?? DEFAULT_MODEL,
+        adminClient,
+      ),
       model_override: definition.model ?? DEFAULT_MODEL,
-      reasoning_effort_override: definition.reasoning_effort ?? DEFAULT_REASONING_EFFORT,
+      reasoning_effort_override:
+        definition.reasoning_effort ?? DEFAULT_REASONING_EFFORT,
       requires_approval: false,
     })
-    .select("id, step_type, order_index, is_enabled, provider_override, model_override, reasoning_effort_override, requires_approval")
+    .select(
+      "id, step_type, order_index, is_enabled, provider_override, model_override, reasoning_effort_override, requires_approval",
+    )
     .single();
 
   if (workflowStepError) {
-    throw new Error(`Unable to create single-step workflow step: ${workflowStepError.message}`);
+    throw new Error(
+      `Unable to create single-step workflow step: ${workflowStepError.message}`,
+    );
   }
 
   return {
@@ -1566,21 +1767,28 @@ async function loadArtifactBindings(
   return bindings;
 }
 
-async function loadArtifactDefinitions(adminClient: SupabaseClient, keys: string[]) {
+async function loadArtifactDefinitions(
+  adminClient: SupabaseClient,
+  keys: string[],
+) {
   if (keys.length === 0) {
     return new Map<string, ArtifactDefinitionRow>();
   }
 
   const { data, error } = await adminClient
     .from("artifact_definitions")
-    .select("key, name, local_path_template, remote_path_template, default_file_name")
+    .select(
+      "key, name, local_path_template, remote_path_template, default_file_name",
+    )
     .in("key", keys);
 
   if (error) {
     throw new Error(`Unable to load artifact definitions: ${error.message}`);
   }
 
-  return new Map(((data ?? []) as ArtifactDefinitionRow[]).map((row) => [row.key, row]));
+  return new Map(
+    ((data ?? []) as ArtifactDefinitionRow[]).map((row) => [row.key, row]),
+  );
 }
 
 async function listExistingArtifacts(
@@ -1617,8 +1825,13 @@ async function resolvePlannedStepExecution(
     workflow.reasoning_effort_override ||
     projectDefaults.default_reasoning_effort ||
     DEFAULT_REASONING_EFFORT;
-  if (resolvedReasoningEffort && !SUPPORTED_REASONING_EFFORTS.has(resolvedReasoningEffort)) {
-    throw new Error(`Step ${definition.step_type} is configured with an unsupported reasoning effort.`);
+  if (
+    resolvedReasoningEffort &&
+    !SUPPORTED_REASONING_EFFORTS.has(resolvedReasoningEffort as ReasoningEffort)
+  ) {
+    throw new Error(
+      `Step ${definition.step_type} is configured with an unsupported reasoning effort.`,
+    );
   }
   const resolvedModel =
     step.model_override ||
@@ -1631,12 +1844,16 @@ async function resolvePlannedStepExecution(
 
   await validateStepModel(adminClient, normalizedModel, definition.step_type);
 
-  const resolvedProvider = await resolveProviderKeyFromModel(normalizedModel, adminClient);
+  const resolvedProvider = await resolveProviderKeyFromModel(
+    normalizedModel,
+    adminClient,
+  );
 
   return {
     model: normalizedModel,
     providerKey: resolvedProvider,
     reasoningEffort: resolvedReasoningEffort,
+    providerAccountId: step.provider_account_override_id ?? null,
   };
 }
 
@@ -1656,7 +1873,8 @@ function createBuiltInResultSummaryDefinition({
     required_skills: [],
     team_role: null,
     subagent: null,
-    model: workflow.model_override || projectDefaults.default_model || DEFAULT_MODEL,
+    model:
+      workflow.model_override || projectDefaults.default_model || DEFAULT_MODEL,
     reasoning_effort:
       workflow.reasoning_effort_override ||
       projectDefaults.default_reasoning_effort ||
@@ -1678,27 +1896,27 @@ async function ensureBuiltInResultSummaryStepDefinition({
     projectDefaults,
   });
 
-  const { error } = await adminClient
-    .from("step_definitions")
-    .upsert(
-      {
-        step_type: RESULT_SUMMARY_STEP_TYPE,
-        name: definition.name,
-        description: definition.description,
-        prompt_base: definition.prompt_base,
-        required_mcps: definition.required_mcps ?? [],
-        required_skills: definition.required_skills ?? [],
-        team_role: definition.team_role,
-        subagent: definition.subagent,
-        model: definition.model,
-        reasoning_effort: definition.reasoning_effort,
-        agent_type: "standard",
-      },
-      { onConflict: "step_type" },
-    );
+  const { error } = await adminClient.from("step_definitions").upsert(
+    {
+      step_type: RESULT_SUMMARY_STEP_TYPE,
+      name: definition.name,
+      description: definition.description,
+      prompt_base: definition.prompt_base,
+      required_mcps: definition.required_mcps ?? [],
+      required_skills: definition.required_skills ?? [],
+      team_role: definition.team_role,
+      subagent: definition.subagent,
+      model: definition.model,
+      reasoning_effort: definition.reasoning_effort,
+      agent_type: "standard",
+    },
+    { onConflict: "step_type" },
+  );
 
   if (error) {
-    throw new Error(`Unable to ensure built-in step definition "${RESULT_SUMMARY_STEP_TYPE}": ${error.message}`);
+    throw new Error(
+      `Unable to ensure built-in step definition "${RESULT_SUMMARY_STEP_TYPE}": ${error.message}`,
+    );
   }
 
   return definition;
@@ -1715,8 +1933,13 @@ async function resolveBuiltInStepExecution(
     workflow.reasoning_effort_override ||
     projectDefaults.default_reasoning_effort ||
     DEFAULT_REASONING_EFFORT;
-  if (resolvedReasoningEffort && !SUPPORTED_REASONING_EFFORTS.has(resolvedReasoningEffort)) {
-    throw new Error(`Step ${definition.step_type} is configured with an unsupported reasoning effort.`);
+  if (
+    resolvedReasoningEffort &&
+    !SUPPORTED_REASONING_EFFORTS.has(resolvedReasoningEffort as ReasoningEffort)
+  ) {
+    throw new Error(
+      `Step ${definition.step_type} is configured with an unsupported reasoning effort.`,
+    );
   }
 
   const resolvedModel =
@@ -1725,12 +1948,17 @@ async function resolveBuiltInStepExecution(
     projectDefaults.default_model ||
     DEFAULT_MODEL;
   const normalizedModel = normalizeStepModel(resolvedModel) ?? resolvedModel;
+
   await validateStepModel(adminClient, normalizedModel, definition.step_type);
 
   return {
     model: normalizedModel,
-    providerKey: await resolveProviderKeyFromModel(normalizedModel, adminClient),
+    providerKey: await resolveProviderKeyFromModel(
+      normalizedModel,
+      adminClient,
+    ),
     reasoningEffort: resolvedReasoningEffort,
+    providerAccountId: null,
   };
 }
 
@@ -1815,12 +2043,22 @@ export async function createArtifactOutputs({
       defaultFileName: definition.default_file_name || definition.name,
     };
 
-    const localPath = resolveArtifactPath(definition.local_path_template, context);
-    const absoluteOutputPath = normalizeAbsolutePath(workingDirectory, localPath);
+    const localPath = resolveArtifactPath(
+      definition.local_path_template,
+      context,
+    );
+    const absoluteOutputPath = normalizeAbsolutePath(
+      workingDirectory,
+      localPath,
+    );
     checkpointArtifactOutputPaths.push(absoluteOutputPath);
     const artifactDirectory = path.dirname(absoluteOutputPath);
     const artifactId = randomUUID();
-    const snapshotDirectory = path.join(artifactDirectory, ".snapshots", artifactId);
+    const snapshotDirectory = path.join(
+      artifactDirectory,
+      ".snapshots",
+      artifactId,
+    );
     await mkdir(path.dirname(absoluteOutputPath), { recursive: true });
     await mkdir(snapshotDirectory, { recursive: true });
     await writeFile(absoluteOutputPath, outputMarkdown, "utf8");
@@ -1836,7 +2074,10 @@ export async function createArtifactOutputs({
       path.basename(localPath),
     );
     const absolutePromptPath = path.join(snapshotDirectory, "prompt.md");
-    const absoluteActualPromptPath = path.join(snapshotDirectory, "actual-prompt.md");
+    const absoluteActualPromptPath = path.join(
+      snapshotDirectory,
+      "actual-prompt.md",
+    );
     const absoluteStdoutPath = path.join(snapshotDirectory, "stdout.txt");
     const absoluteStderrPath = path.join(snapshotDirectory, "stderr.txt");
     const absoluteCommandPath = path.join(snapshotDirectory, "command.txt");
@@ -1871,7 +2112,11 @@ export async function createArtifactOutputs({
     };
 
     const absoluteManifestPath = path.join(snapshotDirectory, "manifest.json");
-    await writeFile(absoluteManifestPath, JSON.stringify(manifest, null, 2), "utf8");
+    await writeFile(
+      absoluteManifestPath,
+      JSON.stringify(manifest, null, 2),
+      "utf8",
+    );
 
     if (!checkpointPromptPath) {
       checkpointPromptPath = absolutePromptPath;
@@ -1887,7 +2132,10 @@ export async function createArtifactOutputs({
       workflow_run_step_id: stepRunId,
       title: definition.default_file_name || definition.name,
       local_path: snapshotLocalPath,
-      remote_path: resolveArtifactPath(definition.remote_path_template, context),
+      remote_path: resolveArtifactPath(
+        definition.remote_path_template,
+        context,
+      ),
       remote_url: "",
       sync_status: "local_only",
       created_at: now,
@@ -1895,7 +2143,10 @@ export async function createArtifactOutputs({
     });
   }
 
-  const { data, error } = await adminClient.from("artifact_runs").insert(rows).select("id");
+  const { data, error } = await adminClient
+    .from("artifact_runs")
+    .insert(rows)
+    .select("id");
   if (error) {
     throw new Error(`Unable to create artifact outputs: ${error.message}`);
   }
@@ -1919,7 +2170,11 @@ export async function submitWorkflowStepFollowUpRuntime({
   adminClient: SupabaseClient;
   localRunnerGateway: Pick<
     LocalRunnerGateway,
-    "executePrompt" | "listMcpBackends" | "startSession" | "sendMessage" | "closeSession"
+    | "executePrompt"
+    | "listMcpBackends"
+    | "startSession"
+    | "sendMessage"
+    | "closeSession"
   >;
   stepId: string;
   comment: string;
@@ -1939,17 +2194,26 @@ export async function submitWorkflowStepFollowUpRuntime({
     stepRun.status !== "WAITING_USER_APPROVAL" &&
     !canReplayInterruptedFailedStep
   ) {
-    throw new Error("Follow-up is only supported for completed or interrupted steps.");
+    throw new Error(
+      "Follow-up is only supported for completed or interrupted steps.",
+    );
   }
 
-  const allRunSteps = await loadWorkflowRunSteps(adminClient, stepRun.workflow_run_id);
+  const allRunSteps = await loadWorkflowRunSteps(
+    adminClient,
+    stepRun.workflow_run_id,
+  );
   const latestExecutableStep = [...allRunSteps]
     .filter((step) => step.status !== "SKIPPED")
-    .sort((left, right) => left.execution_order_index - right.execution_order_index)
+    .sort(
+      (left, right) => left.execution_order_index - right.execution_order_index,
+    )
     .at(-1);
 
   if (!latestExecutableStep || latestExecutableStep.id !== stepRun.id) {
-    throw new Error("Follow-up is only supported for the latest workflow step in the run.");
+    throw new Error(
+      "Follow-up is only supported for the latest workflow step in the run.",
+    );
   }
 
   if (!stepRun.workflow_step_id) {
@@ -1957,26 +2221,61 @@ export async function submitWorkflowStepFollowUpRuntime({
   }
 
   const run = await loadWorkflowRun(adminClient, stepRun.workflow_run_id);
-  const projectDefaults = await loadProjectDefaults(adminClient, run.project_id);
-  const workflow = await loadWorkflowDefinition(adminClient, run.workflow_id, run.project_id);
-  const workflowStep = await loadWorkflowStepById(adminClient, stepRun.workflow_step_id);
-  const stepDefinitions = await loadStepDefinitions(adminClient, [stepRun.step_type]);
+  const projectDefaults = await loadProjectDefaults(
+    adminClient,
+    run.project_id,
+  );
+  const workflow = await loadWorkflowDefinition(
+    adminClient,
+    run.workflow_id,
+    run.project_id,
+  );
+  const workflowStep = await loadWorkflowStepById(
+    adminClient,
+    stepRun.workflow_step_id,
+  );
+  const stepDefinitions = await loadStepDefinitions(adminClient, [
+    stepRun.step_type,
+  ]);
   const definition = stepDefinitions.get(stepRun.step_type);
   if (!definition) {
-    throw new Error(`Step definition "${stepRun.step_type}" could not be loaded.`);
+    throw new Error(
+      `Step definition "${stepRun.step_type}" could not be loaded.`,
+    );
   }
 
-  const inputBindings = await loadArtifactBindings(adminClient, "step_input_artifact_definitions", [stepRun.step_type]);
-  const outputBindings = await loadArtifactBindings(adminClient, "step_output_artifact_definitions", [stepRun.step_type]);
+  const inputBindings = await loadArtifactBindings(
+    adminClient,
+    "step_input_artifact_definitions",
+    [stepRun.step_type],
+  );
+  const outputBindings = await loadArtifactBindings(
+    adminClient,
+    "step_output_artifact_definitions",
+    [stepRun.step_type],
+  );
   const inputArtifactKeys = inputBindings.get(stepRun.step_type) ?? [];
   const outputArtifactKeys = outputBindings.get(stepRun.step_type) ?? [];
-  const artifactDefinitionKeys = Array.from(new Set([...inputArtifactKeys, ...outputArtifactKeys]));
-  const artifactDefinitions = await loadArtifactDefinitions(adminClient, artifactDefinitionKeys);
-  const workingDirectory = await resolveWorkingDirectory(adminClient, run.project_id);
+  const artifactDefinitionKeys = Array.from(
+    new Set([...inputArtifactKeys, ...outputArtifactKeys]),
+  );
+  const artifactDefinitions = await loadArtifactDefinitions(
+    adminClient,
+    artifactDefinitionKeys,
+  );
+  const workingDirectory = await resolveWorkingDirectory(
+    adminClient,
+    run.project_id,
+  );
   const installedBackends = await localRunnerGateway.listMcpBackends();
   const usableMcpKeys = new Set(
     installedBackends
-      .filter((backend) => backend.installed || backend.state === "installed" || backend.state === "launcher_available")
+      .filter(
+        (backend) =>
+          backend.installed ||
+          backend.state === "installed" ||
+          backend.state === "launcher_available",
+      )
       .flatMap((backend) => [backend.key, backend.providerType])
       .map((value) => value.toLowerCase()),
   );
@@ -1985,7 +2284,9 @@ export async function submitWorkflowStepFollowUpRuntime({
     (mcp) => !usableMcpKeys.has(String(mcp).toLowerCase()),
   );
   if (missingMcps.length > 0) {
-    throw new Error(`Missing required MCPs for ${stepRun.step_type}: ${missingMcps.join(", ")}`);
+    throw new Error(
+      `Missing required MCPs for ${stepRun.step_type}: ${missingMcps.join(", ")}`,
+    );
   }
 
   const existingArtifacts = await listExistingArtifacts(
@@ -1993,8 +2294,15 @@ export async function submitWorkflowStepFollowUpRuntime({
     run.id,
     artifactDefinitionKeys,
   );
-  const artifactsByKey = new Map(existingArtifacts.map((artifact) => [artifact.artifact_definition_key, artifact]));
-  const missingArtifacts = inputArtifactKeys.filter((key) => !artifactsByKey.has(key));
+  const artifactsByKey = new Map(
+    existingArtifacts.map((artifact) => [
+      artifact.artifact_definition_key,
+      artifact,
+    ]),
+  );
+  const missingArtifacts = inputArtifactKeys.filter(
+    (key) => !artifactsByKey.has(key),
+  );
   if (missingArtifacts.length > 0) {
     throw new Error(
       `Step ${stepRun.step_type} is missing required input artifacts: ${missingArtifacts.join(", ")}`,
@@ -2002,7 +2310,10 @@ export async function submitWorkflowStepFollowUpRuntime({
   }
 
   const inputArtifactPaths = inputArtifactKeys.map((artifactKey) =>
-    normalizeAbsolutePath(workingDirectory, artifactsByKey.get(artifactKey)!.local_path),
+    normalizeAbsolutePath(
+      workingDirectory,
+      artifactsByKey.get(artifactKey)!.local_path,
+    ),
   );
   const outputArtifactPaths = outputArtifactKeys.map((artifactKey) => {
     const definitionRow = artifactDefinitions.get(artifactKey);
@@ -2024,7 +2335,13 @@ export async function submitWorkflowStepFollowUpRuntime({
     );
   });
 
-  const execution = await resolvePlannedStepExecution(workflowStep, workflow, projectDefaults, definition, adminClient);
+  const execution = await resolvePlannedStepExecution(
+    workflowStep,
+    workflow,
+    projectDefaults,
+    definition,
+    adminClient,
+  );
   const finalPrompt = buildWorkflowStepFollowUpPrompt({
     followUpPrompt: trimmedComment,
     inputArtifactPaths,
@@ -2070,8 +2387,18 @@ export async function submitWorkflowStepFollowUpRuntime({
       createdAt: decisionTimestamp,
     })}`,
   );
-  await insertLog(adminClient, stepRun.id, "info", `Follow-up prompt: ${trimmedComment}`);
-  await insertLog(adminClient, stepRun.id, "info", `Launching follow-up for ${stepRun.step_type} in ${workingDirectory}.`);
+  await insertLog(
+    adminClient,
+    stepRun.id,
+    "info",
+    `Follow-up prompt: ${trimmedComment}`,
+  );
+  await insertLog(
+    adminClient,
+    stepRun.id,
+    "info",
+    `Launching follow-up for ${stepRun.step_type} in ${workingDirectory}.`,
+  );
 
   try {
     const result = await sendMessageWithRetry({
@@ -2086,12 +2413,18 @@ export async function submitWorkflowStepFollowUpRuntime({
       subagent: definition.subagent ?? null,
       prompt: finalPrompt,
       skillIds: definition.required_skills ?? [],
-      idleTTLSeconds: projectDefaults.session_idle_ttl_minutes ? projectDefaults.session_idle_ttl_minutes * 60 : undefined,
+      idleTTLSeconds: projectDefaults.session_idle_ttl_minutes
+        ? projectDefaults.session_idle_ttl_minutes * 60
+        : undefined,
       forceNewProviderSession: canReplayInterruptedFailedStep,
+      providerAccountId: execution.providerAccountId,
     });
 
     if (result.status !== "success") {
-      throw new Error(result.errorMessage || `Local runner execution failed for ${stepRun.step_type}.`);
+      throw new Error(
+        result.errorMessage ||
+          `Local runner execution failed for ${stepRun.step_type}.`,
+      );
     }
 
     await insertLog(
@@ -2140,14 +2473,24 @@ export async function submitWorkflowStepFollowUpRuntime({
         error_message: null,
       })
       .eq("id", stepRun.id);
-    await insertLog(adminClient, stepRun.id, "info", `Command: ${result.command}`);
+    await insertLog(
+      adminClient,
+      stepRun.id,
+      "info",
+      `Command: ${result.command}`,
+    );
     if (result.stdoutSummary) {
       await insertLog(adminClient, stepRun.id, "debug", result.stdoutSummary);
     }
     if (result.stderrSummary) {
       await insertLog(adminClient, stepRun.id, "warn", result.stderrSummary);
     }
-    await insertLog(adminClient, stepRun.id, "info", `Completed follow-up for ${stepRun.step_type} with model ${execution.model}.`);
+    await insertLog(
+      adminClient,
+      stepRun.id,
+      "info",
+      `Completed follow-up for ${stepRun.step_type} with model ${execution.model}.`,
+    );
 
     await adminClient
       .from("workflow_runs")
@@ -2158,7 +2501,10 @@ export async function submitWorkflowStepFollowUpRuntime({
       })
       .eq("id", run.id);
   } catch (error) {
-    const message = error instanceof Error ? error.message : `Follow-up execution failed for ${stepRun.step_type}.`;
+    const message =
+      error instanceof Error
+        ? error.message
+        : `Follow-up execution failed for ${stepRun.step_type}.`;
     await adminClient
       .from("workflow_run_steps")
       .update({
@@ -2186,7 +2532,9 @@ export async function submitWorkflowStepFollowUpRuntime({
     .single();
 
   if (updatedStepError) {
-    throw new Error(`Unable to load updated workflow step: ${updatedStepError.message}`);
+    throw new Error(
+      `Unable to load updated workflow step: ${updatedStepError.message}`,
+    );
   }
 
   return updatedStep;
@@ -2201,13 +2549,20 @@ export async function runWorkflowStartRuntime({
   adminClient: SupabaseClient;
   localRunnerGateway: Pick<
     LocalRunnerGateway,
-    "executePrompt" | "listMcpBackends" | "startSession" | "sendMessage" | "closeSession"
+    | "executePrompt"
+    | "listMcpBackends"
+    | "startSession"
+    | "sendMessage"
+    | "closeSession"
   >;
   request: WorkflowRunStartRequest;
   user: { id: string; email: string | null };
 }) {
   await assertProjectMembership(adminClient, request.projectId, user.email);
-  const projectDefaults = await loadProjectDefaults(adminClient, request.projectId);
+  const projectDefaults = await loadProjectDefaults(
+    adminClient,
+    request.projectId,
+  );
   const executionSource =
     request.startMode === "single-step"
       ? await createSingleStepWorkflow(adminClient, {
@@ -2215,35 +2570,66 @@ export async function runWorkflowStartRuntime({
           stepType: request.stepType,
         })
       : {
-          workflow: await loadWorkflowDefinition(adminClient, request.workflowId, request.projectId),
-          workflowSteps: await loadWorkflowSteps(adminClient, request.workflowId),
+          workflow: await loadWorkflowDefinition(
+            adminClient,
+            request.workflowId,
+            request.projectId,
+          ),
+          workflowSteps: await loadWorkflowSteps(
+            adminClient,
+            request.workflowId,
+          ),
         };
   const { workflow, workflowSteps } = executionSource;
   if (workflowSteps.length === 0) {
     throw new Error("This workflow has no steps to execute.");
   }
 
-  const stepTypes = Array.from(new Set(workflowSteps.map((step) => step.step_type)));
+  const stepTypes = Array.from(
+    new Set(workflowSteps.map((step) => step.step_type)),
+  );
   const stepDefinitions = await loadStepDefinitions(adminClient, stepTypes);
-  const inputBindings = await loadArtifactBindings(adminClient, "step_input_artifact_definitions", stepTypes);
-  const outputBindings = await loadArtifactBindings(adminClient, "step_output_artifact_definitions", stepTypes);
+  const inputBindings = await loadArtifactBindings(
+    adminClient,
+    "step_input_artifact_definitions",
+    stepTypes,
+  );
+  const outputBindings = await loadArtifactBindings(
+    adminClient,
+    "step_output_artifact_definitions",
+    stepTypes,
+  );
   const artifactDefinitionKeys = Array.from(
     new Set(
-      [...inputBindings.values(), ...outputBindings.values()].flatMap((keys) => keys),
+      [...inputBindings.values(), ...outputBindings.values()].flatMap(
+        (keys) => keys,
+      ),
     ),
   );
-  const artifactDefinitions = await loadArtifactDefinitions(adminClient, artifactDefinitionKeys);
-  const workingDirectory = await resolveWorkingDirectory(adminClient, request.projectId);
+  const artifactDefinitions = await loadArtifactDefinitions(
+    adminClient,
+    artifactDefinitionKeys,
+  );
+  const workingDirectory = await resolveWorkingDirectory(
+    adminClient,
+    request.projectId,
+  );
   const installedBackends = await localRunnerGateway.listMcpBackends();
   const usableMcpKeys = new Set(
     installedBackends
-      .filter((backend) => backend.installed || backend.state === "installed" || backend.state === "launcher_available")
+      .filter(
+        (backend) =>
+          backend.installed ||
+          backend.state === "installed" ||
+          backend.state === "launcher_available",
+      )
       .flatMap((backend) => [backend.key, backend.providerType])
       .map((value) => value.toLowerCase()),
   );
 
   const enabledWorkflowSteps = workflowSteps.filter((step) => step.is_enabled);
-  const shouldAddResultSummary = shouldAppendResultSummaryStep(enabledWorkflowSteps);
+  const shouldAddResultSummary =
+    shouldAppendResultSummaryStep(enabledWorkflowSteps);
   if (shouldAddResultSummary) {
     const builtInDefinition = await ensureBuiltInResultSummaryStepDefinition({
       adminClient,
@@ -2256,7 +2642,9 @@ export async function runWorkflowStartRuntime({
     enabledWorkflowSteps.map(async (step) => {
       const definition = stepDefinitions.get(step.step_type);
       if (!definition) {
-        throw new Error(`Step definition "${step.step_type}" could not be loaded.`);
+        throw new Error(
+          `Step definition "${step.step_type}" could not be loaded.`,
+        );
       }
 
       return {
@@ -2265,17 +2653,25 @@ export async function runWorkflowStartRuntime({
         stepType: step.step_type,
         orderIndex: step.order_index,
         definition,
-        ...(await resolvePlannedStepExecution(step, workflow, projectDefaults, definition, adminClient)),
+        ...(await resolvePlannedStepExecution(
+          step,
+          workflow,
+          projectDefaults,
+          definition,
+          adminClient,
+        )),
         inputArtifactKeys: inputBindings.get(step.step_type) ?? [],
         outputArtifactKeys: outputBindings.get(step.step_type) ?? [],
       } satisfies StepExecutionPlan;
-    })
+    }),
   );
 
   if (shouldAddResultSummary) {
     const definition = stepDefinitions.get(RESULT_SUMMARY_STEP_TYPE);
     if (!definition) {
-      throw new Error(`Step definition "${RESULT_SUMMARY_STEP_TYPE}" could not be loaded.`);
+      throw new Error(
+        `Step definition "${RESULT_SUMMARY_STEP_TYPE}" could not be loaded.`,
+      );
     }
     const nextOrderIndex =
       enabledWorkflowSteps.reduce(
@@ -2289,15 +2685,26 @@ export async function runWorkflowStartRuntime({
       stepType: RESULT_SUMMARY_STEP_TYPE,
       orderIndex: nextOrderIndex,
       definition,
-      ...(await resolveBuiltInStepExecution(workflow, projectDefaults, definition, adminClient)),
+      ...(await resolveBuiltInStepExecution(
+        workflow,
+        projectDefaults,
+        definition,
+        adminClient,
+      )),
       inputArtifactKeys: [],
       outputArtifactKeys: [],
     });
   }
 
   const firstStepModel =
-    stepPlans[0]?.model || workflow.model_override || projectDefaults.default_model || DEFAULT_MODEL;
-  const firstStepProvider = await resolveProviderKeyFromModel(firstStepModel, adminClient);
+    stepPlans[0]?.model ||
+    workflow.model_override ||
+    projectDefaults.default_model ||
+    DEFAULT_MODEL;
+  const firstStepProvider = await resolveProviderKeyFromModel(
+    firstStepModel,
+    adminClient,
+  );
   const firstStepReasoningEffort =
     stepPlans[0]?.reasoningEffort ||
     workflow.reasoning_effort_override ||
@@ -2337,7 +2744,9 @@ export async function runWorkflowStartRuntime({
     .select("id, workflow_step_id, step_type, execution_order_index, status");
 
   if (stepInsertError) {
-    throw new Error(`Unable to create workflow run steps: ${stepInsertError.message}`);
+    throw new Error(
+      `Unable to create workflow run steps: ${stepInsertError.message}`,
+    );
   }
 
   const stepRunIds = new Map<string, string>();
@@ -2364,246 +2773,302 @@ export async function runWorkflowStartRuntime({
     const completedSummarySteps: ResultSummarySourceStep[] = [];
 
     try {
-    for (const stepPlan of stepPlans) {
-      const stepRunId = stepRunIds.get(stepPlan.planKey);
-      if (!stepRunId) {
-        throw new Error(`Workflow run step for ${stepPlan.stepType} was not created.`);
-      }
-      activeStepRunId = stepRunId;
+      for (const stepPlan of stepPlans) {
+        const stepRunId = stepRunIds.get(stepPlan.planKey);
+        if (!stepRunId) {
+          throw new Error(
+            `Workflow run step for ${stepPlan.stepType} was not created.`,
+          );
+        }
+        activeStepRunId = stepRunId;
 
-      const missingMcps = (stepPlan.definition.required_mcps ?? []).filter(
-        (mcp) => !usableMcpKeys.has(String(mcp).toLowerCase()),
-      );
-      if (missingMcps.length > 0) {
+        const missingMcps = (stepPlan.definition.required_mcps ?? []).filter(
+          (mcp) => !usableMcpKeys.has(String(mcp).toLowerCase()),
+        );
+        if (missingMcps.length > 0) {
+          await adminClient
+            .from("workflow_run_steps")
+            .update({
+              status: "FAILED",
+              started_at: new Date().toISOString(),
+              finished_at: new Date().toISOString(),
+              error_message: `Missing MCPs: ${missingMcps.join(", ")}`,
+            })
+            .eq("id", stepRunId);
+          await insertLog(
+            adminClient,
+            stepRunId,
+            "error",
+            `Execution stopped before provider launch. Missing MCPs: ${missingMcps.join(", ")}.`,
+          );
+          throw new Error(
+            `Missing required MCPs for ${stepPlan.stepType}: ${missingMcps.join(", ")}`,
+          );
+        }
+
+        const existingArtifacts = await listExistingArtifacts(
+          adminClient,
+          String(runRow.id),
+          stepPlan.inputArtifactKeys,
+        );
+        const artifactsByKey = new Map(
+          existingArtifacts.map((artifact) => [
+            artifact.artifact_definition_key,
+            artifact,
+          ]),
+        );
+        const missingArtifacts = stepPlan.inputArtifactKeys.filter(
+          (key) => !artifactsByKey.has(key),
+        );
+        if (missingArtifacts.length > 0) {
+          throw new Error(
+            `Step ${stepPlan.stepType} is missing required input artifacts: ${missingArtifacts.join(", ")}`,
+          );
+        }
+
+        const inputArtifactPaths = stepPlan.inputArtifactKeys.map(
+          (artifactKey) =>
+            normalizeAbsolutePath(
+              workingDirectory,
+              artifactsByKey.get(artifactKey)!.local_path,
+            ),
+        );
+        const outputArtifactPaths = stepPlan.outputArtifactKeys.map(
+          (artifactKey) => {
+            const definition = artifactDefinitions.get(artifactKey);
+            if (!definition) {
+              throw new Error(
+                `Artifact definition "${artifactKey}" is missing.`,
+              );
+            }
+            return normalizeAbsolutePath(
+              workingDirectory,
+              resolveArtifactPath(definition.local_path_template, {
+                projectId: request.projectId,
+                workflowId: workflow.id,
+                workflowRunId: String(runRow.id),
+                workflowRunStepId: stepRunId,
+                stepType: stepPlan.stepType,
+                artifactKey,
+                defaultFileName:
+                  definition.default_file_name || definition.name,
+              }),
+            );
+          },
+        );
+
+        const finalPrompt =
+          stepPlan.stepType === RESULT_SUMMARY_STEP_TYPE
+            ? buildResultSummaryPrompt({
+                beginPrompt: request.beginPrompt,
+                workflowName: workflow.name,
+                workingDirectory,
+                steps: completedSummarySteps,
+              })
+            : (() => {
+                const promptBase = stepPlan.definition.prompt_base?.trim()
+                  ? stepPlan.definition.prompt_base.trim()
+                  : deriveStepPromptBase({
+                      stepType: stepPlan.definition.step_type as StepType,
+                      name: stepPlan.definition.name,
+                      description: stepPlan.definition.description,
+                    });
+
+                return buildWorkflowStepPrompt({
+                  beginPrompt: request.beginPrompt,
+                  inputArtifactPaths,
+                  model: stepPlan.model,
+                  outputArtifactPaths,
+                  promptBase,
+                  stepType: stepPlan.stepType,
+                  subagent: stepPlan.definition.subagent,
+                  teamRole: stepPlan.definition.team_role,
+                  workingDirectory,
+                  requiredSkills: stepPlan.definition.required_skills ?? [],
+                });
+              })();
+
         await adminClient
           .from("workflow_run_steps")
           .update({
-            status: "FAILED",
+            status: "RUNNING",
             started_at: new Date().toISOString(),
-            finished_at: new Date().toISOString(),
-            error_message: `Missing MCPs: ${missingMcps.join(", ")}`,
+            error_message: null,
           })
           .eq("id", stepRunId);
         await insertLog(
           adminClient,
           stepRunId,
-          "error",
-          `Execution stopped before provider launch. Missing MCPs: ${missingMcps.join(", ")}.`,
+          "info",
+          `Launching ${stepPlan.stepType} in ${workingDirectory}.`,
         );
-        throw new Error(`Missing required MCPs for ${stepPlan.stepType}: ${missingMcps.join(", ")}`);
-      }
-
-      const existingArtifacts = await listExistingArtifacts(
-        adminClient,
-        String(runRow.id),
-        stepPlan.inputArtifactKeys,
-      );
-      const artifactsByKey = new Map(existingArtifacts.map((artifact) => [artifact.artifact_definition_key, artifact]));
-      const missingArtifacts = stepPlan.inputArtifactKeys.filter((key) => !artifactsByKey.has(key));
-      if (missingArtifacts.length > 0) {
-        throw new Error(
-          `Step ${stepPlan.stepType} is missing required input artifacts: ${missingArtifacts.join(", ")}`,
-        );
-      }
-
-      const inputArtifactPaths = stepPlan.inputArtifactKeys.map((artifactKey) =>
-        normalizeAbsolutePath(workingDirectory, artifactsByKey.get(artifactKey)!.local_path),
-      );
-      const outputArtifactPaths = stepPlan.outputArtifactKeys.map((artifactKey) => {
-        const definition = artifactDefinitions.get(artifactKey);
-        if (!definition) {
-          throw new Error(`Artifact definition "${artifactKey}" is missing.`);
-        }
-        return normalizeAbsolutePath(
-          workingDirectory,
-          resolveArtifactPath(definition.local_path_template, {
-            projectId: request.projectId,
-            workflowId: workflow.id,
-            workflowRunId: String(runRow.id),
-            workflowRunStepId: stepRunId,
-            stepType: stepPlan.stepType,
-            artifactKey,
-            defaultFileName: definition.default_file_name || definition.name,
-          }),
-        );
-      });
-
-      const finalPrompt = stepPlan.stepType === RESULT_SUMMARY_STEP_TYPE
-        ? buildResultSummaryPrompt({
-            beginPrompt: request.beginPrompt,
-            workflowName: workflow.name,
-            workingDirectory,
-            steps: completedSummarySteps,
-          })
-        : (() => {
-            const promptBase = stepPlan.definition.prompt_base?.trim()
-              ? stepPlan.definition.prompt_base.trim()
-              : deriveStepPromptBase({
-                  stepType: stepPlan.definition.step_type as StepType,
-                  name: stepPlan.definition.name,
-                  description: stepPlan.definition.description,
-                });
-
-            return buildWorkflowStepPrompt({
-              beginPrompt: request.beginPrompt,
-              inputArtifactPaths,
-              model: stepPlan.model,
-              outputArtifactPaths,
-              promptBase,
-              stepType: stepPlan.stepType,
-              subagent: stepPlan.definition.subagent,
-              teamRole: stepPlan.definition.team_role,
-              workingDirectory,
-              requiredSkills: stepPlan.definition.required_skills ?? [],
-            });
-          })();
-
-      await adminClient
-        .from("workflow_run_steps")
-        .update({
-          status: "RUNNING",
-          started_at: new Date().toISOString(),
-          error_message: null,
-        })
-        .eq("id", stepRunId);
-      await insertLog(adminClient, stepRunId, "info", `Launching ${stepPlan.stepType} in ${workingDirectory}.`);
-      await insertLog(adminClient, stepRunId, "info", `Begin prompt: ${request.beginPrompt}`);
-
-      const result = await sendMessageWithRetry({
-        adminClient,
-        localRunnerGateway: localRunnerGateway as any,
-        workflowRunId: String(runRow.id),
-        stepRunId,
-        providerKey: stepPlan.providerKey,
-        modelName: stepPlan.model,
-        reasoningEffort: stepPlan.reasoningEffort ?? null,
-        workingDirectory,
-        subagent: stepPlan.definition.subagent ?? null,
-        prompt: finalPrompt,
-        skillIds: stepPlan.definition.required_skills ?? [],
-        idleTTLSeconds: projectDefaults.session_idle_ttl_minutes ? projectDefaults.session_idle_ttl_minutes * 60 : undefined,
-      });
-
-      if (result.status !== "success") {
-        throw new Error(result.errorMessage || `Local runner execution failed for ${stepPlan.stepType}.`);
-      }
-
-      await insertLog(
-        adminClient,
-        stepRunId,
-        "debug",
-        buildAiOutputLogMessage(result.outputMarkdown),
-      );
-
-      const artifactOutputResult = await createArtifactOutputs({
-        adminClient,
-        artifactDefinitions,
-        outputArtifactKeys: stepPlan.outputArtifactKeys,
-        outputMarkdown: result.outputMarkdown,
-        promptText: finalPrompt,
-        actualPromptText: result.actualPromptText,
-        projectId: request.projectId,
-        stepRunId,
-        stepType: stepPlan.stepType,
-        stderrText: result.stderrSummary,
-        stdoutText: result.stdoutSummary,
-        workflowId: workflow.id,
-        workflowRunId: String(runRow.id),
-        workingDirectory,
-        commandText: result.command,
-        providerKey: stepPlan.providerKey,
-      });
-      const artifactRunId = artifactOutputResult.artifactRunId;
-
-      if (result.sessionDbId) {
-        await appendSessionCheckpoint(
+        await insertLog(
           adminClient,
-          result.sessionDbId,
-          artifactOutputResult.checkpoint,
+          stepRunId,
+          "info",
+          `Begin prompt: ${request.beginPrompt}`,
         );
+
+        const result = await sendMessageWithRetry({
+          adminClient,
+          localRunnerGateway: localRunnerGateway as any,
+          workflowRunId: String(runRow.id),
+          stepRunId,
+          providerKey: stepPlan.providerKey,
+          modelName: stepPlan.model,
+          reasoningEffort: stepPlan.reasoningEffort ?? null,
+          workingDirectory,
+          subagent: stepPlan.definition.subagent ?? null,
+          prompt: finalPrompt,
+          skillIds: stepPlan.definition.required_skills ?? [],
+          idleTTLSeconds: projectDefaults.session_idle_ttl_minutes
+            ? projectDefaults.session_idle_ttl_minutes * 60
+            : undefined,
+          providerAccountId: stepPlan.providerAccountId,
+        });
+
+        if (result.status !== "success") {
+          throw new Error(
+            result.errorMessage ||
+              `Local runner execution failed for ${stepPlan.stepType}.`,
+          );
+        }
+
+        await insertLog(
+          adminClient,
+          stepRunId,
+          "debug",
+          buildAiOutputLogMessage(result.outputMarkdown),
+        );
+
+        const artifactOutputResult = await createArtifactOutputs({
+          adminClient,
+          artifactDefinitions,
+          outputArtifactKeys: stepPlan.outputArtifactKeys,
+          outputMarkdown: result.outputMarkdown,
+          promptText: finalPrompt,
+          actualPromptText: result.actualPromptText,
+          projectId: request.projectId,
+          stepRunId,
+          stepType: stepPlan.stepType,
+          stderrText: result.stderrSummary,
+          stdoutText: result.stdoutSummary,
+          workflowId: workflow.id,
+          workflowRunId: String(runRow.id),
+          workingDirectory,
+          commandText: result.command,
+          providerKey: stepPlan.providerKey,
+        });
+        const artifactRunId = artifactOutputResult.artifactRunId;
+
+        if (result.sessionDbId) {
+          await appendSessionCheckpoint(
+            adminClient,
+            result.sessionDbId,
+            artifactOutputResult.checkpoint,
+          );
+        }
+
+        await adminClient
+          .from("workflow_run_steps")
+          .update({
+            status: "DONE",
+            started_at: result.startedAt,
+            finished_at: result.completedAt,
+            artifact_run_id: artifactRunId,
+            error_message: null,
+          })
+          .eq("id", stepRunId);
+        await insertLog(
+          adminClient,
+          stepRunId,
+          "info",
+          `Command: ${result.command}`,
+        );
+        if (result.stdoutSummary) {
+          await insertLog(
+            adminClient,
+            stepRunId,
+            "debug",
+            result.stdoutSummary,
+          );
+        }
+        if (result.stderrSummary) {
+          await insertLog(adminClient, stepRunId, "warn", result.stderrSummary);
+        }
+        await insertLog(
+          adminClient,
+          stepRunId,
+          "info",
+          `Completed ${stepPlan.stepType} with model ${stepPlan.model}.`,
+        );
+
+        if (stepPlan.stepType !== RESULT_SUMMARY_STEP_TYPE) {
+          completedSummarySteps.push({
+            stepName: stepPlan.definition.name,
+            stepType: stepPlan.stepType,
+            outputMarkdown: result.outputMarkdown,
+            artifactOutputPaths:
+              artifactOutputResult.checkpoint.artifactOutputPaths,
+            startedAt: result.startedAt,
+            completedAt: result.completedAt,
+          });
+        }
       }
 
-      await adminClient
-        .from("workflow_run_steps")
+      const finishedAt = new Date().toISOString();
+      await finalizeWorkflowRunSessions(
+        adminClient,
+        localRunnerGateway as any,
+        String(runRow.id),
+        { preserveMainSession: true },
+      );
+
+      const { data: completedRun, error: completedRunError } = await adminClient
+        .from("workflow_runs")
         .update({
           status: "DONE",
-          started_at: result.startedAt,
-          finished_at: result.completedAt,
-          artifact_run_id: artifactRunId,
+          finished_at: finishedAt,
           error_message: null,
         })
-        .eq("id", stepRunId);
-      await insertLog(adminClient, stepRunId, "info", `Command: ${result.command}`);
-      if (result.stdoutSummary) {
-        await insertLog(adminClient, stepRunId, "debug", result.stdoutSummary);
+        .eq("id", runRow.id)
+        .select("*")
+        .single();
+
+      if (completedRunError) {
+        throw new Error(
+          `Unable to finalize workflow run: ${completedRunError.message}`,
+        );
       }
-      if (result.stderrSummary) {
-        await insertLog(adminClient, stepRunId, "warn", result.stderrSummary);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Workflow execution failed.";
+      await finalizeWorkflowRunSessions(
+        adminClient,
+        localRunnerGateway as any,
+        String(runRow.id),
+      );
+
+      if (activeStepRunId) {
+        await adminClient
+          .from("workflow_run_steps")
+          .update({
+            status: "FAILED",
+            finished_at: new Date().toISOString(),
+            error_message: message,
+          })
+          .eq("id", activeStepRunId);
+        await insertLog(adminClient, activeStepRunId, "error", message);
       }
-      await insertLog(adminClient, stepRunId, "info", `Completed ${stepPlan.stepType} with model ${stepPlan.model}.`);
-
-      if (stepPlan.stepType !== RESULT_SUMMARY_STEP_TYPE) {
-        completedSummarySteps.push({
-          stepName: stepPlan.definition.name,
-          stepType: stepPlan.stepType,
-          outputMarkdown: result.outputMarkdown,
-          artifactOutputPaths: artifactOutputResult.checkpoint.artifactOutputPaths,
-          startedAt: result.startedAt,
-          completedAt: result.completedAt,
-        });
-      }
-    }
-
-    const finishedAt = new Date().toISOString();
-    await finalizeWorkflowRunSessions(
-      adminClient,
-      localRunnerGateway as any,
-      String(runRow.id),
-      { preserveMainSession: true },
-    );
-
-    const { data: completedRun, error: completedRunError } = await adminClient
-      .from("workflow_runs")
-      .update({
-        status: "DONE",
-        finished_at: finishedAt,
-        error_message: null,
-      })
-      .eq("id", runRow.id)
-      .select("*")
-      .single();
-
-    if (completedRunError) {
-      throw new Error(`Unable to finalize workflow run: ${completedRunError.message}`);
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Workflow execution failed.";
-    await finalizeWorkflowRunSessions(
-      adminClient,
-      localRunnerGateway as any,
-      String(runRow.id),
-    );
-
-    if (activeStepRunId) {
       await adminClient
-        .from("workflow_run_steps")
+        .from("workflow_runs")
         .update({
           status: "FAILED",
           finished_at: new Date().toISOString(),
           error_message: message,
         })
-        .eq("id", activeStepRunId);
-      await insertLog(adminClient, activeStepRunId, "error", message);
+        .eq("id", runRow.id);
     }
-    await adminClient
-      .from("workflow_runs")
-      .update({
-        status: "FAILED",
-        finished_at: new Date().toISOString(),
-        error_message: message,
-      })
-      .eq("id", runRow.id);
-  }
   };
 
   void executeWorkflow().catch((err) => {

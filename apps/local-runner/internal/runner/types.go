@@ -212,16 +212,20 @@ type IntegrationConnectionResult struct {
 }
 
 type PromptExecutionRequest struct {
-	ProviderKey      string   `json:"providerKey"`
-	ModelName        string   `json:"modelName,omitempty"`
-	ReasoningEffort  string   `json:"reasoningEffort,omitempty"`
-	Prompt           string   `json:"prompt"`
-	SkillIds         []string `json:"skillIds"`
-	FlowId           string   `json:"flowId"`
-	ContextSourceIds []string `json:"contextSourceIds"`
-	TimeoutMs        int      `json:"timeoutMs"`
-	WorkingDirectory string   `json:"workingDirectory"`
-	AllowWrite       bool     `json:"allowWrite,omitempty"`
+	ProviderKey       string            `json:"providerKey"`
+	ModelName         string            `json:"modelName,omitempty"`
+	ReasoningEffort   string            `json:"reasoningEffort,omitempty"`
+	Prompt            string            `json:"prompt"`
+	SkillIds          []string          `json:"skillIds"`
+	FlowId            string            `json:"flowId"`
+	ContextSourceIds  []string          `json:"contextSourceIds"`
+	TimeoutMs         int               `json:"timeoutMs"`
+	WorkingDirectory  string            `json:"workingDirectory"`
+	AllowWrite        bool              `json:"allowWrite,omitempty"`
+	ProviderAccountID string            `json:"providerAccountId,omitempty"`
+	AccountHomePath   string            `json:"accountHomePath,omitempty"`
+	ProxyURL          string            `json:"proxyUrl,omitempty"`
+	CustomEnv         map[string]string `json:"customEnv,omitempty"`
 }
 
 type PromptExecutionResult struct {
@@ -242,14 +246,18 @@ type PromptExecutionResult struct {
 }
 
 type AiSessionStartRequest struct {
-	ProviderKey             string  `json:"providerKey"`
-	ModelName               string  `json:"modelName"`
-	ReasoningEffort         *string `json:"reasoningEffort"`
-	WorkingDirectory        string  `json:"workingDirectory"`
-	ApprovalMode            *string `json:"approvalMode"`
-	AllowWrite              bool    `json:"allowWrite"`
-	IdleTTLSeconds          *int    `json:"idleTTLSeconds,omitempty"`
-	ResumeProviderSessionID *string `json:"resumeProviderSessionId,omitempty"`
+	ProviderKey             string            `json:"providerKey"`
+	ModelName               string            `json:"modelName"`
+	ReasoningEffort         *string           `json:"reasoningEffort"`
+	WorkingDirectory        string            `json:"workingDirectory"`
+	ApprovalMode            *string           `json:"approvalMode"`
+	AllowWrite              bool              `json:"allowWrite"`
+	IdleTTLSeconds          *int              `json:"idleTTLSeconds,omitempty"`
+	ResumeProviderSessionID *string           `json:"resumeProviderSessionId,omitempty"`
+	ProviderAccountID       string            `json:"providerAccountId,omitempty"`
+	AccountHomePath         string            `json:"accountHomePath,omitempty"`
+	ProxyURL                string            `json:"proxyUrl,omitempty"`
+	CustomEnv               map[string]string `json:"customEnv,omitempty"`
 }
 
 type AiSessionHandle struct {

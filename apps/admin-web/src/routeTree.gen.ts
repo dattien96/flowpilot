@@ -31,6 +31,7 @@ import { Route as AuthenticatedSettingsPromptTemplatesRouteImport } from './rout
 import { Route as AuthenticatedSettingsMcpServersRouteImport } from './routes/_authenticated/settings/mcp-servers'
 import { Route as AuthenticatedSettingsArtifactsRouteImport } from './routes/_authenticated/settings/artifacts'
 import { Route as AuthenticatedSettingsAiProvidersRouteImport } from './routes/_authenticated/settings/ai-providers'
+import { Route as AuthenticatedSettingsAccountsRouteImport } from './routes/_authenticated/settings/accounts'
 import { Route as AuthenticatedProjectsCreateRouteImport } from './routes/_authenticated/projects/create'
 import { Route as AuthenticatedProjectsProjectIdRouteImport } from './routes/_authenticated/projects/$projectId'
 import { Route as AuthenticatedArtifactsCreateRouteImport } from './routes/_authenticated/artifacts/create'
@@ -171,6 +172,12 @@ const AuthenticatedSettingsAiProvidersRoute =
     path: '/settings/ai-providers',
     getParentRoute: () => AuthenticatedRoute,
   } as any)
+const AuthenticatedSettingsAccountsRoute =
+  AuthenticatedSettingsAccountsRouteImport.update({
+    id: '/settings/accounts',
+    path: '/settings/accounts',
+    getParentRoute: () => AuthenticatedRoute,
+  } as any)
 const AuthenticatedProjectsCreateRoute =
   AuthenticatedProjectsCreateRouteImport.update({
     id: '/projects/create',
@@ -288,6 +295,7 @@ export interface FileRoutesByFullPath {
   '/artifacts/create': typeof AuthenticatedArtifactsCreateRoute
   '/projects/$projectId': typeof AuthenticatedProjectsProjectIdRouteWithChildren
   '/projects/create': typeof AuthenticatedProjectsCreateRoute
+  '/settings/accounts': typeof AuthenticatedSettingsAccountsRoute
   '/settings/ai-providers': typeof AuthenticatedSettingsAiProvidersRoute
   '/settings/artifacts': typeof AuthenticatedSettingsArtifactsRouteWithChildren
   '/settings/mcp-servers': typeof AuthenticatedSettingsMcpServersRouteWithChildren
@@ -328,6 +336,7 @@ export interface FileRoutesByTo {
   '/artifacts/create': typeof AuthenticatedArtifactsCreateRoute
   '/projects/$projectId': typeof AuthenticatedProjectsProjectIdRouteWithChildren
   '/projects/create': typeof AuthenticatedProjectsCreateRoute
+  '/settings/accounts': typeof AuthenticatedSettingsAccountsRoute
   '/settings/ai-providers': typeof AuthenticatedSettingsAiProvidersRoute
   '/settings/artifacts': typeof AuthenticatedSettingsArtifactsRouteWithChildren
   '/settings/mcp-servers': typeof AuthenticatedSettingsMcpServersRouteWithChildren
@@ -370,6 +379,7 @@ export interface FileRoutesById {
   '/_authenticated/artifacts/create': typeof AuthenticatedArtifactsCreateRoute
   '/_authenticated/projects/$projectId': typeof AuthenticatedProjectsProjectIdRouteWithChildren
   '/_authenticated/projects/create': typeof AuthenticatedProjectsCreateRoute
+  '/_authenticated/settings/accounts': typeof AuthenticatedSettingsAccountsRoute
   '/_authenticated/settings/ai-providers': typeof AuthenticatedSettingsAiProvidersRoute
   '/_authenticated/settings/artifacts': typeof AuthenticatedSettingsArtifactsRouteWithChildren
   '/_authenticated/settings/mcp-servers': typeof AuthenticatedSettingsMcpServersRouteWithChildren
@@ -412,6 +422,7 @@ export interface FileRouteTypes {
     | '/artifacts/create'
     | '/projects/$projectId'
     | '/projects/create'
+    | '/settings/accounts'
     | '/settings/ai-providers'
     | '/settings/artifacts'
     | '/settings/mcp-servers'
@@ -452,6 +463,7 @@ export interface FileRouteTypes {
     | '/artifacts/create'
     | '/projects/$projectId'
     | '/projects/create'
+    | '/settings/accounts'
     | '/settings/ai-providers'
     | '/settings/artifacts'
     | '/settings/mcp-servers'
@@ -493,6 +505,7 @@ export interface FileRouteTypes {
     | '/_authenticated/artifacts/create'
     | '/_authenticated/projects/$projectId'
     | '/_authenticated/projects/create'
+    | '/_authenticated/settings/accounts'
     | '/_authenticated/settings/ai-providers'
     | '/_authenticated/settings/artifacts'
     | '/_authenticated/settings/mcp-servers'
@@ -681,6 +694,13 @@ declare module '@tanstack/react-router' {
       path: '/settings/ai-providers'
       fullPath: '/settings/ai-providers'
       preLoaderRoute: typeof AuthenticatedSettingsAiProvidersRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/settings/accounts': {
+      id: '/_authenticated/settings/accounts'
+      path: '/settings/accounts'
+      fullPath: '/settings/accounts'
+      preLoaderRoute: typeof AuthenticatedSettingsAccountsRouteImport
       parentRoute: typeof AuthenticatedRoute
     }
     '/_authenticated/projects/create': {
@@ -968,6 +988,7 @@ interface AuthenticatedRouteChildren {
   AuthenticatedWorkflowsRoute: typeof AuthenticatedWorkflowsRouteWithChildren
   AuthenticatedProjectsProjectIdRoute: typeof AuthenticatedProjectsProjectIdRouteWithChildren
   AuthenticatedProjectsCreateRoute: typeof AuthenticatedProjectsCreateRoute
+  AuthenticatedSettingsAccountsRoute: typeof AuthenticatedSettingsAccountsRoute
   AuthenticatedSettingsAiProvidersRoute: typeof AuthenticatedSettingsAiProvidersRoute
   AuthenticatedSettingsArtifactsRoute: typeof AuthenticatedSettingsArtifactsRouteWithChildren
   AuthenticatedSettingsMcpServersRoute: typeof AuthenticatedSettingsMcpServersRouteWithChildren
@@ -987,6 +1008,7 @@ const AuthenticatedRouteChildren: AuthenticatedRouteChildren = {
   AuthenticatedProjectsProjectIdRoute:
     AuthenticatedProjectsProjectIdRouteWithChildren,
   AuthenticatedProjectsCreateRoute: AuthenticatedProjectsCreateRoute,
+  AuthenticatedSettingsAccountsRoute: AuthenticatedSettingsAccountsRoute,
   AuthenticatedSettingsAiProvidersRoute: AuthenticatedSettingsAiProvidersRoute,
   AuthenticatedSettingsArtifactsRoute:
     AuthenticatedSettingsArtifactsRouteWithChildren,
