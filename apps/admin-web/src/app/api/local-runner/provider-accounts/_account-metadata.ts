@@ -56,6 +56,12 @@ type AccountMetadata = {
   }>;
 };
 
+type GeminiQuotaBucket = {
+  modelId?: string | null;
+  remainingFraction?: number | null;
+  resetTime?: string | null;
+};
+
 const GEMINI_CONFIG = {
   clientId:
     "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com",
@@ -500,29 +506,10 @@ async function loadGeminiQuota(accessToken: string) {
   }
 
   const quotaPayload = (await quotaResponse.json()) as {
-    buckets?: Array<{
-      modelId?: string | null;
-      remainingFraction?: number | null;
-      resetTime?: string | null;
-    }>;
+    buckets?: GeminiQuotaBucket[];
   };
 
-  const usageDetailLines = (quotaPayload.buckets ?? [])
-    .filter(
-      (bucket) =>
-        typeof bucket.modelId === "string" &&
-        typeof bucket.remainingFraction === "number",
-    )
-    .sort((a, b) => String(a.modelId).localeCompare(String(b.modelId)))
-    .slice(0, 3)
-    .map((bucket) => ({
-      label: bucket.modelId as string,
-      remainingPercent: Math.max(
-        0,
-        Math.min(100, Math.round((bucket.remainingFraction as number) * 100)),
-      ),
-      resetAt: parseResetTime(bucket.resetTime ?? null),
-    }));
+  const usageDetailLines = mapGeminiQuotaUsageDetailLines(quotaPayload.buckets);
 
   return {
     usageSummary: loadPayload.currentTier?.name ?? null,
@@ -535,6 +522,26 @@ async function loadGeminiQuota(accessToken: string) {
     refreshTokenExpiresAt: null,
     refreshTokenExpiryNote: null,
   };
+}
+
+export function mapGeminiQuotaUsageDetailLines(
+  buckets: GeminiQuotaBucket[] | null | undefined,
+): AccountMetadata["usageDetailLines"] {
+  return (buckets ?? [])
+    .filter(
+      (bucket) =>
+        typeof bucket.modelId === "string" &&
+        typeof bucket.remainingFraction === "number",
+    )
+    .sort((a, b) => String(a.modelId).localeCompare(String(b.modelId)))
+    .map((bucket) => ({
+      label: bucket.modelId as string,
+      remainingPercent: Math.max(
+        0,
+        Math.min(100, Math.round((bucket.remainingFraction as number) * 100)),
+      ),
+      resetAt: parseResetTime(bucket.resetTime ?? null),
+    }));
 }
 
 async function geminiMetadata(homePath: string): Promise<AccountMetadata> {
