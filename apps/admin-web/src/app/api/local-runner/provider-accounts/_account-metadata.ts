@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 
 type ProviderKey = "codex" | "claude" | "gemini";
@@ -60,6 +61,22 @@ type GeminiQuotaBucket = {
   modelId?: string | null;
   remainingFraction?: number | null;
   resetTime?: string | null;
+};
+
+type ClaudeAuthStatus = {
+  loggedIn?: boolean;
+  email?: string | null;
+  orgName?: string | null;
+  subscriptionType?: string | null;
+};
+
+type ClaudeOauthAccount = {
+  emailAddress?: string | null;
+  displayName?: string | null;
+  organizationBillingType?: string | null;
+  billingType?: string | null;
+  hasExtraUsageEnabled?: boolean;
+  subscriptionCreatedAt?: string | null;
 };
 
 const GEMINI_CONFIG = {
@@ -151,6 +168,80 @@ function parseJwtExpiry(token: string | null | undefined) {
   } catch {
     return null;
   }
+}
+
+function humanizeDelimitedLabel(value: string | null | undefined) {
+  const trimmed = String(value ?? "").trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+
+  return trimmed
+    .split(/[_\s-]+/)
+    .filter((part) => part.length > 0)
+    .map((part) => part[0]!.toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function loadClaudeAuthStatus(homePath: string): ClaudeAuthStatus | null {
+  const command = process.platform === "win32" ? "claude.cmd" : "claude";
+
+  try {
+    const raw = execFileSync(command, ["auth", "status", "--json"], {
+      cwd: homePath,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        HOME: homePath,
+        USERPROFILE: homePath,
+      },
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const payload = JSON.parse(raw) as ClaudeAuthStatus;
+    return payload.loggedIn ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
+export function buildClaudeUsageSummary(input: {
+  account?: ClaudeOauthAccount | null;
+  authStatus?: ClaudeAuthStatus | null;
+  extraUsageDisabledReason?: string | null;
+}) {
+  const account = input.account ?? null;
+  const authStatus = input.authStatus ?? null;
+  const rawPlan =
+    authStatus?.subscriptionType ??
+    account?.organizationBillingType ??
+    account?.billingType ??
+    null;
+  const rawDisabledReason = String(input.extraUsageDisabledReason ?? "").trim();
+  const disabledReason =
+    rawDisabledReason.length > 0
+      ? humanizeDelimitedLabel(rawDisabledReason)?.toLowerCase() ?? null
+      : null;
+
+  let summary = humanizeDelimitedLabel(rawPlan);
+  if (
+    summary &&
+    typeof account?.subscriptionCreatedAt === "string" &&
+    account.subscriptionCreatedAt.length >= 10
+  ) {
+    summary += ` since ${account.subscriptionCreatedAt.slice(0, 10)}`;
+  }
+
+  if (disabledReason) {
+    return summary
+      ? `${summary} | extra usage unavailable (${disabledReason})`
+      : `Extra usage unavailable (${disabledReason})`;
+  }
+
+  if (account?.hasExtraUsageEnabled) {
+    return summary ? `${summary} | extra usage enabled` : "Extra usage enabled";
+  }
+
+  return summary;
 }
 
 function codexQuotaFromWindow(window: unknown) {
@@ -368,25 +459,21 @@ function claudeMetadata(homePath: string): AccountMetadata {
 
   try {
     const auth = JSON.parse(fs.readFileSync(authPath, "utf8")) as {
-      oauthAccount?: {
-        emailAddress?: string | null;
-        displayName?: string | null;
-        organizationBillingType?: string | null;
-        hasExtraUsageEnabled?: boolean;
-      };
+      oauthAccount?: ClaudeOauthAccount;
+      cachedExtraUsageDisabledReason?: string | null;
     };
+    const authStatus = loadClaudeAuthStatus(homePath);
     const account = auth.oauthAccount;
-    let usageSummary: string | null = null;
-    if (account?.organizationBillingType) {
-      usageSummary = account.organizationBillingType;
-      if (account.hasExtraUsageEnabled) {
-        usageSummary += " + extra usage";
-      }
-    }
+    const usageSummary =
+      buildClaudeUsageSummary({
+        account,
+        authStatus,
+        extraUsageDisabledReason: auth.cachedExtraUsageDisabledReason,
+      }) ?? null;
 
     return {
-      authStorePath: path.join(homePath, ".claude"),
-      accountEmail: account?.emailAddress ?? null,
+      authStorePath: path.dirname(authPath),
+      accountEmail: authStatus?.email ?? account?.emailAddress ?? null,
       accountName: account?.displayName ?? null,
       usageSummary,
       remaining5hPercent: null,
