@@ -184,6 +184,14 @@ func (r *Runner) DeleteProviderAccount(accountID string) error {
 		return errors.New("default local account cannot be deleted; log out from the provider CLI if you want it removed")
 	}
 
+	if account.SlotIndex > 0 && account.HomePath != "" {
+		base := filepath.Base(account.HomePath)
+		prefix, ok := managedProviderHomePrefix(account.ProviderKey)
+		if ok && strings.HasPrefix(base, prefix) {
+			_ = os.RemoveAll(account.HomePath)
+		}
+	}
+
 	accounts = append(accounts[:accountIndex], accounts[accountIndex+1:]...)
 	if account.IsActive {
 		accounts, _ = ensureActiveAccountForProvider(accounts, account.ProviderKey)
