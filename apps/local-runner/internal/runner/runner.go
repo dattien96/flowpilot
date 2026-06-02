@@ -2921,9 +2921,11 @@ func launchProviderTerminalCommand(providerKey, accountHomePath, command string,
 
 	switch runtime.GOOS {
 	case "windows":
-		envPrefix := providerEnvSetCommand(providerKey, accountHomePath, "windows")
-		fullCommand := fmt.Sprintf("%s && %s", envPrefix, command)
-		cmd := exec.Command("cmd.exe", "/c", "start", "", "cmd.exe", "/k", fullCommand)
+		scriptPath, err := writeWindowsProviderTerminalScript(providerKey, accountHomePath, command)
+		if err != nil {
+			return err
+		}
+		cmd := exec.Command("cmd.exe", "/c", "start", "", "cmd.exe", "/k", scriptPath)
 		if err := cmd.Start(); err != nil {
 			return err
 		}
@@ -2992,6 +2994,40 @@ func singleQuoteForShell(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
 
+func doubleQuoteForCmd(value string) string {
+	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
+}
+
+func writeWindowsProviderTerminalScript(providerKey, accountHomePath, command string) (string, error) {
+	scriptFile, err := os.CreateTemp("", "flowpilot-provider-terminal-*.cmd")
+	if err != nil {
+		return "", err
+	}
+	defer scriptFile.Close()
+
+	script := strings.Join([]string{
+		"@echo off",
+		providerEnvSetCommand(providerKey, accountHomePath, "windows"),
+		command,
+		"",
+	}, "\r\n")
+
+	if _, err := scriptFile.WriteString(script); err != nil {
+		return "", err
+	}
+
+	return scriptFile.Name(), nil
+}
+
+func commandWithWindowsWorkingDirectory(command, workingDir string) string {
+	trimmedDir := strings.TrimSpace(workingDir)
+	if trimmedDir == "" {
+		return command
+	}
+
+	return fmt.Sprintf("cd /d %s && %s", doubleQuoteForCmd(trimmedDir), command)
+}
+
 func commandWithWorkingDirectory(command, workingDir string) string {
 	trimmedDir := strings.TrimSpace(workingDir)
 	if trimmedDir == "" {
@@ -3000,7 +3036,7 @@ func commandWithWorkingDirectory(command, workingDir string) string {
 
 	switch runtime.GOOS {
 	case "windows":
-		return fmt.Sprintf("cd /d %s && %s", trimmedDir, command)
+		return commandWithWindowsWorkingDirectory(command, trimmedDir)
 	default:
 		return fmt.Sprintf("cd %s && %s", singleQuoteForShell(trimmedDir), command)
 	}
@@ -3142,14 +3178,23 @@ func (r *Runner) StartInteractiveAuth(providerKey string, accountHomePath string
 		return fmt.Errorf("provider binary %q not found: %w", spec.BinaryName, err)
 	}
 
+	authInvocation := binaryPath
+	if runtime.GOOS == "windows" {
+		authInvocation = doubleQuoteForCmd(binaryPath)
+		lowerPath := strings.ToLower(binaryPath)
+		if strings.HasSuffix(lowerPath, ".cmd") || strings.HasSuffix(lowerPath, ".bat") {
+			authInvocation = "call " + authInvocation
+		}
+	}
+
 	var authCommand string
 	switch strings.ToLower(providerKey) {
 	case "claude":
-		authCommand = fmt.Sprintf("%s login", binaryPath)
+		authCommand = fmt.Sprintf("%s login", authInvocation)
 	case "codex":
-		authCommand = fmt.Sprintf("%s login", binaryPath)
+		authCommand = fmt.Sprintf("%s login", authInvocation)
 	case "gemini":
-		authCommand = binaryPath
+		authCommand = authInvocation
 	default:
 		return fmt.Errorf("provider %s does not support interactive CLI login", providerKey)
 	}
@@ -3168,7 +3213,16 @@ func (r *Runner) StartInteractiveTest(providerKey string, accountHomePath string
 		return fmt.Errorf("provider binary %q not found: %w", spec.BinaryName, err)
 	}
 
-	testCommand := commandWithWorkingDirectory(binaryPath, r.workspace)
+	testInvocation := binaryPath
+	if runtime.GOOS == "windows" {
+		testInvocation = doubleQuoteForCmd(binaryPath)
+		lowerPath := strings.ToLower(binaryPath)
+		if strings.HasSuffix(lowerPath, ".cmd") || strings.HasSuffix(lowerPath, ".bat") {
+			testInvocation = "call " + testInvocation
+		}
+	}
+
+	testCommand := commandWithWorkingDirectory(testInvocation, r.workspace)
 	return launchProviderTerminalCommand(providerKey, accountHomePath, testCommand, true)
 }
 
@@ -3184,9 +3238,19 @@ func providerEnvSetCommand(providerKey, homePath, shellType string) string {
 	case "windows":
 		switch strings.ToLower(providerKey) {
 		case "codex":
-			return fmt.Sprintf("set CODEX_HOME=%s && set HOME=%s", homePath, homePath)
+			return strings.Join([]string{
+				fmt.Sprintf("set CODEX_HOME=%s", homePath),
+				fmt.Sprintf("set HOME=%s", homePath),
+				fmt.Sprintf("set USERPROFILE=%s", homePath),
+			}, "\r\n")
 		default:
-			return fmt.Sprintf("set USERPROFILE=%s && set APPDATA=%s\\AppData\\Roaming", homePath, homePath)
+			return strings.Join([]string{
+				fmt.Sprintf("set HOME=%s", homePath),
+				fmt.Sprintf("set USERPROFILE=%s", homePath),
+				fmt.Sprintf("set APPDATA=%s\\AppData\\Roaming", homePath),
+				fmt.Sprintf("set LOCALAPPDATA=%s\\AppData\\Local", homePath),
+				fmt.Sprintf("set XDG_CONFIG_HOME=%s\\.config", homePath),
+			}, "\r\n")
 		}
 	default:
 		return ""

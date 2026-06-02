@@ -1885,6 +1885,34 @@ func TestProviderInstallCommandMatrix(t *testing.T) {
 	})
 }
 
+func TestCommandWithWindowsWorkingDirectoryQuotesPath(t *testing.T) {
+	command := commandWithWindowsWorkingDirectory(
+		`call "C:\Users\Test User\AppData\Roaming\npm\claude.cmd"`,
+		`C:\working dir\flowpilot`,
+	)
+
+	want := `cd /d "C:\working dir\flowpilot" && call "C:\Users\Test User\AppData\Roaming\npm\claude.cmd"`
+	if command != want {
+		t.Fatalf("expected %q, got %q", want, command)
+	}
+}
+
+func TestProviderEnvSetCommandWindowsClaudeIncludesHomeStyleEnv(t *testing.T) {
+	command := providerEnvSetCommand("claude", `C:\Users\Test\.claudeHome1`, "windows")
+
+	for _, expected := range []string{
+		`set HOME=C:\Users\Test\.claudeHome1`,
+		`set USERPROFILE=C:\Users\Test\.claudeHome1`,
+		`set APPDATA=C:\Users\Test\.claudeHome1\AppData\Roaming`,
+		`set LOCALAPPDATA=C:\Users\Test\.claudeHome1\AppData\Local`,
+		`set XDG_CONFIG_HOME=C:\Users\Test\.claudeHome1\.config`,
+	} {
+		if !strings.Contains(command, expected) {
+			t.Fatalf("expected command to contain %q, got %q", expected, command)
+		}
+	}
+}
+
 func writeMockProviderBinary(t *testing.T, dir, name, version string) string {
 	t.Helper()
 
