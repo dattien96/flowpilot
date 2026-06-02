@@ -258,42 +258,81 @@ func geminiACPPromptParams(sessionID string, prompt string) map[string]interface
 	}
 }
 
+func extractGeminiACPText(message map[string]interface{}) string {
+	method, _ := message["method"].(string)
+	if method != "session/update" {
+		return ""
+	}
+
+	params, ok := message["params"].(map[string]interface{})
+	if !ok {
+		return ""
+	}
+
+	update, ok := params["update"].(map[string]interface{})
+	if !ok {
+		return ""
+	}
+
+	if updateType, _ := update["sessionUpdate"].(string); updateType != "agent_message_chunk" {
+		return ""
+	}
+
+	content, ok := update["content"].(map[string]interface{})
+	if !ok {
+		return ""
+	}
+
+	if contentType, _ := content["type"].(string); contentType != "text" {
+		return ""
+	}
+
+	if text, ok := content["text"].(string); ok {
+		return text
+	}
+
+	return ""
+}
+
 func appendGeminiACPText(output *strings.Builder, message map[string]interface{}) {
 	if output == nil {
 		return
 	}
 
-	method, _ := message["method"].(string)
-	if method != "session/update" {
-		return
+	output.WriteString(extractGeminiACPText(message))
+}
+
+func extractClaudeStreamText(line []byte) string {
+	var msg map[string]interface{}
+	if err := json.Unmarshal(bytes.TrimSpace(line), &msg); err != nil {
+		return ""
 	}
 
-	params, ok := message["params"].(map[string]interface{})
-	if !ok {
-		return
+	if delta, ok := msg["delta"].(map[string]interface{}); ok {
+		if text, ok := delta["text"].(string); ok {
+			return text
+		}
+	}
+	if text, ok := msg["text"].(string); ok {
+		return text
+	}
+	if message, ok := msg["message"].(map[string]interface{}); ok {
+		if content, ok := message["content"].([]interface{}); ok {
+			var builder strings.Builder
+			for _, entry := range content {
+				block, ok := entry.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				if text, ok := block["text"].(string); ok {
+					builder.WriteString(text)
+				}
+			}
+			return builder.String()
+		}
 	}
 
-	update, ok := params["update"].(map[string]interface{})
-	if !ok {
-		return
-	}
-
-	if updateType, _ := update["sessionUpdate"].(string); updateType != "agent_message_chunk" {
-		return
-	}
-
-	content, ok := update["content"].(map[string]interface{})
-	if !ok {
-		return
-	}
-
-	if contentType, _ := content["type"].(string); contentType != "text" {
-		return
-	}
-
-	if text, ok := content["text"].(string); ok {
-		output.WriteString(text)
-	}
+	return ""
 }
 
 func readClaudeStreamResult(output []byte) (map[string]interface{}, error) {
@@ -543,6 +582,19 @@ func (r *Runner) StartSession(ctx context.Context, req AiSessionStartRequest) (A
 }
 
 func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (PromptExecutionResult, error) {
+	return r.SendMessageWithCallback(ctx, req, nil)
+}
+
+func (r *Runner) SendMessageWithCallback(ctx context.Context, req AiSessionMessageRequest, callback SessionStreamCallback) (PromptExecutionResult, error) {
+	if callback == nil {
+		callback = req.StreamCallback
+	}
+	emit := func(event SessionStreamEvent) {
+		if callback != nil {
+			callback(event)
+		}
+	}
+
 	if req.Session.ProcessKey == nil {
 		return PromptExecutionResult{}, fmt.Errorf("session process key is required")
 	}
@@ -607,7 +659,11 @@ func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (
 			}
 			return PromptExecutionResult{}, fmt.Errorf("session_dead: failed to send MCP tool call: %w", err)
 		}
-		resp, err := readJsonRpcResponse(session.StdoutScanner, 3)
+		resp, err := readJsonRpcResponseWithHandler(session.StdoutScanner, 3, func(msg map[string]interface{}) {
+			if raw, err := json.Marshal(msg); err == nil {
+				emit(SessionStreamEvent{Type: "chunk", Stream: "stdout", Message: string(raw)})
+			}
+		})
 		if err != nil {
 			if terminationErr := sessionTerminationError(session); terminationErr != nil {
 				return PromptExecutionResult{}, terminationErr
@@ -649,7 +705,11 @@ func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (
 		}
 		var streamedOutput strings.Builder
 		resp, err := readJsonRpcResponseWithHandler(session.StdoutScanner, 3, func(msg map[string]interface{}) {
-			appendGeminiACPText(&streamedOutput, msg)
+			text := extractGeminiACPText(msg)
+			if text != "" {
+				streamedOutput.WriteString(text)
+				emit(SessionStreamEvent{Type: "chunk", Stream: "stdout", Message: text})
+			}
 		})
 		if err != nil {
 			if terminationErr := sessionTerminationError(session); terminationErr != nil {
@@ -717,10 +777,20 @@ func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (
 			return PromptExecutionResult{}, fmt.Errorf("provider error: failed to create Claude stdin pipe: %w", err)
 		}
 
+		stdoutPipe, err := cmd.StdoutPipe()
+		if err != nil {
+			_ = stdin.Close()
+			return PromptExecutionResult{}, fmt.Errorf("provider error: failed to create Claude stdout pipe: %w", err)
+		}
+		stderrPipe, err := cmd.StderrPipe()
+		if err != nil {
+			_ = stdin.Close()
+			return PromptExecutionResult{}, fmt.Errorf("provider error: failed to create Claude stderr pipe: %w", err)
+		}
 		var stdout bytes.Buffer
 		var stderr bytes.Buffer
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
+		var captureMu sync.Mutex
+		var captureWg sync.WaitGroup
 
 		session.Mu.Lock()
 		if session.Status == "completed" {
@@ -737,6 +807,39 @@ func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (
 			_ = stdin.Close()
 			return PromptExecutionResult{}, fmt.Errorf("provider error: failed to start Claude print command: %w", err)
 		}
+		captureWg.Add(2)
+		go func() {
+			defer captureWg.Done()
+			scanner := bufio.NewScanner(stdoutPipe)
+			buf := make([]byte, 64*1024)
+			scanner.Buffer(buf, 10*1024*1024)
+			for scanner.Scan() {
+				line := append([]byte(nil), scanner.Bytes()...)
+				captureMu.Lock()
+				stdout.Write(line)
+				stdout.WriteByte('\n')
+				captureMu.Unlock()
+				if text := extractClaudeStreamText(line); text != "" {
+					emit(SessionStreamEvent{Type: "chunk", Stream: "stdout", Message: text})
+				} else {
+					emit(SessionStreamEvent{Type: "chunk", Stream: "stdout", Message: string(line)})
+				}
+			}
+		}()
+		go func() {
+			defer captureWg.Done()
+			scanner := bufio.NewScanner(stderrPipe)
+			buf := make([]byte, 64*1024)
+			scanner.Buffer(buf, 10*1024*1024)
+			for scanner.Scan() {
+				line := append([]byte(nil), scanner.Bytes()...)
+				captureMu.Lock()
+				stderr.Write(line)
+				stderr.WriteByte('\n')
+				captureMu.Unlock()
+				emit(SessionStreamEvent{Type: "chunk", Stream: "stderr", Message: string(line)})
+			}
+		}()
 		session.Cmd = cmd
 		if cmd.Process != nil {
 			session.Pid = cmd.Process.Pid
@@ -789,6 +892,7 @@ func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (
 		}
 
 		err = cmd.Wait()
+		captureWg.Wait()
 
 		session.Mu.Lock()
 		session.Cmd = nil
@@ -799,16 +903,21 @@ func (r *Runner) SendMessage(ctx context.Context, req AiSessionMessageRequest) (
 			if terminationErr := sessionTerminationError(session); terminationErr != nil {
 				return PromptExecutionResult{}, terminationErr
 			}
+			captureMu.Lock()
 			stderrText := strings.TrimSpace(stderr.String())
+			captureMu.Unlock()
 			if stderrText != "" {
 				return PromptExecutionResult{}, fmt.Errorf("provider error: %s", stderrText)
 			}
 			return PromptExecutionResult{}, fmt.Errorf("provider error: Claude print command failed: %w", err)
 		}
 
-		outputBytes := bytes.TrimSpace(stdout.Bytes())
+		captureMu.Lock()
+		outputBytes := bytes.TrimSpace(append([]byte(nil), stdout.Bytes()...))
+		stderrText := strings.TrimSpace(stderr.String())
+		captureMu.Unlock()
 		if len(outputBytes) == 0 {
-			if stderrText := strings.TrimSpace(stderr.String()); stderrText != "" {
+			if stderrText != "" {
 				return PromptExecutionResult{}, fmt.Errorf("provider error: %s", stderrText)
 			}
 			return PromptExecutionResult{}, fmt.Errorf("provider error: Claude response was empty")

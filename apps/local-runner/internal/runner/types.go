@@ -245,6 +245,18 @@ type PromptExecutionResult struct {
 	ErrorMessage      string   `json:"errorMessage"`
 }
 
+type SessionStreamEvent struct {
+	Type    string                 `json:"type"`
+	Stream  string                 `json:"stream,omitempty"`
+	Message string                 `json:"message,omitempty"`
+	Result  *PromptExecutionResult `json:"result,omitempty"`
+	Error   string                 `json:"error,omitempty"`
+	Code    string                 `json:"code,omitempty"`
+	Details string                 `json:"details,omitempty"`
+}
+
+type SessionStreamCallback func(SessionStreamEvent)
+
 type AiSessionStartRequest struct {
 	ProviderKey             string            `json:"providerKey"`
 	ModelName               string            `json:"modelName"`
@@ -268,9 +280,10 @@ type AiSessionHandle struct {
 }
 
 type AiSessionMessageRequest struct {
-	Session          AiSessionHandle `json:"session"`
-	Prompt           string          `json:"prompt"`
-	SkillIds         []string        `json:"skillIds"`
-	ContextSourceIds []string        `json:"contextSourceIds"`
-	IdleTTLSeconds   *int            `json:"idleTTLSeconds,omitempty"`
+	Session          AiSessionHandle       `json:"session"`
+	Prompt           string                `json:"prompt"`
+	SkillIds         []string              `json:"skillIds"`
+	ContextSourceIds []string              `json:"contextSourceIds"`
+	IdleTTLSeconds   *int                  `json:"idleTTLSeconds,omitempty"`
+	StreamCallback   SessionStreamCallback `json:"-"`
 }

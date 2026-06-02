@@ -107,6 +107,28 @@ function renderSubject(props: Partial<Parameters<typeof AiProvidersContent>[0]> 
       <AiProvidersContent
         health={buildHealth()}
         providers={[buildProvider()]}
+        supportedModels={[
+          {
+            id: "model-1",
+            providerKey: "codex",
+            modelId: "gpt-5.5",
+            displayName: "gpt-5.5",
+            isEnabled: true,
+            sortOrder: 1,
+            source: "registry",
+            createdAt: "2026-05-30T00:00:00Z",
+          },
+          {
+            id: "model-2",
+            providerKey: "codex",
+            modelId: "gpt-5.4",
+            displayName: "gpt-5.4",
+            isEnabled: false,
+            sortOrder: 2,
+            source: "registry",
+            createdAt: "2026-05-30T00:00:00Z",
+          },
+        ]}
         {...props}
       />
     </QueryClientProvider>,
@@ -139,8 +161,8 @@ describe("AI Providers settings", () => {
     expect(screen.getByText("Codex")).toBeInTheDocument();
     expect(screen.getByText("INSTALLED")).toBeInTheDocument();
     expect(screen.getByText("READY")).toBeInTheDocument();
-    expect(screen.getByText("gpt-5.5")).toBeInTheDocument();
-    expect(screen.getByText("gpt-5.4")).toBeInTheDocument();
+    expect(screen.getAllByText("gpt-5.5")[0]).toBeInTheDocument();
+    expect(screen.getAllByText("gpt-5.4")[0]).toBeInTheDocument();
   });
 
   it("refresh button re-detects provider state via GET /providers without calling install", async () => {

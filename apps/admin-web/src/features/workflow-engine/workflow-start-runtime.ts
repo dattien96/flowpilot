@@ -5,7 +5,10 @@ import path from "node:path";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type { LocalRunnerGateway } from "@/domain/gateway/local-runner-gateway";
-import type { LocalRunnerPromptExecutionResult } from "@/domain/model/entity/local-runner";
+import type {
+  LocalRunnerPromptExecutionResult,
+  LocalRunnerSessionStreamEvent,
+} from "@/domain/model/entity/local-runner";
 import {
   deriveStepPromptBase,
   isSupportedStepModel,
@@ -857,14 +860,21 @@ export async function sendMessageWithRetry({
   let currentPrompt = prompt;
 
   while (attempt <= maxAttempts) {
+    const streamLogger = createProviderStreamLogger(adminClient, stepRunId);
     try {
-      const result = await localRunnerGateway.sendMessage({
-        session: handle,
-        prompt: currentPrompt,
-        skillIds,
-        contextSourceIds: [],
-        idleTTLSeconds,
-      });
+      const result = await localRunnerGateway.sendMessage(
+        {
+          session: handle,
+          prompt: currentPrompt,
+          skillIds,
+          contextSourceIds: [],
+          idleTTLSeconds,
+        },
+        {
+          onStream: streamLogger.handle,
+        },
+      );
+      await streamLogger.flush();
 
       if (isThreadMissingOutput(result.outputMarkdown)) {
         throw new Error(`provider error: ${result.outputMarkdown}`);
@@ -904,6 +914,7 @@ export async function sendMessageWithRetry({
         sessionDbId: handle.dbId,
       };
     } catch (error) {
+      await streamLogger.flush();
       const msg = String((error as any).message || "").toLowerCase();
       const isSessionDead = (error as any).code === "session_dead";
       const isSessionTerminated = (error as any).code === "session_terminated";
@@ -1203,6 +1214,45 @@ function buildWorkflowSessionLogMessage(
   details: Record<string, unknown>,
 ) {
   return `session_event:${JSON.stringify({ event, ...details })}`;
+}
+
+function buildProviderStreamLogMessage(stream: string, text: string) {
+  return `provider_stream:${JSON.stringify({ stream, text })}`;
+}
+
+function createProviderStreamLogger(
+  adminClient: SupabaseClient,
+  workflowRunStepId: string,
+) {
+  let pending = "";
+  let stream = "stdout";
+
+  const flush = async () => {
+    const text = pending;
+    pending = "";
+    if (!text.trim()) return;
+    await insertLog(
+      adminClient,
+      workflowRunStepId,
+      stream === "stderr" ? "warn" : "debug",
+      buildProviderStreamLogMessage(stream, text),
+    );
+  };
+
+  return {
+    async handle(event: LocalRunnerSessionStreamEvent) {
+      if (event.type !== "chunk" || !event.message) return;
+      if (event.stream && event.stream !== stream && pending.trim()) {
+        await flush();
+      }
+      if (event.stream) stream = event.stream;
+      pending += event.message;
+      if (pending.length >= 1200 || event.message.includes("\n")) {
+        await flush();
+      }
+    },
+    flush,
+  };
 }
 
 async function writeWorkflowSessionLog({

@@ -488,10 +488,10 @@ describe("workflow-start-runtime", () => {
       }));
       expect(mockSendMessage).toHaveBeenNthCalledWith(1, expect.objectContaining({
         idleTTLSeconds: 60,
-      }));
+      }), expect.any(Object));
       expect(mockSendMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
         idleTTLSeconds: 60,
-      }));
+      }), expect.any(Object));
       expect(result.outputMarkdown).toBe("success");
       expect(result.actualPromptText).toBe("hello");
     });
@@ -782,31 +782,31 @@ describe("workflow-start-runtime", () => {
       }));
       expect(mockSendMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
         prompt: expect.stringContaining("# Previous Conversation Context")
-      }));
+      }), expect.any(Object));
       expect(mockSendMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
         prompt: expect.stringContaining("## Prompt Path 1")
-      }));
+      }), expect.any(Object));
       expect(mockSendMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
         prompt: expect.stringContaining("## Output Content Path 1")
-      }));
+      }), expect.any(Object));
       expect(mockSendMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
         prompt: expect.stringContaining("/repo/.flowpilot/artifacts/run-1/step-1/.snapshots/snap-1/prompt.md")
-      }));
+      }), expect.any(Object));
       expect(mockSendMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
         prompt: expect.stringContaining("/repo/.flowpilot/artifacts/run-1/step-1/.snapshots/snap-1/BusinessIdea.md")
-      }));
+      }), expect.any(Object));
       expect(mockSendMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
         prompt: expect.stringContaining("## Artifact Output Path 1")
-      }));
+      }), expect.any(Object));
       expect(mockSendMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
         prompt: expect.stringContaining("/repo/.flowpilot/artifacts/run-1/step-1/BusinessIdea.md")
-      }));
+      }), expect.any(Object));
       expect(mockSendMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
         prompt: expect.stringContaining("new-prompt")
-      }));
+      }), expect.any(Object));
       expect(mockSendMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
         prompt: expect.not.stringContaining("## Assistant Reply")
-      }));
+      }), expect.any(Object));
       expect(result.actualPromptText).toContain("# Previous Conversation Context");
     });
 
@@ -912,12 +912,14 @@ describe("workflow-start-runtime", () => {
         expect.objectContaining({
           prompt: expect.stringContaining("# Previous Conversation Context"),
         }),
+        expect.any(Object),
       );
       expect(mockSendMessage).toHaveBeenNthCalledWith(
         2,
         expect.objectContaining({
           prompt: expect.stringContaining("/repo/.flowpilot/artifacts/run-1/step-1/.snapshots/snap-1/prompt.md"),
         }),
+        expect.any(Object),
       );
       expect(result.actualPromptText).toContain("# Previous Conversation Context");
     });

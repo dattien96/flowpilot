@@ -1,0 +1,1 @@
+When navigate to Account Page, there no loading UI, so it just blank page, fix it

@@ -205,6 +205,20 @@ export interface LocalRunnerPromptExecutionResult {
   errorMessage: string | null;
 }
 
+export interface LocalRunnerSessionStreamEvent {
+  type: "chunk" | "result" | "error";
+  stream?: "stdout" | "stderr" | string;
+  message?: string;
+  result?: LocalRunnerPromptExecutionResult;
+  error?: string;
+  code?: string;
+  details?: string;
+}
+
+export interface LocalRunnerStreamOptions {
+  onStream?: (event: LocalRunnerSessionStreamEvent) => void | Promise<void>;
+}
+
 export interface LocalRunnerIntegrationConnectionRequest {
   projectId: string;
   integrationId: string;
