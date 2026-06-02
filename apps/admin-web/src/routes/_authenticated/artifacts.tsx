@@ -5,10 +5,13 @@ import { PageFrame } from "@/components/common/page-frame";
 import { Button } from "@/components/ui/button";
 import { createGatewayBundle } from "@/data/repository/browser-factory";
 import type { LocalRunnerStorageDriver } from "@/domain/model/entity/local-runner";
+import type { Project } from "@/domain/model/entity/project";
+import { ListProjectsUseCase } from "@/domain/usecase/projects/list-projects-usecase";
 import type { ArtifactDefinition } from "@/domain/model/entity/workflow-engine";
 import { GetStorageDriverUseCase } from "@/domain/usecase/artifacts/get-storage-driver-usecase";
 import { ListArtifactDefinitionsUseCase } from "@/domain/usecase/workflow-engine/list-artifact-definitions-usecase";
 import { SaveArtifactDefinitionUseCase } from "@/domain/usecase/workflow-engine/save-artifact-definition-usecase";
+import { ArtifactCloudStoragePanel } from "@/presentation/components/artifacts/artifact-cloud-storage-panel";
 import { ArtifactStoragePanel } from "@/presentation/components/artifacts/artifact-storage-panel";
 
 export const Route = createFileRoute("/_authenticated/artifacts")({
@@ -27,25 +30,32 @@ export function ArtifactsPage() {
   const getStorageDriverUseCase = useRef(
     new GetStorageDriverUseCase(gatewayBundle.current.localRunnerGateway)
   );
+  const listProjectsUseCase = useRef(
+    new ListProjectsUseCase(gatewayBundle.current.projectGateway)
+  );
 
   const [loading, setLoading] = useState(true);
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [storageDriver, setStorageDriver] = useState<LocalRunnerStorageDriver | null>(null);
   const [artifactDefinitions, setArtifactDefinitions] = useState<ArtifactDefinition[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
 
   useEffect(() => {
     const load = async () => {
       setLoading(true);
       try {
-        const [definitions, driver] = await Promise.all([
+        const [definitions, driver, loadedProjects] = await Promise.all([
           listArtifactDefinitionsUseCase.current.execute(),
           getStorageDriverUseCase.current.execute(),
+          listProjectsUseCase.current.execute(),
         ]);
         setArtifactDefinitions(definitions);
         setStorageDriver(driver);
+        setProjects(loadedProjects);
       } catch {
         setArtifactDefinitions([]);
         setStorageDriver(null);
+        setProjects([]);
       } finally {
         setLoading(false);
       }
@@ -103,6 +113,7 @@ export function ArtifactsPage() {
       }
     >
       <div className="space-y-6">
+        {projects.length > 0 ? <ArtifactCloudStoragePanel projects={projects} /> : null}
         {storageDriver ? <ArtifactStoragePanel storageDriver={storageDriver} /> : null}
 
         <section className="rounded-[1.6rem] border border-border/60 bg-card/45 p-6 backdrop-blur-sm shadow-sm">

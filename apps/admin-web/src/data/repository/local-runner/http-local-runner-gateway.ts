@@ -2,6 +2,7 @@ import { mapProvider, type RawProvider } from "./local-runner-mappers";
 import type { LocalRunnerGateway } from "@/domain/gateway/local-runner-gateway";
 import type {
   LocalRunnerArtifact,
+  LocalRunnerArtifactCloudSyncResult,
   LocalRunnerBackupResult,
   LocalRunnerDirectorySelection,
   LocalRunnerFlow,
@@ -314,6 +315,44 @@ export class HttpLocalRunnerGateway implements LocalRunnerGateway {
     }
 
     return (await response.json()) as LocalRunnerMcpTestResult;
+  }
+
+  async exportArtifactSyncBundle(artifactId: string) {
+    const response = await fetch(new URL(`/artifacts/${artifactId}/sync-bundle`, this.baseUrl), {
+      method: "GET",
+      cache: "no-store",
+    });
+
+    if (!response.ok) {
+      throw new Error(`Artifact sync bundle export failed: ${response.status} ${response.statusText}`);
+    }
+
+    return await response.arrayBuffer();
+  }
+
+  async saveArtifactCloudSyncResult(
+    artifactId: string,
+    result: LocalRunnerArtifactCloudSyncResult,
+  ) {
+    const response = await fetch(
+      new URL(`/artifacts/${artifactId}/cloud-sync-result`, this.baseUrl),
+      {
+        method: "PUT",
+        cache: "no-store",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(result),
+      },
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `Artifact cloud sync result save failed: ${response.status} ${response.statusText}`,
+      );
+    }
+
+    return (await response.json()) as LocalRunnerArtifact;
   }
 
   async syncArtifact(artifactId: string) {

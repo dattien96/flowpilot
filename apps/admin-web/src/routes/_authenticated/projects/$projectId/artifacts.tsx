@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo } from "react";
+import { ExternalLink } from "lucide-react";
 
 import { PageFrame } from "@/components/common/page-frame";
 import { ProjectSectionNav } from "@/components/project/project-section-nav";
@@ -132,6 +133,17 @@ function ProjectArtifactsContent({
                           <p>Remote: {artifact.remotePath || "Not synced"}</p>
                           <p>Remote URL: {artifact.remoteUrl || "Not synced"}</p>
                           <p>Updated: {new Date(artifact.updatedAt).toLocaleString()}</p>
+                        </div>
+                        <div className="mt-4">
+                          <a
+                            className="inline-flex items-center gap-2 rounded-full border border-border px-4 py-2 text-sm font-semibold hover:bg-muted"
+                            href={`/api/local-runner/artifacts/${artifact.id}/open`}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            <ExternalLink className="size-4" />
+                            Open artifact
+                          </a>
                         </div>
                       </div>
                     ))}

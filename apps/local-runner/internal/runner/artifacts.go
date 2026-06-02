@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -19,8 +20,22 @@ const (
 	artifactSourcePromptExecution = "prompt_execution"
 	artifactSyncStatusLocalOnly   = "local_only"
 	artifactSyncStatusSynced      = "synced"
+	artifactSyncStatusFailed      = "failed"
 	artifactStorageDriverKey      = "filesystem"
 )
+
+var (
+	artifactSyncBundleMaxEntries         = 1024
+	artifactSyncBundleMaxEntrySize int64 = 16 << 20
+	artifactSyncBundleMaxTotalSize int64 = 128 << 20
+)
+
+type artifactDiskFile struct {
+	absolutePath string
+	relativePath string
+	size         int64
+	info         fs.FileInfo
+}
 
 func (r *Runner) ListArtifacts() ([]ArtifactSummary, error) {
 	manifests, err := r.loadArtifactDetails()
@@ -49,6 +64,112 @@ func (r *Runner) GetArtifact(artifactID string) (ArtifactDetail, error) {
 	}
 
 	return ArtifactDetail{}, os.ErrNotExist
+}
+
+func (r *Runner) WriteArtifactSyncBundle(artifactID string, writer io.Writer) (err error) {
+	artifact, err := r.GetArtifact(artifactID)
+	if err != nil {
+		return err
+	}
+
+	rootPath := filepath.Clean(artifact.LocalPath)
+	info, err := os.Stat(rootPath)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("artifact path is not a directory: %s", rootPath)
+	}
+	entries, err := collectArtifactDiskFiles(rootPath)
+	if err != nil {
+		return err
+	}
+
+	zipWriter := zip.NewWriter(writer)
+	defer func() {
+		closeErr := zipWriter.Close()
+		if err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}()
+
+	for _, entry := range entries {
+		file, openErr := os.Open(entry.absolutePath)
+		if openErr != nil {
+			return openErr
+		}
+
+		header, headerErr := zip.FileInfoHeader(entry.info)
+		if headerErr != nil {
+			file.Close()
+			return headerErr
+		}
+		header.Name = entry.relativePath
+		header.Method = zip.Deflate
+
+		zipEntry, createErr := zipWriter.CreateHeader(header)
+		if createErr != nil {
+			file.Close()
+			return createErr
+		}
+
+		if _, copyErr := io.Copy(zipEntry, file); copyErr != nil {
+			file.Close()
+			return copyErr
+		}
+		if closeErr := file.Close(); closeErr != nil {
+			return closeErr
+		}
+	}
+
+	return nil
+}
+
+func (r *Runner) SaveArtifactCloudSyncResult(artifactID string, result ArtifactCloudSyncResult) (ArtifactDetail, error) {
+	artifact, err := r.GetArtifact(artifactID)
+	if err != nil {
+		return ArtifactDetail{}, err
+	}
+
+	status := strings.ToLower(strings.TrimSpace(result.SyncStatus))
+	switch status {
+	case artifactSyncStatusSynced, artifactSyncStatusFailed:
+	default:
+		return ArtifactDetail{}, fmt.Errorf("unsupported artifact cloud sync status %q", result.SyncStatus)
+	}
+
+	updated := artifact
+	updated.SyncStatus = status
+	updated.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	updated.RemoteURL = ""
+
+	if status == artifactSyncStatusSynced {
+		updated.StorageProvider = strings.TrimSpace(result.StorageProvider)
+		updated.RemotePath = strings.TrimSpace(result.RemotePath)
+		updated.RemoteObjectID = strings.TrimSpace(result.RemoteObjectID)
+		if updated.StorageProvider == "" {
+			return ArtifactDetail{}, errors.New("storage provider is required for a successful cloud sync result")
+		}
+		if updated.RemotePath == "" {
+			return ArtifactDetail{}, errors.New("remote path is required for a successful cloud sync result")
+		}
+	} else {
+		if hasCloudSyncMetadata(artifact) {
+			updated.StorageProvider = artifact.StorageProvider
+			updated.RemotePath = artifact.RemotePath
+			updated.RemoteObjectID = artifact.RemoteObjectID
+		} else {
+			updated.StorageProvider = strings.TrimSpace(result.StorageProvider)
+			updated.RemotePath = strings.TrimSpace(result.RemotePath)
+			updated.RemoteObjectID = strings.TrimSpace(result.RemoteObjectID)
+		}
+	}
+
+	if err := updated.writeManifest(updated.ManifestPath); err != nil {
+		return ArtifactDetail{}, err
+	}
+
+	return updated, nil
 }
 
 func (r *Runner) SavePromptArtifact(request PromptExecutionRequest, result PromptExecutionResult) (ArtifactDetail, error) {
@@ -196,12 +317,26 @@ func (r *Runner) ValidateStorageDriver() (StorageDriverConfig, error) {
 	return config, nil
 }
 
-func (r *Runner) SyncArtifact(artifactID string) (ArtifactDetail, error) {
+func (r *Runner) SyncArtifact(artifactID string, request ArtifactSyncRequest) (ArtifactDetail, error) {
 	artifact, err := r.GetArtifact(artifactID)
 	if err != nil {
 		return ArtifactDetail{}, err
 	}
 
+	storageProvider := strings.ToLower(strings.TrimSpace(request.StorageProvider))
+	switch storageProvider {
+	case "", artifactStorageDriverKey:
+		return r.syncArtifactToFilesystem(artifact)
+	case "supabase":
+		return r.syncArtifactToSupabase(artifact)
+	case "google_drive":
+		return r.syncArtifactToGoogleDrive(artifact, request)
+	default:
+		return ArtifactDetail{}, fmt.Errorf("unsupported artifact storage provider %q", request.StorageProvider)
+	}
+}
+
+func (r *Runner) syncArtifactToFilesystem(artifact ArtifactDetail) (ArtifactDetail, error) {
 	config, err := r.loadStorageDriverConfig()
 	if err != nil {
 		return ArtifactDetail{}, err
@@ -600,6 +735,75 @@ func (r *Runner) storageDriverConfigPath() string {
 	return filepath.Join(r.workspace, ".flowpilot", "settings", "storage-driver.json")
 }
 
+func collectArtifactDiskFiles(rootPath string) ([]artifactDiskFile, error) {
+	entries := make([]artifactDiskFile, 0)
+	walkErr := filepath.WalkDir(rootPath, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("symlinks are not allowed in artifact bundles: %s", path)
+		}
+
+		fileInfo, err := os.Stat(path)
+		if err != nil {
+			return err
+		}
+		relativePath, err := filepath.Rel(rootPath, path)
+		if err != nil {
+			return err
+		}
+		cleanRelativePath := filepath.Clean(relativePath)
+		if cleanRelativePath == "." ||
+			cleanRelativePath == ".." ||
+			strings.HasPrefix(cleanRelativePath, ".."+string(os.PathSeparator)) ||
+			filepath.IsAbs(cleanRelativePath) {
+			return fmt.Errorf("path traversal detected in artifact bundle: %s", relativePath)
+		}
+		if fileInfo.Size() > artifactSyncBundleMaxEntrySize {
+			return fmt.Errorf("artifact bundle entry %s exceeds maximum size", relativePath)
+		}
+
+		entries = append(entries, artifactDiskFile{
+			absolutePath: path,
+			relativePath: filepath.ToSlash(cleanRelativePath),
+			size:         fileInfo.Size(),
+			info:         fileInfo,
+		})
+		return nil
+	})
+	if walkErr != nil {
+		return nil, walkErr
+	}
+
+	sort.Slice(entries, func(left, right int) bool {
+		return entries[left].relativePath < entries[right].relativePath
+	})
+
+	if len(entries) > artifactSyncBundleMaxEntries {
+		return nil, fmt.Errorf(
+			"artifact bundle exceeds maximum entry count of %d",
+			artifactSyncBundleMaxEntries,
+		)
+	}
+
+	var totalSize int64
+	for _, entry := range entries {
+		totalSize += entry.size
+		if totalSize > artifactSyncBundleMaxTotalSize {
+			return nil, fmt.Errorf(
+				"artifact bundle exceeds maximum total size of %d bytes",
+				artifactSyncBundleMaxTotalSize,
+			)
+		}
+	}
+
+	return entries, nil
+}
+
 func filterArtifactsForBackup(artifacts []ArtifactDetail, request BackupRequest) []ArtifactDetail {
 	scope := strings.TrimSpace(request.Scope)
 	if scope == "" || scope == "all" {
@@ -693,4 +897,8 @@ func scopeOrAll(scope string) string {
 	}
 
 	return scope
+}
+
+func hasCloudSyncMetadata(detail ArtifactDetail) bool {
+	return strings.TrimSpace(detail.StorageProvider) != "" && strings.TrimSpace(detail.RemotePath) != ""
 }

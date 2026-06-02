@@ -79,6 +79,8 @@ type ArtifactSummary struct {
 	WorkflowRunID   string `json:"workflowRunId"`
 	WorkflowStepKey string `json:"workflowStepKey"`
 	ProviderKey     string `json:"providerKey"`
+	StorageProvider string `json:"storageProvider,omitempty"`
+	RemoteObjectID  string `json:"remoteObjectId,omitempty"`
 	LocalPath       string `json:"localPath"`
 	RemotePath      string `json:"remotePath"`
 	RemoteURL       string `json:"remoteUrl"`
@@ -104,6 +106,81 @@ type ArtifactDetail struct {
 	StdoutText       string `json:"stdoutText,omitempty"`
 	StderrText       string `json:"stderrText,omitempty"`
 	CommandText      string `json:"commandText,omitempty"`
+}
+
+type ArtifactCloudSyncResult struct {
+	StorageProvider string `json:"storageProvider"`
+	RemotePath      string `json:"remotePath"`
+	RemoteObjectID  string `json:"remoteObjectId,omitempty"`
+	SyncStatus      string `json:"syncStatus"`
+	ErrorMessage    string `json:"errorMessage,omitempty"`
+}
+
+type ArtifactSyncRequest struct {
+	StorageProvider          string `json:"storageProvider,omitempty"`
+	GoogleDriveIntegrationID string `json:"googleDriveIntegrationId,omitempty"`
+	GoogleDriveProjectID     string `json:"googleDriveProjectId,omitempty"`
+	GoogleDriveFolderID      string `json:"googleDriveFolderId,omitempty"`
+	GoogleDriveDriveID       string `json:"googleDriveDriveId,omitempty"`
+}
+
+type ArtifactStorageGoogleDriveConnectRequest struct {
+	ProjectID string `json:"projectId"`
+	BaseURL   string `json:"baseUrl,omitempty"`
+}
+
+type ArtifactStorageGoogleDriveSessionStatus string
+
+const (
+	ArtifactStorageGoogleDriveSessionPending              ArtifactStorageGoogleDriveSessionStatus = "pending"
+	ArtifactStorageGoogleDriveSessionAwaitingOAuth        ArtifactStorageGoogleDriveSessionStatus = "awaiting_oauth"
+	ArtifactStorageGoogleDriveSessionAwaitingFolderPicker ArtifactStorageGoogleDriveSessionStatus = "awaiting_folder_selection"
+	ArtifactStorageGoogleDriveSessionConnected            ArtifactStorageGoogleDriveSessionStatus = "connected"
+	ArtifactStorageGoogleDriveSessionFailed               ArtifactStorageGoogleDriveSessionStatus = "failed"
+	ArtifactStorageGoogleDriveSessionExpired              ArtifactStorageGoogleDriveSessionStatus = "expired"
+	artifactStorageGoogleDriveDefaultSessionTTL                                                   = 10 * 60
+)
+
+type ArtifactStorageGoogleDriveSession struct {
+	SessionID    string                                  `json:"sessionId"`
+	ProjectID    string                                  `json:"projectId"`
+	Status       ArtifactStorageGoogleDriveSessionStatus `json:"status"`
+	ConnectURL   string                                  `json:"connectUrl,omitempty"`
+	ExpiresAt    string                                  `json:"expiresAt"`
+	ConnectedAt  string                                  `json:"connectedAt,omitempty"`
+	AccountEmail string                                  `json:"accountEmail,omitempty"`
+	FolderID     string                                  `json:"folderId,omitempty"`
+	FolderName   string                                  `json:"folderName,omitempty"`
+	LastError    string                                  `json:"lastError,omitempty"`
+}
+
+type ArtifactStorageGoogleDriveConnection struct {
+	ProjectID       string `json:"projectId"`
+	Status          string `json:"status"`
+	FolderID        string `json:"folderId,omitempty"`
+	FolderName      string `json:"folderName,omitempty"`
+	AccountEmail    string `json:"accountEmail,omitempty"`
+	LastError       string `json:"lastError,omitempty"`
+	LastValidatedAt string `json:"lastValidatedAt,omitempty"`
+	ConnectedAt     string `json:"connectedAt,omitempty"`
+	UpdatedAt       string `json:"updatedAt,omitempty"`
+}
+
+type ArtifactStorageGoogleDriveConnectionStatus struct {
+	Connection ArtifactStorageGoogleDriveConnection `json:"connection"`
+	Session    *ArtifactStorageGoogleDriveSession   `json:"session,omitempty"`
+}
+
+type ArtifactStorageGoogleDrivePickerToken struct {
+	AccessToken string `json:"accessToken"`
+	ApiKey      string `json:"apiKey"`
+}
+
+type ArtifactStorageGoogleDriveFolderSelectionRequest struct {
+	SessionID    string `json:"sessionId"`
+	FolderID     string `json:"folderId"`
+	FolderName   string `json:"folderName"`
+	AccountEmail string `json:"accountEmail,omitempty"`
 }
 
 type StorageDriverConfig struct {

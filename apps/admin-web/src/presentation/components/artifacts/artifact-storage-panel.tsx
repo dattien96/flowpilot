@@ -86,13 +86,14 @@ export function ArtifactStoragePanel({ storageDriver }: ArtifactStoragePanelProp
       <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <p className="font-mono text-xs uppercase tracking-[0.28em] text-muted-foreground">
-            Artifact Storage
+            Local Backup Driver
           </p>
           <h2 className="mt-3 text-2xl font-semibold tracking-tight">
-            Connect the driver folder
+            Configure the optional mirror folder
           </h2>
           <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
-            Configure the local driver root that receives synced artifacts and backups.
+            This runner-local filesystem driver is an advanced backup path. Shared cloud sync uses
+            the project storage provider instead.
           </p>
         </div>
         <Badge tone={enabled ? "success" : "warning"}>{enabled ? "enabled" : "disabled"}</Badge>
@@ -166,7 +167,7 @@ export function ArtifactStoragePanel({ storageDriver }: ArtifactStoragePanelProp
           {validating ? "Validating..." : "Save and test"}
         </Button>
         <p className="text-sm text-muted-foreground">
-          {message ?? "The runner persists this config locally and uses it for artifact sync."}
+          {message ?? "The runner persists this config locally and uses it only for optional local backup copies."}
         </p>
       </div>
     </section>

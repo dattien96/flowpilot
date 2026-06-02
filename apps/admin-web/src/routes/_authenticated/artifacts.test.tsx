@@ -56,6 +56,9 @@ describe("ArtifactsPage", () => {
         listArtifactDefinitions: vi.fn().mockImplementation(() => new Promise(() => undefined)),
         saveArtifactDefinition: vi.fn(),
       },
+      projectGateway: {
+        listProjects: vi.fn().mockResolvedValue([]),
+      },
       localRunnerGateway: {
         getStorageDriver: vi.fn().mockImplementation(() => new Promise(() => undefined)),
       },
