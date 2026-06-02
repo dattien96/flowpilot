@@ -14,6 +14,12 @@ The goal is not to expose hidden model reasoning. The UI should stream observabl
 
 - When a workflow step is running, the Run Logs panel should receive new `provider_stream` rows during execution.
 - Streamed rows should show the output text directly, with a badge for `stdout`, `stderr`, or the provider stream name.
+- Below each prompt/output chat area, the UI should show a dedicated thinking panel sourced from the same streamed provider output.
+- While the provider is still running, the thinking panel should show only the latest 3 visible lines in normal description-style text.
+- The live window should behave like a rolling buffer:
+  `1-2-3` becomes `2-3-4` when line `4` arrives.
+- After the final response/output is available, the thinking panel should collapse by default.
+- After completion, users must be able to expand the thinking panel and inspect the full multiline thinking history for that prompt attempt.
 - Existing final output, artifact creation, session reuse, approval gates, and error handling should keep working.
 - If streaming is unavailable, the system should still return the final `sendMessage` result through the existing non-streaming path.
 
@@ -77,6 +83,22 @@ The existing Run Logs panel recognizes `provider_stream:` messages and renders:
 - badge: stream name such as `stdout` or `stderr`
 - body: streamed provider text
 
+The step detail timeline also adds a prompt-level thinking component:
+
+- It appears directly below the prompt chat bubble.
+- It derives its content from `provider_stream:` rows for that prompt window.
+- During live execution it renders only the newest 3 lines.
+- After output completion it becomes a collapsed section that can be expanded to show the full transcript.
+
+The timeline also adds a prompt-level skill audit component:
+
+- It appears directly below the thinking panel.
+- It extracts operational reads of `.../skills/<name>/SKILL.md` files, named `*-skill` actions such as `Read git-commit-skill` or `opening the local git-commit-skill instructions`, and clear skill-use announcements from the normalized thinking transcript.
+- Its transcript window ends at the next prompt for the selected step, including prompts started in replay sessions.
+- It lists unique detected skills in call order.
+- It is collapsed by default and can be expanded to inspect the detected skills.
+- It remains visible with a `0` count when a prompt does not call any skills.
+
 ## Files Changed
 
 - `apps/local-runner/internal/cli/root.go`
@@ -107,6 +129,10 @@ Known environment limitations:
 ## Acceptance Criteria
 
 - A running workflow step inserts live `provider_stream` logs before the final step result is available.
+- A running prompt shows a dedicated thinking panel directly under the prompt bubble.
+- The live thinking panel displays at most 3 lines and rolls forward as new lines arrive.
+- Once output is complete, the thinking panel collapses by default and can be expanded to show the full line history.
+- Each prompt shows a collapsible skill audit panel below the thinking panel, listing unique detected skill calls in order.
 - The final `PromptExecutionResult` still drives artifact creation and step completion.
 - Existing session recovery behavior still handles `session_dead`, `session_terminated`, and thread-missing fallback.
 - The Run Logs UI displays streamed provider output as readable terminal-style rows.

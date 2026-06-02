@@ -53,6 +53,15 @@ import {
   extractBeginPromptFromLogs,
 } from "@/features/workflow-engine/workflow-run-log-fallback";
 import {
+  buildLiveThinkingLines,
+  extractProviderStreamDisplayText,
+  extractSkillAuditEntries,
+  findNextPromptCreatedAt,
+  getPromptWindowThinkingLines,
+  isLiveThinkingPrompt,
+  parseProviderStreamPayload,
+} from "@/features/workflow-engine/workflow-run-thinking";
+import {
   appendSyntheticResultSummarySteps,
   isResultSummaryStepType,
   RESULT_SUMMARY_STEP_NAME,
@@ -607,22 +616,6 @@ function parseSessionEventPayload(message: string | null | undefined) {
   }
 }
 
-function parseProviderStreamPayload(message: string | null | undefined) {
-  const normalized = message?.trim() ?? "";
-  if (!normalized.startsWith("provider_stream:")) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(normalized.slice("provider_stream:".length)) as {
-      stream?: string;
-      text?: string;
-    };
-  } catch {
-    return null;
-  }
-}
-
 function resolveSessionRecoveryDisplay(session: any): SessionRecoveryDisplay | null {
   const recoveryMode = session?.metadataJson?.recovery?.mode;
   if (recoveryMode === "bootstrap_replay") {
@@ -755,6 +748,133 @@ function DeveloperDiagnosticsSection({ output }: { output: WorkflowOutputRecord 
   );
 }
 
+function ThinkingPanel({
+  lines,
+  isLive,
+}: {
+  lines: string[];
+  isLive: boolean;
+}) {
+  const [isExpanded, setIsExpanded] = useState(isLive);
+
+  useEffect(() => {
+    setIsExpanded(isLive);
+  }, [isLive]);
+
+  if (!isLive && lines.length === 0) {
+    return null;
+  }
+
+  const visibleLines = isLive ? buildLiveThinkingLines(lines, 3) : lines;
+
+  return (
+    <div className="ml-auto flex w-full max-w-[85%] flex-col gap-2">
+      <div className="rounded-[1.2rem] border border-border/35 bg-[#151924] px-5 py-4 shadow-sm">
+        <button
+          type="button"
+          onClick={() => {
+            if (!isLive) {
+              setIsExpanded((current) => !current);
+            }
+          }}
+          className={`flex w-full items-center justify-between gap-3 text-left ${isLive ? "cursor-default" : "cursor-pointer"}`}
+        >
+          <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
+            Thinking
+          </span>
+          {isLive ? (
+            <span className="text-[10px] text-emerald-400">Live</span>
+          ) : (
+            <span className="text-muted-foreground">
+              {isExpanded ? (
+                <ChevronUp className="h-4 w-4" />
+              ) : (
+                <ChevronDown className="h-4 w-4" />
+              )}
+            </span>
+          )}
+        </button>
+
+        {isExpanded ? (
+          <div className="mt-3 space-y-2">
+            {visibleLines.length > 0 ? (
+              visibleLines.map((line, index) => (
+                <p
+                  key={`${index}-${line}`}
+                  className="text-sm leading-6 text-[#d3dae6]"
+                >
+                  {`- ${line}`}
+                </p>
+              ))
+            ) : (
+              <p className="text-sm leading-6 text-muted-foreground">
+                Waiting for stream...
+              </p>
+            )}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function SkillAuditPanel({
+  skills,
+  isLive,
+}: {
+  skills: string[];
+  isLive: boolean;
+}) {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  return (
+    <div className="ml-auto flex w-full max-w-[85%] flex-col gap-2">
+      <div className="rounded-[1.2rem] border border-amber-500/20 bg-[#171a20] px-5 py-4 shadow-sm">
+        <button
+          type="button"
+          onClick={() => setIsExpanded((current) => !current)}
+          className="flex w-full cursor-pointer items-center justify-between gap-3 text-left"
+        >
+          <span className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.18em] text-amber-300">
+            Skill Audit
+            <span className="rounded-full border border-amber-500/25 bg-amber-500/10 px-2 py-0.5 text-[9px] text-amber-200">
+              {skills.length}
+            </span>
+          </span>
+          <span className="text-muted-foreground">
+            {isExpanded ? (
+              <ChevronUp className="h-4 w-4" />
+            ) : (
+              <ChevronDown className="h-4 w-4" />
+            )}
+          </span>
+        </button>
+
+        {isExpanded ? (
+          <div className="mt-3 space-y-2">
+            {skills.length > 0 ? (
+              skills.map((skill) => (
+                <p
+                  key={skill}
+                  className="font-mono text-xs leading-5 text-[#e6d5a8]"
+                >
+                  {`- ${skill}`}
+                </p>
+              ))
+            ) : (
+              <p className="text-sm leading-6 text-muted-foreground">
+                {isLive
+                  ? "Waiting for skill calls..."
+                  : "No skill calls detected for this prompt."}
+              </p>
+            )}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function SessionGroupSection({
   group,
   subagent,
@@ -762,6 +882,9 @@ function SessionGroupSection({
   detail,
   gatewayBundle,
   onKillSession,
+  stepLogs,
+  stepPromptCreatedAts,
+  stepStatus,
 }: {
   group: WorkflowStepSessionGroup;
   subagent: string | null;
@@ -769,6 +892,9 @@ function SessionGroupSection({
   detail: any;
   gatewayBundle: React.MutableRefObject<ReturnType<typeof createGatewayBundle>>;
   onKillSession: (session: WorkflowRunSession) => Promise<void>;
+  stepLogs: Array<{ createdAt: string; message?: string | null }>;
+  stepPromptCreatedAts: string[];
+  stepStatus: string;
 }) {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [isKilling, setIsKilling] = useState(false);
@@ -874,7 +1000,23 @@ function SessionGroupSection({
 
       {!isCollapsed && (
         <div className="ml-4 space-y-6 border-l border-border/20 pl-5">
-          {group.promptGroups.map((pg) => {
+          {group.promptGroups.map((pg, index) => {
+            const nextPromptCreatedAt = findNextPromptCreatedAt(
+              pg.prompt.createdAt,
+              stepPromptCreatedAts,
+            );
+            const thinkingLines = getPromptWindowThinkingLines({
+              logs: stepLogs,
+              promptCreatedAt: pg.prompt.createdAt,
+              nextPromptCreatedAt,
+            });
+            const skillAuditEntries = extractSkillAuditEntries(thinkingLines);
+            const isLiveThinking = isLiveThinkingPrompt({
+              promptIndex: index,
+              promptCount: group.promptGroups.length,
+              sessionStatus: group.session?.status,
+              stepStatus,
+            });
             return (
               <div key={pg.key} className="space-y-5 bg-[#0f111a]/45 border border-border/10 p-6 rounded-2xl shadow-inner">
                 {/* Prompt Chat Bubble */}
@@ -887,6 +1029,16 @@ function SessionGroupSection({
                     metaNote={pg.prompt.metaNote}
                   />
                 </div>
+
+                <ThinkingPanel
+                  lines={thinkingLines}
+                  isLive={isLiveThinking}
+                />
+
+                <SkillAuditPanel
+                  skills={skillAuditEntries}
+                  isLive={isLiveThinking}
+                />
 
                 {/* Attempts/Outputs belonging to this Prompt */}
                 {pg.attempts.length > 0 && (
@@ -1471,6 +1623,16 @@ function WorkflowRunDetailPage() {
       ),
     [detail?.approvalDecisions, optimisticFollowUps],
   );
+  const stepThinkingLogs = useMemo(
+    () =>
+      allLogs.filter(
+        (log: any) =>
+          log.workflowRunStepId === selectedStep?.id &&
+          typeof log?.message === "string" &&
+          parseProviderStreamPayload(log.message),
+      ),
+    [allLogs, selectedStep?.id],
+  );
 
   const handleDecision = async (
     stepId: string,
@@ -1734,6 +1896,9 @@ function WorkflowRunDetailPage() {
         }
         : null,
   });
+  const stepPromptCreatedAts = stepSessionGroups
+    .flatMap((group) => group.promptGroups)
+    .map((promptGroup) => promptGroup.prompt.createdAt);
 
   return (
     <div className="fixed inset-0 z-50 bg-[#0c0d12] flex flex-col lg:flex-row overflow-hidden text-foreground">
@@ -2026,6 +2191,9 @@ function WorkflowRunDetailPage() {
                       group={group}
                       onKillSession={handleKillSession}
                       stepOutputs={stepOutputs}
+                      stepLogs={stepThinkingLogs}
+                      stepPromptCreatedAts={stepPromptCreatedAts}
+                      stepStatus={selectedStep.status}
                       subagent={subagent}
                     />
                   ))}
@@ -2223,7 +2391,11 @@ function WorkflowRunDetailPage() {
                             badgeLabel = providerStreamPayload?.stream || "stream";
                           }
                           const logMessage =
-                            providerStreamPayload?.text ?? log.message;
+                            providerStreamPayload
+                              ? extractProviderStreamDisplayText(
+                                  providerStreamPayload.text ?? "",
+                                )
+                              : log.message;
                           return (
                             <div
                               key={log.id}
