@@ -2,10 +2,10 @@ import { redirect } from "next/navigation";
 import { NextResponse } from "next/server";
 
 import { createSupabaseServerClient } from "@/data/datasource/supabase/client";
-import { hasSupabaseEnv } from "@/lib/env/app-env";
+import { hasSupabaseRuntimeConfigOrEnvFallback } from "@/lib/supabase/runtime-config.server";
 
 export async function POST(request: Request) {
-  if (hasSupabaseEnv()) {
+  if (await hasSupabaseRuntimeConfigOrEnvFallback()) {
     const supabase = await createSupabaseServerClient();
     await supabase.auth.signOut();
   }

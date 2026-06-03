@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { createSupabaseServerClient } from "@/data/datasource/supabase/client";
-import { hasSupabaseEnv } from "@/lib/env/app-env";
+import { hasSupabaseRuntimeConfigOrEnvFallback } from "@/lib/supabase/runtime-config.server";
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -11,7 +11,7 @@ const loginSchema = z.object({
 });
 
 export async function POST(request: Request) {
-  if (!hasSupabaseEnv()) {
+  if (!(await hasSupabaseRuntimeConfigOrEnvFallback())) {
     redirect("/dashboard");
   }
 
