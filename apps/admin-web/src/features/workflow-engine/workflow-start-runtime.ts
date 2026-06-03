@@ -246,6 +246,20 @@ async function getOrCreateSession({
     sessionRow = data;
   }
 
+  const requestedAccount = await resolveLocalProviderAccount(
+    providerKey,
+    providerAccountId,
+  );
+  const sessionAccountId = sessionRow?.metadata_json?.providerAccountId ?? null;
+  const sessionAccountHomePath =
+    sessionRow?.metadata_json?.providerAccountHomePath ?? null;
+  const sessionMatchesRequestedAccount = sessionRow
+    ? (typeof sessionAccountId === "string" &&
+        sessionAccountId === requestedAccount.id) ||
+      (typeof sessionAccountHomePath === "string" &&
+        sessionAccountHomePath === requestedAccount.home_path)
+    : true;
+
   let previousCheckpoints: any[] = [];
   let resolvedRecoveryMode = recoveryMode ?? null;
   let resolvedRecoveredFromSessionId = recoveredFromSessionId ?? null;
@@ -259,7 +273,8 @@ async function getOrCreateSession({
       if (
         !forceNewProviderSession &&
         sessionRow.provider === providerKey &&
-        sessionRow.model === modelName
+        sessionRow.model === modelName &&
+        sessionMatchesRequestedAccount
       ) {
         resumeProviderSessionId =
           resumeProviderSessionId ?? sessionRow.provider_session_id;
@@ -276,7 +291,8 @@ async function getOrCreateSession({
     } else if (
       forceNewProviderSession ||
       sessionRow.provider !== providerKey ||
-      sessionRow.model !== modelName
+      sessionRow.model !== modelName ||
+      !sessionMatchesRequestedAccount
     ) {
       previousCheckpoints = sessionRow.metadata_json?.checkpoints || [];
       await writeWorkflowSessionLog({
@@ -292,9 +308,16 @@ async function getOrCreateSession({
           model: sessionRow.model,
           requestedProvider: providerKey,
           requestedModel: modelName,
+          requestedProviderAccountId: requestedAccount.id,
+          existingProviderAccountId: sessionAccountId,
+          existingProviderAccountHomePath: sessionAccountHomePath,
           providerSessionId: sessionRow.provider_session_id,
           processKey: sessionRow.process_key,
-          reason: "provider_or_model_mismatch",
+          reason: forceNewProviderSession
+            ? "forced_new_session"
+            : !sessionMatchesRequestedAccount
+              ? "provider_account_mismatch"
+              : "provider_or_model_mismatch",
         },
       });
       if (sessionRow.process_key) {
@@ -358,11 +381,6 @@ async function getOrCreateSession({
   }
 
   if (!handle) {
-    const activeAccount = await resolveLocalProviderAccount(
-      providerKey,
-      providerAccountId,
-    );
-
     const startResult = await localRunnerGateway.startSession({
       providerKey,
       modelName,
@@ -372,10 +390,10 @@ async function getOrCreateSession({
       allowWrite: true,
       idleTTLSeconds: idleTTLSeconds ?? undefined,
       resumeProviderSessionId: resumeProviderSessionId ?? undefined,
-      providerAccountId: activeAccount?.id,
-      providerAccountHomePath: activeAccount?.home_path,
-      proxyUrl: activeAccount?.proxy_url || undefined,
-      customEnv: activeAccount?.extra_env || undefined,
+      providerAccountId: requestedAccount.id,
+      providerAccountHomePath: requestedAccount.home_path,
+      proxyUrl: requestedAccount.proxy_url || undefined,
+      customEnv: requestedAccount.extra_env || undefined,
     });
 
     handle = startResult;
@@ -391,6 +409,11 @@ async function getOrCreateSession({
             provider: providerKey,
             model: modelName,
             process_pid: handle.processPid ?? null,
+            metadata_json: {
+              ...(sessionRow.metadata_json ?? {}),
+              providerAccountId: requestedAccount.id,
+              providerAccountHomePath: requestedAccount.home_path,
+            },
           })
           .eq("id", sessionRow.id);
         if (updateErr) {
@@ -428,6 +451,8 @@ async function getOrCreateSession({
             metadata_json: {
               ...metadata,
               checkpoints: previousCheckpoints,
+              providerAccountId: requestedAccount.id,
+              providerAccountHomePath: requestedAccount.home_path,
               ...recoveryMetadata,
             },
           })
@@ -973,6 +998,7 @@ export async function sendMessageWithRetry({
           workingDirectory,
           subagent,
           idleTTLSeconds,
+          providerAccountId,
           resumeProviderSessionId: handle?.providerSessionId ?? null,
           recoveryMode: "resumed_thread",
           recoveredFromSessionId: handle?.dbId ?? null,
