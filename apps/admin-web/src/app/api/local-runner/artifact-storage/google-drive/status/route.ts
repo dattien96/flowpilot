@@ -1,15 +1,34 @@
 import { NextResponse } from "next/server";
 
-import { assertAdminApiSession } from "@/data/auth/session";
+import { assertAdminApiSessionForRequest } from "@/data/auth/session";
 import { createSupabaseServerClient } from "@/data/datasource/supabase/client";
 import {
   upsertArtifactStorageConnection,
 } from "@/features/artifacts/artifact-storage-connection";
 import { getLocalRunnerBaseUrl } from "@/lib/env/app-env";
 
+async function readRunnerResponse(response: Response) {
+  const raw = await response.text();
+  if (!raw.trim()) {
+    return { raw, body: {} as Record<string, unknown> };
+  }
+
+  try {
+    return {
+      raw,
+      body: JSON.parse(raw) as Record<string, unknown>,
+    };
+  } catch {
+    return {
+      raw,
+      body: { error: raw } satisfies Record<string, unknown>,
+    };
+  }
+}
+
 export async function GET(request: Request) {
   try {
-    const auth = await assertAdminApiSession();
+    const auth = await assertAdminApiSessionForRequest(request);
     if (!auth.ok) return auth.response;
 
     const { searchParams } = new URL(request.url);
@@ -29,7 +48,7 @@ export async function GET(request: Request) {
       method: "GET",
       cache: "no-store",
     });
-    const body = (await response.json()) as Record<string, any>;
+    const { body } = await readRunnerResponse(response);
     if (!response.ok) {
       return NextResponse.json(
         { error: String(body.error ?? "Unable to read Google Drive status.") },
