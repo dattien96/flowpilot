@@ -159,7 +159,7 @@ export interface ArtifactDefinition {
 
 export interface ArtifactRun {
   id: string;
-  artifactDefinitionKey: string;
+  artifactDefinitionKey: string | null;
   workflowId: string;
   workflowRunId: string;
   workflowRunStepId: string | null;
@@ -168,6 +168,8 @@ export interface ArtifactRun {
   localPath: string;
   remotePath: string;
   remoteUrl: string;
+  storageProvider: "supabase" | "google_drive" | null;
+  remoteObjectId: string | null;
   syncStatus: ArtifactSyncStatus;
   createdAt: string;
   updatedAt: string;
