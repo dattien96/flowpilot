@@ -9,7 +9,7 @@ import { ArrowRight } from "lucide-react";
 
 import { PageFrame } from "@/components/common/page-frame";
 import { Button } from "@/components/ui/button";
-import { createSupabaseBrowserClient } from "@/data/datasource/supabase/client";
+import { getBrowserSupabaseClient } from "@/data/datasource/supabase/client";
 import { createGatewayBundle } from "@/data/repository/browser-factory";
 import { ListWorkflowRunsUseCase } from "@/domain/usecase/workflow-engine/list-workflow-runs-usecase";
 import { ListWorkflowsUseCase } from "@/domain/usecase/workflow-engine/list-workflows-usecase";
@@ -123,6 +123,10 @@ export function WorkflowRunHistoryPage() {
   const [processActionError, setProcessActionError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
+  function getGatewayBundle() {
+    return gatewayBundle.current;
+  }
+
   async function reconcileLiveSessions(sessions: WorkflowRunSession[]) {
     if (sessions.length === 0) {
       return sessions;
@@ -130,7 +134,7 @@ export function WorkflowRunHistoryPage() {
 
     let liveSessions: Array<{ processKey: string | null }> = [];
     try {
-      liveSessions = await gatewayBundle.current.localRunnerGateway.listSessions();
+      liveSessions = await getGatewayBundle().localRunnerGateway.listSessions();
     } catch (error) {
       console.warn("Unable to load live runner sessions for reconciliation:", error);
       return sessions;
@@ -151,7 +155,7 @@ export function WorkflowRunHistoryPage() {
     try {
       await Promise.allSettled(
         staleSessions.map((session) =>
-          gatewayBundle.current.localRunnerGateway.closeSession({
+          getGatewayBundle().localRunnerGateway.closeSession({
             transportType: session.transportType,
             providerSessionId: session.providerSessionId ?? "",
             processKey: session.processKey,
@@ -160,7 +164,7 @@ export function WorkflowRunHistoryPage() {
         ),
       );
 
-      const supabase = createSupabaseBrowserClient();
+      const supabase = await getBrowserSupabaseClient();
       const { error } = await supabase
         .from("workflow_run_sessions")
         .update({
@@ -187,7 +191,7 @@ export function WorkflowRunHistoryPage() {
   }
 
   async function loadActiveSessions() {
-    const supabase = createSupabaseBrowserClient();
+    const supabase = await getBrowserSupabaseClient();
     const { data, error } = await supabase
       .from("workflow_run_sessions")
       .select(
@@ -211,14 +215,14 @@ export function WorkflowRunHistoryPage() {
       const [runRows, workflowRows, projectRows] = await Promise.all([
         listWorkflowRunsUseCase.current.execute(),
         listWorkflowsUseCase.current.execute(),
-        gatewayBundle.current.projectGateway.listProjects(),
+        getGatewayBundle().projectGateway.listProjects(),
       ]);
       const titles = await loadWorkflowRunTitleMap(
-        gatewayBundle.current.localRunnerGateway,
+        getGatewayBundle().localRunnerGateway,
         runRows.map((run) => run.id),
         {
           listArtifactRuns: () =>
-            gatewayBundle.current.workflowEngineGateway.listArtifactRuns(),
+            getGatewayBundle().workflowEngineGateway.listArtifactRuns(),
           loadArtifactContent: async (artifactRun) => {
             if (!artifactRun.id.trim() || !artifactRun.remotePath.trim()) {
               return null;
@@ -343,7 +347,7 @@ export function WorkflowRunHistoryPage() {
     setDeleteError(null);
 
     try {
-      await gatewayBundle.current.workflowGateway.deleteWorkflowRuns(uniqueRunIds);
+      await getGatewayBundle().workflowGateway.deleteWorkflowRuns(uniqueRunIds);
       setRuns((current) => current.filter((run) => !uniqueRunIds.includes(run.id)));
       setSelectedRunIds((current) => current.filter((runId) => !uniqueRunIds.includes(runId)));
       setActiveSessions((current) =>
@@ -375,7 +379,7 @@ export function WorkflowRunHistoryPage() {
     const completedAt = new Date().toISOString();
     const closeResults = await Promise.allSettled(
       killableSessions.map((session) =>
-        gatewayBundle.current.localRunnerGateway.closeSession({
+        getGatewayBundle().localRunnerGateway.closeSession({
           transportType: session.transportType,
           providerSessionId: session.providerSessionId ?? "",
           processKey: session.processKey,
@@ -391,7 +395,7 @@ export function WorkflowRunHistoryPage() {
 
     try {
       if (closedSessionIds.length > 0) {
-        const supabase = createSupabaseBrowserClient();
+        const supabase = await getBrowserSupabaseClient();
         const { error } = await supabase
           .from("workflow_run_sessions")
           .update({

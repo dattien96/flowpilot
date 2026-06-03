@@ -23,7 +23,7 @@ import { GetWorkflowRunDetailUseCase } from "@/domain/usecase/workflow-runs/get-
 import { GetWorkflowRunDetailUseCase as GetWorkflowEngineRunDetailUseCase } from "@/domain/usecase/workflow-engine/get-workflow-run-detail-usecase";
 import { ListArtifactRunsUseCase } from "@/domain/usecase/workflow-engine/list-artifact-runs-usecase";
 import { SubmitStepApprovalDecisionUseCase } from "@/domain/usecase/workflow-engine/submit-step-approval-decision-usecase";
-import { createSupabaseBrowserClient } from "@/data/datasource/supabase/client";
+import { getBrowserSupabaseClient } from "@/data/datasource/supabase/client";
 import { applyOptimisticWorkflowFollowUp } from "@/features/workflow-engine/workflow-run-detail-optimistic";
 import {
   buildWorkflowStepSessionGroups,
@@ -1059,7 +1059,7 @@ function SessionGroupSection({
                             <div className="space-y-4">
                               <StepOutputTabs
                                 artifactRun={itemArtifactRun}
-                                localRunnerGateway={gatewayBundle.current.localRunnerGateway}
+                                localRunnerGateway={getGatewayBundle().localRunnerGateway}
                                 output={attemptItem.output}
                               />
 
@@ -1122,6 +1122,10 @@ function WorkflowRunDetailPage() {
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
   const [logsExpanded, setLogsExpanded] = useState(true);
 
+  function getGatewayBundle() {
+    return gatewayBundle.current;
+  }
+
   const reconcileTimedOutSessions = async ({
     sessionIdleTtlMinutes,
     sessions,
@@ -1145,7 +1149,7 @@ function WorkflowRunDetailPage() {
     );
 
     try {
-      const supabase = createSupabaseBrowserClient();
+      const supabase = await getBrowserSupabaseClient();
       const { error } = await supabase
         .from("workflow_run_sessions")
         .update({
@@ -1175,7 +1179,7 @@ function WorkflowRunDetailPage() {
 
     let liveSessions: Array<{ processKey: string | null }> = [];
     try {
-      liveSessions = await gatewayBundle.current.localRunnerGateway.listSessions();
+      liveSessions = await getGatewayBundle().localRunnerGateway.listSessions();
     } catch (error) {
       console.warn("Unable to load live runner sessions for detail reconciliation:", error);
       return sessions;
@@ -1196,7 +1200,7 @@ function WorkflowRunDetailPage() {
     try {
       await Promise.allSettled(
         staleSessions.map((session) =>
-          gatewayBundle.current.localRunnerGateway.closeSession({
+          getGatewayBundle().localRunnerGateway.closeSession({
             transportType: session.transportType,
             providerSessionId: session.providerSessionId ?? "",
             processKey: session.processKey,
@@ -1205,7 +1209,7 @@ function WorkflowRunDetailPage() {
         ),
       );
 
-      const supabase = createSupabaseBrowserClient();
+      const supabase = await getBrowserSupabaseClient();
       const { error } = await supabase
         .from("workflow_run_sessions")
         .update({
@@ -1241,14 +1245,14 @@ function WorkflowRunDetailPage() {
 
     const completedAt = new Date().toISOString();
 
-    await gatewayBundle.current.localRunnerGateway.closeSession({
+    await getGatewayBundle().localRunnerGateway.closeSession({
       transportType: session.transportType,
       providerSessionId: session.providerSessionId ?? "",
       processKey: session.processKey,
       processPid: session.processPid ?? null,
     });
 
-    const supabase = createSupabaseBrowserClient();
+    const supabase = await getBrowserSupabaseClient();
     const { error } = await supabase
       .from("workflow_run_sessions")
       .update({
@@ -1281,14 +1285,14 @@ function WorkflowRunDetailPage() {
     let mappedOutputs: WorkflowOutputRecord[] = [];
     try {
       const localArtifacts =
-        await gatewayBundle.current.localRunnerGateway.listArtifacts();
+        await getGatewayBundle().localRunnerGateway.listArtifacts();
       const runArtifacts = localArtifacts.filter(
         (art) => art.workflowRunId === runId,
       );
       const artifactDetails = await Promise.all(
         runArtifacts.map(
           async (artifact) =>
-            (await gatewayBundle.current.localRunnerGateway.getArtifactById(
+            (await getGatewayBundle().localRunnerGateway.getArtifactById(
               artifact.artifactId,
             )) ?? artifact,
         ),
@@ -1322,7 +1326,7 @@ function WorkflowRunDetailPage() {
       const [data, promptText, engineDetailRaw] = await Promise.all([
         getWorkflowRunDetailUseCase.current.execute(runId),
         loadWorkflowRunPromptText(
-          gatewayBundle.current.localRunnerGateway,
+          getGatewayBundle().localRunnerGateway,
           runId,
         ),
         getWorkflowEngineRunDetailUseCase.current.execute(runId),
@@ -1387,7 +1391,7 @@ function WorkflowRunDetailPage() {
         if (processed && interruptedStepIds.length > 0) {
           const failedAt = new Date().toISOString();
           try {
-            const supabase = createSupabaseBrowserClient();
+            const supabase = await getBrowserSupabaseClient();
             const { error: stepsError } = await supabase
               .from("workflow_run_steps")
               .update({
@@ -1476,45 +1480,47 @@ function WorkflowRunDetailPage() {
 
     let runSubscription: any = null;
     let stepSubscription: any = null;
-    try {
-      const supabase = createSupabaseBrowserClient();
-      runSubscription = supabase
-        .channel(`run-realtime-${runId}`)
-        .on(
-          "postgres_changes",
-          {
-            event: "*",
-            schema: "public",
-            table: "workflow_runs",
-            filter: `id=eq.${runId}`,
-          },
-          () => {
-            void loadData();
-          },
-        )
-        .subscribe();
+    void (async () => {
+      try {
+        const supabase = await getBrowserSupabaseClient();
+        runSubscription = supabase
+          .channel(`run-realtime-${runId}`)
+          .on(
+            "postgres_changes",
+            {
+              event: "*",
+              schema: "public",
+              table: "workflow_runs",
+              filter: `id=eq.${runId}`,
+            },
+            () => {
+              void loadData();
+            },
+          )
+          .subscribe();
 
-      stepSubscription = supabase
-        .channel(`steps-realtime-${runId}`)
-        .on(
-          "postgres_changes",
-          {
-            event: "*",
-            schema: "public",
-            table: "workflow_run_steps",
-            filter: `workflow_run_id=eq.${runId}`,
-          },
-          () => {
-            void loadData();
-          },
-        )
-        .subscribe();
-    } catch (realtimeErr) {
-      console.warn(
-        "Supabase realtime not available. Falling back to polling.",
-        realtimeErr,
-      );
-    }
+        stepSubscription = supabase
+          .channel(`steps-realtime-${runId}`)
+          .on(
+            "postgres_changes",
+            {
+              event: "*",
+              schema: "public",
+              table: "workflow_run_steps",
+              filter: `workflow_run_id=eq.${runId}`,
+            },
+            () => {
+              void loadData();
+            },
+          )
+          .subscribe();
+      } catch (realtimeErr) {
+        console.warn(
+          "Supabase realtime not available. Falling back to polling.",
+          realtimeErr,
+        );
+      }
+    })();
 
     const interval = setInterval(() => {
       if (
@@ -1527,13 +1533,14 @@ function WorkflowRunDetailPage() {
     }, 2000);
 
     return () => {
-      try {
-        const supabase = createSupabaseBrowserClient();
-        if (runSubscription) void supabase.removeChannel(runSubscription);
-        if (stepSubscription) void supabase.removeChannel(stepSubscription);
-      } catch (err) {
-        console.warn("Cleanup error:", err);
-      }
+      void getBrowserSupabaseClient()
+        .then((supabase) => {
+          if (runSubscription) void supabase.removeChannel(runSubscription);
+          if (stepSubscription) void supabase.removeChannel(stepSubscription);
+        })
+        .catch((err) => {
+          console.warn("Cleanup error:", err);
+        });
       clearInterval(interval);
     };
   }, [runId, detail?.run?.status]);
@@ -1684,7 +1691,7 @@ function WorkflowRunDetailPage() {
         );
       } else {
         const now = new Date().toISOString();
-        await gatewayBundle.current.workflowGateway.createApprovalDecision({
+        await getGatewayBundle().workflowGateway.createApprovalDecision({
           id: crypto.randomUUID(),
           approvalId: pendingApproval.id,
           workflowRunId: pendingApproval.workflowRunId,
@@ -1695,7 +1702,7 @@ function WorkflowRunDetailPage() {
           comment: decisionComment || null,
           createdAt: now,
         });
-        await gatewayBundle.current.workflowGateway.updateWorkflowStep(
+        await getGatewayBundle().workflowGateway.updateWorkflowStep(
           pendingApproval.workflowStepId,
           {
             status: "rejected",
@@ -1703,7 +1710,7 @@ function WorkflowRunDetailPage() {
             errorMessage: decisionComment || "Rejected by reviewer.",
           },
         );
-        await gatewayBundle.current.workflowGateway.updateWorkflowRun(runId, {
+        await getGatewayBundle().workflowGateway.updateWorkflowRun(runId, {
           status: "rejected",
           completedAt: now,
           errorSummary: decisionComment || "Rejected by reviewer.",
@@ -1764,7 +1771,7 @@ function WorkflowRunDetailPage() {
     setTogglingYolo(true);
     try {
       const updatedRun =
-        await gatewayBundle.current.workflowEngineGateway.toggleYoloMode(
+        await getGatewayBundle().workflowEngineGateway.toggleYoloMode(
           detail.run.id,
           !detail.run.yoloMode,
         );
@@ -1780,11 +1787,11 @@ function WorkflowRunDetailPage() {
     if (!runId) return;
     setProcessingAction(true);
     try {
-      await gatewayBundle.current.workflowGateway.updateWorkflowRun(runId, {
+      await getGatewayBundle().workflowGateway.updateWorkflowRun(runId, {
         status: "running",
         currentStepKey: null,
       });
-      await gatewayBundle.current.workflowExecutor.executeUntilPause(runId);
+      await getGatewayBundle().workflowExecutor.executeUntilPause(runId);
       await loadData();
     } catch (err: any) {
       alert(`Resume failed: ${err.message}`);
@@ -1797,7 +1804,7 @@ function WorkflowRunDetailPage() {
     if (!runId) return;
     setProcessingAction(true);
     try {
-      await gatewayBundle.current.workflowGateway.updateWorkflowRun(runId, {
+      await getGatewayBundle().workflowGateway.updateWorkflowRun(runId, {
         status: "rejected",
         completedAt: new Date().toISOString(),
         errorSummary: "Cancelled by admin.",

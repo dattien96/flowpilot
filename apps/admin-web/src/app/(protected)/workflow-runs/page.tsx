@@ -6,7 +6,7 @@ import { WorkflowRunsList } from "./workflow-runs-list";
 
 export default async function WorkflowRunsPage() {
   const gateways = await createGatewayBundle();
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const runs = await new ListWorkflowRunsUseCase(
     gateways.workflowGateway,
   ).execute();
