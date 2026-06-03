@@ -82,6 +82,7 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			instance.StartIdleSweeper(ctx)
+			instance.StartOrphanedWorkflowArtifactCleanup(ctx)
 
 			mux := http.NewServeMux()
 			mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
