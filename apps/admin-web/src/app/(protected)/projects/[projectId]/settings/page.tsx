@@ -1,7 +1,7 @@
 import { createGatewayBundle } from "@/data/repository/factory";
 import { Badge } from "@/presentation/components/ui/badge";
 import { ProjectSectionNav } from "@/components/project/project-section-nav";
-import { updateSessionTtlAction } from "./actions";
+import { updateArtifactStoragePreferenceAction, updateSessionTtlAction } from "./actions";
 import { Button } from "@/presentation/components/ui/button";
 
 export default async function ProjectSettingsPage({
@@ -24,11 +24,31 @@ export default async function ProjectSettingsPage({
           </p>
           <h1 className="mt-3 text-3xl font-semibold tracking-tight">Artifact storage preference</h1>
           <p className="mt-3 text-sm text-muted-foreground">
-            {project?.artifactStoragePreference ?? "supabase"}
+            Choose the shared destination for synced artifact bytes. The current PC runner still
+            owns local auth state and upload execution.
           </p>
+          <form
+            className="mt-4 flex flex-wrap items-center gap-3"
+            action={async (formData: FormData) => {
+              "use server";
+              await updateArtifactStoragePreferenceAction(projectId, formData);
+            }}
+          >
+            <select
+              name="artifactStoragePreference"
+              defaultValue={project?.artifactStoragePreference ?? "supabase"}
+              className="min-w-52 rounded-lg border border-border bg-background px-3 py-2 text-sm"
+            >
+              <option value="supabase">supabase</option>
+              <option value="google_drive">google_drive</option>
+            </select>
+            <Button type="submit" variant="secondary">
+              Save
+            </Button>
+          </form>
           <div className="mt-4 flex gap-2">
-            <Badge>supabase</Badge>
-            <Badge>google_drive</Badge>
+            <Badge tone={(project?.artifactStoragePreference ?? "supabase") === "supabase" ? "success" : "neutral"}>supabase</Badge>
+            <Badge tone={(project?.artifactStoragePreference ?? "supabase") === "google_drive" ? "success" : "neutral"}>google_drive</Badge>
           </div>
         </div>
         <div className="rounded-[1.6rem] border border-border bg-background/70 p-6">

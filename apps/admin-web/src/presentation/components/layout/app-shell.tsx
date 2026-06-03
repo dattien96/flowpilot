@@ -1,8 +1,12 @@
- "use client";
+"use client";
 
 import type { ReactNode } from "react";
+import { useEffect } from "react";
 import { usePathname } from "next/navigation";
 
+import { createGatewayBundle } from "@/data/repository/browser-factory";
+import { CheckLocalRunnerHealthUseCase } from "@/domain/usecase/local-runner/check-local-runner-health-usecase";
+import { requestArtifactSyncBootstrap } from "@/features/artifacts/artifact-sync-bootstrap-client";
 import type { AdminSession } from "@/data/auth/session";
 import { cn } from "@/lib/utils/cn";
 import { navItems } from "@/presentation/components/layout/app-nav";
@@ -14,6 +18,39 @@ interface AppShellProps {
 
 export function AppShell({ children, session }: AppShellProps) {
   const pathname = usePathname();
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function pollRunnerHealth() {
+      try {
+        const gateways = createGatewayBundle();
+        const health = await new CheckLocalRunnerHealthUseCase(
+          gateways.localRunnerGateway,
+        ).execute();
+
+        if (cancelled || health.status !== "online") {
+          return;
+        }
+
+        await requestArtifactSyncBootstrap(health);
+      } catch (error) {
+        if (!cancelled) {
+          console.warn("Unable to request artifact sync bootstrap:", error);
+        }
+      }
+    }
+
+    void pollRunnerHealth();
+    const intervalId = window.setInterval(() => {
+      void pollRunnerHealth();
+    }, 30_000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, []);
 
   return (
     <div className="noise-bg min-h-screen">

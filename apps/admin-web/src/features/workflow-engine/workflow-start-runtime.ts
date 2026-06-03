@@ -4,6 +4,7 @@ import path from "node:path";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { SupabaseArtifactStorageConnectionGateway } from "@/data/repository/supabase/supabase-artifact-storage-connection-gateway";
 import type { LocalRunnerGateway } from "@/domain/gateway/local-runner-gateway";
 import type {
   LocalRunnerPromptExecutionResult,
@@ -29,6 +30,9 @@ import {
   INTERRUPTED_RUN_ERROR,
   isInterruptedWorkflowStep,
 } from "@/features/workflow-engine/workflow-run-interruption";
+import {
+  scheduleArtifactAutoSync,
+} from "@/features/artifacts/artifact-auto-sync";
 import { getLocalRunnerBaseUrl } from "@/lib/env/app-env";
 
 type WorkflowDefinitionRow = {
@@ -76,7 +80,7 @@ type ArtifactDefinitionRow = {
 
 type ArtifactRunRow = {
   id: string;
-  artifact_definition_key: string;
+  artifact_definition_key: string | null;
   local_path: string;
   title: string;
 };
@@ -1076,6 +1080,7 @@ type LocalWorkflowOutputArtifactSnapshot = {
   snapshotDirectory: string;
   manifestPath: string;
   contentPath: string;
+  title: string;
 };
 
 export async function createLocalWorkflowOutputArtifactSnapshot({
@@ -1168,6 +1173,7 @@ export async function createLocalWorkflowOutputArtifactSnapshot({
     snapshotDirectory,
     manifestPath,
     contentPath,
+    title,
   };
 }
 
@@ -2065,8 +2071,38 @@ export async function createArtifactOutputs({
       commandText,
       providerKey,
     });
+    const now = new Date().toISOString();
+    const localPath = path.relative(workingDirectory, snapshot.contentPath);
+    const { data, error } = await adminClient
+      .from("artifact_runs")
+      .insert([
+        {
+          id: snapshot.artifactId,
+          artifact_definition_key: null,
+          project_id: projectId,
+          workflow_id: workflowId,
+          workflow_run_id: workflowRunId,
+          workflow_run_step_id: stepRunId,
+          title: snapshot.title,
+          local_path: localPath,
+          remote_path: "",
+          remote_url: "",
+          sync_status: "local_only",
+          created_at: now,
+          updated_at: now,
+        },
+      ])
+      .select("id");
+    if (error) {
+      throw new Error(`Unable to create fallback artifact output: ${error.message}`);
+    }
+
+    const artifactRunIds = (data ?? [])
+      .map((row) => (row.id ? String(row.id) : ""))
+      .filter(Boolean);
     return {
-      artifactRunId: null,
+      artifactRunId: artifactRunIds[0] ?? snapshot.artifactId,
+      artifactRunIds,
       checkpoint: {
         promptPath: path.join(snapshot.snapshotDirectory, "prompt.md"),
         outputContentPath: snapshot.contentPath,
@@ -2201,8 +2237,13 @@ export async function createArtifactOutputs({
     throw new Error(`Unable to create artifact outputs: ${error.message}`);
   }
 
+  const artifactRunIds = (data ?? [])
+    .map((row) => (row.id ? String(row.id) : ""))
+    .filter(Boolean);
+
   return {
-    artifactRunId: data?.[0]?.id ? String(data[0].id) : null,
+    artifactRunId: artifactRunIds[0] ?? null,
+    artifactRunIds,
     checkpoint: {
       promptPath: checkpointPromptPath,
       outputContentPath: checkpointOutputContentPath,
@@ -2503,6 +2544,20 @@ export async function submitWorkflowStepFollowUpRuntime({
       providerKey: execution.providerKey,
     });
     const artifactRunId = artifactOutputResult.artifactRunId;
+    if (artifactOutputResult.artifactRunId) {
+      scheduleArtifactAutoSync(
+        {
+          supabase: adminClient,
+          artifactStorageConnectionGateway: new SupabaseArtifactStorageConnectionGateway(
+            adminClient,
+          ),
+        },
+        {
+          projectId: run.project_id,
+          workflowRunId: run.id,
+        },
+      );
+    }
 
     if (result.sessionDbId) {
       await appendSessionCheckpoint(
@@ -3010,6 +3065,20 @@ export async function runWorkflowStartRuntime({
           providerKey: stepPlan.providerKey,
         });
         const artifactRunId = artifactOutputResult.artifactRunId;
+        if (artifactOutputResult.artifactRunId) {
+          scheduleArtifactAutoSync(
+            {
+              supabase: adminClient,
+              artifactStorageConnectionGateway: new SupabaseArtifactStorageConnectionGateway(
+                adminClient,
+              ),
+            },
+            {
+              projectId: request.projectId,
+              workflowRunId: String(runRow.id),
+            },
+          );
+        }
 
         if (result.sessionDbId) {
           await appendSessionCheckpoint(

@@ -205,15 +205,93 @@ describe("SupabaseGatewayBundle integrations", () => {
 
 describe("SupabaseGatewayBundle workflow runs", () => {
   it("deletes workflow runs by id list", async () => {
-    const inFn = vi.fn().mockResolvedValue({ error: null });
-    const deleteFn = vi.fn(() => ({ in: inFn }));
-    const from = vi.fn(() => ({ delete: deleteFn }));
+    const artifactRunsIn = vi.fn().mockResolvedValue({
+      data: [],
+      error: null,
+    });
+    const artifactRunsSelect = vi.fn(() => ({ in: artifactRunsIn }));
+    const workflowRunsIn = vi.fn().mockResolvedValue({ error: null });
+    const workflowRunsDelete = vi.fn(() => ({ in: workflowRunsIn }));
+    const from = vi.fn((table: string) => {
+      if (table === "artifact_runs") {
+        return { select: artifactRunsSelect };
+      }
+      if (table === "workflow_runs") {
+        return { delete: workflowRunsDelete };
+      }
+      throw new Error(`Unexpected table ${table}`);
+    });
 
-    const gateway = createSupabaseGatewayBundle({ from } as never).workflowGateway;
+    const gateway = createSupabaseGatewayBundle({
+      from,
+      storage: {
+        from: vi.fn(),
+      },
+    } as never).workflowGateway;
     await gateway.deleteWorkflowRuns(["run-1", "run-2"]);
 
+    expect(from).toHaveBeenCalledWith("artifact_runs");
+    expect(artifactRunsIn).toHaveBeenCalledWith("workflow_run_id", ["run-1", "run-2"]);
     expect(from).toHaveBeenCalledWith("workflow_runs");
-    expect(inFn).toHaveBeenCalledWith("id", ["run-1", "run-2"]);
+    expect(workflowRunsIn).toHaveBeenCalledWith("id", ["run-1", "run-2"]);
+  });
+
+  it("deletes synced Supabase artifact objects before removing workflow runs", async () => {
+    const artifactRunsIn = vi.fn().mockResolvedValue({
+      data: [
+        {
+          id: "artifact-1",
+          remote_path: "projects/project-1/runs/run-1/steps/plan/Response.md",
+          storage_provider: "supabase",
+        },
+      ],
+      error: null,
+    });
+    const artifactRunsSelect = vi.fn(() => ({ in: artifactRunsIn }));
+    const workflowRunsIn = vi.fn().mockResolvedValue({ error: null });
+    const workflowRunsDelete = vi.fn(() => ({ in: workflowRunsIn }));
+    const list = vi.fn().mockResolvedValue({
+      data: [
+        { name: "manifest.json", id: "file-1" },
+        { name: "prompt.md", id: "file-2" },
+      ],
+      error: null,
+    });
+    const remove = vi.fn().mockResolvedValue({ error: null });
+    const storageFrom = vi.fn(() => ({ list, remove }));
+    const from = vi.fn((table: string) => {
+      if (table === "artifact_runs") {
+        return { select: artifactRunsSelect };
+      }
+      if (table === "workflow_runs") {
+        return { delete: workflowRunsDelete };
+      }
+      throw new Error(`Unexpected table ${table}`);
+    });
+
+    const gateway = createSupabaseGatewayBundle({
+      from,
+      storage: {
+        from: storageFrom,
+      },
+    } as never).workflowGateway;
+    await gateway.deleteWorkflowRuns(["run-1"]);
+
+    expect(storageFrom).toHaveBeenCalledWith("flowpilot-artifacts");
+    expect(list).toHaveBeenCalledWith(
+      "projects/project-1/runs/run-1/steps/plan/.snapshots/artifact-1",
+      {
+        limit: 1000,
+        offset: 0,
+        sortBy: { column: "name", order: "asc" },
+      },
+    );
+    expect(remove).toHaveBeenCalledWith([
+      "projects/project-1/runs/run-1/steps/plan/Response.md",
+      "projects/project-1/runs/run-1/steps/plan/.snapshots/artifact-1/manifest.json",
+      "projects/project-1/runs/run-1/steps/plan/.snapshots/artifact-1/prompt.md",
+    ]);
+    expect(workflowRunsIn).toHaveBeenCalledWith("id", ["run-1"]);
   });
 });
 

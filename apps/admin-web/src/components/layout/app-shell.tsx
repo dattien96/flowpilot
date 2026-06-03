@@ -10,6 +10,7 @@ import { createGatewayBundle } from "@/data/repository/browser-factory";
 import type { Integration } from "@/domain/model/entity/integration";
 import type { LocalRunnerHealth } from "@/domain/model/entity/local-runner";
 import { CheckLocalRunnerHealthUseCase } from "@/domain/usecase/local-runner/check-local-runner-health-usecase";
+import { requestArtifactSyncBootstrap } from "@/features/artifacts/artifact-sync-bootstrap-client";
 import { useAuth } from "@/features/auth/auth-provider";
 import { ThemeSwitcher } from "@/features/theme/components/theme-switcher";
 import { cn } from "@/lib/utils/cn";
@@ -143,13 +144,21 @@ export function AppShell({ children }: { children: ReactNode }) {
     async function loadStatuses() {
       try {
         const gateways = createGatewayBundle();
-        const [integrations, runnerHealth] = await Promise.all([
-          gateways.integrationGateway.listAllIntegrations(),
-          new CheckLocalRunnerHealthUseCase(gateways.localRunnerGateway).execute(),
-        ]);
+        const runnerHealth = await new CheckLocalRunnerHealthUseCase(
+          gateways.localRunnerGateway,
+        ).execute();
+        const integrations = await gateways.integrationGateway
+          .listAllIntegrations()
+          .catch(() => [] as Integration[]);
 
         if (cancelled) {
           return;
+        }
+
+        if (runnerHealth.status === "online") {
+          void requestArtifactSyncBootstrap(runnerHealth).catch((error) => {
+            console.warn("Unable to request artifact sync bootstrap:", error);
+          });
         }
 
         setSettingsStatuses(createSettingsNavStatuses(integrations, runnerHealth));
@@ -211,6 +220,9 @@ export function AppShell({ children }: { children: ReactNode }) {
           const health = await new CheckLocalRunnerHealthUseCase(innerGateways.localRunnerGateway).execute();
           if (health.status === "online") {
             clearInterval(interval);
+            void requestArtifactSyncBootstrap(health).catch((error) => {
+              console.warn("Unable to request artifact sync bootstrap after restart:", error);
+            });
             setIsPending(null);
             const integrations = await innerGateways.integrationGateway.listAllIntegrations();
             setSettingsStatuses(createSettingsNavStatuses(integrations, health));

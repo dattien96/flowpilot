@@ -1,5 +1,6 @@
 import type {
   LocalRunnerArtifact,
+  LocalRunnerArtifactCloudSyncResult,
   LocalRunnerBackupResult,
   LocalRunnerDirectorySelection,
   LocalRunnerFlow,
@@ -48,6 +49,11 @@ export interface LocalRunnerGateway {
   ): Promise<LocalRunnerMcpTestRunSummary[]>;
   runMcpTest(request: LocalRunnerMcpTestRequest): Promise<LocalRunnerMcpTestResult>;
   deleteIntegrationConnection(integrationId: string): Promise<void>;
+  exportArtifactSyncBundle(artifactId: string): Promise<ArrayBuffer>;
+  saveArtifactCloudSyncResult(
+    artifactId: string,
+    result: LocalRunnerArtifactCloudSyncResult,
+  ): Promise<LocalRunnerArtifact>;
   syncArtifact(artifactId: string): Promise<LocalRunnerArtifact>;
   deleteArtifactsByWorkflowRunIds(runIds: string[]): Promise<void>;
   createBackup(scope: string, runId: string | null): Promise<LocalRunnerBackupResult>;

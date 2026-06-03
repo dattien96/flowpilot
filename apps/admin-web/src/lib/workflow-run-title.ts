@@ -1,5 +1,6 @@
 import type { LocalRunnerGateway } from "@/domain/gateway/local-runner-gateway";
 import type { LocalRunnerArtifact } from "@/domain/model/entity/local-runner";
+import type { ArtifactRun } from "@/domain/model/entity/workflow-engine";
 
 const workflowRunPathPattern =
   /\.flowpilot[\\/]+artifacts[\\/]+[^/\\\s]+[\\/]+([0-9a-f-]{36})[\\/]+/gi;
@@ -107,12 +108,59 @@ function sortByUpdatedAtDesc(left: LocalRunnerArtifact, right: LocalRunnerArtifa
   return right.updatedAt.localeCompare(left.updatedAt);
 }
 
+function summarizeArtifactContent(content: string) {
+  const normalized = content.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return null;
+  }
+
+  return normalized.length > 50
+    ? `${normalized.slice(0, 50).trimEnd()}...`
+    : normalized;
+}
+
+function isGenericArtifactTitle(title: string) {
+  const normalized = normalize(title);
+  return normalized === "response.md" || normalized === "artifact.md";
+}
+
+function selectLatestSyncedArtifactRunByRun(
+  artifactRuns: ArtifactRun[],
+  runIds: Set<string>,
+) {
+  const latestByRun = new Map<string, ArtifactRun>();
+
+  for (const artifact of artifactRuns) {
+    if (normalize(artifact.syncStatus) !== "synced") {
+      continue;
+    }
+
+    const normalizedRunId = normalize(artifact.workflowRunId);
+    if (!runIds.has(normalizedRunId)) {
+      continue;
+    }
+
+    const current = latestByRun.get(normalizedRunId);
+    if (!current || artifact.updatedAt > current.updatedAt) {
+      latestByRun.set(normalizedRunId, artifact);
+    }
+  }
+
+  return latestByRun;
+}
+
+type WorkflowRunTitleOptions = {
+  listArtifactRuns?: () => Promise<ArtifactRun[]>;
+  loadArtifactContent?: (artifactRun: ArtifactRun) => Promise<string | null>;
+};
+
 export async function loadWorkflowRunTitleMap(
   localRunnerGateway: Pick<
     LocalRunnerGateway,
     "listArtifacts" | "getArtifactById"
   >,
   runIds: string[],
+  options: WorkflowRunTitleOptions = {},
 ) {
   const normalizedRunIds = new Set(
     runIds.map((runId) => normalize(runId)).filter(Boolean),
@@ -175,6 +223,32 @@ export async function loadWorkflowRunTitleMap(
 
       resolvedTitles.set(resolvedRunId, title);
       unresolvedRunIds.delete(resolvedRunId);
+    }
+
+    if (unresolvedRunIds.size === 0 || !options.listArtifactRuns) {
+      return resolvedTitles;
+    }
+
+    const artifactRuns = await options.listArtifactRuns();
+    const latestSyncedByRun = selectLatestSyncedArtifactRunByRun(
+      artifactRuns,
+      unresolvedRunIds,
+    );
+    for (const [runId, artifactRun] of latestSyncedByRun.entries()) {
+      let title = artifactRun.title.trim();
+      if (!title) {
+        continue;
+      }
+
+      if (options.loadArtifactContent && isGenericArtifactTitle(title)) {
+        const content = await options.loadArtifactContent(artifactRun);
+        const summary = content ? summarizeArtifactContent(content) : null;
+        if (summary) {
+          title = summary;
+        }
+      }
+
+      resolvedTitles.set(runId, title);
     }
 
     return resolvedTitles;

@@ -89,6 +89,12 @@ function createLocalRunnerMock(): LocalRunnerGateway {
     deleteIntegrationConnection: vi.fn(async () => {
       throw new Error("not implemented");
     }),
+    exportArtifactSyncBundle: vi.fn(async () => {
+      throw new Error("not implemented");
+    }),
+    saveArtifactCloudSyncResult: vi.fn(async () => {
+      throw new Error("not implemented");
+    }),
     syncArtifact: vi.fn(async () => {
       throw new Error("not implemented");
     }),

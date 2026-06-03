@@ -1,10 +1,14 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -627,13 +631,95 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 						return
 					}
 
-					artifact, err := instance.SyncArtifact(artifactID)
+					var payload runner.ArtifactSyncRequest
+					if r.Body != nil {
+						decodeErr := json.NewDecoder(r.Body).Decode(&payload)
+						if decodeErr != nil && !errors.Is(decodeErr, io.EOF) {
+							writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", decodeErr))
+							return
+						}
+					}
+
+					artifact, err := instance.SyncArtifact(artifactID, payload)
 					if err != nil {
 						writeHTTPError(w, http.StatusBadRequest, err)
 						return
 					}
 
 					writeHTTPJSON(w, artifact)
+					return
+				}
+
+				if len(parts) == 2 && parts[1] == "sync-bundle" {
+					if r.Method != http.MethodGet {
+						http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+						return
+					}
+
+					var buffer bytes.Buffer
+					if err := instance.WriteArtifactSyncBundle(artifactID, &buffer); err != nil {
+						status := http.StatusBadRequest
+						if errors.Is(err, os.ErrNotExist) {
+							status = http.StatusNotFound
+						}
+						writeHTTPError(w, status, err)
+						return
+					}
+
+					w.Header().Set("Content-Type", "application/zip")
+					w.Header().Set(
+						"Content-Disposition",
+						fmt.Sprintf(`attachment; filename="%s.zip"`, artifactID),
+					)
+					if _, err := w.Write(buffer.Bytes()); err != nil {
+						writeHTTPError(w, http.StatusInternalServerError, err)
+					}
+					return
+				}
+
+				if len(parts) == 2 && parts[1] == "cloud-sync-result" {
+					if r.Method != http.MethodPut {
+						http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+						return
+					}
+
+					var payload runner.ArtifactCloudSyncResult
+					if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+						writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+						return
+					}
+
+					artifact, err := instance.SaveArtifactCloudSyncResult(artifactID, payload)
+					if err != nil {
+						status := http.StatusBadRequest
+						if errors.Is(err, os.ErrNotExist) {
+							status = http.StatusNotFound
+						}
+						writeHTTPError(w, status, err)
+						return
+					}
+
+					writeHTTPJSON(w, artifact)
+					return
+				}
+
+				if len(parts) == 2 && parts[1] == "open" {
+					if r.Method != http.MethodGet {
+						http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+						return
+					}
+
+					targetURL, err := instance.ResolveArtifactOpenURL(artifactID, r.URL.Query().Get("file"))
+					if err != nil {
+						status := http.StatusBadRequest
+						if errors.Is(err, os.ErrNotExist) {
+							status = http.StatusNotFound
+						}
+						writeHTTPError(w, status, err)
+						return
+					}
+
+					http.Redirect(w, r, targetURL, http.StatusTemporaryRedirect)
 					return
 				}
 
@@ -678,6 +764,119 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 					return
 				}
 				writeHTTPJSON(w, map[string]string{"content": string(content)})
+			})
+			mux.HandleFunc("/artifact-storage/google-drive/connect-sessions", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+
+				var payload runner.ArtifactStorageGoogleDriveConnectRequest
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+
+				session, err := instance.CreateGoogleDriveArtifactConnectSession(payload)
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+				writeHTTPJSON(w, session)
+			})
+			mux.HandleFunc("/artifact-storage/google-drive/connection", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+
+				projectID := strings.TrimSpace(r.URL.Query().Get("projectId"))
+				sessionID := strings.TrimSpace(r.URL.Query().Get("sessionId"))
+				status, err := instance.GetGoogleDriveArtifactConnectionStatus(projectID, sessionID)
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+				writeHTTPJSON(w, status)
+			})
+			mux.HandleFunc("/artifact-storage/google-drive/connect", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+
+				targetURL, err := instance.BuildGoogleDriveArtifactConnectRedirect(
+					r.URL.Query().Get("sessionId"),
+					r.URL.Query().Get("token"),
+				)
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+
+				http.Redirect(w, r, targetURL, http.StatusTemporaryRedirect)
+			})
+			mux.HandleFunc("/artifact-storage/google-drive/oauth/callback", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+
+				session, err := instance.HandleGoogleDriveArtifactOAuthCallback(
+					r.URL.Query().Get("state"),
+					r.URL.Query().Get("code"),
+					r.URL.Query().Get("error"),
+				)
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+
+				http.Redirect(w, r, fmt.Sprintf("%s?sessionId=%s", "/artifact-storage/google-drive/picker", url.QueryEscape(session.SessionID)), http.StatusTemporaryRedirect)
+			})
+			mux.HandleFunc("/artifact-storage/google-drive/picker", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				sessionID := strings.TrimSpace(r.URL.Query().Get("sessionId"))
+				if sessionID == "" {
+					writeHTTPError(w, http.StatusBadRequest, errors.New("sessionId is required"))
+					return
+				}
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				if _, err := w.Write([]byte(runner.RenderGoogleDriveArtifactPickerHTML(sessionID))); err != nil {
+					writeHTTPError(w, http.StatusInternalServerError, err)
+				}
+			})
+			mux.HandleFunc("/artifact-storage/google-drive/picker-token", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				token, err := instance.GetGoogleDriveArtifactPickerToken(r.URL.Query().Get("sessionId"))
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+				writeHTTPJSON(w, token)
+			})
+			mux.HandleFunc("/artifact-storage/google-drive/folder-selection", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				var payload runner.ArtifactStorageGoogleDriveFolderSelectionRequest
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+				status, err := instance.SaveGoogleDriveArtifactFolderSelection(payload)
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+				writeHTTPJSON(w, status)
 			})
 			mux.HandleFunc("/integrations/", func(w http.ResponseWriter, r *http.Request) {
 				trimmed := strings.TrimPrefix(r.URL.Path, "/integrations/")

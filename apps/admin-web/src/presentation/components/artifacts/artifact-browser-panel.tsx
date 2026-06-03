@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react";
 import { useState } from "react";
-import { Download, ExternalLink, Search, UploadCloud } from "lucide-react";
+import { ExternalLink, Search, UploadCloud } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 import { Badge } from "@/presentation/components/ui/badge";
@@ -24,10 +24,8 @@ export function ArtifactBrowserPanel({
   const [projectId, setProjectId] = useState("all");
   const [runId, setRunId] = useState("all");
   const [selectedArtifactId, setSelectedArtifactId] = useState(artifacts[0]?.artifactId ?? "");
-  const [backupScope, setBackupScope] = useState<"all" | "run">("all");
-  const [backupMessage, setBackupMessage] = useState<string | null>(null);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [syncingArtifactId, setSyncingArtifactId] = useState<string | null>(null);
-  const [backuping, setBackuping] = useState(false);
 
   const filteredArtifacts = artifacts.filter((artifact) => {
     const matchesQuery =
@@ -56,45 +54,27 @@ export function ArtifactBrowserPanel({
 
   async function syncArtifact(artifactId: string) {
     setSyncingArtifactId(artifactId);
+    setStatusMessage(null);
     try {
       const response = await fetch(`/api/local-runner/artifacts/${artifactId}/sync`, {
         method: "POST",
       });
+      const payload = (await response.json()) as
+        | (Partial<LocalRunnerArtifact> & { error?: string })
+        | { error?: string };
       if (!response.ok) {
-        const payload = (await response.json()) as { error?: string };
         throw new Error(payload.error ?? "Unable to sync artifact.");
       }
+      setStatusMessage(
+        "syncStatus" in payload && payload.syncStatus
+          ? `Artifact sync state: ${payload.syncStatus}.`
+          : "Artifact sync completed.",
+      );
       router.refresh();
     } catch (error) {
-      setBackupMessage(error instanceof Error ? error.message : "Unable to sync artifact.");
+      setStatusMessage(error instanceof Error ? error.message : "Unable to sync artifact.");
     } finally {
       setSyncingArtifactId(null);
-    }
-  }
-
-  async function createBackup(scope: "all" | "run") {
-    setBackuping(true);
-    setBackupMessage(null);
-    try {
-      const response = await fetch("/api/local-runner/backup", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          scope,
-          runId: scope === "run" ? selectedArtifact?.workflowRunId ?? null : null,
-        }),
-      });
-      const payload = (await response.json()) as { backupPath?: string; error?: string };
-      if (!response.ok) {
-        throw new Error(payload.error ?? "Unable to create backup.");
-      }
-      setBackupMessage(payload.backupPath ? `Backup created: ${payload.backupPath}` : "Backup created.");
-    } catch (error) {
-      setBackupMessage(error instanceof Error ? error.message : "Unable to create backup.");
-    } finally {
-      setBackuping(false);
     }
   }
 
@@ -107,18 +87,16 @@ export function ArtifactBrowserPanel({
       <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <p className="font-mono text-xs uppercase tracking-[0.28em] text-muted-foreground">
-            Artifacts
+            Local Artifacts
           </p>
-          <h2 className="mt-3 text-2xl font-semibold tracking-tight">
-            Generated files by flow run
-          </h2>
+          <h2 className="mt-3 text-2xl font-semibold tracking-tight">Browse local runs and cloud sync state</h2>
           <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
-            Browse generated markdown, preview content, sync file-backed artifacts, and export
-            backups to the configured driver folder.
+            Inspect runner artifacts, compare the local snapshot against its remote metadata, and
+            request a cloud sync for the selected artifact.
           </p>
         </div>
         <Badge tone={storageDriver.enabled ? "success" : "warning"}>
-          {storageDriver.enabled ? "driver ready" : "driver paused"}
+          {storageDriver.enabled ? "local artifacts ready" : "local artifacts paused"}
         </Badge>
       </div>
 
@@ -165,42 +143,20 @@ export function ArtifactBrowserPanel({
       </div>
 
       <div className="mt-6 flex flex-wrap items-center gap-3">
-        <label className="space-y-1">
-          <span className="text-xs uppercase tracking-[0.24em] text-muted-foreground">
-            Backup scope
-          </span>
-          <select
-            className="rounded-2xl border border-border bg-card px-4 py-2 text-sm outline-none"
-            value={backupScope}
-            onChange={(event) => setBackupScope(event.target.value as "all" | "run")}
-          >
-            <option value="all">All artifacts</option>
-            <option value="run">Selected run</option>
-          </select>
-        </label>
         <Button
           type="button"
           variant="secondary"
-          disabled={backuping}
+          disabled={!selectedArtifact || syncingArtifactId === selectedArtifact?.artifactId}
           onClick={() => {
-            void createBackup("all");
+            if (selectedArtifact) {
+              void syncArtifact(selectedArtifact.artifactId);
+            }
           }}
         >
-          <Download className="mr-2 size-4" />
-          {backuping ? "Backing up..." : "Backup all"}
+          <UploadCloud className="mr-2 size-4" />
+          {syncingArtifactId === selectedArtifact?.artifactId ? "Syncing..." : "Sync artifact"}
         </Button>
-        <Button
-          type="button"
-          variant="secondary"
-          disabled={backuping || !selectedArtifact}
-          onClick={() => {
-            void createBackup(backupScope);
-          }}
-        >
-          <Download className="mr-2 size-4" />
-          {backupScope === "run" ? "Backup selected run" : "Backup all artifacts"}
-        </Button>
-        {backupMessage ? <p className="text-sm text-muted-foreground">{backupMessage}</p> : null}
+        {statusMessage ? <p className="text-sm text-muted-foreground">{statusMessage}</p> : null}
       </div>
 
       <div className="mt-6 grid gap-4 xl:grid-cols-[1fr_1.1fr]">
@@ -210,7 +166,6 @@ export function ArtifactBrowserPanel({
           ) : (
             filteredArtifacts.map((artifact) => {
               const selected = artifact.artifactId === selectedArtifact?.artifactId;
-              const syncable = Boolean(artifact.localPath);
               return (
                 <button
                   key={artifact.artifactId}
@@ -229,22 +184,25 @@ export function ArtifactBrowserPanel({
                         {artifact.projectId} / {artifact.workflowRunId}
                       </p>
                     </div>
-                    <Badge tone={artifact.syncStatus === "synced" ? "success" : "warning"}>
-                      {artifact.sourceKind}
-                    </Badge>
+                    <div className="flex flex-wrap justify-end gap-2">
+                      <Badge tone={artifactStatusTone(artifact.syncStatus)}>
+                        {artifact.syncStatus}
+                      </Badge>
+                      <Badge tone="neutral">{artifact.storageProvider || "local"}</Badge>
+                    </div>
                   </div>
                   <p className="mt-3 line-clamp-2 text-sm text-muted-foreground">
                     {artifact.previewMarkdown || artifact.contentMarkdown || "No preview available."}
                   </p>
                   <div className="mt-4 flex flex-wrap items-center gap-2">
-                    <Badge tone="neutral">{artifact.syncStatus}</Badge>
+                    <Badge tone="neutral">{artifact.sourceKind}</Badge>
                     <Badge tone="neutral">{artifact.workflowStepKey}</Badge>
                     <Badge tone="neutral">
                       {artifact.createdAt.slice(0, 19).replace("T", " ")}
                     </Badge>
-                    <span className="text-xs text-muted-foreground">
-                      {syncable ? "file-backed" : "demo record"}
-                    </span>
+                    {artifact.remoteObjectId ? (
+                      <Badge tone="neutral">object {artifact.remoteObjectId}</Badge>
+                    ) : null}
                   </div>
                 </button>
               );
@@ -262,13 +220,16 @@ export function ArtifactBrowserPanel({
                     {selectedArtifact.projectId} / {selectedArtifact.workflowRunId}
                   </p>
                 </div>
-                <Badge tone={selectedArtifact.syncStatus === "synced" ? "success" : "warning"}>
+                <Badge tone={artifactStatusTone(selectedArtifact.syncStatus)}>
                   {selectedArtifact.syncStatus}
                 </Badge>
               </div>
 
               <div className="grid gap-3 sm:grid-cols-2">
                 <InfoTile label="Local path" value={selectedArtifact.localPath || "Not file-backed"} />
+                <InfoTile label="Remote path" value={selectedArtifact.remotePath || "Not synced"} />
+                <InfoTile label="Cloud provider" value={selectedArtifact.storageProvider || "Local only"} />
+                <InfoTile label="Remote object" value={selectedArtifact.remoteObjectId || "Not assigned"} />
                 <InfoTile label="Remote link" value={selectedArtifact.remoteUrl || "Not synced"} />
                 <InfoTile label="Provider" value={selectedArtifact.providerKey || "Unknown"} />
                 <InfoTile label="Step" value={selectedArtifact.workflowStepKey} />
@@ -278,17 +239,24 @@ export function ArtifactBrowserPanel({
                 <Button
                   type="button"
                   disabled={
-                    syncingArtifactId === selectedArtifact.artifactId ||
-                    !selectedArtifact.localPath ||
-                    !storageDriver.enabled
+                    syncingArtifactId === selectedArtifact.artifactId
                   }
                   onClick={() => {
                     void syncArtifact(selectedArtifact.artifactId);
                   }}
                 >
                   <UploadCloud className="mr-2 size-4" />
-                  {syncingArtifactId === selectedArtifact.artifactId ? "Syncing..." : "Sync"}
+                  {syncingArtifactId === selectedArtifact.artifactId ? "Syncing..." : "Sync artifact"}
                 </Button>
+                <a
+                  className="inline-flex items-center gap-2 rounded-full border border-border px-4 py-2 text-sm font-semibold hover:bg-muted"
+                  href={`/api/local-runner/artifacts/${selectedArtifact.artifactId}/open`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <ExternalLink className="size-4" />
+                  Open artifact
+                </a>
                 {selectedArtifact.remoteUrl ? (
                   <a
                     className="inline-flex items-center gap-2 rounded-full border border-border px-4 py-2 text-sm font-semibold hover:bg-muted"
@@ -316,6 +284,18 @@ export function ArtifactBrowserPanel({
       </div>
     </section>
   );
+}
+
+function artifactStatusTone(syncStatus: LocalRunnerArtifact["syncStatus"]) {
+  if (syncStatus === "synced") {
+    return "success";
+  }
+
+  if (syncStatus === "failed") {
+    return "danger";
+  }
+
+  return "warning";
 }
 
 function FilterSelect({

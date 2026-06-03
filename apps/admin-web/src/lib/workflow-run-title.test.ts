@@ -130,4 +130,83 @@ build a product for cafes
 
     expect(titleMap.get(workflowRunId)).toBe("build a product for cafes");
   });
+
+  it("falls back to synced artifact run titles when local artifacts are gone", async () => {
+    const workflowRunId = "0cd0fe76-87a1-497d-af5e-b773a386de67";
+    const localRunnerGateway = {
+      listArtifacts: vi.fn(async () => []),
+      getArtifactById: vi.fn(async () => null),
+    };
+    const workflowEngineGateway = {
+      listArtifactRuns: vi.fn(async () => [
+        {
+          id: "artifact-run-1",
+          artifactDefinitionKey: "business_idea_artifact",
+          workflowId: "workflow-1",
+          workflowRunId,
+          workflowRunStepId: "step-1",
+          projectId: "project-1",
+          title: "BusinessIdea.md",
+          localPath: ".flowpilot/artifacts/project-1/run-1/business_idea/.snapshots/artifact-run-1/BusinessIdea.md",
+          remotePath: "projects/project-1/runs/run-1/steps/business_idea/BusinessIdea.md",
+          remoteUrl: "",
+          storageProvider: "supabase" as const,
+          remoteObjectId: "object-1",
+          syncStatus: "synced" as const,
+          createdAt: "2026-05-23T01:47:10.176Z",
+          updatedAt: "2026-05-23T01:47:24.785Z",
+        },
+      ]),
+    };
+
+    const titleMap = await loadWorkflowRunTitleMap(
+      localRunnerGateway,
+      [workflowRunId],
+      {
+        listArtifactRuns: workflowEngineGateway.listArtifactRuns,
+      },
+    );
+
+    expect(titleMap.get(workflowRunId)).toBe("BusinessIdea.md");
+  });
+
+  it("uses a 50 character remote content summary for generic synced artifact titles", async () => {
+    const workflowRunId = "0cd0fe76-87a1-497d-af5e-b773a386de67";
+    const localRunnerGateway = {
+      listArtifacts: vi.fn(async () => []),
+      getArtifactById: vi.fn(async () => null),
+    };
+    const artifactRun = {
+      id: "artifact-run-1",
+      artifactDefinitionKey: null,
+      workflowId: "workflow-1",
+      workflowRunId,
+      workflowRunStepId: "step-1",
+      projectId: "project-1",
+      title: "Response.md",
+      localPath: "",
+      remotePath: "projects/project-1/runs/run-1/steps/business_idea/Response.md",
+      remoteUrl: "",
+      storageProvider: "supabase" as const,
+      remoteObjectId: "object-1",
+      syncStatus: "synced" as const,
+      createdAt: "2026-05-23T01:47:10.176Z",
+      updatedAt: "2026-05-23T01:47:24.785Z",
+    };
+    const loadArtifactContent = vi.fn(
+      async () => "This is a synced remote response title that should be shortened for cards.",
+    );
+
+    const titleMap = await loadWorkflowRunTitleMap(
+      localRunnerGateway,
+      [workflowRunId],
+      {
+        listArtifactRuns: vi.fn(async () => [artifactRun]),
+        loadArtifactContent,
+      },
+    );
+
+    expect(titleMap.get(workflowRunId)).toBe("This is a synced remote response title that should...");
+    expect(loadArtifactContent).toHaveBeenCalledWith(artifactRun);
+  });
 });

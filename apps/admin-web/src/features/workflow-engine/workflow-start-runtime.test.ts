@@ -168,6 +168,66 @@ describe("workflow-start-runtime", () => {
     expect(actualPrompt).toContain("# Previous Conversation Context");
   });
 
+  it("creates a fallback artifact run when a step has no output binding", async () => {
+    const workingDirectory = await mkdtemp(path.join(os.tmpdir(), "flowpilot-runtime-fallback-"));
+    const insertedRows: Array<Record<string, unknown>> = [];
+    const adminClient = {
+      from: vi.fn(() => ({
+        insert(rows: Array<Record<string, unknown>>) {
+          insertedRows.push(...rows);
+          return {
+            select() {
+              return Promise.resolve({
+                data: rows.map((row) => ({ id: row.id })),
+                error: null,
+              });
+            },
+          };
+        },
+      })),
+    } as any;
+
+    const result = await createArtifactOutputs({
+      adminClient,
+      artifactDefinitions: new Map(),
+      outputArtifactKeys: [],
+      outputMarkdown: "# Result\n\nHello from the fallback artifact.",
+      promptText: "Prompt",
+      actualPromptText: "Actual Prompt",
+      projectId: "project-1",
+      stepRunId: "step-run-1",
+      stepType: "test_codex_step",
+      stderrText: "",
+      stdoutText: "ok",
+      workflowId: "workflow-1",
+      workflowRunId: "run-1",
+      workingDirectory,
+      commandText: "codex exec",
+      providerKey: "codex",
+    });
+
+    expect(insertedRows).toHaveLength(1);
+    expect(insertedRows[0]).toMatchObject({
+      id: result.artifactRunId,
+      artifact_definition_key: null,
+      project_id: "project-1",
+      workflow_id: "workflow-1",
+      workflow_run_id: "run-1",
+      workflow_run_step_id: "step-run-1",
+      title: "Response.md",
+      remote_path: "",
+      remote_url: "",
+      sync_status: "local_only",
+    });
+    expect(String(insertedRows[0]?.local_path)).toMatch(
+      /\.flowpilot[\\/]artifacts[\\/]project-1[\\/]run-1[\\/]test_codex_step[\\/]\.snapshots[\\/][^\\/]+[\\/]Response\.md$/,
+    );
+    expect(result.artifactRunIds).toEqual([result.artifactRunId]);
+    await expect(readFile(result.checkpoint.outputContentPath, "utf8")).resolves.toContain(
+      "Hello from the fallback artifact.",
+    );
+  });
+
   it("stores workflow step artifact local_path inside the snapshot folder", async () => {
     const workingDirectory = await mkdtemp(path.join(os.tmpdir(), "flowpilot-artifact-output-"));
     const insertedRows: Array<Record<string, unknown>> = [];

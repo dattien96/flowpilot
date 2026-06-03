@@ -138,6 +138,8 @@ describe("WorkflowEngine mappers", () => {
       local_path: ".flowpilot/artifacts/p-123/run-1/plan.md",
       remote_path: "artifacts/p-123/run-1/plan.md",
       remote_url: "https://example.com/plan.md",
+      storage_provider: "supabase",
+      remote_object_id: "object-1",
       sync_status: "synced",
       created_at: "2026-05-20T00:00:00Z",
       updated_at: "2026-05-20T01:00:00Z",
@@ -154,10 +156,34 @@ describe("WorkflowEngine mappers", () => {
       localPath: ".flowpilot/artifacts/p-123/run-1/plan.md",
       remotePath: "artifacts/p-123/run-1/plan.md",
       remoteUrl: "https://example.com/plan.md",
+      storageProvider: "supabase",
+      remoteObjectId: "object-1",
       syncStatus: "synced",
       createdAt: "2026-05-20T00:00:00Z",
       updatedAt: "2026-05-20T01:00:00Z",
     });
+  });
+
+  it("preserves null artifact definition keys for fallback workflow artifacts", () => {
+    const entity = mapArtifactRun({
+      id: "art-2",
+      artifact_definition_key: null,
+      workflow_id: "wf-1",
+      workflow_run_id: "run-2",
+      workflow_run_step_id: "wrs-2",
+      project_id: "p-123",
+      title: "Response.md",
+      local_path: ".flowpilot/artifacts/p-123/run-2/step-1/.snapshots/art-2/Response.md",
+      remote_path: "",
+      remote_url: "",
+      storage_provider: null,
+      remote_object_id: null,
+      sync_status: "local_only",
+      created_at: "2026-05-20T00:00:00Z",
+      updated_at: "2026-05-20T01:00:00Z",
+    });
+
+    expect(entity.artifactDefinitionKey).toBeNull();
   });
 
   it("maps workflows", () => {

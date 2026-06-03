@@ -123,6 +123,8 @@ export interface LocalRunnerArtifact {
   localPath: string;
   remotePath: string;
   remoteUrl: string;
+  storageProvider?: string;
+  remoteObjectId?: string;
   syncStatus: "local_only" | "syncing" | "synced" | "failed";
   createdAt: string;
   updatedAt: string;
@@ -141,6 +143,14 @@ export interface LocalRunnerArtifact {
   stdoutText?: string;
   stderrText?: string;
   commandText?: string;
+}
+
+export interface LocalRunnerArtifactCloudSyncResult {
+  storageProvider: string;
+  remotePath: string;
+  remoteObjectId?: string | null;
+  syncStatus: "local_only" | "syncing" | "synced" | "failed";
+  errorMessage?: string | null;
 }
 
 export interface LocalRunnerStorageDriver {

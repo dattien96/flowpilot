@@ -8,8 +8,11 @@ import { SupabaseWorkflowEngineGateway } from "@/data/repository/supabase/supaba
 import { InMemoryWorkflowEngineGateway } from "@/data/repository/demo/in-memory-workflow-engine-gateway";
 import { LocalFirstWorkflowGateway } from "@/data/repository/local-first/local-first-workflow-gateway";
 import { getLocalRunnerBaseUrl, hasSupabaseEnv } from "@/lib/env/app-env";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { SupabaseUserFavoriteGateway } from "@/data/repository/supabase/supabase-user-favorite-gateway";
 import { InMemoryUserFavoriteGateway } from "@/data/repository/demo/in-memory-user-favorite-gateway";
+import { SupabaseArtifactStorageConnectionGateway } from "@/data/repository/supabase/supabase-artifact-storage-connection-gateway";
+import { startArtifactSyncBootstrap } from "@/features/artifacts/artifact-auto-sync";
 
 export async function createGatewayBundle() {
   const localRunnerGateway = new HttpLocalRunnerGateway(
@@ -19,6 +22,20 @@ export async function createGatewayBundle() {
   if (hasSupabaseEnv()) {
     const supabaseClient = createSupabaseServerClient();
     const bundle = createSupabaseGatewayBundle(supabaseClient);
+    try {
+      const bootstrapClient = createSupabaseAdminClient();
+      const artifactStorageConnectionGateway =
+        new SupabaseArtifactStorageConnectionGateway(bootstrapClient);
+      void startArtifactSyncBootstrap({
+        supabase: bootstrapClient,
+        artifactStorageConnectionGateway,
+      });
+    } catch (error) {
+      console.warn(
+        "Unable to initialize artifact sync bootstrap admin client:",
+        error instanceof Error ? error.message : error,
+      );
+    }
     return {
       ...bundle,
       workflowGateway: new LocalFirstWorkflowGateway(

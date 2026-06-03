@@ -83,9 +83,11 @@ export function mapArtifactDefinition(row: SupabaseRow): ArtifactDefinition {
 }
 
 export function mapArtifactRun(row: SupabaseRow): ArtifactRun {
+  const artifactDefinitionKey = row.artifact_definition_key ?? row.artifact_key;
+
   return {
     id: String(row.id),
-    artifactDefinitionKey: String(row.artifact_definition_key ?? row.artifact_key),
+    artifactDefinitionKey: artifactDefinitionKey ? String(artifactDefinitionKey) : null,
     workflowId: String(row.workflow_id),
     workflowRunId: String(row.workflow_run_id),
     workflowRunStepId: row.workflow_run_step_id ? String(row.workflow_run_step_id) : null,
@@ -94,6 +96,13 @@ export function mapArtifactRun(row: SupabaseRow): ArtifactRun {
     localPath: String(row.local_path),
     remotePath: row.remote_path ? String(row.remote_path) : "",
     remoteUrl: row.remote_url ? String(row.remote_url) : "",
+    storageProvider:
+      row.storage_provider === "google_drive"
+        ? "google_drive"
+        : row.storage_provider === "supabase"
+          ? "supabase"
+          : null,
+    remoteObjectId: row.remote_object_id ? String(row.remote_object_id) : null,
     syncStatus: row.sync_status as ArtifactRun["syncStatus"],
     createdAt: row.created_at ? String(row.created_at) : "",
     updatedAt: row.updated_at ? String(row.updated_at) : "",
