@@ -7,7 +7,7 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 export async function POST() {
   try {
     console.info("[artifact-sync] bootstrap requested");
-    const supabase = createSupabaseAdminClient();
+    const supabase = await createSupabaseAdminClient();
     triggerArtifactSyncBootstrap({
       supabase,
       artifactStorageConnectionGateway: new SupabaseArtifactStorageConnectionGateway(

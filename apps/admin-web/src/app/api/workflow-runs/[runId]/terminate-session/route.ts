@@ -27,7 +27,7 @@ export async function POST(
     );
   }
 
-  const adminClient = createSupabaseAdminClient();
+  const adminClient = await createSupabaseAdminClient();
   await finalizeWorkflowRunSessions(adminClient, gateways.localRunnerGateway, runId);
 
   if ((request.headers.get("content-type") ?? "").includes("application/json")) {
