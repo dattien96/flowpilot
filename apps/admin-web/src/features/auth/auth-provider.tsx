@@ -6,7 +6,7 @@ import {
   type ReactNode,
 } from "react";
 
-import { supabase } from "@/data/supabase/client";
+import { getBrowserSupabaseClient } from "@/data/supabase/client";
 import {
   clearAuthSession,
   getDemoSession,
@@ -15,7 +15,7 @@ import {
   setAuthSession,
   useAuthStore,
 } from "@/features/auth/use-auth";
-import { hasSupabaseEnv } from "@/lib/env/browser-env";
+import { loadSupabaseRuntimeStatus } from "@/lib/supabase/runtime-config";
 
 interface AuthContextValue {
   loading: boolean;
@@ -51,10 +51,12 @@ function mapSupabaseSession(
 
 async function readSession(): Promise<AdminSession | null> {
   try {
-    if (!hasSupabaseEnv()) {
+    const status = await loadSupabaseRuntimeStatus();
+    if (!status.configured) {
       return getDemoSession();
     }
 
+    const supabase = await getBrowserSupabaseClient();
     const {
       data: { session },
     } = await supabase.auth.getSession();
@@ -77,42 +79,50 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let active = true;
+    let cleanup: (() => void) | null = null;
 
     void (async () => {
+      const status = await loadSupabaseRuntimeStatus();
       const nextSession = await readSession();
       if (!active) {
         return;
       }
       setAuthSession(nextSession);
-    })();
 
-    if (!hasSupabaseEnv()) {
-      return () => {
-        active = false;
-      };
-    }
+      if (!status.configured) {
+        return;
+      }
 
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
+      const supabase = await getBrowserSupabaseClient();
       if (!active) {
         return;
       }
-      setAuthSession(mapSupabaseSession(session));
-    });
+      const {
+        data: { subscription },
+      } = supabase.auth.onAuthStateChange((_event, session) => {
+        if (!active) {
+          return;
+        }
+        setAuthSession(mapSupabaseSession(session));
+      });
+
+      cleanup = () => subscription.unsubscribe();
+    })();
 
     return () => {
       active = false;
-      subscription.unsubscribe();
+      cleanup?.();
     };
   }, []);
 
   const signOut = async () => {
-    if (!hasSupabaseEnv()) {
+    const status = await loadSupabaseRuntimeStatus();
+    if (!status.configured) {
       clearAuthSession();
       return;
     }
 
+    const supabase = await getBrowserSupabaseClient();
     await supabase.auth.signOut();
     clearAuthSession();
   };

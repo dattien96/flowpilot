@@ -1,15 +1,17 @@
 import { redirect } from "@tanstack/react-router";
 
-import { supabase } from "@/data/supabase/client";
+import { getBrowserSupabaseClient } from "@/data/supabase/client";
 import { getDemoSession, type AdminSession } from "@/features/auth/use-auth";
-import { hasSupabaseEnv } from "@/lib/env/browser-env";
+import { loadSupabaseRuntimeStatus } from "@/lib/supabase/runtime-config";
 
 export async function getOptionalSession(): Promise<AdminSession | null> {
   try {
-    if (!hasSupabaseEnv()) {
+    const status = await loadSupabaseRuntimeStatus();
+    if (!status.configured) {
       return getDemoSession();
     }
 
+    const supabase = await getBrowserSupabaseClient();
     const {
       data: { session },
     } = await supabase.auth.getSession();
