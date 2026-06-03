@@ -62,13 +62,20 @@ export class SupabaseArtifactStorageConnectionGateway
     }
 
     const patch = buildArtifactRunPatch(update);
-    const { error } = await this.supabase
+    const { data, error } = await this.supabase
       .from("artifact_runs")
       .update(patch)
-      .eq("id", artifactRunId);
+      .eq("id", artifactRunId)
+      .select("id")
+      .maybeSingle();
 
     if (error) {
       throw new Error(error.message);
+    }
+    if (!data) {
+      throw new Error(
+        `Artifact run "${artifactRunId}" was not found in shared sync state. Only workflow-backed artifacts can appear in Remote/Synced across PCs.`,
+      );
     }
   }
 }
