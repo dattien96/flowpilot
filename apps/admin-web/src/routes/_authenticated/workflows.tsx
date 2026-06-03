@@ -11,6 +11,46 @@ import type { Project } from "@/domain/model/entity/project";
 
 type WorkflowSortOption = "name-asc" | "name-desc" | "updated-asc" | "updated-desc";
 
+function WorkflowsSkeleton() {
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 animate-pulse">
+      {[1, 2, 3, 4, 5, 6].map((i) => (
+        <div
+          key={i}
+          className="flex flex-col justify-between overflow-hidden rounded-[1.8rem] border border-border/60 bg-gradient-to-b from-card/90 to-background/40 p-6 min-h-[260px]"
+        >
+          <div className="flex flex-col h-full">
+            <div className="flex items-start justify-between gap-3 mb-4">
+              <div className="space-y-2 flex-1">
+                <div className="h-6 w-3/4 bg-muted rounded" />
+                <div className="h-3 w-1/2 bg-muted rounded mt-1" />
+              </div>
+              <div className="flex flex-col items-end gap-1.5 shrink-0">
+                <div className="w-5 h-5 rounded bg-muted" />
+                <div className="h-4 w-16 bg-muted rounded-full mt-1" />
+                <div className="h-4 w-12 bg-muted rounded-full mt-1" />
+              </div>
+            </div>
+
+            <div className="h-4 w-full bg-muted rounded mt-2" />
+            <div className="h-4 w-5/6 bg-muted rounded mt-2 mb-5" />
+
+            <div className="space-y-2.5 border-t border-border/40 pt-4 mb-6 flex-1">
+              <div className="h-3 w-2/3 bg-muted rounded" />
+              <div className="h-3 w-1/2 bg-muted rounded mt-1" />
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between pt-2 border-t border-border/40 mt-auto">
+            <div className="h-3 w-20 bg-muted rounded" />
+            <div className="h-8 w-28 bg-muted rounded-xl" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export const Route = createFileRoute("/_authenticated/workflows")({
   validateSearch: (search: Record<string, unknown>) => ({
     projectId: typeof search.projectId === "string" ? search.projectId : undefined,
@@ -181,112 +221,111 @@ export function WorkflowDefinitionsPage() {
         </label>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {loading ? (
-          <div className="rounded-[1.5rem] border border-dashed border-border bg-background/60 p-5 text-sm text-muted-foreground md:col-span-2 lg:col-span-3">
-            Loading workflow definitions...
-          </div>
-        ) : null}
-        {!loading && visibleWorkflows.length === 0 ? (
-          <div className="rounded-[1.5rem] border border-dashed border-border bg-background/60 p-5 text-sm text-muted-foreground md:col-span-2 lg:col-span-3">
-            No workflow definitions match the current filters.
-          </div>
-        ) : null}
-        {visibleWorkflows.map((workflow) => {
-          const isBuiltIn = workflow.isTemplate;
-          const isPrivate = !!workflow.projectId;
-          const isFav = favorites.has(workflow.id);
-          return (
-            <div
-              key={workflow.id}
-              className="group relative flex flex-col justify-between overflow-hidden rounded-[1.8rem] border border-border/60 bg-gradient-to-b from-card/90 to-background/40 backdrop-blur-md p-6 shadow-sm hover:shadow-xl hover:border-primary/20 hover:-translate-y-1 transition-all duration-300"
-            >
-              {/* Dynamic top gradient line based on workflow type */}
-              <div 
-                className={`absolute top-0 left-0 right-0 h-[3px] opacity-70 group-hover:opacity-100 transition-opacity bg-gradient-to-r ${
-                  isBuiltIn 
-                    ? "from-emerald-500/80 via-teal-500/80 to-cyan-500/80" 
-                    : "from-violet-500/80 via-purple-500/80 to-blue-500/80"
-                }`} 
-              />
+      {loading ? (
+        <WorkflowsSkeleton />
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {visibleWorkflows.length === 0 ? (
+            <div className="rounded-[1.5rem] border border-dashed border-border bg-background/60 p-5 text-sm text-muted-foreground md:col-span-2 lg:col-span-3">
+              No workflow definitions match the current filters.
+            </div>
+          ) : null}
+          {visibleWorkflows.map((workflow) => {
+            const isBuiltIn = workflow.isTemplate;
+            const isPrivate = !!workflow.projectId;
+            const isFav = favorites.has(workflow.id);
+            return (
+              <div
+                key={workflow.id}
+                className="group relative flex flex-col justify-between overflow-hidden rounded-[1.8rem] border border-border/60 bg-gradient-to-b from-card/90 to-background/40 backdrop-blur-md p-6 shadow-sm hover:shadow-xl hover:border-primary/20 hover:-translate-y-1 transition-all duration-300"
+              >
+                {/* Dynamic top gradient line based on workflow type */}
+                <div 
+                  className={`absolute top-0 left-0 right-0 h-[3px] opacity-70 group-hover:opacity-100 transition-opacity bg-gradient-to-r ${
+                    isBuiltIn 
+                      ? "from-emerald-500/80 via-teal-500/80 to-cyan-500/80" 
+                      : "from-violet-500/80 via-purple-500/80 to-blue-500/80"
+                  }`} 
+                />
 
-              <div className="flex flex-col h-full">
-                {/* Header */}
-                <div className="flex items-start justify-between gap-3 mb-4">
-                  <div className="space-y-1">
-                    <h3 className="text-xl font-bold tracking-tight text-foreground group-hover:text-primary transition-colors duration-300">
-                      {workflow.name}
-                    </h3>
-                    <p className="font-mono text-[10px] tracking-wider text-muted-foreground uppercase mt-1">
-                      ID: {workflow.id}
+                <div className="flex flex-col h-full">
+                  {/* Header */}
+                  <div className="flex items-start justify-between gap-3 mb-4">
+                    <div className="space-y-1">
+                      <h3 className="text-xl font-bold tracking-tight text-foreground group-hover:text-primary transition-colors duration-300">
+                        {workflow.name}
+                      </h3>
+                      <p className="font-mono text-[10px] tracking-wider text-muted-foreground uppercase mt-1">
+                        ID: {workflow.id}
+                      </p>
+                    </div>
+                    <div className="flex flex-col items-end gap-1 shrink-0">
+                      <button
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          void toggleFavorite(workflow.id);
+                        }}
+                        className={`mb-1 transition-colors ${isFav ? 'text-yellow-400 hover:text-yellow-500' : 'text-muted-foreground/40 hover:text-yellow-400/70'}`}
+                        title={isFav ? "Remove from quick run" : "Add to quick run"}
+                      >
+                        <Star className="h-5 w-5" fill={isFav ? "currentColor" : "none"} />
+                      </button>
+                      {isBuiltIn ? (
+                        <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 uppercase tracking-wider">
+                          Built-in
+                        </span>
+                      ) : null}
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold border uppercase tracking-wider ${
+                        isPrivate 
+                          ? "bg-violet-500/10 text-violet-500 border-violet-500/20" 
+                          : "bg-muted/50 text-muted-foreground border-border/50"
+                      }`}>
+                        {isPrivate ? "Private" : "Global"}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Description */}
+                  <p className="text-sm text-muted-foreground leading-relaxed mb-5 line-clamp-3 flex-grow min-h-[3rem]">
+                    {workflow.description}
+                  </p>
+
+                  {/* Details Area */}
+                  <div className="space-y-3 border-t border-border/40 pt-4 mb-6 text-xs text-muted-foreground/90">
+                    <p className="font-medium text-foreground/75">
+                      Owner: {workflow.projectId ? projectNameById.get(workflow.projectId) ?? workflow.projectId : "Workspace global"}
+                    </p>
+                    <p className="font-medium text-foreground/75 flex justify-between items-center">
+                      <span>Flow Steps:</span>
+                      <span className="font-semibold text-foreground/80 bg-muted/60 px-2 py-0.5 rounded border border-border/30">
+                        {workflow.steps?.length ?? 0} {workflow.steps?.length === 1 ? "step" : "steps"}
+                      </span>
                     </p>
                   </div>
-                  <div className="flex flex-col items-end gap-1 shrink-0">
-                    <button
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        void toggleFavorite(workflow.id);
-                      }}
-                      className={`mb-1 transition-colors ${isFav ? 'text-yellow-400 hover:text-yellow-500' : 'text-muted-foreground/40 hover:text-yellow-400/70'}`}
-                      title={isFav ? "Remove from quick run" : "Add to quick run"}
-                    >
-                      <Star className="h-5 w-5" fill={isFav ? "currentColor" : "none"} />
-                    </button>
-                    {isBuiltIn ? (
-                      <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 uppercase tracking-wider">
-                        Built-in
-                      </span>
-                    ) : null}
-                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold border uppercase tracking-wider ${
-                      isPrivate 
-                        ? "bg-violet-500/10 text-violet-500 border-violet-500/20" 
-                        : "bg-muted/50 text-muted-foreground border-border/50"
-                    }`}>
-                      {isPrivate ? "Private" : "Global"}
-                    </span>
-                  </div>
                 </div>
 
-                {/* Description */}
-                <p className="text-sm text-muted-foreground leading-relaxed mb-5 line-clamp-3 flex-grow min-h-[3rem]">
-                  {workflow.description}
-                </p>
-
-                {/* Details Area */}
-                <div className="space-y-3 border-t border-border/40 pt-4 mb-6 text-xs text-muted-foreground/90">
-                  <p className="font-medium text-foreground/75">
-                    Owner: {workflow.projectId ? projectNameById.get(workflow.projectId) ?? workflow.projectId : "Workspace global"}
-                  </p>
-                  <p className="font-medium text-foreground/75 flex justify-between items-center">
-                    <span>Flow Steps:</span>
-                    <span className="font-semibold text-foreground/80 bg-muted/60 px-2 py-0.5 rounded border border-border/30">
-                      {workflow.steps?.length ?? 0} {workflow.steps?.length === 1 ? "step" : "steps"}
-                    </span>
-                  </p>
+                {/* Actions Footer */}
+                <div className="flex items-center justify-between pt-2 border-t border-border/40 mt-auto">
+                  <span className="text-[10px] font-mono text-muted-foreground/60">
+                    By: {workflow.createdBy || "system"}
+                  </span>
+                  <Link
+                    params={{ workflowId: workflow.id }}
+                    search={{ projectId: projectFilter !== "all" ? projectFilter : undefined }}
+                    to="/workflows/$workflowId"
+                  >
+                    <Button size="sm" variant="secondary" className="rounded-xl bg-muted/60 hover:bg-primary hover:text-primary-foreground border border-border/40 transition-all duration-300 group/btn">
+                      Open workflow
+                      <ArrowRight className="ml-1.5 h-3.5 w-3.5 group-hover/btn:translate-x-1 transition-transform duration-300" />
+                    </Button>
+                  </Link>
                 </div>
               </div>
-
-              {/* Actions Footer */}
-              <div className="flex items-center justify-between pt-2 border-t border-border/40 mt-auto">
-                <span className="text-[10px] font-mono text-muted-foreground/60">
-                  By: {workflow.createdBy || "system"}
-                </span>
-                <Link
-                  params={{ workflowId: workflow.id }}
-                  search={{ projectId: projectFilter !== "all" ? projectFilter : undefined }}
-                  to="/workflows/$workflowId"
-                >
-                  <Button size="sm" variant="secondary" className="rounded-xl bg-muted/60 hover:bg-primary hover:text-primary-foreground border border-border/40 transition-all duration-300 group/btn">
-                    Open workflow
-                    <ArrowRight className="ml-1.5 h-3.5 w-3.5 group-hover/btn:translate-x-1 transition-transform duration-300" />
-                  </Button>
-                </Link>
-              </div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      )}
     </PageFrame>
   );
 }

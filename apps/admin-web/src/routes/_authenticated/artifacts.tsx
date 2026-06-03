@@ -23,6 +23,59 @@ export const Route = createFileRoute("/_authenticated/artifacts")({
   component: ArtifactsPage,
 });
 
+function ArtifactsGeneratedSkeleton() {
+  return (
+    <div className="space-y-4 animate-pulse">
+      <div className="flex flex-wrap items-center gap-4 rounded-[1.5rem] border border-border/60 bg-card/45 p-4">
+        <div className="h-10 w-48 bg-muted rounded-xl" />
+        <div className="h-10 w-32 bg-muted rounded-xl ml-auto" />
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {[1, 2, 3].map((i) => (
+          <div key={i} className="rounded-[1.8rem] border border-border/60 bg-gradient-to-b from-card/90 to-background/40 p-6 min-h-[200px]">
+            <div className="space-y-3">
+              <div className="h-5 w-2/3 bg-muted rounded" />
+              <div className="h-3 w-1/2 bg-muted rounded mt-1" />
+              <div className="h-4 w-5/6 bg-muted rounded mt-4" />
+            </div>
+            <div className="mt-6 flex justify-between border-t border-border/40 pt-4">
+              <div className="h-8 w-20 bg-muted rounded-xl" />
+              <div className="h-8 w-20 bg-muted rounded-xl" />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ArtifactsCatalogSkeleton() {
+  return (
+    <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3 animate-pulse">
+      {[1, 2, 3, 4, 5, 6].map((i) => (
+        <div
+          key={i}
+          className="flex flex-col justify-between overflow-hidden rounded-[1.8rem] border border-border/60 bg-gradient-to-b from-card/90 to-background/40 p-6 min-h-[160px]"
+        >
+          <div className="space-y-3 flex-1">
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-2 flex-1">
+                <div className="h-5 w-3/4 bg-muted rounded" />
+                <div className="h-3 w-1/2 bg-muted rounded mt-1" />
+              </div>
+              <div className="h-6 w-12 bg-muted rounded" />
+            </div>
+            <div className="h-4 w-2/3 bg-muted rounded mt-2" />
+          </div>
+          <div className="mt-6 flex justify-end border-t border-border/40 pt-4">
+            <div className="h-8 w-24 bg-muted rounded-xl" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function ArtifactsPage() {
   const location = useLocation();
   const gatewayBundle = useRef(createGatewayBundle());
@@ -182,9 +235,7 @@ export function ArtifactsPage() {
         {/* Tab contents */}
         {activeTab === "generated" && (
           loading ? (
-            <section className="rounded-[1.6rem] border border-dashed border-border/60 bg-card/45 p-6 text-sm text-muted-foreground">
-              Loading artifacts...
-            </section>
+            <ArtifactsGeneratedSkeleton />
           ) : (
             <ArtifactRunBrowserPanel
               artifactRuns={artifactRuns}
@@ -255,104 +306,105 @@ export function ArtifactsPage() {
               </Link>
             </div>
 
-            <div className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
+            <div className="mt-6">
               {loading ? (
-                <div className="rounded-[1.5rem] border border-dashed border-border bg-background/60 p-5 text-sm text-muted-foreground md:col-span-2 lg:col-span-3">
-                  Loading...
-                </div>
-              ) : null}
-              {artifactDefinitions.map((definition) => (
-                <details
-                  key={definition.key}
-                  className="group relative flex flex-col justify-between overflow-hidden rounded-[1.8rem] border border-border/60 bg-gradient-to-b from-card/90 to-background/40 p-6 shadow-sm backdrop-blur-md transition-all duration-300 hover:border-primary/20 hover:shadow-xl [&[open]]:border-primary/30 [&[open]]:shadow-lg"
-                >
-                  <div className="absolute right-0 top-0 h-[3px] left-0 bg-gradient-to-r from-violet-500/85 via-purple-500/85 to-blue-500/85 opacity-50 transition-opacity group-hover:opacity-100 group-[[open]]:opacity-100" />
-
-                  <summary className="flex cursor-pointer list-none items-start justify-between gap-4 outline-none">
-                    <div className="min-w-0 space-y-1">
-                      <p className="truncate text-lg font-bold tracking-tight text-foreground transition-colors duration-300 group-hover:text-primary">
-                        {definition.name}
-                      </p>
-                      <p className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
-                        Key: {definition.key}
-                      </p>
-                      <p className="mt-2 text-xs font-medium text-muted-foreground/80">
-                        Default file:{" "}
-                        <span className="rounded border border-border/30 bg-muted/60 px-1.5 py-0.5 font-mono text-[11px]">
-                          {definition.defaultFileName || "None"}
-                        </span>
-                      </p>
-                    </div>
-                    <span className="shrink-0 rounded border border-border bg-muted/30 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/80 transition-all duration-300 group-hover:border-primary/20 group-hover:bg-primary group-hover:text-primary-foreground">
-                      Edit
-                    </span>
-                  </summary>
-
-                  <div className="mt-6 grid gap-4 border-t border-border/40 pt-4">
-                    <label className="flex flex-col space-y-1.5 text-xs">
-                      <span className="mb-0.5 font-semibold text-muted-foreground">Name</span>
-                      <input
-                        className="w-full rounded-xl border border-border/80 bg-background/50 px-3.5 py-2 text-sm font-medium text-foreground transition-all focus:outline-none focus:ring-1 focus:ring-primary/40"
-                        value={definition.name}
-                        onChange={(event) =>
-                          updateDefinition(definition.key, { name: event.target.value })
-                        }
-                      />
-                    </label>
-                    <label className="flex flex-col space-y-1.5 text-xs">
-                      <span className="mb-0.5 font-semibold text-muted-foreground">Default file name</span>
-                      <input
-                        className="w-full rounded-xl border border-border/80 bg-background/50 px-3.5 py-2 text-sm font-medium text-foreground transition-all focus:outline-none focus:ring-1 focus:ring-primary/40"
-                        value={definition.defaultFileName}
-                        onChange={(event) =>
-                          updateDefinition(definition.key, { defaultFileName: event.target.value })
-                        }
-                      />
-                    </label>
-                    <label className="flex flex-col space-y-1.5 text-xs">
-                      <span className="mb-0.5 font-semibold text-muted-foreground">Description</span>
-                      <textarea
-                        className="min-h-20 w-full resize-y rounded-xl border border-border/80 bg-background/50 px-3.5 py-2 text-sm font-medium text-foreground transition-all focus:outline-none focus:ring-1 focus:ring-primary/40"
-                        value={definition.description}
-                        onChange={(event) =>
-                          updateDefinition(definition.key, { description: event.target.value })
-                        }
-                      />
-                    </label>
-                    <label className="flex flex-col space-y-1.5 text-xs">
-                      <span className="mb-0.5 font-semibold text-muted-foreground">Local path template</span>
-                      <input
-                        className="w-full rounded-xl border border-border/80 bg-background/50 px-3.5 py-2 text-sm font-medium text-foreground transition-all focus:outline-none focus:ring-1 focus:ring-primary/40"
-                        value={definition.localPathTemplate}
-                        onChange={(event) =>
-                          updateDefinition(definition.key, { localPathTemplate: event.target.value })
-                        }
-                      />
-                    </label>
-                    <label className="flex flex-col space-y-1.5 text-xs">
-                      <span className="mb-0.5 font-semibold text-muted-foreground">Remote path template</span>
-                      <input
-                        className="w-full rounded-xl border border-border/80 bg-background/50 px-3.5 py-2 text-sm font-medium text-foreground transition-all focus:outline-none focus:ring-1 focus:ring-primary/40"
-                        value={definition.remotePathTemplate}
-                        onChange={(event) =>
-                          updateDefinition(definition.key, { remotePathTemplate: event.target.value })
-                        }
-                      />
-                    </label>
-                  </div>
-                  <div className="mt-4 flex justify-end border-t border-border/40 pt-2">
-                    <Button
-                      disabled={savingKey === definition.key}
-                      onClick={() => void saveDefinition(definition)}
-                      type="button"
-                      variant="secondary"
-                      className="rounded-xl border border-border/80 bg-muted/60 transition-all duration-300 hover:bg-primary hover:text-primary-foreground cursor-pointer"
+                <ArtifactsCatalogSkeleton />
+              ) : (
+                <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
+                  {artifactDefinitions.map((definition) => (
+                    <details
+                      key={definition.key}
+                      className="group relative flex flex-col justify-between overflow-hidden rounded-[1.8rem] border border-border/60 bg-gradient-to-b from-card/90 to-background/40 p-6 shadow-sm backdrop-blur-md transition-all duration-300 hover:border-primary/20 hover:shadow-xl [&[open]]:border-primary/30 [&[open]]:shadow-lg"
                     >
-                      {savingKey === definition.key ? "Saving..." : "Save Changes"}
-                    </Button>
-                  </div>
-                </details>
-              ))}
+                      <div className="absolute right-0 top-0 h-[3px] left-0 bg-gradient-to-r from-violet-500/85 via-purple-500/85 to-blue-500/85 opacity-50 transition-opacity group-hover:opacity-100 group-[[open]]:opacity-100" />
+
+                      <summary className="flex cursor-pointer list-none items-start justify-between gap-4 outline-none">
+                        <div className="min-w-0 space-y-1">
+                          <p className="truncate text-lg font-bold tracking-tight text-foreground transition-colors duration-300 group-hover:text-primary">
+                            {definition.name}
+                          </p>
+                          <p className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+                            Key: {definition.key}
+                          </p>
+                          <p className="mt-2 text-xs font-medium text-muted-foreground/80">
+                            Default file:{" "}
+                            <span className="rounded border border-border/30 bg-muted/60 px-1.5 py-0.5 font-mono text-[11px]">
+                              {definition.defaultFileName || "None"}
+                            </span>
+                          </p>
+                        </div>
+                        <span className="shrink-0 rounded border border-border bg-muted/30 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/80 transition-all duration-300 group-hover:border-primary/20 group-hover:bg-primary group-hover:text-primary-foreground">
+                          Edit
+                        </span>
+                      </summary>
+
+                      <div className="mt-6 grid gap-4 border-t border-border/40 pt-4">
+                        <label className="flex flex-col space-y-1.5 text-xs">
+                          <span className="mb-0.5 font-semibold text-muted-foreground">Name</span>
+                          <input
+                            className="w-full rounded-xl border border-border/80 bg-background/50 px-3.5 py-2 text-sm font-medium text-foreground transition-all focus:outline-none focus:ring-1 focus:ring-primary/40"
+                            value={definition.name}
+                            onChange={(event) =>
+                              updateDefinition(definition.key, { name: event.target.value })
+                            }
+                          />
+                        </label>
+                        <label className="flex flex-col space-y-1.5 text-xs">
+                          <span className="mb-0.5 font-semibold text-muted-foreground">Default file name</span>
+                          <input
+                            className="w-full rounded-xl border border-border/80 bg-background/50 px-3.5 py-2 text-sm font-medium text-foreground transition-all focus:outline-none focus:ring-1 focus:ring-primary/40"
+                            value={definition.defaultFileName}
+                            onChange={(event) =>
+                              updateDefinition(definition.key, { defaultFileName: event.target.value })
+                            }
+                          />
+                        </label>
+                        <label className="flex flex-col space-y-1.5 text-xs">
+                          <span className="mb-0.5 font-semibold text-muted-foreground">Description</span>
+                          <textarea
+                            className="min-h-20 w-full resize-y rounded-xl border border-border/80 bg-background/50 px-3.5 py-2 text-sm font-medium text-foreground transition-all focus:outline-none focus:ring-1 focus:ring-primary/40"
+                            value={definition.description}
+                            onChange={(event) =>
+                              updateDefinition(definition.key, { description: event.target.value })
+                            }
+                          />
+                        </label>
+                        <label className="flex flex-col space-y-1.5 text-xs">
+                          <span className="mb-0.5 font-semibold text-muted-foreground">Local path template</span>
+                          <input
+                            className="w-full rounded-xl border border-border/80 bg-background/50 px-3.5 py-2 text-sm font-medium text-foreground transition-all focus:outline-none focus:ring-1 focus:ring-primary/40"
+                            value={definition.localPathTemplate}
+                            onChange={(event) =>
+                              updateDefinition(definition.key, { localPathTemplate: event.target.value })
+                            }
+                          />
+                        </label>
+                        <label className="flex flex-col space-y-1.5 text-xs">
+                          <span className="mb-0.5 font-semibold text-muted-foreground">Remote path template</span>
+                          <input
+                            className="w-full rounded-xl border border-border/80 bg-background/50 px-3.5 py-2 text-sm font-medium text-foreground transition-all focus:outline-none focus:ring-1 focus:ring-primary/40"
+                            value={definition.remotePathTemplate}
+                            onChange={(event) =>
+                              updateDefinition(definition.key, { remotePathTemplate: event.target.value })
+                            }
+                          />
+                        </label>
+                      </div>
+                      <div className="mt-4 flex justify-end border-t border-border/40 pt-2">
+                        <Button
+                          disabled={savingKey === definition.key}
+                          onClick={() => void saveDefinition(definition)}
+                          type="button"
+                          variant="secondary"
+                          className="rounded-xl border border-border/80 bg-muted/60 transition-all duration-300 hover:bg-primary hover:text-primary-foreground cursor-pointer"
+                        >
+                          {savingKey === definition.key ? "Saving..." : "Save Changes"}
+                        </Button>
+                      </div>
+                    </details>
+                  ))}
+                </div>
+              )}
             </div>
           </section>
         )}
