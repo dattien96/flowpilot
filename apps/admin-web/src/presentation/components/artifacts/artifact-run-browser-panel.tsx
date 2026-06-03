@@ -411,9 +411,7 @@ export function ArtifactRunBrowserPanel({
           emptyMessage="No valid local-only artifacts match the current filters."
           title="Local"
         >
-          {filteredLocalArtifacts.map((artifact) => (
-            <ArtifactCard artifact={artifact} key={artifact.id} />
-          ))}
+          {renderGroupedArtifacts(filteredLocalArtifacts)}
         </ArtifactSection>
       ) : (
         <ArtifactSection
@@ -422,12 +420,261 @@ export function ArtifactRunBrowserPanel({
           emptyMessage="No remote or synced artifacts match the current filters."
           title="Remote / Synced"
         >
-          {filteredRemoteArtifacts.map((artifact) => (
-            <ArtifactCard artifact={artifact} key={artifact.id} />
-          ))}
+          {renderGroupedArtifacts(filteredRemoteArtifacts)}
         </ArtifactSection>
       )}
     </section>
+  );
+
+  function renderGroupedArtifacts(items: ArtifactBrowserItem[]) {
+    const grouped = groupArtifacts(items);
+    const showProjectLevel = showProjectFilter || grouped.length > 1;
+
+    return (
+      <div className="flex flex-col gap-6">
+        {grouped.map((projectGroup) => {
+          const projectContent = (
+            <div className="flex flex-col gap-4" key={projectGroup.projectId}>
+              {projectGroup.workflowRuns.map((runGroup) => (
+                <WorkflowRunGroup
+                  key={runGroup.workflowRunId}
+                  runId={runGroup.workflowRunId}
+                  projectName={runGroup.projectName}
+                  artifacts={runGroup.artifacts}
+                />
+              ))}
+            </div>
+          );
+
+          if (showProjectLevel) {
+            return (
+              <div key={projectGroup.projectId} className="space-y-4">
+                <div className="flex items-center gap-2 border-b border-border/40 pb-2">
+                  <h4 className="text-sm font-semibold uppercase tracking-wider text-primary">
+                    {projectGroup.projectName}
+                  </h4>
+                  <Badge tone="neutral">
+                    {projectGroup.workflowRuns.reduce((acc, r) => acc + r.artifacts.length, 0)}
+                  </Badge>
+                </div>
+                {projectContent}
+              </div>
+            );
+          }
+
+          return projectContent;
+        })}
+      </div>
+    );
+  }
+}
+
+interface GroupedWorkflowRun {
+  workflowRunId: string;
+  projectName: string | null;
+  artifacts: ArtifactBrowserItem[];
+}
+
+interface GroupedProject {
+  projectId: string;
+  projectName: string;
+  workflowRuns: GroupedWorkflowRun[];
+}
+
+function groupArtifacts(artifacts: ArtifactBrowserItem[]): GroupedProject[] {
+  const projectMap = new Map<string, Map<string, ArtifactBrowserItem[]>>();
+  const projectNameMap = new Map<string, string>();
+
+  for (const artifact of artifacts) {
+    const pId = artifact.projectId || "unknown";
+    const pName = artifact.projectName || "Unknown Project";
+    projectNameMap.set(pId, pName);
+
+    if (!projectMap.has(pId)) {
+      projectMap.set(pId, new Map());
+    }
+
+    const runsMap = projectMap.get(pId)!;
+    const runId = artifact.workflowRunId || "unknown";
+
+    if (!runsMap.has(runId)) {
+      runsMap.set(runId, []);
+    }
+    runsMap.get(runId)!.push(artifact);
+  }
+
+  const result: GroupedProject[] = [];
+  projectMap.forEach((runsMap, pId) => {
+    const pName = projectNameMap.get(pId) || "Unknown Project";
+    const workflowRuns: GroupedWorkflowRun[] = [];
+
+    runsMap.forEach((runArtifacts, runId) => {
+      const sortedArtifacts = [...runArtifacts].sort(
+        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+      );
+      workflowRuns.push({
+        workflowRunId: runId,
+        projectName: pName,
+        artifacts: sortedArtifacts,
+      });
+    });
+
+    workflowRuns.sort((a, b) => {
+      const aLatest = a.artifacts[0]?.createdAt ? new Date(a.artifacts[0].createdAt).getTime() : 0;
+      const bLatest = b.artifacts[0]?.createdAt ? new Date(b.artifacts[0].createdAt).getTime() : 0;
+      return bLatest - aLatest;
+    });
+
+    result.push({
+      projectId: pId,
+      projectName: pName,
+      workflowRuns,
+    });
+  });
+
+  return result.sort((a, b) => a.projectName.localeCompare(b.projectName));
+}
+
+function WorkflowRunGroup({
+  runId,
+  projectName,
+  artifacts,
+}: {
+  runId: string;
+  projectName: string | null;
+  artifacts: ArtifactBrowserItem[];
+}) {
+  const [copied, setCopied] = useState(false);
+
+  const status = useMemo(() => {
+    const statuses = artifacts.map((a) => a.syncStatus);
+    if (statuses.includes("syncing")) return "syncing";
+    if (statuses.includes("failed")) return "failed";
+    if (statuses.every((s) => s === "synced")) return "synced";
+    return "local_only";
+  }, [artifacts]);
+
+  const handleCopy = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    void navigator.clipboard.writeText(runId).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  return (
+    <details className="group/run relative flex flex-col justify-between overflow-hidden rounded-[1.6rem] border border-border bg-[#0f1119]/35 shadow-sm backdrop-blur-md transition-all duration-300 hover:border-primary/20 hover:shadow-md [&[open]]:border-primary/30 [&[open]]:shadow-lg">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-4 p-5 outline-none hover:bg-muted/10 transition-colors">
+        <div className="flex min-w-0 flex-1 items-start gap-3">
+          <div className="mt-1 flex shrink-0 items-center justify-center text-muted-foreground group-open/run:rotate-90 transition-transform duration-200">
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="size-4"
+            >
+              <path d="m9 18 6-6-6-6" />
+            </svg>
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+              <span className="font-mono text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                Workflow Run
+              </span>
+              <div className="flex items-center gap-1.5 font-mono text-sm font-medium text-foreground">
+                <span className="truncate max-w-[180px] sm:max-w-none">{runId}</span>
+                <button
+                  onClick={handleCopy}
+                  type="button"
+                  className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors cursor-pointer"
+                  title="Copy Run ID"
+                >
+                  {copied ? (
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      width="12"
+                      height="12"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      className="text-success"
+                    >
+                      <path d="M20 6 9 17l-5-5" />
+                    </svg>
+                  ) : (
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      width="12"
+                      height="12"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
+                      <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+                    </svg>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex shrink-0 items-center gap-2">
+          <Badge tone={artifactStatusTone(status)}>{status}</Badge>
+          <Badge tone="neutral">
+            {artifacts.length} {artifacts.length === 1 ? "artifact" : "artifacts"}
+          </Badge>
+          <a
+            href={`/workflow-runs/${runId}`}
+            onClick={(e) => {
+              e.stopPropagation();
+            }}
+            className="flex items-center gap-1.5 rounded-xl border border-border/80 px-3.5 py-1.5 text-xs font-semibold text-muted-foreground bg-muted/20 hover:bg-primary hover:text-primary-foreground hover:border-transparent transition-all duration-300 cursor-pointer"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="size-3.5"
+            >
+              <path d="M15 3h6v6" />
+              <path d="M10 14 21 3" />
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+            </svg>
+            Go to Run
+          </a>
+        </div>
+      </summary>
+
+      <div className="border-t border-border/40 bg-card/25 p-5 space-y-4">
+        <div className="flex flex-col gap-4">
+          {artifacts.map((artifact) => (
+            <ArtifactCard artifact={artifact} key={artifact.id} isChild />
+          ))}
+        </div>
+      </div>
+    </details>
   );
 }
 
@@ -468,21 +715,29 @@ function ArtifactSection({
 
 function ArtifactCard({
   artifact,
+  isChild = false,
 }: {
   artifact: ArtifactBrowserItem;
+  isChild?: boolean;
 }) {
   const artifactFiles = buildArtifactFiles(artifact);
 
   return (
-    <details className="group relative flex flex-col justify-between overflow-hidden rounded-[1.35rem] border border-border bg-background/80 p-4 shadow-sm backdrop-blur-md transition-all duration-300 hover:border-primary/20 hover:shadow-md [&[open]]:border-primary/30 [&[open]]:shadow-lg">
+    <details className={`group relative flex flex-col justify-between overflow-hidden rounded-[1.35rem] border shadow-sm backdrop-blur-md transition-all duration-300 ${
+      isChild
+        ? "border-border/60 bg-background/40 hover:border-primary/20 hover:shadow-sm [&[open]]:border-primary/20 [&[open]]:shadow-md p-3.5"
+        : "border-border bg-background/80 hover:border-primary/20 hover:shadow-md [&[open]]:border-primary/30 [&[open]]:shadow-lg p-4"
+    }`}>
       <summary className="flex cursor-pointer list-none items-start justify-between gap-4 outline-none">
         <div className="min-w-0 flex-1">
           <p className="truncate text-base font-semibold group-hover:text-primary transition-colors">
             {artifact.title}
           </p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {artifact.projectName ?? artifact.projectId ?? "Unknown project"} / {artifact.workflowRunId}
-          </p>
+          {!isChild ? (
+            <p className="mt-1 text-xs text-muted-foreground">
+              {artifact.projectName ?? artifact.projectId ?? "Unknown project"} / {artifact.workflowRunId}
+            </p>
+          ) : null}
           <div className="mt-2 flex flex-wrap items-center gap-2">
             {artifactFiles.map((file) => (
               <a
