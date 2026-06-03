@@ -1,9 +1,12 @@
-import { createClient } from "@supabase/supabase-js";
 import { z } from "zod";
 
 import { createGatewayBundle } from "@/data/repository/factory";
 import { submitWorkflowStepFollowUpRuntime } from "@/features/workflow-engine/workflow-start-runtime";
-import { getRequiredEnv, getSupabaseUrl, hasSupabaseEnv } from "@/lib/env/app-env";
+import {
+  createRuntimeSupabaseAdminClient,
+  createRuntimeSupabaseAnonClient,
+  hasSupabaseRuntimeConfigOrEnvFallback,
+} from "@/lib/supabase/runtime-config.server";
 
 const submitDecisionSchema = z.object({
   stepId: z.string().min(1),
@@ -12,7 +15,7 @@ const submitDecisionSchema = z.object({
 });
 
 async function requireApiUser(request: Request) {
-  if (!hasSupabaseEnv()) {
+  if (!(await hasSupabaseRuntimeConfigOrEnvFallback())) {
     return {
       id: "demo-user",
       email: "demo@flowpilot.local",
@@ -25,7 +28,7 @@ async function requireApiUser(request: Request) {
     throw new Error("Unauthorized");
   }
 
-  const authClient = createClient(getSupabaseUrl(), getRequiredEnv("SUPABASE_API_KEY"));
+  const authClient = await createRuntimeSupabaseAnonClient();
   const { data, error } = await authClient.auth.getUser(token);
   if (error || !data.user) {
     throw new Error("Unauthorized");
@@ -35,15 +38,6 @@ async function requireApiUser(request: Request) {
     id: data.user.id,
     email: data.user.email ?? null,
   };
-}
-
-function createAdminClient() {
-  return createClient(
-    getSupabaseUrl(),
-    process.env.SUPABASE_SERVICE_ROLE_KEY ??
-      process.env.SUPABASE_API_SERVICE_ROLE_KEY ??
-      getRequiredEnv("SUPABASE_SERVICE_ROLE_KEY"),
-  );
 }
 
 export async function handleWorkflowSubmitStepApproval(request: Request) {
@@ -56,7 +50,7 @@ export async function handleWorkflowSubmitStepApproval(request: Request) {
 
     const gateways = await createGatewayBundle();
     const step = await submitWorkflowStepFollowUpRuntime({
-      adminClient: createAdminClient(),
+      adminClient: await createRuntimeSupabaseAdminClient(),
       localRunnerGateway: gateways.localRunnerGateway,
       stepId: payload.stepId,
       comment: payload.comment ?? "",
