@@ -174,6 +174,35 @@ export function WorkflowRunHistoryPage() {
     const titles = await loadWorkflowRunTitleMap(
       gatewayBundle.current.localRunnerGateway,
       runRows.map((run) => run.id),
+      {
+        listArtifactRuns: () =>
+          gatewayBundle.current.workflowEngineGateway.listArtifactRuns(),
+        loadArtifactContent: async (artifactRun) => {
+          if (!artifactRun.id.trim() || !artifactRun.remotePath.trim()) {
+            return null;
+          }
+
+          const params = new URLSearchParams({
+            remotePath: artifactRun.remotePath,
+            storageProvider: artifactRun.storageProvider ?? "supabase",
+          });
+          if (artifactRun.remoteObjectId?.trim()) {
+            params.set("remoteObjectId", artifactRun.remoteObjectId.trim());
+          }
+          if (artifactRun.projectId?.trim()) {
+            params.set("projectId", artifactRun.projectId.trim());
+          }
+
+          const response = await fetch(
+            `/api/local-runner/artifacts/${artifactRun.id}/open?${params.toString()}`,
+          );
+          if (!response.ok) {
+            return null;
+          }
+
+          return await response.text();
+        },
+      },
     );
     setRuns(runRows);
     setWorkflows(workflowRows);
