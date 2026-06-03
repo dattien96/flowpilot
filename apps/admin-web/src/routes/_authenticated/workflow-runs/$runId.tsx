@@ -1059,7 +1059,7 @@ function SessionGroupSection({
                             <div className="space-y-4">
                               <StepOutputTabs
                                 artifactRun={itemArtifactRun}
-                                localRunnerGateway={getGatewayBundle().localRunnerGateway}
+                                localRunnerGateway={gatewayBundle.current.localRunnerGateway}
                                 output={attemptItem.output}
                               />
 
