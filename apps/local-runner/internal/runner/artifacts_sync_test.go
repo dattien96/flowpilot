@@ -16,6 +16,74 @@ import (
 	"testing"
 )
 
+func TestNewLoadsWorkspaceRootEnvFileWithoutOverridingExistingEnv(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workspace, ".agents"), 0o755); err != nil {
+		t.Fatalf("mkdir .agents: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(workspace, ".env"),
+		[]byte("SUPABASE_API_URL=https://from-dot-env.supabase.co\nSUPABASE_SERVICE_ROLE_KEY=from-dot-env-key\n"),
+		0o644,
+	); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+
+	originalURL, hadURL := os.LookupEnv("SUPABASE_API_URL")
+	originalServiceKey, hadServiceKey := os.LookupEnv("SUPABASE_SERVICE_ROLE_KEY")
+	t.Cleanup(func() {
+		if hadURL {
+			_ = os.Setenv("SUPABASE_API_URL", originalURL)
+		} else {
+			_ = os.Unsetenv("SUPABASE_API_URL")
+		}
+		if hadServiceKey {
+			_ = os.Setenv("SUPABASE_SERVICE_ROLE_KEY", originalServiceKey)
+		} else {
+			_ = os.Unsetenv("SUPABASE_SERVICE_ROLE_KEY")
+		}
+	})
+
+	_ = os.Unsetenv("SUPABASE_API_URL")
+	_ = os.Unsetenv("SUPABASE_SERVICE_ROLE_KEY")
+
+	instance, err := New(workspace)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+	if instance.workspace != workspace {
+		t.Fatalf("expected workspace %q, got %q", workspace, instance.workspace)
+	}
+
+	config, err := readSupabaseArtifactConfig()
+	if err != nil {
+		t.Fatalf("readSupabaseArtifactConfig() failed: %v", err)
+	}
+	if config.baseURL != "https://from-dot-env.supabase.co" {
+		t.Fatalf("expected baseURL from .env, got %q", config.baseURL)
+	}
+	if config.serviceKey != "from-dot-env-key" {
+		t.Fatalf("expected service key from .env, got %q", config.serviceKey)
+	}
+
+	t.Setenv("SUPABASE_API_URL", "https://from-process.supabase.co")
+	t.Setenv("SUPABASE_SERVICE_ROLE_KEY", "from-process-key")
+	if _, err := New(workspace); err != nil {
+		t.Fatalf("New() with preloaded env failed: %v", err)
+	}
+
+	config, err = readSupabaseArtifactConfig()
+	if err != nil {
+		t.Fatalf("readSupabaseArtifactConfig() with process env failed: %v", err)
+	}
+	if config.baseURL != "https://from-process.supabase.co" {
+		t.Fatalf("expected existing process env to win, got %q", config.baseURL)
+	}
+	if config.serviceKey != "from-process-key" {
+		t.Fatalf("expected existing process env key to win, got %q", config.serviceKey)
+	}
+}
+
 func TestWriteArtifactSyncBundleStreamsByteSafeZip(t *testing.T) {
 	instance := &Runner{workspace: t.TempDir()}
 	artifactID := writeTestArtifactFixture(t, instance.workspace, "artifact-bundle")
@@ -257,6 +325,57 @@ func TestSyncArtifactSupabaseUploadsHistoryAndCanonical(t *testing.T) {
 	}
 }
 
+func TestSyncArtifactSupabaseTreatsWrappedNotFoundAsMissingObject(t *testing.T) {
+	instance := &Runner{workspace: t.TempDir()}
+	artifactID := writeTestArtifactFixture(t, instance.workspace, "artifact-supabase-wrapped-404")
+
+	t.Setenv("SUPABASE_API_URL", "https://example.supabase.co")
+	t.Setenv("SUPABASE_SERVICE_ROLE_KEY", "service-role-key")
+
+	originalHTTPRequest := httpRequestFn
+	t.Cleanup(func() {
+		httpRequestFn = originalHTTPRequest
+	})
+
+	uploadedPaths := make([]string, 0)
+	httpRequestFn = func(
+		ctx context.Context,
+		method string,
+		endpoint string,
+		headers map[string]string,
+		body []byte,
+	) (int, []byte, error) {
+		if ctx == nil {
+			t.Fatal("expected sync requests to include a context")
+		}
+		switch {
+		case method == "POST" && strings.Contains(endpoint, "/storage/v1/object/flowpilot-artifacts/"):
+			uploadedPaths = append(uploadedPaths, endpoint)
+			return 200, []byte(`{"Id":"object-404","Key":"` + endpoint + `"}`), nil
+		case method == "GET" && strings.Contains(endpoint, "/storage/v1/object/info/flowpilot-artifacts/projects/local/runs/run-1/steps/prompt_execution/content.md"):
+			return 400, []byte(`{"statusCode":"404","error":"not_found","message":"Object not found"}`), nil
+		default:
+			t.Fatalf("unexpected request: %s %s", method, endpoint)
+			return 0, nil, nil
+		}
+	}
+
+	artifact, err := instance.SyncArtifact(artifactID, ArtifactSyncRequest{StorageProvider: "supabase"})
+	if err != nil {
+		t.Fatalf("SyncArtifact() supabase failed: %v", err)
+	}
+
+	if artifact.SyncStatus != artifactSyncStatusSynced {
+		t.Fatalf("expected synced status, got %q", artifact.SyncStatus)
+	}
+	if artifact.RemoteObjectID != "object-404" {
+		t.Fatalf("unexpected remote object id: %q", artifact.RemoteObjectID)
+	}
+	if len(uploadedPaths) != 4 {
+		t.Fatalf("expected 4 uploads (3 snapshots + 1 canonical), got %d", len(uploadedPaths))
+	}
+}
+
 func TestResolveArtifactOpenURLCreatesSupabaseSignedURL(t *testing.T) {
 	instance := &Runner{workspace: t.TempDir()}
 	artifactID := writeTestArtifactFixture(t, instance.workspace, "artifact-open")
@@ -294,7 +413,7 @@ func TestResolveArtifactOpenURLCreatesSupabaseSignedURL(t *testing.T) {
 		return 200, []byte(`{"signedURL":"/storage/v1/object/sign/flowpilot-artifacts/projects/local/runs/run-1/steps/prompt_execution/content.md?token=abc"}`), nil
 	}
 
-	url, err := instance.ResolveArtifactOpenURL(artifactID)
+	url, err := instance.ResolveArtifactOpenURL(artifactID, "")
 	if err != nil {
 		t.Fatalf("ResolveArtifactOpenURL() failed: %v", err)
 	}
@@ -362,7 +481,7 @@ func TestSyncArtifactGoogleDriveUploadsHistoryAndCanonical(t *testing.T) {
 }
 
 func TestResolveArtifactOpenURLReturnsGoogleDriveViewURL(t *testing.T) {
-	instance := &Runner{workspace: t.TempDir()}
+	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
 	artifactID := writeTestArtifactFixture(t, instance.workspace, "artifact-open-drive")
 
 	if _, err := instance.SaveArtifactCloudSyncResult(artifactID, ArtifactCloudSyncResult{
@@ -374,12 +493,115 @@ func TestResolveArtifactOpenURLReturnsGoogleDriveViewURL(t *testing.T) {
 		t.Fatalf("seed google drive sync result: %v", err)
 	}
 
-	targetURL, err := instance.ResolveArtifactOpenURL(artifactID)
+	if err := instance.saveGoogleDriveCredentialByProject("local", googleDriveCredential{
+		RefreshToken: "refresh-token-1",
+		AccountEmail: "owner@example.com",
+	}); err != nil {
+		t.Fatalf("seed google drive project credential: %v", err)
+	}
+	if err := instance.saveGoogleDriveCredential("integration-drive", googleDriveCredential{
+		RefreshToken: "refresh-token-1",
+		AccountEmail: "owner@example.com",
+	}); err != nil {
+		t.Fatalf("seed google drive credential: %v", err)
+	}
+	if err := instance.saveArtifactStorageGoogleDriveState(func(current *artifactStorageGoogleDriveState) {
+		current.Connections["local"] = artifactStorageGoogleDriveConnectionRecord{
+			ProjectID:    "local",
+			Status:       "connected",
+			FolderID:     "root-folder",
+			FolderName:   "FlowPilot Root",
+			AccountEmail: "owner@example.com",
+		}
+	}); err != nil {
+		t.Fatalf("seed google drive connection: %v", err)
+	}
+
+	t.Setenv("GOOGLE_DRIVE_CLIENT_ID", "client-id-1")
+	t.Setenv("GOOGLE_DRIVE_CLIENT_SECRET", "client-secret-1")
+
+	originalHTTPRequest := httpRequestFn
+	t.Cleanup(func() {
+		httpRequestFn = originalHTTPRequest
+	})
+	httpRequestFn = func(
+		_ context.Context,
+		method string,
+		endpoint string,
+		headers map[string]string,
+		body []byte,
+	) (int, []byte, error) {
+		if endpoint == "https://oauth2.googleapis.com/token" {
+			if method != "POST" {
+				t.Fatalf("expected POST for google drive token refresh, got %s", method)
+			}
+			if headers["content-type"] != "application/x-www-form-urlencoded" {
+				t.Fatalf("unexpected token refresh content type: %s", headers["content-type"])
+			}
+			if !strings.Contains(string(body), "refresh_token=refresh-token-1") {
+				t.Fatalf("unexpected token refresh body: %s", string(body))
+			}
+			return 200, []byte(`{"access_token":"drive-access-token"}`), nil
+		}
+
+		t.Fatalf("unexpected google drive request: %s %s", method, endpoint)
+		return 500, nil, nil
+	}
+
+	targetURL, err := instance.ResolveArtifactOpenURL(artifactID, "")
 	if err != nil {
 		t.Fatalf("ResolveArtifactOpenURL() google drive failed: %v", err)
 	}
 	if targetURL != "https://drive.google.com/file/d/drive-file-123/view" {
 		t.Fatalf("unexpected google drive open URL: %q", targetURL)
+	}
+}
+
+func TestResolveArtifactOpenURLCreatesSupabaseSignedURLForActualPrompt(t *testing.T) {
+	instance := &Runner{workspace: t.TempDir()}
+	artifactID := writeTestArtifactFixture(t, instance.workspace, "artifact-open-prompt")
+
+	if _, err := instance.SaveArtifactCloudSyncResult(artifactID, ArtifactCloudSyncResult{
+		StorageProvider: "supabase",
+		RemotePath:      "projects/local/runs/run-1/steps/prompt_execution/content.md",
+		RemoteObjectID:  "object-123",
+		SyncStatus:      artifactSyncStatusSynced,
+	}); err != nil {
+		t.Fatalf("seed cloud sync result: %v", err)
+	}
+
+	t.Setenv("SUPABASE_API_URL", "https://example.supabase.co")
+	t.Setenv("SUPABASE_SERVICE_ROLE_KEY", "service-role-key")
+
+	originalHTTPRequest := httpRequestFn
+	t.Cleanup(func() {
+		httpRequestFn = originalHTTPRequest
+	})
+
+	httpRequestFn = func(
+		ctx context.Context,
+		method string,
+		endpoint string,
+		headers map[string]string,
+		body []byte,
+	) (int, []byte, error) {
+		if method != "POST" {
+			t.Fatalf("expected POST for signed URL, got %s", method)
+		}
+		if !strings.Contains(endpoint, "/storage/v1/object/sign/flowpilot-artifacts/projects/local/runs/run-1/steps/prompt_execution/.snapshots/"+artifactID+"/actual-prompt.md") {
+			t.Fatalf("unexpected signed URL endpoint: %s", endpoint)
+		}
+		return 200, []byte(`{"signedURL":"/storage/v1/object/sign/flowpilot-artifacts/projects/local/runs/run-1/steps/prompt_execution/.snapshots/`+artifactID+`/actual-prompt.md?token=abc"}`), nil
+	}
+
+	url, err := instance.ResolveArtifactOpenURL(artifactID, "actual-prompt")
+	if err != nil {
+		t.Fatalf("ResolveArtifactOpenURL() failed: %v", err)
+	}
+
+	expected := "https://example.supabase.co/storage/v1/object/sign/flowpilot-artifacts/projects/local/runs/run-1/steps/prompt_execution/.snapshots/" + artifactID + "/actual-prompt.md?token=abc"
+	if url != expected {
+		t.Fatalf("unexpected signed URL: %q", url)
 	}
 }
 

@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -130,6 +131,9 @@ func New(workspace string) (*Runner, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := loadWorkspaceEnvFile(resolved); err != nil {
+		return nil, err
+	}
 
 	return &Runner{
 		workspace:   resolved,
@@ -137,6 +141,56 @@ func New(workspace string) (*Runner, error) {
 		secretStore: newDefaultSecretStore(),
 		sessions:    make(map[string]*LiveSession),
 	}, nil
+}
+
+func loadWorkspaceEnvFile(workspace string) error {
+	envPath := filepath.Join(workspace, ".env")
+	file, err := os.Open(envPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "export ") {
+			line = strings.TrimSpace(strings.TrimPrefix(line, "export "))
+		}
+
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		if _, exists := os.LookupEnv(key); exists {
+			continue
+		}
+
+		value = strings.TrimSpace(value)
+		if len(value) >= 2 {
+			if (strings.HasPrefix(value, "\"") && strings.HasSuffix(value, "\"")) ||
+				(strings.HasPrefix(value, "'") && strings.HasSuffix(value, "'")) {
+				value = value[1 : len(value)-1]
+			}
+		}
+
+		if err := os.Setenv(key, value); err != nil {
+			return err
+		}
+	}
+
+	return scanner.Err()
 }
 
 func (r *Runner) Health() Health {
