@@ -154,7 +154,7 @@ export function ArtifactBrowserPanel({
           }}
         >
           <UploadCloud className="mr-2 size-4" />
-          {syncingArtifactId === selectedArtifact?.artifactId ? "Syncing..." : "Sync cloud state"}
+          {syncingArtifactId === selectedArtifact?.artifactId ? "Syncing..." : "Sync artifact"}
         </Button>
         {statusMessage ? <p className="text-sm text-muted-foreground">{statusMessage}</p> : null}
       </div>
@@ -185,7 +185,7 @@ export function ArtifactBrowserPanel({
                       </p>
                     </div>
                     <div className="flex flex-wrap justify-end gap-2">
-                      <Badge tone={artifact.syncStatus === "synced" ? "success" : "warning"}>
+                      <Badge tone={artifactStatusTone(artifact.syncStatus)}>
                         {artifact.syncStatus}
                       </Badge>
                       <Badge tone="neutral">{artifact.storageProvider || "local"}</Badge>
@@ -220,7 +220,7 @@ export function ArtifactBrowserPanel({
                     {selectedArtifact.projectId} / {selectedArtifact.workflowRunId}
                   </p>
                 </div>
-                <Badge tone={selectedArtifact.syncStatus === "synced" ? "success" : "warning"}>
+                <Badge tone={artifactStatusTone(selectedArtifact.syncStatus)}>
                   {selectedArtifact.syncStatus}
                 </Badge>
               </div>
@@ -246,7 +246,7 @@ export function ArtifactBrowserPanel({
                   }}
                 >
                   <UploadCloud className="mr-2 size-4" />
-                  {syncingArtifactId === selectedArtifact.artifactId ? "Syncing..." : "Sync cloud state"}
+                  {syncingArtifactId === selectedArtifact.artifactId ? "Syncing..." : "Sync artifact"}
                 </Button>
                 <a
                   className="inline-flex items-center gap-2 rounded-full border border-border px-4 py-2 text-sm font-semibold hover:bg-muted"
@@ -284,6 +284,18 @@ export function ArtifactBrowserPanel({
       </div>
     </section>
   );
+}
+
+function artifactStatusTone(syncStatus: LocalRunnerArtifact["syncStatus"]) {
+  if (syncStatus === "synced") {
+    return "success";
+  }
+
+  if (syncStatus === "failed") {
+    return "danger";
+  }
+
+  return "warning";
 }
 
 function FilterSelect({
