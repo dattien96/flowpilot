@@ -13,6 +13,7 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as GuideRouteImport } from './routes/guide'
 import { Route as AuthenticatedRouteImport } from './routes/_authenticated'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as SetupSupabaseRouteImport } from './routes/setup.supabase'
 import { Route as AuthenticatedWorkflowsRouteImport } from './routes/_authenticated/workflows'
 import { Route as AuthenticatedWorkflowStepsRouteImport } from './routes/_authenticated/workflow-steps'
 import { Route as AuthenticatedWorkflowRunsRouteImport } from './routes/_authenticated/workflow-runs'
@@ -26,6 +27,7 @@ import { Route as AuthenticatedWorkflowsWorkflowIdRouteImport } from './routes/_
 import { Route as AuthenticatedWorkflowStepsCreateRouteImport } from './routes/_authenticated/workflow-steps/create'
 import { Route as AuthenticatedWorkflowStepsStepTypeRouteImport } from './routes/_authenticated/workflow-steps/$stepType'
 import { Route as AuthenticatedWorkflowRunsRunIdRouteImport } from './routes/_authenticated/workflow-runs/$runId'
+import { Route as AuthenticatedSettingsSupabaseRouteImport } from './routes/_authenticated/settings/supabase'
 import { Route as AuthenticatedSettingsRunnerRouteImport } from './routes/_authenticated/settings/runner'
 import { Route as AuthenticatedSettingsPromptTemplatesRouteImport } from './routes/_authenticated/settings/prompt-templates'
 import { Route as AuthenticatedSettingsMcpServersRouteImport } from './routes/_authenticated/settings/mcp-servers'
@@ -67,6 +69,11 @@ const AuthenticatedRoute = AuthenticatedRouteImport.update({
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SetupSupabaseRoute = SetupSupabaseRouteImport.update({
+  id: '/setup/supabase',
+  path: '/setup/supabase',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AuthenticatedWorkflowsRoute = AuthenticatedWorkflowsRouteImport.update({
@@ -141,6 +148,12 @@ const AuthenticatedWorkflowRunsRunIdRoute =
     id: '/$runId',
     path: '/$runId',
     getParentRoute: () => AuthenticatedWorkflowRunsRoute,
+  } as any)
+const AuthenticatedSettingsSupabaseRoute =
+  AuthenticatedSettingsSupabaseRouteImport.update({
+    id: '/settings/supabase',
+    path: '/settings/supabase',
+    getParentRoute: () => AuthenticatedRoute,
   } as any)
 const AuthenticatedSettingsRunnerRoute =
   AuthenticatedSettingsRunnerRouteImport.update({
@@ -292,6 +305,7 @@ export interface FileRoutesByFullPath {
   '/workflow-runs': typeof AuthenticatedWorkflowRunsRouteWithChildren
   '/workflow-steps': typeof AuthenticatedWorkflowStepsRouteWithChildren
   '/workflows': typeof AuthenticatedWorkflowsRouteWithChildren
+  '/setup/supabase': typeof SetupSupabaseRoute
   '/artifacts/create': typeof AuthenticatedArtifactsCreateRoute
   '/projects/$projectId': typeof AuthenticatedProjectsProjectIdRouteWithChildren
   '/projects/create': typeof AuthenticatedProjectsCreateRoute
@@ -301,6 +315,7 @@ export interface FileRoutesByFullPath {
   '/settings/mcp-servers': typeof AuthenticatedSettingsMcpServersRouteWithChildren
   '/settings/prompt-templates': typeof AuthenticatedSettingsPromptTemplatesRouteWithChildren
   '/settings/runner': typeof AuthenticatedSettingsRunnerRoute
+  '/settings/supabase': typeof AuthenticatedSettingsSupabaseRoute
   '/workflow-runs/$runId': typeof AuthenticatedWorkflowRunsRunIdRoute
   '/workflow-steps/$stepType': typeof AuthenticatedWorkflowStepsStepTypeRoute
   '/workflow-steps/create': typeof AuthenticatedWorkflowStepsCreateRoute
@@ -333,6 +348,7 @@ export interface FileRoutesByTo {
   '/workflow-runs': typeof AuthenticatedWorkflowRunsRouteWithChildren
   '/workflow-steps': typeof AuthenticatedWorkflowStepsRouteWithChildren
   '/workflows': typeof AuthenticatedWorkflowsRouteWithChildren
+  '/setup/supabase': typeof SetupSupabaseRoute
   '/artifacts/create': typeof AuthenticatedArtifactsCreateRoute
   '/projects/$projectId': typeof AuthenticatedProjectsProjectIdRouteWithChildren
   '/projects/create': typeof AuthenticatedProjectsCreateRoute
@@ -342,6 +358,7 @@ export interface FileRoutesByTo {
   '/settings/mcp-servers': typeof AuthenticatedSettingsMcpServersRouteWithChildren
   '/settings/prompt-templates': typeof AuthenticatedSettingsPromptTemplatesRouteWithChildren
   '/settings/runner': typeof AuthenticatedSettingsRunnerRoute
+  '/settings/supabase': typeof AuthenticatedSettingsSupabaseRoute
   '/workflow-runs/$runId': typeof AuthenticatedWorkflowRunsRunIdRoute
   '/workflow-steps/$stepType': typeof AuthenticatedWorkflowStepsStepTypeRoute
   '/workflow-steps/create': typeof AuthenticatedWorkflowStepsCreateRoute
@@ -376,6 +393,7 @@ export interface FileRoutesById {
   '/_authenticated/workflow-runs': typeof AuthenticatedWorkflowRunsRouteWithChildren
   '/_authenticated/workflow-steps': typeof AuthenticatedWorkflowStepsRouteWithChildren
   '/_authenticated/workflows': typeof AuthenticatedWorkflowsRouteWithChildren
+  '/setup/supabase': typeof SetupSupabaseRoute
   '/_authenticated/artifacts/create': typeof AuthenticatedArtifactsCreateRoute
   '/_authenticated/projects/$projectId': typeof AuthenticatedProjectsProjectIdRouteWithChildren
   '/_authenticated/projects/create': typeof AuthenticatedProjectsCreateRoute
@@ -385,6 +403,7 @@ export interface FileRoutesById {
   '/_authenticated/settings/mcp-servers': typeof AuthenticatedSettingsMcpServersRouteWithChildren
   '/_authenticated/settings/prompt-templates': typeof AuthenticatedSettingsPromptTemplatesRouteWithChildren
   '/_authenticated/settings/runner': typeof AuthenticatedSettingsRunnerRoute
+  '/_authenticated/settings/supabase': typeof AuthenticatedSettingsSupabaseRoute
   '/_authenticated/workflow-runs/$runId': typeof AuthenticatedWorkflowRunsRunIdRoute
   '/_authenticated/workflow-steps/$stepType': typeof AuthenticatedWorkflowStepsStepTypeRoute
   '/_authenticated/workflow-steps/create': typeof AuthenticatedWorkflowStepsCreateRoute
@@ -419,6 +438,7 @@ export interface FileRouteTypes {
     | '/workflow-runs'
     | '/workflow-steps'
     | '/workflows'
+    | '/setup/supabase'
     | '/artifacts/create'
     | '/projects/$projectId'
     | '/projects/create'
@@ -428,6 +448,7 @@ export interface FileRouteTypes {
     | '/settings/mcp-servers'
     | '/settings/prompt-templates'
     | '/settings/runner'
+    | '/settings/supabase'
     | '/workflow-runs/$runId'
     | '/workflow-steps/$stepType'
     | '/workflow-steps/create'
@@ -460,6 +481,7 @@ export interface FileRouteTypes {
     | '/workflow-runs'
     | '/workflow-steps'
     | '/workflows'
+    | '/setup/supabase'
     | '/artifacts/create'
     | '/projects/$projectId'
     | '/projects/create'
@@ -469,6 +491,7 @@ export interface FileRouteTypes {
     | '/settings/mcp-servers'
     | '/settings/prompt-templates'
     | '/settings/runner'
+    | '/settings/supabase'
     | '/workflow-runs/$runId'
     | '/workflow-steps/$stepType'
     | '/workflow-steps/create'
@@ -502,6 +525,7 @@ export interface FileRouteTypes {
     | '/_authenticated/workflow-runs'
     | '/_authenticated/workflow-steps'
     | '/_authenticated/workflows'
+    | '/setup/supabase'
     | '/_authenticated/artifacts/create'
     | '/_authenticated/projects/$projectId'
     | '/_authenticated/projects/create'
@@ -511,6 +535,7 @@ export interface FileRouteTypes {
     | '/_authenticated/settings/mcp-servers'
     | '/_authenticated/settings/prompt-templates'
     | '/_authenticated/settings/runner'
+    | '/_authenticated/settings/supabase'
     | '/_authenticated/workflow-runs/$runId'
     | '/_authenticated/workflow-steps/$stepType'
     | '/_authenticated/workflow-steps/create'
@@ -538,6 +563,7 @@ export interface RootRouteChildren {
   AuthenticatedRoute: typeof AuthenticatedRouteWithChildren
   GuideRoute: typeof GuideRoute
   LoginRoute: typeof LoginRoute
+  SetupSupabaseRoute: typeof SetupSupabaseRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -568,6 +594,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/setup/supabase': {
+      id: '/setup/supabase'
+      path: '/setup/supabase'
+      fullPath: '/setup/supabase'
+      preLoaderRoute: typeof SetupSupabaseRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_authenticated/workflows': {
@@ -660,6 +693,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/workflow-runs/$runId'
       preLoaderRoute: typeof AuthenticatedWorkflowRunsRunIdRouteImport
       parentRoute: typeof AuthenticatedWorkflowRunsRoute
+    }
+    '/_authenticated/settings/supabase': {
+      id: '/_authenticated/settings/supabase'
+      path: '/settings/supabase'
+      fullPath: '/settings/supabase'
+      preLoaderRoute: typeof AuthenticatedSettingsSupabaseRouteImport
+      parentRoute: typeof AuthenticatedRoute
     }
     '/_authenticated/settings/runner': {
       id: '/_authenticated/settings/runner'
@@ -994,6 +1034,7 @@ interface AuthenticatedRouteChildren {
   AuthenticatedSettingsMcpServersRoute: typeof AuthenticatedSettingsMcpServersRouteWithChildren
   AuthenticatedSettingsPromptTemplatesRoute: typeof AuthenticatedSettingsPromptTemplatesRouteWithChildren
   AuthenticatedSettingsRunnerRoute: typeof AuthenticatedSettingsRunnerRoute
+  AuthenticatedSettingsSupabaseRoute: typeof AuthenticatedSettingsSupabaseRoute
   AuthenticatedProjectsIndexRoute: typeof AuthenticatedProjectsIndexRoute
 }
 
@@ -1017,6 +1058,7 @@ const AuthenticatedRouteChildren: AuthenticatedRouteChildren = {
   AuthenticatedSettingsPromptTemplatesRoute:
     AuthenticatedSettingsPromptTemplatesRouteWithChildren,
   AuthenticatedSettingsRunnerRoute: AuthenticatedSettingsRunnerRoute,
+  AuthenticatedSettingsSupabaseRoute: AuthenticatedSettingsSupabaseRoute,
   AuthenticatedProjectsIndexRoute: AuthenticatedProjectsIndexRoute,
 }
 
@@ -1029,6 +1071,7 @@ const rootRouteChildren: RootRouteChildren = {
   AuthenticatedRoute: AuthenticatedRouteWithChildren,
   GuideRoute: GuideRoute,
   LoginRoute: LoginRoute,
+  SetupSupabaseRoute: SetupSupabaseRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
