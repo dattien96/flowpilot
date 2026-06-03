@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 
 import { createSupabaseServerClient } from "@/data/datasource/supabase/client";
-import { hasSupabaseEnv } from "@/lib/env/app-env";
+import { hasSupabaseRuntimeConfigOrEnvFallback } from "@/lib/supabase/runtime-config.server";
 
 export interface AdminSession {
   user: {
@@ -12,7 +12,7 @@ export interface AdminSession {
 }
 
 export async function getOptionalAdminSession(): Promise<AdminSession | null> {
-  if (!hasSupabaseEnv()) {
+  if (!(await hasSupabaseRuntimeConfigOrEnvFallback())) {
     return {
       mode: "demo",
       user: {
@@ -49,7 +49,7 @@ function readBearerToken(request: Request) {
 export async function getOptionalAdminSessionForRequest(
   request: Request,
 ): Promise<AdminSession | null> {
-  if (!hasSupabaseEnv()) {
+  if (!(await hasSupabaseRuntimeConfigOrEnvFallback())) {
     return {
       mode: "demo",
       user: {
