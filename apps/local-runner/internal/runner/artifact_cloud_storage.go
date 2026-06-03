@@ -41,6 +41,12 @@ type supabaseSignedURLResponse struct {
 	SignedURL string `json:"signedURL"`
 }
 
+type supabaseStorageErrorResponse struct {
+	StatusCode string `json:"statusCode"`
+	Error      string `json:"error"`
+	Message    string `json:"message"`
+}
+
 type supabaseArtifactConfig struct {
 	baseURL    string
 	serviceKey string
@@ -180,24 +186,117 @@ func (r *Runner) syncArtifactToSupabase(artifact ArtifactDetail) (ArtifactDetail
 	})
 }
 
-func (r *Runner) ResolveArtifactOpenURL(artifactID string) (string, error) {
+func (r *Runner) ResolveArtifactOpenURL(artifactID string, fileKind string) (string, error) {
 	artifact, err := r.GetArtifact(artifactID)
 	if err != nil {
 		return "", err
 	}
 
 	storageProvider := strings.TrimSpace(strings.ToLower(artifact.StorageProvider))
-	remotePath := strings.TrimSpace(artifact.RemotePath)
+	targetPath, err := resolveArtifactRemoteFilePath(artifact, fileKind)
+	if err != nil {
+		return "", err
+	}
 	switch {
-	case storageProvider == artifactStorageProviderSupabase && remotePath != "":
-		return createSupabaseSignedURL(remotePath)
-	case storageProvider == artifactStorageProviderGoogleDrive && strings.TrimSpace(artifact.RemoteObjectID) != "":
-		return "https://drive.google.com/file/d/" + url.PathEscape(strings.TrimSpace(artifact.RemoteObjectID)) + "/view", nil
+	case storageProvider == artifactStorageProviderSupabase && targetPath != "":
+		return createSupabaseSignedURL(targetPath)
+	case storageProvider == artifactStorageProviderGoogleDrive && targetPath != "":
+		return r.resolveGoogleDriveArtifactOpenURL(artifact, targetPath, fileKind)
 	case strings.TrimSpace(artifact.RemoteURL) != "":
 		return strings.TrimSpace(artifact.RemoteURL), nil
 	default:
 		return "", os.ErrNotExist
 	}
+}
+
+func resolveArtifactRemoteFilePath(artifact ArtifactDetail, fileKind string) (string, error) {
+	remotePath := strings.TrimSpace(artifact.RemotePath)
+	if remotePath == "" {
+		return "", os.ErrNotExist
+	}
+
+	switch strings.TrimSpace(strings.ToLower(fileKind)) {
+	case "", "content", "response":
+		return remotePath, nil
+	case "actual-prompt":
+		return buildArtifactSnapshotPath(artifact, "actual-prompt.md"), nil
+	case "prompt":
+		return buildArtifactSnapshotPath(artifact, "prompt.md"), nil
+	default:
+		return "", fmt.Errorf("unsupported artifact file %q", fileKind)
+	}
+}
+
+func (r *Runner) resolveGoogleDriveArtifactOpenURL(
+	artifact ArtifactDetail,
+	targetPath string,
+	fileKind string,
+) (string, error) {
+	projectID := strings.TrimSpace(artifact.ProjectID)
+	connectionStatus, err := r.GetGoogleDriveArtifactConnectionStatus(projectID, "")
+	if err != nil {
+		return "", err
+	}
+
+	rootFolderID := strings.TrimSpace(connectionStatus.Connection.FolderID)
+	if rootFolderID == "" {
+		return "", errors.New("google drive artifact storage is not connected for this project")
+	}
+
+	creds, err := r.loadGoogleDriveCredentialByProject(projectID)
+	if err != nil {
+		return "", err
+	}
+
+	accessToken, err := refreshGoogleDriveAccessToken(creds.RefreshToken)
+	if err != nil {
+		return "", err
+	}
+
+	if strings.TrimSpace(strings.ToLower(fileKind)) == "" ||
+		strings.TrimSpace(strings.ToLower(fileKind)) == "content" ||
+		strings.TrimSpace(strings.ToLower(fileKind)) == "response" {
+		if remoteObjectID := strings.TrimSpace(artifact.RemoteObjectID); remoteObjectID != "" {
+			return "https://drive.google.com/file/d/" + url.PathEscape(remoteObjectID) + "/view", nil
+		}
+	}
+
+	file, err := findGoogleDriveFileByLogicalPath(accessToken, rootFolderID, targetPath)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(file.ID) == "" {
+		return "", os.ErrNotExist
+	}
+	return "https://drive.google.com/file/d/" + url.PathEscape(strings.TrimSpace(file.ID)) + "/view", nil
+}
+
+func findGoogleDriveFileByLogicalPath(accessToken, rootFolderID, logicalPath string) (googleDriveFile, error) {
+	segments := strings.Split(strings.Trim(strings.ReplaceAll(logicalPath, "\\", "/"), "/"), "/")
+	if len(segments) == 0 {
+		return googleDriveFile{}, os.ErrNotExist
+	}
+
+	parentID := strings.TrimSpace(rootFolderID)
+	for _, segment := range segments[:len(segments)-1] {
+		folder, err := findGoogleDriveFile(accessToken, parentID, segment)
+		if err != nil {
+			return googleDriveFile{}, err
+		}
+		if strings.TrimSpace(folder.ID) == "" {
+			return googleDriveFile{}, os.ErrNotExist
+		}
+		parentID = strings.TrimSpace(folder.ID)
+	}
+
+	file, err := findGoogleDriveFile(accessToken, parentID, segments[len(segments)-1])
+	if err != nil {
+		return googleDriveFile{}, err
+	}
+	if strings.TrimSpace(file.ID) == "" {
+		return googleDriveFile{}, os.ErrNotExist
+	}
+	return file, nil
 }
 
 func (r *Runner) syncArtifactToGoogleDrive(
@@ -645,7 +744,7 @@ func fetchSupabaseObjectInfo(objectPath string) (supabaseObjectInfoResponse, err
 	if requestErr != nil {
 		return supabaseObjectInfoResponse{}, requestErr
 	}
-	if statusCode == http.StatusNotFound {
+	if statusCode == http.StatusNotFound || isSupabaseObjectNotFoundResponse(statusCode, responseBody) {
 		return supabaseObjectInfoResponse{}, os.ErrNotExist
 	}
 	if statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices {
@@ -661,6 +760,20 @@ func fetchSupabaseObjectInfo(objectPath string) (supabaseObjectInfoResponse, err
 		return supabaseObjectInfoResponse{}, err
 	}
 	return response, nil
+}
+
+func isSupabaseObjectNotFoundResponse(statusCode int, responseBody []byte) bool {
+	if statusCode != http.StatusBadRequest {
+		return false
+	}
+
+	var payload supabaseStorageErrorResponse
+	if err := json.Unmarshal(responseBody, &payload); err != nil {
+		return false
+	}
+
+	return strings.TrimSpace(payload.StatusCode) == "404" &&
+		strings.EqualFold(strings.TrimSpace(payload.Error), "not_found")
 }
 
 func createSupabaseSignedURL(objectPath string) (string, error) {

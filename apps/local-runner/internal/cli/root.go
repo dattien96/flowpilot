@@ -709,7 +709,7 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 						return
 					}
 
-					targetURL, err := instance.ResolveArtifactOpenURL(artifactID)
+					targetURL, err := instance.ResolveArtifactOpenURL(artifactID, r.URL.Query().Get("file"))
 					if err != nil {
 						status := http.StatusBadRequest
 						if errors.Is(err, os.ErrNotExist) {
