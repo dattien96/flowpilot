@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -11,6 +12,42 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/data/repository/browser-factory", () => ({
   createGatewayBundle: mocks.createGatewayBundle,
+}));
+
+vi.mock("@/domain/usecase/projects/list-projects-usecase", () => ({
+  ListProjectsUseCase: class {
+    constructor(private readonly gateway: { listProjects: () => Promise<unknown[]> }) {}
+    execute() {
+      return this.gateway.listProjects();
+    }
+  },
+}));
+
+vi.mock("@/domain/usecase/workflow-engine/list-artifact-definitions-usecase", () => ({
+  ListArtifactDefinitionsUseCase: class {
+    constructor(private readonly gateway: { listArtifactDefinitions: () => Promise<unknown[]> }) {}
+    execute() {
+      return this.gateway.listArtifactDefinitions();
+    }
+  },
+}));
+
+vi.mock("@/domain/usecase/workflow-engine/list-artifact-runs-usecase", () => ({
+  ListArtifactRunsUseCase: class {
+    constructor(private readonly gateway: { listArtifactRuns: () => Promise<unknown[]> }) {}
+    execute() {
+      return this.gateway.listArtifactRuns();
+    }
+  },
+}));
+
+vi.mock("@/domain/usecase/workflow-engine/save-artifact-definition-usecase", () => ({
+  SaveArtifactDefinitionUseCase: class {
+    constructor(private readonly gateway: { saveArtifactDefinition: (definition: unknown) => Promise<unknown> }) {}
+    execute(definition: unknown) {
+      return this.gateway.saveArtifactDefinition(definition);
+    }
+  },
 }));
 
 vi.mock("@/components/common/page-frame", () => ({
@@ -34,6 +71,18 @@ vi.mock("@/components/common/page-frame", () => ({
   ),
 }));
 
+vi.mock("@/components/ui/button", () => ({
+  Button: ({ children }: { children: ReactNode }) => <>{children}</>,
+}));
+
+vi.mock("@/presentation/components/artifacts/artifact-cloud-storage-panel", () => ({
+  ArtifactCloudStoragePanel: () => <div />,
+}));
+
+vi.mock("@/presentation/components/artifacts/artifact-run-browser-panel", () => ({
+  ArtifactRunBrowserPanel: () => <div />,
+}));
+
 vi.mock("@tanstack/react-router", async () => {
   const actual = await vi.importActual<typeof import("@tanstack/react-router")>(
     "@tanstack/react-router"
@@ -54,12 +103,15 @@ describe("ArtifactsPage", () => {
     mocks.createGatewayBundle.mockReturnValue({
       workflowEngineGateway: {
         listArtifactDefinitions: vi.fn().mockImplementation(() => new Promise(() => undefined)),
+        listArtifactRuns: vi.fn().mockResolvedValue([]),
+        listWorkflowRuns: vi.fn().mockResolvedValue([]),
         saveArtifactDefinition: vi.fn(),
       },
       projectGateway: {
         listProjects: vi.fn().mockResolvedValue([]),
       },
       localRunnerGateway: {
+        listArtifacts: vi.fn().mockResolvedValue([]),
         getStorageDriver: vi.fn().mockImplementation(() => new Promise(() => undefined)),
       },
     });
@@ -71,6 +123,6 @@ describe("ArtifactsPage", () => {
     render(<ArtifactsPage />);
 
     expect(screen.getByText("child route")).toBeInTheDocument();
-    expect(screen.queryByText("Definition table")).not.toBeInTheDocument();
+    expect(screen.queryByText("Definition catalog")).not.toBeInTheDocument();
   });
 });
