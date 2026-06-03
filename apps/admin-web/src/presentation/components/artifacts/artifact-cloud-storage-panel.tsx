@@ -2,7 +2,9 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ExternalLink, FolderOpen, Link2, RefreshCw } from "lucide-react";
+import { useRouter } from "next/navigation";
 
+import { supabase } from "@/data/supabase/client";
 import type { Project } from "@/domain/model/entity/project";
 import { Badge } from "@/presentation/components/ui/badge";
 import { Button } from "@/presentation/components/ui/button";
@@ -32,6 +34,7 @@ interface ArtifactCloudStoragePanelProps {
 }
 
 export function ArtifactCloudStoragePanel({ projects }: ArtifactCloudStoragePanelProps) {
+  const router = useRouter();
   const [selectedProjectId, setSelectedProjectId] = useState(projects[0]?.id ?? "");
   const [googleDriveState, setGoogleDriveState] = useState<GoogleDriveConnectionPayload | null>(null);
   const [loadingState, setLoadingState] = useState(false);
@@ -43,6 +46,11 @@ export function ArtifactCloudStoragePanel({ projects }: ArtifactCloudStoragePane
     () => projects.find((project) => project.id === selectedProjectId) ?? null,
     [projects, selectedProjectId],
   );
+
+  async function buildAuthHeaders() {
+    const token = (await supabase.auth.getSession()).data.session?.access_token ?? "";
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  }
 
   async function loadGoogleDriveState(sessionId?: string) {
     if (!selectedProjectId) {
@@ -56,9 +64,20 @@ export function ArtifactCloudStoragePanel({ projects }: ArtifactCloudStoragePane
       if (sessionId) {
         url.searchParams.set("sessionId", sessionId);
       }
-      const response = await fetch(url, { cache: "no-store" });
+      const response = await fetch(url, {
+        cache: "no-store",
+        headers: await buildAuthHeaders(),
+      });
+      if (response.status === 401) {
+        router.replace("/login");
+        return;
+      }
       const payload = (await response.json()) as GoogleDriveConnectionPayload | { error?: string };
       if (!response.ok) {
+        if ("error" in payload && payload.error === "Authentication required.") {
+          router.replace("/login");
+          return;
+        }
         throw new Error("error" in payload && payload.error ? payload.error : "Unable to read Google Drive status.");
       }
       setGoogleDriveState(payload as GoogleDriveConnectionPayload);
@@ -101,15 +120,24 @@ export function ArtifactCloudStoragePanel({ projects }: ArtifactCloudStoragePane
         method: "POST",
         headers: {
           "content-type": "application/json",
+          ...(await buildAuthHeaders()),
         },
         body: JSON.stringify({
           projectId: selectedProjectId,
         }),
       });
+      if (response.status === 401) {
+        router.replace("/login");
+        return;
+      }
       const payload = (await response.json()) as
         | ({ error?: string } & Partial<GoogleDriveConnectionPayload["session"]>)
         | { error?: string };
       if (!response.ok) {
+        if ("error" in payload && payload.error === "Authentication required.") {
+          router.replace("/login");
+          return;
+        }
         throw new Error("error" in payload && payload.error ? payload.error : "Unable to start Google Drive connection.");
       }
 
@@ -162,6 +190,7 @@ export function ArtifactCloudStoragePanel({ projects }: ArtifactCloudStoragePane
   const connection = googleDriveState?.connection ?? null;
   const session = googleDriveState?.session ?? null;
   const providerPreference = selectedProject?.artifactStoragePreference ?? "supabase";
+  const providerLabel = providerPreference === "google_drive" ? "Google Drive" : "Supabase Storage";
 
   return (
     <section className="rounded-[1.6rem] border border-border bg-background/70 p-6">
@@ -208,6 +237,21 @@ export function ArtifactCloudStoragePanel({ projects }: ArtifactCloudStoragePane
             <Badge tone={connection?.status === "connected" ? "success" : connection?.status === "failed" ? "danger" : "warning"}>
               {connection?.status || "disconnected"}
             </Badge>
+          </div>
+
+          <div className="mt-4 rounded-2xl border border-border bg-background px-4 py-3">
+            <p className="text-xs uppercase tracking-[0.24em] text-muted-foreground">Active provider for this project</p>
+            <div className="mt-2 flex flex-wrap items-center gap-3">
+              <p className="text-sm font-semibold">{providerLabel}</p>
+              <Badge tone={providerPreference === "google_drive" ? "warning" : "success"}>
+                {providerPreference}
+              </Badge>
+            </div>
+            <p className="mt-2 text-sm text-muted-foreground">
+              {providerPreference === "google_drive"
+                ? "This project will sync artifacts to Google Drive after this runner is connected to a folder."
+                : "This project will sync artifacts to the shared Supabase bucket. Google Drive details below are optional until you switch providers."}
+            </p>
           </div>
 
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
