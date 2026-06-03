@@ -304,6 +304,43 @@ describe("ArtifactRunBrowserPanel", () => {
     );
   });
 
+  it("hydrates a remote-only generic title from remote content", async () => {
+    const loadRemoteArtifactContent = vi.fn(async () =>
+      "This is a synced remote response title that should be shortened for cards.",
+    );
+
+    render(
+      <ArtifactRunBrowserPanel
+        artifactRuns={[
+          {
+            ...remoteFailedArtifact,
+            id: "artifact-remote-generic",
+            title: "Response.md",
+          },
+        ]}
+        localArtifacts={[]}
+        loadRemoteArtifactContent={loadRemoteArtifactContent}
+        projects={[]}
+        scopeLabel="Artifacts"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Remote/Sync (1)" }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("This is a synced remote response title that should..."),
+      ).toBeInTheDocument();
+    });
+
+    expect(loadRemoteArtifactContent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "artifact-remote-generic",
+        title: "Response.md",
+      }),
+    );
+  });
+
   it("disables the sync button while background sync is already in progress", () => {
     render(
       <ArtifactRunBrowserPanel

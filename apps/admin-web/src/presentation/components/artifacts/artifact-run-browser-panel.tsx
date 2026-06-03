@@ -17,6 +17,7 @@ interface ArtifactRunBrowserPanelProps {
   scopeLabel: string;
   showProjectFilter?: boolean;
   onArtifactsChanged?: () => Promise<void> | void;
+  loadRemoteArtifactContent?: (artifact: ArtifactRun) => Promise<string | null>;
 }
 
 type ArtifactBrowserItem = {
@@ -47,12 +48,16 @@ export function ArtifactRunBrowserPanel({
   scopeLabel,
   showProjectFilter = false,
   onArtifactsChanged,
+  loadRemoteArtifactContent,
 }: ArtifactRunBrowserPanelProps) {
   const [query, setQuery] = useState("");
   const [projectId, setProjectId] = useState("all");
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [bulkSyncing, setBulkSyncing] = useState(false);
   const [subTab, setSubTab] = useState<"local" | "remote">("local");
+  const [remoteTitleOverrides, setRemoteTitleOverrides] = useState<Map<string, string>>(
+    () => new Map(),
+  );
 
   const projectById = useMemo(() => new Map(projects.map((project) => [project.id, project])), [projects]);
   const localArtifactById = useMemo(
@@ -76,13 +81,14 @@ export function ArtifactRunBrowserPanel({
         .map((artifact) => {
           const matchedLocalArtifact =
             localArtifactById.get(artifact.id) ?? localArtifactByRemotePath.get(artifact.remotePath.trim());
+          const fallbackTitle = deriveArtifactDisplayTitle(
+            matchedLocalArtifact?.contentMarkdown ?? "",
+            artifact.title,
+          );
           return {
             id: artifact.id,
             kind: "remote" as const,
-            title: deriveArtifactDisplayTitle(
-              matchedLocalArtifact?.contentMarkdown ?? "",
-              artifact.title,
-            ),
+            title: remoteTitleOverrides.get(artifact.id) ?? fallbackTitle,
             contentMarkdown: matchedLocalArtifact?.contentMarkdown ?? "",
             promptText: matchedLocalArtifact?.promptText ?? "",
             actualPromptText: matchedLocalArtifact?.actualPromptText ?? "",
@@ -100,7 +106,7 @@ export function ArtifactRunBrowserPanel({
             updatedAt: artifact.updatedAt,
           };
         }),
-    [artifactRuns, localArtifactById, localArtifactByRemotePath, projectById],
+    [artifactRuns, localArtifactById, localArtifactByRemotePath, projectById, remoteTitleOverrides],
   );
 
   const remoteArtifactKeys = useMemo(
@@ -237,6 +243,55 @@ export function ArtifactRunBrowserPanel({
 
     return () => window.clearInterval(intervalId);
   }, [onArtifactsChanged, syncingArtifactCount]);
+
+  useEffect(() => {
+    if (!loadRemoteArtifactContent) {
+      setRemoteTitleOverrides(new Map());
+      return;
+    }
+
+    const candidates = artifactRuns
+      .filter(shouldRenderArtifactRunAsRemote)
+      .filter((artifact) => {
+        const matchedLocalArtifact =
+          localArtifactById.get(artifact.id) ?? localArtifactByRemotePath.get(artifact.remotePath.trim());
+        const hasLocalContent =
+          (matchedLocalArtifact?.contentMarkdown ?? "").replace(/\s+/g, " ").trim() !== "";
+        return !hasLocalContent && isGenericArtifactTitle(artifact.title);
+      });
+
+    if (candidates.length === 0) {
+      setRemoteTitleOverrides(new Map());
+      return;
+    }
+
+    let cancelled = false;
+
+    void Promise.all(
+      candidates.map(async (artifact) => {
+        const content = await loadRemoteArtifactContent(artifact);
+        const summary = content ? summarizeArtifactContent(content) : null;
+        return summary ? ([artifact.id, summary] as const) : null;
+      }),
+    ).then((entries) => {
+      if (cancelled) {
+        return;
+      }
+
+      const next = new Map<string, string>();
+      for (const entry of entries) {
+        if (!entry) {
+          continue;
+        }
+        next.set(entry[0], entry[1]);
+      }
+      setRemoteTitleOverrides(next);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [artifactRuns, loadRemoteArtifactContent, localArtifactById, localArtifactByRemotePath]);
 
   async function syncArtifactById(artifactId: string) {
     try {
@@ -1003,13 +1058,29 @@ function uniqueValues(values: string[]) {
   return Array.from(new Set(values.filter((value) => value.trim() !== "")));
 }
 
-function deriveArtifactDisplayTitle(contentMarkdown: string, fallbackTitle: string) {
+function summarizeArtifactContent(contentMarkdown: string) {
   const normalized = contentMarkdown.replace(/\s+/g, " ").trim();
   if (!normalized) {
+    return null;
+  }
+
+  return normalized.length > 50
+    ? `${normalized.slice(0, 50).trimEnd()}...`
+    : normalized;
+}
+
+function isGenericArtifactTitle(title: string) {
+  const normalized = title.trim().toLowerCase();
+  return normalized === "response.md" || normalized === "artifact.md";
+}
+
+function deriveArtifactDisplayTitle(contentMarkdown: string, fallbackTitle: string) {
+  const summary = summarizeArtifactContent(contentMarkdown);
+  if (!summary) {
     return fallbackTitle;
   }
 
-  return normalized.length > 50 ? `${normalized.slice(0, 50).trimEnd()}...` : normalized;
+  return summary;
 }
 
 function truncateText(value: string, maxLength: number) {

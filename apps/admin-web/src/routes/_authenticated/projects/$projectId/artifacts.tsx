@@ -107,6 +107,31 @@ function ProjectArtifactsContent({
         <ArtifactRunBrowserPanel
           artifactRuns={artifactRuns}
           localArtifacts={localArtifacts}
+          loadRemoteArtifactContent={async (artifactRun) => {
+            if (!artifactRun.id.trim() || !artifactRun.remotePath.trim()) {
+              return null;
+            }
+
+            const params = new URLSearchParams({
+              remotePath: artifactRun.remotePath,
+              storageProvider: artifactRun.storageProvider ?? "supabase",
+            });
+            if (artifactRun.remoteObjectId?.trim()) {
+              params.set("remoteObjectId", artifactRun.remoteObjectId.trim());
+            }
+            if (artifactRun.projectId?.trim()) {
+              params.set("projectId", artifactRun.projectId.trim());
+            }
+
+            const response = await fetch(
+              `/api/local-runner/artifacts/${artifactRun.id}/open?${params.toString()}`,
+            );
+            if (!response.ok) {
+              return null;
+            }
+
+            return await response.text();
+          }}
           onArtifactsChanged={onArtifactsChanged}
           projects={[project]}
           scopeLabel={project.name}
