@@ -31,6 +31,15 @@ import {
 
 const DEFAULT_MODEL = "gpt-5.4";
 const DEFAULT_REASONING_EFFORT = "medium";
+const ARTIFACT_BUCKET_NAME = "flowpilot-artifacts";
+const STORAGE_LIST_LIMIT = 1000;
+
+type StorageListEntry = {
+  id?: string | null;
+  name?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
 
 function bindingOrder(row: { order_index?: unknown }, fallbackIndex: number) {
   const raw = Number(row.order_index);
@@ -48,6 +57,133 @@ function normalizeReasoningEffort(
   fallback = DEFAULT_REASONING_EFFORT,
 ) {
   return reasoningEffort?.trim() || fallback;
+}
+
+function buildStorageArtifactRun(path: string, entry: StorageListEntry): ArtifactRun | null {
+  const normalizedPath = path.replaceAll("\\", "/").trim().replace(/^\/+|\/+$/g, "");
+  if (!normalizedPath || normalizedPath.includes("/.snapshots/")) {
+    return null;
+  }
+
+  const segments = normalizedPath.split("/").filter(Boolean);
+  if (
+    segments.length !== 7 ||
+    segments[0] !== "projects" ||
+    segments[2] !== "runs" ||
+    segments[4] !== "steps"
+  ) {
+    return null;
+  }
+
+  const projectId = segments[1] ?? "";
+  const workflowRunId = segments[3] ?? "";
+  const workflowStepKey = segments[5] ?? "";
+  const fileName = segments[6] ?? "";
+  if (!projectId || !workflowRunId || !workflowStepKey || !fileName) {
+    return null;
+  }
+
+  const timestamp = entry.updated_at?.trim() || entry.created_at?.trim() || "";
+
+  return {
+    id: `remote:${normalizedPath}`,
+    artifactDefinitionKey: workflowStepKey,
+    workflowId: "",
+    workflowRunId,
+    workflowRunStepId: workflowStepKey,
+    projectId,
+    title: fileName,
+    localPath: "",
+    remotePath: normalizedPath,
+    remoteUrl: "",
+    storageProvider: "supabase",
+    remoteObjectId: entry.id ? String(entry.id) : null,
+    syncStatus: "synced",
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+}
+
+async function listStorageEntriesRecursively(
+  bucket: ReturnType<SupabaseClient["storage"]["from"]>,
+  path: string,
+): Promise<Array<{ path: string; entry: StorageListEntry }>> {
+  const results: Array<{ path: string; entry: StorageListEntry }> = [];
+  let offset = 0;
+
+  while (true) {
+    const { data, error } = await bucket.list(path, {
+      limit: STORAGE_LIST_LIMIT,
+      offset,
+      sortBy: { column: "name", order: "asc" },
+    });
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    const entries = (data ?? []) as StorageListEntry[];
+    for (const entry of entries) {
+      const name = entry.name?.trim() ?? "";
+      if (!name) {
+        continue;
+      }
+
+      const childPath = [path.trim().replace(/^\/+|\/+$/g, ""), name]
+        .filter(Boolean)
+        .join("/");
+      if (entry.id) {
+        results.push({ path: childPath, entry });
+        continue;
+      }
+
+      results.push(...(await listStorageEntriesRecursively(bucket, childPath)));
+    }
+
+    if (entries.length < STORAGE_LIST_LIMIT) {
+      break;
+    }
+    offset += entries.length;
+  }
+
+  return results;
+}
+
+async function listArtifactRunsFromStorage(
+  supabase: SupabaseClient,
+  projectId?: string,
+): Promise<ArtifactRun[]> {
+  const bucket = supabase.storage.from(ARTIFACT_BUCKET_NAME);
+  const rootPath = projectId ? `projects/${projectId}` : "projects";
+  const entries = await listStorageEntriesRecursively(bucket, rootPath);
+
+  return entries
+    .map(({ path, entry }) => buildStorageArtifactRun(path, entry))
+    .filter((artifact): artifact is ArtifactRun => artifact !== null)
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+}
+
+function mergeArtifactRuns(
+  databaseRuns: ArtifactRun[],
+  storageRuns: ArtifactRun[],
+): ArtifactRun[] {
+  const merged = new Map<string, ArtifactRun>();
+
+  for (const artifact of databaseRuns) {
+    const key = artifact.remotePath.trim() || artifact.id;
+    merged.set(key, artifact);
+  }
+
+  for (const artifact of storageRuns) {
+    const key = artifact.remotePath.trim() || artifact.id;
+    if (!merged.has(key)) {
+      merged.set(key, artifact);
+    }
+  }
+
+  return Array.from(merged.values()).sort((left, right) =>
+    right.updatedAt.localeCompare(left.updatedAt),
+  );
 }
 
 async function invokeWorkflowStartRuntime<TResponse>(
@@ -181,7 +317,17 @@ export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
     const { data, error } = await query.order("created_at", { ascending: false });
 
     if (error) throw new Error(`Unable to list artifact runs: ${error.message}`);
-    return (data ?? []).map(mapArtifactRun);
+    const databaseRuns = (data ?? []).map(mapArtifactRun);
+    const storageRuns = await listArtifactRunsFromStorage(this.supabase, projectId).catch(
+      (storageError) => {
+        console.warn(
+          "Unable to recover artifact runs from Supabase Storage:",
+          storageError instanceof Error ? storageError.message : storageError,
+        );
+        return [] as ArtifactRun[];
+      },
+    );
+    return mergeArtifactRuns(databaseRuns, storageRuns);
   }
 
   async listStepDefinitions(): Promise<StepDefinition[]> {
