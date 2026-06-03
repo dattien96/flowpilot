@@ -63,11 +63,11 @@ describe("SupabaseArtifactStorageGateway", () => {
     expect(stub.upload.mock.calls.map((call) => call[0])).toEqual([
       "projects/project-alpha/runs/run-1/steps/business_idea/.snapshots/artifact-1/content.md",
       "projects/project-alpha/runs/run-1/steps/business_idea/.snapshots/artifact-1/manifest.json",
-      "projects/project-alpha/runs/run-1/steps/business_idea/content.md",
+      "projects/project-alpha/runs/run-1/steps/business_idea/artifacts/artifact-1/content.md",
     ]);
     expect(result).toEqual({
       storageProvider: "supabase",
-      remotePath: "projects/project-alpha/runs/run-1/steps/business_idea/content.md",
+      remotePath: "projects/project-alpha/runs/run-1/steps/business_idea/artifacts/artifact-1/content.md",
       remoteObjectId: "canonical-upload-id",
     });
   });
@@ -104,8 +104,46 @@ describe("SupabaseArtifactStorageGateway", () => {
     expect(stub.upload.mock.calls.map((call) => call[0])).toEqual([
       "projects/project-alpha/runs/run-1/steps/business_idea/.snapshots/artifact-1/content.md",
     ]);
-    expect(result.remotePath).toBe("projects/project-alpha/runs/run-1/steps/business_idea/content.md");
+    expect(result.remotePath).toBe(
+      "projects/project-alpha/runs/run-1/steps/business_idea/artifacts/artifact-1/content.md",
+    );
     expect(result.remoteObjectId).toBe("existing-canonical");
+  });
+
+  it("uses artifact-scoped canonical paths for repeated artifacts in the same workflow step", async () => {
+    const stub = createSupabaseStub([
+      { data: null, error: null },
+      { data: null, error: null },
+      { data: null, error: null },
+      { data: null, error: null },
+    ]);
+    const gateway = new SupabaseArtifactStorageGateway(stub.client as never);
+
+    const first = await gateway.syncSnapshot({
+      projectId: "project-alpha",
+      artifactId: "artifact-1",
+      workflowRunId: "run-1",
+      workflowStepKey: "business_idea",
+      outputFilename: "content.md",
+      createdAt: "2026-06-02T09:00:00.000Z",
+      files: [{ relativePath: "content.md", bytes: new TextEncoder().encode("first") }],
+    });
+    const second = await gateway.syncSnapshot({
+      projectId: "project-alpha",
+      artifactId: "artifact-2",
+      workflowRunId: "run-1",
+      workflowStepKey: "business_idea",
+      outputFilename: "content.md",
+      createdAt: "2026-06-02T09:01:00.000Z",
+      files: [{ relativePath: "content.md", bytes: new TextEncoder().encode("second") }],
+    });
+
+    expect(first.remotePath).toBe(
+      "projects/project-alpha/runs/run-1/steps/business_idea/artifacts/artifact-1/content.md",
+    );
+    expect(second.remotePath).toBe(
+      "projects/project-alpha/runs/run-1/steps/business_idea/artifacts/artifact-2/content.md",
+    );
   });
 
   it("creates signed open URLs on demand", async () => {
@@ -113,12 +151,12 @@ describe("SupabaseArtifactStorageGateway", () => {
     const gateway = new SupabaseArtifactStorageGateway(stub.client as never);
 
     const url = await gateway.createOpenUrl(
-      "projects/project-alpha/runs/run-1/steps/business_idea/content.md",
+      "projects/project-alpha/runs/run-1/steps/business_idea/artifacts/artifact-1/content.md",
     );
 
     expect(url).toBe("https://example.test/signed");
     expect(stub.createSignedUrl).toHaveBeenCalledWith(
-      "projects/project-alpha/runs/run-1/steps/business_idea/content.md",
+      "projects/project-alpha/runs/run-1/steps/business_idea/artifacts/artifact-1/content.md",
       300,
     );
   });

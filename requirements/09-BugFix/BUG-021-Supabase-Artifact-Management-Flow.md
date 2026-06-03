@@ -145,3 +145,33 @@ after timeout, there is no sync process trigger
 ### Important caveat
 - If the admin-web server process restarts before the timeout expires, the in-memory countdown is lost.
 - In that case, startup bootstrap reconciliation should recover pending `local_only` artifacts after the server comes back up.
+
+# Flow test 6 - mutliple artifacts in 1 workflows missed in synced
+## Step 1: Trigger single simple step
+
+- See the local artifact in .flowpilot/artifacts
+- New row in artifact_runs table with local_only status
+- No data in supabase bucket
+
+## Step 2: Continue add 1 more prompt in same flow
+- See the local artifact in .flowpilot/artifacts-> now we have 2 child folder artifacts
+- 1 New row in artifact_runs table with local_only status -> now we have 2 rows
+- No data in supabase bucket
+
+## Step 3: Press Sync button
+
+### Correct parts
+- 2 rows in artifact_runs table changed to synced
+- still 2 artifacts data in local .flowpilot/artifacts
+
+### BUG parts
+
+- Ui state in View: ONLY 1 Synced in remote tab
+- New data push to bucket storate but only artifact of 1 prompt instead of 2 prompts pushed
+
+### Fixed root cause
+- Supabase canonical object paths were only keyed by `projectId/workflowRunId/workflowStepKey/outputFilename`.
+- When the same workflow step produced multiple artifacts in one workflow run, later syncs overwrote the earlier canonical file because both rows pointed to the same remote path.
+- The artifacts page also merged remote rows by `remotePath`, so those overwritten artifacts collapsed into a single remote item in the UI.
+- Canonical sync paths are now artifact-scoped by including `artifactId`, while snapshot/history paths stay unchanged.
+- Remote path parsing and open-file resolution remain backward-compatible with the older non-artifact-scoped paths so previously synced artifacts still render and open correctly.

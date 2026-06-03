@@ -550,10 +550,11 @@ func loadArtifactSyncFiles(artifact ArtifactDetail) ([]artifactSyncFile, error) 
 
 func buildArtifactCanonicalPath(artifact ArtifactDetail) string {
 	return fmt.Sprintf(
-		"projects/%s/runs/%s/steps/%s/%s",
+		"projects/%s/runs/%s/steps/%s/artifacts/%s/%s",
 		cloudPathSegment(artifact.ProjectID),
 		cloudPathSegment(artifact.WorkflowRunID),
 		cloudPathSegment(artifact.WorkflowStepKey),
+		cloudPathSegment(artifact.ArtifactID),
 		filepath.Base(deriveArtifactOutputFilename(artifact)),
 	)
 }

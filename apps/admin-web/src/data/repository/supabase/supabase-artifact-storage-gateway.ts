@@ -54,7 +54,7 @@ function contentTypeForPath(relativePath: string) {
   }
 }
 
-function buildBasePath(request: ArtifactStorageSyncRequest) {
+function buildStepBasePath(request: ArtifactStorageSyncRequest) {
   const projectId = ensureSegment(request.projectId, "projectId");
   const workflowRunId = ensureSegment(request.workflowRunId, "workflowRunId");
   const workflowStepKey = ensureSegment(request.workflowStepKey, "workflowStepKey");
@@ -62,11 +62,11 @@ function buildBasePath(request: ArtifactStorageSyncRequest) {
 }
 
 function buildSnapshotPath(request: ArtifactStorageSyncRequest, relativePath: string) {
-  return `${buildBasePath(request)}/.snapshots/${ensureSegment(request.artifactId, "artifactId")}/${relativePath}`;
+  return `${buildStepBasePath(request)}/.snapshots/${ensureSegment(request.artifactId, "artifactId")}/${relativePath}`;
 }
 
 function buildCanonicalPath(request: ArtifactStorageSyncRequest) {
-  return `${buildBasePath(request)}/${ensureSegment(request.outputFilename, "outputFilename")}`;
+  return `${buildStepBasePath(request)}/artifacts/${ensureSegment(request.artifactId, "artifactId")}/${ensureSegment(request.outputFilename, "outputFilename")}`;
 }
 
 function readSourceCreatedAt(metadata: unknown) {

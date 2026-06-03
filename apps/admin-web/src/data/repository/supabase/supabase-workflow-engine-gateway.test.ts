@@ -229,6 +229,84 @@ describe("SupabaseWorkflowEngineGateway", () => {
         error: null,
       })
       .mockResolvedValueOnce({
+        data: [{ id: null, name: "artifacts" }],
+        error: null,
+      })
+      .mockResolvedValueOnce({
+        data: [{ id: null, name: "artifact-1" }],
+        error: null,
+      })
+      .mockResolvedValueOnce({
+        data: [
+          {
+            id: "object-1",
+            name: "Response.md",
+            created_at: "2026-06-03T00:00:00.000Z",
+            updated_at: "2026-06-03T00:01:00.000Z",
+          },
+        ],
+        error: null,
+      });
+    const from = vi.fn((table: string) => {
+      if (table === "artifact_runs") {
+        return {
+          select: () => ({
+            eq: () => ({ order }),
+            order,
+          }),
+        };
+      }
+      throw new Error(`Unexpected table ${table}`);
+    });
+
+    const gateway = new SupabaseWorkflowEngineGateway({
+      from,
+      storage: {
+        from: vi.fn(() => ({ list })),
+      },
+    } as any);
+    const result = await gateway.listArtifactRuns();
+
+    expect(result).toEqual([
+      expect.objectContaining({
+        id: "remote:projects/project-1/runs/run-1/steps/codex_test/artifacts/artifact-1/Response.md",
+        projectId: "project-1",
+        workflowRunId: "run-1",
+        workflowRunStepId: "codex_test",
+        title: "Response.md",
+        remotePath: "projects/project-1/runs/run-1/steps/codex_test/artifacts/artifact-1/Response.md",
+        remoteObjectId: "object-1",
+        storageProvider: "supabase",
+        syncStatus: "synced",
+      }),
+    ]);
+  });
+
+  it("parses legacy storage-backed artifact paths without artifact folders", async () => {
+    const order = vi.fn().mockResolvedValue({ data: [], error: null });
+    const list = vi
+      .fn()
+      .mockResolvedValueOnce({
+        data: [{ id: null, name: "project-1" }],
+        error: null,
+      })
+      .mockResolvedValueOnce({
+        data: [{ id: null, name: "runs" }],
+        error: null,
+      })
+      .mockResolvedValueOnce({
+        data: [{ id: null, name: "run-1" }],
+        error: null,
+      })
+      .mockResolvedValueOnce({
+        data: [{ id: null, name: "steps" }],
+        error: null,
+      })
+      .mockResolvedValueOnce({
+        data: [{ id: null, name: "codex_test" }],
+        error: null,
+      })
+      .mockResolvedValueOnce({
         data: [
           {
             id: "object-1",
@@ -262,14 +340,8 @@ describe("SupabaseWorkflowEngineGateway", () => {
     expect(result).toEqual([
       expect.objectContaining({
         id: "remote:projects/project-1/runs/run-1/steps/codex_test/Response.md",
-        projectId: "project-1",
-        workflowRunId: "run-1",
-        workflowRunStepId: "codex_test",
-        title: "Response.md",
         remotePath: "projects/project-1/runs/run-1/steps/codex_test/Response.md",
-        remoteObjectId: "object-1",
-        storageProvider: "supabase",
-        syncStatus: "synced",
+        title: "Response.md",
       }),
     ]);
   });

@@ -198,12 +198,24 @@ function resolveRemoteTargetPath(remotePath: string, artifactId: string, file: s
 }
 
 function canonicalToSnapshotPath(remotePath: string, artifactId: string, fileName: string) {
-  const trimmedArtifactId = artifactId.startsWith("remote:") ? "" : artifactId.trim();
-  if (!trimmedArtifactId) {
-    return remotePath;
+  const normalized = remotePath.replaceAll("\\", "/").trim();
+  const segments = normalized.split("/").filter(Boolean);
+  if (
+    segments.length === 9 &&
+    segments[0] === "projects" &&
+    segments[2] === "runs" &&
+    segments[4] === "steps" &&
+    segments[6] === "artifacts" &&
+    segments[7]
+  ) {
+    return `${segments.slice(0, 6).join("/")}/.snapshots/${segments[7]}/${fileName}`;
   }
 
-  const normalized = remotePath.replaceAll("\\", "/").trim();
+  const trimmedArtifactId = artifactId.startsWith("remote:") ? "" : artifactId.trim();
+  if (!trimmedArtifactId) {
+    return normalized;
+  }
+
   const lastSlash = normalized.lastIndexOf("/");
   if (lastSlash < 0) {
     return normalized;

@@ -295,7 +295,7 @@ func TestSyncArtifactSupabaseUploadsHistoryAndCanonical(t *testing.T) {
 				t.Fatalf("expected artifactId metadata, got %#v", metadata)
 			}
 			return 200, []byte(`{"Id":"object-1","Key":"` + endpoint + `"}`), nil
-		case method == "GET" && strings.Contains(endpoint, "/storage/v1/object/info/flowpilot-artifacts/projects/local/runs/run-1/steps/prompt_execution/content.md"):
+		case method == "GET" && strings.Contains(endpoint, "/storage/v1/object/info/flowpilot-artifacts/projects/local/runs/run-1/steps/prompt_execution/artifacts/"+artifactID+"/content.md"):
 			return 404, []byte(`{"message":"not found"}`), nil
 		default:
 			t.Fatalf("unexpected request: %s %s", method, endpoint)
@@ -314,7 +314,7 @@ func TestSyncArtifactSupabaseUploadsHistoryAndCanonical(t *testing.T) {
 	if artifact.StorageProvider != "supabase" {
 		t.Fatalf("expected supabase provider, got %q", artifact.StorageProvider)
 	}
-	if artifact.RemotePath != "projects/local/runs/run-1/steps/prompt_execution/content.md" {
+	if artifact.RemotePath != "projects/local/runs/run-1/steps/prompt_execution/artifacts/"+artifactID+"/content.md" {
 		t.Fatalf("unexpected remote path: %q", artifact.RemotePath)
 	}
 	if artifact.RemoteObjectID != "object-1" {
@@ -352,7 +352,7 @@ func TestSyncArtifactSupabaseTreatsWrappedNotFoundAsMissingObject(t *testing.T) 
 		case method == "POST" && strings.Contains(endpoint, "/storage/v1/object/flowpilot-artifacts/"):
 			uploadedPaths = append(uploadedPaths, endpoint)
 			return 200, []byte(`{"Id":"object-404","Key":"` + endpoint + `"}`), nil
-		case method == "GET" && strings.Contains(endpoint, "/storage/v1/object/info/flowpilot-artifacts/projects/local/runs/run-1/steps/prompt_execution/content.md"):
+		case method == "GET" && strings.Contains(endpoint, "/storage/v1/object/info/flowpilot-artifacts/projects/local/runs/run-1/steps/prompt_execution/artifacts/"+artifactID+"/content.md"):
 			return 400, []byte(`{"statusCode":"404","error":"not_found","message":"Object not found"}`), nil
 		default:
 			t.Fatalf("unexpected request: %s %s", method, endpoint)
@@ -376,13 +376,31 @@ func TestSyncArtifactSupabaseTreatsWrappedNotFoundAsMissingObject(t *testing.T) 
 	}
 }
 
+func TestBuildArtifactCanonicalPathUsesArtifactScopedPath(t *testing.T) {
+	artifact := ArtifactDetail{
+		ArtifactSummary: ArtifactSummary{
+			ArtifactID:      "artifact-2",
+			ProjectID:       "local",
+			WorkflowRunID:   "run-1",
+			WorkflowStepKey: "prompt_execution",
+		},
+		ContentPath: "content.md",
+	}
+
+	got := buildArtifactCanonicalPath(artifact)
+
+	if got != "projects/local/runs/run-1/steps/prompt_execution/artifacts/artifact-2/content.md" {
+		t.Fatalf("unexpected canonical path: %q", got)
+	}
+}
+
 func TestResolveArtifactOpenURLCreatesSupabaseSignedURL(t *testing.T) {
 	instance := &Runner{workspace: t.TempDir()}
 	artifactID := writeTestArtifactFixture(t, instance.workspace, "artifact-open")
 
 	if _, err := instance.SaveArtifactCloudSyncResult(artifactID, ArtifactCloudSyncResult{
 		StorageProvider: "supabase",
-		RemotePath:      "projects/local/runs/run-1/steps/prompt_execution/content.md",
+		RemotePath:      "projects/local/runs/run-1/steps/prompt_execution/artifacts/" + artifactID + "/content.md",
 		RemoteObjectID:  "object-123",
 		SyncStatus:      artifactSyncStatusSynced,
 	}); err != nil {
@@ -407,10 +425,10 @@ func TestResolveArtifactOpenURLCreatesSupabaseSignedURL(t *testing.T) {
 		if method != "POST" {
 			t.Fatalf("expected POST for signed URL, got %s", method)
 		}
-		if !strings.Contains(endpoint, "/storage/v1/object/sign/flowpilot-artifacts/projects/local/runs/run-1/steps/prompt_execution/content.md") {
+		if !strings.Contains(endpoint, "/storage/v1/object/sign/flowpilot-artifacts/projects/local/runs/run-1/steps/prompt_execution/artifacts/"+artifactID+"/content.md") {
 			t.Fatalf("unexpected signed URL endpoint: %s", endpoint)
 		}
-		return 200, []byte(`{"signedURL":"/storage/v1/object/sign/flowpilot-artifacts/projects/local/runs/run-1/steps/prompt_execution/content.md?token=abc"}`), nil
+		return 200, []byte(`{"signedURL":"/storage/v1/object/sign/flowpilot-artifacts/projects/local/runs/run-1/steps/prompt_execution/artifacts/` + artifactID + `/content.md?token=abc"}`), nil
 	}
 
 	url, err := instance.ResolveArtifactOpenURL(artifactID, "")
@@ -418,7 +436,7 @@ func TestResolveArtifactOpenURLCreatesSupabaseSignedURL(t *testing.T) {
 		t.Fatalf("ResolveArtifactOpenURL() failed: %v", err)
 	}
 
-	if url != "https://example.supabase.co/storage/v1/object/sign/flowpilot-artifacts/projects/local/runs/run-1/steps/prompt_execution/content.md?token=abc" {
+	if url != "https://example.supabase.co/storage/v1/object/sign/flowpilot-artifacts/projects/local/runs/run-1/steps/prompt_execution/artifacts/"+artifactID+"/content.md?token=abc" {
 		t.Fatalf("unexpected signed URL: %q", url)
 	}
 }
@@ -459,7 +477,7 @@ func TestSyncArtifactGoogleDriveUploadsHistoryAndCanonical(t *testing.T) {
 	if artifact.StorageProvider != "google_drive" {
 		t.Fatalf("expected google_drive provider, got %q", artifact.StorageProvider)
 	}
-	if artifact.RemotePath != "projects/local/runs/run-1/steps/prompt_execution/content.md" {
+	if artifact.RemotePath != "projects/local/runs/run-1/steps/prompt_execution/artifacts/"+artifactID+"/content.md" {
 		t.Fatalf("unexpected remote path: %q", artifact.RemotePath)
 	}
 	if strings.TrimSpace(artifact.RemoteObjectID) == "" {
@@ -486,7 +504,7 @@ func TestResolveArtifactOpenURLReturnsGoogleDriveViewURL(t *testing.T) {
 
 	if _, err := instance.SaveArtifactCloudSyncResult(artifactID, ArtifactCloudSyncResult{
 		StorageProvider: "google_drive",
-		RemotePath:      "projects/local/runs/run-1/steps/prompt_execution/content.md",
+		RemotePath:      "projects/local/runs/run-1/steps/prompt_execution/artifacts/" + artifactID + "/content.md",
 		RemoteObjectID:  "drive-file-123",
 		SyncStatus:      artifactSyncStatusSynced,
 	}); err != nil {
@@ -563,7 +581,7 @@ func TestResolveArtifactOpenURLCreatesSupabaseSignedURLForActualPrompt(t *testin
 
 	if _, err := instance.SaveArtifactCloudSyncResult(artifactID, ArtifactCloudSyncResult{
 		StorageProvider: "supabase",
-		RemotePath:      "projects/local/runs/run-1/steps/prompt_execution/content.md",
+		RemotePath:      "projects/local/runs/run-1/steps/prompt_execution/artifacts/" + artifactID + "/content.md",
 		RemoteObjectID:  "object-123",
 		SyncStatus:      artifactSyncStatusSynced,
 	}); err != nil {
@@ -591,7 +609,7 @@ func TestResolveArtifactOpenURLCreatesSupabaseSignedURLForActualPrompt(t *testin
 		if !strings.Contains(endpoint, "/storage/v1/object/sign/flowpilot-artifacts/projects/local/runs/run-1/steps/prompt_execution/.snapshots/"+artifactID+"/actual-prompt.md") {
 			t.Fatalf("unexpected signed URL endpoint: %s", endpoint)
 		}
-		return 200, []byte(`{"signedURL":"/storage/v1/object/sign/flowpilot-artifacts/projects/local/runs/run-1/steps/prompt_execution/.snapshots/`+artifactID+`/actual-prompt.md?token=abc"}`), nil
+		return 200, []byte(`{"signedURL":"/storage/v1/object/sign/flowpilot-artifacts/projects/local/runs/run-1/steps/prompt_execution/.snapshots/` + artifactID + `/actual-prompt.md?token=abc"}`), nil
 	}
 
 	url, err := instance.ResolveArtifactOpenURL(artifactID, "actual-prompt")

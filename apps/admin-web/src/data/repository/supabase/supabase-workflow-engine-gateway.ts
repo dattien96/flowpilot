@@ -67,7 +67,7 @@ function buildStorageArtifactRun(path: string, entry: StorageListEntry): Artifac
 
   const segments = normalizedPath.split("/").filter(Boolean);
   if (
-    segments.length !== 7 ||
+    ![7, 9].includes(segments.length) ||
     segments[0] !== "projects" ||
     segments[2] !== "runs" ||
     segments[4] !== "steps"
@@ -78,7 +78,12 @@ function buildStorageArtifactRun(path: string, entry: StorageListEntry): Artifac
   const projectId = segments[1] ?? "";
   const workflowRunId = segments[3] ?? "";
   const workflowStepKey = segments[5] ?? "";
-  const fileName = segments[6] ?? "";
+  const isArtifactScopedPath =
+    segments.length === 9 &&
+    segments[6] === "artifacts" &&
+    Boolean(segments[7]) &&
+    Boolean(segments[8]);
+  const fileName = isArtifactScopedPath ? (segments[8] ?? "") : (segments[6] ?? "");
   if (!projectId || !workflowRunId || !workflowStepKey || !fileName) {
     return null;
   }

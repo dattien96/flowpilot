@@ -54,7 +54,7 @@ describe("artifact open route", () => {
         getArtifactById: vi.fn().mockResolvedValue({
           artifactId: "artifact-1",
           title: "Plan",
-          remotePath: "projects/project-alpha/runs/run-1/steps/plan/Plan.md",
+          remotePath: "projects/project-alpha/runs/run-1/steps/plan/artifacts/artifact-1/Plan.md",
           remoteUrl: "",
           storageProvider: "supabase",
           contentMarkdown: "# Plan",
@@ -69,7 +69,7 @@ describe("artifact open route", () => {
     });
 
     expect(mocks.download).toHaveBeenCalledWith(
-      "projects/project-alpha/runs/run-1/steps/plan/Plan.md",
+      "projects/project-alpha/runs/run-1/steps/plan/artifacts/artifact-1/Plan.md",
     );
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("text/html");
@@ -91,7 +91,7 @@ describe("artifact open route", () => {
         getArtifactById: vi.fn().mockResolvedValue({
           artifactId: "artifact-1",
           title: "Plan",
-          remotePath: "projects/project-alpha/runs/run-1/steps/plan/Plan.md",
+          remotePath: "projects/project-alpha/runs/run-1/steps/plan/artifacts/artifact-1/Plan.md",
           remoteUrl: "",
           storageProvider: "supabase",
           contentMarkdown: "# Plan",
@@ -185,22 +185,56 @@ describe("artifact open route", () => {
 
     const response = await GET(
       new Request(
-        "http://localhost?remotePath=projects/project-1/runs/run-1/steps/codex_test/Response.md&storageProvider=supabase",
+        "http://localhost?remotePath=projects/project-1/runs/run-1/steps/codex_test/artifacts/artifact-1/Response.md&storageProvider=supabase",
         { headers: { "accept": "text/html" } }
       ),
       {
         params: Promise.resolve({
-          artifactId: "remote:projects/project-1/runs/run-1/steps/codex_test/Response.md",
+          artifactId: "remote:projects/project-1/runs/run-1/steps/codex_test/artifacts/artifact-1/Response.md",
         }),
       },
     );
 
     expect(mocks.download).toHaveBeenCalledWith(
-      "projects/project-1/runs/run-1/steps/codex_test/Response.md",
+      "projects/project-1/runs/run-1/steps/codex_test/artifacts/artifact-1/Response.md",
     );
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("text/html");
     expect(await response.text()).toContain("Remote");
+  });
+
+  it("resolves remote prompt snapshot files from artifact-scoped canonical paths", async () => {
+    mocks.download.mockResolvedValue({
+      data: {
+        type: "text/plain; charset=utf-8",
+        text: async () => "Recovered prompt",
+        arrayBuffer: async () => new TextEncoder().encode("Recovered prompt").buffer,
+      },
+      error: null,
+    });
+    mocks.createGatewayBundle.mockResolvedValue({
+      localRunnerGateway: {
+        getArtifactById: vi.fn().mockResolvedValue(null),
+      },
+    });
+
+    const response = await GET(
+      new Request(
+        "http://localhost?remotePath=projects/project-1/runs/run-1/steps/codex_test/artifacts/artifact-1/Response.md&storageProvider=supabase&file=actual-prompt",
+        { headers: { "accept": "text/html" } }
+      ),
+      {
+        params: Promise.resolve({
+          artifactId: "artifact-1",
+        }),
+      },
+    );
+
+    expect(mocks.download).toHaveBeenCalledWith(
+      "projects/project-1/runs/run-1/steps/codex_test/.snapshots/artifact-1/actual-prompt.md",
+    );
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("Recovered prompt");
   });
 
   it("returns raw markdown text when the accept header does not include text/html", async () => {
