@@ -641,7 +641,7 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 						}
 					}
 
-					artifact, err := instance.SyncArtifact(artifactID, payload)
+					artifact, err := instance.SyncArtifactWithContext(r.Context(), artifactID, payload)
 					if err != nil {
 						writeHTTPError(w, http.StatusBadRequest, err)
 						return

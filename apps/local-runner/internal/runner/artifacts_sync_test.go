@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"io"
 	"mime/multipart"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -272,7 +273,7 @@ func TestSyncArtifactSupabaseUploadsHistoryAndCanonical(t *testing.T) {
 		method string,
 		endpoint string,
 		headers map[string]string,
-		body []byte,
+		_ []byte,
 	) (int, []byte, error) {
 		if ctx == nil {
 			t.Fatal("expected sync requests to include a context")
@@ -342,8 +343,8 @@ func TestSyncArtifactSupabaseTreatsWrappedNotFoundAsMissingObject(t *testing.T) 
 		ctx context.Context,
 		method string,
 		endpoint string,
-		headers map[string]string,
-		body []byte,
+		_ map[string]string,
+		_ []byte,
 	) (int, []byte, error) {
 		if ctx == nil {
 			t.Fatal("expected sync requests to include a context")
@@ -373,6 +374,140 @@ func TestSyncArtifactSupabaseTreatsWrappedNotFoundAsMissingObject(t *testing.T) 
 	}
 	if len(uploadedPaths) != 4 {
 		t.Fatalf("expected 4 uploads (3 snapshots + 1 canonical), got %d", len(uploadedPaths))
+	}
+}
+
+func TestSyncArtifactRejectsWorkflowArtifactWhenArtifactRunRowIsMissing(t *testing.T) {
+	instance := &Runner{workspace: t.TempDir()}
+	artifactID := writeWorkflowOutputArtifactFixture(t, instance.workspace, "artifact-workflow-missing-artifact-run")
+
+	t.Setenv("SUPABASE_API_URL", "https://example.supabase.co")
+	t.Setenv("SUPABASE_SERVICE_ROLE_KEY", "service-role-key")
+
+	originalHTTPRequest := httpRequestFn
+	t.Cleanup(func() {
+		httpRequestFn = originalHTTPRequest
+	})
+
+	httpRequestFn = func(
+		ctx context.Context,
+		method string,
+		endpoint string,
+		headers map[string]string,
+		body []byte,
+	) (int, []byte, error) {
+		switch {
+		case method == "GET" && strings.Contains(endpoint, "/rest/v1/artifact_runs?"):
+			return http.StatusOK, []byte(`[]`), nil
+		default:
+			t.Fatalf("unexpected request: %s %s", method, endpoint)
+			return 0, nil, nil
+		}
+	}
+
+	_, err := instance.SyncArtifact(artifactID, ArtifactSyncRequest{StorageProvider: "supabase"})
+	if err == nil || !strings.Contains(err.Error(), "artifact_runs row "+artifactID+" no longer exists") {
+		t.Fatalf("expected missing artifact_runs rejection, got %v", err)
+	}
+}
+
+func TestSyncArtifactRejectsWorkflowArtifactWhenWorkflowRunRowIsMissing(t *testing.T) {
+	instance := &Runner{workspace: t.TempDir()}
+	artifactID := writeWorkflowOutputArtifactFixture(t, instance.workspace, "artifact-workflow-missing-workflow-run")
+
+	t.Setenv("SUPABASE_API_URL", "https://example.supabase.co")
+	t.Setenv("SUPABASE_SERVICE_ROLE_KEY", "service-role-key")
+
+	originalHTTPRequest := httpRequestFn
+	t.Cleanup(func() {
+		httpRequestFn = originalHTTPRequest
+	})
+
+	httpRequestFn = func(
+		ctx context.Context,
+		method string,
+		endpoint string,
+		headers map[string]string,
+		body []byte,
+	) (int, []byte, error) {
+		switch {
+		case method == "GET" && strings.Contains(endpoint, "/rest/v1/artifact_runs?"):
+			return http.StatusOK, []byte(`[{"id":"` + artifactID + `","project_id":"project-1","workflow_run_id":"run-1"}]`), nil
+		case method == "GET" && strings.Contains(endpoint, "/rest/v1/workflow_runs?"):
+			return http.StatusOK, []byte(`[]`), nil
+		default:
+			t.Fatalf("unexpected request: %s %s", method, endpoint)
+			return 0, nil, nil
+		}
+	}
+
+	_, err := instance.SyncArtifact(artifactID, ArtifactSyncRequest{StorageProvider: "supabase"})
+	if err == nil || !strings.Contains(err.Error(), "workflow_runs row run-1 no longer exists") {
+		t.Fatalf("expected missing workflow_runs rejection, got %v", err)
+	}
+}
+
+func TestSyncArtifactWorkflowOutputSupabaseSucceedsWhenArtifactAndWorkflowRowsExist(t *testing.T) {
+	instance := &Runner{workspace: t.TempDir()}
+	artifactID := writeWorkflowOutputArtifactFixture(t, instance.workspace, "artifact-workflow-supabase")
+
+	t.Setenv("SUPABASE_API_URL", "https://example.supabase.co")
+	t.Setenv("SUPABASE_SERVICE_ROLE_KEY", "service-role-key")
+
+	originalHTTPRequest := httpRequestFn
+	t.Cleanup(func() {
+		httpRequestFn = originalHTTPRequest
+	})
+
+	uploadedPaths := make([]string, 0)
+	httpRequestFn = func(
+		ctx context.Context,
+		method string,
+		endpoint string,
+		headers map[string]string,
+		_ []byte,
+	) (int, []byte, error) {
+		if ctx == nil {
+			t.Fatal("expected sync requests to include a context")
+		}
+		switch {
+		case method == "GET" && strings.Contains(endpoint, "/rest/v1/artifact_runs?"):
+			return http.StatusOK, []byte(`[{"id":"` + artifactID + `","project_id":"project-1","workflow_run_id":"run-1"}]`), nil
+		case method == "GET" && strings.Contains(endpoint, "/rest/v1/workflow_runs?"):
+			return http.StatusOK, []byte(`[{"id":"run-1"}]`), nil
+		case method == "POST" && strings.Contains(endpoint, "/storage/v1/object/flowpilot-artifacts/"):
+			uploadedPaths = append(uploadedPaths, endpoint)
+			if headers["x-metadata"] == "" {
+				t.Fatal("expected x-metadata header to be populated")
+			}
+			return http.StatusOK, []byte(`{"Id":"object-workflow-1","Key":"` + endpoint + `"}`), nil
+		case method == "GET" && strings.Contains(endpoint, "/storage/v1/object/info/flowpilot-artifacts/projects/project-1/runs/run-1/steps/business_idea/artifacts/"+artifactID+"/content.md"):
+			return http.StatusNotFound, []byte(`{"message":"not found"}`), nil
+		default:
+			t.Fatalf("unexpected request: %s %s", method, endpoint)
+			return 0, nil, nil
+		}
+	}
+
+	artifact, err := instance.SyncArtifact(artifactID, ArtifactSyncRequest{StorageProvider: "supabase"})
+	if err != nil {
+		t.Fatalf("SyncArtifact() workflow_output supabase failed: %v", err)
+	}
+
+	if artifact.SyncStatus != artifactSyncStatusSynced {
+		t.Fatalf("expected synced status, got %q", artifact.SyncStatus)
+	}
+	if artifact.StorageProvider != "supabase" {
+		t.Fatalf("expected supabase provider, got %q", artifact.StorageProvider)
+	}
+	if artifact.RemotePath != "projects/project-1/runs/run-1/steps/business_idea/artifacts/"+artifactID+"/content.md" {
+		t.Fatalf("unexpected remote path: %q", artifact.RemotePath)
+	}
+	if artifact.RemoteObjectID != "object-workflow-1" {
+		t.Fatalf("unexpected remote object id: %q", artifact.RemoteObjectID)
+	}
+	if len(uploadedPaths) != 8 {
+		t.Fatalf("expected 8 uploads (7 snapshots + 1 canonical), got %d", len(uploadedPaths))
 	}
 }
 
@@ -643,6 +778,65 @@ func writeTestArtifactFixture(t *testing.T, workspace, artifactID string) string
 	}
 	if err := os.WriteFile(filepath.Join(artifactDir, "payload.bin"), []byte{0x00, 0x01, 0x02, 0xff, 0x10, 0x00}, 0o644); err != nil {
 		t.Fatalf("write payload.bin: %v", err)
+	}
+
+	return artifactID
+}
+
+func writeWorkflowOutputArtifactFixture(t *testing.T, workspace, artifactID string) string {
+	t.Helper()
+
+	artifactDir := filepath.Join(
+		workspace,
+		".flowpilot",
+		"artifacts",
+		"project-1",
+		"run-1",
+		"business_idea",
+		".snapshots",
+		artifactID,
+	)
+	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+		t.Fatalf("mkdir workflow artifact dir: %v", err)
+	}
+
+	manifestPath := filepath.Join(artifactDir, "manifest.json")
+	manifest := `{
+  "artifactId": "` + artifactID + `",
+  "title": "Business Idea",
+  "sourceKind": "workflow_output",
+  "projectId": "project-1",
+  "featureId": "business_idea",
+  "workflowRunId": "run-1",
+  "workflowStepKey": "business_idea",
+  "providerKey": "codex",
+  "localPath": "` + filepath.ToSlash(artifactDir) + `",
+  "remotePath": "",
+  "remoteUrl": "",
+  "syncStatus": "local_only",
+  "createdAt": "2026-06-01T00:00:00Z",
+  "updatedAt": "2026-06-01T00:00:01Z"
+}`
+	if err := os.WriteFile(manifestPath, []byte(manifest), 0o644); err != nil {
+		t.Fatalf("write manifest.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(artifactDir, "content.md"), []byte("Generated business idea"), 0o644); err != nil {
+		t.Fatalf("write content.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(artifactDir, "prompt.md"), []byte("Prompt used"), 0o644); err != nil {
+		t.Fatalf("write prompt.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(artifactDir, "actual-prompt.md"), []byte("Prompt used"), 0o644); err != nil {
+		t.Fatalf("write actual-prompt.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(artifactDir, "stdout.txt"), []byte("stdout"), 0o644); err != nil {
+		t.Fatalf("write stdout.txt: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(artifactDir, "stderr.txt"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write stderr.txt: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(artifactDir, "command.txt"), []byte("codex exec"), 0o644); err != nil {
+		t.Fatalf("write command.txt: %v", err)
 	}
 
 	return artifactID

@@ -2,6 +2,7 @@ package runner
 
 import (
 	"archive/zip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -317,8 +318,15 @@ func (r *Runner) ValidateStorageDriver() (StorageDriverConfig, error) {
 }
 
 func (r *Runner) SyncArtifact(artifactID string, request ArtifactSyncRequest) (ArtifactDetail, error) {
+	return r.SyncArtifactWithContext(context.Background(), artifactID, request)
+}
+
+func (r *Runner) SyncArtifactWithContext(ctx context.Context, artifactID string, request ArtifactSyncRequest) (ArtifactDetail, error) {
 	artifact, err := r.GetArtifact(artifactID)
 	if err != nil {
+		return ArtifactDetail{}, err
+	}
+	if err := r.ensureArtifactSyncEligibility(ctx, artifact); err != nil {
 		return ArtifactDetail{}, err
 	}
 

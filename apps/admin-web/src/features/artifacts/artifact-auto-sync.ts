@@ -10,6 +10,7 @@ import {
 
 const ARTIFACT_SYNC_DEBOUNCE_MS = 5 * 60 * 1000;
 const ARTIFACT_SYNC_STALE_MS = ARTIFACT_SYNC_DEBOUNCE_MS;
+const WORKFLOW_RUN_VALIDATION_BATCH_SIZE = 100;
 
 type ArtifactSyncRow = {
   id: string;
@@ -64,6 +65,55 @@ function needsSync(row: ArtifactSyncRow) {
   return !row.storage_provider || !row.remote_path || !row.remote_object_id;
 }
 
+async function filterSyncCandidatesWithExistingWorkflowRuns(
+  supabase: SupabaseClient,
+  rows: ArtifactSyncRow[],
+) {
+  const workflowRunIds = Array.from(
+    new Set(
+      rows
+        .map((row) => row.workflow_run_id?.trim() ?? "")
+        .filter((workflowRunId) => workflowRunId.length > 0),
+    ),
+  );
+
+  if (workflowRunIds.length === 0) {
+    return [] as ArtifactSyncRow[];
+  }
+
+  const existingWorkflowRunIds = new Set<string>();
+  for (
+    let startIndex = 0;
+    startIndex < workflowRunIds.length;
+    startIndex += WORKFLOW_RUN_VALIDATION_BATCH_SIZE
+  ) {
+    const batch = workflowRunIds.slice(
+      startIndex,
+      startIndex + WORKFLOW_RUN_VALIDATION_BATCH_SIZE,
+    );
+    const { data, error } = await supabase
+      .from("workflow_runs")
+      .select("id")
+      .in("id", batch);
+    if (error) {
+      throw new Error(
+        `Unable to validate workflow run sync candidates: ${error.message}`,
+      );
+    }
+
+    for (const row of (data ?? []) as Array<{ id: string | null }>) {
+      if (row.id) {
+        existingWorkflowRunIds.add(row.id);
+      }
+    }
+  }
+
+  return rows.filter((row) => {
+    const workflowRunId = row.workflow_run_id?.trim() ?? "";
+    return workflowRunId.length > 0 && existingWorkflowRunIds.has(workflowRunId);
+  });
+}
+
 async function listArtifactSyncCandidates(
   supabase: SupabaseClient,
   filters?: { projectId?: string; workflowRunId?: string },
@@ -88,7 +138,10 @@ async function listArtifactSyncCandidates(
     throw new Error(`Unable to list artifact sync candidates: ${error.message}`);
   }
 
-  return ((data ?? []) as ArtifactSyncRow[]).filter(needsSync);
+  return filterSyncCandidatesWithExistingWorkflowRuns(
+    supabase,
+    ((data ?? []) as ArtifactSyncRow[]).filter(needsSync),
+  );
 }
 
 export async function resolveArtifactStorageSyncRequest(
