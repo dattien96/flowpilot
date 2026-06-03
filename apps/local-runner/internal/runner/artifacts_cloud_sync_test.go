@@ -30,6 +30,14 @@ func TestWriteArtifactSyncBundleIncludesArtifactFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("save prompt artifact: %v", err)
 	}
+	if artifact.ActualPromptPath == "" {
+		t.Fatal("expected prompt execution artifacts to record actual prompt path")
+	}
+	if raw, err := os.ReadFile(artifact.ActualPromptPath); err != nil {
+		t.Fatalf("read actual prompt file: %v", err)
+	} else if string(raw) != "How does CP-06-01 work?" {
+		t.Fatalf("expected actual prompt file to mirror the request prompt, got %q", string(raw))
+	}
 
 	var bundle bytes.Buffer
 	if err := instance.WriteArtifactSyncBundle(artifact.ArtifactID, &bundle); err != nil {
@@ -49,10 +57,30 @@ func TestWriteArtifactSyncBundleIncludesArtifactFiles(t *testing.T) {
 		entries[file.Name] = struct{}{}
 	}
 
+	if err := os.WriteFile(artifact.ActualPromptPath, []byte("Prompt actually sent to provider"), 0o644); err != nil {
+		t.Fatalf("write actual prompt file: %v", err)
+	}
+
+	bundle.Reset()
+	if err := instance.WriteArtifactSyncBundle(artifact.ArtifactID, &bundle); err != nil {
+		t.Fatalf("write artifact sync bundle after actual prompt: %v", err)
+	}
+
+	reader, err = zip.NewReader(bytes.NewReader(bundle.Bytes()), int64(bundle.Len()))
+	if err != nil {
+		t.Fatalf("open bundle zip after actual prompt: %v", err)
+	}
+
+	entries = make(map[string]struct{}, len(reader.File))
+	for _, file := range reader.File {
+		entries[file.Name] = struct{}{}
+	}
+
 	for _, name := range []string{
 		"manifest.json",
 		"content.md",
 		"prompt.md",
+		"actual-prompt.md",
 		"stdout.txt",
 		"stderr.txt",
 		"command.txt",
@@ -60,6 +88,42 @@ func TestWriteArtifactSyncBundleIncludesArtifactFiles(t *testing.T) {
 		if _, ok := entries[name]; !ok {
 			t.Fatalf("expected bundle to contain %q, got entries %v", name, keys(entries))
 		}
+	}
+}
+
+func TestListArtifactsIncludesPromptMetadata(t *testing.T) {
+	workspace := t.TempDir()
+	instance := &Runner{workspace: workspace}
+
+	if _, err := instance.SavePromptArtifact(
+		PromptExecutionRequest{ProviderKey: "codex", Prompt: "List the saved prompt files"},
+		PromptExecutionResult{
+			Status:         "success",
+			RunID:          "run-list-123",
+			ProviderKey:    "codex",
+			Command:        "codex --prompt",
+			StdoutSummary:  "stdout summary",
+			StderrSummary:  "",
+			OutputMarkdown: "# Artifact",
+			StartedAt:      "2026-06-02T00:00:00Z",
+			CompletedAt:    "2026-06-02T00:00:01Z",
+		},
+	); err != nil {
+		t.Fatalf("save prompt artifact: %v", err)
+	}
+
+	artifacts, err := instance.ListArtifacts()
+	if err != nil {
+		t.Fatalf("ListArtifacts() failed: %v", err)
+	}
+	if len(artifacts) != 1 {
+		t.Fatalf("expected exactly one artifact, got %d", len(artifacts))
+	}
+	if artifacts[0].PromptText != "List the saved prompt files" {
+		t.Fatalf("expected prompt text to be included in artifact list, got %q", artifacts[0].PromptText)
+	}
+	if artifacts[0].ActualPromptText != "List the saved prompt files" {
+		t.Fatalf("expected actual prompt text to be included in artifact list, got %q", artifacts[0].ActualPromptText)
 	}
 }
 

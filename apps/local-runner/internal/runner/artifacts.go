@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -37,18 +38,13 @@ type artifactDiskFile struct {
 	info         fs.FileInfo
 }
 
-func (r *Runner) ListArtifacts() ([]ArtifactSummary, error) {
-	manifests, err := r.loadArtifactDetails()
+func (r *Runner) ListArtifacts() ([]ArtifactDetail, error) {
+	artifacts, err := r.loadArtifactDetails()
 	if err != nil {
 		return nil, err
 	}
 
-	summaries := make([]ArtifactSummary, 0, len(manifests))
-	for _, artifact := range manifests {
-		summaries = append(summaries, artifact.ArtifactSummary)
-	}
-
-	return summaries, nil
+	return artifacts, nil
 }
 
 func (r *Runner) GetArtifact(artifactID string) (ArtifactDetail, error) {
@@ -184,6 +180,7 @@ func (r *Runner) SavePromptArtifact(request PromptExecutionRequest, result Promp
 
 	contentPath := filepath.Join(baseDir, "content.md")
 	promptPath := filepath.Join(baseDir, "prompt.md")
+	actualPromptPath := filepath.Join(baseDir, "actual-prompt.md")
 	stdoutPath := filepath.Join(baseDir, "stdout.txt")
 	stderrPath := filepath.Join(baseDir, "stderr.txt")
 	commandPath := filepath.Join(baseDir, "command.txt")
@@ -213,21 +210,23 @@ func (r *Runner) SavePromptArtifact(request PromptExecutionRequest, result Promp
 			ContentMarkdown: result.OutputMarkdown,
 			PreviewMarkdown: readPreview(result.OutputMarkdown),
 		},
-		ManifestPath: manifestPath,
-		PromptPath:   promptPath,
-		StdoutPath:   stdoutPath,
-		StderrPath:   stderrPath,
-		CommandPath:  commandPath,
-		ContentPath:  contentPath,
-		Checksum:     checksum,
+		ManifestPath:     manifestPath,
+		PromptPath:       promptPath,
+		ActualPromptPath: actualPromptPath,
+		StdoutPath:       stdoutPath,
+		StderrPath:       stderrPath,
+		CommandPath:      commandPath,
+		ContentPath:      contentPath,
+		Checksum:         checksum,
 	}
 
 	files := map[string]string{
-		contentPath: result.OutputMarkdown,
-		promptPath:  request.Prompt,
-		stdoutPath:  result.StdoutSummary,
-		stderrPath:  result.StderrSummary,
-		commandPath: result.Command,
+		contentPath:      result.OutputMarkdown,
+		promptPath:       request.Prompt,
+		actualPromptPath: request.Prompt,
+		stdoutPath:       result.StdoutSummary,
+		stderrPath:       result.StderrSummary,
+		commandPath:      result.Command,
 	}
 
 	if err := writeArtifactFiles(files); err != nil {
@@ -324,16 +323,48 @@ func (r *Runner) SyncArtifact(artifactID string, request ArtifactSyncRequest) (A
 	}
 
 	storageProvider := strings.ToLower(strings.TrimSpace(request.StorageProvider))
+	resolvedProvider := storageProvider
+	if resolvedProvider == "" {
+		resolvedProvider = artifactStorageDriverKey
+	}
+	log.Printf(
+		"[artifact-sync] start artifact_id=%s provider=%s workflow_run_id=%s step=%s",
+		artifact.ArtifactID,
+		resolvedProvider,
+		artifact.WorkflowRunID,
+		artifact.WorkflowStepKey,
+	)
+
+	var synced ArtifactDetail
 	switch storageProvider {
 	case "", artifactStorageDriverKey:
-		return r.syncArtifactToFilesystem(artifact)
+		synced, err = r.syncArtifactToFilesystem(artifact)
 	case "supabase":
-		return r.syncArtifactToSupabase(artifact)
+		synced, err = r.syncArtifactToSupabase(artifact)
 	case "google_drive":
-		return r.syncArtifactToGoogleDrive(artifact, request)
+		synced, err = r.syncArtifactToGoogleDrive(artifact, request)
 	default:
-		return ArtifactDetail{}, fmt.Errorf("unsupported artifact storage provider %q", request.StorageProvider)
+		err = fmt.Errorf("unsupported artifact storage provider %q", request.StorageProvider)
 	}
+	if err != nil {
+		log.Printf(
+			"[artifact-sync] failed artifact_id=%s provider=%s err=%v",
+			artifact.ArtifactID,
+			resolvedProvider,
+			err,
+		)
+		return ArtifactDetail{}, err
+	}
+
+	log.Printf(
+		"[artifact-sync] complete artifact_id=%s provider=%s status=%s remote_path=%s remote_object_id=%s",
+		synced.ArtifactID,
+		resolvedProvider,
+		synced.SyncStatus,
+		synced.RemotePath,
+		synced.RemoteObjectID,
+	)
+	return synced, nil
 }
 
 func (r *Runner) syncArtifactToFilesystem(artifact ArtifactDetail) (ArtifactDetail, error) {
