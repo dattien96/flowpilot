@@ -215,6 +215,62 @@ type SupabaseWorkspaceConfigRequest struct {
 	ServiceRoleKey string `json:"serviceRoleKey"`
 }
 
+type GoogleDriveWorkspaceConfigRequest struct {
+	ClientID     string `json:"clientId"`
+	ClientSecret string `json:"clientSecret"`
+	RedirectURI  string `json:"redirectUri"`
+	PickerAPIKey string `json:"pickerApiKey"`
+}
+
+type GoogleDriveMcpOAuthUploadRequest struct {
+	FileName string `json:"fileName"`
+	Content  string `json:"content"`
+}
+
+type GoogleDriveArtifactSyncStatus struct {
+	Status          string   `json:"status"`
+	Source          string   `json:"source"`
+	Configured      bool     `json:"configured"`
+	ClientID        string   `json:"clientId,omitempty"`
+	RedirectURI     string   `json:"redirectUri,omitempty"`
+	HasClientSecret bool     `json:"hasClientSecret"`
+	HasPickerAPIKey bool     `json:"hasPickerApiKey"`
+	MissingFields   []string `json:"missingFields,omitempty"`
+}
+
+type GoogleDriveMcpStatus struct {
+	Status                  string   `json:"status"`
+	Configured              bool     `json:"configured"`
+	CredentialPath          string   `json:"credentialPath,omitempty"`
+	TokenPath               string   `json:"tokenPath,omitempty"`
+	CredentialFileExists    bool     `json:"credentialFileExists"`
+	CredentialFileValid     bool     `json:"credentialFileValid"`
+	TokenFileExists         bool     `json:"tokenFileExists"`
+	NeedsAuth               bool     `json:"needsAuth"`
+	BackendPackageAvailable bool     `json:"backendPackageAvailable"`
+	MissingFields           []string `json:"missingFields,omitempty"`
+}
+
+type GoogleDriveWorkspaceConfigResponse struct {
+	ArtifactSync    GoogleDriveArtifactSyncStatus `json:"artifactSync"`
+	MCP             GoogleDriveMcpStatus          `json:"mcp"`
+	RunnerReachable bool                          `json:"runnerReachable"`
+	LastError       string                        `json:"lastError,omitempty"`
+	UpdatedAt       string                        `json:"updatedAt,omitempty"`
+}
+
+type GoogleDriveValidationCheck struct {
+	Key     string `json:"key"`
+	Status  string `json:"status"`
+	Message string `json:"message"`
+}
+
+type GoogleDriveValidationResult struct {
+	Valid  bool                               `json:"valid"`
+	Checks []GoogleDriveValidationCheck       `json:"checks"`
+	Status GoogleDriveWorkspaceConfigResponse `json:"status"`
+}
+
 type SupabaseValidationResult struct {
 	Valid             bool                      `json:"valid"`
 	ProjectRef        string                    `json:"projectRef,omitempty"`

@@ -405,6 +405,27 @@ func (r *Runner) InstallMcpBackend(ctx context.Context, backendKey string) (McpB
 		return backend, errors.New(nonEmptyOrFallback(backend.LastError, "mcp backend launcher is not available"))
 	}
 
+	if backendKey == "google_drive" {
+		if err := r.executeGoogleDriveMcpCommand(ctx, backend.BinaryPath, spec.InstallArgs); err != nil {
+			backend.Installed = false
+			backend.State = "missing"
+			backend.Action = "install"
+			backend.ActionLabel = "Install"
+			backend.LastError = backendErrorMessage(err, nil)
+			_ = r.saveMcpBackendRecord(backend)
+			return backend, err
+		}
+		backend.Installed = true
+		backend.State = "installed"
+		backend.LastError = ""
+		if err := r.saveMcpBackendRecord(backend); err != nil {
+			return backend, err
+		}
+		backend.Action = "verify"
+		backend.ActionLabel = "Verify"
+		return backend, nil
+	}
+
 	if err := spec.execute(ctx, &backend, spec.InstallArgs); err != nil {
 		_ = r.saveMcpBackendRecord(backend)
 		return backend, err
@@ -480,6 +501,27 @@ func (r *Runner) VerifyMcpBackend(
 	backend := spec.detect(records[backendKey])
 	if !backend.Installed {
 		return backend, errors.New(nonEmptyOrFallback(backend.LastError, "mcp backend is not installed"))
+	}
+
+	if backendKey == "google_drive" {
+		if err := r.executeGoogleDriveMcpCommand(ctx, backend.BinaryPath, spec.VerifyArgs); err != nil {
+			backend.Installed = false
+			backend.State = "missing"
+			backend.Action = "install"
+			backend.ActionLabel = "Install"
+			backend.LastError = backendErrorMessage(err, nil)
+			_ = r.saveMcpBackendRecord(backend)
+			return backend, err
+		}
+		backend.Installed = true
+		backend.State = "installed"
+		backend.LastError = ""
+		if err := r.saveMcpBackendRecord(backend); err != nil {
+			return backend, err
+		}
+		backend.Action = "verify"
+		backend.ActionLabel = "Verify"
+		return backend, nil
 	}
 
 	if err := spec.execute(ctx, &backend, spec.VerifyArgs); err != nil {
