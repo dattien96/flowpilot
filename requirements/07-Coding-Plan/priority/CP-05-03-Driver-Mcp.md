@@ -44,6 +44,7 @@ What is still missing or unclear:
 - connection verification beyond package launcher availability
 - persistent runner state shape for MCP-ready vs OAuth-ready
 - UI messaging that references CP-27 setup
+- token lifecycle handling for expired access token vs expired refresh token
 - test coverage for success, missing Node, missing MCP credentials, OAuth incomplete, and verification failure
 
 ---
@@ -234,7 +235,22 @@ Acceptance:
 - a package that is installed but not authorized is not shown as connected
 - a revoked Google token moves the integration back to failed or awaiting OAuth
 
-### Step 7: Tests
+### Step 7: Handle token refresh and reconnect flow
+
+MCP should plan the same lifecycle behavior even though the feature is not fully implemented yet:
+
+1. when MCP tool access fails because an access token is stale, the MCP package or FlowPilot wrapper should use the stored refresh token to obtain a new access token automatically
+2. when refresh succeeds, verification and normal MCP tool usage should continue without forcing the user through reconnect
+3. when refresh token exchange fails because the refresh token is expired, revoked, or invalid, FlowPilot should move the integration back to `awaiting_oauth` or another reconnect-required status
+4. project settings should present a clear reconnect action so the user can grant permission again
+
+Acceptance:
+
+- stale access token does not permanently break a healthy MCP connection
+- expired or revoked refresh token is translated into a reconnect-required state
+- the user can recover by re-running the OAuth grant flow
+
+### Step 8: Tests
 
 Add or update tests for:
 
@@ -242,6 +258,8 @@ Add or update tests for:
 - Node missing or command failure maps to clear status
 - missing OAuth credential file maps to setup-needed status
 - successful verification maps to connected
+- stale access token is recovered through refresh-token flow when supported by the package or wrapper
+- expired or revoked refresh token maps to reconnect-required status
 - retry updates existing integration status
 - Supabase integration row does not store Google OAuth token
 
@@ -311,6 +329,8 @@ Google Drive MCP is done when:
 - Supabase integration state mirrors runner result
 - Google OAuth tokens stay out of Supabase
 - a connected state means the MCP backend can actually access Drive
+- stale access token is recovered automatically when refresh token is still valid
+- expired or revoked refresh token results in reconnect-required status and recoverable re-auth
 - automated tests cover success and main failure paths
 
 ---

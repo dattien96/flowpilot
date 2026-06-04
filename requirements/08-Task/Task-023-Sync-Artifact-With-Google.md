@@ -43,6 +43,12 @@ Current code already includes:
 - runner artifact upload to Google Drive
 - runner artifact open URL resolution
 
+Current improvement still needed:
+
+- token lifecycle recovery should be explicit in product behavior
+- if an access token is no longer valid, the runner should use the stored refresh token to acquire a new access token automatically
+- if the refresh token is expired, revoked, or otherwise unusable, the UI should move the project back into a reconnect-required state and let the user grant permission again
+
 Current runner env requirements:
 
 ```env
@@ -198,7 +204,22 @@ Acceptance:
 - selected file is accessible through the connected account
 - revoked token or missing local connection returns a clear error
 
-### Step 7: Validate multi-PC semantics
+### Step 7: Handle token refresh and reconnect flow
+
+Artifact sync already stores project-scoped refresh tokens, so this task must also harden the lifecycle behavior:
+
+1. when a Drive API call fails because the access token is stale, the runner should use the stored refresh token to request a new access token automatically
+2. when refresh succeeds, the original operation should continue without requiring the user to reconnect manually
+3. when refresh token exchange fails because the refresh token is expired, revoked, or invalid, the connection should be marked reconnect-required
+4. the artifact UI should show a clear reconnect action so the user can grant Drive permission again
+
+Acceptance:
+
+- stale access token does not immediately break sync or open flows if refresh token is still valid
+- expired or revoked refresh token moves the project into an actionable reconnect-required state
+- reconnect flow allows the user to grant permission again and continue syncing
+
+### Step 8: Validate multi-PC semantics
 
 Repeat connection from a second PC or clean runner state if available.
 
@@ -228,6 +249,7 @@ Likely gaps to verify:
 - setup guide may still mention admin-web port `3000`; it should use the runner callback URI
 - UI copy may imply MCP connection is enough for artifact sync; it is not
 - code may not expose a manual recovery path if Picker succeeds but folder save fails
+- code may not yet surface refresh-token-expired as a reconnect-required UI state
 - tests may mock Drive but not prove real CP-27 env wiring
 - there may be no explicit preflight endpoint that reports all missing Google env vars at once
 
@@ -245,7 +267,9 @@ Runner tests:
 - Picker token uses stored refresh token
 - folder selection validates folder MIME type
 - sync uploads snapshot and canonical files
+- stale access token is recovered automatically through refresh token flow
 - revoked refresh token marks sync failed
+- expired or revoked refresh token marks connection as reconnect-required
 
 Admin-web tests:
 
@@ -261,6 +285,7 @@ Manual tests:
 - real artifact upload
 - real artifact open
 - revoked Google access recovery
+- expired refresh token reconnect flow
 
 ---
 
@@ -278,6 +303,8 @@ Task-023 is complete when:
 - artifact list remote tab shows only artifacts for the currently selected storage provider
 - switching a project from Supabase to Google Drive updates the remote tab to the Google Drive-backed artifact set only
 - switching the project back to Supabase updates the remote tab back to the Supabase-backed artifact set only
+- stale access tokens are recovered automatically when refresh token is still valid
+- expired or revoked refresh tokens produce a reconnect-required state instead of a silent permanent failure
 - failure modes are understandable in UI/logs
 - automated tests cover the main code paths already implemented
 
