@@ -588,6 +588,8 @@ func TestSyncArtifactGoogleDriveUploadsHistoryAndCanonical(t *testing.T) {
 
 	t.Setenv("GOOGLE_DRIVE_CLIENT_ID", "client-id-1")
 	t.Setenv("GOOGLE_DRIVE_CLIENT_SECRET", "client-secret-1")
+	t.Setenv("GOOGLE_DRIVE_REDIRECT_URI", "http://127.0.0.1:4317/artifact-storage/google-drive/oauth/callback")
+	t.Setenv("GOOGLE_PICKER_API_KEY", "picker-api-key-1")
 
 	originalHTTPRequest := httpRequestFn
 	t.Cleanup(func() {
@@ -633,6 +635,90 @@ func TestSyncArtifactGoogleDriveUploadsHistoryAndCanonical(t *testing.T) {
 	}
 }
 
+func TestSyncArtifactGoogleDriveMarksReconnectRequiredOnInvalidGrant(t *testing.T) {
+	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
+	artifactID := writeTestArtifactFixture(t, instance.workspace, "artifact-drive-invalid-grant")
+	if err := instance.saveGoogleDriveCredentialByProject("local", googleDriveCredential{
+		RefreshToken: "refresh-token-1",
+		AccountEmail: "owner@example.com",
+	}); err != nil {
+		t.Fatalf("seed google drive project credential: %v", err)
+	}
+	if err := instance.saveArtifactStorageGoogleDriveState(func(current *artifactStorageGoogleDriveState) {
+		current.Connections["local"] = artifactStorageGoogleDriveConnectionRecord{
+			ProjectID:       "local",
+			Status:          "connected",
+			FolderID:        "root-folder",
+			FolderName:      "FlowPilot Root",
+			AccountEmail:    "owner@example.com",
+			LastValidatedAt: "2026-06-01T00:00:00Z",
+			ConnectedAt:     "2026-06-01T00:00:00Z",
+			UpdatedAt:       "2026-06-01T00:00:00Z",
+		}
+	}); err != nil {
+		t.Fatalf("seed google drive connection state: %v", err)
+	}
+
+	t.Setenv("GOOGLE_DRIVE_CLIENT_ID", "client-id-1")
+	t.Setenv("GOOGLE_DRIVE_CLIENT_SECRET", "client-secret-1")
+	t.Setenv("GOOGLE_DRIVE_REDIRECT_URI", "http://127.0.0.1:4317/artifact-storage/google-drive/oauth/callback")
+	t.Setenv("GOOGLE_PICKER_API_KEY", "picker-api-key-1")
+
+	originalHTTPRequest := httpRequestFn
+	t.Cleanup(func() {
+		httpRequestFn = originalHTTPRequest
+	})
+	httpRequestFn = func(
+		_ context.Context,
+		method string,
+		endpoint string,
+		headers map[string]string,
+		body []byte,
+	) (int, []byte, error) {
+		if endpoint != "https://oauth2.googleapis.com/token" {
+			t.Fatalf("unexpected google drive request: %s %s", method, endpoint)
+		}
+		if method != "POST" {
+			t.Fatalf("expected POST for google drive token refresh, got %s", method)
+		}
+		if headers["content-type"] != "application/x-www-form-urlencoded" {
+			t.Fatalf("unexpected token refresh content type: %s", headers["content-type"])
+		}
+		if !strings.Contains(string(body), "refresh_token=refresh-token-1") {
+			t.Fatalf("unexpected token refresh body: %s", string(body))
+		}
+		return 400, []byte(`{"error":"invalid_grant","error_description":"Token has been expired or revoked."}`), nil
+	}
+
+	_, err := instance.SyncArtifact(artifactID, ArtifactSyncRequest{
+		StorageProvider:      "google_drive",
+		GoogleDriveProjectID: "local",
+		GoogleDriveFolderID:  "root-folder",
+	})
+	if err == nil || !strings.Contains(err.Error(), "reconnect Google Drive") {
+		t.Fatalf("expected reconnect-required sync error, got %v", err)
+	}
+
+	artifact, getErr := instance.GetArtifact(artifactID)
+	if getErr != nil {
+		t.Fatalf("reload artifact after failed sync: %v", getErr)
+	}
+	if artifact.SyncStatus != artifactSyncStatusFailed {
+		t.Fatalf("expected failed sync status after invalid_grant, got %#v", artifact.SyncStatus)
+	}
+
+	status, statusErr := instance.GetGoogleDriveArtifactConnectionStatus("local", "")
+	if statusErr != nil {
+		t.Fatalf("load google drive connection status: %v", statusErr)
+	}
+	if status.Connection.Status != "reconnect_required" {
+		t.Fatalf("expected connection status reconnect_required after invalid_grant, got %#v", status.Connection)
+	}
+	if !strings.Contains(status.Connection.LastError, "reconnect Google Drive") {
+		t.Fatalf("expected connection error to request reconnect, got %#v", status.Connection)
+	}
+}
+
 func TestResolveArtifactOpenURLReturnsGoogleDriveViewURL(t *testing.T) {
 	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
 	artifactID := writeTestArtifactFixture(t, instance.workspace, "artifact-open-drive")
@@ -672,6 +758,8 @@ func TestResolveArtifactOpenURLReturnsGoogleDriveViewURL(t *testing.T) {
 
 	t.Setenv("GOOGLE_DRIVE_CLIENT_ID", "client-id-1")
 	t.Setenv("GOOGLE_DRIVE_CLIENT_SECRET", "client-secret-1")
+	t.Setenv("GOOGLE_DRIVE_REDIRECT_URI", "http://127.0.0.1:4317/artifact-storage/google-drive/oauth/callback")
+	t.Setenv("GOOGLE_PICKER_API_KEY", "picker-api-key-1")
 
 	originalHTTPRequest := httpRequestFn
 	t.Cleanup(func() {

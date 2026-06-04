@@ -23,6 +23,15 @@ func newMemorySecretStore() *memorySecretStore {
 	return &memorySecretStore{values: map[string]string{}}
 }
 
+func containsEnvValue(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *memorySecretStore) Set(key, value string) error {
 	s.values[key] = value
 	return nil
@@ -761,11 +770,24 @@ func TestListMcpBackendsDetectsAllowlistedBackends(t *testing.T) {
 
 func TestInstallMcpBackendRunsExplicitCommandForGoogleDrive(t *testing.T) {
 	originalLookPath := lookPathFn
-	originalRunCommand := runCommandFn
+	originalRunCommandWithEnv := runCommandWithEnvFn
 	t.Cleanup(func() {
 		lookPathFn = originalLookPath
-		runCommandFn = originalRunCommand
+		runCommandWithEnvFn = originalRunCommandWithEnv
 	})
+
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", homeDir)
+	credentialDir := filepath.Join(homeDir, ".config", "google-drive-mcp")
+	if err := os.MkdirAll(credentialDir, 0o755); err != nil {
+		t.Fatalf("create google drive config dir: %v", err)
+	}
+	credentialPath := filepath.Join(credentialDir, "gcp-oauth.keys.json")
+	credentialJSON := []byte(`{"installed":{"client_id":"client-id","client_secret":"client-secret","auth_uri":"https://accounts.google.com/o/oauth2/auth","token_uri":"https://oauth2.googleapis.com/token"}}`)
+	if err := os.WriteFile(credentialPath, credentialJSON, 0o600); err != nil {
+		t.Fatalf("write credential file: %v", err)
+	}
 
 	lookPathFn = func(file string) (string, error) {
 		if file == "npx" {
@@ -774,8 +796,10 @@ func TestInstallMcpBackendRunsExplicitCommandForGoogleDrive(t *testing.T) {
 		return "", errors.New("launcher not found")
 	}
 	commandArgs := make([][]string, 0, 2)
-	runCommandFn = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+	commandEnvs := make([][]string, 0, 2)
+	runCommandWithEnvFn = func(ctx context.Context, name string, env []string, args ...string) ([]byte, error) {
 		commandArgs = append(commandArgs, append([]string(nil), args...))
+		commandEnvs = append(commandEnvs, append([]string(nil), env...))
 		if name != "/usr/bin/npx" {
 			t.Fatalf("expected explicit install to use resolved launcher path, got %q", name)
 		}
@@ -802,6 +826,15 @@ func TestInstallMcpBackendRunsExplicitCommandForGoogleDrive(t *testing.T) {
 	if want := []string{"-y", "@piotr-agier/google-drive-mcp", "--version"}; !slices.Equal(commandArgs[0], want) {
 		t.Fatalf("expected install args %v, got %v", want, commandArgs[0])
 	}
+	if len(commandEnvs) != 1 {
+		t.Fatalf("expected one explicit install environment, got %d", len(commandEnvs))
+	}
+	if !containsEnvValue(commandEnvs[0], "GOOGLE_DRIVE_OAUTH_CREDENTIALS="+credentialPath) {
+		t.Fatalf("expected install env to include credential path, got %v", commandEnvs[0])
+	}
+	if !containsEnvValue(commandEnvs[0], "GOOGLE_DRIVE_MCP_TOKEN_PATH="+filepath.Join(homeDir, ".config", "google-drive-mcp", "tokens.json")) {
+		t.Fatalf("expected install env to include token path, got %v", commandEnvs[0])
+	}
 
 	verified, err := instance.VerifyMcpBackend(context.Background(), "google_drive", "", "")
 	if err != nil {
@@ -818,6 +851,12 @@ func TestInstallMcpBackendRunsExplicitCommandForGoogleDrive(t *testing.T) {
 	}
 	if want := []string{"-y", "@piotr-agier/google-drive-mcp", "--help"}; !slices.Equal(commandArgs[1], want) {
 		t.Fatalf("expected verify args %v, got %v", want, commandArgs[1])
+	}
+	if len(commandEnvs) != 2 {
+		t.Fatalf("expected install and verify environments to both run, got %d", len(commandEnvs))
+	}
+	if !containsEnvValue(commandEnvs[1], "GOOGLE_DRIVE_OAUTH_CREDENTIALS="+credentialPath) {
+		t.Fatalf("expected verify env to include credential path, got %v", commandEnvs[1])
 	}
 
 	backends, err := instance.ListMcpBackends(context.Background())
