@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { createFileRoute, Link, Outlet, useLocation } from "@tanstack/react-router";
+import { createFileRoute, Link, Outlet, useLocation, useNavigate } from "@tanstack/react-router";
 
 import { PageFrame } from "@/components/common/page-frame";
 import { Button } from "@/components/ui/button";
@@ -19,7 +19,16 @@ import { SaveArtifactDefinitionUseCase } from "@/domain/usecase/workflow-engine/
 import { ArtifactRunBrowserPanel } from "@/presentation/components/artifacts/artifact-run-browser-panel";
 import { ArtifactCloudStoragePanel } from "@/presentation/components/artifacts/artifact-cloud-storage-panel";
 
+type ArtifactTab = "generated" | "storage" | "catalog";
+
+function resolveArtifactTab(value: unknown): ArtifactTab {
+  return value === "storage" || value === "catalog" ? value : "generated";
+}
+
 export const Route = createFileRoute("/_authenticated/artifacts")({
+  validateSearch: (search: Record<string, unknown>) => ({
+    tab: resolveArtifactTab(search.tab),
+  }),
   component: ArtifactsPage,
 });
 
@@ -76,8 +85,74 @@ function ArtifactsCatalogSkeleton() {
   );
 }
 
+function ArtifactsStorageSkeleton() {
+  return (
+    <div className="space-y-6 animate-pulse">
+      <section className="rounded-[1.6rem] border border-border/60 bg-card/45 p-6">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div className="space-y-3">
+            <div className="h-3 w-36 rounded bg-muted" />
+            <div className="h-8 w-72 rounded bg-muted" />
+            <div className="h-4 w-[32rem] max-w-full rounded bg-muted" />
+          </div>
+          <div className="flex gap-2">
+            <div className="h-7 w-24 rounded-full bg-muted" />
+            <div className="h-7 w-28 rounded-full bg-muted" />
+          </div>
+        </div>
+
+        <div className="mt-6 grid gap-4 xl:grid-cols-[minmax(0,20rem)_1fr]">
+          <div className="space-y-2">
+            <div className="h-4 w-20 rounded bg-muted" />
+            <div className="h-12 rounded-2xl bg-muted" />
+          </div>
+          <div className="rounded-2xl border border-border/60 bg-background/40 p-5">
+            <div className="h-3 w-44 rounded bg-muted" />
+            <div className="mt-3 h-5 w-40 rounded bg-muted" />
+            <div className="mt-3 h-4 w-full max-w-xl rounded bg-muted" />
+          </div>
+        </div>
+
+        <div className="mt-6 rounded-2xl border border-border/60 bg-background/40 p-5">
+          <div className="space-y-2">
+            <div className="h-4 w-28 rounded bg-muted" />
+            <div className="h-12 rounded-2xl bg-muted" />
+          </div>
+
+          <div className="mt-4 rounded-2xl border border-border/60 bg-card/60 p-5">
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-3">
+                <div className="h-6 w-44 rounded bg-muted" />
+                <div className="h-4 w-[28rem] max-w-full rounded bg-muted" />
+              </div>
+              <div className="flex gap-2">
+                <div className="h-7 w-24 rounded-full bg-muted" />
+                <div className="h-7 w-28 rounded-full bg-muted" />
+              </div>
+            </div>
+
+            <div className="mt-4 h-24 rounded-2xl border border-border/60 bg-background/50" />
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              {[1, 2, 3, 4].map((item) => (
+                <div key={item} className="h-24 rounded-2xl border border-border/60 bg-background/50" />
+              ))}
+            </div>
+            <div className="mt-4 flex gap-3">
+              <div className="h-10 w-44 rounded-xl bg-muted" />
+              <div className="h-10 w-36 rounded-xl bg-muted" />
+              <div className="h-10 w-32 rounded-xl bg-muted" />
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 export function ArtifactsPage() {
   const location = useLocation();
+  const navigate = useNavigate();
+  const { tab } = Route.useSearch();
   const gatewayBundle = useRef(createGatewayBundle());
   const listArtifactDefinitionsUseCase = useRef(
     new ListArtifactDefinitionsUseCase(gatewayBundle.current.workflowEngineGateway),
@@ -99,7 +174,19 @@ export function ArtifactsPage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [localArtifacts, setLocalArtifacts] = useState<LocalRunnerArtifact[]>([]);
   const [artifactRuns, setArtifactRuns] = useState<ArtifactRun[]>([]);
-  const [activeTab, setActiveTab] = useState<"generated" | "storage" | "catalog">("generated");
+  const [activeTab, setActiveTab] = useState<ArtifactTab>(() => resolveArtifactTab(tab));
+
+  useEffect(() => {
+    setActiveTab(resolveArtifactTab(tab));
+  }, [tab]);
+
+  const setTab = (nextTab: ArtifactTab) => {
+    setActiveTab(nextTab);
+    void navigate({
+      to: "/artifacts",
+      search: nextTab === "generated" ? {} : { tab: nextTab },
+    });
+  };
 
   const loadArtifactsPage = useCallback(async () => {
     setLoading(true);
@@ -204,7 +291,7 @@ export function ArtifactsPage() {
                 ? "text-primary bg-background shadow-md border border-border/20"
                 : "text-muted-foreground hover:text-foreground hover:bg-muted/10"
             }`}
-            onClick={() => setActiveTab("generated")}
+            onClick={() => setTab("generated")}
           >
             Artifact generated list
           </button>
@@ -215,7 +302,7 @@ export function ArtifactsPage() {
                 ? "text-primary bg-background shadow-md border border-border/20"
                 : "text-muted-foreground hover:text-foreground hover:bg-muted/10"
             }`}
-            onClick={() => setActiveTab("storage")}
+            onClick={() => setTab("storage")}
           >
             Shared Cloud Storage Setting
           </button>
@@ -226,7 +313,7 @@ export function ArtifactsPage() {
                 ? "text-primary bg-background shadow-md border border-border/20"
                 : "text-muted-foreground hover:text-foreground hover:bg-muted/10"
             }`}
-            onClick={() => setActiveTab("catalog")}
+            onClick={() => setTab("catalog")}
           >
             Catalog definition
           </button>
@@ -274,7 +361,9 @@ export function ArtifactsPage() {
         )}
 
         {activeTab === "storage" && (
-          projects.length > 0 ? (
+          loading ? (
+            <ArtifactsStorageSkeleton />
+          ) : projects.length > 0 ? (
             <ArtifactCloudStoragePanel projects={projects} />
           ) : (
             <section className="rounded-[1.6rem] border border-dashed border-border bg-card/45 p-6 text-sm text-muted-foreground">

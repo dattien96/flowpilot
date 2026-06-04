@@ -339,11 +339,17 @@ function GoogleDriveSetupPage() {
             </Button>
             {validation ? (
               <button
-                className="text-sm font-medium text-accent underline underline-offset-4 transition hover:text-accent/80"
+                className="transition hover:opacity-85"
                 onClick={() => setValidationOpen(true)}
                 type="button"
+                aria-label="Open last validation result"
               >
-                Open last validation result
+                <div className="flex items-center gap-2">
+                  <span className="text-xs uppercase tracking-[0.22em] text-muted-foreground">
+                    Latest check
+                  </span>
+                  <StatusBadge value={validation.valid ? "configured" : "needs_input"} />
+                </div>
               </button>
             ) : null}
           </div>
@@ -857,7 +863,20 @@ function StatusStack({ status }: { status: GoogleDriveRuntimeStatus | null }) {
 
   return (
     <div className="grid gap-3">
-      <StatusRow label="Artifact sync" value={status.artifactSync.status} detail={`source: ${status.artifactSync.source}`} />
+      <StatusRow
+        label="Artifact sync"
+        value={status.artifactSync.status}
+        detail={`source: ${status.artifactSync.source}`}
+        extra={
+          status.artifactSync.configured ? (
+            <Link search={{ tab: "storage" }} to="/artifacts">
+              <Button className="mt-3 h-auto rounded-full px-3 py-1 text-xs font-medium" variant="secondary">
+                Open Shared Cloud Storage Setting
+              </Button>
+            </Link>
+          ) : null
+        }
+      />
       <StatusRow label="MCP" value={status.mcp.status} detail={googleDriveMcpDetail(status)} />
       <StatusRow
         label="Runner"
@@ -887,14 +906,27 @@ function googleDriveMcpDetail(status: GoogleDriveRuntimeStatus) {
   }
 }
 
-function StatusRow({ label, value, detail }: { label: string; value: string; detail: string }) {
+function StatusRow({
+  label,
+  value,
+  detail,
+  extra,
+}: {
+  label: string;
+  value: string;
+  detail: string;
+  extra?: ReactNode;
+}) {
   return (
-    <div className="flex items-center justify-between rounded-2xl border border-border/70 bg-background/70 px-4 py-3">
-      <div>
-        <p className="text-sm font-medium">{label}</p>
-        <p className="text-xs text-muted-foreground">{detail}</p>
+    <div className="rounded-2xl border border-border/70 bg-background/70 px-4 py-3">
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <p className="text-sm font-medium">{label}</p>
+          <p className="text-xs text-muted-foreground">{detail}</p>
+        </div>
+        <StatusBadge value={value} />
       </div>
-      <StatusBadge value={value} />
+      {extra ? <div>{extra}</div> : null}
     </div>
   );
 }
