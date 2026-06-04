@@ -641,6 +641,98 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				}
 				writeHTTPJSON(w, result)
 			})
+			mux.HandleFunc("/google-drive-config", func(w http.ResponseWriter, r *http.Request) {
+				switch r.Method {
+				case http.MethodGet:
+					config, err := instance.LoadGoogleDriveWorkspaceConfig()
+					if err != nil {
+						writeHTTPError(w, http.StatusInternalServerError, err)
+						return
+					}
+					writeHTTPJSON(w, config)
+				case http.MethodPut:
+					var payload runner.GoogleDriveWorkspaceConfigRequest
+					if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+						writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+						return
+					}
+					config, err := instance.SaveGoogleDriveWorkspaceConfig(payload)
+					if err != nil {
+						writeHTTPError(w, http.StatusBadRequest, err)
+						return
+					}
+					writeHTTPJSON(w, config)
+				case http.MethodDelete:
+					if err := instance.ResetGoogleDriveWorkspaceConfig(); err != nil {
+						writeHTTPError(w, http.StatusInternalServerError, err)
+						return
+					}
+					writeHTTPJSON(w, map[string]string{"status": "reset"})
+				default:
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				}
+			})
+			mux.HandleFunc("/google-drive-config/validate", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				var payload runner.GoogleDriveWorkspaceConfigRequest
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+				result, err := instance.ValidateGoogleDriveWorkspaceConfig(payload)
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+				writeHTTPJSON(w, result)
+			})
+			mux.HandleFunc("/google-drive-config/mcp-oauth-upload", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+
+				var payload runner.GoogleDriveMcpOAuthUploadRequest
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+				status, err := instance.UploadGoogleDriveMcpOAuthCredentials(payload)
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+				writeHTTPJSON(w, status)
+			})
+			mux.HandleFunc("/google-drive-config/mcp-auth/start", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+
+				status, err := instance.LoadGoogleDriveWorkspaceConfig()
+				if err != nil {
+					writeHTTPError(w, http.StatusInternalServerError, err)
+					return
+				}
+				message := "Google Drive MCP auth is handled by the local MCP client after the OAuth JSON is uploaded."
+				switch status.MCP.Status {
+				case "reconnect_required":
+					message = "Stored Google Drive MCP tokens are expired or revoked. Re-run the MCP auth flow to reconnect."
+				case "needs_auth":
+					message = "Complete the Google Drive MCP auth flow to create or refresh the local token file."
+				case "warning":
+					message = "Google Drive MCP credentials exist, but FlowPilot could not fully validate token health."
+				}
+				writeHTTPJSON(w, map[string]any{
+					"status":  status.MCP.Status,
+					"message": message,
+					"config":  status,
+				})
+			})
 			mux.HandleFunc("/backup", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1335,7 +1427,11 @@ func writeHTTPJSON(w http.ResponseWriter, value any) {
 }
 
 func writeHTTPError(w http.ResponseWriter, status int, err error) {
-	http.Error(w, err.Error(), status)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"error": err.Error(),
+	})
 }
 
 func withCORS(next http.Handler) http.Handler {

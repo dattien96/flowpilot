@@ -248,8 +248,9 @@ func (r *Runner) resolveGoogleDriveArtifactOpenURL(
 		return "", err
 	}
 
-	accessToken, err := refreshGoogleDriveAccessToken(creds.RefreshToken)
+	accessToken, err := r.refreshGoogleDriveAccessToken(creds.RefreshToken)
 	if err != nil {
+		r.markGoogleDriveArtifactReconnectRequired(projectID, "", err)
 		return "", err
 	}
 
@@ -348,8 +349,9 @@ func (r *Runner) syncArtifactToGoogleDrive(
 		return ArtifactDetail{}, err
 	}
 
-	accessToken, err := refreshGoogleDriveAccessToken(creds.RefreshToken)
+	accessToken, err := r.refreshGoogleDriveAccessToken(creds.RefreshToken)
 	if err != nil {
+		r.markGoogleDriveArtifactReconnectRequired(projectID, "", err)
 		_, _ = r.SaveArtifactCloudSyncResult(artifact.ArtifactID, ArtifactCloudSyncResult{
 			StorageProvider: artifactStorageProviderGoogleDrive,
 			RemotePath:      canonicalPath,

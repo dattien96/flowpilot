@@ -68,14 +68,8 @@ func (r *Runner) CreateGoogleDriveArtifactConnectSession(request ArtifactStorage
 	if baseURL == "" {
 		return ArtifactStorageGoogleDriveSession{}, errors.New("baseUrl is required")
 	}
-	if _, err := readGoogleDriveArtifactConfig(); err != nil {
+	if _, err := r.resolveGoogleDriveArtifactRuntimeConfig(); err != nil {
 		return ArtifactStorageGoogleDriveSession{}, err
-	}
-	if strings.TrimSpace(os.Getenv("GOOGLE_DRIVE_REDIRECT_URI")) == "" {
-		return ArtifactStorageGoogleDriveSession{}, errors.New("missing required environment variable: GOOGLE_DRIVE_REDIRECT_URI")
-	}
-	if strings.TrimSpace(os.Getenv("GOOGLE_PICKER_API_KEY")) == "" {
-		return ArtifactStorageGoogleDriveSession{}, errors.New("missing required environment variable: GOOGLE_PICKER_API_KEY")
 	}
 
 	connectToken := newArtifactStorageGoogleDriveToken()
@@ -143,10 +137,13 @@ func (r *Runner) BuildGoogleDriveArtifactConnectRedirect(sessionID, connectToken
 		return "", err
 	}
 
-	redirectURI := strings.TrimSpace(os.Getenv("GOOGLE_DRIVE_REDIRECT_URI"))
+	config, err := r.resolveGoogleDriveArtifactRuntimeConfig()
+	if err != nil {
+		return "", err
+	}
 	query := url.Values{}
-	query.Set("client_id", strings.TrimSpace(os.Getenv("GOOGLE_DRIVE_CLIENT_ID")))
-	query.Set("redirect_uri", redirectURI)
+	query.Set("client_id", config.ClientID)
+	query.Set("redirect_uri", config.RedirectURI)
 	query.Set("response_type", "code")
 	query.Set("scope", "https://www.googleapis.com/auth/drive.file openid email")
 	query.Set("access_type", "offline")
@@ -184,12 +181,13 @@ func (r *Runner) HandleGoogleDriveArtifactOAuthCallback(rawState, code, provider
 		return ArtifactStorageGoogleDriveSession{}, errors.New("google drive oauth code is required")
 	}
 
-	tokenResponse, err := exchangeGoogleDriveOAuthCode(code)
+	tokenResponse, err := r.exchangeGoogleDriveOAuthCode(code)
 	if err != nil {
 		_ = r.updateArtifactStorageGoogleDriveSession(sessionID, func(record *artifactStorageGoogleDriveSessionRecord) {
-			record.Status = string(ArtifactStorageGoogleDriveSessionFailed)
+			record.Status = "reconnect_required"
 			record.LastError = err.Error()
 		})
+		r.markGoogleDriveArtifactReconnectRequired(session.ProjectID, sessionID, err)
 		return ArtifactStorageGoogleDriveSession{}, err
 	}
 
@@ -241,13 +239,18 @@ func (r *Runner) GetGoogleDriveArtifactPickerToken(sessionID string) (ArtifactSt
 	if err != nil {
 		return ArtifactStorageGoogleDrivePickerToken{}, err
 	}
-	accessToken, err := refreshGoogleDriveAccessToken(creds.RefreshToken)
+	accessToken, err := r.refreshGoogleDriveAccessToken(creds.RefreshToken)
+	if err != nil {
+		r.markGoogleDriveArtifactReconnectRequired(session.ProjectID, sessionID, err)
+		return ArtifactStorageGoogleDrivePickerToken{}, err
+	}
+	config, err := r.resolveGoogleDriveArtifactRuntimeConfig()
 	if err != nil {
 		return ArtifactStorageGoogleDrivePickerToken{}, err
 	}
 	return ArtifactStorageGoogleDrivePickerToken{
 		AccessToken: accessToken,
-		ApiKey:      strings.TrimSpace(os.Getenv("GOOGLE_PICKER_API_KEY")),
+		ApiKey:      config.PickerAPIKey,
 	}, nil
 }
 
@@ -269,8 +272,9 @@ func (r *Runner) SaveGoogleDriveArtifactFolderSelection(request ArtifactStorageG
 	if err != nil {
 		return ArtifactStorageGoogleDriveConnectionStatus{}, err
 	}
-	accessToken, err := refreshGoogleDriveAccessToken(creds.RefreshToken)
+	accessToken, err := r.refreshGoogleDriveAccessToken(creds.RefreshToken)
 	if err != nil {
+		r.markGoogleDriveArtifactReconnectRequired(session.ProjectID, sessionID, err)
 		return ArtifactStorageGoogleDriveConnectionStatus{}, err
 	}
 	folderInfo, err := fetchGoogleDriveFileByID(accessToken, folderID)
@@ -474,6 +478,39 @@ func mapArtifactStorageGoogleDriveConnection(record artifactStorageGoogleDriveCo
 		ConnectedAt:     record.ConnectedAt,
 		UpdatedAt:       record.UpdatedAt,
 	}
+}
+
+func (r *Runner) markGoogleDriveArtifactReconnectRequired(projectID, sessionID string, err error) {
+	if !googleDriveReconnectRequired(err) {
+		return
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_ = r.saveArtifactStorageGoogleDriveState(func(current *artifactStorageGoogleDriveState) {
+		trimmedProjectID := strings.TrimSpace(projectID)
+		if trimmedProjectID != "" {
+			record := current.Connections[trimmedProjectID]
+			record.ProjectID = trimmedProjectID
+			record.Status = "reconnect_required"
+			record.LastError = err.Error()
+			record.LastValidatedAt = now
+			record.UpdatedAt = now
+			current.Connections[trimmedProjectID] = record
+		}
+
+		trimmedSessionID := strings.TrimSpace(sessionID)
+		if trimmedSessionID == "" {
+			return
+		}
+
+		record, ok := current.Sessions[trimmedSessionID]
+		if !ok {
+			return
+		}
+		record.Status = "reconnect_required"
+		record.LastError = err.Error()
+		current.Sessions[trimmedSessionID] = record
+	})
 }
 
 func newArtifactStorageGoogleDriveSessionID() string {

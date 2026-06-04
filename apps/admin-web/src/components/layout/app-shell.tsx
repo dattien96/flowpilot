@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { Power, RotateCw } from "lucide-react";
 
-import { primaryNavItems, settingsNavItems } from "@/components/layout/app-nav";
+import { primaryNavItems, settingsNavItems, type NavItem } from "@/components/layout/app-nav";
 import { buildMcpServerStatus, buildRunnerStatus } from "@/components/layout/app-shell-status";
 import { Button } from "@/components/ui/button";
 import { createGatewayBundle } from "@/data/repository/browser-factory";
@@ -14,12 +14,6 @@ import { requestArtifactSyncBootstrap } from "@/features/artifacts/artifact-sync
 import { useAuth } from "@/features/auth/auth-provider";
 import { ThemeSwitcher } from "@/features/theme/components/theme-switcher";
 import { cn } from "@/lib/utils/cn";
-
-type NavItem = {
-  to: string;
-  label: string;
-  icon: React.ComponentType<{ className?: string }>;
-};
 
 type SettingsNavStatusMap = Partial<
   Record<
@@ -50,11 +44,18 @@ function NavSection({
   itemStatuses,
   title,
 }: {
-  items: NavItem[];
+  items: readonly NavItem[];
   itemStatuses?: SettingsNavStatusMap;
   title: string;
 }) {
   const location = useLocation();
+
+  function isActive(item: NavItem) {
+    if (item.to) {
+      return location.pathname === item.to || location.pathname.startsWith(`${item.to}/`);
+    }
+    return item.children?.some((child) => isActive(child)) ?? false;
+  }
 
   return (
     <div>
@@ -64,20 +65,64 @@ function NavSection({
       <div className="space-y-2">
         {items.map((item) => {
           const Icon = item.icon;
-          const status = itemStatuses?.[item.to];
-          const active =
-            location.pathname === item.to || location.pathname.startsWith(`${item.to}/`);
+          const status = item.statusKey ? itemStatuses?.[item.statusKey] : item.to ? itemStatuses?.[item.to] : undefined;
+          const active = isActive(item);
+
+          if (item.children?.length) {
+            return (
+              <div className="space-y-2" key={item.label}>
+                <div
+                  className={cn(
+                    "flex items-center gap-3 rounded-2xl px-4 py-3 text-sm",
+                    active ? "bg-accent/12 text-foreground" : "text-muted-foreground",
+                  )}
+                >
+                  <Icon className="size-4" />
+                  <span className="min-w-0 flex-1 font-medium">{item.label}</span>
+                  {status?.kind === "count" ? (
+                    <span className="inline-flex min-w-[3.25rem] items-center justify-center rounded-full border border-border/70 bg-background/80 px-2 py-1 font-mono text-[11px] font-semibold leading-none text-foreground/80">
+                      {status.label}
+                    </span>
+                  ) : null}
+                </div>
+
+                <div className="space-y-2 pl-4">
+                  {item.children.map((child) => {
+                    const ChildIcon = child.icon;
+                    const childActive = isActive(child);
+                    return (
+                      <Link
+                        key={child.to ?? child.label}
+                        className={cn(
+                          "flex items-center gap-3 rounded-2xl px-4 py-3 text-sm transition-colors",
+                          childActive
+                            ? "bg-accent text-white"
+                            : "text-muted-foreground hover:bg-muted/80 hover:text-foreground",
+                        )}
+                        to={child.to ?? "/settings/mcp-servers"}
+                      >
+                        <ChildIcon className={cn("size-4", childActive ? "text-white" : undefined)} />
+                        <span className={cn("min-w-0 flex-1", childActive ? "text-white" : undefined)}>
+                          {child.label}
+                        </span>
+                      </Link>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          }
 
           return (
             <Link
-              key={item.to}
+              key={item.to ?? item.label}
               className={cn(
                 "flex items-center gap-3 rounded-2xl px-4 py-3 text-sm transition-colors",
                 active
                   ? "bg-accent text-white"
                   : "text-muted-foreground hover:bg-muted/80 hover:text-foreground",
               )}
-              to={item.to}
+              to={item.to ?? "/"}
             >
               <Icon className={cn("size-4", active ? "text-white" : undefined)} />
               <span className={cn("min-w-0 flex-1", active ? "text-white" : undefined)}>

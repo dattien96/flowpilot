@@ -26,6 +26,7 @@ describe("CP-01 route tree", () => {
     expect(routePaths).toContain("/settings/artifacts/create");
     expect(routePaths).toContain("/settings/ai-providers");
     expect(routePaths).toContain("/settings/mcp-servers");
+    expect(routePaths).toContain("/settings/mcp-servers/jira-link");
     expect(routePaths).toContain("/settings/prompt-templates");
   });
 });
