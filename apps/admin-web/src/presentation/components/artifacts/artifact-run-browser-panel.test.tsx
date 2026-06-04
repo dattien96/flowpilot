@@ -304,6 +304,27 @@ describe("ArtifactRunBrowserPanel", () => {
     );
   });
 
+  it("hydrates prompt details for remote-only artifacts", async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response("Remote actual prompt", { status: 200 }))
+      .mockResolvedValueOnce(new Response("Remote saved prompt", { status: 200 }));
+
+    render(
+      <ArtifactRunBrowserPanel
+        artifactRuns={[remoteFailedArtifact]}
+        localArtifacts={[]}
+        projects={[]}
+        scopeLabel="Artifacts"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Remote/Sync (1)" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Actual prompt: Remote actual prompt")).toBeInTheDocument();
+    });
+  });
+
   it("hydrates a remote-only generic title from remote content", async () => {
     const loadRemoteArtifactContent = vi.fn(async () =>
       "This is a synced remote response title that should be shortened for cards.",

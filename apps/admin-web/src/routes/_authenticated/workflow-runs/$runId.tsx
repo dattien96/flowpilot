@@ -69,7 +69,9 @@ import {
 import type { ApprovalDecision } from "@/domain/model/entity/workflow";
 import type { LocalRunnerArtifact } from "@/domain/model/entity/local-runner";
 import type { ArtifactRun, WorkflowRunSession } from "@/domain/model/entity/workflow-engine";
+import { resolveArtifactRunForOutput } from "@/lib/workflow-run-artifact-match";
 import { loadWorkflowRunPromptText } from "@/lib/workflow-run-prompt";
+import { loadWorkflowRunArtifactPromptFiles } from "@/lib/workflow-run-artifact-open";
 import { openMarkdownPreviewInNewTab } from "@/lib/markdown-preview";
 
 function summarizeRunPrompt(promptText?: string) {
@@ -417,6 +419,8 @@ function StepOutputTabs({
   const [artifactContent, setArtifactContent] = useState<string | null>(null);
   const [artifactError, setArtifactError] = useState<string | null>(null);
   const [artifactLoading, setArtifactLoading] = useState(false);
+  const [remotePromptText, setRemotePromptText] = useState<string | null>(null);
+  const [promptLoading, setPromptLoading] = useState(false);
   const [copiedTab, setCopiedTab] = useState<"response" | "prompt" | null>(null);
 
   const loadArtifactContent = async () => {
@@ -445,6 +449,8 @@ function StepOutputTabs({
     setArtifactContent(null);
     setArtifactError(null);
     setArtifactLoading(false);
+    setRemotePromptText(null);
+    setPromptLoading(false);
   }, [artifactRun?.id]);
 
   const tabs = [
@@ -456,12 +462,47 @@ function StepOutputTabs({
   const normalizedActualPrompt = normalizePromptDisplay(
     output.actualPromptText ?? output.promptText,
   );
+  const promptDisplayText = normalizedActualPrompt || remotePromptText || "";
+
+  useEffect(() => {
+    if (
+      activeTab !== "prompt" ||
+      normalizedActualPrompt ||
+      remotePromptText !== null ||
+      !artifactRun?.remotePath.trim()
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+    setPromptLoading(true);
+
+    void loadWorkflowRunArtifactPromptFiles(artifactRun).then((promptFiles) => {
+      if (cancelled) {
+        return;
+      }
+
+      setRemotePromptText(
+        normalizePromptDisplay(promptFiles.actualPromptText || promptFiles.promptText),
+      );
+      setPromptLoading(false);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeTab,
+    artifactRun,
+    normalizedActualPrompt,
+    remotePromptText,
+  ]);
 
   const handleCopyTabContent = (tab: "response" | "prompt") => {
     const content =
       tab === "response"
         ? (output.contentMarkdown || "No response captured.")
-        : (normalizedActualPrompt || "No prompt was captured for this output.");
+        : (promptDisplayText || "No prompt was captured for this output.");
     navigator.clipboard.writeText(content);
     setCopiedTab(tab);
     setTimeout(() => setCopiedTab((current) => (current === tab ? null : current)), 2000);
@@ -509,10 +550,14 @@ function StepOutputTabs({
           <p className="mb-4 text-[10px] font-bold uppercase tracking-[0.22em] text-muted-foreground">
             Prompt Sent
           </p>
-          {normalizedActualPrompt ? (
+          {promptDisplayText ? (
             <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-[#d1d5db]">
-              {normalizedActualPrompt}
+              {promptDisplayText}
             </pre>
+          ) : promptLoading ? (
+            <p className="text-xs italic text-muted-foreground">
+              Loading prompt...
+            </p>
           ) : (
             <p className="text-xs italic text-muted-foreground">
               No prompt was captured for this output.
@@ -1046,9 +1091,10 @@ function SessionGroupSection({
                     {pg.attempts.map((attemptItem) => {
                       const outputAttempt =
                         stepOutputs.findIndex((output) => output.id === attemptItem.output.id) + 1;
-                      const itemArtifactRun = (((detail.artifactRuns ?? []) as ArtifactRun[]).find(
-                        (artifactRun) => artifactRun.id === attemptItem.output.id,
-                      ) ?? null);
+                      const itemArtifactRun = resolveArtifactRunForOutput(
+                        attemptItem.output,
+                        ((detail.artifactRuns ?? []) as ArtifactRun[]) ?? [],
+                      );
 
                       return (
                         <div key={attemptItem.key} className="space-y-3">

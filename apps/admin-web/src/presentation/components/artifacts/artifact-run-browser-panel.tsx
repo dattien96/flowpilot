@@ -6,6 +6,7 @@ import { ExternalLink, Search, UploadCloud } from "lucide-react";
 import type { Project } from "@/domain/model/entity/project";
 import type { LocalRunnerArtifact } from "@/domain/model/entity/local-runner";
 import type { ArtifactRun, ArtifactSyncStatus } from "@/domain/model/entity/workflow-engine";
+import { loadWorkflowRunArtifactPromptFiles } from "@/lib/workflow-run-artifact-open";
 import { Badge } from "@/presentation/components/ui/badge";
 import { Button } from "@/presentation/components/ui/button";
 import type { ReactNode } from "react";
@@ -41,6 +42,11 @@ type ArtifactBrowserItem = {
   updatedAt: string;
 };
 
+type RemotePromptOverride = {
+  actualPromptText: string;
+  promptText: string;
+};
+
 export function ArtifactRunBrowserPanel({
   localArtifacts = [],
   artifactRuns = [],
@@ -58,6 +64,9 @@ export function ArtifactRunBrowserPanel({
   const [remoteTitleOverrides, setRemoteTitleOverrides] = useState<Map<string, string>>(
     () => new Map(),
   );
+  const [remotePromptOverrides, setRemotePromptOverrides] = useState<
+    Map<string, RemotePromptOverride>
+  >(() => new Map());
 
   const projectById = useMemo(() => new Map(projects.map((project) => [project.id, project])), [projects]);
   const localArtifactById = useMemo(
@@ -81,6 +90,7 @@ export function ArtifactRunBrowserPanel({
         .map((artifact) => {
           const matchedLocalArtifact =
             localArtifactById.get(artifact.id) ?? localArtifactByRemotePath.get(artifact.remotePath.trim());
+          const promptOverride = remotePromptOverrides.get(artifact.id);
           const fallbackTitle = deriveArtifactDisplayTitle(
             matchedLocalArtifact?.contentMarkdown ?? "",
             artifact.title,
@@ -90,8 +100,9 @@ export function ArtifactRunBrowserPanel({
             kind: "remote" as const,
             title: remoteTitleOverrides.get(artifact.id) ?? fallbackTitle,
             contentMarkdown: matchedLocalArtifact?.contentMarkdown ?? "",
-            promptText: matchedLocalArtifact?.promptText ?? "",
-            actualPromptText: matchedLocalArtifact?.actualPromptText ?? "",
+            promptText: matchedLocalArtifact?.promptText ?? promptOverride?.promptText ?? "",
+            actualPromptText:
+              matchedLocalArtifact?.actualPromptText ?? promptOverride?.actualPromptText ?? "",
             projectId: artifact.projectId,
             projectName: artifact.projectId ? projectById.get(artifact.projectId)?.name ?? null : null,
             workflowRunId: artifact.workflowRunId,
@@ -106,7 +117,14 @@ export function ArtifactRunBrowserPanel({
             updatedAt: artifact.updatedAt,
           };
         }),
-    [artifactRuns, localArtifactById, localArtifactByRemotePath, projectById, remoteTitleOverrides],
+    [
+      artifactRuns,
+      localArtifactById,
+      localArtifactByRemotePath,
+      projectById,
+      remotePromptOverrides,
+      remoteTitleOverrides,
+    ],
   );
 
   const remoteArtifactKeys = useMemo(
@@ -292,6 +310,69 @@ export function ArtifactRunBrowserPanel({
       cancelled = true;
     };
   }, [artifactRuns, loadRemoteArtifactContent, localArtifactById, localArtifactByRemotePath]);
+
+  useEffect(() => {
+    if (subTab !== "remote") {
+      setRemotePromptOverrides(new Map());
+      return;
+    }
+
+    const candidates = artifactRuns
+      .filter(shouldRenderArtifactRunAsRemote)
+      .filter((artifact) => {
+        const matchedLocalArtifact =
+          localArtifactById.get(artifact.id) ?? localArtifactByRemotePath.get(artifact.remotePath.trim());
+        const hasLocalPrompt =
+          (matchedLocalArtifact?.actualPromptText ?? "").trim() !== "" ||
+          (matchedLocalArtifact?.promptText ?? "").trim() !== "";
+        return !hasLocalPrompt && artifact.remotePath.trim() !== "";
+      });
+
+    if (candidates.length === 0) {
+      setRemotePromptOverrides(new Map());
+      return;
+    }
+
+    let cancelled = false;
+
+    void Promise.all(
+      candidates.map(async (artifact) => {
+        const promptFiles = await loadWorkflowRunArtifactPromptFiles(artifact);
+        if (
+          !promptFiles.actualPromptText?.trim() &&
+          !promptFiles.promptText?.trim()
+        ) {
+          return null;
+        }
+
+        return [
+          artifact.id,
+          {
+            actualPromptText: promptFiles.actualPromptText ?? "",
+            promptText: promptFiles.promptText ?? "",
+          } satisfies RemotePromptOverride,
+        ] as const;
+      }),
+    ).then((entries) => {
+      if (cancelled) {
+        return;
+      }
+
+      const next = new Map<string, RemotePromptOverride>();
+      for (const entry of entries) {
+        if (!entry) {
+          continue;
+        }
+
+        next.set(entry[0], entry[1]);
+      }
+      setRemotePromptOverrides(next);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [artifactRuns, localArtifactById, localArtifactByRemotePath, subTab]);
 
   async function syncArtifactById(artifactId: string) {
     try {
