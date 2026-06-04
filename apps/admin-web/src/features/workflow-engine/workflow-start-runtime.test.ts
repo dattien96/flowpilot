@@ -2,7 +2,7 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   buildWorkflowStepFollowUpPrompt,
@@ -488,6 +488,20 @@ describe("workflow-start-runtime", () => {
   });
 
   describe("sendMessageWithRetry", () => {
+    beforeEach(() => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          account: {
+            id: "account-b",
+            provider_key: "codex",
+            home_path: "/accounts/b",
+            extra_env: {},
+          },
+        }),
+      } as Response);
+    });
+
     it("reconnects with old thread on session_dead", async () => {
       let callCount = 0;
       const mockSendMessage = vi.fn().mockImplementation(() => {
@@ -518,7 +532,7 @@ describe("workflow-start-runtime", () => {
         filter: vi.fn().mockReturnThis(),
         order: vi.fn().mockReturnThis(),
         limit: vi.fn().mockReturnThis(),
-        maybeSingle: vi.fn().mockResolvedValue({ data: { id: "session-old", process_key: "proc-old", provider_session_id: "thread-old", transport_type: "codex_mcp", status: "completed", provider: "codex", model: "codex-mcp" }, error: null }),
+        maybeSingle: vi.fn().mockResolvedValue({ data: { id: "session-old", process_key: "proc-old", provider_session_id: "thread-old", transport_type: "codex_mcp", status: "completed", provider: "codex", model: "codex-mcp", metadata_json: { providerAccountId: "account-b", providerAccountHomePath: "/accounts/b" } }, error: null }),
         insert: vi.fn().mockReturnThis(),
         update: vi.fn().mockReturnThis(),
         single: vi.fn().mockResolvedValue({ data: { id: "session-new" }, error: null })
@@ -556,6 +570,79 @@ describe("workflow-start-runtime", () => {
       expect(result.actualPromptText).toBe("hello");
     });
 
+    it("does not resume an old provider thread after the active account changes", async () => {
+      const mockSendMessage = vi.fn().mockResolvedValue({ outputMarkdown: "success" });
+      const mockStartSession = vi.fn().mockResolvedValue({
+        processKey: "proc-new",
+        providerSessionId: "thread-new",
+        transportType: "codex_mcp",
+      });
+
+      const localRunnerGateway = {
+        sendMessage: mockSendMessage,
+        closeSession: vi.fn().mockResolvedValue(undefined),
+        startSession: mockStartSession,
+      } as any;
+
+      const mockQueryBuilder = {
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        filter: vi.fn().mockReturnThis(),
+        order: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: {
+            id: "session-old",
+            process_key: null,
+            provider_session_id: "thread-old",
+            transport_type: "codex_mcp",
+            status: "completed",
+            provider: "codex",
+            model: "codex-mcp",
+            metadata_json: {
+              providerAccountId: "account-a",
+              providerAccountHomePath: "/accounts/a",
+            },
+          },
+          error: null,
+        }),
+        insert: vi.fn().mockReturnThis(),
+        update: vi.fn().mockReturnThis(),
+        single: vi.fn().mockResolvedValue({ data: { id: "session-new" }, error: null }),
+      };
+      const adminClient = {
+        from: vi.fn(() => mockQueryBuilder),
+      } as any;
+
+      const result = await sendMessageWithRetry({
+        adminClient,
+        localRunnerGateway,
+        workflowRunId: "run-123",
+        stepRunId: "step-456",
+        providerKey: "codex",
+        modelName: "codex-mcp",
+        reasoningEffort: null,
+        workingDirectory: "/repo",
+        subagent: null,
+        prompt: "hello",
+        skillIds: [],
+        idleTTLSeconds: 60,
+      });
+
+      expect(mockStartSession).toHaveBeenCalledWith(
+        expect.not.objectContaining({
+          resumeProviderSessionId: expect.any(String),
+        }),
+      );
+      expect(mockStartSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerAccountId: "account-b",
+          providerAccountHomePath: "/accounts/b",
+        }),
+      );
+      expect(result.outputMarkdown).toBe("success");
+    });
+
     it("does not reconnect when the session was intentionally terminated", async () => {
       const err = new Error("session was intentionally terminated");
       (err as any).code = "session_terminated";
@@ -588,7 +675,10 @@ describe("workflow-start-runtime", () => {
             status: "active",
             provider: "codex",
             model: "codex-mcp",
-            metadata_json: {},
+            metadata_json: {
+              providerAccountId: "account-b",
+              providerAccountHomePath: "/accounts/b",
+            },
           },
           error: null,
         }),
@@ -706,7 +796,7 @@ describe("workflow-start-runtime", () => {
         filter: vi.fn().mockReturnThis(),
         order: vi.fn().mockReturnThis(),
         limit: vi.fn().mockReturnThis(),
-        maybeSingle: vi.fn().mockResolvedValue({ data: { id: "sess-id", process_key: "proc-old", provider_session_id: "thread-old", transport_type: "codex_mcp", status: "active", provider: "codex", model: "codex-mcp" }, error: null }),
+        maybeSingle: vi.fn().mockResolvedValue({ data: { id: "sess-id", process_key: "proc-old", provider_session_id: "thread-old", transport_type: "codex_mcp", status: "active", provider: "codex", model: "codex-mcp", metadata_json: { providerAccountId: "account-b", providerAccountHomePath: "/accounts/b" } }, error: null }),
         insert: vi.fn().mockReturnThis(),
         update: vi.fn().mockReturnThis(),
         single: vi.fn().mockResolvedValue({ data: { id: "session-new" }, error: null })
@@ -780,6 +870,8 @@ describe("workflow-start-runtime", () => {
             provider: "codex",
             model: "codex-mcp",
             metadata_json: {
+              providerAccountId: "account-b",
+              providerAccountHomePath: "/accounts/b",
               checkpoints: [
                 {
                   promptPath: "/repo/.flowpilot/artifacts/run-1/step-1/.snapshots/snap-1/prompt.md",
@@ -909,6 +1001,8 @@ describe("workflow-start-runtime", () => {
             provider: "codex",
             model: "codex-mcp",
             metadata_json: {
+              providerAccountId: "account-b",
+              providerAccountHomePath: "/accounts/b",
               checkpoints: [
                 {
                   promptPath: "/repo/.flowpilot/artifacts/run-1/step-1/.snapshots/snap-1/prompt.md",
@@ -1025,7 +1119,11 @@ describe("workflow-start-runtime", () => {
             status: "active",
             provider: "codex",
             model: "codex-mcp",
-            metadata_json: { checkpoints },
+            metadata_json: {
+              providerAccountId: "account-b",
+              providerAccountHomePath: "/accounts/b",
+              checkpoints,
+            },
           },
           error: null,
         }),

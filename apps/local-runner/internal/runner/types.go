@@ -194,6 +194,41 @@ type StorageDriverConfig struct {
 	UpdatedAt        string `json:"updatedAt"`
 }
 
+type SupabaseWorkspaceConfig struct {
+	Version         int    `json:"version"`
+	APIURL          string `json:"apiUrl"`
+	AnonKey         string `json:"anonKey"`
+	EdgeFunctionURL string `json:"edgeFunctionUrl"`
+	ProjectRef      string `json:"projectRef,omitempty"`
+	Status          string `json:"status,omitempty"`
+	UpdatedAt       string `json:"updatedAt"`
+}
+
+type SupabaseWorkspaceConfigResponse struct {
+	SupabaseWorkspaceConfig
+	HasServiceRoleKey bool   `json:"hasServiceRoleKey"`
+	ServiceRoleKey    string `json:"serviceRoleKey,omitempty"`
+}
+
+type SupabaseWorkspaceConfigRequest struct {
+	SupabaseWorkspaceConfig
+	ServiceRoleKey string `json:"serviceRoleKey"`
+}
+
+type SupabaseValidationResult struct {
+	Valid             bool                      `json:"valid"`
+	ProjectRef        string                    `json:"projectRef,omitempty"`
+	Checks            []SupabaseValidationCheck `json:"checks"`
+	BrowserSafeConfig SupabaseWorkspaceConfig   `json:"browserSafeConfig,omitempty"`
+	HasServiceRoleKey bool                      `json:"hasServiceRoleKey"`
+}
+
+type SupabaseValidationCheck struct {
+	Key     string `json:"key"`
+	Status  string `json:"status"`
+	Message string `json:"message"`
+}
+
 type DirectorySelection struct {
 	Path string `json:"path"`
 }

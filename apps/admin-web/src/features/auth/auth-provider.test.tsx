@@ -4,24 +4,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthProvider, useAuth } from "./auth-provider";
 import { clearAuthSession, setAuthLoading } from "./use-auth";
 
-const { getSession, onAuthStateChange, signOut } = vi.hoisted(() => ({
+const { getBrowserSupabaseClient, getSession, loadSupabaseRuntimeStatus, onAuthStateChange, signOut } = vi.hoisted(() => ({
+  getBrowserSupabaseClient: vi.fn(),
   getSession: vi.fn(),
+  loadSupabaseRuntimeStatus: vi.fn(),
   onAuthStateChange: vi.fn(),
   signOut: vi.fn(),
 }));
 
 vi.mock("@/data/supabase/client", () => ({
-  supabase: {
-    auth: {
-      getSession,
-      onAuthStateChange,
-      signOut,
-    },
-  },
+  getBrowserSupabaseClient,
 }));
 
-vi.mock("@/lib/env/browser-env", () => ({
-  hasSupabaseEnv: vi.fn(),
+vi.mock("@/lib/supabase/runtime-config", () => ({
+  loadSupabaseRuntimeStatus,
 }));
 
 function Probe() {
@@ -42,9 +38,18 @@ describe("AuthProvider", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     clearAuthSession();
     setAuthLoading(true);
+    getBrowserSupabaseClient.mockReset();
     getSession.mockReset();
+    loadSupabaseRuntimeStatus.mockReset();
     onAuthStateChange.mockReset();
     signOut.mockReset();
+    getBrowserSupabaseClient.mockResolvedValue({
+      auth: {
+        getSession,
+        onAuthStateChange,
+        signOut,
+      },
+    });
   });
 
   afterEach(() => {
@@ -52,8 +57,7 @@ describe("AuthProvider", () => {
   });
 
   it("hydrates auth state from the current Supabase session on mount", async () => {
-    const { hasSupabaseEnv } = await import("@/lib/env/browser-env");
-    vi.mocked(hasSupabaseEnv).mockReturnValue(true);
+    loadSupabaseRuntimeStatus.mockResolvedValue(supabaseRuntimeStatus());
     getSession.mockResolvedValue({
       data: {
         session: {
@@ -85,9 +89,8 @@ describe("AuthProvider", () => {
     });
   });
 
-  it("uses demo session when Supabase env is unavailable", async () => {
-    const { hasSupabaseEnv } = await import("@/lib/env/browser-env");
-    vi.mocked(hasSupabaseEnv).mockReturnValue(false);
+  it("uses demo session when runtime config is unavailable", async () => {
+    loadSupabaseRuntimeStatus.mockResolvedValue(demoRuntimeStatus());
 
     render(
       <AuthProvider>
@@ -103,8 +106,7 @@ describe("AuthProvider", () => {
   });
 
   it("clears the loading state when reading the session fails", async () => {
-    const { hasSupabaseEnv } = await import("@/lib/env/browser-env");
-    vi.mocked(hasSupabaseEnv).mockReturnValue(true);
+    loadSupabaseRuntimeStatus.mockResolvedValue(supabaseRuntimeStatus());
     getSession.mockRejectedValue(new Error("network down"));
     onAuthStateChange.mockReturnValue({
       data: {
@@ -128,8 +130,7 @@ describe("AuthProvider", () => {
   });
 
   it("hydrates auth state from the auth event payload without re-reading the session", async () => {
-    const { hasSupabaseEnv } = await import("@/lib/env/browser-env");
-    vi.mocked(hasSupabaseEnv).mockReturnValue(true);
+    loadSupabaseRuntimeStatus.mockResolvedValue(supabaseRuntimeStatus());
     getSession.mockResolvedValue({
       data: {
         session: null,
@@ -179,3 +180,35 @@ describe("AuthProvider", () => {
     expect(getSession).toHaveBeenCalledTimes(1);
   });
 });
+
+function supabaseRuntimeStatus() {
+  return {
+    mode: "config",
+    configured: true,
+    apiUrl: "https://demo-ref.supabase.co",
+    anonKey: "anon-key",
+    edgeFunctionUrl: "https://demo-ref.supabase.co/functions/v1",
+    hasServiceRoleKey: true,
+    projectRef: "demo-ref",
+    runnerReachable: true,
+    envAvailable: false,
+    savedConfigAvailable: true,
+    edgeFunctionsReady: true,
+    lastError: null,
+  };
+}
+
+function demoRuntimeStatus() {
+  return {
+    ...supabaseRuntimeStatus(),
+    mode: "demo",
+    configured: false,
+    apiUrl: null,
+    anonKey: null,
+    edgeFunctionUrl: null,
+    hasServiceRoleKey: false,
+    projectRef: null,
+    savedConfigAvailable: false,
+    edgeFunctionsReady: false,
+  };
+}

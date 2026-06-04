@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from "react";
-import { createSupabaseBrowserClient } from "@/data/datasource/supabase/client";
+import { getBrowserSupabaseClient } from "@/data/datasource/supabase/client";
 import { createGatewayBundle } from "@/data/repository/browser-factory";
 import type {
   WorkflowRun,
@@ -15,12 +15,15 @@ export function useWorkflowRealtime(runId: string | undefined) {
   const [error, setError] = useState<string | null>(null);
 
   const gatewayBundle = useRef(createGatewayBundle());
-  const supabase = useRef(createSupabaseBrowserClient());
+
+  function getGatewayBundle() {
+    return gatewayBundle.current;
+  }
 
   const loadData = async () => {
     if (!runId) return;
     try {
-      const data = await gatewayBundle.current.workflowEngineGateway.getWorkflowRunDetail(runId);
+      const data = await getGatewayBundle().workflowEngineGateway.getWorkflowRunDetail(runId);
       if (data) {
         setRun(data.run);
         setSteps(data.steps);
@@ -39,15 +42,16 @@ export function useWorkflowRealtime(runId: string | undefined) {
       setLoading(false);
       return;
     }
-
     loadData();
 
     // 1. Setup Supabase Realtime subscription if available
     let runSubscription: any = null;
     let stepSubscription: any = null;
 
-    try {
-      runSubscription = supabase.current
+    void (async () => {
+      try {
+        const supabase = await getBrowserSupabaseClient();
+        runSubscription = supabase
         .channel(`run-realtime-${runId}`)
         .on(
           "postgres_changes",
@@ -63,7 +67,7 @@ export function useWorkflowRealtime(runId: string | undefined) {
         )
         .subscribe();
 
-      stepSubscription = supabase.current
+        stepSubscription = supabase
         .channel(`steps-realtime-${runId}`)
         .on(
           "postgres_changes",
@@ -77,10 +81,11 @@ export function useWorkflowRealtime(runId: string | undefined) {
             loadData();
           }
         )
-        .subscribe();
-    } catch (realtimeErr) {
-      console.warn("Supabase realtime not available. Falling back to polling.", realtimeErr);
-    }
+          .subscribe();
+      } catch (realtimeErr) {
+        console.warn("Supabase realtime not available. Falling back to polling.", realtimeErr);
+      }
+    })();
 
     // 2. High-frequency polling (2 seconds) as fallback or for logs
     const interval = setInterval(() => {
@@ -91,8 +96,10 @@ export function useWorkflowRealtime(runId: string | undefined) {
     }, 2000);
 
     return () => {
-      if (runSubscription) supabase.current.removeChannel(runSubscription);
-      if (stepSubscription) supabase.current.removeChannel(stepSubscription);
+      void getBrowserSupabaseClient().then((supabase) => {
+        if (runSubscription) supabase.removeChannel(runSubscription);
+        if (stepSubscription) supabase.removeChannel(stepSubscription);
+      });
       clearInterval(interval);
     };
   }, [runId, run?.status]);
@@ -100,7 +107,7 @@ export function useWorkflowRealtime(runId: string | undefined) {
   const toggleYolo = async (enabled: boolean) => {
     if (!runId) return;
     try {
-      const updatedRun = await gatewayBundle.current.workflowEngineGateway.toggleYoloMode(
+      const updatedRun = await getGatewayBundle().workflowEngineGateway.toggleYoloMode(
         runId,
         enabled
       );
@@ -112,7 +119,7 @@ export function useWorkflowRealtime(runId: string | undefined) {
 
   const approveStep = async (stepId: string, approve: boolean, comment?: string) => {
     try {
-      const updatedStep = await gatewayBundle.current.workflowEngineGateway.submitStepApproval(
+      const updatedStep = await getGatewayBundle().workflowEngineGateway.submitStepApproval(
         stepId,
         approve,
         comment

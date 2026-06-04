@@ -1,25 +1,15 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
 
 import { createGatewayBundle } from "@/data/repository/factory";
 import { SupabaseArtifactStorageConnectionGateway } from "@/data/repository/supabase/supabase-artifact-storage-connection-gateway";
 import { syncArtifactThroughRunner } from "@/features/artifacts/artifact-sync-service";
-import { getRequiredEnv, getSupabaseUrl } from "@/lib/env/app-env";
+import { createRuntimeSupabaseAdminClient } from "@/lib/supabase/runtime-config.server";
 
 type RouteContext = {
   params: Promise<{
     artifactId: string;
   }>;
 };
-
-function createSupabaseAdminClient() {
-  return createClient(
-    getSupabaseUrl(),
-    process.env.SUPABASE_SERVICE_ROLE_KEY ??
-      process.env.SUPABASE_API_SERVICE_ROLE_KEY ??
-      getRequiredEnv("SUPABASE_SERVICE_ROLE_KEY"),
-  );
-}
 
 export async function POST(_: Request, context: RouteContext) {
   try {
@@ -31,7 +21,7 @@ export async function POST(_: Request, context: RouteContext) {
       return NextResponse.json({ error: "Artifact not found." }, { status: 404 });
     }
 
-    const supabase = createSupabaseAdminClient();
+    const supabase = await createRuntimeSupabaseAdminClient();
     const storageGateway = new SupabaseArtifactStorageConnectionGateway(supabase);
     const payload = await syncArtifactThroughRunner(artifactId, {
       supabase,

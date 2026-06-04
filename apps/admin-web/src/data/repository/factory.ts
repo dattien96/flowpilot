@@ -7,23 +7,24 @@ import { SupabaseAiOrchestrationGateway } from "@/data/repository/supabase/supab
 import { SupabaseWorkflowEngineGateway } from "@/data/repository/supabase/supabase-workflow-engine-gateway";
 import { InMemoryWorkflowEngineGateway } from "@/data/repository/demo/in-memory-workflow-engine-gateway";
 import { LocalFirstWorkflowGateway } from "@/data/repository/local-first/local-first-workflow-gateway";
-import { getLocalRunnerBaseUrl, hasSupabaseEnv } from "@/lib/env/app-env";
+import { getLocalRunnerBaseUrl } from "@/lib/env/app-env";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { SupabaseUserFavoriteGateway } from "@/data/repository/supabase/supabase-user-favorite-gateway";
 import { InMemoryUserFavoriteGateway } from "@/data/repository/demo/in-memory-user-favorite-gateway";
 import { SupabaseArtifactStorageConnectionGateway } from "@/data/repository/supabase/supabase-artifact-storage-connection-gateway";
 import { startArtifactSyncBootstrap } from "@/features/artifacts/artifact-auto-sync";
+import { hasSupabaseRuntimeConfigOrEnvFallback } from "@/lib/supabase/runtime-config.server";
 
 export async function createGatewayBundle() {
   const localRunnerGateway = new HttpLocalRunnerGateway(
     getLocalRunnerBaseUrl(),
   );
 
-  if (hasSupabaseEnv()) {
-    const supabaseClient = createSupabaseServerClient();
+  if (await hasSupabaseRuntimeConfigOrEnvFallback()) {
+    const supabaseClient = await createSupabaseServerClient();
     const bundle = createSupabaseGatewayBundle(supabaseClient);
     try {
-      const bootstrapClient = createSupabaseAdminClient();
+      const bootstrapClient = await createSupabaseAdminClient();
       const artifactStorageConnectionGateway =
         new SupabaseArtifactStorageConnectionGateway(bootstrapClient);
       void startArtifactSyncBootstrap({

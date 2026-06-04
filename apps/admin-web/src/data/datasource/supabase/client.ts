@@ -1,9 +1,9 @@
-import { createClient } from "@supabase/supabase-js";
-
-import { getSupabaseAnonKey, getSupabaseUrl, hasSupabaseEnv } from "@/lib/env/app-env";
+import { createRuntimeSupabaseAnonClient } from "@/lib/supabase/runtime-config.server";
 
 export {
   createSupabaseBrowserClient,
+  getBrowserSupabaseClient,
+  resetBrowserSupabaseClient,
   supabase,
 } from "@/data/supabase/client";
 
@@ -39,7 +39,7 @@ function createDemoSupabaseClient() {
 }
 
 export function createSupabaseServerClient() {
-  return hasSupabaseEnv()
-    ? createClient(getSupabaseUrl(), getSupabaseAnonKey())
-    : (createDemoSupabaseClient() as never);
+  return createRuntimeSupabaseAnonClient().catch(
+    () => createDemoSupabaseClient() as never,
+  );
 }

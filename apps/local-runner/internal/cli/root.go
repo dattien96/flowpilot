@@ -82,6 +82,7 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			instance.StartIdleSweeper(ctx)
+			instance.StartOrphanedWorkflowArtifactCleanup(ctx)
 
 			mux := http.NewServeMux()
 			mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -580,6 +581,66 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 				}
 			})
+			mux.HandleFunc("/supabase-config", func(w http.ResponseWriter, r *http.Request) {
+				switch r.Method {
+				case http.MethodGet:
+					var (
+						config runner.SupabaseWorkspaceConfigResponse
+						err    error
+					)
+					if r.URL.Query().Get("includeSecret") == "1" {
+						config, err = instance.LoadSupabaseWorkspaceConfigWithSecret()
+					} else {
+						config, err = instance.LoadSupabaseWorkspaceConfig()
+					}
+					if err != nil {
+						if errors.Is(err, os.ErrNotExist) {
+							writeHTTPError(w, http.StatusNotFound, err)
+							return
+						}
+						writeHTTPError(w, http.StatusInternalServerError, err)
+						return
+					}
+					writeHTTPJSON(w, config)
+				case http.MethodPut:
+					var payload runner.SupabaseWorkspaceConfigRequest
+					if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+						writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+						return
+					}
+					config, err := instance.SaveSupabaseWorkspaceConfig(payload)
+					if err != nil {
+						writeHTTPError(w, http.StatusBadRequest, err)
+						return
+					}
+					writeHTTPJSON(w, config)
+				case http.MethodDelete:
+					if err := instance.ResetSupabaseWorkspaceConfig(); err != nil {
+						writeHTTPError(w, http.StatusInternalServerError, err)
+						return
+					}
+					writeHTTPJSON(w, map[string]string{"status": "reset"})
+				default:
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				}
+			})
+			mux.HandleFunc("/supabase-config/validate", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				var payload runner.SupabaseWorkspaceConfigRequest
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+				result, err := instance.ValidateSupabaseWorkspaceConfig(payload)
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+				writeHTTPJSON(w, result)
+			})
 			mux.HandleFunc("/backup", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -640,7 +701,7 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 						}
 					}
 
-					artifact, err := instance.SyncArtifact(artifactID, payload)
+					artifact, err := instance.SyncArtifactWithContext(r.Context(), artifactID, payload)
 					if err != nil {
 						writeHTTPError(w, http.StatusBadRequest, err)
 						return

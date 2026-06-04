@@ -1,10 +1,11 @@
 import { ArrowRight } from "lucide-react";
 
-import { hasSupabaseEnv } from "@/lib/env/app-env";
+import { resolveSupabaseRuntimeConfig } from "@/lib/supabase/runtime-config.server";
 import { Button } from "@/presentation/components/ui/button";
 
-export default function LoginPage() {
-  const supabaseEnabled = hasSupabaseEnv();
+export default async function LoginPage() {
+  const runtimeStatus = await resolveSupabaseRuntimeConfig();
+  const supabaseEnabled = runtimeStatus.configured;
 
   return (
     <div className="noise-bg flex min-h-screen items-center justify-center px-4">
@@ -18,7 +19,7 @@ export default function LoginPage() {
         <p className="mt-4 max-w-lg text-base text-muted-foreground">
           {supabaseEnabled
             ? "Sign in with a Supabase Auth user to access protected admin workflows."
-            : "Supabase env is not configured, so the admin runs in demo mode for local exploration."}
+            : "Supabase is not configured, so the admin runs in demo mode for local exploration."}
         </p>
         {supabaseEnabled ? (
           <form action="/api/auth/login" method="post" className="mt-8 grid gap-3">

@@ -9,7 +9,7 @@ import { ArrowRight } from "lucide-react";
 
 import { PageFrame } from "@/components/common/page-frame";
 import { Button } from "@/components/ui/button";
-import { createSupabaseBrowserClient } from "@/data/datasource/supabase/client";
+import { getBrowserSupabaseClient } from "@/data/datasource/supabase/client";
 import { createGatewayBundle } from "@/data/repository/browser-factory";
 import { ListWorkflowRunsUseCase } from "@/domain/usecase/workflow-engine/list-workflow-runs-usecase";
 import { ListWorkflowsUseCase } from "@/domain/usecase/workflow-engine/list-workflows-usecase";
@@ -58,6 +58,45 @@ function mapWorkflowRunSessionRow(row: WorkflowRunSessionRow): WorkflowRunSessio
   };
 }
 
+function WorkflowRunsSkeleton() {
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 animate-pulse">
+      {[1, 2, 3, 4, 5, 6].map((i) => (
+        <div
+          key={i}
+          className="flex flex-col justify-between overflow-hidden rounded-[1.8rem] border border-border/60 bg-gradient-to-b from-card/90 to-background/40 p-6 min-h-[220px]"
+        >
+          <div className="flex flex-col h-full">
+            <div className="flex items-start justify-between gap-3 mb-4">
+              <div className="flex items-start gap-2.5 min-w-0 flex-1">
+                <div className="w-4 h-4 rounded bg-muted mt-1" />
+                <div className="space-y-2 flex-1">
+                  <div className="h-5 w-3/4 bg-muted rounded" />
+                  <div className="h-3 w-1/2 bg-muted rounded" />
+                </div>
+              </div>
+              <div className="flex flex-col items-end gap-1.5 shrink-0">
+                <div className="h-4 w-16 bg-muted rounded-full" />
+                <div className="h-4 w-12 bg-muted rounded-full" />
+              </div>
+            </div>
+
+            <div className="space-y-2.5 border-t border-border/40 pt-4 mb-6 flex-1">
+              <div className="h-4 w-5/6 bg-muted rounded" />
+              <div className="h-4 w-2/3 bg-muted rounded mt-2" />
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between pt-2 border-t border-border/40 mt-auto">
+            <div className="h-8 w-16 bg-muted rounded-xl" />
+            <div className="h-8 w-24 bg-muted rounded-xl" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function WorkflowRunHistoryPage() {
   const location = useLocation();
   const gatewayBundle = useRef(createGatewayBundle());
@@ -82,6 +121,11 @@ export function WorkflowRunHistoryPage() {
   const [activeSessions, setActiveSessions] = useState<WorkflowRunSession[]>([]);
   const [isKillingAllProcesses, setIsKillingAllProcesses] = useState(false);
   const [processActionError, setProcessActionError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  function getGatewayBundle() {
+    return gatewayBundle.current;
+  }
 
   async function reconcileLiveSessions(sessions: WorkflowRunSession[]) {
     if (sessions.length === 0) {
@@ -90,7 +134,7 @@ export function WorkflowRunHistoryPage() {
 
     let liveSessions: Array<{ processKey: string | null }> = [];
     try {
-      liveSessions = await gatewayBundle.current.localRunnerGateway.listSessions();
+      liveSessions = await getGatewayBundle().localRunnerGateway.listSessions();
     } catch (error) {
       console.warn("Unable to load live runner sessions for reconciliation:", error);
       return sessions;
@@ -111,7 +155,7 @@ export function WorkflowRunHistoryPage() {
     try {
       await Promise.allSettled(
         staleSessions.map((session) =>
-          gatewayBundle.current.localRunnerGateway.closeSession({
+          getGatewayBundle().localRunnerGateway.closeSession({
             transportType: session.transportType,
             providerSessionId: session.providerSessionId ?? "",
             processKey: session.processKey,
@@ -120,7 +164,7 @@ export function WorkflowRunHistoryPage() {
         ),
       );
 
-      const supabase = createSupabaseBrowserClient();
+      const supabase = await getBrowserSupabaseClient();
       const { error } = await supabase
         .from("workflow_run_sessions")
         .update({
@@ -147,7 +191,7 @@ export function WorkflowRunHistoryPage() {
   }
 
   async function loadActiveSessions() {
-    const supabase = createSupabaseBrowserClient();
+    const supabase = await getBrowserSupabaseClient();
     const { data, error } = await supabase
       .from("workflow_run_sessions")
       .select(
@@ -166,53 +210,58 @@ export function WorkflowRunHistoryPage() {
   }
 
   async function loadRunHistory() {
-    const [runRows, workflowRows, projectRows] = await Promise.all([
-      listWorkflowRunsUseCase.current.execute(),
-      listWorkflowsUseCase.current.execute(),
-      gatewayBundle.current.projectGateway.listProjects(),
-    ]);
-    const titles = await loadWorkflowRunTitleMap(
-      gatewayBundle.current.localRunnerGateway,
-      runRows.map((run) => run.id),
-      {
-        listArtifactRuns: () =>
-          gatewayBundle.current.workflowEngineGateway.listArtifactRuns(),
-        loadArtifactContent: async (artifactRun) => {
-          if (!artifactRun.id.trim() || !artifactRun.remotePath.trim()) {
-            return null;
-          }
-
-          const params = new URLSearchParams({
-            remotePath: artifactRun.remotePath,
-            storageProvider: artifactRun.storageProvider ?? "supabase",
-          });
-          if (artifactRun.remoteObjectId?.trim()) {
-            params.set("remoteObjectId", artifactRun.remoteObjectId.trim());
-          }
-          if (artifactRun.projectId?.trim()) {
-            params.set("projectId", artifactRun.projectId.trim());
-          }
-
-          const response = await fetch(
-            `/api/local-runner/artifacts/${artifactRun.id}/open?${params.toString()}`,
-          );
-          if (!response.ok) {
-            return null;
-          }
-
-          return await response.text();
-        },
-      },
-    );
-    setRuns(runRows);
-    setWorkflows(workflowRows);
-    setProjects(projectRows);
-    setRunTitles(titles);
+    setIsLoading(true);
     try {
-      const activeSessionRows = await loadActiveSessions();
-      setActiveSessions(activeSessionRows);
-    } catch (error) {
-      console.error("Unable to load active workflow sessions:", error);
+      const [runRows, workflowRows, projectRows] = await Promise.all([
+        listWorkflowRunsUseCase.current.execute(),
+        listWorkflowsUseCase.current.execute(),
+        getGatewayBundle().projectGateway.listProjects(),
+      ]);
+      const titles = await loadWorkflowRunTitleMap(
+        getGatewayBundle().localRunnerGateway,
+        runRows.map((run) => run.id),
+        {
+          listArtifactRuns: () =>
+            getGatewayBundle().workflowEngineGateway.listArtifactRuns(),
+          loadArtifactContent: async (artifactRun) => {
+            if (!artifactRun.id.trim() || !artifactRun.remotePath.trim()) {
+              return null;
+            }
+
+            const params = new URLSearchParams({
+              remotePath: artifactRun.remotePath,
+              storageProvider: artifactRun.storageProvider ?? "supabase",
+            });
+            if (artifactRun.remoteObjectId?.trim()) {
+              params.set("remoteObjectId", artifactRun.remoteObjectId.trim());
+            }
+            if (artifactRun.projectId?.trim()) {
+              params.set("projectId", artifactRun.projectId.trim());
+            }
+
+            const response = await fetch(
+              `/api/local-runner/artifacts/${artifactRun.id}/open?${params.toString()}`,
+            );
+            if (!response.ok) {
+              return null;
+            }
+
+            return await response.text();
+          },
+        },
+      );
+      setRuns(runRows);
+      setWorkflows(workflowRows);
+      setProjects(projectRows);
+      setRunTitles(titles);
+      try {
+        const activeSessionRows = await loadActiveSessions();
+        setActiveSessions(activeSessionRows);
+      } catch (error) {
+        console.error("Unable to load active workflow sessions:", error);
+      }
+    } finally {
+      setIsLoading(false);
     }
   }
 
@@ -298,7 +347,7 @@ export function WorkflowRunHistoryPage() {
     setDeleteError(null);
 
     try {
-      await gatewayBundle.current.workflowGateway.deleteWorkflowRuns(uniqueRunIds);
+      await getGatewayBundle().workflowGateway.deleteWorkflowRuns(uniqueRunIds);
       setRuns((current) => current.filter((run) => !uniqueRunIds.includes(run.id)));
       setSelectedRunIds((current) => current.filter((runId) => !uniqueRunIds.includes(runId)));
       setActiveSessions((current) =>
@@ -330,7 +379,7 @@ export function WorkflowRunHistoryPage() {
     const completedAt = new Date().toISOString();
     const closeResults = await Promise.allSettled(
       killableSessions.map((session) =>
-        gatewayBundle.current.localRunnerGateway.closeSession({
+        getGatewayBundle().localRunnerGateway.closeSession({
           transportType: session.transportType,
           providerSessionId: session.providerSessionId ?? "",
           processKey: session.processKey,
@@ -346,7 +395,7 @@ export function WorkflowRunHistoryPage() {
 
     try {
       if (closedSessionIds.length > 0) {
-        const supabase = createSupabaseBrowserClient();
+        const supabase = await getBrowserSupabaseClient();
         const { error } = await supabase
           .from("workflow_run_sessions")
           .update({
@@ -425,217 +474,223 @@ export function WorkflowRunHistoryPage() {
         </div>
       }
     >
-      <div className="grid gap-4 rounded-[1.5rem] border border-border/60 bg-card/45 p-5 backdrop-blur-sm md:grid-cols-3">
-        <label className="space-y-2 text-sm flex flex-col">
-          <span className="font-semibold text-muted-foreground mb-1">Project</span>
-          <select
-            className="w-full rounded-xl border border-border/80 bg-background/50 px-4 py-2.5 focus:outline-none focus:ring-1 focus:ring-primary/40 transition-all cursor-pointer font-medium"
-            value={projectFilter}
-            onChange={(event) => setProjectFilter(event.target.value)}
-          >
-            <option value="all">All projects</option>
-            {projects.map((project) => (
-              <option key={project.id} value={project.id}>
-                {project.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="space-y-2 text-sm flex flex-col">
-          <span className="font-semibold text-muted-foreground mb-1">Scope</span>
-          <select
-            className="w-full rounded-xl border border-border/80 bg-background/50 px-4 py-2.5 focus:outline-none focus:ring-1 focus:ring-primary/40 transition-all cursor-pointer font-medium"
-            value={scopeFilter}
-            onChange={(event) =>
-              setScopeFilter(event.target.value as typeof scopeFilter)
-            }
-          >
-            <option value="all">All scopes</option>
-            <option value="global">Global workflow runs</option>
-            <option value="private">Private workflow runs</option>
-          </select>
-        </label>
-        <label className="space-y-2 text-sm flex flex-col">
-          <span className="font-semibold text-muted-foreground mb-1">Workflow type</span>
-          <select
-            className="w-full rounded-xl border border-border/80 bg-background/50 px-4 py-2.5 focus:outline-none focus:ring-1 focus:ring-primary/40 transition-all cursor-pointer font-medium"
-            value={workflowFilter}
-            onChange={(event) => setWorkflowFilter(event.target.value)}
-          >
-            <option value="all">All workflows</option>
-            {workflows.map((workflow) => (
-              <option key={workflow.id} value={workflow.id}>
-                {workflow.name}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
-
-      <div className="flex flex-wrap items-center gap-4 rounded-[1.5rem] border border-border/60 bg-card/45 p-4 backdrop-blur-sm shadow-sm">
-        <label className="flex items-center gap-3 text-sm font-medium text-muted-foreground cursor-pointer select-none">
-          <input
-            checked={allVisibleSelected}
-            className="h-4 w-4 rounded border-border/80 bg-background/50 text-primary focus:ring-primary/40 transition-all cursor-pointer"
-            disabled={visibleRuns.length === 0 || isDeleting}
-            onChange={() =>
-              setSelectedRunIds(
-                allVisibleSelected ? [] : visibleRuns.map((run) => run.id),
-              )
-            }
-            type="checkbox"
-          />
-          <span>Select all visible</span>
-        </label>
-
-        <div className="ml-auto flex flex-wrap gap-2">
-          <Button
-            className="border border-red-500/20 text-red-600 hover:bg-red-500/10 hover:border-red-500/40 rounded-xl px-4 py-2 text-sm font-semibold transition-all duration-300"
-            disabled={selectedVisibleRunIds.length === 0 || isDeleting}
-            onClick={() => void deleteWorkflowRuns(selectedVisibleRunIds)}
-            variant="secondary"
-          >
-            {isDeleting
-              ? "Deleting..."
-              : `Delete selected${selectedVisibleRunIds.length > 0 ? ` (${selectedVisibleRunIds.length})` : ""}`}
-          </Button>
-          <Button
-            className="border border-red-500/20 text-red-600 hover:bg-red-500/10 hover:border-red-500/40 rounded-xl px-4 py-2 text-sm font-semibold transition-all duration-300"
-            disabled={runs.length === 0 || isDeleting}
-            onClick={() => void deleteWorkflowRuns(runs.map((run) => run.id))}
-            variant="secondary"
-          >
-            Delete all
-          </Button>
-        </div>
-      </div>
-
-      {deleteError ? (
-        <div className="rounded-[1.5rem] border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-700 font-medium">
-          {deleteError}
-        </div>
-      ) : null}
-
-      {processActionError ? (
-        <div className="rounded-[1.5rem] border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-700 font-medium">
-          {processActionError}
-        </div>
-      ) : null}
-
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {visibleRuns.length === 0 ? (
-          <div className="rounded-[1.5rem] border border-dashed border-border bg-background/60 p-6 text-sm text-muted-foreground md:col-span-2 lg:col-span-3">
-            No workflow runs match the current filters.
+      {isLoading ? (
+        <WorkflowRunsSkeleton />
+      ) : (
+        <>
+          <div className="grid gap-4 rounded-[1.5rem] border border-border/60 bg-card/45 p-5 backdrop-blur-sm md:grid-cols-3">
+            <label className="space-y-2 text-sm flex flex-col">
+              <span className="font-semibold text-muted-foreground mb-1">Project</span>
+              <select
+                className="w-full rounded-xl border border-border/80 bg-background/50 px-4 py-2.5 focus:outline-none focus:ring-1 focus:ring-primary/40 transition-all cursor-pointer font-medium"
+                value={projectFilter}
+                onChange={(event) => setProjectFilter(event.target.value)}
+              >
+                <option value="all">All projects</option>
+                {projects.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="space-y-2 text-sm flex flex-col">
+              <span className="font-semibold text-muted-foreground mb-1">Scope</span>
+              <select
+                className="w-full rounded-xl border border-border/80 bg-background/50 px-4 py-2.5 focus:outline-none focus:ring-1 focus:ring-primary/40 transition-all cursor-pointer font-medium"
+                value={scopeFilter}
+                onChange={(event) =>
+                  setScopeFilter(event.target.value as typeof scopeFilter)
+                }
+              >
+                <option value="all">All scopes</option>
+                <option value="global">Global workflow runs</option>
+                <option value="private">Private workflow runs</option>
+              </select>
+            </label>
+            <label className="space-y-2 text-sm flex flex-col">
+              <span className="font-semibold text-muted-foreground mb-1">Workflow type</span>
+              <select
+                className="w-full rounded-xl border border-border/80 bg-background/50 px-4 py-2.5 focus:outline-none focus:ring-1 focus:ring-primary/40 transition-all cursor-pointer font-medium"
+                value={workflowFilter}
+                onChange={(event) => setWorkflowFilter(event.target.value)}
+              >
+                <option value="all">All workflows</option>
+                {workflows.map((workflow) => (
+                  <option key={workflow.id} value={workflow.id}>
+                    {workflow.name}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
-        ) : null}
-        {visibleRuns.map((run) => {
-          const workflow = workflowById.get(run.workflowId);
-          const runTitle = runTitles.get(run.id);
-          const selected = selectedRunIds.includes(run.id);
-          const status = (run.status || "").toLowerCase();
 
-          let gradientClass = "from-violet-500/80 via-purple-500/80 to-blue-500/80";
-          let statusBadgeClass = "bg-muted/50 text-muted-foreground border-border/50";
-          if (status === "completed" || status === "success") {
-            gradientClass = "from-emerald-500/80 via-teal-500/80 to-cyan-500/80";
-            statusBadgeClass = "bg-emerald-500/10 text-emerald-500 border-emerald-500/20";
-          } else if (status === "running" || status === "active" || status === "pending") {
-            gradientClass = "from-blue-500/80 via-sky-500/80 to-cyan-500/80";
-            statusBadgeClass = "bg-blue-500/10 text-blue-500 border-blue-500/20";
-          } else if (status === "failed" || status === "error") {
-            gradientClass = "from-red-500/80 via-rose-500/80 to-orange-500/80";
-            statusBadgeClass = "bg-red-500/10 text-red-500 border-red-500/20";
-          }
+          <div className="flex flex-wrap items-center gap-4 rounded-[1.5rem] border border-border/60 bg-card/45 p-4 backdrop-blur-sm shadow-sm">
+            <label className="flex items-center gap-3 text-sm font-medium text-muted-foreground cursor-pointer select-none">
+              <input
+                checked={allVisibleSelected}
+                className="h-4 w-4 rounded border-border/80 bg-background/50 text-primary focus:ring-primary/40 transition-all cursor-pointer"
+                disabled={visibleRuns.length === 0 || isDeleting}
+                onChange={() =>
+                  setSelectedRunIds(
+                    allVisibleSelected ? [] : visibleRuns.map((run) => run.id),
+                  )
+                }
+                type="checkbox"
+              />
+              <span>Select all visible</span>
+            </label>
 
-          return (
-            <div
-              key={run.id}
-              className={`group relative flex flex-col justify-between overflow-hidden rounded-[1.8rem] border bg-gradient-to-b from-card/90 to-background/40 backdrop-blur-md p-6 shadow-sm hover:shadow-xl hover:border-primary/20 hover:-translate-y-1 transition-all duration-300 ${
-                selected ? "border-primary/40 shadow-md ring-1 ring-primary/25" : "border-border/60"
-              }`}
-            >
-              {/* Dynamic top gradient line based on status */}
-              <div className={`absolute top-0 left-0 right-0 h-[3px] opacity-70 group-hover:opacity-100 transition-opacity bg-gradient-to-r ${gradientClass}`} />
+            <div className="ml-auto flex flex-wrap gap-2">
+              <Button
+                className="border border-red-500/20 text-red-600 hover:bg-red-500/10 hover:border-red-500/40 rounded-xl px-4 py-2 text-sm font-semibold transition-all duration-300"
+                disabled={selectedVisibleRunIds.length === 0 || isDeleting}
+                onClick={() => void deleteWorkflowRuns(selectedVisibleRunIds)}
+                variant="secondary"
+              >
+                {isDeleting
+                  ? "Deleting..."
+                  : `Delete selected${selectedVisibleRunIds.length > 0 ? ` (${selectedVisibleRunIds.length})` : ""}`}
+              </Button>
+              <Button
+                className="border border-red-500/20 text-red-600 hover:bg-red-500/10 hover:border-red-500/40 rounded-xl px-4 py-2 text-sm font-semibold transition-all duration-300"
+                disabled={runs.length === 0 || isDeleting}
+                onClick={() => void deleteWorkflowRuns(runs.map((run) => run.id))}
+                variant="secondary"
+              >
+                Delete all
+              </Button>
+            </div>
+          </div>
 
-              <div className="flex flex-col h-full">
-                {/* Header with selection checkbox */}
-                <div className="flex items-start justify-between gap-3 mb-4">
-                  <div className="flex items-start gap-2.5 min-w-0">
-                    <label className="mt-1 flex shrink-0 items-center cursor-pointer">
-                      <input
-                        checked={selected}
-                        className="h-4 w-4 rounded border-border/80 bg-background/50 text-primary focus:ring-primary/40 transition-all cursor-pointer"
-                        disabled={isDeleting}
-                        onChange={() =>
-                          setSelectedRunIds((current) =>
-                            current.includes(run.id)
-                              ? current.filter((id) => id !== run.id)
-                              : [...current, run.id],
-                          )
-                        }
-                        type="checkbox"
-                      />
-                    </label>
-                    <div className="min-w-0">
-                      <Link
-                        to="/workflow-runs/$runId"
-                        params={{ runId: run.id }}
-                        className="block hover:underline"
-                      >
-                        <h3 className="text-lg font-bold tracking-tight text-foreground group-hover:text-primary transition-colors duration-300 truncate">
-                          {runTitle ?? workflow?.name ?? run.workflowId}
-                        </h3>
-                      </Link>
-                      <p className="font-mono text-[9px] tracking-wider text-muted-foreground uppercase mt-1 truncate">
-                        ID: {run.id}
+          {deleteError ? (
+            <div className="rounded-[1.5rem] border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-700 font-medium">
+              {deleteError}
+            </div>
+          ) : null}
+
+          {processActionError ? (
+            <div className="rounded-[1.5rem] border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-700 font-medium">
+              {processActionError}
+            </div>
+          ) : null}
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {visibleRuns.length === 0 ? (
+              <div className="rounded-[1.5rem] border border-dashed border-border bg-background/60 p-6 text-sm text-muted-foreground md:col-span-2 lg:col-span-3">
+                No workflow runs match the current filters.
+              </div>
+            ) : null}
+            {visibleRuns.map((run) => {
+              const workflow = workflowById.get(run.workflowId);
+              const runTitle = runTitles.get(run.id);
+              const selected = selectedRunIds.includes(run.id);
+              const status = (run.status || "").toLowerCase();
+
+              let gradientClass = "from-violet-500/80 via-purple-500/80 to-blue-500/80";
+              let statusBadgeClass = "bg-muted/50 text-muted-foreground border-border/50";
+              if (status === "completed" || status === "success") {
+                gradientClass = "from-emerald-500/80 via-teal-500/80 to-cyan-500/80";
+                statusBadgeClass = "bg-emerald-500/10 text-emerald-500 border-emerald-500/20";
+              } else if (status === "running" || status === "active" || status === "pending") {
+                gradientClass = "from-blue-500/80 via-sky-500/80 to-cyan-500/80";
+                statusBadgeClass = "bg-blue-500/10 text-blue-500 border-blue-500/20";
+              } else if (status === "failed" || status === "error") {
+                gradientClass = "from-red-500/80 via-rose-500/80 to-orange-500/80";
+                statusBadgeClass = "bg-red-500/10 text-red-500 border-red-500/20";
+              }
+
+              return (
+                <div
+                  key={run.id}
+                  className={`group relative flex flex-col justify-between overflow-hidden rounded-[1.8rem] border bg-gradient-to-b from-card/90 to-background/40 backdrop-blur-md p-6 shadow-sm hover:shadow-xl hover:border-primary/20 hover:-translate-y-1 transition-all duration-300 ${
+                    selected ? "border-primary/40 shadow-md ring-1 ring-primary/25" : "border-border/60"
+                  }`}
+                >
+                  {/* Dynamic top gradient line based on status */}
+                  <div className={`absolute top-0 left-0 right-0 h-[3px] opacity-70 group-hover:opacity-100 transition-opacity bg-gradient-to-r ${gradientClass}`} />
+
+                  <div className="flex flex-col h-full">
+                    {/* Header with selection checkbox */}
+                    <div className="flex items-start justify-between gap-3 mb-4">
+                      <div className="flex items-start gap-2.5 min-w-0">
+                        <label className="mt-1 flex shrink-0 items-center cursor-pointer">
+                          <input
+                            checked={selected}
+                            className="h-4 w-4 rounded border-border/80 bg-background/50 text-primary focus:ring-primary/40 transition-all cursor-pointer"
+                            disabled={isDeleting}
+                            onChange={() =>
+                              setSelectedRunIds((current) =>
+                                current.includes(run.id)
+                                  ? current.filter((id) => id !== run.id)
+                                  : [...current, run.id],
+                              )
+                            }
+                            type="checkbox"
+                          />
+                        </label>
+                        <div className="min-w-0">
+                          <Link
+                            to="/workflow-runs/$runId"
+                            params={{ runId: run.id }}
+                            className="block hover:underline"
+                          >
+                            <h3 className="text-lg font-bold tracking-tight text-foreground group-hover:text-primary transition-colors duration-300 truncate">
+                              {runTitle ?? workflow?.name ?? run.workflowId}
+                            </h3>
+                          </Link>
+                          <p className="font-mono text-[9px] tracking-wider text-muted-foreground uppercase mt-1 truncate">
+                            ID: {run.id}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex flex-col items-end gap-1.5 shrink-0">
+                        <span className={`rounded-full px-2.5 py-0.5 text-[10px] font-semibold border uppercase tracking-wider ${statusBadgeClass}`}>
+                          {run.status}
+                        </span>
+                        <span className={`rounded-full px-2.5 py-0.5 text-[10px] font-semibold border border-border/50 bg-muted/30 text-muted-foreground uppercase tracking-wider`}>
+                          {workflow?.projectId ? "Private" : "Global"}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Details Area */}
+                    <div className="space-y-2.5 border-t border-border/40 pt-4 mb-6 text-xs text-muted-foreground/90">
+                      <p className="font-medium text-foreground/75 truncate">
+                        Project: <span className="font-normal text-muted-foreground">{projectNameById.get(run.projectId) ?? run.projectId}</span>
+                      </p>
+                      <p className="font-medium text-foreground/75 truncate">
+                        Started: <span className="font-normal text-muted-foreground">{new Date(run.startedAt).toLocaleString()}</span>
                       </p>
                     </div>
                   </div>
-                  <div className="flex flex-col items-end gap-1.5 shrink-0">
-                    <span className={`rounded-full px-2.5 py-0.5 text-[10px] font-semibold border uppercase tracking-wider ${statusBadgeClass}`}>
-                      {run.status}
-                    </span>
-                    <span className={`rounded-full px-2.5 py-0.5 text-[10px] font-semibold border border-border/50 bg-muted/30 text-muted-foreground uppercase tracking-wider`}>
-                      {workflow?.projectId ? "Private" : "Global"}
-                    </span>
+
+                  {/* Actions Footer */}
+                  <div className="flex items-center justify-between pt-2 border-t border-border/40 mt-auto">
+                    <Button
+                      className="border border-red-500/20 text-red-600 hover:bg-red-500/10 hover:border-red-500/40 rounded-xl px-2.5 py-1 h-8 text-[11px] font-semibold transition-all duration-300"
+                      disabled={isDeleting}
+                      onClick={() => void deleteWorkflowRuns([run.id])}
+                      variant="secondary"
+                    >
+                      Delete
+                    </Button>
+                    <Link
+                      to="/workflow-runs/$runId"
+                      params={{ runId: run.id }}
+                    >
+                      <Button size="sm" variant="secondary" className="rounded-xl bg-muted/60 hover:bg-primary hover:text-primary-foreground border border-border/40 h-8 text-xs transition-all duration-300 group/btn">
+                        Open run
+                        <ArrowRight className="ml-1.5 h-3.5 w-3.5 group-hover/btn:translate-x-1 transition-transform duration-300" />
+                      </Button>
+                    </Link>
                   </div>
                 </div>
-
-                {/* Details Area */}
-                <div className="space-y-2.5 border-t border-border/40 pt-4 mb-6 text-xs text-muted-foreground/90">
-                  <p className="font-medium text-foreground/75 truncate">
-                    Project: <span className="font-normal text-muted-foreground">{projectNameById.get(run.projectId) ?? run.projectId}</span>
-                  </p>
-                  <p className="font-medium text-foreground/75 truncate">
-                    Started: <span className="font-normal text-muted-foreground">{new Date(run.startedAt).toLocaleString()}</span>
-                  </p>
-                </div>
-              </div>
-
-              {/* Actions Footer */}
-              <div className="flex items-center justify-between pt-2 border-t border-border/40 mt-auto">
-                <Button
-                  className="border border-red-500/20 text-red-600 hover:bg-red-500/10 hover:border-red-500/40 rounded-xl px-2.5 py-1 h-8 text-[11px] font-semibold transition-all duration-300"
-                  disabled={isDeleting}
-                  onClick={() => void deleteWorkflowRuns([run.id])}
-                  variant="secondary"
-                >
-                  Delete
-                </Button>
-                <Link
-                  to="/workflow-runs/$runId"
-                  params={{ runId: run.id }}
-                >
-                  <Button size="sm" variant="secondary" className="rounded-xl bg-muted/60 hover:bg-primary hover:text-primary-foreground border border-border/40 h-8 text-xs transition-all duration-300 group/btn">
-                    Open run
-                    <ArrowRight className="ml-1.5 h-3.5 w-3.5 group-hover/btn:translate-x-1 transition-transform duration-300" />
-                  </Button>
-                </Link>
-              </div>
-            </div>
-          );
-        })}
-      </div>
+              );
+            })}
+          </div>
+        </>
+      )}
     </PageFrame>
   );
 }

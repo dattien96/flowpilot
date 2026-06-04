@@ -1,0 +1,9 @@
+{
+  "ok": true,
+  "run_dir": "C:\\working\\flowpilot\\output\\pets\\bao-engineer\\run",
+  "spritesheet": "C:\\working\\flowpilot\\output\\pets\\bao-engineer\\run\\final\\spritesheet.webp",
+  "validation": "C:\\working\\flowpilot\\output\\pets\\bao-engineer\\run\\final\\validation.json",
+  "contact_sheet": "C:\\working\\flowpilot\\output\\pets\\bao-engineer\\run\\qa\\contact-sheet.png",
+  "review": "C:\\working\\flowpilot\\output\\pets\\bao-engineer\\run\\qa\\review.json",
+  "package": "C:\\Users\\dat.nguyen\\.codex\\pets\\bao"
+}

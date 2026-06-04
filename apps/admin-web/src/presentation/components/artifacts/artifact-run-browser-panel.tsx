@@ -6,6 +6,7 @@ import { ExternalLink, Search, UploadCloud } from "lucide-react";
 import type { Project } from "@/domain/model/entity/project";
 import type { LocalRunnerArtifact } from "@/domain/model/entity/local-runner";
 import type { ArtifactRun, ArtifactSyncStatus } from "@/domain/model/entity/workflow-engine";
+import { loadWorkflowRunArtifactPromptFiles } from "@/lib/workflow-run-artifact-open";
 import { Badge } from "@/presentation/components/ui/badge";
 import { Button } from "@/presentation/components/ui/button";
 import type { ReactNode } from "react";
@@ -17,6 +18,7 @@ interface ArtifactRunBrowserPanelProps {
   scopeLabel: string;
   showProjectFilter?: boolean;
   onArtifactsChanged?: () => Promise<void> | void;
+  loadRemoteArtifactContent?: (artifact: ArtifactRun) => Promise<string | null>;
 }
 
 type ArtifactBrowserItem = {
@@ -40,6 +42,11 @@ type ArtifactBrowserItem = {
   updatedAt: string;
 };
 
+type RemotePromptOverride = {
+  actualPromptText: string;
+  promptText: string;
+};
+
 export function ArtifactRunBrowserPanel({
   localArtifacts = [],
   artifactRuns = [],
@@ -47,12 +54,19 @@ export function ArtifactRunBrowserPanel({
   scopeLabel,
   showProjectFilter = false,
   onArtifactsChanged,
+  loadRemoteArtifactContent,
 }: ArtifactRunBrowserPanelProps) {
   const [query, setQuery] = useState("");
   const [projectId, setProjectId] = useState("all");
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [bulkSyncing, setBulkSyncing] = useState(false);
   const [subTab, setSubTab] = useState<"local" | "remote">("local");
+  const [remoteTitleOverrides, setRemoteTitleOverrides] = useState<Map<string, string>>(
+    () => new Map(),
+  );
+  const [remotePromptOverrides, setRemotePromptOverrides] = useState<
+    Map<string, RemotePromptOverride>
+  >(() => new Map());
 
   const projectById = useMemo(() => new Map(projects.map((project) => [project.id, project])), [projects]);
   const localArtifactById = useMemo(
@@ -76,16 +90,19 @@ export function ArtifactRunBrowserPanel({
         .map((artifact) => {
           const matchedLocalArtifact =
             localArtifactById.get(artifact.id) ?? localArtifactByRemotePath.get(artifact.remotePath.trim());
+          const promptOverride = remotePromptOverrides.get(artifact.id);
+          const fallbackTitle = deriveArtifactDisplayTitle(
+            matchedLocalArtifact?.contentMarkdown ?? "",
+            artifact.title,
+          );
           return {
             id: artifact.id,
             kind: "remote" as const,
-            title: deriveArtifactDisplayTitle(
-              matchedLocalArtifact?.contentMarkdown ?? "",
-              artifact.title,
-            ),
+            title: remoteTitleOverrides.get(artifact.id) ?? fallbackTitle,
             contentMarkdown: matchedLocalArtifact?.contentMarkdown ?? "",
-            promptText: matchedLocalArtifact?.promptText ?? "",
-            actualPromptText: matchedLocalArtifact?.actualPromptText ?? "",
+            promptText: matchedLocalArtifact?.promptText ?? promptOverride?.promptText ?? "",
+            actualPromptText:
+              matchedLocalArtifact?.actualPromptText ?? promptOverride?.actualPromptText ?? "",
             projectId: artifact.projectId,
             projectName: artifact.projectId ? projectById.get(artifact.projectId)?.name ?? null : null,
             workflowRunId: artifact.workflowRunId,
@@ -100,7 +117,14 @@ export function ArtifactRunBrowserPanel({
             updatedAt: artifact.updatedAt,
           };
         }),
-    [artifactRuns, localArtifactById, localArtifactByRemotePath, projectById],
+    [
+      artifactRuns,
+      localArtifactById,
+      localArtifactByRemotePath,
+      projectById,
+      remotePromptOverrides,
+      remoteTitleOverrides,
+    ],
   );
 
   const remoteArtifactKeys = useMemo(
@@ -237,6 +261,118 @@ export function ArtifactRunBrowserPanel({
 
     return () => window.clearInterval(intervalId);
   }, [onArtifactsChanged, syncingArtifactCount]);
+
+  useEffect(() => {
+    if (!loadRemoteArtifactContent) {
+      setRemoteTitleOverrides(new Map());
+      return;
+    }
+
+    const candidates = artifactRuns
+      .filter(shouldRenderArtifactRunAsRemote)
+      .filter((artifact) => {
+        const matchedLocalArtifact =
+          localArtifactById.get(artifact.id) ?? localArtifactByRemotePath.get(artifact.remotePath.trim());
+        const hasLocalContent =
+          (matchedLocalArtifact?.contentMarkdown ?? "").replace(/\s+/g, " ").trim() !== "";
+        return !hasLocalContent && isGenericArtifactTitle(artifact.title);
+      });
+
+    if (candidates.length === 0) {
+      setRemoteTitleOverrides(new Map());
+      return;
+    }
+
+    let cancelled = false;
+
+    void Promise.all(
+      candidates.map(async (artifact) => {
+        const content = await loadRemoteArtifactContent(artifact);
+        const summary = content ? summarizeArtifactContent(content) : null;
+        return summary ? ([artifact.id, summary] as const) : null;
+      }),
+    ).then((entries) => {
+      if (cancelled) {
+        return;
+      }
+
+      const next = new Map<string, string>();
+      for (const entry of entries) {
+        if (!entry) {
+          continue;
+        }
+        next.set(entry[0], entry[1]);
+      }
+      setRemoteTitleOverrides(next);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [artifactRuns, loadRemoteArtifactContent, localArtifactById, localArtifactByRemotePath]);
+
+  useEffect(() => {
+    if (subTab !== "remote") {
+      setRemotePromptOverrides(new Map());
+      return;
+    }
+
+    const candidates = artifactRuns
+      .filter(shouldRenderArtifactRunAsRemote)
+      .filter((artifact) => {
+        const matchedLocalArtifact =
+          localArtifactById.get(artifact.id) ?? localArtifactByRemotePath.get(artifact.remotePath.trim());
+        const hasLocalPrompt =
+          (matchedLocalArtifact?.actualPromptText ?? "").trim() !== "" ||
+          (matchedLocalArtifact?.promptText ?? "").trim() !== "";
+        return !hasLocalPrompt && artifact.remotePath.trim() !== "";
+      });
+
+    if (candidates.length === 0) {
+      setRemotePromptOverrides(new Map());
+      return;
+    }
+
+    let cancelled = false;
+
+    void Promise.all(
+      candidates.map(async (artifact) => {
+        const promptFiles = await loadWorkflowRunArtifactPromptFiles(artifact);
+        if (
+          !promptFiles.actualPromptText?.trim() &&
+          !promptFiles.promptText?.trim()
+        ) {
+          return null;
+        }
+
+        return [
+          artifact.id,
+          {
+            actualPromptText: promptFiles.actualPromptText ?? "",
+            promptText: promptFiles.promptText ?? "",
+          } satisfies RemotePromptOverride,
+        ] as const;
+      }),
+    ).then((entries) => {
+      if (cancelled) {
+        return;
+      }
+
+      const next = new Map<string, RemotePromptOverride>();
+      for (const entry of entries) {
+        if (!entry) {
+          continue;
+        }
+
+        next.set(entry[0], entry[1]);
+      }
+      setRemotePromptOverrides(next);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [artifactRuns, localArtifactById, localArtifactByRemotePath, subTab]);
 
   async function syncArtifactById(artifactId: string) {
     try {
@@ -1003,13 +1139,29 @@ function uniqueValues(values: string[]) {
   return Array.from(new Set(values.filter((value) => value.trim() !== "")));
 }
 
-function deriveArtifactDisplayTitle(contentMarkdown: string, fallbackTitle: string) {
+function summarizeArtifactContent(contentMarkdown: string) {
   const normalized = contentMarkdown.replace(/\s+/g, " ").trim();
   if (!normalized) {
+    return null;
+  }
+
+  return normalized.length > 50
+    ? `${normalized.slice(0, 50).trimEnd()}...`
+    : normalized;
+}
+
+function isGenericArtifactTitle(title: string) {
+  const normalized = title.trim().toLowerCase();
+  return normalized === "response.md" || normalized === "artifact.md";
+}
+
+function deriveArtifactDisplayTitle(contentMarkdown: string, fallbackTitle: string) {
+  const summary = summarizeArtifactContent(contentMarkdown);
+  if (!summary) {
     return fallbackTitle;
   }
 
-  return normalized.length > 50 ? `${normalized.slice(0, 50).trimEnd()}...` : normalized;
+  return summary;
 }
 
 function truncateText(value: string, maxLength: number) {

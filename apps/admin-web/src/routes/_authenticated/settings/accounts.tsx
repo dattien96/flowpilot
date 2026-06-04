@@ -480,15 +480,29 @@ function ProviderAccountGroup({
                       </p>
                     ) : null}
                     {account.usage_detail_lines.map((line) => (
-                      <p
+                      <div
                         key={`${account.id}-${line.label}`}
-                        className="text-xs text-muted-foreground mt-1"
+                        className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mt-2 bg-muted/20 p-2.5 rounded-lg border border-border/40 hover:bg-muted/30 transition-colors"
                       >
-                        {line.label}: {line.remaining_percent}%
-                        {formatResetAt(line.reset_at)
-                          ? ` · resets ${formatResetAt(line.reset_at)}`
-                          : ""}
-                      </p>
+                        <span className="text-xs text-muted-foreground font-medium">
+                          {line.label}: {line.remaining_percent}%
+                          {formatResetAt(line.reset_at)
+                            ? ` · resets ${formatResetAt(line.reset_at)}`
+                            : ""}
+                        </span>
+                        <div className="w-full sm:w-32 bg-muted-foreground/10 border border-border/10 rounded-full h-2 overflow-hidden shadow-inner flex-shrink-0 relative">
+                          <div
+                            className={`h-full rounded-full transition-all duration-500 ease-out ${
+                              line.remaining_percent > 50
+                                ? "bg-gradient-to-r from-emerald-500 to-teal-400"
+                                : line.remaining_percent > 20
+                                  ? "bg-gradient-to-r from-amber-500 to-yellow-400"
+                                  : "bg-gradient-to-r from-rose-500 to-red-400"
+                            }`}
+                            style={{ width: `${line.remaining_percent}%` }}
+                          />
+                        </div>
+                      </div>
                     ))}
                   </div>
                 </div>

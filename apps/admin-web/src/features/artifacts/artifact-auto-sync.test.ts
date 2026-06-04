@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  reconcileArtifactSyncState,
   resetArtifactAutoSyncState,
   scheduleArtifactAutoSync,
 } from "@/features/artifacts/artifact-auto-sync";
@@ -106,5 +107,56 @@ describe("artifact-auto-sync", () => {
     expect(fromMock).toHaveBeenCalledTimes(1);
     expect(fromMock).toHaveBeenCalledWith("artifact_runs");
     expect(selectMock).toHaveBeenCalled();
+  });
+
+  it("skips artifact sync candidates whose workflow_runs row no longer exists", async () => {
+    const artifactRunsQuery = createThenableQuery({
+      data: [
+        {
+          id: "artifact-1",
+          project_id: "project-1",
+          workflow_run_id: "run-missing",
+          sync_status: "local_only",
+          storage_provider: null,
+          remote_path: null,
+          remote_object_id: null,
+          updated_at: "2026-06-03T10:00:00.000Z",
+        },
+      ],
+      error: null,
+    });
+    const workflowRunsQuery = {
+      in: vi.fn().mockResolvedValue({
+        data: [],
+        error: null,
+      }),
+    };
+    const artifactRunsSelect = vi.fn(() => artifactRunsQuery);
+    const workflowRunsSelect = vi.fn(() => workflowRunsQuery);
+    const fromMock = vi.fn((table: string) => {
+      if (table === "artifact_runs") {
+        return { select: artifactRunsSelect };
+      }
+      if (table === "workflow_runs") {
+        return { select: workflowRunsSelect };
+      }
+      throw new Error(`unexpected table ${table}`);
+    });
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    await reconcileArtifactSyncState({
+      supabase: {
+        from: fromMock,
+      } as never,
+      artifactStorageConnectionGateway: {
+        getProjectStorageProvider: vi.fn(),
+        updateArtifactRunStorageMetadata: vi.fn(),
+      },
+    });
+
+    expect(fromMock).toHaveBeenCalledWith("artifact_runs");
+    expect(fromMock).toHaveBeenCalledWith("workflow_runs");
+    expect(workflowRunsQuery.in).toHaveBeenCalledWith("id", ["run-missing"]);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

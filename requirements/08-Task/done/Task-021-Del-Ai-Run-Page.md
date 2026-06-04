@@ -1,0 +1,1 @@
+Del Ai-Run page in menu

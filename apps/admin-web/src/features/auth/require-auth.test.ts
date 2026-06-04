@@ -1,24 +1,31 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const getSession = vi.fn();
-
-vi.mock("@/data/supabase/client", () => ({
-  supabase: {
-    auth: {
-      getSession,
-    },
-  },
+const { getBrowserSupabaseClient, getSession, loadSupabaseRuntimeStatus } = vi.hoisted(() => ({
+  getBrowserSupabaseClient: vi.fn(),
+  getSession: vi.fn(),
+  loadSupabaseRuntimeStatus: vi.fn(),
 }));
 
-vi.mock("@/lib/env/browser-env", () => ({
-  hasSupabaseEnv: vi.fn(),
+vi.mock("@/data/supabase/client", () => ({
+  getBrowserSupabaseClient,
+}));
+
+vi.mock("@/lib/supabase/runtime-config", () => ({
+  loadSupabaseRuntimeStatus,
 }));
 
 describe("requireAuth", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.spyOn(console, "error").mockImplementation(() => {});
+    getBrowserSupabaseClient.mockReset();
     getSession.mockReset();
+    loadSupabaseRuntimeStatus.mockReset();
+    getBrowserSupabaseClient.mockResolvedValue({
+      auth: {
+        getSession,
+      },
+    });
   });
 
   afterEach(() => {
@@ -26,8 +33,7 @@ describe("requireAuth", () => {
   });
 
   it("returns the current session when Supabase has an authenticated session", async () => {
-    const { hasSupabaseEnv } = await import("@/lib/env/browser-env");
-    vi.mocked(hasSupabaseEnv).mockReturnValue(true);
+    loadSupabaseRuntimeStatus.mockResolvedValue(supabaseRuntimeStatus());
     getSession.mockResolvedValue({
       data: {
         session: {
@@ -52,8 +58,7 @@ describe("requireAuth", () => {
   });
 
   it("redirects guests to /login when no session exists", async () => {
-    const { hasSupabaseEnv } = await import("@/lib/env/browser-env");
-    vi.mocked(hasSupabaseEnv).mockReturnValue(true);
+    loadSupabaseRuntimeStatus.mockResolvedValue(supabaseRuntimeStatus());
     getSession.mockResolvedValue({
       data: {
         session: null,
@@ -70,8 +75,7 @@ describe("requireAuth", () => {
   });
 
   it("redirects guests to /login when the session lookup fails", async () => {
-    const { hasSupabaseEnv } = await import("@/lib/env/browser-env");
-    vi.mocked(hasSupabaseEnv).mockReturnValue(true);
+    loadSupabaseRuntimeStatus.mockResolvedValue(supabaseRuntimeStatus());
     getSession.mockRejectedValue(new Error("network down"));
 
     const { requireAuth } = await import("./require-auth");
@@ -83,3 +87,20 @@ describe("requireAuth", () => {
     });
   });
 });
+
+function supabaseRuntimeStatus() {
+  return {
+    mode: "config",
+    configured: true,
+    apiUrl: "https://demo-ref.supabase.co",
+    anonKey: "anon-key",
+    edgeFunctionUrl: "https://demo-ref.supabase.co/functions/v1",
+    hasServiceRoleKey: true,
+    projectRef: "demo-ref",
+    runnerReachable: true,
+    envAvailable: false,
+    savedConfigAvailable: true,
+    edgeFunctionsReady: true,
+    lastError: null,
+  };
+}

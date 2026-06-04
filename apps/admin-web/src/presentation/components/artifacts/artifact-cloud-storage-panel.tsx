@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ExternalLink, FolderOpen, Link2, RefreshCw } from "lucide-react";
 import { useRouter } from "next/navigation";
 
-import { supabase } from "@/data/supabase/client";
+import { getBrowserSupabaseClient } from "@/data/supabase/client";
 import type { Project } from "@/domain/model/entity/project";
 import { Badge } from "@/presentation/components/ui/badge";
 import { Button } from "@/presentation/components/ui/button";
@@ -48,6 +48,7 @@ export function ArtifactCloudStoragePanel({ projects }: ArtifactCloudStoragePane
   );
 
   async function buildAuthHeaders() {
+    const supabase = await getBrowserSupabaseClient();
     const token = (await supabase.auth.getSession()).data.session?.access_token ?? "";
     return token ? { Authorization: `Bearer ${token}` } : {};
   }

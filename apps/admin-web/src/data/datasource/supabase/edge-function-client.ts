@@ -1,9 +1,5 @@
-import { supabase } from "@/data/supabase/client";
-import {
-  getSupabaseAnonKey,
-  getSupabaseEdgeFunctionUrl,
-  hasSupabaseEnv,
-} from "@/lib/env/browser-env";
+import { getBrowserSupabaseClient } from "@/data/supabase/client";
+import { loadSupabaseRuntimeStatus } from "@/lib/supabase/runtime-config";
 
 type EdgeFunctionMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
@@ -14,8 +10,13 @@ interface InvokeEdgeFunctionOptions {
 }
 
 async function buildEdgeFunctionHeaders(headers?: HeadersInit) {
+  const status = await loadSupabaseRuntimeStatus();
+  if (!status.configured || !status.anonKey) {
+    throw new Error("Supabase runtime config is not configured.");
+  }
+
   const mergedHeaders = new Headers(headers);
-  const apiKey = getSupabaseAnonKey();
+  const apiKey = status.anonKey;
 
   if (!mergedHeaders.has("Content-Type")) {
     mergedHeaders.set("Content-Type", "application/json");
@@ -26,9 +27,8 @@ async function buildEdgeFunctionHeaders(headers?: HeadersInit) {
   }
 
   if (!mergedHeaders.has("Authorization")) {
-    const accessToken = hasSupabaseEnv()
-      ? (await supabase.auth.getSession()).data.session?.access_token ?? null
-      : null;
+    const supabase = await getBrowserSupabaseClient();
+    const accessToken = (await supabase.auth.getSession()).data.session?.access_token ?? null;
 
     mergedHeaders.set("Authorization", `Bearer ${accessToken ?? apiKey}`);
   }
@@ -42,7 +42,11 @@ export async function invokeSupabaseEdgeFunction<TResponse>(
   options?: InvokeEdgeFunctionOptions,
 ) {
   const method = options?.method ?? "POST";
-  const baseUrl = getSupabaseEdgeFunctionUrl().replace(/\/+$/, "");
+  const status = await loadSupabaseRuntimeStatus();
+  if (!status.edgeFunctionUrl) {
+    throw new Error("Supabase Edge Function URL is not configured.");
+  }
+  const baseUrl = status.edgeFunctionUrl.replace(/\/+$/, "");
   const response = await fetch(`${baseUrl}/${functionName}`, {
     method,
     headers: await buildEdgeFunctionHeaders(options?.headers),

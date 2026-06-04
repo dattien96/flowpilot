@@ -37,7 +37,7 @@ export async function updateArtifactStoragePreferenceAction(projectId: string, f
   const gateways = await createGatewayBundle();
   if (parsed.data === "google_drive") {
     const connection = await getArtifactStorageConnection(
-      createSupabaseServerClient(),
+      await createSupabaseServerClient(),
       projectId,
       "google_drive",
     );

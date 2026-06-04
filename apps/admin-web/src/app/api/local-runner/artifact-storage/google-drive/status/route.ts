@@ -59,7 +59,7 @@ export async function GET(request: Request) {
     const connection = body.connection as Record<string, unknown> | undefined;
     if (connection && typeof connection.status === "string") {
       try {
-        await upsertArtifactStorageConnection(createSupabaseServerClient(), {
+        await upsertArtifactStorageConnection(await createSupabaseServerClient(), {
           projectId,
           provider: "google_drive",
           status:

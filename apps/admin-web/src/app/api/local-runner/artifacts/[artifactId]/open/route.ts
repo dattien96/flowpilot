@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
 import path from "node:path";
 
 import { createGatewayBundle } from "@/data/repository/factory";
-import { getLocalRunnerBaseUrl, getRequiredEnv, getSupabaseUrl } from "@/lib/env/app-env";
+import { getLocalRunnerBaseUrl } from "@/lib/env/app-env";
 import { renderMarkdownPreviewHtml } from "@/lib/markdown-preview";
+import { createRuntimeSupabaseAdminClient } from "@/lib/supabase/runtime-config.server";
 
 type RouteContext = {
   params: Promise<{
@@ -87,17 +87,8 @@ export async function GET(request: Request, context: RouteContext) {
   });
 }
 
-function createSupabaseAdminClient() {
-  return createClient(
-    getSupabaseUrl(),
-    process.env.SUPABASE_SERVICE_ROLE_KEY ??
-      process.env.SUPABASE_API_SERVICE_ROLE_KEY ??
-      getRequiredEnv("SUPABASE_SERVICE_ROLE_KEY"),
-  );
-}
-
 async function streamSupabaseArtifact(remotePath: string, isHtmlRequest: boolean) {
-  const supabase = createSupabaseAdminClient();
+  const supabase = await createRuntimeSupabaseAdminClient();
   const bucket = supabase.storage.from("flowpilot-artifacts");
   const { data, error } = await bucket.download(remotePath.trim());
   if (error || !data) {
