@@ -26,6 +26,12 @@ const artifactRun: ArtifactRun = {
 };
 
 describe("workflow-run-artifact-open", () => {
+  it("builds content URLs with remote metadata by default", () => {
+    expect(buildWorkflowRunArtifactOpenHref(artifactRun)).toBe(
+      "/api/local-runner/artifacts/artifact-remote-1/open?remotePath=projects%2Fproject-1%2Fruns%2Frun-1%2Fsteps%2Fplan%2FResponse.md&storageProvider=supabase&remoteObjectId=object-1&projectId=project-1",
+    );
+  });
+
   it("builds prompt file URLs with remote metadata", () => {
     expect(
       buildWorkflowRunArtifactOpenHref(artifactRun, "actual-prompt"),

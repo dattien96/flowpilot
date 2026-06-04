@@ -71,7 +71,10 @@ import type { LocalRunnerArtifact } from "@/domain/model/entity/local-runner";
 import type { ArtifactRun, WorkflowRunSession } from "@/domain/model/entity/workflow-engine";
 import { resolveArtifactRunForOutput } from "@/lib/workflow-run-artifact-match";
 import { loadWorkflowRunPromptText } from "@/lib/workflow-run-prompt";
-import { loadWorkflowRunArtifactPromptFiles } from "@/lib/workflow-run-artifact-open";
+import {
+  buildWorkflowRunArtifactOpenHref,
+  loadWorkflowRunArtifactPromptFiles,
+} from "@/lib/workflow-run-artifact-open";
 import { openMarkdownPreviewInNewTab } from "@/lib/markdown-preview";
 
 function summarizeRunPrompt(promptText?: string) {
@@ -407,48 +410,16 @@ const ArtifactContentViewer = ({ content }: { content: string }) => {
 function StepOutputTabs({
   artifactRun,
   output,
-  localRunnerGateway,
 }: {
   artifactRun?: ArtifactRun | null;
   output: WorkflowOutputRecord;
-  localRunnerGateway: {
-    readFile(path: string): Promise<string>;
-  };
 }) {
   const [activeTab, setActiveTab] = useState<"response" | "prompt" | "artifact">("response");
-  const [artifactContent, setArtifactContent] = useState<string | null>(null);
-  const [artifactError, setArtifactError] = useState<string | null>(null);
-  const [artifactLoading, setArtifactLoading] = useState(false);
   const [remotePromptText, setRemotePromptText] = useState<string | null>(null);
   const [promptLoading, setPromptLoading] = useState(false);
   const [copiedTab, setCopiedTab] = useState<"response" | "prompt" | null>(null);
 
-  const loadArtifactContent = async () => {
-    if (!artifactRun) {
-      throw new Error("Artifact metadata is unavailable.");
-    }
-
-    setArtifactLoading(true);
-    setArtifactError(null);
-
-    try {
-      const content = await localRunnerGateway.readFile(artifactRun.localPath);
-      setArtifactContent(content);
-      return content;
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Unable to load artifact content.";
-      setArtifactError(message);
-      throw error instanceof Error ? error : new Error(message);
-    } finally {
-      setArtifactLoading(false);
-    }
-  };
-
   useEffect(() => {
-    setArtifactContent(null);
-    setArtifactError(null);
-    setArtifactLoading(false);
     setRemotePromptText(null);
     setPromptLoading(false);
   }, [artifactRun?.id]);
@@ -574,50 +545,31 @@ function StepOutputTabs({
                 {artifactRun.title}
               </p>
               <p className="mt-1 break-all font-mono text-[10px] text-muted-foreground">
-                {artifactRun.localPath}
+                {artifactRun.remotePath.trim() || artifactRun.localPath}
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2 shrink-0">
               <Button
                 className="h-8 px-4 text-xs font-bold uppercase tracking-wider bg-accent/10 border border-accent/20 hover:bg-accent/20 text-accent rounded-lg shadow-sm"
-                disabled={artifactLoading}
                 onClick={() => {
-                  const openPreview = (content: string) => {
-                    const opened = openMarkdownPreviewInNewTab(
-                      content.trim() || content,
-                      artifactRun.title,
+                  const opened = window.open(
+                    buildWorkflowRunArtifactOpenHref(artifactRun),
+                    "_blank",
+                    "noopener,noreferrer",
+                  );
+                  if (!opened) {
+                    window.alert(
+                      "The browser blocked the artifact tab. Allow popups for FlowPilot and try again.",
                     );
-                    if (!opened) {
-                      window.alert(
-                        "The browser blocked the preview tab. Allow popups for FlowPilot and try again.",
-                      );
-                    }
-                  };
-
-                  if (artifactContent) {
-                    openPreview(artifactContent);
-                    return;
                   }
-
-                  void loadArtifactContent()
-                    .then((content) => {
-                      openPreview(content);
-                    })
-                    .catch(() => {
-                      // Error state is already surfaced in the artifact panel.
-                    });
                 }}
                 variant="secondary"
               >
                 <ExternalLink className="mr-2 h-3.5 w-3.5 text-sm" />
-                {artifactLoading ? "Opening..." : "Open in new tab"}
+                Open in new tab
               </Button>
             </div>
           </div>
-
-          {artifactError ? (
-            <p className="text-sm text-destructive">{artifactError}</p>
-          ) : null}
         </div>
       ) : null}
     </div>
@@ -1105,7 +1057,6 @@ function SessionGroupSection({
                             <div className="space-y-4">
                               <StepOutputTabs
                                 artifactRun={itemArtifactRun}
-                                localRunnerGateway={gatewayBundle.current.localRunnerGateway}
                                 output={attemptItem.output}
                               />
 
