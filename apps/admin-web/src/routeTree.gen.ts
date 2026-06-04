@@ -31,6 +31,7 @@ import { Route as AuthenticatedSettingsSupabaseRouteImport } from './routes/_aut
 import { Route as AuthenticatedSettingsRunnerRouteImport } from './routes/_authenticated/settings/runner'
 import { Route as AuthenticatedSettingsPromptTemplatesRouteImport } from './routes/_authenticated/settings/prompt-templates'
 import { Route as AuthenticatedSettingsMcpServersRouteImport } from './routes/_authenticated/settings/mcp-servers'
+import { Route as AuthenticatedSettingsGoogleDriveSetupRouteImport } from './routes/_authenticated/settings/google-drive-setup'
 import { Route as AuthenticatedSettingsArtifactsRouteImport } from './routes/_authenticated/settings/artifacts'
 import { Route as AuthenticatedSettingsAiProvidersRouteImport } from './routes/_authenticated/settings/ai-providers'
 import { Route as AuthenticatedSettingsAccountsRouteImport } from './routes/_authenticated/settings/accounts'
@@ -39,6 +40,8 @@ import { Route as AuthenticatedProjectsProjectIdRouteImport } from './routes/_au
 import { Route as AuthenticatedArtifactsCreateRouteImport } from './routes/_authenticated/artifacts/create'
 import { Route as AuthenticatedSettingsPromptTemplatesCreateRouteImport } from './routes/_authenticated/settings/prompt-templates/create'
 import { Route as AuthenticatedSettingsMcpServersMcpConnectTestRouteImport } from './routes/_authenticated/settings/mcp-servers/mcp-connect-test'
+import { Route as AuthenticatedSettingsMcpServersJiraLinkRouteImport } from './routes/_authenticated/settings/mcp-servers/jira-link'
+import { Route as AuthenticatedSettingsMcpServersInstancesRouteImport } from './routes/_authenticated/settings/mcp-servers/instances'
 import { Route as AuthenticatedSettingsMcpServersCreateRouteImport } from './routes/_authenticated/settings/mcp-servers/create'
 import { Route as AuthenticatedSettingsArtifactsCreateRouteImport } from './routes/_authenticated/settings/artifacts/create'
 import { Route as AuthenticatedProjectsProjectIdWorkflowsRouteImport } from './routes/_authenticated/projects/$projectId/workflows'
@@ -173,6 +176,12 @@ const AuthenticatedSettingsMcpServersRoute =
     path: '/settings/mcp-servers',
     getParentRoute: () => AuthenticatedRoute,
   } as any)
+const AuthenticatedSettingsGoogleDriveSetupRoute =
+  AuthenticatedSettingsGoogleDriveSetupRouteImport.update({
+    id: '/settings/google-drive-setup',
+    path: '/settings/google-drive-setup',
+    getParentRoute: () => AuthenticatedRoute,
+  } as any)
 const AuthenticatedSettingsArtifactsRoute =
   AuthenticatedSettingsArtifactsRouteImport.update({
     id: '/settings/artifacts',
@@ -219,6 +228,18 @@ const AuthenticatedSettingsMcpServersMcpConnectTestRoute =
   AuthenticatedSettingsMcpServersMcpConnectTestRouteImport.update({
     id: '/mcp-connect-test',
     path: '/mcp-connect-test',
+    getParentRoute: () => AuthenticatedSettingsMcpServersRoute,
+  } as any)
+const AuthenticatedSettingsMcpServersJiraLinkRoute =
+  AuthenticatedSettingsMcpServersJiraLinkRouteImport.update({
+    id: '/jira-link',
+    path: '/jira-link',
+    getParentRoute: () => AuthenticatedSettingsMcpServersRoute,
+  } as any)
+const AuthenticatedSettingsMcpServersInstancesRoute =
+  AuthenticatedSettingsMcpServersInstancesRouteImport.update({
+    id: '/instances',
+    path: '/instances',
     getParentRoute: () => AuthenticatedSettingsMcpServersRoute,
   } as any)
 const AuthenticatedSettingsMcpServersCreateRoute =
@@ -312,6 +333,7 @@ export interface FileRoutesByFullPath {
   '/settings/accounts': typeof AuthenticatedSettingsAccountsRoute
   '/settings/ai-providers': typeof AuthenticatedSettingsAiProvidersRoute
   '/settings/artifacts': typeof AuthenticatedSettingsArtifactsRouteWithChildren
+  '/settings/google-drive-setup': typeof AuthenticatedSettingsGoogleDriveSetupRoute
   '/settings/mcp-servers': typeof AuthenticatedSettingsMcpServersRouteWithChildren
   '/settings/prompt-templates': typeof AuthenticatedSettingsPromptTemplatesRouteWithChildren
   '/settings/runner': typeof AuthenticatedSettingsRunnerRoute
@@ -334,6 +356,8 @@ export interface FileRoutesByFullPath {
   '/projects/$projectId/workflows': typeof AuthenticatedProjectsProjectIdWorkflowsRoute
   '/settings/artifacts/create': typeof AuthenticatedSettingsArtifactsCreateRoute
   '/settings/mcp-servers/create': typeof AuthenticatedSettingsMcpServersCreateRoute
+  '/settings/mcp-servers/instances': typeof AuthenticatedSettingsMcpServersInstancesRoute
+  '/settings/mcp-servers/jira-link': typeof AuthenticatedSettingsMcpServersJiraLinkRoute
   '/settings/mcp-servers/mcp-connect-test': typeof AuthenticatedSettingsMcpServersMcpConnectTestRoute
   '/settings/prompt-templates/create': typeof AuthenticatedSettingsPromptTemplatesCreateRoute
 }
@@ -355,6 +379,7 @@ export interface FileRoutesByTo {
   '/settings/accounts': typeof AuthenticatedSettingsAccountsRoute
   '/settings/ai-providers': typeof AuthenticatedSettingsAiProvidersRoute
   '/settings/artifacts': typeof AuthenticatedSettingsArtifactsRouteWithChildren
+  '/settings/google-drive-setup': typeof AuthenticatedSettingsGoogleDriveSetupRoute
   '/settings/mcp-servers': typeof AuthenticatedSettingsMcpServersRouteWithChildren
   '/settings/prompt-templates': typeof AuthenticatedSettingsPromptTemplatesRouteWithChildren
   '/settings/runner': typeof AuthenticatedSettingsRunnerRoute
@@ -377,6 +402,8 @@ export interface FileRoutesByTo {
   '/projects/$projectId/workflows': typeof AuthenticatedProjectsProjectIdWorkflowsRoute
   '/settings/artifacts/create': typeof AuthenticatedSettingsArtifactsCreateRoute
   '/settings/mcp-servers/create': typeof AuthenticatedSettingsMcpServersCreateRoute
+  '/settings/mcp-servers/instances': typeof AuthenticatedSettingsMcpServersInstancesRoute
+  '/settings/mcp-servers/jira-link': typeof AuthenticatedSettingsMcpServersJiraLinkRoute
   '/settings/mcp-servers/mcp-connect-test': typeof AuthenticatedSettingsMcpServersMcpConnectTestRoute
   '/settings/prompt-templates/create': typeof AuthenticatedSettingsPromptTemplatesCreateRoute
 }
@@ -400,6 +427,7 @@ export interface FileRoutesById {
   '/_authenticated/settings/accounts': typeof AuthenticatedSettingsAccountsRoute
   '/_authenticated/settings/ai-providers': typeof AuthenticatedSettingsAiProvidersRoute
   '/_authenticated/settings/artifacts': typeof AuthenticatedSettingsArtifactsRouteWithChildren
+  '/_authenticated/settings/google-drive-setup': typeof AuthenticatedSettingsGoogleDriveSetupRoute
   '/_authenticated/settings/mcp-servers': typeof AuthenticatedSettingsMcpServersRouteWithChildren
   '/_authenticated/settings/prompt-templates': typeof AuthenticatedSettingsPromptTemplatesRouteWithChildren
   '/_authenticated/settings/runner': typeof AuthenticatedSettingsRunnerRoute
@@ -422,6 +450,8 @@ export interface FileRoutesById {
   '/_authenticated/projects/$projectId/workflows': typeof AuthenticatedProjectsProjectIdWorkflowsRoute
   '/_authenticated/settings/artifacts/create': typeof AuthenticatedSettingsArtifactsCreateRoute
   '/_authenticated/settings/mcp-servers/create': typeof AuthenticatedSettingsMcpServersCreateRoute
+  '/_authenticated/settings/mcp-servers/instances': typeof AuthenticatedSettingsMcpServersInstancesRoute
+  '/_authenticated/settings/mcp-servers/jira-link': typeof AuthenticatedSettingsMcpServersJiraLinkRoute
   '/_authenticated/settings/mcp-servers/mcp-connect-test': typeof AuthenticatedSettingsMcpServersMcpConnectTestRoute
   '/_authenticated/settings/prompt-templates/create': typeof AuthenticatedSettingsPromptTemplatesCreateRoute
 }
@@ -445,6 +475,7 @@ export interface FileRouteTypes {
     | '/settings/accounts'
     | '/settings/ai-providers'
     | '/settings/artifacts'
+    | '/settings/google-drive-setup'
     | '/settings/mcp-servers'
     | '/settings/prompt-templates'
     | '/settings/runner'
@@ -467,6 +498,8 @@ export interface FileRouteTypes {
     | '/projects/$projectId/workflows'
     | '/settings/artifacts/create'
     | '/settings/mcp-servers/create'
+    | '/settings/mcp-servers/instances'
+    | '/settings/mcp-servers/jira-link'
     | '/settings/mcp-servers/mcp-connect-test'
     | '/settings/prompt-templates/create'
   fileRoutesByTo: FileRoutesByTo
@@ -488,6 +521,7 @@ export interface FileRouteTypes {
     | '/settings/accounts'
     | '/settings/ai-providers'
     | '/settings/artifacts'
+    | '/settings/google-drive-setup'
     | '/settings/mcp-servers'
     | '/settings/prompt-templates'
     | '/settings/runner'
@@ -510,6 +544,8 @@ export interface FileRouteTypes {
     | '/projects/$projectId/workflows'
     | '/settings/artifacts/create'
     | '/settings/mcp-servers/create'
+    | '/settings/mcp-servers/instances'
+    | '/settings/mcp-servers/jira-link'
     | '/settings/mcp-servers/mcp-connect-test'
     | '/settings/prompt-templates/create'
   id:
@@ -532,6 +568,7 @@ export interface FileRouteTypes {
     | '/_authenticated/settings/accounts'
     | '/_authenticated/settings/ai-providers'
     | '/_authenticated/settings/artifacts'
+    | '/_authenticated/settings/google-drive-setup'
     | '/_authenticated/settings/mcp-servers'
     | '/_authenticated/settings/prompt-templates'
     | '/_authenticated/settings/runner'
@@ -554,6 +591,8 @@ export interface FileRouteTypes {
     | '/_authenticated/projects/$projectId/workflows'
     | '/_authenticated/settings/artifacts/create'
     | '/_authenticated/settings/mcp-servers/create'
+    | '/_authenticated/settings/mcp-servers/instances'
+    | '/_authenticated/settings/mcp-servers/jira-link'
     | '/_authenticated/settings/mcp-servers/mcp-connect-test'
     | '/_authenticated/settings/prompt-templates/create'
   fileRoutesById: FileRoutesById
@@ -722,6 +761,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedSettingsMcpServersRouteImport
       parentRoute: typeof AuthenticatedRoute
     }
+    '/_authenticated/settings/google-drive-setup': {
+      id: '/_authenticated/settings/google-drive-setup'
+      path: '/settings/google-drive-setup'
+      fullPath: '/settings/google-drive-setup'
+      preLoaderRoute: typeof AuthenticatedSettingsGoogleDriveSetupRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
     '/_authenticated/settings/artifacts': {
       id: '/_authenticated/settings/artifacts'
       path: '/settings/artifacts'
@@ -776,6 +822,20 @@ declare module '@tanstack/react-router' {
       path: '/mcp-connect-test'
       fullPath: '/settings/mcp-servers/mcp-connect-test'
       preLoaderRoute: typeof AuthenticatedSettingsMcpServersMcpConnectTestRouteImport
+      parentRoute: typeof AuthenticatedSettingsMcpServersRoute
+    }
+    '/_authenticated/settings/mcp-servers/jira-link': {
+      id: '/_authenticated/settings/mcp-servers/jira-link'
+      path: '/jira-link'
+      fullPath: '/settings/mcp-servers/jira-link'
+      preLoaderRoute: typeof AuthenticatedSettingsMcpServersJiraLinkRouteImport
+      parentRoute: typeof AuthenticatedSettingsMcpServersRoute
+    }
+    '/_authenticated/settings/mcp-servers/instances': {
+      id: '/_authenticated/settings/mcp-servers/instances'
+      path: '/instances'
+      fullPath: '/settings/mcp-servers/instances'
+      preLoaderRoute: typeof AuthenticatedSettingsMcpServersInstancesRouteImport
       parentRoute: typeof AuthenticatedSettingsMcpServersRoute
     }
     '/_authenticated/settings/mcp-servers/create': {
@@ -987,6 +1047,8 @@ const AuthenticatedSettingsArtifactsRouteWithChildren =
 
 interface AuthenticatedSettingsMcpServersRouteChildren {
   AuthenticatedSettingsMcpServersCreateRoute: typeof AuthenticatedSettingsMcpServersCreateRoute
+  AuthenticatedSettingsMcpServersInstancesRoute: typeof AuthenticatedSettingsMcpServersInstancesRoute
+  AuthenticatedSettingsMcpServersJiraLinkRoute: typeof AuthenticatedSettingsMcpServersJiraLinkRoute
   AuthenticatedSettingsMcpServersMcpConnectTestRoute: typeof AuthenticatedSettingsMcpServersMcpConnectTestRoute
 }
 
@@ -994,6 +1056,10 @@ const AuthenticatedSettingsMcpServersRouteChildren: AuthenticatedSettingsMcpServ
   {
     AuthenticatedSettingsMcpServersCreateRoute:
       AuthenticatedSettingsMcpServersCreateRoute,
+    AuthenticatedSettingsMcpServersInstancesRoute:
+      AuthenticatedSettingsMcpServersInstancesRoute,
+    AuthenticatedSettingsMcpServersJiraLinkRoute:
+      AuthenticatedSettingsMcpServersJiraLinkRoute,
     AuthenticatedSettingsMcpServersMcpConnectTestRoute:
       AuthenticatedSettingsMcpServersMcpConnectTestRoute,
   }
@@ -1031,6 +1097,7 @@ interface AuthenticatedRouteChildren {
   AuthenticatedSettingsAccountsRoute: typeof AuthenticatedSettingsAccountsRoute
   AuthenticatedSettingsAiProvidersRoute: typeof AuthenticatedSettingsAiProvidersRoute
   AuthenticatedSettingsArtifactsRoute: typeof AuthenticatedSettingsArtifactsRouteWithChildren
+  AuthenticatedSettingsGoogleDriveSetupRoute: typeof AuthenticatedSettingsGoogleDriveSetupRoute
   AuthenticatedSettingsMcpServersRoute: typeof AuthenticatedSettingsMcpServersRouteWithChildren
   AuthenticatedSettingsPromptTemplatesRoute: typeof AuthenticatedSettingsPromptTemplatesRouteWithChildren
   AuthenticatedSettingsRunnerRoute: typeof AuthenticatedSettingsRunnerRoute
@@ -1053,6 +1120,8 @@ const AuthenticatedRouteChildren: AuthenticatedRouteChildren = {
   AuthenticatedSettingsAiProvidersRoute: AuthenticatedSettingsAiProvidersRoute,
   AuthenticatedSettingsArtifactsRoute:
     AuthenticatedSettingsArtifactsRouteWithChildren,
+  AuthenticatedSettingsGoogleDriveSetupRoute:
+    AuthenticatedSettingsGoogleDriveSetupRoute,
   AuthenticatedSettingsMcpServersRoute:
     AuthenticatedSettingsMcpServersRouteWithChildren,
   AuthenticatedSettingsPromptTemplatesRoute:
