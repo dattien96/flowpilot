@@ -20,7 +20,6 @@ export const primaryNavItems = [
   { to: "/workflow-steps", label: "Workflow Steps", icon: ListTree },
   { to: "/workflow-runs", label: "Workflow Runs", icon: History },
   { to: "/teams", label: "Teams", icon: Users },
-  { to: "/ai-runs", label: "AI Runs", icon: Sparkles },
   { to: "/guide", label: "FlowPilot Guide", icon: BookOpen },
 ] as const;
 

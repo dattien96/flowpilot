@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { settingsNavItems } from "@/components/layout/app-nav";
+import { primaryNavItems, settingsNavItems } from "@/components/layout/app-nav";
 import {
   APP_SHELL_LAYOUT_CLASSES,
   createSettingsNavStatuses,
@@ -8,6 +8,12 @@ import {
 import { buildMcpServerStatus, buildRunnerStatus } from "@/components/layout/app-shell-status";
 
 describe("AppShell", () => {
+  it("does not show AI Runs in the primary navigation", () => {
+    expect(
+      primaryNavItems.some((item) => item.to === "/ai-runs" && item.label === "AI Runs"),
+    ).toBe(false);
+  });
+
   it("includes the MCP Servers entry in the settings navigation", () => {
     expect(
       settingsNavItems.some((item) => item.to === "/artifacts" && item.label === "Artifacts"),
