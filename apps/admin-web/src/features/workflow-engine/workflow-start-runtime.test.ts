@@ -11,6 +11,7 @@ import {
   createLocalWorkflowOutputArtifactSnapshot,
   deactivateWorkflowRunSession,
   finalizeWorkflowRunSessions,
+  resolveArtifactWorkspaceRoot,
   resolveProviderKeyFromModel,
   submitWorkflowStepFollowUpRuntime,
   syncWorkflowRunSessionProviderSessionId,
@@ -81,6 +82,22 @@ describe("workflow-start-runtime", () => {
     expect(prompt).not.toContain("## Related Input Artifacts");
     expect(prompt).not.toContain("- None");
     expect(prompt).toContain("## Execution Context");
+  });
+
+  it("uses the local runner cwd as the workflow artifact workspace root", async () => {
+    await expect(
+      resolveArtifactWorkspaceRoot({
+        getHealth: vi.fn(async () => ({
+          status: "online",
+          runnerVersion: "test",
+          cwd: "/Users/tiendat/Desktop/flowpilot/flowpilot",
+          os: "darwin",
+          startedAt: "2026-06-05T00:00:00.000Z",
+          baseUrl: "http://127.0.0.1:3900",
+          errorMessage: null,
+        })),
+      }),
+    ).resolves.toBe("/Users/tiendat/Desktop/flowpilot/flowpilot");
   });
 
   it("allows replay gating for interrupted failed steps", async () => {
@@ -304,6 +321,88 @@ describe("workflow-start-runtime", () => {
     );
     const actualPromptPath = path.join(path.dirname(snapshotFilePath), "actual-prompt.md");
     await expect(readFile(actualPromptPath, "utf8")).resolves.toBe("Bootstrap Prompt");
+    await expect(
+      readFile(
+        path.join(
+          artifactWorkspaceRoot,
+          ".flowpilot",
+          "artifacts",
+          "project-1",
+          "run-1",
+          "business_idea",
+          "BusinessIdea.md",
+        ),
+        "utf8",
+      ),
+    ).resolves.toContain("# Result");
+    await expect(
+      readFile(
+        path.join(
+          workingDirectory,
+          ".flowpilot",
+          "artifacts",
+          "project-1",
+          "run-1",
+          "business_idea",
+          "BusinessIdea.md",
+        ),
+        "utf8",
+      ),
+    ).rejects.toThrow();
+  });
+
+  it("reroutes dot-slash flowpilot output targets to the FlowPilot workspace root", async () => {
+    const workingDirectory = await mkdtemp(path.join(os.tmpdir(), "flowpilot-dot-output-"));
+    const artifactWorkspaceRoot = await mkdtemp(
+      path.join(os.tmpdir(), "flowpilot-dot-output-root-"),
+    );
+    const insertedRows: Array<Record<string, unknown>> = [];
+    const adminClient = {
+      from: vi.fn(() => ({
+        insert(rows: Array<Record<string, unknown>>) {
+          insertedRows.push(...rows);
+          return {
+            select() {
+              return Promise.resolve({ data: [{ id: "artifact-1" }], error: null });
+            },
+          };
+        },
+      })),
+    } as any;
+
+    await createArtifactOutputs({
+      adminClient,
+      artifactDefinitions: new Map([
+        [
+          "business_idea_artifact",
+          {
+            key: "business_idea_artifact",
+            name: "Business Idea",
+            local_path_template:
+              "./.flowpilot/artifacts/{projectId}/{workflowRunId}/{stepType}/{defaultFileName}",
+            remote_path_template: "",
+            default_file_name: "BusinessIdea.md",
+          } as any,
+        ],
+      ]),
+      outputArtifactKeys: ["business_idea_artifact"],
+      outputMarkdown: "# Result",
+      promptText: "Prompt",
+      actualPromptText: "Bootstrap Prompt",
+      projectId: "project-1",
+      stepRunId: "step-run-1",
+      stepType: "business_idea",
+      stderrText: "",
+      stdoutText: "ok",
+      workflowId: "workflow-1",
+      workflowRunId: "run-1",
+      workingDirectory,
+      commandText: "codex exec",
+      providerKey: "codex",
+      artifactWorkspaceRoot,
+    });
+
+    expect(insertedRows).toHaveLength(1);
     await expect(
       readFile(
         path.join(

@@ -838,6 +838,31 @@ type WorkflowSessionSendResult = LocalRunnerPromptExecutionResult & {
   sessionDbId?: string;
 };
 
+type RuntimeLocalRunnerGateway = Pick<
+  LocalRunnerGateway,
+  | "executePrompt"
+  | "listMcpBackends"
+  | "startSession"
+  | "sendMessage"
+  | "closeSession"
+> &
+  Partial<Pick<LocalRunnerGateway, "getHealth">>;
+
+export async function resolveArtifactWorkspaceRoot(
+  localRunnerGateway: Partial<Pick<LocalRunnerGateway, "getHealth">>,
+) {
+  if (typeof localRunnerGateway.getHealth !== "function") {
+    return process.cwd();
+  }
+
+  try {
+    const health = await localRunnerGateway.getHealth();
+    return health.cwd?.trim() || process.cwd();
+  } catch {
+    return process.cwd();
+  }
+}
+
 export async function sendMessageWithRetry({
   adminClient,
   localRunnerGateway,
@@ -1096,7 +1121,9 @@ function resolveArtifactPath(
 }
 
 function isFlowpilotArtifactPath(localPath: string) {
-  const normalizedPath = localPath.replaceAll("\\", "/");
+  const normalizedPath = path.posix.normalize(
+    localPath.trim().replaceAll("\\", "/"),
+  );
   return normalizedPath === ".flowpilot" || normalizedPath.startsWith(".flowpilot/");
 }
 
@@ -2319,14 +2346,7 @@ export async function submitWorkflowStepFollowUpRuntime({
   comment,
 }: {
   adminClient: SupabaseClient;
-  localRunnerGateway: Pick<
-    LocalRunnerGateway,
-    | "executePrompt"
-    | "listMcpBackends"
-    | "startSession"
-    | "sendMessage"
-    | "closeSession"
-  >;
+  localRunnerGateway: RuntimeLocalRunnerGateway;
   stepId: string;
   comment: string;
 }) {
@@ -2418,6 +2438,8 @@ export async function submitWorkflowStepFollowUpRuntime({
     adminClient,
     run.project_id,
   );
+  const artifactWorkspaceRoot =
+    await resolveArtifactWorkspaceRoot(localRunnerGateway);
   const installedBackends = await localRunnerGateway.listMcpBackends();
   const usableMcpKeys = new Set(
     installedBackends
@@ -2464,7 +2486,7 @@ export async function submitWorkflowStepFollowUpRuntime({
     normalizeAbsolutePath(
       workingDirectory,
       artifactsByKey.get(artifactKey)!.local_path,
-      process.cwd(),
+      artifactWorkspaceRoot,
     ),
   );
   const outputArtifactPaths = outputArtifactKeys.map((artifactKey) => {
@@ -2484,7 +2506,7 @@ export async function submitWorkflowStepFollowUpRuntime({
         artifactKey,
         defaultFileName: definitionRow.default_file_name || definitionRow.name,
       }),
-      process.cwd(),
+      artifactWorkspaceRoot,
     );
   });
 
@@ -2604,6 +2626,7 @@ export async function submitWorkflowStepFollowUpRuntime({
       workingDirectory,
       commandText: result.command,
       providerKey: execution.providerKey,
+      artifactWorkspaceRoot,
     });
     const artifactRunId = artifactOutputResult.artifactRunId;
     if (artifactOutputResult.artifactRunId) {
@@ -2714,14 +2737,7 @@ export async function runWorkflowStartRuntime({
   user,
 }: {
   adminClient: SupabaseClient;
-  localRunnerGateway: Pick<
-    LocalRunnerGateway,
-    | "executePrompt"
-    | "listMcpBackends"
-    | "startSession"
-    | "sendMessage"
-    | "closeSession"
-  >;
+  localRunnerGateway: RuntimeLocalRunnerGateway;
   request: WorkflowRunStartRequest;
   user: { id: string; email: string | null };
 }) {
@@ -2781,6 +2797,8 @@ export async function runWorkflowStartRuntime({
     adminClient,
     request.projectId,
   );
+  const artifactWorkspaceRoot =
+    await resolveArtifactWorkspaceRoot(localRunnerGateway);
   const installedBackends = await localRunnerGateway.listMcpBackends();
   const usableMcpKeys = new Set(
     installedBackends
@@ -2998,7 +3016,7 @@ export async function runWorkflowStartRuntime({
             normalizeAbsolutePath(
               workingDirectory,
               artifactsByKey.get(artifactKey)!.local_path,
-              process.cwd(),
+              artifactWorkspaceRoot,
             ),
         );
         const outputArtifactPaths = stepPlan.outputArtifactKeys.map(
@@ -3021,7 +3039,7 @@ export async function runWorkflowStartRuntime({
                 defaultFileName:
                   definition.default_file_name || definition.name,
               }),
-              process.cwd(),
+              artifactWorkspaceRoot,
             );
           },
         );
@@ -3127,6 +3145,7 @@ export async function runWorkflowStartRuntime({
           workingDirectory,
           commandText: result.command,
           providerKey: stepPlan.providerKey,
+          artifactWorkspaceRoot,
         });
         const artifactRunId = artifactOutputResult.artifactRunId;
         if (artifactOutputResult.artifactRunId) {
