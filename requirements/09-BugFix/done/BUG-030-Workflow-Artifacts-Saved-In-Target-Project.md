@@ -17,14 +17,28 @@ This caused different behavior across projects:
 
 ### Root Cause
 
-Workflow runtime path resolution used the execution `workingDirectory` for all relative artifact paths, including `.flowpilot/...` artifact paths.
+There were two issues in the runtime path resolution:
+
+- Workflow runtime used the execution `workingDirectory` for relative artifact paths, so `.flowpilot/...` outputs were created inside the bound target project.
+- A follow-up fix still used the admin-web server `process.cwd()` instead of the local runner workspace root, so artifacts could be written to a path that the runner did not treat as its artifact source of truth.
+
+The final source of truth for artifact storage must be the local runner workspace `cwd`, not the target project directory and not the admin-web server process directory.
 
 ### Fix
 
 - Reroute `.flowpilot/...` artifact paths to the FlowPilot workspace root.
+- Resolve that workspace root from the local runner health `cwd`.
 - Keep normal project-relative output paths unchanged.
 - Update fallback artifact snapshot storage to use the FlowPilot workspace root as well.
-- Cover both behaviors with tests.
+- Normalize `./.flowpilot/...` path variants so they also resolve to FlowPilot storage.
+- Cover the runner-root and path-variant behavior with tests.
+
+### Resolution
+
+- AI execution still runs in the target project directory.
+- Workflow artifacts now save under the local runner workspace root:
+  `.flowpilot/artifacts/<projectId>/<workflowRunId>/...`
+- The issue was verified against the live runner health path and targeted workflow runtime tests.
 
 ### Done When
 
