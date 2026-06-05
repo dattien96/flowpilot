@@ -237,6 +237,31 @@ describe("artifact open route", () => {
     expect(await response.text()).toContain("Recovered prompt");
   });
 
+  it("redirects remote-only Google Drive artifacts when a remote object id is available", async () => {
+    mocks.createGatewayBundle.mockResolvedValue({
+      localRunnerGateway: {
+        getArtifactById: vi.fn().mockResolvedValue(null),
+      },
+    });
+
+    const response = await GET(
+      new Request(
+        "http://localhost?remotePath=projects/project-1/runs/run-1/steps/codex_test/artifacts/artifact-1/Response.md&storageProvider=google_drive&remoteObjectId=drive-file-1",
+        { headers: { accept: "text/html" } },
+      ),
+      {
+        params: Promise.resolve({
+          artifactId: "artifact-1",
+        }),
+      },
+    );
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe(
+      "https://drive.google.com/file/d/drive-file-1/view",
+    );
+  });
+
   it("returns raw markdown text when the accept header does not include text/html", async () => {
     mocks.createGatewayBundle.mockResolvedValue({
       localRunnerGateway: {

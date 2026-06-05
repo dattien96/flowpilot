@@ -1,6 +1,7 @@
 import type {
   ArtifactDefinition,
   ArtifactRun,
+  ArtifactRunReplica,
   ReasoningEffort,
   SupportedStepModel,
   StepDefinition,
@@ -104,6 +105,32 @@ export function mapArtifactRun(row: SupabaseRow): ArtifactRun {
           : null,
     remoteObjectId: row.remote_object_id ? String(row.remote_object_id) : null,
     syncStatus: row.sync_status as ArtifactRun["syncStatus"],
+    replicas: [],
+    createdAt: row.created_at ? String(row.created_at) : "",
+    updatedAt: row.updated_at ? String(row.updated_at) : "",
+  };
+}
+
+export function mapArtifactRunReplica(row: SupabaseRow): ArtifactRunReplica {
+  return {
+    id: String(row.id ?? ""),
+    artifactRunId: String(row.artifact_run_id),
+    projectId: row.project_id ? String(row.project_id) : null,
+    provider: row.provider === "google_drive" ? "google_drive" : "supabase",
+    storageScopeKey: row.storage_scope_key ? String(row.storage_scope_key) : null,
+    remotePath: String(row.remote_path ?? ""),
+    remoteObjectId: row.remote_object_id ? String(row.remote_object_id) : null,
+    syncStatus:
+      row.sync_status === "syncing"
+        ? "syncing"
+        : row.sync_status === "synced"
+          ? "synced"
+          : row.sync_status === "failed"
+            ? "failed"
+            : "queued",
+    checksum: row.checksum ? String(row.checksum) : null,
+    lastSyncedAt: row.last_synced_at ? String(row.last_synced_at) : null,
+    lastError: row.last_error ? String(row.last_error) : null,
     createdAt: row.created_at ? String(row.created_at) : "",
     updatedAt: row.updated_at ? String(row.updated_at) : "",
   };

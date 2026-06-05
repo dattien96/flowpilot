@@ -856,6 +856,35 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 					return
 				}
 
+				if len(parts) == 2 && parts[1] == "hydrate-remote" {
+					if r.Method != http.MethodPost {
+						http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+						return
+					}
+
+					var payload runner.ArtifactHydrationRequest
+					if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+						writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+						return
+					}
+					if strings.TrimSpace(payload.ArtifactID) == "" {
+						payload.ArtifactID = artifactID
+					}
+
+					artifact, err := instance.HydrateArtifactFromRemote(r.Context(), payload)
+					if err != nil {
+						status := http.StatusBadRequest
+						if errors.Is(err, os.ErrNotExist) {
+							status = http.StatusNotFound
+						}
+						writeHTTPError(w, status, err)
+						return
+					}
+
+					writeHTTPJSON(w, artifact)
+					return
+				}
+
 				if len(parts) == 2 && parts[1] == "open" {
 					if r.Method != http.MethodGet {
 						http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

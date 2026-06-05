@@ -25,6 +25,10 @@ type ArtifactSyncDependencies = {
   >;
 };
 
+type SyncArtifactOptions = {
+  targetProvider?: ArtifactStorageProvider;
+};
+
 type ArtifactSyncRequest = {
   storageProvider: ArtifactStorageProvider;
   googleDriveProjectId?: string;
@@ -80,6 +84,8 @@ async function updateArtifactSyncState(
     remotePath?: string | null;
     remoteObjectId?: string | null;
     syncStatus?: ArtifactSyncResult["syncStatus"];
+    checksum?: string | null;
+    lastError?: string | null;
   },
 ) {
   await gateway.updateArtifactRunStorageMetadata({
@@ -88,6 +94,8 @@ async function updateArtifactSyncState(
     remotePath: patch.remotePath ?? undefined,
     remoteObjectId: patch.remoteObjectId ?? undefined,
     syncStatus: patch.syncStatus as "local_only" | "queued" | "syncing" | "synced" | "failed" | undefined,
+    checksum: patch.checksum ?? undefined,
+    lastError: patch.lastError ?? undefined,
   });
 }
 
@@ -177,6 +185,7 @@ async function syncArtifactToSupabase(
 export async function syncArtifactThroughRunner(
   artifactId: string,
   dependencies: ArtifactSyncDependencies,
+  options: SyncArtifactOptions = {},
 ) {
   const artifact = await dependencies.localRunnerGateway.getArtifactById(artifactId);
   if (!artifact) {
@@ -188,7 +197,7 @@ export async function syncArtifactThroughRunner(
     throw new Error("Artifact is missing its project id.");
   }
 
-  const projectProvider = await loadProjectStorageProvider(dependencies.supabase, projectId);
+  const projectProvider = options.targetProvider ?? (await loadProjectStorageProvider(dependencies.supabase, projectId));
   let googleDriveConnection: ArtifactStorageConnection | null = null;
 
   if (projectProvider === "google_drive") {
@@ -208,6 +217,7 @@ export async function syncArtifactThroughRunner(
   await updateArtifactSyncState(dependencies.artifactStorageConnectionGateway, artifactId, {
     storageProvider: projectProvider,
     syncStatus: "syncing",
+    checksum: artifact.checksum ?? null,
   });
 
   if (projectProvider === "supabase") {
@@ -219,6 +229,8 @@ export async function syncArtifactThroughRunner(
         remotePath: payload.remotePath ?? artifact.remotePath ?? "",
         remoteObjectId: payload.remoteObjectId ?? artifact.remoteObjectId ?? null,
         syncStatus: "synced",
+        checksum: artifact.checksum ?? null,
+        lastError: null,
       });
       return payload;
     } catch (error) {
@@ -234,6 +246,8 @@ export async function syncArtifactThroughRunner(
       await tryUpdateArtifactSyncState(dependencies.artifactStorageConnectionGateway, artifactId, {
         storageProvider: "supabase",
         syncStatus: "failed",
+        checksum: artifact.checksum ?? null,
+        lastError: message,
       });
       throw error instanceof Error ? error : new Error("Unable to sync artifact.");
     }
@@ -260,6 +274,8 @@ export async function syncArtifactThroughRunner(
     await tryUpdateArtifactSyncState(dependencies.artifactStorageConnectionGateway, artifactId, {
       storageProvider: projectProvider,
       syncStatus: "failed",
+      checksum: artifact.checksum ?? null,
+      lastError: error instanceof Error ? error.message : "Unable to sync artifact.",
     });
     throw error instanceof Error ? error : new Error("Unable to sync artifact.");
   }
@@ -269,6 +285,11 @@ export async function syncArtifactThroughRunner(
     await tryUpdateArtifactSyncState(dependencies.artifactStorageConnectionGateway, artifactId, {
       storageProvider: projectProvider,
       syncStatus: "failed",
+      checksum: artifact.checksum ?? null,
+      lastError:
+        payload?.error ||
+        (payload && "message" in payload ? String((payload as { message?: string }).message) : "") ||
+        "Unable to sync artifact.",
     });
     throw new Error(
       payload?.error ||
@@ -286,6 +307,8 @@ export async function syncArtifactThroughRunner(
       remotePath: payload?.remotePath ?? artifact.remotePath ?? "",
       remoteObjectId: payload?.remoteObjectId ?? artifact.remoteObjectId ?? null,
       syncStatus: "synced",
+      checksum: artifact.checksum ?? null,
+      lastError: null,
     });
     return payload;
   } catch (error) {
@@ -299,6 +322,8 @@ export async function syncArtifactThroughRunner(
     await tryUpdateArtifactSyncState(dependencies.artifactStorageConnectionGateway, artifactId, {
       storageProvider: resolvedProvider,
       syncStatus: "failed",
+      checksum: artifact.checksum ?? null,
+      lastError: message,
     });
     throw error instanceof Error ? error : new Error("Unable to sync artifact.");
   }

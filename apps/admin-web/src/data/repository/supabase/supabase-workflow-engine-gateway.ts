@@ -5,6 +5,7 @@ import type { WorkflowEngineGateway } from "@/domain/gateway/workflow-engine-gat
 import type {
   ArtifactDefinition,
   ArtifactRun,
+  ArtifactRunReplica,
   StepDefinition,
   Workflow,
   WorkflowRunStartRequest,
@@ -19,6 +20,7 @@ import { normalizeStepModel } from "@/domain/model/entity/workflow-engine";
 import {
   mapArtifactDefinition,
   mapArtifactRun,
+  mapArtifactRunReplica,
   mapStepDefinition,
   mapWorkflow,
   mapWorkflowRun,
@@ -191,6 +193,37 @@ function mergeArtifactRuns(
   );
 }
 
+function synthesizeCompatibilityReplica(artifact: ArtifactRun): ArtifactRunReplica[] {
+  if (!artifact.storageProvider || !artifact.remotePath.trim()) {
+    return [];
+  }
+
+  return [
+    {
+      id: `compat:${artifact.id}:${artifact.storageProvider}`,
+      artifactRunId: artifact.id,
+      projectId: artifact.projectId,
+      provider: artifact.storageProvider,
+      storageScopeKey: null,
+      remotePath: artifact.remotePath,
+      remoteObjectId: artifact.remoteObjectId,
+      syncStatus:
+        artifact.syncStatus === "syncing"
+          ? "syncing"
+          : artifact.syncStatus === "synced"
+            ? "synced"
+            : artifact.syncStatus === "failed"
+              ? "failed"
+              : "queued",
+      checksum: null,
+      lastSyncedAt: artifact.syncStatus === "synced" ? artifact.updatedAt : null,
+      lastError: null,
+      createdAt: artifact.createdAt,
+      updatedAt: artifact.updatedAt,
+    },
+  ];
+}
+
 async function invokeWorkflowStartRuntime<TResponse>(
   supabase: SupabaseClient,
   payload: WorkflowRunStartRequest,
@@ -323,6 +356,30 @@ export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
 
     if (error) throw new Error(`Unable to list artifact runs: ${error.message}`);
     const databaseRuns = (data ?? []).map(mapArtifactRun);
+    const artifactRunIds = databaseRuns.map((artifact) => artifact.id);
+    const replicaRows =
+      artifactRunIds.length === 0
+        ? []
+        : await this.supabase
+            .from("artifact_run_replicas")
+            .select("*")
+            .in("artifact_run_id", artifactRunIds)
+            .then(({ data: replicaData, error: replicaError }) => {
+              if (replicaError) {
+                throw new Error(`Unable to list artifact run replicas: ${replicaError.message}`);
+              }
+              return (replicaData ?? []).map(mapArtifactRunReplica);
+            });
+    const replicasByArtifactRunId = new Map<string, ArtifactRunReplica[]>();
+    for (const replica of replicaRows) {
+      const current = replicasByArtifactRunId.get(replica.artifactRunId) ?? [];
+      current.push(replica);
+      replicasByArtifactRunId.set(replica.artifactRunId, current);
+    }
+    for (const artifact of databaseRuns) {
+      artifact.replicas =
+        replicasByArtifactRunId.get(artifact.id) ?? synthesizeCompatibilityReplica(artifact);
+    }
     const storageRuns = await listArtifactRunsFromStorage(this.supabase, projectId).catch(
       (storageError) => {
         console.warn(
@@ -332,6 +389,9 @@ export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
         return [] as ArtifactRun[];
       },
     );
+    for (const artifact of storageRuns) {
+      artifact.replicas = synthesizeCompatibilityReplica(artifact);
+    }
     return mergeArtifactRuns(databaseRuns, storageRuns);
   }
 

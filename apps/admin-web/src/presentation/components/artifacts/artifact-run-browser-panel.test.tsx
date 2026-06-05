@@ -65,6 +65,7 @@ describe("ArtifactRunBrowserPanel", () => {
     storageProvider: "supabase",
     remoteObjectId: "object-1",
     syncStatus: "failed",
+    replicas: [],
     createdAt: "2026-06-02T00:00:00.000Z",
     updatedAt: "2026-06-02T00:00:00.000Z",
   };
@@ -83,6 +84,7 @@ describe("ArtifactRunBrowserPanel", () => {
     storageProvider: "supabase",
     remoteObjectId: "object-2",
     syncStatus: "synced",
+    replicas: [],
     createdAt: "2026-06-02T00:00:00.000Z",
     updatedAt: "2026-06-02T00:00:00.000Z",
   };
@@ -241,8 +243,8 @@ describe("ArtifactRunBrowserPanel", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: "local/NotSyned (0)" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Remote/Sync (1)" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Local / Not Synced (0)" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remote / Sync (1)" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /sync artifacts \(0\)/i })).toBeDisabled();
   });
 
@@ -257,6 +259,7 @@ describe("ArtifactRunBrowserPanel", () => {
             storageProvider: null,
             remoteObjectId: null,
             remotePath: "projects/project-1/runs/run-1/steps/step-1/Response.md",
+            replicas: [],
           },
         ]}
         localArtifacts={[localArtifact]}
@@ -265,8 +268,8 @@ describe("ArtifactRunBrowserPanel", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: "local/NotSyned (1)" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Remote/Sync (0)" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Local / Not Synced (1)" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remote / Sync (0)" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /sync artifacts \(1\)/i })).toBeInTheDocument();
   });
 
@@ -280,7 +283,7 @@ describe("ArtifactRunBrowserPanel", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Remote/Sync (1)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remote / Sync (1)" }));
 
     expect(screen.getByText("Recovered response")).toBeInTheDocument();
     expect(screen.getByText("unbound")).toBeInTheDocument();
@@ -296,7 +299,7 @@ describe("ArtifactRunBrowserPanel", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Remote/Sync (1)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remote / Sync (1)" }));
 
     expect(screen.getByRole("link", { name: "Open Response.md" })).toHaveAttribute(
       "href",
@@ -318,7 +321,7 @@ describe("ArtifactRunBrowserPanel", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Remote/Sync (1)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remote / Sync (1)" }));
 
     await waitFor(() => {
       expect(screen.getByText("Actual prompt: Remote actual prompt")).toBeInTheDocument();
@@ -346,7 +349,7 @@ describe("ArtifactRunBrowserPanel", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Remote/Sync (1)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remote / Sync (1)" }));
 
     await waitFor(() => {
       expect(

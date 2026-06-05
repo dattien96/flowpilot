@@ -169,6 +169,142 @@ func (r *Runner) SaveArtifactCloudSyncResult(artifactID string, result ArtifactC
 	return updated, nil
 }
 
+func (r *Runner) HydrateArtifactFromRemote(ctx context.Context, request ArtifactHydrationRequest) (ArtifactDetail, error) {
+	artifactID := strings.TrimSpace(request.ArtifactID)
+	if artifactID == "" {
+		return ArtifactDetail{}, errors.New("artifact id is required")
+	}
+	projectID := strings.TrimSpace(request.ProjectID)
+	if projectID == "" {
+		return ArtifactDetail{}, errors.New("project id is required")
+	}
+	workflowRunID := strings.TrimSpace(request.WorkflowRunID)
+	if workflowRunID == "" {
+		return ArtifactDetail{}, errors.New("workflow run id is required")
+	}
+	workflowStepKey := strings.TrimSpace(request.WorkflowStepKey)
+	if workflowStepKey == "" {
+		return ArtifactDetail{}, errors.New("workflow step key is required")
+	}
+	remotePath := strings.TrimSpace(request.RemotePath)
+	if remotePath == "" {
+		return ArtifactDetail{}, errors.New("remote path is required")
+	}
+	sourceStorageProvider := strings.ToLower(strings.TrimSpace(request.SourceStorageProvider))
+	if sourceStorageProvider != artifactStorageProviderSupabase && sourceStorageProvider != artifactStorageProviderGoogleDrive {
+		return ArtifactDetail{}, fmt.Errorf("unsupported source storage provider %q", request.SourceStorageProvider)
+	}
+
+	featureID := strings.TrimSpace(request.FeatureID)
+	if featureID == "" {
+		featureID = workflowStepKey
+	}
+	providerKey := strings.TrimSpace(request.ProviderKey)
+	if providerKey == "" {
+		providerKey = "codex"
+	}
+	sourceKind := strings.TrimSpace(request.SourceKind)
+	if sourceKind == "" {
+		sourceKind = "workflow_output"
+	}
+	title := strings.TrimSpace(request.Title)
+	if title == "" {
+		title = filepath.Base(remotePath)
+	}
+	createdAt := strings.TrimSpace(request.CreatedAt)
+	if createdAt == "" {
+		createdAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	updatedAt := strings.TrimSpace(request.UpdatedAt)
+	if updatedAt == "" {
+		updatedAt = createdAt
+	}
+
+	artifactDir := r.artifactDirectory(projectID, featureID, workflowRunID, workflowStepKey, artifactID)
+	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+		return ArtifactDetail{}, err
+	}
+
+	artifact := ArtifactDetail{
+		ArtifactSummary: ArtifactSummary{
+			ArtifactID:      artifactID,
+			Title:           title,
+			SourceKind:      sourceKind,
+			ProjectID:       projectID,
+			FeatureID:       featureID,
+			WorkflowRunID:   workflowRunID,
+			WorkflowStepKey: workflowStepKey,
+			ProviderKey:     providerKey,
+			StorageProvider: sourceStorageProvider,
+			RemoteObjectID:  strings.TrimSpace(request.RemoteObjectID),
+			LocalPath:       artifactDir,
+			RemotePath:      remotePath,
+			RemoteURL:       "",
+			SyncStatus:      artifactSyncStatusLocalOnly,
+			CreatedAt:       createdAt,
+			UpdatedAt:       updatedAt,
+		},
+		ManifestPath:     filepath.Join(artifactDir, "manifest.json"),
+		PromptPath:       filepath.Join(artifactDir, "prompt.md"),
+		ActualPromptPath: filepath.Join(artifactDir, "actual-prompt.md"),
+		StdoutPath:       filepath.Join(artifactDir, "stdout.txt"),
+		StderrPath:       filepath.Join(artifactDir, "stderr.txt"),
+		CommandPath:      filepath.Join(artifactDir, "command.txt"),
+		ContentPath:      filepath.Join(artifactDir, filepath.Base(remotePath)),
+	}
+
+	files, err := r.loadArtifactFilesFromRemoteSource(ctx, artifact, sourceStorageProvider)
+	if err != nil {
+		return ArtifactDetail{}, err
+	}
+	if len(files) == 0 {
+		return ArtifactDetail{}, errors.New("remote artifact source returned no files")
+	}
+
+	for _, file := range files {
+		targetPath := filepath.Join(artifactDir, filepath.FromSlash(file.relativePath))
+		if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+			return ArtifactDetail{}, err
+		}
+		if err := os.WriteFile(targetPath, file.bytes, 0o644); err != nil {
+			return ArtifactDetail{}, err
+		}
+	}
+
+	if _, err := os.Stat(artifact.ContentPath); err != nil {
+		return ArtifactDetail{}, err
+	}
+	contentBytes, err := os.ReadFile(artifact.ContentPath)
+	if err != nil {
+		return ArtifactDetail{}, err
+	}
+	artifact.ContentMarkdown = string(contentBytes)
+	artifact.PreviewMarkdown = readPreview(artifact.ContentMarkdown)
+	artifact.Checksum = checksumFor(artifact.ContentMarkdown)
+
+	if promptBytes, err := os.ReadFile(artifact.PromptPath); err == nil {
+		artifact.PromptText = strings.TrimSpace(string(promptBytes))
+	}
+	if actualPromptBytes, err := os.ReadFile(artifact.ActualPromptPath); err == nil {
+		artifact.ActualPromptText = strings.TrimSpace(string(actualPromptBytes))
+	}
+	if stdoutBytes, err := os.ReadFile(artifact.StdoutPath); err == nil {
+		artifact.StdoutText = strings.TrimSpace(string(stdoutBytes))
+	}
+	if stderrBytes, err := os.ReadFile(artifact.StderrPath); err == nil {
+		artifact.StderrText = strings.TrimSpace(string(stderrBytes))
+	}
+	if commandBytes, err := os.ReadFile(artifact.CommandPath); err == nil {
+		artifact.CommandText = strings.TrimSpace(string(commandBytes))
+	}
+
+	if err := artifact.writeManifest(artifact.ManifestPath); err != nil {
+		return ArtifactDetail{}, err
+	}
+
+	return artifact, nil
+}
+
 func (r *Runner) SavePromptArtifact(request PromptExecutionRequest, result PromptExecutionResult) (ArtifactDetail, error) {
 	artifactID := fmt.Sprintf("artifact_%s", result.RunID)
 	projectID := "local"

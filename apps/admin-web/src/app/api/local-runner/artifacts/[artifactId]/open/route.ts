@@ -18,6 +18,7 @@ export async function GET(request: Request, context: RouteContext) {
   const file = requestUrl.searchParams.get("file")?.trim() ?? "";
   const remotePath = requestUrl.searchParams.get("remotePath")?.trim() ?? "";
   const storageProvider = requestUrl.searchParams.get("storageProvider")?.trim() ?? "";
+  const remoteObjectId = requestUrl.searchParams.get("remoteObjectId")?.trim() ?? "";
   const gateways = await createGatewayBundle();
   const artifact = await gateways.localRunnerGateway.getArtifactById(artifactId);
 
@@ -28,6 +29,15 @@ export async function GET(request: Request, context: RouteContext) {
     if (storageProvider === "supabase" && remotePath) {
       const targetPath = resolveRemoteTargetPath(remotePath, artifactId, file);
       return streamSupabaseArtifact(targetPath, isHtmlRequest);
+    }
+    if (
+      storageProvider === "google_drive" &&
+      remoteObjectId &&
+      (file === "" || file === "content")
+    ) {
+      return NextResponse.redirect(
+        `https://drive.google.com/file/d/${encodeURIComponent(remoteObjectId)}/view`,
+      );
     }
     return NextResponse.json({ error: "Artifact not found." }, { status: 404 });
   }

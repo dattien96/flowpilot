@@ -95,6 +95,9 @@ function createLocalRunnerMock(): LocalRunnerGateway {
     saveArtifactCloudSyncResult: vi.fn(async () => {
       throw new Error("not implemented");
     }),
+    hydrateArtifactFromRemote: vi.fn(async () => {
+      throw new Error("not implemented");
+    }),
     syncArtifact: vi.fn(async () => {
       throw new Error("not implemented");
     }),

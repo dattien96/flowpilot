@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { FolderOpen, Link2, RefreshCw } from "lucide-react";
 import { useRouter } from "next/navigation";
 
-import { createGatewayBundle } from "@/data/repository/browser-factory";
 import { getBrowserSupabaseClient } from "@/data/supabase/client";
 import type { Project } from "@/domain/model/entity/project";
 import {
@@ -39,10 +38,41 @@ interface ArtifactCloudStoragePanelProps {
 }
 
 type StorageProviderOption = "supabase" | "google_drive";
+type ProviderSwitchStage =
+  | "validating_target_provider"
+  | "scanning_artifacts"
+  | "checking_existing_replicas"
+  | "syncing"
+  | "completed"
+  | "failed"
+  | "reconnect_required";
+type ProviderSwitchResult = {
+  status: "completed" | "failed";
+  sourceProvider: StorageProviderOption;
+  targetProvider: StorageProviderOption;
+  totalArtifacts: number;
+  syncedCount: number;
+  skippedCount: number;
+  failedCount: number;
+  failures: Array<{
+    artifactRunId: string;
+    reason: string;
+  }>;
+};
+type ProviderSwitchState = {
+  targetProvider: StorageProviderOption;
+  stage: ProviderSwitchStage;
+  message: string;
+  totalArtifacts: number;
+  syncedCount: number;
+  skippedCount: number;
+  failedCount: number;
+  currentArtifactLabel?: string | null;
+  failures: ProviderSwitchResult["failures"];
+};
 
 export function ArtifactCloudStoragePanel({ projects }: ArtifactCloudStoragePanelProps) {
   const router = useRouter();
-  const gatewayBundle = useRef(createGatewayBundle());
   const [projectList, setProjectList] = useState(projects);
   const [selectedProjectId, setSelectedProjectId] = useState(projects[0]?.id ?? "");
   const [detailProvider, setDetailProvider] = useState<StorageProviderOption>("supabase");
@@ -52,8 +82,10 @@ export function ArtifactCloudStoragePanel({ projects }: ArtifactCloudStoragePane
   const [loadingSetupState, setLoadingSetupState] = useState(false);
   const [startingSession, setStartingSession] = useState(false);
   const [savingProvider, setSavingProvider] = useState<"supabase" | "google_drive" | null>(null);
+  const [providerSwitchState, setProviderSwitchState] = useState<ProviderSwitchState | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const pollingTimerRef = useRef<number | null>(null);
+  const switchProgressTimersRef = useRef<number[]>([]);
 
   const selectedProject = useMemo(
     () => projectList.find((project) => project.id === selectedProjectId) ?? null,
@@ -70,7 +102,11 @@ export function ArtifactCloudStoragePanel({ projects }: ArtifactCloudStoragePane
   async function buildAuthHeaders() {
     const supabase = await getBrowserSupabaseClient();
     const token = (await supabase.auth.getSession()).data.session?.access_token ?? "";
-    return token ? { Authorization: `Bearer ${token}` } : {};
+    const headers: Record<string, string> = {};
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+    return headers;
   }
 
   async function loadGoogleDriveState(sessionId?: string) {
@@ -132,6 +168,64 @@ export function ArtifactCloudStoragePanel({ projects }: ArtifactCloudStoragePane
       window.clearTimeout(pollingTimerRef.current);
       pollingTimerRef.current = null;
     }
+  }
+
+  function clearSwitchProgressTimers() {
+    for (const timerId of switchProgressTimersRef.current) {
+      window.clearTimeout(timerId);
+    }
+    switchProgressTimersRef.current = [];
+  }
+
+  function updateProviderSwitchState(stage: ProviderSwitchStage, message: string) {
+    setProviderSwitchState((current) =>
+      current
+        ? {
+            ...current,
+            stage,
+            message,
+          }
+        : current,
+    );
+  }
+
+  function startProviderSwitchProgress(targetProvider: StorageProviderOption) {
+    clearSwitchProgressTimers();
+    setProviderSwitchState({
+      targetProvider,
+      stage: "validating_target_provider",
+      message: `Validating ${targetProvider === "google_drive" ? "Google Drive" : "Supabase"} target provider...`,
+      totalArtifacts: 0,
+      syncedCount: 0,
+      skippedCount: 0,
+      failedCount: 0,
+      currentArtifactLabel: null,
+      failures: [],
+    });
+
+    const checkpoints: Array<{ delayMs: number; stage: ProviderSwitchStage; message: string }> = [
+      {
+        delayMs: 250,
+        stage: "scanning_artifacts",
+        message: "Scanning local artifacts, shared artifact rows, and provider replicas...",
+      },
+      {
+        delayMs: 900,
+        stage: "checking_existing_replicas",
+        message: "Checking existing target replicas before downloading remote bytes...",
+      },
+      {
+        delayMs: 1600,
+        stage: "syncing",
+        message: "Syncing missing artifacts into the selected target provider...",
+      },
+    ];
+
+    switchProgressTimersRef.current = checkpoints.map(({ delayMs, stage, message }) =>
+      window.setTimeout(() => {
+        updateProviderSwitchState(stage, message);
+      }, delayMs),
+    );
   }
 
   function schedulePolling(sessionId: string) {
@@ -199,37 +293,84 @@ export function ArtifactCloudStoragePanel({ projects }: ArtifactCloudStoragePane
       return;
     }
 
-    const googleDriveReady =
-      provider === "google_drive" &&
-      googleDriveSetupStatus?.artifactSync?.configured &&
-      connection?.status === "connected" &&
-      Boolean(connection.folderId?.trim());
-
-    if (provider === "google_drive" && !googleDriveReady) {
-      setStatusMessage(
-        googleDriveSetupStatus?.artifactSync?.configured
-          ? "Connect a Google Drive folder on this runner before selecting Google Drive."
-          : "Complete Google Console setup before selecting Google Drive.",
-      );
-      return;
-    }
-
     setSavingProvider(provider);
+    startProviderSwitchProgress(provider);
     setStatusMessage(null);
     try {
-      const updatedProject = await gatewayBundle.current.projectGateway.updateProject(selectedProjectId, {
-        artifactStoragePreference: provider,
+      const response = await fetch("/api/local-runner/artifact-storage/switch-provider", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(await buildAuthHeaders()),
+        },
+        body: JSON.stringify({
+          projectId: selectedProjectId,
+          targetProvider: provider,
+        }),
       });
-      setProjectList((current) =>
-        current.map((project) => (project.id === updatedProject.id ? updatedProject : project)),
-      );
-      setStatusMessage(
-        provider === "google_drive"
-          ? "Google Drive is now the selected artifact storage provider for this project."
-          : "Supabase Storage is now the selected artifact storage provider for this project.",
-      );
+      if (response.status === 401) {
+        router.replace("/login");
+        return;
+      }
+      const payload = (await response.json()) as ProviderSwitchResult | { error?: string };
+      if (!response.ok) {
+        if ("error" in payload && payload.error === "Authentication required.") {
+          router.replace("/login");
+          return;
+        }
+        throw new Error("error" in payload && payload.error ? payload.error : "Unable to switch artifact storage provider.");
+      }
+
+      const result = payload as ProviderSwitchResult;
+      clearSwitchProgressTimers();
+      setProviderSwitchState({
+        targetProvider: provider,
+        stage: result.status === "completed" ? "completed" : "failed",
+        message:
+          result.status === "completed"
+            ? "Provider switch completed."
+            : "Provider switch failed before the active provider could change.",
+        totalArtifacts: result.totalArtifacts,
+        syncedCount: result.syncedCount,
+        skippedCount: result.skippedCount,
+        failedCount: result.failedCount,
+        currentArtifactLabel: result.failures[0]?.artifactRunId ?? null,
+        failures: result.failures,
+      });
+      if (result.status === "completed") {
+        setProjectList((current) =>
+          current.map((project) =>
+            project.id === selectedProjectId
+              ? { ...project, artifactStoragePreference: provider }
+              : project,
+          ),
+        );
+      }
+      if (result.status === "completed") {
+        setStatusMessage(
+          `Provider switch completed. Synced ${result.syncedCount}, skipped ${result.skippedCount}, total ${result.totalArtifacts}.`,
+        );
+      } else {
+        setStatusMessage(
+          `Provider switch stopped with ${result.failedCount} failures. Synced ${result.syncedCount}, skipped ${result.skippedCount}. ${result.failures[0]?.reason ?? ""}`.trim(),
+        );
+      }
+      await loadGoogleDriveState();
     } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : "Unable to update artifact storage provider.");
+      clearSwitchProgressTimers();
+      const message = error instanceof Error ? error.message : "Unable to update artifact storage provider.";
+      const reconnectRequired = /reconnect/i.test(message);
+      setProviderSwitchState((current) =>
+        current
+          ? {
+              ...current,
+              stage: reconnectRequired ? "reconnect_required" : "failed",
+              message,
+              failedCount: Math.max(current.failedCount, 1),
+            }
+          : null,
+      );
+      setStatusMessage(message);
     } finally {
       setSavingProvider(null);
     }
@@ -242,6 +383,7 @@ export function ArtifactCloudStoragePanel({ projects }: ArtifactCloudStoragePane
     void loadGoogleDriveSetup();
     return () => {
       stopPolling();
+      clearSwitchProgressTimers();
     };
   }, [selectedProjectId]);
 
@@ -362,7 +504,15 @@ export function ArtifactCloudStoragePanel({ projects }: ArtifactCloudStoragePane
                   <Badge tone={googleDriveConfigured ? "success" : "warning"}>
                     {googleDriveConfigured ? "setup ready" : "setup needed"}
                   </Badge>
-                  <Badge tone={connection?.status === "connected" ? "success" : connection?.status === "failed" ? "danger" : "warning"}>
+                  <Badge
+                    tone={
+                      connection?.status === "connected"
+                        ? "success"
+                        : connection?.status === "failed" || connection?.status === "reconnect_required"
+                          ? "danger"
+                          : "warning"
+                    }
+                  >
                     {connection?.status || "disconnected"}
                   </Badge>
                 </>
@@ -492,6 +642,66 @@ export function ArtifactCloudStoragePanel({ projects }: ArtifactCloudStoragePane
           </p>
         </div>
       </div>
+
+      {providerSwitchState ? (
+        <div className="mt-6 rounded-2xl border border-primary/40 bg-card/90 p-5 shadow-sm">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <p className="text-xs uppercase tracking-[0.24em] text-muted-foreground">Provider switch migration</p>
+              <p className="mt-2 text-sm font-medium">
+                Target provider: {providerSwitchState.targetProvider === "google_drive" ? "Google Drive" : "Supabase"}
+              </p>
+              <p className="mt-2 text-sm text-muted-foreground">{providerSwitchState.message}</p>
+              {providerSwitchState.currentArtifactLabel ? (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Current artifact: {providerSwitchState.currentArtifactLabel}
+                </p>
+              ) : null}
+            </div>
+            <Badge tone={providerSwitchStageTone(providerSwitchState.stage)}>
+              {formatProviderSwitchStage(providerSwitchState.stage)}
+            </Badge>
+          </div>
+
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+            <InfoTile label="State" value={formatProviderSwitchStage(providerSwitchState.stage)} />
+            <InfoTile label="Total artifacts" value={String(providerSwitchState.totalArtifacts)} />
+            <InfoTile label="Synced" value={String(providerSwitchState.syncedCount)} />
+            <InfoTile label="Skipped" value={String(providerSwitchState.skippedCount)} />
+            <InfoTile label="Failed" value={String(providerSwitchState.failedCount)} />
+          </div>
+
+          <div className="mt-4 flex flex-wrap gap-2">
+            {providerSwitchStages.map((stage) => (
+              <Badge
+                key={stage}
+                tone={
+                  providerSwitchState.stage === stage
+                    ? providerSwitchStageTone(stage)
+                    : providerSwitchStageReached(providerSwitchState.stage, stage)
+                      ? "success"
+                      : "neutral"
+                }
+              >
+                {formatProviderSwitchStage(stage)}
+              </Badge>
+            ))}
+          </div>
+
+          {providerSwitchState.failures.length > 0 ? (
+            <div className="mt-4 rounded-2xl border border-border bg-background/70 p-4">
+              <p className="text-xs uppercase tracking-[0.24em] text-muted-foreground">Failure details</p>
+              <ul className="mt-3 space-y-2 text-sm text-muted-foreground">
+                {providerSwitchState.failures.slice(0, 3).map((failure) => (
+                  <li key={`${failure.artifactRunId}-${failure.reason}`}>
+                    <span className="font-medium text-foreground">{failure.artifactRunId}</span>: {failure.reason}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -503,4 +713,60 @@ function InfoTile({ label, value }: { label: string; value: string }) {
       <p className="mt-2 break-words text-sm font-medium">{value}</p>
     </div>
   );
+}
+
+const providerSwitchStages: ProviderSwitchStage[] = [
+  "validating_target_provider",
+  "scanning_artifacts",
+  "checking_existing_replicas",
+  "syncing",
+  "completed",
+  "failed",
+  "reconnect_required",
+];
+
+function formatProviderSwitchStage(stage: ProviderSwitchStage) {
+  switch (stage) {
+    case "validating_target_provider":
+      return "validating target provider";
+    case "scanning_artifacts":
+      return "scanning artifacts";
+    case "checking_existing_replicas":
+      return "checking existing replicas";
+    case "syncing":
+      return "syncing";
+    case "completed":
+      return "completed";
+    case "failed":
+      return "failed";
+    case "reconnect_required":
+      return "reconnect required";
+  }
+}
+
+function providerSwitchStageTone(stage: ProviderSwitchStage): "success" | "warning" | "danger" | "neutral" {
+  switch (stage) {
+    case "completed":
+      return "success";
+    case "failed":
+    case "reconnect_required":
+      return "danger";
+    case "validating_target_provider":
+    case "scanning_artifacts":
+    case "checking_existing_replicas":
+    case "syncing":
+      return "warning";
+  }
+}
+
+function providerSwitchStageReached(current: ProviderSwitchStage, candidate: ProviderSwitchStage) {
+  const currentIndex = providerSwitchStages.indexOf(current);
+  const candidateIndex = providerSwitchStages.indexOf(candidate);
+  if (candidateIndex === -1 || currentIndex === -1) {
+    return false;
+  }
+  if (current === "failed" || current === "reconnect_required") {
+    return candidateIndex < providerSwitchStages.indexOf("failed");
+  }
+  return candidateIndex <= currentIndex;
 }

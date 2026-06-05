@@ -2,6 +2,7 @@ import { mapProvider, type RawProvider } from "./local-runner-mappers";
 import type { LocalRunnerGateway } from "@/domain/gateway/local-runner-gateway";
 import type {
   LocalRunnerArtifact,
+  LocalRunnerArtifactHydrationRequest,
   LocalRunnerArtifactCloudSyncResult,
   LocalRunnerBackupResult,
   LocalRunnerDirectorySelection,
@@ -349,6 +350,31 @@ export class HttpLocalRunnerGateway implements LocalRunnerGateway {
     if (!response.ok) {
       throw new Error(
         `Artifact cloud sync result save failed: ${response.status} ${response.statusText}`,
+      );
+    }
+
+    return (await response.json()) as LocalRunnerArtifact;
+  }
+
+  async hydrateArtifactFromRemote(
+    artifactId: string,
+    request: LocalRunnerArtifactHydrationRequest,
+  ) {
+    const response = await fetch(
+      new URL(`/artifacts/${artifactId}/hydrate-remote`, this.baseUrl),
+      {
+        method: "POST",
+        cache: "no-store",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(request),
+      },
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `Artifact remote hydration failed: ${response.status} ${response.statusText}`,
       );
     }
 

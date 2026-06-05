@@ -171,6 +171,23 @@ export interface ArtifactRun {
   storageProvider: "supabase" | "google_drive" | null;
   remoteObjectId: string | null;
   syncStatus: ArtifactSyncStatus;
+  replicas: ArtifactRunReplica[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ArtifactRunReplica {
+  id: string;
+  artifactRunId: string;
+  projectId: string | null;
+  provider: "supabase" | "google_drive";
+  storageScopeKey: string | null;
+  remotePath: string;
+  remoteObjectId: string | null;
+  syncStatus: Exclude<ArtifactSyncStatus, "local_only">;
+  checksum: string | null;
+  lastSyncedAt: string | null;
+  lastError: string | null;
   createdAt: string;
   updatedAt: string;
 }
