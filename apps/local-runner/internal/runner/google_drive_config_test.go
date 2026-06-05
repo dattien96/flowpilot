@@ -432,6 +432,65 @@ func TestHandleGoogleDriveArtifactOAuthCallbackMarksReconnectRequiredOnInvalidGr
 	}
 }
 
+func TestLoadArtifactStorageGoogleDriveStateFallsBackToLegacyPath(t *testing.T) {
+	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
+	legacyPath := filepath.Join(instance.workspace, ".flowpilot", "artifact-storage-google-drive.json")
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
+		t.Fatalf("create legacy state dir: %v", err)
+	}
+
+	payload := `{
+  "sessions": {
+    "session-1": {
+      "sessionId": "session-1",
+      "projectId": "project-1",
+      "status": "connected",
+      "createdAt": "2026-06-01T00:00:00Z",
+      "expiresAt": "2026-06-01T01:00:00Z"
+    }
+  },
+  "connections": {
+    "project-1": {
+      "projectId": "project-1",
+      "status": "connected",
+      "folderId": "folder-1",
+      "folderName": "FlowPilot Root"
+    }
+  }
+}`
+	if err := os.WriteFile(legacyPath, []byte(payload), 0o644); err != nil {
+		t.Fatalf("write legacy state: %v", err)
+	}
+
+	state, err := instance.loadArtifactStorageGoogleDriveState()
+	if err != nil {
+		t.Fatalf("load artifact storage google drive state: %v", err)
+	}
+	if state.Connections["project-1"].FolderID != "folder-1" {
+		t.Fatalf("expected legacy connection to load, got %#v", state.Connections["project-1"])
+	}
+
+	if err := instance.saveArtifactStorageGoogleDriveState(func(current *artifactStorageGoogleDriveState) {
+		current.Connections["project-1"] = artifactStorageGoogleDriveConnectionRecord{
+			ProjectID:  "project-1",
+			Status:     "connected",
+			FolderID:   "folder-2",
+			FolderName: "FlowPilot Settings",
+		}
+	}); err != nil {
+		t.Fatalf("save migrated google drive state: %v", err)
+	}
+
+	newPath := filepath.Join(instance.workspace, ".flowpilot", "settings", "artifact-storage-google-drive.json")
+	raw, err := os.ReadFile(newPath)
+	if err != nil {
+		t.Fatalf("read migrated state: %v", err)
+	}
+	if !strings.Contains(string(raw), `"folderId": "folder-2"`) {
+		t.Fatalf("expected migrated state to be written to new path, got %s", string(raw))
+	}
+}
+
 func TestLoadGoogleDriveWorkspaceConfigDetectsMcpReconnectRequiredOnInvalidGrant(t *testing.T) {
 	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
 	homeDir := t.TempDir()

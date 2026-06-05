@@ -391,12 +391,20 @@ func (r *Runner) loadArtifactStorageGoogleDriveState() (artifactStorageGoogleDri
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return artifactStorageGoogleDriveState{
-				Sessions:    map[string]artifactStorageGoogleDriveSessionRecord{},
-				Connections: map[string]artifactStorageGoogleDriveConnectionRecord{},
-			}, nil
+			legacyRaw, legacyErr := os.ReadFile(r.legacyArtifactStorageGoogleDriveStatePath())
+			if legacyErr == nil {
+				raw = legacyRaw
+			} else if !errors.Is(legacyErr, os.ErrNotExist) {
+				return artifactStorageGoogleDriveState{}, legacyErr
+			} else {
+				return artifactStorageGoogleDriveState{
+					Sessions:    map[string]artifactStorageGoogleDriveSessionRecord{},
+					Connections: map[string]artifactStorageGoogleDriveConnectionRecord{},
+				}, nil
+			}
+		} else {
+			return artifactStorageGoogleDriveState{}, err
 		}
-		return artifactStorageGoogleDriveState{}, err
 	}
 
 	var state artifactStorageGoogleDriveState
@@ -430,6 +438,10 @@ func (r *Runner) saveArtifactStorageGoogleDriveState(apply func(*artifactStorage
 }
 
 func (r *Runner) artifactStorageGoogleDriveStatePath() string {
+	return filepath.Join(r.workspace, ".flowpilot", "settings", "artifact-storage-google-drive.json")
+}
+
+func (r *Runner) legacyArtifactStorageGoogleDriveStatePath() string {
 	return filepath.Join(r.workspace, ".flowpilot", "artifact-storage-google-drive.json")
 }
 
