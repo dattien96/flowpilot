@@ -871,7 +871,7 @@ function StatusStack({ status }: { status: GoogleDriveRuntimeStatus | null }) {
           status.artifactSync.configured ? (
             <Link search={{ tab: "storage" }} to="/artifacts">
               <Button className="mt-3 h-auto rounded-full px-3 py-1 text-xs font-medium" variant="secondary">
-                Open Shared Cloud Storage Setting
+                Open Artifact Storage Setting
               </Button>
             </Link>
           ) : null

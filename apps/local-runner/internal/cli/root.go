@@ -1002,6 +1002,16 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 					writeHTTPError(w, http.StatusInternalServerError, err)
 				}
 			})
+			mux.HandleFunc("/artifact-storage/google-drive/picker-relay", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				if _, err := w.Write([]byte(runner.RenderGoogleDriveArtifactPickerRelayHTML())); err != nil {
+					writeHTTPError(w, http.StatusInternalServerError, err)
+				}
+			})
 			mux.HandleFunc("/artifact-storage/google-drive/picker-token", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodGet {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
