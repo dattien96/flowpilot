@@ -4,6 +4,8 @@
 
 Planning and verification task.
 
+Live runner investigation is now in progress. Real Google OAuth and Picker were tested against the local runner on June 5, 2026.
+
 The core Google Drive artifact sync code already exists. This task defines what must be true after [CP-27: Google Cloud Setting](../07-Coding-Plan/todo/CP-27-Google-Cloud-Setting.md) so the current implementation can actually run end to end, and what gaps should be fixed if validation fails.
 
 ---
@@ -255,6 +257,24 @@ Likely gaps to verify:
 
 ---
 
+## 6.1 Live Investigation Notes (June 5, 2026)
+
+### Verified working pieces
+
+- Google OAuth callback on the runner works with the configured redirect URI:
+
+```text
+http://127.0.0.1:4317/artifact-storage/google-drive/oauth/callback
+```
+
+- the runner successfully stores a project-scoped refresh token after OAuth
+- Google Picker API key is accepted when key application restriction is temporarily set to `None`
+- folder list renders inside Google Picker and the user can highlight a folder
+
+### Real issues found during live test
+
+See BUG-023
+
 ## 7. Test Plan
 
 Runner tests:
@@ -282,6 +302,7 @@ Manual tests:
 
 - real Google OAuth connect
 - real Picker folder selection
+- real Picker folder selection after relay/origin patch
 - real artifact upload
 - real artifact open
 - revoked Google access recovery
