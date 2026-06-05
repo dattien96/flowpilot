@@ -140,6 +140,9 @@ describe("workflow-start-runtime", () => {
 
   it("captures a local artifact snapshot even when a step has no output binding", async () => {
     const workingDirectory = await mkdtemp(path.join(os.tmpdir(), "flowpilot-runtime-"));
+    const artifactWorkspaceRoot = await mkdtemp(
+      path.join(os.tmpdir(), "flowpilot-artifact-root-"),
+    );
     const snapshot = await createLocalWorkflowOutputArtifactSnapshot({
       outputMarkdown: "# Result\n\nHello from the step.",
       promptText: "## Begin Prompt\nsay hello",
@@ -149,9 +152,9 @@ describe("workflow-start-runtime", () => {
       stderrText: "",
       stdoutText: "Hello from the step.",
       workflowRunId: "run-123",
-      workingDirectory,
       commandText: "codex exec < /tmp/prompt.txt",
       providerKey: "codex",
+      artifactWorkspaceRoot,
     });
 
     const manifest = JSON.parse(await readFile(snapshot.manifestPath, "utf8"));
@@ -161,6 +164,8 @@ describe("workflow-start-runtime", () => {
     expect(snapshot.snapshotDirectory).toContain(
       path.join(".flowpilot", "artifacts", "project-1", "run-123", "test_codex_step"),
     );
+    expect(snapshot.snapshotDirectory.startsWith(artifactWorkspaceRoot)).toBe(true);
+    expect(snapshot.snapshotDirectory.startsWith(workingDirectory)).toBe(false);
     expect(manifest.workflowRunId).toBe("run-123");
     expect(manifest.sourceKind).toBe("workflow_output");
     expect(manifest.title).toBe("Response.md");
@@ -170,6 +175,9 @@ describe("workflow-start-runtime", () => {
 
   it("creates a fallback artifact run when a step has no output binding", async () => {
     const workingDirectory = await mkdtemp(path.join(os.tmpdir(), "flowpilot-runtime-fallback-"));
+    const artifactWorkspaceRoot = await mkdtemp(
+      path.join(os.tmpdir(), "flowpilot-artifact-fallback-root-"),
+    );
     const insertedRows: Array<Record<string, unknown>> = [];
     const adminClient = {
       from: vi.fn(() => ({
@@ -204,6 +212,7 @@ describe("workflow-start-runtime", () => {
       workingDirectory,
       commandText: "codex exec",
       providerKey: "codex",
+      artifactWorkspaceRoot,
     });
 
     expect(insertedRows).toHaveLength(1);
@@ -226,10 +235,19 @@ describe("workflow-start-runtime", () => {
     await expect(readFile(result.checkpoint.outputContentPath, "utf8")).resolves.toContain(
       "Hello from the fallback artifact.",
     );
+    await expect(
+      readFile(path.join(artifactWorkspaceRoot, String(insertedRows[0]?.local_path)), "utf8"),
+    ).resolves.toContain("Hello from the fallback artifact.");
+    await expect(
+      readFile(path.join(workingDirectory, String(insertedRows[0]?.local_path)), "utf8"),
+    ).rejects.toThrow();
   });
 
   it("stores workflow step artifact local_path inside the snapshot folder", async () => {
     const workingDirectory = await mkdtemp(path.join(os.tmpdir(), "flowpilot-artifact-output-"));
+    const artifactWorkspaceRoot = await mkdtemp(
+      path.join(os.tmpdir(), "flowpilot-artifact-output-root-"),
+    );
     const insertedRows: Array<Record<string, unknown>> = [];
     const adminClient = {
       from: vi.fn(() => ({
@@ -273,15 +291,106 @@ describe("workflow-start-runtime", () => {
       workingDirectory,
       commandText: "codex exec",
       providerKey: "codex",
+      artifactWorkspaceRoot,
     });
 
     expect(insertedRows).toHaveLength(1);
     expect(String(insertedRows[0]?.local_path)).toMatch(
       /\.flowpilot[\\/]artifacts[\\/]project-1[\\/]run-1[\\/]business_idea[\\/]\.snapshots[\\/][^\\/]+[\\/]BusinessIdea\.md$/,
     );
-    const snapshotFilePath = path.join(workingDirectory, String(insertedRows[0]?.local_path));
+    const snapshotFilePath = path.join(
+      artifactWorkspaceRoot,
+      String(insertedRows[0]?.local_path),
+    );
     const actualPromptPath = path.join(path.dirname(snapshotFilePath), "actual-prompt.md");
     await expect(readFile(actualPromptPath, "utf8")).resolves.toBe("Bootstrap Prompt");
+    await expect(
+      readFile(
+        path.join(
+          artifactWorkspaceRoot,
+          ".flowpilot",
+          "artifacts",
+          "project-1",
+          "run-1",
+          "business_idea",
+          "BusinessIdea.md",
+        ),
+        "utf8",
+      ),
+    ).resolves.toContain("# Result");
+    await expect(
+      readFile(
+        path.join(
+          workingDirectory,
+          ".flowpilot",
+          "artifacts",
+          "project-1",
+          "run-1",
+          "business_idea",
+          "BusinessIdea.md",
+        ),
+        "utf8",
+      ),
+    ).rejects.toThrow();
+  });
+
+  it("keeps non-flowpilot output targets inside the project working directory", async () => {
+    const workingDirectory = await mkdtemp(path.join(os.tmpdir(), "flowpilot-project-output-"));
+    const artifactWorkspaceRoot = await mkdtemp(
+      path.join(os.tmpdir(), "flowpilot-project-output-root-"),
+    );
+    const insertedRows: Array<Record<string, unknown>> = [];
+    const adminClient = {
+      from: vi.fn(() => ({
+        insert(rows: Array<Record<string, unknown>>) {
+          insertedRows.push(...rows);
+          return {
+            select() {
+              return Promise.resolve({ data: [{ id: "artifact-1" }], error: null });
+            },
+          };
+        },
+      })),
+    } as any;
+
+    await createArtifactOutputs({
+      adminClient,
+      artifactDefinitions: new Map([
+        [
+          "project_note",
+          {
+            key: "project_note",
+            name: "Project Note",
+            local_path_template: "docs/{defaultFileName}",
+            remote_path_template: "",
+            default_file_name: "ProjectNote.md",
+          } as any,
+        ],
+      ]),
+      outputArtifactKeys: ["project_note"],
+      outputMarkdown: "# Project Note",
+      promptText: "Prompt",
+      actualPromptText: "Bootstrap Prompt",
+      projectId: "project-1",
+      stepRunId: "step-run-1",
+      stepType: "business_idea",
+      stderrText: "",
+      stdoutText: "ok",
+      workflowId: "workflow-1",
+      workflowRunId: "run-1",
+      workingDirectory,
+      commandText: "codex exec",
+      providerKey: "codex",
+      artifactWorkspaceRoot,
+    });
+
+    expect(insertedRows).toHaveLength(1);
+    await expect(
+      readFile(path.join(workingDirectory, "docs", "ProjectNote.md"), "utf8"),
+    ).resolves.toContain("# Project Note");
+    await expect(
+      readFile(path.join(artifactWorkspaceRoot, "docs", "ProjectNote.md"), "utf8"),
+    ).rejects.toThrow();
   });
 
   it("persists the real provider session id back to the workflow session row", async () => {
