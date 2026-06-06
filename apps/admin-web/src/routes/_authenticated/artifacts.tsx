@@ -204,18 +204,23 @@ export function ArtifactsPage() {
         listArtifactRunsUseCase.current.execute(),
         listWorkflowRunsUseCase.current.execute(),
       ]);
-      const validWorkflowRunIds = new Set(loadedWorkflowRuns.map((run: WorkflowRun) => run.id));
+      const activeWorkflowRunIds = new Set(
+        loadedWorkflowRuns.map((run: WorkflowRun) => run.id),
+      );
       setArtifactDefinitions(definitions);
       setProjects(loadedProjects);
       setLocalArtifacts(
         loadedLocalArtifacts.filter(
           (artifact: LocalRunnerArtifact) =>
             artifact.projectId.trim() !== "" &&
-            artifact.workflowRunId.trim() !== "" &&
-            validWorkflowRunIds.has(artifact.workflowRunId),
+            artifact.workflowRunId.trim() !== "",
         ),
       );
-      setArtifactRuns(loadedArtifactRuns);
+      setArtifactRuns(
+        loadedArtifactRuns.filter((artifact: ArtifactRun) =>
+          activeWorkflowRunIds.has(artifact.workflowRunId),
+        ),
+      );
     } catch {
       setArtifactDefinitions([]);
       setProjects([]);
@@ -344,7 +349,9 @@ export function ArtifactsPage() {
                 }
 
                 const response = await fetch(
-                  `/api/local-runner/artifacts/${artifactRun.id}/open?${params.toString()}`,
+                  `/api/local-runner/artifacts/${encodeURIComponent(
+                    artifactRun.id.trim() || "remote-artifact",
+                  )}/open?${params.toString()}`,
                 );
                 if (!response.ok) {
                   return null;

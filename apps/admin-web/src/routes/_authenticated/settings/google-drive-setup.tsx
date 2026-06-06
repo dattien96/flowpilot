@@ -26,6 +26,10 @@ import { Badge } from "@/presentation/components/ui/badge";
 
 const DEFAULT_REDIRECT_URI =
   "http://127.0.0.1:4317/artifact-storage/google-drive/oauth/callback";
+const PICKER_ALLOWED_REFERRERS = [
+  "http://127.0.0.1:4317/*",
+  "http://localhost:4317/*",
+];
 
 export const Route = createFileRoute("/_authenticated/settings/google-drive-setup")({
   loader: loadMcpSettingsData,
@@ -727,9 +731,15 @@ function GoogleDriveSetupPage() {
               "Give it a clear name such as FlowPilot Picker API Key.",
               "Restrict the key to Google Picker API.",
               "Do not enable Authenticate API calls through a service account.",
-              "For the simplest local MVP test, keep application restriction as None, then copy the key into this field.",
+              "For local restricted keys, set Application restrictions to Websites and add the full HTTP referrers below. Do not omit http://.",
+              "For the simplest local MVP test only, keep application restriction as None, then copy the key into this field.",
             ]}
           />
+          <div className="mt-4 grid gap-3 md:grid-cols-2">
+            {PICKER_ALLOWED_REFERRERS.map((referrer) => (
+              <CodeRow key={referrer} label="Allowed picker referrer" value={referrer} />
+            ))}
+          </div>
           <div className="mt-4 grid gap-4 md:grid-cols-[1fr_auto]">
             <SecretField
               label="Picker API key"

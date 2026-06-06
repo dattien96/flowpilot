@@ -243,6 +243,92 @@ describe("ArtifactCloudStoragePanel", () => {
     expect((await screen.findAllByText(/Provider switch completed/i)).length).toBeGreaterThan(0);
   });
 
+  it("activates Google Drive automatically after a picker session selects a folder", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/runtime/google-drive-config")) {
+        return Promise.resolve(createGoogleDriveRuntimeReadyResponse());
+      }
+      if (url.includes("/api/local-runner/artifact-storage/google-drive/connect-session")) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: vi.fn().mockResolvedValue({
+            sessionId: "session-1",
+            status: "awaiting_folder_selection",
+            connectUrl: "http://127.0.0.1:4317/artifact-storage/google-drive/picker?sessionId=session-1",
+          }),
+        });
+      }
+      if (url.includes("/api/local-runner/artifact-storage/google-drive/status")) {
+        const hasSessionId = url.includes("sessionId=session-1");
+        return Promise.resolve(
+          hasSessionId
+            ? createGoogleDriveConnectedResponse()
+            : {
+                ok: true,
+                status: 200,
+                json: vi.fn().mockResolvedValue({
+                  connection: {
+                    projectId: "project-1",
+                    status: "disconnected",
+                  },
+                  session: null,
+                }),
+              },
+        );
+      }
+      if (url.includes("/api/local-runner/artifact-storage/switch-provider")) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: vi.fn().mockResolvedValue({
+            status: "completed",
+            sourceProvider: "supabase",
+            targetProvider: "google_drive",
+            totalArtifacts: 1,
+            syncedCount: 1,
+            skippedCount: 0,
+            failedCount: 0,
+            failures: [],
+          }),
+        });
+      }
+      throw new Error(`Unexpected fetch url: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("open", vi.fn());
+
+    render(<ArtifactCloudStoragePanel projects={[project]} />);
+    fireEvent.change(screen.getByLabelText("Provider detail"), {
+      target: { value: "google_drive" },
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Connect Google Drive" }));
+    expect(await screen.findByText("Active connect link")).toBeInTheDocument();
+    await act(async () => {
+      window.dispatchEvent(new MessageEvent("message", {
+        data: {
+          type: "flowpilot-google-drive-connected",
+          projectId: "project-1",
+        },
+      }));
+    });
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(
+          ([url, init]) =>
+            String(url).includes("/api/local-runner/artifact-storage/switch-provider") &&
+            (init as { body?: string; method?: string } | undefined)?.method === "POST" &&
+            String((init as { body?: string } | undefined)?.body).includes('"targetProvider":"google_drive"'),
+        ),
+      ).toBe(true);
+    });
+
+    expect((await screen.findAllByText(/Provider switch completed/i)).length).toBeGreaterThan(0);
+  });
+
   it("shows staged provider switch progress while the migration request is in flight", async () => {
     let resolveSwitchRequest: ((value: ResponseLike) => void) | null = null;
     type ResponseLike = {
@@ -279,6 +365,7 @@ describe("ArtifactCloudStoragePanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Select Google Drive" }));
 
     expect(await screen.findByText(/validating target provider/i)).toBeInTheDocument();
+    expect(screen.getAllByRole("listitem")).toHaveLength(7);
 
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 1000));

@@ -633,6 +633,23 @@ func TestSyncArtifactGoogleDriveUploadsHistoryAndCanonical(t *testing.T) {
 	if canonical.AppProperties["syncRole"] != "canonical" {
 		t.Fatalf("expected canonical syncRole metadata, got %#v", canonical.AppProperties)
 	}
+	if _, ok := canonical.AppProperties["remotePath"]; ok {
+		t.Fatalf("canonical upload should not store remotePath in Google Drive appProperties: %#v", canonical.AppProperties)
+	}
+}
+
+func TestGoogleDriveAppPropertiesDropsOversizedValues(t *testing.T) {
+	metadata := googleDriveAppProperties(map[string]string{
+		"syncRole":   "canonical",
+		"remotePath": strings.Repeat("x", googleDriveAppPropertyByteLimit),
+	})
+
+	if metadata["syncRole"] != "canonical" {
+		t.Fatalf("expected short metadata to be preserved, got %#v", metadata)
+	}
+	if _, ok := metadata["remotePath"]; ok {
+		t.Fatalf("expected oversized metadata to be omitted, got %#v", metadata)
+	}
 }
 
 func TestSyncArtifactGoogleDriveMarksReconnectRequiredOnInvalidGrant(t *testing.T) {
@@ -1143,6 +1160,11 @@ func (api *fakeGoogleDriveAPI) handleUpload(
 			if err := json.Unmarshal(data, &metadata); err != nil {
 				return 400, nil, err
 			}
+		}
+	}
+	for key, value := range metadata.AppProperties {
+		if len([]byte(key))+len([]byte(value)) > googleDriveAppPropertyByteLimit {
+			return 403, []byte(`{"error":{"code":403,"message":"Properties and app properties are limited to 124 bytes in UTF-8 encoding, counting both the key and the value.","errors":[{"message":"Properties and app properties are limited to 124 bytes in UTF-8 encoding, counting both the key and the value.","domain":"global","reason":"propertyLengthLimitExceeded"}]}}`), nil
 		}
 	}
 

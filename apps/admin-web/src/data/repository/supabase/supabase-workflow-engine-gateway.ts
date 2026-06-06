@@ -106,6 +106,7 @@ function buildStorageArtifactRun(path: string, entry: StorageListEntry): Artifac
     storageProvider: "supabase",
     remoteObjectId: entry.id ? String(entry.id) : null,
     syncStatus: "synced",
+    replicas: [],
     createdAt: timestamp,
     updatedAt: timestamp,
   };
@@ -175,6 +176,7 @@ function mergeArtifactRuns(
   storageRuns: ArtifactRun[],
 ): ArtifactRun[] {
   const merged = new Map<string, ArtifactRun>();
+  const databaseRunsById = new Map(databaseRuns.map((artifact) => [artifact.id, artifact]));
 
   for (const artifact of databaseRuns) {
     const key = artifact.remotePath.trim() || artifact.id;
@@ -182,6 +184,21 @@ function mergeArtifactRuns(
   }
 
   for (const artifact of storageRuns) {
+    const databaseArtifact = databaseRunsById.get(
+      parseArtifactScopedStorageArtifactId(artifact.remotePath),
+    );
+    if (databaseArtifact) {
+      const remotePath = artifact.remotePath.trim();
+      const provider = artifact.storageProvider;
+      const hasReplica = databaseArtifact.replicas.some(
+        (replica) => replica.provider === provider && replica.remotePath.trim() === remotePath,
+      );
+      if (provider && remotePath && !hasReplica) {
+        databaseArtifact.replicas.push(storageArtifactToReplica(artifact, databaseArtifact.id));
+      }
+      continue;
+    }
+
     const key = artifact.remotePath.trim() || artifact.id;
     if (!merged.has(key)) {
       merged.set(key, artifact);
@@ -191,6 +208,43 @@ function mergeArtifactRuns(
   return Array.from(merged.values()).sort((left, right) =>
     right.updatedAt.localeCompare(left.updatedAt),
   );
+}
+
+function parseArtifactScopedStorageArtifactId(remotePath: string) {
+  const segments = remotePath.replaceAll("\\", "/").trim().split("/").filter(Boolean);
+  if (
+    segments.length === 9 &&
+    segments[0] === "projects" &&
+    segments[2] === "runs" &&
+    segments[4] === "steps" &&
+    segments[6] === "artifacts"
+  ) {
+    return segments[7] ?? "";
+  }
+  return "";
+}
+
+function storageArtifactToReplica(artifact: ArtifactRun, artifactRunId: string): ArtifactRunReplica {
+  return {
+    id: `storage:${artifactRunId}:${artifact.storageProvider ?? "unknown"}:${artifact.remotePath}`,
+    artifactRunId,
+    projectId: artifact.projectId,
+    provider: artifact.storageProvider === "google_drive" ? "google_drive" : "supabase",
+    storageScopeKey: null,
+    remotePath: artifact.remotePath,
+    remoteObjectId: artifact.remoteObjectId,
+    syncStatus:
+      artifact.syncStatus === "syncing"
+        ? "syncing"
+        : artifact.syncStatus === "failed"
+          ? "failed"
+          : "synced",
+    checksum: null,
+    lastSyncedAt: artifact.updatedAt || null,
+    lastError: artifact.syncStatus === "failed" ? "storage recovery replica" : null,
+    createdAt: artifact.createdAt,
+    updatedAt: artifact.updatedAt,
+  };
 }
 
 function synthesizeCompatibilityReplica(artifact: ArtifactRun): ArtifactRunReplica[] {

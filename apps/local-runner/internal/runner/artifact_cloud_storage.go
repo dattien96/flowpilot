@@ -74,6 +74,7 @@ type supabaseStorageObject struct {
 }
 
 const googleDriveFolderMimeType = "application/vnd.google-apps.folder"
+const googleDriveAppPropertyByteLimit = 124
 
 func (r *Runner) loadArtifactFilesFromRemoteSource(
 	ctx context.Context,
@@ -581,7 +582,7 @@ func (r *Runner) syncArtifactToGoogleDrive(
 			filepath.Base(file.relativePath),
 			file.bytes,
 			contentTypeForArtifactPath(file.relativePath),
-			withMetadata(snapshotMetadata, "relativePath", file.relativePath),
+			googleDriveAppProperties(withMetadata(snapshotMetadata, "relativePath", file.relativePath)),
 		); uploadErr != nil {
 			_, _ = r.SaveArtifactCloudSyncResult(artifact.ArtifactID, ArtifactCloudSyncResult{
 				StorageProvider: artifactStorageProviderGoogleDrive,
@@ -628,7 +629,7 @@ func (r *Runner) syncArtifactToGoogleDrive(
 			filepath.Base(canonicalPath),
 			canonicalFile.bytes,
 			contentTypeForArtifactPath(canonicalFile.relativePath),
-			withMetadata(snapshotMetadata, "relativePath", canonicalFile.relativePath, "syncRole", "canonical", "remotePath", canonicalPath),
+			googleDriveAppProperties(withMetadata(snapshotMetadata, "relativePath", canonicalFile.relativePath, "syncRole", "canonical")),
 		)
 		if uploadErr != nil {
 			_, _ = r.SaveArtifactCloudSyncResult(artifact.ArtifactID, ArtifactCloudSyncResult{
@@ -775,6 +776,21 @@ func withMetadata(base map[string]string, kv ...string) map[string]string {
 		metadata[kv[index]] = kv[index+1]
 	}
 	return metadata
+}
+
+func googleDriveAppProperties(metadata map[string]string) map[string]string {
+	sanitized := make(map[string]string, len(metadata))
+	for key, value := range metadata {
+		trimmedKey := strings.TrimSpace(key)
+		if trimmedKey == "" {
+			continue
+		}
+		if len([]byte(trimmedKey))+len([]byte(value)) > googleDriveAppPropertyByteLimit {
+			continue
+		}
+		sanitized[trimmedKey] = value
+	}
+	return sanitized
 }
 
 func parseArtifactTimestamp(value string) int64 {

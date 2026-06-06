@@ -2,75 +2,104 @@
 - Invoke new token automatically
   - Access tok expired -> use refresh tok to acquire new one
   - Refresh tok expired -> Confirm user login again (Same func with the button CONNECT Google Drive in /artifacts page)
-- If project is in supabase storage -> gen Artifact A -> change to google driver and gen artifact B
-  - Page /artifacts must show artifact by storage type. We can not show B for supabase or A for driver
-  - Change UI :
-    - Currently, we use collapsible UI with RUN_ID > multiple steps ID 
-    - I want add more layers: Project ID > Storage type > RUN_ID > multiple steps ID 
 
-i want to discuss this item again (5. Separate remote artifact sets by provider
+# Bug note
+## 1. (Fixed) Open any file .md we got: The browser blocked the artifact tab. Allow popups for FlowPilot and try again.
 
-  - Define the rule:
-      - if project provider is supabase, remote tab shows only Supabase-backed artifacts
-      - if project provider is google_drive, remote tab shows only Google Drive-backed artifacts
+In both detail workflow-run page + artifact list page
 
-  - Do not show old Supabase artifacts in remote view while Google Drive is active
-  - Do not show Google Drive artifacts in remote view while Supabase is active
-  - Keep local-only artifacts independent from that remote-provider filtering)
+Root cause:
+- Workflow-run detail used `window.open(...)` for artifact opening, so the browser treated it as popup-style behavior and could block it.
+- Artifact list links also had edge cases around encoded artifact IDs and nested clickable summary UI, which made file opening unreliable for remote/recovered artifacts.
 
-even that is my origin requirement. But i have new idea
+Fixed solution:
+- Replaced the workflow-run detail open action with a normal anchor link using `target="_blank"` instead of scripted `window.open(...)`.
+- Normalized artifact open href generation so artifact IDs are URL-encoded and link clicks do not bubble into the details/summary toggle behavior.
 
-Let say
-Step 1: we set supabase and sync artifact A
-Step 2: We gen artifact B but have not sync to supabase
-Step 3: we change to driver
-Step 4: (New step here) Whenever we change the remote storage of project
--> Show the modal Of Syncing process as loading
--> behind the sync You got all previous artifact in local and supabase : in this case is A and B
--> sync it to google driver
+## 2. (Fixed) page /artifacts show total 13 artifacts
+why we only have 4 artifacts active (that belong our workflow-run + project) in our supabase
+Other is old aritfacts.
+it is still keep in remote storage for reference. i dont del them after del workflow-runs
+But yuo need to show only active in UI
 
-Step5: user can continue gen artifact C -> push to driver
-Step6: user change back to supabase => the modal process continue show to sync back C to supabase
-SO basically the conditions are
-- the data must be same/sync on both storage
-- You need to check the artifact ID + project ID + runid to know which artifact is exist -> ignore sync
+BUt i leave the page for abit then i see it automatically update the number to 4
+-> I think we have some bg process here. We need so correctly 4 whenever i access the page, not waiting like that
 
+Root cause:
+- Global `/artifacts` initially loaded shared artifact rows directly, including old remote/storage-backed artifacts whose workflow runs had already been deleted.
+- A later refresh/state reconciliation path eventually reduced the list, which is why the count looked wrong first and corrected itself later.
 
+Fixed solution:
+- During the first `/artifacts` page load, we now load active workflow runs together with artifact rows.
+- Remote/shared artifact rows are filtered immediately to workflow run IDs that still exist, so old storage leftovers do not appear as active UI items.
 
+## 3. (Fixed) If the artifact was deleted from local
+then the title of it is flicking change between real tile + RESPONSE.md
+you need to care the case the artifact sync to remote then was deleted in local
 
-You said: 9. Multi-PC Semantics
-Each runner must authorize Google Drive artifact sync independently.
+Root cause:
+- When the local artifact file was gone, the remote card started from the generic stored title `Response.md`, then fetched remote content to derive a better title.
+- That hydrated title was stored only as a UI override, but the generic-title detection was still reading the changing display title instead of the stable source row title, so the override could be cleared and re-added repeatedly.
+- In replica-backed cases, title hydration could also read from the DB row with empty `remotePath` instead of the active remote replica path.
 
-Allowed:
+Fixed solution:
+- Title hydration now decides whether a title is generic from the original artifact row title, not from the already-overridden display title.
+- Remote title fetching now uses the active replica `remotePath`, `remoteObjectId`, and provider when the local file is missing.
+- Override map updates were stabilized so unchanged empty/derived maps are not recreated every render, preventing flicker loops.
 
-PC A and PC B can use the same Google Cloud app registration
-PC A and PC B can select the same Google Drive folder
-Supabase metadata can show that artifacts have Google Drive replicas
-Not allowed:
+## 4. (Fixed) The Google picker Api key is invalid
+I got this one when i connect google drive
 
-copying PC A refresh token to PC B through Supabase
-assuming PC B can open/sync Drive artifacts without its own local authorization
-If PC B has no local Google Drive authorization:
+Current state key in console is
+Set Restriction to Web
+and add
+127.0.0.1:4317 and 127.0.0.1:4317/*
 
-remote metadata may be visible
-open/sync actions that require Drive access should show "connect Google Drive on this runner"
+But when i test reset to NONE restriction then It works, i can select drive folder
 
--> That mean, same project but in different runner, we can have diffrent driver (different data in artifact-storage-google-drive.json)
-right?
+Root cause:
+- The setup guide only said local MVP can keep the API key application restriction as `None`, but did not show the correct website referrer format for a restricted Google Picker key.
+- Google API key website restrictions require full HTTP referrer patterns. Values like `127.0.0.1:4317` and `127.0.0.1:4317/*` omit `http://`, so Google rejects the browser-side Picker key even though an unrestricted key works.
 
-And because the supabase only see this project is using driver. then it's ok if we use different local driver json data
+Fixed solution:
+- The Google Drive setup page now shows the exact local restricted referrers to add:
+  - `http://127.0.0.1:4317/*`
+  - `http://localhost:4317/*`
+- The guide text now explicitly says not to omit `http://` when using Website application restrictions.
 
-But 1 question
+## 5. (Fixed) After selected drive folder
+i see we show the folder data done
+Data gen in artifact-storage-google-drive.json is ok
 
-- Runner A sync artifact A to Drive a@gmail.com
-- Runner B with driver b@gmail.com can lost that artifact right ? Because actually in runner B we dont have actual switch provider step -> there is no sync process. And even we have sync process, it still can not know artifact from a@gmail.com
-So i think the RULE here is: we need to use same gg acc + folder to sync artifact accross PC/runners
+But we did not save it as active src. It only supabase in project table of db
 
+Root cause:
+- Folder selection only saved the Google Drive connection metadata in the runner/local connection state.
+- The project provider switch still required a second manual `Select Google Drive` click, so `projects.artifact_storage_preference` remained `supabase` after the picker completed.
+- The status route also attempted to mirror the connected folder into `artifact_storage_connections` with a session-scoped Supabase client and swallowed write failures. When that write was blocked or skipped, the migration endpoint used the admin client, found no connected Google Drive row, and failed with "Google Drive artifact storage is not connected on this runner for the selected project."
 
- 1. Your case is good. 2 accounts but share 1 folder is ok cause driver has this feature
- 2. But if using different accounts with different folders -> then we lost artifact here. So we must note this limitation
- 3. And you said that (with the current implementation, there is still a real gap:
-  if artifact A exists only in source remote and not locally on Runner B, provider-switch migration from Runner B can
-  still fail, because source-remote download/hydration is not implemented yet. That is why the multi-PC and migration
-  backfill DoD items remain [todo].) let more detail explain this case by steps
+Fixed solution:
+- When a live Google Drive picker session reports a connected folder, `/artifacts` now automatically activates Google Drive for that project.
+- The auto-activation uses the existing `/api/local-runner/artifact-storage/switch-provider` migration endpoint, so artifact sync/backfill still runs before `projects.artifact_storage_preference` changes to `google_drive`.
+- A duplicate guard prevents repeated polling/message refreshes from calling the switch endpoint more than once for the same project/folder.
+- The Google Drive status route now persists connected folder metadata with the runtime Supabase admin client before migration can run. If a connected-folder metadata write fails, the route returns the real error instead of letting the UI start a migration that will fail validation.
 
+## 6: (Fixed) switch drive sync failed
+e730b90d-1650-4e53-aee6-99654368fdc3: google drive upload failed: 403 { "error": { "code": 403, "message": "Properties and app properties are limited to 124 bytes in UTF-8 encoding, counting both the key and the value.", "errors": [ { "message": "Properties and app properties are limited to 124 bytes in UTF-8 encoding, counting both the key and the value.", "domain": "global", "reason": "propertyLengthLimitExceeded" } ] } }
+
+f41d68f7-8d02-416a-b30b-4a89438b7b16: google drive upload failed: 403 { "error": { "code": 403, "message": "Properties and app properties are limited to 124 bytes in UTF-8 encoding, counting both the key and the value.", "errors": [ { "message": "Properties and app properties are limited to 124 bytes in UTF-8 encoding, counting both the key and the value.", "domain": "global", "reason": "propertyLengthLimitExceeded" } ] } }
+
+Provider switch stopped with 2 failures. Synced 0, skipped 0. google drive upload failed: 403 { "error": { "code": 403, "message": "Properties and app properties are limited to 124 bytes in UTF-8 encoding, counting both the key and the value.", "errors": [ { "message": "Properties and app properties are limited to 124 bytes in UTF-8 encoding, counting both the key and the value.", "domain": "global", "reason": "propertyLengthLimitExceeded" } ] } }
+
+Root cause:
+- Google Drive `appProperties` has a small 124-byte limit for each key/value pair.
+- The Drive canonical artifact upload included long path metadata such as `remotePath`, and some snapshot uploads could include long `relativePath` values. Those paths can exceed Google's appProperties limit even though the actual Drive folder/file path is valid.
+
+Fixed solution:
+- Google Drive uploads now sanitize appProperties before sending them to Drive and omit any property whose key plus value exceeds 124 bytes.
+- Canonical Drive uploads no longer store `remotePath` in appProperties because the durable remote path is already stored in FlowPilot metadata and represented by the Drive folder layout.
+- The fake Google Drive test API now enforces the same appProperties byte limit so this 403 case is covered locally.
+
+UI note:
+- Provider switch migration progress now renders as a vertical seven-step list.
+- The current step shows a loading icon at the beginning of the line and highlighted text instead of a horizontal badge row.

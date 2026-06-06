@@ -549,25 +549,15 @@ function StepOutputTabs({
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2 shrink-0">
-              <Button
-                className="h-8 px-4 text-xs font-bold uppercase tracking-wider bg-accent/10 border border-accent/20 hover:bg-accent/20 text-accent rounded-lg shadow-sm"
-                onClick={() => {
-                  const opened = window.open(
-                    buildWorkflowRunArtifactOpenHref(artifactRun),
-                    "_blank",
-                    "noopener,noreferrer",
-                  );
-                  if (!opened) {
-                    window.alert(
-                      "The browser blocked the artifact tab. Allow popups for FlowPilot and try again.",
-                    );
-                  }
-                }}
-                variant="secondary"
+              <a
+                className="inline-flex h-8 items-center justify-center px-4 text-xs font-bold uppercase tracking-wider bg-accent/10 border border-accent/20 hover:bg-accent/20 text-accent rounded-lg shadow-sm"
+                href={buildWorkflowRunArtifactOpenHref(artifactRun)}
+                rel="noreferrer"
+                target="_blank"
               >
                 <ExternalLink className="mr-2 h-3.5 w-3.5 text-sm" />
                 Open in new tab
-              </Button>
+              </a>
             </div>
           </div>
         </div>

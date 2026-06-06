@@ -101,6 +101,7 @@ describe("ArtifactRunBrowserPanel", () => {
 
   beforeEach(() => {
     fetchMock.mockReset();
+    fetchMock.mockResolvedValue(new Response("", { status: 404 }));
     locationAssign.mockReset();
     onArtifactsChanged.mockReset();
     vi.stubGlobal("fetch", fetchMock);
@@ -307,6 +308,82 @@ describe("ArtifactRunBrowserPanel", () => {
     );
   });
 
+  it("opens prompt files through the API for artifact-scoped remote replicas", () => {
+    const artifactScopedRemote: ArtifactRun = {
+      ...remoteFailedArtifact,
+      id: "artifact-1",
+      workflowRunStepId: "D2DAF71C-625E-403D-B0E0-D418387A4E77",
+      remotePath: "",
+      remoteObjectId: null,
+      storageProvider: null,
+      syncStatus: "local_only",
+      replicas: [
+        {
+          id: "replica-1",
+          artifactRunId: "artifact-1",
+          projectId: "project-1",
+          provider: "supabase",
+          storageScopeKey: null,
+          remotePath: "projects/project-1/runs/run-1/steps/codex_test/artifacts/artifact-1/Response.md",
+          remoteObjectId: "object-1",
+          syncStatus: "synced",
+          checksum: null,
+          lastSyncedAt: "2026-06-02T00:00:00.000Z",
+          lastError: null,
+          createdAt: "2026-06-02T00:00:00.000Z",
+          updatedAt: "2026-06-02T00:00:00.000Z",
+        },
+      ],
+    };
+
+    render(
+      <ArtifactRunBrowserPanel
+        artifactRuns={[artifactScopedRemote]}
+        localArtifacts={[]}
+        projects={[]}
+        scopeLabel="Artifacts"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Remote / Sync (1)" }));
+
+    expect(screen.getAllByText("D2DAF71C-625E-403D-B0E0-D418387A4E77")).not.toHaveLength(0);
+    expect(screen.getByRole("link", { name: "Open prompt.md" })).toHaveAttribute(
+      "href",
+      "/api/local-runner/artifacts/artifact-1/open?remotePath=projects%2Fproject-1%2Fruns%2Frun-1%2Fsteps%2Fcodex_test%2Fartifacts%2Fartifact-1%2FResponse.md&storageProvider=supabase&remoteObjectId=object-1&projectId=project-1&file=prompt",
+    );
+  });
+
+  it("encodes storage-recovered artifact ids in open links", () => {
+    const storageOnlyRemote: ArtifactRun = {
+      ...remoteFailedArtifact,
+      id: "remote:projects/project-1/runs/run-1/steps/codex_test/artifacts/artifact-1/Response.md",
+      workflowRunStepId: "codex_test",
+      title: "Response.md",
+      remotePath: "projects/project-1/runs/run-1/steps/codex_test/artifacts/artifact-1/Response.md",
+      remoteObjectId: "object-1",
+      storageProvider: "supabase",
+      syncStatus: "synced",
+      replicas: [],
+    };
+
+    render(
+      <ArtifactRunBrowserPanel
+        artifactRuns={[storageOnlyRemote]}
+        localArtifacts={[]}
+        projects={[]}
+        scopeLabel="Artifacts"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Remote / Sync (1)" }));
+
+    expect(screen.getByRole("link", { name: "Open Response.md" })).toHaveAttribute(
+      "href",
+      "/api/local-runner/artifacts/remote%3Aprojects%2Fproject-1%2Fruns%2Frun-1%2Fsteps%2Fcodex_test%2Fartifacts%2Fartifact-1%2FResponse.md/open?remotePath=projects%2Fproject-1%2Fruns%2Frun-1%2Fsteps%2Fcodex_test%2Fartifacts%2Fartifact-1%2FResponse.md&storageProvider=supabase&remoteObjectId=object-1&projectId=project-1",
+    );
+  });
+
   it("hydrates prompt details for remote-only artifacts", async () => {
     fetchMock
       .mockResolvedValueOnce(new Response("Remote actual prompt", { status: 200 }))
@@ -361,6 +438,70 @@ describe("ArtifactRunBrowserPanel", () => {
       expect.objectContaining({
         id: "artifact-remote-generic",
         title: "Response.md",
+      }),
+    );
+  });
+
+  it("hydrates a remote title from the replica path after the local artifact is deleted", async () => {
+    const replicaPath =
+      "projects/project-1/runs/run-1/steps/codex_test/artifacts/artifact-1/Response.md";
+    const loadRemoteArtifactContent = vi.fn(async (artifact: ArtifactRun) =>
+      artifact.remotePath === replicaPath
+        ? "This title comes from remote content after local deletion."
+        : null,
+    );
+
+    render(
+      <ArtifactRunBrowserPanel
+        artifactRuns={[
+          {
+            ...remoteFailedArtifact,
+            id: "artifact-1",
+            title: "Response.md",
+            remotePath: "",
+            remoteObjectId: null,
+            storageProvider: null,
+            syncStatus: "local_only",
+            replicas: [
+              {
+                id: "replica-1",
+                artifactRunId: "artifact-1",
+                projectId: "project-1",
+                provider: "supabase",
+                storageScopeKey: null,
+                remotePath: replicaPath,
+                remoteObjectId: "object-1",
+                syncStatus: "synced",
+                checksum: null,
+                lastSyncedAt: "2026-06-02T00:00:00.000Z",
+                lastError: null,
+                createdAt: "2026-06-02T00:00:00.000Z",
+                updatedAt: "2026-06-02T00:00:00.000Z",
+              },
+            ],
+          },
+        ]}
+        localArtifacts={[]}
+        loadRemoteArtifactContent={loadRemoteArtifactContent}
+        projects={[]}
+        scopeLabel="Artifacts"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Remote / Sync (1)" }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/This title comes from remote content after local/),
+      ).toBeInTheDocument();
+    });
+
+    expect(loadRemoteArtifactContent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "artifact-1",
+        remoteObjectId: "object-1",
+        remotePath: replicaPath,
+        storageProvider: "supabase",
       }),
     );
   });

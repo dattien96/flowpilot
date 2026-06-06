@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { FolderOpen, Link2, RefreshCw } from "lucide-react";
+import { Check, FolderOpen, Link2, Loader2, RefreshCw } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 import { getBrowserSupabaseClient } from "@/data/supabase/client";
@@ -86,6 +86,7 @@ export function ArtifactCloudStoragePanel({ projects }: ArtifactCloudStoragePane
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const pollingTimerRef = useRef<number | null>(null);
   const switchProgressTimersRef = useRef<number[]>([]);
+  const autoProviderSwitchKeyRef = useRef<string | null>(null);
 
   const selectedProject = useMemo(
     () => projectList.find((project) => project.id === selectedProjectId) ?? null,
@@ -137,12 +138,26 @@ export function ArtifactCloudStoragePanel({ projects }: ArtifactCloudStoragePane
         }
         throw new Error("error" in payload && payload.error ? payload.error : "Unable to read Google Drive status.");
       }
-      setGoogleDriveState(payload as GoogleDriveConnectionPayload);
-      const session = (payload as GoogleDriveConnectionPayload).session;
+      const nextState = payload as GoogleDriveConnectionPayload;
+      setGoogleDriveState(nextState);
+      const session = nextState.session;
       if (session && (session.status === "pending" || session.status === "awaiting_oauth" || session.status === "awaiting_folder_selection")) {
         schedulePolling(session.sessionId);
       } else {
         stopPolling();
+      }
+      const connection = nextState.connection;
+      const shouldActivateGoogleDrive =
+        Boolean(sessionId) &&
+        connection?.status === "connected" &&
+        Boolean(connection.folderId?.trim()) &&
+        selectedProject?.artifactStoragePreference !== "google_drive" &&
+        savingProvider === null;
+      const autoSwitchKey = `${selectedProjectId}:${connection?.folderId ?? ""}`;
+      if (shouldActivateGoogleDrive && autoProviderSwitchKeyRef.current !== autoSwitchKey) {
+        autoProviderSwitchKeyRef.current = autoSwitchKey;
+        setStatusMessage("Google Drive folder connected. Activating Google Drive as this project's artifact provider...");
+        await selectProvider("google_drive");
       }
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Unable to read Google Drive status.");
@@ -360,6 +375,9 @@ export function ArtifactCloudStoragePanel({ projects }: ArtifactCloudStoragePane
       clearSwitchProgressTimers();
       const message = error instanceof Error ? error.message : "Unable to update artifact storage provider.";
       const reconnectRequired = /reconnect/i.test(message);
+      if (provider === "google_drive") {
+        autoProviderSwitchKeyRef.current = null;
+      }
       setProviderSwitchState((current) =>
         current
           ? {
@@ -378,6 +396,7 @@ export function ArtifactCloudStoragePanel({ projects }: ArtifactCloudStoragePane
 
   useEffect(() => {
     stopPolling();
+    autoProviderSwitchKeyRef.current = null;
     setStatusMessage(null);
     void loadGoogleDriveState();
     void loadGoogleDriveSetup();
@@ -671,22 +690,23 @@ export function ArtifactCloudStoragePanel({ projects }: ArtifactCloudStoragePane
             <InfoTile label="Failed" value={String(providerSwitchState.failedCount)} />
           </div>
 
-          <div className="mt-4 flex flex-wrap gap-2">
+          <ol className="mt-4 grid gap-2">
             {providerSwitchStages.map((stage) => (
-              <Badge
+              <li
                 key={stage}
-                tone={
+                className={`flex items-center gap-2 text-sm font-medium ${
                   providerSwitchState.stage === stage
-                    ? providerSwitchStageTone(stage)
+                    ? providerSwitchStageTextClass(stage)
                     : providerSwitchStageReached(providerSwitchState.stage, stage)
-                      ? "success"
-                      : "neutral"
-                }
+                      ? "text-emerald-500"
+                  : "text-muted-foreground"
+                }`}
               >
+                {providerSwitchStageIcon(providerSwitchState.stage, stage)}
                 {formatProviderSwitchStage(stage)}
-              </Badge>
+              </li>
             ))}
-          </div>
+          </ol>
 
           {providerSwitchState.failures.length > 0 ? (
             <div className="mt-4 rounded-2xl border border-border bg-background/70 p-4">
@@ -757,6 +777,35 @@ function providerSwitchStageTone(stage: ProviderSwitchStage): "success" | "warni
     case "syncing":
       return "warning";
   }
+}
+
+function providerSwitchStageTextClass(stage: ProviderSwitchStage) {
+  switch (providerSwitchStageTone(stage)) {
+    case "success":
+      return "text-emerald-400";
+    case "danger":
+      return "text-danger";
+    case "warning":
+      return "text-amber-400";
+    case "neutral":
+      return "text-muted-foreground";
+  }
+}
+
+function providerSwitchStageIcon(current: ProviderSwitchStage, candidate: ProviderSwitchStage) {
+  if (candidate === current) {
+    if (current === "completed") {
+      return <Check className="size-4" aria-hidden="true" />;
+    }
+    if (current === "failed" || current === "reconnect_required") {
+      return <span className="size-4" aria-hidden="true" />;
+    }
+    return <Loader2 className="size-4 animate-spin" aria-hidden="true" />;
+  }
+  if (providerSwitchStageReached(current, candidate)) {
+    return <Check className="size-4" aria-hidden="true" />;
+  }
+  return <span className="size-4" aria-hidden="true" />;
 }
 
 function providerSwitchStageReached(current: ProviderSwitchStage, candidate: ProviderSwitchStage) {

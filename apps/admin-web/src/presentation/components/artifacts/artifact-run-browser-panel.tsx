@@ -297,20 +297,26 @@ export function ArtifactRunBrowserPanel({
 
   useEffect(() => {
     if (!loadRemoteArtifactContent) {
-      setRemoteTitleOverrides(new Map());
+      setRemoteTitleOverrides((current) =>
+        current.size === 0 ? current : new Map(),
+      );
       return;
     }
 
     const candidates = remoteArtifacts
       .filter((artifact) => {
+        const artifactRun = artifactRunById.get(artifact.id);
+        const sourceTitle = artifactRun?.title ?? artifact.title;
         const matchedLocalArtifact = localArtifactById.get(artifact.id) ?? localArtifactByRemotePath.get(artifact.remotePath.trim());
         const hasLocalContent =
           (matchedLocalArtifact?.contentMarkdown ?? "").replace(/\s+/g, " ").trim() !== "";
-        return !hasLocalContent && isGenericArtifactTitle(artifact.title);
+        return !hasLocalContent && isGenericArtifactTitle(sourceTitle);
       });
 
     if (candidates.length === 0) {
-      setRemoteTitleOverrides(new Map());
+      setRemoteTitleOverrides((current) =>
+        current.size === 0 ? current : new Map(),
+      );
       return;
     }
 
@@ -323,7 +329,12 @@ export function ArtifactRunBrowserPanel({
           return null;
         }
 
-        const content = await loadRemoteArtifactContent(artifactRun);
+        const content = await loadRemoteArtifactContent({
+          ...artifactRun,
+          remoteObjectId: artifact.remoteObjectId,
+          remotePath: artifact.remotePath,
+          storageProvider: artifact.storageProvider,
+        });
         const summary = content ? summarizeArtifactContent(content) : null;
         return summary ? ([artifact.id, summary] as const) : null;
       }),
@@ -339,7 +350,7 @@ export function ArtifactRunBrowserPanel({
         }
         next.set(entry[0], entry[1]);
       }
-      setRemoteTitleOverrides(next);
+      setRemoteTitleOverrides((current) => (stringMapsEqual(current, next) ? current : next));
     });
 
     return () => {
@@ -349,7 +360,9 @@ export function ArtifactRunBrowserPanel({
 
   useEffect(() => {
     if (subTab !== "remote") {
-      setRemotePromptOverrides(new Map());
+      setRemotePromptOverrides((current) =>
+        current.size === 0 ? current : new Map(),
+      );
       return;
     }
 
@@ -363,7 +376,9 @@ export function ArtifactRunBrowserPanel({
       });
 
     if (candidates.length === 0) {
-      setRemotePromptOverrides(new Map());
+      setRemotePromptOverrides((current) =>
+        current.size === 0 ? current : new Map(),
+      );
       return;
     }
 
@@ -400,7 +415,9 @@ export function ArtifactRunBrowserPanel({
 
         next.set(entry[0], entry[1]);
       }
-      setRemotePromptOverrides(next);
+      setRemotePromptOverrides((current) =>
+        promptOverrideMapsEqual(current, next) ? current : next,
+      );
     });
 
     return () => {
@@ -893,6 +910,7 @@ function ArtifactCard({
                 className="inline-flex items-center gap-1 rounded-full border border-border px-2.5 py-1 text-xs font-medium hover:bg-muted transition-colors"
                 href={file.href}
                 key={file.label}
+                onClick={(event) => event.stopPropagation()}
                 rel="noreferrer"
                 target="_blank"
               >
@@ -974,6 +992,7 @@ function ArtifactCard({
                 className="inline-flex items-center gap-2 rounded-full border border-border px-4 py-2 text-sm font-semibold hover:bg-muted transition-colors cursor-pointer"
                 href={file.href}
                 key={file.href}
+                onClick={(event) => event.stopPropagation()}
                 rel="noreferrer"
                 target="_blank"
               >
@@ -1044,10 +1063,11 @@ function buildArtifactOpenHref(artifact: ArtifactBrowserItem) {
     }
   }
 
+  const artifactId = encodeURIComponent(artifact.id.trim() || "remote-artifact");
   const query = params.toString();
   return query
-    ? `/api/local-runner/artifacts/${artifact.id}/open?${query}`
-    : `/api/local-runner/artifacts/${artifact.id}/open`;
+    ? `/api/local-runner/artifacts/${artifactId}/open?${query}`
+    : `/api/local-runner/artifacts/${artifactId}/open`;
 }
 
 function appendArtifactFileQuery(baseHref: string, file: string) {
@@ -1148,6 +1168,42 @@ function resolveLocalArtifactStorageType(
 
 function artifactRemoteKey(artifact: Pick<ArtifactBrowserItem, "id" | "remotePath">) {
   return artifact.remotePath.trim() || artifact.id;
+}
+
+function stringMapsEqual(left: Map<string, string>, right: Map<string, string>) {
+  if (left.size !== right.size) {
+    return false;
+  }
+
+  for (const [key, value] of left) {
+    if (right.get(key) !== value) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function promptOverrideMapsEqual(
+  left: Map<string, RemotePromptOverride>,
+  right: Map<string, RemotePromptOverride>,
+) {
+  if (left.size !== right.size) {
+    return false;
+  }
+
+  for (const [key, value] of left) {
+    const rightValue = right.get(key);
+    if (
+      !rightValue ||
+      rightValue.actualPromptText !== value.actualPromptText ||
+      rightValue.promptText !== value.promptText
+    ) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 function resolveActiveReplica(
