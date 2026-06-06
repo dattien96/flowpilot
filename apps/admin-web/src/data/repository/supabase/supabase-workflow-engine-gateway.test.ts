@@ -282,6 +282,118 @@ describe("SupabaseWorkflowEngineGateway", () => {
     ]);
   });
 
+  it("merges artifact-scoped storage recovery into the matching shared artifact row", async () => {
+    const order = vi.fn().mockResolvedValue({
+      data: [
+        {
+          id: "artifact-1",
+          artifact_definition_key: null,
+          project_id: "project-1",
+          workflow_id: "workflow-1",
+          workflow_run_id: "run-1",
+          workflow_run_step_id: "D2DAF71C-625E-403D-B0E0-D418387A4E77",
+          title: "Response.md",
+          local_path: "",
+          remote_path: "",
+          remote_url: "",
+          storage_provider: null,
+          remote_object_id: null,
+          sync_status: "local_only",
+          created_at: "2026-06-03T00:00:00.000Z",
+          updated_at: "2026-06-03T00:01:00.000Z",
+        },
+      ],
+      error: null,
+    });
+    const replicaIn = vi.fn().mockResolvedValue({ data: [], error: null });
+    const list = vi
+      .fn()
+      .mockResolvedValueOnce({
+        data: [{ id: null, name: "project-1" }],
+        error: null,
+      })
+      .mockResolvedValueOnce({
+        data: [{ id: null, name: "runs" }],
+        error: null,
+      })
+      .mockResolvedValueOnce({
+        data: [{ id: null, name: "run-1" }],
+        error: null,
+      })
+      .mockResolvedValueOnce({
+        data: [{ id: null, name: "steps" }],
+        error: null,
+      })
+      .mockResolvedValueOnce({
+        data: [{ id: null, name: "codex_test" }],
+        error: null,
+      })
+      .mockResolvedValueOnce({
+        data: [{ id: null, name: "artifacts" }],
+        error: null,
+      })
+      .mockResolvedValueOnce({
+        data: [{ id: null, name: "artifact-1" }],
+        error: null,
+      })
+      .mockResolvedValueOnce({
+        data: [
+          {
+            id: "object-1",
+            name: "Response.md",
+            created_at: "2026-06-03T00:00:00.000Z",
+            updated_at: "2026-06-03T00:01:00.000Z",
+          },
+        ],
+        error: null,
+      });
+    const from = vi.fn((table: string) => {
+      if (table === "artifact_runs") {
+        return {
+          select: () => ({
+            eq: () => ({ order }),
+            order,
+          }),
+        };
+      }
+      if (table === "artifact_run_replicas") {
+        return {
+          select: () => ({
+            in: replicaIn,
+          }),
+        };
+      }
+      throw new Error(`Unexpected table ${table}`);
+    });
+
+    const gateway = new SupabaseWorkflowEngineGateway({
+      from,
+      storage: {
+        from: vi.fn(() => ({ list })),
+      },
+    } as any);
+    const result = await gateway.listArtifactRuns();
+
+    expect(replicaIn).toHaveBeenCalledWith("artifact_run_id", ["artifact-1"]);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toEqual(
+      expect.objectContaining({
+        id: "artifact-1",
+        workflowRunStepId: "D2DAF71C-625E-403D-B0E0-D418387A4E77",
+        remotePath: "",
+      }),
+    );
+    expect(result[0]?.replicas).toEqual([
+      expect.objectContaining({
+        artifactRunId: "artifact-1",
+        provider: "supabase",
+        remotePath: "projects/project-1/runs/run-1/steps/codex_test/artifacts/artifact-1/Response.md",
+        remoteObjectId: "object-1",
+        syncStatus: "synced",
+      }),
+    ]);
+  });
+
   it("parses legacy storage-backed artifact paths without artifact folders", async () => {
     const order = vi.fn().mockResolvedValue({ data: [], error: null });
     const list = vi

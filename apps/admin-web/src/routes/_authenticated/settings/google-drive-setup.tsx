@@ -26,6 +26,10 @@ import { Badge } from "@/presentation/components/ui/badge";
 
 const DEFAULT_REDIRECT_URI =
   "http://127.0.0.1:4317/artifact-storage/google-drive/oauth/callback";
+const PICKER_ALLOWED_REFERRERS = [
+  "http://127.0.0.1:4317/*",
+  "http://localhost:4317/*",
+];
 
 export const Route = createFileRoute("/_authenticated/settings/google-drive-setup")({
   loader: loadMcpSettingsData,
@@ -339,11 +343,17 @@ function GoogleDriveSetupPage() {
             </Button>
             {validation ? (
               <button
-                className="text-sm font-medium text-accent underline underline-offset-4 transition hover:text-accent/80"
+                className="transition hover:opacity-85"
                 onClick={() => setValidationOpen(true)}
                 type="button"
+                aria-label="Open last validation result"
               >
-                Open last validation result
+                <div className="flex items-center gap-2">
+                  <span className="text-xs uppercase tracking-[0.22em] text-muted-foreground">
+                    Latest check
+                  </span>
+                  <StatusBadge value={validation.valid ? "configured" : "needs_input"} />
+                </div>
               </button>
             ) : null}
           </div>
@@ -721,9 +731,15 @@ function GoogleDriveSetupPage() {
               "Give it a clear name such as FlowPilot Picker API Key.",
               "Restrict the key to Google Picker API.",
               "Do not enable Authenticate API calls through a service account.",
-              "For the simplest local MVP test, keep application restriction as None, then copy the key into this field.",
+              "For local restricted keys, set Application restrictions to Websites and add the full HTTP referrers below. Do not omit http://.",
+              "For the simplest local MVP test only, keep application restriction as None, then copy the key into this field.",
             ]}
           />
+          <div className="mt-4 grid gap-3 md:grid-cols-2">
+            {PICKER_ALLOWED_REFERRERS.map((referrer) => (
+              <CodeRow key={referrer} label="Allowed picker referrer" value={referrer} />
+            ))}
+          </div>
           <div className="mt-4 grid gap-4 md:grid-cols-[1fr_auto]">
             <SecretField
               label="Picker API key"
@@ -857,7 +873,20 @@ function StatusStack({ status }: { status: GoogleDriveRuntimeStatus | null }) {
 
   return (
     <div className="grid gap-3">
-      <StatusRow label="Artifact sync" value={status.artifactSync.status} detail={`source: ${status.artifactSync.source}`} />
+      <StatusRow
+        label="Artifact sync"
+        value={status.artifactSync.status}
+        detail={`source: ${status.artifactSync.source}`}
+        extra={
+          status.artifactSync.configured ? (
+            <Link search={{ tab: "storage" }} to="/artifacts">
+              <Button className="mt-3 h-auto rounded-full px-3 py-1 text-xs font-medium" variant="secondary">
+                Open Artifact Storage Setting
+              </Button>
+            </Link>
+          ) : null
+        }
+      />
       <StatusRow label="MCP" value={status.mcp.status} detail={googleDriveMcpDetail(status)} />
       <StatusRow
         label="Runner"
@@ -887,14 +916,27 @@ function googleDriveMcpDetail(status: GoogleDriveRuntimeStatus) {
   }
 }
 
-function StatusRow({ label, value, detail }: { label: string; value: string; detail: string }) {
+function StatusRow({
+  label,
+  value,
+  detail,
+  extra,
+}: {
+  label: string;
+  value: string;
+  detail: string;
+  extra?: ReactNode;
+}) {
   return (
-    <div className="flex items-center justify-between rounded-2xl border border-border/70 bg-background/70 px-4 py-3">
-      <div>
-        <p className="text-sm font-medium">{label}</p>
-        <p className="text-xs text-muted-foreground">{detail}</p>
+    <div className="rounded-2xl border border-border/70 bg-background/70 px-4 py-3">
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <p className="text-sm font-medium">{label}</p>
+          <p className="text-xs text-muted-foreground">{detail}</p>
+        </div>
+        <StatusBadge value={value} />
       </div>
-      <StatusBadge value={value} />
+      {extra ? <div>{extra}</div> : null}
     </div>
   );
 }

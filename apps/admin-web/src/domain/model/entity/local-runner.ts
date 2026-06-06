@@ -153,6 +153,22 @@ export interface LocalRunnerArtifactCloudSyncResult {
   errorMessage?: string | null;
 }
 
+export interface LocalRunnerArtifactHydrationRequest {
+  artifactId: string;
+  title: string;
+  sourceKind?: string;
+  projectId: string;
+  featureId?: string;
+  workflowRunId: string;
+  workflowStepKey: string;
+  providerKey?: string;
+  remotePath: string;
+  remoteObjectId?: string;
+  sourceStorageProvider: "supabase" | "google_drive";
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export interface LocalRunnerStorageDriver {
   driverKey: string;
   enabled: boolean;

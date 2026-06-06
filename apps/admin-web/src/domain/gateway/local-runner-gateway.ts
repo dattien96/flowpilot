@@ -1,5 +1,6 @@
 import type {
   LocalRunnerArtifact,
+  LocalRunnerArtifactHydrationRequest,
   LocalRunnerArtifactCloudSyncResult,
   LocalRunnerBackupResult,
   LocalRunnerDirectorySelection,
@@ -53,6 +54,10 @@ export interface LocalRunnerGateway {
   saveArtifactCloudSyncResult(
     artifactId: string,
     result: LocalRunnerArtifactCloudSyncResult,
+  ): Promise<LocalRunnerArtifact>;
+  hydrateArtifactFromRemote(
+    artifactId: string,
+    request: LocalRunnerArtifactHydrationRequest,
   ): Promise<LocalRunnerArtifact>;
   syncArtifact(artifactId: string): Promise<LocalRunnerArtifact>;
   deleteArtifactsByWorkflowRunIds(runIds: string[]): Promise<void>;

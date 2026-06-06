@@ -124,6 +124,22 @@ type ArtifactSyncRequest struct {
 	GoogleDriveDriveID       string `json:"googleDriveDriveId,omitempty"`
 }
 
+type ArtifactHydrationRequest struct {
+	ArtifactID            string `json:"artifactId"`
+	Title                 string `json:"title"`
+	SourceKind            string `json:"sourceKind,omitempty"`
+	ProjectID             string `json:"projectId"`
+	FeatureID             string `json:"featureId,omitempty"`
+	WorkflowRunID         string `json:"workflowRunId"`
+	WorkflowStepKey       string `json:"workflowStepKey"`
+	ProviderKey           string `json:"providerKey,omitempty"`
+	RemotePath            string `json:"remotePath"`
+	RemoteObjectID        string `json:"remoteObjectId,omitempty"`
+	SourceStorageProvider string `json:"sourceStorageProvider"`
+	CreatedAt             string `json:"createdAt,omitempty"`
+	UpdatedAt             string `json:"updatedAt,omitempty"`
+}
+
 type ArtifactStorageGoogleDriveConnectRequest struct {
 	ProjectID string `json:"projectId"`
 	BaseURL   string `json:"baseUrl,omitempty"`

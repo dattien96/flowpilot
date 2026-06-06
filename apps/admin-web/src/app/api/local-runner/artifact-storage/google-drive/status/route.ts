@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
 
 import { assertAdminApiSessionForRequest } from "@/data/auth/session";
-import { createSupabaseServerClient } from "@/data/datasource/supabase/client";
 import {
   upsertArtifactStorageConnection,
 } from "@/features/artifacts/artifact-storage-connection";
 import { getLocalRunnerBaseUrl } from "@/lib/env/app-env";
+import { createRuntimeSupabaseAdminClient } from "@/lib/supabase/runtime-config.server";
 
 async function readRunnerResponse(response: Response) {
   const raw = await response.text();
@@ -59,7 +59,7 @@ export async function GET(request: Request) {
     const connection = body.connection as Record<string, unknown> | undefined;
     if (connection && typeof connection.status === "string") {
       try {
-        await upsertArtifactStorageConnection(await createSupabaseServerClient(), {
+        await upsertArtifactStorageConnection(await createRuntimeSupabaseAdminClient(), {
           projectId,
           provider: "google_drive",
           status:
@@ -77,8 +77,10 @@ export async function GET(request: Request) {
           lastError: typeof connection.lastError === "string" ? connection.lastError : null,
           connectedAt: typeof connection.connectedAt === "string" ? connection.connectedAt : null,
         });
-      } catch {
-        // Best effort only.
+      } catch (error) {
+        if (connection.status === "connected") {
+          throw error;
+        }
       }
     }
 

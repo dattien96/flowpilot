@@ -633,6 +633,23 @@ func TestSyncArtifactGoogleDriveUploadsHistoryAndCanonical(t *testing.T) {
 	if canonical.AppProperties["syncRole"] != "canonical" {
 		t.Fatalf("expected canonical syncRole metadata, got %#v", canonical.AppProperties)
 	}
+	if _, ok := canonical.AppProperties["remotePath"]; ok {
+		t.Fatalf("canonical upload should not store remotePath in Google Drive appProperties: %#v", canonical.AppProperties)
+	}
+}
+
+func TestGoogleDriveAppPropertiesDropsOversizedValues(t *testing.T) {
+	metadata := googleDriveAppProperties(map[string]string{
+		"syncRole":   "canonical",
+		"remotePath": strings.Repeat("x", googleDriveAppPropertyByteLimit),
+	})
+
+	if metadata["syncRole"] != "canonical" {
+		t.Fatalf("expected short metadata to be preserved, got %#v", metadata)
+	}
+	if _, ok := metadata["remotePath"]; ok {
+		t.Fatalf("expected oversized metadata to be omitted, got %#v", metadata)
+	}
 }
 
 func TestSyncArtifactGoogleDriveMarksReconnectRequiredOnInvalidGrant(t *testing.T) {
@@ -843,6 +860,77 @@ func TestResolveArtifactOpenURLCreatesSupabaseSignedURLForActualPrompt(t *testin
 	expected := "https://example.supabase.co/storage/v1/object/sign/flowpilot-artifacts/projects/local/runs/run-1/steps/prompt_execution/.snapshots/" + artifactID + "/actual-prompt.md?token=abc"
 	if url != expected {
 		t.Fatalf("unexpected signed URL: %q", url)
+	}
+}
+
+func TestHydrateArtifactFromRemoteSupabaseDownloadsCanonicalAndSnapshots(t *testing.T) {
+	instance := &Runner{workspace: t.TempDir()}
+
+	t.Setenv("SUPABASE_API_URL", "https://example.supabase.co")
+	t.Setenv("SUPABASE_SERVICE_ROLE_KEY", "service-role-key")
+
+	originalHTTPRequest := httpRequestFn
+	t.Cleanup(func() {
+		httpRequestFn = originalHTTPRequest
+	})
+
+	httpRequestFn = func(
+		_ context.Context,
+		method string,
+		endpoint string,
+		headers map[string]string,
+		body []byte,
+	) (int, []byte, error) {
+		switch {
+		case method == "POST" && strings.HasSuffix(endpoint, "/storage/v1/object/list/flowpilot-artifacts"):
+			return 200, []byte(`[{"name":"prompt.md"},{"name":"actual-prompt.md"}]`), nil
+		case method == "GET" && strings.Contains(endpoint, "/storage/v1/object/flowpilot-artifacts/projects/project-1/runs/run-1/steps/business_idea/.snapshots/artifact-remote-1/prompt.md"):
+			return 200, []byte("Saved prompt"), nil
+		case method == "GET" && strings.Contains(endpoint, "/storage/v1/object/flowpilot-artifacts/projects/project-1/runs/run-1/steps/business_idea/.snapshots/artifact-remote-1/actual-prompt.md"):
+			return 200, []byte("Actual prompt"), nil
+		case method == "GET" && strings.Contains(endpoint, "/storage/v1/object/flowpilot-artifacts/projects/project-1/runs/run-1/steps/business_idea/artifacts/artifact-remote-1/content.md"):
+			return 200, []byte("Hydrated content"), nil
+		default:
+			t.Fatalf("unexpected supabase hydration request: %s %s", method, endpoint)
+			return 500, nil, nil
+		}
+	}
+
+	artifact, err := instance.HydrateArtifactFromRemote(context.Background(), ArtifactHydrationRequest{
+		ArtifactID:            "artifact-remote-1",
+		Title:                 "Business Idea",
+		SourceKind:            "workflow_output",
+		ProjectID:             "project-1",
+		FeatureID:             "business_idea",
+		WorkflowRunID:         "run-1",
+		WorkflowStepKey:       "business_idea",
+		ProviderKey:           "codex",
+		RemotePath:            "projects/project-1/runs/run-1/steps/business_idea/artifacts/artifact-remote-1/content.md",
+		SourceStorageProvider: "supabase",
+		CreatedAt:             "2026-06-01T00:00:00Z",
+		UpdatedAt:             "2026-06-01T00:00:01Z",
+	})
+	if err != nil {
+		t.Fatalf("HydrateArtifactFromRemote() failed: %v", err)
+	}
+
+	if artifact.SyncStatus != artifactSyncStatusLocalOnly {
+		t.Fatalf("expected local_only sync status, got %q", artifact.SyncStatus)
+	}
+	if artifact.StorageProvider != "supabase" {
+		t.Fatalf("expected hydrated source provider supabase, got %q", artifact.StorageProvider)
+	}
+	if artifact.ContentMarkdown != "Hydrated content" {
+		t.Fatalf("unexpected hydrated content: %q", artifact.ContentMarkdown)
+	}
+	if artifact.PromptText != "Saved prompt" {
+		t.Fatalf("unexpected hydrated prompt: %q", artifact.PromptText)
+	}
+	if artifact.ActualPromptText != "Actual prompt" {
+		t.Fatalf("unexpected hydrated actual prompt: %q", artifact.ActualPromptText)
+	}
+	if _, err := os.Stat(artifact.ManifestPath); err != nil {
+		t.Fatalf("expected manifest to exist: %v", err)
 	}
 }
 
@@ -1072,6 +1160,11 @@ func (api *fakeGoogleDriveAPI) handleUpload(
 			if err := json.Unmarshal(data, &metadata); err != nil {
 				return 400, nil, err
 			}
+		}
+	}
+	for key, value := range metadata.AppProperties {
+		if len([]byte(key))+len([]byte(value)) > googleDriveAppPropertyByteLimit {
+			return 403, []byte(`{"error":{"code":403,"message":"Properties and app properties are limited to 124 bytes in UTF-8 encoding, counting both the key and the value.","errors":[{"message":"Properties and app properties are limited to 124 bytes in UTF-8 encoding, counting both the key and the value.","domain":"global","reason":"propertyLengthLimitExceeded"}]}}`), nil
 		}
 	}
 

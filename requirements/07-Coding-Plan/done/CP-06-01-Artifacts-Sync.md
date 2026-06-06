@@ -9,7 +9,7 @@ Sync local artifact snapshots to shared online storage while preserving version 
 - The Go runner on the current PC is the backend for local sync state, auth/session handling, and manifest persistence.
 - Supabase Storage is the default shared provider.
 - A project may switch to Google Drive after the user completes OAuth login and selects one destination folder on that PC.
-- The `/artifacts` page provides a QR code and normal browser link for the Google Drive connection flow on the current host.
+- The `/artifacts` page provides a connect link for the Google Drive connection flow on the current host.
 - Artifacts must be visible in both project detail pages and the global artifact page, with manual sync available from both places.
 - Both pages must present artifact data as two sections: `Local` and `Remote/Synced`.
 - Both pages should expose one bulk sync action for the current filtered scope instead of requiring per-row sync clicks.
@@ -144,13 +144,18 @@ The local runner API on the current PC:
 
 Supabase is the durable shared sync-state store. Local manifests are still the local runner source of truth for artifact bytes and immediate retry state, but the app must not depend only on local files to know whether a generated artifact is local-only or synced remotely.
 
-Persist sync state in Supabase for every workflow artifact run:
+`artifact_runs` is the logical artifact record. Provider-specific remote sync state must live in `artifact_run_replicas`, while compatibility fields on `artifact_runs` may still mirror the active/latest provider for older readers.
 
-- `artifact_runs.storage_provider`
-- `artifact_runs.remote_path`
-- `artifact_runs.remote_object_id`
-- `artifact_runs.sync_status`
-- `artifact_runs.updated_at`
+Persist shared sync state in Supabase for every workflow artifact run:
+
+- logical artifact identity in `artifact_runs`
+- provider-specific replica rows in `artifact_run_replicas`
+- `artifact_run_replicas.provider`
+- `artifact_run_replicas.storage_scope_key`
+- `artifact_run_replicas.remote_path`
+- `artifact_run_replicas.remote_object_id`
+- `artifact_run_replicas.sync_status`
+- `artifact_run_replicas.updated_at`
 
 Sync state meanings:
 
@@ -225,11 +230,10 @@ From `/artifacts`, the user selects a project and clicks `Connect Google Drive`.
 
 The local runner on the current PC creates a short-lived, one-time connect session and returns a FlowPilot URL. The UI:
 
-- Displays a QR code containing that URL.
-- Displays the same URL as a clickable link.
+- Displays the URL as a clickable link.
 - Polls connection status until completion, expiry, or failure.
 
-The QR connect token and OAuth `state` are separate single-use values. Store only their hashes in the local runner secret store.
+The connect token and OAuth `state` are separate single-use values. Store only their hashes in the local runner secret store.
 
 ### 6.2 OAuth
 
@@ -243,7 +247,7 @@ Opening the connect URL starts Google OAuth authorization-code flow:
 
 ### 6.3 Folder picker
 
-After OAuth succeeds, the browser opens Google Picker on the current PC:
+After OAuth succeeds, the browser opens Google Picker:
 
 - Use a Drive folders view.
 - Enable folder selection.
@@ -268,7 +272,7 @@ For large artifact payloads, use resumable upload rather than standard upload.
 
 - `integrations.config_encrypted` may store non-secret metadata only. It is JSONB, not an encrypted secret vault.
 - Keep Google client secret, refresh tokens, and any Supabase secret keys in the local runner secret store on the current PC.
-- Use short-lived, one-time QR connect sessions.
+- Use short-lived, one-time connect sessions.
 - Do not put OAuth tokens in query strings, logs, browser storage, or local manifests.
 - Keep the Picker access token in memory only and discard it after folder selection.
 - Validate the selected Drive folder belongs to the authorized picker result before marking the connection ready.
@@ -311,7 +315,7 @@ The global artifact page must show:
 - `Open artifact` action that uses the fresh server-generated open route.
 - Supabase Storage as the default provider.
 - Google Drive connection and selected-folder status.
-- QR code and clickable link while Google Drive authorization is pending.
+- Clickable link for Google Drive authorization.
 - Last validation, last sync, and last error state.
 - Exclude orphan local artifacts that do not map to an existing workflow run.
 
@@ -346,7 +350,7 @@ Artifact browser actions must:
 - New prompts or workflow activity within the 5-minute window reset the sync timer.
 - A private Supabase bucket stores snapshot history and canonical files.
 - Supabase signed URLs are generated on demand and are not persisted.
-- A user can scan a QR code or click a link, log in with Google, select a Drive folder on the current PC, and return to a connected state.
+- A user can click a link, log in with Google, select a Drive folder on the current PC, and return to a connected state.
 - Google Drive sync writes below the selected folder.
 - Google Drive refresh tokens are stored only in the local runner secret store.
 - Google Drive MCP setup is not treated as artifact-storage readiness.
@@ -374,8 +378,8 @@ Artifact browser actions must:
 
 ### 11.2 Sync State
 
-- [ ] Supabase stores durable artifact sync state in `artifact_runs`.
-- [ ] Persist `storage_provider`, `remote_path`, `remote_object_id`, `sync_status`, and `updated_at`.
+- [ ] Supabase stores durable artifact sync state in `artifact_runs` plus provider-specific rows in `artifact_run_replicas`.
+- [ ] Persist provider-specific `storage_scope_key`, `remote_path`, `remote_object_id`, `sync_status`, and `updated_at` in `artifact_run_replicas`.
 - [ ] Mark sync as `syncing` before upload.
 - [ ] Mark sync as `synced` after upload and metadata persistence succeed.
 - [ ] Mark sync as `failed` when upload or Supabase metadata persistence fails.
@@ -424,7 +428,7 @@ Merged review findings and corrections:
 2. `projects.artifact_storage_preference` already exists and defaults to `supabase`, but the actual sync backend must live in the runner on each PC.
 3. Existing Google Drive MCP setup is unrelated to artifact uploads and must not be reused as the storage provider.
 4. Google Drive connection must use browser OAuth plus Google Picker folder selection.
-5. The QR code should open a short-lived FlowPilot connect URL that continues into OAuth and folder selection on the current host.
+5. A short-lived FlowPilot connect URL continues into OAuth and folder selection on the current host.
 6. Google Drive refresh tokens require local runner secret storage. `integrations.config_encrypted` is not sufficient.
 7. Supabase private-bucket signed URLs expire and must be generated on demand.
 8. Online upload orchestration belongs in the Go runner on the current PC. The UI and web app are thin local clients.
@@ -486,7 +490,7 @@ This keeps Google refresh tokens and local connect state machine-local while syn
 - Add runner-local Google OAuth authorization-code flow with offline access.
 - Request `https://www.googleapis.com/auth/drive.file`.
 - Store the refresh token in the local runner secret store on that PC.
-- Add a short-lived connect session usable from a QR code or browser link.
+- Add a short-lived connect session usable from a browser link.
 - Open Google Picker with folder selection enabled and persist the selected folder ID and name locally.
 - Upload snapshots and canonical files below the selected Drive folder.
 
@@ -520,7 +524,7 @@ This keeps Google refresh tokens and local connect state machine-local while syn
 - Verify project Artifact tab filtering, global artifact aggregation, sync-state display, and bulk sync from both surfaces.
 - Verify server-start reconciliation and workflow-completion debounce behavior.
 - Verify Supabase sync-state persistence survives app restart.
-- Run a manual QR-code connection pass in a second browser or phone on the same PC host.
+- Run a manual connection test in a browser on the same PC host.
 
 ### 12.5 Detailed Changes
 
@@ -553,7 +557,7 @@ This keeps Google refresh tokens and local connect state machine-local while syn
 - Supabase path mapping, canonical promotion, retry, and fresh signed URL generation.
 - Google OAuth state validation, callback token handling, folder selection, revoked-token failure, and recovery.
 - Sync route provider selection and local-state persistence.
-- `/artifacts` provider cards, QR pending state, and polling completion.
+- `/artifacts` provider cards, connect pending state, and polling completion.
 - Project Artifact tab shows only project artifacts.
 - Global artifact page shows all project artifacts.
 - Bulk sync from both artifact pages updates Supabase sync state.
@@ -629,18 +633,27 @@ File opens/downloads
 
 The `artifact_runs.remote_url` field should remain empty or contain only a stable reference path (not the signed URL). The actual signed URL is generated through a dedicated "open artifact" API route that calls the runner's Supabase adapter.
 
+**Current implementation approach:**
+
+The current implementation streams artifact content through admin-web instead of generating signed URLs for direct browser redirect. This approach:
+- Keeps artifact access within the FlowPilot security boundary
+- Allows additional access control and logging at the proxy layer
+- Avoids exposing signed URLs to the browser
+
+If future requirements prefer direct signed URL redirects, the architecture already supports switching to on-demand signed URL generation at the "open artifact" route.
+
 ---
 
-### Q2: What is the "short-lived QR code" for Google Drive connection?
+### Q2: What is the "short-lived connect link" for Google Drive connection?
 
 **What it is:**
 
-A temporary authorization link that enables Google Drive connection from any device on the same network. The QR code contains a short-lived FlowPilot URL pointing to the local runner.
+A temporary authorization link that enables Google Drive connection from the same device running the FlowPilot runner.
 
-**Example QR code content:**
+**Example connect link content:**
 
 ```
-http://192.168.1.100:3000/runner/connect/google-drive?token=short_lived_abc123
+http://127.0.0.1:4317/artifact-storage/google-drive/connect?token=short_lived_abc123
 ```
 
 **About the token in the URL:**
@@ -650,7 +663,7 @@ The `token=short_lived_abc123` parameter is a **connect token created by the Go 
 | Aspect | Details |
 |--------|---------|
 | **Created by** | Go runner's local-runner service when user clicks "Connect Google Drive" |
-| **Purpose** | Secure the QR code link and validate the connection request came from FlowPilot |
+| **Purpose** | Secure the connect link and validate the connection request came from FlowPilot |
 | **Stored as** | `hash(token)` in runner's local secret store (not the plaintext token) |
 | **Lifetime** | 5-10 minutes |
 | **One-time use** | Marked as "used" after first successful validation |
@@ -680,21 +693,22 @@ Admin-web → POST /api/local-runner/connect/google-drive
 │    }                                                 │
 │                                                      │
 │ 3. Build connect URL:                               │
-│    url = "http://192.168.1.100:3000/runner/         │
-│           connect/google-drive?token=" + token      │
+│    url = "http://127.0.0.1:4317/                    │
+│           artifact-storage/google-drive/            │
+│           connect?token=" + token                   │
 │                                                      │
 │ 4. Return { connectUrl: url, expiresAt: ... }       │
 └─────────────────────────────────────────────────────┘
   ↓
-UI displays QR code + clickable link
+UI displays clickable link
 ```
 
 **Token validation flow:**
 
 ```
-User scans QR code or clicks link
+User clicks link
   ↓
-Browser opens: .../connect/google-drive?token=short_lived_abc123
+Browser opens: .../connect?token=short_lived_abc123
   ↓
 ┌─────────────────────────────────────────────────────┐
 │ Go Runner validates connect token:                  │
@@ -721,7 +735,7 @@ Browser opens: .../connect/google-drive?token=short_lived_abc123
 
 | Token Type | Created By | Purpose | Lifetime | Stored As |
 |------------|-----------|---------|----------|-----------|
-| **Connect Token** | Go Runner | Secure QR code link, validate connection request | 5-10 min | `hash(token)` in runner secret store |
+| **Connect Token** | Go Runner | Secure connect link, validate connection request | 5-10 min | `hash(token)` in runner secret store |
 | **OAuth State** | Go Runner | Prevent CSRF in OAuth flow | ~30 min | `hash(state)` in runner secret store |
 | **OAuth Code** | Google | Exchange for tokens | ~10 min | Not stored (used immediately) |
 | **Access Token** | Google | Temporary API access | 1 hour | Memory only (for Picker) |
@@ -740,7 +754,7 @@ Both the connect token and OAuth state are single-use, cryptographically random 
 │ Local runner creates connect session:                       │
 │ - Generates random token (valid 5-10 minutes)               │
 │ - Stores hash(token) in local secret store                  │
-│ - Returns URL: http://[local-ip]:3000/runner/connect/...   │
+│ - Returns URL: http://127.0.0.1:4317/artifact-storage/...  │
 └─────────────────────────────────────────────────────────────┘
                           ↓
 ┌─────────────────────────────────────────────────────────────┐
@@ -750,12 +764,8 @@ Both the connect token and OAuth state are single-use, cryptographically random 
 │   ║  Connect Google Drive          ║                        │
 │   ╠═══════════════════════════════╣                        │
 │   ║                                ║                        │
-│   ║   ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓         ║                        │
-│   ║   ▓▓   QR CODE       ▓▓        ║  ← Scan on phone      │
-│   ║   ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓         ║                        │
-│   ║                                ║                        │
-│   ║   Or click:                    ║                        │
-│   ║   http://192.168.1.100:3000... ║  ← Click same PC      │
+│   ║   Click to connect:            ║                        │
+│   ║   http://127.0.0.1:4317...    ║  ← Click to connect   │
 │   ║                                ║                        │
 │   ║   ⏱️  Expires in 4:32          ║  ← Countdown          │
 │   ║                                ║                        │
@@ -766,7 +776,7 @@ Both the connect token and OAuth state are single-use, cryptographically random 
 └─────────────────────────────────────────────────────────────┘
                           ↓
 ┌─────────────────────────────────────────────────────────────┐
-│ Step 2: User scans QR or clicks link                        │
+│ Step 2: User clicks link                                    │
 └─────────────────────────────────────────────────────────────┘
                           ↓
 ┌─────────────────────────────────────────────────────────────┐
@@ -782,7 +792,7 @@ Both the connect token and OAuth state are single-use, cryptographically random 
 │                                                              │
 │ https://accounts.google.com/o/oauth2/v2/auth?               │
 │   client_id=...                                              │
-│   redirect_uri=http://localhost:3000/runner/oauth/callback  │
+│   redirect_uri=http://127.0.0.1:4317/artifact-storage/...   │
 │   response_type=code                                         │
 │   scope=https://www.googleapis.com/auth/drive.file          │
 │   access_type=offline  ← Request refresh token              │
@@ -837,10 +847,9 @@ Both the connect token and OAuth state are single-use, cryptographically random 
 
 | Security aspect | Reason |
 |-----------------|--------|
-| **Interception risk** | If someone captures the QR code screenshot, it expires quickly |
+| **Interception risk** | If someone captures the link, it expires quickly |
 | **One-time use** | Token invalidated after first successful connection |
-| **No replay attacks** | Cannot reuse old QR codes |
-| **Network boundary** | Only works on local network (localhost/LAN IP) - phone must be on same subnet as PC |
+| **No replay attacks** | Cannot reuse old connect links |
 
 **Key security properties:**
 
@@ -850,18 +859,6 @@ Both the connect token and OAuth state are single-use, cryptographically random 
 - OAuth state validates the authorization flow came from FlowPilot
 - Refresh token never leaves local runner secret store
 - Short-lived access token used only for Picker, then discarded
-
-**Multiple device support:**
-
-The QR code enables this workflow:
-- Desktop PC runs local runner (e.g., at IP `192.168.1.100`)
-- User scans QR on phone **on the same local network/subnet**
-- User logs in with Google on phone
-- User selects folder on phone
-- Desktop PC receives connection confirmation
-- Both devices now can sync to same Google Drive folder
-
-**Network requirement:** The phone must be on the same local network (subnet) as the PC running the runner, because the QR code contains a local IP address (e.g., `http://192.168.1.100:3000/...`) that is only reachable on the same network. The phone cannot connect to the runner if it's on a different network (e.g., mobile data, different WiFi).
 
 ---
 
@@ -880,7 +877,7 @@ The QR code enables this workflow:
 | Storage driver config | `.flowpilot/settings/storage-driver.json` | ✅ Yes |
 | Google Drive refresh tokens | Runner's local secret store (encrypted on disk) | ✅ Yes |
 | Google Drive folder connections | Runner's local state (on disk) | ✅ Yes |
-| Google Drive connect session records | `.flowpilot/artifact-storage-google-drive.json` | ✅ Yes |
+| Google Drive connect session records | `.flowpilot/settings/artifact-storage-google-drive.json` (legacy `.flowpilot/artifact-storage-google-drive.json` still readable) | ✅ Yes |
 | Hashed connect/state tokens | Runner's local secret store | ✅ Yes |
 | Supabase artifacts | Supabase Storage (cloud) | ✅ Yes |
 | Google Drive artifacts | Google Drive (cloud) | ✅ Yes |
@@ -947,8 +944,8 @@ After restart:
 
 ```
 User clicks "Connect Google Drive"
-  → QR code displayed (token valid for 5 minutes)
-  → User scanning QR...
+  → Connect link displayed (token valid for 5 minutes)
+  → User clicks link...
   
 Runner crashes/restarts
 
@@ -968,7 +965,7 @@ But:
 1. **Local artifacts**: File system storage at `.flowpilot/artifacts/<projectId>/<runId>/<stepKey>/.snapshots/<artifactId>/`
 2. **Runner secret store**: OS-backed secret storage (contains refresh tokens, hashed session tokens)
 3. **Storage driver config**: JSON file at `.flowpilot/settings/storage-driver.json`
-4. **Google Drive connections**: Runner state file `.flowpilot/artifact-storage-google-drive.json` tracking `projectId → folderId → connectionStatus` mappings and connect session records
+4. **Google Drive connections**: Runner state file `.flowpilot/settings/artifact-storage-google-drive.json` tracking `projectId → folderId → connectionStatus` mappings and connect session records, with legacy fallback to `.flowpilot/artifact-storage-google-drive.json`
 
 **Key takeaway:** All sync functionality survives restarts because critical data (artifacts, auth tokens, connection state, and short-lived connect session records) is persisted locally. The only temporary value that must be regenerated after restart is the Google access token used for API calls and Picker.
 
@@ -992,13 +989,13 @@ PC A:
 
 PC B:
   ✅ Can read the artifact if:
-     • PC B has Supabase credentials (deployment-level, shared across PCs)
-     • PC B's admin-web queries artifact_runs table for project abc-123
+     • PC B has Supabase credentials for the same effective Supabase target
+     • PC B's admin-web queries shared artifact metadata for project abc-123 (`artifact_runs` plus `artifact_run_replicas`)
      • PC B's runner generates fresh signed URL for the remotePath
      
   ✅ How PC B reads it:
-     1. Admin-web queries: SELECT * FROM artifact_runs WHERE project_id='abc-123'
-     2. Gets remotePath: "projects/abc-123/runs/xyz/steps/step1/Response.md"
+     1. Admin-web queries shared artifact metadata for project abc-123
+     2. Gets the Supabase replica remotePath: "projects/abc-123/runs/xyz/steps/step1/Response.md"
      3. PC B's runner calls: Supabase.storage.createSignedUrl(remotePath)
      4. Returns signed URL (valid for X hours)
      5. PC B's browser opens the artifact ✓
@@ -1025,7 +1022,7 @@ PC B:
 
 #### Part 2: Can PC B sync NEW artifacts?
 
-**Supabase Storage: ✅ YES (works immediately)**
+**Supabase Storage: ✅ YES (when PC B uses the same effective Supabase target)**
 
 ```
 Project Settings:
@@ -1035,16 +1032,16 @@ PC A:
   ✅ Can sync (has Supabase credentials)
 
 PC B:
-  ✅ Can sync immediately because:
-     • Supabase credentials are deployment-level (shared)
-     • No per-PC setup required
+  ✅ Can sync when:
+     • PC B resolves the same Supabase project/bucket target as PC A
+     • the required Supabase credentials/runtime config are available on PC B
      
   How it works:
   1. PC B creates local artifact
   2. PC B's runner checks project preference: "supabase"
-  3. PC B's runner uses deployment Supabase credentials
+  3. PC B's runner uses its local Supabase runtime configuration
   4. Uploads to: projects/abc-123/runs/new-run/steps/step2/NewArtifact.md
-  5. Updates local manifest + artifact_runs table
+  5. Updates local manifest + shared Supabase metadata (`artifact_run_replicas` and any compatibility mirror on `artifact_runs`)
   ✅ Success - artifact visible to all PCs!
 ```
 
@@ -1075,7 +1072,7 @@ PC B:
   ┌────────────────────────────────────────────────┐
   │ 1. Go to /artifacts page on PC B               │
   │ 2. Click "Connect Google Drive" for project    │
-  │ 3. Scan QR / click link                        │
+  │ 3. Click connect link                          │
   │ 4. Log in with Google                          │
   │    (same account as PC A, or different)        │
   │ 5. Select folder                               │
@@ -1091,10 +1088,10 @@ PC B:
 
 | Scenario | Supabase Storage | Google Drive |
 |----------|-----------------|--------------|
-| **PC B reads artifacts from PC A** | ✅ YES (uses shared deployment credentials) | ❌ NO (unless PC B connects to same Google account + folder) |
-| **PC B syncs NEW artifacts** | ✅ YES (works immediately, no setup) | ❌ NO (must connect Google Drive on PC B first) |
-| **Credentials scope** | Deployment-level (shared across PCs) | Per-PC (each PC needs its own connection) |
-| **Setup required on PC B** | None (uses existing credentials) | Must complete full Google Drive connection flow |
+| **PC B reads artifacts from PC A** | ✅ YES (if both runners use the same effective Supabase target) | ❌ NO (unless PC B connects to same Google account + folder scope) |
+| **PC B syncs NEW artifacts** | ✅ YES (if PC B is configured for the same Supabase target) | ❌ NO (must connect Google Drive on PC B first) |
+| **Credentials scope** | Runner-local config, but continuity requires the same Supabase target | Per-PC (each PC needs its own connection) |
+| **Setup required on PC B** | Ensure the same Supabase target/config is available on PC B | Must complete full Google Drive connection flow |
 
 #### Design Rationale
 
@@ -1104,9 +1101,9 @@ From **Section 10 - Acceptance Criteria**:
 This design choice means:
 
 **Supabase Storage:**
-- ✅ Auth is deployment-level (SUPABASE_URL, SUPABASE_ANON_KEY environment variables)
-- ✅ Same credentials work on all PCs in the deployment
-- ✅ PC B works out of the box with no additional setup
+- ✅ Supabase access may be shared by deployment config or repeated locally on each runner
+- ✅ Cross-PC continuity works only when runners resolve the same Supabase project/bucket target
+- ✅ PC B can work immediately only when that matching target/config is already available
 
 **Google Drive:**
 - ✅ Auth is per-PC (refresh token stored locally on each PC)
@@ -1144,7 +1141,7 @@ Result:
 
 **Question:** If PC B connects to the SAME Google Drive account as PC A, can PC B see artifacts synced by PC A?
 
-**Answer:** YES, but only if the artifact browser queries the shared `artifact_runs` table (not just local files).
+**Answer:** YES, but only if the artifact browser queries the shared Supabase metadata model (`artifact_runs` plus `artifact_run_replicas`), not just local files.
 
 **The Two Sources of Artifact Metadata:**
 
@@ -1154,7 +1151,7 @@ Source 1: Local artifacts (PC-specific)
   Contains: Artifacts created and synced by THIS PC only
   
 Source 2: Shared metadata (cross-PC)
-  Location: Supabase artifact_runs table
+  Location: Supabase `artifact_runs` + `artifact_run_replicas`
   Contains: ALL artifacts synced by ANY PC
   Updated: Required after every sync attempt
 ```
@@ -1164,14 +1161,14 @@ Source 2: Shared metadata (cross-PC)
 | UI Query Source | PC B Sees |
 |----------------|-----------|
 | **Local only** (`.flowpilot/artifacts/`) | ❌ Only PC B's own artifacts (PC A's artifacts not visible) |
-| **Shared metadata** (`artifact_runs` table) | ✅ ALL artifacts from all PCs |
+| **Shared metadata** (`artifact_runs` + `artifact_run_replicas`) | ✅ ALL artifacts from all PCs |
 
 **The correct implementation (based on Section 5.2 and Section 5.3):**
 
 From **Section 5.2 - Local runner responsibility**:
 > "Updates Supabase sync metadata after each success or failure."
 
-The `artifact_runs` table is the required shared sync-state store.
+The required shared sync-state store is the Supabase metadata model: `artifact_runs` for logical artifact identity and `artifact_run_replicas` for provider-specific correctness.
 
 **Complete flow for cross-PC visibility:**
 
@@ -1181,17 +1178,12 @@ PC A:
   2. Syncs to Google Drive:
      - Uploads files to Drive folder
      - Gets Drive file ID (remoteObjectId)
-  3. Updates artifact_runs table:
-     INSERT INTO artifact_runs (
-       id, project_id, title,
-       remote_path, remote_object_id,
-       storage_provider, sync_status
-     ) VALUES (
-       'artifact-1', 'abc-123', 'Response.md',
-       'projects/abc/runs/run-1/steps/step-1/Response.md',
-       'google-drive-file-id-xyz',
-       'google_drive', 'synced'
-     )
+  3. Upserts shared metadata:
+     - keeps logical artifact identity in artifact_runs
+     - writes provider-specific remote state to artifact_run_replicas
+       (provider='google_drive', storage_scope_key='gdrive:<folderId>',
+        remote_path='projects/abc/runs/run-1/steps/step-1/Response.md',
+        remote_object_id='google-drive-file-id-xyz', sync_status='synced')
   ✓ Artifact now visible in shared metadata
 
 PC B (after connecting to same Google Drive account + folder):
@@ -1218,16 +1210,16 @@ PC B (after connecting to same Google Drive account + folder):
 
 **Implementation requirements:**
 
-1. **Sync operation must update both:**
+  1. **Sync operation must update both:**
    - ✅ Local manifest (`.flowpilot/artifacts/.../manifest.json`)
-   - ✅ Shared metadata (`artifact_runs` table)
+   - ✅ Shared metadata (`artifact_runs` + `artifact_run_replicas`)
 
-2. **Artifact browser must query:**
-   - ✅ `artifact_runs` table (shows ALL synced artifacts)
+  2. **Artifact browser must query:**
+   - ✅ shared Supabase metadata (`artifact_runs` joined with `artifact_run_replicas`) to show ALL synced artifacts
    - ✅ NOT just local `.flowpilot/artifacts/` (PC-specific only)
 
-3. **Open artifact operation must:**
-   - ✅ Read `remoteObjectId` from `artifact_runs` table
+  3. **Open artifact operation must:**
+   - ✅ Read provider-specific `remoteObjectId` from the matching replica row
    - ✅ Use current PC's credentials (refresh token) to generate access URL
    - ✅ Work even if artifact was synced by different PC
 
@@ -1235,10 +1227,12 @@ PC B (after connecting to same Google Drive account + folder):
 
 ```
 Shared metadata model:
-  ✓ artifact_runs table is the source of truth for "what's synced"
+  ✓ `artifact_runs` identifies the logical artifact
+  ✓ `artifact_run_replicas` is the source of truth for provider-specific remote sync state
   ✓ Each PC has its own auth tokens but same view of synced artifacts
   ✓ Drive remoteObjectId (file ID) is stable across PCs
-  ✓ Any PC with Drive access to same folder can open any artifact
+  ✓ Shared continuity is valid only when both runners use the same effective storage scope
+    (same Supabase target or same Google Drive folder scope)
 
 Local artifacts remain PC-specific:
   ✓ .flowpilot/artifacts/ contains only this PC's local snapshots
@@ -1246,7 +1240,7 @@ Local artifacts remain PC-specific:
   ✓ Not required for viewing already-synced artifacts
 ```
 
-**Edge case - What if artifact_runs update fails?**
+**Edge case - What if shared metadata update fails?**
 
 From **Section 5.3**:
 > "Supabase is the durable shared sync-state store."
@@ -1255,7 +1249,7 @@ From **Section 5.3**:
 PC A syncs artifact:
   1. ✓ Uploads to Drive successfully
   2. ✓ Updates local manifest
-  3. ❌ artifact_runs update fails (network issue)
+  3. ❌ shared metadata update fails (for example `artifact_run_replicas` upsert fails)
   
 Result:
   ✓ Uploaded bytes may exist remotely
@@ -1266,7 +1260,7 @@ Result:
 Recovery:
   → Mark local sync as failed with the Supabase metadata error
   → PC A or server-start reconciliation retries sync later
-  → artifact_runs gets updated
+  → shared metadata is retried and updated
   → PC B can now see the artifact
 ```
 
@@ -1276,7 +1270,7 @@ Supabase metadata persistence is part of sync completion. If it fails, the artif
 
 | Scenario | PC B Can See PC A's Artifacts? |
 |----------|-------------------------------|
-| **Supabase Storage** | ✅ YES (artifact_runs updated automatically) |
+| **Supabase Storage** | ✅ YES (shared metadata updated automatically) |
 | **Google Drive** (PC B not connected) | ❌ NO (PC B has no Drive credentials) |
-| **Google Drive** (PC B connected to same account + folder) | ✅ YES (artifact_runs shows all artifacts, PC B uses own tokens to access) |
-| **Google Drive** (artifact_runs update failed) | ❌ NO (sync is incomplete; retry needed) |
+| **Google Drive** (PC B connected to same account + folder scope) | ✅ YES (shared metadata shows all artifacts, PC B uses its own tokens to access) |
+| **Google Drive** (shared metadata update failed) | ❌ NO (sync is incomplete; retry needed) |

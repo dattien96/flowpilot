@@ -21,6 +21,12 @@ describe("artifact storage connection helpers", () => {
     ).toBe(false);
     expect(
       isArtifactStorageConnectionReady({
+        status: "reconnect_required",
+        folderId: "folder-1",
+      } as never),
+    ).toBe(false);
+    expect(
+      isArtifactStorageConnectionReady({
         status: "connected",
         folderId: "folder-1",
       } as never),

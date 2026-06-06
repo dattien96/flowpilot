@@ -11,9 +11,14 @@ type RouteContext = {
   }>;
 };
 
-export async function POST(_: Request, context: RouteContext) {
+export async function POST(request: Request, context: RouteContext) {
   try {
     const { artifactId } = await context.params;
+    const overridePayload = (await request.json().catch(() => null)) as
+      | {
+          storageProvider?: "supabase" | "google_drive";
+        }
+      | null;
     const gateways = await createGatewayBundle();
     const artifact = await gateways.localRunnerGateway.getArtifactById(artifactId);
 
@@ -40,6 +45,13 @@ export async function POST(_: Request, context: RouteContext) {
         ),
       },
       artifactStorageConnectionGateway: storageGateway,
+    }, {
+      targetProvider:
+        overridePayload?.storageProvider === "google_drive"
+          ? "google_drive"
+          : overridePayload?.storageProvider === "supabase"
+            ? "supabase"
+            : undefined,
     });
 
     if (payload?.syncStatus === "failed") {

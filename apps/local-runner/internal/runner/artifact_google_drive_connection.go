@@ -20,6 +20,7 @@ const (
 	googleDriveArtifactConnectPath         = "/artifact-storage/google-drive/connect"
 	googleDriveArtifactOAuthCallbackPath   = "/artifact-storage/google-drive/oauth/callback"
 	googleDriveArtifactPickerPath          = "/artifact-storage/google-drive/picker"
+	googleDriveArtifactPickerRelayPath     = "/artifact-storage/google-drive/picker-relay"
 	googleDriveArtifactSessionSecretPrefix = "artifact-storage:google-drive:session"
 )
 
@@ -279,7 +280,17 @@ func (r *Runner) SaveGoogleDriveArtifactFolderSelection(request ArtifactStorageG
 	}
 	folderInfo, err := fetchGoogleDriveFileByID(accessToken, folderID)
 	if err != nil {
-		return ArtifactStorageGoogleDriveConnectionStatus{}, err
+		if !shouldFallbackToPickedGoogleDriveFolder(err) {
+			return ArtifactStorageGoogleDriveConnectionStatus{}, err
+		}
+		// Google Picker already constrained the selection to folders. Some
+		// drive.file refresh tokens cannot immediately re-read an existing folder
+		// by ID even though the user just picked it, so we trust the picker payload.
+		folderInfo = googleDriveFile{
+			ID:       folderID,
+			Name:     firstNonEmptyGoogleDriveValue(request.FolderName, folderID),
+			MimeType: googleDriveFolderMimeType,
+		}
 	}
 	if folderInfo.MimeType != googleDriveFolderMimeType {
 		return ArtifactStorageGoogleDriveConnectionStatus{}, errors.New("selected Google Drive item is not a folder")
@@ -380,12 +391,20 @@ func (r *Runner) loadArtifactStorageGoogleDriveState() (artifactStorageGoogleDri
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return artifactStorageGoogleDriveState{
-				Sessions:    map[string]artifactStorageGoogleDriveSessionRecord{},
-				Connections: map[string]artifactStorageGoogleDriveConnectionRecord{},
-			}, nil
+			legacyRaw, legacyErr := os.ReadFile(r.legacyArtifactStorageGoogleDriveStatePath())
+			if legacyErr == nil {
+				raw = legacyRaw
+			} else if !errors.Is(legacyErr, os.ErrNotExist) {
+				return artifactStorageGoogleDriveState{}, legacyErr
+			} else {
+				return artifactStorageGoogleDriveState{
+					Sessions:    map[string]artifactStorageGoogleDriveSessionRecord{},
+					Connections: map[string]artifactStorageGoogleDriveConnectionRecord{},
+				}, nil
+			}
+		} else {
+			return artifactStorageGoogleDriveState{}, err
 		}
-		return artifactStorageGoogleDriveState{}, err
 	}
 
 	var state artifactStorageGoogleDriveState
@@ -419,6 +438,10 @@ func (r *Runner) saveArtifactStorageGoogleDriveState(apply func(*artifactStorage
 }
 
 func (r *Runner) artifactStorageGoogleDriveStatePath() string {
+	return filepath.Join(r.workspace, ".flowpilot", "settings", "artifact-storage-google-drive.json")
+}
+
+func (r *Runner) legacyArtifactStorageGoogleDriveStatePath() string {
 	return filepath.Join(r.workspace, ".flowpilot", "artifact-storage-google-drive.json")
 }
 
@@ -588,6 +611,21 @@ func parseGoogleDriveIDTokenEmail(idToken string) string {
 	return strings.TrimSpace(payload.Email)
 }
 
+func shouldFallbackToPickedGoogleDriveFolder(err error) bool {
+	message := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(message, "google drive file lookup by id failed: 403") ||
+		strings.Contains(message, "google drive file lookup by id failed: 404")
+}
+
+func firstNonEmptyGoogleDriveValue(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
 func RenderGoogleDriveArtifactPickerHTML(sessionID string) string {
 	return fmt.Sprintf(`<!doctype html>
 <html>
@@ -602,6 +640,7 @@ func RenderGoogleDriveArtifactPickerHTML(sessionID string) string {
       .card { max-width: 640px; margin: 32px auto; background: white; border-radius: 16px; padding: 24px; box-shadow: 0 12px 32px rgba(0,0,0,.08); }
       .muted { color: #6b7280; }
       .error { color: #b91c1c; }
+      .debug { display: none; margin-top: 16px; padding: 12px; border-radius: 12px; background: #f3f4f6; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
       button { border: none; border-radius: 999px; padding: 12px 18px; font-weight: 600; cursor: pointer; background: #111827; color: white; }
     </style>
   </head>
@@ -611,17 +650,34 @@ func RenderGoogleDriveArtifactPickerHTML(sessionID string) string {
       <p class="muted">FlowPilot will store synced artifacts below the folder you choose on this runner host.</p>
       <p id="status">Preparing Google Picker…</p>
       <button id="retry" style="display:none">Retry picker</button>
+      <pre id="debug" class="debug"></pre>
     </div>
     <script>
       const sessionId = %q;
+      const pickerOrigin = window.location.protocol + "//" + window.location.host;
+      const pickerRelayUrl = pickerOrigin + %q;
       const statusEl = document.getElementById("status");
       const retryButton = document.getElementById("retry");
+      const debugEl = document.getElementById("debug");
       let pickerReady = false;
       let oauthPayload = null;
 
       function setStatus(message, isError) {
         statusEl.textContent = message;
         statusEl.className = isError ? "error" : "";
+      }
+
+      function setDebug(value) {
+        if (!debugEl) {
+          return;
+        }
+        if (!value) {
+          debugEl.style.display = "none";
+          debugEl.textContent = "";
+          return;
+        }
+        debugEl.style.display = "block";
+        debugEl.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
       }
 
       async function loadPicker() {
@@ -647,41 +703,76 @@ func RenderGoogleDriveArtifactPickerHTML(sessionID string) string {
         }
         retryButton.style.display = "none";
         setStatus("Waiting for folder selection…", false);
-        const view = new google.picker.DocsView(google.picker.ViewId.FOLDERS)
+        const folderMimeType = "application/vnd.google-apps.folder";
+        const view = new google.picker.DocsView()
           .setIncludeFolders(true)
+          .setMimeTypes(folderMimeType)
           .setSelectFolderEnabled(true);
         const picker = new google.picker.PickerBuilder()
           .setDeveloperKey(oauthPayload.apiKey)
           .setOAuthToken(oauthPayload.accessToken)
+          .setOrigin(pickerOrigin)
+          .setRelayUrl(pickerRelayUrl)
           .addView(view)
+          .setSelectableMimeTypes(folderMimeType)
           .setTitle("Select a FlowPilot artifact folder")
           .setCallback(async (data) => {
-            if (data.action === google.picker.Action.PICKED && data.docs && data.docs.length > 0) {
-              const folder = data.docs[0];
+            const action = data[google.picker.Response.ACTION] || data.action;
+            const docs = data[google.picker.Response.DOCUMENTS] || data.docs || [];
+            setDebug({
+              action,
+              docs: docs.map((doc) => ({
+                id: doc[google.picker.Document.ID] || doc.id || "",
+                name: doc[google.picker.Document.NAME] || doc.name || "",
+                mimeType: doc[google.picker.Document.MIME_TYPE] || doc.mimeType || "",
+              })),
+            });
+            if (action === google.picker.Action.PICKED && docs.length > 0) {
+              const folder = docs[0];
+              const folderId = folder[google.picker.Document.ID] || folder.id || "";
+              const folderName = folder[google.picker.Document.NAME] || folder.name || "";
               try {
+                setStatus("Saving the selected folder…", false);
                 const saveResponse = await fetch("/artifact-storage/google-drive/folder-selection", {
                   method: "POST",
                   headers: { "content-type": "application/json" },
                   body: JSON.stringify({
                     sessionId,
-                    folderId: folder.id,
-                    folderName: folder.name || "",
+                    folderId,
+                    folderName,
                   }),
                 });
-                const savePayload = await saveResponse.json();
+                const saveBody = await saveResponse.text();
+                let savePayload = {};
+                try {
+                  savePayload = saveBody ? JSON.parse(saveBody) : {};
+                } catch (parseError) {
+                  savePayload = { raw: saveBody, parseError: parseError instanceof Error ? parseError.message : "Unable to parse response." };
+                }
+                setDebug({
+                  action,
+                  folderId,
+                  folderName,
+                  saveStatus: saveResponse.status,
+                  savePayload,
+                });
                 if (!saveResponse.ok) {
                   throw new Error(savePayload.error || "Unable to save the selected folder.");
                 }
+                picker.setVisible(false);
                 setStatus("Google Drive is connected. You can close this tab.", false);
                 if (window.opener) {
                   window.opener.postMessage({ type: "flowpilot-google-drive-connected", projectId: savePayload.connection?.projectId || "" }, "*");
                 }
+                window.setTimeout(() => window.close(), 350);
               } catch (error) {
                 setStatus(error instanceof Error ? error.message : "Unable to save the selected folder.", true);
               }
-            } else if (data.action === google.picker.Action.CANCEL) {
+            } else if (action === google.picker.Action.CANCEL) {
               setStatus("Folder selection was cancelled. You can retry below.", true);
               retryButton.style.display = "inline-flex";
+            } else {
+              setStatus("Picker returned " + String(action || "an unknown action") + ".", true);
             }
           })
           .build();
@@ -699,5 +790,16 @@ func RenderGoogleDriveArtifactPickerHTML(sessionID string) string {
       void loadPicker();
     </script>
   </body>
-</html>`, sessionID)
+</html>`, sessionID, googleDriveArtifactPickerRelayPath)
+}
+
+func RenderGoogleDriveArtifactPickerRelayHTML() string {
+	return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>FlowPilot Google Drive Picker Relay</title>
+  </head>
+  <body></body>
+</html>`
 }

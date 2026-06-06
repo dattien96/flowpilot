@@ -838,6 +838,31 @@ type WorkflowSessionSendResult = LocalRunnerPromptExecutionResult & {
   sessionDbId?: string;
 };
 
+type RuntimeLocalRunnerGateway = Pick<
+  LocalRunnerGateway,
+  | "executePrompt"
+  | "listMcpBackends"
+  | "startSession"
+  | "sendMessage"
+  | "closeSession"
+> &
+  Partial<Pick<LocalRunnerGateway, "getHealth">>;
+
+export async function resolveArtifactWorkspaceRoot(
+  localRunnerGateway: Partial<Pick<LocalRunnerGateway, "getHealth">>,
+) {
+  if (typeof localRunnerGateway.getHealth !== "function") {
+    return process.cwd();
+  }
+
+  try {
+    const health = await localRunnerGateway.getHealth();
+    return health.cwd?.trim() || process.cwd();
+  } catch {
+    return process.cwd();
+  }
+}
+
 export async function sendMessageWithRetry({
   adminClient,
   localRunnerGateway,
@@ -1095,10 +1120,43 @@ function resolveArtifactPath(
     .replaceAll("{defaultFileName}", context.defaultFileName);
 }
 
-function normalizeAbsolutePath(workingDirectory: string, localPath: string) {
-  return path.isAbsolute(localPath)
-    ? localPath
-    : path.join(workingDirectory, localPath);
+function isFlowpilotArtifactPath(localPath: string) {
+  const normalizedPath = path.posix.normalize(
+    localPath.trim().replaceAll("\\", "/"),
+  );
+  return normalizedPath === ".flowpilot" || normalizedPath.startsWith(".flowpilot/");
+}
+
+function normalizeAbsolutePath(
+  workingDirectory: string,
+  localPath: string,
+  artifactWorkspaceRoot = process.cwd(),
+) {
+  if (path.isAbsolute(localPath)) {
+    return localPath;
+  }
+
+  const rootDirectory = isFlowpilotArtifactPath(localPath)
+    ? artifactWorkspaceRoot
+    : workingDirectory;
+
+  return path.join(rootDirectory, path.normalize(localPath));
+}
+
+function buildArtifactSnapshotRoot(
+  projectId: string,
+  workflowRunId: string,
+  stepType: string,
+  artifactWorkspaceRoot = process.cwd(),
+) {
+  return path.join(
+    artifactWorkspaceRoot,
+    ".flowpilot",
+    "artifacts",
+    projectId,
+    workflowRunId,
+    stepType,
+  );
 }
 
 type LocalWorkflowOutputArtifactSnapshot = {
@@ -1118,9 +1176,9 @@ export async function createLocalWorkflowOutputArtifactSnapshot({
   stderrText,
   stdoutText,
   workflowRunId,
-  workingDirectory,
   commandText,
   providerKey,
+  artifactWorkspaceRoot = process.cwd(),
   title = "Response.md",
 }: {
   outputMarkdown: string;
@@ -1131,19 +1189,19 @@ export async function createLocalWorkflowOutputArtifactSnapshot({
   stderrText: string;
   stdoutText: string;
   workflowRunId: string;
-  workingDirectory: string;
   commandText: string;
   providerKey: string;
+  artifactWorkspaceRoot?: string;
   title?: string;
 }): Promise<LocalWorkflowOutputArtifactSnapshot> {
   const artifactId = randomUUID();
   const snapshotDirectory = path.join(
-    workingDirectory,
-    ".flowpilot",
-    "artifacts",
-    projectId,
-    workflowRunId,
-    stepType,
+    buildArtifactSnapshotRoot(
+      projectId,
+      workflowRunId,
+      stepType,
+      artifactWorkspaceRoot,
+    ),
     ".snapshots",
     artifactId,
   );
@@ -2061,6 +2119,7 @@ export async function createArtifactOutputs({
   workingDirectory,
   commandText,
   providerKey,
+  artifactWorkspaceRoot = process.cwd(),
 }: {
   adminClient: SupabaseClient;
   artifactDefinitions: Map<string, ArtifactDefinitionRow>;
@@ -2078,6 +2137,7 @@ export async function createArtifactOutputs({
   workingDirectory: string;
   commandText: string;
   providerKey: string;
+  artifactWorkspaceRoot?: string;
 }) {
   const checkpointArtifactOutputPaths: string[] = [];
   let checkpointPromptPath = "";
@@ -2093,12 +2153,12 @@ export async function createArtifactOutputs({
       stderrText,
       stdoutText,
       workflowRunId,
-      workingDirectory,
       commandText,
       providerKey,
+      artifactWorkspaceRoot,
     });
     const now = new Date().toISOString();
-    const localPath = path.relative(workingDirectory, snapshot.contentPath);
+    const localPath = path.relative(artifactWorkspaceRoot, snapshot.contentPath);
     const { data, error } = await adminClient
       .from("artifact_runs")
       .insert([
@@ -2162,6 +2222,7 @@ export async function createArtifactOutputs({
     const absoluteOutputPath = normalizeAbsolutePath(
       workingDirectory,
       localPath,
+      artifactWorkspaceRoot,
     );
     checkpointArtifactOutputPaths.push(absoluteOutputPath);
     const artifactDirectory = path.dirname(absoluteOutputPath);
@@ -2285,14 +2346,7 @@ export async function submitWorkflowStepFollowUpRuntime({
   comment,
 }: {
   adminClient: SupabaseClient;
-  localRunnerGateway: Pick<
-    LocalRunnerGateway,
-    | "executePrompt"
-    | "listMcpBackends"
-    | "startSession"
-    | "sendMessage"
-    | "closeSession"
-  >;
+  localRunnerGateway: RuntimeLocalRunnerGateway;
   stepId: string;
   comment: string;
 }) {
@@ -2384,6 +2438,8 @@ export async function submitWorkflowStepFollowUpRuntime({
     adminClient,
     run.project_id,
   );
+  const artifactWorkspaceRoot =
+    await resolveArtifactWorkspaceRoot(localRunnerGateway);
   const installedBackends = await localRunnerGateway.listMcpBackends();
   const usableMcpKeys = new Set(
     installedBackends
@@ -2430,6 +2486,7 @@ export async function submitWorkflowStepFollowUpRuntime({
     normalizeAbsolutePath(
       workingDirectory,
       artifactsByKey.get(artifactKey)!.local_path,
+      artifactWorkspaceRoot,
     ),
   );
   const outputArtifactPaths = outputArtifactKeys.map((artifactKey) => {
@@ -2449,6 +2506,7 @@ export async function submitWorkflowStepFollowUpRuntime({
         artifactKey,
         defaultFileName: definitionRow.default_file_name || definitionRow.name,
       }),
+      artifactWorkspaceRoot,
     );
   });
 
@@ -2568,6 +2626,7 @@ export async function submitWorkflowStepFollowUpRuntime({
       workingDirectory,
       commandText: result.command,
       providerKey: execution.providerKey,
+      artifactWorkspaceRoot,
     });
     const artifactRunId = artifactOutputResult.artifactRunId;
     if (artifactOutputResult.artifactRunId) {
@@ -2678,14 +2737,7 @@ export async function runWorkflowStartRuntime({
   user,
 }: {
   adminClient: SupabaseClient;
-  localRunnerGateway: Pick<
-    LocalRunnerGateway,
-    | "executePrompt"
-    | "listMcpBackends"
-    | "startSession"
-    | "sendMessage"
-    | "closeSession"
-  >;
+  localRunnerGateway: RuntimeLocalRunnerGateway;
   request: WorkflowRunStartRequest;
   user: { id: string; email: string | null };
 }) {
@@ -2745,6 +2797,8 @@ export async function runWorkflowStartRuntime({
     adminClient,
     request.projectId,
   );
+  const artifactWorkspaceRoot =
+    await resolveArtifactWorkspaceRoot(localRunnerGateway);
   const installedBackends = await localRunnerGateway.listMcpBackends();
   const usableMcpKeys = new Set(
     installedBackends
@@ -2962,6 +3016,7 @@ export async function runWorkflowStartRuntime({
             normalizeAbsolutePath(
               workingDirectory,
               artifactsByKey.get(artifactKey)!.local_path,
+              artifactWorkspaceRoot,
             ),
         );
         const outputArtifactPaths = stepPlan.outputArtifactKeys.map(
@@ -2984,6 +3039,7 @@ export async function runWorkflowStartRuntime({
                 defaultFileName:
                   definition.default_file_name || definition.name,
               }),
+              artifactWorkspaceRoot,
             );
           },
         );
@@ -3089,6 +3145,7 @@ export async function runWorkflowStartRuntime({
           workingDirectory,
           commandText: result.command,
           providerKey: stepPlan.providerKey,
+          artifactWorkspaceRoot,
         });
         const artifactRunId = artifactOutputResult.artifactRunId;
         if (artifactOutputResult.artifactRunId) {

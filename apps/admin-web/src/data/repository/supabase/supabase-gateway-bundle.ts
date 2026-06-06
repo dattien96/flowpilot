@@ -43,14 +43,6 @@ import type { StartWorkflowRunPayload } from "@/domain/model/payload/workflow-pa
 import type { ListOutputsFilters } from "@/domain/model/payload/workflow-payload";
 
 type SupabaseRow = Record<string, unknown>;
-type ArtifactRunStorageRow = {
-  id: string;
-  remote_path: string | null;
-  storage_provider: string | null;
-};
-
-const ARTIFACT_BUCKET_NAME = "flowpilot-artifacts";
-
 function createId(prefix: string) {
   return `${prefix}_${crypto.randomUUID().replaceAll("-", "").slice(0, 18)}`;
 }
@@ -97,56 +89,6 @@ function assertNoError(error: { message: string } | null, fallback: string) {
   if (error) {
     throw new Error(error.message || fallback);
   }
-}
-
-function buildArtifactSnapshotPrefix(remotePath: string, artifactId: string) {
-  const normalizedPath = remotePath.replaceAll("\\", "/").trim().replace(/^\/+|\/+$/g, "");
-  const trimmedArtifactId = artifactId.trim();
-  if (!normalizedPath || !trimmedArtifactId) {
-    return "";
-  }
-
-  const lastSlash = normalizedPath.lastIndexOf("/");
-  if (lastSlash < 0) {
-    return "";
-  }
-
-  return `${normalizedPath.slice(0, lastSlash)}/.snapshots/${trimmedArtifactId}`;
-}
-
-async function listBucketPathsRecursively(
-  bucket: ReturnType<SupabaseClient["storage"]["from"]>,
-  prefix: string,
-): Promise<string[]> {
-  const normalizedPrefix = prefix.replaceAll("\\", "/").trim().replace(/^\/+|\/+$/g, "");
-  if (!normalizedPrefix) {
-    return [];
-  }
-
-  const { data, error } = await bucket.list(normalizedPrefix, {
-    limit: 1000,
-    offset: 0,
-    sortBy: { column: "name", order: "asc" },
-  });
-  assertNoError(error, "Unable to list artifact storage objects.");
-
-  const paths: string[] = [];
-  for (const entry of data ?? []) {
-    const name = String(entry.name ?? "").trim();
-    if (!name) {
-      continue;
-    }
-
-    const childPath = `${normalizedPrefix}/${name}`;
-    if (entry.id) {
-      paths.push(childPath);
-      continue;
-    }
-
-    paths.push(...(await listBucketPathsRecursively(bucket, childPath)));
-  }
-
-  return paths;
 }
 
 function mapProject(row: SupabaseRow): Project {
@@ -1102,46 +1044,6 @@ class SupabaseGatewayBundle
     const ids = [...new Set(runIds)].filter((runId) => runId.trim().length > 0);
     if (ids.length === 0) {
       return;
-    }
-
-    const { data: artifactRuns, error: artifactRunsError } = await this.supabase
-      .from("artifact_runs")
-      .select("id, remote_path, storage_provider")
-      .in("workflow_run_id", ids);
-    assertNoError(artifactRunsError, "Unable to load workflow run artifacts.");
-
-    const supabaseArtifacts = ((artifactRuns ?? []) as ArtifactRunStorageRow[]).filter(
-      (artifact) =>
-        artifact.storage_provider?.trim() === "supabase" &&
-        artifact.remote_path?.trim(),
-    );
-    if (supabaseArtifacts.length > 0) {
-      const bucket = this.supabase.storage.from(ARTIFACT_BUCKET_NAME);
-      const pathsToRemove = new Set<string>();
-
-      for (const artifact of supabaseArtifacts) {
-        const remotePath = artifact.remote_path?.trim() ?? "";
-        if (!remotePath) {
-          continue;
-        }
-
-        pathsToRemove.add(remotePath);
-
-        const snapshotPrefix = buildArtifactSnapshotPrefix(remotePath, artifact.id);
-        if (!snapshotPrefix) {
-          continue;
-        }
-
-        for (const snapshotPath of await listBucketPathsRecursively(bucket, snapshotPrefix)) {
-          pathsToRemove.add(snapshotPath);
-        }
-      }
-
-      const paths = Array.from(pathsToRemove);
-      if (paths.length > 0) {
-        const { error: removeError } = await bucket.remove(paths);
-        assertNoError(removeError, "Unable to delete remote artifact storage.");
-      }
     }
 
     const { error } = await this.supabase.from("workflow_runs").delete().in("id", ids);

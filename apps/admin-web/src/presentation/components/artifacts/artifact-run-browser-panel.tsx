@@ -10,6 +10,10 @@ import { loadWorkflowRunArtifactPromptFiles } from "@/lib/workflow-run-artifact-
 import { Badge } from "@/presentation/components/ui/badge";
 import { Button } from "@/presentation/components/ui/button";
 import type { ReactNode } from "react";
+import {
+  groupArtifactsForDisplay,
+  type GroupedWorkflowStep,
+} from "./artifact-run-browser-grouping";
 
 interface ArtifactRunBrowserPanelProps {
   localArtifacts?: LocalRunnerArtifact[];
@@ -24,6 +28,7 @@ interface ArtifactRunBrowserPanelProps {
 type ArtifactBrowserItem = {
   id: string;
   kind: "local" | "remote";
+  storageType: "local_only" | "supabase" | "google_drive";
   title: string;
   contentMarkdown: string;
   promptText: string;
@@ -69,9 +74,23 @@ export function ArtifactRunBrowserPanel({
   >(() => new Map());
 
   const projectById = useMemo(() => new Map(projects.map((project) => [project.id, project])), [projects]);
+  const activeProviderByProjectId = useMemo(
+    () =>
+      new Map<string, "supabase" | "google_drive">(
+        projects.map((project) => [
+          project.id,
+          project.artifactStoragePreference === "google_drive" ? "google_drive" : "supabase",
+        ]),
+      ),
+    [projects],
+  );
   const localArtifactById = useMemo(
     () => new Map(localArtifacts.map((artifact) => [artifact.artifactId, artifact])),
     [localArtifacts],
+  );
+  const artifactRunById = useMemo(
+    () => new Map(artifactRuns.map((artifact) => [artifact.id, artifact])),
+    [artifactRuns],
   );
   const localArtifactByRemotePath = useMemo(
     () =>
@@ -86,38 +105,50 @@ export function ArtifactRunBrowserPanel({
   const remoteArtifacts = useMemo<ArtifactBrowserItem[]>(
     () =>
       artifactRuns
-        .filter(shouldRenderArtifactRunAsRemote)
         .map((artifact) => {
+          const activeReplica = resolveActiveReplica(artifact, activeProviderByProjectId);
+          if (!activeReplica) {
+            return null;
+          }
+
+          return { artifact, activeReplica };
+        })
+        .filter((entry): entry is { artifact: ArtifactRun; activeReplica: NonNullable<ReturnType<typeof resolveActiveReplica>> } => entry !== null)
+        .map((artifact) => {
+          const activeReplica = artifact.activeReplica;
+          const artifactRun = artifact.artifact;
           const matchedLocalArtifact =
-            localArtifactById.get(artifact.id) ?? localArtifactByRemotePath.get(artifact.remotePath.trim());
-          const promptOverride = remotePromptOverrides.get(artifact.id);
+            localArtifactById.get(artifactRun.id) ?? localArtifactByRemotePath.get(activeReplica.remotePath.trim());
+          const promptOverride = remotePromptOverrides.get(artifactRun.id);
           const fallbackTitle = deriveArtifactDisplayTitle(
             matchedLocalArtifact?.contentMarkdown ?? "",
-            artifact.title,
+            artifactRun.title,
           );
           return {
-            id: artifact.id,
+            id: artifactRun.id,
             kind: "remote" as const,
-            title: remoteTitleOverrides.get(artifact.id) ?? fallbackTitle,
+            storageType: activeReplica.provider,
+            title: remoteTitleOverrides.get(artifactRun.id) ?? fallbackTitle,
             contentMarkdown: matchedLocalArtifact?.contentMarkdown ?? "",
             promptText: matchedLocalArtifact?.promptText ?? promptOverride?.promptText ?? "",
             actualPromptText:
               matchedLocalArtifact?.actualPromptText ?? promptOverride?.actualPromptText ?? "",
-            projectId: artifact.projectId,
-            projectName: artifact.projectId ? projectById.get(artifact.projectId)?.name ?? null : null,
-            workflowRunId: artifact.workflowRunId,
-            workflowRunStepId: artifact.workflowRunStepId,
-            artifactDefinitionKey: formatArtifactDefinitionKey(artifact.artifactDefinitionKey),
-            localPath: artifact.localPath,
-            remotePath: artifact.remotePath,
-            remoteObjectId: artifact.remoteObjectId,
-            storageProvider: artifact.storageProvider,
-            syncStatus: artifact.syncStatus,
-            createdAt: artifact.createdAt,
-            updatedAt: artifact.updatedAt,
+            projectId: artifactRun.projectId,
+            projectName: artifactRun.projectId ? projectById.get(artifactRun.projectId)?.name ?? null : null,
+            workflowRunId: artifactRun.workflowRunId,
+            workflowRunStepId: artifactRun.workflowRunStepId,
+            artifactDefinitionKey: formatArtifactDefinitionKey(artifactRun.artifactDefinitionKey),
+            localPath: artifactRun.localPath,
+            remotePath: activeReplica.remotePath,
+            remoteObjectId: activeReplica.remoteObjectId,
+            storageProvider: activeReplica.provider,
+            syncStatus: activeReplica.syncStatus,
+            createdAt: artifactRun.createdAt,
+            updatedAt: artifactRun.updatedAt,
           };
         }),
     [
+      activeProviderByProjectId,
       artifactRuns,
       localArtifactById,
       localArtifactByRemotePath,
@@ -139,11 +170,12 @@ export function ArtifactRunBrowserPanel({
   const syntheticRemoteArtifacts = useMemo<ArtifactBrowserItem[]>(
     () =>
       localArtifacts
-        .filter((artifact) => shouldRenderLocalArtifactAsRemote(artifact))
+        .filter((artifact) => shouldRenderLocalArtifactAsRemote(artifact, activeProviderByProjectId))
         .filter((artifact) => !remoteArtifactKeys.has(localArtifactRemoteKey(artifact)))
         .map((artifact) => ({
           id: artifact.artifactId,
           kind: "remote" as const,
+          storageType: resolveLocalArtifactStorageType(artifact, activeProviderByProjectId),
           title: deriveArtifactDisplayTitle(artifact.contentMarkdown, artifact.title),
           contentMarkdown: artifact.contentMarkdown,
           promptText: artifact.promptText ?? "",
@@ -166,7 +198,7 @@ export function ArtifactRunBrowserPanel({
           createdAt: artifact.createdAt,
           updatedAt: artifact.updatedAt,
         })),
-    [localArtifacts, projectById, remoteArtifactKeys],
+    [activeProviderByProjectId, localArtifacts, projectById, remoteArtifactKeys],
   );
 
   const allRemoteArtifacts = useMemo(
@@ -178,10 +210,11 @@ export function ArtifactRunBrowserPanel({
     () =>
       localArtifacts
         .filter((artifact) => !hasRemoteArtifactCounterpart(artifact, remoteArtifactIds, remoteArtifactKeys))
-        .filter((artifact) => !shouldRenderLocalArtifactAsRemote(artifact))
+        .filter((artifact) => !shouldRenderLocalArtifactAsRemote(artifact, activeProviderByProjectId))
         .map((artifact) => ({
           id: artifact.artifactId,
           kind: "local",
+          storageType: "local_only",
           title: deriveArtifactDisplayTitle(artifact.contentMarkdown, artifact.title),
           contentMarkdown: artifact.contentMarkdown,
           promptText: artifact.promptText ?? "",
@@ -199,7 +232,7 @@ export function ArtifactRunBrowserPanel({
           createdAt: artifact.createdAt,
           updatedAt: artifact.updatedAt,
         })),
-    [localArtifacts, projectById, remoteArtifactIds, remoteArtifactKeys],
+    [activeProviderByProjectId, localArtifacts, projectById, remoteArtifactIds, remoteArtifactKeys],
   );
 
   const projectOptions = useMemo(
@@ -264,22 +297,26 @@ export function ArtifactRunBrowserPanel({
 
   useEffect(() => {
     if (!loadRemoteArtifactContent) {
-      setRemoteTitleOverrides(new Map());
+      setRemoteTitleOverrides((current) =>
+        current.size === 0 ? current : new Map(),
+      );
       return;
     }
 
-    const candidates = artifactRuns
-      .filter(shouldRenderArtifactRunAsRemote)
+    const candidates = remoteArtifacts
       .filter((artifact) => {
-        const matchedLocalArtifact =
-          localArtifactById.get(artifact.id) ?? localArtifactByRemotePath.get(artifact.remotePath.trim());
+        const artifactRun = artifactRunById.get(artifact.id);
+        const sourceTitle = artifactRun?.title ?? artifact.title;
+        const matchedLocalArtifact = localArtifactById.get(artifact.id) ?? localArtifactByRemotePath.get(artifact.remotePath.trim());
         const hasLocalContent =
           (matchedLocalArtifact?.contentMarkdown ?? "").replace(/\s+/g, " ").trim() !== "";
-        return !hasLocalContent && isGenericArtifactTitle(artifact.title);
+        return !hasLocalContent && isGenericArtifactTitle(sourceTitle);
       });
 
     if (candidates.length === 0) {
-      setRemoteTitleOverrides(new Map());
+      setRemoteTitleOverrides((current) =>
+        current.size === 0 ? current : new Map(),
+      );
       return;
     }
 
@@ -287,7 +324,17 @@ export function ArtifactRunBrowserPanel({
 
     void Promise.all(
       candidates.map(async (artifact) => {
-        const content = await loadRemoteArtifactContent(artifact);
+        const artifactRun = artifactRunById.get(artifact.id);
+        if (!artifactRun) {
+          return null;
+        }
+
+        const content = await loadRemoteArtifactContent({
+          ...artifactRun,
+          remoteObjectId: artifact.remoteObjectId,
+          remotePath: artifact.remotePath,
+          storageProvider: artifact.storageProvider,
+        });
         const summary = content ? summarizeArtifactContent(content) : null;
         return summary ? ([artifact.id, summary] as const) : null;
       }),
@@ -303,25 +350,25 @@ export function ArtifactRunBrowserPanel({
         }
         next.set(entry[0], entry[1]);
       }
-      setRemoteTitleOverrides(next);
+      setRemoteTitleOverrides((current) => (stringMapsEqual(current, next) ? current : next));
     });
 
     return () => {
       cancelled = true;
     };
-  }, [artifactRuns, loadRemoteArtifactContent, localArtifactById, localArtifactByRemotePath]);
+  }, [artifactRunById, localArtifactById, localArtifactByRemotePath, loadRemoteArtifactContent, remoteArtifacts]);
 
   useEffect(() => {
     if (subTab !== "remote") {
-      setRemotePromptOverrides(new Map());
+      setRemotePromptOverrides((current) =>
+        current.size === 0 ? current : new Map(),
+      );
       return;
     }
 
-    const candidates = artifactRuns
-      .filter(shouldRenderArtifactRunAsRemote)
+    const candidates = remoteArtifacts
       .filter((artifact) => {
-        const matchedLocalArtifact =
-          localArtifactById.get(artifact.id) ?? localArtifactByRemotePath.get(artifact.remotePath.trim());
+        const matchedLocalArtifact = localArtifactById.get(artifact.id) ?? localArtifactByRemotePath.get(artifact.remotePath.trim());
         const hasLocalPrompt =
           (matchedLocalArtifact?.actualPromptText ?? "").trim() !== "" ||
           (matchedLocalArtifact?.promptText ?? "").trim() !== "";
@@ -329,7 +376,9 @@ export function ArtifactRunBrowserPanel({
       });
 
     if (candidates.length === 0) {
-      setRemotePromptOverrides(new Map());
+      setRemotePromptOverrides((current) =>
+        current.size === 0 ? current : new Map(),
+      );
       return;
     }
 
@@ -366,13 +415,15 @@ export function ArtifactRunBrowserPanel({
 
         next.set(entry[0], entry[1]);
       }
-      setRemotePromptOverrides(next);
+      setRemotePromptOverrides((current) =>
+        promptOverrideMapsEqual(current, next) ? current : next,
+      );
     });
 
     return () => {
       cancelled = true;
     };
-  }, [artifactRuns, localArtifactById, localArtifactByRemotePath, subTab]);
+  }, [localArtifactById, localArtifactByRemotePath, remoteArtifacts, subTab]);
 
   async function syncArtifactById(artifactId: string) {
     try {
@@ -457,8 +508,8 @@ export function ArtifactRunBrowserPanel({
           </p>
           <h2 className="mt-3 text-2xl font-semibold tracking-tight">Artifacts</h2>
           <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
-            Local artifacts are shown separately from remote Supabase-backed state so you can sync
-            unsynced work without losing visibility into what is already shared.
+            Local artifacts stay visible independently, while remote artifacts are grouped by active
+            storage type and scoped to the provider currently selected for each project.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
@@ -525,7 +576,7 @@ export function ArtifactRunBrowserPanel({
           }`}
           onClick={() => setSubTab("local")}
         >
-          local/NotSyned ({filteredLocalArtifacts.length})
+          Local / Not Synced ({filteredLocalArtifacts.length})
         </button>
         <button
           type="button"
@@ -536,14 +587,14 @@ export function ArtifactRunBrowserPanel({
           }`}
           onClick={() => setSubTab("remote")}
         >
-          Remote/Sync ({filteredRemoteArtifacts.length})
+          Remote / Sync ({filteredRemoteArtifacts.length})
         </button>
       </div>
 
       {subTab === "local" ? (
         <ArtifactSection
           count={filteredLocalArtifacts.length}
-          description="Valid local artifacts discovered on this runner. These are not yet represented in remote sync state."
+          description="Valid local artifacts discovered on this runner that still need active-provider replication."
           emptyMessage="No valid local-only artifacts match the current filters."
           title="Local"
         >
@@ -552,7 +603,7 @@ export function ArtifactRunBrowserPanel({
       ) : (
         <ArtifactSection
           count={filteredRemoteArtifacts.length}
-          description="Artifacts that already have durable Supabase sync metadata."
+          description="Artifacts that already have durable remote replicas for the active provider on each project."
           emptyMessage="No remote or synced artifacts match the current filters."
           title="Remote / Synced"
         >
@@ -563,21 +614,54 @@ export function ArtifactRunBrowserPanel({
   );
 
   function renderGroupedArtifacts(items: ArtifactBrowserItem[]) {
-    const grouped = groupArtifacts(items);
+    const grouped = groupArtifactsForDisplay(items);
     const showProjectLevel = showProjectFilter || grouped.length > 1;
 
     return (
       <div className="flex flex-col gap-6">
         {grouped.map((projectGroup) => {
+          const artifactCount = projectGroup.storageTypes.reduce(
+            (sum, storageTypeGroup) =>
+              sum +
+              storageTypeGroup.workflowRuns.reduce(
+                (runSum, runGroup) =>
+                  runSum +
+                  runGroup.workflowSteps.reduce(
+                    (stepSum, workflowStep) => stepSum + workflowStep.artifacts.length,
+                    0,
+                  ),
+                0,
+              ),
+            0,
+          );
           const projectContent = (
             <div className="flex flex-col gap-4" key={projectGroup.projectId}>
-              {projectGroup.workflowRuns.map((runGroup) => (
-                <WorkflowRunGroup
-                  key={runGroup.workflowRunId}
-                  runId={runGroup.workflowRunId}
-                  projectName={runGroup.projectName}
-                  artifacts={runGroup.artifacts}
-                />
+              {projectGroup.storageTypes.map((storageTypeGroup) => (
+                <div className="space-y-4" key={`${projectGroup.projectId}-${storageTypeGroup.storageType}`}>
+                  <div className="flex items-center gap-2 border-b border-border/30 pb-2">
+                    <h5 className="text-xs font-semibold uppercase tracking-[0.24em] text-muted-foreground">
+                      {formatStorageTypeLabel(storageTypeGroup.storageType)}
+                    </h5>
+                    <Badge tone="neutral">
+                      {storageTypeGroup.workflowRuns.reduce(
+                        (acc, runGroup) =>
+                          acc +
+                          runGroup.workflowSteps.reduce(
+                            (stepAcc, workflowStep) => stepAcc + workflowStep.artifacts.length,
+                            0,
+                          ),
+                        0,
+                      )}
+                    </Badge>
+                  </div>
+                  {storageTypeGroup.workflowRuns.map((runGroup) => (
+                    <WorkflowRunGroup
+                      key={`${storageTypeGroup.storageType}-${runGroup.workflowRunId}`}
+                      runId={runGroup.workflowRunId}
+                      workflowSteps={runGroup.workflowSteps}
+                    />
+                  ))}
+                </div>
               ))}
             </div>
           );
@@ -589,9 +673,7 @@ export function ArtifactRunBrowserPanel({
                   <h4 className="text-sm font-semibold uppercase tracking-wider text-primary">
                     {projectGroup.projectName}
                   </h4>
-                  <Badge tone="neutral">
-                    {projectGroup.workflowRuns.reduce((acc, r) => acc + r.artifacts.length, 0)}
-                  </Badge>
+                  <Badge tone="neutral">{artifactCount}</Badge>
                 </div>
                 {projectContent}
               </div>
@@ -605,90 +687,24 @@ export function ArtifactRunBrowserPanel({
   }
 }
 
-interface GroupedWorkflowRun {
-  workflowRunId: string;
-  projectName: string | null;
-  artifacts: ArtifactBrowserItem[];
-}
-
-interface GroupedProject {
-  projectId: string;
-  projectName: string;
-  workflowRuns: GroupedWorkflowRun[];
-}
-
-function groupArtifacts(artifacts: ArtifactBrowserItem[]): GroupedProject[] {
-  const projectMap = new Map<string, Map<string, ArtifactBrowserItem[]>>();
-  const projectNameMap = new Map<string, string>();
-
-  for (const artifact of artifacts) {
-    const pId = artifact.projectId || "unknown";
-    const pName = artifact.projectName || "Unknown Project";
-    projectNameMap.set(pId, pName);
-
-    if (!projectMap.has(pId)) {
-      projectMap.set(pId, new Map());
-    }
-
-    const runsMap = projectMap.get(pId)!;
-    const runId = artifact.workflowRunId || "unknown";
-
-    if (!runsMap.has(runId)) {
-      runsMap.set(runId, []);
-    }
-    runsMap.get(runId)!.push(artifact);
-  }
-
-  const result: GroupedProject[] = [];
-  projectMap.forEach((runsMap, pId) => {
-    const pName = projectNameMap.get(pId) || "Unknown Project";
-    const workflowRuns: GroupedWorkflowRun[] = [];
-
-    runsMap.forEach((runArtifacts, runId) => {
-      const sortedArtifacts = [...runArtifacts].sort(
-        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-      );
-      workflowRuns.push({
-        workflowRunId: runId,
-        projectName: pName,
-        artifacts: sortedArtifacts,
-      });
-    });
-
-    workflowRuns.sort((a, b) => {
-      const aLatest = a.artifacts[0]?.createdAt ? new Date(a.artifacts[0].createdAt).getTime() : 0;
-      const bLatest = b.artifacts[0]?.createdAt ? new Date(b.artifacts[0].createdAt).getTime() : 0;
-      return bLatest - aLatest;
-    });
-
-    result.push({
-      projectId: pId,
-      projectName: pName,
-      workflowRuns,
-    });
-  });
-
-  return result.sort((a, b) => a.projectName.localeCompare(b.projectName));
-}
-
 function WorkflowRunGroup({
   runId,
-  projectName,
-  artifacts,
+  workflowSteps,
 }: {
   runId: string;
-  projectName: string | null;
-  artifacts: ArtifactBrowserItem[];
+  workflowSteps: GroupedWorkflowStep[];
 }) {
   const [copied, setCopied] = useState(false);
 
   const status = useMemo(() => {
-    const statuses = artifacts.map((a) => a.syncStatus);
+    const statuses = workflowSteps.flatMap((workflowStep) =>
+      workflowStep.artifacts.map((artifact) => artifact.syncStatus),
+    );
     if (statuses.includes("syncing")) return "syncing";
     if (statuses.includes("failed")) return "failed";
     if (statuses.every((s) => s === "synced")) return "synced";
     return "local_only";
-  }, [artifacts]);
+  }, [workflowSteps]);
 
   const handleCopy = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -773,7 +789,10 @@ function WorkflowRunGroup({
         <div className="flex shrink-0 items-center gap-2">
           <Badge tone={artifactStatusTone(status)}>{status}</Badge>
           <Badge tone="neutral">
-            {artifacts.length} {artifacts.length === 1 ? "artifact" : "artifacts"}
+            {workflowSteps.reduce((count, workflowStep) => count + workflowStep.artifacts.length, 0)}{" "}
+            {workflowSteps.reduce((count, workflowStep) => count + workflowStep.artifacts.length, 0) === 1
+              ? "artifact"
+              : "artifacts"}
           </Badge>
           <a
             href={`/workflow-runs/${runId}`}
@@ -804,11 +823,22 @@ function WorkflowRunGroup({
       </summary>
 
       <div className="border-t border-border/40 bg-card/25 p-5 space-y-4">
-        <div className="flex flex-col gap-4">
-          {artifacts.map((artifact) => (
-            <ArtifactCard artifact={artifact} key={artifact.id} isChild />
-          ))}
-        </div>
+        {workflowSteps.map((workflowStep) => (
+          <div className="space-y-3" key={`${runId}-${workflowStep.workflowStepId}`}>
+            <div className="flex items-center gap-2 border-b border-border/30 pb-2">
+              <h6 className="text-xs font-semibold uppercase tracking-[0.24em] text-muted-foreground">
+                Step ID
+              </h6>
+              <Badge tone="neutral">{workflowStep.workflowStepId}</Badge>
+              <Badge tone="neutral">{workflowStep.artifacts.length}</Badge>
+            </div>
+            <div className="flex flex-col gap-4">
+              {workflowStep.artifacts.map((artifact) => (
+                <ArtifactCard artifact={artifact} key={artifact.id} isChild />
+              ))}
+            </div>
+          </div>
+        ))}
       </div>
     </details>
   );
@@ -880,6 +910,7 @@ function ArtifactCard({
                 className="inline-flex items-center gap-1 rounded-full border border-border px-2.5 py-1 text-xs font-medium hover:bg-muted transition-colors"
                 href={file.href}
                 key={file.label}
+                onClick={(event) => event.stopPropagation()}
                 rel="noreferrer"
                 target="_blank"
               >
@@ -896,7 +927,7 @@ function ArtifactCard({
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <Badge tone={artifactStatusTone(artifact.syncStatus)}>{artifact.syncStatus}</Badge>
-          <Badge tone="neutral">{artifact.storageProvider ?? (artifact.kind === "local" ? "local" : "unknown")}</Badge>
+          <Badge tone="neutral">{formatStorageTypeLabel(artifact.storageType)}</Badge>
           <span className="ml-2 shrink-0 rounded border border-border bg-muted/30 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/80 transition-all duration-300 group-hover:bg-primary group-hover:text-primary-foreground group-[[open]]:bg-primary group-[[open]]:text-primary-foreground">
             Details
           </span>
@@ -961,6 +992,7 @@ function ArtifactCard({
                 className="inline-flex items-center gap-2 rounded-full border border-border px-4 py-2 text-sm font-semibold hover:bg-muted transition-colors cursor-pointer"
                 href={file.href}
                 key={file.href}
+                onClick={(event) => event.stopPropagation()}
                 rel="noreferrer"
                 target="_blank"
               >
@@ -989,7 +1021,9 @@ function buildArtifactFiles(artifact: ArtifactBrowserItem) {
   const canOpenActualPrompt =
     artifact.actualPromptText.trim() !== "" ||
     artifact.promptText.trim() !== "" ||
-    (artifact.kind === "remote" && hasLocalSnapshotIdentity);
+    (artifact.kind === "remote" &&
+      hasLocalSnapshotIdentity &&
+      artifact.storageProvider === "supabase");
   if (canOpenActualPrompt) {
     files.push({
       key: "actual-prompt",
@@ -999,7 +1033,10 @@ function buildArtifactFiles(artifact: ArtifactBrowserItem) {
   }
 
   const canOpenPrompt =
-    artifact.promptText.trim() !== "" || (artifact.kind === "remote" && hasLocalSnapshotIdentity);
+    artifact.promptText.trim() !== "" ||
+    (artifact.kind === "remote" &&
+      hasLocalSnapshotIdentity &&
+      artifact.storageProvider === "supabase");
   if (canOpenPrompt) {
     files.push({
       key: "prompt",
@@ -1026,10 +1063,11 @@ function buildArtifactOpenHref(artifact: ArtifactBrowserItem) {
     }
   }
 
+  const artifactId = encodeURIComponent(artifact.id.trim() || "remote-artifact");
   const query = params.toString();
   return query
-    ? `/api/local-runner/artifacts/${artifact.id}/open?${query}`
-    : `/api/local-runner/artifacts/${artifact.id}/open`;
+    ? `/api/local-runner/artifacts/${artifactId}/open?${query}`
+    : `/api/local-runner/artifacts/${artifactId}/open`;
 }
 
 function appendArtifactFileQuery(baseHref: string, file: string) {
@@ -1071,12 +1109,6 @@ function formatArtifactDefinitionKey(artifactDefinitionKey: string | null) {
   return normalized ? normalized : "unbound";
 }
 
-function shouldRenderArtifactRunAsRemote(artifact: ArtifactRun) {
-  const remotePath = artifact.remotePath.trim();
-  const storageProvider = artifact.storageProvider?.trim() ?? "";
-  return remotePath !== "" && storageProvider !== "";
-}
-
 function hasRemoteArtifactCounterpart(
   artifact: LocalRunnerArtifact,
   remoteArtifactIds: Set<string>,
@@ -1088,8 +1120,15 @@ function hasRemoteArtifactCounterpart(
   );
 }
 
-function shouldRenderLocalArtifactAsRemote(artifact: LocalRunnerArtifact) {
-  return normalizeLocalArtifactSyncStatus(artifact) !== "local_only";
+function shouldRenderLocalArtifactAsRemote(
+  artifact: LocalRunnerArtifact,
+  activeProviderByProjectId: Map<string, "supabase" | "google_drive">,
+) {
+  const activeProvider = resolveActiveProviderForProject(artifact.projectId, activeProviderByProjectId);
+  return (
+    normalizeLocalArtifactSyncStatus(artifact) !== "local_only" &&
+    artifact.storageProvider?.trim() === activeProvider
+  );
 }
 
 function normalizeLocalArtifactSyncStatus(artifact: LocalRunnerArtifact): ArtifactSyncStatus {
@@ -1118,8 +1157,95 @@ function localArtifactRemoteKey(artifact: LocalRunnerArtifact) {
   return artifact.remotePath.trim() || artifact.artifactId;
 }
 
+function resolveLocalArtifactStorageType(
+  artifact: LocalRunnerArtifact,
+  activeProviderByProjectId: Map<string, "supabase" | "google_drive">,
+): ArtifactBrowserItem["storageType"] {
+  return shouldRenderLocalArtifactAsRemote(artifact, activeProviderByProjectId)
+    ? resolveActiveProviderForProject(artifact.projectId, activeProviderByProjectId)
+    : "local_only";
+}
+
 function artifactRemoteKey(artifact: Pick<ArtifactBrowserItem, "id" | "remotePath">) {
   return artifact.remotePath.trim() || artifact.id;
+}
+
+function stringMapsEqual(left: Map<string, string>, right: Map<string, string>) {
+  if (left.size !== right.size) {
+    return false;
+  }
+
+  for (const [key, value] of left) {
+    if (right.get(key) !== value) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function promptOverrideMapsEqual(
+  left: Map<string, RemotePromptOverride>,
+  right: Map<string, RemotePromptOverride>,
+) {
+  if (left.size !== right.size) {
+    return false;
+  }
+
+  for (const [key, value] of left) {
+    const rightValue = right.get(key);
+    if (
+      !rightValue ||
+      rightValue.actualPromptText !== value.actualPromptText ||
+      rightValue.promptText !== value.promptText
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function resolveActiveReplica(
+  artifact: ArtifactRun,
+  activeProviderByProjectId: Map<string, "supabase" | "google_drive">,
+) {
+  const activeProvider = resolveActiveProviderForProject(artifact.projectId, activeProviderByProjectId);
+  const explicitReplica = artifact.replicas.find(
+    (replica) => replica.provider === activeProvider && replica.remotePath.trim() !== "",
+  );
+  if (explicitReplica) {
+    return explicitReplica;
+  }
+
+  if (
+    artifact.storageProvider === activeProvider &&
+    artifact.remotePath.trim() !== ""
+  ) {
+    return {
+      id: `compat-${artifact.id}-${activeProvider}`,
+      artifactRunId: artifact.id,
+      projectId: artifact.projectId,
+      provider: activeProvider,
+      remotePath: artifact.remotePath,
+      remoteObjectId: artifact.remoteObjectId,
+      syncStatus: artifact.syncStatus === "local_only" ? "queued" : artifact.syncStatus,
+      checksum: null,
+      lastSyncedAt: artifact.updatedAt,
+      lastError: artifact.syncStatus === "failed" ? "compatibility replica" : null,
+      createdAt: artifact.createdAt,
+      updatedAt: artifact.updatedAt,
+    } as const;
+  }
+
+  return null;
+}
+
+function resolveActiveProviderForProject(
+  projectId: string | null,
+  activeProviderByProjectId: Map<string, "supabase" | "google_drive">,
+) {
+  return (projectId ? activeProviderByProjectId.get(projectId) : null) ?? "supabase";
 }
 
 function artifactStatusTone(status: ArtifactSyncStatus) {
@@ -1132,6 +1258,17 @@ function artifactStatusTone(status: ArtifactSyncStatus) {
       return "warning";
     default:
       return "neutral";
+  }
+}
+
+function formatStorageTypeLabel(storageType: ArtifactBrowserItem["storageType"]) {
+  switch (storageType) {
+    case "google_drive":
+      return "google_drive";
+    case "supabase":
+      return "supabase";
+    default:
+      return "local_only";
   }
 }
 

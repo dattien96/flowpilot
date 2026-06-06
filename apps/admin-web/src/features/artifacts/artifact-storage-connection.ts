@@ -6,6 +6,7 @@ export type ArtifactStorageConnectionStatus =
   | "disconnected"
   | "pending"
   | "connected"
+  | "reconnect_required"
   | "failed";
 
 export interface ArtifactStorageConnectionRecord {
@@ -29,6 +30,7 @@ function normalizeStatus(value: unknown): ArtifactStorageConnectionStatus {
   switch (value) {
     case "pending":
     case "connected":
+    case "reconnect_required":
     case "failed":
       return value;
     default:

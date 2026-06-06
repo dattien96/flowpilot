@@ -5,6 +5,7 @@ import type { WorkflowEngineGateway } from "@/domain/gateway/workflow-engine-gat
 import type {
   ArtifactDefinition,
   ArtifactRun,
+  ArtifactRunReplica,
   StepDefinition,
   Workflow,
   WorkflowRunStartRequest,
@@ -19,6 +20,7 @@ import { normalizeStepModel } from "@/domain/model/entity/workflow-engine";
 import {
   mapArtifactDefinition,
   mapArtifactRun,
+  mapArtifactRunReplica,
   mapStepDefinition,
   mapWorkflow,
   mapWorkflowRun,
@@ -104,6 +106,7 @@ function buildStorageArtifactRun(path: string, entry: StorageListEntry): Artifac
     storageProvider: "supabase",
     remoteObjectId: entry.id ? String(entry.id) : null,
     syncStatus: "synced",
+    replicas: [],
     createdAt: timestamp,
     updatedAt: timestamp,
   };
@@ -173,6 +176,7 @@ function mergeArtifactRuns(
   storageRuns: ArtifactRun[],
 ): ArtifactRun[] {
   const merged = new Map<string, ArtifactRun>();
+  const databaseRunsById = new Map(databaseRuns.map((artifact) => [artifact.id, artifact]));
 
   for (const artifact of databaseRuns) {
     const key = artifact.remotePath.trim() || artifact.id;
@@ -180,6 +184,21 @@ function mergeArtifactRuns(
   }
 
   for (const artifact of storageRuns) {
+    const databaseArtifact = databaseRunsById.get(
+      parseArtifactScopedStorageArtifactId(artifact.remotePath),
+    );
+    if (databaseArtifact) {
+      const remotePath = artifact.remotePath.trim();
+      const provider = artifact.storageProvider;
+      const hasReplica = databaseArtifact.replicas.some(
+        (replica) => replica.provider === provider && replica.remotePath.trim() === remotePath,
+      );
+      if (provider && remotePath && !hasReplica) {
+        databaseArtifact.replicas.push(storageArtifactToReplica(artifact, databaseArtifact.id));
+      }
+      continue;
+    }
+
     const key = artifact.remotePath.trim() || artifact.id;
     if (!merged.has(key)) {
       merged.set(key, artifact);
@@ -189,6 +208,74 @@ function mergeArtifactRuns(
   return Array.from(merged.values()).sort((left, right) =>
     right.updatedAt.localeCompare(left.updatedAt),
   );
+}
+
+function parseArtifactScopedStorageArtifactId(remotePath: string) {
+  const segments = remotePath.replaceAll("\\", "/").trim().split("/").filter(Boolean);
+  if (
+    segments.length === 9 &&
+    segments[0] === "projects" &&
+    segments[2] === "runs" &&
+    segments[4] === "steps" &&
+    segments[6] === "artifacts"
+  ) {
+    return segments[7] ?? "";
+  }
+  return "";
+}
+
+function storageArtifactToReplica(artifact: ArtifactRun, artifactRunId: string): ArtifactRunReplica {
+  return {
+    id: `storage:${artifactRunId}:${artifact.storageProvider ?? "unknown"}:${artifact.remotePath}`,
+    artifactRunId,
+    projectId: artifact.projectId,
+    provider: artifact.storageProvider === "google_drive" ? "google_drive" : "supabase",
+    storageScopeKey: null,
+    remotePath: artifact.remotePath,
+    remoteObjectId: artifact.remoteObjectId,
+    syncStatus:
+      artifact.syncStatus === "syncing"
+        ? "syncing"
+        : artifact.syncStatus === "failed"
+          ? "failed"
+          : "synced",
+    checksum: null,
+    lastSyncedAt: artifact.updatedAt || null,
+    lastError: artifact.syncStatus === "failed" ? "storage recovery replica" : null,
+    createdAt: artifact.createdAt,
+    updatedAt: artifact.updatedAt,
+  };
+}
+
+function synthesizeCompatibilityReplica(artifact: ArtifactRun): ArtifactRunReplica[] {
+  if (!artifact.storageProvider || !artifact.remotePath.trim()) {
+    return [];
+  }
+
+  return [
+    {
+      id: `compat:${artifact.id}:${artifact.storageProvider}`,
+      artifactRunId: artifact.id,
+      projectId: artifact.projectId,
+      provider: artifact.storageProvider,
+      storageScopeKey: null,
+      remotePath: artifact.remotePath,
+      remoteObjectId: artifact.remoteObjectId,
+      syncStatus:
+        artifact.syncStatus === "syncing"
+          ? "syncing"
+          : artifact.syncStatus === "synced"
+            ? "synced"
+            : artifact.syncStatus === "failed"
+              ? "failed"
+              : "queued",
+      checksum: null,
+      lastSyncedAt: artifact.syncStatus === "synced" ? artifact.updatedAt : null,
+      lastError: null,
+      createdAt: artifact.createdAt,
+      updatedAt: artifact.updatedAt,
+    },
+  ];
 }
 
 async function invokeWorkflowStartRuntime<TResponse>(
@@ -323,6 +410,30 @@ export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
 
     if (error) throw new Error(`Unable to list artifact runs: ${error.message}`);
     const databaseRuns = (data ?? []).map(mapArtifactRun);
+    const artifactRunIds = databaseRuns.map((artifact) => artifact.id);
+    const replicaRows =
+      artifactRunIds.length === 0
+        ? []
+        : await this.supabase
+            .from("artifact_run_replicas")
+            .select("*")
+            .in("artifact_run_id", artifactRunIds)
+            .then(({ data: replicaData, error: replicaError }) => {
+              if (replicaError) {
+                throw new Error(`Unable to list artifact run replicas: ${replicaError.message}`);
+              }
+              return (replicaData ?? []).map(mapArtifactRunReplica);
+            });
+    const replicasByArtifactRunId = new Map<string, ArtifactRunReplica[]>();
+    for (const replica of replicaRows) {
+      const current = replicasByArtifactRunId.get(replica.artifactRunId) ?? [];
+      current.push(replica);
+      replicasByArtifactRunId.set(replica.artifactRunId, current);
+    }
+    for (const artifact of databaseRuns) {
+      artifact.replicas =
+        replicasByArtifactRunId.get(artifact.id) ?? synthesizeCompatibilityReplica(artifact);
+    }
     const storageRuns = await listArtifactRunsFromStorage(this.supabase, projectId).catch(
       (storageError) => {
         console.warn(
@@ -332,6 +443,9 @@ export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
         return [] as ArtifactRun[];
       },
     );
+    for (const artifact of storageRuns) {
+      artifact.replicas = synthesizeCompatibilityReplica(artifact);
+    }
     return mergeArtifactRuns(databaseRuns, storageRuns);
   }
 
