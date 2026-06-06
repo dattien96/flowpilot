@@ -146,7 +146,7 @@ Required product rule:
 
 - users must use the same Supabase runtime target and the same Google Drive folder if they expect full cross-runner artifact continuity for one project
 
-Recommended future metadata addition:
+Required metadata addition:
 
 - add a provider scope identity such as `storage_scope_key` or equivalent
 
@@ -156,6 +156,23 @@ Examples:
 - `gdrive:folder_123456`
 
 Without a scope identity, the system can only say "artifact has a Supabase replica" or "artifact has a Google Drive replica", but cannot prove it is the same Supabase bucket or the same Drive folder currently configured on another runner.
+
+### 2.5 Deletion Semantics
+
+Deleting `workflow_runs` or the related shared artifact rows must remove:
+
+- local runner artifact files for the deleted run
+- shared metadata rows such as `artifact_runs` and `artifact_run_replicas`
+
+Deleting those rows must not hard-delete remote provider bytes from:
+
+- Supabase Storage
+- Google Drive
+
+Reason:
+
+- remote providers are treated as retained artifact storage, not destructive mirrors
+- deleting a run should clean local workspace state and shared metadata without purging previously synced remote files
 
 ---
 
@@ -544,7 +561,7 @@ Each runner may also point at its own Supabase runtime target independently.
 Allowed:
 
 - PC A and PC B can use the same Google Cloud app registration
-- PC A and PC B can store different local runner auth state and different local `artifact-storage-google-drive.json` files
+- PC A and PC B can store different local runner auth state and different local `.flowpilot/settings/artifact-storage-google-drive.json` files
 - PC A and PC B can select the same Google Drive folder
 - PC A and PC B should use the same Google account access plus the same folder when they are expected to share one Google Drive artifact replica set for the same project
 - PC A and PC B should use the same Supabase runtime target when they are expected to share one Supabase artifact replica set for the same project
@@ -746,6 +763,7 @@ Task-023 is complete when all of the following are true:
 - `[done]` Expired, revoked, or invalid refresh tokens produce reconnect-required state.
 - `[done]` Reconnect-required state exposes the same Connect Google Drive flow.
 - `[done]` Failure modes are understandable in UI and logs.
+- `[done]` Deleting workflow runs or related shared artifact rows removes local artifacts and shared metadata without hard-deleting remote Supabase or Google Drive files.
 - `[todo]` Multi-PC behavior is correct: metadata is shared, tokens are local per runner, and shared continuity only applies when runners use the same effective Supabase target and Google Drive folder scope.
 - `[done]` Shared metadata can distinguish provider type from provider scope well enough to avoid false assumptions across different Supabase targets or Drive folders.
 - `[todo]` Automated runner tests cover config resolution, token lifecycle, Drive sync, and reconnect-required behavior.
@@ -754,12 +772,336 @@ Task-023 is complete when all of the following are true:
 
 ---
 
-## 13. Known Implementation Risks
+## 13. Manual Test Guide
+
+Use this section to manually verify the DOD in a repeatable order. Record pass/fail per case and note screenshots, logs, DB rows, and remote files for anything that fails.
+
+### 13.1 Test Environment
+
+Prepare this before starting:
+
+1. Start admin-web and the local runner on PC A.
+2. Confirm the project under test exists and has at least one runnable workflow that produces artifacts.
+3. Confirm Supabase credentials and bucket access are working for the current environment.
+4. Confirm Google runtime config is saved through CP-28 UI or available through env fallback.
+5. Prepare one Google Drive folder dedicated to this test project.
+6. If multi-PC verification is needed, prepare PC B with the same FlowPilot version and access to the same project.
+
+Suggested test project data:
+
+- Project `P1`
+- Workflow run `R1`
+- Workflow step `S1`
+- Artifact filenames such as `Response.md`
+
+Evidence to collect during testing:
+
+- `/artifacts` screenshots
+- runner logs
+- admin-web logs
+- Supabase rows from `artifact_runs` and `artifact_run_replicas`
+- remote object paths in Supabase Storage and Google Drive
+- local file state under `.flowpilot/artifacts` and `.flowpilot/settings/artifact-storage-google-drive.json`
+
+### 13.2 TC-01: Documentation And Runtime Config Sanity
+
+DOD coverage:
+
+- CP-27 manual Google Cloud setup remains documented and linked
+- CP-28 UI config is used by artifact sync runtime before env fallback
+
+Steps:
+
+1. Open the linked CP-27 and CP-28 documents from this task.
+2. In admin-web, open the Google Drive runtime config UI.
+3. Save valid Google config through the UI.
+4. Temporarily remove the corresponding env vars if you want to prove saved config is being used first.
+5. Start a Google Drive connect flow from `/artifacts`.
+
+Expected result:
+
+- The linked docs are present and readable.
+- The connect flow works with saved CP-28 config.
+- If env vars were removed, the runner still uses saved config first.
+
+### 13.3 TC-02: Initial Google Drive Connect And Folder Selection
+
+DOD coverage:
+
+- Google Drive connection succeeds from admin-web
+- Google Picker folder selection succeeds
+- Runner stores project-scoped Google refresh tokens locally only
+- Runner stores Google Drive artifact connection state under `.flowpilot/settings/artifact-storage-google-drive.json`
+
+Steps:
+
+1. In `/artifacts`, select project `P1`.
+2. Click `Connect Google Drive`.
+3. Follow the connect link.
+4. Complete Google OAuth with the intended Google account.
+5. In Google Picker, choose the prepared folder.
+6. Return to `/artifacts` and wait for polling to show `connected`.
+7. Inspect runner-local state after success.
+
+Expected result:
+
+- The flow completes without manual URL edits.
+- The selected folder name and connected status appear in UI.
+- Refresh token is not present in browser storage or Supabase rows.
+- Runner-local connection state is written to `.flowpilot/settings/artifact-storage-google-drive.json`.
+- Runner secret storage contains the project-scoped token material, not the shared DB.
+
+### 13.4 TC-03: Supabase Sync Baseline
+
+DOD coverage:
+
+- Supabase artifact sync uploads canonical artifact content and snapshot files
+- Per-provider artifact replica state exists and can represent both Supabase and Google Drive copies of the same artifact
+- Newly generated artifacts sync to the active provider
+- Remote artifact view shows the active provider's replica set
+- Remote artifact view does not blend Supabase and Google Drive replicas into one main list
+- Local artifact view remains visible independently from active-provider filtering
+- Artifact browser groups by `Project ID > Storage Type > Run ID > Step ID`
+
+Steps:
+
+1. Set project `P1` active provider to `supabase`.
+2. Run a workflow that creates at least one new artifact.
+3. Trigger sync if auto-sync has not completed yet.
+4. Open `/artifacts` and the project artifact tab.
+5. Expand the browser groups and inspect the remote section.
+6. Inspect Supabase Storage for the canonical file and `.snapshots/<artifactId>/` files.
+7. Inspect `artifact_run_replicas` for a `supabase` row for the artifact.
+
+Expected result:
+
+- New artifacts sync to Supabase.
+- Canonical file and snapshot files exist in Supabase under the expected path layout.
+- UI groups artifacts as `Project ID > Storage Type > Run ID > Step ID`.
+- Remote view shows only the active provider's remote replicas.
+- Local view still shows unsynced or failed local items independently.
+- Shared metadata contains a `supabase` replica row.
+
+### 13.5 TC-04: Google Drive Sync Baseline
+
+DOD coverage:
+
+- Google Drive artifact sync uploads canonical artifact content and snapshot files
+- Per-provider artifact replica state exists and can represent both Supabase and Google Drive copies of the same artifact
+- Newly generated artifacts sync to the active provider
+
+Steps:
+
+1. Switch project `P1` active provider to `google_drive` after it is connected.
+2. Run a new workflow that creates artifact `A`.
+3. Trigger sync if needed.
+4. Inspect the selected Google Drive folder for the canonical file and snapshot folder.
+5. Inspect `artifact_run_replicas` for a `google_drive` row for artifact `A`.
+
+Expected result:
+
+- Artifact `A` uploads to Google Drive under the selected folder and expected logical path.
+- Canonical content and snapshot files are present.
+- Shared metadata contains a `google_drive` replica row.
+
+### 13.6 TC-05: Provider Switch Supabase To Google Drive
+
+DOD coverage:
+
+- Provider switch starts a migration/backfill flow instead of directly flipping provider state
+- Provider switch shows progress UI with validating, scanning, syncing, completed, failed, and reconnect-required states
+- Provider switch syncs missing artifacts to the target provider
+- Provider switch skips artifacts that already exist on the target provider
+- Provider switch uses artifact identity plus checksum where available to avoid duplicate sync
+- Provider switch builds one combined candidate artifact set from local, Supabase remote, and Google Drive remote sources available in the current runner scope
+- Provider switch backfills only into the single selected target provider, not into every other source
+- Provider switch checks target existence by artifact identity before downloading remote source bytes
+- Provider switch uses local files first, then Supabase remote copy, then Google Drive remote copy, then fails with source-unavailable
+- Provider switch only treats remote-source migration as valid inside the current runner's configured Supabase/Drive scope
+- Provider switch flips `projects.artifact_storage_preference` only after required migration succeeds
+- Failed migration does not silently change active provider
+- Switching from Supabase to Google Drive backfills prior Supabase/local artifacts to Google Drive
+- Failure modes are understandable in UI and logs
+- Shared metadata can distinguish provider type from provider scope well enough to avoid false assumptions across different Supabase targets or Drive folders
+
+Steps:
+
+1. Ensure project `P1` is active on `supabase`.
+2. Prepare three artifacts:
+   - `A`: already synced to Supabase
+   - `B`: local-only and not yet synced anywhere
+   - `C`: already present on Google Drive target if you want duplicate-skip coverage
+3. In `/artifacts`, switch provider from `supabase` to `google_drive`.
+4. Watch the progress UI from start to finish.
+5. After completion, inspect Google Drive contents and replica rows.
+6. Confirm the project preference changed only after migration success.
+
+Expected result:
+
+- The UI enters migration flow before the provider flips.
+- Progress UI shows meaningful stages and counters.
+- `A` and `B` are backfilled to Google Drive if missing.
+- `C` is skipped if already present on the target.
+- The project active provider changes only after success.
+- If a source is unavailable or scope mismatches, the UI/logs show a clear failure and the provider does not silently flip.
+- Replica metadata includes correct provider and scope identity.
+
+### 13.7 TC-06: Provider Switch Google Drive To Supabase
+
+DOD coverage:
+
+- Switching from Google Drive to Supabase backfills prior Google Drive/local artifacts to Supabase
+- All provider-switch DOD items from TC-05 in the reverse direction
+
+Steps:
+
+1. Ensure project `P1` is active on `google_drive`.
+2. Prepare:
+   - `D`: already synced to Google Drive
+   - `E`: local-only on the current runner
+3. Switch provider from `google_drive` to `supabase`.
+4. Observe progress UI.
+5. Inspect Supabase bucket contents and replica rows after success.
+
+Expected result:
+
+- `D` and `E` are backfilled to Supabase if missing there.
+- Existing Supabase replicas are skipped.
+- Active provider flips only after successful migration.
+
+### 13.8 TC-07: Open Artifact And Active-Provider Filtering
+
+DOD coverage:
+
+- Remote artifact view shows the active provider's replica set
+- Remote artifact view does not blend Supabase and Google Drive replicas into one main list
+- Open action works for synced artifacts
+
+Steps:
+
+1. Ensure at least one artifact has both `supabase` and `google_drive` replicas.
+2. Set active provider to `supabase`.
+3. Open the remote artifact list and confirm only Supabase replicas are shown in the main remote view.
+4. Open one artifact.
+5. Switch active provider to `google_drive`.
+6. Repeat the same check and open action.
+
+Expected result:
+
+- Main remote list follows the active provider.
+- Open action succeeds for the active-provider replica.
+- No mixed-provider main remote list is shown.
+
+### 13.9 TC-08: Token Refresh And Reconnect-Required Recovery
+
+DOD coverage:
+
+- Stale access tokens are recovered automatically when refresh token is valid
+- Expired, revoked, or invalid refresh tokens produce reconnect-required state
+- Reconnect-required state exposes the same Connect Google Drive flow
+- Failure modes are understandable in UI and logs
+
+Steps:
+
+1. With project `P1` connected to Google Drive, wait for the short-lived access token to expire or force a stale-access-token condition in the test environment.
+2. Trigger an operation that requires Drive access, such as sync or open.
+3. Confirm the operation succeeds after automatic refresh.
+4. Then revoke or invalidate the Google refresh token for the same project.
+5. Trigger another Drive operation.
+6. Observe the returned status and UI state.
+7. Use the reconnect flow from the same `Connect Google Drive` action.
+8. Retry the failed operation.
+
+Expected result:
+
+- Valid refresh token path recovers automatically without asking the user to reconnect.
+- Invalid refresh token path moves to `reconnect_required`.
+- UI presents the same connect action for recovery.
+- After reconnect, the operation succeeds again.
+
+### 13.10 TC-09: Multi-PC Shared Metadata And Scope Behavior
+
+DOD coverage:
+
+- Multi-PC behavior is correct: metadata is shared, tokens are local per runner, and shared continuity only applies when runners use the same effective Supabase target and Google Drive folder scope
+- Shared metadata can distinguish provider type from provider scope well enough to avoid false assumptions across different Supabase targets or Drive folders
+
+Steps:
+
+1. On PC A, connect Google Drive for project `P1`, choose folder `F1`, and sync artifact `M1`.
+2. On PC B, open `/artifacts` for the same project without connecting Google Drive.
+3. Confirm PC B can see shared metadata for `M1` but cannot perform Drive access that requires local auth.
+4. On PC B, connect Google Drive to the same folder `F1`.
+5. Confirm PC B can now open or continue syncing shared Drive artifacts.
+6. Change PC B to a different Drive folder `F2` and repeat a migration/open attempt.
+7. If possible, repeat the same exercise with a different Supabase target on PC B.
+
+Expected result:
+
+- Metadata is shared across runners.
+- Tokens remain local per runner.
+- Same-scope configuration allows continuity.
+- Different Drive folder scope or different Supabase target does not get treated as equivalent shared storage.
+- Scope mismatch failures are explicit rather than silent.
+
+### 13.11 TC-10: Delete Workflow Run Retains Remote Provider Files
+
+DOD coverage:
+
+- Deleting workflow runs or related shared artifact rows removes local artifacts and shared metadata without hard-deleting remote Supabase or Google Drive files
+
+Steps:
+
+1. On PC A, create and sync one artifact to Supabase and one artifact to Google Drive for project `P1`.
+2. Confirm both remote copies exist before deletion.
+3. Delete the corresponding workflow run from admin-web.
+4. Confirm local runner artifact files for that run are removed.
+5. Confirm the related `workflow_runs`, `artifact_runs`, and `artifact_run_replicas` rows are removed from shared metadata.
+6. Inspect Supabase Storage and Google Drive directly for the previously synced remote files.
+
+Expected result:
+
+- Local artifacts for the deleted run are removed.
+- Shared metadata rows are removed by the delete flow and DB cascade.
+- Previously synced remote files still exist in Supabase Storage and Google Drive.
+- No delete attempt is made against remote provider storage during workflow-run deletion.
+
+### 13.12 TC-11: Automated Coverage Verification
+
+DOD coverage:
+
+- Automated runner tests cover config resolution, token lifecycle, Drive sync, and reconnect-required behavior
+- Automated admin-web tests cover provider switch migration, replica filtering, grouping, and error states
+
+Steps:
+
+1. Run the targeted runner test command for Task-023.
+2. Run the targeted admin-web test command for Task-023.
+3. Record the exact command lines and results in your test log.
+
+Expected result:
+
+- Both targeted suites pass.
+- Any unrelated package-level failures are recorded separately and not confused with Task-023 verification.
+
+### 13.13 Sign-Off Checklist
+
+Mark Task-023 DOD only after all of the following are true:
+
+1. TC-01 through TC-08 pass on one runner.
+2. TC-09 passes across two runners.
+3. TC-10 confirms delete semantics.
+4. TC-11 passes for both runner and admin-web coverage.
+5. Any failure found during testing is either fixed and retested or explicitly left as `[todo]` in the DOD.
+
+---
+
+## 14. Known Implementation Risks
 
 - Current `artifact_runs` remote fields cannot represent both Supabase and Google Drive copies at the same time.
 - Provider switch migration needs job/progress state; a simple direct update is not enough.
 - Copying from source-provider remote when local files are missing may require provider-specific download/read support.
-- Current replica metadata does not fully distinguish provider scope such as Supabase project/bucket identity or Google Drive folder identity.
+- Scope-aware replica metadata now distinguishes provider scope with `storage_scope_key`, but continuity still depends on correct runner-local configuration and real multi-runner verification.
 - Same provider name across runners does not guarantee shared data continuity if runtime targets differ.
 - Existing auto-sync code may assume one provider per artifact and must be reviewed.
 - Existing artifact browser tests may need significant updates because grouping changes.
