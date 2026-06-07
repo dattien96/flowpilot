@@ -865,12 +865,6 @@ func (r *Runner) googleDriveMcpCommandEnv() ([]string, error) {
 	if !config.CredentialExists || !config.CredentialValid {
 		return nil, errors.New("google drive MCP OAuth credentials are not configured")
 	}
-	if config.Status == "reconnect_required" {
-		return nil, errors.New("google drive MCP authorization expired or was revoked; reconnect the MCP and try again")
-	}
-	if config.Status != "configured" && config.Status != "warning" {
-		return nil, errors.New("google drive MCP OAuth token is not ready; complete the MCP auth flow")
-	}
 
 	if err := os.MkdirAll(filepath.Dir(config.TokenPath), 0o755); err != nil {
 		return nil, err

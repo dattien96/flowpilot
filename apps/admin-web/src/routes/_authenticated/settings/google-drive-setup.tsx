@@ -286,17 +286,37 @@ function GoogleDriveSetupPage() {
     setBusyAction("refresh-mcp");
     setMessage(null);
     try {
+      const nextStatus = await refreshStatus();
+      setMessage(
+        nextStatus.mcp.needsAuth
+          ? "Google Drive MCP still needs auth. Finish the auth flow, then refresh again."
+          : "Google Drive MCP status refreshed.",
+      );
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to refresh Google Drive MCP status.");
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const startMcpAuth = async () => {
+    setBusyAction("start-mcp-auth");
+    setMessage(null);
+    try {
       const response = await fetch("/api/runtime/google-drive-config/mcp-auth/start", {
         method: "POST",
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(payload.error ?? "Unable to refresh Google Drive MCP status.");
+        throw new Error(payload.error ?? "Unable to start Google Drive MCP auth.");
       }
       setStatus((payload.config as GoogleDriveRuntimeStatus) ?? status);
-      setMessage(payload.message ?? "Google Drive MCP status refreshed.");
+      setMessage(
+        payload.message ??
+          "Google Drive MCP auth opened in a new terminal. Complete sign-in, then refresh MCP status.",
+      );
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Unable to refresh Google Drive MCP status.");
+      setMessage(error instanceof Error ? error.message : "Unable to start Google Drive MCP auth.");
     } finally {
       setBusyAction(null);
     }
@@ -680,6 +700,20 @@ function GoogleDriveSetupPage() {
                   >
                     {runBackendAction.isPending ? "Working..." : googleDriveBackend.actionLabel}
                   </Button>
+                  {googleDriveBackend.transport === "launcher" ? (
+                    <Button
+                      disabled={
+                        !runnerOnline ||
+                        busyAction === "start-mcp-auth" ||
+                        !status?.mcp.credentialFileValid
+                      }
+                      onClick={startMcpAuth}
+                      type="button"
+                      variant="secondary"
+                    >
+                      {busyAction === "start-mcp-auth" ? "Opening..." : "Start Auth"}
+                    </Button>
+                  ) : null}
                   {googleDriveBackend.transport === "remote" ? (
                     googleDriveTypeEnabled ? (
                       <Button

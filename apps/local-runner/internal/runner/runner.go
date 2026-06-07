@@ -3081,6 +3081,132 @@ end tell`,
 	}
 }
 
+func terminalEnvSetCommand(env map[string]string, shellType string) string {
+	if len(env) == 0 {
+		return ""
+	}
+
+	keys := make([]string, 0, len(env))
+	for key := range env {
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	switch shellType {
+	case "posix":
+		lines := make([]string, 0, len(keys))
+		for _, key := range keys {
+			lines = append(lines, fmt.Sprintf("export %s=%s", key, singleQuoteForShell(env[key])))
+		}
+		return strings.Join(lines, " && ")
+	case "windows":
+		lines := make([]string, 0, len(keys))
+		for _, key := range keys {
+			lines = append(lines, fmt.Sprintf(`set "%s=%s"`, key, strings.ReplaceAll(env[key], `"`, `""`)))
+		}
+		return strings.Join(lines, "\r\n")
+	default:
+		return ""
+	}
+}
+
+func writeWindowsTerminalScript(env map[string]string, command string) (string, error) {
+	scriptFile, err := os.CreateTemp("", "flowpilot-terminal-*.cmd")
+	if err != nil {
+		return "", err
+	}
+	defer scriptFile.Close()
+
+	lines := []string{"@echo off"}
+	if envCommand := terminalEnvSetCommand(env, "windows"); envCommand != "" {
+		lines = append(lines, envCommand)
+	}
+	lines = append(lines, command, "")
+
+	if _, err := scriptFile.WriteString(strings.Join(lines, "\r\n")); err != nil {
+		return "", err
+	}
+
+	return scriptFile.Name(), nil
+}
+
+func launchTerminalCommandWithEnv(env map[string]string, command string, keepShellOpen bool) error {
+	if strings.TrimSpace(command) == "" {
+		return errors.New("terminal command is empty")
+	}
+
+	switch runtime.GOOS {
+	case "windows":
+		scriptPath, err := writeWindowsTerminalScript(env, command)
+		if err != nil {
+			return err
+		}
+		cmd := exec.Command("cmd.exe", "/c", "start", "", "cmd.exe", "/k", scriptPath)
+		if err := cmd.Start(); err != nil {
+			return err
+		}
+		return cmd.Process.Release()
+	case "darwin":
+		shellCommand := command
+		if envCommand := terminalEnvSetCommand(env, "posix"); envCommand != "" {
+			shellCommand = envCommand + " && " + shellCommand
+		}
+		if keepShellOpen {
+			shellCommand += `; exec "$SHELL" -l`
+		}
+		script := fmt.Sprintf(
+			`tell application "Terminal"
+activate
+do script "%s"
+end tell`,
+			escapeAppleScriptString(shellCommand),
+		)
+		cmd := exec.Command("osascript", "-e", script)
+		if err := cmd.Start(); err != nil {
+			return err
+		}
+		return cmd.Process.Release()
+	case "linux":
+		shellCommand := command
+		if envCommand := terminalEnvSetCommand(env, "posix"); envCommand != "" {
+			shellCommand = envCommand + " && " + shellCommand
+		}
+		if keepShellOpen {
+			shellCommand += "; exec bash"
+		}
+		launchCommand := fmt.Sprintf("bash -lc %s", singleQuoteForShell(shellCommand))
+		terminals := []struct {
+			name string
+			args []string
+		}{
+			{"x-terminal-emulator", []string{"-e", launchCommand}},
+			{"gnome-terminal", []string{"--", "bash", "-lc", shellCommand}},
+			{"konsole", []string{"-e", "bash", "-lc", shellCommand}},
+			{"xfce4-terminal", []string{"-e", launchCommand}},
+			{"alacritty", []string{"-e", "bash", "-lc", shellCommand}},
+		}
+
+		for _, terminal := range terminals {
+			path, err := exec.LookPath(terminal.name)
+			if err != nil {
+				continue
+			}
+			cmd := exec.Command(path, terminal.args...)
+			if err := cmd.Start(); err == nil {
+				return cmd.Process.Release()
+			}
+		}
+		return fmt.Errorf("no supported terminal emulator found")
+	default:
+		return fmt.Errorf("unsupported operating system %q for terminal spawning", runtime.GOOS)
+	}
+}
+
+var launchTerminalCommandWithEnvFn = launchTerminalCommandWithEnv
+
 func escapeAppleScriptString(value string) string {
 	replacer := strings.NewReplacer(`\`, `\\`, `"`, `\"`)
 	return replacer.Replace(value)
@@ -3157,6 +3283,43 @@ func (r *Runner) AuthenticateProvider(ctx context.Context, providerName string) 
 	}
 
 	return LaunchTerminalWithCommand(authCommand)
+}
+
+func (r *Runner) StartGoogleDriveMcpAuth() error {
+	config, err := r.googleDriveMcpRuntimeConfig()
+	if err != nil {
+		return err
+	}
+	if !config.CredentialExists || !config.CredentialValid {
+		return errors.New("google drive MCP OAuth credentials are not configured")
+	}
+	if err := os.MkdirAll(filepath.Dir(config.TokenPath), 0o755); err != nil {
+		return err
+	}
+
+	launcherPath, err := lookPathFn("npx")
+	if err != nil {
+		return fmt.Errorf("google drive MCP launcher \"npx\" is not available: %w", err)
+	}
+
+	authInvocation := launcherPath
+	if runtime.GOOS == "windows" {
+		authInvocation = doubleQuoteForCmd(launcherPath)
+		lowerPath := strings.ToLower(launcherPath)
+		if strings.HasSuffix(lowerPath, ".cmd") || strings.HasSuffix(lowerPath, ".bat") {
+			authInvocation = "call " + authInvocation
+		}
+	} else {
+		authInvocation = singleQuoteForShell(launcherPath)
+	}
+
+	authCommand := fmt.Sprintf("%s -y @piotr-agier/google-drive-mcp auth", authInvocation)
+	env := map[string]string{
+		"GOOGLE_DRIVE_MCP_TOKEN_PATH":    config.TokenPath,
+		"GOOGLE_DRIVE_OAUTH_CREDENTIALS": config.CredentialPath,
+	}
+
+	return launchTerminalCommandWithEnvFn(env, authCommand, true)
 }
 
 func (r *Runner) getEnvForExecution(

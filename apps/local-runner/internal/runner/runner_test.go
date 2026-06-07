@@ -883,6 +883,66 @@ func TestInstallMcpBackendRunsExplicitCommandForGoogleDrive(t *testing.T) {
 	t.Fatal("expected google_drive backend to be present after install")
 }
 
+func TestStartGoogleDriveMcpAuthLaunchesTerminalWithManagedPaths(t *testing.T) {
+	originalLookPath := lookPathFn
+	originalLaunchTerminalCommandWithEnv := launchTerminalCommandWithEnvFn
+	t.Cleanup(func() {
+		lookPathFn = originalLookPath
+		launchTerminalCommandWithEnvFn = originalLaunchTerminalCommandWithEnv
+	})
+
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", homeDir)
+	credentialDir := filepath.Join(homeDir, ".config", "google-drive-mcp")
+	if err := os.MkdirAll(credentialDir, 0o755); err != nil {
+		t.Fatalf("create google drive config dir: %v", err)
+	}
+	credentialPath := filepath.Join(credentialDir, "gcp-oauth.keys.json")
+	credentialJSON := []byte(`{"installed":{"client_id":"client-id","client_secret":"client-secret","auth_uri":"https://accounts.google.com/o/oauth2/auth","token_uri":"https://oauth2.googleapis.com/token"}}`)
+	if err := os.WriteFile(credentialPath, credentialJSON, 0o600); err != nil {
+		t.Fatalf("write credential file: %v", err)
+	}
+
+	lookPathFn = func(file string) (string, error) {
+		if file == "npx" {
+			return "/usr/bin/npx", nil
+		}
+		return "", errors.New("launcher not found")
+	}
+
+	var observedEnv map[string]string
+	var observedCommand string
+	var observedKeepShellOpen bool
+	launchTerminalCommandWithEnvFn = func(env map[string]string, command string, keepShellOpen bool) error {
+		observedEnv = env
+		observedCommand = command
+		observedKeepShellOpen = keepShellOpen
+		return nil
+	}
+
+	instance := &Runner{workspace: t.TempDir()}
+	if err := instance.StartGoogleDriveMcpAuth(); err != nil {
+		t.Fatalf("start google drive MCP auth: %v", err)
+	}
+
+	if !observedKeepShellOpen {
+		t.Fatal("expected auth terminal to stay open")
+	}
+	if !strings.Contains(observedCommand, "@piotr-agier/google-drive-mcp auth") {
+		t.Fatalf("expected auth command to run google-drive-mcp auth, got %q", observedCommand)
+	}
+	if !strings.Contains(observedCommand, "npx") {
+		t.Fatalf("expected auth command to use npx launcher, got %q", observedCommand)
+	}
+	if observedEnv["GOOGLE_DRIVE_OAUTH_CREDENTIALS"] != credentialPath {
+		t.Fatalf("expected credential env to match uploaded path, got %#v", observedEnv)
+	}
+	if observedEnv["GOOGLE_DRIVE_MCP_TOKEN_PATH"] != filepath.Join(homeDir, ".config", "google-drive-mcp", "tokens.json") {
+		t.Fatalf("expected token env to use managed token path, got %#v", observedEnv)
+	}
+}
+
 func TestDeleteIntegrationConnectionRemovesJiraSecret(t *testing.T) {
 	instance := &Runner{
 		workspace:   t.TempDir(),
