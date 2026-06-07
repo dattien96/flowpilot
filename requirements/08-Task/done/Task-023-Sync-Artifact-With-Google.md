@@ -776,7 +776,7 @@ Task-023 is complete when all of the following are true:
 
 Use this section to manually verify the DOD in a repeatable order. Record pass/fail per case and note screenshots, logs, DB rows, and remote files for anything that fails.
 
-### 13.1 Test Environment
+### 13.1 Test Environment - Passed
 
 Prepare this before starting:
 
@@ -803,7 +803,7 @@ Evidence to collect during testing:
 - remote object paths in Supabase Storage and Google Drive
 - local file state under `.flowpilot/artifacts` and `.flowpilot/settings/artifact-storage-google-drive.json`
 
-### 13.2 TC-01: Documentation And Runtime Config Sanity
+### 13.2 TC-01: Documentation And Runtime Config Sanity - Passed
 
 DOD coverage:
 
@@ -824,7 +824,7 @@ Expected result:
 - The connect flow works with saved CP-28 config.
 - If env vars were removed, the runner still uses saved config first.
 
-### 13.3 TC-02: Initial Google Drive Connect And Folder Selection
+### 13.3 TC-02: Initial Google Drive Connect And Folder Selection - Passed
 
 DOD coverage:
 
@@ -851,7 +851,7 @@ Expected result:
 - Runner-local connection state is written to `.flowpilot/settings/artifact-storage-google-drive.json`.
 - Runner secret storage contains the project-scoped token material, not the shared DB.
 
-### 13.4 TC-03: Supabase Sync Baseline
+### 13.4 TC-03: Supabase Sync Baseline - Passed
 
 DOD coverage:
 
@@ -882,7 +882,7 @@ Expected result:
 - Local view still shows unsynced or failed local items independently.
 - Shared metadata contains a `supabase` replica row.
 
-### 13.5 TC-04: Google Drive Sync Baseline
+### 13.5 TC-04: Google Drive Sync Baseline - Passed
 
 DOD coverage:
 
@@ -904,7 +904,7 @@ Expected result:
 - Canonical content and snapshot files are present.
 - Shared metadata contains a `google_drive` replica row.
 
-### 13.6 TC-05: Provider Switch Supabase To Google Drive
+### 13.6 TC-05: Provider Switch Supabase To Google Drive - Passed
 
 DOD coverage:
 
@@ -946,7 +946,7 @@ Expected result:
 - If a source is unavailable or scope mismatches, the UI/logs show a clear failure and the provider does not silently flip.
 - Replica metadata includes correct provider and scope identity.
 
-### 13.7 TC-06: Provider Switch Google Drive To Supabase
+### 13.7 TC-06: Provider Switch Google Drive To Supabase - Passed
 
 DOD coverage:
 
@@ -969,7 +969,7 @@ Expected result:
 - Existing Supabase replicas are skipped.
 - Active provider flips only after successful migration.
 
-### 13.8 TC-07: Open Artifact And Active-Provider Filtering
+### 13.8 TC-07: Open Artifact And Active-Provider Filtering - Passed
 
 DOD coverage:
 
@@ -992,7 +992,7 @@ Expected result:
 - Open action succeeds for the active-provider replica.
 - No mixed-provider main remote list is shown.
 
-### 13.9 TC-08: Token Refresh And Reconnect-Required Recovery
+### 13.9 TC-08: Token Refresh And Reconnect-Required Recovery - Not Tested
 
 DOD coverage:
 
@@ -1044,7 +1044,7 @@ Expected result:
 - Different Drive folder scope or different Supabase target does not get treated as equivalent shared storage.
 - Scope mismatch failures are explicit rather than silent.
 
-### 13.11 TC-10: Delete Workflow Run Retains Remote Provider Files
+### 13.11 TC-10: Delete Workflow Run Retains Remote Provider Files - Passed
 
 DOD coverage:
 
