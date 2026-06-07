@@ -4,6 +4,8 @@
 **Phase:** 7 (final hardening + cross-cutting context intelligence)
 **Depends on:** CP-09, CP-07, CP-06
 
+input = artifact + mcp + history + Rag
+output = artifact + rag
 ---
 
 ## 1. Core Concept
