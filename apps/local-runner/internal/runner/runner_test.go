@@ -415,9 +415,18 @@ func TestResolvePromptExecutionAdapterMapsModelNames(t *testing.T) {
 				t.Fatalf("expected binary %q, got %q", tc.expectedBin, binary)
 			}
 
-			// Find "--model" index in args and verify next arg
 			found := false
 			for i, arg := range args {
+				if tc.provider == "codex" && arg == "-c" {
+					if i+1 >= len(args) {
+						t.Fatalf("missing value after -c flag")
+					}
+					if args[i+1] != fmt.Sprintf("model=%q", tc.expectedModel) {
+						continue
+					}
+					found = true
+					break
+				}
 				if arg == "--model" {
 					if i+1 >= len(args) {
 						t.Fatalf("missing value after --model flag")
@@ -430,7 +439,7 @@ func TestResolvePromptExecutionAdapterMapsModelNames(t *testing.T) {
 				}
 			}
 			if !found {
-				t.Fatalf("expected --model flag in args: %v", args)
+				t.Fatalf("expected model flag in args: %v", args)
 			}
 		})
 	}
@@ -444,8 +453,8 @@ func TestResolvePromptExecutionAdapterReasoningEffort(t *testing.T) {
 		expectedBin   string
 		expectedFlags []string
 	}{
-		{"codex", "gpt-5.4", "high", "codex", []string{"-c", "reasoning_effort=high"}},
-		{"codex", "gpt-5.5", "low", "codex", []string{"-c", "reasoning_effort=low"}},
+		{"codex", "gpt-5.4", "high", "codex", []string{"-c", "model_reasoning_effort=high"}},
+		{"codex", "gpt-5.5", "low", "codex", []string{"-c", "model_reasoning_effort=low"}},
 		{"claude", "claude-sonnet", "high", "claude", []string{"--effort", "high"}},
 		{"claude", "claude-opus", "xhigh", "claude", []string{"--effort", "max"}},
 		{"gemini", "gemini-pro", "high", "gemini", []string{}}, // gemini doesn't append reasoning flags
@@ -474,16 +483,17 @@ func TestResolvePromptExecutionAdapterReasoningEffort(t *testing.T) {
 				val := tc.expectedFlags[i+1]
 				found := false
 				for idx, arg := range args {
-					if arg == flag {
-						if idx+1 >= len(args) {
-							t.Fatalf("missing value after flag %s", flag)
-						}
-						if args[idx+1] != val {
-							t.Fatalf("expected value %q for flag %s, got %q", val, flag, args[idx+1])
-						}
-						found = true
-						break
+					if arg != flag {
+						continue
 					}
+					if idx+1 >= len(args) {
+						t.Fatalf("missing value after flag %s", flag)
+					}
+					if args[idx+1] != val {
+						continue
+					}
+					found = true
+					break
 				}
 				if !found {
 					t.Fatalf("expected flag %s with value %s in args: %v", flag, val, args)

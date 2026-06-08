@@ -288,6 +288,7 @@ func expectedCodexGoogleDriveMcpServer(mode string, mcpStatus googleDriveMcpRunt
 
 	if mode == "read_only" {
 		server.EnabledTools = googleDriveMcpReadOnlyTools
+		server.ApprovalMode = "approve"
 	}
 
 	return server

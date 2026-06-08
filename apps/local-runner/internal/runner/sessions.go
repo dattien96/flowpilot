@@ -41,6 +41,7 @@ type LiveSession struct {
 	ProcessKey        string
 	Pid               int
 	BinaryPath        string
+	Command           string
 	WorkingDirectory  string
 	Cmd               *exec.Cmd
 	Stdin             io.WriteCloser
@@ -372,7 +373,14 @@ func readClaudeStreamResult(output []byte) (map[string]interface{}, error) {
 func resolveBinaryAndArgs(provider string, model string, reasoningEffort string) (string, []string, string) {
 	switch provider {
 	case "codex":
-		return "codex", []string{"mcp-server"}, "codex_mcp"
+		args := []string{"mcp-server"}
+		if strings.TrimSpace(model) != "" {
+			args = append(args, "-c", fmt.Sprintf("model=%q", strings.TrimSpace(model)))
+		}
+		if strings.TrimSpace(reasoningEffort) != "" {
+			args = append(args, "-c", fmt.Sprintf("model_reasoning_effort=%s", strings.ToLower(strings.TrimSpace(reasoningEffort))))
+		}
+		return "codex", args, "codex_mcp"
 	case "claude":
 		args := []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--tools", "default"}
 		if model != "" {
@@ -420,6 +428,7 @@ func (r *Runner) StartSession(ctx context.Context, req AiSessionStartRequest) (A
 	if err != nil {
 		return AiSessionHandle{}, fmt.Errorf("failed to resolve working directory: %w", err)
 	}
+	command := formatProviderCommand(binaryPath, args)
 
 	processKey := newRunID()
 	session := &LiveSession{
@@ -431,6 +440,7 @@ func (r *Runner) StartSession(ctx context.Context, req AiSessionStartRequest) (A
 		TransportType:    transportType,
 		ProcessKey:       processKey,
 		BinaryPath:       binaryPath,
+		Command:          command,
 		WorkingDirectory: resolvedWorkingDirectory,
 		Status:           "active",
 		LastUsedAt:       time.Now().UTC(),
@@ -456,6 +466,7 @@ func (r *Runner) StartSession(ctx context.Context, req AiSessionStartRequest) (A
 			TransportType:     transportType,
 			ProviderSessionID: providerSessionID,
 			ProcessKey:        &processKey,
+			Command:           command,
 		}, nil
 	}
 
@@ -580,6 +591,7 @@ func (r *Runner) StartSession(ctx context.Context, req AiSessionStartRequest) (A
 		ProviderSessionID: providerSessionID,
 		ProcessKey:        &processKey,
 		ProcessPid:        &pid,
+		Command:           command,
 	}, nil
 }
 
@@ -668,11 +680,22 @@ func (r *Runner) SendMessageWithCallback(ctx context.Context, req AiSessionMessa
 		session.Mu.Lock()
 		providerSessionID := session.ProviderSessionID
 		sessionID := session.SessionID
+		modelName := strings.TrimSpace(session.Model)
+		reasoningEffort := strings.TrimSpace(session.ReasoningEffort)
 		session.Mu.Unlock()
 
 		if providerSessionID != "" && providerSessionID != "codex_mcp_session_"+sessionID {
 			toolName = "codex-reply"
 			args["threadId"] = providerSessionID
+		} else {
+			if modelName != "" {
+				args["model"] = modelName
+			}
+			if reasoningEffort != "" {
+				args["config"] = map[string]interface{}{
+					"model_reasoning_effort": strings.ToLower(reasoningEffort),
+				}
+			}
 		}
 		params := map[string]interface{}{
 			"name":      toolName,
@@ -996,7 +1019,7 @@ func (r *Runner) SendMessageWithCallback(ctx context.Context, req AiSessionMessa
 		ProviderKey:       session.Provider,
 		ModelName:         &session.Model,
 		ProviderSessionID: pSessionID,
-		Command:           session.Provider + " session message",
+		Command:           session.Command,
 		OutputMarkdown:    outputMarkdown,
 		StartedAt:         startedAt.Format(time.RFC3339Nano),
 		CompletedAt:       completedAt.Format(time.RFC3339Nano),

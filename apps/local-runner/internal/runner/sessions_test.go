@@ -150,6 +150,47 @@ func TestStartSessionGeminiACPUsesCurrentHandshake(t *testing.T) {
 	}
 }
 
+func TestStartSessionCodexMcpUsesRequestedModelConfig(t *testing.T) {
+	originalCmdCtx := commandContextFn
+	defer func() { commandContextFn = originalCmdCtx }()
+	var startedArgs []string
+	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+		startedArgs = append([]string{}, arg...)
+		return exec.CommandContext(
+			ctx,
+			"sh",
+			"-c",
+			"printf '%s\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}'",
+		)
+	}
+
+	r, _ := New(".")
+	reasoningEffort := "medium"
+
+	handle, err := r.StartSession(context.Background(), AiSessionStartRequest{
+		ProviderKey:      "codex",
+		ModelName:        "gpt-5.4-mini",
+		ReasoningEffort:  &reasoningEffort,
+		WorkingDirectory: ".",
+	})
+	if err != nil {
+		t.Fatalf("StartSession failed: %v", err)
+	}
+
+	if got := strings.Join(startedArgs, " "); !strings.Contains(got, "-c model=\"gpt-5.4-mini\"") {
+		t.Fatalf("expected Codex MCP session to pass requested model config, got args %v", startedArgs)
+	}
+	if got := strings.Join(startedArgs, " "); !strings.Contains(got, "-c model_reasoning_effort=medium") {
+		t.Fatalf("expected Codex MCP session to pass requested reasoning effort config, got args %v", startedArgs)
+	}
+
+	if handle.ProcessKey != nil {
+		r.sessionsMu.Lock()
+		delete(r.sessions, *handle.ProcessKey)
+		r.sessionsMu.Unlock()
+	}
+}
+
 func TestStartSessionGeminiACPRejectsInitializeErrors(t *testing.T) {
 	originalCmdCtx := commandContextFn
 	defer func() { commandContextFn = originalCmdCtx }()
@@ -339,7 +380,8 @@ func TestSendMessageInjectsRequiredGoogleDriveInstructionsIntoActualPrompt(t *te
 	r.sessions[processKey] = &LiveSession{
 		SessionID:         "session-1",
 		Provider:          "codex",
-		Model:             "codex-mcp",
+		Model:             "gpt-5.4-mini",
+		ReasoningEffort:   "low",
 		AccountHomePath:   accountHomePath,
 		TransportType:     "codex_mcp",
 		ProviderSessionID: "codex_mcp_session_session-1",
@@ -375,6 +417,12 @@ func TestSendMessageInjectsRequiredGoogleDriveInstructionsIntoActualPrompt(t *te
 	}
 	if !strings.Contains(stdin.String(), "google-drive") {
 		t.Fatalf("expected provider request to contain injected prompt, got %q", stdin.String())
+	}
+	if !strings.Contains(stdin.String(), `"model":"gpt-5.4-mini"`) {
+		t.Fatalf("expected initial Codex MCP tool call to include selected model, got %q", stdin.String())
+	}
+	if !strings.Contains(stdin.String(), `"model_reasoning_effort":"low"`) {
+		t.Fatalf("expected initial Codex MCP tool call to include selected reasoning effort, got %q", stdin.String())
 	}
 }
 

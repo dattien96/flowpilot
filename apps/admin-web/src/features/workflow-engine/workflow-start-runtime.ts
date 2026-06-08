@@ -360,6 +360,9 @@ async function getOrCreateSession({
       processPid: sessionRow.process_pid
         ? Number(sessionRow.process_pid)
         : null,
+      command: typeof sessionRow.metadata_json?.command === "string"
+        ? sessionRow.metadata_json.command
+        : undefined,
       dbId: sessionRow.id,
       accountHomePath: requestedAccount.home_path,
     };
@@ -377,6 +380,7 @@ async function getOrCreateSession({
         transportType: sessionRow.transport_type,
         providerSessionId: sessionRow.provider_session_id,
         processKey: sessionRow.process_key,
+        command: handle.command ?? null,
       },
     });
   }
@@ -418,6 +422,7 @@ async function getOrCreateSession({
               ...(sessionRow.metadata_json ?? {}),
               providerAccountId: requestedAccount.id,
               providerAccountHomePath: requestedAccount.home_path,
+              command: handle.command ?? null,
             },
           })
           .eq("id", sessionRow.id);
@@ -458,6 +463,7 @@ async function getOrCreateSession({
               checkpoints: previousCheckpoints,
               providerAccountId: requestedAccount.id,
               providerAccountHomePath: requestedAccount.home_path,
+              command: handle.command ?? null,
               ...recoveryMetadata,
             },
           })
@@ -495,6 +501,7 @@ async function getOrCreateSession({
         transportType: handle.transportType,
         providerSessionId: handle.providerSessionId,
         processKey: handle.processKey,
+        command: handle.command ?? null,
       },
     });
   }
@@ -507,6 +514,7 @@ type WorkflowSessionHandle = {
   providerSessionId: string;
   processKey: string | null;
   processPid?: number | null;
+  command?: string;
   dbId?: string;
   accountHomePath?: string;
 };

@@ -723,7 +723,8 @@ Codex:
 - Add `[mcp_servers.google-drive]`.
 - Use `enabled_tools` for read-only mode.
 - Use `disabled_tools` for write/destructive tools if needed.
-- Use `default_tools_approval_mode = "prompt"` for Phase A/B.
+- Use `default_tools_approval_mode = "approve"` for read-only allowlisted tools in Phase B.
+- Keep write/destructive tools behind a separate FlowPilot-owned approval model.
 - FlowPilot launch can keep using existing Codex provider paths; Codex loads MCP config from `CODEX_HOME`/project config.
 
 ### 11.9 Config Verification Strategy
@@ -1550,6 +1551,11 @@ Expected Phase B results:
 - The injected prompt survives into the actual prompt artifact.
 - A real explicit MCP failure marker produces a failed step.
 - Quoted instructions alone do not produce a false failure.
+
+Phase B issues found and fixed:
+
+- Codex MCP model override gap: the `codex mcp-server` command could be launched with `gpt-5.4-mini`, but the first MCP `codex` tool call could still inherit the account config default `model = "gpt-5.5"`. Fix: pass the selected step model into both the Codex MCP server config override and the initial MCP `codex` tool-call arguments.
+- Codex MCP tool approval gap: `default_tools_approval_mode = "prompt"` caused read-only Google Drive tool calls such as `google-drive.authGetStatus({})` to require interactive approval, which FlowPilot cannot answer from the programmatic `codex mcp-server` path. Fix: generated Codex Google Drive MCP config now uses `default_tools_approval_mode = "approve"` for the read-only `enabled_tools` allowlist.
 
 ### 12.4 Retry And Recovery Cases
 

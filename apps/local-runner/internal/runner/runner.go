@@ -776,10 +776,10 @@ func resolvePromptExecutionAdapter(request PromptExecutionRequest, outputPath st
 		}
 		args := []string{"--sandbox", sandboxMode, "exec"}
 		if modelName != "" {
-			args = append(args, "--model", modelName)
+			args = append(args, "-c", fmt.Sprintf("model=%q", modelName))
 		}
 		if request.ReasoningEffort != "" {
-			args = append(args, "-c", fmt.Sprintf("reasoning_effort=%s", strings.ToLower(request.ReasoningEffort)))
+			args = append(args, "-c", fmt.Sprintf("model_reasoning_effort=%s", strings.ToLower(strings.TrimSpace(request.ReasoningEffort))))
 		}
 		args = append(args, "--output-last-message", outputPath, "-")
 		return "codex", args, resolvedProvider, nil
@@ -836,13 +836,17 @@ func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
-func formatShellCommand(binary string, args []string, stdinPath string) string {
+func formatProviderCommand(binary string, args []string) string {
 	parts := make([]string, 0, len(args)+1)
 	parts = append(parts, shellQuote(binary))
 	for _, arg := range args {
 		parts = append(parts, shellQuote(arg))
 	}
-	return strings.Join(parts, " ") + " < " + shellQuote(stdinPath)
+	return strings.Join(parts, " ")
+}
+
+func formatShellCommand(binary string, args []string, stdinPath string) string {
+	return formatProviderCommand(binary, args) + " < " + shellQuote(stdinPath)
 }
 
 func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionRequest) (PromptExecutionResult, error) {
@@ -978,10 +982,10 @@ func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionReque
 			commandPath,
 			metadataPath,
 		},
-		StartedAt:    startedAt.Format(time.RFC3339Nano),
-		CompletedAt:  completedAt.Format(time.RFC3339Nano),
-		ExitCode:     exitCode,
-		ErrorMessage: errorMessage,
+		StartedAt:        startedAt.Format(time.RFC3339Nano),
+		CompletedAt:      completedAt.Format(time.RFC3339Nano),
+		ExitCode:         exitCode,
+		ErrorMessage:     errorMessage,
 		ActualPromptText: actualPrompt,
 	}
 	applyRequiredMcpFailureStatus(&result, request.RequiredMcps)

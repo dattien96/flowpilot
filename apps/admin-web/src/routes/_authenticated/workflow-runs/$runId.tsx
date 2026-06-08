@@ -597,6 +597,7 @@ function parseSessionEventPayload(message: string | null | undefined) {
       providerSessionId?: string | null;
       recoveredFromSessionId?: string | null;
       recoveredFromProviderSessionId?: string | null;
+      command?: string | null;
     };
   } catch {
     return null;
@@ -862,6 +863,100 @@ function SkillAuditPanel({
   );
 }
 
+function CommandPanel({ commands }: { commands: string[] }) {
+  const [isExpanded, setIsExpanded] = useState(commands.length > 0);
+  const visibleCommands = commands.length > 0 ? commands : ["No provider command captured yet."];
+
+  useEffect(() => {
+    if (commands.length > 0) {
+      setIsExpanded(true);
+    }
+  }, [commands.length]);
+
+  return (
+    <div className="ml-auto flex w-full max-w-[85%] flex-col gap-2">
+      <div className="rounded-[1.2rem] border border-sky-500/20 bg-[#111923] px-5 py-4 shadow-sm">
+        <button
+          type="button"
+          onClick={() => setIsExpanded((current) => !current)}
+          className="flex w-full cursor-pointer items-center justify-between gap-3 text-left"
+        >
+          <span className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.18em] text-sky-300">
+            Command
+            <span className="rounded-full border border-sky-500/25 bg-sky-500/10 px-2 py-0.5 text-[9px] text-sky-200">
+              {commands.length}
+            </span>
+          </span>
+          <span className="text-muted-foreground">
+            {isExpanded ? (
+              <ChevronUp className="h-4 w-4" />
+            ) : (
+              <ChevronDown className="h-4 w-4" />
+            )}
+          </span>
+        </button>
+
+        {isExpanded ? (
+          <div className="mt-3 space-y-2">
+            {visibleCommands.map((command, index) => (
+              <pre
+                key={`${index}-${command}`}
+                className="overflow-x-auto whitespace-pre-wrap break-words rounded-xl border border-sky-500/15 bg-black/25 px-3 py-2 font-mono text-xs leading-5 text-sky-100"
+              >
+                {command}
+              </pre>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function commandLinesForPrompt({
+  attempts,
+  logs,
+  promptCreatedAt,
+  nextPromptCreatedAt,
+}: {
+  attempts: WorkflowStepSessionItem[];
+  logs: Array<{ createdAt: string; message?: string | null }>;
+  promptCreatedAt: string;
+  nextPromptCreatedAt?: string | null;
+}) {
+  const seen = new Set<string>();
+  const commands: string[] = [];
+  const addCommand = (value: string | null | undefined) => {
+    const command = value?.trim();
+    if (!command || seen.has(command)) {
+      return;
+    }
+    seen.add(command);
+    commands.push(command);
+  };
+
+  for (const log of logs) {
+    if (log.createdAt < promptCreatedAt) {
+      continue;
+    }
+    if (nextPromptCreatedAt && log.createdAt >= nextPromptCreatedAt) {
+      continue;
+    }
+    const payload = parseSessionEventPayload(log.message);
+    if (payload?.event === "session_created" || payload?.event === "session_reused") {
+      addCommand(payload.command);
+    }
+  }
+
+  for (const attempt of attempts) {
+    if (attempt.kind === "output") {
+      addCommand(attempt.output.commandText);
+    }
+  }
+
+  return commands;
+}
+
 function SessionGroupSection({
   group,
   subagent,
@@ -870,6 +965,7 @@ function SessionGroupSection({
   gatewayBundle,
   onKillSession,
   stepLogs,
+  stepCommandLogs,
   stepPromptCreatedAts,
   stepStatus,
 }: {
@@ -880,6 +976,7 @@ function SessionGroupSection({
   gatewayBundle: React.MutableRefObject<ReturnType<typeof createGatewayBundle>>;
   onKillSession: (session: WorkflowRunSession) => Promise<void>;
   stepLogs: Array<{ createdAt: string; message?: string | null }>;
+  stepCommandLogs: Array<{ createdAt: string; message?: string | null }>;
   stepPromptCreatedAts: string[];
   stepStatus: string;
 }) {
@@ -998,6 +1095,12 @@ function SessionGroupSection({
               nextPromptCreatedAt,
             });
             const skillAuditEntries = extractSkillAuditEntries(thinkingLines);
+            const commandLines = commandLinesForPrompt({
+              attempts: pg.attempts,
+              logs: stepCommandLogs,
+              promptCreatedAt: pg.prompt.createdAt,
+              nextPromptCreatedAt,
+            });
             const isLiveThinking = isLiveThinkingPrompt({
               promptIndex: index,
               promptCount: group.promptGroups.length,
@@ -1026,6 +1129,8 @@ function SessionGroupSection({
                   skills={skillAuditEntries}
                   isLive={isLiveThinking}
                 />
+
+                <CommandPanel commands={commandLines} />
 
                 {/* Attempts/Outputs belonging to this Prompt */}
                 {pg.attempts.length > 0 && (
@@ -1627,6 +1732,15 @@ function WorkflowRunDetailPage() {
       ),
     [allLogs, selectedStep?.id],
   );
+  const stepCommandLogs = useMemo(
+    () =>
+      allLogs.filter(
+        (log: any) =>
+          log.workflowRunStepId === selectedStep?.id &&
+          typeof log?.message === "string",
+      ),
+    [allLogs, selectedStep?.id],
+  );
 
   const handleDecision = async (
     stepId: string,
@@ -2185,6 +2299,7 @@ function WorkflowRunDetailPage() {
                       group={group}
                       onKillSession={handleKillSession}
                       stepOutputs={stepOutputs}
+                      stepCommandLogs={stepCommandLogs}
                       stepLogs={stepThinkingLogs}
                       stepPromptCreatedAts={stepPromptCreatedAts}
                       stepStatus={selectedStep.status}

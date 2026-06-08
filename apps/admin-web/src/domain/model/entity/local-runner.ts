@@ -303,6 +303,7 @@ export interface LocalRunnerAiSessionHandle {
   providerSessionId: string;
   processKey: string | null;
   processPid?: number | null;
+  command?: string;
 }
 
 export interface LocalRunnerAiSessionMessageRequest {

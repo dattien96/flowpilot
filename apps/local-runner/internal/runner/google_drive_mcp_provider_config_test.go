@@ -131,6 +131,9 @@ func TestEnsureCodexGoogleDriveMcpConfig(t *testing.T) {
 	if len(server.EnabledTools) == 0 {
 		t.Error("No enabled tools configured for read_only mode")
 	}
+	if server.ApprovalMode != "approve" {
+		t.Errorf("Expected read_only approval mode 'approve', got '%s'", server.ApprovalMode)
+	}
 
 	// Run again to verify idempotency
 	resp2, err := runner.EnsureGoogleDriveMcpProviderConfig(req)

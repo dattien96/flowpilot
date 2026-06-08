@@ -481,6 +481,7 @@ type AiSessionHandle struct {
 	ProviderSessionID string  `json:"providerSessionId"`
 	ProcessKey        *string `json:"processKey"`
 	ProcessPid        *int    `json:"processPid,omitempty"`
+	Command           string  `json:"command,omitempty"`
 }
 
 type AiSessionMessageRequest struct {
