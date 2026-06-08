@@ -3,6 +3,7 @@
 **Maps from:** SD-03, SD-04 §4, SS-03, CP-05, SS-09, SD-10, SD-08, SD-05
 **Phase:** 7 (final hardening + cross-cutting context intelligence)
 **Depends on:** CP-09, CP-07, CP-06
+**Additional input:** SS-13 (AI-followable document contract for governed phase docs)
 
 input = artifact + mcp + history + Rag
 output = artifact + rag
@@ -22,6 +23,7 @@ These two parts are merged here because:
 - Both are best shipped together as one coherent phase.
 
 CP-10 must not move MCP configuration ownership out of CP-05.
+CP-10 must treat governed project documents that follow `SS-13` as structured context, not generic markdown blobs.
 
 ---
 
@@ -312,6 +314,19 @@ After every successful artifact save, the Go-Runner must:
 4. Call `generate-embedding` with the combined memory text.
 5. Store the embedding and set `embedding_status = 'ready'`.
 
+Structured phase-document fast path:
+
+- For markdown files in `requirements/05-System-Specs`, `06-System-Tech-Design`, `07-Coding-Plan`, `08-Task`, and `09-BugFix`, first parse the `SS-13` contract deterministically before falling back to full AI extraction.
+- Read the metadata block and `AI Quick View` block when present.
+- Map `AI Quick View` fields directly:
+  - `Summary` -> `summary`
+  - `Key Decisions` -> `key_decisions`
+  - `Constraints` -> `constraints`
+  - `Open Questions` -> `open_questions`
+  - `Source Refs` -> `source_refs`
+- Add metadata fields such as `Document ID`, `Phase`, `Parent Documents`, and `Tags` into derived `keywords` and `source_refs` so retrieval can trace document lineage cheaply.
+- Use model-generated extraction only to fill gaps, normalize legacy non-compliant docs, or derive fields that are not explicitly present, such as `assumptions`.
+
 Failure behavior:
 - Raw artifact save must succeed even if memory generation fails.
 - Failed memory records must be visible in Admin Web with retry capability.
@@ -450,6 +465,15 @@ The Prompt Assembler constructs the final prompt sections from resolved context:
 ```
 
 Each section includes source references so the output can be audited back to its inputs.
+
+For governed phase documents that follow `SS-13`, prompt packing should prefer:
+
+1. metadata block
+2. `AI Quick View`
+3. exact cited section IDs or subsections
+4. raw excerpts only when the compact structure is insufficient
+
+This keeps spec, design, plan, task, and bug documents cheap to retrieve and easier for the AI to follow consistently.
 
 ---
 
@@ -619,6 +643,7 @@ export function ErrorBoundary({ error }: { error: Error }) {
 
 Unit tests:
 - Working memory extraction produces expected shape
+- Governed phase-document parser extracts metadata block and `AI Quick View` fields deterministically
 - Vector search RPC ranking inputs are correct
 - Context ranking combines similarity + recency + pinned boost correctly
 - Token budget packing respects priority order
@@ -627,6 +652,7 @@ Unit tests:
 Integration tests:
 - Raw artifact save → working memory generated → embedding stored
 - Failed memory generation: artifact save still succeeds, retry visible in Admin Web
+- Compliant `SS`/`SD`/`CP`/`Task`/`BugFix` docs use the structured extraction fast path before whole-file fallback
 - Workflow step prompt includes required context slots
 - Prompt context audit shows correct selected memory for each step
 
@@ -635,6 +661,7 @@ Manual validation:
 - Approve an upstream artifact
 - Run a later step
 - Verify only relevant memory is injected (check prompt context drawer)
+- Verify a governed phase document is represented by document ID, phase, parent links, and `AI Quick View` content instead of a whole-file dump when the compact structure is sufficient
 - Verify raw artifact remains viewable as source of truth
 
 ---
@@ -655,6 +682,7 @@ Manual validation:
 - [ ] Steps with MCP requirements seeded with their MCP slot row
 - [ ] `generate-embedding` Edge Function returns normalized embeddings
 - [ ] Working memory generated after artifact save (non-fatal on failure)
+- [ ] Governed phase documents in `requirements/05` to `09` use deterministic `SS-13` parsing before whole-file AI extraction fallback
 - [ ] Failed memory records visible in Admin Web with retry capability
 - [ ] Context Resolver loads slots from `step_context_slots` ordered by priority and order_index
 - [ ] Context Resolver dispatches each slot type to the correct resolver
@@ -662,6 +690,7 @@ Manual validation:
 - [ ] Semantic search uses resolved short query, not the full prompt
 - [ ] Context Resolver packs selected memory within token budget by priority
 - [ ] Prompt Assembler receives packed prompt memory, not all raw artifacts
+- [ ] Prompt packing prefers metadata + `AI Quick View` + exact cited sections for governed phase documents when that structure is available
 - [ ] Each workflow step records memory items used in `workflow_prompt_context_items`
 - [ ] Admin Web: Artifact Management screen with filters, memory viewer, embedding status
 - [ ] Admin Web: Context Slots panel with Add/Edit/Delete/Reorder — no raw JSON exposed
