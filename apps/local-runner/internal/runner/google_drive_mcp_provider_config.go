@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -47,6 +48,7 @@ type GoogleDriveConfigWithProviders struct {
 
 const (
 	googleDriveMcpServerName = "google-drive"
+	googleDriveMcpStatusMode = "read_only"
 )
 
 // Read-only tool allowlist for Phase A
@@ -169,13 +171,8 @@ func (r *Runner) ensureCodexGoogleDriveMcpConfig(accountHomePath string, mode st
 	if err == nil {
 		// Parse existing config
 		if err := toml.Unmarshal(raw, &config); err != nil {
-			return GoogleDriveMcpProviderConfigResponse{
-				ProviderKey: "codex",
-				ServerName:  googleDriveMcpServerName,
-				Status:      "failed",
-				ConfigPath:  configPath,
-				LastError:   "invalid TOML config",
-			}, fmt.Errorf("existing Codex config is invalid TOML: %w", err)
+			config = codexConfig{}
+			changed = true
 		}
 	}
 
@@ -184,24 +181,7 @@ func (r *Runner) ensureCodexGoogleDriveMcpConfig(accountHomePath string, mode st
 		config.McpServers = make(map[string]codexMcpServer)
 	}
 
-	// Build expected server config
-	expectedServer := codexMcpServer{
-		Command:           "npx",
-		Args:              []string{"-y", "@piotr-agier/google-drive-mcp"},
-		StartupTimeoutSec: 20,
-		ToolTimeoutSec:    120,
-		Enabled:           true,
-		ApprovalMode:      "prompt",
-		Env: map[string]string{
-			"GOOGLE_DRIVE_OAUTH_CREDENTIALS": mcpStatus.CredentialPath,
-			"GOOGLE_DRIVE_MCP_TOKEN_PATH":    mcpStatus.TokenPath,
-		},
-	}
-
-	// Add read-only tools for read_only mode
-	if mode == "read_only" {
-		expectedServer.EnabledTools = googleDriveMcpReadOnlyTools
-	}
+	expectedServer := expectedCodexGoogleDriveMcpServer(mode, mcpStatus)
 
 	// Check if config needs update
 	existingServer, exists := config.McpServers[googleDriveMcpServerName]
@@ -235,9 +215,40 @@ func (r *Runner) ensureCodexGoogleDriveMcpConfig(accountHomePath string, mode st
 	}, nil
 }
 
+// toolListsMatch compares two tool lists, handling nil and empty slices
+func toolListsMatch(existing, expected []string) bool {
+	// Both empty or nil - they match
+	if len(existing) == 0 && len(expected) == 0 {
+		return true
+	}
+	// One is empty and other is not - no match
+	if len(existing) != len(expected) {
+		return false
+	}
+	// Compare elements
+	for i, tool := range expected {
+		if i >= len(existing) || existing[i] != tool {
+			return false
+		}
+	}
+	return true
+}
+
 // codexServerConfigMatches checks if existing server config matches expected
 func codexServerConfigMatches(existing, expected codexMcpServer) bool {
 	if existing.Command != expected.Command {
+		return false
+	}
+	if existing.StartupTimeoutSec != expected.StartupTimeoutSec {
+		return false
+	}
+	if existing.ToolTimeoutSec != expected.ToolTimeoutSec {
+		return false
+	}
+	if existing.Enabled != expected.Enabled {
+		return false
+	}
+	if existing.ApprovalMode != expected.ApprovalMode {
 		return false
 	}
 	if len(existing.Args) != len(expected.Args) {
@@ -254,7 +265,32 @@ func codexServerConfigMatches(existing, expected codexMcpServer) bool {
 	if existing.Env["GOOGLE_DRIVE_MCP_TOKEN_PATH"] != expected.Env["GOOGLE_DRIVE_MCP_TOKEN_PATH"] {
 		return false
 	}
+	// Compare enabled tools for read-only mode
+	if !toolListsMatch(existing.EnabledTools, expected.EnabledTools) {
+		return false
+	}
 	return true
+}
+
+func expectedCodexGoogleDriveMcpServer(mode string, mcpStatus googleDriveMcpRuntimeConfig) codexMcpServer {
+	server := codexMcpServer{
+		Command:           "npx",
+		Args:              []string{"-y", "@piotr-agier/google-drive-mcp"},
+		StartupTimeoutSec: 20,
+		ToolTimeoutSec:    120,
+		Enabled:           true,
+		ApprovalMode:      "prompt",
+		Env: map[string]string{
+			"GOOGLE_DRIVE_OAUTH_CREDENTIALS": mcpStatus.CredentialPath,
+			"GOOGLE_DRIVE_MCP_TOKEN_PATH":    mcpStatus.TokenPath,
+		},
+	}
+
+	if mode == "read_only" {
+		server.EnabledTools = googleDriveMcpReadOnlyTools
+	}
+
+	return server
 }
 
 // ensureGeminiGoogleDriveMcpConfig configures Gemini settings.json
@@ -274,13 +310,8 @@ func (r *Runner) ensureGeminiGoogleDriveMcpConfig(accountHomePath string, mode s
 	if err == nil {
 		// Parse existing config
 		if err := json.Unmarshal(raw, &config); err != nil {
-			return GoogleDriveMcpProviderConfigResponse{
-				ProviderKey: "gemini",
-				ServerName:  googleDriveMcpServerName,
-				Status:      "failed",
-				ConfigPath:  configPath,
-				LastError:   "invalid JSON config",
-			}, fmt.Errorf("existing Gemini config is invalid JSON: %w", err)
+			config = geminiSettings{}
+			changed = true
 		}
 	}
 
@@ -289,22 +320,7 @@ func (r *Runner) ensureGeminiGoogleDriveMcpConfig(accountHomePath string, mode s
 		config.McpServers = make(map[string]geminiMcpServer)
 	}
 
-	// Build expected server config
-	expectedServer := geminiMcpServer{
-		Command: "npx",
-		Args:    []string{"-y", "@piotr-agier/google-drive-mcp"},
-		Env: map[string]string{
-			"GOOGLE_DRIVE_OAUTH_CREDENTIALS": mcpStatus.CredentialPath,
-			"GOOGLE_DRIVE_MCP_TOKEN_PATH":    mcpStatus.TokenPath,
-		},
-		Timeout: 600000,
-		Trust:   false,
-	}
-
-	// Add read-only tools for read_only mode
-	if mode == "read_only" {
-		expectedServer.IncludeTools = googleDriveMcpReadOnlyTools
-	}
+	expectedServer := expectedGeminiGoogleDriveMcpServer(mode, mcpStatus)
 
 	// Check if config needs update
 	existingServer, exists := config.McpServers[googleDriveMcpServerName]
@@ -343,6 +359,12 @@ func geminiServerConfigMatches(existing, expected geminiMcpServer) bool {
 	if existing.Command != expected.Command {
 		return false
 	}
+	if existing.Timeout != expected.Timeout {
+		return false
+	}
+	if existing.Trust != expected.Trust {
+		return false
+	}
 	if len(existing.Args) != len(expected.Args) {
 		return false
 	}
@@ -357,7 +379,30 @@ func geminiServerConfigMatches(existing, expected geminiMcpServer) bool {
 	if existing.Env["GOOGLE_DRIVE_MCP_TOKEN_PATH"] != expected.Env["GOOGLE_DRIVE_MCP_TOKEN_PATH"] {
 		return false
 	}
+	// Compare includeTools for read-only mode
+	if !toolListsMatch(existing.IncludeTools, expected.IncludeTools) {
+		return false
+	}
 	return true
+}
+
+func expectedGeminiGoogleDriveMcpServer(mode string, mcpStatus googleDriveMcpRuntimeConfig) geminiMcpServer {
+	server := geminiMcpServer{
+		Command: "npx",
+		Args:    []string{"-y", "@piotr-agier/google-drive-mcp"},
+		Env: map[string]string{
+			"GOOGLE_DRIVE_OAUTH_CREDENTIALS": mcpStatus.CredentialPath,
+			"GOOGLE_DRIVE_MCP_TOKEN_PATH":    mcpStatus.TokenPath,
+		},
+		Timeout: 600000,
+		Trust:   false,
+	}
+
+	if mode == "read_only" {
+		server.IncludeTools = googleDriveMcpReadOnlyTools
+	}
+
+	return server
 }
 
 // ensureClaudeGoogleDriveMcpConfig configures Claude .claude.json
@@ -376,13 +421,8 @@ func (r *Runner) ensureClaudeGoogleDriveMcpConfig(accountHomePath string, mode s
 	if err == nil {
 		// Parse existing config
 		if err := json.Unmarshal(raw, &config); err != nil {
-			return GoogleDriveMcpProviderConfigResponse{
-				ProviderKey: "claude",
-				ServerName:  googleDriveMcpServerName,
-				Status:      "failed",
-				ConfigPath:  configPath,
-				LastError:   "invalid JSON config",
-			}, fmt.Errorf("existing Claude config is invalid JSON: %w", err)
+			config = claudeConfig{}
+			changed = true
 		}
 	}
 
@@ -391,17 +431,7 @@ func (r *Runner) ensureClaudeGoogleDriveMcpConfig(accountHomePath string, mode s
 		config.McpServers = make(map[string]claudeMcpServer)
 	}
 
-	// Build expected server config
-	expectedServer := claudeMcpServer{
-		Type:    "stdio",
-		Command: "npx",
-		Args:    []string{"-y", "@piotr-agier/google-drive-mcp"},
-		Env: map[string]string{
-			"GOOGLE_DRIVE_OAUTH_CREDENTIALS": mcpStatus.CredentialPath,
-			"GOOGLE_DRIVE_MCP_TOKEN_PATH":    mcpStatus.TokenPath,
-		},
-		Timeout: 600000,
-	}
+	expectedServer := expectedClaudeGoogleDriveMcpServer(mcpStatus)
 
 	// Check if config needs update
 	existingServer, exists := config.McpServers[googleDriveMcpServerName]
@@ -440,6 +470,9 @@ func claudeServerConfigMatches(existing, expected claudeMcpServer) bool {
 	if existing.Type != expected.Type || existing.Command != expected.Command {
 		return false
 	}
+	if existing.Timeout != expected.Timeout {
+		return false
+	}
 	if len(existing.Args) != len(expected.Args) {
 		return false
 	}
@@ -455,4 +488,338 @@ func claudeServerConfigMatches(existing, expected claudeMcpServer) bool {
 		return false
 	}
 	return true
+}
+
+func expectedClaudeGoogleDriveMcpServer(mcpStatus googleDriveMcpRuntimeConfig) claudeMcpServer {
+	return claudeMcpServer{
+		Type:    "stdio",
+		Command: "npx",
+		Args:    []string{"-y", "@piotr-agier/google-drive-mcp"},
+		Env: map[string]string{
+			"GOOGLE_DRIVE_OAUTH_CREDENTIALS": mcpStatus.CredentialPath,
+			"GOOGLE_DRIVE_MCP_TOKEN_PATH":    mcpStatus.TokenPath,
+		},
+		Timeout: 600000,
+	}
+}
+
+// resolveGoogleDriveMcpProviderStatuses checks provider config status for all providers
+func (r *Runner) resolveGoogleDriveMcpProviderStatuses() ([]GoogleDriveMcpProviderConfigStatus, error) {
+	// Get runtime config for credential and token paths
+	mcpStatus, err := r.googleDriveMcpRuntimeConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get Google Drive MCP runtime config: %w", err)
+	}
+
+	statuses := make([]GoogleDriveMcpProviderConfigStatus, 0, 3)
+	now := time.Now().UTC().Format(time.RFC3339)
+	accounts, _ := r.ListProviderAccounts()
+
+	// Check each provider
+	for _, providerKey := range []string{"codex", "gemini", "claude"} {
+		accountHomes, discoverErr := DiscoverProviderAccountHomes(providerKey)
+		if discoverErr != nil {
+			statuses = append(statuses, GoogleDriveMcpProviderConfigStatus{
+				ProviderKey:   providerKey,
+				Status:        "failed",
+				LastCheckedAt: now,
+				LastError:     discoverErr.Error(),
+			})
+			continue
+		}
+
+		orderedHomes := orderProviderStatusHomes(providerKey, accountHomes, accounts)
+		if len(orderedHomes) == 0 {
+			statuses = append(statuses, GoogleDriveMcpProviderConfigStatus{
+				ProviderKey:   providerKey,
+				Status:        "not_started",
+				LastCheckedAt: now,
+			})
+			continue
+		}
+
+		for _, accountHomePath := range orderedHomes {
+			configPath := getProviderConfigPath(providerKey, accountHomePath)
+
+			// Check if config file exists
+			exists := fileExists(configPath)
+			if !exists {
+				statuses = append(statuses, GoogleDriveMcpProviderConfigStatus{
+					ProviderKey:     providerKey,
+					AccountHomePath: accountHomePath,
+					ConfigPath:      configPath,
+					Status:          "not_started",
+					LastCheckedAt:   now,
+				})
+				continue
+			}
+
+			// Try to parse config and check for google-drive server
+			status, detailedErr := r.checkProviderGoogleDriveMcpConfig(providerKey, accountHomePath, configPath, mcpStatus)
+			if detailedErr != nil {
+				status.LastError = detailedErr.Error()
+			}
+			status.LastCheckedAt = now
+			statuses = append(statuses, status)
+		}
+	}
+
+	return statuses, nil
+}
+
+func orderProviderStatusHomes(
+	providerKey string,
+	discoveredHomes []string,
+	accounts []ProviderAccount,
+) []string {
+	if len(discoveredHomes) == 0 {
+		return nil
+	}
+
+	canonicalHomes := make(map[string]string, len(discoveredHomes))
+	for _, homePath := range discoveredHomes {
+		canonicalHomes[canonicalPathKey(homePath)] = filepath.Clean(homePath)
+	}
+
+	orderedHomes := make([]string, 0, len(discoveredHomes))
+	seen := make(map[string]struct{}, len(discoveredHomes))
+	appendHome := func(homePath string) {
+		cleanHome := canonicalPathKey(homePath)
+		if _, alreadySeen := seen[cleanHome]; alreadySeen {
+			return
+		}
+		canonicalHome, ok := canonicalHomes[cleanHome]
+		if !ok {
+			return
+		}
+		seen[cleanHome] = struct{}{}
+		orderedHomes = append(orderedHomes, canonicalHome)
+	}
+
+	for _, account := range accounts {
+		cleanHome := canonicalPathKey(account.HomePath)
+		if account.ProviderKey == providerKey && account.IsActive && account.AuthStatus == "connected" {
+			appendHome(cleanHome)
+		}
+	}
+
+	for _, account := range accounts {
+		cleanHome := canonicalPathKey(account.HomePath)
+		if account.ProviderKey == providerKey && account.AuthStatus == "connected" {
+			appendHome(cleanHome)
+		}
+	}
+
+	for _, homePath := range discoveredHomes {
+		appendHome(homePath)
+	}
+
+	return orderedHomes
+}
+
+// getProviderConfigPath returns the config file path for a provider
+func getProviderConfigPath(providerKey string, accountHomePath string) string {
+	switch providerKey {
+	case "codex":
+		return filepath.Join(accountHomePath, "config.toml")
+	case "gemini":
+		return filepath.Join(accountHomePath, ".gemini", "settings.json")
+	case "claude":
+		return filepath.Join(accountHomePath, ".claude.json")
+	default:
+		return ""
+	}
+}
+
+// checkProviderGoogleDriveMcpConfig checks the config status for a specific provider
+func (r *Runner) checkProviderGoogleDriveMcpConfig(
+	providerKey string,
+	accountHomePath string,
+	configPath string,
+	mcpStatus googleDriveMcpRuntimeConfig,
+) (GoogleDriveMcpProviderConfigStatus, error) {
+	result := GoogleDriveMcpProviderConfigStatus{
+		ProviderKey:     providerKey,
+		AccountHomePath: accountHomePath,
+		ConfigPath:      configPath,
+		Status:          "failed",
+	}
+
+	switch providerKey {
+	case "codex":
+		return r.checkCodexGoogleDriveMcpConfig(result, configPath, mcpStatus)
+	case "gemini":
+		return r.checkGeminiGoogleDriveMcpConfig(result, configPath, mcpStatus)
+	case "claude":
+		return r.checkClaudeGoogleDriveMcpConfig(result, configPath, mcpStatus)
+	default:
+		return result, fmt.Errorf("unsupported provider: %s", providerKey)
+	}
+}
+
+// checkCodexGoogleDriveMcpConfig checks Codex config.toml for google-drive MCP
+func (r *Runner) checkCodexGoogleDriveMcpConfig(
+	result GoogleDriveMcpProviderConfigStatus,
+	configPath string,
+	mcpStatus googleDriveMcpRuntimeConfig,
+) (GoogleDriveMcpProviderConfigStatus, error) {
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		return result, fmt.Errorf("failed to read Codex config: %w", err)
+	}
+
+	var config codexConfig
+	if err := toml.Unmarshal(raw, &config); err != nil {
+		result.Status = "failed"
+		return result, fmt.Errorf("invalid TOML config: %w", err)
+	}
+
+	server, exists := config.McpServers[googleDriveMcpServerName]
+	if !exists {
+		result.Status = "not_started"
+		return result, nil
+	}
+
+	// Check if paths match current runtime config
+	if detectStaleCodexConfig(server, mcpStatus) {
+		result.Status = "config_stale"
+		return result, nil
+	}
+
+	result.Status = "configured"
+	return result, nil
+}
+
+// detectStaleCodexConfig detects if Codex config drifts from the expected MCP server shape.
+func detectStaleCodexConfig(server codexMcpServer, mcpStatus googleDriveMcpRuntimeConfig) bool {
+	return !codexServerConfigMatches(server, expectedCodexGoogleDriveMcpServer(googleDriveMcpStatusMode, mcpStatus))
+}
+
+// checkGeminiGoogleDriveMcpConfig checks Gemini settings.json for google-drive MCP
+func (r *Runner) checkGeminiGoogleDriveMcpConfig(
+	result GoogleDriveMcpProviderConfigStatus,
+	configPath string,
+	mcpStatus googleDriveMcpRuntimeConfig,
+) (GoogleDriveMcpProviderConfigStatus, error) {
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		return result, fmt.Errorf("failed to read Gemini config: %w", err)
+	}
+
+	var config geminiSettings
+	if err := json.Unmarshal(raw, &config); err != nil {
+		result.Status = "failed"
+		return result, fmt.Errorf("invalid JSON config: %w", err)
+	}
+
+	server, exists := config.McpServers[googleDriveMcpServerName]
+	if !exists {
+		result.Status = "not_started"
+		return result, nil
+	}
+
+	// Check if paths match current runtime config
+	if detectStaleGeminiConfig(server, mcpStatus) {
+		result.Status = "config_stale"
+		return result, nil
+	}
+
+	result.Status = "configured"
+	return result, nil
+}
+
+// detectStaleGeminiConfig detects if Gemini config drifts from the expected MCP server shape.
+func detectStaleGeminiConfig(server geminiMcpServer, mcpStatus googleDriveMcpRuntimeConfig) bool {
+	return !geminiServerConfigMatches(server, expectedGeminiGoogleDriveMcpServer(googleDriveMcpStatusMode, mcpStatus))
+}
+
+// checkClaudeGoogleDriveMcpConfig checks Claude .claude.json for google-drive MCP
+func (r *Runner) checkClaudeGoogleDriveMcpConfig(
+	result GoogleDriveMcpProviderConfigStatus,
+	configPath string,
+	mcpStatus googleDriveMcpRuntimeConfig,
+) (GoogleDriveMcpProviderConfigStatus, error) {
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		return result, fmt.Errorf("failed to read Claude config: %w", err)
+	}
+
+	var config claudeConfig
+	if err := json.Unmarshal(raw, &config); err != nil {
+		result.Status = "failed"
+		return result, fmt.Errorf("invalid JSON config: %w", err)
+	}
+
+	server, exists := config.McpServers[googleDriveMcpServerName]
+	if !exists {
+		result.Status = "not_started"
+		return result, nil
+	}
+
+	// Check if paths match current runtime config
+	if detectStaleClaudeConfig(server, mcpStatus) {
+		result.Status = "config_stale"
+		return result, nil
+	}
+
+	result.Status = "configured"
+	return result, nil
+}
+
+// detectStaleClaudeConfig detects if Claude config drifts from the expected MCP server shape.
+func detectStaleClaudeConfig(server claudeMcpServer, mcpStatus googleDriveMcpRuntimeConfig) bool {
+	return !claudeServerConfigMatches(server, expectedClaudeGoogleDriveMcpServer(mcpStatus))
+}
+
+// detectProviderConfigStale checks if provider config paths are stale
+func (r *Runner) detectProviderConfigStale(providerKey string, configPath string, mcpStatus googleDriveMcpRuntimeConfig) (bool, error) {
+	switch providerKey {
+	case "codex":
+		raw, err := os.ReadFile(configPath)
+		if err != nil {
+			return false, err
+		}
+		var config codexConfig
+		if err := toml.Unmarshal(raw, &config); err != nil {
+			return false, nil // If invalid, not necessarily stale
+		}
+		server, exists := config.McpServers[googleDriveMcpServerName]
+		if !exists {
+			return false, nil // Not configured
+		}
+		return detectStaleCodexConfig(server, mcpStatus), nil
+
+	case "gemini":
+		raw, err := os.ReadFile(configPath)
+		if err != nil {
+			return false, err
+		}
+		var config geminiSettings
+		if err := json.Unmarshal(raw, &config); err != nil {
+			return false, nil // If invalid, not necessarily stale
+		}
+		server, exists := config.McpServers[googleDriveMcpServerName]
+		if !exists {
+			return false, nil // Not configured
+		}
+		return detectStaleGeminiConfig(server, mcpStatus), nil
+
+	case "claude":
+		raw, err := os.ReadFile(configPath)
+		if err != nil {
+			return false, err
+		}
+		var config claudeConfig
+		if err := json.Unmarshal(raw, &config); err != nil {
+			return false, nil // If invalid, not necessarily stale
+		}
+		server, exists := config.McpServers[googleDriveMcpServerName]
+		if !exists {
+			return false, nil // Not configured
+		}
+		return detectStaleClaudeConfig(server, mcpStatus), nil
+
+	default:
+		return false, fmt.Errorf("unsupported provider: %s", providerKey)
+	}
 }

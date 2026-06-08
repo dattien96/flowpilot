@@ -26,6 +26,9 @@ import type {
   LocalRunnerAiSessionStartRequest,
   LocalRunnerAiSessionHandle,
   LocalRunnerAiSessionMessageRequest,
+  GoogleDriveWorkspaceConfigResponse,
+  GoogleDriveMcpProviderConfigRequest,
+  GoogleDriveMcpProviderConfigResponse,
 } from "@/domain/model/entity/local-runner";
 
 type HealthResponse = Omit<LocalRunnerHealth, "baseUrl" | "errorMessage">;
@@ -696,5 +699,37 @@ export class HttpLocalRunnerGateway implements LocalRunnerGateway {
     if (!response.ok) {
       throw new Error(`Local runner restart stack failed: ${response.status} ${response.statusText}`);
     }
+  }
+
+  async loadGoogleDriveWorkspaceConfig() {
+    try {
+      return await readJson<GoogleDriveWorkspaceConfigResponse>(this.baseUrl, "/google-drive-config");
+    } catch (error) {
+      throw new LocalRunnerError(
+        error instanceof Error ? error.message : "Failed to load Google Drive workspace config",
+      );
+    }
+  }
+
+  async ensureGoogleDriveMcpProviderConfig(request: GoogleDriveMcpProviderConfigRequest) {
+    const response = await fetch(
+      new URL("/google-drive-config/mcp-provider-config/ensure", this.baseUrl),
+      {
+        method: "POST",
+        cache: "no-store",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(request),
+      },
+    );
+
+    if (!response.ok) {
+      throw new LocalRunnerError(
+        `Provider config ensure failed: ${response.status} ${response.statusText}`,
+      );
+    }
+
+    return (await response.json()) as GoogleDriveMcpProviderConfigResponse;
   }
 }

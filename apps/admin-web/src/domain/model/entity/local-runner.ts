@@ -24,6 +24,7 @@ export interface LocalRunnerProvider {
   models?: LocalRunnerProviderModel[];
   lastError?: string | null;
   installHint: string | null;
+  accounts?: LocalRunnerProviderAccount[];
 }
 
 export interface LocalRunnerProviderModel {
@@ -31,6 +32,12 @@ export interface LocalRunnerProviderModel {
   displayName: string;
   available: boolean;
   source: string;
+}
+
+export interface LocalRunnerProviderAccount {
+  id: string;
+  homePath: string;
+  label: string;
 }
 
 export interface LocalRunnerMcpBackend {
@@ -65,6 +72,11 @@ export interface LocalRunnerMcpTestRequest {
   allowWrite: boolean;
   prompt: string;
   timeoutMs: number;
+  useProviderCli?: boolean;
+  aiProviderKey?: string;
+  aiModelName?: string;
+  accountHomePath?: string;
+  workingDirectory?: string;
 }
 
 export interface LocalRunnerMcpTestResult {
@@ -82,6 +94,11 @@ export interface LocalRunnerMcpTestResult {
   startedAt: string;
   completedAt: string;
   errorMessage: string | null;
+  aiProviderKey?: string;
+  aiModelName?: string;
+  mcpServerName?: string;
+  mcpToolUsed?: string;
+  mcpFailureCode?: string;
 }
 
 export interface LocalRunnerMcpTestRunSummary {
@@ -290,4 +307,65 @@ export interface LocalRunnerAiSessionMessageRequest {
   skillIds: string[];
   contextSourceIds: string[];
   idleTTLSeconds?: number | null;
+}
+
+
+// Google Drive MCP Provider Configuration Types
+
+export interface GoogleDriveMcpProviderConfigStatus {
+  providerKey: string;
+  accountHomePath: string;
+  configPath: string;
+  status: "not_started" | "configured" | "config_stale" | "failed";
+  lastCheckedAt?: string;
+  lastError?: string;
+}
+
+export interface GoogleDriveMcpProviderConfigRequest {
+  providerKey: string;
+  accountHomePath: string;
+  scope: "account" | "workspace";
+  mode: "read_only" | "read_write";
+}
+
+export interface GoogleDriveMcpProviderConfigResponse {
+  providerKey: string;
+  serverName: string;
+  status: string;
+  changed: boolean;
+  configPath: string;
+  lastError?: string;
+}
+
+export interface GoogleDriveMcpStatus {
+  status: string;
+  configured: boolean;
+  credentialPath?: string;
+  tokenPath?: string;
+  credentialFileExists: boolean;
+  credentialFileValid: boolean;
+  tokenFileExists: boolean;
+  needsAuth: boolean;
+  backendPackageAvailable: boolean;
+  missingFields?: string[];
+}
+
+export interface GoogleDriveArtifactSyncStatus {
+  status: string;
+  source: string;
+  configured: boolean;
+  clientId?: string;
+  redirectUri?: string;
+  hasClientSecret: boolean;
+  hasPickerApiKey: boolean;
+  missingFields?: string[];
+}
+
+export interface GoogleDriveWorkspaceConfigResponse {
+  artifactSync: GoogleDriveArtifactSyncStatus;
+  mcp: GoogleDriveMcpStatus;
+  providerConfigs?: GoogleDriveMcpProviderConfigStatus[];
+  runnerReachable: boolean;
+  lastError?: string | null;
+  updatedAt?: string;
 }

@@ -17,6 +17,12 @@
 - Cleared the Google Drive setup page secret inputs after successful artifact-sync and Picker-key saves.
 - Aligned the admin-web fallback validator with the runner by treating Web OAuth JSON as invalid for the MCP upload flow.
 - Expanded targeted runner coverage for env precedence, MCP JSON validation, artifact reconnect handling, and MCP reconnect detection.
+- Extended Google Drive MCP provider-account discovery for Codex, Gemini, and Claude so the runner now surfaces legacy/default homes, managed account slots, and per-account provider-config status rows to the setup flow.
+- Updated provider-config repair so invalid Codex/Gemini/Claude config files are rewritten into the expected Google Drive MCP server shape instead of dead-ending on parse errors.
+- Aligned provider-config status detection with the written server shape so drift in read-only tool allowlists, timeout fields, approval mode, enable flags, and command/type fields now returns `config_stale` instead of a false `configured`.
+- Tightened Gemini discovery validation so metadata-only files, arbitrary JSON payloads, and nested wrapper false positives no longer fabricate discoverable account homes.
+- Updated the admin-web provider configuration card so failed provider rows can be retried, partial success is messaged correctly when some providers still lack discovered homes, and the card only acts on actionable provider rows.
+- Added targeted backend and frontend regressions for managed account discovery, provider-config status drift, invalid config rewrite, Gemini JSON validation edge cases, and provider configuration UI success/error flows.
 
 ## Verification
 
@@ -25,8 +31,14 @@
 - Re-indexed GitNexus with `npx gitnexus analyze` so impact checks covered the new Google Drive config symbols before the final fix pass.
 - Ran GitNexus impact analysis on the Google Drive config/runtime symbols touched in the loop; all reported LOW risk with no indexed caller/process blast radius.
 - Completed a reviewer sub-agent pass with final result: clean pass.
+- Passed `go test ./internal/runner -run "TestDiscover|TestEnsure|TestPreflight|TestResolveGoogleDriveMcpProviderStatuses|TestIsValidGemini"` from `apps/local-runner`.
+- Passed `npm run test -- src/data/repository/local-first/local-first-workflow-gateway.test.ts src/routes/_authenticated/settings/components/GoogleDriveProviderConfigCard.test.tsx src/routes/_authenticated/settings/mcp-servers/mcp-connect-test.test.tsx` from `apps/admin-web`.
+- Passed targeted Gemini validation regressions with `go test ./internal/runner -run "TestIsValidGeminiAccountPath_ArbitraryJSONInvalid|TestDiscoverGeminiAccountHomes_IgnoresArbitraryJSONCandidates|TestDiscoverGeminiAccountHomes_IgnoresStructurallyEmptyJSONCandidates|TestIsValidGeminiAccountPath_WithGeminiDir|TestIsValidGeminiAccountPath_WithSettingsJson"`.
+- Completed a bounded coder/reviewer sub-agent loop for the provider-config and Gemini-discovery follow-up fixes, with final reviewer result: `PASS`.
 
 ## Residual Notes
 
 - Frontend behavior for the updated Google Drive setup messaging and fallback status handling was validated by code review only; no dedicated admin-web test or build was run in this loop.
 - Full `go test ./...` for `apps/local-runner` was not rerun; verification stayed scoped to the Google Drive runner paths touched here.
+- Full `npx tsc --noEmit` in `apps/admin-web` still reports unrelated pre-existing errors outside the Google Drive provider-config files, including `src/data/repository/local-first/local-first-workflow-gateway.ts`.
+- Gemini discovery now intentionally uses a conservative shape check for `settings.json` and `oauth*.json`; if the upstream CLI introduces additional legitimate top-level schemas, the allowlist may need another small update.

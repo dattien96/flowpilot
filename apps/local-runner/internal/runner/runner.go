@@ -1039,6 +1039,12 @@ func summarizeCommandFailure(runErr error, stderrSummary string) string {
 }
 
 func (r *Runner) RunMcpTest(ctx context.Context, request McpTestRequest) (McpTestResult, error) {
+	// Handle provider-driven tests
+	if request.UseProviderCLI {
+		return r.runProviderDrivenMcpTest(ctx, request)
+	}
+
+	// Handle standard backend tests
 	if strings.TrimSpace(request.BackendKey) == "" {
 		return McpTestResult{}, errors.New("backendKey is required")
 	}
@@ -1329,6 +1335,10 @@ func detectProvider(ctx context.Context, spec providerSpec) Provider {
 		Models:        buildProviderModels(spec.Models, false),
 	}
 
+	if accounts, err := DiscoverProviderAccounts(spec.Key); err == nil && len(accounts) > 0 {
+		provider.Accounts = accounts
+	}
+
 	binaryPath, err := lookPathFn(spec.BinaryName)
 	if err != nil {
 		notFound := fmt.Sprintf("%s binary was not found on PATH", spec.Label)
@@ -1573,20 +1583,61 @@ func parseGeminiModelsFromBundle(raw string) ([]ProviderModel, error) {
 }
 
 func getPossibleHomeDirs() []string {
-	var dirs []string
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		dirs = append(dirs, home)
+	dirs := make([]string, 0, 4)
+	appendUniqueHomeDir := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+
+		cleanValue := canonicalPathKey(value)
+		for _, existing := range dirs {
+			if canonicalPathKey(existing) == cleanValue {
+				return
+			}
+		}
+
+		dirs = append(dirs, filepath.Clean(value))
 	}
-	if userProfile := os.Getenv("USERPROFILE"); userProfile != "" {
-		dirs = append(dirs, userProfile)
+
+	appendUniqueHomeDir(preferredUserHomeDir())
+	appendUniqueHomeDir(os.Getenv("USERPROFILE"))
+	appendUniqueHomeDir(os.Getenv("HOME"))
+	appendUniqueHomeDir(os.Getenv("APPDATA"))
+	if home, err := os.UserHomeDir(); err == nil {
+		appendUniqueHomeDir(home)
 	}
-	if homeEnv := os.Getenv("HOME"); homeEnv != "" {
-		dirs = append(dirs, homeEnv)
-	}
-	if appData := os.Getenv("APPDATA"); appData != "" {
-		dirs = append(dirs, appData)
-	}
+
 	return dirs
+}
+
+func preferredUserHomeDir() string {
+	candidates := make([]string, 0, 4)
+	if runtime.GOOS == "windows" {
+		candidates = append(candidates, os.Getenv("USERPROFILE"))
+		if drive := strings.TrimSpace(os.Getenv("HOMEDRIVE")); drive != "" {
+			if path := strings.TrimSpace(os.Getenv("HOMEPATH")); path != "" {
+				candidates = append(candidates, drive+path)
+			}
+		}
+		candidates = append(candidates, os.Getenv("HOME"))
+	} else {
+		candidates = append(candidates, os.Getenv("HOME"))
+		candidates = append(candidates, os.Getenv("USERPROFILE"))
+	}
+
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate != "" {
+			return filepath.Clean(candidate)
+		}
+	}
+
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		return filepath.Clean(home)
+	}
+
+	return ""
 }
 
 type RunnerInstanceContext struct {
@@ -3392,9 +3443,9 @@ func (r *Runner) getEnvForExecution(
 }
 
 func NextAccountHomePath(providerKey string, existing []string) (string, int, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", 0, err
+	home := preferredUserHomeDir()
+	if home == "" {
+		return "", 0, errors.New("unable to resolve user home directory")
 	}
 
 	prefix := ""
@@ -3411,12 +3462,12 @@ func NextAccountHomePath(providerKey string, existing []string) (string, int, er
 
 	existingPaths := make(map[string]bool)
 	for _, p := range existing {
-		existingPaths[filepath.Clean(p)] = true
+		existingPaths[canonicalPathKey(p)] = true
 	}
 
 	for i := 1; i < 1000; i++ {
 		path := filepath.Join(home, fmt.Sprintf("%s%d", prefix, i))
-		if existingPaths[path] {
+		if existingPaths[canonicalPathKey(path)] {
 			continue
 		}
 		if _, err := os.Stat(path); os.IsNotExist(err) {

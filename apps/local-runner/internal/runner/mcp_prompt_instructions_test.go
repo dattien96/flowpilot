@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -85,17 +86,23 @@ func TestPreflightGoogleDriveMcp_NoCredential(t *testing.T) {
 	nonExistentCredPath := filepath.Join(tmpDir, "nonexistent", "cred.json")
 	nonExistentTokenPath := filepath.Join(tmpDir, "nonexistent", "token.json")
 
-	workspaceConfig := `{
+	// Build workspace config using JSON marshaling for proper escaping (handles Windows paths)
+	wsConfig := map[string]interface{}{
 		"version": 1,
-		"artifactSync": {},
-		"mcp": {
-			"credentialPath": "` + nonExistentCredPath + `",
-			"tokenPath": "` + nonExistentTokenPath + `"
-		}
-	}`
+		"artifactSync": map[string]interface{}{},
+		"mcp": map[string]interface{}{
+			"credentialPath": nonExistentCredPath,
+			"tokenPath": nonExistentTokenPath,
+		},
+	}
+
+	wsConfigBytes, err := json.Marshal(wsConfig)
+	if err != nil {
+		t.Fatalf("Failed to marshal workspace config: %v", err)
+	}
 
 	wsConfigPath := filepath.Join(flowpilotDir, "google-drive-config.json")
-	if err := os.WriteFile(wsConfigPath, []byte(workspaceConfig), 0o644); err != nil {
+	if err := os.WriteFile(wsConfigPath, wsConfigBytes, 0o644); err != nil {
 		t.Fatalf("Failed to write workspace config: %v", err)
 	}
 
@@ -135,6 +142,31 @@ func TestPreflightGoogleDriveMcp_ConfiguredWithNoProvider(t *testing.T) {
 	validToken := `{"access_token":"test-access","refresh_token":"test-refresh"}`
 	if err := os.WriteFile(tokenPath, []byte(validToken), 0o600); err != nil {
 		t.Fatalf("Failed to write token: %v", err)
+	}
+
+	// Create workspace config to specify MCP paths
+	flowpilotDir := filepath.Join(tmpDir, ".flowpilot", "settings")
+	if err := os.MkdirAll(flowpilotDir, 0o755); err != nil {
+		t.Fatalf("Failed to create .flowpilot dir: %v", err)
+	}
+
+	wsConfig := map[string]interface{}{
+		"version": 1,
+		"artifactSync": map[string]interface{}{},
+		"mcp": map[string]interface{}{
+			"credentialPath": credPath,
+			"tokenPath": tokenPath,
+		},
+	}
+
+	wsConfigBytes, err := json.Marshal(wsConfig)
+	if err != nil {
+		t.Fatalf("Failed to marshal workspace config: %v", err)
+	}
+
+	wsConfigPath := filepath.Join(flowpilotDir, "google-drive-config.json")
+	if err := os.WriteFile(wsConfigPath, wsConfigBytes, 0o644); err != nil {
+		t.Fatalf("Failed to write workspace config: %v", err)
 	}
 
 	// Check without provider - should pass if Google Drive is ready

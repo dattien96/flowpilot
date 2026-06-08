@@ -142,7 +142,24 @@ func (r *Runner) PreflightGoogleDriveMcp(providerKey string, accountHomePath str
 			return result
 		}
 
-		// TODO: Add stale config detection
+		// Validate the actual config structure and mcpServers.google-drive presence
+		providerConfigStatus, err := r.checkProviderGoogleDriveMcpConfig(providerKey, accountHomePath, configPath, mcpStatus)
+		if err != nil {
+			result.ErrorMessage = fmt.Sprintf("Provider config validation failed: %v", err)
+			return result
+		}
+
+		if providerConfigStatus.Status == "failed" {
+			result.ErrorMessage = fmt.Sprintf("Provider config is invalid: %s", providerConfigStatus.LastError)
+			return result
+		}
+
+		// Check for stale config
+		if providerConfigStatus.Status == "config_stale" {
+			result.ErrorMessage = "Provider has stale Google Drive MCP config. Re-run Configure Providers."
+			return result
+		}
+
 		result.ProviderConfigured = true
 	} else {
 		// If no provider specified, assume provider config is not checked

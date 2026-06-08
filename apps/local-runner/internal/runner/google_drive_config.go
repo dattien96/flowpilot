@@ -277,6 +277,10 @@ func (r *Runner) resolveGoogleDriveWorkspaceStatus() (GoogleDriveWorkspaceConfig
 		return status, nil
 	}
 
+	// Resolve provider configs
+	providerConfigs, _ := r.resolveGoogleDriveMcpProviderStatuses()
+	status.ProviderConfigs = providerConfigs
+
 	if err == nil {
 		artifact, artifactErr := r.resolveGoogleDriveArtifactStatusFromSavedConfig(configFile)
 		if artifactErr != nil {

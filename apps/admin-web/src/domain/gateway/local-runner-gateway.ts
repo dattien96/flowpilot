@@ -23,6 +23,8 @@ import type {
   LocalRunnerAiSessionStartRequest,
   LocalRunnerAiSessionHandle,
   LocalRunnerAiSessionMessageRequest,
+  GoogleDriveMcpProviderConfigRequest,
+  GoogleDriveMcpProviderConfigResponse,
 } from "@/domain/model/entity/local-runner";
 
 export interface LocalRunnerGateway {
@@ -82,4 +84,7 @@ export interface LocalRunnerGateway {
   readFile(path: string): Promise<string>;
   shutdownStack(): Promise<void>;
   restartStack(): Promise<void>;
+  ensureGoogleDriveMcpProviderConfig(
+    request: GoogleDriveMcpProviderConfigRequest,
+  ): Promise<GoogleDriveMcpProviderConfigResponse>;
 }

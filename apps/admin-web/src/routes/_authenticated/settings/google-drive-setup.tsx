@@ -23,6 +23,7 @@ import {
   type GoogleDriveValidationResult,
 } from "@/lib/google-drive/runtime-config";
 import { Badge } from "@/presentation/components/ui/badge";
+import { GoogleDriveProviderConfigCard } from "./components/-GoogleDriveProviderConfigCard";
 
 const DEFAULT_REDIRECT_URI =
   "http://127.0.0.1:4317/artifact-storage/google-drive/oauth/callback";
@@ -801,6 +802,13 @@ function GoogleDriveSetupPage() {
         <Button disabled={busyAction === "reset"} onClick={resetConfig} variant="secondary">
           {busyAction === "reset" ? "Resetting..." : "Reset Google Drive config"}
         </Button>
+      </div>
+
+      <div className="mt-6">
+        <GoogleDriveProviderConfigCard
+          googleDriveStatus={status}
+          onStatusRefresh={refreshStatus}
+        />
       </div>
 
       <Dialog open={validationOpen} onOpenChange={setValidationOpen}>
