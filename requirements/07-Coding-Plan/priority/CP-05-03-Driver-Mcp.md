@@ -1473,7 +1473,7 @@ Do not start with a Go MCP client unless provider-side MCP verification fails an
 
 Use this guide to verify the behavior that is already implemented in Phase A and Phase B.
 
-### 12.1 Prerequisites
+### 12.1 Prerequisites - Passed
 
 Before testing, confirm:
 
@@ -1489,7 +1489,7 @@ Before testing, confirm:
 
 If any of those are missing, stop and fix setup first. Do not treat provider runtime failures as proof that Phase A or Phase B is broken unless the prerequisite checks passed.
 
-### 12.2 Phase A Test Cases
+### 12.2 Phase A Test Cases - Passed
 
 Verify provider config and provider-driven MCP smoke testing first.
 
