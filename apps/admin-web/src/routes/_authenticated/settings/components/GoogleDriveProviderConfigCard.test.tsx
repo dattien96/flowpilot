@@ -111,7 +111,7 @@ describe('GoogleDriveProviderConfigCard', () => {
     it('renders the card title and description', () => {
       renderComponent();
 
-      expect(screen.getByText('AI Provider Configuration')).toBeInTheDocument();
+      expect(screen.getByText('MCP Provider setup')).toBeInTheDocument();
       expect(
         screen.getByText(/Configure Codex, Gemini, and Claude to use Google Drive MCP/)
       ).toBeInTheDocument();
@@ -379,7 +379,7 @@ describe('GoogleDriveProviderConfigCard', () => {
     it('renders safely when status is null', () => {
       renderComponent(null);
 
-      expect(screen.getByText('AI Provider Configuration')).toBeInTheDocument();
+      expect(screen.getByText('MCP Provider setup')).toBeInTheDocument();
       // Should show empty state or placeholder
       expect(screen.getByText(/No provider configurations available/)).toBeInTheDocument();
     });

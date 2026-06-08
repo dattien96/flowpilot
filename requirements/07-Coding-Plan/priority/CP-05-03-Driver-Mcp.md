@@ -1523,7 +1523,7 @@ Expected Phase A results:
 - The provider-driven MCP test reaches the provider CLI, not a direct runner MCP call.
 - The smoke test fails clearly if the provider account is not configured.
 
-### 12.3 Phase B Test Cases
+### 12.3 Phase B Test Cases - Inprogress
 
 Verify workflow runtime behavior with `requiredMcps: ["google_drive"]`.
 

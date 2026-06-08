@@ -14,6 +14,7 @@ import { Badge } from '@/presentation/components/ui/badge';
 interface GoogleDriveProviderConfigCardProps {
   googleDriveStatus: GoogleDriveWorkspaceConfigResponse | null;
   onStatusRefresh?: () => Promise<unknown>;
+  embedded?: boolean;
 }
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -81,6 +82,7 @@ function getStatusTooltip(status: string): string {
 export function GoogleDriveProviderConfigCard({
   googleDriveStatus,
   onStatusRefresh,
+  embedded = false,
 }: GoogleDriveProviderConfigCardProps) {
   const [configMessage, setConfigMessage] = useState<string | null>(null);
   const [configError, setConfigError] = useState<string | null>(null);
@@ -156,12 +158,16 @@ export function GoogleDriveProviderConfigCard({
   const isConfiguring = configureProviders.isPending;
 
   return (
-    <section className="rounded-[1.6rem] border border-border bg-background/80 p-6">
+    <section className={embedded ? "" : "rounded-[1.6rem] border border-border bg-background/80 p-6"}>
       <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
         <div>
-          <p className="text-xs uppercase tracking-[0.28em] text-muted-foreground">Provider Setup</p>
-          <h2 className="mt-2 text-2xl font-semibold">AI Provider Configuration</h2>
-          <p className="mt-3 max-w-2xl text-sm text-muted-foreground">
+          {embedded ? null : (
+            <>
+              <p className="text-xs uppercase tracking-[0.28em] text-muted-foreground">Provider setup</p>
+              <h2 className="mt-2 text-2xl font-semibold">MCP Provider setup</h2>
+            </>
+          )}
+          <p className={`${embedded ? "" : "mt-3 "}max-w-2xl text-sm text-muted-foreground`}>
             Configure Codex, Gemini, and Claude to use Google Drive MCP tools during workflow execution.
           </p>
         </div>
@@ -184,7 +190,7 @@ export function GoogleDriveProviderConfigCard({
       {!mcpConfigured && (
         <div className="mt-4 rounded-2xl border border-border/70 bg-muted/40 p-4 text-sm text-muted-foreground">
           <p className="font-medium text-foreground">Google Drive MCP must be configured first</p>
-          <p className="mt-2">Complete Step 5 (Upload Desktop OAuth JSON for MCP) to enable provider configuration.</p>
+          <p className="mt-2">Complete Step 6 (Upload Desktop OAuth JSON for MCP) to enable provider configuration.</p>
         </div>
       )}
 
