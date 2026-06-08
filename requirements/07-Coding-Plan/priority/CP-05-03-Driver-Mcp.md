@@ -1468,3 +1468,111 @@ Then expand:
 4. Add workflow-level provider config validation for all selected providers.
 
 Do not start with a Go MCP client unless provider-side MCP verification fails and cannot be made reliable.
+
+## 12. Test Guide For Implemented Phase A + B Cases
+
+Use this guide to verify the behavior that is already implemented in Phase A and Phase B.
+
+### 12.1 Prerequisites
+
+Before testing, confirm:
+
+- Google Cloud project setup from CP-27 is complete.
+- The local Google Drive setup page can save the Desktop OAuth JSON.
+- `npx` is available on the runner machine.
+- The selected AI provider CLI is installed and signed in on the account you plan to test.
+- The account home path used by the provider matches the path stored by FlowPilot.
+- You know where each provider stores its MCP config file:
+  - Codex: `config.toml`
+  - Gemini: `.gemini/settings.json`
+  - Claude: `.claude.json`
+
+If any of those are missing, stop and fix setup first. Do not treat provider runtime failures as proof that Phase A or Phase B is broken unless the prerequisite checks passed.
+
+### 12.2 Phase A Test Cases
+
+Verify provider config and provider-driven MCP smoke testing first.
+
+1. Open `/settings/google-drive-setup`.
+2. Upload the Desktop OAuth JSON.
+3. Confirm the runner stores `gcp-oauth.keys.json` under the managed MCP config path.
+4. Click `Install` for Google Drive MCP.
+5. Confirm the backend moves to installed or verify state.
+6. Click `Verify` and confirm the package probe runs with the Google Drive MCP env vars.
+7. Click `Start Auth`.
+8. Complete the Google sign-in flow in the opened terminal or browser.
+9. Confirm `tokens.json` exists under the managed MCP config path.
+10. Click `Refresh MCP status`.
+11. Confirm status changes from `needs_auth` to `configured`, `warning`, or `reconnect_required` depending on token state.
+12. Click `Configure AI Providers` after MCP status is ready.
+13. Confirm the runner writes the provider config file for the selected account home path:
+  - Codex writes `config.toml`
+  - Gemini writes `.gemini/settings.json`
+  - Claude writes `.claude.json`
+14. Run the provider-driven MCP smoke test for Codex, Claude, and Gemini.
+15. Confirm each smoke test shows the injected prompt, provider stdout/stderr, and parsed MCP failure code or success evidence.
+
+Expected Phase A results:
+
+- Google Drive MCP install and verify succeed with the managed credential/token paths.
+- Provider config is written under the account-local home path, not into the repo.
+- The config file names match the provider:
+  - Codex: `config.toml`
+  - Gemini: `.gemini/settings.json`
+  - Claude: `.claude.json`
+- The provider-driven MCP test reaches the provider CLI, not a direct runner MCP call.
+- The smoke test fails clearly if the provider account is not configured.
+
+### 12.3 Phase B Test Cases
+
+Verify workflow runtime behavior with `requiredMcps: ["google_drive"]`.
+
+1. Create or open a workflow step that declares `requiredMcps: ["google_drive"]`.
+2. Run the step with Google Drive auth incomplete.
+3. Confirm the step stops before provider launch.
+4. Confirm the error points to `/settings/google-drive-setup` and the Start Auth flow.
+5. Fix Google Drive auth, then remove the provider MCP config.
+6. Run the step again.
+7. Confirm the step stops before provider launch and reports missing `google-drive` provider config.
+8. Restore provider config and run the step normally.
+9. Confirm the actual prompt artifact contains the `## Required MCP Usage` section.
+10. Confirm the prompt mentions the internal key `google_drive` and the provider server name `google-drive`.
+11. Confirm provider output contains file evidence or an explicit MCP failure code.
+12. Confirm `actualPromptText` is persisted in the prompt execution result and artifacts.
+13. Simulate provider output that returns `MCP_FAILURE_CODE: MCP_AUTH_REQUIRED`.
+14. Confirm the workflow step fails.
+15. Simulate provider output that only quotes the failure-code guidance.
+16. Confirm the workflow step stays successful and is not downgraded by the parser.
+
+Expected Phase B results:
+
+- Steps fail early when auth or provider config is missing.
+- The injected prompt survives into the actual prompt artifact.
+- A real explicit MCP failure marker produces a failed step.
+- Quoted instructions alone do not produce a false failure.
+
+### 12.4 Retry And Recovery Cases
+
+Verify the retry wrapper behavior after the Phase B runtime changes.
+
+1. Trigger a `session_dead` path that represents a real transport/session loss.
+2. Confirm the wrapper retries or reconnects as designed.
+3. Trigger a deterministic setup error such as missing `accountHomePath` or missing Google Drive config.
+4. Confirm the wrapper does not treat it as a recoverable `session_dead` event.
+5. Trigger a provider reply that includes an explicit marker at the end of the final line.
+6. Confirm the wrapper records the MCP failure and returns a failed result.
+7. Trigger a provider reply that only mentions the marker in quoted guidance.
+8. Confirm the wrapper does not misclassify the run as failed.
+
+### 12.5 Minimal Regression Checklist
+
+If you only have time for a short regression pass, run these cases:
+
+- Google Drive MCP install, verify, auth, and refresh
+- Provider config write for at least one provider account
+- Provider-driven MCP smoke test
+- Workflow step with `requiredMcps: ["google_drive"]`
+- Missing auth preflight
+- Missing provider config preflight
+- Explicit MCP failure marker handling
+- Quoted guidance false-positive check
