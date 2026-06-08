@@ -290,6 +290,74 @@ func TestExecutePromptCapturesAbsoluteProviderCommand(t *testing.T) {
 	}
 }
 
+func TestExecutePromptMarksResultFailedWhenProviderReportsMcpFailureCode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture is unix-only")
+	}
+
+	workspace := t.TempDir()
+	writeValidGoogleDriveWorkspaceConfig(t, workspace)
+
+	accountHomePath := t.TempDir()
+	instance := &Runner{workspace: workspace}
+	_, err := instance.EnsureGoogleDriveMcpProviderConfig(GoogleDriveMcpProviderConfigRequest{
+		ProviderKey:     "codex",
+		AccountHomePath: accountHomePath,
+		Scope:           "account",
+		Mode:            "read_only",
+	})
+	if err != nil {
+		t.Fatalf("ensure provider config: %v", err)
+	}
+
+	binDir := filepath.Join(workspace, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir bin dir: %v", err)
+	}
+
+	binaryPath := filepath.Join(binDir, "codex")
+	script := "#!/bin/sh\n" +
+		"output=''\n" +
+		"while [ \"$#\" -gt 0 ]; do\n" +
+		"  if [ \"$1\" = \"--output-last-message\" ]; then\n" +
+		"    shift\n" +
+		"    output=\"$1\"\n" +
+		"  fi\n" +
+		"  shift\n" +
+		"done\n" +
+		"cat >/dev/null\n" +
+		"printf 'MCP_AUTH_REQUIRED' > \"$output\"\n"
+	if err := os.WriteFile(binaryPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex binary: %v", err)
+	}
+
+	originalPath := os.Getenv("PATH")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+originalPath)
+
+	result, err := instance.ExecutePrompt(context.Background(), PromptExecutionRequest{
+		ProviderKey:     "codex",
+		Prompt:          "Summarize the roadmap doc.",
+		RequiredMcps:    []string{"google_drive"},
+		AccountHomePath: accountHomePath,
+	})
+	if err != nil {
+		t.Fatalf("execute prompt: %v", err)
+	}
+
+	if result.Status != "failed" {
+		t.Fatalf("expected failed status, got %q", result.Status)
+	}
+	if !strings.Contains(result.ErrorMessage, "mcp_auth_required") {
+		t.Fatalf("expected MCP failure code in error message, got %q", result.ErrorMessage)
+	}
+	if !strings.Contains(result.OutputMarkdown, "MCP_AUTH_REQUIRED") {
+		t.Fatalf("expected provider output to be captured, got %q", result.OutputMarkdown)
+	}
+	if !strings.Contains(result.ActualPromptText, "## Required MCP Usage") {
+		t.Fatalf("expected injected MCP section in actual prompt, got %q", result.ActualPromptText)
+	}
+}
+
 func TestResolvePromptExecutionAdapterUsesWorkspaceWriteWhenAllowed(t *testing.T) {
 	binary, args, provider, err := resolvePromptExecutionAdapter(
 		PromptExecutionRequest{

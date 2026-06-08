@@ -23,6 +23,11 @@
 - Tightened Gemini discovery validation so metadata-only files, arbitrary JSON payloads, and nested wrapper false positives no longer fabricate discoverable account homes.
 - Updated the admin-web provider configuration card so failed provider rows can be retried, partial success is messaged correctly when some providers still lack discovered homes, and the card only acts on actionable provider rows.
 - Added targeted backend and frontend regressions for managed account discovery, provider-config status drift, invalid config rewrite, Gemini JSON validation edge cases, and provider configuration UI success/error flows.
+- Added Phase B workflow runtime preflight and prompt augmentation for `requiredMcps: ["google_drive"]` so one-shot prompt execution and live session message paths now inject explicit Google Drive MCP instructions and fail before provider launch when auth/config prerequisites are missing.
+- Extended local-runner prompt/session result handling to propagate `actualPromptText`, preserve account-home context for provider execution, and downgrade runs to `failed` when providers end their response with an explicit `MCP_FAILURE_CODE: ...` marker.
+- Hardened workflow session retry behavior so deterministic MCP setup/preflight failures do not trigger `session_dead` recovery or bootstrap replay, while true transport/thread recovery paths remain intact.
+- Narrowed MCP failure parsing to an unquoted terminal marker contract, preventing false failures when providers quote guidance while still accepting legitimate `explanation + marker` tails.
+- Added targeted regressions for direct `ExecutePrompt`, session `SendMessage`, prompt preflight branches (`needs_auth`, `reconnect_required`, `config_stale`), explicit-marker parsing, and workflow runtime retry classification.
 
 ## Verification
 
@@ -35,6 +40,10 @@
 - Passed `npm run test -- src/data/repository/local-first/local-first-workflow-gateway.test.ts src/routes/_authenticated/settings/components/GoogleDriveProviderConfigCard.test.tsx src/routes/_authenticated/settings/mcp-servers/mcp-connect-test.test.tsx` from `apps/admin-web`.
 - Passed targeted Gemini validation regressions with `go test ./internal/runner -run "TestIsValidGeminiAccountPath_ArbitraryJSONInvalid|TestDiscoverGeminiAccountHomes_IgnoresArbitraryJSONCandidates|TestDiscoverGeminiAccountHomes_IgnoresStructurallyEmptyJSONCandidates|TestIsValidGeminiAccountPath_WithGeminiDir|TestIsValidGeminiAccountPath_WithSettingsJson"`.
 - Completed a bounded coder/reviewer sub-agent loop for the provider-config and Gemini-discovery follow-up fixes, with final reviewer result: `PASS`.
+- Passed `go test ./internal/runner -run 'Test(ExecutePrompt|PreparePromptForRequiredMcps|PreflightGoogleDriveMcp|ApplyRequiredMcpFailureStatus|DetectMcpFailureCode|SendMessage.*GoogleDrive)'` from `apps/local-runner`.
+- Passed `go test ./internal/runner -run 'TestProviderDrivenMcpTestPopulatesResult|TestDetectMcpFailureCodePatterns'` from `apps/local-runner`.
+- Passed `npm test -- --run src/features/workflow-engine/workflow-start-runtime.test.ts` from `apps/admin-web`.
+- Completed a reviewer sub-agent pass on the final Phase B MCP runtime scope with result: clean pass and no actionable correctness findings.
 
 ## Residual Notes
 
@@ -42,3 +51,4 @@
 - Full `go test ./...` for `apps/local-runner` was not rerun; verification stayed scoped to the Google Drive runner paths touched here.
 - Full `npx tsc --noEmit` in `apps/admin-web` still reports unrelated pre-existing errors outside the Google Drive provider-config files, including `src/data/repository/local-first/local-first-workflow-gateway.ts`.
 - Gemini discovery now intentionally uses a conservative shape check for `settings.json` and `oauth*.json`; if the upstream CLI introduces additional legitimate top-level schemas, the allowlist may need another small update.
+- Workflow-level failure propagation for MCP-marked step results is covered through the lower-level runtime/request tests and the existing `result.status !== "success"` guards, but this loop did not add dedicated end-to-end step-level regressions for `submitWorkflowStepFollowUpRuntime` or `runWorkflowStartRuntime`.

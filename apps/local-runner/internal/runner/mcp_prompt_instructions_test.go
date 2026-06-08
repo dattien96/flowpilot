@@ -1,12 +1,60 @@
 package runner
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func writeValidGoogleDriveWorkspaceConfig(t *testing.T, workspace string) (string, string) {
+	t.Helper()
+
+	mcpConfigDir := filepath.Join(workspace, ".config", "google-drive-mcp")
+	if err := os.MkdirAll(mcpConfigDir, 0o755); err != nil {
+		t.Fatalf("Failed to create MCP config dir: %v", err)
+	}
+
+	credPath := filepath.Join(mcpConfigDir, "gcp-oauth.keys.json")
+	validCred := `{"installed":{"client_id":"test-id","client_secret":"test-secret","auth_uri":"https://accounts.google.com/o/oauth2/auth","token_uri":"https://oauth2.googleapis.com/token"}}`
+	if err := os.WriteFile(credPath, []byte(validCred), 0o600); err != nil {
+		t.Fatalf("Failed to write credential: %v", err)
+	}
+
+	tokenPath := filepath.Join(mcpConfigDir, "tokens.json")
+	validToken := `{"access_token":"test-access","refresh_token":"test-refresh"}`
+	if err := os.WriteFile(tokenPath, []byte(validToken), 0o600); err != nil {
+		t.Fatalf("Failed to write token: %v", err)
+	}
+
+	flowpilotDir := filepath.Join(workspace, ".flowpilot", "settings")
+	if err := os.MkdirAll(flowpilotDir, 0o755); err != nil {
+		t.Fatalf("Failed to create .flowpilot dir: %v", err)
+	}
+
+	wsConfig := map[string]interface{}{
+		"version":      1,
+		"artifactSync": map[string]interface{}{},
+		"mcp": map[string]interface{}{
+			"credentialPath": credPath,
+			"tokenPath":      tokenPath,
+		},
+	}
+
+	wsConfigBytes, err := json.Marshal(wsConfig)
+	if err != nil {
+		t.Fatalf("Failed to marshal workspace config: %v", err)
+	}
+
+	wsConfigPath := filepath.Join(flowpilotDir, "google-drive-config.json")
+	if err := os.WriteFile(wsConfigPath, wsConfigBytes, 0o644); err != nil {
+		t.Fatalf("Failed to write workspace config: %v", err)
+	}
+
+	return credPath, tokenPath
+}
 
 func TestInjectRequiredMcpInstructions_NoMcps(t *testing.T) {
 	prompt := "Original prompt"
@@ -88,11 +136,11 @@ func TestPreflightGoogleDriveMcp_NoCredential(t *testing.T) {
 
 	// Build workspace config using JSON marshaling for proper escaping (handles Windows paths)
 	wsConfig := map[string]interface{}{
-		"version": 1,
+		"version":      1,
 		"artifactSync": map[string]interface{}{},
 		"mcp": map[string]interface{}{
 			"credentialPath": nonExistentCredPath,
-			"tokenPath": nonExistentTokenPath,
+			"tokenPath":      nonExistentTokenPath,
 		},
 	}
 
@@ -126,48 +174,7 @@ func TestPreflightGoogleDriveMcp_ConfiguredWithNoProvider(t *testing.T) {
 	tmpDir := t.TempDir()
 	runner := &Runner{workspace: tmpDir}
 
-	// Create valid MCP credential and token files
-	mcpConfigDir := filepath.Join(tmpDir, ".config", "google-drive-mcp")
-	if err := os.MkdirAll(mcpConfigDir, 0o755); err != nil {
-		t.Fatalf("Failed to create MCP config dir: %v", err)
-	}
-
-	credPath := filepath.Join(mcpConfigDir, "gcp-oauth.keys.json")
-	validCred := `{"installed":{"client_id":"test-id","client_secret":"test-secret","auth_uri":"https://accounts.google.com/o/oauth2/auth","token_uri":"https://oauth2.googleapis.com/token"}}`
-	if err := os.WriteFile(credPath, []byte(validCred), 0o600); err != nil {
-		t.Fatalf("Failed to write credential: %v", err)
-	}
-
-	tokenPath := filepath.Join(mcpConfigDir, "tokens.json")
-	validToken := `{"access_token":"test-access","refresh_token":"test-refresh"}`
-	if err := os.WriteFile(tokenPath, []byte(validToken), 0o600); err != nil {
-		t.Fatalf("Failed to write token: %v", err)
-	}
-
-	// Create workspace config to specify MCP paths
-	flowpilotDir := filepath.Join(tmpDir, ".flowpilot", "settings")
-	if err := os.MkdirAll(flowpilotDir, 0o755); err != nil {
-		t.Fatalf("Failed to create .flowpilot dir: %v", err)
-	}
-
-	wsConfig := map[string]interface{}{
-		"version": 1,
-		"artifactSync": map[string]interface{}{},
-		"mcp": map[string]interface{}{
-			"credentialPath": credPath,
-			"tokenPath": tokenPath,
-		},
-	}
-
-	wsConfigBytes, err := json.Marshal(wsConfig)
-	if err != nil {
-		t.Fatalf("Failed to marshal workspace config: %v", err)
-	}
-
-	wsConfigPath := filepath.Join(flowpilotDir, "google-drive-config.json")
-	if err := os.WriteFile(wsConfigPath, wsConfigBytes, 0o644); err != nil {
-		t.Fatalf("Failed to write workspace config: %v", err)
-	}
+	writeValidGoogleDriveWorkspaceConfig(t, tmpDir)
 
 	// Check without provider - should pass if Google Drive is ready
 	result := runner.PreflightGoogleDriveMcp("", "")
@@ -178,5 +185,190 @@ func TestPreflightGoogleDriveMcp_ConfiguredWithNoProvider(t *testing.T) {
 
 	if !result.ProviderConfigured {
 		t.Error("Provider should be considered configured when not checked")
+	}
+}
+
+func TestPreparePromptForRequiredMcps_RequiresAccountHomePath(t *testing.T) {
+	runner := &Runner{workspace: t.TempDir()}
+
+	_, err := runner.preparePromptForRequiredMcps(
+		"Original prompt",
+		[]string{"google_drive"},
+		"codex",
+		"",
+		false,
+	)
+	if err == nil {
+		t.Fatal("expected missing accountHomePath error")
+	}
+	if !strings.Contains(err.Error(), "accountHomePath is required") {
+		t.Fatalf("expected accountHomePath error, got %v", err)
+	}
+}
+
+func TestPreparePromptForRequiredMcps_InjectsAfterSuccessfulPreflight(t *testing.T) {
+	workspace := t.TempDir()
+	runner := &Runner{workspace: workspace}
+	writeValidGoogleDriveWorkspaceConfig(t, workspace)
+
+	accountHomePath := t.TempDir()
+	_, err := runner.EnsureGoogleDriveMcpProviderConfig(GoogleDriveMcpProviderConfigRequest{
+		ProviderKey:     "codex",
+		AccountHomePath: accountHomePath,
+		Scope:           "account",
+		Mode:            "read_only",
+	})
+	if err != nil {
+		t.Fatalf("ensure provider config: %v", err)
+	}
+
+	result, err := runner.preparePromptForRequiredMcps(
+		"Original prompt",
+		[]string{"google_drive"},
+		"codex",
+		accountHomePath,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("prepare prompt: %v", err)
+	}
+
+	if !strings.Contains(result, "## Required MCP Usage") {
+		t.Fatal("expected injected MCP section")
+	}
+	if !strings.Contains(result, "google-drive") {
+		t.Fatal("expected injected server name")
+	}
+	if !strings.Contains(result, "Original prompt") {
+		t.Fatal("expected original prompt to remain in output")
+	}
+}
+
+func TestApplyRequiredMcpFailureStatus_IgnoresQuotedFailureGuidance(t *testing.T) {
+	result := PromptExecutionResult{
+		Status:         "success",
+		OutputMarkdown: "Drive search succeeded.\nQuoted guidance: If auth fails later, return `MCP_AUTH_REQUIRED`.",
+	}
+
+	applyRequiredMcpFailureStatus(&result, []string{"google_drive"})
+
+	if result.Status != "success" {
+		t.Fatalf("expected status to remain success, got %q", result.Status)
+	}
+	if result.ErrorMessage != "" {
+		t.Fatalf("expected empty error message, got %q", result.ErrorMessage)
+	}
+}
+
+func TestApplyRequiredMcpFailureStatus_IgnoresQuotedExplicitMarkerGuidance(t *testing.T) {
+	result := PromptExecutionResult{
+		Status:         "success",
+		OutputMarkdown: "Drive search succeeded.\nQuoted guidance: end the response with `MCP_FAILURE_CODE: MCP_AUTH_REQUIRED`.",
+	}
+
+	applyRequiredMcpFailureStatus(&result, []string{"google_drive"})
+
+	if result.Status != "success" {
+		t.Fatalf("expected status to remain success, got %q", result.Status)
+	}
+	if result.ErrorMessage != "" {
+		t.Fatalf("expected empty error message, got %q", result.ErrorMessage)
+	}
+}
+
+func TestApplyRequiredMcpFailureStatus_DetectsExplicitMarkerAfterExplanation(t *testing.T) {
+	result := PromptExecutionResult{
+		Status:         "success",
+		OutputMarkdown: "I could not authenticate with Google Drive. MCP_FAILURE_CODE: MCP_AUTH_REQUIRED",
+	}
+
+	applyRequiredMcpFailureStatus(&result, []string{"google_drive"})
+
+	if result.Status != "failed" {
+		t.Fatalf("expected status to be failed, got %q", result.Status)
+	}
+	if !strings.Contains(result.ErrorMessage, "mcp_auth_required") {
+		t.Fatalf("expected MCP failure code in error message, got %q", result.ErrorMessage)
+	}
+}
+
+func TestPreflightGoogleDriveMcp_NeedsAuthWithoutToken(t *testing.T) {
+	workspace := t.TempDir()
+	runner := &Runner{workspace: workspace}
+	_, tokenPath := writeValidGoogleDriveWorkspaceConfig(t, workspace)
+	if err := os.Remove(tokenPath); err != nil {
+		t.Fatalf("remove token file: %v", err)
+	}
+
+	result := runner.PreflightGoogleDriveMcp("", "")
+
+	if result.GoogleDriveReady {
+		t.Fatal("expected Google Drive to require auth when token is missing")
+	}
+	if !strings.Contains(result.ErrorMessage, "auth is incomplete") {
+		t.Fatalf("expected needs_auth error, got %q", result.ErrorMessage)
+	}
+}
+
+func TestPreflightGoogleDriveMcp_ReconnectRequired(t *testing.T) {
+	workspace := t.TempDir()
+	runner := &Runner{workspace: workspace}
+	writeValidGoogleDriveWorkspaceConfig(t, workspace)
+
+	originalHTTPRequest := httpRequestFn
+	t.Cleanup(func() {
+		httpRequestFn = originalHTTPRequest
+	})
+	httpRequestFn = func(ctx context.Context, method, url string, headers map[string]string, body []byte) (int, []byte, error) {
+		return 400, []byte(`{"error":"invalid_grant","error_description":"token revoked"}`), nil
+	}
+
+	result := runner.PreflightGoogleDriveMcp("", "")
+
+	if result.GoogleDriveReady {
+		t.Fatal("expected Google Drive to require reconnect when refresh token is revoked")
+	}
+	if !strings.Contains(result.ErrorMessage, "requires reconnect") {
+		t.Fatalf("expected reconnect error, got %q", result.ErrorMessage)
+	}
+}
+
+func TestPreflightGoogleDriveMcp_ConfigStale(t *testing.T) {
+	workspace := t.TempDir()
+	runner := &Runner{workspace: workspace}
+	_, tokenPath := writeValidGoogleDriveWorkspaceConfig(t, workspace)
+
+	accountHomePath := t.TempDir()
+	_, err := runner.EnsureGoogleDriveMcpProviderConfig(GoogleDriveMcpProviderConfigRequest{
+		ProviderKey:     "codex",
+		AccountHomePath: accountHomePath,
+		Scope:           "account",
+		Mode:            "read_only",
+	})
+	if err != nil {
+		t.Fatalf("ensure provider config: %v", err)
+	}
+
+	configPath := filepath.Join(accountHomePath, "config.toml")
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read provider config: %v", err)
+	}
+	staleTokenPath := tokenPath + ".stale"
+	updated := strings.Replace(string(raw), tokenPath, staleTokenPath, 1)
+	if updated == string(raw) {
+		t.Fatal("expected to replace token path in provider config")
+	}
+	if err := os.WriteFile(configPath, []byte(updated), 0o644); err != nil {
+		t.Fatalf("write stale provider config: %v", err)
+	}
+
+	result := runner.PreflightGoogleDriveMcp("codex", accountHomePath)
+
+	if result.ProviderConfigured {
+		t.Fatal("expected stale provider config to fail preflight")
+	}
+	if !strings.Contains(result.ErrorMessage, "stale Google Drive MCP config") {
+		t.Fatalf("expected stale config error, got %q", result.ErrorMessage)
 	}
 }

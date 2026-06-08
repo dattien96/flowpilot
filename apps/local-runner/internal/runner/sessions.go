@@ -35,6 +35,7 @@ type LiveSession struct {
 	Provider          string
 	Model             string
 	ReasoningEffort   string
+	AccountHomePath   string
 	TransportType     string
 	ProviderSessionID string
 	ProcessKey        string
@@ -426,6 +427,7 @@ func (r *Runner) StartSession(ctx context.Context, req AiSessionStartRequest) (A
 		Provider:         req.ProviderKey,
 		Model:            req.ModelName,
 		ReasoningEffort:  reasoningEffortVal,
+		AccountHomePath:  req.AccountHomePath,
 		TransportType:    transportType,
 		ProcessKey:       processKey,
 		BinaryPath:       binaryPath,
@@ -633,12 +635,35 @@ func (r *Runner) SendMessageWithCallback(ctx context.Context, req AiSessionMessa
 	}()
 
 	startedAt := time.Now().UTC()
+	actualPrompt := req.Prompt
+
+	session.Mu.Lock()
+	effectiveAccountHomePath := strings.TrimSpace(req.AccountHomePath)
+	if effectiveAccountHomePath == "" {
+		effectiveAccountHomePath = strings.TrimSpace(session.AccountHomePath)
+	}
+	session.Mu.Unlock()
+
+	if len(req.RequiredMcps) > 0 {
+		preparedPrompt, err := r.preparePromptForRequiredMcps(
+			req.Prompt,
+			req.RequiredMcps,
+			session.Provider,
+			effectiveAccountHomePath,
+			req.AllowWrite,
+		)
+		if err != nil {
+			return PromptExecutionResult{}, err
+		}
+		actualPrompt = preparedPrompt
+	}
+
 	var outputMarkdown string
 
 	if session.TransportType == "codex_mcp" {
 		toolName := "codex"
 		args := map[string]interface{}{
-			"prompt": req.Prompt,
+			"prompt": actualPrompt,
 		}
 		session.Mu.Lock()
 		providerSessionID := session.ProviderSessionID
@@ -696,7 +721,7 @@ func (r *Runner) SendMessageWithCallback(ctx context.Context, req AiSessionMessa
 		providerSessionID := session.ProviderSessionID
 		session.Mu.Unlock()
 
-		params := geminiACPPromptParams(providerSessionID, req.Prompt)
+		params := geminiACPPromptParams(providerSessionID, actualPrompt)
 		if err := writeJsonRpcRequest(session.Stdin, "session/prompt", params, 3); err != nil {
 			if terminationErr := sessionTerminationError(session); terminationErr != nil {
 				return PromptExecutionResult{}, terminationErr
@@ -853,7 +878,7 @@ func (r *Runner) SendMessageWithCallback(ctx context.Context, req AiSessionMessa
 				"content": []map[string]string{
 					{
 						"type": "text",
-						"text": req.Prompt,
+						"text": actualPrompt,
 					},
 				},
 			},
@@ -965,7 +990,7 @@ func (r *Runner) SendMessageWithCallback(ctx context.Context, req AiSessionMessa
 	pSessionID := session.ProviderSessionID
 	session.Mu.Unlock()
 
-	return PromptExecutionResult{
+	result := PromptExecutionResult{
 		Status:            "success",
 		RunID:             newRunID(),
 		ProviderKey:       session.Provider,
@@ -975,7 +1000,11 @@ func (r *Runner) SendMessageWithCallback(ctx context.Context, req AiSessionMessa
 		OutputMarkdown:    outputMarkdown,
 		StartedAt:         startedAt.Format(time.RFC3339Nano),
 		CompletedAt:       completedAt.Format(time.RFC3339Nano),
-	}, nil
+		ActualPromptText:  actualPrompt,
+	}
+	applyRequiredMcpFailureStatus(&result, req.RequiredMcps)
+
+	return result, nil
 }
 
 func (r *Runner) CloseSession(ctx context.Context, handle AiSessionHandle) error {

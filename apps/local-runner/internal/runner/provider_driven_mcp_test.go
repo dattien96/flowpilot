@@ -145,9 +145,9 @@ func TestGenerateMcpVerificationPromptContent(t *testing.T) {
 // TestDetectMcpToolUsedPatterns tests tool detection with various patterns
 func TestDetectMcpToolUsedPatterns(t *testing.T) {
 	tests := []struct {
-		name      string
-		output    string
-		expected  string
+		name     string
+		output   string
+		expected string
 	}{
 		{
 			name:     "Pattern 1: calling authGetStatus",
@@ -227,6 +227,26 @@ func TestDetectMcpFailureCodePatterns(t *testing.T) {
 			name:         "Case insensitive",
 			output:       "error MCP_Unavailable",
 			expectedCode: "mcp_unavailable",
+		},
+		{
+			name:         "Explicit marker",
+			output:       "MCP_FAILURE_CODE: MCP_AUTH_REQUIRED",
+			expectedCode: "mcp_auth_required",
+		},
+		{
+			name:         "Explanation plus explicit marker",
+			output:       "I could not authenticate. MCP_FAILURE_CODE: MCP_AUTH_REQUIRED",
+			expectedCode: "mcp_auth_required",
+		},
+		{
+			name:         "Quoted guidance does not count",
+			output:       "Drive search succeeded. If auth fails later, report `MCP_AUTH_REQUIRED` to the user.",
+			expectedCode: "",
+		},
+		{
+			name:         "Quoted explicit marker guidance does not count",
+			output:       "Drive search succeeded.\nQuoted guidance: end the response with `MCP_FAILURE_CODE: MCP_AUTH_REQUIRED`.",
+			expectedCode: "",
 		},
 	}
 
@@ -326,7 +346,7 @@ func TestDetectMcpToolUsedCaseInsensitive(t *testing.T) {
 		{"Calling AUTHGETSTATUS", true},
 		{"Tool: Search", true},
 		{"LISTFOLDER called successfully", false}, // May not match - tool detection is pattern-based
-		{"called LISTFOLDER", false},               // May not match - tool detection is pattern-based
+		{"called LISTFOLDER", false},              // May not match - tool detection is pattern-based
 	}
 
 	for _, test := range tests {

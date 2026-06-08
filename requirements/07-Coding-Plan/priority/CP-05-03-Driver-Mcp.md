@@ -964,6 +964,15 @@ Deliverables:
 - Prompt augmentation helper.
 - Tests for config generation and preflight.
 
+Phase A completion checklist:
+
+- [x] Runner provider config installer is implemented for Codex, Gemini, and Claude account-local config paths.
+- [x] Google Drive config status response includes provider config status rows and stale/failed detection.
+- [x] Google Drive setup UI exposes provider configuration status and configure actions.
+- [x] `/mcp-tests` supports provider-driven Google Drive smoke tests through the selected provider CLI.
+- [x] Prompt augmentation and Google Drive MCP preflight are implemented for provider verification.
+- [x] Read-only tool allowlists and provider-config regression coverage were added for Phase A behavior.
+
 Implementation steps:
 
 1. Add provider config status types.
@@ -1062,11 +1071,25 @@ Acceptance:
 - Provider output includes evidence of Drive file usage or a failure code.
 - Write tools remain unavailable or blocked for read-only steps.
 
+Checklist:
+
+- [x] Add workflow prompt preflight for `requiredMcps: ["google_drive"]`.
+- [x] Inject the Phase B MCP instruction block into the actual prompt before provider execution.
+- [x] Persist the actual prompt artifact with the injected MCP instructions.
+- [x] Fail the step early when Google Drive auth or provider config is missing or stale.
+- [x] Detect explicit MCP failure codes in provider output and mark the workflow step failed.
+- [x] Keep read-only workflow steps from enabling write tools.
+- [x] Add regression tests for preflight, prompt injection, failure-code detection, and workflow runtime retry behavior.
+
 ### 11.15 Phase C: Write Workflows Through Provider CLI
 
 Goal:
 
 - Allow selected workflow steps to create/update Google Drive artifacts through the provider CLI and Google Drive MCP.
+
+Note:
+
+- This phase is still required even with artifact sync in place, because artifact sync only mirrors FlowPilot-owned artifacts. Phase C is the runtime write path for AI providers like Claude Code, Gemini, and Codex to create or edit existing files in Google Drive during a workflow run.
 
 Initial write use cases:
 

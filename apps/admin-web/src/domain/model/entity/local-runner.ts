@@ -219,6 +219,7 @@ export interface LocalRunnerPromptExecutionRequest {
   modelName?: string;
   reasoningEffort?: ReasoningEffort | null;
   prompt: string;
+  requiredMcps?: string[];
   skillIds: string[];
   flowId: string | null;
   contextSourceIds: string[];
@@ -226,6 +227,7 @@ export interface LocalRunnerPromptExecutionRequest {
   workingDirectory: string | null;
   allowWrite?: boolean;
   providerAccountId?: string;
+  accountHomePath?: string;
   providerAccountHomePath?: string;
   proxyUrl?: string;
   customEnv?: Record<string, string>;
@@ -241,6 +243,7 @@ export interface LocalRunnerPromptExecutionResult {
   stdoutSummary: string;
   stderrSummary: string;
   outputMarkdown: string;
+  actualPromptText?: string | null;
   artifactPaths: string[];
   startedAt: string;
   completedAt: string;
@@ -289,6 +292,7 @@ export interface LocalRunnerAiSessionStartRequest {
   idleTTLSeconds?: number;
   resumeProviderSessionId?: string;
   providerAccountId?: string;
+  accountHomePath?: string;
   providerAccountHomePath?: string;
   proxyUrl?: string;
   customEnv?: Record<string, string>;
@@ -304,8 +308,11 @@ export interface LocalRunnerAiSessionHandle {
 export interface LocalRunnerAiSessionMessageRequest {
   session: LocalRunnerAiSessionHandle;
   prompt: string;
+  requiredMcps?: string[];
   skillIds: string[];
   contextSourceIds: string[];
+  allowWrite?: boolean;
+  accountHomePath?: string;
   idleTTLSeconds?: number | null;
 }
 

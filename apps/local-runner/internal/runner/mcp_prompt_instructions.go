@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,20 +10,7 @@ import (
 
 // InjectRequiredMcpInstructions adds MCP usage instructions to a prompt
 func InjectRequiredMcpInstructions(prompt string, requiredMcps []string, providerKey string, allowWrite bool) string {
-	if len(requiredMcps) == 0 {
-		return prompt
-	}
-
-	// Check if google_drive is required
-	hasGoogleDrive := false
-	for _, mcp := range requiredMcps {
-		if strings.ToLower(strings.TrimSpace(mcp)) == "google_drive" {
-			hasGoogleDrive = true
-			break
-		}
-	}
-
-	if !hasGoogleDrive {
+	if !requiresGoogleDriveMcp(requiredMcps) {
 		return prompt
 	}
 
@@ -38,6 +26,16 @@ func InjectRequiredMcpInstructions(prompt string, requiredMcps []string, provide
 
 	// Prepend instructions
 	return instructions + "\n\n" + prompt
+}
+
+func requiresGoogleDriveMcp(requiredMcps []string) bool {
+	for _, mcp := range requiredMcps {
+		if strings.EqualFold(strings.TrimSpace(mcp), "google_drive") {
+			return true
+		}
+	}
+
+	return false
 }
 
 // buildGoogleDriveMcpInstructions creates the MCP usage section
@@ -62,9 +60,9 @@ func buildGoogleDriveMcpInstructions(providerKey string, allowWrite bool) string
 
 	sb.WriteString("Rules:\n")
 	sb.WriteString("- Do not invent Google Drive content.\n")
-	sb.WriteString("- If `google-drive` is unavailable, stop and report `MCP_UNAVAILABLE`.\n")
-	sb.WriteString("- If auth is missing or expired, stop and report `MCP_AUTH_REQUIRED`.\n")
-	sb.WriteString("- If the required Drive file or folder cannot be found, report `DRIVE_CONTENT_NOT_FOUND`.\n")
+	sb.WriteString("- If `google-drive` is unavailable, stop and end the response with `MCP_FAILURE_CODE: MCP_UNAVAILABLE`.\n")
+	sb.WriteString("- If auth is missing or expired, stop and end the response with `MCP_FAILURE_CODE: MCP_AUTH_REQUIRED`.\n")
+	sb.WriteString("- If the required Drive file or folder cannot be found, end the response with `MCP_FAILURE_CODE: DRIVE_CONTENT_NOT_FOUND`.\n")
 	sb.WriteString("- Include the file name and file ID for every Drive item used.\n")
 
 	if !allowWrite {
@@ -167,4 +165,49 @@ func (r *Runner) PreflightGoogleDriveMcp(providerKey string, accountHomePath str
 	}
 
 	return result
+}
+
+func (r *Runner) preparePromptForRequiredMcps(
+	prompt string,
+	requiredMcps []string,
+	providerKey string,
+	accountHomePath string,
+	allowWrite bool,
+) (string, error) {
+	if !requiresGoogleDriveMcp(requiredMcps) {
+		return prompt, nil
+	}
+
+	if strings.TrimSpace(accountHomePath) == "" {
+		return "", errors.New("accountHomePath is required when requiredMcps includes google_drive")
+	}
+
+	preflight := r.PreflightGoogleDriveMcp(providerKey, accountHomePath)
+	if !preflight.GoogleDriveReady || !preflight.ProviderConfigured {
+		if strings.TrimSpace(preflight.ErrorMessage) != "" {
+			return "", errors.New(preflight.ErrorMessage)
+		}
+		return "", errors.New("Google Drive MCP preflight failed")
+	}
+
+	return InjectRequiredMcpInstructions(prompt, requiredMcps, providerKey, allowWrite), nil
+}
+
+func applyRequiredMcpFailureStatus(result *PromptExecutionResult, requiredMcps []string) {
+	if result == nil || !requiresGoogleDriveMcp(requiredMcps) {
+		return
+	}
+
+	combinedOutput := strings.Join([]string{
+		result.StdoutSummary,
+		result.StderrSummary,
+		result.OutputMarkdown,
+	}, "\n")
+	failureCode := detectMcpFailureCode(combinedOutput)
+	if failureCode == "" {
+		return
+	}
+
+	result.Status = "failed"
+	result.ErrorMessage = fmt.Sprintf("MCP failure detected: %s", failureCode)
 }

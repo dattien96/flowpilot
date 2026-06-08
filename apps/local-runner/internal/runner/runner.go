@@ -877,8 +877,19 @@ func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionReque
 	commandPath := filepath.Join(runDir, "command.txt")
 	metadataPath := filepath.Join(runDir, "metadata.json")
 
-	finalPrompt := r.injectSkillContent(workspace, request.Prompt, request.SkillIds)
-	if err := os.WriteFile(promptPath, []byte(finalPrompt), 0o644); err != nil {
+	promptWithSkills := r.injectSkillContent(workspace, request.Prompt, request.SkillIds)
+	actualPrompt, err := r.preparePromptForRequiredMcps(
+		promptWithSkills,
+		request.RequiredMcps,
+		request.ProviderKey,
+		request.AccountHomePath,
+		request.AllowWrite,
+	)
+	if err != nil {
+		return PromptExecutionResult{}, err
+	}
+
+	if err := os.WriteFile(promptPath, []byte(actualPrompt), 0o644); err != nil {
 		return PromptExecutionResult{}, err
 	}
 
@@ -971,7 +982,9 @@ func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionReque
 		CompletedAt:  completedAt.Format(time.RFC3339Nano),
 		ExitCode:     exitCode,
 		ErrorMessage: errorMessage,
+		ActualPromptText: actualPrompt,
 	}
+	applyRequiredMcpFailureStatus(&result, request.RequiredMcps)
 
 	if artifact, err := r.SavePromptArtifact(request, result); err == nil {
 		result.ArtifactPaths = []string{

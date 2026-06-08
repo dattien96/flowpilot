@@ -13,6 +13,8 @@ import (
 
 // Provider-driven MCP test execution functions
 
+const mcpFailureCodeMarker = "MCP_FAILURE_CODE"
+
 // runProviderDrivenMcpTest executes an MCP test using the AI provider CLI
 func (r *Runner) runProviderDrivenMcpTest(ctx context.Context, request McpTestRequest) (McpTestResult, error) {
 	// Validate provider-driven test fields
@@ -92,9 +94,9 @@ func (r *Runner) runProviderDrivenMcpTest(ctx context.Context, request McpTestRe
 		CompletedAt:   completedAt.Format(time.RFC3339Nano),
 		ArtifactPaths: []string{promptPath},
 		// Populate existing fields if available
-		BackendKey:   request.BackendKey,
-		ProviderType: request.ProviderType,
-		ProjectID:    request.ProjectID,
+		BackendKey:    request.BackendKey,
+		ProviderType:  request.ProviderType,
+		ProjectID:     request.ProjectID,
 		IntegrationID: request.IntegrationID,
 	}
 
@@ -210,23 +212,47 @@ func detectMcpToolUsed(output string) string {
 
 // detectMcpFailureCode detects failure codes in provider output
 func detectMcpFailureCode(output string) string {
-	lowerOutput := strings.ToLower(output)
-
-	// Check for specific failure codes in order
-	failureCodes := []string{
-		"mcp_unavailable",         // Server not found
-		"mcp_auth_required",       // Auth/token missing
-		"mcp_tool_blocked",        // Policy blocked tool
-		"mcp_tool_failed",         // Tool error
-		"drive_content_not_found", // No Drive content
+	failureCodes := strings.Join([]string{
+		"mcp_unavailable",
+		"mcp_auth_required",
+		"mcp_tool_blocked",
+		"mcp_tool_failed",
+		"drive_content_not_found",
+	}, "|")
+	explicitMarkerPattern := regexp.MustCompile(`(?i)(?:^|.*\s)` + regexp.QuoteMeta(mcpFailureCodeMarker) + `\s*[:=-]\s*(` + failureCodes + `)\s*$`)
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?i)^\s*(?:error|failure|tool execution failed|mcp failure detected)\s*[:=-]?\s*(` + failureCodes + `)\b`),
+		regexp.MustCompile(`(?i)^\s*(` + failureCodes + `)(?:\b|[:\s-])`),
 	}
 
-	for _, code := range failureCodes {
-		if strings.Contains(lowerOutput, strings.ToLower(code)) {
-			return code
+	rawLines := make([]string, 0)
+	normalizedLines := make([]string, 0)
+	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		rawLines = append(rawLines, trimmed)
+		normalized := strings.TrimSpace(strings.Trim(trimmed, "`\"'"))
+		normalizedLines = append(normalizedLines, normalized)
+	}
+
+	if len(rawLines) > 0 {
+		lastLine := rawLines[len(rawLines)-1]
+		matches := explicitMarkerPattern.FindStringSubmatch(lastLine)
+		if len(matches) > 1 {
+			return strings.ToLower(strings.TrimSpace(matches[1]))
 		}
 	}
 
-	// No failure code detected
+	for _, normalized := range normalizedLines {
+		for _, pattern := range patterns {
+			matches := pattern.FindStringSubmatch(normalized)
+			if len(matches) > 1 {
+				return strings.ToLower(strings.TrimSpace(matches[1]))
+			}
+		}
+	}
+
 	return ""
 }

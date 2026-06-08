@@ -418,6 +418,7 @@ type PromptExecutionRequest struct {
 	ModelName         string            `json:"modelName,omitempty"`
 	ReasoningEffort   string            `json:"reasoningEffort,omitempty"`
 	Prompt            string            `json:"prompt"`
+	RequiredMcps      []string          `json:"requiredMcps,omitempty"`
 	SkillIds          []string          `json:"skillIds"`
 	FlowId            string            `json:"flowId"`
 	ContextSourceIds  []string          `json:"contextSourceIds"`
@@ -445,6 +446,7 @@ type PromptExecutionResult struct {
 	CompletedAt       string   `json:"completedAt"`
 	ExitCode          int      `json:"exitCode"`
 	ErrorMessage      string   `json:"errorMessage"`
+	ActualPromptText  string   `json:"actualPromptText,omitempty"`
 }
 
 type SessionStreamEvent struct {
@@ -484,8 +486,11 @@ type AiSessionHandle struct {
 type AiSessionMessageRequest struct {
 	Session          AiSessionHandle       `json:"session"`
 	Prompt           string                `json:"prompt"`
+	RequiredMcps     []string              `json:"requiredMcps,omitempty"`
 	SkillIds         []string              `json:"skillIds"`
 	ContextSourceIds []string              `json:"contextSourceIds"`
+	AllowWrite       bool                  `json:"allowWrite,omitempty"`
+	AccountHomePath  string                `json:"accountHomePath,omitempty"`
 	IdleTTLSeconds   *int                  `json:"idleTTLSeconds,omitempty"`
 	StreamCallback   SessionStreamCallback `json:"-"`
 }

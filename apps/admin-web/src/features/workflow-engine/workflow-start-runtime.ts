@@ -361,6 +361,7 @@ async function getOrCreateSession({
         ? Number(sessionRow.process_pid)
         : null,
       dbId: sessionRow.id,
+      accountHomePath: requestedAccount.home_path,
     };
     await writeWorkflowSessionLog({
       adminClient,
@@ -391,12 +392,16 @@ async function getOrCreateSession({
       idleTTLSeconds: idleTTLSeconds ?? undefined,
       resumeProviderSessionId: resumeProviderSessionId ?? undefined,
       providerAccountId: requestedAccount.id,
+      accountHomePath: requestedAccount.home_path,
       providerAccountHomePath: requestedAccount.home_path,
       proxyUrl: requestedAccount.proxy_url || undefined,
       customEnv: requestedAccount.extra_env || undefined,
     });
 
-    handle = startResult;
+    handle = {
+      ...startResult,
+      accountHomePath: requestedAccount.home_path,
+    };
 
     try {
       if (sessionRow) {
@@ -503,6 +508,7 @@ type WorkflowSessionHandle = {
   processKey: string | null;
   processPid?: number | null;
   dbId?: string;
+  accountHomePath?: string;
 };
 
 async function updateWorkflowRunSessionById({
@@ -833,6 +839,40 @@ function isThreadMissingOutput(outputMarkdown: string | null | undefined) {
   );
 }
 
+function isNonRetryableWorkflowSetupError(error: unknown) {
+  const message = String((error as { message?: unknown })?.message ?? "").toLowerCase();
+  const details = String((error as { details?: unknown })?.details ?? "").toLowerCase();
+  const combined = `${message}\n${details}`;
+
+  if (!combined.trim()) {
+    return false;
+  }
+
+  if (
+    combined.includes("accounthomepath is required") ||
+    combined.includes("google drive mcp preflight failed") ||
+    combined.includes("requiredmcps includes google_drive") ||
+    combined.includes("provider bootstrap") ||
+    combined.includes("provider setup")
+  ) {
+    return true;
+  }
+
+  const referencesGoogleDrive =
+    combined.includes("google drive") || combined.includes("google-drive");
+  if (!referencesGoogleDrive) {
+    return false;
+  }
+
+  return (
+    combined.includes("auth") ||
+    combined.includes("credential") ||
+    combined.includes("config") ||
+    combined.includes("not configured") ||
+    combined.includes("not authenticated")
+  );
+}
+
 type WorkflowSessionSendResult = LocalRunnerPromptExecutionResult & {
   actualPromptText: string;
   sessionDbId?: string;
@@ -875,6 +915,8 @@ export async function sendMessageWithRetry({
   subagent,
   prompt,
   skillIds,
+  requiredMcps = [],
+  allowWrite = false,
   idleTTLSeconds,
   forceNewProviderSession,
   providerAccountId,
@@ -890,6 +932,8 @@ export async function sendMessageWithRetry({
   subagent: string | null;
   prompt: string;
   skillIds: string[];
+  requiredMcps?: string[];
+  allowWrite?: boolean;
   idleTTLSeconds?: number | null;
   forceNewProviderSession?: boolean;
   providerAccountId?: string | null;
@@ -920,8 +964,11 @@ export async function sendMessageWithRetry({
         {
           session: handle,
           prompt: currentPrompt,
+          requiredMcps,
           skillIds,
           contextSourceIds: [],
+          allowWrite,
+          accountHomePath: handle.accountHomePath,
           idleTTLSeconds,
         },
         {
@@ -964,19 +1011,18 @@ export async function sendMessageWithRetry({
 
       return {
         ...result,
-        actualPromptText: currentPrompt,
+        actualPromptText: result.actualPromptText ?? currentPrompt,
         sessionDbId: handle.dbId,
       };
     } catch (error) {
       await streamLogger.flush();
       const msg = String((error as any).message || "").toLowerCase();
-      const isSessionDead = (error as any).code === "session_dead";
+      const isSessionDead =
+        (error as any).code === "session_dead" &&
+        !isNonRetryableWorkflowSetupError(error);
       const isSessionTerminated = (error as any).code === "session_terminated";
       const isThreadMissing =
-        msg.includes("provider error:") &&
-        (msg.includes("thread") ||
-          msg.includes("not found") ||
-          msg.includes("invalid"));
+        msg.includes("provider error:") && isThreadMissingOutput(msg);
 
       if (isSessionTerminated) {
         throw error;
@@ -2588,6 +2634,8 @@ export async function submitWorkflowStepFollowUpRuntime({
       subagent: definition.subagent ?? null,
       prompt: finalPrompt,
       skillIds: definition.required_skills ?? [],
+      requiredMcps: definition.required_mcps ?? [],
+      allowWrite: false,
       idleTTLSeconds: projectDefaults.session_idle_ttl_minutes
         ? projectDefaults.session_idle_ttl_minutes * 60
         : undefined,
@@ -3108,6 +3156,8 @@ export async function runWorkflowStartRuntime({
           subagent: stepPlan.definition.subagent ?? null,
           prompt: finalPrompt,
           skillIds: stepPlan.definition.required_skills ?? [],
+          requiredMcps: stepPlan.definition.required_mcps ?? [],
+          allowWrite: false,
           idleTTLSeconds: projectDefaults.session_idle_ttl_minutes
             ? projectDefaults.session_idle_ttl_minutes * 60
             : undefined,
