@@ -69,6 +69,7 @@ function createGoogleDriveRuntimeReadyResponse() {
       mcp: {
         status: "configured",
         configured: true,
+        proxyMcpEnabled: true,
         credentialPath: null,
         tokenPath: null,
         credentialFileExists: false,
@@ -167,6 +168,7 @@ describe("ArtifactCloudStoragePanel", () => {
             mcp: {
               status: "needs_input",
               configured: false,
+              proxyMcpEnabled: false,
               credentialPath: null,
               tokenPath: null,
               credentialFileExists: false,
