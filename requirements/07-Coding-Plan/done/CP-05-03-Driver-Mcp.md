@@ -464,7 +464,7 @@ GOOGLE_DRIVE_MCP_TOKEN_PATH = "/Users/example/.config/google-drive-mcp/tokens.js
 Tool allowlist policy:
 
 - Phase A and Phase B should allow read-only and diagnostic tools only.
-- Phase C can add write tools only when the workflow step explicitly allows writes.
+- CP-05-03 must not add write tools. Write-mode MCP behavior moved to [CP-27: FlowPilot Self-Hosted MCP Server](../todo/CP-27-MCP-Self-Server.md).
 - Permission and approval behavior is provider-specific, so the runner should configure the strictest available option per provider.
 
 Read-only allowlist:
@@ -482,7 +482,7 @@ getGoogleDocContent
 getGoogleDocContentPaginated
 ```
 
-Write tools to keep disabled until Phase C:
+Write tools to keep disabled in CP-05-03:
 
 ```text
 createTextFile
@@ -1086,68 +1086,34 @@ Checklist:
 
 Goal:
 
-- Allow selected workflow steps to create/update Google Drive artifacts through the provider CLI and Google Drive MCP.
+- Deferred. Write-mode MCP support moved to [CP-27: FlowPilot Self-Hosted MCP Server](../todo/CP-27-MCP-Self-Server.md).
 
-Note:
+Current CP-05-03 scope:
 
-- This phase is still required even with artifact sync in place, because artifact sync only mirrors FlowPilot-owned artifacts. Phase C is the runtime write path for AI providers like Claude Code, Gemini, and Codex to create or edit existing files in Google Drive during a workflow run.
+- Phase A and Phase B support read-only Google Drive MCP tools only.
+- FlowPilot configures provider clients so Codex, Claude, and Gemini can use read-only Drive tools through their own MCP client support.
+- FlowPilot does not currently observe each provider-side Google Drive tool call.
+- FlowPilot does not currently approve individual Google Drive write requests.
+- FlowPilot must not enable broad write tools in provider config from this plan.
 
-Initial write use cases:
+Reason for deferral:
 
-- Create Google Doc from workflow result.
-- Update Google Doc with final deliverable.
-- Create a Google Sheet for structured run output.
-- Create a Slides deck from a planning/research result.
+- In the current architecture, FlowPilot injects MCP requirements into the prompt and then launches the AI provider process.
+- The AI provider process is the MCP client and connects directly to the configured Google Drive MCP server.
+- Because the provider owns the MCP client connection, FlowPilot cannot reliably see the exact write tool name, arguments, file/folder target, run ID, and step ID at the moment the model requests a write.
+- A safe per-request write approval flow requires a FlowPilot-owned MCP server/proxy so the tool call crosses a FlowPilot-controlled boundary before reaching Google Drive.
 
-Required guardrails:
+CP-27 owns the future write-mode design:
 
-- Step must explicitly allow writes.
-- Prompt augmentation must say writes are allowed and list exact target operations.
-- Provider config must enable only the required write tools for that run or provider account.
-- Destructive tools such as `deleteItem`, permission changes, and public sharing remain disabled until a separate approval design exists.
-- Result must include created/updated file IDs and URLs.
-- Runner should save write audit metadata in artifacts.
-
-Write prompt example:
-
-```markdown
-## Required MCP Usage
-
-This step is allowed to write to Google Drive through provider MCP server `google-drive`.
-
-Allowed operation:
-- Create one Google Doc from the final workflow output.
-
-Not allowed:
-- Delete files
-- Change sharing permissions
-- Move unrelated files
-- Create calendar events
-
-After the write, return the created document name, document ID, and URL.
-If the write tool is unavailable or blocked, report `MCP_TOOL_BLOCKED` or `MCP_TOOL_FAILED`.
-```
-
-Write audit artifact:
-
-```json
-{
-  "provider": "google_drive",
-  "serverName": "google-drive",
-  "aiProvider": "claude",
-  "workflowRunId": "run-id",
-  "stepKey": "publish_doc",
-  "allowWrite": true,
-  "requestedTools": ["createGoogleDoc"],
-  "createdObjects": [
-    {
-      "type": "google_doc",
-      "id": "doc-id",
-      "url": "https://docs.google.com/document/d/doc-id"
-    }
-  ]
-}
-```
+- explain MCP terms and the three-party interaction between user, FlowPilot MCP server, and AI provider
+- design a self-hosted FlowPilot MCP server
+- replace direct provider-to-Google-Drive MCP wiring with provider-to-FlowPilot-MCP wiring where needed
+- support step-level `mcpAccessMode = read_only | read_write`
+- keep default mode as `read_only`
+- expose write tools only when the step is configured for `read_write`
+- capture exact write calls at the MCP server boundary
+- create pending approval records for write calls
+- resume or fail the workflow based on the user's approval decision
 
 ### 11.16 UI Changes
 
@@ -1441,13 +1407,9 @@ Phase B is done when:
 - Step output includes Drive evidence or an MCP failure code.
 - Tests cover preflight, prompt injection, and provider-driven test request shape.
 
-Phase C is done when:
+Phase C is deferred to [CP-27: FlowPilot Self-Hosted MCP Server](../todo/CP-27-MCP-Self-Server.md).
 
-- Write tools are enabled only for write-approved steps.
-- Provider prompt clearly states exact allowed write operation.
-- Created/updated Drive object IDs are captured.
-- Destructive and permission-changing tools stay disabled unless separately approved.
-- Audit artifacts record requested tools and resulting Drive objects.
+CP-05-03 is complete without write tools when Phase A and Phase B read-only provider-MCP behavior is stable.
 
 ### 11.23 Recommended First Slice
 
@@ -1582,3 +1544,4 @@ If you only have time for a short regression pass, run these cases:
 - Missing provider config preflight
 - Explicit MCP failure marker handling
 - Quoted guidance false-positive check
+
