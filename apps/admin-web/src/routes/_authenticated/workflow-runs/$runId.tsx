@@ -1784,10 +1784,22 @@ function WorkflowRunDetailPage() {
         setDecisionComment("");
       }
 
-      if (decision === "approved" || decision === "changes_requested") {
+      if (decision === "changes_requested") {
         await submitStepApprovalDecisionUseCase.current.execute(
           stepId,
-          decision === "approved",
+          false,
+          followUpComment || undefined,
+        );
+      } else if (pendingApproval) {
+        await getGatewayBundle().workflowEngineGateway.submitGoogleDriveWriteApproval(
+          stepId,
+          decision,
+          followUpComment || undefined,
+        );
+      } else if (decision === "approved") {
+        await submitStepApprovalDecisionUseCase.current.execute(
+          stepId,
+          true,
           followUpComment || undefined,
         );
       } else {
