@@ -264,6 +264,7 @@ type GoogleDriveArtifactSyncStatus struct {
 type GoogleDriveMcpStatus struct {
 	Status                  string   `json:"status"`
 	Configured              bool     `json:"configured"`
+	ProxyMcpEnabled         bool     `json:"proxyMcpEnabled"`
 	CredentialPath          string   `json:"credentialPath,omitempty"`
 	TokenPath               string   `json:"tokenPath,omitempty"`
 	CredentialFileExists    bool     `json:"credentialFileExists"`
@@ -425,6 +426,7 @@ type PromptExecutionRequest struct {
 	TimeoutMs         int               `json:"timeoutMs"`
 	WorkingDirectory  string            `json:"workingDirectory"`
 	AllowWrite        bool              `json:"allowWrite,omitempty"`
+	YoloMode          bool              `json:"yoloMode,omitempty"`
 	ProviderAccountID string            `json:"providerAccountId,omitempty"`
 	AccountHomePath   string            `json:"accountHomePath,omitempty"`
 	ProxyURL          string            `json:"proxyUrl,omitempty"`
@@ -491,6 +493,7 @@ type AiSessionMessageRequest struct {
 	SkillIds         []string              `json:"skillIds"`
 	ContextSourceIds []string              `json:"contextSourceIds"`
 	AllowWrite       bool                  `json:"allowWrite,omitempty"`
+	YoloMode         bool                  `json:"yoloMode,omitempty"`
 	AccountHomePath  string                `json:"accountHomePath,omitempty"`
 	IdleTTLSeconds   *int                  `json:"idleTTLSeconds,omitempty"`
 	StreamCallback   SessionStreamCallback `json:"-"`

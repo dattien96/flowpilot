@@ -45,6 +45,7 @@ func NewRootCommand() *cobra.Command {
 	rootCmd.AddCommand(newProvidersCommand(cfg))
 	rootCmd.AddCommand(newInstallProviderCommand(cfg))
 	rootCmd.AddCommand(newBackendsCommand(cfg))
+	rootCmd.AddCommand(newGoogleDriveMcpCommand(cfg))
 	rootCmd.AddCommand(newSkillsCommand(cfg))
 	rootCmd.AddCommand(newFlowsCommand(cfg))
 
@@ -748,6 +749,46 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 					"config":  status,
 				})
 			})
+			mux.HandleFunc("/google-drive-proxy-approvals", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				records, err := instance.ListGoogleDriveProxyApprovals(
+					r.URL.Query().Get("workflowRunId"),
+					r.URL.Query().Get("workflowStepRunId"),
+					r.URL.Query().Get("status"),
+				)
+				if err != nil {
+					writeHTTPError(w, http.StatusInternalServerError, err)
+					return
+				}
+				writeHTTPJSON(w, records)
+			})
+			mux.HandleFunc("/google-drive-proxy-approvals/", func(w http.ResponseWriter, r *http.Request) {
+				trimmed := strings.TrimPrefix(r.URL.Path, "/google-drive-proxy-approvals/")
+				parts := strings.Split(trimmed, "/")
+				if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || parts[1] != "decision" {
+					http.NotFound(w, r)
+					return
+				}
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+
+				var payload runner.GoogleDriveProxyApprovalDecisionRequest
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+				record, err := instance.DecideGoogleDriveProxyApproval(parts[0], payload)
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+				writeHTTPJSON(w, record)
+			})
 			mux.HandleFunc("/backup", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1196,6 +1237,16 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 						})
 						return
 					}
+					if strings.HasPrefix(err.Error(), "mcp_write_approval_required:") {
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(http.StatusConflict)
+						json.NewEncoder(w).Encode(map[string]string{
+							"code":    "mcp_write_approval_required",
+							"message": "manual approval is required before retrying this Google Drive write",
+							"details": err.Error(),
+						})
+						return
+					}
 					writeHTTPError(w, http.StatusBadRequest, err)
 					return
 				}
@@ -1239,6 +1290,9 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 					} else if strings.HasPrefix(err.Error(), "session_terminated:") {
 						event.Code = "session_terminated"
 						event.Error = "session was intentionally terminated"
+					} else if strings.HasPrefix(err.Error(), "mcp_write_approval_required:") {
+						event.Code = "mcp_write_approval_required"
+						event.Error = "manual approval is required before retrying this Google Drive write"
 					}
 					writeEvent(event)
 					return
@@ -1416,6 +1470,30 @@ func newBackendsCommand(cfg *config) *cobra.Command {
 	})
 
 	return backendsCmd
+}
+
+func newGoogleDriveMcpCommand(cfg *config) *cobra.Command {
+	var accountHomePath string
+	var mode string
+	var yoloMode bool
+
+	cmd := &cobra.Command{
+		Use:   "google-drive-mcp",
+		Short: "Run the FlowPilot Google Drive proxy MCP server over stdio",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			instance, err := runner.New(cfg.workspace)
+			if err != nil {
+				return err
+			}
+			return instance.RunGoogleDriveProxyMcpServer(cmd.Context(), cfg.workspace, accountHomePath, mode, yoloMode)
+		},
+	}
+
+	cmd.Flags().StringVar(&accountHomePath, "account-home", "", "Provider account home path used for discovery and diagnostics")
+	cmd.Flags().StringVar(&mode, "mode", "read_only", "Proxy MCP mode: read_only or read_write")
+	cmd.Flags().BoolVar(&yoloMode, "yolo-mode", false, "Enable yolo approval mode for proxy MCP approval handling")
+
+	return cmd
 }
 
 func newSkillsCommand(cfg *config) *cobra.Command {
