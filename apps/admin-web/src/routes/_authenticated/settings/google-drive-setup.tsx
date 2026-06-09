@@ -97,12 +97,27 @@ function GoogleDriveSetupPage() {
   }, []);
 
   const stepSummary = useMemo(() => buildStepSummary(status), [status]);
+  const proxyMcpEnabled = Boolean(status?.mcp.proxyMcpEnabled);
   const canSaveArtifactSync = artifactForm.clientId.trim().length > 0;
   const canSavePickerApiKey = pickerApiKey.trim().length > 0;
   const providerSetupStatus = providerSetupStepStatus(status);
   const mcpLaunchStatus = backendSetupStepStatus(googleDriveBackend, googleDriveTypeEnabled);
 
+  useEffect(() => {
+    if (!proxyMcpEnabled) {
+      return;
+    }
+    setExpandedStep6Sections((current) => ({
+      ...current,
+      "6.1": false,
+      "6.2": false,
+    }));
+  }, [proxyMcpEnabled]);
+
   function toggleStep6Section(section: "6.1" | "6.2" | "6.3") {
+    if (proxyMcpEnabled && (section === "6.1" || section === "6.2")) {
+      return;
+    }
     setExpandedStep6Sections((current) => ({
       ...current,
       [section]: !current[section],
@@ -246,7 +261,7 @@ function GoogleDriveSetupPage() {
 
   const uploadMcpOAuthJson = async (file = oauthFile) => {
     if (!file) {
-      setMessage("Choose the Google Drive MCP OAuth JSON file first.");
+      setMessage("Choose the legacy Desktop OAuth JSON file first.");
       return;
     }
     setBusyAction("upload-mcp");
@@ -260,12 +275,12 @@ function GoogleDriveSetupPage() {
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(payload.error ?? "Unable to upload Google Drive MCP OAuth JSON.");
+        throw new Error(payload.error ?? "Unable to upload legacy Desktop OAuth JSON.");
       }
       setStatus(payload as GoogleDriveRuntimeStatus);
-      setMessage("OAuth JSON uploaded to the runner-managed MCP config path.");
+      setMessage("OAuth JSON uploaded to the runner-managed legacy MCP config path.");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Unable to upload Google Drive MCP OAuth JSON.");
+      setMessage(error instanceof Error ? error.message : "Unable to upload legacy Desktop OAuth JSON.");
     } finally {
       setBusyAction(null);
     }
@@ -304,11 +319,11 @@ function GoogleDriveSetupPage() {
       const nextStatus = await refreshStatus();
       setMessage(
         nextStatus.mcp.needsAuth
-          ? "Google Drive MCP still needs auth. Finish the auth flow, then refresh again."
-          : "Google Drive MCP status refreshed.",
+          ? "Legacy raw MCP still needs auth. Finish the auth flow, then refresh again."
+          : "Legacy raw MCP status refreshed.",
       );
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Unable to refresh Google Drive MCP status.");
+      setMessage(error instanceof Error ? error.message : "Unable to refresh legacy raw MCP status.");
     } finally {
       setBusyAction(null);
     }
@@ -323,15 +338,15 @@ function GoogleDriveSetupPage() {
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(payload.error ?? "Unable to start Google Drive MCP auth.");
+        throw new Error(payload.error ?? "Unable to start legacy raw MCP auth.");
       }
       setStatus((payload.config as GoogleDriveRuntimeStatus) ?? status);
       setMessage(
         payload.message ??
-          "Google Drive MCP auth opened in a new terminal. Complete sign-in, then refresh MCP status.",
+          "Legacy raw MCP auth opened in a new terminal. Complete sign-in, then refresh legacy status.",
       );
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Unable to start Google Drive MCP auth.");
+      setMessage(error instanceof Error ? error.message : "Unable to start legacy raw MCP auth.");
     } finally {
       setBusyAction(null);
     }
@@ -359,7 +374,7 @@ function GoogleDriveSetupPage() {
   return (
     <PageFrame
       title="Google Console Setup"
-      description="Save the Google Cloud values once, then let FlowPilot reuse them for artifact sync and MCP."
+      description="Save the Google Cloud values once, then let FlowPilot reuse them for artifact sync and the proxy MCP."
     >
       <section className="rounded-[1.6rem] border border-border bg-card/80 p-6">
         <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
@@ -603,17 +618,22 @@ function GoogleDriveSetupPage() {
         <section className="rounded-[1.6rem] border border-border bg-background/80 p-6">
           <SectionHeader
             step="6"
-            title="Google Drive MCP setup"
-            subtitle="Complete the runner-side Google Drive MCP flow in order: credentials, backend launch, then provider configuration."
+            title="Google Drive proxy MCP setup"
+            subtitle="Set up the FlowPilot proxy MCP first. Use the Desktop OAuth JSON flow only for legacy raw-MCP fallback."
             status={status?.mcp.status ?? "not_started"}
           />
           <div className="mt-6 grid gap-4">
             <CollapsibleSetupSection
-              expanded={expandedStep6Sections["6.1"]}
+              disabled={proxyMcpEnabled}
+              expanded={!proxyMcpEnabled && expandedStep6Sections["6.1"]}
               onToggle={() => toggleStep6Section("6.1")}
               status={status?.mcp.status ?? "not_started"}
-              subtitle="Copy the downloaded Desktop OAuth JSON into the runner-managed MCP config path."
-              title="6.1 Upload Desktop OAuth JSON for MCP"
+              subtitle={
+                proxyMcpEnabled
+                  ? "Disabled while FlowPilot proxy MCP is enabled on this runner."
+                  : "Only upload Desktop OAuth JSON if you still need the legacy raw-MCP fallback."
+              }
+              title="6.1 Legacy raw MCP Desktop OAuth fallback"
             >
               <GuidePanel
                 className="mt-4"
@@ -621,19 +641,19 @@ function GoogleDriveSetupPage() {
                   "Open Google Auth Platform > Clients.",
                   "Click Create client.",
                   "Choose Desktop app.",
-                  "Use a clear name such as FlowPilot Google Drive MCP Local.",
+                  "Use a clear name such as FlowPilot Google Drive MCP Legacy.",
                   "Save the client and download the OAuth JSON file.",
-                  "Choose or Drag the Desktop client JSON here. Do not upload the Web OAuth client JSON from step 4.",
+                  "Choose or Drag the Desktop client JSON here only for legacy raw-MCP fallback. The proxy MCP path does not need this file.",
                 ]}
               />
               <div className="mt-4 grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
                 <div className="grid gap-4">
                   <div className="space-y-2">
                     <span className="text-sm text-muted-foreground">
-                      <span className="text-accent">Choose or Drag file to upload</span>
+                      <span className="text-accent">Choose or Drag legacy file to upload</span>
                     </span>
                     <div
-                      aria-label="Choose or Drag file to upload"
+                      aria-label="Choose or Drag legacy file to upload"
                       className="flex min-h-14 cursor-pointer items-center overflow-hidden rounded-2xl border border-border bg-background text-sm outline-none transition hover:border-accent/50 focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/40"
                       onClick={openMcpOAuthPicker}
                       onDrop={handleMcpOAuthDrop}
@@ -653,12 +673,12 @@ function GoogleDriveSetupPage() {
                         type="file"
                       />
                       <span className={`min-w-0 flex-1 px-4 py-3 ${oauthFile ? "text-foreground" : "text-muted-foreground"}`}>
-                        {oauthFile ? oauthFile.name : "Drop the Desktop OAuth JSON here or click to browse"}
+                        {oauthFile ? oauthFile.name : "Drop the legacy Desktop OAuth JSON here or click to browse"}
                       </span>
                     </div>
                   </div>
                   <div className="rounded-2xl border border-border/70 bg-background/60 p-4 text-sm text-muted-foreground">
-                    <p className="font-medium text-foreground">Runner-managed MCP paths</p>
+                    <p className="font-medium text-foreground">Legacy raw-MCP paths</p>
                     <p className="mt-2 break-all">Credentials: {status?.mcp.credentialPath ?? "Not resolved yet"}</p>
                     <p className="mt-1 break-all">Token: {status?.mcp.tokenPath ?? "Not resolved yet"}</p>
                     <p className="mt-1">
@@ -670,41 +690,47 @@ function GoogleDriveSetupPage() {
                 <div className="rounded-2xl border border-border/70 bg-background/60 p-4 text-sm">
                   <p className="font-medium text-foreground">What this does</p>
                   <ul className="mt-3 grid gap-2 text-muted-foreground">
-                    <li>Validates the downloaded Google Desktop OAuth JSON.</li>
+                    <li>Validates the downloaded Google Desktop OAuth JSON for the legacy raw-MCP package.</li>
                     <li>Copies it to `~/.config/google-drive-mcp/gcp-oauth.keys.json`.</li>
-                    <li>Leaves the token file for the MCP auth flow to create later.</li>
+                    <li>Leaves the token file for the legacy MCP auth flow to create later.</li>
+                    <li>Does not affect proxy MCP readiness.</li>
                   </ul>
                 </div>
               </div>
               <div className="mt-5 flex flex-wrap gap-3">
                 <Button disabled={busyAction === "upload-mcp" || !oauthFile} onClick={saveMcpOAuthJson}>
-                  {busyAction === "upload-mcp" ? "Saving..." : "Save MCP OAuth JSON"}
+                  {busyAction === "upload-mcp" ? "Saving..." : "Save legacy OAuth JSON"}
                 </Button>
                 <Button disabled={busyAction === "refresh-mcp"} onClick={refreshMcpStatus} variant="secondary">
                   <RefreshCw className="mr-2 h-4 w-4" />
-                  {busyAction === "refresh-mcp" ? "Refreshing..." : "Refresh MCP status"}
+                  {busyAction === "refresh-mcp" ? "Refreshing..." : "Refresh legacy MCP status"}
                 </Button>
               </div>
             </CollapsibleSetupSection>
 
             <CollapsibleSetupSection
-              expanded={expandedStep6Sections["6.2"]}
+              disabled={proxyMcpEnabled}
+              expanded={!proxyMcpEnabled && expandedStep6Sections["6.2"]}
               onToggle={() => toggleStep6Section("6.2")}
               status={mcpLaunchStatus}
-              subtitle="Install, launch, and authenticate the local Google Drive MCP backend."
-              title="6.2 GOOGLE DRIVE MCP launch"
+              subtitle={
+                proxyMcpEnabled
+                  ? "Disabled while FlowPilot proxy MCP is enabled on this runner."
+                  : "Install, launch, and authenticate the third-party MCP package only when you need the legacy fallback."
+              }
+              title="6.2 Legacy raw MCP launch"
             >
               <div className="rounded-[1.6rem] border border-border/70 bg-card/50 p-5">
                 <div className="flex flex-wrap items-start justify-between gap-4">
                   <div>
                     <p className="text-xs uppercase tracking-[0.24em] text-muted-foreground">
-                      Google Drive MCP
+                      Legacy raw MCP
                     </p>
                     <h4 className="mt-2 text-xl font-semibold tracking-tight">
                       Backend status moved here from MCP Servers
                     </h4>
                     <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
-                      Step 6.2 owns backend launch and auth because it depends on the credentials uploaded in 6.1.
+                      This section only applies to the legacy raw-MCP package. The FlowPilot proxy MCP reuses the artifact-sync Google OAuth connection instead.
                     </p>
                   </div>
                   <div className="flex flex-wrap gap-2">
@@ -830,8 +856,8 @@ function GoogleDriveSetupPage() {
               expanded={expandedStep6Sections["6.3"]}
               onToggle={() => toggleStep6Section("6.3")}
               status={providerSetupStatus}
-              subtitle="Configure Codex, Gemini, and Claude to use the local Google Drive MCP."
-              title="6.3 MCP Provider setup"
+              subtitle="Configure Codex, Gemini, and Claude against the FlowPilot proxy MCP. Keep the legacy raw-MCP/Desktop OAuth path only if you still need it."
+              title="6.3 Proxy MCP provider setup"
             >
               <GoogleDriveProviderConfigCard
                 embedded
@@ -1091,6 +1117,7 @@ function CollapsibleSetupSection({
   subtitle,
   status,
   expanded,
+  disabled = false,
   onToggle,
   children,
 }: {
@@ -1098,13 +1125,18 @@ function CollapsibleSetupSection({
   subtitle: string;
   status: string;
   expanded: boolean;
+  disabled?: boolean;
   onToggle: () => void;
   children: ReactNode;
 }) {
   return (
     <div className="overflow-hidden rounded-[1.4rem] border border-border/70 bg-background/60">
       <button
-        className="flex w-full items-start justify-between gap-4 px-5 py-4 text-left transition-colors hover:bg-muted/20"
+        aria-disabled={disabled}
+        className={`flex w-full items-start justify-between gap-4 px-5 py-4 text-left transition-colors ${
+          disabled ? "cursor-not-allowed opacity-60" : "hover:bg-muted/20"
+        }`}
+        disabled={disabled}
         onClick={onToggle}
         type="button"
       >
