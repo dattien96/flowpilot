@@ -41,7 +41,7 @@ func (r *Runner) runProviderDrivenMcpTest(ctx context.Context, request McpTestRe
 
 	// Generate verification prompt with MCP instructions
 	verificationPrompt := generateMcpVerificationPrompt(request.AIProviderKey)
-	verificationPrompt = InjectRequiredMcpInstructions(verificationPrompt, []string{"google_drive"}, request.AIProviderKey, false)
+	verificationPrompt = InjectRequiredMcpInstructions(verificationPrompt, []string{"google_drive"}, request.AIProviderKey, false, false)
 
 	// Create run directory for artifacts
 	runID := newMcpTestRunID()
@@ -215,6 +215,7 @@ func detectMcpFailureCode(output string) string {
 	failureCodes := strings.Join([]string{
 		"mcp_unavailable",
 		"mcp_auth_required",
+		"mcp_write_approval_required",
 		"mcp_tool_blocked",
 		"mcp_tool_failed",
 		"drive_content_not_found",

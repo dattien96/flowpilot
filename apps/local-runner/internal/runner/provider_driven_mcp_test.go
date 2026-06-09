@@ -204,6 +204,11 @@ func TestDetectMcpFailureCodePatterns(t *testing.T) {
 			expectedCode: "mcp_auth_required",
 		},
 		{
+			name:         "MCP_WRITE_APPROVAL_REQUIRED",
+			output:       "MCP_FAILURE_CODE: MCP_WRITE_APPROVAL_REQUIRED",
+			expectedCode: "mcp_write_approval_required",
+		},
+		{
 			name:         "MCP_TOOL_BLOCKED",
 			output:       "MCP_TOOL_BLOCKED: policy restricts this tool",
 			expectedCode: "mcp_tool_blocked",
