@@ -888,6 +888,7 @@ func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionReque
 		request.ProviderKey,
 		request.AccountHomePath,
 		request.AllowWrite,
+		request.YoloMode,
 	)
 	if err != nil {
 		return PromptExecutionResult{}, err
@@ -3397,13 +3398,33 @@ func (r *Runner) getEnvForExecution(
 	proxyURL string,
 ) []string {
 	baseEnv := os.Environ()
-	if strings.TrimSpace(accountHomePath) == "" {
-		return baseEnv
-	}
+	trimmedAccountHomePath := strings.TrimSpace(accountHomePath)
 
-	_ = os.MkdirAll(filepath.Join(accountHomePath, "AppData", "Roaming"), 0755)
-	_ = os.MkdirAll(filepath.Join(accountHomePath, "AppData", "Local"), 0755)
-	_ = os.MkdirAll(filepath.Join(accountHomePath, ".config"), 0755)
+	if trimmedAccountHomePath == "" {
+		newEnv := make([]string, 0, len(baseEnv)+len(customEnv)+2)
+		for _, envVar := range baseEnv {
+			parts := strings.SplitN(envVar, "=", 2)
+			if len(parts) == 0 {
+				continue
+			}
+			key := parts[0]
+			if _, exists := customEnv[key]; exists {
+				continue
+			}
+			if strings.TrimSpace(proxyURL) != "" && (key == "HTTP_PROXY" || key == "HTTPS_PROXY") {
+				continue
+			}
+			newEnv = append(newEnv, envVar)
+		}
+		if strings.TrimSpace(proxyURL) != "" {
+			newEnv = append(newEnv, fmt.Sprintf("HTTP_PROXY=%s", proxyURL))
+			newEnv = append(newEnv, fmt.Sprintf("HTTPS_PROXY=%s", proxyURL))
+		}
+		for k, v := range customEnv {
+			newEnv = append(newEnv, fmt.Sprintf("%s=%s", k, v))
+		}
+		return newEnv
+	}
 
 	var newEnv []string
 	for _, envVar := range baseEnv {
@@ -3421,25 +3442,29 @@ func (r *Runner) getEnvForExecution(
 		newEnv = append(newEnv, envVar)
 	}
 
+	_ = os.MkdirAll(filepath.Join(trimmedAccountHomePath, "AppData", "Roaming"), 0755)
+	_ = os.MkdirAll(filepath.Join(trimmedAccountHomePath, "AppData", "Local"), 0755)
+	_ = os.MkdirAll(filepath.Join(trimmedAccountHomePath, ".config"), 0755)
+
 	switch strings.ToLower(providerKey) {
 	case "codex":
-		newEnv = append(newEnv, fmt.Sprintf("CODEX_HOME=%s", accountHomePath))
-		newEnv = append(newEnv, fmt.Sprintf("HOME=%s", accountHomePath))
-		newEnv = append(newEnv, fmt.Sprintf("XDG_CONFIG_HOME=%s/.config", accountHomePath))
+		newEnv = append(newEnv, fmt.Sprintf("CODEX_HOME=%s", trimmedAccountHomePath))
+		newEnv = append(newEnv, fmt.Sprintf("HOME=%s", trimmedAccountHomePath))
+		newEnv = append(newEnv, fmt.Sprintf("XDG_CONFIG_HOME=%s/.config", trimmedAccountHomePath))
 	default:
-		newEnv = append(newEnv, fmt.Sprintf("HOME=%s", accountHomePath))
-		newEnv = append(newEnv, fmt.Sprintf("XDG_CONFIG_HOME=%s/.config", accountHomePath))
+		newEnv = append(newEnv, fmt.Sprintf("HOME=%s", trimmedAccountHomePath))
+		newEnv = append(newEnv, fmt.Sprintf("XDG_CONFIG_HOME=%s/.config", trimmedAccountHomePath))
 	}
 
 	if runtime.GOOS == "windows" {
-		newEnv = append(newEnv, fmt.Sprintf("USERPROFILE=%s", accountHomePath))
-		newEnv = append(newEnv, fmt.Sprintf("APPDATA=%s\\AppData\\Roaming", accountHomePath))
-		newEnv = append(newEnv, fmt.Sprintf("LOCALAPPDATA=%s\\AppData\\Local", accountHomePath))
+		newEnv = append(newEnv, fmt.Sprintf("USERPROFILE=%s", trimmedAccountHomePath))
+		newEnv = append(newEnv, fmt.Sprintf("APPDATA=%s\\AppData\\Roaming", trimmedAccountHomePath))
+		newEnv = append(newEnv, fmt.Sprintf("LOCALAPPDATA=%s\\AppData\\Local", trimmedAccountHomePath))
 
 		drive := "C:"
-		path := strings.TrimPrefix(accountHomePath, "C:")
-		if strings.Contains(accountHomePath, ":") {
-			parts := strings.SplitN(accountHomePath, ":", 2)
+		path := strings.TrimPrefix(trimmedAccountHomePath, "C:")
+		if strings.Contains(trimmedAccountHomePath, ":") {
+			parts := strings.SplitN(trimmedAccountHomePath, ":", 2)
 			drive = parts[0] + ":"
 			path = parts[1]
 		}

@@ -1743,7 +1743,7 @@ func TestDetectProvidersPopulatesInventoryShape(t *testing.T) {
 		runCommandFn = originalRunCommand
 	})
 	runCommandFn = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		if strings.HasSuffix(name, "codex") && len(args) == 2 && args[0] == "debug" && args[1] == "models" {
+		if strings.Contains(strings.ToLower(filepath.Base(name)), "codex") && len(args) == 2 && args[0] == "debug" && args[1] == "models" {
 			return []byte(`{"models":[
 				{"slug":"gpt-5.5","display_name":"GPT-5.5","visibility":"list","supported_in_api":true},
 				{"slug":"gpt-5.4","display_name":"GPT-5.4","visibility":"list","supported_in_api":true},
@@ -1887,7 +1887,7 @@ func TestDetectProvidersFallsBackToStaticCodexModelsWhenDebugCatalogFails(t *tes
 		runCommandFn = originalRunCommand
 	})
 	runCommandFn = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		if strings.HasSuffix(name, "codex") && len(args) == 2 && args[0] == "debug" && args[1] == "models" {
+		if strings.Contains(strings.ToLower(filepath.Base(name)), "codex") && len(args) == 2 && args[0] == "debug" && args[1] == "models" {
 			return nil, errors.New("catalog unavailable")
 		}
 		return originalRunCommand(ctx, name, args...)
@@ -1942,7 +1942,7 @@ func TestInstallProviderUsesOSAwareInstallAndRefreshesInventory(t *testing.T) {
 		runCommandFn = originalRunCommand
 	})
 	runCommandFn = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		if strings.HasSuffix(name, "codex") && len(args) == 2 && args[0] == "debug" && args[1] == "models" {
+		if strings.Contains(strings.ToLower(filepath.Base(name)), "codex") && len(args) == 2 && args[0] == "debug" && args[1] == "models" {
 			return []byte(`{"models":[
 				{"slug":"gpt-5.5","display_name":"GPT-5.5","visibility":"list","supported_in_api":true},
 				{"slug":"gpt-5.4","display_name":"GPT-5.4","visibility":"list","supported_in_api":true},
@@ -1950,7 +1950,6 @@ func TestInstallProviderUsesOSAwareInstallAndRefreshesInventory(t *testing.T) {
 			]}`), nil
 		}
 
-		installTriggered = true
 		switch runtime.GOOS {
 		case "windows":
 			if name != "npm" || !slices.Equal(args, []string{"install", "-g", "@openai/codex"}) {
@@ -1961,6 +1960,7 @@ func TestInstallProviderUsesOSAwareInstallAndRefreshesInventory(t *testing.T) {
 				t.Fatalf("unexpected codex install command: %s %v", name, args)
 			}
 		}
+		installTriggered = true
 		createdBinary := writeMockProviderBinary(t, binDir, "codex", "codex 1.2.3")
 		if _, err := os.Stat(createdBinary); err != nil {
 			t.Fatalf("expected codex binary to be created during install: %v", err)
@@ -1995,6 +1995,64 @@ func TestInstallProviderUsesOSAwareInstallAndRefreshesInventory(t *testing.T) {
 	}
 	if provider.LastError != nil {
 		t.Fatalf("expected last error to be nil after successful refresh, got %q", *provider.LastError)
+	}
+}
+
+func TestGetEnvForExecutionPreservesBaseEnvWithoutAccountHomeOverride(t *testing.T) {
+	workspace := t.TempDir()
+	t.Setenv("HOME", filepath.Join(workspace, "base-home"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(workspace, "base-config"))
+	t.Setenv("HTTP_PROXY", "http://base-proxy")
+
+	instance := &Runner{workspace: workspace}
+	env := instance.getEnvForExecution("codex", "", map[string]string{
+		googleDriveProxyProcessKeyEnv: "proc-123",
+	}, "")
+
+	if !containsEnvValue(env, "HOME="+filepath.Join(workspace, "base-home")) {
+		t.Fatalf("expected HOME to be preserved when accountHomePath is empty, got %v", env)
+	}
+	if !containsEnvValue(env, "XDG_CONFIG_HOME="+filepath.Join(workspace, "base-config")) {
+		t.Fatalf("expected XDG_CONFIG_HOME to be preserved when accountHomePath is empty, got %v", env)
+	}
+	if !containsEnvValue(env, "HTTP_PROXY=http://base-proxy") {
+		t.Fatalf("expected HTTP_PROXY to be preserved when accountHomePath is empty, got %v", env)
+	}
+	if !containsEnvValue(env, googleDriveProxyProcessKeyEnv+"=proc-123") {
+		t.Fatalf("expected custom env to be appended when accountHomePath is empty, got %v", env)
+	}
+}
+
+func TestGetEnvForExecutionRewritesAccountHomeAndProxyWhenOverrideProvided(t *testing.T) {
+	workspace := t.TempDir()
+	t.Setenv("HOME", filepath.Join(workspace, "base-home"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(workspace, "base-config"))
+	t.Setenv("HTTP_PROXY", "http://base-proxy")
+	t.Setenv("HTTPS_PROXY", "http://base-proxy-secure")
+
+	accountHomePath := filepath.Join(workspace, "codex-home")
+	instance := &Runner{workspace: workspace}
+	env := instance.getEnvForExecution("codex", accountHomePath, map[string]string{
+		googleDriveProxyProcessKeyEnv: "proc-456",
+	}, "http://override-proxy")
+
+	if !containsEnvValue(env, "CODEX_HOME="+accountHomePath) {
+		t.Fatalf("expected CODEX_HOME to be rewritten for account-scoped execution, got %v", env)
+	}
+	if !containsEnvValue(env, "HOME="+accountHomePath) {
+		t.Fatalf("expected HOME to be rewritten for account-scoped execution, got %v", env)
+	}
+	if !containsEnvValue(env, "XDG_CONFIG_HOME="+accountHomePath+"/.config") {
+		t.Fatalf("expected XDG_CONFIG_HOME to be rewritten for account-scoped execution, got %v", env)
+	}
+	if !containsEnvValue(env, "HTTP_PROXY=http://override-proxy") {
+		t.Fatalf("expected HTTP_PROXY to be replaced for account-scoped execution, got %v", env)
+	}
+	if !containsEnvValue(env, "HTTPS_PROXY=http://override-proxy") {
+		t.Fatalf("expected HTTPS_PROXY to be replaced for account-scoped execution, got %v", env)
+	}
+	if !containsEnvValue(env, googleDriveProxyProcessKeyEnv+"=proc-456") {
+		t.Fatalf("expected custom env to be appended for account-scoped execution, got %v", env)
 	}
 }
 
