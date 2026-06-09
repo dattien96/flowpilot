@@ -1345,6 +1345,7 @@ func newProvidersCommand(cfg *config) *cobra.Command {
 	}
 	listCmd.Flags().Bool("json", true, "Emit JSON output")
 	providersCmd.AddCommand(listCmd)
+	providersCmd.AddCommand(newProviderTerminalCommand(cfg))
 
 	providersCmd.AddCommand(&cobra.Command{
 		Use:   "detect",
