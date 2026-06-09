@@ -50,6 +50,7 @@ const mockGoogleDriveStatus: GoogleDriveWorkspaceConfigResponse = {
   mcp: {
     status: 'configured',
     configured: true,
+    proxyMcpEnabled: true,
     credentialPath: '/home/user/.config/google-drive-mcp/gcp-oauth.keys.json',
     tokenPath: '/home/user/.config/google-drive-mcp/tokens.json',
     credentialFileExists: true,
@@ -66,9 +67,22 @@ const mockGoogleDriveStatus: GoogleDriveWorkspaceConfigResponse = {
 
 const mockGoogleDriveStatusNotConfigured: GoogleDriveWorkspaceConfigResponse = {
   ...mockGoogleDriveStatus,
+  artifactSync: {
+    ...mockGoogleDriveStatus.artifactSync,
+    hasClientSecret: false,
+  },
   mcp: {
     ...mockGoogleDriveStatus.mcp,
+    proxyMcpEnabled: true,
     status: 'needs_oauth',
+  },
+};
+
+const mockGoogleDriveStatusProxyDisabled: GoogleDriveWorkspaceConfigResponse = {
+  ...mockGoogleDriveStatus,
+  mcp: {
+    ...mockGoogleDriveStatus.mcp,
+    proxyMcpEnabled: false,
   },
 };
 
@@ -111,10 +125,11 @@ describe('GoogleDriveProviderConfigCard', () => {
     it('renders the card title and description', () => {
       renderComponent();
 
-      expect(screen.getByText('MCP Provider setup')).toBeInTheDocument();
+      expect(screen.getByText('Proxy MCP provider setup')).toBeInTheDocument();
       expect(
-        screen.getByText(/Configure Codex, Gemini, and Claude to use Google Drive MCP/)
+        screen.getByText(/Configure Codex, Gemini, and Claude to use the FlowPilot proxy Google Drive MCP/)
       ).toBeInTheDocument();
+      expect(screen.getByText(/The Desktop OAuth flow is legacy fallback only\./)).toBeInTheDocument();
     });
 
     it('displays all three provider badges when configs are available', () => {
@@ -160,20 +175,47 @@ describe('GoogleDriveProviderConfigCard', () => {
   });
 
   describe('Configure Button', () => {
-    it('disables button when Google Drive MCP is not configured', () => {
+    it('disables button when proxy Google Drive auth is not configured', () => {
       renderComponent(mockGoogleDriveStatusNotConfigured);
 
       const configButton = screen.getByRole('button', { name: /Configure AI Providers/ });
       expect(configButton).toBeDisabled();
     });
 
-    it('shows informational message when MCP not configured', () => {
+    it('shows informational message when proxy auth is not configured', () => {
       renderComponent(mockGoogleDriveStatusNotConfigured);
 
-      expect(screen.getByText('Google Drive MCP must be configured first')).toBeInTheDocument();
+      expect(screen.getByText('FlowPilot proxy Google Drive auth must be configured first')).toBeInTheDocument();
+      expect(
+        screen.getByText(/Save the artifact-sync Google OAuth values first\. Use the Desktop OAuth upload only if you need the legacy raw-MCP fallback\./)
+      ).toBeInTheDocument();
     });
 
-    it('disables button when all providers are already configured', () => {
+    it('enables button when proxy mode is enabled and artifact-sync auth is ready even if legacy MCP status is not configured', () => {
+      renderComponent({
+        ...mockGoogleDriveStatus,
+        mcp: {
+          ...mockGoogleDriveStatus.mcp,
+          proxyMcpEnabled: true,
+          status: 'needs_oauth',
+        },
+      });
+
+      const configButton = screen.getByRole('button', { name: /Configure AI Providers/ });
+      expect(configButton).not.toBeDisabled();
+    });
+
+    it('disables button when proxy mode is off even if artifact-sync auth is ready', () => {
+      renderComponent(mockGoogleDriveStatusProxyDisabled);
+
+      const configButton = screen.getByRole('button', { name: /Configure AI Providers/ });
+      expect(configButton).toBeDisabled();
+      expect(
+        screen.getByText(/FlowPilot proxy Google Drive MCP is disabled in this runner/)
+      ).toBeInTheDocument();
+    });
+
+    it('keeps button enabled when all providers are already configured', () => {
       const allConfigured: GoogleDriveWorkspaceConfigResponse = {
         ...mockGoogleDriveStatus,
         providerConfigs: mockProviderConfigs.map((p) => ({ ...p, status: 'configured' })),
@@ -181,10 +223,10 @@ describe('GoogleDriveProviderConfigCard', () => {
       renderComponent(allConfigured);
 
       const configButton = screen.getByRole('button', { name: /Configure AI Providers/ });
-      expect(configButton).toBeDisabled();
+      expect(configButton).not.toBeDisabled();
     });
 
-    it('enables button when MCP is configured and some providers need configuration', () => {
+    it('enables button when proxy MCP is configured and some providers need configuration', () => {
       renderComponent(mockGoogleDriveStatus);
 
       const configButton = screen.getByRole('button', { name: /Configure AI Providers/ });
@@ -193,7 +235,7 @@ describe('GoogleDriveProviderConfigCard', () => {
   });
 
   describe('Configuration Flow', () => {
-    it('calls ensure endpoint for each provider when Configure button is clicked', async () => {
+    it('calls ensure endpoint for each discovered provider when Configure button is clicked', async () => {
       mocks.ensureGoogleDriveMcpProviderConfig.mockResolvedValue({
         providerKey: 'codex',
         serverName: 'google-drive',
@@ -211,12 +253,16 @@ describe('GoogleDriveProviderConfigCard', () => {
         expect(mocks.ensureGoogleDriveMcpProviderConfig).toHaveBeenCalled();
       });
 
-      expect(mocks.ensureGoogleDriveMcpProviderConfig.mock.calls).toHaveLength(2);
+      expect(mocks.ensureGoogleDriveMcpProviderConfig.mock.calls).toHaveLength(3);
       expect(mocks.ensureGoogleDriveMcpProviderConfig.mock.calls[0]?.[0]).toMatchObject({
         providerKey: 'codex',
         accountHomePath: '/home/user/.codexHome',
       });
       expect(mocks.ensureGoogleDriveMcpProviderConfig.mock.calls[1]?.[0]).toMatchObject({
+        providerKey: 'gemini',
+        accountHomePath: '/home/user',
+      });
+      expect(mocks.ensureGoogleDriveMcpProviderConfig.mock.calls[2]?.[0]).toMatchObject({
         providerKey: 'claude',
         accountHomePath: '/home/user',
       });
@@ -261,7 +307,7 @@ describe('GoogleDriveProviderConfigCard', () => {
       fireEvent.click(configButton);
 
       await waitFor(() => {
-        expect(screen.getByText(/Configured 2 provider accounts successfully/)).toBeInTheDocument();
+        expect(screen.getByText(/Applied configuration to 3 provider accounts successfully/)).toBeInTheDocument();
       });
     });
 
@@ -358,6 +404,49 @@ describe('GoogleDriveProviderConfigCard', () => {
         ).toBeInTheDocument();
       });
     });
+
+    it('can refresh provider configs even when every provider is already configured', async () => {
+      const allConfigured: GoogleDriveWorkspaceConfigResponse = {
+        ...mockGoogleDriveStatus,
+        providerConfigs: mockProviderConfigs.map((config) => ({
+          ...config,
+          status: 'configured',
+        })),
+      };
+
+      mocks.ensureGoogleDriveMcpProviderConfig.mockResolvedValue({
+        providerKey: 'codex',
+        serverName: 'google-drive',
+        status: 'configured',
+        changed: true,
+        configPath: '/home/user/.codexHome/config.toml',
+      });
+
+      renderComponent(allConfigured);
+
+      fireEvent.click(screen.getByRole('button', { name: /Configure AI Providers/ }));
+
+      await waitFor(() => {
+        expect(mocks.ensureGoogleDriveMcpProviderConfig).toHaveBeenCalledTimes(3);
+      });
+
+      expect(mocks.ensureGoogleDriveMcpProviderConfig).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ providerKey: 'codex', accountHomePath: '/home/user/.codexHome' })
+      );
+      expect(mocks.ensureGoogleDriveMcpProviderConfig).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ providerKey: 'gemini', accountHomePath: '/home/user' })
+      );
+      expect(mocks.ensureGoogleDriveMcpProviderConfig).toHaveBeenNthCalledWith(
+        3,
+        expect.objectContaining({ providerKey: 'claude', accountHomePath: '/home/user' })
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText(/Refreshed 3 provider accounts successfully/)).toBeInTheDocument();
+      });
+    });
   });
 
   describe('Stale Config Display', () => {
@@ -379,7 +468,7 @@ describe('GoogleDriveProviderConfigCard', () => {
     it('renders safely when status is null', () => {
       renderComponent(null);
 
-      expect(screen.getByText('MCP Provider setup')).toBeInTheDocument();
+      expect(screen.getByText('Proxy MCP provider setup')).toBeInTheDocument();
       // Should show empty state or placeholder
       expect(screen.getByText(/No provider configurations available/)).toBeInTheDocument();
     });

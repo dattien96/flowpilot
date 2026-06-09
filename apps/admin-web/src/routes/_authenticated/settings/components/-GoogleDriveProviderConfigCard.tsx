@@ -68,14 +68,36 @@ function getStatusText(status: string): string {
 function getStatusTooltip(status: string): string {
   switch (status) {
     case 'configured':
-      return 'Provider is configured and ready to use Google Drive MCP';
+      return 'Provider is configured and ready to use the FlowPilot proxy Google Drive MCP';
     case 'config_stale':
-      return 'Configuration is outdated. Click Configure to update.';
+      return 'Configuration is outdated. Click Configure to refresh the proxy MCP provider config.';
     case 'failed':
       return 'Provider configuration failed. Check error message and reconfigure.';
     case 'not_started':
     default:
       return 'Provider has not been configured yet';
+  }
+}
+
+function getConfigKindLabel(configKind?: string) {
+  switch (configKind) {
+    case 'proxy':
+      return 'Proxy MCP';
+    case 'legacy_raw':
+      return 'Legacy Raw MCP';
+    default:
+      return 'Unknown MCP Shape';
+  }
+}
+
+function getModeLabel(mode?: string) {
+  switch (mode) {
+    case 'read_write':
+      return 'Read + write';
+    case 'read_only':
+      return 'Read only';
+    default:
+      return 'Mode unknown';
   }
 }
 
@@ -88,18 +110,24 @@ export function GoogleDriveProviderConfigCard({
   const [configError, setConfigError] = useState<string | null>(null);
 
   const providerConfigs = googleDriveStatus?.providerConfigs ?? [];
-  const mcpConfigured = googleDriveStatus?.mcp.status === 'configured';
+  const proxyMcpEnabled = Boolean(googleDriveStatus?.mcp.proxyMcpEnabled);
+  const proxyAuthConfigured = Boolean(
+    googleDriveStatus?.artifactSync.clientId?.trim() &&
+    googleDriveStatus?.artifactSync.redirectUri?.trim() &&
+    googleDriveStatus?.artifactSync.hasClientSecret
+  );
+  const discoveredProviderConfigs = providerConfigs.filter(
+    (config) => config.accountHomePath.trim().length > 0
+  );
   const pendingProviderConfigs = providerConfigs.filter(
     (config) =>
       config.status === 'not_started' || config.status === 'config_stale' || config.status === 'failed'
   );
-  const actionableProviderConfigs = pendingProviderConfigs.filter(
-    (config) => config.accountHomePath.trim().length > 0
-  );
-  const unresolvedProviderCount = pendingProviderConfigs.length - actionableProviderConfigs.length;
+  const actionableProviderConfigs = discoveredProviderConfigs;
+  const unresolvedProviderCount = providerConfigs.length - discoveredProviderConfigs.length;
 
-  // Determine if any provider needs configuration
-  const needsConfiguration = actionableProviderConfigs.length > 0;
+  const canConfigureProviders =
+    proxyMcpEnabled && proxyAuthConfigured && actionableProviderConfigs.length > 0;
 
   const configureProviders = useMutation({
     mutationFn: async () => {
@@ -145,9 +173,13 @@ export function GoogleDriveProviderConfigCard({
 
       const providerCount = actionableProviderConfigs.length;
       setConfigMessage(
-        providerCount === 1
-          ? 'Configured 1 provider account successfully.'
-          : `Configured ${providerCount} provider accounts successfully.`
+        pendingProviderConfigs.length === 0
+          ? providerCount === 1
+            ? 'Refreshed 1 provider account successfully.'
+            : `Refreshed ${providerCount} provider accounts successfully.`
+          : providerCount === 1
+            ? 'Applied configuration to 1 provider account successfully.'
+            : `Applied configuration to ${providerCount} provider accounts successfully.`
       );
     },
     onError: (error) => {
@@ -164,15 +196,15 @@ export function GoogleDriveProviderConfigCard({
           {embedded ? null : (
             <>
               <p className="text-xs uppercase tracking-[0.28em] text-muted-foreground">Provider setup</p>
-              <h2 className="mt-2 text-2xl font-semibold">MCP Provider setup</h2>
+              <h2 className="mt-2 text-2xl font-semibold">Proxy MCP provider setup</h2>
             </>
           )}
           <p className={`${embedded ? "" : "mt-3 "}max-w-2xl text-sm text-muted-foreground`}>
-            Configure Codex, Gemini, and Claude to use Google Drive MCP tools during workflow execution.
+            Configure Codex, Gemini, and Claude to use the FlowPilot proxy Google Drive MCP during workflow execution. The Desktop OAuth flow is legacy fallback only.
           </p>
         </div>
         <Button
-          disabled={!mcpConfigured || isConfiguring || !needsConfiguration}
+          disabled={!canConfigureProviders || isConfiguring}
           onClick={() => configureProviders.mutate()}
           variant="secondary"
         >
@@ -187,10 +219,26 @@ export function GoogleDriveProviderConfigCard({
         </Button>
       </div>
 
-      {!mcpConfigured && (
+      {!proxyMcpEnabled ? (
         <div className="mt-4 rounded-2xl border border-border/70 bg-muted/40 p-4 text-sm text-muted-foreground">
-          <p className="font-medium text-foreground">Google Drive MCP must be configured first</p>
-          <p className="mt-2">Complete Step 6 (Upload Desktop OAuth JSON for MCP) to enable provider configuration.</p>
+          <p className="font-medium text-foreground">FlowPilot proxy Google Drive MCP is disabled in this runner</p>
+          <p className="mt-2">
+            Turn on the proxy feature flag before configuring provider MCP servers. The Desktop OAuth upload remains only for the legacy raw-MCP fallback.
+          </p>
+        </div>
+      ) : !proxyAuthConfigured ? (
+        <div className="mt-4 rounded-2xl border border-border/70 bg-muted/40 p-4 text-sm text-muted-foreground">
+          <p className="font-medium text-foreground">FlowPilot proxy Google Drive auth must be configured first</p>
+          <p className="mt-2">
+            Save the artifact-sync Google OAuth values first. Use the Desktop OAuth upload only if you need the legacy raw-MCP fallback.
+          </p>
+        </div>
+      ) : (
+        <div className="mt-4 rounded-2xl border border-success/20 bg-success/5 p-4 text-sm text-muted-foreground">
+          <p className="font-medium text-foreground">FlowPilot proxy MCP is active in this runner</p>
+          <p className="mt-2">
+            The rows below now show the detected MCP type and command from each provider config file, so you can verify that the active config is using the FlowPilot proxy instead of the legacy third-party package.
+          </p>
         </div>
       )}
 
@@ -255,6 +303,25 @@ function ProviderConfigRow({ config }: { config: GoogleDriveMcpProviderConfigSta
               Config: {config.configPath}
             </p>
           )}
+          {config.configKind ? (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Type: {getConfigKindLabel(config.configKind)}
+            </p>
+          ) : null}
+          {config.mode ? (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Access: {getModeLabel(config.mode)}
+              {config.approvalMode ? ` | Approval: ${config.approvalMode}` : ""}
+            </p>
+          ) : null}
+          {config.command ? (
+            <div className="mt-2 rounded-lg border border-border/50 bg-muted/30 px-3 py-2">
+              <p className="text-[11px] uppercase tracking-[0.22em] text-muted-foreground">Detected command</p>
+              <p className="mt-1 break-all font-mono text-xs text-foreground">
+                {[config.command, ...(config.args ?? [])].join(' ')}
+              </p>
+            </div>
+          ) : null}
           {config.lastError && (
             <p className="mt-2 text-xs text-danger break-all">
               Error: {config.lastError}
