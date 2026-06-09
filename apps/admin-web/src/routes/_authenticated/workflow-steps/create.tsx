@@ -12,6 +12,7 @@ import {
   REASONING_EFFORT_OPTIONS,
   STEP_MODEL_OPTIONS,
   type ArtifactDefinition,
+  type McpAccessMode,
 } from "@/domain/model/entity/workflow-engine";
 import { useSupportedModels } from "@/presentation/hooks/use-supported-models";
 import { useMemo } from "react";
@@ -50,6 +51,7 @@ export function CreateWorkflowStepPage() {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [requiredMcps, setRequiredMcps] = useState("");
+  const [mcpAccessMode, setMcpAccessMode] = useState<McpAccessMode>("read_only");
   const [requiredSkills, setRequiredSkills] = useState("");
   const [teamRole, setTeamRole] = useState("");
   const [promptBase, setPromptBase] = useState("");
@@ -107,6 +109,7 @@ export function CreateWorkflowStepPage() {
         description,
         promptBase: promptBase.trim() || deriveStepPromptBase({ stepType, name, description }),
         requiredMcps: parsedRequiredMcps,
+        mcpAccessMode: parsedRequiredMcps.includes("google_drive") ? mcpAccessMode : "read_only",
         requiredSkills: requiredSkills
           .split(",")
           .map((item) => item.trim())
@@ -179,6 +182,22 @@ export function CreateWorkflowStepPage() {
             onChange={(event) => setRequiredMcps(event.target.value)}
           />
         </label>
+        {requiredMcps
+          .split(",")
+          .map((item) => item.trim())
+          .includes("google_drive") ? (
+            <label className="space-y-2 text-sm">
+              <span className="font-medium">Google Drive access</span>
+              <select
+                className="w-full rounded-2xl border border-border bg-card px-4 py-3"
+                value={mcpAccessMode}
+                onChange={(event) => setMcpAccessMode(event.target.value as McpAccessMode)}
+              >
+                <option value="read_only">Read only</option>
+                <option value="read_write">Read + write</option>
+              </select>
+            </label>
+          ) : null}
         <label className="space-y-2 text-sm">
           <span className="font-medium">Required skills</span>
           <input
