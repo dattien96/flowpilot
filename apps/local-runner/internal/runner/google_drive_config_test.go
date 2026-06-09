@@ -111,6 +111,7 @@ func TestLoadGoogleDriveWorkspaceConfigUsesEnvFallback(t *testing.T) {
 	t.Setenv("GOOGLE_DRIVE_CLIENT_SECRET", "env-client-secret")
 	t.Setenv("GOOGLE_DRIVE_REDIRECT_URI", googleDriveDefaultRedirectURI)
 	t.Setenv("GOOGLE_PICKER_API_KEY", "env-picker-api-key")
+	t.Setenv("FLOWPILOT_GOOGLE_DRIVE_PROXY_MCP", "true")
 
 	status, err := instance.LoadGoogleDriveWorkspaceConfig()
 	if err != nil {
@@ -121,6 +122,9 @@ func TestLoadGoogleDriveWorkspaceConfigUsesEnvFallback(t *testing.T) {
 	}
 	if !status.ArtifactSync.Configured {
 		t.Fatalf("expected env artifact sync to be configured, got %#v", status.ArtifactSync)
+	}
+	if !status.MCP.ProxyMcpEnabled {
+		t.Fatalf("expected proxy MCP flag to be reflected in status, got %#v", status.MCP)
 	}
 	if status.ArtifactSync.ClientID != "env-client-id" {
 		t.Fatalf("unexpected env client id: %#v", status.ArtifactSync.ClientID)

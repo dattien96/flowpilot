@@ -478,14 +478,16 @@ func (r *Runner) resolveGoogleDriveMcpStatus(configFile googleDriveWorkspaceConf
 	mcpConfig, err := r.googleDriveMcpRuntimeConfig()
 	if err != nil {
 		return GoogleDriveMcpStatus{
-			Status:        "failed",
-			Configured:    false,
-			MissingFields: []string{"mcp_runtime"},
+			Status:          "failed",
+			Configured:      false,
+			ProxyMcpEnabled: flowpilotGoogleDriveProxyMcpEnabled(),
+			MissingFields:   []string{"mcp_runtime"},
 		}
 	}
 	status := GoogleDriveMcpStatus{
 		Status:                  mcpConfig.Status,
 		Configured:              mcpConfig.Status == "configured",
+		ProxyMcpEnabled:         flowpilotGoogleDriveProxyMcpEnabled(),
 		CredentialPath:          mcpConfig.CredentialPath,
 		TokenPath:               mcpConfig.TokenPath,
 		CredentialFileExists:    mcpConfig.CredentialExists,
