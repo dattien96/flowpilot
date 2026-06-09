@@ -135,6 +135,7 @@ export function resolveMcpEnvStatus(): GoogleDriveMcpStatus {
   const credentialFileValid = credentialFileExists ? validateOAuthJsonFile(credentialPath) : false;
   const backendPackageAvailable = true;
   const tokenFileHasRefreshToken = tokenFileExists ? hasRefreshToken(tokenPath) : false;
+  const proxyMcpEnabled = isFlowPilotGoogleDriveProxyMcpEnabled();
 
   let status = "not_started";
   if (!credentialFileExists) {
@@ -145,8 +146,10 @@ export function resolveMcpEnvStatus(): GoogleDriveMcpStatus {
     status = "needs_auth";
   } else if (!tokenFileHasRefreshToken) {
     status = "needs_auth";
-  } else {
+  } else if (!backendPackageAvailable) {
     status = "warning";
+  } else {
+    status = "configured";
   }
 
   const missingFields: string[] = [];
@@ -157,7 +160,8 @@ export function resolveMcpEnvStatus(): GoogleDriveMcpStatus {
 
   return {
     status,
-    configured: false,
+    configured: status === "configured",
+    proxyMcpEnabled,
     credentialPath,
     tokenPath,
     credentialFileExists,
@@ -222,6 +226,10 @@ function getGoogleDriveConfigDir() {
   }
   const home = process.env.HOME?.trim() || process.env.USERPROFILE?.trim() || "";
   return home ? join(home, ".config", "google-drive-mcp") : join(".", ".config", "google-drive-mcp");
+}
+
+function isFlowPilotGoogleDriveProxyMcpEnabled() {
+  return process.env.FLOWPILOT_GOOGLE_DRIVE_PROXY_MCP?.trim().toLowerCase() === "true";
 }
 
 function validateOAuthJsonFile(path: string) {
