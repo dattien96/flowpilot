@@ -9,6 +9,7 @@ import {
   REASONING_EFFORT_OPTIONS,
   STEP_MODEL_OPTIONS,
   type ArtifactDefinition,
+  type McpAccessMode,
   type StepDefinition,
 } from "@/domain/model/entity/workflow-engine";
 import { useSupportedModels } from "@/presentation/hooks/use-supported-models";
@@ -61,6 +62,7 @@ export function WorkflowStepDetailPage() {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [requiredMcps, setRequiredMcps] = useState<string[]>([]);
+  const [mcpAccessMode, setMcpAccessMode] = useState<McpAccessMode>("read_only");
   const [selectedMcpType, setSelectedMcpType] = useState<string>(integrationTypes[0] ?? "");
   const [requiredSkills, setRequiredSkills] = useState("");
   const [teamRole, setTeamRole] = useState("");
@@ -82,6 +84,7 @@ export function WorkflowStepDetailPage() {
         setName(match?.name ?? "");
         setDescription(match?.description ?? "");
         setRequiredMcps(match?.requiredMcps ?? []);
+        setMcpAccessMode(match?.mcpAccessMode ?? "read_only");
         setSelectedMcpType(firstAvailableMcpType(match?.requiredMcps ?? []));
         setRequiredSkills(match?.requiredSkills.join(", ") ?? "");
         setTeamRole(match?.teamRole ?? "");
@@ -134,6 +137,7 @@ export function WorkflowStepDetailPage() {
         description,
         promptBase: promptBase.trim() || deriveStepPromptBase({ stepType: step.stepType, name, description }),
         requiredMcps,
+        mcpAccessMode: requiredMcps.includes("google_drive") ? mcpAccessMode : "read_only",
         requiredSkills: requiredSkills
           .split(",")
           .map((item) => item.trim())
@@ -150,6 +154,7 @@ export function WorkflowStepDetailPage() {
       setName(saved.name);
       setDescription(saved.description);
       setRequiredMcps(saved.requiredMcps);
+      setMcpAccessMode(saved.mcpAccessMode);
       setSelectedMcpType(firstAvailableMcpType(saved.requiredMcps));
       setRequiredSkills(saved.requiredSkills.join(", "));
       setTeamRole(saved.teamRole ?? "");
@@ -180,6 +185,9 @@ export function WorkflowStepDetailPage() {
   const removeRequiredMcp = (mcpType: string) => {
     const nextRequiredMcps = requiredMcps.filter((current) => current !== mcpType);
     setRequiredMcps(nextRequiredMcps);
+    if (mcpType === "google_drive") {
+      setMcpAccessMode("read_only");
+    }
     setSelectedMcpType(firstAvailableMcpType(nextRequiredMcps));
   };
 
@@ -314,6 +322,19 @@ export function WorkflowStepDetailPage() {
                 </span>
               ))}
             </div>
+            {requiredMcps.includes("google_drive") ? (
+              <label className="space-y-2 text-sm">
+                <span className="font-medium">Google Drive access</span>
+                <select
+                  className="w-full rounded-2xl border border-border bg-card px-4 py-3"
+                  value={mcpAccessMode}
+                  onChange={(event) => setMcpAccessMode(event.target.value as McpAccessMode)}
+                >
+                  <option value="read_only">Read only</option>
+                  <option value="read_write">Read + write</option>
+                </select>
+              </label>
+            ) : null}
           </div>
         </label>
         <label className="space-y-2 text-sm">
