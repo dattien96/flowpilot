@@ -464,7 +464,7 @@ GOOGLE_DRIVE_MCP_TOKEN_PATH = "/Users/example/.config/google-drive-mcp/tokens.js
 Tool allowlist policy:
 
 - Phase A and Phase B should allow read-only and diagnostic tools only.
-- CP-05-03 must not add write tools. Write-mode MCP behavior moved to [CP-27: FlowPilot Self-Hosted MCP Server](../todo/CP-27-MCP-Self-Server.md).
+- CP-05-03 must not add write tools. Write-mode MCP behavior moved to [CP-29: FlowPilot Proxy MCP Server For Google Drive](../priority/CP-29-MCP-Proxy-Google-Drive.md).
 - Permission and approval behavior is provider-specific, so the runner should configure the strictest available option per provider.
 
 Read-only allowlist:
@@ -1086,7 +1086,7 @@ Checklist:
 
 Goal:
 
-- Deferred. Write-mode MCP support moved to [CP-27: FlowPilot Self-Hosted MCP Server](../todo/CP-27-MCP-Self-Server.md).
+- Deferred. Write-mode MCP support moved to [CP-29: FlowPilot Proxy MCP Server For Google Drive](../priority/CP-29-MCP-Proxy-Google-Drive.md).
 
 Current CP-05-03 scope:
 
@@ -1407,7 +1407,7 @@ Phase B is done when:
 - Step output includes Drive evidence or an MCP failure code.
 - Tests cover preflight, prompt injection, and provider-driven test request shape.
 
-Phase C is deferred to [CP-27: FlowPilot Self-Hosted MCP Server](../todo/CP-27-MCP-Self-Server.md).
+Phase C is deferred to [CP-29: FlowPilot Proxy MCP Server For Google Drive](../priority/CP-29-MCP-Proxy-Google-Drive.md).
 
 CP-05-03 is complete without write tools when Phase A and Phase B read-only provider-MCP behavior is stable.
 

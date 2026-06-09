@@ -12,7 +12,7 @@
 - Last Updated: `2026-06-09`
 - Parent Documents: [SD-11: MCP Connection Flows](../../06-System-Tech-Design/SD-11-MCP-Connection-Flows.md), [CP-05-03: Google Drive MCP Current Implementation Notes](../priority/CP-05-03-Driver-Mcp.md)
 - Child Documents: `None`
-- Related Documents: [CP-27: FlowPilot Self-Hosted MCP Server For Google Drive Write Mode](CP-27-MCP-Self-Server.md)
+- Related Documents: [CP-29: FlowPilot Proxy MCP Server For Google Drive](../priority/CP-29-MCP-Proxy-Google-Drive.md)
 - Replaces: `None`
 - Tags: `mcp, ai-provider, direct-runtime, superseded`
 
@@ -77,7 +77,7 @@ workflow step requires google_drive
 ## 2. Input Documents
 
 - [CP-05-03: Google Drive MCP Current Implementation Notes](../priority/CP-05-03-Driver-Mcp.md)
-- [CP-27: FlowPilot Self-Hosted MCP Server For Google Drive Write Mode](CP-27-MCP-Self-Server.md)
+- [CP-29: FlowPilot Proxy MCP Server For Google Drive](../priority/CP-29-MCP-Proxy-Google-Drive.md)
 - [SD-11: MCP Connection Flows](../../06-System-Tech-Design/SD-11-MCP-Connection-Flows.md)
 
 ## 3. Implementation Strategy
