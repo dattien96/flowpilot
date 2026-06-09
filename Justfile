@@ -68,7 +68,7 @@ runner-dev:
 
 # Start admin web and local runner together
 dev:
-    @node scripts/supervisor.js --web-port {{ADMIN_WEB_PORT}} --runner-port {{LOCAL_RUNNER_PORT}}
+    @node scripts/supervisor.js --web-port {{ADMIN_WEB_PORT}} --runner-port {{LOCAL_RUNNER_PORT}} --restart-existing
 
 
 # Print runner health as JSON
