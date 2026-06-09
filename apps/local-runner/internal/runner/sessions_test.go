@@ -150,6 +150,47 @@ func TestStartSessionGeminiACPUsesCurrentHandshake(t *testing.T) {
 	}
 }
 
+func TestStartSessionCodexMcpUsesRequestedModelConfig(t *testing.T) {
+	originalCmdCtx := commandContextFn
+	defer func() { commandContextFn = originalCmdCtx }()
+	var startedArgs []string
+	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+		startedArgs = append([]string{}, arg...)
+		return exec.CommandContext(
+			ctx,
+			"sh",
+			"-c",
+			"printf '%s\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}'",
+		)
+	}
+
+	r, _ := New(".")
+	reasoningEffort := "medium"
+
+	handle, err := r.StartSession(context.Background(), AiSessionStartRequest{
+		ProviderKey:      "codex",
+		ModelName:        "gpt-5.4-mini",
+		ReasoningEffort:  &reasoningEffort,
+		WorkingDirectory: ".",
+	})
+	if err != nil {
+		t.Fatalf("StartSession failed: %v", err)
+	}
+
+	if got := strings.Join(startedArgs, " "); !strings.Contains(got, "-c model=\"gpt-5.4-mini\"") {
+		t.Fatalf("expected Codex MCP session to pass requested model config, got args %v", startedArgs)
+	}
+	if got := strings.Join(startedArgs, " "); !strings.Contains(got, "-c model_reasoning_effort=medium") {
+		t.Fatalf("expected Codex MCP session to pass requested reasoning effort config, got args %v", startedArgs)
+	}
+
+	if handle.ProcessKey != nil {
+		r.sessionsMu.Lock()
+		delete(r.sessions, *handle.ProcessKey)
+		r.sessionsMu.Unlock()
+	}
+}
+
 func TestStartSessionGeminiACPRejectsInitializeErrors(t *testing.T) {
 	originalCmdCtx := commandContextFn
 	defer func() { commandContextFn = originalCmdCtx }()
@@ -265,6 +306,182 @@ func TestSendMessageGeminiACPUsesContentBlocksAndStreamsText(t *testing.T) {
 	}
 	if !strings.Contains(written, `"prompt":[{"text":"Reply with just OK","type":"text"}]`) {
 		t.Fatalf("expected Gemini prompt payload to use ACP content blocks, got %q", written)
+	}
+}
+
+func TestSendMessageRequiredGoogleDriveMcpPreflightFailsBeforeProviderCall(t *testing.T) {
+	workspace := t.TempDir()
+	r := &Runner{
+		workspace: workspace,
+		sessions:  make(map[string]*LiveSession),
+	}
+	writeValidGoogleDriveWorkspaceConfig(t, workspace)
+
+	var stdin bytes.Buffer
+	processKey := "codex-proc"
+	accountHomePath := t.TempDir()
+	r.sessions[processKey] = &LiveSession{
+		SessionID:         "session-1",
+		Provider:          "codex",
+		Model:             "codex-mcp",
+		AccountHomePath:   accountHomePath,
+		TransportType:     "codex_mcp",
+		ProviderSessionID: "codex_mcp_session_session-1",
+		Stdin:             nopWriteCloser{Writer: &stdin},
+		StdoutScanner:     bufio.NewScanner(strings.NewReader("")),
+		LastUsedAt:        time.Now().UTC(),
+		IdleTTL:           time.Hour,
+		Status:            "active",
+	}
+
+	_, err := r.SendMessage(context.Background(), AiSessionMessageRequest{
+		Session: AiSessionHandle{
+			TransportType:     "codex_mcp",
+			ProviderSessionID: "codex_mcp_session_session-1",
+			ProcessKey:        &processKey,
+		},
+		Prompt:          "List the Drive root",
+		RequiredMcps:    []string{"google_drive"},
+		AllowWrite:      false,
+		AccountHomePath: accountHomePath,
+	})
+	if err == nil {
+		t.Fatal("expected preflight error when provider config is missing")
+	}
+	if !strings.Contains(err.Error(), "not configured with the google-drive MCP server") {
+		t.Fatalf("expected provider config error, got %v", err)
+	}
+	if stdin.Len() != 0 {
+		t.Fatalf("expected no provider request to be written on preflight failure, got %q", stdin.String())
+	}
+}
+
+func TestSendMessageInjectsRequiredGoogleDriveInstructionsIntoActualPrompt(t *testing.T) {
+	workspace := t.TempDir()
+	r := &Runner{
+		workspace: workspace,
+		sessions:  make(map[string]*LiveSession),
+	}
+	writeValidGoogleDriveWorkspaceConfig(t, workspace)
+
+	accountHomePath := t.TempDir()
+	_, err := r.EnsureGoogleDriveMcpProviderConfig(GoogleDriveMcpProviderConfigRequest{
+		ProviderKey:     "codex",
+		AccountHomePath: accountHomePath,
+		Scope:           "account",
+		Mode:            "read_only",
+	})
+	if err != nil {
+		t.Fatalf("ensure provider config: %v", err)
+	}
+
+	var stdin bytes.Buffer
+	processKey := "codex-proc"
+	r.sessions[processKey] = &LiveSession{
+		SessionID:         "session-1",
+		Provider:          "codex",
+		Model:             "gpt-5.4-mini",
+		ReasoningEffort:   "low",
+		AccountHomePath:   accountHomePath,
+		TransportType:     "codex_mcp",
+		ProviderSessionID: "codex_mcp_session_session-1",
+		Stdin:             nopWriteCloser{Writer: &stdin},
+		StdoutScanner: bufio.NewScanner(strings.NewReader(
+			`{"jsonrpc":"2.0","id":3,"result":{"threadId":"thread-1","content":[{"text":"ok"}]}}`,
+		)),
+		LastUsedAt: time.Now().UTC(),
+		IdleTTL:    time.Hour,
+		Status:     "active",
+	}
+
+	result, err := r.SendMessage(context.Background(), AiSessionMessageRequest{
+		Session: AiSessionHandle{
+			TransportType:     "codex_mcp",
+			ProviderSessionID: "codex_mcp_session_session-1",
+			ProcessKey:        &processKey,
+		},
+		Prompt:          "Summarize the roadmap doc.",
+		RequiredMcps:    []string{"google_drive"},
+		AllowWrite:      false,
+		AccountHomePath: accountHomePath,
+	})
+	if err != nil {
+		t.Fatalf("SendMessage failed: %v", err)
+	}
+
+	if !strings.Contains(result.ActualPromptText, "## Required MCP Usage") {
+		t.Fatalf("expected injected MCP section in actual prompt, got %q", result.ActualPromptText)
+	}
+	if !strings.Contains(result.ActualPromptText, "google-drive") {
+		t.Fatalf("expected server name in actual prompt, got %q", result.ActualPromptText)
+	}
+	if !strings.Contains(stdin.String(), "google-drive") {
+		t.Fatalf("expected provider request to contain injected prompt, got %q", stdin.String())
+	}
+	if !strings.Contains(stdin.String(), `"model":"gpt-5.4-mini"`) {
+		t.Fatalf("expected initial Codex MCP tool call to include selected model, got %q", stdin.String())
+	}
+	if !strings.Contains(stdin.String(), `"model_reasoning_effort":"low"`) {
+		t.Fatalf("expected initial Codex MCP tool call to include selected reasoning effort, got %q", stdin.String())
+	}
+}
+
+func TestSendMessageMarksResultFailedWhenProviderReportsMcpFailureCode(t *testing.T) {
+	workspace := t.TempDir()
+	r := &Runner{
+		workspace: workspace,
+		sessions:  make(map[string]*LiveSession),
+	}
+	writeValidGoogleDriveWorkspaceConfig(t, workspace)
+
+	accountHomePath := t.TempDir()
+	_, err := r.EnsureGoogleDriveMcpProviderConfig(GoogleDriveMcpProviderConfigRequest{
+		ProviderKey:     "codex",
+		AccountHomePath: accountHomePath,
+		Scope:           "account",
+		Mode:            "read_only",
+	})
+	if err != nil {
+		t.Fatalf("ensure provider config: %v", err)
+	}
+
+	processKey := "codex-proc"
+	r.sessions[processKey] = &LiveSession{
+		SessionID:         "session-1",
+		Provider:          "codex",
+		Model:             "codex-mcp",
+		AccountHomePath:   accountHomePath,
+		TransportType:     "codex_mcp",
+		ProviderSessionID: "codex_mcp_session_session-1",
+		Stdin:             nopWriteCloser{Writer: &bytes.Buffer{}},
+		StdoutScanner: bufio.NewScanner(strings.NewReader(
+			`{"jsonrpc":"2.0","id":3,"result":{"threadId":"thread-1","content":[{"text":"MCP_AUTH_REQUIRED"}]}}`,
+		)),
+		LastUsedAt: time.Now().UTC(),
+		IdleTTL:    time.Hour,
+		Status:     "active",
+	}
+
+	result, err := r.SendMessage(context.Background(), AiSessionMessageRequest{
+		Session: AiSessionHandle{
+			TransportType:     "codex_mcp",
+			ProviderSessionID: "codex_mcp_session_session-1",
+			ProcessKey:        &processKey,
+		},
+		Prompt:          "Summarize the roadmap doc.",
+		RequiredMcps:    []string{"google_drive"},
+		AllowWrite:      false,
+		AccountHomePath: accountHomePath,
+	})
+	if err != nil {
+		t.Fatalf("SendMessage failed: %v", err)
+	}
+
+	if result.Status != "failed" {
+		t.Fatalf("expected failed status, got %q", result.Status)
+	}
+	if !strings.Contains(result.ErrorMessage, "mcp_auth_required") {
+		t.Fatalf("expected MCP failure code in error message, got %q", result.ErrorMessage)
 	}
 }
 

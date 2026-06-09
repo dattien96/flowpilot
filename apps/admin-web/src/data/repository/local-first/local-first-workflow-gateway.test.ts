@@ -126,6 +126,9 @@ function createLocalRunnerMock(): LocalRunnerGateway {
     }),
     shutdownStack: vi.fn(async () => {}),
     restartStack: vi.fn(async () => {}),
+    ensureGoogleDriveMcpProviderConfig: vi.fn(async () => {
+      throw new Error("not implemented");
+    }),
   };
 }
 
@@ -171,7 +174,7 @@ describe("LocalFirstWorkflowGateway", () => {
           workflowRunId: "run-1",
           workflowStepId: "step-run-1",
           projectId: "project-1",
-          outputType: "document",
+          outputType: "business_summary",
           version: 1,
           title: "BusinessIdea.md",
           contentMarkdown: "",
@@ -224,7 +227,7 @@ describe("LocalFirstWorkflowGateway", () => {
         workflowRunId: "run-1",
         workflowStepId: "step-run-1",
         projectId: "project-1",
-        outputType: "document",
+        outputType: "business_summary",
         version: 1,
         title: "BusinessIdea.md",
         contentMarkdown: "",
@@ -371,7 +374,7 @@ describe("LocalFirstWorkflowGateway", () => {
           workflowRunId: "run-1",
           workflowStepId: "step-run-1",
           projectId: "project-1",
-          outputType: "document",
+          outputType: "business_summary",
           version: 1,
           title: "BusinessIdea.md",
           contentMarkdown: "# Business Idea\n\nInitial output",
@@ -383,7 +386,7 @@ describe("LocalFirstWorkflowGateway", () => {
           workflowRunId: "run-1",
           workflowStepId: "step-run-1",
           projectId: "project-1",
-          outputType: "document",
+          outputType: "business_summary",
           version: 2,
           title: "BusinessIdea.md",
           contentMarkdown: "",

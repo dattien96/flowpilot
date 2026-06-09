@@ -707,9 +707,32 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				}
 				writeHTTPJSON(w, status)
 			})
+			mux.HandleFunc("/google-drive-config/mcp-provider-config/ensure", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+
+				var payload runner.GoogleDriveMcpProviderConfigRequest
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+				result, err := instance.EnsureGoogleDriveMcpProviderConfig(payload)
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+				writeHTTPJSON(w, result)
+			})
 			mux.HandleFunc("/google-drive-config/mcp-auth/start", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+
+				if err := instance.StartGoogleDriveMcpAuth(); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
 					return
 				}
 
@@ -718,15 +741,7 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 					writeHTTPError(w, http.StatusInternalServerError, err)
 					return
 				}
-				message := "Google Drive MCP auth is handled by the local MCP client after the OAuth JSON is uploaded."
-				switch status.MCP.Status {
-				case "reconnect_required":
-					message = "Stored Google Drive MCP tokens are expired or revoked. Re-run the MCP auth flow to reconnect."
-				case "needs_auth":
-					message = "Complete the Google Drive MCP auth flow to create or refresh the local token file."
-				case "warning":
-					message = "Google Drive MCP credentials exist, but FlowPilot could not fully validate token health."
-				}
+				message := "Google Drive MCP auth opened in a new terminal. Complete sign-in in the terminal/browser, then refresh MCP status."
 				writeHTTPJSON(w, map[string]any{
 					"status":  status.MCP.Status,
 					"message": message,
@@ -1330,6 +1345,7 @@ func newProvidersCommand(cfg *config) *cobra.Command {
 	}
 	listCmd.Flags().Bool("json", true, "Emit JSON output")
 	providersCmd.AddCommand(listCmd)
+	providersCmd.AddCommand(newProviderTerminalCommand(cfg))
 
 	providersCmd.AddCommand(&cobra.Command{
 		Use:   "detect",

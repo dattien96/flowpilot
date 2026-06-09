@@ -79,6 +79,10 @@ runner-health:
 runner-providers:
     @cd {{LOCAL_RUNNER_PATH}} && go run ./cmd/flowpilot providers detect
 
+# Choose a connected provider account, review its usage limits, and open a terminal in the current workspace
+runner-provider-terminal:
+    @cd {{LOCAL_RUNNER_PATH}} && go run ./cmd/flowpilot providers terminal
+
 # List local skills markdown
 runner-skills:
     @cd {{LOCAL_RUNNER_PATH}} && go run ./cmd/flowpilot skills list

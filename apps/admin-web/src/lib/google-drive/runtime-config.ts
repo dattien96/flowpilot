@@ -1,34 +1,16 @@
-export type GoogleDriveArtifactSyncStatus = {
-  status: string;
-  source: string;
-  configured: boolean;
-  clientId: string | null;
-  redirectUri: string | null;
-  hasClientSecret: boolean;
-  hasPickerApiKey: boolean;
-  missingFields: string[];
-};
+import type {
+  GoogleDriveArtifactSyncStatus,
+  GoogleDriveMcpStatus,
+  GoogleDriveWorkspaceConfigResponse,
+} from "@/domain/model/entity/local-runner";
 
-export type GoogleDriveMcpStatus = {
-  status: string;
-  configured: boolean;
-  credentialPath: string | null;
-  tokenPath: string | null;
-  credentialFileExists: boolean;
-  credentialFileValid: boolean;
-  tokenFileExists: boolean;
-  needsAuth: boolean;
-  backendPackageAvailable: boolean;
-  missingFields: string[];
-};
+export type {
+  GoogleDriveArtifactSyncStatus,
+  GoogleDriveMcpStatus,
+  GoogleDriveWorkspaceConfigResponse,
+} from "@/domain/model/entity/local-runner";
 
-export type GoogleDriveRuntimeStatus = {
-  artifactSync: GoogleDriveArtifactSyncStatus;
-  mcp: GoogleDriveMcpStatus;
-  runnerReachable: boolean;
-  lastError: string | null;
-  updatedAt?: string;
-};
+export type GoogleDriveRuntimeStatus = GoogleDriveWorkspaceConfigResponse;
 
 export type GoogleDriveWorkspaceConfigRequest = {
   clientId?: string;
@@ -51,10 +33,10 @@ export type GoogleDriveValidationCheck = {
 export type GoogleDriveValidationResult = {
   valid: boolean;
   checks: GoogleDriveValidationCheck[];
-  status: GoogleDriveRuntimeStatus;
+  status: GoogleDriveWorkspaceConfigResponse;
 };
 
-export async function loadGoogleDriveRuntimeStatus() {
+export async function loadGoogleDriveRuntimeStatus(): Promise<GoogleDriveRuntimeStatus> {
   const response = await fetch("/api/runtime/google-drive-config", {
     cache: "no-store",
   });

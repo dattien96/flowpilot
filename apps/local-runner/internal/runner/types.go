@@ -9,20 +9,21 @@ type Health struct {
 }
 
 type Provider struct {
-	ID              string          `json:"id,omitempty"`
-	Key             string          `json:"key"`
-	Label           string          `json:"label"`
-	Supported       bool            `json:"supported"`
-	Installed       bool            `json:"installed"`
-	InstallStatus   string          `json:"install_status,omitempty"`
-	AuthStatus      string          `json:"auth_status"`
-	DetectedBinary  string          `json:"detected_binary,omitempty"`
-	DetectedVersion string          `json:"detected_version,omitempty"`
-	Models          []ProviderModel `json:"models,omitempty"`
-	LastError       *string         `json:"last_error,omitempty"`
-	Version         string          `json:"version"`
-	BinaryPath      string          `json:"binaryPath"`
-	InstallHint     string          `json:"installHint"`
+	ID              string                      `json:"id,omitempty"`
+	Key             string                      `json:"key"`
+	Label           string                      `json:"label"`
+	Supported       bool                        `json:"supported"`
+	Installed       bool                        `json:"installed"`
+	InstallStatus   string                      `json:"install_status,omitempty"`
+	AuthStatus      string                      `json:"auth_status"`
+	DetectedBinary  string                      `json:"detected_binary,omitempty"`
+	DetectedVersion string                      `json:"detected_version,omitempty"`
+	Models          []ProviderModel             `json:"models,omitempty"`
+	LastError       *string                     `json:"last_error,omitempty"`
+	Version         string                      `json:"version"`
+	BinaryPath      string                      `json:"binaryPath"`
+	InstallHint     string                      `json:"installHint"`
+	Accounts        []ProviderDiscoveredAccount `json:"accounts,omitempty"`
 }
 
 type ProviderModel struct {
@@ -30,6 +31,12 @@ type ProviderModel struct {
 	DisplayName string `json:"display_name"`
 	Available   bool   `json:"available"`
 	Source      string `json:"source"`
+}
+
+type ProviderDiscoveredAccount struct {
+	ID       string `json:"id"`
+	HomePath string `json:"homePath"`
+	Label    string `json:"label"`
 }
 
 type ProviderInventory struct {
@@ -268,11 +275,12 @@ type GoogleDriveMcpStatus struct {
 }
 
 type GoogleDriveWorkspaceConfigResponse struct {
-	ArtifactSync    GoogleDriveArtifactSyncStatus `json:"artifactSync"`
-	MCP             GoogleDriveMcpStatus          `json:"mcp"`
-	RunnerReachable bool                          `json:"runnerReachable"`
-	LastError       string                        `json:"lastError,omitempty"`
-	UpdatedAt       string                        `json:"updatedAt,omitempty"`
+	ArtifactSync    GoogleDriveArtifactSyncStatus        `json:"artifactSync"`
+	MCP             GoogleDriveMcpStatus                 `json:"mcp"`
+	ProviderConfigs []GoogleDriveMcpProviderConfigStatus `json:"providerConfigs,omitempty"`
+	RunnerReachable bool                                 `json:"runnerReachable"`
+	LastError       string                               `json:"lastError,omitempty"`
+	UpdatedAt       string                               `json:"updatedAt,omitempty"`
 }
 
 type GoogleDriveValidationCheck struct {
@@ -348,14 +356,19 @@ type McpBackendActionRequest struct {
 }
 
 type McpTestRequest struct {
-	BackendKey    string `json:"backendKey"`
-	ProviderType  string `json:"providerType"`
-	ProjectID     string `json:"projectId"`
-	IntegrationID string `json:"integrationId"`
-	TemplateKey   string `json:"templateKey"`
-	AllowWrite    bool   `json:"allowWrite"`
-	Prompt        string `json:"prompt"`
-	TimeoutMs     int    `json:"timeoutMs"`
+	BackendKey       string `json:"backendKey"`
+	ProviderType     string `json:"providerType"`
+	ProjectID        string `json:"projectId"`
+	IntegrationID    string `json:"integrationId"`
+	TemplateKey      string `json:"templateKey"`
+	AllowWrite       bool   `json:"allowWrite"`
+	Prompt           string `json:"prompt"`
+	TimeoutMs        int    `json:"timeoutMs"`
+	UseProviderCLI   bool   `json:"useProviderCli"`
+	AIProviderKey    string `json:"aiProviderKey,omitempty"`
+	AIModelName      string `json:"aiModelName,omitempty"`
+	AccountHomePath  string `json:"accountHomePath,omitempty"`
+	WorkingDirectory string `json:"workingDirectory,omitempty"`
 }
 
 type McpTestResult struct {
@@ -373,6 +386,11 @@ type McpTestResult struct {
 	StartedAt      string   `json:"startedAt"`
 	CompletedAt    string   `json:"completedAt"`
 	ErrorMessage   string   `json:"errorMessage"`
+	AIProviderKey  string   `json:"aiProviderKey,omitempty"`
+	AIModelName    string   `json:"aiModelName,omitempty"`
+	McpServerName  string   `json:"mcpServerName,omitempty"`
+	McpToolUsed    string   `json:"mcpToolUsed,omitempty"`
+	McpFailureCode string   `json:"mcpFailureCode,omitempty"`
 }
 
 type McpTestRunSummary struct {
@@ -400,6 +418,7 @@ type PromptExecutionRequest struct {
 	ModelName         string            `json:"modelName,omitempty"`
 	ReasoningEffort   string            `json:"reasoningEffort,omitempty"`
 	Prompt            string            `json:"prompt"`
+	RequiredMcps      []string          `json:"requiredMcps,omitempty"`
 	SkillIds          []string          `json:"skillIds"`
 	FlowId            string            `json:"flowId"`
 	ContextSourceIds  []string          `json:"contextSourceIds"`
@@ -427,6 +446,7 @@ type PromptExecutionResult struct {
 	CompletedAt       string   `json:"completedAt"`
 	ExitCode          int      `json:"exitCode"`
 	ErrorMessage      string   `json:"errorMessage"`
+	ActualPromptText  string   `json:"actualPromptText,omitempty"`
 }
 
 type SessionStreamEvent struct {
@@ -461,13 +481,17 @@ type AiSessionHandle struct {
 	ProviderSessionID string  `json:"providerSessionId"`
 	ProcessKey        *string `json:"processKey"`
 	ProcessPid        *int    `json:"processPid,omitempty"`
+	Command           string  `json:"command,omitempty"`
 }
 
 type AiSessionMessageRequest struct {
 	Session          AiSessionHandle       `json:"session"`
 	Prompt           string                `json:"prompt"`
+	RequiredMcps     []string              `json:"requiredMcps,omitempty"`
 	SkillIds         []string              `json:"skillIds"`
 	ContextSourceIds []string              `json:"contextSourceIds"`
+	AllowWrite       bool                  `json:"allowWrite,omitempty"`
+	AccountHomePath  string                `json:"accountHomePath,omitempty"`
 	IdleTTLSeconds   *int                  `json:"idleTTLSeconds,omitempty"`
 	StreamCallback   SessionStreamCallback `json:"-"`
 }

@@ -192,6 +192,7 @@ export function McpConnectTestContent({
       return;
     }
 
+    const backendKey = jiraBackend.key;
     let cancelled = false;
 
     async function loadMcpTestRuns() {
@@ -199,7 +200,7 @@ export function McpConnectTestContent({
       try {
         const gateways = await createGatewayBundle();
         const runs = await gateways.localRunnerGateway.listMcpTestRuns(
-          jiraBackend.key,
+          backendKey,
           selectedProjectId,
           selectedIntegrationId || undefined,
           5,

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -476,8 +477,8 @@ func syncManagedProviderAccounts(accounts []ProviderAccount, providerKey string)
 		accounts[i] = account
 	}
 
-	homeDir, err := os.UserHomeDir()
-	if err != nil || strings.TrimSpace(homeDir) == "" {
+	homeDir := preferredUserHomeDir()
+	if homeDir == "" {
 		return accounts, changed
 	}
 
@@ -495,7 +496,7 @@ func syncManagedProviderAccounts(accounts []ProviderAccount, providerKey string)
 		accountIndex := indexProviderAccountByProviderAndSlot(accounts, providerKey, slotIndex)
 		if accountIndex >= 0 {
 			account := accounts[accountIndex]
-			if filepath.Clean(account.HomePath) != filepath.Clean(homePath) {
+			if !samePath(account.HomePath, homePath) {
 				account.HomePath = homePath
 				changed = true
 			}
@@ -590,7 +591,7 @@ func providerAccountsConfigPath() string {
 		return filepath.Join(configDir, "FlowPilot", "provider-accounts.json")
 	}
 
-	if homeDir, err := os.UserHomeDir(); err == nil && strings.TrimSpace(homeDir) != "" {
+	if homeDir := preferredUserHomeDir(); homeDir != "" {
 		return filepath.Join(homeDir, ".flowpilot", "settings", "provider-accounts.json")
 	}
 
@@ -616,4 +617,442 @@ func newProviderAccountID() string {
 		return fmt.Sprintf("acct-%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(buffer)
+}
+
+// DiscoverProviderAccountHomes discovers provider account home paths by checking default locations.
+// It returns valid provider homes plus existing FlowPilot-managed slot directories,
+// so the UI can surface not-started accounts before authentication completes.
+// For Codex, it checks:
+//   - ~/.codexHome (default account path)
+//   - ~/codex-accounts/* (managed account slots)
+//
+// Paths are validated by checking for config.toml or .codex/ directory presence.
+func DiscoverProviderAccountHomes(providerKey string) ([]string, error) {
+	switch strings.ToLower(providerKey) {
+	case "codex":
+		return discoverCodexAccountHomes()
+	case "gemini":
+		return discoverGeminiAccountHomes()
+	case "claude":
+		return discoverClaudeAccountHomes()
+	default:
+		return nil, fmt.Errorf("unsupported provider: %s", providerKey)
+	}
+}
+
+func DiscoverProviderAccounts(providerKey string) ([]ProviderDiscoveredAccount, error) {
+	paths, err := DiscoverProviderAccountHomes(providerKey)
+	if err != nil {
+		return nil, err
+	}
+
+	accounts := make([]ProviderDiscoveredAccount, 0, len(paths))
+	for index, homePath := range paths {
+		accounts = append(accounts, ProviderDiscoveredAccount{
+			ID:       fmt.Sprintf("%s-%d", strings.ToLower(providerKey), index+1),
+			HomePath: homePath,
+			Label:    discoveredProviderAccountLabel(providerKey, homePath),
+		})
+	}
+
+	return accounts, nil
+}
+
+// discoverCodexAccountHomes discovers Codex account home paths.
+// Checks:
+// - CODEX_HOME environment variable
+// - ~/.codex (legacy authenticated home)
+// - ~/.codexHome (default home path)
+// - ~/.codexHomeN (FlowPilot-managed slots)
+// - ~/codex-accounts/* (managed slots directory pattern)
+// Returns valid paths where config.toml or local auth exists, plus existing
+// FlowPilot-managed slot directories so they can be configured before auth.
+func discoverCodexAccountHomes() ([]string, error) {
+	discovered := make(map[string]struct{})
+	var accountPaths []string
+
+	// Check CODEX_HOME environment variable
+	if codexHome := os.Getenv("CODEX_HOME"); strings.TrimSpace(codexHome) != "" {
+		accountPaths = appendDiscoveredAccountPath(accountPaths, discovered, codexHome, isValidCodexAccountPath)
+	}
+
+	// Check default paths in user home directory
+	homeDir := preferredUserHomeDir()
+	if homeDir != "" {
+		// Check ~/.codex (legacy authenticated home path)
+		accountPaths = appendDiscoveredAccountPath(
+			accountPaths,
+			discovered,
+			filepath.Join(homeDir, ".codex"),
+			isValidCodexAccountPath,
+		)
+
+		// Check ~/.codexHome (default account home path)
+		accountPaths = appendDiscoveredAccountPath(
+			accountPaths,
+			discovered,
+			filepath.Join(homeDir, ".codexHome"),
+			isValidCodexAccountPath,
+		)
+
+		for _, path := range discoverManagedProviderHomeSlots(homeDir, ".codexHome", isValidCodexAccountPath) {
+			accountPaths = appendDiscoveredAccountPath(accountPaths, discovered, path, nil)
+		}
+
+		// Check ~/codex-accounts/* for managed account slots
+		codexAccountsDir := filepath.Join(homeDir, "codex-accounts")
+		managedPaths, err := discoverManagedCodexAccounts(codexAccountsDir)
+		if err == nil {
+			for _, path := range managedPaths {
+				accountPaths = appendDiscoveredAccountPath(accountPaths, discovered, path, isValidCodexAccountPath)
+			}
+		}
+	}
+
+	return accountPaths, nil
+}
+
+// discoverGeminiAccountHomes discovers Gemini account home paths.
+// Checks:
+// - ~/.gemini/settings.json (user config)
+// - GEMINI_HOME environment variable if set
+// - ~/.geminiHomeN (FlowPilot-managed slots)
+// Returns valid paths where Gemini config/auth exists, plus existing
+// FlowPilot-managed slot directories so they can be configured before auth.
+func discoverGeminiAccountHomes() ([]string, error) {
+	discovered := make(map[string]struct{})
+	var accountPaths []string
+
+	// Check GEMINI_HOME environment variable
+	if geminiHome := os.Getenv("GEMINI_HOME"); strings.TrimSpace(geminiHome) != "" {
+		accountPaths = appendDiscoveredAccountPath(accountPaths, discovered, geminiHome, isValidGeminiAccountPath)
+	}
+
+	// Check default paths in user home directory
+	homeDir := preferredUserHomeDir()
+	if homeDir != "" {
+		// Check ~/.gemini/ for settings.json
+		accountPaths = appendDiscoveredAccountPath(accountPaths, discovered, homeDir, isValidGeminiAccountPath)
+
+		for _, path := range discoverManagedProviderHomeSlots(homeDir, ".geminiHome", isValidGeminiAccountPath) {
+			accountPaths = appendDiscoveredAccountPath(accountPaths, discovered, path, nil)
+		}
+	}
+
+	return accountPaths, nil
+}
+
+// discoverClaudeAccountHomes discovers Claude account home paths.
+// Checks:
+// - ~/.claude.json (user config)
+// - ~/.claudeHomeN (FlowPilot-managed slots)
+// Returns valid paths where Claude config/auth exists, plus existing
+// FlowPilot-managed slot directories so they can be configured before auth.
+func discoverClaudeAccountHomes() ([]string, error) {
+	discovered := make(map[string]struct{})
+	var accountPaths []string
+
+	homeDir := preferredUserHomeDir()
+	if homeDir == "" {
+		return accountPaths, nil
+	}
+
+	// Check ~/.claude.json (user config in home dir)
+	accountPaths = appendDiscoveredAccountPath(accountPaths, discovered, homeDir, isValidClaudeAccountPath)
+
+	for _, path := range discoverManagedProviderHomeSlots(homeDir, ".claudeHome", isValidClaudeAccountPath) {
+		accountPaths = appendDiscoveredAccountPath(accountPaths, discovered, path, nil)
+	}
+
+	return accountPaths, nil
+}
+
+// discoverManagedCodexAccounts discovers managed Codex account slots from ~/codex-accounts/* directory.
+// Each subdirectory is checked to see if it contains valid Codex config (config.toml or .codex/ dir).
+// Returns a list of valid managed account paths.
+func discoverManagedCodexAccounts(codexAccountsDir string) ([]string, error) {
+	var accountPaths []string
+
+	// Check if the codex-accounts directory exists
+	dirInfo, err := os.Stat(codexAccountsDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return accountPaths, nil // Directory doesn't exist, no managed accounts
+		}
+		return accountPaths, nil // Silently return empty on permission errors
+	}
+
+	if !dirInfo.IsDir() {
+		return accountPaths, nil // Not a directory
+	}
+
+	// Read the directory entries
+	entries, err := os.ReadDir(codexAccountsDir)
+	if err != nil {
+		return accountPaths, nil // Permission error or other issues, return empty
+	}
+
+	// Check each subdirectory
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		accountPath := filepath.Join(codexAccountsDir, entry.Name())
+		if isValidCodexAccountPath(accountPath) {
+			accountPaths = append(accountPaths, accountPath)
+		}
+	}
+
+	return accountPaths, nil
+}
+
+// isValidCodexAccountPath checks if a path is a valid Codex account home path.
+// Returns true if the path contains config.toml or a .codex/ directory.
+func isValidCodexAccountPath(homePath string) bool {
+	// Check if path exists and is accessible
+	info, err := os.Stat(homePath)
+	if err != nil {
+		return false
+	}
+	if !info.IsDir() {
+		return false
+	}
+
+	// Check for config.toml (Codex config file)
+	configPath := filepath.Join(homePath, "config.toml")
+	if _, err := os.Stat(configPath); err == nil {
+		return true
+	}
+
+	return HasLocalAuthAtPath("codex", homePath)
+}
+
+// isValidGeminiAccountPath checks if a path is a valid Gemini account home path.
+// Returns true if the path contains valid Gemini config/auth state.
+func isValidGeminiAccountPath(homePath string) bool {
+	// Check if path exists and is accessible
+	info, err := os.Stat(homePath)
+	if err != nil {
+		return false
+	}
+	if !info.IsDir() {
+		return false
+	}
+
+	if HasLocalAuthAtPath("gemini", homePath) {
+		return true
+	}
+
+	for _, path := range geminiConfigCandidatePaths(homePath) {
+		if isValidJSONConfigFile(path) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// isValidClaudeAccountPath checks if a path is a valid Claude account home path.
+// Returns true if the path contains .claude.json or similar config.
+func isValidClaudeAccountPath(homePath string) bool {
+	// Check if path exists and is accessible
+	info, err := os.Stat(homePath)
+	if err != nil {
+		return false
+	}
+	if !info.IsDir() {
+		return false
+	}
+
+	if _, err := os.Stat(filepath.Join(homePath, ".claude.json")); err == nil {
+		return true
+	}
+
+	return HasLocalAuthAtPath("claude", homePath)
+}
+
+func appendDiscoveredAccountPath(
+	accountPaths []string,
+	discovered map[string]struct{},
+	candidate string,
+	validator func(string) bool,
+) []string {
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "" {
+		return accountPaths
+	}
+	if validator != nil && !validator(candidate) {
+		return accountPaths
+	}
+
+	cleanCandidate := canonicalPathKey(candidate)
+	if _, exists := discovered[cleanCandidate]; exists {
+		return accountPaths
+	}
+
+	discovered[cleanCandidate] = struct{}{}
+	return append(accountPaths, filepath.Clean(candidate))
+}
+
+func geminiConfigCandidatePaths(homePath string) []string {
+	return []string{
+		filepath.Join(homePath, ".gemini", "settings.json"),
+		filepath.Join(homePath, ".gemini", "oauth.json"),
+		filepath.Join(homePath, ".gemini", "oauth_creds.json"),
+		filepath.Join(homePath, "gemini", "oauth_creds.json"),
+		filepath.Join(homePath, "oauth_creds.json"),
+	}
+}
+
+func discoverManagedProviderHomeSlots(
+	homeDir string,
+	prefix string,
+	validator func(string) bool,
+) []string {
+	entries, err := os.ReadDir(homeDir)
+	if err != nil {
+		return nil
+	}
+
+	type slotPath struct {
+		slot int
+		path string
+	}
+
+	paths := make([]slotPath, 0)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		name := entry.Name()
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+
+		slotText := strings.TrimPrefix(name, prefix)
+		if slotText == "" {
+			continue
+		}
+
+		slot, err := strconv.Atoi(slotText)
+		if err != nil || slot <= 0 {
+			continue
+		}
+
+		path := filepath.Join(homeDir, name)
+		if validator(path) || isExistingDirectory(path) {
+			paths = append(paths, slotPath{slot: slot, path: path})
+		}
+	}
+
+	sort.Slice(paths, func(i, j int) bool {
+		return paths[i].slot < paths[j].slot
+	})
+
+	discovered := make([]string, 0, len(paths))
+	for _, path := range paths {
+		discovered = append(discovered, path.path)
+	}
+
+	return discovered
+}
+
+func discoveredProviderAccountLabel(providerKey, homePath string) string {
+	cleanPath := filepath.Clean(homePath)
+	base := filepath.Base(cleanPath)
+	homeDir := preferredUserHomeDir()
+
+	if homeDir != "" && samePath(homeDir, cleanPath) {
+		return "Default"
+	}
+
+	if prefix, ok := managedProviderHomePrefix(providerKey); ok {
+		if strings.HasPrefix(base, prefix) {
+			slotText := strings.TrimPrefix(base, prefix)
+			if slot, err := strconv.Atoi(slotText); err == nil && slot > 0 {
+				return fmt.Sprintf("Account %d", slot)
+			}
+		}
+	}
+
+	if base == "" || base == "." || base == string(filepath.Separator) {
+		return strings.Title(strings.ToLower(providerKey))
+	}
+
+	return base
+}
+
+func isExistingDirectory(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+func isValidJSONConfigFile(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() || info.Size() == 0 {
+		return false
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+
+	var payload any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return false
+	}
+
+	return geminiJSONConfigPayloadLooksValid(filepath.Base(path), payload)
+}
+
+func geminiJSONConfigPayloadLooksValid(fileName string, payload any) bool {
+	root, ok := payload.(map[string]any)
+	if !ok {
+		return false
+	}
+
+	switch strings.ToLower(fileName) {
+	case "settings.json":
+		if hasNonEmptyJSONString(root, "user") {
+			return true
+		}
+		if hasNonEmptyJSONObject(root["mcpServers"]) {
+			return true
+		}
+		return false
+	case "oauth.json", "oauth_creds.json":
+		return geminiOAuthPayloadLooksValid(root)
+	default:
+		return false
+	}
+}
+
+func hasNonEmptyJSONString(root map[string]any, key string) bool {
+	value, ok := root[key].(string)
+	return ok && strings.TrimSpace(value) != ""
+}
+
+func hasNonEmptyJSONObject(value any) bool {
+	obj, ok := value.(map[string]any)
+	return ok && len(obj) > 0
+}
+
+func geminiOAuthPayloadLooksValid(root map[string]any) bool {
+	if hasNonEmptyJSONString(root, "access_token") ||
+		hasNonEmptyJSONString(root, "refresh_token") ||
+		hasNonEmptyJSONString(root, "client_id") ||
+		hasNonEmptyJSONString(root, "client_secret") {
+		return true
+	}
+
+	tokens, ok := root["tokens"].(map[string]any)
+	if !ok {
+		return false
+	}
+
+	return hasNonEmptyJSONString(tokens, "access_token") ||
+		hasNonEmptyJSONString(tokens, "refresh_token")
 }

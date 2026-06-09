@@ -1,4 +1,5 @@
 import type {
+  LocalRunnerProviderAccount,
   LocalRunnerProvider,
   LocalRunnerProviderModel,
 } from "@/domain/model/entity/local-runner";
@@ -8,6 +9,12 @@ export interface RawProviderModel {
   display_name: string;
   available: boolean;
   source: string;
+}
+
+export interface RawProviderAccount {
+  id: string;
+  homePath: string;
+  label: string;
 }
 
 export interface RawProvider {
@@ -25,6 +32,7 @@ export interface RawProvider {
   version: string;
   binaryPath: string;
   installHint: string;
+  accounts?: RawProviderAccount[];
 }
 
 export function mapProviderModel(raw: RawProviderModel): LocalRunnerProviderModel {
@@ -51,5 +59,14 @@ export function mapProvider(raw: RawProvider): LocalRunnerProvider {
     models: raw.models?.map(mapProviderModel),
     lastError: raw.last_error,
     installHint: raw.installHint,
+    accounts: raw.accounts?.map(mapProviderAccount),
+  };
+}
+
+export function mapProviderAccount(raw: RawProviderAccount): LocalRunnerProviderAccount {
+  return {
+    id: raw.id,
+    homePath: raw.homePath,
+    label: raw.label,
   };
 }

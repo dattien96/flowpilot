@@ -710,6 +710,218 @@ describe("workflow-start-runtime", () => {
       } as Response);
     });
 
+    it("passes required MCPs, read-only mode, and accountHomePath through the session message request", async () => {
+      const mockSendMessage = vi.fn().mockResolvedValue({
+        outputMarkdown: "success",
+        actualPromptText: "Injected MCP prompt",
+      });
+      const mockStartSession = vi.fn().mockResolvedValue({
+        processKey: "proc-new",
+        providerSessionId: "thread-new",
+        transportType: "codex_mcp",
+      });
+
+      const localRunnerGateway = {
+        sendMessage: mockSendMessage,
+        closeSession: vi.fn().mockResolvedValue(undefined),
+        startSession: mockStartSession,
+      } as any;
+
+      const mockQueryBuilder = {
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        filter: vi.fn().mockReturnThis(),
+        order: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
+        insert: vi.fn().mockReturnThis(),
+        update: vi.fn().mockReturnThis(),
+        single: vi.fn().mockResolvedValue({ data: { id: "session-new" }, error: null }),
+      };
+      const adminClient = {
+        from: vi.fn(() => mockQueryBuilder),
+      } as any;
+
+      const result = await sendMessageWithRetry({
+        adminClient,
+        localRunnerGateway,
+        workflowRunId: "run-123",
+        stepRunId: "step-456",
+        providerKey: "codex",
+        modelName: "codex-mcp",
+        reasoningEffort: null,
+        workingDirectory: "/repo",
+        subagent: null,
+        prompt: "hello",
+        skillIds: [],
+        requiredMcps: ["google_drive"],
+        allowWrite: false,
+        idleTTLSeconds: 60,
+      });
+
+      expect(mockStartSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          accountHomePath: "/accounts/b",
+          providerAccountHomePath: "/accounts/b",
+        }),
+      );
+      expect(mockSendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prompt: "hello",
+          requiredMcps: ["google_drive"],
+          allowWrite: false,
+          accountHomePath: "/accounts/b",
+        }),
+        expect.any(Object),
+      );
+      expect(result.actualPromptText).toBe("Injected MCP prompt");
+    });
+
+    it("fails immediately for deterministic MCP setup errors even when tagged as session_dead", async () => {
+      const err = new Error(
+        "accountHomePath is required when requiredMcps includes google_drive",
+      );
+      (err as any).code = "session_dead";
+
+      const mockSendMessage = vi.fn().mockRejectedValue(err);
+      const mockCloseSession = vi.fn().mockResolvedValue(undefined);
+      const mockStartSession = vi.fn().mockResolvedValue({
+        processKey: "proc-new",
+        providerSessionId: "thread-new",
+        transportType: "codex_mcp",
+      });
+
+      const localRunnerGateway = {
+        sendMessage: mockSendMessage,
+        closeSession: mockCloseSession,
+        startSession: mockStartSession,
+      } as any;
+
+      const mockQueryBuilder = {
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        filter: vi.fn().mockReturnThis(),
+        order: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: {
+            id: "session-old",
+            process_key: "proc-old",
+            provider_session_id: "thread-old",
+            transport_type: "codex_mcp",
+            status: "active",
+            provider: "codex",
+            model: "codex-mcp",
+            metadata_json: {
+              providerAccountId: "account-b",
+              providerAccountHomePath: "/accounts/b",
+            },
+          },
+          error: null,
+        }),
+        insert: vi.fn().mockReturnThis(),
+        update: vi.fn().mockReturnThis(),
+        single: vi.fn().mockResolvedValue({ data: { id: "session-old" }, error: null }),
+      };
+      const adminClient = {
+        from: vi.fn(() => mockQueryBuilder),
+      } as any;
+
+      await expect(
+        sendMessageWithRetry({
+          adminClient,
+          localRunnerGateway,
+          workflowRunId: "run-123",
+          stepRunId: "step-456",
+          providerKey: "codex",
+          modelName: "codex-mcp",
+          reasoningEffort: null,
+          workingDirectory: "/repo",
+          subagent: null,
+          prompt: "hello",
+          skillIds: [],
+          requiredMcps: ["google_drive"],
+          idleTTLSeconds: 60,
+        }),
+      ).rejects.toThrow("accountHomePath is required when requiredMcps includes google_drive");
+
+      expect(mockSendMessage).toHaveBeenCalledTimes(1);
+      expect(mockCloseSession).not.toHaveBeenCalled();
+      expect(mockStartSession).not.toHaveBeenCalled();
+      expect(mockQueryBuilder.single).not.toHaveBeenCalled();
+    });
+
+    it("fails immediately for Google Drive auth/config bootstrap errors instead of replaying", async () => {
+      const mockSendMessage = vi.fn().mockRejectedValue(
+        new Error("provider error: Google Drive auth token not found for /accounts/b"),
+      );
+      const mockCloseSession = vi.fn().mockResolvedValue(undefined);
+      const mockStartSession = vi.fn().mockResolvedValue({
+        processKey: "proc-new",
+        providerSessionId: "thread-new",
+        transportType: "codex_mcp",
+      });
+
+      const localRunnerGateway = {
+        sendMessage: mockSendMessage,
+        closeSession: mockCloseSession,
+        startSession: mockStartSession,
+      } as any;
+
+      const mockQueryBuilder = {
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        filter: vi.fn().mockReturnThis(),
+        order: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: {
+            id: "session-old",
+            process_key: "proc-old",
+            provider_session_id: "thread-old",
+            transport_type: "codex_mcp",
+            status: "active",
+            provider: "codex",
+            model: "codex-mcp",
+            metadata_json: {
+              providerAccountId: "account-b",
+              providerAccountHomePath: "/accounts/b",
+            },
+          },
+          error: null,
+        }),
+        insert: vi.fn().mockReturnThis(),
+        update: vi.fn().mockReturnThis(),
+        single: vi.fn().mockResolvedValue({ data: { id: "session-old" }, error: null }),
+      };
+      const adminClient = {
+        from: vi.fn(() => mockQueryBuilder),
+      } as any;
+
+      await expect(
+        sendMessageWithRetry({
+          adminClient,
+          localRunnerGateway,
+          workflowRunId: "run-123",
+          stepRunId: "step-456",
+          providerKey: "codex",
+          modelName: "codex-mcp",
+          reasoningEffort: null,
+          workingDirectory: "/repo",
+          subagent: null,
+          prompt: "hello",
+          skillIds: [],
+          requiredMcps: ["google_drive"],
+          idleTTLSeconds: 60,
+        }),
+      ).rejects.toThrow("provider error: Google Drive auth token not found for /accounts/b");
+
+      expect(mockSendMessage).toHaveBeenCalledTimes(1);
+      expect(mockCloseSession).not.toHaveBeenCalled();
+      expect(mockStartSession).not.toHaveBeenCalled();
+      expect(mockQueryBuilder.single).not.toHaveBeenCalled();
+    });
+
     it("reconnects with old thread on session_dead", async () => {
       let callCount = 0;
       const mockSendMessage = vi.fn().mockImplementation(() => {

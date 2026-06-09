@@ -776,10 +776,10 @@ func resolvePromptExecutionAdapter(request PromptExecutionRequest, outputPath st
 		}
 		args := []string{"--sandbox", sandboxMode, "exec"}
 		if modelName != "" {
-			args = append(args, "--model", modelName)
+			args = append(args, "-c", fmt.Sprintf("model=%q", modelName))
 		}
 		if request.ReasoningEffort != "" {
-			args = append(args, "-c", fmt.Sprintf("reasoning_effort=%s", strings.ToLower(request.ReasoningEffort)))
+			args = append(args, "-c", fmt.Sprintf("model_reasoning_effort=%s", strings.ToLower(strings.TrimSpace(request.ReasoningEffort))))
 		}
 		args = append(args, "--output-last-message", outputPath, "-")
 		return "codex", args, resolvedProvider, nil
@@ -836,13 +836,17 @@ func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
-func formatShellCommand(binary string, args []string, stdinPath string) string {
+func formatProviderCommand(binary string, args []string) string {
 	parts := make([]string, 0, len(args)+1)
 	parts = append(parts, shellQuote(binary))
 	for _, arg := range args {
 		parts = append(parts, shellQuote(arg))
 	}
-	return strings.Join(parts, " ") + " < " + shellQuote(stdinPath)
+	return strings.Join(parts, " ")
+}
+
+func formatShellCommand(binary string, args []string, stdinPath string) string {
+	return formatProviderCommand(binary, args) + " < " + shellQuote(stdinPath)
 }
 
 func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionRequest) (PromptExecutionResult, error) {
@@ -877,8 +881,19 @@ func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionReque
 	commandPath := filepath.Join(runDir, "command.txt")
 	metadataPath := filepath.Join(runDir, "metadata.json")
 
-	finalPrompt := r.injectSkillContent(workspace, request.Prompt, request.SkillIds)
-	if err := os.WriteFile(promptPath, []byte(finalPrompt), 0o644); err != nil {
+	promptWithSkills := r.injectSkillContent(workspace, request.Prompt, request.SkillIds)
+	actualPrompt, err := r.preparePromptForRequiredMcps(
+		promptWithSkills,
+		request.RequiredMcps,
+		request.ProviderKey,
+		request.AccountHomePath,
+		request.AllowWrite,
+	)
+	if err != nil {
+		return PromptExecutionResult{}, err
+	}
+
+	if err := os.WriteFile(promptPath, []byte(actualPrompt), 0o644); err != nil {
 		return PromptExecutionResult{}, err
 	}
 
@@ -967,11 +982,13 @@ func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionReque
 			commandPath,
 			metadataPath,
 		},
-		StartedAt:    startedAt.Format(time.RFC3339Nano),
-		CompletedAt:  completedAt.Format(time.RFC3339Nano),
-		ExitCode:     exitCode,
-		ErrorMessage: errorMessage,
+		StartedAt:        startedAt.Format(time.RFC3339Nano),
+		CompletedAt:      completedAt.Format(time.RFC3339Nano),
+		ExitCode:         exitCode,
+		ErrorMessage:     errorMessage,
+		ActualPromptText: actualPrompt,
 	}
+	applyRequiredMcpFailureStatus(&result, request.RequiredMcps)
 
 	if artifact, err := r.SavePromptArtifact(request, result); err == nil {
 		result.ArtifactPaths = []string{
@@ -1039,6 +1056,12 @@ func summarizeCommandFailure(runErr error, stderrSummary string) string {
 }
 
 func (r *Runner) RunMcpTest(ctx context.Context, request McpTestRequest) (McpTestResult, error) {
+	// Handle provider-driven tests
+	if request.UseProviderCLI {
+		return r.runProviderDrivenMcpTest(ctx, request)
+	}
+
+	// Handle standard backend tests
 	if strings.TrimSpace(request.BackendKey) == "" {
 		return McpTestResult{}, errors.New("backendKey is required")
 	}
@@ -1329,6 +1352,10 @@ func detectProvider(ctx context.Context, spec providerSpec) Provider {
 		Models:        buildProviderModels(spec.Models, false),
 	}
 
+	if accounts, err := DiscoverProviderAccounts(spec.Key); err == nil && len(accounts) > 0 {
+		provider.Accounts = accounts
+	}
+
 	binaryPath, err := lookPathFn(spec.BinaryName)
 	if err != nil {
 		notFound := fmt.Sprintf("%s binary was not found on PATH", spec.Label)
@@ -1573,20 +1600,61 @@ func parseGeminiModelsFromBundle(raw string) ([]ProviderModel, error) {
 }
 
 func getPossibleHomeDirs() []string {
-	var dirs []string
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		dirs = append(dirs, home)
+	dirs := make([]string, 0, 4)
+	appendUniqueHomeDir := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+
+		cleanValue := canonicalPathKey(value)
+		for _, existing := range dirs {
+			if canonicalPathKey(existing) == cleanValue {
+				return
+			}
+		}
+
+		dirs = append(dirs, filepath.Clean(value))
 	}
-	if userProfile := os.Getenv("USERPROFILE"); userProfile != "" {
-		dirs = append(dirs, userProfile)
+
+	appendUniqueHomeDir(preferredUserHomeDir())
+	appendUniqueHomeDir(os.Getenv("USERPROFILE"))
+	appendUniqueHomeDir(os.Getenv("HOME"))
+	appendUniqueHomeDir(os.Getenv("APPDATA"))
+	if home, err := os.UserHomeDir(); err == nil {
+		appendUniqueHomeDir(home)
 	}
-	if homeEnv := os.Getenv("HOME"); homeEnv != "" {
-		dirs = append(dirs, homeEnv)
-	}
-	if appData := os.Getenv("APPDATA"); appData != "" {
-		dirs = append(dirs, appData)
-	}
+
 	return dirs
+}
+
+func preferredUserHomeDir() string {
+	candidates := make([]string, 0, 4)
+	if runtime.GOOS == "windows" {
+		candidates = append(candidates, os.Getenv("USERPROFILE"))
+		if drive := strings.TrimSpace(os.Getenv("HOMEDRIVE")); drive != "" {
+			if path := strings.TrimSpace(os.Getenv("HOMEPATH")); path != "" {
+				candidates = append(candidates, drive+path)
+			}
+		}
+		candidates = append(candidates, os.Getenv("HOME"))
+	} else {
+		candidates = append(candidates, os.Getenv("HOME"))
+		candidates = append(candidates, os.Getenv("USERPROFILE"))
+	}
+
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate != "" {
+			return filepath.Clean(candidate)
+		}
+	}
+
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		return filepath.Clean(home)
+	}
+
+	return ""
 }
 
 type RunnerInstanceContext struct {
@@ -3081,6 +3149,132 @@ end tell`,
 	}
 }
 
+func terminalEnvSetCommand(env map[string]string, shellType string) string {
+	if len(env) == 0 {
+		return ""
+	}
+
+	keys := make([]string, 0, len(env))
+	for key := range env {
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	switch shellType {
+	case "posix":
+		lines := make([]string, 0, len(keys))
+		for _, key := range keys {
+			lines = append(lines, fmt.Sprintf("export %s=%s", key, singleQuoteForShell(env[key])))
+		}
+		return strings.Join(lines, " && ")
+	case "windows":
+		lines := make([]string, 0, len(keys))
+		for _, key := range keys {
+			lines = append(lines, fmt.Sprintf(`set "%s=%s"`, key, strings.ReplaceAll(env[key], `"`, `""`)))
+		}
+		return strings.Join(lines, "\r\n")
+	default:
+		return ""
+	}
+}
+
+func writeWindowsTerminalScript(env map[string]string, command string) (string, error) {
+	scriptFile, err := os.CreateTemp("", "flowpilot-terminal-*.cmd")
+	if err != nil {
+		return "", err
+	}
+	defer scriptFile.Close()
+
+	lines := []string{"@echo off"}
+	if envCommand := terminalEnvSetCommand(env, "windows"); envCommand != "" {
+		lines = append(lines, envCommand)
+	}
+	lines = append(lines, command, "")
+
+	if _, err := scriptFile.WriteString(strings.Join(lines, "\r\n")); err != nil {
+		return "", err
+	}
+
+	return scriptFile.Name(), nil
+}
+
+func launchTerminalCommandWithEnv(env map[string]string, command string, keepShellOpen bool) error {
+	if strings.TrimSpace(command) == "" {
+		return errors.New("terminal command is empty")
+	}
+
+	switch runtime.GOOS {
+	case "windows":
+		scriptPath, err := writeWindowsTerminalScript(env, command)
+		if err != nil {
+			return err
+		}
+		cmd := exec.Command("cmd.exe", "/c", "start", "", "cmd.exe", "/k", scriptPath)
+		if err := cmd.Start(); err != nil {
+			return err
+		}
+		return cmd.Process.Release()
+	case "darwin":
+		shellCommand := command
+		if envCommand := terminalEnvSetCommand(env, "posix"); envCommand != "" {
+			shellCommand = envCommand + " && " + shellCommand
+		}
+		if keepShellOpen {
+			shellCommand += `; exec "$SHELL" -l`
+		}
+		script := fmt.Sprintf(
+			`tell application "Terminal"
+activate
+do script "%s"
+end tell`,
+			escapeAppleScriptString(shellCommand),
+		)
+		cmd := exec.Command("osascript", "-e", script)
+		if err := cmd.Start(); err != nil {
+			return err
+		}
+		return cmd.Process.Release()
+	case "linux":
+		shellCommand := command
+		if envCommand := terminalEnvSetCommand(env, "posix"); envCommand != "" {
+			shellCommand = envCommand + " && " + shellCommand
+		}
+		if keepShellOpen {
+			shellCommand += "; exec bash"
+		}
+		launchCommand := fmt.Sprintf("bash -lc %s", singleQuoteForShell(shellCommand))
+		terminals := []struct {
+			name string
+			args []string
+		}{
+			{"x-terminal-emulator", []string{"-e", launchCommand}},
+			{"gnome-terminal", []string{"--", "bash", "-lc", shellCommand}},
+			{"konsole", []string{"-e", "bash", "-lc", shellCommand}},
+			{"xfce4-terminal", []string{"-e", launchCommand}},
+			{"alacritty", []string{"-e", "bash", "-lc", shellCommand}},
+		}
+
+		for _, terminal := range terminals {
+			path, err := exec.LookPath(terminal.name)
+			if err != nil {
+				continue
+			}
+			cmd := exec.Command(path, terminal.args...)
+			if err := cmd.Start(); err == nil {
+				return cmd.Process.Release()
+			}
+		}
+		return fmt.Errorf("no supported terminal emulator found")
+	default:
+		return fmt.Errorf("unsupported operating system %q for terminal spawning", runtime.GOOS)
+	}
+}
+
+var launchTerminalCommandWithEnvFn = launchTerminalCommandWithEnv
+
 func escapeAppleScriptString(value string) string {
 	replacer := strings.NewReplacer(`\`, `\\`, `"`, `\"`)
 	return replacer.Replace(value)
@@ -3159,6 +3353,43 @@ func (r *Runner) AuthenticateProvider(ctx context.Context, providerName string) 
 	return LaunchTerminalWithCommand(authCommand)
 }
 
+func (r *Runner) StartGoogleDriveMcpAuth() error {
+	config, err := r.googleDriveMcpRuntimeConfig()
+	if err != nil {
+		return err
+	}
+	if !config.CredentialExists || !config.CredentialValid {
+		return errors.New("google drive MCP OAuth credentials are not configured")
+	}
+	if err := os.MkdirAll(filepath.Dir(config.TokenPath), 0o755); err != nil {
+		return err
+	}
+
+	launcherPath, err := lookPathFn("npx")
+	if err != nil {
+		return fmt.Errorf("google drive MCP launcher \"npx\" is not available: %w", err)
+	}
+
+	authInvocation := launcherPath
+	if runtime.GOOS == "windows" {
+		authInvocation = doubleQuoteForCmd(launcherPath)
+		lowerPath := strings.ToLower(launcherPath)
+		if strings.HasSuffix(lowerPath, ".cmd") || strings.HasSuffix(lowerPath, ".bat") {
+			authInvocation = "call " + authInvocation
+		}
+	} else {
+		authInvocation = singleQuoteForShell(launcherPath)
+	}
+
+	authCommand := fmt.Sprintf("%s -y @piotr-agier/google-drive-mcp auth", authInvocation)
+	env := map[string]string{
+		"GOOGLE_DRIVE_MCP_TOKEN_PATH":    config.TokenPath,
+		"GOOGLE_DRIVE_OAUTH_CREDENTIALS": config.CredentialPath,
+	}
+
+	return launchTerminalCommandWithEnvFn(env, authCommand, true)
+}
+
 func (r *Runner) getEnvForExecution(
 	providerKey string,
 	accountHomePath string,
@@ -3229,9 +3460,9 @@ func (r *Runner) getEnvForExecution(
 }
 
 func NextAccountHomePath(providerKey string, existing []string) (string, int, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", 0, err
+	home := preferredUserHomeDir()
+	if home == "" {
+		return "", 0, errors.New("unable to resolve user home directory")
 	}
 
 	prefix := ""
@@ -3248,12 +3479,12 @@ func NextAccountHomePath(providerKey string, existing []string) (string, int, er
 
 	existingPaths := make(map[string]bool)
 	for _, p := range existing {
-		existingPaths[filepath.Clean(p)] = true
+		existingPaths[canonicalPathKey(p)] = true
 	}
 
 	for i := 1; i < 1000; i++ {
 		path := filepath.Join(home, fmt.Sprintf("%s%d", prefix, i))
-		if existingPaths[path] {
+		if existingPaths[canonicalPathKey(path)] {
 			continue
 		}
 		if _, err := os.Stat(path); os.IsNotExist(err) {

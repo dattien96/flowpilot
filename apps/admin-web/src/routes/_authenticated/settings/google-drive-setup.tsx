@@ -1,6 +1,6 @@
 import { useMutation } from "@tanstack/react-query";
 import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
-import { ChevronDown, Copy, Eye, EyeOff, RefreshCw } from "lucide-react";
+import { ChevronDown, ChevronRight, Copy, Eye, EyeOff, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -23,6 +23,7 @@ import {
   type GoogleDriveValidationResult,
 } from "@/lib/google-drive/runtime-config";
 import { Badge } from "@/presentation/components/ui/badge";
+import { GoogleDriveProviderConfigCard } from "./components/-GoogleDriveProviderConfigCard";
 
 const DEFAULT_REDIRECT_URI =
   "http://127.0.0.1:4317/artifact-storage/google-drive/oauth/callback";
@@ -51,6 +52,11 @@ function GoogleDriveSetupPage() {
   const [oauthFile, setOauthFile] = useState<File | null>(null);
   const [showClientSecret, setShowClientSecret] = useState(false);
   const [showPickerApiKey, setShowPickerApiKey] = useState(false);
+  const [expandedStep6Sections, setExpandedStep6Sections] = useState<Record<"6.1" | "6.2" | "6.3", boolean>>({
+    "6.1": true,
+    "6.2": true,
+    "6.3": true,
+  });
   const [validation, setValidation] = useState<GoogleDriveValidationResult | null>(null);
   const [validationOpen, setValidationOpen] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -93,6 +99,15 @@ function GoogleDriveSetupPage() {
   const stepSummary = useMemo(() => buildStepSummary(status), [status]);
   const canSaveArtifactSync = artifactForm.clientId.trim().length > 0;
   const canSavePickerApiKey = pickerApiKey.trim().length > 0;
+  const providerSetupStatus = providerSetupStepStatus(status);
+  const mcpLaunchStatus = backendSetupStepStatus(googleDriveBackend, googleDriveTypeEnabled);
+
+  function toggleStep6Section(section: "6.1" | "6.2" | "6.3") {
+    setExpandedStep6Sections((current) => ({
+      ...current,
+      [section]: !current[section],
+    }));
+  }
 
   const runBackendAction = useMutation({
     mutationFn: async (backend: LocalRunnerMcpBackend) => {
@@ -286,17 +301,37 @@ function GoogleDriveSetupPage() {
     setBusyAction("refresh-mcp");
     setMessage(null);
     try {
+      const nextStatus = await refreshStatus();
+      setMessage(
+        nextStatus.mcp.needsAuth
+          ? "Google Drive MCP still needs auth. Finish the auth flow, then refresh again."
+          : "Google Drive MCP status refreshed.",
+      );
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to refresh Google Drive MCP status.");
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const startMcpAuth = async () => {
+    setBusyAction("start-mcp-auth");
+    setMessage(null);
+    try {
       const response = await fetch("/api/runtime/google-drive-config/mcp-auth/start", {
         method: "POST",
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(payload.error ?? "Unable to refresh Google Drive MCP status.");
+        throw new Error(payload.error ?? "Unable to start Google Drive MCP auth.");
       }
       setStatus((payload.config as GoogleDriveRuntimeStatus) ?? status);
-      setMessage(payload.message ?? "Google Drive MCP status refreshed.");
+      setMessage(
+        payload.message ??
+          "Google Drive MCP auth opened in a new terminal. Complete sign-in, then refresh MCP status.",
+      );
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Unable to refresh Google Drive MCP status.");
+      setMessage(error instanceof Error ? error.message : "Unable to start Google Drive MCP auth.");
     } finally {
       setBusyAction(null);
     }
@@ -522,203 +557,6 @@ function GoogleDriveSetupPage() {
         <section className="rounded-[1.6rem] border border-border bg-background/80 p-6">
           <SectionHeader
             step="5"
-            title="Upload Desktop OAuth JSON for MCP"
-            subtitle="Copy the downloaded Desktop OAuth JSON into the runner-managed MCP config path."
-            status={status?.mcp.status ?? "not_started"}
-          />
-          <GuidePanel
-            className="mt-4"
-            items={[
-              "Open Google Auth Platform > Clients.",
-              "Click Create client.",
-              "Choose Desktop app.",
-              "Use a clear name such as FlowPilot Google Drive MCP Local.",
-              "Save the client and download the OAuth JSON file.",
-              "Choose or Drag the Desktop client JSON here. Do not upload the Web OAuth client JSON from step 4.",
-            ]}
-          />
-          <div className="mt-4 grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
-            <div className="grid gap-4">
-              <div className="space-y-2">
-                <span className="text-sm text-muted-foreground">
-                  <span className="text-accent">Choose or Drag file to upload</span>
-                </span>
-                <div
-                  aria-label="Choose or Drag file to upload"
-                  className="flex min-h-14 cursor-pointer items-center overflow-hidden rounded-2xl border border-border bg-background text-sm outline-none transition hover:border-accent/50 focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/40"
-                  onClick={openMcpOAuthPicker}
-                  onDrop={handleMcpOAuthDrop}
-                  onDragOver={(event) => event.preventDefault()}
-                  onKeyDown={handleMcpOAuthKeyDown}
-                  role="button"
-                  tabIndex={0}
-                >
-                  <input
-                    ref={oauthFileInputRef}
-                    accept="application/json,.json"
-                    className="sr-only"
-                    onChange={(event) => {
-                      const file = event.target.files?.[0] ?? null;
-                      selectMcpOAuthFile(file);
-                    }}
-                    type="file"
-                  />
-                  <span className={`min-w-0 flex-1 px-4 py-3 ${oauthFile ? "text-foreground" : "text-muted-foreground"}`}>
-                    {oauthFile ? oauthFile.name : "Drop the Desktop OAuth JSON here or click to browse"}
-                  </span>
-                </div>
-              </div>
-              <div className="rounded-2xl border border-border/70 bg-background/60 p-4 text-sm text-muted-foreground">
-                <p className="font-medium text-foreground">Runner-managed MCP paths</p>
-                <p className="mt-2 break-all">Credentials: {status?.mcp.credentialPath ?? "Not resolved yet"}</p>
-                <p className="mt-1 break-all">Token: {status?.mcp.tokenPath ?? "Not resolved yet"}</p>
-                <p className="mt-1">
-                  Token file exists: {status?.mcp.tokenFileExists ? "yes" : "no"} | Auth required:{" "}
-                  {status?.mcp.needsAuth ? "yes" : "no"}
-                </p>
-              </div>
-            </div>
-            <div className="rounded-2xl border border-border/70 bg-background/60 p-4 text-sm">
-              <p className="font-medium text-foreground">What this does</p>
-              <ul className="mt-3 grid gap-2 text-muted-foreground">
-                <li>Validates the downloaded Google Desktop OAuth JSON.</li>
-                <li>Copies it to `~/.config/google-drive-mcp/gcp-oauth.keys.json`.</li>
-                <li>Leaves the token file for the MCP auth flow to create later.</li>
-              </ul>
-            </div>
-          </div>
-          <div className="mt-5 flex flex-wrap gap-3">
-            <Button disabled={busyAction === "upload-mcp" || !oauthFile} onClick={saveMcpOAuthJson}>
-              {busyAction === "upload-mcp" ? "Saving..." : "Save MCP OAuth JSON"}
-            </Button>
-            <Button disabled={busyAction === "refresh-mcp"} onClick={refreshMcpStatus} variant="secondary">
-              <RefreshCw className="mr-2 h-4 w-4" />
-              {busyAction === "refresh-mcp" ? "Refreshing..." : "Refresh MCP status"}
-            </Button>
-          </div>
-
-          <div className="mt-6 rounded-[1.6rem] border border-border/70 bg-card/50 p-5">
-            <div className="flex flex-wrap items-start justify-between gap-4">
-              <div>
-                <p className="text-xs uppercase tracking-[0.24em] text-muted-foreground">
-                  Google Drive MCP
-                </p>
-                <h4 className="mt-2 text-xl font-semibold tracking-tight">
-                  Backend status moved here from MCP Servers
-                </h4>
-                <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
-                  Step 5 now owns the Google Drive MCP backend card because the OAuth desktop JSON
-                  and the runner-managed credentials belong to the same setup flow.
-                </p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Link
-                  className="inline-flex items-center justify-center rounded-full border border-border bg-background px-4 py-2 text-sm font-semibold transition-colors hover:bg-muted"
-                  search={{ provider: "google_drive" }}
-                  to="/settings/mcp-servers/create"
-                >
-                  Create MCP
-                </Link>
-                <Link
-                  className="inline-flex items-center justify-center rounded-full border border-border bg-background px-4 py-2 text-sm font-semibold transition-colors hover:bg-muted"
-                  to="/settings/mcp-servers/jira-link"
-                >
-                  Jira MCP Link
-                </Link>
-              </div>
-            </div>
-
-            {googleDriveBackend ? (
-              <div className="mt-5 rounded-[1.4rem] border border-border bg-background/70 p-5">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <p className="font-mono text-xs uppercase tracking-[0.24em] text-muted-foreground">
-                      {googleDriveBackend.providerType}
-                    </p>
-                    <h5 className="mt-2 text-lg font-semibold tracking-tight">{googleDriveBackend.label}</h5>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <Badge tone={backendTone(googleDriveBackend.state)}>
-                      {backendStateLabel(googleDriveBackend.state)}
-                    </Badge>
-                    <Badge tone={googleDriveTypeEnabled ? "success" : "neutral"}>
-                      {googleDriveTypeEnabled ? "enabled" : "disabled"}
-                    </Badge>
-                    <Badge tone="neutral">{googleDriveBackend.transport}</Badge>
-                  </div>
-                </div>
-
-                <div className="mt-5 grid gap-3 sm:grid-cols-2">
-                  <SetupDetailRow label="Launcher" value={googleDriveBackend.launcher} />
-                  <SetupDetailRow label="Command" value={googleDriveBackend.command} />
-                  <SetupDetailRow
-                    label="Type State"
-                    value={
-                      googleDriveTypeEnabled
-                        ? "Enabled for Google Drive MCP instances"
-                        : "Disabled until enabled"
-                    }
-                  />
-                  <SetupDetailRow
-                    label="Last Checked"
-                    value={googleDriveBackend.lastCheckedAt ? new Date(googleDriveBackend.lastCheckedAt).toLocaleString() : "Never"}
-                  />
-                </div>
-
-                {googleDriveBackend.lastError ? (
-                  <p className="mt-4 rounded-2xl border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-danger">
-                    Last error: {googleDriveBackend.lastError}
-                  </p>
-                ) : null}
-
-                <div className="mt-4 flex flex-wrap gap-2">
-                  <Button
-                    disabled={!runnerOnline || runBackendAction.isPending}
-                    onClick={() => runBackendAction.mutate(googleDriveBackend)}
-                    type="button"
-                    variant="secondary"
-                  >
-                    {runBackendAction.isPending ? "Working..." : googleDriveBackend.actionLabel}
-                  </Button>
-                  {googleDriveBackend.transport === "remote" ? (
-                    googleDriveTypeEnabled ? (
-                      <Button
-                        className="bg-danger text-white hover:bg-danger/90"
-                        disabled={!runnerOnline || toggleMcpType.isPending}
-                        onClick={() =>
-                          toggleMcpType.mutate({ enabled: false, providerType: "google_drive" })
-                        }
-                        type="button"
-                        variant="secondary"
-                      >
-                        {toggleMcpType.isPending ? "Working..." : "Disable"}
-                      </Button>
-                    ) : (
-                      <Button
-                        disabled={!runnerOnline || toggleMcpType.isPending}
-                        onClick={() =>
-                          toggleMcpType.mutate({ enabled: true, providerType: "google_drive" })
-                        }
-                        type="button"
-                        variant="secondary"
-                      >
-                        {toggleMcpType.isPending ? "Working..." : "Enable"}
-                      </Button>
-                    )
-                  ) : null}
-                </div>
-              </div>
-            ) : (
-              <div className="mt-5 rounded-2xl border border-dashed border-border bg-background/60 p-4 text-sm text-muted-foreground">
-                No Google Drive MCP backend was returned by the local runner.
-              </div>
-            )}
-          </div>
-        </section>
-
-        <section className="rounded-[1.6rem] border border-border bg-background/80 p-6">
-          <SectionHeader
-            step="6"
             title="Create API key for Google Picker"
             subtitle="Save the browser-side Picker API key separately from the OAuth client secret."
             status={status?.artifactSync.hasPickerApiKey ? "configured" : "needs_input"}
@@ -759,6 +597,248 @@ function GoogleDriveSetupPage() {
                 {busyAction === "save-picker" ? "Saving..." : "Save picker key"}
               </Button>
             </div>
+          </div>
+        </section>
+
+        <section className="rounded-[1.6rem] border border-border bg-background/80 p-6">
+          <SectionHeader
+            step="6"
+            title="Google Drive MCP setup"
+            subtitle="Complete the runner-side Google Drive MCP flow in order: credentials, backend launch, then provider configuration."
+            status={status?.mcp.status ?? "not_started"}
+          />
+          <div className="mt-6 grid gap-4">
+            <CollapsibleSetupSection
+              expanded={expandedStep6Sections["6.1"]}
+              onToggle={() => toggleStep6Section("6.1")}
+              status={status?.mcp.status ?? "not_started"}
+              subtitle="Copy the downloaded Desktop OAuth JSON into the runner-managed MCP config path."
+              title="6.1 Upload Desktop OAuth JSON for MCP"
+            >
+              <GuidePanel
+                className="mt-4"
+                items={[
+                  "Open Google Auth Platform > Clients.",
+                  "Click Create client.",
+                  "Choose Desktop app.",
+                  "Use a clear name such as FlowPilot Google Drive MCP Local.",
+                  "Save the client and download the OAuth JSON file.",
+                  "Choose or Drag the Desktop client JSON here. Do not upload the Web OAuth client JSON from step 4.",
+                ]}
+              />
+              <div className="mt-4 grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
+                <div className="grid gap-4">
+                  <div className="space-y-2">
+                    <span className="text-sm text-muted-foreground">
+                      <span className="text-accent">Choose or Drag file to upload</span>
+                    </span>
+                    <div
+                      aria-label="Choose or Drag file to upload"
+                      className="flex min-h-14 cursor-pointer items-center overflow-hidden rounded-2xl border border-border bg-background text-sm outline-none transition hover:border-accent/50 focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/40"
+                      onClick={openMcpOAuthPicker}
+                      onDrop={handleMcpOAuthDrop}
+                      onDragOver={(event) => event.preventDefault()}
+                      onKeyDown={handleMcpOAuthKeyDown}
+                      role="button"
+                      tabIndex={0}
+                    >
+                      <input
+                        ref={oauthFileInputRef}
+                        accept="application/json,.json"
+                        className="sr-only"
+                        onChange={(event) => {
+                          const file = event.target.files?.[0] ?? null;
+                          selectMcpOAuthFile(file);
+                        }}
+                        type="file"
+                      />
+                      <span className={`min-w-0 flex-1 px-4 py-3 ${oauthFile ? "text-foreground" : "text-muted-foreground"}`}>
+                        {oauthFile ? oauthFile.name : "Drop the Desktop OAuth JSON here or click to browse"}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-border/70 bg-background/60 p-4 text-sm text-muted-foreground">
+                    <p className="font-medium text-foreground">Runner-managed MCP paths</p>
+                    <p className="mt-2 break-all">Credentials: {status?.mcp.credentialPath ?? "Not resolved yet"}</p>
+                    <p className="mt-1 break-all">Token: {status?.mcp.tokenPath ?? "Not resolved yet"}</p>
+                    <p className="mt-1">
+                      Token file exists: {status?.mcp.tokenFileExists ? "yes" : "no"} | Auth required:{" "}
+                      {status?.mcp.needsAuth ? "yes" : "no"}
+                    </p>
+                  </div>
+                </div>
+                <div className="rounded-2xl border border-border/70 bg-background/60 p-4 text-sm">
+                  <p className="font-medium text-foreground">What this does</p>
+                  <ul className="mt-3 grid gap-2 text-muted-foreground">
+                    <li>Validates the downloaded Google Desktop OAuth JSON.</li>
+                    <li>Copies it to `~/.config/google-drive-mcp/gcp-oauth.keys.json`.</li>
+                    <li>Leaves the token file for the MCP auth flow to create later.</li>
+                  </ul>
+                </div>
+              </div>
+              <div className="mt-5 flex flex-wrap gap-3">
+                <Button disabled={busyAction === "upload-mcp" || !oauthFile} onClick={saveMcpOAuthJson}>
+                  {busyAction === "upload-mcp" ? "Saving..." : "Save MCP OAuth JSON"}
+                </Button>
+                <Button disabled={busyAction === "refresh-mcp"} onClick={refreshMcpStatus} variant="secondary">
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                  {busyAction === "refresh-mcp" ? "Refreshing..." : "Refresh MCP status"}
+                </Button>
+              </div>
+            </CollapsibleSetupSection>
+
+            <CollapsibleSetupSection
+              expanded={expandedStep6Sections["6.2"]}
+              onToggle={() => toggleStep6Section("6.2")}
+              status={mcpLaunchStatus}
+              subtitle="Install, launch, and authenticate the local Google Drive MCP backend."
+              title="6.2 GOOGLE DRIVE MCP launch"
+            >
+              <div className="rounded-[1.6rem] border border-border/70 bg-card/50 p-5">
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.24em] text-muted-foreground">
+                      Google Drive MCP
+                    </p>
+                    <h4 className="mt-2 text-xl font-semibold tracking-tight">
+                      Backend status moved here from MCP Servers
+                    </h4>
+                    <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
+                      Step 6.2 owns backend launch and auth because it depends on the credentials uploaded in 6.1.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Link
+                      className="inline-flex items-center justify-center rounded-full border border-border bg-background px-4 py-2 text-sm font-semibold transition-colors hover:bg-muted"
+                      search={{ provider: "google_drive" }}
+                      to="/settings/mcp-servers/create"
+                    >
+                      Create MCP
+                    </Link>
+                    <Link
+                      className="inline-flex items-center justify-center rounded-full border border-border bg-background px-4 py-2 text-sm font-semibold transition-colors hover:bg-muted"
+                      to="/settings/mcp-servers/jira-link"
+                    >
+                      Jira MCP Link
+                    </Link>
+                  </div>
+                </div>
+
+                {googleDriveBackend ? (
+                  <div className="mt-5 rounded-[1.4rem] border border-border bg-background/70 p-5">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <p className="font-mono text-xs uppercase tracking-[0.24em] text-muted-foreground">
+                          {googleDriveBackend.providerType}
+                        </p>
+                        <h5 className="mt-2 text-lg font-semibold tracking-tight">{googleDriveBackend.label}</h5>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Badge tone={backendTone(googleDriveBackend.state)}>
+                          {backendStateLabel(googleDriveBackend.state)}
+                        </Badge>
+                        <Badge tone={googleDriveTypeEnabled ? "success" : "neutral"}>
+                          {googleDriveTypeEnabled ? "enabled" : "disabled"}
+                        </Badge>
+                        <Badge tone="neutral">{googleDriveBackend.transport}</Badge>
+                      </div>
+                    </div>
+
+                    <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                      <SetupDetailRow label="Launcher" value={googleDriveBackend.launcher} />
+                      <SetupDetailRow label="Command" value={googleDriveBackend.command} />
+                      <SetupDetailRow
+                        label="Type State"
+                        value={
+                          googleDriveTypeEnabled
+                            ? "Enabled for Google Drive MCP instances"
+                            : "Disabled until enabled"
+                        }
+                      />
+                      <SetupDetailRow
+                        label="Last Checked"
+                        value={googleDriveBackend.lastCheckedAt ? new Date(googleDriveBackend.lastCheckedAt).toLocaleString() : "Never"}
+                      />
+                    </div>
+
+                    {googleDriveBackend.lastError ? (
+                      <p className="mt-4 rounded-2xl border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-danger">
+                        Last error: {googleDriveBackend.lastError}
+                      </p>
+                    ) : null}
+
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      <Button
+                        disabled={!runnerOnline || runBackendAction.isPending}
+                        onClick={() => runBackendAction.mutate(googleDriveBackend)}
+                        type="button"
+                        variant="secondary"
+                      >
+                        {runBackendAction.isPending ? "Working..." : googleDriveBackend.actionLabel}
+                      </Button>
+                      {googleDriveBackend.transport === "launcher" ? (
+                        <Button
+                          disabled={
+                            !runnerOnline ||
+                            busyAction === "start-mcp-auth" ||
+                            !status?.mcp.credentialFileValid
+                          }
+                          onClick={startMcpAuth}
+                          type="button"
+                          variant="secondary"
+                        >
+                          {busyAction === "start-mcp-auth" ? "Opening..." : "Start Auth"}
+                        </Button>
+                      ) : null}
+                      {googleDriveBackend.transport === "remote" ? (
+                        googleDriveTypeEnabled ? (
+                          <Button
+                            className="bg-danger text-white hover:bg-danger/90"
+                            disabled={!runnerOnline || toggleMcpType.isPending}
+                            onClick={() =>
+                              toggleMcpType.mutate({ enabled: false, providerType: "google_drive" })
+                            }
+                            type="button"
+                            variant="secondary"
+                          >
+                            {toggleMcpType.isPending ? "Working..." : "Disable"}
+                          </Button>
+                        ) : (
+                          <Button
+                            disabled={!runnerOnline || toggleMcpType.isPending}
+                            onClick={() =>
+                              toggleMcpType.mutate({ enabled: true, providerType: "google_drive" })
+                            }
+                            type="button"
+                            variant="secondary"
+                          >
+                            {toggleMcpType.isPending ? "Working..." : "Enable"}
+                          </Button>
+                        )
+                      ) : null}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mt-5 rounded-2xl border border-dashed border-border bg-background/60 p-4 text-sm text-muted-foreground">
+                    No Google Drive MCP backend was returned by the local runner.
+                  </div>
+                )}
+              </div>
+            </CollapsibleSetupSection>
+
+            <CollapsibleSetupSection
+              expanded={expandedStep6Sections["6.3"]}
+              onToggle={() => toggleStep6Section("6.3")}
+              status={providerSetupStatus}
+              subtitle="Configure Codex, Gemini, and Claude to use the local Google Drive MCP."
+              title="6.3 MCP Provider setup"
+            >
+              <GoogleDriveProviderConfigCard
+                embedded
+                googleDriveStatus={status}
+                onStatusRefresh={refreshStatus}
+              />
+            </CollapsibleSetupSection>
           </div>
         </section>
       </div>
@@ -851,6 +931,36 @@ function backendStateLabel(state: LocalRunnerMcpBackend["state"]) {
     default:
       return state.replace("_", " ");
   }
+}
+
+function backendSetupStepStatus(
+  backend: LocalRunnerMcpBackend | null,
+  googleDriveTypeEnabled: boolean,
+) {
+  if (!backend) {
+    return "not_started";
+  }
+  if (backend.lastError) {
+    return "failed";
+  }
+  if (backend.transport === "launcher") {
+    return backend.state === "installed" ? "configured" : "needs_input";
+  }
+  return googleDriveTypeEnabled ? "configured" : "needs_input";
+}
+
+function providerSetupStepStatus(status: GoogleDriveRuntimeStatus | null) {
+  const providerConfigs = status?.providerConfigs ?? [];
+  if (providerConfigs.length === 0) {
+    return "not_started";
+  }
+  if (providerConfigs.some((config) => config.status === "failed")) {
+    return "failed";
+  }
+  if (providerConfigs.every((config) => config.status === "configured")) {
+    return "configured";
+  }
+  return "needs_input";
 }
 
 function artifactSyncStepStatus(status?: GoogleDriveRuntimeStatus["artifactSync"] | null) {
@@ -972,6 +1082,49 @@ function SectionHeader({
         <p className="mt-2 text-sm text-muted-foreground">{subtitle}</p>
       </div>
       <StatusBadge value={status} />
+    </div>
+  );
+}
+
+function CollapsibleSetupSection({
+  title,
+  subtitle,
+  status,
+  expanded,
+  onToggle,
+  children,
+}: {
+  title: string;
+  subtitle: string;
+  status: string;
+  expanded: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div className="overflow-hidden rounded-[1.4rem] border border-border/70 bg-background/60">
+      <button
+        className="flex w-full items-start justify-between gap-4 px-5 py-4 text-left transition-colors hover:bg-muted/20"
+        onClick={onToggle}
+        type="button"
+      >
+        <div className="flex min-w-0 items-start gap-3">
+          <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted">
+            {expanded ? (
+              <ChevronDown className="h-4 w-4 text-muted-foreground" />
+            ) : (
+              <ChevronRight className="h-4 w-4 text-muted-foreground" />
+            )}
+          </div>
+          <div className="min-w-0">
+            <h4 className="text-lg font-semibold">{title}</h4>
+            <p className="mt-1 text-sm text-muted-foreground">{subtitle}</p>
+          </div>
+        </div>
+        <StatusBadge value={status} />
+      </button>
+
+      {expanded ? <div className="border-t border-border/70 px-5 py-5">{children}</div> : null}
     </div>
   );
 }

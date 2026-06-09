@@ -290,6 +290,74 @@ func TestExecutePromptCapturesAbsoluteProviderCommand(t *testing.T) {
 	}
 }
 
+func TestExecutePromptMarksResultFailedWhenProviderReportsMcpFailureCode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture is unix-only")
+	}
+
+	workspace := t.TempDir()
+	writeValidGoogleDriveWorkspaceConfig(t, workspace)
+
+	accountHomePath := t.TempDir()
+	instance := &Runner{workspace: workspace}
+	_, err := instance.EnsureGoogleDriveMcpProviderConfig(GoogleDriveMcpProviderConfigRequest{
+		ProviderKey:     "codex",
+		AccountHomePath: accountHomePath,
+		Scope:           "account",
+		Mode:            "read_only",
+	})
+	if err != nil {
+		t.Fatalf("ensure provider config: %v", err)
+	}
+
+	binDir := filepath.Join(workspace, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir bin dir: %v", err)
+	}
+
+	binaryPath := filepath.Join(binDir, "codex")
+	script := "#!/bin/sh\n" +
+		"output=''\n" +
+		"while [ \"$#\" -gt 0 ]; do\n" +
+		"  if [ \"$1\" = \"--output-last-message\" ]; then\n" +
+		"    shift\n" +
+		"    output=\"$1\"\n" +
+		"  fi\n" +
+		"  shift\n" +
+		"done\n" +
+		"cat >/dev/null\n" +
+		"printf 'MCP_AUTH_REQUIRED' > \"$output\"\n"
+	if err := os.WriteFile(binaryPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex binary: %v", err)
+	}
+
+	originalPath := os.Getenv("PATH")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+originalPath)
+
+	result, err := instance.ExecutePrompt(context.Background(), PromptExecutionRequest{
+		ProviderKey:     "codex",
+		Prompt:          "Summarize the roadmap doc.",
+		RequiredMcps:    []string{"google_drive"},
+		AccountHomePath: accountHomePath,
+	})
+	if err != nil {
+		t.Fatalf("execute prompt: %v", err)
+	}
+
+	if result.Status != "failed" {
+		t.Fatalf("expected failed status, got %q", result.Status)
+	}
+	if !strings.Contains(result.ErrorMessage, "mcp_auth_required") {
+		t.Fatalf("expected MCP failure code in error message, got %q", result.ErrorMessage)
+	}
+	if !strings.Contains(result.OutputMarkdown, "MCP_AUTH_REQUIRED") {
+		t.Fatalf("expected provider output to be captured, got %q", result.OutputMarkdown)
+	}
+	if !strings.Contains(result.ActualPromptText, "## Required MCP Usage") {
+		t.Fatalf("expected injected MCP section in actual prompt, got %q", result.ActualPromptText)
+	}
+}
+
 func TestResolvePromptExecutionAdapterUsesWorkspaceWriteWhenAllowed(t *testing.T) {
 	binary, args, provider, err := resolvePromptExecutionAdapter(
 		PromptExecutionRequest{
@@ -347,9 +415,18 @@ func TestResolvePromptExecutionAdapterMapsModelNames(t *testing.T) {
 				t.Fatalf("expected binary %q, got %q", tc.expectedBin, binary)
 			}
 
-			// Find "--model" index in args and verify next arg
 			found := false
 			for i, arg := range args {
+				if tc.provider == "codex" && arg == "-c" {
+					if i+1 >= len(args) {
+						t.Fatalf("missing value after -c flag")
+					}
+					if args[i+1] != fmt.Sprintf("model=%q", tc.expectedModel) {
+						continue
+					}
+					found = true
+					break
+				}
 				if arg == "--model" {
 					if i+1 >= len(args) {
 						t.Fatalf("missing value after --model flag")
@@ -362,7 +439,7 @@ func TestResolvePromptExecutionAdapterMapsModelNames(t *testing.T) {
 				}
 			}
 			if !found {
-				t.Fatalf("expected --model flag in args: %v", args)
+				t.Fatalf("expected model flag in args: %v", args)
 			}
 		})
 	}
@@ -376,8 +453,8 @@ func TestResolvePromptExecutionAdapterReasoningEffort(t *testing.T) {
 		expectedBin   string
 		expectedFlags []string
 	}{
-		{"codex", "gpt-5.4", "high", "codex", []string{"-c", "reasoning_effort=high"}},
-		{"codex", "gpt-5.5", "low", "codex", []string{"-c", "reasoning_effort=low"}},
+		{"codex", "gpt-5.4", "high", "codex", []string{"-c", "model_reasoning_effort=high"}},
+		{"codex", "gpt-5.5", "low", "codex", []string{"-c", "model_reasoning_effort=low"}},
 		{"claude", "claude-sonnet", "high", "claude", []string{"--effort", "high"}},
 		{"claude", "claude-opus", "xhigh", "claude", []string{"--effort", "max"}},
 		{"gemini", "gemini-pro", "high", "gemini", []string{}}, // gemini doesn't append reasoning flags
@@ -406,16 +483,17 @@ func TestResolvePromptExecutionAdapterReasoningEffort(t *testing.T) {
 				val := tc.expectedFlags[i+1]
 				found := false
 				for idx, arg := range args {
-					if arg == flag {
-						if idx+1 >= len(args) {
-							t.Fatalf("missing value after flag %s", flag)
-						}
-						if args[idx+1] != val {
-							t.Fatalf("expected value %q for flag %s, got %q", val, flag, args[idx+1])
-						}
-						found = true
-						break
+					if arg != flag {
+						continue
 					}
+					if idx+1 >= len(args) {
+						t.Fatalf("missing value after flag %s", flag)
+					}
+					if args[idx+1] != val {
+						continue
+					}
+					found = true
+					break
 				}
 				if !found {
 					t.Fatalf("expected flag %s with value %s in args: %v", flag, val, args)
@@ -881,6 +959,66 @@ func TestInstallMcpBackendRunsExplicitCommandForGoogleDrive(t *testing.T) {
 	}
 
 	t.Fatal("expected google_drive backend to be present after install")
+}
+
+func TestStartGoogleDriveMcpAuthLaunchesTerminalWithManagedPaths(t *testing.T) {
+	originalLookPath := lookPathFn
+	originalLaunchTerminalCommandWithEnv := launchTerminalCommandWithEnvFn
+	t.Cleanup(func() {
+		lookPathFn = originalLookPath
+		launchTerminalCommandWithEnvFn = originalLaunchTerminalCommandWithEnv
+	})
+
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", homeDir)
+	credentialDir := filepath.Join(homeDir, ".config", "google-drive-mcp")
+	if err := os.MkdirAll(credentialDir, 0o755); err != nil {
+		t.Fatalf("create google drive config dir: %v", err)
+	}
+	credentialPath := filepath.Join(credentialDir, "gcp-oauth.keys.json")
+	credentialJSON := []byte(`{"installed":{"client_id":"client-id","client_secret":"client-secret","auth_uri":"https://accounts.google.com/o/oauth2/auth","token_uri":"https://oauth2.googleapis.com/token"}}`)
+	if err := os.WriteFile(credentialPath, credentialJSON, 0o600); err != nil {
+		t.Fatalf("write credential file: %v", err)
+	}
+
+	lookPathFn = func(file string) (string, error) {
+		if file == "npx" {
+			return "/usr/bin/npx", nil
+		}
+		return "", errors.New("launcher not found")
+	}
+
+	var observedEnv map[string]string
+	var observedCommand string
+	var observedKeepShellOpen bool
+	launchTerminalCommandWithEnvFn = func(env map[string]string, command string, keepShellOpen bool) error {
+		observedEnv = env
+		observedCommand = command
+		observedKeepShellOpen = keepShellOpen
+		return nil
+	}
+
+	instance := &Runner{workspace: t.TempDir()}
+	if err := instance.StartGoogleDriveMcpAuth(); err != nil {
+		t.Fatalf("start google drive MCP auth: %v", err)
+	}
+
+	if !observedKeepShellOpen {
+		t.Fatal("expected auth terminal to stay open")
+	}
+	if !strings.Contains(observedCommand, "@piotr-agier/google-drive-mcp auth") {
+		t.Fatalf("expected auth command to run google-drive-mcp auth, got %q", observedCommand)
+	}
+	if !strings.Contains(observedCommand, "npx") {
+		t.Fatalf("expected auth command to use npx launcher, got %q", observedCommand)
+	}
+	if observedEnv["GOOGLE_DRIVE_OAUTH_CREDENTIALS"] != credentialPath {
+		t.Fatalf("expected credential env to match uploaded path, got %#v", observedEnv)
+	}
+	if observedEnv["GOOGLE_DRIVE_MCP_TOKEN_PATH"] != filepath.Join(homeDir, ".config", "google-drive-mcp", "tokens.json") {
+		t.Fatalf("expected token env to use managed token path, got %#v", observedEnv)
+	}
 }
 
 func TestDeleteIntegrationConnectionRemovesJiraSecret(t *testing.T) {
