@@ -20,6 +20,7 @@ describe("WorkflowEngine mappers", () => {
       description: "Produce technical layout",
       prompt_base: "Produce technical layout for the workflow.",
       required_mcps: ["jira"],
+      mcp_access_mode: "read_write",
       required_skills: ["tech_spec_skill"],
       model: "gpt-5.5",
       reasoning_effort: "high",
@@ -36,6 +37,7 @@ describe("WorkflowEngine mappers", () => {
       description: "Produce technical layout",
       promptBase: "Produce technical layout for the workflow.",
       requiredMcps: ["jira"],
+      mcpAccessMode: "read_write",
       requiredSkills: ["tech_spec_skill"],
       teamRole: null,
       subagent: null,
@@ -66,6 +68,7 @@ describe("WorkflowEngine mappers", () => {
 
     expect(entity.inputArtifactDefinitions).toEqual([]);
     expect(entity.outputArtifactDefinitions).toEqual([]);
+    expect(entity.mcpAccessMode).toBe("read_only");
   });
 
   it("normalizes legacy Gemini aliases when mapping workflow config rows", () => {
@@ -159,6 +162,7 @@ describe("WorkflowEngine mappers", () => {
       storageProvider: "supabase",
       remoteObjectId: "object-1",
       syncStatus: "synced",
+      replicas: [],
       createdAt: "2026-05-20T00:00:00Z",
       updatedAt: "2026-05-20T01:00:00Z",
     });

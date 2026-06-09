@@ -1,4 +1,5 @@
 export type StepType = string;
+export type McpAccessMode = "read_only" | "read_write";
 
 export type ArtifactSyncStatus = "local_only" | "queued" | "syncing" | "synced" | "failed";
 
@@ -134,6 +135,7 @@ export interface StepDefinition {
   description: string;
   promptBase: string | null;
   requiredMcps: string[];
+  mcpAccessMode?: McpAccessMode;
   requiredSkills: string[];
   teamRole?: string | null;
   subagent?: string | null;
@@ -144,6 +146,10 @@ export interface StepDefinition {
   outputArtifactDefinitions?: string[];
   createdAt: string;
   updatedAt: string;
+}
+
+export function normalizeMcpAccessMode(value: unknown): McpAccessMode {
+  return value === "read_write" ? "read_write" : "read_only";
 }
 
 export interface ArtifactDefinition {

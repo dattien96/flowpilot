@@ -19,6 +19,7 @@ import type {
 import {
   STEP_MODEL_OPTIONS,
   coerceSupportedStepModel,
+  normalizeMcpAccessMode,
   normalizeStepModel,
 } from "@/domain/model/entity/workflow-engine";
 
@@ -50,6 +51,7 @@ export function mapStepDefinition(row: SupabaseRow): StepDefinition {
     description: String(row.description),
     promptBase: row.prompt_base ? String(row.prompt_base) : null,
     requiredMcps: mcps,
+    mcpAccessMode: normalizeMcpAccessMode(row.mcp_access_mode),
     requiredSkills: skills,
     teamRole: row.team_role ? String(row.team_role) : null,
     subagent: row.subagent ? String(row.subagent) : null,
