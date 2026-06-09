@@ -9,13 +9,13 @@ import (
 )
 
 // InjectRequiredMcpInstructions adds MCP usage instructions to a prompt
-func InjectRequiredMcpInstructions(prompt string, requiredMcps []string, providerKey string, allowWrite bool) string {
+func InjectRequiredMcpInstructions(prompt string, requiredMcps []string, providerKey string, allowWrite bool, yoloMode bool) string {
 	if !requiresGoogleDriveMcp(requiredMcps) {
 		return prompt
 	}
 
 	// Build MCP instructions section
-	instructions := buildGoogleDriveMcpInstructions(providerKey, allowWrite)
+	instructions := buildGoogleDriveMcpInstructions(providerKey, allowWrite, yoloMode)
 
 	// Insert instructions after any existing headers or at the start
 	if strings.Contains(prompt, "\n\n") {
@@ -39,7 +39,7 @@ func requiresGoogleDriveMcp(requiredMcps []string) bool {
 }
 
 // buildGoogleDriveMcpInstructions creates the MCP usage section
-func buildGoogleDriveMcpInstructions(providerKey string, allowWrite bool) string {
+func buildGoogleDriveMcpInstructions(providerKey string, allowWrite bool, yoloMode bool) string {
 	var sb strings.Builder
 
 	sb.WriteString("## Required MCP Usage\n\n")
@@ -47,9 +47,28 @@ func buildGoogleDriveMcpInstructions(providerKey string, allowWrite bool) string
 	sb.WriteString("The configured provider MCP server name is `google-drive`.\n\n")
 
 	if allowWrite {
-		sb.WriteString("This step is allowed to perform read and write operations on Google Drive.\n\n")
+		sb.WriteString("This step is allowed to perform read and write operations on Google Drive.\n")
+		sb.WriteString("Write operations are allowed for this step.\n\n")
 	} else {
+		sb.WriteString("This step is restricted to `read_only` Google Drive operations.\n")
 		sb.WriteString("Before producing the final answer, use Google Drive MCP tools from `google-drive` when Drive context is needed for this task.\n\n")
+	}
+
+	if yoloMode {
+		sb.WriteString("Provider MCP tool-call approval mode for this run: `yolo_auto_approve`.\n")
+		if allowWrite {
+			sb.WriteString("Read tools and policy-allowed write tools can be called without waiting for user approval.\n\n")
+		} else {
+			sb.WriteString("Read tools can be called without waiting for user approval.\n\n")
+		}
+	} else {
+		sb.WriteString("Provider MCP tool-call approval mode for this run: `manual`.\n")
+		if allowWrite {
+			sb.WriteString("Read and write MCP tool calls require provider-side approval before execution.\n")
+			sb.WriteString("If FlowPilot returns `MCP_WRITE_APPROVAL_REQUIRED`, stop, return that code with the approval ID, and retry only the exact approved write after user approval.\n\n")
+		} else {
+			sb.WriteString("Read MCP tool calls require provider-side approval before execution.\n\n")
+		}
 	}
 
 	sb.WriteString("Preferred read-only tools:\n")
@@ -64,9 +83,12 @@ func buildGoogleDriveMcpInstructions(providerKey string, allowWrite bool) string
 	sb.WriteString("- If auth is missing or expired, stop and end the response with `MCP_FAILURE_CODE: MCP_AUTH_REQUIRED`.\n")
 	sb.WriteString("- If the required Drive file or folder cannot be found, end the response with `MCP_FAILURE_CODE: DRIVE_CONTENT_NOT_FOUND`.\n")
 	sb.WriteString("- Include the file name and file ID for every Drive item used.\n")
+	sb.WriteString("- Destructive or permission-changing Google Drive operations are not allowed in this MCP server.\n")
 
 	if !allowWrite {
 		sb.WriteString("- Use read-only tools only unless this step explicitly allows writes.\n")
+	} else {
+		sb.WriteString("- If a write is rejected or blocked, do not invent a successful mutation. Continue with a clear notice instead.\n")
 	}
 
 	return sb.String()
@@ -83,32 +105,40 @@ type MCPPreflightCheck struct {
 func (r *Runner) PreflightGoogleDriveMcp(providerKey string, accountHomePath string) MCPPreflightCheck {
 	result := MCPPreflightCheck{}
 
-	// Check Google Drive MCP status
-	mcpStatus, err := r.googleDriveMcpRuntimeConfig()
-	if err != nil {
-		result.ErrorMessage = fmt.Sprintf("Failed to check Google Drive MCP status: %v", err)
-		return result
-	}
-
-	// Validate Google Drive MCP status
-	switch mcpStatus.Status {
-	case "needs_input":
-		result.ErrorMessage = "Google Drive MCP credential JSON is missing. Upload the Desktop OAuth JSON first."
-		return result
-	case "failed":
-		result.ErrorMessage = "Google Drive MCP credential JSON is invalid."
-		return result
-	case "needs_auth":
-		result.ErrorMessage = "Google Drive MCP auth is incomplete. Run Start Auth, complete sign-in, then refresh status."
-		return result
-	case "reconnect_required":
-		result.ErrorMessage = "Google Drive MCP token requires reconnect. Start Auth again."
-		return result
-	case "configured", "warning":
+	mcpStatus := googleDriveMcpRuntimeConfig{}
+	if flowpilotGoogleDriveProxyMcpEnabled() {
+		if err := r.validateGoogleDriveProxyMcpPrerequisites(); err != nil {
+			result.ErrorMessage = fmt.Sprintf("FlowPilot proxy Google Drive auth is incomplete: %v", err)
+			return result
+		}
 		result.GoogleDriveReady = true
-	default:
-		result.ErrorMessage = fmt.Sprintf("Google Drive MCP status is %s", mcpStatus.Status)
-		return result
+	} else {
+		var err error
+		mcpStatus, err = r.googleDriveMcpRuntimeConfig()
+		if err != nil {
+			result.ErrorMessage = fmt.Sprintf("Failed to check Google Drive MCP status: %v", err)
+			return result
+		}
+
+		switch mcpStatus.Status {
+		case "needs_input":
+			result.ErrorMessage = "Google Drive MCP credential JSON is missing. Upload the Desktop OAuth JSON first."
+			return result
+		case "failed":
+			result.ErrorMessage = "Google Drive MCP credential JSON is invalid."
+			return result
+		case "needs_auth":
+			result.ErrorMessage = "Google Drive MCP auth is incomplete. Run Start Auth, complete sign-in, then refresh status."
+			return result
+		case "reconnect_required":
+			result.ErrorMessage = "Google Drive MCP token requires reconnect. Start Auth again."
+			return result
+		case "configured", "warning":
+			result.GoogleDriveReady = true
+		default:
+			result.ErrorMessage = fmt.Sprintf("Google Drive MCP status is %s", mcpStatus.Status)
+			return result
+		}
 	}
 
 	// Check provider config if provider key is provided
@@ -173,6 +203,7 @@ func (r *Runner) preparePromptForRequiredMcps(
 	providerKey string,
 	accountHomePath string,
 	allowWrite bool,
+	yoloMode bool,
 ) (string, error) {
 	if !requiresGoogleDriveMcp(requiredMcps) {
 		return prompt, nil
@@ -190,7 +221,7 @@ func (r *Runner) preparePromptForRequiredMcps(
 		return "", errors.New("Google Drive MCP preflight failed")
 	}
 
-	return InjectRequiredMcpInstructions(prompt, requiredMcps, providerKey, allowWrite), nil
+	return InjectRequiredMcpInstructions(prompt, requiredMcps, providerKey, allowWrite, yoloMode), nil
 }
 
 func applyRequiredMcpFailureStatus(result *PromptExecutionResult, requiredMcps []string) {

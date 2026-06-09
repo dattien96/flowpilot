@@ -35,8 +35,11 @@ func writeValidGoogleDriveWorkspaceConfig(t *testing.T, workspace string) (strin
 	}
 
 	wsConfig := map[string]interface{}{
-		"version":      1,
-		"artifactSync": map[string]interface{}{},
+		"version": 1,
+		"artifactSync": map[string]interface{}{
+			"clientId":    "artifact-client-id",
+			"redirectUri": googleDriveDefaultRedirectURI,
+		},
 		"mcp": map[string]interface{}{
 			"credentialPath": credPath,
 			"tokenPath":      tokenPath,
@@ -53,12 +56,17 @@ func writeValidGoogleDriveWorkspaceConfig(t *testing.T, workspace string) (strin
 		t.Fatalf("Failed to write workspace config: %v", err)
 	}
 
+	runner := &Runner{workspace: workspace, secretStore: newMemorySecretStore()}
+	if err := runner.ensureSecretStore().Set(googleDriveArtifactSyncClientSecretKey, "artifact-client-secret"); err != nil {
+		t.Fatalf("Failed to save artifact sync client secret: %v", err)
+	}
+
 	return credPath, tokenPath
 }
 
 func TestInjectRequiredMcpInstructions_NoMcps(t *testing.T) {
 	prompt := "Original prompt"
-	result := InjectRequiredMcpInstructions(prompt, []string{}, "codex", false)
+	result := InjectRequiredMcpInstructions(prompt, []string{}, "codex", false, false)
 
 	if result != prompt {
 		t.Error("Prompt should be unchanged when no MCPs required")
@@ -67,7 +75,7 @@ func TestInjectRequiredMcpInstructions_NoMcps(t *testing.T) {
 
 func TestInjectRequiredMcpInstructions_NoGoogleDrive(t *testing.T) {
 	prompt := "Original prompt"
-	result := InjectRequiredMcpInstructions(prompt, []string{"other_mcp"}, "codex", false)
+	result := InjectRequiredMcpInstructions(prompt, []string{"other_mcp"}, "codex", false, false)
 
 	if result != prompt {
 		t.Error("Prompt should be unchanged when google_drive is not required")
@@ -76,7 +84,7 @@ func TestInjectRequiredMcpInstructions_NoGoogleDrive(t *testing.T) {
 
 func TestInjectRequiredMcpInstructions_GoogleDriveReadOnly(t *testing.T) {
 	prompt := "Original prompt"
-	result := InjectRequiredMcpInstructions(prompt, []string{"google_drive"}, "codex", false)
+	result := InjectRequiredMcpInstructions(prompt, []string{"google_drive"}, "codex", false, false)
 
 	if !strings.Contains(result, "## Required MCP Usage") {
 		t.Error("Result should contain MCP instructions header")
@@ -98,6 +106,10 @@ func TestInjectRequiredMcpInstructions_GoogleDriveReadOnly(t *testing.T) {
 		t.Error("Result should include read-only restriction for allowWrite=false")
 	}
 
+	if strings.Contains(result, "Read and write MCP tool calls require provider-side approval before execution") {
+		t.Error("Read-only manual instructions should not mention write approval guidance")
+	}
+
 	if !strings.Contains(result, "Original prompt") {
 		t.Error("Result should still contain original prompt")
 	}
@@ -105,7 +117,7 @@ func TestInjectRequiredMcpInstructions_GoogleDriveReadOnly(t *testing.T) {
 
 func TestInjectRequiredMcpInstructions_GoogleDriveWrite(t *testing.T) {
 	prompt := "Original prompt"
-	result := InjectRequiredMcpInstructions(prompt, []string{"google_drive"}, "codex", true)
+	result := InjectRequiredMcpInstructions(prompt, []string{"google_drive"}, "codex", true, false)
 
 	if !strings.Contains(result, "## Required MCP Usage") {
 		t.Error("Result should contain MCP instructions header")
@@ -120,9 +132,43 @@ func TestInjectRequiredMcpInstructions_GoogleDriveWrite(t *testing.T) {
 	}
 }
 
+func TestInjectRequiredMcpInstructions_GoogleDriveReadOnlyYolo(t *testing.T) {
+	prompt := "Original prompt"
+	result := InjectRequiredMcpInstructions(prompt, []string{"google_drive"}, "codex", false, true)
+
+	if !strings.Contains(result, "yolo_auto_approve") {
+		t.Error("Result should mention yolo auto-approve mode")
+	}
+
+	if !strings.Contains(result, "Read tools can be called without waiting for user approval") {
+		t.Error("Result should explain read-only yolo behavior")
+	}
+
+	if strings.Contains(result, "policy-allowed write tools") {
+		t.Error("Read-only yolo instructions should not mention write tools")
+	}
+}
+
+func TestInjectRequiredMcpInstructions_GoogleDriveWriteYolo(t *testing.T) {
+	prompt := "Original prompt"
+	result := InjectRequiredMcpInstructions(prompt, []string{"google_drive"}, "codex", true, true)
+
+	if !strings.Contains(result, "yolo_auto_approve") {
+		t.Error("Result should mention yolo auto-approve mode")
+	}
+
+	if !strings.Contains(result, "policy-allowed write tools can be called without waiting for user approval") {
+		t.Error("Write-enabled yolo instructions should mention auto-approved write tools")
+	}
+
+	if strings.Contains(result, "Use read-only tools only") {
+		t.Error("Write-enabled yolo instructions should not mention read-only restriction")
+	}
+}
+
 func TestPreflightGoogleDriveMcp_NoCredential(t *testing.T) {
 	tmpDir := t.TempDir()
-	runner := &Runner{workspace: tmpDir}
+	runner := &Runner{workspace: tmpDir, secretStore: newMemorySecretStore()}
 
 	// Create an explicit workspace config with non-existent paths to override defaults
 	flowpilotDir := filepath.Join(tmpDir, ".flowpilot", "settings")
@@ -172,7 +218,7 @@ func TestPreflightGoogleDriveMcp_NoCredential(t *testing.T) {
 
 func TestPreflightGoogleDriveMcp_ConfiguredWithNoProvider(t *testing.T) {
 	tmpDir := t.TempDir()
-	runner := &Runner{workspace: tmpDir}
+	runner := &Runner{workspace: tmpDir, secretStore: newMemorySecretStore()}
 
 	writeValidGoogleDriveWorkspaceConfig(t, tmpDir)
 
@@ -189,13 +235,14 @@ func TestPreflightGoogleDriveMcp_ConfiguredWithNoProvider(t *testing.T) {
 }
 
 func TestPreparePromptForRequiredMcps_RequiresAccountHomePath(t *testing.T) {
-	runner := &Runner{workspace: t.TempDir()}
+	runner := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
 
 	_, err := runner.preparePromptForRequiredMcps(
 		"Original prompt",
 		[]string{"google_drive"},
 		"codex",
 		"",
+		false,
 		false,
 	)
 	if err == nil {
@@ -208,7 +255,7 @@ func TestPreparePromptForRequiredMcps_RequiresAccountHomePath(t *testing.T) {
 
 func TestPreparePromptForRequiredMcps_InjectsAfterSuccessfulPreflight(t *testing.T) {
 	workspace := t.TempDir()
-	runner := &Runner{workspace: workspace}
+	runner := &Runner{workspace: workspace, secretStore: newMemorySecretStore()}
 	writeValidGoogleDriveWorkspaceConfig(t, workspace)
 
 	accountHomePath := t.TempDir()
@@ -227,6 +274,7 @@ func TestPreparePromptForRequiredMcps_InjectsAfterSuccessfulPreflight(t *testing
 		[]string{"google_drive"},
 		"codex",
 		accountHomePath,
+		false,
 		false,
 	)
 	if err != nil {
@@ -294,7 +342,7 @@ func TestApplyRequiredMcpFailureStatus_DetectsExplicitMarkerAfterExplanation(t *
 
 func TestPreflightGoogleDriveMcp_NeedsAuthWithoutToken(t *testing.T) {
 	workspace := t.TempDir()
-	runner := &Runner{workspace: workspace}
+	runner := &Runner{workspace: workspace, secretStore: newMemorySecretStore()}
 	_, tokenPath := writeValidGoogleDriveWorkspaceConfig(t, workspace)
 	if err := os.Remove(tokenPath); err != nil {
 		t.Fatalf("remove token file: %v", err)
@@ -312,7 +360,7 @@ func TestPreflightGoogleDriveMcp_NeedsAuthWithoutToken(t *testing.T) {
 
 func TestPreflightGoogleDriveMcp_ReconnectRequired(t *testing.T) {
 	workspace := t.TempDir()
-	runner := &Runner{workspace: workspace}
+	runner := &Runner{workspace: workspace, secretStore: newMemorySecretStore()}
 	writeValidGoogleDriveWorkspaceConfig(t, workspace)
 
 	originalHTTPRequest := httpRequestFn
@@ -335,7 +383,7 @@ func TestPreflightGoogleDriveMcp_ReconnectRequired(t *testing.T) {
 
 func TestPreflightGoogleDriveMcp_ConfigStale(t *testing.T) {
 	workspace := t.TempDir()
-	runner := &Runner{workspace: workspace}
+	runner := &Runner{workspace: workspace, secretStore: newMemorySecretStore()}
 	_, tokenPath := writeValidGoogleDriveWorkspaceConfig(t, workspace)
 
 	accountHomePath := t.TempDir()
@@ -370,5 +418,165 @@ func TestPreflightGoogleDriveMcp_ConfigStale(t *testing.T) {
 	}
 	if !strings.Contains(result.ErrorMessage, "stale Google Drive MCP config") {
 		t.Fatalf("expected stale config error, got %q", result.ErrorMessage)
+	}
+}
+
+func TestPreflightGoogleDriveMcp_ProxyPathDoesNotRequireLegacyDesktopMcpAuth(t *testing.T) {
+	t.Setenv(googleDriveProxyMcpFlag, "true")
+
+	workspace := t.TempDir()
+	runner := &Runner{workspace: workspace, secretStore: newMemorySecretStore()}
+	writeArtifactSyncOnlyPreflightConfig(t, runner, workspace)
+	writeSingleProxyArtifactConnection(t, runner, "project-1")
+
+	result := runner.PreflightGoogleDriveMcp("", "")
+
+	if !result.GoogleDriveReady {
+		t.Fatalf("expected proxy path to be ready with artifact-sync auth only, got error: %s", result.ErrorMessage)
+	}
+	if !result.ProviderConfigured {
+		t.Fatal("expected providerConfigured to remain true when no provider config is requested")
+	}
+}
+
+func TestPreflightGoogleDriveMcp_ProxyPathFailsWithoutArtifactConnection(t *testing.T) {
+	t.Setenv(googleDriveProxyMcpFlag, "true")
+
+	workspace := t.TempDir()
+	runner := &Runner{workspace: workspace, secretStore: newMemorySecretStore()}
+	writeArtifactSyncOnlyPreflightConfig(t, runner, workspace)
+
+	result := runner.PreflightGoogleDriveMcp("", "")
+
+	if result.GoogleDriveReady {
+		t.Fatal("expected proxy preflight to fail when no artifact-sync connection exists")
+	}
+	if !strings.Contains(result.ErrorMessage, "no artifact-sync Google Drive connection") {
+		t.Fatalf("expected missing connection error, got %q", result.ErrorMessage)
+	}
+}
+
+func TestPreflightGoogleDriveMcp_ProxyPathFailsWithMultipleArtifactConnections(t *testing.T) {
+	t.Setenv(googleDriveProxyMcpFlag, "true")
+
+	workspace := t.TempDir()
+	runner := &Runner{workspace: workspace, secretStore: newMemorySecretStore()}
+	writeArtifactSyncOnlyPreflightConfig(t, runner, workspace)
+
+	if err := runner.saveGoogleDriveCredentialByProject("project-1", googleDriveCredential{
+		RefreshToken: "refresh-1",
+		AccountEmail: "project-1@example.com",
+	}); err != nil {
+		t.Fatalf("saveGoogleDriveCredentialByProject(project-1) failed: %v", err)
+	}
+	if err := runner.saveGoogleDriveCredentialByProject("project-2", googleDriveCredential{
+		RefreshToken: "refresh-2",
+		AccountEmail: "project-2@example.com",
+	}); err != nil {
+		t.Fatalf("saveGoogleDriveCredentialByProject(project-2) failed: %v", err)
+	}
+	if err := runner.saveArtifactStorageGoogleDriveState(func(current *artifactStorageGoogleDriveState) {
+		current.Connections["project-1"] = artifactStorageGoogleDriveConnectionRecord{
+			ProjectID:    "project-1",
+			Status:       "connected",
+			FolderID:     "folder-1",
+			AccountEmail: "project-1@example.com",
+		}
+		current.Connections["project-2"] = artifactStorageGoogleDriveConnectionRecord{
+			ProjectID:    "project-2",
+			Status:       "connected",
+			FolderID:     "folder-2",
+			AccountEmail: "project-2@example.com",
+		}
+	}); err != nil {
+		t.Fatalf("saveArtifactStorageGoogleDriveState() failed: %v", err)
+	}
+
+	result := runner.PreflightGoogleDriveMcp("", "")
+
+	if result.GoogleDriveReady {
+		t.Fatal("expected proxy preflight to fail when multiple artifact-sync connections exist")
+	}
+	if !strings.Contains(result.ErrorMessage, "multiple artifact-sync Google Drive connections") {
+		t.Fatalf("expected multiple connection error, got %q", result.ErrorMessage)
+	}
+}
+
+func TestPreflightGoogleDriveMcp_ProxyPathFailsWithoutStoredRefreshToken(t *testing.T) {
+	t.Setenv(googleDriveProxyMcpFlag, "true")
+
+	workspace := t.TempDir()
+	runner := &Runner{workspace: workspace, secretStore: newMemorySecretStore()}
+	writeArtifactSyncOnlyPreflightConfig(t, runner, workspace)
+
+	if err := runner.ensureSecretStore().Set(
+		googleDriveProjectCredentialKey("project-1"),
+		`{"accountEmail":"project-1@example.com"}`,
+	); err != nil {
+		t.Fatalf("failed to store incomplete credential: %v", err)
+	}
+	if err := runner.saveArtifactStorageGoogleDriveState(func(current *artifactStorageGoogleDriveState) {
+		current.Connections["project-1"] = artifactStorageGoogleDriveConnectionRecord{
+			ProjectID:    "project-1",
+			Status:       "connected",
+			FolderID:     "folder-1",
+			AccountEmail: "project-1@example.com",
+		}
+	}); err != nil {
+		t.Fatalf("saveArtifactStorageGoogleDriveState() failed: %v", err)
+	}
+
+	httpCalled := false
+	originalHTTPRequest := httpRequestFn
+	t.Cleanup(func() {
+		httpRequestFn = originalHTTPRequest
+	})
+	httpRequestFn = func(ctx context.Context, method, url string, headers map[string]string, body []byte) (int, []byte, error) {
+		httpCalled = true
+		return 500, nil, nil
+	}
+
+	result := runner.PreflightGoogleDriveMcp("", "")
+
+	if result.GoogleDriveReady {
+		t.Fatal("expected proxy preflight to fail when refresh token is missing")
+	}
+	if !strings.Contains(result.ErrorMessage, "refresh token is not configured") {
+		t.Fatalf("expected missing refresh token error, got %q", result.ErrorMessage)
+	}
+	if httpCalled {
+		t.Fatal("expected proxy preflight to validate locally without refreshing tokens")
+	}
+}
+
+func writeArtifactSyncOnlyPreflightConfig(t *testing.T, runner *Runner, workspace string) {
+	t.Helper()
+
+	flowpilotDir := filepath.Join(workspace, ".flowpilot", "settings")
+	if err := os.MkdirAll(flowpilotDir, 0o755); err != nil {
+		t.Fatalf("Failed to create .flowpilot dir: %v", err)
+	}
+
+	wsConfig := map[string]interface{}{
+		"version": 1,
+		"artifactSync": map[string]interface{}{
+			"clientId":    "artifact-client-id",
+			"redirectUri": googleDriveDefaultRedirectURI,
+		},
+		"mcp": map[string]interface{}{},
+	}
+
+	wsConfigBytes, err := json.Marshal(wsConfig)
+	if err != nil {
+		t.Fatalf("Failed to marshal workspace config: %v", err)
+	}
+
+	wsConfigPath := filepath.Join(flowpilotDir, "google-drive-config.json")
+	if err := os.WriteFile(wsConfigPath, wsConfigBytes, 0o644); err != nil {
+		t.Fatalf("Failed to write workspace config: %v", err)
+	}
+
+	if err := runner.ensureSecretStore().Set(googleDriveArtifactSyncClientSecretKey, "artifact-client-secret"); err != nil {
+		t.Fatalf("Failed to save artifact sync client secret: %v", err)
 	}
 }
