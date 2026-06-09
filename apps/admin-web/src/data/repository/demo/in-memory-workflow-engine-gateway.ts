@@ -823,6 +823,14 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
     return step;
   }
 
+  async submitGoogleDriveWriteApproval(
+    stepId: string,
+    decision: "approved" | "rejected",
+    comment?: string,
+  ): Promise<WorkflowRunStep> {
+    return this.submitStepApproval(stepId, decision === "approved", comment);
+  }
+
   private supportedModels: SupportedModel[] = [
     { id: "1", providerKey: "gemini", modelId: "auto-gemini-3", displayName: "Auto (Gemini 3)", isEnabled: true, sortOrder: 1, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
     { id: "2", providerKey: "gemini", modelId: "auto-gemini-2.5", displayName: "Auto (Gemini 2.5)", isEnabled: true, sortOrder: 2, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
