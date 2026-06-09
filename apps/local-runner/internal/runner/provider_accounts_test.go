@@ -225,6 +225,10 @@ func setDiscoveryTestHome(t *testing.T, homeDir string) {
 	t.Helper()
 	t.Setenv("HOME", homeDir)
 	t.Setenv("USERPROFILE", homeDir)
+	t.Setenv("APPDATA", filepath.Join(homeDir, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(homeDir, "AppData", "Local"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(homeDir, ".config"))
+	t.Setenv("FLOWPILOT_PROVIDER_ACCOUNTS_CONFIG_PATH", filepath.Join(homeDir, ".flowpilot", "settings", "provider-accounts.json"))
 	t.Setenv("CODEX_HOME", "")
 	t.Setenv("GEMINI_HOME", "")
 }

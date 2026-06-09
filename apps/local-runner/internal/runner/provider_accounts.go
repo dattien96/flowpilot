@@ -587,6 +587,10 @@ func removeProviderAccountByID(accounts []ProviderAccount, accountID string) []P
 }
 
 func providerAccountsConfigPath() string {
+	if override := strings.TrimSpace(os.Getenv("FLOWPILOT_PROVIDER_ACCOUNTS_CONFIG_PATH")); override != "" {
+		return filepath.Clean(override)
+	}
+
 	if configDir, err := os.UserConfigDir(); err == nil && strings.TrimSpace(configDir) != "" {
 		return filepath.Join(configDir, "FlowPilot", "provider-accounts.json")
 	}
