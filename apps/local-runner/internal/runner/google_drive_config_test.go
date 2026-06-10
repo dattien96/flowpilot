@@ -10,6 +10,13 @@ import (
 	"time"
 )
 
+func setGoogleDriveMcpHomeEnv(t *testing.T, homeDir string) {
+	t.Helper()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", homeDir)
+	t.Setenv("XDG_CONFIG_HOME", "")
+}
+
 func TestGoogleDriveWorkspaceConfigSaveAndLoad(t *testing.T) {
 	workspace := t.TempDir()
 	instance := &Runner{workspace: workspace, secretStore: newMemorySecretStore()}
@@ -51,8 +58,7 @@ func TestGoogleDriveWorkspaceConfigSaveAndLoad(t *testing.T) {
 func TestUploadGoogleDriveMcpOAuthCredentialsWritesCredentialFile(t *testing.T) {
 	workspace := t.TempDir()
 	homeDir := t.TempDir()
-	t.Setenv("HOME", homeDir)
-	t.Setenv("USERPROFILE", homeDir)
+	setGoogleDriveMcpHomeEnv(t, homeDir)
 
 	instance := &Runner{workspace: workspace, secretStore: newMemorySecretStore()}
 	status, err := instance.UploadGoogleDriveMcpOAuthCredentials(GoogleDriveMcpOAuthUploadRequest{
@@ -134,6 +140,204 @@ func TestLoadGoogleDriveWorkspaceConfigUsesEnvFallback(t *testing.T) {
 	}
 }
 
+func TestResolveGoogleDriveProxyMcpStatus_UsesGoRunLauncherWhenNpxIsMissing(t *testing.T) {
+	t.Setenv(googleDriveProxyMcpFlag, "true")
+	t.Setenv(googleDriveProxyAccountIDEnv, "account-1")
+
+	workspace := t.TempDir()
+	runner := &Runner{workspace: workspace, secretStore: newMemorySecretStore()}
+	if _, err := runner.SaveGoogleDriveWorkspaceConfig(GoogleDriveWorkspaceConfigRequest{
+		ClientID:     "artifact-client-id",
+		ClientSecret: "artifact-client-secret",
+		RedirectURI:  googleDriveDefaultRedirectURI,
+		PickerAPIKey: "picker-api-key-1",
+	}); err != nil {
+		t.Fatalf("save google drive config: %v", err)
+	}
+	if err := runner.saveGoogleDriveCredentialByAccount("account-1", googleDriveCredential{
+		RefreshToken: "account-refresh-token",
+		AccountEmail: "account-1@example.com",
+	}); err != nil {
+		t.Fatalf("saveGoogleDriveCredentialByAccount() failed: %v", err)
+	}
+	if err := runner.saveArtifactStorageGoogleDriveState(func(current *artifactStorageGoogleDriveState) {
+		current.Accounts["account-1"] = artifactStorageGoogleDriveAccountRecord{
+			AccountID:     "account-1",
+			AccountEmail:  "account-1@example.com",
+			GrantedScopes: googleDriveAccountRequestedScopes(),
+			Status:        "connected",
+		}
+	}); err != nil {
+		t.Fatalf("saveArtifactStorageGoogleDriveState() failed: %v", err)
+	}
+
+	runnerDir := filepath.Join(workspace, "apps", "local-runner")
+	if err := os.MkdirAll(runnerDir, 0o755); err != nil {
+		t.Fatalf("create runner dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(runnerDir, "go.mod"), []byte("module flowpilot\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	originalLookPath := lookPathFn
+	t.Cleanup(func() {
+		lookPathFn = originalLookPath
+	})
+	lookPathFn = func(file string) (string, error) {
+		switch file {
+		case "flowpilot", "npx":
+			return "", os.ErrNotExist
+		case "go":
+			return "/usr/local/go/bin/go", nil
+		default:
+			return "", os.ErrNotExist
+		}
+	}
+
+	stubGoogleDriveOAuthTokenRefresh(t)
+
+	configFile, err := runner.loadGoogleDriveWorkspaceConfigFile()
+	if err != nil {
+		t.Fatalf("load google drive workspace config: %v", err)
+	}
+
+	status := runner.resolveGoogleDriveProxyMcpStatus(configFile)
+	if !status.BackendPackageAvailable {
+		t.Fatalf("expected proxy backend to use flowpilot/go-run path, got %#v", status)
+	}
+	if status.Status != "configured" {
+		t.Fatalf("expected configured proxy status, got %#v", status)
+	}
+	if status.AccountSelectionRequired {
+		t.Fatalf("expected selected account to satisfy proxy selection, got %#v", status)
+	}
+	if status.AccountID != "account-1" {
+		t.Fatalf("unexpected account id: %#v", status.AccountID)
+	}
+}
+
+func TestValidateGoogleDriveWorkspaceConfig_ProxyPathReportsFlowPilotLauncherWhenUnavailable(t *testing.T) {
+	t.Setenv(googleDriveProxyMcpFlag, "true")
+	t.Setenv(googleDriveProxyAccountIDEnv, "account-1")
+
+	workspace := t.TempDir()
+	runner := &Runner{workspace: workspace, secretStore: newMemorySecretStore()}
+	if _, err := runner.SaveGoogleDriveWorkspaceConfig(GoogleDriveWorkspaceConfigRequest{
+		ClientID:     "artifact-client-id",
+		ClientSecret: "artifact-client-secret",
+		RedirectURI:  googleDriveDefaultRedirectURI,
+		PickerAPIKey: "picker-api-key-1",
+	}); err != nil {
+		t.Fatalf("save google drive config: %v", err)
+	}
+	if err := runner.saveGoogleDriveCredentialByAccount("account-1", googleDriveCredential{
+		RefreshToken: "account-refresh-token",
+		AccountEmail: "account-1@example.com",
+	}); err != nil {
+		t.Fatalf("saveGoogleDriveCredentialByAccount() failed: %v", err)
+	}
+	if err := runner.saveArtifactStorageGoogleDriveState(func(current *artifactStorageGoogleDriveState) {
+		current.Accounts["account-1"] = artifactStorageGoogleDriveAccountRecord{
+			AccountID:     "account-1",
+			AccountEmail:  "account-1@example.com",
+			GrantedScopes: googleDriveAccountRequestedScopes(),
+			Status:        "connected",
+		}
+	}); err != nil {
+		t.Fatalf("saveArtifactStorageGoogleDriveState() failed: %v", err)
+	}
+
+	originalLookPath := lookPathFn
+	t.Cleanup(func() {
+		lookPathFn = originalLookPath
+	})
+	lookPathFn = func(file string) (string, error) {
+		return "", os.ErrNotExist
+	}
+
+	stubGoogleDriveOAuthTokenRefresh(t)
+
+	configFile, err := runner.loadGoogleDriveWorkspaceConfigFile()
+	if err != nil {
+		t.Fatalf("load google drive workspace config: %v", err)
+	}
+	status := runner.resolveGoogleDriveProxyMcpStatus(configFile)
+	if status.Configured {
+		t.Fatalf("expected proxy status to be unconfigured when the launcher is unavailable, got %#v", status)
+	}
+	if status.Status != "warning" {
+		t.Fatalf("expected warning proxy status when the launcher is unavailable, got %#v", status)
+	}
+
+	result, err := runner.ValidateGoogleDriveWorkspaceConfig(GoogleDriveWorkspaceConfigRequest{})
+	if err != nil {
+		t.Fatalf("validate google drive config: %v", err)
+	}
+	backendCheck := findGoogleDriveValidationCheck(result.Checks, "mcp_backend_available")
+	if backendCheck.Status != "failed" {
+		t.Fatalf("expected backend availability check to fail, got %#v", backendCheck)
+	}
+	if !strings.Contains(backendCheck.Message, "FlowPilot or Go") {
+		t.Fatalf("expected FlowPilot/go launcher wording, got %#v", backendCheck.Message)
+	}
+	if strings.Contains(backendCheck.Message, "Node.js") || strings.Contains(backendCheck.Message, "npx") {
+		t.Fatalf("unexpected legacy launcher wording in backend message: %#v", backendCheck.Message)
+	}
+}
+
+func TestResolveGoogleDriveProxyMcpStatusRequiresReadonlyScope(t *testing.T) {
+	t.Setenv(googleDriveProxyMcpFlag, "true")
+	t.Setenv(googleDriveProxyAccountIDEnv, "account-1")
+
+	workspace := t.TempDir()
+	runner := &Runner{workspace: workspace, secretStore: newMemorySecretStore()}
+	if _, err := runner.SaveGoogleDriveWorkspaceConfig(GoogleDriveWorkspaceConfigRequest{
+		ClientID:     "artifact-client-id",
+		ClientSecret: "artifact-client-secret",
+		RedirectURI:  googleDriveDefaultRedirectURI,
+		PickerAPIKey: "picker-api-key-1",
+	}); err != nil {
+		t.Fatalf("save google drive config: %v", err)
+	}
+	if err := runner.saveGoogleDriveCredentialByAccount("account-1", googleDriveCredential{
+		RefreshToken: "account-refresh-token",
+		AccountEmail: "account-1@example.com",
+	}); err != nil {
+		t.Fatalf("saveGoogleDriveCredentialByAccount() failed: %v", err)
+	}
+	if err := runner.saveArtifactStorageGoogleDriveState(func(current *artifactStorageGoogleDriveState) {
+		current.Accounts["account-1"] = artifactStorageGoogleDriveAccountRecord{
+			AccountID:     "account-1",
+			AccountEmail:  "account-1@example.com",
+			GrantedScopes: googleDriveArtifactRequestedScopes(),
+			Status:        "connected",
+		}
+	}); err != nil {
+		t.Fatalf("saveArtifactStorageGoogleDriveState() failed: %v", err)
+	}
+
+	stubGoogleDriveOAuthTokenRefresh(t)
+
+	configFile, err := runner.loadGoogleDriveWorkspaceConfigFile()
+	if err != nil {
+		t.Fatalf("load google drive workspace config: %v", err)
+	}
+
+	status := runner.resolveGoogleDriveProxyMcpStatus(configFile)
+	if status.Status != "needs_auth" {
+		t.Fatalf("expected proxy status to require auth when drive.readonly is missing, got %#v", status)
+	}
+	if status.McpReadReady {
+		t.Fatalf("expected proxy read readiness to stay false, got %#v", status)
+	}
+	if !status.McpWriteReady {
+		t.Fatalf("expected artifact write readiness to remain true, got %#v", status)
+	}
+	if len(status.MissingScopes) != 1 || status.MissingScopes[0] != googleDriveScopeDriveReadonly {
+		t.Fatalf("expected only drive.readonly to be missing, got %#v", status.MissingScopes)
+	}
+}
+
 func TestResolveGoogleDriveArtifactRuntimeConfigPrefersSavedConfigOverEnv(t *testing.T) {
 	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
 	if _, err := instance.SaveGoogleDriveWorkspaceConfig(GoogleDriveWorkspaceConfigRequest{
@@ -165,6 +369,33 @@ func TestResolveGoogleDriveArtifactRuntimeConfigPrefersSavedConfigOverEnv(t *tes
 	}
 	if config.PickerAPIKey != "saved-picker-api-key" {
 		t.Fatalf("expected saved picker API key to win, got %#v", config.PickerAPIKey)
+	}
+}
+
+func TestSaveGoogleDriveWorkspaceConfigRequiresClientSecretWhenClientIDChanges(t *testing.T) {
+	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
+	if _, err := instance.SaveGoogleDriveWorkspaceConfig(GoogleDriveWorkspaceConfigRequest{
+		ClientID:     "client-id-1",
+		ClientSecret: "client-secret-1",
+		RedirectURI:  googleDriveDefaultRedirectURI,
+		PickerAPIKey: "picker-api-key-1",
+	}); err != nil {
+		t.Fatalf("save initial google drive config: %v", err)
+	}
+
+	_, err := instance.SaveGoogleDriveWorkspaceConfig(GoogleDriveWorkspaceConfigRequest{
+		ClientID: "client-id-2",
+	})
+	if err == nil || !strings.Contains(err.Error(), "clientSecret is required when clientId changes") {
+		t.Fatalf("expected clientId change without secret to fail, got %v", err)
+	}
+
+	config, err := instance.resolveGoogleDriveArtifactRuntimeConfig()
+	if err != nil {
+		t.Fatalf("resolve google drive runtime config after rejected save: %v", err)
+	}
+	if config.ClientID != "client-id-1" || config.ClientSecret != "client-secret-1" {
+		t.Fatalf("expected previous oauth client config to remain active, got %#v", config)
 	}
 }
 
@@ -211,8 +442,7 @@ func TestGoogleDriveWorkspaceStatusHidesSecretsFromJSONResponse(t *testing.T) {
 func TestUploadGoogleDriveMcpOAuthCredentialsRejectsWebClientJSON(t *testing.T) {
 	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
 	homeDir := t.TempDir()
-	t.Setenv("HOME", homeDir)
-	t.Setenv("USERPROFILE", homeDir)
+	setGoogleDriveMcpHomeEnv(t, homeDir)
 
 	_, err := instance.UploadGoogleDriveMcpOAuthCredentials(GoogleDriveMcpOAuthUploadRequest{
 		FileName: "gcp-oauth.keys.json",
@@ -230,8 +460,7 @@ func TestUploadGoogleDriveMcpOAuthCredentialsRejectsWebClientJSON(t *testing.T) 
 func TestLoadGoogleDriveWorkspaceConfigDoesNotTreatInvalidMcpCredentialFileAsReady(t *testing.T) {
 	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
 	homeDir := t.TempDir()
-	t.Setenv("HOME", homeDir)
-	t.Setenv("USERPROFILE", homeDir)
+	setGoogleDriveMcpHomeEnv(t, homeDir)
 
 	configDir := filepath.Join(homeDir, ".config", "google-drive-mcp")
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
@@ -272,8 +501,7 @@ func TestLoadGoogleDriveWorkspaceConfigDoesNotTreatInvalidMcpCredentialFileAsRea
 func TestValidateGoogleDriveWorkspaceConfigSkipsMcpTokenChecksUntilAuthFlowRuns(t *testing.T) {
 	workspace := t.TempDir()
 	homeDir := t.TempDir()
-	t.Setenv("HOME", homeDir)
-	t.Setenv("USERPROFILE", homeDir)
+	setGoogleDriveMcpHomeEnv(t, homeDir)
 
 	instance := &Runner{workspace: workspace, secretStore: newMemorySecretStore()}
 	if _, err := instance.SaveGoogleDriveWorkspaceConfig(GoogleDriveWorkspaceConfigRequest{
@@ -310,11 +538,37 @@ func TestValidateGoogleDriveWorkspaceConfigSkipsMcpTokenChecksUntilAuthFlowRuns(
 	}
 }
 
+func TestValidateGoogleDriveWorkspaceConfigFailsWhenClientIDChangesWithoutClientSecret(t *testing.T) {
+	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
+	if _, err := instance.SaveGoogleDriveWorkspaceConfig(GoogleDriveWorkspaceConfigRequest{
+		ClientID:     "client-id-1",
+		ClientSecret: "client-secret-1",
+		RedirectURI:  googleDriveDefaultRedirectURI,
+		PickerAPIKey: "picker-api-key-1",
+	}); err != nil {
+		t.Fatalf("save initial google drive config: %v", err)
+	}
+
+	result, err := instance.ValidateGoogleDriveWorkspaceConfig(GoogleDriveWorkspaceConfigRequest{
+		ClientID: "client-id-2",
+	})
+	if err != nil {
+		t.Fatalf("validate google drive config after clientId change: %v", err)
+	}
+	if result.Valid {
+		t.Fatalf("expected validation to fail when clientId changes without a replacement secret, got %#v", result.Checks)
+	}
+
+	clientSecretCheck := findGoogleDriveValidationCheck(result.Checks, "artifact_client_secret_present")
+	if clientSecretCheck.Status != "failed" {
+		t.Fatalf("expected client secret check to fail when clientId changes without a replacement secret, got %#v", clientSecretCheck)
+	}
+}
+
 func TestValidateGoogleDriveWorkspaceConfigFailsWhenTokenFileExistsWithoutRefreshToken(t *testing.T) {
 	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
 	homeDir := t.TempDir()
-	t.Setenv("HOME", homeDir)
-	t.Setenv("USERPROFILE", homeDir)
+	setGoogleDriveMcpHomeEnv(t, homeDir)
 
 	if _, err := instance.SaveGoogleDriveWorkspaceConfig(GoogleDriveWorkspaceConfigRequest{
 		ClientID:     "client-id-1",
@@ -498,8 +752,7 @@ func TestLoadArtifactStorageGoogleDriveStateFallsBackToLegacyPath(t *testing.T) 
 func TestLoadGoogleDriveWorkspaceConfigDetectsMcpReconnectRequiredOnInvalidGrant(t *testing.T) {
 	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
 	homeDir := t.TempDir()
-	t.Setenv("HOME", homeDir)
-	t.Setenv("USERPROFILE", homeDir)
+	setGoogleDriveMcpHomeEnv(t, homeDir)
 
 	configDir := filepath.Join(homeDir, ".config", "google-drive-mcp")
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
