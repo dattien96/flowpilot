@@ -377,11 +377,14 @@ func TestEnsureCodexGoogleDriveMcpConfig_ProxyPathUsesYoloApproval(t *testing.T)
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			resp, err := runner.EnsureGoogleDriveMcpProviderConfig(GoogleDriveMcpProviderConfigRequest{
-				ProviderKey:     "codex",
-				AccountHomePath: accountHome,
-				Scope:           "account",
-				Mode:            "read_write",
-				YoloMode:        tc.yoloMode,
+				ProviderKey:       "codex",
+				AccountHomePath:   accountHome,
+				Scope:             "account",
+				Mode:              "read_write",
+				YoloMode:          tc.yoloMode,
+				WorkflowRunID:     "run-123",
+				WorkflowStepRunID: "step-456",
+				ProcessKey:        "proc-789",
 			})
 			if err != nil {
 				t.Fatalf("EnsureGoogleDriveMcpProviderConfig failed: %v", err)
@@ -426,6 +429,15 @@ func TestEnsureCodexGoogleDriveMcpConfig_ProxyPathUsesYoloApproval(t *testing.T)
 			assertStringSliceEqual(t, server.Args[:len(expectedPrefix)], expectedPrefix)
 			if _, ok := server.Env["FLOWPILOT_GOOGLE_DRIVE_PROXY_MCP"]; ok {
 				t.Fatalf("expected proxy env flag to be omitted, got %#v", server.Env)
+			}
+			if got := server.Env[googleDriveProxyWorkflowRunIDEnv]; got != "run-123" {
+				t.Fatalf("expected workflow run id env, got %q", got)
+			}
+			if got := server.Env[googleDriveProxyWorkflowStepIDEnv]; got != "step-456" {
+				t.Fatalf("expected workflow step run id env, got %q", got)
+			}
+			if got := server.Env[googleDriveProxyProcessKeyEnv]; got != "proc-789" {
+				t.Fatalf("expected process key env, got %q", got)
 			}
 		})
 	}
@@ -495,6 +507,78 @@ func TestEnsureCodexGoogleDriveMcpConfig_ProxyPathInjectsSelectedAccountID(t *te
 	}
 	if got := strings.TrimSpace(server.Env[googleDriveProxyRefreshTokenEnv]); got != "artifact-refresh-token" {
 		t.Fatalf("expected Google Drive refresh token env to be injected, got %q", got)
+	}
+}
+
+func TestGoogleDriveProxyMcpServerEnvIncludesApprovalScope(t *testing.T) {
+	env := googleDriveProxyMcpServerEnv(googleDriveMcpRuntimeConfig{
+		AccountID:         "account-1",
+		WorkflowRunID:     "run-123",
+		WorkflowStepRunID: "step-456",
+		ProcessKey:        "proc-789",
+		ProxyClientID:     "client-id",
+		ProxyClientSecret: "client-secret",
+		ProxyRefreshToken: "refresh-token",
+	})
+
+	expected := map[string]string{
+		googleDriveProxyAccountIDEnv:      "account-1",
+		googleDriveProxyWorkflowRunIDEnv:  "run-123",
+		googleDriveProxyWorkflowStepIDEnv: "step-456",
+		googleDriveProxyProcessKeyEnv:     "proc-789",
+		googleDriveClientIDEnv:            "client-id",
+		googleDriveClientSecretEnv:        "client-secret",
+		googleDriveProxyRefreshTokenEnv:   "refresh-token",
+	}
+	for key, want := range expected {
+		if got := env[key]; got != want {
+			t.Fatalf("expected env[%s] = %q, got %q", key, want, got)
+		}
+	}
+}
+
+func TestEnvMatchesAllowsRuntimeApprovalScopeExtras(t *testing.T) {
+	expected := map[string]string{
+		googleDriveProxyAccountIDEnv: "account-1",
+		googleDriveClientIDEnv:       "client-id",
+	}
+	existing := map[string]string{
+		googleDriveProxyAccountIDEnv:      "account-1",
+		googleDriveClientIDEnv:            "client-id",
+		googleDriveProxyWorkflowRunIDEnv:  "run-123",
+		googleDriveProxyWorkflowStepIDEnv: "step-456",
+		googleDriveProxyProcessKeyEnv:     "proc-789",
+	}
+
+	if !envMatches(existing, expected) {
+		t.Fatal("expected runtime approval scope env extras to be ignored")
+	}
+}
+
+func TestEnvMatchesRejectsMismatchedExpectedApprovalScope(t *testing.T) {
+	expected := map[string]string{
+		googleDriveProxyProcessKeyEnv: "proc-new",
+	}
+	existing := map[string]string{
+		googleDriveProxyProcessKeyEnv: "proc-old",
+	}
+
+	if envMatches(existing, expected) {
+		t.Fatal("expected mismatched approval scope env to be rejected")
+	}
+}
+
+func TestEnvMatchesRejectsUnknownExtraEnv(t *testing.T) {
+	expected := map[string]string{
+		googleDriveProxyAccountIDEnv: "account-1",
+	}
+	existing := map[string]string{
+		googleDriveProxyAccountIDEnv: "account-1",
+		"FLOWPILOT_UNKNOWN":          "value",
+	}
+
+	if envMatches(existing, expected) {
+		t.Fatal("expected unknown extra env to be rejected")
 	}
 }
 

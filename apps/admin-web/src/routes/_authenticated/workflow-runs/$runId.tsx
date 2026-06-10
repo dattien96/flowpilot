@@ -120,7 +120,14 @@ function summarizeRunPrompt(promptText?: string) {
 function isGoogleDriveMcpApprovalMessage(message?: string | null) {
   const normalized = message?.trim().toLowerCase() ?? "";
   return normalized.includes("google drive mcp approval required") ||
-    normalized.includes("google drive write approval required");
+    normalized.includes("google drive write approval required") ||
+    normalized.includes("mcp_tool_approval_required") ||
+    normalized.includes("mcp_write_approval_required");
+}
+
+function isWorkflowStepWaitingForApproval(status?: string | null) {
+  const normalized = String(status ?? "").trim().toUpperCase();
+  return normalized === "WAITING_USER_APPROVAL" || normalized === "WAITING_APPROVAL";
 }
 
 function normalizePromptDisplay(promptText?: string | null) {
@@ -1651,7 +1658,7 @@ function WorkflowRunDetailPage() {
     if (detail?.steps && detail.steps.length > 0 && !selectedStepId) {
       const activeStep = detail.steps.find(
         (s: any) =>
-          s.status === "RUNNING" || s.status === "WAITING_USER_APPROVAL",
+          s.status === "RUNNING" || isWorkflowStepWaitingForApproval(s.status),
       );
       const pendingStep = detail.steps.find((s: any) => s.status === "PENDING");
       if (activeStep) {
@@ -1698,11 +1705,21 @@ function WorkflowRunDetailPage() {
     () => canCancelWorkflowRun(detail?.run),
     [detail?.run],
   );
+  const googleDriveMcpWaitingStep = useMemo(
+    () =>
+      detail?.steps.find(
+        (step: any) =>
+          isWorkflowStepWaitingForApproval(step.status) &&
+          isGoogleDriveMcpApprovalMessage(step.errorMessage),
+      ),
+    [detail?.steps],
+  );
   const selectedStep =
     detail?.steps.find((step: any) => step.id === selectedStepId) ??
+    googleDriveMcpWaitingStep ??
     detail?.steps[0];
   const selectedStepIndex =
-    detail?.steps.findIndex((step: any) => step.id === selectedStepId) ?? -1;
+    detail?.steps.findIndex((step: any) => step.id === selectedStep?.id) ?? -1;
   const isInterruptedFailedStep = isInterruptedWorkflowStep({
     status: selectedStep?.status,
     errorMessage: selectedStep?.errorMessage,
@@ -1759,10 +1776,12 @@ function WorkflowRunDetailPage() {
     stepId: string,
     decision: "approved" | "changes_requested" | "rejected",
   ) => {
-    if (decision === "rejected" && !pendingApproval) {
+    const useGoogleDriveMcpApproval = isGoogleDriveMcpApproval;
+    if (decision === "rejected" && !pendingApproval && !useGoogleDriveMcpApproval) {
       alert("Cannot reject an already completed step.");
       return;
     }
+
     setSubmittingDecision(true);
     const followUpComment = decisionComment.trim();
     const canOptimisticallyContinue =
@@ -1782,9 +1801,6 @@ function WorkflowRunDetailPage() {
       comment: followUpComment,
       createdAt,
     };
-    const useGoogleDriveMcpApproval = Boolean(
-      pendingApproval && isGoogleDriveMcpApproval,
-    );
     let submitted = false;
     try {
       if (decision === "changes_requested" && useGoogleDriveMcpApproval) {
@@ -2228,7 +2244,7 @@ function WorkflowRunDetailPage() {
                 </span>
                 <h2 className="text-2xl font-bold tracking-tight text-foreground flex items-center gap-2.5 flex-wrap mt-1">
                   {selectedStep.stepName}
-                  {selectedStep.status === "WAITING_USER_APPROVAL" ? (
+                  {isWorkflowStepWaitingForApproval(selectedStep.status) ? (
                     <span className="bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2.5 py-0.5 rounded-full text-xs font-semibold uppercase tracking-wider animate-pulse">
                       Awaiting Safe-Gate Approval
                     </span>
@@ -2351,7 +2367,7 @@ function WorkflowRunDetailPage() {
                 {(() => {
                   const stepStatus = selectedStep.status?.toUpperCase();
                   const runStatus = detail.run.status?.toUpperCase();
-                  const isWaiting = stepStatus === "WAITING_USER_APPROVAL";
+                  const isWaiting = isWorkflowStepWaitingForApproval(stepStatus);
                   const isDone = stepStatus === "DONE" || stepStatus === "COMPLETED";
                   const canContinue =
                     ((isWaiting || isDone) &&

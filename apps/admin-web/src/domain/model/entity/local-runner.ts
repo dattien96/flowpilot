@@ -369,6 +369,10 @@ export interface GoogleDriveMcpProviderConfigRequest {
   accountHomePath: string;
   scope: "account" | "workspace";
   mode: "read_only" | "read_write";
+  yoloMode?: boolean;
+  workflowRunId?: string;
+  workflowStepRunId?: string;
+  processKey?: string;
 }
 
 export interface GoogleDriveMcpProviderConfigResponse {

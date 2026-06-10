@@ -507,6 +507,53 @@ func TestHandleReadTool_CreatesPendingApprovalWhenManual(t *testing.T) {
 	}
 }
 
+func TestHandleReadTool_CreatesPendingApprovalWhenSessionIsNotInProcess(t *testing.T) {
+	workspace := t.TempDir()
+	runner := &Runner{workspace: workspace}
+
+	server := &proxyMcpServer{
+		runner:            runner,
+		mode:              "read_only",
+		yoloMode:          false,
+		workflowRunID:     "run-read",
+		workflowStepRunID: "step-read",
+		processKey:        "proc-read",
+	}
+
+	_, err := server.handleReadTool("authGetStatus", map[string]any{}, func() (string, error) {
+		return "status=configured", nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "mcp_tool_approval_required") {
+		t.Fatalf("expected pending approval error, got %v", err)
+	}
+	if strings.Contains(err.Error(), "session_dead") {
+		t.Fatalf("expected approval error without session_dead leak, got %v", err)
+	}
+
+	state, err := runner.loadGoogleDriveProxyApprovalState()
+	if err != nil {
+		t.Fatalf("loadGoogleDriveProxyApprovalState() failed: %v", err)
+	}
+	if len(state.Records) != 1 {
+		t.Fatalf("expected one pending approval, got %d", len(state.Records))
+	}
+	for _, record := range state.Records {
+		if record.Status != "pending" {
+			t.Fatalf("expected pending status, got %q", record.Status)
+		}
+		if record.ProcessKey != "proc-read" {
+			t.Fatalf("expected process key to be persisted, got %q", record.ProcessKey)
+		}
+		expiresAt, err := time.Parse(time.RFC3339Nano, record.ExpiresAt)
+		if err != nil {
+			t.Fatalf("parse ExpiresAt: %v", err)
+		}
+		if time.Until(expiresAt) < time.Hour {
+			t.Fatalf("expected fallback approval expiry in the future, got %s", expiresAt)
+		}
+	}
+}
+
 func TestHandleReadTool_ExecutesWithoutFlowPilotApprovalScope(t *testing.T) {
 	workspace := t.TempDir()
 	runner := &Runner{workspace: workspace}

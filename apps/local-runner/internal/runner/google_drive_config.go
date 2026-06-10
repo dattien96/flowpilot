@@ -1352,6 +1352,9 @@ type googleDriveMcpRuntimeConfig struct {
 	ProxyClientID            string
 	ProxyClientSecret        string
 	ProxyRefreshToken        string
+	WorkflowRunID            string
+	WorkflowStepRunID        string
+	ProcessKey               string
 	Status                   string
 }
 

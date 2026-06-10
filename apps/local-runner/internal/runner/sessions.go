@@ -474,8 +474,11 @@ func (r *Runner) StartSession(ctx context.Context, req AiSessionStartRequest) (A
 	}
 	command := formatProviderCommand(binaryPath, args)
 
-	processKey := newRunID()
 	sessionCustomEnv := cloneSessionCustomEnv(req.CustomEnv)
+	processKey := strings.TrimSpace(sessionCustomEnv[googleDriveProxyProcessKeyEnv])
+	if processKey == "" {
+		processKey = newRunID()
+	}
 	sessionCustomEnv[googleDriveProxyProcessKeyEnv] = processKey
 	session := &LiveSession{
 		SessionID:        newRunID(),

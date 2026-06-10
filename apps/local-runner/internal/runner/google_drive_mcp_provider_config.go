@@ -30,11 +30,14 @@ type GoogleDriveMcpProviderConfigStatus struct {
 
 // Request to ensure provider config
 type GoogleDriveMcpProviderConfigRequest struct {
-	ProviderKey     string `json:"providerKey"`
-	AccountHomePath string `json:"accountHomePath"`
-	Scope           string `json:"scope"` // "account" or "workspace"
-	Mode            string `json:"mode"`  // "read_only" or "read_write"
-	YoloMode        bool   `json:"yoloMode,omitempty"`
+	ProviderKey       string `json:"providerKey"`
+	AccountHomePath   string `json:"accountHomePath"`
+	Scope             string `json:"scope"` // "account" or "workspace"
+	Mode              string `json:"mode"`  // "read_only" or "read_write"
+	YoloMode          bool   `json:"yoloMode,omitempty"`
+	WorkflowRunID     string `json:"workflowRunId,omitempty"`
+	WorkflowStepRunID string `json:"workflowStepRunId,omitempty"`
+	ProcessKey        string `json:"processKey,omitempty"`
 }
 
 // Response from ensuring provider config
@@ -220,6 +223,9 @@ func (r *Runner) EnsureGoogleDriveMcpProviderConfig(req GoogleDriveMcpProviderCo
 	}
 	mcpStatus := r.resolveGoogleDriveMcpStatus(configFile)
 	runtimeMcpStatus := googleDriveMcpStatusRuntimeConfig(mcpStatus)
+	runtimeMcpStatus.WorkflowRunID = strings.TrimSpace(req.WorkflowRunID)
+	runtimeMcpStatus.WorkflowStepRunID = strings.TrimSpace(req.WorkflowStepRunID)
+	runtimeMcpStatus.ProcessKey = strings.TrimSpace(req.ProcessKey)
 	r.hydrateGoogleDriveProxyOAuthRuntimeConfig(&runtimeMcpStatus)
 	if flowpilotGoogleDriveProxyMcpEnabled() {
 		if !mcpStatus.Configured {
@@ -345,17 +351,34 @@ func toolListsMatch(existing, expected []string) bool {
 }
 
 func envMatches(existing, expected map[string]string) bool {
-	if len(existing) != len(expected) {
-		return false
-	}
-
 	for key, expectedValue := range expected {
 		if existing[key] != expectedValue {
 			return false
 		}
 	}
 
+	for key := range existing {
+		if _, ok := expected[key]; ok {
+			continue
+		}
+		if isGoogleDriveProxyApprovalScopeEnv(key) {
+			continue
+		}
+		return false
+	}
+
 	return true
+}
+
+func isGoogleDriveProxyApprovalScopeEnv(key string) bool {
+	switch key {
+	case googleDriveProxyWorkflowRunIDEnv,
+		googleDriveProxyWorkflowStepIDEnv,
+		googleDriveProxyProcessKeyEnv:
+		return true
+	default:
+		return false
+	}
 }
 
 func googleDriveProxyMcpArgs(workspace string, accountHomePath string, mode string, yoloMode bool) []string {
@@ -401,6 +424,15 @@ func googleDriveProxyMcpServerEnv(mcpStatus googleDriveMcpRuntimeConfig) map[str
 	env := map[string]string{}
 	if strings.TrimSpace(mcpStatus.AccountID) != "" {
 		env[googleDriveProxyAccountIDEnv] = strings.TrimSpace(mcpStatus.AccountID)
+	}
+	if strings.TrimSpace(mcpStatus.WorkflowRunID) != "" {
+		env[googleDriveProxyWorkflowRunIDEnv] = strings.TrimSpace(mcpStatus.WorkflowRunID)
+	}
+	if strings.TrimSpace(mcpStatus.WorkflowStepRunID) != "" {
+		env[googleDriveProxyWorkflowStepIDEnv] = strings.TrimSpace(mcpStatus.WorkflowStepRunID)
+	}
+	if strings.TrimSpace(mcpStatus.ProcessKey) != "" {
+		env[googleDriveProxyProcessKeyEnv] = strings.TrimSpace(mcpStatus.ProcessKey)
 	}
 	if strings.TrimSpace(mcpStatus.ProxyClientID) != "" {
 		env[googleDriveClientIDEnv] = strings.TrimSpace(mcpStatus.ProxyClientID)

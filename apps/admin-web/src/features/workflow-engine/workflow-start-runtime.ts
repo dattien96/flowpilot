@@ -204,6 +204,7 @@ async function getOrCreateSession({
   replayCheckpointCount,
   providerAccountId,
   sessionScopeKey,
+  requestedProcessKey,
 }: {
   adminClient: SupabaseClient;
   localRunnerGateway: LocalRunnerGateway;
@@ -223,6 +224,7 @@ async function getOrCreateSession({
   replayCheckpointCount?: number | null;
   providerAccountId?: string | null;
   sessionScopeKey?: string | null;
+  requestedProcessKey?: string | null;
 }) {
   let sessionRow = null;
 
@@ -406,6 +408,7 @@ async function getOrCreateSession({
       ...(requestedAccount.extra_env || {}),
       FLOWPILOT_WORKFLOW_RUN_ID: workflowRunId,
       FLOWPILOT_WORKFLOW_STEP_RUN_ID: stepRunId,
+      ...(requestedProcessKey ? { FLOWPILOT_PROCESS_KEY: requestedProcessKey } : {}),
     };
     const startResult = await localRunnerGateway.startSession({
       providerKey,
@@ -908,6 +911,13 @@ function requiresStepScopedSession(requiredMcps: string[]) {
   return requiredMcps.some((mcp) => String(mcp).toLowerCase() === "google_drive");
 }
 
+function isEmptyRequiredMcpOutput(
+  outputMarkdown: string | null | undefined,
+  requiredMcps: string[],
+) {
+  return requiresStepScopedSession(requiredMcps) && !(outputMarkdown ?? "").trim();
+}
+
 function stepAllowsGoogleDriveWrites(definition: Pick<StepDefinitionRow, "required_mcps" | "mcp_access_mode">) {
   return requiresStepScopedSession(definition.required_mcps ?? []) &&
     normalizeMcpAccessMode(definition.mcp_access_mode) === "read_write";
@@ -991,6 +1001,11 @@ function formatGoogleDriveWriteApprovalMessage(
   return lines.join("\n");
 }
 
+function isWorkflowStepWaitingForApproval(status?: string | null) {
+  const normalized = String(status ?? "").trim().toUpperCase();
+  return normalized === "WAITING_USER_APPROVAL" || normalized === "WAITING_APPROVAL";
+}
+
 type WorkflowSessionSendResult = LocalRunnerPromptExecutionResult & {
   actualPromptText: string;
   sessionDbId?: string;
@@ -1060,6 +1075,10 @@ export async function sendMessageWithRetry({
   forceNewProviderSession?: boolean;
   providerAccountId?: string | null;
 }): Promise<WorkflowSessionSendResult> {
+  const stepScopedProcessKey = requiresStepScopedSession(requiredMcps)
+    ? `workflow-${workflowRunId}-step-${stepRunId}`
+    : null;
+
   if (requiresStepScopedSession(requiredMcps)) {
     const requestedAccount = await resolveLocalProviderAccount(
       providerKey,
@@ -1071,6 +1090,9 @@ export async function sendMessageWithRetry({
       scope: "account",
       mode: allowWrite ? "read_write" : "read_only",
       yoloMode,
+      workflowRunId,
+      workflowStepRunId: stepRunId,
+      processKey: stepScopedProcessKey ?? undefined,
     });
   }
 
@@ -1089,6 +1111,7 @@ export async function sendMessageWithRetry({
     forceNewProviderSession,
     providerAccountId,
     sessionScopeKey,
+    requestedProcessKey: stepScopedProcessKey,
   });
 
   let attempt = 1;
@@ -1118,6 +1141,21 @@ export async function sendMessageWithRetry({
 
       if (isThreadMissingOutput(result.outputMarkdown)) {
         throw new Error(`provider error: ${result.outputMarkdown}`);
+      }
+
+      if (isEmptyRequiredMcpOutput(result.outputMarkdown, requiredMcps)) {
+        if (attempt >= maxAttempts) {
+          throw new Error(
+            "provider error: required MCP step completed without a final answer",
+          );
+        }
+        currentPrompt = [
+          "The previous response was empty after Google Drive MCP tool execution.",
+          "Use the existing conversation and any Google Drive tool results already returned to answer the user's original request now.",
+          "Do not call additional Google Drive tools unless the current thread lacks enough information to answer.",
+        ].join("\n");
+        attempt += 1;
+        continue;
       }
 
       await syncWorkflowRunSessionProviderSessionId({
@@ -3198,7 +3236,7 @@ export async function submitGoogleDriveWriteApprovalRuntime({
   const stepRun = await loadWorkflowRunStep(adminClient, stepId);
   const run = await loadWorkflowRun(adminClient, stepRun.workflow_run_id);
 
-  if (stepRun.status !== "WAITING_USER_APPROVAL") {
+  if (!isWorkflowStepWaitingForApproval(stepRun.status)) {
     throw new Error("Google Drive MCP approval is only available for waiting steps.");
   }
 

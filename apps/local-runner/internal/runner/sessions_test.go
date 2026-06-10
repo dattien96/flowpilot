@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -209,8 +210,8 @@ func TestStartSessionInjectsProcessKeyIntoProviderEnv(t *testing.T) {
 	envCaptureDir := t.TempDir()
 	envCapturePath := filepath.Join(envCaptureDir, "process-key.txt")
 	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
-		script := "$env:FLOWPILOT_PROCESS_KEY | Set-Content -LiteralPath '" + strings.ReplaceAll(envCapturePath, "'", "''") + "'; Write-Output '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}'; Start-Sleep -Seconds 2"
-		return exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
+		script := "printf %s \"$FLOWPILOT_PROCESS_KEY\" > " + strconv.Quote(envCapturePath) + "; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}'; sleep 2"
+		return exec.CommandContext(ctx, "sh", "-c", script)
 	}
 
 	r, _ := New(".")
@@ -234,6 +235,47 @@ func TestStartSessionInjectsProcessKeyIntoProviderEnv(t *testing.T) {
 	got := strings.TrimSpace(string(raw))
 	if got != *handle.ProcessKey {
 		t.Fatalf("expected captured process key %q, got %q", *handle.ProcessKey, got)
+	}
+
+	if err := r.CloseSession(context.Background(), handle); err != nil {
+		t.Fatalf("CloseSession failed: %v", err)
+	}
+}
+
+func TestStartSessionPreservesProvidedProcessKeyInProviderEnv(t *testing.T) {
+	originalCmdCtx := commandContextFn
+	defer func() { commandContextFn = originalCmdCtx }()
+
+	envCaptureDir := t.TempDir()
+	envCapturePath := filepath.Join(envCaptureDir, "process-key.txt")
+	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+		script := "printf %s \"$FLOWPILOT_PROCESS_KEY\" > " + strconv.Quote(envCapturePath) + "; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}'; sleep 2"
+		return exec.CommandContext(ctx, "sh", "-c", script)
+	}
+
+	r, _ := New(".")
+	handle, err := r.StartSession(context.Background(), AiSessionStartRequest{
+		ProviderKey:      "codex",
+		ModelName:        "gpt-5.4-mini",
+		WorkingDirectory: ".",
+		CustomEnv: map[string]string{
+			googleDriveProxyProcessKeyEnv: "workflow-run-123-step-step-456",
+		},
+	})
+	if err != nil {
+		t.Fatalf("StartSession failed: %v", err)
+	}
+
+	if handle.ProcessKey == nil || *handle.ProcessKey != "workflow-run-123-step-step-456" {
+		t.Fatalf("expected provided process key in handle, got %#v", handle.ProcessKey)
+	}
+
+	raw, err := os.ReadFile(envCapturePath)
+	if err != nil {
+		t.Fatalf("failed to read captured process key: %v", err)
+	}
+	if got := strings.TrimSpace(string(raw)); got != "workflow-run-123-step-step-456" {
+		t.Fatalf("expected provided process key in env, got %q", got)
 	}
 
 	if err := r.CloseSession(context.Background(), handle); err != nil {

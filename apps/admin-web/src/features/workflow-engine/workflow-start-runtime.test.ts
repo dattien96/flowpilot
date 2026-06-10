@@ -897,11 +897,19 @@ describe("workflow-start-runtime", () => {
         scope: "account",
         mode: "read_only",
         yoloMode: false,
+        workflowRunId: "run-123",
+        workflowStepRunId: "step-456",
+        processKey: "workflow-run-123-step-step-456",
       });
       expect(mockStartSession).toHaveBeenCalledWith(
         expect.objectContaining({
           accountHomePath: "/accounts/b",
           providerAccountHomePath: "/accounts/b",
+          customEnv: expect.objectContaining({
+            FLOWPILOT_WORKFLOW_RUN_ID: "run-123",
+            FLOWPILOT_WORKFLOW_STEP_RUN_ID: "step-456",
+            FLOWPILOT_PROCESS_KEY: "workflow-run-123-step-step-456",
+          }),
         }),
       );
       expect(mockSendMessage).toHaveBeenCalledWith(
@@ -915,6 +923,77 @@ describe("workflow-start-runtime", () => {
         expect.any(Object),
       );
       expect(result.actualPromptText).toBe("Injected MCP prompt");
+    });
+
+    it("asks Codex for a final answer when a required MCP response is empty", async () => {
+      const mockSendMessage = vi.fn()
+        .mockResolvedValueOnce({
+          outputMarkdown: "",
+          actualPromptText: "Injected MCP prompt",
+        })
+        .mockResolvedValueOnce({
+          outputMarkdown: "Recent files:\n- File A\n- File B",
+          actualPromptText: "Final answer prompt",
+        });
+      const mockEnsureGoogleDriveMcpProviderConfig = vi.fn().mockResolvedValue({
+        configChanged: false,
+      });
+      const mockStartSession = vi.fn().mockResolvedValue({
+        processKey: "proc-new",
+        providerSessionId: "thread-new",
+        transportType: "codex_mcp",
+      });
+
+      const localRunnerGateway = {
+        ensureGoogleDriveMcpProviderConfig: mockEnsureGoogleDriveMcpProviderConfig,
+        sendMessage: mockSendMessage,
+        closeSession: vi.fn().mockResolvedValue(undefined),
+        startSession: mockStartSession,
+      } as any;
+
+      const mockQueryBuilder = {
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        filter: vi.fn().mockReturnThis(),
+        order: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
+        insert: vi.fn().mockReturnThis(),
+        update: vi.fn().mockReturnThis(),
+        single: vi.fn().mockResolvedValue({ data: { id: "session-new" }, error: null }),
+      };
+      const adminClient = {
+        from: vi.fn(() => mockQueryBuilder),
+      } as any;
+
+      const result = await sendMessageWithRetry({
+        adminClient,
+        localRunnerGateway,
+        workflowRunId: "run-123",
+        stepRunId: "step-456",
+        providerKey: "codex",
+        modelName: "codex-mcp",
+        reasoningEffort: null,
+        workingDirectory: "/repo",
+        subagent: null,
+        prompt: "list 2 recent files",
+        skillIds: [],
+        requiredMcps: ["google_drive"],
+        allowWrite: false,
+        yoloMode: false,
+        idleTTLSeconds: 60,
+      });
+
+      expect(mockSendMessage).toHaveBeenCalledTimes(2);
+      expect(mockSendMessage).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          prompt: expect.stringContaining("previous response was empty"),
+          requiredMcps: ["google_drive"],
+        }),
+        expect.any(Object),
+      );
+      expect(result.outputMarkdown).toContain("File A");
     });
 
     it("fails immediately for deterministic MCP setup errors even when tagged as session_dead", async () => {

@@ -656,7 +656,10 @@ func (s *proxyMcpServer) resolveToolApproval(toolName string, args map[string]an
 	now := time.Now().UTC()
 	expiresAt, err := s.runner.googleDriveProxyApprovalDeadline(s.processKey)
 	if err != nil {
-		return googleDriveProxyApprovalRecord{}, err
+		if !strings.Contains(err.Error(), "session_dead:") {
+			return googleDriveProxyApprovalRecord{}, err
+		}
+		expiresAt = now.Add(2 * time.Hour)
 	}
 	record := googleDriveProxyApprovalRecord{
 		ID:                newRunID(),
