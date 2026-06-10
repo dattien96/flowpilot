@@ -326,6 +326,7 @@ export interface LocalRunnerGoogleDriveProxyApproval {
   processKey?: string;
   accountHomePath?: string;
   toolName: string;
+  operation?: string;
   canonicalArgsJson: string;
   argumentsHash: string;
   targetSummary?: string;

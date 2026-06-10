@@ -917,13 +917,16 @@ function isMcpWriteApprovalRequiredError(error: unknown) {
   const code = error instanceof LocalRunnerError
     ? String(error.code ?? "").toLowerCase()
     : String((error as { code?: unknown })?.code ?? "").toLowerCase();
-  if (code === "mcp_write_approval_required") {
+  if (code === "mcp_write_approval_required" || code === "mcp_tool_approval_required") {
     return true;
   }
 
   const message = String((error as { message?: unknown })?.message ?? "").toLowerCase();
   const details = String((error as { details?: unknown })?.details ?? "").toLowerCase();
-  return message.includes("mcp_write_approval_required") || details.includes("mcp_write_approval_required");
+  return message.includes("mcp_write_approval_required") ||
+    details.includes("mcp_write_approval_required") ||
+    message.includes("mcp_tool_approval_required") ||
+    details.includes("mcp_tool_approval_required");
 }
 
 function extractMcpWriteApprovalId(error: unknown) {
@@ -940,6 +943,8 @@ function extractGoogleDriveWriteApprovalIdFromText(...values: Array<string | nul
     .join("\n");
   const patterns = [
     /approval request ([a-z0-9_-]+)/i,
+    /google drive mcp approval required:\s*([a-z0-9_-]+)/i,
+    /google drive approval required:\s*([a-z0-9_-]+)/i,
     /google drive write approval required:\s*([a-z0-9_-]+)/i,
   ];
   for (const pattern of patterns) {
@@ -951,12 +956,32 @@ function extractGoogleDriveWriteApprovalIdFromText(...values: Array<string | nul
   return null;
 }
 
+function googleDriveApprovalOperation(
+  approval: Pick<LocalRunnerGoogleDriveProxyApproval, "operation" | "toolName">,
+) {
+  const operation = String(approval.operation ?? "").trim().toLowerCase();
+  if (operation === "read" || operation === "write") {
+    return operation;
+  }
+
+  switch (String(approval.toolName ?? "").trim()) {
+    case "createGoogleDoc":
+    case "updateGoogleDoc":
+    case "createFolder":
+      return "write";
+    default:
+      return "read";
+  }
+}
+
 function formatGoogleDriveWriteApprovalMessage(
   approval: LocalRunnerGoogleDriveProxyApproval,
 ) {
+  const operation = googleDriveApprovalOperation(approval);
   const lines = [
-    `Google Drive write approval required: ${approval.id}`,
+    `Google Drive MCP approval required: ${approval.id}`,
     `Tool: ${approval.toolName}`,
+    `Operation: ${operation}`,
   ];
   if (approval.targetSummary?.trim()) {
     lines.push(`Target: ${approval.targetSummary.trim()}`);
@@ -1035,6 +1060,20 @@ export async function sendMessageWithRetry({
   forceNewProviderSession?: boolean;
   providerAccountId?: string | null;
 }): Promise<WorkflowSessionSendResult> {
+  if (requiresStepScopedSession(requiredMcps)) {
+    const requestedAccount = await resolveLocalProviderAccount(
+      providerKey,
+      providerAccountId,
+    );
+    await localRunnerGateway.ensureGoogleDriveMcpProviderConfig({
+      providerKey,
+      accountHomePath: requestedAccount.home_path,
+      scope: "account",
+      mode: allowWrite ? "read_write" : "read_only",
+      yoloMode,
+    });
+  }
+
   const sessionScopeKey = requiresStepScopedSession(requiredMcps) ? stepRunId : null;
   let handle = await getOrCreateSession({
     adminClient,
@@ -1284,7 +1323,7 @@ async function pauseWorkflowForGoogleDriveWriteApproval({
   });
   const message = approval
     ? formatGoogleDriveWriteApprovalMessage(approval)
-    : String((error as { message?: unknown })?.message ?? "Google Drive write approval required.");
+    : String((error as { message?: unknown })?.message ?? "Google Drive MCP approval required.");
 
   await adminClient
     .from("workflow_run_steps")
@@ -1307,7 +1346,7 @@ async function pauseWorkflowForGoogleDriveWriteApproval({
     adminClient,
     stepRunId,
     "info",
-    `Workflow paused for Google Drive write approval on ${stepType}.`,
+    `Workflow paused for Google Drive MCP approval on ${stepType}.`,
   );
   return approval;
 }
@@ -1401,6 +1440,7 @@ function buildGoogleDriveWriteAuditPayload({
     processKey: approval.processKey ?? null,
     mcpAccessMode,
     yoloMode,
+    operation: googleDriveApprovalOperation(approval),
     toolName: approval.toolName,
     argumentsHash: approval.argumentsHash,
     targetSummary: approval.targetSummary ?? null,
@@ -1467,6 +1507,7 @@ export async function createGoogleDriveWriteAuditArtifacts({
     stepRunId,
   );
   const auditableApprovals = approvals.filter((approval) =>
+    googleDriveApprovalOperation(approval) === "write" &&
     ["executed", "rejected"].includes(approval.status),
   );
   const createdArtifactIds: string[] = [];
@@ -3158,12 +3199,12 @@ export async function submitGoogleDriveWriteApprovalRuntime({
   const run = await loadWorkflowRun(adminClient, stepRun.workflow_run_id);
 
   if (stepRun.status !== "WAITING_USER_APPROVAL") {
-    throw new Error("Google Drive write approval is only available for waiting steps.");
+    throw new Error("Google Drive MCP approval is only available for waiting steps.");
   }
 
   const approvalId = extractGoogleDriveWriteApprovalIdFromText(stepRun.error_message);
   if (!approvalId) {
-    throw new Error("Google Drive write approval id is missing for this waiting step.");
+    throw new Error("Google Drive MCP approval id is missing for this waiting step.");
   }
 
   const approval = await loadPendingGoogleDriveWriteApproval({
@@ -3173,21 +3214,42 @@ export async function submitGoogleDriveWriteApprovalRuntime({
     approvalId,
   });
   if (!approval) {
-    throw new Error("No pending Google Drive write approval was found for this step.");
+    throw new Error("No pending Google Drive MCP approval was found for this step.");
   }
+
+  const stepDefinitions = await loadStepDefinitions(adminClient, [stepRun.step_type]);
+  const stepDefinition = stepDefinitions.get(stepRun.step_type);
+  if (!stepDefinition) {
+    throw new Error(`Step definition "${stepRun.step_type}" could not be loaded.`);
+  }
+  const allowWrite = stepAllowsGoogleDriveWrites(stepDefinition);
 
   await localRunnerGateway.decideGoogleDriveProxyApproval(approval.id, {
     decision,
     comment: trimmedComment || undefined,
   });
 
+  const operation = googleDriveApprovalOperation(approval);
+  const approvalLabel = operation === "write"
+    ? "Google Drive write request"
+    : "Google Drive tool request";
+  const exactRetryLine = operation === "write"
+    ? "Retry the exact approved Google Drive write now."
+    : "Retry the exact approved Google Drive tool call now.";
+  const scopeGuardLine = operation === "write"
+    ? "Do not add new writes, broaden the scope, or change the tool arguments."
+    : "Do not broaden the scope or change the tool arguments.";
+  const rejectionContinueLine = operation === "write"
+    ? "Continue the task without executing that exact write and include a clear notice in the final output."
+    : "Continue the task without using that exact Google Drive tool call and include a clear notice if the missing Drive context limits the answer.";
+
   if (decision === "rejected") {
     const retryPrompt = [
-      `FlowPilot rejected Google Drive write request ${approval.id}.`,
-      `Do not retry the rejected write for ${approval.toolName}.`,
+      `FlowPilot rejected ${approvalLabel} ${approval.id}.`,
+      `Do not retry the rejected Google Drive tool call for ${approval.toolName}.`,
       approval.targetSummary?.trim() ? `Rejected target: ${approval.targetSummary.trim()}` : null,
       trimmedComment ? `Reviewer note: ${trimmedComment}` : null,
-      "Continue the task without executing that exact write and include a clear notice in the final output.",
+      rejectionContinueLine,
     ]
       .filter(Boolean)
       .join("\n");
@@ -3197,18 +3259,18 @@ export async function submitGoogleDriveWriteApprovalRuntime({
       localRunnerGateway,
       stepId,
       comment: trimmedComment,
-      allowWrite: true,
+      allowWrite,
       prebuiltFollowUpPrompt: retryPrompt,
       approvalDecision: "rejected",
     });
   } else {
     const retryPrompt = [
-      `FlowPilot approved Google Drive write request ${approval.id}.`,
-      `Retry the exact approved Google Drive write now.`,
+      `FlowPilot approved ${approvalLabel} ${approval.id}.`,
+      exactRetryLine,
       `Use the exact same tool and arguments for ${approval.toolName}.`,
       approval.targetSummary?.trim() ? `Approved target: ${approval.targetSummary.trim()}` : null,
       trimmedComment ? `Reviewer note: ${trimmedComment}` : null,
-      "Do not add new writes, broaden the scope, or change the write arguments.",
+      scopeGuardLine,
     ]
       .filter(Boolean)
       .join("\n");
@@ -3218,7 +3280,7 @@ export async function submitGoogleDriveWriteApprovalRuntime({
       localRunnerGateway,
       stepId,
       comment: trimmedComment,
-      allowWrite: true,
+      allowWrite,
       prebuiltFollowUpPrompt: retryPrompt,
       approvalDecision: "approved",
     });

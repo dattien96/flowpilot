@@ -722,6 +722,7 @@ describe("workflow-start-runtime", () => {
           workflowStepRunId: "step-1",
           processKey: "proc-1",
           toolName: "createGoogleDoc",
+          operation: "write",
           canonicalArgsJson: "{\"content\":\"secret body\"}",
           argumentsHash: "hash-1",
           targetSummary: "Create Google Doc \"Plan\"",
@@ -739,6 +740,7 @@ describe("workflow-start-runtime", () => {
           workflowStepRunId: "step-1",
           processKey: "proc-1",
           toolName: "createFolder",
+          operation: "write",
           canonicalArgsJson: "{\"name\":\"blocked\"}",
           argumentsHash: "hash-2",
           targetSummary: "Create Drive folder",
@@ -748,6 +750,22 @@ describe("workflow-start-runtime", () => {
           decidedAt: "2026-06-09T00:10:01Z",
           expiresAt: "2026-06-09T01:00:00Z",
           errorMessage: "not allowed",
+        },
+        {
+          id: "approval-3",
+          workflowRunId: "run-1",
+          workflowStepRunId: "step-1",
+          processKey: "proc-1",
+          toolName: "search",
+          operation: "read",
+          canonicalArgsJson: "{\"query\":\"plan\"}",
+          argumentsHash: "hash-3",
+          targetSummary: "Search Google Drive for \"plan\"",
+          status: "executed",
+          decisionMode: "manual",
+          requestedAt: "2026-06-09T00:20:00Z",
+          decidedAt: "2026-06-09T00:20:01Z",
+          expiresAt: "2026-06-09T01:00:00Z",
         },
       ]),
     } as any;
@@ -824,6 +842,9 @@ describe("workflow-start-runtime", () => {
         outputMarkdown: "success",
         actualPromptText: "Injected MCP prompt",
       });
+      const mockEnsureGoogleDriveMcpProviderConfig = vi.fn().mockResolvedValue({
+        configChanged: false,
+      });
       const mockStartSession = vi.fn().mockResolvedValue({
         processKey: "proc-new",
         providerSessionId: "thread-new",
@@ -831,6 +852,7 @@ describe("workflow-start-runtime", () => {
       });
 
       const localRunnerGateway = {
+        ensureGoogleDriveMcpProviderConfig: mockEnsureGoogleDriveMcpProviderConfig,
         sendMessage: mockSendMessage,
         closeSession: vi.fn().mockResolvedValue(undefined),
         startSession: mockStartSession,
@@ -865,9 +887,17 @@ describe("workflow-start-runtime", () => {
         skillIds: [],
         requiredMcps: ["google_drive"],
         allowWrite: false,
+        yoloMode: false,
         idleTTLSeconds: 60,
       });
 
+      expect(mockEnsureGoogleDriveMcpProviderConfig).toHaveBeenCalledWith({
+        providerKey: "codex",
+        accountHomePath: "/accounts/b",
+        scope: "account",
+        mode: "read_only",
+        yoloMode: false,
+      });
       expect(mockStartSession).toHaveBeenCalledWith(
         expect.objectContaining({
           accountHomePath: "/accounts/b",
@@ -893,6 +923,9 @@ describe("workflow-start-runtime", () => {
       );
       (err as any).code = "session_dead";
 
+      const mockEnsureGoogleDriveMcpProviderConfig = vi.fn().mockResolvedValue({
+        configChanged: false,
+      });
       const mockSendMessage = vi.fn().mockRejectedValue(err);
       const mockCloseSession = vi.fn().mockResolvedValue(undefined);
       const mockStartSession = vi.fn().mockResolvedValue({
@@ -902,6 +935,7 @@ describe("workflow-start-runtime", () => {
       });
 
       const localRunnerGateway = {
+        ensureGoogleDriveMcpProviderConfig: mockEnsureGoogleDriveMcpProviderConfig,
         sendMessage: mockSendMessage,
         closeSession: mockCloseSession,
         startSession: mockStartSession,
@@ -951,6 +985,7 @@ describe("workflow-start-runtime", () => {
           prompt: "hello",
           skillIds: [],
           requiredMcps: ["google_drive"],
+          yoloMode: false,
           idleTTLSeconds: 60,
         }),
       ).rejects.toThrow("accountHomePath is required when requiredMcps includes google_drive");
@@ -969,6 +1004,9 @@ describe("workflow-start-runtime", () => {
       (err as any).details =
         "mcp_write_approval_required: MCP_WRITE_APPROVAL_REQUIRED: FlowPilot created approval request appr-123";
 
+      const mockEnsureGoogleDriveMcpProviderConfig = vi.fn().mockResolvedValue({
+        configChanged: false,
+      });
       const mockSendMessage = vi.fn().mockRejectedValue(err);
       const mockStartSession = vi.fn().mockResolvedValue({
         processKey: "proc-new",
@@ -977,6 +1015,7 @@ describe("workflow-start-runtime", () => {
       });
 
       const localRunnerGateway = {
+        ensureGoogleDriveMcpProviderConfig: mockEnsureGoogleDriveMcpProviderConfig,
         sendMessage: mockSendMessage,
         closeSession: vi.fn().mockResolvedValue(undefined),
         startSession: mockStartSession,
@@ -1011,6 +1050,7 @@ describe("workflow-start-runtime", () => {
           prompt: "hello",
           skillIds: [],
           requiredMcps: ["google_drive"],
+          yoloMode: false,
           idleTTLSeconds: 60,
         }),
       ).rejects.toThrow("manual approval is required before retrying this Google Drive write");
@@ -1021,8 +1061,8 @@ describe("workflow-start-runtime", () => {
 
     it("routes a rejected Google Drive approval into the follow-up path for the waiting step", async () => {
       const approvals = [
-        { id: "approval-old", status: "pending", toolName: "createFolder" },
-        { id: "approval-live", status: "pending", toolName: "createFolder" },
+        { id: "approval-old", status: "pending", toolName: "search", operation: "read" },
+        { id: "approval-live", status: "pending", toolName: "search", operation: "read" },
       ];
       const workflowRunId = "run-1";
       const workflowId = "wf-1";
@@ -1038,7 +1078,7 @@ describe("workflow-start-runtime", () => {
         step_type: "create_doc",
         retry_count: 0,
         status: "WAITING_USER_APPROVAL",
-        error_message: "Google Drive write approval required: approval-live",
+        error_message: "Google Drive MCP approval required: approval-live",
       };
       const projectRow = {
         id: projectId,
@@ -1072,7 +1112,7 @@ describe("workflow-start-runtime", () => {
         description: "Create a document.",
         prompt_base: null,
         required_mcps: ["google_drive"],
-        mcp_access_mode: "read_write",
+        mcp_access_mode: "read_only",
         required_skills: [],
         team_role: null,
         subagent: null,
@@ -1225,7 +1265,7 @@ describe("workflow-start-runtime", () => {
             id: "step-1",
             workflow_run_id: "run-1",
             status: "WAITING_USER_APPROVAL",
-            error_message: "Google Drive write approval required.",
+            error_message: "Google Drive MCP approval required.",
           },
           error: null,
         }),
@@ -1257,10 +1297,13 @@ describe("workflow-start-runtime", () => {
           stepId: "step-1",
           decision: "rejected",
         }),
-      ).rejects.toThrow("Google Drive write approval id is missing for this waiting step.");
+      ).rejects.toThrow("Google Drive MCP approval id is missing for this waiting step.");
     });
 
     it("fails immediately for Google Drive auth/config bootstrap errors instead of replaying", async () => {
+      const mockEnsureGoogleDriveMcpProviderConfig = vi.fn().mockResolvedValue({
+        configChanged: false,
+      });
       const mockSendMessage = vi.fn().mockRejectedValue(
         new Error("provider error: Google Drive auth token not found for /accounts/b"),
       );
@@ -1272,6 +1315,7 @@ describe("workflow-start-runtime", () => {
       });
 
       const localRunnerGateway = {
+        ensureGoogleDriveMcpProviderConfig: mockEnsureGoogleDriveMcpProviderConfig,
         sendMessage: mockSendMessage,
         closeSession: mockCloseSession,
         startSession: mockStartSession,
@@ -1321,6 +1365,7 @@ describe("workflow-start-runtime", () => {
           prompt: "hello",
           skillIds: [],
           requiredMcps: ["google_drive"],
+          yoloMode: false,
           idleTTLSeconds: 60,
         }),
       ).rejects.toThrow("provider error: Google Drive auth token not found for /accounts/b");
