@@ -1,9 +1,11 @@
 package runner
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pelletier/go-toml/v2"
@@ -355,6 +357,7 @@ func TestEnsureCodexGoogleDriveMcpConfig_ProxyPathUsesYoloApproval(t *testing.T)
 
 	runner := &Runner{workspace: tmpDir, secretStore: newMemorySecretStore()}
 	_, _, _ = writeTestGoogleDriveMcpRuntime(t, runner, tmpDir)
+	stubGoogleDriveOAuthTokenRefresh(t)
 
 	accountHome := filepath.Join(tmpDir, "codex-home")
 	if err := os.MkdirAll(accountHome, 0o755); err != nil {
@@ -421,10 +424,68 @@ func TestEnsureCodexGoogleDriveMcpConfig_ProxyPathUsesYoloApproval(t *testing.T)
 				t.Fatalf("unexpected command: got %q want %q", server.Command, expectedCommand)
 			}
 			assertStringSliceEqual(t, server.Args[:len(expectedPrefix)], expectedPrefix)
-			if server.Env["FLOWPILOT_GOOGLE_DRIVE_PROXY_MCP"] != "true" {
-				t.Fatalf("expected proxy env flag in codex config, got %#v", server.Env)
+			if _, ok := server.Env["FLOWPILOT_GOOGLE_DRIVE_PROXY_MCP"]; ok {
+				t.Fatalf("expected proxy env flag to be omitted, got %#v", server.Env)
 			}
 		})
+	}
+}
+
+func TestEnsureCodexGoogleDriveMcpConfig_ProxyPathInjectsSelectedAccountID(t *testing.T) {
+	tmpDir := t.TempDir()
+	setDiscoveryTestHome(t, tmpDir)
+	t.Setenv(googleDriveProxyMcpFlag, "true")
+
+	runner := &Runner{workspace: tmpDir, secretStore: newMemorySecretStore()}
+	_, _, _ = writeTestGoogleDriveMcpRuntime(t, runner, tmpDir)
+	stubGoogleDriveOAuthTokenRefresh(t)
+
+	runtimeStatus, err := runner.LoadGoogleDriveWorkspaceConfig()
+	if err != nil {
+		t.Fatalf("LoadGoogleDriveWorkspaceConfig() failed: %v", err)
+	}
+	if len(runtimeStatus.Accounts) == 0 {
+		t.Fatal("expected at least one Google Drive account to be discovered")
+	}
+	selectedAccountID := runtimeStatus.Accounts[0].AccountID
+
+	if _, err := runner.SaveGoogleDriveWorkspaceConfig(GoogleDriveWorkspaceConfigRequest{
+		MCPAccountID: selectedAccountID,
+	}); err != nil {
+		t.Fatalf("SaveGoogleDriveWorkspaceConfig() failed: %v", err)
+	}
+
+	accountHome := filepath.Join(tmpDir, "codex-home")
+	if err := os.MkdirAll(accountHome, 0o755); err != nil {
+		t.Fatalf("Failed to create account home: %v", err)
+	}
+
+	resp, err := runner.EnsureGoogleDriveMcpProviderConfig(GoogleDriveMcpProviderConfigRequest{
+		ProviderKey:     "codex",
+		AccountHomePath: accountHome,
+		Scope:           "account",
+		Mode:            "read_only",
+	})
+	if err != nil {
+		t.Fatalf("EnsureGoogleDriveMcpProviderConfig failed: %v", err)
+	}
+	if resp.Status != "configured" {
+		t.Fatalf("expected configured response, got %q", resp.Status)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(accountHome, "config.toml"))
+	if err != nil {
+		t.Fatalf("Failed to read config: %v", err)
+	}
+
+	var config codexConfig
+	if err := toml.Unmarshal(raw, &config); err != nil {
+		t.Fatalf("Failed to parse TOML: %v", err)
+	}
+
+	server := config.McpServers[googleDriveMcpServerName]
+	if got := strings.TrimSpace(server.Env[googleDriveProxyAccountIDEnv]); got != selectedAccountID {
+		t.Fatalf("expected selected account id env to be injected, got %q", got)
 	}
 }
 
@@ -434,6 +495,7 @@ func TestEnsureGeminiAndClaudeGoogleDriveMcpConfig_ProxyPathIncludesAccountHome(
 
 	runner := &Runner{workspace: tmpDir, secretStore: newMemorySecretStore()}
 	_, _, _ = writeTestGoogleDriveMcpRuntime(t, runner, tmpDir)
+	stubGoogleDriveOAuthTokenRefresh(t)
 
 	t.Setenv(googleDriveProxyMcpFlag, "true")
 
@@ -498,8 +560,8 @@ func TestEnsureGeminiAndClaudeGoogleDriveMcpConfig_ProxyPathIncludesAccountHome(
 				if len(server.IncludeTools) != len(googleDriveMcpReadOnlyTools) {
 					t.Fatalf("expected read_only tools, got %v", server.IncludeTools)
 				}
-				if server.Env["FLOWPILOT_GOOGLE_DRIVE_PROXY_MCP"] != "true" {
-					t.Fatalf("expected proxy env flag in gemini config, got %#v", server.Env)
+				if _, ok := server.Env["FLOWPILOT_GOOGLE_DRIVE_PROXY_MCP"]; ok {
+					t.Fatalf("expected proxy env flag to be omitted, got %#v", server.Env)
 				}
 				return
 			}
@@ -526,8 +588,8 @@ func TestEnsureGeminiAndClaudeGoogleDriveMcpConfig_ProxyPathIncludesAccountHome(
 				t.Fatalf("unexpected command: got %q want %q", server.Command, expectedCommand)
 			}
 			assertStringSliceEqual(t, server.Args[:len(expectedPrefix)], expectedPrefix)
-			if server.Env["FLOWPILOT_GOOGLE_DRIVE_PROXY_MCP"] != "true" {
-				t.Fatalf("expected proxy env flag in claude config, got %#v", server.Env)
+			if _, ok := server.Env["FLOWPILOT_GOOGLE_DRIVE_PROXY_MCP"]; ok {
+				t.Fatalf("expected proxy env flag to be omitted, got %#v", server.Env)
 			}
 		})
 	}
@@ -539,6 +601,7 @@ func TestEnsureGoogleDriveMcpProviderConfig_ProxyConfigsIncludeSharedAccountHome
 	tmpDir := t.TempDir()
 	runner := &Runner{workspace: tmpDir, secretStore: newMemorySecretStore()}
 	_, _, _ = writeTestGoogleDriveMcpRuntime(t, runner, tmpDir)
+	stubGoogleDriveOAuthTokenRefresh(t)
 
 	testCases := []struct {
 		name        string
@@ -610,8 +673,8 @@ func TestEnsureGoogleDriveMcpProviderConfig_ProxyConfigsIncludeSharedAccountHome
 				}
 				assertStringSliceEqual(t, server.Args[:len(expectedPrefix)], expectedPrefix)
 				assertStringSliceEqual(t, server.Args, expectedArgs)
-				if server.Env["FLOWPILOT_GOOGLE_DRIVE_PROXY_MCP"] != "true" {
-					t.Fatalf("expected proxy env to be true, got %q", server.Env["FLOWPILOT_GOOGLE_DRIVE_PROXY_MCP"])
+				if _, ok := server.Env["FLOWPILOT_GOOGLE_DRIVE_PROXY_MCP"]; ok {
+					t.Fatalf("expected proxy env flag to be omitted, got %#v", server.Env)
 				}
 				if server.ApprovalMode != "prompt" {
 					t.Fatalf("expected prompt approval for yolo=false, got %q", server.ApprovalMode)
@@ -628,8 +691,8 @@ func TestEnsureGoogleDriveMcpProviderConfig_ProxyConfigsIncludeSharedAccountHome
 				}
 				assertStringSliceEqual(t, server.Args[:len(expectedPrefix)], expectedPrefix)
 				assertStringSliceEqual(t, server.Args, expectedArgs)
-				if server.Env["FLOWPILOT_GOOGLE_DRIVE_PROXY_MCP"] != "true" {
-					t.Fatalf("expected proxy env to be true, got %q", server.Env["FLOWPILOT_GOOGLE_DRIVE_PROXY_MCP"])
+				if _, ok := server.Env["FLOWPILOT_GOOGLE_DRIVE_PROXY_MCP"]; ok {
+					t.Fatalf("expected proxy env flag to be omitted, got %#v", server.Env)
 				}
 			case "claude":
 				var config claudeConfig
@@ -643,8 +706,8 @@ func TestEnsureGoogleDriveMcpProviderConfig_ProxyConfigsIncludeSharedAccountHome
 				}
 				assertStringSliceEqual(t, server.Args[:len(expectedPrefix)], expectedPrefix)
 				assertStringSliceEqual(t, server.Args, expectedArgs)
-				if server.Env["FLOWPILOT_GOOGLE_DRIVE_PROXY_MCP"] != "true" {
-					t.Fatalf("expected proxy env to be true, got %q", server.Env["FLOWPILOT_GOOGLE_DRIVE_PROXY_MCP"])
+				if _, ok := server.Env["FLOWPILOT_GOOGLE_DRIVE_PROXY_MCP"]; ok {
+					t.Fatalf("expected proxy env flag to be omitted, got %#v", server.Env)
 				}
 			}
 		})
@@ -662,6 +725,7 @@ func TestEnsureGoogleDriveMcpProviderConfig_ProxyCodexApprovalAndToolSurfaceFoll
 
 	runner := &Runner{workspace: tmpDir, secretStore: newMemorySecretStore()}
 	_, _, _ = writeTestGoogleDriveMcpRuntime(t, runner, tmpDir)
+	stubGoogleDriveOAuthTokenRefresh(t)
 
 	testCases := []struct {
 		name         string
@@ -736,6 +800,7 @@ func TestEnsureGoogleDriveMcpProviderConfig_ProxyPathDoesNotRequireLegacyDesktop
 
 	runner := &Runner{workspace: tmpDir, secretStore: newMemorySecretStore()}
 	writeArtifactSyncOnlyGoogleDriveWorkspaceConfig(t, runner, tmpDir)
+	stubGoogleDriveOAuthTokenRefresh(t)
 
 	resp, err := runner.EnsureGoogleDriveMcpProviderConfig(GoogleDriveMcpProviderConfigRequest{
 		ProviderKey:     "codex",
@@ -759,6 +824,7 @@ func TestResolveGoogleDriveMcpProviderStatuses_WithProxyFieldDriftedConfig(t *te
 
 	runner := &Runner{workspace: tmpDir, secretStore: newMemorySecretStore()}
 	_, credPath, tokenPath := writeTestGoogleDriveMcpRuntime(t, runner, tmpDir)
+	stubGoogleDriveOAuthTokenRefresh(t)
 	mcpStatus := googleDriveMcpRuntimeConfig{
 		CredentialPath: credPath,
 		TokenPath:      tokenPath,
@@ -1460,6 +1526,7 @@ func writeTestGoogleDriveMcpRuntime(t *testing.T, runner *Runner, workspace stri
 
 func writeTestGoogleDriveWorkspaceConfig(t *testing.T, runner *Runner, workspace string, credPath string, tokenPath string) {
 	t.Helper()
+	stubGoogleDriveProxyLauncherAvailable(t)
 
 	flowpilotDir := filepath.Join(workspace, ".flowpilot", "settings")
 	if err := os.MkdirAll(flowpilotDir, 0o755); err != nil {
@@ -1494,6 +1561,7 @@ func writeTestGoogleDriveWorkspaceConfig(t *testing.T, runner *Runner, workspace
 
 func writeArtifactSyncOnlyGoogleDriveWorkspaceConfig(t *testing.T, runner *Runner, workspace string) {
 	t.Helper()
+	stubGoogleDriveProxyLauncherAvailable(t)
 
 	flowpilotDir := filepath.Join(workspace, ".flowpilot", "settings")
 	if err := os.MkdirAll(flowpilotDir, 0o755); err != nil {
@@ -1521,6 +1589,36 @@ func writeArtifactSyncOnlyGoogleDriveWorkspaceConfig(t *testing.T, runner *Runne
 		t.Fatalf("Failed to save artifact sync client secret: %v", err)
 	}
 	writeSingleProxyArtifactConnection(t, runner, "project-1")
+}
+
+func stubGoogleDriveOAuthTokenRefresh(t *testing.T) {
+	t.Helper()
+
+	originalHTTPRequest := httpRequestFn
+	t.Cleanup(func() {
+		httpRequestFn = originalHTTPRequest
+	})
+	httpRequestFn = func(_ context.Context, _ string, endpoint string, _ map[string]string, _ []byte) (int, []byte, error) {
+		if endpoint != "https://oauth2.googleapis.com/token" {
+			return 500, []byte(`unexpected Google Drive OAuth request`), nil
+		}
+		return 200, []byte(`{"access_token":"test-access-token"}`), nil
+	}
+}
+
+func stubGoogleDriveProxyLauncherAvailable(t *testing.T) {
+	t.Helper()
+
+	originalLookPath := lookPathFn
+	t.Cleanup(func() {
+		lookPathFn = originalLookPath
+	})
+	lookPathFn = func(file string) (string, error) {
+		if file == "flowpilot" {
+			return "/usr/local/bin/flowpilot", nil
+		}
+		return "", os.ErrNotExist
+	}
 }
 
 func findProviderConfigStatus(

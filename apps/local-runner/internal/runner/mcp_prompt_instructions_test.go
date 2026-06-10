@@ -428,6 +428,7 @@ func TestPreflightGoogleDriveMcp_ProxyPathDoesNotRequireLegacyDesktopMcpAuth(t *
 	runner := &Runner{workspace: workspace, secretStore: newMemorySecretStore()}
 	writeArtifactSyncOnlyPreflightConfig(t, runner, workspace)
 	writeSingleProxyArtifactConnection(t, runner, "project-1")
+	stubGoogleDriveOAuthTokenRefresh(t)
 
 	result := runner.PreflightGoogleDriveMcp("", "")
 
@@ -445,13 +446,14 @@ func TestPreflightGoogleDriveMcp_ProxyPathFailsWithoutArtifactConnection(t *test
 	workspace := t.TempDir()
 	runner := &Runner{workspace: workspace, secretStore: newMemorySecretStore()}
 	writeArtifactSyncOnlyPreflightConfig(t, runner, workspace)
+	stubGoogleDriveOAuthTokenRefresh(t)
 
 	result := runner.PreflightGoogleDriveMcp("", "")
 
 	if result.GoogleDriveReady {
 		t.Fatal("expected proxy preflight to fail when no artifact-sync connection exists")
 	}
-	if !strings.Contains(result.ErrorMessage, "no artifact-sync Google Drive connection") {
+	if !strings.Contains(result.ErrorMessage, "no connected Google Drive account is available") {
 		t.Fatalf("expected missing connection error, got %q", result.ErrorMessage)
 	}
 }
@@ -491,14 +493,15 @@ func TestPreflightGoogleDriveMcp_ProxyPathFailsWithMultipleArtifactConnections(t
 	}); err != nil {
 		t.Fatalf("saveArtifactStorageGoogleDriveState() failed: %v", err)
 	}
+	stubGoogleDriveOAuthTokenRefresh(t)
 
 	result := runner.PreflightGoogleDriveMcp("", "")
 
 	if result.GoogleDriveReady {
 		t.Fatal("expected proxy preflight to fail when multiple artifact-sync connections exist")
 	}
-	if !strings.Contains(result.ErrorMessage, "multiple artifact-sync Google Drive connections") {
-		t.Fatalf("expected multiple connection error, got %q", result.ErrorMessage)
+	if !strings.Contains(result.ErrorMessage, "select an active Google account") {
+		t.Fatalf("expected active account selection error, got %q", result.ErrorMessage)
 	}
 }
 
@@ -510,21 +513,29 @@ func TestPreflightGoogleDriveMcp_ProxyPathFailsWithoutStoredRefreshToken(t *test
 	writeArtifactSyncOnlyPreflightConfig(t, runner, workspace)
 
 	if err := runner.ensureSecretStore().Set(
-		googleDriveProjectCredentialKey("project-1"),
+		googleDriveAccountCredentialKey("project-1@example.com"),
 		`{"accountEmail":"project-1@example.com"}`,
 	); err != nil {
 		t.Fatalf("failed to store incomplete credential: %v", err)
 	}
 	if err := runner.saveArtifactStorageGoogleDriveState(func(current *artifactStorageGoogleDriveState) {
+		current.Accounts["project-1@example.com"] = artifactStorageGoogleDriveAccountRecord{
+			AccountID:     "project-1@example.com",
+			AccountEmail:  "project-1@example.com",
+			GrantedScopes: googleDriveAccountRequestedScopes(),
+			Status:        "connected",
+		}
 		current.Connections["project-1"] = artifactStorageGoogleDriveConnectionRecord{
 			ProjectID:    "project-1",
 			Status:       "connected",
 			FolderID:     "folder-1",
+			AccountID:    "project-1@example.com",
 			AccountEmail: "project-1@example.com",
 		}
 	}); err != nil {
 		t.Fatalf("saveArtifactStorageGoogleDriveState() failed: %v", err)
 	}
+	stubGoogleDriveOAuthTokenRefresh(t)
 
 	httpCalled := false
 	originalHTTPRequest := httpRequestFn
@@ -551,6 +562,7 @@ func TestPreflightGoogleDriveMcp_ProxyPathFailsWithoutStoredRefreshToken(t *test
 
 func writeArtifactSyncOnlyPreflightConfig(t *testing.T, runner *Runner, workspace string) {
 	t.Helper()
+	stubGoogleDriveProxyLauncherAvailable(t)
 
 	flowpilotDir := filepath.Join(workspace, ".flowpilot", "settings")
 	if err := os.MkdirAll(flowpilotDir, 0o755); err != nil {

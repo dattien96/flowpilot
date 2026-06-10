@@ -857,6 +857,7 @@ func TestInstallMcpBackendRunsExplicitCommandForGoogleDrive(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
 	t.Setenv("USERPROFILE", homeDir)
+	t.Setenv("XDG_CONFIG_HOME", "")
 	credentialDir := filepath.Join(homeDir, ".config", "google-drive-mcp")
 	if err := os.MkdirAll(credentialDir, 0o755); err != nil {
 		t.Fatalf("create google drive config dir: %v", err)
@@ -972,6 +973,7 @@ func TestStartGoogleDriveMcpAuthLaunchesTerminalWithManagedPaths(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
 	t.Setenv("USERPROFILE", homeDir)
+	t.Setenv("XDG_CONFIG_HOME", "")
 	credentialDir := filepath.Join(homeDir, ".config", "google-drive-mcp")
 	if err := os.MkdirAll(credentialDir, 0o755); err != nil {
 		t.Fatalf("create google drive config dir: %v", err)
