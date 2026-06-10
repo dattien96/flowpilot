@@ -165,14 +165,125 @@ func TestProxyMcpAuthStatusText_FailsWhenSelectedAccountCredentialMissing(t *tes
 
 	server := &proxyMcpServer{runner: runner}
 	statusText := server.authStatusText()
-	if !strings.Contains(statusText, "status=failed") {
-		t.Fatalf("expected failed auth status when the account token is missing, got %q", statusText)
+	if !strings.Contains(statusText, "status=needs_auth") {
+		t.Fatalf("expected needs_auth status when the account token is missing, got %q", statusText)
 	}
 	if strings.Contains(statusText, "status=configured") {
 		t.Fatalf("did not expect configured auth status when the account token is missing, got %q", statusText)
 	}
 	if !strings.Contains(statusText, "source=account") {
 		t.Fatalf("expected account source in auth status, got %q", statusText)
+	}
+}
+
+func TestProxyMcpAccessToken_ReturnsAuthRequiredWhenSelectedAccountCredentialMissing(t *testing.T) {
+	t.Setenv(googleDriveProxyMcpFlag, "true")
+	t.Setenv(googleDriveProxyAccountIDEnv, "account-1")
+
+	workspace := t.TempDir()
+	runner := &Runner{workspace: workspace, secretStore: newMemorySecretStore()}
+	writeProxyArtifactSyncConfig(t, runner, workspace)
+	if err := runner.saveArtifactStorageGoogleDriveState(func(current *artifactStorageGoogleDriveState) {
+		current.Accounts["account-1"] = artifactStorageGoogleDriveAccountRecord{
+			AccountID:     "account-1",
+			AccountEmail:  "account-1@example.com",
+			GrantedScopes: googleDriveAccountRequestedScopes(),
+			Status:        "connected",
+		}
+	}); err != nil {
+		t.Fatalf("saveArtifactStorageGoogleDriveState() failed: %v", err)
+	}
+
+	server := &proxyMcpServer{runner: runner}
+	_, err := server.accessToken()
+	if err == nil || !strings.Contains(err.Error(), "mcp_auth_required") {
+		t.Fatalf("expected mcp_auth_required error, got %v", err)
+	}
+}
+
+func TestProxyMcpAccessToken_UsesRefreshTokenEnvWhenSelectedAccountCredentialMissing(t *testing.T) {
+	t.Setenv(googleDriveProxyMcpFlag, "true")
+	t.Setenv(googleDriveProxyAccountIDEnv, "account-1")
+	t.Setenv(googleDriveProxyRefreshTokenEnv, "env-refresh-token")
+
+	workspace := t.TempDir()
+	runner := &Runner{workspace: workspace, secretStore: newMemorySecretStore()}
+	writeProxyArtifactSyncConfig(t, runner, workspace)
+	if err := runner.saveArtifactStorageGoogleDriveState(func(current *artifactStorageGoogleDriveState) {
+		current.Accounts["account-1"] = artifactStorageGoogleDriveAccountRecord{
+			AccountID:     "account-1",
+			AccountEmail:  "account-1@example.com",
+			GrantedScopes: googleDriveAccountRequestedScopes(),
+			Status:        "connected",
+		}
+	}); err != nil {
+		t.Fatalf("saveArtifactStorageGoogleDriveState() failed: %v", err)
+	}
+
+	originalHTTPRequest := httpRequestFn
+	t.Cleanup(func() {
+		httpRequestFn = originalHTTPRequest
+	})
+	httpRequestFn = func(ctx context.Context, method, url string, headers map[string]string, body []byte) (int, []byte, error) {
+		if !strings.Contains(url, "oauth2.googleapis.com/token") {
+			t.Fatalf("unexpected URL: %s", url)
+		}
+		if !strings.Contains(string(body), "refresh_token=env-refresh-token") {
+			t.Fatalf("expected env refresh token in token request, got %s", string(body))
+		}
+		return 200, []byte(`{"access_token":"env-access-token"}`), nil
+	}
+
+	server := &proxyMcpServer{runner: runner}
+	token, err := server.accessToken()
+	if err != nil {
+		t.Fatalf("accessToken() failed: %v", err)
+	}
+	if token != "env-access-token" {
+		t.Fatalf("unexpected access token: %q", token)
+	}
+}
+
+func TestProxyMcpAuthStatusText_UsesRefreshTokenEnvWhenSelectedAccountCredentialMissing(t *testing.T) {
+	t.Setenv(googleDriveProxyMcpFlag, "true")
+	t.Setenv(googleDriveProxyAccountIDEnv, "account-1")
+	t.Setenv(googleDriveProxyRefreshTokenEnv, "env-refresh-token")
+
+	workspace := t.TempDir()
+	runner := &Runner{workspace: workspace, secretStore: newMemorySecretStore()}
+	writeProxyArtifactSyncConfig(t, runner, workspace)
+	if err := runner.saveArtifactStorageGoogleDriveState(func(current *artifactStorageGoogleDriveState) {
+		current.Accounts["account-1"] = artifactStorageGoogleDriveAccountRecord{
+			AccountID:     "account-1",
+			AccountEmail:  "account-1@example.com",
+			GrantedScopes: googleDriveAccountRequestedScopes(),
+			Status:        "connected",
+		}
+	}); err != nil {
+		t.Fatalf("saveArtifactStorageGoogleDriveState() failed: %v", err)
+	}
+
+	originalHTTPRequest := httpRequestFn
+	t.Cleanup(func() {
+		httpRequestFn = originalHTTPRequest
+	})
+	httpRequestFn = func(ctx context.Context, method, url string, headers map[string]string, body []byte) (int, []byte, error) {
+		if !strings.Contains(url, "oauth2.googleapis.com/token") {
+			t.Fatalf("unexpected URL: %s", url)
+		}
+		if !strings.Contains(string(body), "refresh_token=env-refresh-token") {
+			t.Fatalf("expected env refresh token in token request, got %s", string(body))
+		}
+		return 200, []byte(`{"access_token":"env-access-token"}`), nil
+	}
+
+	server := &proxyMcpServer{runner: runner}
+	statusText := server.authStatusText()
+	if !strings.Contains(statusText, "status=configured") {
+		t.Fatalf("expected configured auth status with env refresh token, got %q", statusText)
+	}
+	if !strings.Contains(statusText, "accountReady=true") {
+		t.Fatalf("expected accountReady=true with env refresh token, got %q", statusText)
 	}
 }
 
@@ -341,6 +452,208 @@ func TestProxyMcpAuthStatusText_ReportsReconnectRequiredForArtifactBinding(t *te
 	}
 	if !strings.Contains(strings.ToLower(statusText), "authorization expired or was revoked") {
 		t.Fatalf("expected token revocation detail in auth status, got %q", statusText)
+	}
+}
+
+func TestHandleReadTool_CreatesPendingApprovalWhenManual(t *testing.T) {
+	workspace := t.TempDir()
+	lastUsedAt := time.Now().UTC()
+	runner := &Runner{
+		workspace: workspace,
+		sessions: map[string]*LiveSession{
+			"proc-read": {
+				SessionID:  "session-read",
+				ProcessKey: "proc-read",
+				Status:     "active",
+				LastUsedAt: lastUsedAt,
+				IdleTTL:    45 * time.Minute,
+			},
+		},
+	}
+
+	server := &proxyMcpServer{
+		runner:            runner,
+		mode:              "read_only",
+		yoloMode:          false,
+		workflowRunID:     "run-read",
+		workflowStepRunID: "step-read",
+		processKey:        "proc-read",
+	}
+
+	_, err := server.handleReadTool("search", map[string]any{"query": "plan"}, func() (string, error) {
+		return `[{"name":"Plan","id":"file-1"}]`, nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "mcp_tool_approval_required") {
+		t.Fatalf("expected pending approval error, got %v", err)
+	}
+
+	state, err := runner.loadGoogleDriveProxyApprovalState()
+	if err != nil {
+		t.Fatalf("loadGoogleDriveProxyApprovalState() failed: %v", err)
+	}
+	if len(state.Records) != 1 {
+		t.Fatalf("expected one pending approval, got %d", len(state.Records))
+	}
+	for _, record := range state.Records {
+		if record.Status != "pending" {
+			t.Fatalf("expected pending status, got %q", record.Status)
+		}
+		if record.Operation != "read" {
+			t.Fatalf("expected read operation, got %q", record.Operation)
+		}
+		if !strings.Contains(record.TargetSummary, "Search Google Drive") {
+			t.Fatalf("expected search target summary, got %q", record.TargetSummary)
+		}
+	}
+}
+
+func TestHandleReadTool_ExecutesWithoutFlowPilotApprovalScope(t *testing.T) {
+	workspace := t.TempDir()
+	runner := &Runner{workspace: workspace}
+	server := &proxyMcpServer{
+		runner:   runner,
+		mode:     "read_only",
+		yoloMode: false,
+	}
+
+	result, err := server.handleReadTool("authGetStatus", map[string]any{}, func() (string, error) {
+		return "status=configured", nil
+	})
+	if err != nil {
+		t.Fatalf("expected read tool without FlowPilot approval scope to succeed, got %v", err)
+	}
+	if !strings.Contains(mustJSON(result), "status=configured") {
+		t.Fatalf("unexpected read tool result: %v", result)
+	}
+
+	state, err := runner.loadGoogleDriveProxyApprovalState()
+	if err != nil {
+		t.Fatalf("loadGoogleDriveProxyApprovalState() failed: %v", err)
+	}
+	if len(state.Records) != 0 {
+		t.Fatalf("expected no approvals to be persisted, got %d", len(state.Records))
+	}
+}
+
+func TestHandleReadTool_RejectsPartialFlowPilotApprovalScope(t *testing.T) {
+	workspace := t.TempDir()
+	runner := &Runner{workspace: workspace}
+	server := &proxyMcpServer{
+		runner:            runner,
+		mode:              "read_only",
+		yoloMode:          false,
+		workflowRunID:     "run-read",
+		workflowStepRunID: "step-read",
+	}
+
+	_, err := server.handleReadTool("authGetStatus", map[string]any{}, func() (string, error) {
+		return "status=configured", nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "process key is required") {
+		t.Fatalf("expected partial approval scope to be rejected, got %v", err)
+	}
+}
+
+func TestHandleReadTool_ExecutesApprovedReadRequest(t *testing.T) {
+	workspace := t.TempDir()
+	runner := &Runner{workspace: workspace}
+	args := map[string]any{"query": "plan"}
+	canonicalArgsJSON, argumentsHash, err := canonicalizeGoogleDriveProxyArguments(args)
+	if err != nil {
+		t.Fatalf("canonicalizeGoogleDriveProxyArguments() failed: %v", err)
+	}
+	state := googleDriveProxyApprovalState{
+		Version: 1,
+		Records: map[string]googleDriveProxyApprovalRecord{
+			"approval-read": {
+				ID:                "approval-read",
+				WorkflowRunID:     "run-read",
+				WorkflowStepRunID: "step-read",
+				ProcessKey:        "proc-read",
+				ToolName:          "search",
+				Operation:         "read",
+				CanonicalArgsJSON: canonicalArgsJSON,
+				ArgumentsHash:     argumentsHash,
+				Status:            "approved",
+				DecisionMode:      "manual",
+				RequestedAt:       time.Now().UTC().Add(-1 * time.Minute).Format(time.RFC3339Nano),
+				DecidedAt:         time.Now().UTC().Add(-30 * time.Second).Format(time.RFC3339Nano),
+				ExpiresAt:         time.Now().UTC().Add(30 * time.Minute).Format(time.RFC3339Nano),
+			},
+		},
+	}
+	if err := runner.saveGoogleDriveProxyApprovalState(state); err != nil {
+		t.Fatalf("saveGoogleDriveProxyApprovalState() failed: %v", err)
+	}
+
+	server := &proxyMcpServer{
+		runner:            runner,
+		mode:              "read_only",
+		yoloMode:          false,
+		workflowRunID:     "run-read",
+		workflowStepRunID: "step-read",
+		processKey:        "proc-read",
+	}
+
+	result, err := server.handleReadTool("search", args, func() (string, error) {
+		return `[{"name":"Plan","id":"file-1"}]`, nil
+	})
+	if err != nil {
+		t.Fatalf("expected approved read to succeed, got %v", err)
+	}
+	if !strings.Contains(mustJSON(result), `{\"name\":\"Plan\",\"id\":\"file-1\"}`) {
+		t.Fatalf("unexpected read tool result: %v", result)
+	}
+
+	storedState, err := runner.loadGoogleDriveProxyApprovalState()
+	if err != nil {
+		t.Fatalf("loadGoogleDriveProxyApprovalState() failed: %v", err)
+	}
+	if got := storedState.Records["approval-read"].Status; got != "executed" {
+		t.Fatalf("expected approved read to become executed, got %q", got)
+	}
+}
+
+func TestHandleWriteTool_YoloExecutesWithoutFlowPilotApprovalScope(t *testing.T) {
+	t.Setenv(googleDriveProxyMcpFlag, "true")
+
+	workspace := t.TempDir()
+	runner := &Runner{workspace: workspace, secretStore: newMemorySecretStore()}
+	writeProxyArtifactSyncConfig(t, runner, workspace)
+	writeSingleProxyArtifactConnection(t, runner, "project-1")
+
+	originalHTTPRequest := httpRequestFn
+	t.Cleanup(func() {
+		httpRequestFn = originalHTTPRequest
+	})
+	httpRequestFn = func(ctx context.Context, method, url string, headers map[string]string, body []byte) (int, []byte, error) {
+		return 200, []byte(`{"access_token":"artifact-access-token"}`), nil
+	}
+
+	server := &proxyMcpServer{
+		runner:   runner,
+		mode:     "read_write",
+		yoloMode: true,
+	}
+	result, err := server.handleWriteTool("createFolder", map[string]any{"name": "Docs"}, func(accessToken string) (string, string, string, error) {
+		if accessToken != "artifact-access-token" {
+			t.Fatalf("expected refreshed access token, got %q", accessToken)
+		}
+		return `{"status":"ok"}`, "drive-1", "https://drive.google.com/file/d/drive-1/view", nil
+	})
+	if err != nil {
+		t.Fatalf("expected yolo write without FlowPilot approval scope to succeed, got %v", err)
+	}
+	if !strings.Contains(mustJSON(result), `{\"status\":\"ok\"}`) {
+		t.Fatalf("expected successful tool result, got %v", result)
+	}
+
+	state, err := runner.loadGoogleDriveProxyApprovalState()
+	if err != nil {
+		t.Fatalf("loadGoogleDriveProxyApprovalState() failed: %v", err)
+	}
+	if len(state.Records) != 0 {
+		t.Fatalf("expected no approvals to be persisted, got %d", len(state.Records))
 	}
 }
 

@@ -215,6 +215,7 @@ func detectMcpFailureCode(output string) string {
 	failureCodes := strings.Join([]string{
 		"mcp_unavailable",
 		"mcp_auth_required",
+		"mcp_tool_approval_required",
 		"mcp_write_approval_required",
 		"mcp_tool_blocked",
 		"mcp_tool_failed",

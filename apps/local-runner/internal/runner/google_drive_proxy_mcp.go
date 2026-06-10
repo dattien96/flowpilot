@@ -54,6 +54,11 @@ type proxyMcpServer struct {
 	stdout            io.Writer
 }
 
+const (
+	googleDriveProxyApprovalOperationRead  = "read"
+	googleDriveProxyApprovalOperationWrite = "write"
+)
+
 func (r *Runner) RunGoogleDriveProxyMcpServer(ctx context.Context, workspace string, accountHome string, mode string, yoloMode bool) error {
 	server := &proxyMcpServer{
 		runner:            r,
@@ -330,6 +335,37 @@ func (s *proxyMcpServer) tools() []proxyMcpTool {
 	return base
 }
 
+func googleDriveProxyToolOperation(toolName string) string {
+	switch strings.TrimSpace(toolName) {
+	case "createGoogleDoc", "updateGoogleDoc", "createFolder":
+		return googleDriveProxyApprovalOperationWrite
+	default:
+		return googleDriveProxyApprovalOperationRead
+	}
+}
+
+func normalizeGoogleDriveProxyApprovalOperation(operation string, toolName string) string {
+	trimmed := strings.ToLower(strings.TrimSpace(operation))
+	if trimmed == googleDriveProxyApprovalOperationRead || trimmed == googleDriveProxyApprovalOperationWrite {
+		return trimmed
+	}
+	return googleDriveProxyToolOperation(toolName)
+}
+
+func googleDriveProxyApprovalFailureCode(operation string) string {
+	if normalizeGoogleDriveProxyApprovalOperation(operation, "") == googleDriveProxyApprovalOperationWrite {
+		return "mcp_write_approval_required"
+	}
+	return "mcp_tool_approval_required"
+}
+
+func googleDriveProxyApprovalFailureMarker(operation string) string {
+	if normalizeGoogleDriveProxyApprovalOperation(operation, "") == googleDriveProxyApprovalOperationWrite {
+		return "MCP_WRITE_APPROVAL_REQUIRED"
+	}
+	return "MCP_TOOL_APPROVAL_REQUIRED"
+}
+
 func (s *proxyMcpServer) callTool(ctx context.Context, rawParams json.RawMessage) (map[string]any, error) {
 	var params struct {
 		Name      string         `json:"name"`
@@ -341,64 +377,78 @@ func (s *proxyMcpServer) callTool(ctx context.Context, rawParams json.RawMessage
 
 	switch strings.TrimSpace(params.Name) {
 	case "authGetStatus":
-		return map[string]any{"content": []any{map[string]any{"type": "text", "text": s.authStatusText()}}, "isError": false}, nil
+		return s.handleReadTool("authGetStatus", params.Arguments, func() (string, error) {
+			return s.authStatusText(), nil
+		})
 	case "authListScopes":
-		return map[string]any{"content": []any{map[string]any{"type": "text", "text": strings.Join(s.authScopes(), ", ")}}, "isError": false}, nil
+		return s.handleReadTool("authListScopes", params.Arguments, func() (string, error) {
+			return strings.Join(s.authScopes(), ", "), nil
+		})
 	case "authTestFileAccess":
-		accessToken, err := s.accessToken()
-		if err != nil {
-			return nil, err
-		}
-		fileID, _ := params.Arguments["fileId"].(string)
-		file, err := fetchGoogleDriveFileByID(accessToken, fileID)
-		if err != nil {
-			return nil, err
-		}
-		return textToolResult("File is accessible: " + formatGoogleDriveFile(file)), nil
+		return s.handleReadTool("authTestFileAccess", params.Arguments, func() (string, error) {
+			accessToken, err := s.accessToken()
+			if err != nil {
+				return "", err
+			}
+			fileID, _ := params.Arguments["fileId"].(string)
+			file, err := fetchGoogleDriveFileByID(accessToken, fileID)
+			if err != nil {
+				return "", err
+			}
+			return "File is accessible: " + formatGoogleDriveFile(file), nil
+		})
 	case "search":
-		accessToken, err := s.accessToken()
-		if err != nil {
-			return nil, err
-		}
-		query, _ := params.Arguments["query"].(string)
-		pageSize := intFromAny(params.Arguments["pageSize"], 10)
-		files, err := searchGoogleDriveFiles(accessToken, query, pageSize)
-		if err != nil {
-			return nil, err
-		}
-		return textToolResult(mustJSON(files)), nil
+		return s.handleReadTool("search", params.Arguments, func() (string, error) {
+			accessToken, err := s.accessToken()
+			if err != nil {
+				return "", err
+			}
+			query, _ := params.Arguments["query"].(string)
+			pageSize := intFromAny(params.Arguments["pageSize"], 10)
+			files, err := searchGoogleDriveFiles(accessToken, query, pageSize)
+			if err != nil {
+				return "", err
+			}
+			return mustJSON(files), nil
+		})
 	case "listFolder":
-		accessToken, err := s.accessToken()
-		if err != nil {
-			return nil, err
-		}
-		folderID, _ := params.Arguments["folderId"].(string)
-		files, err := listGoogleDriveFolderChildren(accessToken, folderID)
-		if err != nil {
-			return nil, err
-		}
-		return textToolResult(mustJSON(files)), nil
+		return s.handleReadTool("listFolder", params.Arguments, func() (string, error) {
+			accessToken, err := s.accessToken()
+			if err != nil {
+				return "", err
+			}
+			folderID, _ := params.Arguments["folderId"].(string)
+			files, err := listGoogleDriveFolderChildren(accessToken, folderID)
+			if err != nil {
+				return "", err
+			}
+			return mustJSON(files), nil
+		})
 	case "listSharedDrives":
-		accessToken, err := s.accessToken()
-		if err != nil {
-			return nil, err
-		}
-		drives, err := listGoogleSharedDrives(accessToken)
-		if err != nil {
-			return nil, err
-		}
-		return textToolResult(mustJSON(drives)), nil
+		return s.handleReadTool("listSharedDrives", params.Arguments, func() (string, error) {
+			accessToken, err := s.accessToken()
+			if err != nil {
+				return "", err
+			}
+			drives, err := listGoogleSharedDrives(accessToken)
+			if err != nil {
+				return "", err
+			}
+			return mustJSON(drives), nil
+		})
 	case "readGoogleDoc", "readGoogleDocPaginated", "getGoogleDocContent", "getGoogleDocContentPaginated":
-		accessToken, err := s.accessToken()
-		if err != nil {
-			return nil, err
-		}
-		fileID, _ := params.Arguments["fileId"].(string)
-		content, err := readGoogleDriveDocument(accessToken, fileID)
-		if err != nil {
-			return nil, err
-		}
-		return textToolResult(content), nil
+		return s.handleReadTool(strings.TrimSpace(params.Name), params.Arguments, func() (string, error) {
+			accessToken, err := s.accessToken()
+			if err != nil {
+				return "", err
+			}
+			fileID, _ := params.Arguments["fileId"].(string)
+			content, err := readGoogleDriveDocument(accessToken, fileID)
+			if err != nil {
+				return "", err
+			}
+			return content, nil
+		})
 	case "createGoogleDoc":
 		title, _ := params.Arguments["title"].(string)
 		content, _ := params.Arguments["content"].(string)
@@ -436,6 +486,54 @@ func (s *proxyMcpServer) callTool(ctx context.Context, rawParams json.RawMessage
 	}
 }
 
+func (s *proxyMcpServer) handleReadTool(
+	toolName string,
+	args map[string]any,
+	execFn func() (string, error),
+) (map[string]any, error) {
+	if s.yoloMode || s.hasNoApprovalScope() {
+		resultText, err := execFn()
+		if err != nil {
+			return nil, err
+		}
+		return textToolResult(resultText), nil
+	}
+
+	record, err := s.resolveToolApproval(toolName, args, googleDriveProxyApprovalOperationRead)
+	if err != nil {
+		return nil, err
+	}
+
+	switch record.Status {
+	case "pending":
+		return nil, fmt.Errorf(
+			"%s: %s: FlowPilot created approval request %s. Wait for user approval before retrying this exact Google Drive tool call.",
+			googleDriveProxyApprovalFailureCode(record.Operation),
+			googleDriveProxyApprovalFailureMarker(record.Operation),
+			record.ID,
+		)
+	case "rejected":
+		return textToolResult(mustJSON(map[string]any{
+			"status":     "rejected",
+			"approvalId": record.ID,
+			"notice":     "The requested Google Drive tool call was rejected and was not executed.",
+		})), nil
+	case "executed":
+		return textToolResult(record.ResultJSON), nil
+	case "approved":
+		resultText, err := execFn()
+		if err != nil {
+			return nil, s.markProxyApprovalFailed(record, err)
+		}
+		if _, err := s.markProxyApprovalExecuted(record, resultText, "", ""); err != nil {
+			return nil, err
+		}
+		return textToolResult(resultText), nil
+	default:
+		return nil, fmt.Errorf("unsupported approval status %q", record.Status)
+	}
+}
+
 func (s *proxyMcpServer) handleWriteTool(
 	toolName string,
 	args map[string]any,
@@ -443,6 +541,18 @@ func (s *proxyMcpServer) handleWriteTool(
 ) (map[string]any, error) {
 	if s.mode != "read_write" {
 		return nil, errors.New("DRIVE_WRITE_NOT_ALLOWED: write tools are disabled for this run")
+	}
+
+	if s.yoloMode && s.hasNoApprovalScope() {
+		accessToken, err := s.accessToken()
+		if err != nil {
+			return nil, err
+		}
+		resultJSON, _, _, err := execFn(accessToken)
+		if err != nil {
+			return nil, err
+		}
+		return textToolResult(resultJSON), nil
 	}
 
 	record, err := s.resolveWriteApproval(toolName, args)
@@ -453,7 +563,9 @@ func (s *proxyMcpServer) handleWriteTool(
 	switch record.Status {
 	case "pending":
 		return nil, fmt.Errorf(
-			"mcp_write_approval_required: MCP_WRITE_APPROVAL_REQUIRED: FlowPilot created approval request %s. Wait for user approval before retrying this exact write.",
+			"%s: %s: FlowPilot created approval request %s. Wait for user approval before retrying this exact write.",
+			googleDriveProxyApprovalFailureCode(record.Operation),
+			googleDriveProxyApprovalFailureMarker(record.Operation),
 			record.ID,
 		)
 	case "rejected":
@@ -467,13 +579,13 @@ func (s *proxyMcpServer) handleWriteTool(
 	case "approved", "auto_approved":
 		accessToken, err := s.accessToken()
 		if err != nil {
-			return nil, s.markWriteApprovalFailed(record, err)
+			return nil, s.markProxyApprovalFailed(record, err)
 		}
 		resultJSON, driveID, driveURL, err := execFn(accessToken)
 		if err != nil {
-			return nil, s.markWriteApprovalFailed(record, err)
+			return nil, s.markProxyApprovalFailed(record, err)
 		}
-		if _, err := s.markWriteApprovalExecuted(record, resultJSON, driveID, driveURL); err != nil {
+		if _, err := s.markProxyApprovalExecuted(record, resultJSON, driveID, driveURL); err != nil {
 			return nil, err
 		}
 		return textToolResult(resultJSON), nil
@@ -483,16 +595,33 @@ func (s *proxyMcpServer) handleWriteTool(
 }
 
 func (s *proxyMcpServer) resolveWriteApproval(toolName string, args map[string]any) (googleDriveProxyApprovalRecord, error) {
+	return s.resolveToolApproval(toolName, args, googleDriveProxyApprovalOperationWrite)
+}
+
+func (s *proxyMcpServer) hasApprovalScope() bool {
+	return strings.TrimSpace(s.workflowRunID) != "" &&
+		strings.TrimSpace(s.workflowStepRunID) != "" &&
+		strings.TrimSpace(s.processKey) != ""
+}
+
+func (s *proxyMcpServer) hasNoApprovalScope() bool {
+	return strings.TrimSpace(s.workflowRunID) == "" &&
+		strings.TrimSpace(s.workflowStepRunID) == "" &&
+		strings.TrimSpace(s.processKey) == ""
+}
+
+func (s *proxyMcpServer) resolveToolApproval(toolName string, args map[string]any, operation string) (googleDriveProxyApprovalRecord, error) {
 	if strings.TrimSpace(s.workflowRunID) == "" {
-		return googleDriveProxyApprovalRecord{}, errors.New("workflow run id is required for Google Drive proxy write approvals")
+		return googleDriveProxyApprovalRecord{}, errors.New("workflow run id is required for Google Drive proxy approvals")
 	}
 	if strings.TrimSpace(s.workflowStepRunID) == "" {
-		return googleDriveProxyApprovalRecord{}, errors.New("workflow step run id is required for Google Drive proxy write approvals")
+		return googleDriveProxyApprovalRecord{}, errors.New("workflow step run id is required for Google Drive proxy approvals")
 	}
 	if strings.TrimSpace(s.processKey) == "" {
-		return googleDriveProxyApprovalRecord{}, errors.New("process key is required for Google Drive proxy write approvals")
+		return googleDriveProxyApprovalRecord{}, errors.New("process key is required for Google Drive proxy approvals")
 	}
 
+	normalizedOperation := normalizeGoogleDriveProxyApprovalOperation(operation, toolName)
 	canonicalArgsJSON, argumentsHash, err := canonicalizeGoogleDriveProxyArguments(args)
 	if err != nil {
 		return googleDriveProxyApprovalRecord{}, err
@@ -515,6 +644,9 @@ func (s *proxyMcpServer) resolveWriteApproval(toolName string, args map[string]a
 		if record.ToolName != toolName {
 			continue
 		}
+		if normalizeGoogleDriveProxyApprovalOperation(record.Operation, record.ToolName) != normalizedOperation {
+			continue
+		}
 		if record.ArgumentsHash != argumentsHash || record.CanonicalArgsJSON != canonicalArgsJSON {
 			continue
 		}
@@ -533,9 +665,10 @@ func (s *proxyMcpServer) resolveWriteApproval(toolName string, args map[string]a
 		ProcessKey:        s.processKey,
 		AccountHomePath:   s.accountHome,
 		ToolName:          toolName,
+		Operation:         normalizedOperation,
 		CanonicalArgsJSON: canonicalArgsJSON,
 		ArgumentsHash:     argumentsHash,
-		TargetSummary:     summarizeGoogleDriveProxyWrite(toolName, args),
+		TargetSummary:     summarizeGoogleDriveProxyRequest(toolName, args),
 		RequestedAt:       now.Format(time.RFC3339Nano),
 		ExpiresAt:         expiresAt.Format(time.RFC3339Nano),
 	}
@@ -555,7 +688,7 @@ func (s *proxyMcpServer) resolveWriteApproval(toolName string, args map[string]a
 	return record, nil
 }
 
-func (s *proxyMcpServer) markWriteApprovalExecuted(record googleDriveProxyApprovalRecord, resultJSON, driveID, driveURL string) (googleDriveProxyApprovalRecord, error) {
+func (s *proxyMcpServer) markProxyApprovalExecuted(record googleDriveProxyApprovalRecord, resultJSON, driveID, driveURL string) (googleDriveProxyApprovalRecord, error) {
 	state, err := s.runner.loadGoogleDriveProxyApprovalState()
 	if err != nil {
 		return googleDriveProxyApprovalRecord{}, err
@@ -575,7 +708,11 @@ func (s *proxyMcpServer) markWriteApprovalExecuted(record googleDriveProxyApprov
 	return current, nil
 }
 
-func (s *proxyMcpServer) markWriteApprovalFailed(record googleDriveProxyApprovalRecord, execErr error) error {
+func (s *proxyMcpServer) markWriteApprovalExecuted(record googleDriveProxyApprovalRecord, resultJSON, driveID, driveURL string) (googleDriveProxyApprovalRecord, error) {
+	return s.markProxyApprovalExecuted(record, resultJSON, driveID, driveURL)
+}
+
+func (s *proxyMcpServer) markProxyApprovalFailed(record googleDriveProxyApprovalRecord, execErr error) error {
 	state, err := s.runner.loadGoogleDriveProxyApprovalState()
 	if err != nil {
 		return err
@@ -592,8 +729,30 @@ func (s *proxyMcpServer) markWriteApprovalFailed(record googleDriveProxyApproval
 	return execErr
 }
 
-func summarizeGoogleDriveProxyWrite(toolName string, args map[string]any) string {
+func (s *proxyMcpServer) markWriteApprovalFailed(record googleDriveProxyApprovalRecord, execErr error) error {
+	return s.markProxyApprovalFailed(record, execErr)
+}
+
+func summarizeGoogleDriveProxyRequest(toolName string, args map[string]any) string {
 	switch toolName {
+	case "authGetStatus":
+		return "Check Google Drive auth status"
+	case "authListScopes":
+		return "List Google Drive OAuth scopes"
+	case "authTestFileAccess":
+		fileID, _ := args["fileId"].(string)
+		return fmt.Sprintf("Check Drive file access for %s", strings.TrimSpace(fileID))
+	case "search":
+		query, _ := args["query"].(string)
+		return fmt.Sprintf("Search Google Drive for %q", strings.TrimSpace(query))
+	case "listFolder":
+		folderID, _ := args["folderId"].(string)
+		return fmt.Sprintf("List Drive folder %s", strings.TrimSpace(folderID))
+	case "listSharedDrives":
+		return "List shared drives"
+	case "readGoogleDoc", "readGoogleDocPaginated", "getGoogleDocContent", "getGoogleDocContentPaginated":
+		fileID, _ := args["fileId"].(string)
+		return fmt.Sprintf("Read Google Doc %s", strings.TrimSpace(fileID))
 	case "createGoogleDoc":
 		title, _ := args["title"].(string)
 		return fmt.Sprintf("Create Google Doc %q", strings.TrimSpace(title))
@@ -620,16 +779,22 @@ func (s *proxyMcpServer) authStatusText() string {
 		}
 		accountStatus, statusErr := s.runner.googleDriveAccountStatusByID(accountID)
 		if statusErr != nil {
+			status := "failed"
+			if googleDriveCredentialNeedsAuth(statusErr) {
+				status = "needs_auth"
+			}
 			if strings.TrimSpace(connection.ProjectID) == "" {
 				return fmt.Sprintf(
-					"status=failed source=account accountId=%s accountEmail=%s artifactBinding=absent error=%s",
+					"status=%s source=account accountId=%s accountEmail=%s artifactBinding=absent error=%s",
+					status,
 					accountID,
 					strings.TrimSpace(accountEmail),
 					statusErr.Error(),
 				)
 			}
 			return fmt.Sprintf(
-				"status=failed source=artifact_sync accountId=%s accountEmail=%s projectId=%s folderId=%s artifactBinding=present error=%s",
+				"status=%s source=artifact_sync accountId=%s accountEmail=%s projectId=%s folderId=%s artifactBinding=present error=%s",
+				status,
 				accountID,
 				strings.TrimSpace(connection.AccountEmail),
 				strings.TrimSpace(connection.ProjectID),
@@ -637,6 +802,7 @@ func (s *proxyMcpServer) authStatusText() string {
 				statusErr.Error(),
 			)
 		}
+		s.applyProxyEnvAuthStatus(&accountStatus)
 		scopeSummary := strings.Join(accountStatus.GrantedScopes, ",")
 		missingScopeSummary := strings.Join(accountStatus.MissingScopes, ",")
 		artifactBinding := "absent"
@@ -644,6 +810,8 @@ func (s *proxyMcpServer) authStatusText() string {
 		switch {
 		case accountStatus.ReconnectRequired:
 			effectiveStatus = "reconnect_required"
+		case strings.EqualFold(effectiveStatus, "needs_auth"):
+			effectiveStatus = "needs_auth"
 		case !accountStatus.AccountReady:
 			effectiveStatus = "failed"
 		case !accountStatus.McpReadReady:
@@ -709,6 +877,9 @@ func (s *proxyMcpServer) accessToken() (string, error) {
 	if flowpilotGoogleDriveProxyMcpEnabled() {
 		clientID, clientSecret, err := s.proxyOAuthClient()
 		if err != nil {
+			if googleDriveCredentialNeedsAuth(err) {
+				return "", fmt.Errorf("mcp_auth_required: MCP_AUTH_REQUIRED: Google Drive OAuth config is missing; re-save Google Drive setup and reconnect Google Drive before using this MCP: %w", err)
+			}
 			return "", err
 		}
 		accountID, _, _, err := s.proxyAccountConnection()
@@ -717,6 +888,12 @@ func (s *proxyMcpServer) accessToken() (string, error) {
 		}
 		creds, err := s.runner.loadGoogleDriveCredentialByAccount(accountID)
 		if err != nil {
+			if refreshToken := strings.TrimSpace(os.Getenv(googleDriveProxyRefreshTokenEnv)); refreshToken != "" {
+				return googleDriveRefreshAccessToken(clientID, clientSecret, refreshToken)
+			}
+			if googleDriveCredentialNeedsAuth(err) {
+				return "", fmt.Errorf("mcp_auth_required: MCP_AUTH_REQUIRED: Google Drive auth is missing for the selected account; reconnect Google Drive in FlowPilot setup before using this MCP: %w", err)
+			}
 			return "", err
 		}
 		return googleDriveRefreshAccessToken(clientID, clientSecret, creds.RefreshToken)
@@ -752,6 +929,35 @@ func (s *proxyMcpServer) proxyOAuthClient() (string, string, error) {
 		return "", "", err
 	}
 	return strings.TrimSpace(config.clientID), strings.TrimSpace(config.clientSecret), nil
+}
+
+func (s *proxyMcpServer) applyProxyEnvAuthStatus(status *GoogleDriveAccountStatus) {
+	if status == nil || status.AccountReady {
+		return
+	}
+	refreshToken := strings.TrimSpace(os.Getenv(googleDriveProxyRefreshTokenEnv))
+	if refreshToken == "" {
+		return
+	}
+	clientID, clientSecret, err := s.proxyOAuthClient()
+	if err != nil {
+		status.LastError = err.Error()
+		return
+	}
+	if _, err := googleDriveRefreshAccessToken(clientID, clientSecret, refreshToken); err != nil {
+		status.LastError = err.Error()
+		if googleDriveReconnectRequired(err) {
+			status.Status = "reconnect_required"
+			status.ReconnectRequired = true
+		}
+		return
+	}
+	status.AccountReady = true
+	status.Status = "connected"
+	status.ReconnectRequired = false
+	status.LastError = ""
+	status.McpReadReady = googleDriveHasScope(status.GrantedScopes, googleDriveScopeDriveReadonly)
+	status.McpWriteReady = googleDriveHasScope(status.GrantedScopes, googleDriveScopeDriveFile)
 }
 
 func (s *proxyMcpServer) proxyArtifactConnection() (string, artifactStorageGoogleDriveConnectionRecord, error) {

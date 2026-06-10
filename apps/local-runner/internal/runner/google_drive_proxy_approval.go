@@ -31,6 +31,7 @@ type googleDriveProxyApprovalRecord struct {
 	ProcessKey        string `json:"processKey,omitempty"`
 	AccountHomePath   string `json:"accountHomePath,omitempty"`
 	ToolName          string `json:"toolName"`
+	Operation         string `json:"operation,omitempty"`
 	CanonicalArgsJSON string `json:"canonicalArgsJson"`
 	ArgumentsHash     string `json:"argumentsHash"`
 	TargetSummary     string `json:"targetSummary,omitempty"`
@@ -58,6 +59,7 @@ type GoogleDriveProxyApprovalRecord struct {
 	ProcessKey        string `json:"processKey,omitempty"`
 	AccountHomePath   string `json:"accountHomePath,omitempty"`
 	ToolName          string `json:"toolName"`
+	Operation         string `json:"operation,omitempty"`
 	CanonicalArgsJSON string `json:"canonicalArgsJson"`
 	ArgumentsHash     string `json:"argumentsHash"`
 	TargetSummary     string `json:"targetSummary,omitempty"`
@@ -86,6 +88,7 @@ func toGoogleDriveProxyApprovalRecord(record googleDriveProxyApprovalRecord) Goo
 		ProcessKey:        record.ProcessKey,
 		AccountHomePath:   record.AccountHomePath,
 		ToolName:          record.ToolName,
+		Operation:         normalizeGoogleDriveProxyApprovalOperation(record.Operation, record.ToolName),
 		CanonicalArgsJSON: record.CanonicalArgsJSON,
 		ArgumentsHash:     record.ArgumentsHash,
 		TargetSummary:     record.TargetSummary,
