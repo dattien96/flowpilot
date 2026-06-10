@@ -40,6 +40,184 @@ func TestProxyMcpAccessToken_UsesArtifactSyncCredentialWhenProxyEnabled(t *testi
 	}
 }
 
+func TestProxyMcpAccessToken_UsesSelectedAccountWithoutArtifactSyncConnection(t *testing.T) {
+	t.Setenv(googleDriveProxyMcpFlag, "true")
+	t.Setenv(googleDriveProxyAccountIDEnv, "account-1")
+
+	workspace := t.TempDir()
+	runner := &Runner{workspace: workspace, secretStore: newMemorySecretStore()}
+	writeProxyArtifactSyncConfig(t, runner, workspace)
+	if err := runner.saveGoogleDriveCredentialByAccount("account-1", googleDriveCredential{
+		RefreshToken: "account-refresh-token",
+		AccountEmail: "account-1@example.com",
+	}); err != nil {
+		t.Fatalf("saveGoogleDriveCredentialByAccount() failed: %v", err)
+	}
+	if err := runner.saveArtifactStorageGoogleDriveState(func(current *artifactStorageGoogleDriveState) {
+		current.Accounts["account-1"] = artifactStorageGoogleDriveAccountRecord{
+			AccountID:     "account-1",
+			AccountEmail:  "account-1@example.com",
+			GrantedScopes: googleDriveAccountRequestedScopes(),
+			Status:        "connected",
+		}
+	}); err != nil {
+		t.Fatalf("saveArtifactStorageGoogleDriveState() failed: %v", err)
+	}
+
+	originalHTTPRequest := httpRequestFn
+	t.Cleanup(func() {
+		httpRequestFn = originalHTTPRequest
+	})
+	httpRequestFn = func(ctx context.Context, method, url string, headers map[string]string, body []byte) (int, []byte, error) {
+		if !strings.Contains(url, "oauth2.googleapis.com/token") {
+			t.Fatalf("unexpected URL: %s", url)
+		}
+		return 200, []byte(`{"access_token":"account-access-token"}`), nil
+	}
+
+	server := &proxyMcpServer{runner: runner}
+	token, err := server.accessToken()
+	if err != nil {
+		t.Fatalf("accessToken() failed: %v", err)
+	}
+	if token != "account-access-token" {
+		t.Fatalf("unexpected access token: %q", token)
+	}
+
+	statusText := server.authStatusText()
+	if !strings.Contains(statusText, "source=account") {
+		t.Fatalf("expected account source in auth status, got %q", statusText)
+	}
+	if !strings.Contains(statusText, "accountId=account-1") {
+		t.Fatalf("expected account id in auth status, got %q", statusText)
+	}
+	if !strings.Contains(statusText, "status=configured") {
+		t.Fatalf("expected configured auth status, got %q", statusText)
+	}
+}
+
+func TestProxyMcpAccessToken_AllowsSelectedAccountAcrossMultipleArtifactBindings(t *testing.T) {
+	t.Setenv(googleDriveProxyMcpFlag, "true")
+	t.Setenv(googleDriveProxyAccountIDEnv, "account-1")
+
+	workspace := t.TempDir()
+	runner := &Runner{workspace: workspace, secretStore: newMemorySecretStore()}
+	writeProxyArtifactSyncConfig(t, runner, workspace)
+	if err := runner.saveGoogleDriveCredentialByAccount("account-1", googleDriveCredential{
+		RefreshToken: "account-refresh-token",
+		AccountEmail: "owner@example.com",
+	}); err != nil {
+		t.Fatalf("saveGoogleDriveCredentialByAccount() failed: %v", err)
+	}
+	if err := runner.saveArtifactStorageGoogleDriveState(func(current *artifactStorageGoogleDriveState) {
+		current.Accounts["account-1"] = artifactStorageGoogleDriveAccountRecord{
+			AccountID:     "account-1",
+			AccountEmail:  "owner@example.com",
+			GrantedScopes: googleDriveAccountRequestedScopes(),
+			Status:        "connected",
+		}
+		current.Connections["project-1"] = artifactStorageGoogleDriveConnectionRecord{
+			ProjectID:    "project-1",
+			Status:       "connected",
+			FolderID:     "folder-1",
+			AccountID:    "account-1",
+			AccountEmail: "owner@example.com",
+		}
+		current.Connections["project-2"] = artifactStorageGoogleDriveConnectionRecord{
+			ProjectID:    "project-2",
+			Status:       "connected",
+			FolderID:     "folder-2",
+			AccountID:    "account-1",
+			AccountEmail: "owner@example.com",
+		}
+	}); err != nil {
+		t.Fatalf("saveArtifactStorageGoogleDriveState() failed: %v", err)
+	}
+
+	originalHTTPRequest := httpRequestFn
+	t.Cleanup(func() {
+		httpRequestFn = originalHTTPRequest
+	})
+	httpRequestFn = func(_ context.Context, method, url string, headers map[string]string, body []byte) (int, []byte, error) {
+		if !strings.Contains(url, "oauth2.googleapis.com/token") {
+			t.Fatalf("unexpected URL: %s", url)
+		}
+		return 200, []byte(`{"access_token":"account-access-token"}`), nil
+	}
+
+	server := &proxyMcpServer{runner: runner}
+	token, err := server.accessToken()
+	if err != nil {
+		t.Fatalf("accessToken() failed with multiple bindings on the same account: %v", err)
+	}
+	if token != "account-access-token" {
+		t.Fatalf("unexpected access token: %q", token)
+	}
+}
+
+func TestProxyMcpAuthStatusText_FailsWhenSelectedAccountCredentialMissing(t *testing.T) {
+	t.Setenv(googleDriveProxyMcpFlag, "true")
+	t.Setenv(googleDriveProxyAccountIDEnv, "account-1")
+
+	workspace := t.TempDir()
+	runner := &Runner{workspace: workspace, secretStore: newMemorySecretStore()}
+	writeProxyArtifactSyncConfig(t, runner, workspace)
+
+	server := &proxyMcpServer{runner: runner}
+	statusText := server.authStatusText()
+	if !strings.Contains(statusText, "status=failed") {
+		t.Fatalf("expected failed auth status when the account token is missing, got %q", statusText)
+	}
+	if strings.Contains(statusText, "status=configured") {
+		t.Fatalf("did not expect configured auth status when the account token is missing, got %q", statusText)
+	}
+	if !strings.Contains(statusText, "source=account") {
+		t.Fatalf("expected account source in auth status, got %q", statusText)
+	}
+}
+
+func TestProxyMcpAuthStatusText_ReportsMissingReadonlyScopeForSelectedAccount(t *testing.T) {
+	t.Setenv(googleDriveProxyMcpFlag, "true")
+	t.Setenv(googleDriveProxyAccountIDEnv, "account-1")
+
+	workspace := t.TempDir()
+	runner := &Runner{workspace: workspace, secretStore: newMemorySecretStore()}
+	writeProxyArtifactSyncConfig(t, runner, workspace)
+	if err := runner.saveGoogleDriveCredentialByAccount("account-1", googleDriveCredential{
+		RefreshToken: "account-refresh-token",
+		AccountEmail: "account-1@example.com",
+	}); err != nil {
+		t.Fatalf("saveGoogleDriveCredentialByAccount() failed: %v", err)
+	}
+	if err := runner.saveArtifactStorageGoogleDriveState(func(current *artifactStorageGoogleDriveState) {
+		current.Accounts["account-1"] = artifactStorageGoogleDriveAccountRecord{
+			AccountID:     "account-1",
+			AccountEmail:  "account-1@example.com",
+			GrantedScopes: googleDriveArtifactRequestedScopes(),
+			Status:        "connected",
+		}
+	}); err != nil {
+		t.Fatalf("saveArtifactStorageGoogleDriveState() failed: %v", err)
+	}
+
+	stubGoogleDriveOAuthTokenRefresh(t)
+
+	server := &proxyMcpServer{runner: runner}
+	statusText := server.authStatusText()
+	if !strings.Contains(statusText, "status=needs_auth") {
+		t.Fatalf("expected needs_auth status when drive.readonly is missing, got %q", statusText)
+	}
+	if !strings.Contains(statusText, "source=account") {
+		t.Fatalf("expected account source when no artifact binding exists, got %q", statusText)
+	}
+	if !strings.Contains(statusText, "missingScopes="+googleDriveScopeDriveReadonly) {
+		t.Fatalf("expected missing drive.readonly scope in auth status, got %q", statusText)
+	}
+	if !strings.Contains(statusText, "mcpReadReady=false") {
+		t.Fatalf("expected read readiness to stay false, got %q", statusText)
+	}
+}
+
 func TestProxyMcpAccessToken_FailsWhenMultipleArtifactConnectionsExist(t *testing.T) {
 	t.Setenv(googleDriveProxyMcpFlag, "true")
 
@@ -67,9 +245,9 @@ func TestProxyMcpAccessToken_FailsWhenMultipleArtifactConnectionsExist(t *testin
 	server := &proxyMcpServer{runner: runner}
 	_, err := server.accessToken()
 	if err == nil {
-		t.Fatal("expected multiple connection error")
+		t.Fatal("expected active account selection error")
 	}
-	if !strings.Contains(err.Error(), "multiple artifact-sync Google Drive connections") {
+	if !strings.Contains(err.Error(), "select an active Google account") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -89,6 +267,80 @@ func TestProxyMcpAuthStatusText_ReportsArtifactSyncSourceWhenProxyEnabled(t *tes
 	}
 	if !strings.Contains(statusText, "projectId=project-1") {
 		t.Fatalf("expected project id in auth status, got %q", statusText)
+	}
+}
+
+func TestProxyMcpAuthStatusText_PrefersArtifactSyncBindingOverPlainSelectedAccount(t *testing.T) {
+	t.Setenv(googleDriveProxyMcpFlag, "true")
+	t.Setenv(googleDriveProxyAccountIDEnv, "project-1@example.com")
+
+	workspace := t.TempDir()
+	runner := &Runner{workspace: workspace, secretStore: newMemorySecretStore()}
+	writeProxyArtifactSyncConfig(t, runner, workspace)
+	writeSingleProxyArtifactConnection(t, runner, "project-1")
+	if err := runner.saveGoogleDriveCredentialByAccount("project-1@example.com", googleDriveCredential{
+		RefreshToken: "account-refresh-token",
+		AccountEmail: "project-1@example.com",
+	}); err != nil {
+		t.Fatalf("saveGoogleDriveCredentialByAccount() failed: %v", err)
+	}
+
+	originalHTTPRequest := httpRequestFn
+	t.Cleanup(func() {
+		httpRequestFn = originalHTTPRequest
+	})
+	httpRequestFn = func(ctx context.Context, method, url string, headers map[string]string, body []byte) (int, []byte, error) {
+		if !strings.Contains(url, "oauth2.googleapis.com/token") {
+			t.Fatalf("unexpected URL: %s", url)
+		}
+		return 200, []byte(`{"access_token":"artifact-access-token"}`), nil
+	}
+
+	server := &proxyMcpServer{runner: runner}
+	statusText := server.authStatusText()
+	if !strings.Contains(statusText, "source=artifact_sync") {
+		t.Fatalf("expected artifact sync source to win when a folder binding exists, got %q", statusText)
+	}
+	if !strings.Contains(statusText, "projectId=project-1") {
+		t.Fatalf("expected project id in auth status, got %q", statusText)
+	}
+	if !strings.Contains(statusText, "folderId=folder-project-1") {
+		t.Fatalf("expected folder id in auth status, got %q", statusText)
+	}
+}
+
+func TestProxyMcpAuthStatusText_ReportsReconnectRequiredForArtifactBinding(t *testing.T) {
+	t.Setenv(googleDriveProxyMcpFlag, "true")
+
+	workspace := t.TempDir()
+	runner := &Runner{workspace: workspace, secretStore: newMemorySecretStore()}
+	writeProxyArtifactSyncConfig(t, runner, workspace)
+	writeSingleProxyArtifactConnection(t, runner, "project-1")
+
+	originalHTTPRequest := httpRequestFn
+	t.Cleanup(func() {
+		httpRequestFn = originalHTTPRequest
+	})
+	httpRequestFn = func(_ context.Context, method, url string, headers map[string]string, body []byte) (int, []byte, error) {
+		if !strings.Contains(url, "oauth2.googleapis.com/token") {
+			t.Fatalf("unexpected URL: %s", url)
+		}
+		return 400, []byte(`{"error":"invalid_grant","error_description":"Token has been expired or revoked."}`), nil
+	}
+
+	server := &proxyMcpServer{runner: runner}
+	statusText := server.authStatusText()
+	if !strings.Contains(statusText, "status=reconnect_required") {
+		t.Fatalf("expected reconnect_required status, got %q", statusText)
+	}
+	if !strings.Contains(statusText, "source=artifact_sync") {
+		t.Fatalf("expected artifact_sync source, got %q", statusText)
+	}
+	if !strings.Contains(statusText, "projectId=project-1") {
+		t.Fatalf("expected project id in auth status, got %q", statusText)
+	}
+	if !strings.Contains(strings.ToLower(statusText), "authorization expired or was revoked") {
+		t.Fatalf("expected token revocation detail in auth status, got %q", statusText)
 	}
 }
 
@@ -135,7 +387,7 @@ func TestHandleWriteTool_RetainsApprovedStatusAfterTransientFailure(t *testing.T
 	})
 	httpRequestFn = func(ctx context.Context, method, url string, headers map[string]string, body []byte) (int, []byte, error) {
 		requestCount++
-		if requestCount == 1 {
+		if requestCount == 2 {
 			return 0, nil, errors.New("temporary token refresh failure")
 		}
 		return 200, []byte(`{"access_token":"artifact-access-token"}`), nil
@@ -362,11 +614,24 @@ func writeSingleProxyArtifactConnection(t *testing.T, runner *Runner, projectID 
 	}); err != nil {
 		t.Fatalf("saveGoogleDriveCredentialByProject() failed: %v", err)
 	}
+	if err := runner.saveGoogleDriveCredentialByAccount(projectID+"@example.com", googleDriveCredential{
+		RefreshToken: "artifact-refresh-token",
+		AccountEmail: projectID + "@example.com",
+	}); err != nil {
+		t.Fatalf("saveGoogleDriveCredentialByAccount() failed: %v", err)
+	}
 	if err := runner.saveArtifactStorageGoogleDriveState(func(current *artifactStorageGoogleDriveState) {
+		current.Accounts[projectID+"@example.com"] = artifactStorageGoogleDriveAccountRecord{
+			AccountID:     projectID + "@example.com",
+			AccountEmail:  projectID + "@example.com",
+			GrantedScopes: googleDriveAccountRequestedScopes(),
+			Status:        "connected",
+		}
 		current.Connections[projectID] = artifactStorageGoogleDriveConnectionRecord{
 			ProjectID:    projectID,
 			Status:       "connected",
 			FolderID:     "folder-" + projectID,
+			AccountID:    projectID + "@example.com",
 			AccountEmail: projectID + "@example.com",
 		}
 	}); err != nil {
