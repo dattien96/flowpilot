@@ -3,7 +3,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { readGoogleDriveUploadForm, resolveEnvFallbackStatus } from "./_shared";
 
-const envKeys = ["HOME", "USERPROFILE", "XDG_CONFIG_HOME"] as const;
+const envKeys = [
+  "HOME",
+  "USERPROFILE",
+  "XDG_CONFIG_HOME",
+  "FLOWPILOT_GOOGLE_DRIVE_ACCOUNT_ID",
+] as const;
 
 function setEnv(key: (typeof envKeys)[number], value?: string) {
   if (value === undefined) {
@@ -25,8 +30,6 @@ describe("google drive config shared helpers", () => {
     setEnv("HOME", "/Users/demo");
     setEnv("USERPROFILE", "/Users/demo");
     setEnv("XDG_CONFIG_HOME", "/tmp/flowpilot-xdg");
-    setEnv("FLOWPILOT_GOOGLE_DRIVE_PROXY_MCP", "true");
-
     const status = resolveEnvFallbackStatus();
 
     expect(status.mcp.proxyMcpEnabled).toBe(true);
