@@ -1,7 +1,6 @@
-import { useMutation } from "@tanstack/react-query";
 import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
-import { ChevronDown, ChevronRight, Copy, Eye, EyeOff, RefreshCw } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
+import { ChevronDown, ChevronRight, Copy, Eye, EyeOff } from "lucide-react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
 import { PageFrame } from "@/components/common/page-frame";
@@ -13,9 +12,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { createGatewayBundle } from "@/data/repository/browser-factory";
-import type { IntegrationType } from "@/domain/model/entity/integration";
-import type { LocalRunnerMcpBackend } from "@/domain/model/entity/local-runner";
 import { loadMcpSettingsData } from "@/features/mcp/mcp-settings-loader";
 import {
   loadGoogleDriveRuntimeStatus,
@@ -37,39 +33,33 @@ export const Route = createFileRoute("/_authenticated/settings/google-drive-setu
   component: GoogleDriveSetupPage,
 });
 
-function GoogleDriveSetupPage() {
-  const { allIntegrations, backends, health, projects } = Route.useLoaderData();
+export function GoogleDriveSetupPage() {
+  Route.useLoaderData();
   const router = useRouter();
   const [status, setStatus] = useState<GoogleDriveRuntimeStatus | null>(null);
   const [clientIdEditable, setClientIdEditable] = useState(false);
-  const oauthFileInputRef = useRef<HTMLInputElement | null>(null);
   const [artifactForm, setArtifactForm] = useState({
     clientId: "",
     clientSecret: "",
     redirectUri: DEFAULT_REDIRECT_URI,
   });
   const [pickerApiKey, setPickerApiKey] = useState("");
-  const [oauthFile, setOauthFile] = useState<File | null>(null);
+  const [mcpAccountId, setMcpAccountId] = useState("");
   const [showClientSecret, setShowClientSecret] = useState(false);
   const [showPickerApiKey, setShowPickerApiKey] = useState(false);
-  const [expandedStep6Sections, setExpandedStep6Sections] = useState<Record<"6.1" | "6.2" | "6.3", boolean>>({
-    "6.1": true,
-    "6.2": true,
-    "6.3": true,
-  });
   const [validation, setValidation] = useState<GoogleDriveValidationResult | null>(null);
   const [validationOpen, setValidationOpen] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
-  const runnerOnline = health.status === "online";
-  const googleDriveBackend = backends.find((backend) => backend.providerType === "google_drive") ?? null;
-  const googleDriveIntegrations = allIntegrations.filter(
-    (integration) => integration.type === "google_drive",
-  );
-  const googleDriveTypeEnabled =
-    googleDriveBackend?.transport === "remote"
-      ? googleDriveIntegrations.some((integration) => integration.mcpTypeEnabled === true)
-      : googleDriveBackend?.state === "installed";
+
+  const applyLoadedStatus = (nextStatus: GoogleDriveRuntimeStatus) => {
+    setStatus(nextStatus);
+    setMcpAccountId(
+      nextStatus.mcp.accountId?.trim() ||
+        (nextStatus.accounts?.length === 1 ? nextStatus.accounts[0].accountId?.trim() : "") ||
+        "",
+    );
+  };
 
   useEffect(() => {
     let active = true;
@@ -78,7 +68,7 @@ function GoogleDriveSetupPage() {
         if (!active) {
           return;
         }
-        setStatus(nextStatus);
+        applyLoadedStatus(nextStatus);
         setArtifactForm({
           clientId: nextStatus.artifactSync.clientId ?? "",
           clientSecret: "",
@@ -96,94 +86,39 @@ function GoogleDriveSetupPage() {
     };
   }, []);
 
-  const stepSummary = useMemo(() => buildStepSummary(status), [status]);
-  const proxyMcpEnabled = Boolean(status?.mcp.proxyMcpEnabled);
-  const canSaveArtifactSync = artifactForm.clientId.trim().length > 0;
-  const canSavePickerApiKey = pickerApiKey.trim().length > 0;
-  const providerSetupStatus = providerSetupStepStatus(status);
-  const mcpLaunchStatus = backendSetupStepStatus(googleDriveBackend, googleDriveTypeEnabled);
-
   useEffect(() => {
-    if (!proxyMcpEnabled) {
-      return;
-    }
-    setExpandedStep6Sections((current) => ({
-      ...current,
-      "6.1": false,
-      "6.2": false,
-    }));
-  }, [proxyMcpEnabled]);
-
-  function toggleStep6Section(section: "6.1" | "6.2" | "6.3") {
-    if (proxyMcpEnabled && (section === "6.1" || section === "6.2")) {
-      return;
-    }
-    setExpandedStep6Sections((current) => ({
-      ...current,
-      [section]: !current[section],
-    }));
-  }
-
-  const runBackendAction = useMutation({
-    mutationFn: async (backend: LocalRunnerMcpBackend) => {
-      if (!runnerOnline) {
-        throw new Error(`The local runner is unreachable at ${health.baseUrl}.`);
-      }
-
-      const gateways = await createGatewayBundle();
-      if (backend.action === "install") {
-        return gateways.localRunnerGateway.installMcpBackend(backend.key);
-      }
-      return gateways.localRunnerGateway.triggerMcpBackendAction(backend.key, {
-        projectId: googleDriveIntegrations[0]?.projectId ?? projects[0]?.id ?? "",
-        action: backend.action,
-      });
-    },
-    onSuccess: async () => {
-      await router.invalidate();
-    },
-    onError: (error) => {
-      setMessage(error instanceof Error ? error.message : "Unable to manage Google Drive MCP.");
-    },
-  });
-
-  const toggleMcpType = useMutation({
-    mutationFn: async ({ enabled, providerType }: { enabled: boolean; providerType: IntegrationType }) => {
-      const gateways = await createGatewayBundle();
-      await Promise.all(
-        googleDriveIntegrations.map((integration) =>
-          gateways.integrationGateway.updateIntegration(integration.id, {
-            type: integration.type,
-            label: integration.label,
-            configEncrypted: integration.configEncrypted,
-            status: integration.status,
-            lastSyncedAt: integration.lastSyncedAt,
-            lastError: integration.lastError,
-            mcpTypeEnabled: enabled,
-          }),
-        ),
-      );
-
-      if (enabled || googleDriveIntegrations.length > 0) {
+    function handleMessage(event: MessageEvent) {
+      if (!event.data || typeof event.data !== "object") {
         return;
       }
-
-      await router.navigate({
-        to: "/settings/mcp-servers/create",
-        search: { provider: providerType },
+      if (event.data.type !== "flowpilot-google-drive-account-connected") {
+        return;
+      }
+      void router.invalidate().then(refreshStatus).then(() => {
+        setMessage("Google Drive account status refreshed.");
+      }).catch((error) => {
+        setMessage(error instanceof Error ? error.message : "Unable to refresh Google Drive account status.");
       });
-    },
-    onSuccess: async () => {
-      await router.invalidate();
-    },
-    onError: (error) => {
-      setMessage(error instanceof Error ? error.message : "Unable to update Google Drive MCP type.");
-    },
-  });
+    }
+
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
+  }, [router]);
+
+  const stepSummary = useMemo(() => buildStepSummary(status), [status]);
+  const proxyMcpEnabled = true;
+  const proxyAccounts = status?.accounts ?? [];
+  const selectedProxyAccount =
+    proxyAccounts.find((account) => account.accountId === mcpAccountId) ?? null;
+  const hasSelectedProxyAccount = mcpAccountId.trim().length > 0;
+  const canSaveArtifactSync = artifactForm.clientId.trim().length > 0;
+  const canSavePickerApiKey = pickerApiKey.trim().length > 0;
+  const canSaveProxyAccount = proxyMcpEnabled && hasSelectedProxyAccount;
+  const providerSetupStatus = providerSetupStepStatus(status);
 
   const refreshStatus = async () => {
     const nextStatus = await loadGoogleDriveRuntimeStatus();
-    setStatus(nextStatus);
+    applyLoadedStatus(nextStatus);
     return nextStatus;
   };
 
@@ -191,14 +126,18 @@ function GoogleDriveSetupPage() {
     setBusyAction("validate");
     setMessage(null);
     try {
+      const payload: Record<string, string> = {
+        clientId: artifactForm.clientId,
+        clientSecret: artifactForm.clientSecret,
+        redirectUri: artifactForm.redirectUri,
+        pickerApiKey,
+      };
+      if (mcpAccountId.trim()) {
+        payload.mcpAccountId = mcpAccountId.trim();
+      }
       const result = (await submitGoogleDriveConfig(
         "/api/runtime/google-drive-config/validate",
-        {
-          clientId: artifactForm.clientId,
-          clientSecret: artifactForm.clientSecret,
-          redirectUri: artifactForm.redirectUri,
-          pickerApiKey,
-        },
+        payload,
         "POST",
       )) as GoogleDriveValidationResult;
       setValidation(result);
@@ -215,13 +154,17 @@ function GoogleDriveSetupPage() {
     setBusyAction("save-artifact");
     setMessage(null);
     try {
+      const payload: Record<string, string> = {
+        clientId: artifactForm.clientId,
+        clientSecret: artifactForm.clientSecret,
+        redirectUri: artifactForm.redirectUri,
+      };
+      if (mcpAccountId.trim()) {
+        payload.mcpAccountId = mcpAccountId.trim();
+      }
       await submitGoogleDriveConfig(
         "/api/runtime/google-drive-config",
-        {
-          clientId: artifactForm.clientId,
-          clientSecret: artifactForm.clientSecret,
-          redirectUri: artifactForm.redirectUri,
-        },
+        payload,
         "PUT",
       );
       const nextStatus = await refreshStatus();
@@ -259,94 +202,68 @@ function GoogleDriveSetupPage() {
     }
   };
 
-  const uploadMcpOAuthJson = async (file = oauthFile) => {
-    if (!file) {
-      setMessage("Choose the legacy Desktop OAuth JSON file first.");
-      return;
-    }
-    setBusyAction("upload-mcp");
+  const saveProxyAccountSelection = async () => {
+    setBusyAction("save-proxy-account");
     setMessage(null);
     try {
-      const formData = new FormData();
-      formData.append("file", file);
-      const response = await fetch("/api/runtime/google-drive-config/mcp-oauth-upload", {
-        method: "POST",
-        body: formData,
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(payload.error ?? "Unable to upload legacy Desktop OAuth JSON.");
-      }
-      setStatus(payload as GoogleDriveRuntimeStatus);
-      setMessage("OAuth JSON uploaded to the runner-managed legacy MCP config path.");
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Unable to upload legacy Desktop OAuth JSON.");
-    } finally {
-      setBusyAction(null);
-    }
-  };
-
-  const saveMcpOAuthJson = async () => {
-    await uploadMcpOAuthJson();
-  };
-
-  const selectMcpOAuthFile = (file: File | null) => {
-    setOauthFile(file);
-    setMessage(null);
-  };
-
-  const openMcpOAuthPicker = () => {
-    oauthFileInputRef.current?.click();
-  };
-
-  const handleMcpOAuthDrop = (event: DragEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    const file = event.dataTransfer.files?.[0] ?? null;
-    selectMcpOAuthFile(file);
-  };
-
-  const handleMcpOAuthKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      openMcpOAuthPicker();
-    }
-  };
-
-  const refreshMcpStatus = async () => {
-    setBusyAction("refresh-mcp");
-    setMessage(null);
-    try {
+      await submitGoogleDriveConfig("/api/runtime/google-drive-config", {
+        mcpAccountId: mcpAccountId.trim(),
+      }, "PUT");
       const nextStatus = await refreshStatus();
       setMessage(
-        nextStatus.mcp.needsAuth
-          ? "Legacy raw MCP still needs auth. Finish the auth flow, then refresh again."
-          : "Legacy raw MCP status refreshed.",
+        nextStatus.mcp.accountSelectionRequired
+          ? "Google account selection saved, but the proxy MCP still needs a connected account."
+          : "Google account selection saved.",
       );
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Unable to refresh legacy raw MCP status.");
+      setMessage(error instanceof Error ? error.message : "Unable to save Google account selection.");
     } finally {
       setBusyAction(null);
     }
   };
 
-  const startMcpAuth = async () => {
-    setBusyAction("start-mcp-auth");
+  const startAccountConnect = async (accountId?: string) => {
+    setBusyAction(accountId ? `reconnect-account:${accountId}` : "connect-account");
     setMessage(null);
     try {
-      const response = await fetch("/api/runtime/google-drive-config/mcp-auth/start", {
+      const response = await fetch("/api/runtime/google-drive-config/accounts/connect-session", {
         method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(accountId ? { accountId } : {}),
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(payload.error ?? "Unable to start legacy raw MCP auth.");
+        throw new Error(payload.error ?? "Unable to start Google Drive account connection.");
       }
-      setStatus((payload.config as GoogleDriveRuntimeStatus) ?? status);
-      setMessage(
-        payload.message ??
-          "Legacy raw MCP auth opened in a new terminal. Complete sign-in, then refresh legacy status.",
-      );
+      if (typeof payload.connectUrl === "string" && payload.connectUrl.trim()) {
+        window.open(payload.connectUrl, "_blank", "width=980,height=820");
+      }
+      setMessage(accountId ? "Google Drive account reconnect started." : "Google Drive account connect started.");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Unable to start legacy raw MCP auth.");
+      setMessage(error instanceof Error ? error.message : "Unable to start Google Drive account connection.");
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const disconnectAccount = async (accountId: string) => {
+    setBusyAction(`disconnect-account:${accountId}`);
+    setMessage(null);
+    try {
+      const response = await fetch(`/api/runtime/google-drive-config/accounts/${encodeURIComponent(accountId)}`, {
+        method: "DELETE",
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error ?? "Unable to disconnect Google Drive account.");
+      }
+      const nextStatus = await refreshStatus();
+      if (nextStatus.mcp.accountId === accountId) {
+        setMcpAccountId("");
+      }
+      setMessage("Google Drive account disconnected.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to disconnect Google Drive account.");
     } finally {
       setBusyAction(null);
     }
@@ -494,8 +411,8 @@ function GoogleDriveSetupPage() {
         <section className="rounded-[1.6rem] border border-border bg-background/80 p-6">
           <SectionHeader
             step="4"
-            title="Create Web OAuth client for artifact sync"
-            subtitle="Save the Web OAuth client locally so artifact sync can start and refresh without editing .env."
+            title="Create Web OAuth client"
+            subtitle="Save the Web OAuth client locally so FlowPilot can reuse it for artifact sync and the proxy MCP without editing .env."
             status={artifactSyncStepStatus(status?.artifactSync)}
           />
           <GuidePanel
@@ -504,7 +421,7 @@ function GoogleDriveSetupPage() {
               "Open Google Auth Platform > Clients.",
               "Click Create client.",
               "Choose Web application.",
-              "Use a clear name such as FlowPilot Artifact Sync Local.",
+              "Use a clear name such as FlowPilot Google Drive Local.",
               "Add the redirect URI shown below.",
               "Save the client, then copy Client ID and Client Secret into this form.",
             ]}
@@ -616,248 +533,212 @@ function GoogleDriveSetupPage() {
         </section>
 
         <section className="rounded-[1.6rem] border border-border bg-background/80 p-6">
+            <SectionHeader
+              step="6"
+              title="Select Google account for proxy MCP"
+              subtitle="Choose one connected Google account for the proxy MCP. Artifact sync still picks the per-project folder inside that account."
+              status={status?.mcp.status ?? "not_started"}
+            />
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <Button
+                className="w-full md:w-auto"
+                disabled={busyAction !== null}
+                onClick={() => {
+                  void startAccountConnect();
+                }}
+              >
+                {busyAction === "connect-account" ? "Opening..." : "Connect Google account"}
+              </Button>
+              <p className="text-sm text-muted-foreground">
+                Connect at least one Google account here before selecting the proxy MCP account or binding project folders.
+              </p>
+            </div>
+            <div className="mt-4 grid gap-4 lg:grid-cols-[1fr_auto]">
+              <Field
+                label={
+                  <span className="flex flex-wrap items-center gap-2">
+                    Active account
+                    <span className="text-xs uppercase tracking-[0.22em] text-muted-foreground">
+                      {proxyAccounts.length > 0 ? `${proxyAccounts.length} available` : "none connected"}
+                    </span>
+                  </span>
+                }
+              >
+                <select
+                  className="w-full rounded-2xl border border-border bg-background px-4 py-3 outline-none transition focus:border-transparent focus:ring-2 focus:ring-accent"
+                  onChange={(event) => setMcpAccountId(event.target.value)}
+                  value={mcpAccountId}
+                >
+                  <option value="">Select a connected Google account</option>
+                  {proxyAccounts.map((account) => {
+                    const label = account.accountEmail
+                      ? `${account.accountEmail} (${account.accountId})`
+                      : account.accountId;
+                    const meta = account.projectCount > 0 ? ` - ${account.projectCount} project${account.projectCount === 1 ? "" : "s"}` : "";
+                    return (
+                      <option key={account.accountId} value={account.accountId}>
+                        {label}
+                        {meta}
+                      </option>
+                    );
+                  })}
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  Select the Google account whose refresh token the proxy MCP should reuse. The artifact folder binding remains per FlowPilot project.
+                </p>
+              </Field>
+              <div className="flex items-end">
+                <Button
+                  disabled={busyAction === "save-proxy-account" || !canSaveProxyAccount}
+                  onClick={saveProxyAccountSelection}
+                  className="w-full md:w-auto"
+                >
+                  {busyAction === "save-proxy-account" ? "Saving..." : "Save account selection"}
+                </Button>
+              </div>
+            </div>
+            <div className="mt-4 rounded-2xl border border-border/70 bg-background/60 p-4 text-sm text-muted-foreground">
+              <p className="font-medium text-foreground">Current account selection</p>
+              <p className="mt-2 break-words">
+                {status?.mcp.accountSelectionRequired
+                  ? "Select a connected account to finish proxy MCP setup."
+                  : status?.mcp.accountId
+                    ? `Using account ${status.mcp.accountEmail ? `${status.mcp.accountEmail} ` : ""}(${status.mcp.accountId})`
+                    : "No account selected yet."}
+              </p>
+              {selectedProxyAccount ? (
+                <>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Badge tone={googleDriveAccountBadgeTone(selectedProxyAccount.status)}>
+                      {selectedProxyAccount.status}
+                    </Badge>
+                    <Badge tone={selectedProxyAccount.mcpReadReady ? "success" : "warning"}>
+                      {selectedProxyAccount.mcpReadReady ? "proxy read ready" : "proxy read scope missing"}
+                    </Badge>
+                    <Badge tone={selectedProxyAccount.mcpWriteReady ? "success" : "warning"}>
+                      {selectedProxyAccount.mcpWriteReady ? "artifact write ready" : "artifact write scope missing"}
+                    </Badge>
+                  </div>
+                  <p className="mt-2 text-xs">
+                    Granted scopes: {formatGoogleDriveScopeSummary(selectedProxyAccount.grantedScopes)}
+                  </p>
+                  {selectedProxyAccount.missingScopes?.length ? (
+                    <p className="mt-1 text-xs text-warning">
+                      Missing scopes: {formatGoogleDriveScopeSummary(selectedProxyAccount.missingScopes)}
+                    </p>
+                  ) : null}
+                </>
+              ) : null}
+            </div>
+            <div className="mt-4 grid gap-4">
+              {proxyAccounts.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-border/70 bg-background/50 p-4 text-sm text-muted-foreground">
+                  No Google accounts are connected on this runner yet. Start a new account connection, finish OAuth in the popup, then come back here to select the account for proxy MCP and artifact binding.
+                </div>
+              ) : (
+                proxyAccounts.map((account) => {
+                  const reconnectAction = `reconnect-account:${account.accountId}`;
+                  const disconnectAction = `disconnect-account:${account.accountId}`;
+                  const selectedInForm = account.accountId === mcpAccountId;
+                  const savedSelection = account.accountId === status?.mcp.accountId;
+                  return (
+                    <div
+                      key={account.accountId}
+                      className={`rounded-2xl border p-4 ${
+                        savedSelection
+                          ? "border-success/30 bg-success/5"
+                          : selectedInForm
+                            ? "border-accent/30 bg-accent/5"
+                            : "border-border/70 bg-background/50"
+                      }`}
+                    >
+                      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                        <div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="font-medium text-foreground">
+                              {account.accountEmail || account.accountId}
+                            </p>
+                            <Badge tone={googleDriveAccountBadgeTone(account.status)}>
+                              {account.status}
+                            </Badge>
+                            {savedSelection ? <Badge tone="success">saved selection</Badge> : null}
+                            {!savedSelection && selectedInForm ? <Badge tone="neutral">selected in form</Badge> : null}
+                          </div>
+                          <p className="mt-2 break-all text-xs text-muted-foreground">
+                            Account ID: {account.accountId}
+                          </p>
+                          {account.oauthClientId ? (
+                            <p className="mt-1 break-all text-xs text-muted-foreground">
+                              OAuth client: {account.oauthClientId}
+                            </p>
+                          ) : null}
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <Badge tone={account.mcpReadReady ? "success" : "warning"}>
+                            {account.mcpReadReady ? "proxy read ready" : "proxy read missing scope"}
+                          </Badge>
+                          <Badge tone={account.mcpWriteReady ? "success" : "warning"}>
+                            {account.mcpWriteReady ? "artifact write ready" : "artifact write missing scope"}
+                          </Badge>
+                          <Badge tone={account.projectCount > 0 ? "success" : "neutral"}>
+                            {account.projectCount} project{account.projectCount === 1 ? "" : "s"}
+                          </Badge>
+                        </div>
+                      </div>
+                      <div className="mt-3 grid gap-2 text-sm text-muted-foreground md:grid-cols-2">
+                        <p>Granted scopes: {formatGoogleDriveScopeSummary(account.grantedScopes)}</p>
+                        <p>Missing scopes: {formatGoogleDriveScopeSummary(account.missingScopes)}</p>
+                        <p>Connected at: {account.connectedAt || "unknown"}</p>
+                        <p>Updated at: {account.updatedAt || "unknown"}</p>
+                      </div>
+                      {account.lastError ? (
+                        <p className="mt-3 rounded-2xl border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-warning">
+                          {account.lastError}
+                        </p>
+                      ) : null}
+                      <div className="mt-4 flex flex-wrap gap-3">
+                        <Button
+                          className="w-full md:w-auto"
+                          disabled={busyAction !== null}
+                          onClick={() => {
+                            void startAccountConnect(account.accountId);
+                          }}
+                          variant="secondary"
+                        >
+                          {busyAction === reconnectAction ? "Opening..." : "Reconnect account"}
+                        </Button>
+                        <Button
+                          className="w-full md:w-auto"
+                          disabled={busyAction !== null}
+                          onClick={() => {
+                            void disconnectAccount(account.accountId);
+                          }}
+                          variant="secondary"
+                        >
+                          {busyAction === disconnectAction ? "Disconnecting..." : "Disconnect account"}
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </section>
+
+        <section className="rounded-[1.6rem] border border-border bg-background/80 p-6">
           <SectionHeader
-            step="6"
+            step="7"
             title="Google Drive proxy MCP setup"
-            subtitle="Set up the FlowPilot proxy MCP first. Use the Desktop OAuth JSON flow only for legacy raw-MCP fallback."
+            subtitle="Set up the FlowPilot proxy MCP and provider integrations."
             status={status?.mcp.status ?? "not_started"}
           />
           <div className="mt-6 grid gap-4">
             <CollapsibleSetupSection
-              disabled={proxyMcpEnabled}
-              expanded={!proxyMcpEnabled && expandedStep6Sections["6.1"]}
-              onToggle={() => toggleStep6Section("6.1")}
-              status={status?.mcp.status ?? "not_started"}
-              subtitle={
-                proxyMcpEnabled
-                  ? "Disabled while FlowPilot proxy MCP is enabled on this runner."
-                  : "Only upload Desktop OAuth JSON if you still need the legacy raw-MCP fallback."
-              }
-              title="6.1 Legacy raw MCP Desktop OAuth fallback"
-            >
-              <GuidePanel
-                className="mt-4"
-                items={[
-                  "Open Google Auth Platform > Clients.",
-                  "Click Create client.",
-                  "Choose Desktop app.",
-                  "Use a clear name such as FlowPilot Google Drive MCP Legacy.",
-                  "Save the client and download the OAuth JSON file.",
-                  "Choose or Drag the Desktop client JSON here only for legacy raw-MCP fallback. The proxy MCP path does not need this file.",
-                ]}
-              />
-              <div className="mt-4 grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
-                <div className="grid gap-4">
-                  <div className="space-y-2">
-                    <span className="text-sm text-muted-foreground">
-                      <span className="text-accent">Choose or Drag legacy file to upload</span>
-                    </span>
-                    <div
-                      aria-label="Choose or Drag legacy file to upload"
-                      className="flex min-h-14 cursor-pointer items-center overflow-hidden rounded-2xl border border-border bg-background text-sm outline-none transition hover:border-accent/50 focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/40"
-                      onClick={openMcpOAuthPicker}
-                      onDrop={handleMcpOAuthDrop}
-                      onDragOver={(event) => event.preventDefault()}
-                      onKeyDown={handleMcpOAuthKeyDown}
-                      role="button"
-                      tabIndex={0}
-                    >
-                      <input
-                        ref={oauthFileInputRef}
-                        accept="application/json,.json"
-                        className="sr-only"
-                        onChange={(event) => {
-                          const file = event.target.files?.[0] ?? null;
-                          selectMcpOAuthFile(file);
-                        }}
-                        type="file"
-                      />
-                      <span className={`min-w-0 flex-1 px-4 py-3 ${oauthFile ? "text-foreground" : "text-muted-foreground"}`}>
-                        {oauthFile ? oauthFile.name : "Drop the legacy Desktop OAuth JSON here or click to browse"}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="rounded-2xl border border-border/70 bg-background/60 p-4 text-sm text-muted-foreground">
-                    <p className="font-medium text-foreground">Legacy raw-MCP paths</p>
-                    <p className="mt-2 break-all">Credentials: {status?.mcp.credentialPath ?? "Not resolved yet"}</p>
-                    <p className="mt-1 break-all">Token: {status?.mcp.tokenPath ?? "Not resolved yet"}</p>
-                    <p className="mt-1">
-                      Token file exists: {status?.mcp.tokenFileExists ? "yes" : "no"} | Auth required:{" "}
-                      {status?.mcp.needsAuth ? "yes" : "no"}
-                    </p>
-                  </div>
-                </div>
-                <div className="rounded-2xl border border-border/70 bg-background/60 p-4 text-sm">
-                  <p className="font-medium text-foreground">What this does</p>
-                  <ul className="mt-3 grid gap-2 text-muted-foreground">
-                    <li>Validates the downloaded Google Desktop OAuth JSON for the legacy raw-MCP package.</li>
-                    <li>Copies it to `~/.config/google-drive-mcp/gcp-oauth.keys.json`.</li>
-                    <li>Leaves the token file for the legacy MCP auth flow to create later.</li>
-                    <li>Does not affect proxy MCP readiness.</li>
-                  </ul>
-                </div>
-              </div>
-              <div className="mt-5 flex flex-wrap gap-3">
-                <Button disabled={busyAction === "upload-mcp" || !oauthFile} onClick={saveMcpOAuthJson}>
-                  {busyAction === "upload-mcp" ? "Saving..." : "Save legacy OAuth JSON"}
-                </Button>
-                <Button disabled={busyAction === "refresh-mcp"} onClick={refreshMcpStatus} variant="secondary">
-                  <RefreshCw className="mr-2 h-4 w-4" />
-                  {busyAction === "refresh-mcp" ? "Refreshing..." : "Refresh legacy MCP status"}
-                </Button>
-              </div>
-            </CollapsibleSetupSection>
-
-            <CollapsibleSetupSection
-              disabled={proxyMcpEnabled}
-              expanded={!proxyMcpEnabled && expandedStep6Sections["6.2"]}
-              onToggle={() => toggleStep6Section("6.2")}
-              status={mcpLaunchStatus}
-              subtitle={
-                proxyMcpEnabled
-                  ? "Disabled while FlowPilot proxy MCP is enabled on this runner."
-                  : "Install, launch, and authenticate the third-party MCP package only when you need the legacy fallback."
-              }
-              title="6.2 Legacy raw MCP launch"
-            >
-              <div className="rounded-[1.6rem] border border-border/70 bg-card/50 p-5">
-                <div className="flex flex-wrap items-start justify-between gap-4">
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.24em] text-muted-foreground">
-                      Legacy raw MCP
-                    </p>
-                    <h4 className="mt-2 text-xl font-semibold tracking-tight">
-                      Backend status moved here from MCP Servers
-                    </h4>
-                    <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
-                      This section only applies to the legacy raw-MCP package. The FlowPilot proxy MCP reuses the artifact-sync Google OAuth connection instead.
-                    </p>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <Link
-                      className="inline-flex items-center justify-center rounded-full border border-border bg-background px-4 py-2 text-sm font-semibold transition-colors hover:bg-muted"
-                      search={{ provider: "google_drive" }}
-                      to="/settings/mcp-servers/create"
-                    >
-                      Create MCP
-                    </Link>
-                    <Link
-                      className="inline-flex items-center justify-center rounded-full border border-border bg-background px-4 py-2 text-sm font-semibold transition-colors hover:bg-muted"
-                      to="/settings/mcp-servers/jira-link"
-                    >
-                      Jira MCP Link
-                    </Link>
-                  </div>
-                </div>
-
-                {googleDriveBackend ? (
-                  <div className="mt-5 rounded-[1.4rem] border border-border bg-background/70 p-5">
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div>
-                        <p className="font-mono text-xs uppercase tracking-[0.24em] text-muted-foreground">
-                          {googleDriveBackend.providerType}
-                        </p>
-                        <h5 className="mt-2 text-lg font-semibold tracking-tight">{googleDriveBackend.label}</h5>
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        <Badge tone={backendTone(googleDriveBackend.state)}>
-                          {backendStateLabel(googleDriveBackend.state)}
-                        </Badge>
-                        <Badge tone={googleDriveTypeEnabled ? "success" : "neutral"}>
-                          {googleDriveTypeEnabled ? "enabled" : "disabled"}
-                        </Badge>
-                        <Badge tone="neutral">{googleDriveBackend.transport}</Badge>
-                      </div>
-                    </div>
-
-                    <div className="mt-5 grid gap-3 sm:grid-cols-2">
-                      <SetupDetailRow label="Launcher" value={googleDriveBackend.launcher} />
-                      <SetupDetailRow label="Command" value={googleDriveBackend.command} />
-                      <SetupDetailRow
-                        label="Type State"
-                        value={
-                          googleDriveTypeEnabled
-                            ? "Enabled for Google Drive MCP instances"
-                            : "Disabled until enabled"
-                        }
-                      />
-                      <SetupDetailRow
-                        label="Last Checked"
-                        value={googleDriveBackend.lastCheckedAt ? new Date(googleDriveBackend.lastCheckedAt).toLocaleString() : "Never"}
-                      />
-                    </div>
-
-                    {googleDriveBackend.lastError ? (
-                      <p className="mt-4 rounded-2xl border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-danger">
-                        Last error: {googleDriveBackend.lastError}
-                      </p>
-                    ) : null}
-
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      <Button
-                        disabled={!runnerOnline || runBackendAction.isPending}
-                        onClick={() => runBackendAction.mutate(googleDriveBackend)}
-                        type="button"
-                        variant="secondary"
-                      >
-                        {runBackendAction.isPending ? "Working..." : googleDriveBackend.actionLabel}
-                      </Button>
-                      {googleDriveBackend.transport === "launcher" ? (
-                        <Button
-                          disabled={
-                            !runnerOnline ||
-                            busyAction === "start-mcp-auth" ||
-                            !status?.mcp.credentialFileValid
-                          }
-                          onClick={startMcpAuth}
-                          type="button"
-                          variant="secondary"
-                        >
-                          {busyAction === "start-mcp-auth" ? "Opening..." : "Start Auth"}
-                        </Button>
-                      ) : null}
-                      {googleDriveBackend.transport === "remote" ? (
-                        googleDriveTypeEnabled ? (
-                          <Button
-                            className="bg-danger text-white hover:bg-danger/90"
-                            disabled={!runnerOnline || toggleMcpType.isPending}
-                            onClick={() =>
-                              toggleMcpType.mutate({ enabled: false, providerType: "google_drive" })
-                            }
-                            type="button"
-                            variant="secondary"
-                          >
-                            {toggleMcpType.isPending ? "Working..." : "Disable"}
-                          </Button>
-                        ) : (
-                          <Button
-                            disabled={!runnerOnline || toggleMcpType.isPending}
-                            onClick={() =>
-                              toggleMcpType.mutate({ enabled: true, providerType: "google_drive" })
-                            }
-                            type="button"
-                            variant="secondary"
-                          >
-                            {toggleMcpType.isPending ? "Working..." : "Enable"}
-                          </Button>
-                        )
-                      ) : null}
-                    </div>
-                  </div>
-                ) : (
-                  <div className="mt-5 rounded-2xl border border-dashed border-border bg-background/60 p-4 text-sm text-muted-foreground">
-                    No Google Drive MCP backend was returned by the local runner.
-                  </div>
-                )}
-              </div>
-            </CollapsibleSetupSection>
-
-            <CollapsibleSetupSection
-              expanded={expandedStep6Sections["6.3"]}
-              onToggle={() => toggleStep6Section("6.3")}
+              expanded
+              onToggle={() => {}}
               status={providerSetupStatus}
-              subtitle="Configure Codex, Gemini, and Claude against the FlowPilot proxy MCP. Keep the legacy raw-MCP/Desktop OAuth path only if you still need it."
-              title="6.3 Proxy MCP provider setup"
+              subtitle="Configure Codex, Gemini, and Claude against the FlowPilot proxy MCP."
+              title="Proxy MCP provider setup"
             >
               <GoogleDriveProviderConfigCard
                 embedded
@@ -939,40 +820,24 @@ function buildStepSummary(status: GoogleDriveRuntimeStatus | null) {
   } as const;
 }
 
-function backendTone(state: LocalRunnerMcpBackend["state"]) {
-  switch (state) {
-    case "installed":
+function googleDriveAccountBadgeTone(status: string) {
+  switch (status) {
+    case "configured":
+    case "connected":
       return "success";
-    case "launcher_available":
+    case "needs_auth":
+    case "needs_input":
+    case "reconnect_required":
       return "warning";
-    case "missing":
+    case "failed":
       return "danger";
-  }
-}
-
-function backendStateLabel(state: LocalRunnerMcpBackend["state"]) {
-  switch (state) {
-    case "launcher_available":
-      return "Launcher Available";
     default:
-      return state.replace("_", " ");
+      return "neutral";
   }
 }
 
-function backendSetupStepStatus(
-  backend: LocalRunnerMcpBackend | null,
-  googleDriveTypeEnabled: boolean,
-) {
-  if (!backend) {
-    return "not_started";
-  }
-  if (backend.lastError) {
-    return "failed";
-  }
-  if (backend.transport === "launcher") {
-    return backend.state === "installed" ? "configured" : "needs_input";
-  }
-  return googleDriveTypeEnabled ? "configured" : "needs_input";
+function formatGoogleDriveScopeSummary(scopes?: string[]) {
+  return scopes && scopes.length > 0 ? scopes.join(", ") : "none recorded";
 }
 
 function providerSetupStepStatus(status: GoogleDriveRuntimeStatus | null) {
@@ -1034,19 +899,31 @@ function StatusStack({ status }: { status: GoogleDriveRuntimeStatus | null }) {
 }
 
 function googleDriveMcpDetail(status: GoogleDriveRuntimeStatus) {
+  const accountLabel =
+    status.mcp.proxyMcpEnabled && status.mcp.accountId
+      ? `account ${status.mcp.accountEmail ? `${status.mcp.accountEmail} ` : ""}(${status.mcp.accountId})`
+      : "";
+  const missingScopes = status.mcp.missingScopes?.length
+    ? `missing scopes: ${status.mcp.missingScopes.join(", ")}`
+    : "";
+
   switch (status.mcp.status) {
     case "configured":
-      return "ready";
+      return accountLabel
+        ? `ready · ${accountLabel}`
+        : "ready";
     case "reconnect_required":
-      return "reconnect required";
+      return [accountLabel, "reconnect required", missingScopes].filter(Boolean).join(" · ");
     case "needs_auth":
-      return "auth needed";
+      return [accountLabel, "auth needed", missingScopes].filter(Boolean).join(" · ");
     case "needs_input":
-      return "credentials missing";
+      return status.mcp.proxyMcpEnabled && status.mcp.accountSelectionRequired
+        ? "select a Google account"
+        : "credentials missing";
     case "failed":
-      return "credentials invalid";
+      return [accountLabel, "credentials invalid", missingScopes].filter(Boolean).join(" · ");
     case "warning":
-      return "backend unavailable";
+      return status.mcp.backendPackageAvailable ? "warning" : "FlowPilot or Go launcher unavailable";
     default:
       return status.mcp.status || "not started";
   }
