@@ -107,6 +107,25 @@ func (r *Runner) PreflightGoogleDriveMcp(providerKey string, accountHomePath str
 
 	mcpStatus := googleDriveMcpRuntimeConfig{}
 	if flowpilotGoogleDriveProxyMcpEnabled() {
+		configFile, err := r.loadGoogleDriveWorkspaceConfigFile()
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			result.ErrorMessage = fmt.Sprintf("Failed to check Google Drive MCP status: %v", err)
+			return result
+		}
+		proxyStatus := r.resolveGoogleDriveMcpStatus(configFile)
+		mcpStatus = googleDriveMcpRuntimeConfig{
+			CredentialPath:           proxyStatus.CredentialPath,
+			TokenPath:                proxyStatus.TokenPath,
+			CredentialExists:         proxyStatus.CredentialFileExists,
+			CredentialValid:          proxyStatus.CredentialFileValid,
+			TokenExists:              proxyStatus.TokenFileExists,
+			TokenRefreshValid:        proxyStatus.TokenRefreshValid,
+			BackendPackageAvailable:  proxyStatus.BackendPackageAvailable,
+			AccountID:                proxyStatus.AccountID,
+			AccountEmail:             proxyStatus.AccountEmail,
+			AccountSelectionRequired: proxyStatus.AccountSelectionRequired,
+			Status:                   proxyStatus.Status,
+		}
 		if err := r.validateGoogleDriveProxyMcpPrerequisites(); err != nil {
 			result.ErrorMessage = fmt.Sprintf("FlowPilot proxy Google Drive auth is incomplete: %v", err)
 			return result

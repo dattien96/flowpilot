@@ -382,9 +382,13 @@ func TestPreflightGoogleDriveMcp_ReconnectRequired(t *testing.T) {
 }
 
 func TestPreflightGoogleDriveMcp_ConfigStale(t *testing.T) {
+	t.Setenv(googleDriveProxyMcpFlag, "true")
+
 	workspace := t.TempDir()
 	runner := &Runner{workspace: workspace, secretStore: newMemorySecretStore()}
-	_, tokenPath := writeValidGoogleDriveWorkspaceConfig(t, workspace)
+	writeArtifactSyncOnlyPreflightConfigWithAccountID(t, runner, workspace, "project-1@example.com")
+	writeSingleProxyArtifactConnection(t, runner, "project-1")
+	stubGoogleDriveOAuthTokenRefresh(t)
 
 	accountHomePath := t.TempDir()
 	_, err := runner.EnsureGoogleDriveMcpProviderConfig(GoogleDriveMcpProviderConfigRequest{
@@ -402,10 +406,14 @@ func TestPreflightGoogleDriveMcp_ConfigStale(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read provider config: %v", err)
 	}
-	staleTokenPath := tokenPath + ".stale"
-	updated := strings.Replace(string(raw), tokenPath, staleTokenPath, 1)
+	updated := strings.Replace(
+		string(raw),
+		"project-1@example.com",
+		"project-1@example.com.stale",
+		1,
+	)
 	if updated == string(raw) {
-		t.Fatal("expected to replace token path in provider config")
+		t.Fatal("expected to replace proxy account id in provider config")
 	}
 	if err := os.WriteFile(configPath, []byte(updated), 0o644); err != nil {
 		t.Fatalf("write stale provider config: %v", err)
@@ -455,6 +463,36 @@ func TestPreflightGoogleDriveMcp_ProxyPathFailsWithoutArtifactConnection(t *test
 	}
 	if !strings.Contains(result.ErrorMessage, "no connected Google Drive account is available") {
 		t.Fatalf("expected missing connection error, got %q", result.ErrorMessage)
+	}
+}
+
+func TestPreflightGoogleDriveMcp_ProxyPathUsesSelectedAccountForProviderValidation(t *testing.T) {
+	t.Setenv(googleDriveProxyMcpFlag, "true")
+
+	workspace := t.TempDir()
+	runner := &Runner{workspace: workspace, secretStore: newMemorySecretStore()}
+	writeArtifactSyncOnlyPreflightConfigWithAccountID(t, runner, workspace, "project-1@example.com")
+	writeSingleProxyArtifactConnection(t, runner, "project-1")
+	stubGoogleDriveOAuthTokenRefresh(t)
+
+	accountHomePath := t.TempDir()
+	_, err := runner.EnsureGoogleDriveMcpProviderConfig(GoogleDriveMcpProviderConfigRequest{
+		ProviderKey:     "codex",
+		AccountHomePath: accountHomePath,
+		Scope:           "account",
+		Mode:            "read_only",
+	})
+	if err != nil {
+		t.Fatalf("ensure provider config: %v", err)
+	}
+
+	result := runner.PreflightGoogleDriveMcp("codex", accountHomePath)
+
+	if !result.GoogleDriveReady {
+		t.Fatalf("expected Google Drive proxy preflight to be ready, got error: %q", result.ErrorMessage)
+	}
+	if !result.ProviderConfigured {
+		t.Fatalf("expected provider config to validate with selected proxy account, got error: %q", result.ErrorMessage)
 	}
 }
 
@@ -576,6 +614,41 @@ func writeArtifactSyncOnlyPreflightConfig(t *testing.T, runner *Runner, workspac
 			"redirectUri": googleDriveDefaultRedirectURI,
 		},
 		"mcp": map[string]interface{}{},
+	}
+
+	wsConfigBytes, err := json.Marshal(wsConfig)
+	if err != nil {
+		t.Fatalf("Failed to marshal workspace config: %v", err)
+	}
+
+	wsConfigPath := filepath.Join(flowpilotDir, "google-drive-config.json")
+	if err := os.WriteFile(wsConfigPath, wsConfigBytes, 0o644); err != nil {
+		t.Fatalf("Failed to write workspace config: %v", err)
+	}
+
+	if err := runner.ensureSecretStore().Set(googleDriveArtifactSyncClientSecretKey, "artifact-client-secret"); err != nil {
+		t.Fatalf("Failed to save artifact sync client secret: %v", err)
+	}
+}
+
+func writeArtifactSyncOnlyPreflightConfigWithAccountID(t *testing.T, runner *Runner, workspace string, accountID string) {
+	t.Helper()
+	stubGoogleDriveProxyLauncherAvailable(t)
+
+	flowpilotDir := filepath.Join(workspace, ".flowpilot", "settings")
+	if err := os.MkdirAll(flowpilotDir, 0o755); err != nil {
+		t.Fatalf("Failed to create .flowpilot dir: %v", err)
+	}
+
+	wsConfig := map[string]interface{}{
+		"version": 1,
+		"artifactSync": map[string]interface{}{
+			"clientId":    "artifact-client-id",
+			"redirectUri": googleDriveDefaultRedirectURI,
+		},
+		"mcp": map[string]interface{}{
+			"accountId": accountID,
+		},
 	}
 
 	wsConfigBytes, err := json.Marshal(wsConfig)
