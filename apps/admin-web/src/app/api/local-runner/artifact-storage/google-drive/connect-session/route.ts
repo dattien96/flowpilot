@@ -27,8 +27,9 @@ export async function POST(request: Request) {
     const auth = await assertAdminApiSessionForRequest(request);
     if (!auth.ok) return auth.response;
 
-    const payload = (await request.json()) as { projectId?: string };
+    const payload = (await request.json()) as { projectId?: string; accountId?: string };
     const projectId = payload.projectId?.trim() ?? "";
+    const accountId = payload.accountId?.trim() ?? "";
     if (!projectId) {
       return NextResponse.json({ error: "projectId is required." }, { status: 400 });
     }
@@ -44,6 +45,7 @@ export async function POST(request: Request) {
         body: JSON.stringify({
           projectId,
           baseUrl: getLocalRunnerBaseUrl(),
+          accountId: accountId || undefined,
         }),
       },
     );

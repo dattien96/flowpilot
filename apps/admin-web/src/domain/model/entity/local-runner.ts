@@ -388,9 +388,39 @@ export interface GoogleDriveMcpStatus {
   credentialFileExists: boolean;
   credentialFileValid: boolean;
   tokenFileExists: boolean;
+  tokenRefreshValid: boolean;
   needsAuth: boolean;
   backendPackageAvailable: boolean;
+  accountId?: string;
+  accountEmail?: string;
+  accountSelectionRequired?: boolean;
+  grantedScopes?: string[];
+  missingScopes?: string[];
+  accountReady: boolean;
+  artifactBindingPresent?: boolean;
+  artifactReady: boolean;
+  mcpReadReady: boolean;
+  mcpWriteReady: boolean;
+  reconnectRequired?: boolean;
   missingFields?: string[];
+}
+
+export interface GoogleDriveAccountStatus {
+  accountId: string;
+  accountEmail?: string;
+  accountSubject?: string;
+  oauthClientId?: string;
+  grantedScopes?: string[];
+  missingScopes?: string[];
+  status: string;
+  projectCount: number;
+  accountReady: boolean;
+  mcpReadReady: boolean;
+  mcpWriteReady: boolean;
+  reconnectRequired?: boolean;
+  connectedAt?: string;
+  updatedAt?: string;
+  lastError?: string;
 }
 
 export interface GoogleDriveArtifactSyncStatus {
@@ -407,6 +437,7 @@ export interface GoogleDriveArtifactSyncStatus {
 export interface GoogleDriveWorkspaceConfigResponse {
   artifactSync: GoogleDriveArtifactSyncStatus;
   mcp: GoogleDriveMcpStatus;
+  accounts?: GoogleDriveAccountStatus[];
   providerConfigs?: GoogleDriveMcpProviderConfigStatus[];
   runnerReachable: boolean;
   lastError?: string | null;
