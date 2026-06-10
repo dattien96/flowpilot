@@ -367,6 +367,8 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
         isTemplate: true,
         providerOverride: null,
         modelOverride: null,
+        reasoningEffortOverride: null,
+        yoloMode: false,
         createdBy: "seed",
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -381,6 +383,8 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
           isEnabled: true,
           providerOverride: null,
           modelOverride: null,
+          reasoningEffortOverride: null,
+          yoloMode: null,
           requiresApproval: true,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
@@ -422,6 +426,7 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
       teamRole: step.teamRole ?? null,
       subagent: step.subagent ?? null,
       model: step.model,
+      yoloMode: typeof step.yoloMode === "boolean" ? step.yoloMode : null,
     };
     const existingIndex = this.stepDefinitions.findIndex(
       (current) => current.stepType === next.stepType

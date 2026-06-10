@@ -64,6 +64,7 @@ export function mapStepDefinition(row: SupabaseRow): StepDefinition {
         STEP_MODEL_OPTIONS[0].value,
     ) as SupportedStepModel,
     reasoningEffort: row.reasoning_effort ? (String(row.reasoning_effort) as ReasoningEffort) : null,
+    yoloMode: typeof row.yolo_mode === "boolean" ? row.yolo_mode : null,
     agentType: row.agent_type as "standard" | "autonomous",
     inputArtifactDefinitions,
     outputArtifactDefinitions,

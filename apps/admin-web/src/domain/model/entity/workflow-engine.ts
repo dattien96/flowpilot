@@ -141,6 +141,7 @@ export interface StepDefinition {
   subagent?: string | null;
   model: SupportedStepModel;
   reasoningEffort?: string | null;
+  yoloMode?: boolean | null;
   agentType: "standard" | "autonomous";
   inputArtifactDefinitions?: string[];
   outputArtifactDefinitions?: string[];

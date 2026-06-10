@@ -569,6 +569,7 @@ export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
           subagent: step.subagent ?? null,
           model: step.model,
           reasoning_effort: normalizeReasoningEffort(step.reasoningEffort),
+          yolo_mode: typeof step.yoloMode === "boolean" ? step.yoloMode : null,
           agent_type: step.agentType,
         },
         { onConflict: "step_type" }

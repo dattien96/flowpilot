@@ -77,6 +77,7 @@ function buildStepDefinition(overrides: Partial<StepDefinition> = {}): StepDefin
     promptBase: "Generate the initial project spec.",
     requiredMcps: [],
     requiredSkills: [],
+    yoloMode: true,
     model: "gpt-5.4",
     agentType: "standard",
     createdAt: "2026-05-20T00:00:00.000Z",

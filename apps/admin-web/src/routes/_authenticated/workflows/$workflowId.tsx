@@ -179,7 +179,7 @@ export function WorkflowDetailPage() {
         orderIndex: current.length,
         isEnabled: true,
         requiresApproval: true,
-        yoloMode: null,
+        yoloMode: selectedStep?.yoloMode ?? null,
         modelOverride: selectedStep?.model ?? DEFAULT_MODEL,
         reasoningEffortOverride: selectedStep?.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
       },
