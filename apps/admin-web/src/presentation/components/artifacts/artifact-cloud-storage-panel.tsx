@@ -19,6 +19,7 @@ type GoogleDriveConnectionPayload = {
     status: string;
     folderId?: string;
     folderName?: string;
+    accountId?: string;
     accountEmail?: string;
     lastError?: string;
     lastValidatedAt?: string;
@@ -29,6 +30,8 @@ type GoogleDriveConnectionPayload = {
     status: string;
     connectUrl?: string;
     expiresAt?: string;
+    accountId?: string;
+    accountEmail?: string;
     lastError?: string;
   } | null;
 };
@@ -78,6 +81,7 @@ export function ArtifactCloudStoragePanel({ projects }: ArtifactCloudStoragePane
   const [detailProvider, setDetailProvider] = useState<StorageProviderOption>("supabase");
   const [googleDriveState, setGoogleDriveState] = useState<GoogleDriveConnectionPayload | null>(null);
   const [googleDriveSetupStatus, setGoogleDriveSetupStatus] = useState<GoogleDriveRuntimeStatus | null>(null);
+  const [selectedGoogleDriveAccountId, setSelectedGoogleDriveAccountId] = useState("");
   const [loadingState, setLoadingState] = useState(false);
   const [loadingSetupState, setLoadingSetupState] = useState(false);
   const [startingSession, setStartingSession] = useState(false);
@@ -251,7 +255,7 @@ export function ArtifactCloudStoragePanel({ projects }: ArtifactCloudStoragePane
   }
 
   async function startGoogleDriveConnect() {
-    if (!selectedProjectId) {
+    if (!selectedProjectId || !selectedGoogleDriveAccountId.trim()) {
       return;
     }
     setStartingSession(true);
@@ -265,6 +269,7 @@ export function ArtifactCloudStoragePanel({ projects }: ArtifactCloudStoragePane
         },
         body: JSON.stringify({
           projectId: selectedProjectId,
+          accountId: selectedGoogleDriveAccountId.trim(),
         }),
       });
       if (response.status === 401) {
@@ -424,17 +429,34 @@ export function ArtifactCloudStoragePanel({ projects }: ArtifactCloudStoragePane
 
   const connection = googleDriveState?.connection ?? null;
   const session = googleDriveState?.session ?? null;
+  const googleDriveAccounts = googleDriveSetupStatus?.accounts ?? [];
+  const selectedGoogleDriveAccount =
+    googleDriveAccounts.find((account) => account.accountId === selectedGoogleDriveAccountId) ?? null;
   const providerPreference = selectedProject?.artifactStoragePreference ?? "supabase";
   const googleDriveConfigured = Boolean(googleDriveSetupStatus?.artifactSync?.configured);
   const googleDriveConnected = Boolean(
     connection?.status === "connected" && connection.folderId?.trim(),
   );
+  const googleDriveAccountReady = Boolean(selectedGoogleDriveAccount?.accountReady && selectedGoogleDriveAccount?.mcpWriteReady);
   const providerLabel = providerPreference === "google_drive" ? "Google Drive" : "Supabase Storage";
   const detailProviderLabel = detailProvider === "google_drive" ? "Google Drive" : "Supabase Storage";
 
   useEffect(() => {
     setDetailProvider(providerPreference);
   }, [providerPreference, selectedProjectId]);
+
+  useEffect(() => {
+    const preferredAccountId =
+      connection?.accountId?.trim() ||
+      session?.accountId?.trim() ||
+      googleDriveSetupStatus?.mcp?.accountId?.trim() ||
+      (googleDriveAccounts.length === 1 ? googleDriveAccounts[0]?.accountId?.trim() : "") ||
+      "";
+    if (!preferredAccountId) {
+      return;
+    }
+    setSelectedGoogleDriveAccountId((current) => current || preferredAccountId);
+  }, [connection?.accountId, googleDriveAccounts, googleDriveSetupStatus?.mcp?.accountId, session?.accountId]);
 
   return (
     <section className="rounded-[1.6rem] border border-border bg-background/70 p-6">
@@ -573,18 +595,44 @@ export function ArtifactCloudStoragePanel({ projects }: ArtifactCloudStoragePane
                 </p>
               </div>
 
-              <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                <InfoTile label="Selected folder" value={connection?.folderName || "Not connected"} />
-                <InfoTile label="Folder id" value={connection?.folderId || "Not selected"} />
-                <InfoTile label="Google account" value={connection?.accountEmail || "Unknown"} />
-                <InfoTile label="Last validated" value={connection?.lastValidatedAt || "Never"} />
-                <InfoTile label="Connected at" value={connection?.connectedAt || "Never"} />
-                <InfoTile label="Last error" value={connection?.lastError || session?.lastError || "None"} />
-              </div>
+	              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+	                <InfoTile label="Selected folder" value={connection?.folderName || "Not connected"} />
+	                <InfoTile label="Folder id" value={connection?.folderId || "Not selected"} />
+	                <InfoTile label="Google account" value={connection?.accountEmail || "Unknown"} />
+	                <InfoTile label="Last validated" value={connection?.lastValidatedAt || "Never"} />
+	                <InfoTile label="Connected at" value={connection?.connectedAt || "Never"} />
+	                <InfoTile label="Last error" value={connection?.lastError || session?.lastError || "None"} />
+	              </div>
 
-              {googleDriveConfigured && session?.connectUrl ? (
-                <div className="mt-4 rounded-2xl border border-dashed border-border bg-background/70 p-4">
-                  <p className="text-sm font-medium">Active connect link</p>
+	              <div className="mt-4 rounded-2xl border border-border bg-background px-4 py-3">
+	                <label className="space-y-2">
+	                  <span className="text-sm font-medium">Connected Google account</span>
+	                  <select
+	                    className="w-full rounded-2xl border border-border bg-card px-4 py-3 text-sm outline-none"
+	                    value={selectedGoogleDriveAccountId}
+	                    onChange={(event) => setSelectedGoogleDriveAccountId(event.target.value)}
+	                  >
+	                    <option value="">Select a connected account</option>
+	                    {googleDriveAccounts.map((account) => (
+	                      <option key={account.accountId} value={account.accountId}>
+	                        {account.accountEmail ? `${account.accountEmail} (${account.accountId})` : account.accountId}
+	                      </option>
+	                    ))}
+	                  </select>
+	                </label>
+	                <p className="mt-2 text-xs text-muted-foreground">
+	                  Pick the connected Google account first, then choose the artifact folder for this project.
+	                </p>
+	                {selectedGoogleDriveAccount ? (
+	                  <p className="mt-2 text-xs text-muted-foreground">
+	                    Account status: {selectedGoogleDriveAccount.status}. MCP read: {selectedGoogleDriveAccount.mcpReadReady ? "ready" : "missing scope"}.
+	                  </p>
+	                ) : null}
+	              </div>
+
+	              {googleDriveConfigured && session?.connectUrl ? (
+	                <div className="mt-4 rounded-2xl border border-dashed border-border bg-background/70 p-4">
+	                  <p className="text-sm font-medium">Active connect link</p>
                   <a
                     className="mt-2 inline-flex items-center gap-2 text-sm text-primary underline-offset-4 hover:underline"
                     href={session.connectUrl}
@@ -601,29 +649,29 @@ export function ArtifactCloudStoragePanel({ projects }: ArtifactCloudStoragePane
               ) : null}
 
               <div className="mt-4 flex flex-wrap items-center gap-3">
-                {!googleDriveConfigured ? (
-                  <a
+	                {!googleDriveConfigured ? (
+	                  <a
                     className="inline-flex items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground"
                     href="/settings/google-drive-setup"
                   >
                     Complete Google Console setup
                   </a>
-                ) : (
-                  <Button
-                    type="button"
-                    disabled={!selectedProjectId || startingSession}
-                    onClick={() => {
-                      void startGoogleDriveConnect();
-                    }}
-                  >
-                    <FolderOpen className="mr-2 size-4" />
-                    {startingSession
-                      ? "Starting..."
-                      : connection?.status === "connected"
-                        ? "Reconnect Google Drive"
-                        : "Connect Google Drive"}
-                  </Button>
-                )}
+	                ) : (
+	                  <Button
+	                    type="button"
+	                    disabled={!selectedProjectId || startingSession || !selectedGoogleDriveAccountId || !googleDriveAccountReady}
+	                    onClick={() => {
+	                      void startGoogleDriveConnect();
+	                    }}
+	                  >
+	                    <FolderOpen className="mr-2 size-4" />
+	                    {startingSession
+	                      ? "Starting..."
+	                      : connection?.status === "connected"
+	                        ? "Choose Google Drive folder"
+	                        : "Choose Google Drive folder"}
+	                  </Button>
+	                )}
                 {providerPreference !== "google_drive" ? (
                   <Button
                     type="button"
@@ -651,14 +699,14 @@ export function ArtifactCloudStoragePanel({ projects }: ArtifactCloudStoragePane
             </>
           )}
 
-          <p className="mt-4 text-sm text-muted-foreground">
-            {statusMessage ??
-              (detailProvider === "google_drive"
-                ? googleDriveConfigured
-                  ? "Connect Google Drive on this runner, choose one folder, then select Google Drive as the active provider."
-                  : "Finish Google Console setup first, then return here to connect a Google Drive folder and select it."
-                : "Supabase stays available immediately and does not require any extra host setup.")}
-          </p>
+	          <p className="mt-4 text-sm text-muted-foreground">
+	            {statusMessage ??
+	              (detailProvider === "google_drive"
+	                ? googleDriveConfigured
+	                  ? "Select a connected Google account, choose one folder for this project, then select Google Drive as the active provider."
+	                  : "Finish Google Console setup first, then return here to connect a Google account and choose a project folder."
+	                : "Supabase stays available immediately and does not require any extra host setup.")}
+	          </p>
         </div>
       </div>
 
