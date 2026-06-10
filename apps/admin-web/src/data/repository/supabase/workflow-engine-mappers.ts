@@ -169,6 +169,7 @@ export function mapWorkflowStep(row: SupabaseRow): WorkflowStep {
       ? normalizeStepModel(String(row.model_override)) ?? String(row.model_override)
       : null,
     reasoningEffortOverride: row.reasoning_effort_override ? String(row.reasoning_effort_override) : null,
+    yoloMode: typeof row.yolo_mode === "boolean" ? row.yolo_mode : null,
     requiresApproval: Boolean(row.requires_approval),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),

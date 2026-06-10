@@ -58,6 +58,7 @@ type WorkflowStepRow = {
   provider_override: string | null;
   model_override: string | null;
   reasoning_effort_override: string | null;
+  yolo_mode?: boolean | null;
   provider_account_override_id: string | null;
   requires_approval: boolean;
 };
@@ -132,6 +133,7 @@ type StepExecutionPlan = {
   providerKey: string;
   model: string;
   reasoningEffort: string | null;
+  yoloMode: boolean;
   providerAccountId: string | null;
   inputArtifactKeys: string[];
   outputArtifactKeys: string[];
@@ -2161,7 +2163,7 @@ async function loadWorkflowRunStep(
     .from("workflow_run_steps")
     .select(
       "id, workflow_run_id, workflow_step_id, execution_order_index, step_type, status, retry_count, error_message, " +
-        "workflow_steps ( id, step_type, order_index, is_enabled, provider_override, model_override, reasoning_effort_override, provider_account_override_id, requires_approval )",
+        "workflow_steps ( id, step_type, order_index, is_enabled, provider_override, model_override, reasoning_effort_override, yolo_mode, provider_account_override_id, requires_approval )",
     )
     .eq("id", stepRunId)
     .maybeSingle();
@@ -2202,7 +2204,7 @@ async function loadWorkflowSteps(
   const { data, error } = await adminClient
     .from("workflow_steps")
     .select(
-      "id, step_type, order_index, is_enabled, provider_override, model_override, reasoning_effort_override, requires_approval",
+      "id, step_type, order_index, is_enabled, provider_override, model_override, reasoning_effort_override, yolo_mode, provider_account_override_id, requires_approval",
     )
     .eq("workflow_id", workflowId)
     .order("order_index", { ascending: true });
@@ -2221,7 +2223,7 @@ async function loadWorkflowStepById(
   const { data, error } = await adminClient
     .from("workflow_steps")
     .select(
-      "id, step_type, order_index, is_enabled, provider_override, model_override, reasoning_effort_override, requires_approval",
+      "id, step_type, order_index, is_enabled, provider_override, model_override, reasoning_effort_override, yolo_mode, provider_account_override_id, requires_approval",
     )
     .eq("id", workflowStepId)
     .maybeSingle();
@@ -2445,6 +2447,7 @@ async function resolvePlannedStepExecution(
     model: normalizedModel,
     providerKey: resolvedProvider,
     reasoningEffort: resolvedReasoningEffort,
+    yoloMode: step.yolo_mode ?? Boolean(workflow.yolo_mode),
     providerAccountId: step.provider_account_override_id ?? null,
   };
 }
@@ -2551,6 +2554,7 @@ async function resolveBuiltInStepExecution(
       adminClient,
     ),
     reasoningEffort: resolvedReasoningEffort,
+    yoloMode: Boolean(workflow.yolo_mode),
     providerAccountId: null,
   };
 }
@@ -3054,7 +3058,7 @@ export async function submitWorkflowStepFollowUpRuntime({
       skillIds: definition.required_skills ?? [],
       requiredMcps: definition.required_mcps ?? [],
       allowWrite,
-      yoloMode: Boolean(run.yolo_mode),
+      yoloMode: execution.yoloMode,
       idleTTLSeconds: projectDefaults.session_idle_ttl_minutes
         ? projectDefaults.session_idle_ttl_minutes * 60
         : undefined,
@@ -3104,7 +3108,7 @@ export async function submitWorkflowStepFollowUpRuntime({
       stepRunId: stepRun.id,
       stepType: stepRun.step_type,
       mcpAccessMode: stepAllowsGoogleDriveWrites(definition) ? "read_write" : "read_only",
-      yoloMode: Boolean(run.yolo_mode),
+      yoloMode: execution.yoloMode,
       artifactWorkspaceRoot,
     });
     const artifactRunId = artifactOutputResult.artifactRunId;
@@ -3720,7 +3724,7 @@ export async function runWorkflowStartRuntime({
           skillIds: stepPlan.definition.required_skills ?? [],
           requiredMcps: stepPlan.definition.required_mcps ?? [],
           allowWrite: stepAllowsGoogleDriveWrites(stepPlan.definition),
-          yoloMode: Boolean(runRow.yolo_mode),
+          yoloMode: stepPlan.yoloMode,
           idleTTLSeconds: projectDefaults.session_idle_ttl_minutes
             ? projectDefaults.session_idle_ttl_minutes * 60
             : undefined,
@@ -3769,7 +3773,7 @@ export async function runWorkflowStartRuntime({
           stepRunId,
           stepType: stepPlan.stepType,
           mcpAccessMode: stepAllowsGoogleDriveWrites(stepPlan.definition) ? "read_write" : "read_only",
-          yoloMode: Boolean(runRow.yolo_mode),
+          yoloMode: stepPlan.yoloMode,
           artifactWorkspaceRoot,
         });
         const artifactRunId = artifactOutputResult.artifactRunId;

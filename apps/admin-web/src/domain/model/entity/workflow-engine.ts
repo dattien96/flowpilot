@@ -223,6 +223,7 @@ export interface WorkflowStep {
   providerOverride: string | null;
   modelOverride: string | null;
   reasoningEffortOverride?: string | null;
+  yoloMode: boolean | null;
   requiresApproval: boolean;
   createdAt: string;
   updatedAt: string;

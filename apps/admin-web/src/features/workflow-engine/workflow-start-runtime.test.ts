@@ -1173,6 +1173,7 @@ describe("workflow-start-runtime", () => {
         provider_override: null,
         model_override: null,
         reasoning_effort_override: null,
+        yolo_mode: true,
       };
       const workflowStepRow = {
         id: workflowStepId,
@@ -1182,6 +1183,7 @@ describe("workflow-start-runtime", () => {
         provider_override: null,
         model_override: null,
         reasoning_effort_override: null,
+        yolo_mode: false,
         provider_account_override_id: null,
         requires_approval: true,
       };

@@ -766,6 +766,7 @@ export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
             step.reasoningEffortOverride,
             resolvedWorkflowReasoning,
           ),
+          yolo_mode: typeof step.yoloMode === "boolean" ? step.yoloMode : null,
           requires_approval: step.requiresApproval ?? true,
         }))
       );
