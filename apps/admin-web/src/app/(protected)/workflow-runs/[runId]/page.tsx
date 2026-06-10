@@ -49,6 +49,12 @@ function summarizeRunPrompt(promptText?: string) {
     : firstLine;
 }
 
+function isGoogleDriveMcpApprovalMessage(message?: string | null) {
+  const normalized = message?.trim().toLowerCase() ?? "";
+  return normalized.includes("google drive mcp approval required") ||
+    normalized.includes("google drive write approval required");
+}
+
 export default async function WorkflowRunDetailPage({
   params,
 }: {
@@ -89,6 +95,12 @@ export default async function WorkflowRunDetailPage({
 
   const pendingApproval = detail.approvals.find(
     (approval) => approval.status === "pending",
+  );
+  const pendingApprovalStep = pendingApproval
+    ? detail.steps.find((step) => step.id === pendingApproval.workflowStepId) ?? null
+    : null;
+  const isGoogleDriveMcpApproval = isGoogleDriveMcpApprovalMessage(
+    pendingApprovalStep?.errorMessage ?? pendingApproval?.comment ?? null,
   );
   const outputByStepId = new Map(
     detail.outputs.map((output) => [output.workflowStepId, output]),
@@ -218,47 +230,80 @@ export default async function WorkflowRunDetailPage({
             <h2 className="text-xl font-semibold">Approval panel</h2>
             {pendingApproval ? (
               <div className="mt-4 grid gap-3">
-                <form
-                  action={`/api/approvals/${pendingApproval.id}/decision`}
-                  method="post"
-                >
-                  <textarea
-                    className="mb-3 min-h-20 w-full rounded-2xl border border-border bg-card px-4 py-3 text-sm"
-                    name="comment"
-                    placeholder="Decision comment"
-                  />
-                  <div className="flex flex-wrap gap-3">
-                    <input name="decision" type="hidden" value="approved" />
-                    <Button type="submit">Approve</Button>
-                  </div>
-                </form>
-                <form
-                  action={`/api/approvals/${pendingApproval.id}/decision`}
-                  method="post"
-                >
-                  <input
-                    name="decision"
-                    type="hidden"
-                    value="changes_requested"
-                  />
-                  <input
-                    name="comment"
-                    type="hidden"
-                    value="Changes requested from run detail."
-                  />
-                  <Button type="submit" variant="secondary">
-                    Request changes
-                  </Button>
-                </form>
-                <form
-                  action={`/api/approvals/${pendingApproval.id}/decision`}
-                  method="post"
-                >
-                  <input name="decision" type="hidden" value="rejected" />
-                  <Button type="submit" variant="ghost">
-                    Reject
-                  </Button>
-                </form>
+                {isGoogleDriveMcpApproval ? (
+                  <form
+                    action="/api/workflow-engine/google-drive-write-approval"
+                    method="post"
+                  >
+                    <input
+                      name="stepId"
+                      type="hidden"
+                      value={pendingApproval.workflowStepId}
+                    />
+                    <textarea
+                      className="mb-3 min-h-20 w-full rounded-2xl border border-border bg-card px-4 py-3 text-sm"
+                      name="comment"
+                      placeholder="Optional comment for this Google Drive approval"
+                    />
+                    <div className="flex flex-wrap gap-3">
+                      <Button name="decision" type="submit" value="approved">
+                        Approve request
+                      </Button>
+                      <Button
+                        name="decision"
+                        type="submit"
+                        value="rejected"
+                        variant="ghost"
+                      >
+                        Reject request
+                      </Button>
+                    </div>
+                  </form>
+                ) : (
+                  <>
+                    <form
+                      action={`/api/approvals/${pendingApproval.id}/decision`}
+                      method="post"
+                    >
+                      <textarea
+                        className="mb-3 min-h-20 w-full rounded-2xl border border-border bg-card px-4 py-3 text-sm"
+                        name="comment"
+                        placeholder="Decision comment"
+                      />
+                      <div className="flex flex-wrap gap-3">
+                        <input name="decision" type="hidden" value="approved" />
+                        <Button type="submit">Approve</Button>
+                      </div>
+                    </form>
+                    <form
+                      action={`/api/approvals/${pendingApproval.id}/decision`}
+                      method="post"
+                    >
+                      <input
+                        name="decision"
+                        type="hidden"
+                        value="changes_requested"
+                      />
+                      <input
+                        name="comment"
+                        type="hidden"
+                        value="Changes requested from run detail."
+                      />
+                      <Button type="submit" variant="secondary">
+                        Request changes
+                      </Button>
+                    </form>
+                    <form
+                      action={`/api/approvals/${pendingApproval.id}/decision`}
+                      method="post"
+                    >
+                      <input name="decision" type="hidden" value="rejected" />
+                      <Button type="submit" variant="ghost">
+                        Reject
+                      </Button>
+                    </form>
+                  </>
+                )}
               </div>
             ) : (
               <p className="mt-4 text-sm text-muted-foreground">
