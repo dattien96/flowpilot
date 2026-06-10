@@ -38,13 +38,13 @@
 - `P-2` Use `stdio` transport first because provider clients already support local command-based MCP servers.
 - `P-3` Configure AI providers to connect to FlowPilot's MCP server when write-mode observability is required.
 - `P-4` Keep `read_only` as the default for all workflow steps.
-- `P-5` When workflow run `yolo_mode` is off, provider MCP `call_tool` approval must require user approval for both read and write tools.
+- `P-5` When workflow run `yolo_mode` is off, FlowPilot proxy approval must require user approval for both read and write tools.
 - `P-6` Keep destructive and permission-changing Google Drive tools disabled until a separate policy is approved.
 - `P-7` Use direct Google API calls inside FlowPilot MCP instead of proxying to the existing package.
 - `P-8` Reuse the existing runner-local Google OAuth, token refresh, and Drive API helper path where possible, but treat proxy MCP auth as selected-account state rather than "the currently connected artifact project".
 - `P-9` Bind approval expiry to the active workflow/provider session timeout; when the session is destroyed, pending, approved, or auto-approved write requests expire if they have not executed.
 - `P-10` Rejected or failed write MCP calls should let the provider continue and produce a useful output artifact with a clear user-facing notice.
-- `P-11` When workflow run `yolo_mode` is on, provider MCP `call_tool` approval must auto-approve both read and policy-allowed write tools.
+- `P-11` When workflow run `yolo_mode` is on, FlowPilot proxy approval must auto-approve both read and policy-allowed write tools.
 - `P-12` FlowPilot write audit remains per exact write tool call; YOLO auto-approval applies only for the active run/session and policy-allowed write tools.
 - `P-13` Once proxy MCP is the active Google Drive MCP path, the Drive settings page should no longer require the third-party MCP Desktop OAuth JSON step.
 - `P-14` Keep the third-party MCP Desktop OAuth setup only as a legacy/raw-MCP fallback while the proxy MCP feature flag is off.
@@ -53,7 +53,7 @@
 
 - FlowPilot currently sends prompts to provider CLIs; provider CLIs own MCP client behavior.
 - FlowPilot cannot reliably see exact provider-side Google Drive write tool calls when providers connect directly to the raw Google Drive MCP package.
-- Provider-side MCP `call_tool` approval applies to read and write tools; Codex `default_tools_approval_mode = "approve"` is equivalent to YOLO-style auto-approval for MCP tool calls.
+- Headless workflow runs cannot reliably surface provider-host MCP approval popups, so the proxy path must keep provider-host approval non-blocking and move exact read/write approval to the FlowPilot proxy boundary.
 - Supabase must not store Google OAuth tokens, Desktop OAuth JSON contents, or MCP token contents.
 - Artifact sync currently proves Google Drive upload/write capability through FlowPilot's own Google API path, but broader proxy MCP tools may need additional scopes and APIs.
 - The first implementation should stay local-runner owned and machine-local.
@@ -346,19 +346,22 @@ User starts workflow
 -> FlowPilot launches provider
 -> provider connects to FlowPilot MCP
 -> if yolo_mode is off:
-     provider asks for user approval before MCP call_tool
+     provider can reach FlowPilot MCP without a host popup
+     FlowPilot MCP creates a pending read approval for the exact tool call
+     workflow step moves to waiting_approval
+     user approves
+     provider reruns and retries the exact approved read call
 -> if yolo_mode is on:
-     provider auto-approves MCP call_tool
--> provider calls search/read/list tools after provider approval mode allows the call
--> FlowPilot MCP executes immediately
+     provider can reach FlowPilot MCP without a host popup
+     FlowPilot MCP auto-approves the read call and executes immediately
 -> provider uses returned Drive context
 -> provider returns final answer
 ```
 
-FlowPilot MCP does not create write-approval records for read tools, but provider MCP `call_tool` approval still follows YOLO mode:
+FlowPilot MCP creates exact-match approval records for read tools when manual approval is required:
 
-- YOLO off: user approval before read or write `call_tool`
-- YOLO on: auto-approve read or policy-allowed write `call_tool`
+- YOLO off: pending approval before executing the exact read or write tool call
+- YOLO on: auto-approve the exact read or policy-allowed write tool call
 
 #### 3.6 Write-Mode Flow
 
@@ -372,16 +375,17 @@ User starts workflow
 -> runtime reads workflowRun.yolo_mode
 -> FlowPilot launches provider with write-capable FlowPilot MCP config
 -> if yolo_mode is off:
-     provider asks for user approval before MCP call_tool
+     provider can reach FlowPilot MCP without a host popup
 -> if yolo_mode is on:
-     provider auto-approves MCP call_tool
--> provider calls createGoogleDoc after provider approval mode allows the call
+     provider can reach FlowPilot MCP without a host popup
+-> provider calls createGoogleDoc
 -> FlowPilot MCP receives the write call
 -> if yolo_mode is off:
      FlowPilot MCP creates pending approval record
      workflow step moves to waiting_approval
-     UI shows exact tool, target, and arguments summary
+     UI shows exact tool, operation, target summary, and expiry details
      user approves
+     provider reruns and retries the exact approved write call
      FlowPilot MCP executes the stored write call
 -> if yolo_mode is on:
      FlowPilot MCP creates an auto-approved audit record
@@ -620,14 +624,10 @@ Tool metadata requirements:
 - destructive flag:
   - `true` for destructive tools
   - `false` for non-destructive tools
-- provider call-tool approval:
-  - `prompt_when_yolo_off` for read tools
-  - `prompt_when_yolo_off` for write tools
-  - `auto_approve_when_yolo_on` for read and policy-allowed write tools
-- FlowPilot write execution approval:
-  - `none` for read tools
+- FlowPilot proxy approval:
+  - `required_when_yolo_off` for read tools
   - `required_when_yolo_off` for write tools
-  - `auto_approved_when_yolo_on` for policy-allowed write tools
+  - `auto_approved_when_yolo_on` for read and policy-allowed write tools
 
 Suggested Go shape:
 
@@ -801,8 +801,18 @@ Handler flow for every tool:
 Receive tool call
 -> identify tool metadata
 -> if read tool:
-     provider call_tool approval has already been handled by provider config
-     execute immediately
+     if yolo_mode is on:
+         create auto_approved approval record
+         execute immediately
+     if yolo_mode is off and no matching approved approval:
+         create pending approval record
+         signal workflow waiting_approval
+         return error MCP_TOOL_APPROVAL_REQUIRED with approval id
+     if yolo_mode is off and matching approval exists:
+         execute read
+         save result_json
+         mark approval executed
+         return tool result
 -> if write tool and access mode is not read_write:
      return error DRIVE_WRITE_NOT_ALLOWED
 -> if write tool and yolo_mode is on and tool is policy-allowed:
@@ -827,7 +837,7 @@ Receive tool call
 
 Important behavior:
 
-- When YOLO mode is off, the provider must require user approval before read or write MCP `call_tool`.
+- When YOLO mode is off, FlowPilot proxy approval must block exact read or write tool execution until the user approves.
 - When YOLO mode is off, a write must not execute before FlowPilot write approval.
 - When YOLO mode is on, policy-allowed writes are auto-approved before execution and must still create audit records.
 - Approval must match:
@@ -841,6 +851,7 @@ Important behavior:
 Tool error text:
 
 ```text
+MCP_TOOL_APPROVAL_REQUIRED: FlowPilot created approval request <approvalId>. Wait for user approval before retrying this exact Google Drive tool call.
 MCP_WRITE_APPROVAL_REQUIRED: FlowPilot created approval request <approvalId>. Wait for user approval before retrying this exact write.
 ```
 
@@ -1021,15 +1032,15 @@ enabled_tools = [
   "listFolder",
   "readGoogleDoc"
 ]
-default_tools_approval_mode = "<prompt | approve>"
+default_tools_approval_mode = "<approve>"
 ```
 
 Approval mode mapping:
 
-- `yolo_mode = false` -> `default_tools_approval_mode = "prompt"`
+- `yolo_mode = false` -> `default_tools_approval_mode = "approve"`
 - `yolo_mode = true` -> `default_tools_approval_mode = "approve"`
 
-This applies to both read and write tool calls. The observed Codex fix from `prompt` to `approve` is the YOLO-mode behavior; non-YOLO runs should keep `prompt` so the user grants MCP `call_tool` execution.
+For the proxy path, host-side provider approval stays non-blocking so the provider can always reach FlowPilot MCP. The active run's `--yolo-mode` flag tells FlowPilot MCP whether to create manual approvals or auto-approve exact tool calls.
 
 For `read_write`, include package-equivalent write tools allowed by policy:
 
@@ -1047,9 +1058,9 @@ enabled_tools = [
 
 Important:
 
-- Provider MCP tool-call approval is separate from FlowPilot write execution policy.
-- In non-YOLO runs, provider config must prompt before both read and write MCP `call_tool` requests.
-- In YOLO runs, provider config must auto-approve read and policy-allowed write MCP `call_tool` requests.
+- Provider host approval must not block the proxy path during headless workflow execution.
+- In non-YOLO runs, FlowPilot MCP must create manual approvals before executing exact read or write tool calls.
+- In YOLO runs, FlowPilot MCP must auto-approve exact read and policy-allowed write tool calls.
 - Provider config can expose write tools only when the step/session needs write mode.
 - Prefer temporary run-scoped provider config for write mode.
 - Do not permanently add write tools to a normal provider account config unless product explicitly approves that.
@@ -1074,8 +1085,8 @@ Tests:
 - Provider config points to FlowPilot MCP server, not raw package, when CP-29 feature flag is enabled.
 - Read-only config excludes write tools if using tool allowlists.
 - Write-mode config includes package-equivalent policy-allowed write tools.
-- Non-YOLO Codex config uses `default_tools_approval_mode = "prompt"` for read and write tool calls.
-- YOLO Codex config uses `default_tools_approval_mode = "approve"` for read and policy-allowed write tool calls.
+- Codex proxy config uses `default_tools_approval_mode = "approve"` so the host does not hide approvals from FlowPilot.
+- The proxy server arguments still carry `--yolo-mode=true|false` so FlowPilot owns the final approval behavior.
 - Existing unrelated provider config is preserved.
 
 #### P-10: Add UI For Pending Write Approvals
@@ -1146,8 +1157,9 @@ Read-only prompt section:
 This workflow step requires FlowPilot MCP `google_drive`.
 Provider MCP tool-call approval mode for this run: `<manual | yolo_auto_approve>`.
 
-If approval mode is `manual`, ask the user before every Google Drive MCP `call_tool`, including read tools.
+If approval mode is `manual`, call Google Drive tools through FlowPilot MCP and wait for FlowPilot to return the next approval-required status when a tool needs approval.
 If approval mode is `yolo_auto_approve`, Google Drive MCP read tools can be called without waiting for user approval.
+If FlowPilot returns `MCP_TOOL_APPROVAL_REQUIRED`, stop and return that code with the approval ID.
 
 Use read-only tools only.
 Do not create, update, delete, move, or share Drive files.
@@ -1163,7 +1175,7 @@ This workflow step requires FlowPilot MCP `google_drive`.
 This step may request Google Drive write tools through FlowPilot MCP.
 Provider MCP tool-call approval mode for this run: `<manual | yolo_auto_approve>`.
 
-If approval mode is `manual`, ask the user before every Google Drive MCP `call_tool`, including read and write tools.
+If approval mode is `manual`, call Google Drive tools through FlowPilot MCP and wait for FlowPilot approval-required responses for exact read or write tool calls.
 If approval mode is `yolo_auto_approve`, read and policy-allowed write tools can be called without waiting for user approval.
 FlowPilot MCP still records policy-allowed write executions for audit.
 
@@ -1176,7 +1188,7 @@ Not allowed:
 - public sharing
 - move unrelated files
 
-If FlowPilot returns `MCP_WRITE_APPROVAL_REQUIRED`, stop and return that code with the approval ID.
+If FlowPilot returns `MCP_TOOL_APPROVAL_REQUIRED` or `MCP_WRITE_APPROVAL_REQUIRED`, stop and return that code with the approval ID.
 After user approval, retry only the exact approved write operation.
 If FlowPilot returns a rejected-write or failed-write notice, continue without executing the write and include the notice in the final artifact.
 ```
@@ -1362,7 +1374,7 @@ Integration tests:
 
 - provider config points to proxy MCP server
 - Codex can list FlowPilot MCP tools
-- non-YOLO provider read tool call asks for MCP `call_tool` approval
+- non-YOLO read tool call creates a pending FlowPilot approval and pauses the workflow
 - YOLO provider can call a read tool through FlowPilot MCP without manual approval
 - provider write call creates pending approval and does not write
 - provider write call in YOLO mode creates auto-approved audit record and executes immediately
@@ -1376,14 +1388,14 @@ Manual checks:
 2. Confirm artifact sync Google Drive connection is configured and can upload an artifact.
 3. Configure Codex provider MCP.
 4. Run read-only workflow step with YOLO off.
-5. Confirm Codex asks for MCP `call_tool` approval before read tools.
+5. Confirm FlowPilot pauses on a pending Google Drive read approval before executing the read tool.
 6. Enable YOLO mode.
 7. Run read-only workflow step again.
-8. Confirm Codex can call read tools without manual approval.
+8. Confirm the proxy executes read tools without waiting for manual approval.
 9. Disable YOLO mode.
 10. Configure step as read-write.
 11. Run step that asks to create a Google Doc.
-12. Confirm Codex asks for MCP `call_tool` approval before the write tool.
+12. Confirm FlowPilot pauses on a pending Google Drive write approval before executing the write tool.
 13. Confirm workflow pauses at pending write approval.
 14. Approve request.
 15. Confirm document is created.
@@ -1467,8 +1479,8 @@ Monitoring:
 - [x] Proxy MCP readiness does not require Desktop OAuth JSON.
 - [x] Desktop OAuth JSON upload remains only for legacy raw-MCP fallback, if that fallback is still supported.
 - [x] Read tools work through FlowPilot MCP server.
-- [x] With YOLO mode off, provider MCP `call_tool` approval prompts before both read and write tools.
-- [x] With YOLO mode on, provider MCP `call_tool` approval auto-approves read and policy-allowed write tools.
+- [x] With YOLO mode off, FlowPilot MCP requires approval before executing both read and write tools.
+- [x] With YOLO mode on, FlowPilot MCP auto-approves read and policy-allowed write tools.
 - [x] Write tools are visible only for write-mode support.
 - [x] With YOLO mode off, write tools do not execute before user approval.
 - [x] With YOLO mode on, policy-allowed write tools auto-approve and execute without waiting for user input.
@@ -1569,8 +1581,8 @@ Web test steps:
 - Confirm the `YOLO` toggle in the run header is off.
 - Return to `/settings/google-drive-setup` and refresh the provider config cards.
 - Inspect the Codex provider config and compare it with the Gemini and Claude cards for the same account.
-Current expected result: Codex uses prompt-style MCP call approval configuration for the proxy server. Gemini and Claude config shape should remain proxy-based and account-home aware.
-Target expected result: provider MCP `call_tool` approval is proven end-to-end for both read and write tools with YOLO off across the supported providers.
+Current expected result: Codex uses approve-style MCP host configuration for the proxy server even with YOLO off, and Gemini and Claude remain proxy-based and account-home aware.
+Target expected result: FlowPilot proxy approval is proven end-to-end for both read and write tools with YOLO off across the supported providers.
 
 12. Generate provider config with YOLO on and inspect provider settings.
 Web test steps:
@@ -1578,8 +1590,8 @@ Web test steps:
 - Toggle `YOLO` on in the run header and wait for the UI to settle.
 - Return to `/settings/google-drive-setup` and refresh the provider config cards.
 - Inspect the provider config again and compare the arguments and approval mode with step 11.
-Current expected result: Codex uses approve-style MCP call approval configuration for the proxy server, and the `--yolo-mode` flag is present in proxy server arguments.
-Target expected result: provider MCP `call_tool` approval is proven end-to-end for read and policy-allowed write tools with YOLO on across the supported providers.
+Current expected result: Codex still uses approve-style MCP host configuration for the proxy server, and the `--yolo-mode` flag is present in proxy server arguments.
+Target expected result: FlowPilot proxy auto-approval is proven end-to-end for read and policy-allowed write tools with YOLO on across the supported providers.
 
 13. Run a `read_write` workflow or MCP session that attempts `createGoogleDoc` while YOLO is off.
 Web test steps:
@@ -1587,8 +1599,8 @@ Web test steps:
 - Start a workflow run from the project page or workflow launcher with the run `YOLO` setting left off.
 - Open `/workflow-runs/$runId`.
 - Wait for the Google Drive step to enter `waiting_approval`, then inspect the step card, timeline, and error message block.
-Current expected result: CP-29 manual write approval is implemented. The write does not execute immediately, FlowPilot creates a pending approval record, the workflow pauses in `waiting_approval`, and the run UI shows the exact tool, target summary, and expiry details.
-Target expected result: the write does not execute immediately, FlowPilot creates a pending approval record, the workflow pauses in `waiting_approval`, and the UI shows the exact tool, target summary, and argument preview.
+Current expected result: CP-29 manual write approval is implemented. The write does not execute immediately, FlowPilot creates a pending approval record, the workflow pauses in `waiting_approval`, and the run UI shows the exact tool, operation, target summary, and expiry details.
+Target expected result: the write does not execute immediately, FlowPilot creates a pending approval record, the workflow pauses in `waiting_approval`, and the UI shows the exact tool, operation, target summary, and expiry details.
 
 14. Approve the pending write request after step 13.
 Web test steps:
