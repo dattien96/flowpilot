@@ -111,11 +111,7 @@ export function GoogleDriveProviderConfigCard({
 
   const providerConfigs = googleDriveStatus?.providerConfigs ?? [];
   const proxyMcpEnabled = Boolean(googleDriveStatus?.mcp.proxyMcpEnabled);
-  const proxyAuthConfigured = Boolean(
-    googleDriveStatus?.artifactSync.clientId?.trim() &&
-    googleDriveStatus?.artifactSync.redirectUri?.trim() &&
-    googleDriveStatus?.artifactSync.hasClientSecret
-  );
+  const proxyMcpConfigured = Boolean(googleDriveStatus?.mcp.configured);
   const discoveredProviderConfigs = providerConfigs.filter(
     (config) => config.accountHomePath.trim().length > 0
   );
@@ -125,9 +121,13 @@ export function GoogleDriveProviderConfigCard({
   );
   const actionableProviderConfigs = discoveredProviderConfigs;
   const unresolvedProviderCount = providerConfigs.length - discoveredProviderConfigs.length;
+  const proxyMissingScopes = googleDriveStatus?.mcp.missingScopes ?? [];
+  const proxySelectionRequired = Boolean(googleDriveStatus?.mcp.accountSelectionRequired);
+  const proxyReconnectRequired = Boolean(googleDriveStatus?.mcp.reconnectRequired);
+  const proxyAccountLabel = googleDriveStatus?.mcp.accountEmail || googleDriveStatus?.mcp.accountId || 'the selected account';
 
   const canConfigureProviders =
-    proxyMcpEnabled && proxyAuthConfigured && actionableProviderConfigs.length > 0;
+    proxyMcpEnabled && proxyMcpConfigured && actionableProviderConfigs.length > 0;
 
   const configureProviders = useMutation({
     mutationFn: async () => {
@@ -200,8 +200,19 @@ export function GoogleDriveProviderConfigCard({
             </>
           )}
           <p className={`${embedded ? "" : "mt-3 "}max-w-2xl text-sm text-muted-foreground`}>
-            Configure Codex, Gemini, and Claude to use the FlowPilot proxy Google Drive MCP during workflow execution. The Desktop OAuth flow is legacy fallback only.
+            Configure Codex, Gemini, and Claude to use the FlowPilot proxy Google Drive MCP during workflow execution.
           </p>
+          {proxyMcpEnabled && !proxyMcpConfigured ? (
+            <p className="mt-3 rounded-2xl border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-warning">
+              {proxySelectionRequired
+                ? 'Select an active Google account in Google Drive setup before configuring provider MCPs.'
+                : proxyReconnectRequired
+                  ? `Reconnect ${proxyAccountLabel} in Google Drive setup before configuring provider MCPs.`
+                  : proxyMissingScopes.length > 0
+                    ? `Reconnect ${proxyAccountLabel} and grant these scopes before configuring provider MCPs: ${proxyMissingScopes.join(', ')}.`
+                    : `Finish proxy MCP Google Drive auth for ${proxyAccountLabel} before configuring provider MCPs.`}
+            </p>
+          ) : null}
         </div>
         <Button
           disabled={!canConfigureProviders || isConfiguring}
@@ -219,18 +230,25 @@ export function GoogleDriveProviderConfigCard({
         </Button>
       </div>
 
-      {!proxyMcpEnabled ? (
+      {!proxyMcpConfigured ? (
         <div className="mt-4 rounded-2xl border border-border/70 bg-muted/40 p-4 text-sm text-muted-foreground">
-          <p className="font-medium text-foreground">FlowPilot proxy Google Drive MCP is disabled in this runner</p>
-          <p className="mt-2">
-            Turn on the proxy feature flag before configuring provider MCP servers. The Desktop OAuth upload remains only for the legacy raw-MCP fallback.
+          <p className="font-medium text-foreground">
+            {proxySelectionRequired
+              ? 'Proxy MCP needs an active Google account selection.'
+              : proxyReconnectRequired
+                ? 'Proxy MCP needs the selected Google account to be reconnected.'
+                : proxyMissingScopes.length > 0
+                  ? 'Proxy MCP is missing required Google Drive scopes.'
+                  : 'Proxy MCP is not ready yet.'}
           </p>
-        </div>
-      ) : !proxyAuthConfigured ? (
-        <div className="mt-4 rounded-2xl border border-border/70 bg-muted/40 p-4 text-sm text-muted-foreground">
-          <p className="font-medium text-foreground">FlowPilot proxy Google Drive auth must be configured first</p>
           <p className="mt-2">
-            Save the artifact-sync Google OAuth values first. Use the Desktop OAuth upload only if you need the legacy raw-MCP fallback.
+            {proxySelectionRequired
+              ? 'The proxy MCP uses the selected Google account token; artifact sync still binds the per-project folder underneath that account.'
+              : proxyReconnectRequired
+                ? 'Reconnect the selected Google account in Google Drive setup so the proxy MCP can refresh its token again.'
+                : proxyMissingScopes.length > 0
+                  ? `Reconnect the selected Google account and grant the missing scopes: ${proxyMissingScopes.join(', ')}.`
+                  : 'Complete Google Drive setup so the proxy MCP can supply the provider-side MCP configs.'}
           </p>
         </div>
       ) : (
