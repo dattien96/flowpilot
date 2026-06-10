@@ -54,9 +54,10 @@ type GoogleDriveConfigWithProviders struct {
 }
 
 const (
-	googleDriveMcpServerName = "google-drive"
-	googleDriveMcpStatusMode = "read_only"
-	googleDriveProxyMcpFlag  = "FLOWPILOT_GOOGLE_DRIVE_PROXY_MCP"
+	googleDriveMcpServerName     = "google-drive"
+	googleDriveMcpStatusMode     = "read_only"
+	googleDriveProxyMcpFlag      = "FLOWPILOT_GOOGLE_DRIVE_PROXY_MCP"
+	googleDriveProxyAccountIDEnv = "FLOWPILOT_GOOGLE_DRIVE_ACCOUNT_ID"
 )
 
 // Read-only tool allowlist for Phase A
@@ -90,43 +91,55 @@ var googleDriveMcpReadWriteTools = []string{
 }
 
 func flowpilotGoogleDriveProxyMcpEnabled() bool {
-	return strings.EqualFold(strings.TrimSpace(os.Getenv(googleDriveProxyMcpFlag)), "true")
+	return true
 }
 
 func (r *Runner) googleDriveProxyMcpAuthReady() (bool, error) {
 	configFile, err := r.loadGoogleDriveWorkspaceConfigFile()
-	if err == nil {
-		secretState, stateErr := r.googleDriveSecretState()
-		if stateErr != nil {
-			return false, stateErr
-		}
-		return strings.TrimSpace(configFile.ArtifactSync.ClientID) != "" &&
-			normalizeGoogleDriveRedirectURI(configFile.ArtifactSync.RedirectURI) != "" &&
-			secretState.hasClientSecret, nil
-	}
-	if !errors.Is(err, os.ErrNotExist) {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return false, err
 	}
-
-	return strings.TrimSpace(os.Getenv("GOOGLE_DRIVE_CLIENT_ID")) != "" &&
-		strings.TrimSpace(os.Getenv("GOOGLE_DRIVE_CLIENT_SECRET")) != "" &&
-		normalizeGoogleDriveRedirectURI(os.Getenv("GOOGLE_DRIVE_REDIRECT_URI")) != "", nil
+	status := r.resolveGoogleDriveMcpStatus(configFile)
+	return status.Configured, nil
 }
 
 func (r *Runner) validateGoogleDriveProxyMcpPrerequisites() error {
-	server := &proxyMcpServer{runner: r}
-
-	if _, _, err := server.proxyOAuthClient(); err != nil {
+	configFile, err := r.loadGoogleDriveWorkspaceConfigFile()
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-
-	projectID, _, err := server.proxyArtifactConnection()
+	selection, err := r.resolveGoogleDriveProxyAccountSelection(configFile)
 	if err != nil {
 		return err
 	}
-
-	_, err = r.loadGoogleDriveCredentialByProject(projectID)
-	return err
+	status := r.resolveGoogleDriveMcpStatus(configFile)
+	if !status.Configured {
+		if !status.BackendPackageAvailable {
+			return errors.New("Google Drive MCP launcher is not available; install FlowPilot or Go so the proxy launcher can start the Google Drive MCP package")
+		}
+		if status.AccountSelectionRequired && len(selection.Accounts) == 0 {
+			return errors.New("no connected Google Drive account is available; connect an account in Google Drive setup first")
+		}
+		if status.AccountSelectionRequired && len(selection.Accounts) > 1 && strings.TrimSpace(status.AccountID) == "" {
+			return errors.New("select an active Google account in Google Drive setup before using the proxy MCP")
+		}
+		if len(status.MissingScopes) > 0 {
+			return fmt.Errorf(
+				"selected Google Drive account is missing MCP read scope (%s); reconnect the account in Google Drive setup and grant broad read access",
+				strings.Join(status.MissingScopes, ", "),
+			)
+		}
+		for _, field := range status.MissingFields {
+			if field == "refreshToken" {
+				return errors.New("refresh token is not configured")
+			}
+		}
+		if status.Status == "failed" {
+			return errors.New("FlowPilot proxy Google Drive auth is incomplete")
+		}
+		return errors.New("FlowPilot proxy Google Drive auth must be configured before configuring providers")
+	}
+	return nil
 }
 
 // Codex config TOML structures
@@ -200,31 +213,24 @@ func applyDetectedServerStatus(
 
 // EnsureGoogleDriveMcpProviderConfig configures a provider for Google Drive MCP
 func (r *Runner) EnsureGoogleDriveMcpProviderConfig(req GoogleDriveMcpProviderConfigRequest) (GoogleDriveMcpProviderConfigResponse, error) {
-	mcpStatus := googleDriveMcpRuntimeConfig{}
+	configFile, configErr := r.loadGoogleDriveWorkspaceConfigFile()
+	if configErr != nil && !errors.Is(configErr, os.ErrNotExist) {
+		return GoogleDriveMcpProviderConfigResponse{}, fmt.Errorf("failed to get Google Drive workspace config: %w", configErr)
+	}
+	mcpStatus := r.resolveGoogleDriveMcpStatus(configFile)
+	runtimeMcpStatus := googleDriveMcpStatusRuntimeConfig(mcpStatus)
 	if flowpilotGoogleDriveProxyMcpEnabled() {
-		proxyReady, err := r.googleDriveProxyMcpAuthReady()
-		if err != nil {
-			return GoogleDriveMcpProviderConfigResponse{}, fmt.Errorf("failed to get FlowPilot proxy Google Drive auth status: %w", err)
-		}
-		if !proxyReady {
+		if !mcpStatus.Configured {
 			return GoogleDriveMcpProviderConfigResponse{}, errors.New(
 				"FlowPilot proxy Google Drive auth must be configured before configuring providers",
 			)
 		}
-	} else {
-		var err error
-		mcpStatus, err = r.googleDriveMcpRuntimeConfig()
-		if err != nil {
-			return GoogleDriveMcpProviderConfigResponse{}, fmt.Errorf("failed to get Google Drive MCP status: %w", err)
-		}
-
-		if mcpStatus.Status == "needs_input" || mcpStatus.Status == "failed" ||
-			mcpStatus.Status == "needs_auth" || mcpStatus.Status == "reconnect_required" {
-			return GoogleDriveMcpProviderConfigResponse{}, fmt.Errorf(
-				"Google Drive MCP must be configured and authenticated before configuring providers (current status: %s)",
-				mcpStatus.Status,
-			)
-		}
+	} else if mcpStatus.Status == "needs_input" || mcpStatus.Status == "failed" ||
+		mcpStatus.Status == "needs_auth" || mcpStatus.Status == "reconnect_required" {
+		return GoogleDriveMcpProviderConfigResponse{}, fmt.Errorf(
+			"Google Drive MCP must be configured and authenticated before configuring providers (current status: %s)",
+			mcpStatus.Status,
+		)
 	}
 
 	// Validate provider key
@@ -247,11 +253,11 @@ func (r *Runner) EnsureGoogleDriveMcpProviderConfig(req GoogleDriveMcpProviderCo
 	// Route to provider-specific implementation
 	switch providerKey {
 	case "codex":
-		return r.ensureCodexGoogleDriveMcpConfig(accountHomePath, mode, req.YoloMode, mcpStatus)
+		return r.ensureCodexGoogleDriveMcpConfig(accountHomePath, mode, req.YoloMode, runtimeMcpStatus)
 	case "gemini":
-		return r.ensureGeminiGoogleDriveMcpConfig(accountHomePath, mode, req.YoloMode, mcpStatus)
+		return r.ensureGeminiGoogleDriveMcpConfig(accountHomePath, mode, req.YoloMode, runtimeMcpStatus)
 	case "claude":
-		return r.ensureClaudeGoogleDriveMcpConfig(accountHomePath, mode, req.YoloMode, mcpStatus)
+		return r.ensureClaudeGoogleDriveMcpConfig(accountHomePath, mode, req.YoloMode, runtimeMcpStatus)
 	default:
 		return GoogleDriveMcpProviderConfigResponse{}, fmt.Errorf("unsupported provider: %s", providerKey)
 	}
@@ -482,9 +488,10 @@ func expectedCodexGoogleDriveMcpServer(workspace string, accountHomePath string,
 			StartupTimeoutSec: 20,
 			ToolTimeoutSec:    120,
 			Enabled:           true,
-			Env: map[string]string{
-				"FLOWPILOT_GOOGLE_DRIVE_PROXY_MCP": "true",
-			},
+			Env:               map[string]string{},
+		}
+		if strings.TrimSpace(mcpStatus.AccountID) != "" {
+			server.Env[googleDriveProxyAccountIDEnv] = strings.TrimSpace(mcpStatus.AccountID)
 		}
 
 		server.ApprovalMode = googleDriveProxyMcpApprovalMode(yoloMode)
@@ -627,8 +634,9 @@ func expectedGeminiGoogleDriveMcpServer(workspace string, accountHomePath string
 		if mode != "read_only" {
 			server.IncludeTools = googleDriveMcpReadWriteTools
 		}
-		server.Env = map[string]string{
-			"FLOWPILOT_GOOGLE_DRIVE_PROXY_MCP": "true",
+		server.Env = map[string]string{}
+		if strings.TrimSpace(mcpStatus.AccountID) != "" {
+			server.Env[googleDriveProxyAccountIDEnv] = strings.TrimSpace(mcpStatus.AccountID)
 		}
 		return server
 	}
@@ -725,15 +733,17 @@ func claudeServerConfigMatches(existing, expected claudeMcpServer) bool {
 func expectedClaudeGoogleDriveMcpServer(workspace string, accountHomePath string, mode string, yoloMode bool, mcpStatus googleDriveMcpRuntimeConfig) claudeMcpServer {
 	if flowpilotGoogleDriveProxyMcpEnabled() {
 		command, argsPrefix := googleDriveProxyMcpCommand(workspace)
-		return claudeMcpServer{
+		server := claudeMcpServer{
 			Type:    "stdio",
 			Command: command,
 			Args:    append(argsPrefix, googleDriveProxyMcpArgs(workspace, accountHomePath, mode, yoloMode)...),
-			Env: map[string]string{
-				"FLOWPILOT_GOOGLE_DRIVE_PROXY_MCP": "true",
-			},
+			Env:     map[string]string{},
 			Timeout: 600000,
 		}
+		if strings.TrimSpace(mcpStatus.AccountID) != "" {
+			server.Env[googleDriveProxyAccountIDEnv] = strings.TrimSpace(mcpStatus.AccountID)
+		}
+		return server
 	}
 
 	return claudeMcpServer{
@@ -750,11 +760,12 @@ func expectedClaudeGoogleDriveMcpServer(workspace string, accountHomePath string
 
 // resolveGoogleDriveMcpProviderStatuses checks provider config status for all providers
 func (r *Runner) resolveGoogleDriveMcpProviderStatuses() ([]GoogleDriveMcpProviderConfigStatus, error) {
-	// Get runtime config for credential and token paths
-	mcpStatus, err := r.googleDriveMcpRuntimeConfig()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get Google Drive MCP runtime config: %w", err)
+	configFile, err := r.loadGoogleDriveWorkspaceConfigFile()
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("failed to get Google Drive workspace config: %w", err)
 	}
+	mcpStatus := r.resolveGoogleDriveMcpStatus(configFile)
+	runtimeMcpStatus := googleDriveMcpStatusRuntimeConfig(mcpStatus)
 
 	statuses := make([]GoogleDriveMcpProviderConfigStatus, 0, 3)
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -800,7 +811,7 @@ func (r *Runner) resolveGoogleDriveMcpProviderStatuses() ([]GoogleDriveMcpProvid
 			}
 
 			// Try to parse config and check for google-drive server
-			status, detailedErr := r.checkProviderGoogleDriveMcpConfig(providerKey, accountHomePath, configPath, mcpStatus)
+			status, detailedErr := r.checkProviderGoogleDriveMcpConfig(providerKey, accountHomePath, configPath, runtimeMcpStatus)
 			if detailedErr != nil {
 				status.LastError = detailedErr.Error()
 			}
@@ -860,6 +871,22 @@ func orderProviderStatusHomes(
 	}
 
 	return orderedHomes
+}
+
+func googleDriveMcpStatusRuntimeConfig(status GoogleDriveMcpStatus) googleDriveMcpRuntimeConfig {
+	return googleDriveMcpRuntimeConfig{
+		CredentialPath:           status.CredentialPath,
+		TokenPath:                status.TokenPath,
+		CredentialExists:         status.CredentialFileExists,
+		CredentialValid:          status.CredentialFileValid,
+		TokenExists:              status.TokenFileExists,
+		TokenRefreshValid:        status.TokenRefreshValid,
+		BackendPackageAvailable:  status.BackendPackageAvailable,
+		AccountID:                status.AccountID,
+		AccountEmail:             status.AccountEmail,
+		AccountSelectionRequired: status.AccountSelectionRequired,
+		Status:                   status.Status,
+	}
 }
 
 // getProviderConfigPath returns the config file path for a provider
