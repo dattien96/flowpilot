@@ -106,8 +106,12 @@ func TestInjectRequiredMcpInstructions_GoogleDriveReadOnly(t *testing.T) {
 		t.Error("Result should include read-only restriction for allowWrite=false")
 	}
 
-	if strings.Contains(result, "Read and write MCP tool calls require provider-side approval before execution") {
+	if strings.Contains(result, "Read and write Google Drive MCP tool calls require FlowPilot approval before execution") {
 		t.Error("Read-only manual instructions should not mention write approval guidance")
+	}
+
+	if !strings.Contains(result, "MCP_TOOL_APPROVAL_REQUIRED") {
+		t.Error("Read-only manual instructions should mention the generic MCP approval failure code")
 	}
 
 	if !strings.Contains(result, "Original prompt") {
@@ -125,6 +129,10 @@ func TestInjectRequiredMcpInstructions_GoogleDriveWrite(t *testing.T) {
 
 	if !strings.Contains(result, "allowed to perform read and write operations") {
 		t.Error("Result should mention write operations are allowed")
+	}
+
+	if !strings.Contains(result, "MCP_TOOL_APPROVAL_REQUIRED") {
+		t.Error("Write-enabled manual instructions should mention the generic MCP approval failure code")
 	}
 
 	if strings.Contains(result, "Use read-only tools only") {
@@ -426,6 +434,36 @@ func TestPreflightGoogleDriveMcp_ConfigStale(t *testing.T) {
 	}
 	if !strings.Contains(result.ErrorMessage, "stale Google Drive MCP config") {
 		t.Fatalf("expected stale config error, got %q", result.ErrorMessage)
+	}
+}
+
+func TestPreflightGoogleDriveMcp_ProxyPathAcceptsHydratedProviderConfig(t *testing.T) {
+	t.Setenv(googleDriveProxyMcpFlag, "true")
+
+	workspace := t.TempDir()
+	runner := &Runner{workspace: workspace, secretStore: newMemorySecretStore()}
+	writeArtifactSyncOnlyPreflightConfigWithAccountID(t, runner, workspace, "project-1@example.com")
+	writeSingleProxyArtifactConnection(t, runner, "project-1")
+	stubGoogleDriveOAuthTokenRefresh(t)
+
+	accountHomePath := t.TempDir()
+	_, err := runner.EnsureGoogleDriveMcpProviderConfig(GoogleDriveMcpProviderConfigRequest{
+		ProviderKey:     "codex",
+		AccountHomePath: accountHomePath,
+		Scope:           "account",
+		Mode:            "read_only",
+	})
+	if err != nil {
+		t.Fatalf("ensure provider config: %v", err)
+	}
+
+	result := runner.PreflightGoogleDriveMcp("codex", accountHomePath)
+
+	if !result.GoogleDriveReady {
+		t.Fatalf("expected Google Drive to be ready, got %q", result.ErrorMessage)
+	}
+	if !result.ProviderConfigured {
+		t.Fatalf("expected hydrated provider config to pass preflight, got %q", result.ErrorMessage)
 	}
 }
 

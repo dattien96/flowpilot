@@ -55,19 +55,20 @@ func buildGoogleDriveMcpInstructions(providerKey string, allowWrite bool, yoloMo
 	}
 
 	if yoloMode {
-		sb.WriteString("Provider MCP tool-call approval mode for this run: `yolo_auto_approve`.\n")
+		sb.WriteString("FlowPilot Google Drive MCP approval mode for this run: `yolo_auto_approve`.\n")
 		if allowWrite {
 			sb.WriteString("Read tools and policy-allowed write tools can be called without waiting for user approval.\n\n")
 		} else {
 			sb.WriteString("Read tools can be called without waiting for user approval.\n\n")
 		}
 	} else {
-		sb.WriteString("Provider MCP tool-call approval mode for this run: `manual`.\n")
+		sb.WriteString("FlowPilot Google Drive MCP approval mode for this run: `manual`.\n")
 		if allowWrite {
-			sb.WriteString("Read and write MCP tool calls require provider-side approval before execution.\n")
-			sb.WriteString("If FlowPilot returns `MCP_WRITE_APPROVAL_REQUIRED`, stop, return that code with the approval ID, and retry only the exact approved write after user approval.\n\n")
+			sb.WriteString("Read and write Google Drive MCP tool calls require FlowPilot approval before execution.\n")
+			sb.WriteString("If FlowPilot returns `MCP_TOOL_APPROVAL_REQUIRED` or `MCP_WRITE_APPROVAL_REQUIRED`, stop, return that code with the approval ID, and retry only the exact approved Google Drive tool call after user approval.\n\n")
 		} else {
-			sb.WriteString("Read MCP tool calls require provider-side approval before execution.\n\n")
+			sb.WriteString("Read Google Drive MCP tool calls require FlowPilot approval before execution.\n")
+			sb.WriteString("If FlowPilot returns `MCP_TOOL_APPROVAL_REQUIRED`, stop, return that code with the approval ID, and retry only the exact approved Google Drive tool call after user approval.\n\n")
 		}
 	}
 
@@ -126,6 +127,7 @@ func (r *Runner) PreflightGoogleDriveMcp(providerKey string, accountHomePath str
 			AccountSelectionRequired: proxyStatus.AccountSelectionRequired,
 			Status:                   proxyStatus.Status,
 		}
+		r.hydrateGoogleDriveProxyOAuthRuntimeConfig(&mcpStatus)
 		if err := r.validateGoogleDriveProxyMcpPrerequisites(); err != nil {
 			result.ErrorMessage = fmt.Sprintf("FlowPilot proxy Google Drive auth is incomplete: %v", err)
 			return result
