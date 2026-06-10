@@ -117,6 +117,12 @@ function summarizeRunPrompt(promptText?: string) {
     : firstLine;
 }
 
+function isGoogleDriveMcpApprovalMessage(message?: string | null) {
+  const normalized = message?.trim().toLowerCase() ?? "";
+  return normalized.includes("google drive mcp approval required") ||
+    normalized.includes("google drive write approval required");
+}
+
 function normalizePromptDisplay(promptText?: string | null) {
   const normalized = promptText?.trim() ?? "";
   if (!normalized) {
@@ -1713,6 +1719,13 @@ function WorkflowRunDetailPage() {
       (approval: any) => approval.status === "pending",
     );
   }, [detail?.approvals]);
+  const isGoogleDriveMcpApproval = useMemo(
+    () =>
+      isGoogleDriveMcpApprovalMessage(
+        selectedStep?.errorMessage ?? pendingApproval?.comment ?? null,
+      ),
+    [pendingApproval?.comment, selectedStep?.errorMessage],
+  );
 
   const timelineApprovalDecisions = useMemo(
     () =>
@@ -1769,8 +1782,16 @@ function WorkflowRunDetailPage() {
       comment: followUpComment,
       createdAt,
     };
+    const useGoogleDriveMcpApproval = Boolean(
+      pendingApproval && isGoogleDriveMcpApproval,
+    );
     let submitted = false;
     try {
+      if (decision === "changes_requested" && useGoogleDriveMcpApproval) {
+        alert("Use Reject Request for Google Drive MCP approvals.");
+        return;
+      }
+
       if (canOptimisticallyContinue) {
         setOptimisticFollowUps((current) => [...current, optimisticDecision]);
         setDetail(
@@ -1790,7 +1811,7 @@ function WorkflowRunDetailPage() {
           false,
           followUpComment || undefined,
         );
-      } else if (pendingApproval) {
+      } else if (useGoogleDriveMcpApproval) {
         await getGatewayBundle().workflowEngineGateway.submitGoogleDriveWriteApproval(
           stepId,
           decision,
@@ -2346,14 +2367,18 @@ function WorkflowRunDetailPage() {
                         <div className="flex items-center gap-2 pb-2 border-b border-border/30">
                           <ShieldAlert className="h-5 w-5 text-warning shrink-0" />
                           <span className="text-sm font-semibold text-warning">
-                            Safe Gate: Approving compiles files & begins coding stage
+                            {isGoogleDriveMcpApproval
+                              ? "Google Drive MCP approval is waiting for your decision"
+                              : "Safe Gate: Approving compiles files & begins coding stage"}
                           </span>
                         </div>
 
                         <div className="space-y-3">
                           <textarea
                             className="w-full min-h-[70px] max-h-[200px] resize-none bg-[#090a0f] border border-border/60 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-1 focus:ring-accent/50 placeholder:text-muted-foreground/60 text-[#eaeaea]"
-                            placeholder="Provide revision notes for Reject & Retry..."
+                            placeholder={isGoogleDriveMcpApproval
+                              ? "Optional comment for this Google Drive approval..."
+                              : "Provide revision notes for Reject & Retry..."}
                             value={decisionComment}
                             onChange={(e) => {
                               setDecisionComment(e.target.value);
@@ -2362,20 +2387,37 @@ function WorkflowRunDetailPage() {
                           />
 
                           <div className="flex flex-wrap items-center justify-end gap-3 pt-1">
-                            <Button
-                              variant="secondary"
-                              className="h-10 rounded-xl border-border/80 px-5 text-foreground hover:bg-muted"
-                              disabled={submittingDecision || !decisionComment.trim()}
-                              onClick={() => handleDecision(selectedStep.id, "changes_requested")}
-                            >
-                              {submittingDecision ? <RefreshCw className="h-4 w-4 animate-spin" /> : "Reject & Retry"}
-                            </Button>
+                            {isGoogleDriveMcpApproval ? (
+                              <Button
+                                variant="secondary"
+                                className="h-10 rounded-xl border-border/80 px-5 text-foreground hover:bg-muted"
+                                disabled={submittingDecision}
+                                onClick={() => handleDecision(selectedStep.id, "rejected")}
+                              >
+                                {submittingDecision ? <RefreshCw className="h-4 w-4 animate-spin" /> : "Reject Request"}
+                              </Button>
+                            ) : (
+                              <Button
+                                variant="secondary"
+                                className="h-10 rounded-xl border-border/80 px-5 text-foreground hover:bg-muted"
+                                disabled={submittingDecision || !decisionComment.trim()}
+                                onClick={() => handleDecision(selectedStep.id, "changes_requested")}
+                              >
+                                {submittingDecision ? <RefreshCw className="h-4 w-4 animate-spin" /> : "Reject & Retry"}
+                              </Button>
+                            )}
                             <Button
                               className="rounded-xl px-5 h-10 bg-emerald-600 text-white hover:bg-emerald-700 border-none flex items-center gap-1.5"
                               disabled={submittingDecision}
                               onClick={() => handleDecision(selectedStep.id, "approved")}
                             >
-                              {submittingDecision ? <RefreshCw className="h-4 w-4 animate-spin" /> : <>Approve & Continue &rarr;</>}
+                              {submittingDecision ? (
+                                <RefreshCw className="h-4 w-4 animate-spin" />
+                              ) : isGoogleDriveMcpApproval ? (
+                                <>Approve Request &rarr;</>
+                              ) : (
+                                <>Approve & Continue &rarr;</>
+                              )}
                             </Button>
                           </div>
                         </div>
