@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -746,6 +747,153 @@ func TestLoadArtifactStorageGoogleDriveStateFallsBackToLegacyPath(t *testing.T) 
 	}
 	if !strings.Contains(string(raw), `"folderId": "folder-2"`) {
 		t.Fatalf("expected migrated state to be written to new path, got %s", string(raw))
+	}
+}
+
+func TestResetGoogleDriveWorkspaceConfigRemovesArtifactStorageState(t *testing.T) {
+	homeDir := t.TempDir()
+	setGoogleDriveMcpHomeEnv(t, homeDir)
+
+	secretStore := newMemorySecretStore()
+	instance := &Runner{workspace: t.TempDir(), secretStore: secretStore}
+
+	if _, err := instance.SaveGoogleDriveWorkspaceConfig(GoogleDriveWorkspaceConfigRequest{
+		ClientID:     "client-id-1",
+		ClientSecret: "client-secret-1",
+		RedirectURI:  googleDriveDefaultRedirectURI,
+		PickerAPIKey: "picker-api-key-1",
+	}); err != nil {
+		t.Fatalf("save google drive config: %v", err)
+	}
+	if _, err := instance.SaveGoogleDriveWorkspaceConfig(GoogleDriveWorkspaceConfigRequest{
+		MCPAccountID: "orphan-account",
+	}); err != nil {
+		t.Fatalf("save google drive account selection: %v", err)
+	}
+	if err := instance.saveGoogleDriveCredentialByAccount("orphan-account", googleDriveCredential{
+		RefreshToken: "refresh-token-orphan",
+		AccountEmail: "orphan-account@example.com",
+	}); err != nil {
+		t.Fatalf("save orphan account credential: %v", err)
+	}
+	if err := instance.saveGoogleDriveCredentialByAccount("account-1", googleDriveCredential{
+		RefreshToken: "refresh-token-account-1",
+		AccountEmail: "account-1@example.com",
+	}); err != nil {
+		t.Fatalf("save account credential: %v", err)
+	}
+	if err := instance.saveGoogleDriveCredentialByProject("project-1", googleDriveCredential{
+		RefreshToken: "refresh-token-project-1",
+		AccountEmail: "account-1@example.com",
+	}); err != nil {
+		t.Fatalf("save project credential: %v", err)
+	}
+	if err := instance.saveGoogleDriveCredential("project-1", googleDriveCredential{
+		RefreshToken: "refresh-token-legacy-project-1",
+		AccountEmail: "account-1@example.com",
+	}); err != nil {
+		t.Fatalf("save legacy project credential: %v", err)
+	}
+	if err := secretStore.Set("jira:keep-me", "still-here"); err != nil {
+		t.Fatalf("seed unrelated secret: %v", err)
+	}
+
+	if err := instance.saveArtifactStorageGoogleDriveState(func(current *artifactStorageGoogleDriveState) {
+		current.Accounts["account-1"] = artifactStorageGoogleDriveAccountRecord{
+			AccountID:    "account-1",
+			AccountEmail: "account-1@example.com",
+			Status:       "connected",
+		}
+		current.Connections["project-1"] = artifactStorageGoogleDriveConnectionRecord{
+			ProjectID:    "project-1",
+			Status:       "connected",
+			FolderID:     "folder-1",
+			FolderName:   "FlowPilot Root",
+			AccountID:    "account-1",
+			AccountEmail: "account-1@example.com",
+		}
+		current.Sessions["session-1"] = artifactStorageGoogleDriveSessionRecord{
+			SessionID:    "session-1",
+			ProjectID:    "project-1",
+			Status:       "pending",
+			CreatedAt:    "2026-06-01T00:00:00Z",
+			ExpiresAt:    "2026-06-01T01:00:00Z",
+			AccountID:    "account-1",
+			AccountEmail: "account-1@example.com",
+		}
+	}); err != nil {
+		t.Fatalf("save artifact storage state: %v", err)
+	}
+	if err := instance.saveArtifactStorageGoogleDriveSessionToken("session-1", "connect", "connect-token"); err != nil {
+		t.Fatalf("save connect token: %v", err)
+	}
+	if err := instance.saveArtifactStorageGoogleDriveSessionToken("session-1", "state", "state-token"); err != nil {
+		t.Fatalf("save state token: %v", err)
+	}
+
+	legacyPath := instance.legacyArtifactStorageGoogleDriveStatePath()
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
+		t.Fatalf("create legacy state dir: %v", err)
+	}
+	if err := os.WriteFile(legacyPath, []byte(`{"connections":{}}`), 0o644); err != nil {
+		t.Fatalf("write legacy state: %v", err)
+	}
+	configDir := filepath.Join(homeDir, ".config", "google-drive-mcp")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("create mcp config dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "gcp-oauth.keys.json"), []byte(`{"installed":{"client_id":"client-id"}}`), 0o600); err != nil {
+		t.Fatalf("write mcp credential file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "tokens.json"), []byte(`{"refresh_token":"refresh-token-1"}`), 0o600); err != nil {
+		t.Fatalf("write mcp token file: %v", err)
+	}
+
+	if err := instance.ResetGoogleDriveWorkspaceConfig(); err != nil {
+		t.Fatalf("reset google drive config: %v", err)
+	}
+
+	if _, err := os.Stat(instance.googleDriveWorkspaceConfigPath()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected workspace config to be removed, got %v", err)
+	}
+	if _, err := os.Stat(instance.artifactStorageGoogleDriveStatePath()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected artifact storage state to be removed, got %v", err)
+	}
+	if _, err := os.Stat(legacyPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected legacy artifact storage state to be removed, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(configDir, "gcp-oauth.keys.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected mcp credential file to be removed, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(configDir, "tokens.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected mcp token file to be removed, got %v", err)
+	}
+	if _, exists := secretStore.values[googleDriveArtifactSyncClientSecretKey]; exists {
+		t.Fatal("expected artifact sync client secret to be removed from secret store")
+	}
+	if _, exists := secretStore.values[googleDriveArtifactSyncPickerAPIKeySecret]; exists {
+		t.Fatal("expected picker api key to be removed from secret store")
+	}
+	if _, exists := secretStore.values[googleDriveAccountCredentialKey("orphan-account")]; exists {
+		t.Fatal("expected selected account secret to be removed from secret store")
+	}
+	if _, exists := secretStore.values[googleDriveAccountCredentialKey("account-1")]; exists {
+		t.Fatal("expected account secret to be removed from secret store")
+	}
+	if _, exists := secretStore.values[googleDriveProjectCredentialKey("project-1")]; exists {
+		t.Fatal("expected project secret to be removed from secret store")
+	}
+	if _, exists := secretStore.values[googleDriveCredentialKey("project-1")]; exists {
+		t.Fatal("expected legacy project secret to be removed from secret store")
+	}
+	if _, exists := secretStore.values[artifactStorageGoogleDriveSessionSecretKey("session-1", "connect")]; exists {
+		t.Fatal("expected connect token secret to be removed from secret store")
+	}
+	if _, exists := secretStore.values[artifactStorageGoogleDriveSessionSecretKey("session-1", "state")]; exists {
+		t.Fatal("expected state token secret to be removed from secret store")
+	}
+	if got := secretStore.values["jira:keep-me"]; got != "still-here" {
+		t.Fatalf("expected unrelated secret to remain, got %q", got)
 	}
 }
 

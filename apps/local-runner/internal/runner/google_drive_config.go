@@ -219,19 +219,110 @@ func (r *Runner) SaveGoogleDriveWorkspaceConfig(input GoogleDriveWorkspaceConfig
 }
 
 func (r *Runner) ResetGoogleDriveWorkspaceConfig() error {
-	err := os.Remove(r.googleDriveWorkspaceConfigPath())
+	configFile, err := r.loadGoogleDriveWorkspaceConfigFile()
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+		configFile = googleDriveWorkspaceConfigFile{}
 	}
 
-	if deleteErr := r.ensureSecretStore().Delete(googleDriveArtifactSyncClientSecretKey); deleteErr != nil {
-		return deleteErr
-	}
-	if deleteErr := r.ensureSecretStore().Delete(googleDriveArtifactSyncPickerAPIKeySecret); deleteErr != nil {
-		return deleteErr
+	state, err := r.loadArtifactStorageGoogleDriveState()
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		state = artifactStorageGoogleDriveState{}
 	}
 
-	return nil
+	var cleanupErrs []error
+	for _, secretKey := range googleDriveResetSecretKeys(configFile, state) {
+		if deleteErr := r.ensureSecretStore().Delete(secretKey); deleteErr != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("delete google drive secret %q: %w", secretKey, deleteErr))
+		}
+	}
+
+	for _, path := range googleDriveResetPaths(r, configFile) {
+		if deleteErr := os.Remove(path); deleteErr != nil && !errors.Is(deleteErr, os.ErrNotExist) {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("remove google drive file %q: %w", path, deleteErr))
+		}
+	}
+
+	return errors.Join(cleanupErrs...)
+}
+
+func googleDriveResetSecretKeys(configFile googleDriveWorkspaceConfigFile, state artifactStorageGoogleDriveState) []string {
+	keys := map[string]struct{}{}
+	add := func(values ...string) {
+		for _, value := range values {
+			trimmed := strings.TrimSpace(value)
+			if trimmed == "" {
+				continue
+			}
+			keys[trimmed] = struct{}{}
+		}
+	}
+	add(
+		googleDriveArtifactSyncClientSecretKey,
+		googleDriveArtifactSyncPickerAPIKeySecret,
+	)
+	if accountID := normalizeGoogleDriveStoredAccountID(configFile.MCP.AccountID); accountID != "" {
+		add(googleDriveAccountCredentialKey(accountID))
+	}
+
+	for accountID, record := range state.Accounts {
+		add(googleDriveAccountCredentialKey(normalizeGoogleDriveStoredAccountID(accountID)))
+		add(googleDriveAccountCredentialKey(normalizeGoogleDriveStoredAccountID(record.AccountID)))
+		add(googleDriveAccountCredentialKey(normalizeGoogleDriveStoredAccountID(record.AccountEmail)))
+	}
+
+	for projectID, record := range state.Connections {
+		add(googleDriveProjectCredentialKey(strings.TrimSpace(projectID)))
+		add(googleDriveProjectCredentialKey(strings.TrimSpace(record.ProjectID)))
+		add(googleDriveCredentialKey(strings.TrimSpace(projectID)))
+		add(googleDriveCredentialKey(strings.TrimSpace(record.ProjectID)))
+		add(googleDriveAccountCredentialKey(normalizeGoogleDriveStoredAccountID(record.AccountID)))
+		add(googleDriveAccountCredentialKey(normalizeGoogleDriveStoredAccountID(record.AccountEmail)))
+	}
+
+	for sessionID, record := range state.Sessions {
+		add(artifactStorageGoogleDriveSessionSecretKey(strings.TrimSpace(sessionID), "connect"))
+		add(artifactStorageGoogleDriveSessionSecretKey(strings.TrimSpace(sessionID), "state"))
+		add(artifactStorageGoogleDriveSessionSecretKey(strings.TrimSpace(record.SessionID), "connect"))
+		add(artifactStorageGoogleDriveSessionSecretKey(strings.TrimSpace(record.SessionID), "state"))
+		add(googleDriveProjectCredentialKey(strings.TrimSpace(record.ProjectID)))
+		add(googleDriveCredentialKey(strings.TrimSpace(record.ProjectID)))
+		add(googleDriveAccountCredentialKey(normalizeGoogleDriveStoredAccountID(record.AccountID)))
+		add(googleDriveAccountCredentialKey(normalizeGoogleDriveStoredAccountID(record.AccountEmail)))
+	}
+
+	ordered := make([]string, 0, len(keys))
+	for key := range keys {
+		ordered = append(ordered, key)
+	}
+	return ordered
+}
+
+func googleDriveResetPaths(r *Runner, configFile googleDriveWorkspaceConfigFile) []string {
+	paths := map[string]struct{}{}
+	add := func(values ...string) {
+		for _, value := range values {
+			trimmed := strings.TrimSpace(value)
+			if trimmed == "" {
+				continue
+			}
+			paths[trimmed] = struct{}{}
+		}
+	}
+	add(
+		r.googleDriveWorkspaceConfigPath(),
+		r.artifactStorageGoogleDriveStatePath(),
+		r.legacyArtifactStorageGoogleDriveStatePath(),
+		googleDriveMcpCredentialPath(),
+		googleDriveMcpTokenPath(),
+		configFile.MCP.CredentialPath,
+		configFile.MCP.TokenPath,
+	)
+
+	ordered := make([]string, 0, len(paths))
+	for path := range paths {
+		ordered = append(ordered, path)
+	}
+	return ordered
 }
 
 func (r *Runner) ValidateGoogleDriveWorkspaceConfig(input GoogleDriveWorkspaceConfigRequest) (GoogleDriveValidationResult, error) {

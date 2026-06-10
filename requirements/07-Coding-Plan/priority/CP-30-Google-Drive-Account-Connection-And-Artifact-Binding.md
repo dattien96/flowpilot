@@ -439,8 +439,10 @@ If broad read scopes are missing, MCP should fail preflight with a clear message
 8. Open Project B settings or artifact storage UI.
 9. Select account A again and choose folder Y for artifact sync.
 10. Confirm Project B shows `google_drive connected`, account A, and folder Y.
+
 11. Run a Google Drive MCP read-only workflow for Project A.
 12. Ask the provider to list or search for a file outside folder X but inside account A's Drive.
+
 13. Confirm MCP can read the file if OAuth scopes permit it.
 14. Generate an artifact in Project A and run manual sync.
 15. Confirm the remote artifact appears under folder X only.
