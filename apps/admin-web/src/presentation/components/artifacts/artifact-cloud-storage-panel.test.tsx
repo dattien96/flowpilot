@@ -45,6 +45,8 @@ function createGoogleDriveConnectedResponse() {
         status: "connected",
         folderId: "folder-1",
         folderName: "Artifacts",
+        accountId: "account-1",
+        accountEmail: "owner@example.com",
       },
       session: null,
     }),
@@ -75,10 +77,45 @@ function createGoogleDriveRuntimeReadyResponse() {
         credentialFileExists: false,
         credentialFileValid: false,
         tokenFileExists: false,
+        tokenRefreshValid: false,
         needsAuth: false,
         backendPackageAvailable: true,
+        accountId: "account-1",
+        accountEmail: "owner@example.com",
+        accountSelectionRequired: false,
+        grantedScopes: [
+          "https://www.googleapis.com/auth/drive.file",
+          "https://www.googleapis.com/auth/drive.readonly",
+          "openid",
+          "email",
+        ],
+        missingScopes: [],
+        accountReady: true,
+        artifactBindingPresent: false,
+        artifactReady: false,
+        mcpReadReady: true,
+        mcpWriteReady: true,
+        reconnectRequired: false,
         missingFields: [],
       },
+      accounts: [
+        {
+          accountId: "account-1",
+          accountEmail: "owner@example.com",
+          status: "connected",
+          projectCount: 0,
+          accountReady: true,
+          mcpReadReady: true,
+          mcpWriteReady: true,
+          grantedScopes: [
+            "https://www.googleapis.com/auth/drive.file",
+            "https://www.googleapis.com/auth/drive.readonly",
+            "openid",
+            "email",
+          ],
+          missingScopes: [],
+        },
+      ],
       runnerReachable: true,
       lastError: null,
     }),
@@ -174,10 +211,16 @@ describe("ArtifactCloudStoragePanel", () => {
               credentialFileExists: false,
               credentialFileValid: false,
               tokenFileExists: false,
+              tokenRefreshValid: false,
               needsAuth: false,
               backendPackageAvailable: true,
+              accountReady: false,
+              artifactReady: false,
+              mcpReadReady: false,
+              mcpWriteReady: false,
               missingFields: [],
             },
+            accounts: [],
             runnerReachable: true,
             lastError: null,
           }),
@@ -189,7 +232,134 @@ describe("ArtifactCloudStoragePanel", () => {
       target: { value: "google_drive" },
     });
 
-    expect(await screen.findByText("Complete Google Console setup")).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: "Complete Google Console setup" })).toBeInTheDocument();
+  });
+
+  it("disables folder binding when the selected account is missing write scope", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/runtime/google-drive-config")) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: vi.fn().mockResolvedValue({
+            artifactSync: {
+              status: "configured",
+              source: "local",
+              configured: true,
+              clientId: "client-id",
+              redirectUri: "http://localhost/callback",
+              hasClientSecret: true,
+              hasPickerApiKey: true,
+              missingFields: [],
+            },
+            mcp: {
+              status: "needs_auth",
+              configured: false,
+              proxyMcpEnabled: true,
+              credentialPath: null,
+              tokenPath: null,
+              credentialFileExists: false,
+              credentialFileValid: false,
+              tokenFileExists: false,
+              tokenRefreshValid: true,
+              needsAuth: true,
+              backendPackageAvailable: true,
+              accountId: "account-1",
+              accountEmail: "owner@example.com",
+              accountSelectionRequired: false,
+              grantedScopes: ["https://www.googleapis.com/auth/drive.readonly", "openid", "email"],
+              missingScopes: ["https://www.googleapis.com/auth/drive.file"],
+              accountReady: true,
+              artifactBindingPresent: false,
+              artifactReady: false,
+              mcpReadReady: true,
+              mcpWriteReady: false,
+              reconnectRequired: false,
+              missingFields: [],
+            },
+            accounts: [
+              {
+                accountId: "account-1",
+                accountEmail: "owner@example.com",
+                status: "connected",
+                projectCount: 0,
+                accountReady: true,
+                mcpReadReady: true,
+                mcpWriteReady: false,
+                grantedScopes: ["https://www.googleapis.com/auth/drive.readonly", "openid", "email"],
+                missingScopes: ["https://www.googleapis.com/auth/drive.file"],
+              },
+            ],
+            runnerReachable: true,
+            lastError: null,
+          }),
+        });
+      }
+      if (url.includes("/api/local-runner/artifact-storage/google-drive/status")) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: vi.fn().mockResolvedValue({
+            connection: {
+              projectId: "project-1",
+              status: "disconnected",
+            },
+            session: null,
+          }),
+        });
+      }
+      throw new Error(`Unexpected fetch url: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ArtifactCloudStoragePanel projects={[project]} />);
+    fireEvent.change(screen.getByLabelText("Provider detail"), {
+      target: { value: "google_drive" },
+    });
+
+    expect(await screen.findByText(/Account status: connected\. MCP read: ready\./i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Choose Google Drive folder" })).toBeDisabled();
+  });
+
+  it("shows the missing-folder state before a project folder is bound", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/runtime/google-drive-config")) {
+        return Promise.resolve(createGoogleDriveRuntimeReadyResponse());
+      }
+      if (url.includes("/api/local-runner/artifact-storage/google-drive/status")) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: vi.fn().mockResolvedValue({
+            connection: {
+              projectId: "project-1",
+              status: "disconnected",
+              accountId: "account-1",
+              accountEmail: "owner@example.com",
+            },
+            session: null,
+          }),
+        });
+      }
+      throw new Error(`Unexpected fetch url: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ArtifactCloudStoragePanel projects={[project]} />);
+    fireEvent.change(screen.getByLabelText("Provider detail"), {
+      target: { value: "google_drive" },
+    });
+
+    expect(await screen.findByText("Not connected")).toBeInTheDocument();
+    expect(screen.getByText("owner@example.com (account-1)")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Choose Google Drive folder" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Connected Google account"), {
+      target: { value: "account-1" },
+    });
+    expect(screen.getByRole("button", { name: "Choose Google Drive folder" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Select Google Drive" })).toBeDisabled();
   });
 
   it("switches providers through the migration endpoint", async () => {
@@ -257,6 +427,7 @@ describe("ArtifactCloudStoragePanel", () => {
           status: 200,
           json: vi.fn().mockResolvedValue({
             sessionId: "session-1",
+            accountId: "account-1",
             status: "awaiting_folder_selection",
             connectUrl: "http://127.0.0.1:4317/artifact-storage/google-drive/picker?sessionId=session-1",
           }),
@@ -306,8 +477,22 @@ describe("ArtifactCloudStoragePanel", () => {
       target: { value: "google_drive" },
     });
 
-    fireEvent.click(await screen.findByRole("button", { name: "Connect Google Drive" }));
+    fireEvent.change(await screen.findByLabelText("Connected Google account"), {
+      target: { value: "account-1" },
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Choose Google Drive folder" }));
     expect(await screen.findByText("Active connect link")).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(
+          ([url, init]) =>
+            String(url).includes("/api/local-runner/artifact-storage/google-drive/connect-session") &&
+            String((init as { body?: string } | undefined)?.body).includes('"accountId":"account-1"'),
+        ),
+      ).toBe(true);
+    });
+
     await act(async () => {
       window.dispatchEvent(new MessageEvent("message", {
         data: {
@@ -329,6 +514,47 @@ describe("ArtifactCloudStoragePanel", () => {
     });
 
     expect((await screen.findAllByText(/Provider switch completed/i)).length).toBeGreaterThan(0);
+  });
+
+  it("shows reconnect-required state when the existing folder binding needs auth again", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/runtime/google-drive-config")) {
+        return Promise.resolve(createGoogleDriveRuntimeReadyResponse());
+      }
+      if (url.includes("/api/local-runner/artifact-storage/google-drive/status")) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: vi.fn().mockResolvedValue({
+            connection: {
+              projectId: "project-1",
+              status: "reconnect_required",
+              folderId: "folder-1",
+              folderName: "Artifacts",
+              accountId: "account-1",
+              accountEmail: "owner@example.com",
+              lastError: "Google Drive account was disconnected on this runner.",
+            },
+            session: null,
+          }),
+        });
+      }
+      throw new Error(`Unexpected fetch url: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ArtifactCloudStoragePanel projects={[project]} />);
+    fireEvent.change(screen.getByLabelText("Provider detail"), {
+      target: { value: "google_drive" },
+    });
+
+    expect(await screen.findByText("reconnect_required")).toBeInTheDocument();
+    expect(screen.getByText("Google Drive account was disconnected on this runner.")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Connected Google account"), {
+      target: { value: "account-1" },
+    });
+    expect(screen.getByRole("button", { name: "Choose Google Drive folder" })).toBeEnabled();
   });
 
   it("shows staged provider switch progress while the migration request is in flight", async () => {
