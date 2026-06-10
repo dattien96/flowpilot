@@ -732,7 +732,7 @@ func (r *Runner) googleDriveAccountStatusFromRecord(record artifactStorageGoogle
 				status.Status = "failed"
 			}
 		}
-	case strings.Contains(strings.ToLower(err.Error()), "refresh token is not configured"):
+	case googleDriveCredentialNeedsAuth(err):
 		status.Status = "needs_auth"
 		status.LastError = err.Error()
 	default:
@@ -744,6 +744,16 @@ func (r *Runner) googleDriveAccountStatusFromRecord(record artifactStorageGoogle
 	status.McpWriteReady = status.AccountReady && googleDriveHasScope(grantedScopes, googleDriveScopeDriveFile)
 	status.MissingScopes = googleDriveMissingScopes(grantedScopes, []string{googleDriveScopeDriveReadonly, googleDriveScopeDriveFile})
 	return status
+}
+
+func googleDriveCredentialNeedsAuth(err error) bool {
+	if err == nil {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "refresh token is not configured") ||
+		strings.Contains(lower, "not connected on this runner") ||
+		strings.Contains(lower, "secret not found")
 }
 
 func (r *Runner) DisconnectGoogleDriveAccount(accountID string) error {

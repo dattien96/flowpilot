@@ -24,6 +24,8 @@ const (
 	googleDriveScopeEmail                     = "email"
 	googleDriveScopeDriveFile                 = "https://www.googleapis.com/auth/drive.file"
 	googleDriveScopeDriveReadonly             = "https://www.googleapis.com/auth/drive.readonly"
+	googleDriveClientIDEnv                    = "GOOGLE_DRIVE_CLIENT_ID"
+	googleDriveClientSecretEnv                = "GOOGLE_DRIVE_CLIENT_SECRET"
 )
 
 type googleDriveWorkspaceConfigFile struct {
@@ -450,11 +452,16 @@ func (r *Runner) resolveGoogleDriveProxyOAuthConfig() (googleDriveArtifactConfig
 	configFile, err := r.loadGoogleDriveWorkspaceConfigFile()
 	if err == nil {
 		clientID := strings.TrimSpace(configFile.ArtifactSync.ClientID)
-		clientSecret, secretErr := r.ensureSecretStore().Get(googleDriveArtifactSyncClientSecretKey)
-		if secretErr != nil {
-			return googleDriveArtifactConfig{}, secretErr
+		if clientID == "" {
+			clientID = strings.TrimSpace(os.Getenv(googleDriveClientIDEnv))
 		}
-		clientSecret = strings.TrimSpace(clientSecret)
+		clientSecret := ""
+		if storedSecret, secretErr := r.ensureSecretStore().Get(googleDriveArtifactSyncClientSecretKey); secretErr == nil {
+			clientSecret = strings.TrimSpace(storedSecret)
+		}
+		if clientSecret == "" {
+			clientSecret = strings.TrimSpace(os.Getenv(googleDriveClientSecretEnv))
+		}
 		if clientID == "" || clientSecret == "" {
 			return googleDriveArtifactConfig{}, errors.New("FlowPilot proxy Google Drive auth is incomplete")
 		}
@@ -1342,6 +1349,9 @@ type googleDriveMcpRuntimeConfig struct {
 	AccountID                string
 	AccountEmail             string
 	AccountSelectionRequired bool
+	ProxyClientID            string
+	ProxyClientSecret        string
+	ProxyRefreshToken        string
 	Status                   string
 }
 

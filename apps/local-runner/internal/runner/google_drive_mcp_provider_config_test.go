@@ -487,6 +487,15 @@ func TestEnsureCodexGoogleDriveMcpConfig_ProxyPathInjectsSelectedAccountID(t *te
 	if got := strings.TrimSpace(server.Env[googleDriveProxyAccountIDEnv]); got != selectedAccountID {
 		t.Fatalf("expected selected account id env to be injected, got %q", got)
 	}
+	if got := strings.TrimSpace(server.Env[googleDriveClientIDEnv]); got != "artifact-client-id" {
+		t.Fatalf("expected Google Drive client id env to be injected, got %q", got)
+	}
+	if got := strings.TrimSpace(server.Env[googleDriveClientSecretEnv]); got != "artifact-client-secret" {
+		t.Fatalf("expected Google Drive client secret env to be injected, got %q", got)
+	}
+	if got := strings.TrimSpace(server.Env[googleDriveProxyRefreshTokenEnv]); got != "artifact-refresh-token" {
+		t.Fatalf("expected Google Drive refresh token env to be injected, got %q", got)
+	}
 }
 
 func TestEnsureGeminiAndClaudeGoogleDriveMcpConfig_ProxyPathIncludesAccountHome(t *testing.T) {
@@ -676,8 +685,8 @@ func TestEnsureGoogleDriveMcpProviderConfig_ProxyConfigsIncludeSharedAccountHome
 				if _, ok := server.Env["FLOWPILOT_GOOGLE_DRIVE_PROXY_MCP"]; ok {
 					t.Fatalf("expected proxy env flag to be omitted, got %#v", server.Env)
 				}
-				if server.ApprovalMode != "prompt" {
-					t.Fatalf("expected prompt approval for yolo=false, got %q", server.ApprovalMode)
+				if server.ApprovalMode != "approve" {
+					t.Fatalf("expected approve approval for proxy path, got %q", server.ApprovalMode)
 				}
 			case "gemini":
 				var config geminiSettings
@@ -735,10 +744,10 @@ func TestEnsureGoogleDriveMcpProviderConfig_ProxyCodexApprovalAndToolSurfaceFoll
 		wantTools    []string
 	}{
 		{
-			name:         "read_only_prompt",
+			name:         "read_only_approve",
 			mode:         "read_only",
 			yoloMode:     false,
-			wantApproval: "prompt",
+			wantApproval: "approve",
 			wantTools:    googleDriveMcpReadOnlyTools,
 		},
 		{
@@ -884,6 +893,7 @@ func TestEnsureGoogleDriveMcpProviderConfig_RewritesInvalidExistingConfigs(t *te
 	tmpDir := t.TempDir()
 	runner := &Runner{workspace: tmpDir, secretStore: newMemorySecretStore()}
 	_, credPath, tokenPath := writeTestGoogleDriveMcpRuntime(t, runner, tmpDir)
+	stubGoogleDriveOAuthTokenRefresh(t)
 
 	testCases := []struct {
 		name         string
@@ -912,11 +922,18 @@ func TestEnsureGoogleDriveMcpProviderConfig_RewritesInvalidExistingConfigs(t *te
 				}
 
 				server := config.McpServers[googleDriveMcpServerName]
-				if server.Env["GOOGLE_DRIVE_OAUTH_CREDENTIALS"] != expectedCred {
-					t.Fatalf("expected credential path %q, got %q", expectedCred, server.Env["GOOGLE_DRIVE_OAUTH_CREDENTIALS"])
+				expectedCommand, expectedPrefix := googleDriveProxyMcpCommand(tmpDir)
+				if server.Command != expectedCommand {
+					t.Fatalf("expected command %q, got %q", expectedCommand, server.Command)
 				}
-				if server.Env["GOOGLE_DRIVE_MCP_TOKEN_PATH"] != expectedToken {
-					t.Fatalf("expected token path %q, got %q", expectedToken, server.Env["GOOGLE_DRIVE_MCP_TOKEN_PATH"])
+				expectedArgs := googleDriveProxyMcpArgs(tmpDir, filepath.Join(tmpDir, ".codexHome"), "read_only", false)
+				assertStringSliceEqual(t, server.Args[:len(expectedPrefix)], expectedPrefix)
+				assertStringSliceEqual(t, server.Args, expectedArgs)
+				if server.ApprovalMode != "approve" {
+					t.Fatalf("expected proxy approval mode 'approve', got %q", server.ApprovalMode)
+				}
+				if server.Env[googleDriveProxyAccountIDEnv] == "" {
+					t.Fatalf("expected account id env to be populated, got %#v", server.Env)
 				}
 			},
 		},
@@ -939,11 +956,15 @@ func TestEnsureGoogleDriveMcpProviderConfig_RewritesInvalidExistingConfigs(t *te
 				}
 
 				server := config.McpServers[googleDriveMcpServerName]
-				if server.Env["GOOGLE_DRIVE_OAUTH_CREDENTIALS"] != expectedCred {
-					t.Fatalf("expected credential path %q, got %q", expectedCred, server.Env["GOOGLE_DRIVE_OAUTH_CREDENTIALS"])
+				expectedCommand, expectedPrefix := googleDriveProxyMcpCommand(tmpDir)
+				if server.Command != expectedCommand {
+					t.Fatalf("expected command %q, got %q", expectedCommand, server.Command)
 				}
-				if server.Env["GOOGLE_DRIVE_MCP_TOKEN_PATH"] != expectedToken {
-					t.Fatalf("expected token path %q, got %q", expectedToken, server.Env["GOOGLE_DRIVE_MCP_TOKEN_PATH"])
+				expectedArgs := googleDriveProxyMcpArgs(tmpDir, filepath.Join(tmpDir, "gemini-home"), "read_only", false)
+				assertStringSliceEqual(t, server.Args[:len(expectedPrefix)], expectedPrefix)
+				assertStringSliceEqual(t, server.Args, expectedArgs)
+				if server.Env[googleDriveProxyAccountIDEnv] == "" {
+					t.Fatalf("expected account id env to be populated, got %#v", server.Env)
 				}
 			},
 		},
@@ -966,11 +987,15 @@ func TestEnsureGoogleDriveMcpProviderConfig_RewritesInvalidExistingConfigs(t *te
 				}
 
 				server := config.McpServers[googleDriveMcpServerName]
-				if server.Env["GOOGLE_DRIVE_OAUTH_CREDENTIALS"] != expectedCred {
-					t.Fatalf("expected credential path %q, got %q", expectedCred, server.Env["GOOGLE_DRIVE_OAUTH_CREDENTIALS"])
+				expectedCommand, expectedPrefix := googleDriveProxyMcpCommand(tmpDir)
+				if server.Command != expectedCommand {
+					t.Fatalf("expected command %q, got %q", expectedCommand, server.Command)
 				}
-				if server.Env["GOOGLE_DRIVE_MCP_TOKEN_PATH"] != expectedToken {
-					t.Fatalf("expected token path %q, got %q", expectedToken, server.Env["GOOGLE_DRIVE_MCP_TOKEN_PATH"])
+				expectedArgs := googleDriveProxyMcpArgs(tmpDir, filepath.Join(tmpDir, "claude-home"), "read_only", false)
+				assertStringSliceEqual(t, server.Args[:len(expectedPrefix)], expectedPrefix)
+				assertStringSliceEqual(t, server.Args, expectedArgs)
+				if server.Env[googleDriveProxyAccountIDEnv] == "" {
+					t.Fatalf("expected account id env to be populated, got %#v", server.Env)
 				}
 			},
 		},

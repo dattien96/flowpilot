@@ -54,10 +54,11 @@ type GoogleDriveConfigWithProviders struct {
 }
 
 const (
-	googleDriveMcpServerName     = "google-drive"
-	googleDriveMcpStatusMode     = "read_only"
-	googleDriveProxyMcpFlag      = "FLOWPILOT_GOOGLE_DRIVE_PROXY_MCP"
-	googleDriveProxyAccountIDEnv = "FLOWPILOT_GOOGLE_DRIVE_ACCOUNT_ID"
+	googleDriveMcpServerName        = "google-drive"
+	googleDriveMcpStatusMode        = "read_only"
+	googleDriveProxyMcpFlag         = "FLOWPILOT_GOOGLE_DRIVE_PROXY_MCP"
+	googleDriveProxyAccountIDEnv    = "FLOWPILOT_GOOGLE_DRIVE_ACCOUNT_ID"
+	googleDriveProxyRefreshTokenEnv = "FLOWPILOT_GOOGLE_DRIVE_REFRESH_TOKEN"
 )
 
 // Read-only tool allowlist for Phase A
@@ -219,6 +220,7 @@ func (r *Runner) EnsureGoogleDriveMcpProviderConfig(req GoogleDriveMcpProviderCo
 	}
 	mcpStatus := r.resolveGoogleDriveMcpStatus(configFile)
 	runtimeMcpStatus := googleDriveMcpStatusRuntimeConfig(mcpStatus)
+	r.hydrateGoogleDriveProxyOAuthRuntimeConfig(&runtimeMcpStatus)
 	if flowpilotGoogleDriveProxyMcpEnabled() {
 		if !mcpStatus.Configured {
 			return GoogleDriveMcpProviderConfigResponse{}, errors.New(
@@ -392,10 +394,41 @@ func googleDriveProxyMcpCommandWithLookup(workspace string, lookPath func(string
 }
 
 func googleDriveProxyMcpApprovalMode(yoloMode bool) string {
-	if yoloMode {
-		return "approve"
+	return "approve"
+}
+
+func googleDriveProxyMcpServerEnv(mcpStatus googleDriveMcpRuntimeConfig) map[string]string {
+	env := map[string]string{}
+	if strings.TrimSpace(mcpStatus.AccountID) != "" {
+		env[googleDriveProxyAccountIDEnv] = strings.TrimSpace(mcpStatus.AccountID)
 	}
-	return "prompt"
+	if strings.TrimSpace(mcpStatus.ProxyClientID) != "" {
+		env[googleDriveClientIDEnv] = strings.TrimSpace(mcpStatus.ProxyClientID)
+	}
+	if strings.TrimSpace(mcpStatus.ProxyClientSecret) != "" {
+		env[googleDriveClientSecretEnv] = strings.TrimSpace(mcpStatus.ProxyClientSecret)
+	}
+	if strings.TrimSpace(mcpStatus.ProxyRefreshToken) != "" {
+		env[googleDriveProxyRefreshTokenEnv] = strings.TrimSpace(mcpStatus.ProxyRefreshToken)
+	}
+	return env
+}
+
+func (r *Runner) hydrateGoogleDriveProxyOAuthRuntimeConfig(mcpStatus *googleDriveMcpRuntimeConfig) {
+	if mcpStatus == nil || !flowpilotGoogleDriveProxyMcpEnabled() {
+		return
+	}
+	config, err := r.resolveGoogleDriveProxyOAuthConfig()
+	if err != nil {
+		return
+	}
+	mcpStatus.ProxyClientID = strings.TrimSpace(config.clientID)
+	mcpStatus.ProxyClientSecret = strings.TrimSpace(config.clientSecret)
+	if strings.TrimSpace(mcpStatus.AccountID) != "" {
+		if creds, err := r.loadGoogleDriveCredentialByAccount(mcpStatus.AccountID); err == nil {
+			mcpStatus.ProxyRefreshToken = strings.TrimSpace(creds.RefreshToken)
+		}
+	}
 }
 
 func parseGoogleDriveProxyMcpArgs(args []string) (workspace string, accountHomePath string, mode string, yoloMode bool, ok bool) {
@@ -488,10 +521,7 @@ func expectedCodexGoogleDriveMcpServer(workspace string, accountHomePath string,
 			StartupTimeoutSec: 20,
 			ToolTimeoutSec:    120,
 			Enabled:           true,
-			Env:               map[string]string{},
-		}
-		if strings.TrimSpace(mcpStatus.AccountID) != "" {
-			server.Env[googleDriveProxyAccountIDEnv] = strings.TrimSpace(mcpStatus.AccountID)
+			Env:               googleDriveProxyMcpServerEnv(mcpStatus),
 		}
 
 		server.ApprovalMode = googleDriveProxyMcpApprovalMode(yoloMode)
@@ -634,10 +664,7 @@ func expectedGeminiGoogleDriveMcpServer(workspace string, accountHomePath string
 		if mode != "read_only" {
 			server.IncludeTools = googleDriveMcpReadWriteTools
 		}
-		server.Env = map[string]string{}
-		if strings.TrimSpace(mcpStatus.AccountID) != "" {
-			server.Env[googleDriveProxyAccountIDEnv] = strings.TrimSpace(mcpStatus.AccountID)
-		}
+		server.Env = googleDriveProxyMcpServerEnv(mcpStatus)
 		return server
 	}
 
@@ -737,11 +764,8 @@ func expectedClaudeGoogleDriveMcpServer(workspace string, accountHomePath string
 			Type:    "stdio",
 			Command: command,
 			Args:    append(argsPrefix, googleDriveProxyMcpArgs(workspace, accountHomePath, mode, yoloMode)...),
-			Env:     map[string]string{},
+			Env:     googleDriveProxyMcpServerEnv(mcpStatus),
 			Timeout: 600000,
-		}
-		if strings.TrimSpace(mcpStatus.AccountID) != "" {
-			server.Env[googleDriveProxyAccountIDEnv] = strings.TrimSpace(mcpStatus.AccountID)
 		}
 		return server
 	}
@@ -766,6 +790,7 @@ func (r *Runner) resolveGoogleDriveMcpProviderStatuses() ([]GoogleDriveMcpProvid
 	}
 	mcpStatus := r.resolveGoogleDriveMcpStatus(configFile)
 	runtimeMcpStatus := googleDriveMcpStatusRuntimeConfig(mcpStatus)
+	r.hydrateGoogleDriveProxyOAuthRuntimeConfig(&runtimeMcpStatus)
 
 	statuses := make([]GoogleDriveMcpProviderConfigStatus, 0, 3)
 	now := time.Now().UTC().Format(time.RFC3339)

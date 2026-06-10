@@ -373,6 +373,33 @@ func TestResolveGoogleDriveArtifactRuntimeConfigPrefersSavedConfigOverEnv(t *tes
 	}
 }
 
+func TestResolveGoogleDriveProxyOAuthConfigFallsBackToEnvSecret(t *testing.T) {
+	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
+	if _, err := instance.SaveGoogleDriveWorkspaceConfig(GoogleDriveWorkspaceConfigRequest{
+		ClientID:     "saved-client-id",
+		ClientSecret: "saved-client-secret",
+		RedirectURI:  googleDriveDefaultRedirectURI,
+		PickerAPIKey: "saved-picker-api-key",
+	}); err != nil {
+		t.Fatalf("save google drive config: %v", err)
+	}
+	if err := instance.ensureSecretStore().Delete(googleDriveArtifactSyncClientSecretKey); err != nil {
+		t.Fatalf("delete saved client secret: %v", err)
+	}
+	t.Setenv(googleDriveClientSecretEnv, "env-client-secret")
+
+	config, err := instance.resolveGoogleDriveProxyOAuthConfig()
+	if err != nil {
+		t.Fatalf("resolve proxy oauth config: %v", err)
+	}
+	if config.clientID != "saved-client-id" {
+		t.Fatalf("expected saved client id, got %q", config.clientID)
+	}
+	if config.clientSecret != "env-client-secret" {
+		t.Fatalf("expected env client secret fallback, got %q", config.clientSecret)
+	}
+}
+
 func TestSaveGoogleDriveWorkspaceConfigRequiresClientSecretWhenClientIDChanges(t *testing.T) {
 	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
 	if _, err := instance.SaveGoogleDriveWorkspaceConfig(GoogleDriveWorkspaceConfigRequest{
