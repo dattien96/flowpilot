@@ -48,7 +48,7 @@ MCP must be configured once per project and shared across flows in that project.
 We want to support these MCP context types for MVP:
 - Jira: read ticket description, comments, status, assignee, and related metadata
 - Figma: read design spec, file structure, components, and comments
-- Google Drive: read or write files in a selected folder or shared drive
+- Google Drive: read Drive data through a connected account and, when artifact sync is enabled, write project artifacts into a selected folder under that account
 - Firebase: read or write project data, crash info, analytics, and environment details
 - Telegram: send notifications and optionally receive workflow-related messages
 
@@ -61,7 +61,7 @@ This is the most important expectation for MVP:
 **Adding an MCP in the UI must create a real usable connection, not just save a row in Supabase.**
 
 When the user clicks `Add MCP`:
-1. user selects provider type and enters provider-specific config such as `folderId`
+1. user selects provider type and enters provider-specific config such as an account, workspace, board, or project folder binding
 2. FlowPilot saves the project-scoped MCP record
 3. FlowPilot asks the local Go-Runner to connect that MCP
 4. the Go-Runner opens the user's local browser to the real provider auth page when auth is required
@@ -79,16 +79,16 @@ If verification fails, the MCP must stay non-connected and surface the failure r
 For Google Drive, entering only `folderId` is not enough by itself.
 
 Expected real flow:
-1. user enters `folderId`
-2. system saves the project MCP entry
-3. Go-Runner opens Google OAuth in the user's local browser
-4. user logs into Google and approves Drive access
-5. Go-Runner receives the auth callback locally
-6. Go-Runner stores the credential securely on the local machine
-7. Go-Runner calls Google Drive API to verify it can access the configured folder
-8. MCP status becomes `connected`
+1. user connects a Google account through the local Go-Runner
+2. Go-Runner opens Google OAuth in the user's local browser
+3. user logs into Google and approves Drive access
+4. Go-Runner receives the auth callback locally
+5. Go-Runner stores the account credential securely on the local machine
+6. if the project also uses Google Drive artifact sync, the user selects one folder under that connected account
+7. Go-Runner calls Google Drive API to verify the selected folder when a folder binding is required
+8. MCP status becomes `connected` when the account token is ready; artifact sync status becomes `connected` when the folder binding is verified
 
-Later, when a workflow or project action asks to import files from Google Drive, the system uses that real connection.
+Later, when a workflow or project action asks to import files from Google Drive, the system uses that real connected account. Artifact sync still routes uploads into the project's selected folder.
 
 ---
 
@@ -97,7 +97,7 @@ Later, when a workflow or project action asks to import files from Google Drive,
 Provider credentials must not be treated as plain business config.
 
 Rules:
-- stable project config may be stored in FlowPilot DB, for example `folderId`, `workspaceUrl`, `board`, `projectId`
+- stable project config may be stored in FlowPilot DB, for example `folderId`, `workspaceUrl`, `board`, `projectId`, or a selected provider account identifier
 - provider auth tokens or equivalent secrets must be handled by the Go-Runner
 - auth credentials should be stored securely on the local machine or in a dedicated secure secret store
 - the project MCP record should expose status and metadata, not raw provider tokens

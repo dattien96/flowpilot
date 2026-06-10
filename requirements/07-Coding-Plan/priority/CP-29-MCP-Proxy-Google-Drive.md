@@ -9,7 +9,7 @@
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-09`
-- Last Updated: `2026-06-09`
+- Last Updated: `2026-06-10`
 - Parent Documents: [CP-05-03: Google Drive MCP Current Implementation Notes](../priority/CP-05-03-Driver-Mcp.md), [SD-11: MCP Connection Flows](../../06-System-Tech-Design/SD-11-MCP-Connection-Flows.md), [SS-02: Project Context](../../05-System-Specs/SS-02-Project-Context.md), [SS-04: Workflow](../../05-System-Specs/SS-04-Workflow.md)
 - Child Documents: `TBD`
 - Related Documents: [Task-025: Drive MCP Auth Flow](../../08-Task/Task-025-Drive-MCP-Auth-Flow.md), [CP-27: Google Cloud Setting](../done/CP-27-Google-Cloud-Setting-Manually.md), [CP-28: Google Cloud Config With UI Auto](../done/CP-28-Google-Cloud-Config-With-Ui-Auto.md), [SS-08: Approval Gates & YOLO Mode](../../05-System-Specs/SS-08-Approve-Gate.md), [SD-09: Approval Gates & YOLO Mode](../../06-System-Tech-Design/SD-09-Approval-Gates.md)
@@ -23,7 +23,7 @@
 - CP-05-03 now supports Phase A and Phase B Google Drive MCP configuration, but provider-side MCP tool-call approval can block both read and write calls unless configured correctly.
 - CP-29 owns the future design for FlowPilot's own proxy MCP server so read/write MCP calls can be controlled, manually approved, or auto-approved in YOLO mode.
 - The key architecture change is moving provider config from direct `AI provider -> raw Google Drive MCP` to `AI provider -> FlowPilot MCP server -> Google Drive`.
-- The proxy MCP should reuse FlowPilot's artifact-sync OAuth/token/Google API infrastructure instead of requiring the third-party MCP Desktop OAuth setup.
+- The proxy MCP should reuse FlowPilot's runner-local Google OAuth/token/Google API infrastructure and explicit account selection instead of requiring the third-party MCP Desktop OAuth setup.
 - Default step mode remains `read_only`; `read_write` is an explicit workflow-step configuration.
 - True per-request MCP tool-call approval and auditable YOLO auto-approval are only possible when provider approval mode and FlowPilot MCP policy are controlled together.
 
@@ -41,7 +41,7 @@
 - `P-5` When workflow run `yolo_mode` is off, provider MCP `call_tool` approval must require user approval for both read and write tools.
 - `P-6` Keep destructive and permission-changing Google Drive tools disabled until a separate policy is approved.
 - `P-7` Use direct Google API calls inside FlowPilot MCP instead of proxying to the existing package.
-- `P-8` Reuse the existing artifact-sync Google OAuth, token refresh, and Drive API helper path where possible.
+- `P-8` Reuse the existing runner-local Google OAuth, token refresh, and Drive API helper path where possible, but treat proxy MCP auth as selected-account state rather than "the currently connected artifact project".
 - `P-9` Bind approval expiry to the active workflow/provider session timeout; when the session is destroyed, pending, approved, or auto-approved write requests expire if they have not executed.
 - `P-10` Rejected or failed write MCP calls should let the provider continue and produce a useful output artifact with a clear user-facing notice.
 - `P-11` When workflow run `yolo_mode` is on, provider MCP `call_tool` approval must auto-approve both read and policy-allowed write tools.
@@ -699,12 +699,13 @@ Selected implementation:
 - FlowPilot MCP calls Google APIs directly.
 - Do not proxy write execution to `@piotr-agier/google-drive-mcp`.
 - Match the package tool surface where possible so existing provider behavior remains compatible.
-- Reuse artifact-sync OAuth connection, refresh-token storage, access-token refresh, and Drive API helpers where possible.
+- Reuse runner-local Google OAuth connection, refresh-token storage, access-token refresh, and Drive API helpers where possible.
 - Implement tools in priority order if needed, but the CP-29 target scope is package-equivalent support subject to FlowPilot safety policy and available OAuth scopes.
 
 Credential rules:
 
-- Use the existing FlowPilot artifact-sync Google Drive connection as the primary OAuth source for proxy MCP.
+- Use the selected FlowPilot Google account as the primary OAuth source for proxy MCP.
+- Treat artifact sync as a separate `projectId -> accountId -> folderId` binding under that selected account.
 - Refresh access tokens through the existing runner token refresh path.
 - Keep MCP Desktop OAuth credential/token paths only for legacy/raw-MCP fallback while the third-party package remains available.
 - Never return token contents in tool results.
@@ -714,8 +715,9 @@ Credential rules:
 
 Tests:
 
-- Missing artifact-sync Google Drive connection fails startup or tool call clearly.
-- Expired/revoked artifact-sync refresh token fails with `MCP_AUTH_REQUIRED` or reconnect-required status.
+- Missing selected Google account fails startup or tool call clearly.
+- Missing required scopes on the selected account fail with reconnect-required or missing-scope status.
+- Expired/revoked selected-account refresh token fails with `MCP_AUTH_REQUIRED` or reconnect-required status.
 - Search returns file name and ID.
 - Read doc returns file name, ID, and content.
 - Write tools return stable IDs, URLs when available, and enough result metadata for audit artifacts.
@@ -1254,14 +1256,14 @@ Behavior:
 - If enabled:
   - provider config points to FlowPilot MCP server
   - manual approval and YOLO auto-approval model is active
-  - proxy MCP uses artifact-sync Google OAuth/token/Google API infrastructure
+  - proxy MCP uses selected-account Google OAuth/token/Google API infrastructure
   - Drive settings no longer require the Desktop OAuth JSON upload step for proxy MCP readiness
 
 Tests:
 
 - Disabled flag keeps old config.
 - Enabled flag writes proxy MCP config.
-- Enabled flag treats artifact-sync Google Drive connection as the proxy MCP auth source.
+- Enabled flag treats the selected Google account as the proxy MCP auth source.
 - Enabled flag does not require MCP Desktop OAuth JSON for proxy MCP readiness.
 
 ## 5. Touched Areas
@@ -1498,13 +1500,12 @@ Web test steps:
 - Refresh the page and confirm the saved values are reflected in status, with the secret field remaining masked or empty.
 Current expected result: artifact-sync status becomes configured when `clientId`, `redirectUri`, and `clientSecret` are present. Desktop OAuth JSON is not required for proxy readiness.
 
-3. Connect exactly one artifact-sync Google Drive project and make sure its refresh token is stored locally.
+3. Connect at least one Google Drive account and select it for proxy MCP.
 Web test steps:
-- Open the project page that will use Google Drive artifacts.
-- In the artifact storage panel, choose `Google Drive`.
-- Click `Connect Google Drive` or `Reconnect Google Drive`, finish the OAuth flow, and select one folder.
-- Return to the web app, refresh the project page, and confirm the project now shows one connected Google Drive target on this runner.
-Current expected result: proxy MCP read tools can refresh an access token through the artifact-sync credential path. If zero or multiple connected artifact-sync projects exist, the proxy server fails clearly instead of guessing a project.
+- Open `/settings/google-drive-setup`.
+- Start a Google account connection, finish OAuth, then save that account as the active proxy MCP account.
+- Return to the status section and confirm the selected account shows proxy-read readiness.
+Current expected result: proxy MCP read tools can refresh an access token through the selected-account credential path. If zero or multiple connected accounts exist and no account is selected, the proxy server fails clearly instead of guessing.
 
 4. Leave the legacy Desktop OAuth JSON and token files absent, then refresh Google Drive status.
 Web test steps:
@@ -1536,11 +1537,11 @@ Web test steps:
 - Open `/workflow-steps/create`.
 - Create or reuse a step definition with `Required MCPs` including `google_drive` and set `Google Drive access` to `Read only`.
 - Use that step in a workflow, start a workflow run from the project UI, then open `/workflow-runs/$runId` and inspect the step output and logs for the MCP read calls.
-Current expected result: `authGetStatus`, `search`, `listFolder`, and Google Doc read tools execute through the FlowPilot proxy MCP and use the artifact-sync credential source.
+Current expected result: `authGetStatus`, `search`, `listFolder`, and Google Doc read tools execute through the FlowPilot proxy MCP and use the selected-account credential source.
 
-8. Re-run the read-only smoke test after removing artifact-sync client secret, client ID, redirect URI, or the connected project credential.
+8. Re-run the read-only smoke test after removing artifact-sync client secret, client ID, redirect URI, the selected account token, or the selected account scopes.
 Web test steps:
-- Open `/settings/google-drive-setup` and clear one required artifact-sync value, or disconnect the project Google Drive folder from the project artifact storage UI.
+- Open `/settings/google-drive-setup` and clear one required artifact-sync value, disconnect the selected account, or reconnect the selected account with insufficient scopes.
 - Save the change and refresh the page.
 - Start the same read-only workflow again.
 - Open `/workflow-runs/$runId` and inspect the failed step message and logs in the run detail page.
