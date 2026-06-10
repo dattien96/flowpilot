@@ -117,6 +117,19 @@ function summarizeRunPrompt(promptText?: string) {
     : firstLine;
 }
 
+function isGoogleDriveMcpApprovalMessage(message?: string | null) {
+  const normalized = message?.trim().toLowerCase() ?? "";
+  return normalized.includes("google drive mcp approval required") ||
+    normalized.includes("google drive write approval required") ||
+    normalized.includes("mcp_tool_approval_required") ||
+    normalized.includes("mcp_write_approval_required");
+}
+
+function isWorkflowStepWaitingForApproval(status?: string | null) {
+  const normalized = String(status ?? "").trim().toUpperCase();
+  return normalized === "WAITING_USER_APPROVAL" || normalized === "WAITING_APPROVAL";
+}
+
 function normalizePromptDisplay(promptText?: string | null) {
   const normalized = promptText?.trim() ?? "";
   if (!normalized) {
@@ -1205,7 +1218,6 @@ function WorkflowRunDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [decisionComment, setDecisionComment] = useState("");
   const [submittingDecision, setSubmittingDecision] = useState(false);
-  const [togglingYolo, setTogglingYolo] = useState(false);
   const [processingAction, setProcessingAction] = useState(false);
   const [runPromptText, setRunPromptText] = useState<string | null>(null);
   const [optimisticFollowUps, setOptimisticFollowUps] = useState<
@@ -1645,7 +1657,7 @@ function WorkflowRunDetailPage() {
     if (detail?.steps && detail.steps.length > 0 && !selectedStepId) {
       const activeStep = detail.steps.find(
         (s: any) =>
-          s.status === "RUNNING" || s.status === "WAITING_USER_APPROVAL",
+          s.status === "RUNNING" || isWorkflowStepWaitingForApproval(s.status),
       );
       const pendingStep = detail.steps.find((s: any) => s.status === "PENDING");
       if (activeStep) {
@@ -1692,11 +1704,21 @@ function WorkflowRunDetailPage() {
     () => canCancelWorkflowRun(detail?.run),
     [detail?.run],
   );
+  const googleDriveMcpWaitingStep = useMemo(
+    () =>
+      detail?.steps.find(
+        (step: any) =>
+          isWorkflowStepWaitingForApproval(step.status) &&
+          isGoogleDriveMcpApprovalMessage(step.errorMessage),
+      ),
+    [detail?.steps],
+  );
   const selectedStep =
     detail?.steps.find((step: any) => step.id === selectedStepId) ??
+    googleDriveMcpWaitingStep ??
     detail?.steps[0];
   const selectedStepIndex =
-    detail?.steps.findIndex((step: any) => step.id === selectedStepId) ?? -1;
+    detail?.steps.findIndex((step: any) => step.id === selectedStep?.id) ?? -1;
   const isInterruptedFailedStep = isInterruptedWorkflowStep({
     status: selectedStep?.status,
     errorMessage: selectedStep?.errorMessage,
@@ -1713,6 +1735,13 @@ function WorkflowRunDetailPage() {
       (approval: any) => approval.status === "pending",
     );
   }, [detail?.approvals]);
+  const isGoogleDriveMcpApproval = useMemo(
+    () =>
+      isGoogleDriveMcpApprovalMessage(
+        selectedStep?.errorMessage ?? pendingApproval?.comment ?? null,
+      ),
+    [pendingApproval?.comment, selectedStep?.errorMessage],
+  );
 
   const timelineApprovalDecisions = useMemo(
     () =>
@@ -1746,10 +1775,12 @@ function WorkflowRunDetailPage() {
     stepId: string,
     decision: "approved" | "changes_requested" | "rejected",
   ) => {
-    if (decision === "rejected" && !pendingApproval) {
+    const useGoogleDriveMcpApproval = isGoogleDriveMcpApproval;
+    if (decision === "rejected" && !pendingApproval && !useGoogleDriveMcpApproval) {
       alert("Cannot reject an already completed step.");
       return;
     }
+
     setSubmittingDecision(true);
     const followUpComment = decisionComment.trim();
     const canOptimisticallyContinue =
@@ -1771,6 +1802,11 @@ function WorkflowRunDetailPage() {
     };
     let submitted = false;
     try {
+      if (decision === "changes_requested" && useGoogleDriveMcpApproval) {
+        alert("Use Reject Request for Google Drive MCP approvals.");
+        return;
+      }
+
       if (canOptimisticallyContinue) {
         setOptimisticFollowUps((current) => [...current, optimisticDecision]);
         setDetail(
@@ -1784,10 +1820,22 @@ function WorkflowRunDetailPage() {
         setDecisionComment("");
       }
 
-      if (decision === "approved" || decision === "changes_requested") {
+      if (decision === "changes_requested") {
         await submitStepApprovalDecisionUseCase.current.execute(
           stepId,
-          decision === "approved",
+          false,
+          followUpComment || undefined,
+        );
+      } else if (useGoogleDriveMcpApproval) {
+        await getGatewayBundle().workflowEngineGateway.submitGoogleDriveWriteApproval(
+          stepId,
+          decision,
+          followUpComment || undefined,
+        );
+      } else if (decision === "approved") {
+        await submitStepApprovalDecisionUseCase.current.execute(
+          stepId,
+          true,
           followUpComment || undefined,
         );
       } else {
@@ -1864,23 +1912,6 @@ function WorkflowRunDetailPage() {
       alert(`Replay failed: ${err.message}`);
     } finally {
       setSubmittingDecision(false);
-    }
-  };
-
-  const handleToggleYolo = async () => {
-    if (!detail?.run) return;
-    setTogglingYolo(true);
-    try {
-      const updatedRun =
-        await getGatewayBundle().workflowEngineGateway.toggleYoloMode(
-          detail.run.id,
-          !detail.run.yoloMode,
-        );
-      setDetail((prev: any) => (prev ? { ...prev, run: updatedRun } : null));
-    } catch (err: any) {
-      alert(`YOLO toggle failed: ${err.message}`);
-    } finally {
-      setTogglingYolo(false);
     }
   };
 
@@ -2195,7 +2226,7 @@ function WorkflowRunDetailPage() {
                 </span>
                 <h2 className="text-2xl font-bold tracking-tight text-foreground flex items-center gap-2.5 flex-wrap mt-1">
                   {selectedStep.stepName}
-                  {selectedStep.status === "WAITING_USER_APPROVAL" ? (
+                  {isWorkflowStepWaitingForApproval(selectedStep.status) ? (
                     <span className="bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2.5 py-0.5 rounded-full text-xs font-semibold uppercase tracking-wider animate-pulse">
                       Awaiting Safe-Gate Approval
                     </span>
@@ -2245,17 +2276,16 @@ function WorkflowRunDetailPage() {
                   <span className="font-medium text-muted-foreground uppercase tracking-wider">
                     YOLO
                   </span>
-                  <button
-                    disabled={togglingYolo}
-                    onClick={handleToggleYolo}
-                    className={`relative inline-flex h-4 w-7 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${detail.run.yoloMode ? "bg-accent" : "bg-muted"
+                  <span
+                    aria-label={`YOLO mode ${detail.run.yoloMode ? "enabled" : "disabled"}`}
+                    className={`relative inline-flex h-4 w-7 shrink-0 rounded-full border-2 border-transparent ${detail.run.yoloMode ? "bg-accent" : "bg-muted"
                       }`}
                   >
                     <span
-                      className={`pointer-events-none inline-block h-3 w-3 transform rounded-full bg-background shadow ring-0 transition duration-200 ease-in-out ${detail.run.yoloMode ? "translate-x-3" : "translate-x-0"
+                      className={`pointer-events-none inline-block h-3 w-3 transform rounded-full bg-background shadow ring-0 ${detail.run.yoloMode ? "translate-x-3" : "translate-x-0"
                         }`}
                     />
-                  </button>
+                  </span>
                 </div>
               </div>
             </div>
@@ -2318,7 +2348,7 @@ function WorkflowRunDetailPage() {
                 {(() => {
                   const stepStatus = selectedStep.status?.toUpperCase();
                   const runStatus = detail.run.status?.toUpperCase();
-                  const isWaiting = stepStatus === "WAITING_USER_APPROVAL";
+                  const isWaiting = isWorkflowStepWaitingForApproval(stepStatus);
                   const isDone = stepStatus === "DONE" || stepStatus === "COMPLETED";
                   const canContinue =
                     ((isWaiting || isDone) &&
@@ -2334,14 +2364,18 @@ function WorkflowRunDetailPage() {
                         <div className="flex items-center gap-2 pb-2 border-b border-border/30">
                           <ShieldAlert className="h-5 w-5 text-warning shrink-0" />
                           <span className="text-sm font-semibold text-warning">
-                            Safe Gate: Approving compiles files & begins coding stage
+                            {isGoogleDriveMcpApproval
+                              ? "Google Drive MCP approval is waiting for your decision"
+                              : "Safe Gate: Approving compiles files & begins coding stage"}
                           </span>
                         </div>
 
                         <div className="space-y-3">
                           <textarea
                             className="w-full min-h-[70px] max-h-[200px] resize-none bg-[#090a0f] border border-border/60 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-1 focus:ring-accent/50 placeholder:text-muted-foreground/60 text-[#eaeaea]"
-                            placeholder="Provide revision notes for Reject & Retry..."
+                            placeholder={isGoogleDriveMcpApproval
+                              ? "Optional comment for this Google Drive approval..."
+                              : "Provide revision notes for Reject & Retry..."}
                             value={decisionComment}
                             onChange={(e) => {
                               setDecisionComment(e.target.value);
@@ -2350,20 +2384,37 @@ function WorkflowRunDetailPage() {
                           />
 
                           <div className="flex flex-wrap items-center justify-end gap-3 pt-1">
-                            <Button
-                              variant="secondary"
-                              className="h-10 rounded-xl border-border/80 px-5 text-foreground hover:bg-muted"
-                              disabled={submittingDecision || !decisionComment.trim()}
-                              onClick={() => handleDecision(selectedStep.id, "changes_requested")}
-                            >
-                              {submittingDecision ? <RefreshCw className="h-4 w-4 animate-spin" /> : "Reject & Retry"}
-                            </Button>
+                            {isGoogleDriveMcpApproval ? (
+                              <Button
+                                variant="secondary"
+                                className="h-10 rounded-xl border-border/80 px-5 text-foreground hover:bg-muted"
+                                disabled={submittingDecision}
+                                onClick={() => handleDecision(selectedStep.id, "rejected")}
+                              >
+                                {submittingDecision ? <RefreshCw className="h-4 w-4 animate-spin" /> : "Reject Request"}
+                              </Button>
+                            ) : (
+                              <Button
+                                variant="secondary"
+                                className="h-10 rounded-xl border-border/80 px-5 text-foreground hover:bg-muted"
+                                disabled={submittingDecision || !decisionComment.trim()}
+                                onClick={() => handleDecision(selectedStep.id, "changes_requested")}
+                              >
+                                {submittingDecision ? <RefreshCw className="h-4 w-4 animate-spin" /> : "Reject & Retry"}
+                              </Button>
+                            )}
                             <Button
                               className="rounded-xl px-5 h-10 bg-emerald-600 text-white hover:bg-emerald-700 border-none flex items-center gap-1.5"
                               disabled={submittingDecision}
                               onClick={() => handleDecision(selectedStep.id, "approved")}
                             >
-                              {submittingDecision ? <RefreshCw className="h-4 w-4 animate-spin" /> : <>Approve & Continue &rarr;</>}
+                              {submittingDecision ? (
+                                <RefreshCw className="h-4 w-4 animate-spin" />
+                              ) : isGoogleDriveMcpApproval ? (
+                                <>Approve Request &rarr;</>
+                              ) : (
+                                <>Approve & Continue &rarr;</>
+                              )}
                             </Button>
                           </div>
                         </div>

@@ -19,6 +19,19 @@ import { StartWorkflowRunUseCase } from "@/domain/usecase/workflow-engine/start-
 
 const DEFAULT_MODEL = "gpt-5.4";
 const DEFAULT_REASONING_EFFORT = "medium";
+type StepYoloModeValue = "inherit" | "enabled" | "disabled";
+
+function stepYoloValue(value: boolean | null | undefined): StepYoloModeValue {
+  if (value === true) return "enabled";
+  if (value === false) return "disabled";
+  return "inherit";
+}
+
+function parseStepYoloValue(value: string): boolean | null {
+  if (value === "enabled") return true;
+  if (value === "disabled") return false;
+  return null;
+}
 
 function providerForModel(model: string) {
   if (model.startsWith("gpt-")) {
@@ -77,6 +90,7 @@ export function WorkflowDetailPage() {
   const [description, setDescription] = useState("");
   const [modelOverride, setModelOverride] = useState(DEFAULT_MODEL);
   const [reasoningEffortOverride, setReasoningEffortOverride] = useState(DEFAULT_REASONING_EFFORT);
+  const [yoloMode, setYoloMode] = useState(false);
   const [selectedStepType, setSelectedStepType] = useState("");
   const [steps, setSteps] = useState<Partial<WorkflowStep>[]>([]);
   const [runProjectId, setRunProjectId] = useState(searchProjectId ?? "");
@@ -102,6 +116,7 @@ export function WorkflowDetailPage() {
           setDescription(detail.description);
           setModelOverride(detail.modelOverride ?? DEFAULT_MODEL);
           setReasoningEffortOverride(detail.reasoningEffortOverride ?? DEFAULT_REASONING_EFFORT);
+          setYoloMode(detail.yoloMode);
           setSteps(
             (detail.steps ?? [])
               .slice()
@@ -164,6 +179,7 @@ export function WorkflowDetailPage() {
         orderIndex: current.length,
         isEnabled: true,
         requiresApproval: true,
+        yoloMode: selectedStep?.yoloMode ?? null,
         modelOverride: selectedStep?.model ?? DEFAULT_MODEL,
         reasoningEffortOverride: selectedStep?.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
       },
@@ -208,6 +224,7 @@ export function WorkflowDetailPage() {
         isTemplate: workflow.isTemplate,
         modelOverride: modelOverride || DEFAULT_MODEL,
         reasoningEffortOverride: reasoningEffortOverride || DEFAULT_REASONING_EFFORT,
+        yoloMode,
         steps,
       });
       setWorkflow(saved);
@@ -375,6 +392,21 @@ export function WorkflowDetailPage() {
             ))}
           </select>
         </label>
+        <label className="flex items-start gap-3 rounded-2xl border border-border bg-card px-4 py-3 text-sm md:col-span-2">
+          <input
+            type="checkbox"
+            className="mt-1 h-4 w-4 rounded border-border"
+            disabled={!canEdit}
+            checked={yoloMode}
+            onChange={(event) => setYoloMode(event.target.checked)}
+          />
+          <span>
+            <span className="block font-medium">YOLO mode</span>
+            <span className="mt-1 block text-xs text-muted-foreground">
+              Runs created from this workflow auto-approve approval gates.
+            </span>
+          </span>
+        </label>
       </div>
 
       <div className="rounded-[1.5rem] border border-border bg-background/60 p-5">
@@ -520,6 +552,27 @@ export function WorkflowDetailPage() {
                         {option.label}
                       </option>
                     ))}
+                  </select>
+                </label>
+                <label className="space-y-2 text-sm">
+                  <span className="font-medium">YOLO</span>
+                  <select
+                    className="w-full rounded-2xl border border-border bg-background px-4 py-3"
+                    disabled={!canEdit}
+                    value={stepYoloValue(step.yoloMode)}
+                    onChange={(event) =>
+                      setSteps((current) =>
+                        current.map((item, currentIndex) =>
+                          currentIndex === index
+                            ? { ...item, yoloMode: parseStepYoloValue(event.target.value) }
+                            : item,
+                        ),
+                      )
+                    }
+                  >
+                    <option value="inherit">Inherit workflow</option>
+                    <option value="enabled">On</option>
+                    <option value="disabled">Off</option>
                   </select>
                 </label>
               </div>

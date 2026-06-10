@@ -119,8 +119,8 @@ export function resolveArtifactSyncEnvStatus(): GoogleDriveArtifactSyncStatus {
     status: configured ? "configured" : "needs_input",
     source: configured ? "env" : "missing",
     configured,
-    clientId,
-    redirectUri,
+    clientId: clientId || undefined,
+    redirectUri: redirectUri || undefined,
     hasClientSecret: Boolean(clientSecret),
     hasPickerApiKey: Boolean(pickerApiKey),
     missingFields,
@@ -135,6 +135,8 @@ export function resolveMcpEnvStatus(): GoogleDriveMcpStatus {
   const credentialFileValid = credentialFileExists ? validateOAuthJsonFile(credentialPath) : false;
   const backendPackageAvailable = true;
   const tokenFileHasRefreshToken = tokenFileExists ? hasRefreshToken(tokenPath) : false;
+  const proxyMcpEnabled = true;
+  const accountId = process.env.FLOWPILOT_GOOGLE_DRIVE_ACCOUNT_ID?.trim() || null;
 
   let status = "not_started";
   if (!credentialFileExists) {
@@ -145,8 +147,10 @@ export function resolveMcpEnvStatus(): GoogleDriveMcpStatus {
     status = "needs_auth";
   } else if (!tokenFileHasRefreshToken) {
     status = "needs_auth";
-  } else {
+  } else if (!backendPackageAvailable) {
     status = "warning";
+  } else {
+    status = "configured";
   }
 
   const missingFields: string[] = [];
@@ -157,14 +161,22 @@ export function resolveMcpEnvStatus(): GoogleDriveMcpStatus {
 
   return {
     status,
-    configured: false,
+    configured: status === "configured",
+    proxyMcpEnabled,
     credentialPath,
     tokenPath,
     credentialFileExists,
     credentialFileValid,
     tokenFileExists,
+    tokenRefreshValid: tokenFileHasRefreshToken,
     needsAuth: status === "needs_auth" || status === "reconnect_required",
     backendPackageAvailable,
+    accountId: accountId || undefined,
+    accountSelectionRequired: proxyMcpEnabled ? !accountId : undefined,
+    accountReady: !proxyMcpEnabled && status === "configured",
+    artifactReady: false,
+    mcpReadReady: status === "configured",
+    mcpWriteReady: status === "configured",
     missingFields,
   };
 }
@@ -193,7 +205,7 @@ export async function readGoogleDriveUploadForm(request: Request): Promise<Googl
   };
 }
 
-function isUploadFile(value: FormDataEntryValue | null): value is Blob & { name: string } {
+function isUploadFile(value: FormDataEntryValue | null): value is File {
   return Boolean(
     value &&
       typeof value === "object" &&

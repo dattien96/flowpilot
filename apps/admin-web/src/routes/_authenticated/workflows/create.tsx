@@ -15,6 +15,19 @@ import { useSupportedModels } from "@/presentation/hooks/use-supported-models";
 
 const DEFAULT_MODEL = "gpt-5.4";
 const DEFAULT_REASONING_EFFORT = "medium";
+type StepYoloModeValue = "inherit" | "enabled" | "disabled";
+
+function stepYoloValue(value: boolean | null | undefined): StepYoloModeValue {
+  if (value === true) return "enabled";
+  if (value === false) return "disabled";
+  return "inherit";
+}
+
+function parseStepYoloValue(value: string): boolean | null {
+  if (value === "enabled") return true;
+  if (value === "disabled") return false;
+  return null;
+}
 
 export const Route = createFileRoute("/_authenticated/workflows/create")({
   validateSearch: (search: Record<string, unknown>) => ({
@@ -56,6 +69,7 @@ export function CreateWorkflowPage() {
   const [description, setDescription] = useState("");
   const [modelOverride, setModelOverride] = useState(DEFAULT_MODEL);
   const [reasoningEffortOverride, setReasoningEffortOverride] = useState(DEFAULT_REASONING_EFFORT);
+  const [yoloMode, setYoloMode] = useState(false);
   const [selectedStepType, setSelectedStepType] = useState("");
   const [steps, setSteps] = useState<Partial<WorkflowStep>[]>([]);
 
@@ -125,6 +139,7 @@ export function CreateWorkflowPage() {
         orderIndex: current.length,
         isEnabled: true,
         requiresApproval: true,
+        yoloMode: selectedStep?.yoloMode ?? null,
         modelOverride: selectedStep?.model ?? DEFAULT_MODEL,
         reasoningEffortOverride: selectedStep?.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
       },
@@ -161,6 +176,7 @@ export function CreateWorkflowPage() {
         isTemplate: false,
         modelOverride: modelOverride || DEFAULT_MODEL,
         reasoningEffortOverride: reasoningEffortOverride || DEFAULT_REASONING_EFFORT,
+        yoloMode,
         steps,
       });
       await navigate({
@@ -256,6 +272,20 @@ export function CreateWorkflowPage() {
             ))}
           </select>
         </label>
+        <label className="flex items-start gap-3 rounded-2xl border border-border bg-card px-4 py-3 text-sm md:col-span-2">
+          <input
+            type="checkbox"
+            className="mt-1 h-4 w-4 rounded border-border"
+            checked={yoloMode}
+            onChange={(event) => setYoloMode(event.target.checked)}
+          />
+          <span>
+            <span className="block font-medium">YOLO mode</span>
+            <span className="mt-1 block text-xs text-muted-foreground">
+              Runs created from this workflow auto-approve approval gates.
+            </span>
+          </span>
+        </label>
       </div>
 
       <div className="rounded-[1.5rem] border border-border bg-background/60 p-5">
@@ -296,7 +326,27 @@ export function CreateWorkflowPage() {
                 </p>
                 <p className="text-xs text-muted-foreground">{step.stepType}</p>
               </div>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <span className="font-medium uppercase tracking-wide">YOLO</span>
+                  <select
+                    className="rounded-xl border border-border bg-background px-3 py-2 text-xs"
+                    value={stepYoloValue(step.yoloMode)}
+                    onChange={(event) =>
+                      setSteps((current) =>
+                        current.map((item, currentIndex) =>
+                          currentIndex === index
+                            ? { ...item, yoloMode: parseStepYoloValue(event.target.value) }
+                            : item,
+                        ),
+                      )
+                    }
+                  >
+                    <option value="inherit">Inherit</option>
+                    <option value="enabled">On</option>
+                    <option value="disabled">Off</option>
+                  </select>
+                </label>
                 <Button variant="secondary" onClick={() => moveStep(index, "up")}>
                   Up
                 </Button>

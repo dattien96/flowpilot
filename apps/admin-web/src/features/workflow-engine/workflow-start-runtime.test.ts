@@ -8,11 +8,13 @@ import {
   buildWorkflowStepFollowUpPrompt,
   buildWorkflowStepPrompt,
   createArtifactOutputs,
+  createGoogleDriveWriteAuditArtifacts,
   createLocalWorkflowOutputArtifactSnapshot,
   deactivateWorkflowRunSession,
   finalizeWorkflowRunSessions,
   resolveArtifactWorkspaceRoot,
   resolveProviderKeyFromModel,
+  submitGoogleDriveWriteApprovalRuntime,
   submitWorkflowStepFollowUpRuntime,
   syncWorkflowRunSessionProviderSessionId,
   sendMessageWithRetry,
@@ -695,6 +697,131 @@ describe("workflow-start-runtime", () => {
     expect(updatedIds).toEqual(["session-subagent"]);
   });
 
+  it("creates sanitized Google Drive write audit artifacts", async () => {
+    const artifactWorkspaceRoot = await mkdtemp(
+      path.join(os.tmpdir(), "flowpilot-gdrive-audit-"),
+    );
+    const insertedRows: Array<Record<string, unknown>> = [];
+    const queryBuilder = {
+      select: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
+      insert: vi.fn((rows: Array<Record<string, unknown>>) => {
+        insertedRows.push(...rows);
+        return { error: null };
+      }),
+    };
+    const adminClient = {
+      from: vi.fn(() => queryBuilder),
+    } as any;
+    const localRunnerGateway = {
+      listGoogleDriveProxyApprovals: vi.fn().mockResolvedValue([
+        {
+          id: "approval-1",
+          workflowRunId: "run-1",
+          workflowStepRunId: "step-1",
+          processKey: "proc-1",
+          toolName: "createGoogleDoc",
+          operation: "write",
+          canonicalArgsJson: "{\"content\":\"secret body\"}",
+          argumentsHash: "hash-1",
+          targetSummary: "Create Google Doc \"Plan\"",
+          status: "executed",
+          decisionMode: "yolo",
+          requestedAt: "2026-06-09T00:00:00Z",
+          decidedAt: "2026-06-09T00:00:01Z",
+          expiresAt: "2026-06-09T01:00:00Z",
+          resultDriveId: "drive-1",
+          resultDriveUrl: "https://docs.google.com/document/d/drive-1",
+        },
+        {
+          id: "approval-2",
+          workflowRunId: "run-1",
+          workflowStepRunId: "step-1",
+          processKey: "proc-1",
+          toolName: "createFolder",
+          operation: "write",
+          canonicalArgsJson: "{\"name\":\"blocked\"}",
+          argumentsHash: "hash-2",
+          targetSummary: "Create Drive folder",
+          status: "rejected",
+          decisionMode: "manual",
+          requestedAt: "2026-06-09T00:10:00Z",
+          decidedAt: "2026-06-09T00:10:01Z",
+          expiresAt: "2026-06-09T01:00:00Z",
+          errorMessage: "not allowed",
+        },
+        {
+          id: "approval-3",
+          workflowRunId: "run-1",
+          workflowStepRunId: "step-1",
+          processKey: "proc-1",
+          toolName: "search",
+          operation: "read",
+          canonicalArgsJson: "{\"query\":\"plan\"}",
+          argumentsHash: "hash-3",
+          targetSummary: "Search Google Drive for \"plan\"",
+          status: "executed",
+          decisionMode: "manual",
+          requestedAt: "2026-06-09T00:20:00Z",
+          decidedAt: "2026-06-09T00:20:01Z",
+          expiresAt: "2026-06-09T01:00:00Z",
+        },
+      ]),
+    } as any;
+
+    const artifactIds = await createGoogleDriveWriteAuditArtifacts({
+      adminClient,
+      localRunnerGateway,
+      projectId: "project-1",
+      workflowId: "workflow-1",
+      workflowRunId: "run-1",
+      stepRunId: "step-1",
+      stepType: "write_doc",
+      mcpAccessMode: "read_write",
+      yoloMode: true,
+      artifactWorkspaceRoot,
+    });
+
+    expect(artifactIds).toHaveLength(2);
+    expect(insertedRows).toHaveLength(2);
+    expect(insertedRows[0]).toEqual(
+      expect.objectContaining({
+        artifact_definition_key: null,
+        project_id: "project-1",
+        workflow_id: "workflow-1",
+        workflow_run_id: "run-1",
+        workflow_run_step_id: "step-1",
+        title: "Google Drive Write Audit - approval-1.json",
+        sync_status: "local_only",
+      }),
+    );
+    expect(insertedRows[1]).toEqual(
+      expect.objectContaining({
+        title: "Google Drive Write Audit - approval-2.json",
+      }),
+    );
+    const executedAuditContent = await readFile(
+      path.join(artifactWorkspaceRoot, String(insertedRows[0].local_path)),
+      "utf8",
+    );
+    const rejectedAuditContent = await readFile(
+      path.join(artifactWorkspaceRoot, String(insertedRows[1].local_path)),
+      "utf8",
+    );
+    expect(executedAuditContent).toContain("\"mcpAccessMode\": \"read_write\"");
+    expect(executedAuditContent).toContain("\"decisionMode\": \"yolo\"");
+    expect(executedAuditContent).toContain("\"resultDriveId\": \"drive-1\"");
+    expect(rejectedAuditContent).toContain("\"decisionMode\": \"manual\"");
+    expect(rejectedAuditContent).toContain("\"errorMessage\": \"not allowed\"");
+    expect(executedAuditContent).not.toContain("secret body");
+    expect(rejectedAuditContent).not.toContain("secret body");
+    expect(localRunnerGateway.listGoogleDriveProxyApprovals).toHaveBeenCalledWith(
+      "run-1",
+      "step-1",
+    );
+  });
+
   describe("sendMessageWithRetry", () => {
     beforeEach(() => {
       vi.spyOn(globalThis, "fetch").mockResolvedValue({
@@ -715,6 +842,9 @@ describe("workflow-start-runtime", () => {
         outputMarkdown: "success",
         actualPromptText: "Injected MCP prompt",
       });
+      const mockEnsureGoogleDriveMcpProviderConfig = vi.fn().mockResolvedValue({
+        configChanged: false,
+      });
       const mockStartSession = vi.fn().mockResolvedValue({
         processKey: "proc-new",
         providerSessionId: "thread-new",
@@ -722,6 +852,7 @@ describe("workflow-start-runtime", () => {
       });
 
       const localRunnerGateway = {
+        ensureGoogleDriveMcpProviderConfig: mockEnsureGoogleDriveMcpProviderConfig,
         sendMessage: mockSendMessage,
         closeSession: vi.fn().mockResolvedValue(undefined),
         startSession: mockStartSession,
@@ -756,13 +887,29 @@ describe("workflow-start-runtime", () => {
         skillIds: [],
         requiredMcps: ["google_drive"],
         allowWrite: false,
+        yoloMode: false,
         idleTTLSeconds: 60,
       });
 
+      expect(mockEnsureGoogleDriveMcpProviderConfig).toHaveBeenCalledWith({
+        providerKey: "codex",
+        accountHomePath: "/accounts/b",
+        scope: "account",
+        mode: "read_only",
+        yoloMode: false,
+        workflowRunId: "run-123",
+        workflowStepRunId: "step-456",
+        processKey: "workflow-run-123-step-step-456",
+      });
       expect(mockStartSession).toHaveBeenCalledWith(
         expect.objectContaining({
           accountHomePath: "/accounts/b",
           providerAccountHomePath: "/accounts/b",
+          customEnv: expect.objectContaining({
+            FLOWPILOT_WORKFLOW_RUN_ID: "run-123",
+            FLOWPILOT_WORKFLOW_STEP_RUN_ID: "step-456",
+            FLOWPILOT_PROCESS_KEY: "workflow-run-123-step-step-456",
+          }),
         }),
       );
       expect(mockSendMessage).toHaveBeenCalledWith(
@@ -770,11 +917,83 @@ describe("workflow-start-runtime", () => {
           prompt: "hello",
           requiredMcps: ["google_drive"],
           allowWrite: false,
+          yoloMode: false,
           accountHomePath: "/accounts/b",
         }),
         expect.any(Object),
       );
       expect(result.actualPromptText).toBe("Injected MCP prompt");
+    });
+
+    it("asks Codex for a final answer when a required MCP response is empty", async () => {
+      const mockSendMessage = vi.fn()
+        .mockResolvedValueOnce({
+          outputMarkdown: "",
+          actualPromptText: "Injected MCP prompt",
+        })
+        .mockResolvedValueOnce({
+          outputMarkdown: "Recent files:\n- File A\n- File B",
+          actualPromptText: "Final answer prompt",
+        });
+      const mockEnsureGoogleDriveMcpProviderConfig = vi.fn().mockResolvedValue({
+        configChanged: false,
+      });
+      const mockStartSession = vi.fn().mockResolvedValue({
+        processKey: "proc-new",
+        providerSessionId: "thread-new",
+        transportType: "codex_mcp",
+      });
+
+      const localRunnerGateway = {
+        ensureGoogleDriveMcpProviderConfig: mockEnsureGoogleDriveMcpProviderConfig,
+        sendMessage: mockSendMessage,
+        closeSession: vi.fn().mockResolvedValue(undefined),
+        startSession: mockStartSession,
+      } as any;
+
+      const mockQueryBuilder = {
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        filter: vi.fn().mockReturnThis(),
+        order: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
+        insert: vi.fn().mockReturnThis(),
+        update: vi.fn().mockReturnThis(),
+        single: vi.fn().mockResolvedValue({ data: { id: "session-new" }, error: null }),
+      };
+      const adminClient = {
+        from: vi.fn(() => mockQueryBuilder),
+      } as any;
+
+      const result = await sendMessageWithRetry({
+        adminClient,
+        localRunnerGateway,
+        workflowRunId: "run-123",
+        stepRunId: "step-456",
+        providerKey: "codex",
+        modelName: "codex-mcp",
+        reasoningEffort: null,
+        workingDirectory: "/repo",
+        subagent: null,
+        prompt: "list 2 recent files",
+        skillIds: [],
+        requiredMcps: ["google_drive"],
+        allowWrite: false,
+        yoloMode: false,
+        idleTTLSeconds: 60,
+      });
+
+      expect(mockSendMessage).toHaveBeenCalledTimes(2);
+      expect(mockSendMessage).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          prompt: expect.stringContaining("previous response was empty"),
+          requiredMcps: ["google_drive"],
+        }),
+        expect.any(Object),
+      );
+      expect(result.outputMarkdown).toContain("File A");
     });
 
     it("fails immediately for deterministic MCP setup errors even when tagged as session_dead", async () => {
@@ -783,6 +1002,9 @@ describe("workflow-start-runtime", () => {
       );
       (err as any).code = "session_dead";
 
+      const mockEnsureGoogleDriveMcpProviderConfig = vi.fn().mockResolvedValue({
+        configChanged: false,
+      });
       const mockSendMessage = vi.fn().mockRejectedValue(err);
       const mockCloseSession = vi.fn().mockResolvedValue(undefined);
       const mockStartSession = vi.fn().mockResolvedValue({
@@ -792,6 +1014,7 @@ describe("workflow-start-runtime", () => {
       });
 
       const localRunnerGateway = {
+        ensureGoogleDriveMcpProviderConfig: mockEnsureGoogleDriveMcpProviderConfig,
         sendMessage: mockSendMessage,
         closeSession: mockCloseSession,
         startSession: mockStartSession,
@@ -841,17 +1064,327 @@ describe("workflow-start-runtime", () => {
           prompt: "hello",
           skillIds: [],
           requiredMcps: ["google_drive"],
+          yoloMode: false,
           idleTTLSeconds: 60,
         }),
       ).rejects.toThrow("accountHomePath is required when requiredMcps includes google_drive");
 
       expect(mockSendMessage).toHaveBeenCalledTimes(1);
-      expect(mockCloseSession).not.toHaveBeenCalled();
-      expect(mockStartSession).not.toHaveBeenCalled();
-      expect(mockQueryBuilder.single).not.toHaveBeenCalled();
+      expect(mockCloseSession).toHaveBeenCalledTimes(1);
+      expect(mockStartSession).toHaveBeenCalledTimes(1);
+      expect(mockQueryBuilder.single).toHaveBeenCalled();
+    });
+
+    it("fails without reconnecting when a Google Drive write approval is required", async () => {
+      const err = new Error(
+        "manual approval is required before retrying this Google Drive write",
+      );
+      (err as any).code = "mcp_write_approval_required";
+      (err as any).details =
+        "mcp_write_approval_required: MCP_WRITE_APPROVAL_REQUIRED: FlowPilot created approval request appr-123";
+
+      const mockEnsureGoogleDriveMcpProviderConfig = vi.fn().mockResolvedValue({
+        configChanged: false,
+      });
+      const mockSendMessage = vi.fn().mockRejectedValue(err);
+      const mockStartSession = vi.fn().mockResolvedValue({
+        processKey: "proc-new",
+        providerSessionId: "thread-new",
+        transportType: "codex_mcp",
+      });
+
+      const localRunnerGateway = {
+        ensureGoogleDriveMcpProviderConfig: mockEnsureGoogleDriveMcpProviderConfig,
+        sendMessage: mockSendMessage,
+        closeSession: vi.fn().mockResolvedValue(undefined),
+        startSession: mockStartSession,
+      } as any;
+
+      const mockQueryBuilder = {
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        filter: vi.fn().mockReturnThis(),
+        order: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
+        insert: vi.fn().mockReturnThis(),
+        update: vi.fn().mockReturnThis(),
+        single: vi.fn().mockResolvedValue({ data: { id: "session-new" }, error: null }),
+      };
+      const adminClient = {
+        from: vi.fn(() => mockQueryBuilder),
+      } as any;
+
+      await expect(
+        sendMessageWithRetry({
+          adminClient,
+          localRunnerGateway,
+          workflowRunId: "run-123",
+          stepRunId: "step-456",
+          providerKey: "codex",
+          modelName: "codex-mcp",
+          reasoningEffort: null,
+          workingDirectory: "/repo",
+          subagent: null,
+          prompt: "hello",
+          skillIds: [],
+          requiredMcps: ["google_drive"],
+          yoloMode: false,
+          idleTTLSeconds: 60,
+        }),
+      ).rejects.toThrow("manual approval is required before retrying this Google Drive write");
+
+      expect(mockSendMessage).toHaveBeenCalledTimes(1);
+      expect(mockStartSession).toHaveBeenCalledTimes(1);
+    });
+
+    it("routes a rejected Google Drive approval into the follow-up path for the waiting step", async () => {
+      const approvals = [
+        { id: "approval-old", status: "pending", toolName: "search", operation: "read" },
+        { id: "approval-live", status: "pending", toolName: "search", operation: "read" },
+      ];
+      const workflowRunId = "run-1";
+      const workflowId = "wf-1";
+      const projectId = "proj-1";
+      const workflowStepId = "workflow-step-1";
+      const decideGoogleDriveProxyApproval = vi.fn().mockResolvedValue(undefined);
+      const listMcpBackends = vi.fn().mockResolvedValue([]);
+      const workflowRunStep = {
+        id: "step-1",
+        workflow_run_id: workflowRunId,
+        workflow_step_id: workflowStepId,
+        execution_order_index: 1,
+        step_type: "create_doc",
+        retry_count: 0,
+        status: "WAITING_USER_APPROVAL",
+        error_message: "Google Drive MCP approval required: approval-live",
+      };
+      const projectRow = {
+        id: projectId,
+        default_provider: null,
+        default_model: null,
+        default_reasoning_effort: null,
+        session_idle_ttl_minutes: null,
+      };
+      const workflowRow = {
+        id: workflowId,
+        name: "Test Workflow",
+        project_id: projectId,
+        provider_override: null,
+        model_override: null,
+        reasoning_effort_override: null,
+        yolo_mode: true,
+      };
+      const workflowStepRow = {
+        id: workflowStepId,
+        step_type: "create_doc",
+        order_index: 1,
+        is_enabled: true,
+        provider_override: null,
+        model_override: null,
+        reasoning_effort_override: null,
+        yolo_mode: false,
+        provider_account_override_id: null,
+        requires_approval: true,
+      };
+      const stepDefinitionRow = {
+        step_type: "create_doc",
+        name: "Create doc",
+        description: "Create a document.",
+        prompt_base: null,
+        required_mcps: ["google_drive"],
+        mcp_access_mode: "read_only",
+        required_skills: [],
+        team_role: null,
+        subagent: null,
+        model: "gpt-5.4",
+        reasoning_effort: "medium",
+      };
+
+      const workflowRunStepsBuilder = {
+        select: vi.fn().mockReturnThis(),
+        update: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: workflowRunStep,
+          error: null,
+        }),
+        order: vi.fn().mockResolvedValue({
+          data: [workflowRunStep],
+          error: null,
+        }),
+      };
+      const workflowRunsBuilder = {
+        select: vi.fn().mockReturnThis(),
+        update: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: {
+            id: workflowRunId,
+            workflow_id: workflowId,
+            project_id: projectId,
+            provider_account_id: null,
+            yolo_mode: false,
+          },
+          error: null,
+        }),
+      };
+      const projectsBuilder = {
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: projectRow,
+          error: null,
+        }),
+      };
+      const workflowsBuilder = {
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        or: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: workflowRow,
+          error: null,
+        }),
+      };
+      const workflowStepsBuilder = {
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: workflowStepRow,
+          error: null,
+        }),
+      };
+      const stepDefinitionsBuilder = {
+        select: vi.fn().mockReturnThis(),
+        in: vi.fn().mockResolvedValue({
+          data: [stepDefinitionRow],
+          error: null,
+        }),
+      };
+      const emptyArtifactBindingsBuilder = {
+        select: vi.fn().mockReturnThis(),
+        in: vi.fn().mockReturnThis(),
+        order: vi.fn().mockResolvedValue({
+          data: [],
+          error: null,
+        }),
+      };
+      const aiSupportedModelsBuilder = {
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: { model_id: "gpt-5.4", is_enabled: true },
+          error: null,
+        }),
+      };
+      const projectWorkspaceBindingsBuilder = {
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        order: vi.fn().mockResolvedValue({
+          data: [{ local_path: "/repo" }],
+          error: null,
+        }),
+      };
+      const workflowRunLogsBuilder = {
+        insert: vi.fn().mockResolvedValue({ data: null, error: null }),
+      };
+      const listGoogleDriveProxyApprovals = vi.fn().mockResolvedValue(approvals);
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+        ok: true,
+        json: async () => ({ usable: true, path: "/repo" }),
+      } as any);
+      const adminClient = {
+        from: vi.fn((table: string) => {
+          if (table === "workflow_run_steps") return workflowRunStepsBuilder;
+          if (table === "workflow_runs") return workflowRunsBuilder;
+          if (table === "projects") return projectsBuilder;
+          if (table === "workflows") return workflowsBuilder;
+          if (table === "workflow_steps") return workflowStepsBuilder;
+          if (table === "step_definitions") return stepDefinitionsBuilder;
+          if (table === "step_input_artifact_definitions") return emptyArtifactBindingsBuilder;
+          if (table === "step_output_artifact_definitions") return emptyArtifactBindingsBuilder;
+          if (table === "ai_supported_models") return aiSupportedModelsBuilder;
+          if (table === "project_workspace_bindings") return projectWorkspaceBindingsBuilder;
+          if (table === "workflow_run_logs") return workflowRunLogsBuilder;
+          throw new Error(`Unexpected table ${table}`);
+        }),
+      } as any;
+
+      await expect(
+        submitGoogleDriveWriteApprovalRuntime({
+          adminClient,
+          localRunnerGateway: {
+            listGoogleDriveProxyApprovals,
+            decideGoogleDriveProxyApproval,
+            listMcpBackends,
+          } as any,
+          stepId: "step-1",
+          decision: "rejected",
+          comment: "Do not create this folder.",
+        }),
+      ).rejects.toThrow("Missing required MCPs for create_doc: google_drive");
+
+      expect(decideGoogleDriveProxyApproval).toHaveBeenCalledWith("approval-live", {
+        decision: "rejected",
+        comment: "Do not create this folder.",
+      });
+      expect(listGoogleDriveProxyApprovals).toHaveBeenCalledWith(
+        workflowRunId,
+        "step-1",
+        "pending",
+      );
+      expect(workflowStepsBuilder.eq).toHaveBeenCalledWith("id", workflowStepId);
+      expect(listMcpBackends).toHaveBeenCalledTimes(1);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("fails when a waiting step does not carry the exact Google Drive approval id", async () => {
+      const workflowRunStepsBuilder = {
+        select: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: {
+            id: "step-1",
+            workflow_run_id: "run-1",
+            status: "WAITING_USER_APPROVAL",
+            error_message: "Google Drive MCP approval required.",
+          },
+          error: null,
+        }),
+        eq: vi.fn().mockReturnThis(),
+      };
+      const workflowRunsBuilder = {
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: { id: "run-1", workflow_id: "wf-1", project_id: "proj-1", provider_account_id: null, yolo_mode: false },
+          error: null,
+        }),
+      };
+      const adminClient = {
+        from: vi.fn((table: string) => {
+          if (table === "workflow_run_steps") return workflowRunStepsBuilder;
+          if (table === "workflow_runs") return workflowRunsBuilder;
+          throw new Error(`Unexpected table ${table}`);
+        }),
+      } as any;
+
+      await expect(
+        submitGoogleDriveWriteApprovalRuntime({
+          adminClient,
+          localRunnerGateway: {
+            listGoogleDriveProxyApprovals: vi.fn().mockResolvedValue([{ id: "approval-other" }]),
+            decideGoogleDriveProxyApproval: vi.fn(),
+          } as any,
+          stepId: "step-1",
+          decision: "rejected",
+        }),
+      ).rejects.toThrow("Google Drive MCP approval id is missing for this waiting step.");
     });
 
     it("fails immediately for Google Drive auth/config bootstrap errors instead of replaying", async () => {
+      const mockEnsureGoogleDriveMcpProviderConfig = vi.fn().mockResolvedValue({
+        configChanged: false,
+      });
       const mockSendMessage = vi.fn().mockRejectedValue(
         new Error("provider error: Google Drive auth token not found for /accounts/b"),
       );
@@ -863,6 +1396,7 @@ describe("workflow-start-runtime", () => {
       });
 
       const localRunnerGateway = {
+        ensureGoogleDriveMcpProviderConfig: mockEnsureGoogleDriveMcpProviderConfig,
         sendMessage: mockSendMessage,
         closeSession: mockCloseSession,
         startSession: mockStartSession,
@@ -912,14 +1446,15 @@ describe("workflow-start-runtime", () => {
           prompt: "hello",
           skillIds: [],
           requiredMcps: ["google_drive"],
+          yoloMode: false,
           idleTTLSeconds: 60,
         }),
       ).rejects.toThrow("provider error: Google Drive auth token not found for /accounts/b");
 
       expect(mockSendMessage).toHaveBeenCalledTimes(1);
-      expect(mockCloseSession).not.toHaveBeenCalled();
-      expect(mockStartSession).not.toHaveBeenCalled();
-      expect(mockQueryBuilder.single).not.toHaveBeenCalled();
+      expect(mockCloseSession).toHaveBeenCalledTimes(1);
+      expect(mockStartSession).toHaveBeenCalledTimes(1);
+      expect(mockQueryBuilder.single).toHaveBeenCalled();
     });
 
     it("reconnects with old thread on session_dead", async () => {

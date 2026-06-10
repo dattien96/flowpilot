@@ -20,6 +20,12 @@ const (
 	googleDriveDefaultRedirectURI             = "http://127.0.0.1:4317/artifact-storage/google-drive/oauth/callback"
 	googleDriveOAuthCredentialsFileName       = "gcp-oauth.keys.json"
 	googleDriveMcpTokenFileName               = "tokens.json"
+	googleDriveScopeOpenID                    = "openid"
+	googleDriveScopeEmail                     = "email"
+	googleDriveScopeDriveFile                 = "https://www.googleapis.com/auth/drive.file"
+	googleDriveScopeDriveReadonly             = "https://www.googleapis.com/auth/drive.readonly"
+	googleDriveClientIDEnv                    = "GOOGLE_DRIVE_CLIENT_ID"
+	googleDriveClientSecretEnv                = "GOOGLE_DRIVE_CLIENT_SECRET"
 )
 
 type googleDriveWorkspaceConfigFile struct {
@@ -37,6 +43,7 @@ type googleDriveWorkspaceArtifactConfig struct {
 type googleDriveWorkspaceMcpConfig struct {
 	CredentialPath string `json:"credentialPath,omitempty"`
 	TokenPath      string `json:"tokenPath,omitempty"`
+	AccountID      string `json:"accountId,omitempty"`
 }
 
 type googleDriveArtifactEnvConfig struct {
@@ -52,6 +59,13 @@ type googleDriveArtifactRuntimeConfig struct {
 	RedirectURI  string
 	PickerAPIKey string
 	Source       string
+}
+
+type googleDriveProxyAccountSelection struct {
+	AccountID    string
+	AccountEmail string
+	Accounts     []GoogleDriveAccountStatus
+	Required     bool
 }
 
 type googleDriveOAuthClientJSON struct {
@@ -157,6 +171,9 @@ func (r *Runner) SaveGoogleDriveWorkspaceConfig(input GoogleDriveWorkspaceConfig
 	if err != nil {
 		return GoogleDriveWorkspaceConfigResponse{}, err
 	}
+	if hasCurrent && googleDriveClientIDChangeNeedsNewSecret(current, input, previousSecretState.hasClientSecret) {
+		return GoogleDriveWorkspaceConfigResponse{}, errors.New("clientSecret is required when clientId changes so Google OAuth does not reuse an older secret")
+	}
 
 	artifactConfig := current.ArtifactSync
 	if strings.TrimSpace(input.ClientID) != "" {
@@ -175,6 +192,9 @@ func (r *Runner) SaveGoogleDriveWorkspaceConfig(input GoogleDriveWorkspaceConfig
 	}
 	if strings.TrimSpace(mcpConfig.TokenPath) == "" {
 		mcpConfig.TokenPath = googleDriveMcpTokenPath()
+	}
+	if strings.TrimSpace(input.MCPAccountID) != "" {
+		mcpConfig.AccountID = strings.TrimSpace(input.MCPAccountID)
 	}
 
 	nextConfig := googleDriveWorkspaceConfigFile{
@@ -201,19 +221,110 @@ func (r *Runner) SaveGoogleDriveWorkspaceConfig(input GoogleDriveWorkspaceConfig
 }
 
 func (r *Runner) ResetGoogleDriveWorkspaceConfig() error {
-	err := os.Remove(r.googleDriveWorkspaceConfigPath())
+	configFile, err := r.loadGoogleDriveWorkspaceConfigFile()
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+		configFile = googleDriveWorkspaceConfigFile{}
 	}
 
-	if deleteErr := r.ensureSecretStore().Delete(googleDriveArtifactSyncClientSecretKey); deleteErr != nil {
-		return deleteErr
-	}
-	if deleteErr := r.ensureSecretStore().Delete(googleDriveArtifactSyncPickerAPIKeySecret); deleteErr != nil {
-		return deleteErr
+	state, err := r.loadArtifactStorageGoogleDriveState()
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		state = artifactStorageGoogleDriveState{}
 	}
 
-	return nil
+	var cleanupErrs []error
+	for _, secretKey := range googleDriveResetSecretKeys(configFile, state) {
+		if deleteErr := r.ensureSecretStore().Delete(secretKey); deleteErr != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("delete google drive secret %q: %w", secretKey, deleteErr))
+		}
+	}
+
+	for _, path := range googleDriveResetPaths(r, configFile) {
+		if deleteErr := os.Remove(path); deleteErr != nil && !errors.Is(deleteErr, os.ErrNotExist) {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("remove google drive file %q: %w", path, deleteErr))
+		}
+	}
+
+	return errors.Join(cleanupErrs...)
+}
+
+func googleDriveResetSecretKeys(configFile googleDriveWorkspaceConfigFile, state artifactStorageGoogleDriveState) []string {
+	keys := map[string]struct{}{}
+	add := func(values ...string) {
+		for _, value := range values {
+			trimmed := strings.TrimSpace(value)
+			if trimmed == "" {
+				continue
+			}
+			keys[trimmed] = struct{}{}
+		}
+	}
+	add(
+		googleDriveArtifactSyncClientSecretKey,
+		googleDriveArtifactSyncPickerAPIKeySecret,
+	)
+	if accountID := normalizeGoogleDriveStoredAccountID(configFile.MCP.AccountID); accountID != "" {
+		add(googleDriveAccountCredentialKey(accountID))
+	}
+
+	for accountID, record := range state.Accounts {
+		add(googleDriveAccountCredentialKey(normalizeGoogleDriveStoredAccountID(accountID)))
+		add(googleDriveAccountCredentialKey(normalizeGoogleDriveStoredAccountID(record.AccountID)))
+		add(googleDriveAccountCredentialKey(normalizeGoogleDriveStoredAccountID(record.AccountEmail)))
+	}
+
+	for projectID, record := range state.Connections {
+		add(googleDriveProjectCredentialKey(strings.TrimSpace(projectID)))
+		add(googleDriveProjectCredentialKey(strings.TrimSpace(record.ProjectID)))
+		add(googleDriveCredentialKey(strings.TrimSpace(projectID)))
+		add(googleDriveCredentialKey(strings.TrimSpace(record.ProjectID)))
+		add(googleDriveAccountCredentialKey(normalizeGoogleDriveStoredAccountID(record.AccountID)))
+		add(googleDriveAccountCredentialKey(normalizeGoogleDriveStoredAccountID(record.AccountEmail)))
+	}
+
+	for sessionID, record := range state.Sessions {
+		add(artifactStorageGoogleDriveSessionSecretKey(strings.TrimSpace(sessionID), "connect"))
+		add(artifactStorageGoogleDriveSessionSecretKey(strings.TrimSpace(sessionID), "state"))
+		add(artifactStorageGoogleDriveSessionSecretKey(strings.TrimSpace(record.SessionID), "connect"))
+		add(artifactStorageGoogleDriveSessionSecretKey(strings.TrimSpace(record.SessionID), "state"))
+		add(googleDriveProjectCredentialKey(strings.TrimSpace(record.ProjectID)))
+		add(googleDriveCredentialKey(strings.TrimSpace(record.ProjectID)))
+		add(googleDriveAccountCredentialKey(normalizeGoogleDriveStoredAccountID(record.AccountID)))
+		add(googleDriveAccountCredentialKey(normalizeGoogleDriveStoredAccountID(record.AccountEmail)))
+	}
+
+	ordered := make([]string, 0, len(keys))
+	for key := range keys {
+		ordered = append(ordered, key)
+	}
+	return ordered
+}
+
+func googleDriveResetPaths(r *Runner, configFile googleDriveWorkspaceConfigFile) []string {
+	paths := map[string]struct{}{}
+	add := func(values ...string) {
+		for _, value := range values {
+			trimmed := strings.TrimSpace(value)
+			if trimmed == "" {
+				continue
+			}
+			paths[trimmed] = struct{}{}
+		}
+	}
+	add(
+		r.googleDriveWorkspaceConfigPath(),
+		r.artifactStorageGoogleDriveStatePath(),
+		r.legacyArtifactStorageGoogleDriveStatePath(),
+		googleDriveMcpCredentialPath(),
+		googleDriveMcpTokenPath(),
+		configFile.MCP.CredentialPath,
+		configFile.MCP.TokenPath,
+	)
+
+	ordered := make([]string, 0, len(paths))
+	for path := range paths {
+		ordered = append(ordered, path)
+	}
+	return ordered
 }
 
 func (r *Runner) ValidateGoogleDriveWorkspaceConfig(input GoogleDriveWorkspaceConfigRequest) (GoogleDriveValidationResult, error) {
@@ -231,25 +342,31 @@ func (r *Runner) ValidateGoogleDriveWorkspaceConfig(input GoogleDriveWorkspaceCo
 	checks = append(checks, googleDriveCheck("picker_api_key_present", artifact.HasPickerAPIKey, "Google Picker API key is present.", "Google Picker API key is required."))
 
 	mcp := status.MCP
-	checks = append(checks, googleDriveCheck("mcp_credential_path_resolved", strings.TrimSpace(mcp.CredentialPath) != "", "MCP credential path is resolved.", "MCP credential path is required."))
-	checks = append(checks, googleDriveCheck("mcp_credential_file_exists", mcp.CredentialFileExists, "MCP credential JSON exists.", "Upload the Google Drive MCP OAuth JSON file."))
-	checks = append(checks, googleDriveCheck("mcp_credential_json_valid", mcp.CredentialFileValid, "MCP credential JSON is valid.", "The uploaded OAuth JSON is invalid."))
-	checks = append(checks, googleDriveCheck("mcp_token_path_resolved", strings.TrimSpace(mcp.TokenPath) != "", "MCP token path is resolved.", "MCP token path is required."))
-	if !mcp.TokenFileExists {
-		checks = append(checks, googleDriveSkippedCheck("mcp_token_file_exists", "MCP token file will be created when you complete the MCP auth flow."))
-		checks = append(checks, googleDriveSkippedCheck("mcp_token_refresh_valid", "MCP OAuth token validation will run after the MCP auth flow creates the token file."))
+	if mcp.ProxyMcpEnabled {
+		checks = append(checks, googleDriveCheck("mcp_account_selected", !mcp.AccountSelectionRequired && strings.TrimSpace(mcp.AccountID) != "", "Active Google account is selected for the FlowPilot proxy MCP.", "Select an active Google account for the FlowPilot proxy MCP."))
+		checks = append(checks, googleDriveCheck("mcp_account_ready", mcp.TokenRefreshValid, "Selected Google account auth is ready for the proxy MCP.", "Reconnect the selected Google account before configuring the proxy MCP."))
+		checks = append(checks, googleDriveCheck("mcp_backend_available", mcp.BackendPackageAvailable, "Google Drive MCP launcher is available.", "Install FlowPilot or Go so the proxy launcher can start the Google Drive MCP package."))
 	} else {
-		checks = append(checks, googleDrivePassedCheck("mcp_token_file_exists", "MCP token file exists."))
-		switch mcp.Status {
-		case "configured":
-			checks = append(checks, googleDrivePassedCheck("mcp_token_refresh_valid", "MCP OAuth token is usable."))
-		case "warning":
-			checks = append(checks, googleDriveSkippedCheck("mcp_token_refresh_valid", "The stored MCP OAuth token exists, but FlowPilot could not fully validate token health."))
-		default:
-			checks = append(checks, googleDriveFailedCheck("mcp_token_refresh_valid", "The stored MCP OAuth token needs reconnect or re-authentication."))
+		checks = append(checks, googleDriveCheck("mcp_credential_path_resolved", strings.TrimSpace(mcp.CredentialPath) != "", "MCP credential path is resolved.", "MCP credential path is required."))
+		checks = append(checks, googleDriveCheck("mcp_credential_file_exists", mcp.CredentialFileExists, "MCP credential JSON exists.", "Upload the Google Drive MCP OAuth JSON file."))
+		checks = append(checks, googleDriveCheck("mcp_credential_json_valid", mcp.CredentialFileValid, "MCP credential JSON is valid.", "The uploaded OAuth JSON is invalid."))
+		checks = append(checks, googleDriveCheck("mcp_token_path_resolved", strings.TrimSpace(mcp.TokenPath) != "", "MCP token path is resolved.", "MCP token path is required."))
+		if !mcp.TokenFileExists {
+			checks = append(checks, googleDriveSkippedCheck("mcp_token_file_exists", "MCP token file will be created when you complete the MCP auth flow."))
+			checks = append(checks, googleDriveSkippedCheck("mcp_token_refresh_valid", "MCP OAuth token validation will run after the MCP auth flow creates the token file."))
+		} else {
+			checks = append(checks, googleDrivePassedCheck("mcp_token_file_exists", "MCP token file exists."))
+			switch mcp.Status {
+			case "configured":
+				checks = append(checks, googleDrivePassedCheck("mcp_token_refresh_valid", "MCP OAuth token is usable."))
+			case "warning":
+				checks = append(checks, googleDriveSkippedCheck("mcp_token_refresh_valid", "The stored MCP OAuth token exists, but FlowPilot could not fully validate token health."))
+			default:
+				checks = append(checks, googleDriveFailedCheck("mcp_token_refresh_valid", "The stored MCP OAuth token needs reconnect or re-authentication."))
+			}
 		}
+		checks = append(checks, googleDriveCheck("mcp_backend_available", mcp.BackendPackageAvailable, "Google Drive MCP launcher is available.", "Install Node.js so npx can launch the Google Drive MCP package."))
 	}
-	checks = append(checks, googleDriveCheck("mcp_backend_available", mcp.BackendPackageAvailable, "Google Drive MCP launcher is available.", "Install Node.js so npx can launch the Google Drive MCP package."))
 
 	valid := true
 	for _, item := range checks {
@@ -280,6 +397,11 @@ func (r *Runner) resolveGoogleDriveWorkspaceStatus() (GoogleDriveWorkspaceConfig
 	// Resolve provider configs
 	providerConfigs, _ := r.resolveGoogleDriveMcpProviderStatuses()
 	status.ProviderConfigs = providerConfigs
+	if accounts, accountsErr := r.resolveGoogleDriveAccountStatuses(); accountsErr == nil {
+		status.Accounts = accounts
+	} else if status.LastError == "" {
+		status.LastError = accountsErr.Error()
+	}
 
 	if err == nil {
 		artifact, artifactErr := r.resolveGoogleDriveArtifactStatusFromSavedConfig(configFile)
@@ -326,6 +448,31 @@ func (r *Runner) resolveGoogleDriveArtifactRuntimeConfig() (googleDriveArtifactR
 	}, nil
 }
 
+func (r *Runner) resolveGoogleDriveProxyOAuthConfig() (googleDriveArtifactConfig, error) {
+	configFile, err := r.loadGoogleDriveWorkspaceConfigFile()
+	if err == nil {
+		clientID := strings.TrimSpace(configFile.ArtifactSync.ClientID)
+		if clientID == "" {
+			clientID = strings.TrimSpace(os.Getenv(googleDriveClientIDEnv))
+		}
+		clientSecret := ""
+		if storedSecret, secretErr := r.ensureSecretStore().Get(googleDriveArtifactSyncClientSecretKey); secretErr == nil {
+			clientSecret = strings.TrimSpace(storedSecret)
+		}
+		if clientSecret == "" {
+			clientSecret = strings.TrimSpace(os.Getenv(googleDriveClientSecretEnv))
+		}
+		if clientID == "" || clientSecret == "" {
+			return googleDriveArtifactConfig{}, errors.New("FlowPilot proxy Google Drive auth is incomplete")
+		}
+		return googleDriveArtifactConfig{clientID: clientID, clientSecret: clientSecret}, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return googleDriveArtifactConfig{}, err
+	}
+	return readGoogleDriveArtifactConfig()
+}
+
 func (r *Runner) exchangeGoogleDriveOAuthCode(code string) (googleDriveOAuthTokenResponse, error) {
 	config, err := r.resolveGoogleDriveArtifactRuntimeConfig()
 	if err != nil {
@@ -370,13 +517,62 @@ func (r *Runner) exchangeGoogleDriveOAuthCode(code string) (googleDriveOAuthToke
 	return response, nil
 }
 
-func (r *Runner) refreshGoogleDriveAccessToken(refreshToken string) (string, error) {
+func (r *Runner) validateGoogleDriveArtifactOAuthClient() error {
 	config, err := r.resolveGoogleDriveArtifactRuntimeConfig()
+	if err != nil {
+		return err
+	}
+	return validateGoogleDriveArtifactOAuthClientConfig(config)
+}
+
+func validateGoogleDriveArtifactOAuthClientConfig(config googleDriveArtifactRuntimeConfig) error {
+	form := url.Values{}
+	form.Set("client_id", config.ClientID)
+	form.Set("client_secret", config.ClientSecret)
+	form.Set("grant_type", "authorization_code")
+	form.Set("code", "flowpilot-oauth-client-validation-probe")
+	form.Set("redirect_uri", config.RedirectURI)
+
+	statusCode, responseBody, requestErr := httpRequestFn(
+		context.Background(),
+		http.MethodPost,
+		"https://oauth2.googleapis.com/token",
+		map[string]string{
+			"content-type": "application/x-www-form-urlencoded",
+		},
+		[]byte(form.Encode()),
+	)
+	if requestErr != nil {
+		return requestErr
+	}
+	if statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices {
+		return nil
+	}
+
+	err := googleDriveOAuthFailure("google drive oauth client validation", statusCode, responseBody)
+	var oauthErr *googleDriveOAuthRequestError
+	if errors.As(err, &oauthErr) {
+		switch strings.ToLower(strings.TrimSpace(oauthErr.ProviderError)) {
+		case "invalid_grant":
+			return nil
+		case "invalid_client":
+			return fmt.Errorf(
+				"google drive OAuth client credentials are invalid for clientId %q; save the matching Web OAuth client secret and try again",
+				strings.TrimSpace(config.ClientID),
+			)
+		}
+	}
+
+	return err
+}
+
+func (r *Runner) refreshGoogleDriveAccessToken(refreshToken string) (string, error) {
+	config, err := r.resolveGoogleDriveProxyOAuthConfig()
 	if err != nil {
 		return "", err
 	}
 
-	return googleDriveRefreshAccessToken(config.ClientID, config.ClientSecret, refreshToken)
+	return googleDriveRefreshAccessToken(config.clientID, config.clientSecret, refreshToken)
 }
 
 func googleDriveRefreshAccessToken(clientID, clientSecret, refreshToken string) (string, error) {
@@ -475,24 +671,33 @@ func (r *Runner) googleDriveMcpRuntimeConfig() (googleDriveMcpRuntimeConfig, err
 }
 
 func (r *Runner) resolveGoogleDriveMcpStatus(configFile googleDriveWorkspaceConfigFile) GoogleDriveMcpStatus {
+	if flowpilotGoogleDriveProxyMcpEnabled() {
+		return r.resolveGoogleDriveProxyMcpStatus(configFile)
+	}
+
 	mcpConfig, err := r.googleDriveMcpRuntimeConfig()
 	if err != nil {
 		return GoogleDriveMcpStatus{
-			Status:        "failed",
-			Configured:    false,
-			MissingFields: []string{"mcp_runtime"},
+			Status:          "failed",
+			Configured:      false,
+			ProxyMcpEnabled: flowpilotGoogleDriveProxyMcpEnabled(),
+			MissingFields:   []string{"mcp_runtime"},
 		}
 	}
 	status := GoogleDriveMcpStatus{
-		Status:                  mcpConfig.Status,
-		Configured:              mcpConfig.Status == "configured",
-		CredentialPath:          mcpConfig.CredentialPath,
-		TokenPath:               mcpConfig.TokenPath,
-		CredentialFileExists:    mcpConfig.CredentialExists,
-		CredentialFileValid:     mcpConfig.CredentialValid,
-		TokenFileExists:         mcpConfig.TokenExists,
-		NeedsAuth:               mcpConfig.Status == "needs_auth" || mcpConfig.Status == "reconnect_required",
-		BackendPackageAvailable: mcpConfig.BackendPackageAvailable,
+		Status:                   mcpConfig.Status,
+		Configured:               mcpConfig.Status == "configured",
+		ProxyMcpEnabled:          flowpilotGoogleDriveProxyMcpEnabled(),
+		CredentialPath:           mcpConfig.CredentialPath,
+		TokenPath:                mcpConfig.TokenPath,
+		CredentialFileExists:     mcpConfig.CredentialExists,
+		CredentialFileValid:      mcpConfig.CredentialValid,
+		TokenFileExists:          mcpConfig.TokenExists,
+		NeedsAuth:                mcpConfig.Status == "needs_auth" || mcpConfig.Status == "reconnect_required",
+		BackendPackageAvailable:  mcpConfig.BackendPackageAvailable,
+		AccountID:                mcpConfig.AccountID,
+		AccountEmail:             mcpConfig.AccountEmail,
+		AccountSelectionRequired: mcpConfig.AccountSelectionRequired,
 	}
 
 	if strings.TrimSpace(configFile.MCP.CredentialPath) != "" || strings.TrimSpace(configFile.MCP.TokenPath) != "" {
@@ -500,6 +705,109 @@ func (r *Runner) resolveGoogleDriveMcpStatus(configFile googleDriveWorkspaceConf
 		status.TokenPath = configFile.MCP.TokenPath
 	}
 
+	status.MissingFields = googleDriveMcpMissingFields(status)
+	return status
+}
+
+func (r *Runner) resolveGoogleDriveProxyMcpStatus(configFile googleDriveWorkspaceConfigFile) GoogleDriveMcpStatus {
+	artifactConfig, err := r.resolveGoogleDriveProxyOAuthConfig()
+	if err != nil {
+		return GoogleDriveMcpStatus{
+			Status:                   "failed",
+			Configured:               false,
+			ProxyMcpEnabled:          true,
+			AccountSelectionRequired: true,
+			MissingFields:            []string{"artifactSync", "accountId"},
+		}
+	}
+
+	selection, err := r.resolveGoogleDriveProxyAccountSelection(configFile)
+	if err != nil {
+		return GoogleDriveMcpStatus{
+			Status:                   "failed",
+			Configured:               false,
+			ProxyMcpEnabled:          true,
+			AccountSelectionRequired: true,
+			MissingFields:            []string{"accountId"},
+			AccountID:                strings.TrimSpace(configFile.MCP.AccountID),
+		}
+	}
+
+	status := GoogleDriveMcpStatus{
+		Status:                   "needs_input",
+		Configured:               false,
+		ProxyMcpEnabled:          true,
+		CredentialPath:           googleDriveMcpCredentialPath(),
+		TokenPath:                googleDriveMcpTokenPath(),
+		CredentialFileExists:     fileExists(googleDriveMcpCredentialPath()),
+		CredentialFileValid:      fileExists(googleDriveMcpCredentialPath()) && validateGoogleDriveOAuthCredentialJSONFile(googleDriveMcpCredentialPath()) == nil,
+		TokenFileExists:          fileExists(googleDriveMcpTokenPath()),
+		NeedsAuth:                true,
+		BackendPackageAvailable:  googleDriveProxyMcpBackendAvailable(r.workspace),
+		AccountID:                selection.AccountID,
+		AccountEmail:             selection.AccountEmail,
+		AccountSelectionRequired: selection.Required,
+	}
+
+	if strings.TrimSpace(configFile.MCP.CredentialPath) != "" || strings.TrimSpace(configFile.MCP.TokenPath) != "" {
+		status.CredentialPath = configFile.MCP.CredentialPath
+		status.TokenPath = configFile.MCP.TokenPath
+		status.CredentialFileExists = fileExists(status.CredentialPath)
+		status.CredentialFileValid = status.CredentialFileExists && validateGoogleDriveOAuthCredentialJSONFile(status.CredentialPath) == nil
+		status.TokenFileExists = fileExists(status.TokenPath)
+	}
+	if strings.TrimSpace(configFile.MCP.AccountID) != "" {
+		status.AccountID = strings.TrimSpace(configFile.MCP.AccountID)
+		if account, ok := findGoogleDriveAccountStatus(selection.Accounts, status.AccountID); ok {
+			status.AccountEmail = account.AccountEmail
+		}
+	}
+
+	if status.AccountSelectionRequired {
+		status.Status = "needs_input"
+		status.MissingFields = googleDriveMcpMissingFields(status)
+		return status
+	}
+
+	accountStatus, ok := findGoogleDriveAccountStatus(selection.Accounts, status.AccountID)
+	if !ok {
+		status.Status = "needs_auth"
+		status.NeedsAuth = true
+		status.MissingFields = googleDriveMcpMissingFields(status)
+		return status
+	}
+
+	status.AccountEmail = accountStatus.AccountEmail
+	status.GrantedScopes = normalizeGoogleDriveScopes(accountStatus.GrantedScopes)
+	status.MissingScopes = googleDriveMissingScopes(status.GrantedScopes, []string{googleDriveScopeDriveReadonly})
+	status.AccountReady = accountStatus.AccountReady
+	status.McpReadReady = accountStatus.McpReadReady
+	status.McpWriteReady = accountStatus.McpWriteReady
+	status.ReconnectRequired = accountStatus.ReconnectRequired
+	status.TokenRefreshValid = accountStatus.AccountReady
+	status.ArtifactBindingPresent = r.googleDriveAccountHasArtifactBinding(status.AccountID)
+	status.ArtifactReady = status.AccountReady && googleDriveHasScope(status.GrantedScopes, googleDriveScopeDriveFile) && status.ArtifactBindingPresent
+
+	switch {
+	case accountStatus.ReconnectRequired:
+		status.Status = "reconnect_required"
+		status.NeedsAuth = true
+	case !accountStatus.AccountReady:
+		status.Status = "needs_auth"
+		status.NeedsAuth = true
+	case len(status.MissingScopes) > 0:
+		status.Status = "needs_auth"
+		status.NeedsAuth = true
+	case status.BackendPackageAvailable:
+		status.Status = "configured"
+		status.Configured = true
+		status.NeedsAuth = false
+	default:
+		status.Status = "warning"
+		status.NeedsAuth = false
+	}
+
+	_ = artifactConfig
 	status.MissingFields = googleDriveMcpMissingFields(status)
 	return status
 }
@@ -576,9 +884,16 @@ func (r *Runner) buildGoogleDriveValidationStatus(input GoogleDriveWorkspaceConf
 	if strings.TrimSpace(input.PickerAPIKey) != "" {
 		artifact.HasPickerAPIKey = true
 	}
+	if hasCurrent && googleDriveClientIDChangeNeedsNewSecret(current, input, artifact.HasClientSecret) {
+		artifact.HasClientSecret = false
+	}
 	artifact.MissingFields = googleDriveArtifactMissingFields(artifact)
 	artifact.Configured = len(artifact.MissingFields) == 0
 	artifact.Status = googleDriveArtifactStatus(artifact)
+
+	if strings.TrimSpace(input.MCPAccountID) != "" {
+		current.MCP.AccountID = strings.TrimSpace(input.MCPAccountID)
+	}
 
 	mcp := r.resolveGoogleDriveMcpStatus(current)
 	return GoogleDriveWorkspaceConfigResponse{
@@ -665,6 +980,74 @@ func (r *Runner) restoreGoogleDriveSecretState(previous googleDriveSecretState) 
 	}
 }
 
+func findGoogleDriveAccountStatus(accounts []GoogleDriveAccountStatus, accountID string) (GoogleDriveAccountStatus, bool) {
+	trimmedAccountID := strings.TrimSpace(accountID)
+	for _, account := range accounts {
+		if strings.EqualFold(strings.TrimSpace(account.AccountID), trimmedAccountID) {
+			return account, true
+		}
+	}
+	return GoogleDriveAccountStatus{}, false
+}
+
+func (r *Runner) googleDriveAccountHasArtifactBinding(accountID string) bool {
+	state, err := r.loadArtifactStorageGoogleDriveState()
+	if err != nil {
+		return false
+	}
+	normalizedAccountID := normalizeGoogleDriveStoredAccountID(accountID)
+	for _, connection := range state.Connections {
+		if !strings.EqualFold(normalizeGoogleDriveStoredAccountID(connection.AccountID), normalizedAccountID) {
+			continue
+		}
+		if strings.TrimSpace(connection.FolderID) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *Runner) resolveGoogleDriveProxyAccountSelection(configFile googleDriveWorkspaceConfigFile) (googleDriveProxyAccountSelection, error) {
+	accounts, err := r.resolveGoogleDriveAccountStatuses()
+	if err != nil {
+		return googleDriveProxyAccountSelection{}, err
+	}
+
+	selectedAccountID := strings.TrimSpace(configFile.MCP.AccountID)
+	if selectedAccountID == "" {
+		selectedAccountID = strings.TrimSpace(os.Getenv("FLOWPILOT_GOOGLE_DRIVE_ACCOUNT_ID"))
+	}
+	if selectedAccountID != "" {
+		if account, ok := findGoogleDriveAccountStatus(accounts, selectedAccountID); ok {
+			return googleDriveProxyAccountSelection{
+				AccountID:    account.AccountID,
+				AccountEmail: account.AccountEmail,
+				Accounts:     accounts,
+				Required:     false,
+			}, nil
+		}
+		return googleDriveProxyAccountSelection{
+			AccountID: selectedAccountID,
+			Accounts:  accounts,
+			Required:  false,
+		}, nil
+	}
+
+	if len(accounts) == 1 {
+		return googleDriveProxyAccountSelection{
+			AccountID:    accounts[0].AccountID,
+			AccountEmail: accounts[0].AccountEmail,
+			Accounts:     accounts,
+			Required:     false,
+		}, nil
+	}
+
+	return googleDriveProxyAccountSelection{
+		Accounts: accounts,
+		Required: true,
+	}, nil
+}
+
 func readGoogleDriveArtifactEnvConfig() (googleDriveArtifactEnvConfig, error) {
 	clientID := strings.TrimSpace(os.Getenv("GOOGLE_DRIVE_CLIENT_ID"))
 	clientSecret := strings.TrimSpace(os.Getenv("GOOGLE_DRIVE_CLIENT_SECRET"))
@@ -693,6 +1076,21 @@ func readGoogleDriveArtifactEnvConfig() (googleDriveArtifactEnvConfig, error) {
 
 func normalizeGoogleDriveRedirectURI(value string) string {
 	return strings.TrimRight(strings.TrimSpace(value), "/")
+}
+
+func googleDriveClientIDChangeNeedsNewSecret(current googleDriveWorkspaceConfigFile, input GoogleDriveWorkspaceConfigRequest, hasStoredSecret bool) bool {
+	if !hasStoredSecret {
+		return false
+	}
+	nextClientID := strings.TrimSpace(input.ClientID)
+	if nextClientID == "" {
+		return false
+	}
+	currentClientID := strings.TrimSpace(current.ArtifactSync.ClientID)
+	if currentClientID == "" || strings.EqualFold(currentClientID, nextClientID) {
+		return false
+	}
+	return strings.TrimSpace(input.ClientSecret) == ""
 }
 
 func googleDriveArtifactMissingFields(status GoogleDriveArtifactSyncStatus) []string {
@@ -746,6 +1144,25 @@ func googleDriveSkippedCheck(key string, message string) GoogleDriveValidationCh
 
 func googleDriveMcpMissingFields(status GoogleDriveMcpStatus) []string {
 	missing := make([]string, 0, 4)
+	if status.ProxyMcpEnabled {
+		if status.AccountSelectionRequired || strings.TrimSpace(status.AccountID) == "" {
+			missing = append(missing, "accountId")
+		}
+		if !status.AccountReady {
+			missing = append(missing, "refreshToken")
+		}
+		if len(status.MissingScopes) > 0 {
+			missing = append(missing, "mcpReadScope")
+		}
+		if status.Status == "reconnect_required" {
+			missing = append(missing, "tokenReconnect")
+		}
+		if !status.BackendPackageAvailable {
+			missing = append(missing, "backendPackage")
+		}
+		return missing
+	}
+
 	if strings.TrimSpace(status.CredentialPath) == "" {
 		missing = append(missing, "credentialPath")
 	}
@@ -773,6 +1190,20 @@ func googleDriveMcpMissingFields(status GoogleDriveMcpStatus) []string {
 func googleDriveMcpBackendAvailable() bool {
 	_, err := lookPathFn("npx")
 	return err == nil
+}
+
+func googleDriveProxyMcpBackendAvailable(workspace string) bool {
+	if _, err := lookPathFn("flowpilot"); err == nil {
+		return true
+	}
+
+	runnerDir := filepath.Join(strings.TrimSpace(filepath.Clean(workspace)), "apps", "local-runner")
+	if _, err := os.Stat(filepath.Join(runnerDir, "go.mod")); err == nil {
+		_, err := lookPathFn("go")
+		return err == nil
+	}
+
+	return false
 }
 
 func validateGoogleDriveOAuthCredentialJSONFile(path string) error {
@@ -908,14 +1339,23 @@ type googleDriveSecretState struct {
 }
 
 type googleDriveMcpRuntimeConfig struct {
-	CredentialPath          string
-	TokenPath               string
-	CredentialExists        bool
-	CredentialValid         bool
-	TokenExists             bool
-	TokenRefreshValid       bool
-	BackendPackageAvailable bool
-	Status                  string
+	CredentialPath           string
+	TokenPath                string
+	CredentialExists         bool
+	CredentialValid          bool
+	TokenExists              bool
+	TokenRefreshValid        bool
+	BackendPackageAvailable  bool
+	AccountID                string
+	AccountEmail             string
+	AccountSelectionRequired bool
+	ProxyClientID            string
+	ProxyClientSecret        string
+	ProxyRefreshToken        string
+	WorkflowRunID            string
+	WorkflowStepRunID        string
+	ProcessKey               string
+	Status                   string
 }
 
 type googleDriveMcpTokenFile struct {

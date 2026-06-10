@@ -36,6 +36,8 @@ type LiveSession struct {
 	Model             string
 	ReasoningEffort   string
 	AccountHomePath   string
+	CustomEnv         map[string]string
+	ProxyURL          string
 	TransportType     string
 	ProviderSessionID string
 	ProcessKey        string
@@ -55,6 +57,36 @@ type LiveSession struct {
 	Mu                sync.Mutex
 	SendMu            sync.Mutex
 	InFlight          bool
+}
+
+func (r *Runner) googleDriveProxyApprovalDeadline(processKey string) (time.Time, error) {
+	trimmedProcessKey := strings.TrimSpace(processKey)
+	if trimmedProcessKey == "" {
+		return time.Time{}, errors.New("process key is required for Google Drive proxy approvals")
+	}
+
+	r.sessionsMu.Lock()
+	session, exists := r.sessions[trimmedProcessKey]
+	r.sessionsMu.Unlock()
+	if !exists || session == nil {
+		return time.Time{}, fmt.Errorf("session_dead: session %q not found or expired", trimmedProcessKey)
+	}
+
+	session.Mu.Lock()
+	defer session.Mu.Unlock()
+
+	if session.Status == "completed" {
+		if err := sessionTerminationErrorLocked(session); err != nil {
+			return time.Time{}, err
+		}
+		return time.Time{}, fmt.Errorf("session_dead: session %q has been closed", trimmedProcessKey)
+	}
+
+	if session.IdleTTL <= 0 {
+		return session.LastUsedAt.UTC(), nil
+	}
+
+	return session.LastUsedAt.UTC().Add(session.IdleTTL), nil
 }
 
 func sessionTerminationError(session *LiveSession) error {
@@ -401,6 +433,18 @@ func resolveBinaryAndArgs(provider string, model string, reasoningEffort string)
 	}
 }
 
+func cloneSessionCustomEnv(customEnv map[string]string) map[string]string {
+	if len(customEnv) == 0 {
+		return map[string]string{}
+	}
+
+	cloned := make(map[string]string, len(customEnv))
+	for key, value := range customEnv {
+		cloned[key] = value
+	}
+	return cloned
+}
+
 func (r *Runner) StartSession(ctx context.Context, req AiSessionStartRequest) (AiSessionHandle, error) {
 	r.sessionsMu.Lock()
 	defer r.sessionsMu.Unlock()
@@ -430,13 +474,20 @@ func (r *Runner) StartSession(ctx context.Context, req AiSessionStartRequest) (A
 	}
 	command := formatProviderCommand(binaryPath, args)
 
-	processKey := newRunID()
+	sessionCustomEnv := cloneSessionCustomEnv(req.CustomEnv)
+	processKey := strings.TrimSpace(sessionCustomEnv[googleDriveProxyProcessKeyEnv])
+	if processKey == "" {
+		processKey = newRunID()
+	}
+	sessionCustomEnv[googleDriveProxyProcessKeyEnv] = processKey
 	session := &LiveSession{
 		SessionID:        newRunID(),
 		Provider:         req.ProviderKey,
 		Model:            req.ModelName,
 		ReasoningEffort:  reasoningEffortVal,
 		AccountHomePath:  req.AccountHomePath,
+		CustomEnv:        sessionCustomEnv,
+		ProxyURL:         req.ProxyURL,
 		TransportType:    transportType,
 		ProcessKey:       processKey,
 		BinaryPath:       binaryPath,
@@ -471,7 +522,7 @@ func (r *Runner) StartSession(ctx context.Context, req AiSessionStartRequest) (A
 	}
 
 	cmd := commandContextFn(ctx, binaryPath, args...)
-	cmd.Env = r.getEnvForExecution(req.ProviderKey, req.AccountHomePath, req.CustomEnv, req.ProxyURL)
+	cmd.Env = r.getEnvForExecution(req.ProviderKey, req.AccountHomePath, sessionCustomEnv, req.ProxyURL)
 	cmd.Dir = resolvedWorkingDirectory
 
 	stdin, err := cmd.StdinPipe()
@@ -663,6 +714,7 @@ func (r *Runner) SendMessageWithCallback(ctx context.Context, req AiSessionMessa
 			session.Provider,
 			effectiveAccountHomePath,
 			req.AllowWrite,
+			req.YoloMode,
 		)
 		if err != nil {
 			return PromptExecutionResult{}, err
@@ -814,10 +866,14 @@ func (r *Runner) SendMessageWithCallback(ctx context.Context, req AiSessionMessa
 		model := session.Model
 		reasoningEffort := session.ReasoningEffort
 		providerSessionID := session.ProviderSessionID
+		accountHomePath := session.AccountHomePath
+		customEnv := cloneSessionCustomEnv(session.CustomEnv)
+		proxyURL := session.ProxyURL
 		session.Mu.Unlock()
 
 		args := buildClaudePrintArgs(model, reasoningEffort, providerSessionID)
 		cmd := commandContextFn(ctx, session.BinaryPath, args...)
+		cmd.Env = r.getEnvForExecution(session.Provider, accountHomePath, customEnv, proxyURL)
 		cmd.Dir = session.WorkingDirectory
 
 		stdin, err := cmd.StdinPipe()
@@ -1041,6 +1097,7 @@ func (r *Runner) CloseSession(ctx context.Context, handle AiSessionHandle) error
 	r.sessionsMu.Unlock()
 
 	if !exists {
+		_ = r.retireGoogleDriveProxyApprovalsForProcess(*handle.ProcessKey, "approval expired because the session was no longer active")
 		if handle.ProcessPid != nil {
 			processName, err := lookupProcessNameFn(ctx, *handle.ProcessPid)
 			if err == nil && processNameMatchesTransport(processName, handle.TransportType) {
@@ -1051,6 +1108,7 @@ func (r *Runner) CloseSession(ctx context.Context, handle AiSessionHandle) error
 	}
 
 	stdin, cmd, transport := markSessionTerminated(session, "manual_close")
+	_ = r.retireGoogleDriveProxyApprovalsForProcess(session.ProcessKey, "approval expired because the session closed before execution")
 
 	if stdin != nil {
 		stdin.Close()
@@ -1108,6 +1166,7 @@ func (r *Runner) CleanupSessions() {
 
 	for _, session := range activeSessions {
 		stdin, cmd, transport := markSessionTerminated(session, "runner_cleanup")
+		_ = r.retireGoogleDriveProxyApprovalsForProcess(session.ProcessKey, "approval expired because the runner cleaned up the session")
 
 		if stdin != nil {
 			stdin.Close()
@@ -1158,6 +1217,7 @@ func (r *Runner) sweepIdleSessions() {
 
 	for _, session := range staleSessions {
 		stdin, cmd, transport := markSessionTerminated(session, "idle_timeout")
+		_ = r.retireGoogleDriveProxyApprovalsForProcess(session.ProcessKey, "approval expired because the session timed out before execution")
 
 		if stdin != nil {
 			stdin.Close()

@@ -4,8 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -82,8 +86,9 @@ func TestStartSessionResumesProviderSessionID(t *testing.T) {
 	originalCmdCtx := commandContextFn
 	defer func() { commandContextFn = originalCmdCtx }()
 	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
-		// Return a valid JSON-RPC initialization response so StartSession succeeds
-		return exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", "Write-Output '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}'")
+		// Keep the mock process alive long enough for the Codex MCP handshake to finish.
+		script := "$null = [Console]::In.ReadLine(); Write-Output '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}'; $null = [Console]::In.ReadLine(); Start-Sleep -Seconds 2"
+		return exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
 	}
 
 	r, _ := New(".")
@@ -109,9 +114,9 @@ func TestStartSessionResumesProviderSessionID(t *testing.T) {
 
 	// Clean up
 	if handle.ProcessKey != nil {
-		r.sessionsMu.Lock()
-		delete(r.sessions, *handle.ProcessKey)
-		r.sessionsMu.Unlock()
+		if err := r.CloseSession(context.Background(), handle); err != nil {
+			t.Fatalf("CloseSession failed: %v", err)
+		}
 	}
 }
 
@@ -126,7 +131,7 @@ func TestStartSessionGeminiACPUsesCurrentHandshake(t *testing.T) {
 			"powershell",
 			"-NoProfile",
 			"-Command",
-			"Write-Output '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1}}'; Write-Output '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"gemini-live-session\"}}'",
+			"Write-Output '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1}}'; Write-Output '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"gemini-live-session\"}}'; Start-Sleep -Seconds 2",
 		)
 	}
 
@@ -148,6 +153,12 @@ func TestStartSessionGeminiACPUsesCurrentHandshake(t *testing.T) {
 	if !strings.Contains(strings.Join(startedArgs, " "), "--model gemini-2.5-flash") {
 		t.Fatalf("expected Gemini ACP session to normalize legacy model alias, got args %v", startedArgs)
 	}
+
+	if handle.ProcessKey != nil {
+		if err := r.CloseSession(context.Background(), handle); err != nil {
+			t.Fatalf("CloseSession failed: %v", err)
+		}
+	}
 }
 
 func TestStartSessionCodexMcpUsesRequestedModelConfig(t *testing.T) {
@@ -158,9 +169,10 @@ func TestStartSessionCodexMcpUsesRequestedModelConfig(t *testing.T) {
 		startedArgs = append([]string{}, arg...)
 		return exec.CommandContext(
 			ctx,
-			"sh",
-			"-c",
-			"printf '%s\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}'",
+			"powershell",
+			"-NoProfile",
+			"-Command",
+			"Write-Output '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}'; Start-Sleep -Seconds 2",
 		)
 	}
 
@@ -185,9 +197,89 @@ func TestStartSessionCodexMcpUsesRequestedModelConfig(t *testing.T) {
 	}
 
 	if handle.ProcessKey != nil {
-		r.sessionsMu.Lock()
-		delete(r.sessions, *handle.ProcessKey)
-		r.sessionsMu.Unlock()
+		if err := r.CloseSession(context.Background(), handle); err != nil {
+			t.Fatalf("CloseSession failed: %v", err)
+		}
+	}
+}
+
+func TestStartSessionInjectsProcessKeyIntoProviderEnv(t *testing.T) {
+	originalCmdCtx := commandContextFn
+	defer func() { commandContextFn = originalCmdCtx }()
+
+	envCaptureDir := t.TempDir()
+	envCapturePath := filepath.Join(envCaptureDir, "process-key.txt")
+	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+		script := "printf %s \"$FLOWPILOT_PROCESS_KEY\" > " + strconv.Quote(envCapturePath) + "; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}'; sleep 2"
+		return exec.CommandContext(ctx, "sh", "-c", script)
+	}
+
+	r, _ := New(".")
+	handle, err := r.StartSession(context.Background(), AiSessionStartRequest{
+		ProviderKey:      "codex",
+		ModelName:        "gpt-5.4-mini",
+		WorkingDirectory: ".",
+	})
+	if err != nil {
+		t.Fatalf("StartSession failed: %v", err)
+	}
+
+	if handle.ProcessKey == nil {
+		t.Fatal("expected process key to be populated")
+	}
+
+	raw, err := os.ReadFile(envCapturePath)
+	if err != nil {
+		t.Fatalf("failed to read captured process key: %v", err)
+	}
+	got := strings.TrimSpace(string(raw))
+	if got != *handle.ProcessKey {
+		t.Fatalf("expected captured process key %q, got %q", *handle.ProcessKey, got)
+	}
+
+	if err := r.CloseSession(context.Background(), handle); err != nil {
+		t.Fatalf("CloseSession failed: %v", err)
+	}
+}
+
+func TestStartSessionPreservesProvidedProcessKeyInProviderEnv(t *testing.T) {
+	originalCmdCtx := commandContextFn
+	defer func() { commandContextFn = originalCmdCtx }()
+
+	envCaptureDir := t.TempDir()
+	envCapturePath := filepath.Join(envCaptureDir, "process-key.txt")
+	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+		script := "printf %s \"$FLOWPILOT_PROCESS_KEY\" > " + strconv.Quote(envCapturePath) + "; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}'; sleep 2"
+		return exec.CommandContext(ctx, "sh", "-c", script)
+	}
+
+	r, _ := New(".")
+	handle, err := r.StartSession(context.Background(), AiSessionStartRequest{
+		ProviderKey:      "codex",
+		ModelName:        "gpt-5.4-mini",
+		WorkingDirectory: ".",
+		CustomEnv: map[string]string{
+			googleDriveProxyProcessKeyEnv: "workflow-run-123-step-step-456",
+		},
+	})
+	if err != nil {
+		t.Fatalf("StartSession failed: %v", err)
+	}
+
+	if handle.ProcessKey == nil || *handle.ProcessKey != "workflow-run-123-step-step-456" {
+		t.Fatalf("expected provided process key in handle, got %#v", handle.ProcessKey)
+	}
+
+	raw, err := os.ReadFile(envCapturePath)
+	if err != nil {
+		t.Fatalf("failed to read captured process key: %v", err)
+	}
+	if got := strings.TrimSpace(string(raw)); got != "workflow-run-123-step-step-456" {
+		t.Fatalf("expected provided process key in env, got %q", got)
+	}
+
+	if err := r.CloseSession(context.Background(), handle); err != nil {
+		t.Fatalf("CloseSession failed: %v", err)
 	}
 }
 
@@ -498,6 +590,7 @@ func TestSendMessageClaudeRespawnsPrintCommandPerTurnAndResumesSession(t *testin
 	}
 
 	var startedArgs [][]string
+	envCaptureDir := t.TempDir()
 	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
 		startedArgs = append(startedArgs, append([]string{name}, arg...))
 		output := strings.Join([]string{
@@ -511,7 +604,8 @@ func TestSendMessageClaudeRespawnsPrintCommandPerTurnAndResumesSession(t *testin
 				`{"type":"result","subtype":"success","is_error":false,"result":"second reply","session_id":"claude-real-session"}`,
 			}, "\n")
 		}
-		script := "$input | Out-Null; Write-Output '" + output + "'"
+		envCapturePath := filepath.Join(envCaptureDir, fmt.Sprintf("claude-env-%d.txt", len(startedArgs)))
+		script := "$env:FLOWPILOT_WORKFLOW_RUN_ID + '|' + $env:FLOWPILOT_WORKFLOW_STEP_RUN_ID + '|' + $env:FLOWPILOT_PROCESS_KEY | Set-Content -LiteralPath '" + strings.ReplaceAll(envCapturePath, "'", "''") + "'; $input | Out-Null; Write-Output '" + output + "'"
 		return exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
 	}
 
@@ -520,6 +614,10 @@ func TestSendMessageClaudeRespawnsPrintCommandPerTurnAndResumesSession(t *testin
 		ProviderKey:      "claude",
 		ModelName:        "claude-haiku",
 		WorkingDirectory: ".",
+		CustomEnv: map[string]string{
+			googleDriveProxyWorkflowRunIDEnv:  "run-claude",
+			googleDriveProxyWorkflowStepIDEnv: "step-claude",
+		},
 	})
 	if err != nil {
 		t.Fatalf("StartSession failed: %v", err)
@@ -564,6 +662,16 @@ func TestSendMessageClaudeRespawnsPrintCommandPerTurnAndResumesSession(t *testin
 	}
 	if !strings.Contains(strings.Join(startedArgs[1], " "), "--resume claude-real-session") {
 		t.Fatalf("expected second Claude turn to resume the real session id, got args %v", startedArgs[1])
+	}
+	for idx := 1; idx <= 2; idx++ {
+		raw, err := os.ReadFile(filepath.Join(envCaptureDir, fmt.Sprintf("claude-env-%d.txt", idx)))
+		if err != nil {
+			t.Fatalf("failed to read Claude env capture %d: %v", idx, err)
+		}
+		expected := "run-claude|step-claude|" + *handle.ProcessKey
+		if strings.TrimSpace(string(raw)) != expected {
+			t.Fatalf("expected Claude env capture %d to equal %q, got %q", idx, expected, strings.TrimSpace(string(raw)))
+		}
 	}
 }
 
@@ -853,6 +961,102 @@ func TestCloseSessionRacingWithClaudeStart(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "session_dead") {
 		t.Fatalf("expected session_dead error, got: %v", err)
+	}
+}
+
+func TestCloseSessionRetiresProcessBoundGoogleDriveApprovals(t *testing.T) {
+	r, _ := New(t.TempDir())
+
+	processKey := "proc-approval"
+	r.sessions[processKey] = &LiveSession{
+		SessionID:  "session-1",
+		ProcessKey: processKey,
+		Status:     "active",
+		LastUsedAt: time.Now().UTC(),
+		IdleTTL:    time.Hour,
+	}
+	if err := r.saveGoogleDriveProxyApprovalState(googleDriveProxyApprovalState{
+		Version: 1,
+		Records: map[string]googleDriveProxyApprovalRecord{
+			"approval-1": {
+				ID:                "approval-1",
+				WorkflowRunID:     "run-1",
+				WorkflowStepRunID: "step-1",
+				ProcessKey:        processKey,
+				ToolName:          "createFolder",
+				CanonicalArgsJSON: "{}",
+				ArgumentsHash:     "hash-1",
+				Status:            "pending",
+				RequestedAt:       time.Now().UTC().Add(-1 * time.Minute).Format(time.RFC3339Nano),
+				ExpiresAt:         time.Now().UTC().Add(30 * time.Minute).Format(time.RFC3339Nano),
+			},
+			"approval-2": {
+				ID:                "approval-2",
+				WorkflowRunID:     "run-1",
+				WorkflowStepRunID: "step-1",
+				ProcessKey:        "other-proc",
+				ToolName:          "createFolder",
+				CanonicalArgsJSON: "{}",
+				ArgumentsHash:     "hash-2",
+				Status:            "pending",
+				RequestedAt:       time.Now().UTC().Add(-1 * time.Minute).Format(time.RFC3339Nano),
+				ExpiresAt:         time.Now().UTC().Add(30 * time.Minute).Format(time.RFC3339Nano),
+			},
+		},
+	}); err != nil {
+		t.Fatalf("saveGoogleDriveProxyApprovalState() failed: %v", err)
+	}
+
+	if err := r.CloseSession(context.Background(), AiSessionHandle{ProcessKey: &processKey}); err != nil {
+		t.Fatalf("CloseSession failed: %v", err)
+	}
+
+	state, err := r.loadGoogleDriveProxyApprovalState()
+	if err != nil {
+		t.Fatalf("loadGoogleDriveProxyApprovalState() failed: %v", err)
+	}
+	if got := state.Records["approval-1"].Status; got != "expired" {
+		t.Fatalf("expected closed-session approval to be expired, got %q", got)
+	}
+	if got := state.Records["approval-2"].Status; got != "pending" {
+		t.Fatalf("expected unrelated approval to remain pending, got %q", got)
+	}
+}
+
+func TestCloseSessionRetiresProcessBoundApprovalsWhenSessionStateIsMissing(t *testing.T) {
+	r, _ := New(t.TempDir())
+
+	processKey := "proc-missing"
+	if err := r.saveGoogleDriveProxyApprovalState(googleDriveProxyApprovalState{
+		Version: 1,
+		Records: map[string]googleDriveProxyApprovalRecord{
+			"approval-missing": {
+				ID:                "approval-missing",
+				WorkflowRunID:     "run-1",
+				WorkflowStepRunID: "step-1",
+				ProcessKey:        processKey,
+				ToolName:          "createFolder",
+				CanonicalArgsJSON: "{}",
+				ArgumentsHash:     "hash-missing",
+				Status:            "pending",
+				RequestedAt:       time.Now().UTC().Add(-1 * time.Minute).Format(time.RFC3339Nano),
+				ExpiresAt:         time.Now().UTC().Add(30 * time.Minute).Format(time.RFC3339Nano),
+			},
+		},
+	}); err != nil {
+		t.Fatalf("saveGoogleDriveProxyApprovalState() failed: %v", err)
+	}
+
+	if err := r.CloseSession(context.Background(), AiSessionHandle{ProcessKey: &processKey}); err != nil {
+		t.Fatalf("CloseSession failed: %v", err)
+	}
+
+	state, err := r.loadGoogleDriveProxyApprovalState()
+	if err != nil {
+		t.Fatalf("loadGoogleDriveProxyApprovalState() failed: %v", err)
+	}
+	if got := state.Records["approval-missing"].Status; got != "expired" {
+		t.Fatalf("expected missing-session approval to be expired, got %q", got)
 	}
 }
 

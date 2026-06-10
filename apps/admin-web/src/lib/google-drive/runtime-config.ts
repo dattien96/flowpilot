@@ -17,6 +17,7 @@ export type GoogleDriveWorkspaceConfigRequest = {
   clientSecret?: string;
   redirectUri?: string;
   pickerApiKey?: string;
+  mcpAccountId?: string;
 };
 
 export type GoogleDriveMcpOAuthUploadRequest = {

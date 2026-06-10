@@ -4,7 +4,7 @@
 
 This document covers three MCP-related integrations in FlowPilot:
 
-- Google Drive via a third-party MCP backend
+- Google Drive via the FlowPilot-owned proxy MCP plus runner-local account OAuth and optional artifact folder binding
 - Jira via Atlassian's official remote MCP server
 - Telegram via a native Go integration
 
@@ -25,7 +25,7 @@ flowchart LR
   Runner -->|read/write| State[(.flowpilot/mcp-backend-state.json)]
   Runner -->|update status| DB[(Supabase integrations row)]
 
-  Runner -->|Google Drive| GDMCP[Google Drive MCP backend]
+  Runner -->|Google Drive| GDMCP[FlowPilot Google Drive proxy MCP]
   Runner -->|Jira| AMCP[Atlassian Remote MCP server]
   Runner -->|Telegram| TG[Native Go Telegram adapter]
 
@@ -76,29 +76,25 @@ It asks the runner, then writes the runner result back to the integration row.
 
 ### 3.1 Google Drive
 
-Google Drive is the third-party MCP path.
+Google Drive is the FlowPilot proxy MCP path.
 
 Current intent:
 
-- use the allowlisted `google-drive-mcp` backend
-- detect local launcher availability first
-- if missing, perform the documented install step
-- verify the backend before marking the integration usable
-- complete Google Drive OAuth after backend preparation
+- use the FlowPilot proxy MCP launcher path
+- store Google OAuth state in the local runner, keyed by connected Google account
+- allow artifact sync to bind `projectId -> accountId -> folderId`
+- let MCP read tools use the selected account token without filtering reads to the artifact folder
+- keep the third-party Desktop OAuth JSON path only as a legacy fallback while raw MCP support remains available
 
 Under the hood:
 
 1. user clicks `Add MCP`
 2. UI creates the integration row
-3. runner checks whether the Google Drive backend is already prepared
-4. if not, runner runs the allowlisted install step
-5. runner verifies the backend
-6. runner completes OAuth / resource verification
-7. runner updates `connected` or `failed`
-
-Reference repo:
-
-- [google-drive-mcp](https://github.com/piotr-agier/google-drive-mcp)
+3. runner checks whether the FlowPilot or Go launcher path for the proxy MCP is available
+4. runner completes or refreshes Google account OAuth locally
+5. runner verifies the selected account scopes and token refresh path
+6. if artifact sync is enabled for the project, runner verifies the selected Drive folder binding
+7. runner updates account, proxy MCP, and artifact-binding status independently
 
 ### 3.2 Jira
 
@@ -168,7 +164,7 @@ Install means:
 
 Install is provider-specific:
 
-- Google Drive uses the third-party backend install path
+- Google Drive uses the FlowPilot proxy MCP launcher path and runner-local OAuth state
 - Jira uses Atlassian's official remote MCP setup path through the local proxy
 - Telegram skips this step because it is native Go
 
@@ -207,7 +203,7 @@ Do not move provider secrets into normal project config.
 Recommended split:
 
 - Supabase stores project configuration and user-visible integration state
-- local runner stores backend readiness and any secure provider credential material
+- local runner stores backend readiness, Google account credentials, proxy account selection, and any secure provider credential material
 - third-party MCP backends are only used where they match the provider model
 
 This keeps the UI simple and prevents false success states.
@@ -220,9 +216,8 @@ If the user presses `Add MCP`:
 
 - FlowPilot creates the project integration record
 - the local runner checks the provider path
-- Google Drive may install and verify a third-party MCP backend
+- Google Drive connects a runner-local account, validates proxy MCP readiness, and optionally validates a project folder binding
 - Jira connects through Atlassian's official remote MCP server at `/v1/mcp/authv2`
 - Telegram uses native Go without a third-party MCP backend install
 - the runner returns the real state
 - the UI writes that state back to Supabase
-

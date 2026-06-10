@@ -176,6 +176,9 @@ describe("CreateWorkflowStepPage", () => {
     fireEvent.change(screen.getByLabelText("Reasoning effort"), {
       target: { value: "medium" },
     });
+    fireEvent.change(screen.getByLabelText("YOLO default"), {
+      target: { value: "enabled" },
+    });
     fireEvent.click(screen.getAllByRole("button", { name: "Add artifact" })[0]);
     fireEvent.click(screen.getAllByRole("button", { name: "Add artifact" })[1]);
     fireEvent.click(screen.getByRole("button", { name: "Save step" }));
@@ -191,6 +194,7 @@ describe("CreateWorkflowStepPage", () => {
           requiredSkills: ["skill_a", "skill_b"],
           model: "gpt-5.4",
           reasoningEffort: "medium",
+          yoloMode: true,
           inputArtifactDefinitions: ["business_summary_artifact"],
           outputArtifactDefinitions: ["tech_spec_artifact"],
         })

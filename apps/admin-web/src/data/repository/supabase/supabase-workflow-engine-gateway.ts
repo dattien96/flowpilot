@@ -16,7 +16,7 @@ import type {
   WorkflowRunSession,
   SupportedModel,
 } from "@/domain/model/entity/workflow-engine";
-import { normalizeStepModel } from "@/domain/model/entity/workflow-engine";
+import { normalizeMcpAccessMode, normalizeStepModel } from "@/domain/model/entity/workflow-engine";
 import {
   mapArtifactDefinition,
   mapArtifactRun,
@@ -33,6 +33,13 @@ import {
 
 const DEFAULT_MODEL = "gpt-5.4";
 const DEFAULT_REASONING_EFFORT = "medium";
+
+function normalizeStepMcpAccessMode(step: StepDefinition) {
+  if (!step.requiredMcps.some((mcp) => String(mcp).toLowerCase() === "google_drive")) {
+    return "read_only";
+  }
+  return normalizeMcpAccessMode(step.mcpAccessMode);
+}
 const ARTIFACT_BUCKET_NAME = "flowpilot-artifacts";
 const STORAGE_LIST_LIMIT = 1000;
 
@@ -360,6 +367,49 @@ async function invokeWorkflowSubmitStepApprovalRuntime<TResponse>(
   );
 }
 
+async function invokeWorkflowGoogleDriveWriteApprovalRuntime<TResponse>(
+  supabase: SupabaseClient,
+  payload: {
+    stepId: string;
+    decision: "approved" | "rejected";
+    comment?: string;
+  },
+) {
+  if (typeof window === "undefined") {
+    throw new Error("Google Drive MCP approval runtime is only available in the browser.");
+  }
+
+  const accessToken = (await supabase.auth.getSession()).data.session?.access_token ?? null;
+  let response: Response;
+  try {
+    response = await fetch("/api/workflow-engine/google-drive-write-approval", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch (error) {
+    throw new Error(
+      error instanceof Error
+        ? `Google Drive MCP approval runtime is unavailable: ${error.message}`
+        : "Google Drive MCP approval runtime is unavailable.",
+    );
+  }
+
+  if (response.ok) {
+    return (await response.json()) as TResponse;
+  }
+
+  const body = await response.json().catch(() => null);
+  throw new Error(
+    typeof body?.error === "string"
+      ? body.error
+      : `Google Drive MCP approval runtime failed (${response.status}).`,
+  );
+}
+
 export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
   constructor(private readonly supabase: SupabaseClient) {}
 
@@ -513,11 +563,13 @@ export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
           description: step.description,
           prompt_base: step.promptBase,
           required_mcps: step.requiredMcps,
+          mcp_access_mode: normalizeStepMcpAccessMode(step),
           required_skills: step.requiredSkills,
           team_role: step.teamRole ?? null,
           subagent: step.subagent ?? null,
           model: step.model,
           reasoning_effort: normalizeReasoningEffort(step.reasoningEffort),
+          yolo_mode: typeof step.yoloMode === "boolean" ? step.yoloMode : null,
           agent_type: step.agentType,
         },
         { onConflict: "step_type" }
@@ -651,6 +703,7 @@ export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
           provider_override: resolvedWorkflowProvider,
           model_override: resolvedWorkflowModel,
           reasoning_effort_override: resolvedWorkflowReasoning,
+          yolo_mode: Boolean(workflow.yoloMode),
         })
         .select("*")
         .maybeSingle();
@@ -672,6 +725,7 @@ export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
           provider_override: resolvedWorkflowProvider,
           model_override: resolvedWorkflowModel,
           reasoning_effort_override: resolvedWorkflowReasoning,
+          yolo_mode: Boolean(workflow.yoloMode),
           updated_at: new Date().toISOString(),
         })
         .eq("id", workflow.id)
@@ -713,6 +767,7 @@ export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
             step.reasoningEffortOverride,
             resolvedWorkflowReasoning,
           ),
+          yolo_mode: typeof step.yoloMode === "boolean" ? step.yoloMode : null,
           requires_approval: step.requiresApproval ?? true,
         }))
       );
@@ -837,6 +892,19 @@ export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
           approve,
           comment,
         });
+    return mapWorkflowRunStep(data);
+  }
+
+  async submitGoogleDriveWriteApproval(
+    stepId: string,
+    decision: "approved" | "rejected",
+    comment?: string,
+  ): Promise<WorkflowRunStep> {
+    const data = await invokeWorkflowGoogleDriveWriteApprovalRuntime<any>(this.supabase, {
+      stepId,
+      decision,
+      comment,
+    });
     return mapWorkflowRunStep(data);
   }
 

@@ -1,4 +1,5 @@
 export type StepType = string;
+export type McpAccessMode = "read_only" | "read_write";
 
 export type ArtifactSyncStatus = "local_only" | "queued" | "syncing" | "synced" | "failed";
 
@@ -134,16 +135,22 @@ export interface StepDefinition {
   description: string;
   promptBase: string | null;
   requiredMcps: string[];
+  mcpAccessMode?: McpAccessMode;
   requiredSkills: string[];
   teamRole?: string | null;
   subagent?: string | null;
   model: SupportedStepModel;
   reasoningEffort?: string | null;
+  yoloMode?: boolean | null;
   agentType: "standard" | "autonomous";
   inputArtifactDefinitions?: string[];
   outputArtifactDefinitions?: string[];
   createdAt: string;
   updatedAt: string;
+}
+
+export function normalizeMcpAccessMode(value: unknown): McpAccessMode {
+  return value === "read_write" ? "read_write" : "read_only";
 }
 
 export interface ArtifactDefinition {
@@ -201,6 +208,7 @@ export interface Workflow {
   providerOverride: string | null;
   modelOverride: string | null;
   reasoningEffortOverride?: string | null;
+  yoloMode: boolean;
   createdBy: string;
   createdAt: string;
   updatedAt: string;
@@ -216,6 +224,7 @@ export interface WorkflowStep {
   providerOverride: string | null;
   modelOverride: string | null;
   reasoningEffortOverride?: string | null;
+  yoloMode: boolean | null;
   requiresApproval: boolean;
   createdAt: string;
   updatedAt: string;

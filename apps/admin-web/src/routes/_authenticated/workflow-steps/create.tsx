@@ -12,6 +12,7 @@ import {
   REASONING_EFFORT_OPTIONS,
   STEP_MODEL_OPTIONS,
   type ArtifactDefinition,
+  type McpAccessMode,
 } from "@/domain/model/entity/workflow-engine";
 import { useSupportedModels } from "@/presentation/hooks/use-supported-models";
 import { useMemo } from "react";
@@ -25,6 +26,13 @@ const DEFAULT_STEP_MODEL =
   STEP_MODEL_OPTIONS.find((option) => option.value === "gpt-5.4")?.value ??
   STEP_MODEL_OPTIONS[0].value;
 const DEFAULT_REASONING_EFFORT = "medium";
+type YoloModeValue = "inherit" | "enabled" | "disabled";
+
+function parseYoloModeValue(value: string): boolean | null {
+  if (value === "enabled") return true;
+  if (value === "disabled") return false;
+  return null;
+}
 
 export function CreateWorkflowStepPage() {
   const navigate = useNavigate();
@@ -50,12 +58,14 @@ export function CreateWorkflowStepPage() {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [requiredMcps, setRequiredMcps] = useState("");
+  const [mcpAccessMode, setMcpAccessMode] = useState<McpAccessMode>("read_only");
   const [requiredSkills, setRequiredSkills] = useState("");
   const [teamRole, setTeamRole] = useState("");
   const [promptBase, setPromptBase] = useState("");
   const [subagent, setSubagent] = useState("");
   const [model, setModel] = useState<string>(DEFAULT_STEP_MODEL);
   const [reasoningEffort, setReasoningEffort] = useState(DEFAULT_REASONING_EFFORT);
+  const [yoloMode, setYoloMode] = useState<YoloModeValue>("inherit");
   const [inputArtifactDefinitions, setInputArtifactDefinitions] = useState<string[]>([]);
   const [outputArtifactDefinitions, setOutputArtifactDefinitions] = useState<string[]>([]);
   const [agentType, setAgentType] = useState<"standard" | "autonomous">("standard");
@@ -107,6 +117,7 @@ export function CreateWorkflowStepPage() {
         description,
         promptBase: promptBase.trim() || deriveStepPromptBase({ stepType, name, description }),
         requiredMcps: parsedRequiredMcps,
+        mcpAccessMode: parsedRequiredMcps.includes("google_drive") ? mcpAccessMode : "read_only",
         requiredSkills: requiredSkills
           .split(",")
           .map((item) => item.trim())
@@ -115,6 +126,7 @@ export function CreateWorkflowStepPage() {
         subagent: subagent.trim() || null,
         model,
         reasoningEffort: reasoningEffort || DEFAULT_REASONING_EFFORT,
+        yoloMode: parseYoloModeValue(yoloMode),
         inputArtifactDefinitions,
         outputArtifactDefinitions,
         agentType,
@@ -179,6 +191,22 @@ export function CreateWorkflowStepPage() {
             onChange={(event) => setRequiredMcps(event.target.value)}
           />
         </label>
+        {requiredMcps
+          .split(",")
+          .map((item) => item.trim())
+          .includes("google_drive") ? (
+            <label className="space-y-2 text-sm">
+              <span className="font-medium">Google Drive access</span>
+              <select
+                className="w-full rounded-2xl border border-border bg-card px-4 py-3"
+                value={mcpAccessMode}
+                onChange={(event) => setMcpAccessMode(event.target.value as McpAccessMode)}
+              >
+                <option value="read_only">Read only</option>
+                <option value="read_write">Read + write</option>
+              </select>
+            </label>
+          ) : null}
         <label className="space-y-2 text-sm">
           <span className="font-medium">Required skills</span>
           <input
@@ -244,6 +272,18 @@ export function CreateWorkflowStepPage() {
                 {option.label}
               </option>
             ))}
+          </select>
+        </label>
+        <label className="space-y-2 text-sm">
+          <span className="font-medium">YOLO default</span>
+          <select
+            className="w-full rounded-2xl border border-border bg-card px-4 py-3"
+            value={yoloMode}
+            onChange={(event) => setYoloMode(event.target.value as YoloModeValue)}
+          >
+            <option value="inherit">Inherit workflow</option>
+            <option value="enabled">On</option>
+            <option value="disabled">Off</option>
           </select>
         </label>
         <div className="space-y-2 md:col-span-2">

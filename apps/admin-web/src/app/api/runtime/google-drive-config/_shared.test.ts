@@ -1,8 +1,14 @@
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { readGoogleDriveUploadForm, resolveEnvFallbackStatus } from "./_shared";
 
-const envKeys = ["HOME", "USERPROFILE", "XDG_CONFIG_HOME"] as const;
+const envKeys = [
+  "HOME",
+  "USERPROFILE",
+  "XDG_CONFIG_HOME",
+  "FLOWPILOT_GOOGLE_DRIVE_ACCOUNT_ID",
+] as const;
 
 function setEnv(key: (typeof envKeys)[number], value?: string) {
   if (value === undefined) {
@@ -24,14 +30,14 @@ describe("google drive config shared helpers", () => {
     setEnv("HOME", "/Users/demo");
     setEnv("USERPROFILE", "/Users/demo");
     setEnv("XDG_CONFIG_HOME", "/tmp/flowpilot-xdg");
-
     const status = resolveEnvFallbackStatus();
 
+    expect(status.mcp.proxyMcpEnabled).toBe(true);
     expect(status.mcp.credentialPath).toBe(
-      "/tmp/flowpilot-xdg/google-drive-mcp/gcp-oauth.keys.json",
+      join("/tmp/flowpilot-xdg", "google-drive-mcp", "gcp-oauth.keys.json"),
     );
     expect(status.mcp.tokenPath).toBe(
-      "/tmp/flowpilot-xdg/google-drive-mcp/tokens.json",
+      join("/tmp/flowpilot-xdg", "google-drive-mcp", "tokens.json"),
     );
   });
 

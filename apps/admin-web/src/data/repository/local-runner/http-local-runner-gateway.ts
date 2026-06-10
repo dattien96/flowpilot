@@ -26,6 +26,8 @@ import type {
   LocalRunnerAiSessionStartRequest,
   LocalRunnerAiSessionHandle,
   LocalRunnerAiSessionMessageRequest,
+  LocalRunnerGoogleDriveProxyApproval,
+  LocalRunnerGoogleDriveProxyApprovalDecisionRequest,
   GoogleDriveWorkspaceConfigResponse,
   GoogleDriveMcpProviderConfigRequest,
   GoogleDriveMcpProviderConfigResponse,
@@ -520,6 +522,51 @@ export class HttpLocalRunnerGateway implements LocalRunnerGateway {
 
   async listSessions() {
     return await readJson<LocalRunnerAiSessionHandle[]>(this.baseUrl, "/sessions");
+  }
+
+  async listGoogleDriveProxyApprovals(
+    workflowRunId?: string,
+    workflowStepRunId?: string,
+    status?: string,
+  ) {
+    const url = new URL("/google-drive-proxy-approvals", this.baseUrl);
+    if (workflowRunId) url.searchParams.set("workflowRunId", workflowRunId);
+    if (workflowStepRunId) url.searchParams.set("workflowStepRunId", workflowStepRunId);
+    if (status) url.searchParams.set("status", status);
+    const response = await fetch(url, {
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      throw new Error(
+        `Local runner google drive proxy approvals failed: ${response.status} ${response.statusText}`,
+      );
+    }
+    return (await response.json()) as LocalRunnerGoogleDriveProxyApproval[];
+  }
+
+  async decideGoogleDriveProxyApproval(
+    approvalId: string,
+    request: LocalRunnerGoogleDriveProxyApprovalDecisionRequest,
+  ) {
+    const response = await fetch(
+      new URL(`/google-drive-proxy-approvals/${encodeURIComponent(approvalId)}/decision`, this.baseUrl),
+      {
+        method: "POST",
+        cache: "no-store",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(request),
+      },
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `Local runner google drive proxy approval decision failed: ${response.status} ${response.statusText}`,
+      );
+    }
+
+    return (await response.json()) as LocalRunnerGoogleDriveProxyApproval;
   }
 
   async sendMessage(

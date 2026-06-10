@@ -5,16 +5,20 @@ import path from "node:path";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { SupabaseArtifactStorageConnectionGateway } from "@/data/repository/supabase/supabase-artifact-storage-connection-gateway";
+import { LocalRunnerError } from "@/data/repository/local-runner/http-local-runner-gateway";
 import type { LocalRunnerGateway } from "@/domain/gateway/local-runner-gateway";
 import type {
+  LocalRunnerGoogleDriveProxyApproval,
   LocalRunnerPromptExecutionResult,
   LocalRunnerSessionStreamEvent,
 } from "@/domain/model/entity/local-runner";
 import {
   deriveStepPromptBase,
   isSupportedStepModel,
+  normalizeMcpAccessMode,
   normalizeStepModel,
   REASONING_EFFORT_OPTIONS,
+  type McpAccessMode,
   type ReasoningEffort,
   type StepType,
   type WorkflowRunStartRequest,
@@ -42,6 +46,7 @@ type WorkflowDefinitionRow = {
   provider_override: string | null;
   model_override: string | null;
   reasoning_effort_override: string | null;
+  yolo_mode?: boolean | null;
   session_idle_ttl_minutes?: number | null;
 };
 
@@ -53,6 +58,7 @@ type WorkflowStepRow = {
   provider_override: string | null;
   model_override: string | null;
   reasoning_effort_override: string | null;
+  yolo_mode?: boolean | null;
   provider_account_override_id: string | null;
   requires_approval: boolean;
 };
@@ -63,6 +69,7 @@ type StepDefinitionRow = {
   description: string;
   prompt_base: string | null;
   required_mcps: string[] | null;
+  mcp_access_mode?: string | null;
   required_skills: string[] | null;
   team_role: string | null;
   subagent: string | null;
@@ -90,6 +97,7 @@ type WorkflowRunRow = {
   workflow_id: string;
   project_id: string;
   provider_account_id: string | null;
+  yolo_mode: boolean | null;
 };
 
 type WorkflowRunStepExecutionRow = {
@@ -125,6 +133,7 @@ type StepExecutionPlan = {
   providerKey: string;
   model: string;
   reasoningEffort: string | null;
+  yoloMode: boolean;
   providerAccountId: string | null;
   inputArtifactKeys: string[];
   outputArtifactKeys: string[];
@@ -197,6 +206,8 @@ async function getOrCreateSession({
   recoveredFromProviderSessionId,
   replayCheckpointCount,
   providerAccountId,
+  sessionScopeKey,
+  requestedProcessKey,
 }: {
   adminClient: SupabaseClient;
   localRunnerGateway: LocalRunnerGateway;
@@ -215,6 +226,8 @@ async function getOrCreateSession({
   recoveredFromProviderSessionId?: string | null;
   replayCheckpointCount?: number | null;
   providerAccountId?: string | null;
+  sessionScopeKey?: string | null;
+  requestedProcessKey?: string | null;
 }) {
   let sessionRow = null;
 
@@ -259,6 +272,10 @@ async function getOrCreateSession({
       (typeof sessionAccountHomePath === "string" &&
         sessionAccountHomePath === requestedAccount.home_path)
     : true;
+  const requestedSessionScopeKey = sessionScopeKey?.trim() || null;
+  const sessionScopeMatches = sessionRow
+    ? (sessionRow.metadata_json?.sessionScopeKey ?? null) === requestedSessionScopeKey
+    : true;
 
   let previousCheckpoints: any[] = [];
   let resolvedRecoveryMode = recoveryMode ?? null;
@@ -274,7 +291,8 @@ async function getOrCreateSession({
         !forceNewProviderSession &&
         sessionRow.provider === providerKey &&
         sessionRow.model === modelName &&
-        sessionMatchesRequestedAccount
+        sessionMatchesRequestedAccount &&
+        sessionScopeMatches
       ) {
         resumeProviderSessionId =
           resumeProviderSessionId ?? sessionRow.provider_session_id;
@@ -292,7 +310,8 @@ async function getOrCreateSession({
       forceNewProviderSession ||
       sessionRow.provider !== providerKey ||
       sessionRow.model !== modelName ||
-      !sessionMatchesRequestedAccount
+      !sessionMatchesRequestedAccount ||
+      !sessionScopeMatches
     ) {
       previousCheckpoints = sessionRow.metadata_json?.checkpoints || [];
       await writeWorkflowSessionLog({
@@ -317,6 +336,8 @@ async function getOrCreateSession({
             ? "forced_new_session"
             : !sessionMatchesRequestedAccount
               ? "provider_account_mismatch"
+              : !sessionScopeMatches
+                ? "session_scope_mismatch"
               : "provider_or_model_mismatch",
         },
       });
@@ -386,6 +407,12 @@ async function getOrCreateSession({
   }
 
   if (!handle) {
+    const customEnv = {
+      ...(requestedAccount.extra_env || {}),
+      FLOWPILOT_WORKFLOW_RUN_ID: workflowRunId,
+      FLOWPILOT_WORKFLOW_STEP_RUN_ID: stepRunId,
+      ...(requestedProcessKey ? { FLOWPILOT_PROCESS_KEY: requestedProcessKey } : {}),
+    };
     const startResult = await localRunnerGateway.startSession({
       providerKey,
       modelName,
@@ -399,7 +426,7 @@ async function getOrCreateSession({
       accountHomePath: requestedAccount.home_path,
       providerAccountHomePath: requestedAccount.home_path,
       proxyUrl: requestedAccount.proxy_url || undefined,
-      customEnv: requestedAccount.extra_env || undefined,
+      customEnv,
     });
 
     handle = {
@@ -422,6 +449,7 @@ async function getOrCreateSession({
               ...(sessionRow.metadata_json ?? {}),
               providerAccountId: requestedAccount.id,
               providerAccountHomePath: requestedAccount.home_path,
+              sessionScopeKey: requestedSessionScopeKey,
               command: handle.command ?? null,
             },
           })
@@ -463,6 +491,7 @@ async function getOrCreateSession({
               checkpoints: previousCheckpoints,
               providerAccountId: requestedAccount.id,
               providerAccountHomePath: requestedAccount.home_path,
+              sessionScopeKey: requestedSessionScopeKey,
               command: handle.command ?? null,
               ...recoveryMetadata,
             },
@@ -881,6 +910,105 @@ function isNonRetryableWorkflowSetupError(error: unknown) {
   );
 }
 
+function requiresStepScopedSession(requiredMcps: string[]) {
+  return requiredMcps.some((mcp) => String(mcp).toLowerCase() === "google_drive");
+}
+
+function isEmptyRequiredMcpOutput(
+  outputMarkdown: string | null | undefined,
+  requiredMcps: string[],
+) {
+  return requiresStepScopedSession(requiredMcps) && !(outputMarkdown ?? "").trim();
+}
+
+function stepAllowsGoogleDriveWrites(definition: Pick<StepDefinitionRow, "required_mcps" | "mcp_access_mode">) {
+  return requiresStepScopedSession(definition.required_mcps ?? []) &&
+    normalizeMcpAccessMode(definition.mcp_access_mode) === "read_write";
+}
+
+function isMcpWriteApprovalRequiredError(error: unknown) {
+  const code = error instanceof LocalRunnerError
+    ? String(error.code ?? "").toLowerCase()
+    : String((error as { code?: unknown })?.code ?? "").toLowerCase();
+  if (code === "mcp_write_approval_required" || code === "mcp_tool_approval_required") {
+    return true;
+  }
+
+  const message = String((error as { message?: unknown })?.message ?? "").toLowerCase();
+  const details = String((error as { details?: unknown })?.details ?? "").toLowerCase();
+  return message.includes("mcp_write_approval_required") ||
+    details.includes("mcp_write_approval_required") ||
+    message.includes("mcp_tool_approval_required") ||
+    details.includes("mcp_tool_approval_required");
+}
+
+function extractMcpWriteApprovalId(error: unknown) {
+  return extractGoogleDriveWriteApprovalIdFromText(
+    String((error as { message?: unknown })?.message ?? ""),
+    String((error as { details?: unknown })?.details ?? ""),
+  );
+}
+
+function extractGoogleDriveWriteApprovalIdFromText(...values: Array<string | null | undefined>) {
+  const combined = values
+    .map((value) => String(value ?? ""))
+    .filter(Boolean)
+    .join("\n");
+  const patterns = [
+    /approval request ([a-z0-9_-]+)/i,
+    /google drive mcp approval required:\s*([a-z0-9_-]+)/i,
+    /google drive approval required:\s*([a-z0-9_-]+)/i,
+    /google drive write approval required:\s*([a-z0-9_-]+)/i,
+  ];
+  for (const pattern of patterns) {
+    const match = combined.match(pattern);
+    if (match?.[1]) {
+      return match[1];
+    }
+  }
+  return null;
+}
+
+function googleDriveApprovalOperation(
+  approval: Pick<LocalRunnerGoogleDriveProxyApproval, "operation" | "toolName">,
+) {
+  const operation = String(approval.operation ?? "").trim().toLowerCase();
+  if (operation === "read" || operation === "write") {
+    return operation;
+  }
+
+  switch (String(approval.toolName ?? "").trim()) {
+    case "createGoogleDoc":
+    case "updateGoogleDoc":
+    case "createFolder":
+      return "write";
+    default:
+      return "read";
+  }
+}
+
+function formatGoogleDriveWriteApprovalMessage(
+  approval: LocalRunnerGoogleDriveProxyApproval,
+) {
+  const operation = googleDriveApprovalOperation(approval);
+  const lines = [
+    `Google Drive MCP approval required: ${approval.id}`,
+    `Tool: ${approval.toolName}`,
+    `Operation: ${operation}`,
+  ];
+  if (approval.targetSummary?.trim()) {
+    lines.push(`Target: ${approval.targetSummary.trim()}`);
+  }
+  lines.push(`Requested at: ${approval.requestedAt}`);
+  lines.push(`Expires at: ${approval.expiresAt}`);
+  return lines.join("\n");
+}
+
+function isWorkflowStepWaitingForApproval(status?: string | null) {
+  const normalized = String(status ?? "").trim().toUpperCase();
+  return normalized === "WAITING_USER_APPROVAL" || normalized === "WAITING_APPROVAL";
+}
+
 type WorkflowSessionSendResult = LocalRunnerPromptExecutionResult & {
   actualPromptText: string;
   sessionDbId?: string;
@@ -893,6 +1021,8 @@ type RuntimeLocalRunnerGateway = Pick<
   | "startSession"
   | "sendMessage"
   | "closeSession"
+  | "listGoogleDriveProxyApprovals"
+  | "decideGoogleDriveProxyApproval"
 > &
   Partial<Pick<LocalRunnerGateway, "getHealth">>;
 
@@ -925,6 +1055,7 @@ export async function sendMessageWithRetry({
   skillIds,
   requiredMcps = [],
   allowWrite = false,
+  yoloMode = false,
   idleTTLSeconds,
   forceNewProviderSession,
   providerAccountId,
@@ -942,10 +1073,33 @@ export async function sendMessageWithRetry({
   skillIds: string[];
   requiredMcps?: string[];
   allowWrite?: boolean;
+  yoloMode?: boolean;
   idleTTLSeconds?: number | null;
   forceNewProviderSession?: boolean;
   providerAccountId?: string | null;
 }): Promise<WorkflowSessionSendResult> {
+  const stepScopedProcessKey = requiresStepScopedSession(requiredMcps)
+    ? `workflow-${workflowRunId}-step-${stepRunId}`
+    : null;
+
+  if (requiresStepScopedSession(requiredMcps)) {
+    const requestedAccount = await resolveLocalProviderAccount(
+      providerKey,
+      providerAccountId,
+    );
+    await localRunnerGateway.ensureGoogleDriveMcpProviderConfig({
+      providerKey,
+      accountHomePath: requestedAccount.home_path,
+      scope: "account",
+      mode: allowWrite ? "read_write" : "read_only",
+      yoloMode,
+      workflowRunId,
+      workflowStepRunId: stepRunId,
+      processKey: stepScopedProcessKey ?? undefined,
+    });
+  }
+
+  const sessionScopeKey = requiresStepScopedSession(requiredMcps) ? stepRunId : null;
   let handle = await getOrCreateSession({
     adminClient,
     localRunnerGateway,
@@ -959,6 +1113,8 @@ export async function sendMessageWithRetry({
     idleTTLSeconds,
     forceNewProviderSession,
     providerAccountId,
+    sessionScopeKey,
+    requestedProcessKey: stepScopedProcessKey,
   });
 
   let attempt = 1;
@@ -976,6 +1132,7 @@ export async function sendMessageWithRetry({
           skillIds,
           contextSourceIds: [],
           allowWrite,
+          yoloMode,
           accountHomePath: handle.accountHomePath,
           idleTTLSeconds,
         },
@@ -987,6 +1144,21 @@ export async function sendMessageWithRetry({
 
       if (isThreadMissingOutput(result.outputMarkdown)) {
         throw new Error(`provider error: ${result.outputMarkdown}`);
+      }
+
+      if (isEmptyRequiredMcpOutput(result.outputMarkdown, requiredMcps)) {
+        if (attempt >= maxAttempts) {
+          throw new Error(
+            "provider error: required MCP step completed without a final answer",
+          );
+        }
+        currentPrompt = [
+          "The previous response was empty after Google Drive MCP tool execution.",
+          "Use the existing conversation and any Google Drive tool results already returned to answer the user's original request now.",
+          "Do not call additional Google Drive tools unless the current thread lacks enough information to answer.",
+        ].join("\n");
+        attempt += 1;
+        continue;
       }
 
       await syncWorkflowRunSessionProviderSessionId({
@@ -1082,6 +1254,7 @@ export async function sendMessageWithRetry({
           recoveryMode: "resumed_thread",
           recoveredFromSessionId: handle?.dbId ?? null,
           recoveredFromProviderSessionId: handle?.providerSessionId ?? null,
+          sessionScopeKey,
         });
         attempt++;
         continue;
@@ -1133,6 +1306,7 @@ export async function sendMessageWithRetry({
           recoveredFromSessionId: handle?.dbId ?? null,
           recoveredFromProviderSessionId: handle?.providerSessionId ?? null,
           replayCheckpointCount: checkpoints.length,
+          sessionScopeKey,
         });
         attempt++;
         continue;
@@ -1143,6 +1317,79 @@ export async function sendMessageWithRetry({
   }
 
   throw new Error("sendMessageWithRetry exceeded max attempts");
+}
+
+async function loadPendingGoogleDriveWriteApproval({
+  localRunnerGateway,
+  workflowRunId,
+  stepRunId,
+  approvalId,
+}: {
+  localRunnerGateway: Pick<LocalRunnerGateway, "listGoogleDriveProxyApprovals">;
+  workflowRunId: string;
+  stepRunId: string;
+  approvalId?: string | null;
+}) {
+  const approvals = await localRunnerGateway.listGoogleDriveProxyApprovals(
+    workflowRunId,
+    stepRunId,
+    "pending",
+  );
+  if (approvalId) {
+    return approvals.find((record) => record.id === approvalId) ?? null;
+  }
+  return approvals[0] ?? null;
+}
+
+async function pauseWorkflowForGoogleDriveWriteApproval({
+  adminClient,
+  localRunnerGateway,
+  workflowRunId,
+  stepRunId,
+  stepType,
+  error,
+}: {
+  adminClient: SupabaseClient;
+  localRunnerGateway: Pick<LocalRunnerGateway, "listGoogleDriveProxyApprovals">;
+  workflowRunId: string;
+  stepRunId: string;
+  stepType: string;
+  error: unknown;
+}) {
+  const approval = await loadPendingGoogleDriveWriteApproval({
+    localRunnerGateway,
+    workflowRunId,
+    stepRunId,
+    approvalId: extractMcpWriteApprovalId(error),
+  });
+  const message = approval
+    ? formatGoogleDriveWriteApprovalMessage(approval)
+    : String((error as { message?: unknown })?.message ?? "Google Drive MCP approval required.");
+
+  await adminClient
+    .from("workflow_run_steps")
+    .update({
+      status: "WAITING_USER_APPROVAL",
+      finished_at: null,
+      error_message: message,
+    })
+    .eq("id", stepRunId);
+  await insertLog(adminClient, stepRunId, "warn", message);
+  await adminClient
+    .from("workflow_runs")
+    .update({
+      status: "WAITING_USER_APPROVAL",
+      finished_at: null,
+      error_message: message,
+    })
+    .eq("id", workflowRunId);
+  await insertLog(
+    adminClient,
+    stepRunId,
+    "info",
+    `Workflow paused for Google Drive MCP approval on ${stepType}.`,
+  );
+  return approval;
 }
 
 const SINGLE_STEP_RUNTIME_CREATED_BY = "flowpilot-runtime";
@@ -1211,6 +1458,159 @@ function buildArtifactSnapshotRoot(
     workflowRunId,
     stepType,
   );
+}
+
+function googleDriveWriteAuditTitle(approvalId: string) {
+  return `Google Drive Write Audit - ${approvalId}.json`;
+}
+
+function buildGoogleDriveWriteAuditPayload({
+  approval,
+  mcpAccessMode,
+  yoloMode,
+}: {
+  approval: LocalRunnerGoogleDriveProxyApproval;
+  mcpAccessMode: string;
+  yoloMode: boolean;
+}) {
+  return {
+    kind: "google_drive_mcp_write_audit",
+    approvalId: approval.id,
+    workflowRunId: approval.workflowRunId ?? null,
+    workflowStepRunId: approval.workflowStepRunId ?? null,
+    processKey: approval.processKey ?? null,
+    mcpAccessMode,
+    yoloMode,
+    operation: googleDriveApprovalOperation(approval),
+    toolName: approval.toolName,
+    argumentsHash: approval.argumentsHash,
+    targetSummary: approval.targetSummary ?? null,
+    decision: approval.status,
+    decisionMode: approval.decisionMode,
+    decisionComment: approval.decisionComment ?? null,
+    requestedAt: approval.requestedAt,
+    decidedAt: approval.decidedAt ?? null,
+    expiresAt: approval.expiresAt,
+    resultDriveId: approval.resultDriveId ?? null,
+    resultDriveUrl: approval.resultDriveUrl ?? null,
+    errorMessage: approval.errorMessage ?? null,
+  };
+}
+
+async function googleDriveWriteAuditArtifactExists({
+  adminClient,
+  stepRunId,
+  title,
+}: {
+  adminClient: SupabaseClient;
+  stepRunId: string;
+  title: string;
+}) {
+  const { data, error } = await adminClient
+    .from("artifact_runs")
+    .select("id")
+    .eq("workflow_run_step_id", stepRunId)
+    .eq("title", title)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Unable to check Google Drive write audit artifact: ${error.message}`);
+  }
+
+  return Boolean(data?.id);
+}
+
+export async function createGoogleDriveWriteAuditArtifacts({
+  adminClient,
+  localRunnerGateway,
+  projectId,
+  workflowId,
+  workflowRunId,
+  stepRunId,
+  stepType,
+  mcpAccessMode,
+  yoloMode,
+  artifactWorkspaceRoot = process.cwd(),
+}: {
+  adminClient: SupabaseClient;
+  localRunnerGateway: Pick<LocalRunnerGateway, "listGoogleDriveProxyApprovals">;
+  projectId: string;
+  workflowId: string;
+  workflowRunId: string;
+  stepRunId: string;
+  stepType: string;
+  mcpAccessMode: McpAccessMode;
+  yoloMode: boolean;
+  artifactWorkspaceRoot?: string;
+}) {
+  const approvals = await localRunnerGateway.listGoogleDriveProxyApprovals(
+    workflowRunId,
+    stepRunId,
+  );
+  const auditableApprovals = approvals.filter((approval) =>
+    googleDriveApprovalOperation(approval) === "write" &&
+    ["executed", "rejected"].includes(approval.status),
+  );
+  const createdArtifactIds: string[] = [];
+
+  for (const approval of auditableApprovals) {
+    const title = googleDriveWriteAuditTitle(approval.id);
+    if (await googleDriveWriteAuditArtifactExists({ adminClient, stepRunId, title })) {
+      continue;
+    }
+
+    const artifactId = randomUUID();
+    const snapshotDirectory = path.join(
+      buildArtifactSnapshotRoot(projectId, workflowRunId, stepType, artifactWorkspaceRoot),
+      ".snapshots",
+      artifactId,
+    );
+    const contentPath = path.join(snapshotDirectory, title);
+    const localPath = path.relative(artifactWorkspaceRoot, contentPath);
+    const now = new Date().toISOString();
+
+    await mkdir(snapshotDirectory, { recursive: true });
+    await writeFile(
+      contentPath,
+      JSON.stringify(
+        buildGoogleDriveWriteAuditPayload({
+          approval,
+          mcpAccessMode,
+          yoloMode,
+        }),
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const { error } = await adminClient
+      .from("artifact_runs")
+      .insert([
+        {
+          id: artifactId,
+          artifact_definition_key: null,
+          project_id: projectId,
+          workflow_id: workflowId,
+          workflow_run_id: workflowRunId,
+          workflow_run_step_id: stepRunId,
+          title,
+          local_path: localPath,
+          remote_path: "",
+          remote_url: "",
+          sync_status: "local_only",
+          created_at: now,
+          updated_at: now,
+        },
+      ]);
+    if (error) {
+      throw new Error(`Unable to create Google Drive write audit artifact: ${error.message}`);
+    }
+
+    createdArtifactIds.push(artifactId);
+  }
+
+  return createdArtifactIds;
 }
 
 type LocalWorkflowOutputArtifactSnapshot = {
@@ -1741,7 +2141,7 @@ async function loadWorkflowDefinition(
 async function loadWorkflowRun(adminClient: SupabaseClient, runId: string) {
   const { data, error } = await adminClient
     .from("workflow_runs")
-    .select("id, workflow_id, project_id, provider_account_id")
+    .select("id, workflow_id, project_id, provider_account_id, yolo_mode")
     .eq("id", runId)
     .maybeSingle();
 
@@ -1763,7 +2163,7 @@ async function loadWorkflowRunStep(
     .from("workflow_run_steps")
     .select(
       "id, workflow_run_id, workflow_step_id, execution_order_index, step_type, status, retry_count, error_message, " +
-        "workflow_steps ( id, step_type, order_index, is_enabled, provider_override, model_override, reasoning_effort_override, provider_account_override_id, requires_approval )",
+        "workflow_steps ( id, step_type, order_index, is_enabled, provider_override, model_override, reasoning_effort_override, yolo_mode, provider_account_override_id, requires_approval )",
     )
     .eq("id", stepRunId)
     .maybeSingle();
@@ -1804,7 +2204,7 @@ async function loadWorkflowSteps(
   const { data, error } = await adminClient
     .from("workflow_steps")
     .select(
-      "id, step_type, order_index, is_enabled, provider_override, model_override, reasoning_effort_override, requires_approval",
+      "id, step_type, order_index, is_enabled, provider_override, model_override, reasoning_effort_override, yolo_mode, provider_account_override_id, requires_approval",
     )
     .eq("workflow_id", workflowId)
     .order("order_index", { ascending: true });
@@ -1823,7 +2223,7 @@ async function loadWorkflowStepById(
   const { data, error } = await adminClient
     .from("workflow_steps")
     .select(
-      "id, step_type, order_index, is_enabled, provider_override, model_override, reasoning_effort_override, requires_approval",
+      "id, step_type, order_index, is_enabled, provider_override, model_override, reasoning_effort_override, yolo_mode, provider_account_override_id, requires_approval",
     )
     .eq("id", workflowStepId)
     .maybeSingle();
@@ -1847,7 +2247,7 @@ async function loadStepDefinitions(
   const { data, error } = await adminClient
     .from("step_definitions")
     .select(
-      "step_type, name, description, prompt_base, required_mcps, required_skills, team_role, subagent, model, reasoning_effort",
+      "step_type, name, description, prompt_base, required_mcps, mcp_access_mode, required_skills, team_role, subagent, model, reasoning_effort",
     )
     .in("step_type", stepTypes);
 
@@ -2047,6 +2447,7 @@ async function resolvePlannedStepExecution(
     model: normalizedModel,
     providerKey: resolvedProvider,
     reasoningEffort: resolvedReasoningEffort,
+    yoloMode: step.yolo_mode ?? Boolean(workflow.yolo_mode),
     providerAccountId: step.provider_account_override_id ?? null,
   };
 }
@@ -2064,6 +2465,7 @@ function createBuiltInResultSummaryDefinition({
     description: "Runtime-generated final workflow summary step.",
     prompt_base: null,
     required_mcps: [],
+    mcp_access_mode: "read_only",
     required_skills: [],
     team_role: null,
     subagent: null,
@@ -2152,6 +2554,7 @@ async function resolveBuiltInStepExecution(
       adminClient,
     ),
     reasoningEffort: resolvedReasoningEffort,
+    yoloMode: Boolean(workflow.yolo_mode),
     providerAccountId: null,
   };
 }
@@ -2398,14 +2801,20 @@ export async function submitWorkflowStepFollowUpRuntime({
   localRunnerGateway,
   stepId,
   comment,
+  allowWrite = false,
+  prebuiltFollowUpPrompt,
+  approvalDecision = "changes_requested",
 }: {
   adminClient: SupabaseClient;
   localRunnerGateway: RuntimeLocalRunnerGateway;
   stepId: string;
   comment: string;
+  allowWrite?: boolean;
+  prebuiltFollowUpPrompt?: string;
+  approvalDecision?: "changes_requested" | "approved" | "rejected";
 }) {
   const trimmedComment = comment.trim();
-  if (!trimmedComment) {
+  if (!trimmedComment && !prebuiltFollowUpPrompt?.trim()) {
     throw new Error("Follow-up prompt is required.");
   }
 
@@ -2571,12 +2980,14 @@ export async function submitWorkflowStepFollowUpRuntime({
     definition,
     adminClient,
   );
-  const finalPrompt = buildWorkflowStepFollowUpPrompt({
-    followUpPrompt: trimmedComment,
-    inputArtifactPaths,
-    outputArtifactPaths,
-    workingDirectory,
-  });
+  const finalPrompt = prebuiltFollowUpPrompt?.trim()
+    ? prebuiltFollowUpPrompt.trim()
+    : buildWorkflowStepFollowUpPrompt({
+        followUpPrompt: trimmedComment,
+        inputArtifactPaths,
+        outputArtifactPaths,
+        workingDirectory,
+      });
 
   const decisionTimestamp = new Date().toISOString();
   await adminClient
@@ -2593,7 +3004,8 @@ export async function submitWorkflowStepFollowUpRuntime({
     .update({
       status: "RUNNING",
       retry_count: stepRun.retry_count + 1,
-      rejection_note: trimmedComment,
+      rejection_note:
+        approvalDecision === "approved" ? null : trimmedComment || null,
       started_at: decisionTimestamp,
       finished_at: null,
       error_message: null,
@@ -2610,9 +3022,9 @@ export async function submitWorkflowStepFollowUpRuntime({
       workflowRunId: run.id,
       workflowStepId: stepRun.id,
       aiOutputId: null,
-      decision: "changes_requested",
+      decision: approvalDecision,
       reviewerId: null,
-      comment: trimmedComment,
+      comment: trimmedComment || null,
       createdAt: decisionTimestamp,
     })}`,
   );
@@ -2620,7 +3032,9 @@ export async function submitWorkflowStepFollowUpRuntime({
     adminClient,
     stepRun.id,
     "info",
-    `Follow-up prompt: ${trimmedComment}`,
+    prebuiltFollowUpPrompt?.trim()
+      ? `Approval retry prompt: ${prebuiltFollowUpPrompt.trim()}`
+      : `Follow-up prompt: ${trimmedComment}`,
   );
   await insertLog(
     adminClient,
@@ -2643,7 +3057,8 @@ export async function submitWorkflowStepFollowUpRuntime({
       prompt: finalPrompt,
       skillIds: definition.required_skills ?? [],
       requiredMcps: definition.required_mcps ?? [],
-      allowWrite: false,
+      allowWrite,
+      yoloMode: execution.yoloMode,
       idleTTLSeconds: projectDefaults.session_idle_ttl_minutes
         ? projectDefaults.session_idle_ttl_minutes * 60
         : undefined,
@@ -2682,6 +3097,18 @@ export async function submitWorkflowStepFollowUpRuntime({
       workingDirectory,
       commandText: result.command,
       providerKey: execution.providerKey,
+      artifactWorkspaceRoot,
+    });
+    await createGoogleDriveWriteAuditArtifacts({
+      adminClient,
+      localRunnerGateway,
+      projectId: run.project_id,
+      workflowId: run.workflow_id,
+      workflowRunId: run.id,
+      stepRunId: stepRun.id,
+      stepType: stepRun.step_type,
+      mcpAccessMode: stepAllowsGoogleDriveWrites(definition) ? "read_write" : "read_only",
+      yoloMode: execution.yoloMode,
       artifactWorkspaceRoot,
     });
     const artifactRunId = artifactOutputResult.artifactRunId;
@@ -2747,28 +3174,159 @@ export async function submitWorkflowStepFollowUpRuntime({
       })
       .eq("id", run.id);
   } catch (error) {
+    if (isMcpWriteApprovalRequiredError(error)) {
+      await pauseWorkflowForGoogleDriveWriteApproval({
+        adminClient,
+        localRunnerGateway,
+        workflowRunId: run.id,
+        stepRunId: stepRun.id,
+        stepType: stepRun.step_type,
+        error,
+      });
+    } else {
     const message =
       error instanceof Error
         ? error.message
         : `Follow-up execution failed for ${stepRun.step_type}.`;
-    await adminClient
-      .from("workflow_run_steps")
-      .update({
-        status: "FAILED",
-        finished_at: new Date().toISOString(),
-        error_message: message,
-      })
-      .eq("id", stepRun.id);
-    await insertLog(adminClient, stepRun.id, "error", message);
-    await adminClient
-      .from("workflow_runs")
-      .update({
-        status: "FAILED",
-        finished_at: new Date().toISOString(),
-        error_message: message,
-      })
-      .eq("id", run.id);
-    throw error;
+      await adminClient
+        .from("workflow_run_steps")
+        .update({
+          status: "FAILED",
+          finished_at: new Date().toISOString(),
+          error_message: message,
+        })
+        .eq("id", stepRun.id);
+      await insertLog(adminClient, stepRun.id, "error", message);
+      await adminClient
+        .from("workflow_runs")
+        .update({
+          status: "FAILED",
+          finished_at: new Date().toISOString(),
+          error_message: message,
+        })
+        .eq("id", run.id);
+      throw error;
+    }
+  }
+
+  const { data: updatedStep, error: updatedStepError } = await adminClient
+    .from("workflow_run_steps")
+    .select("*")
+    .eq("id", stepRun.id)
+    .single();
+
+  if (updatedStepError) {
+    throw new Error(
+      `Unable to load updated workflow step: ${updatedStepError.message}`,
+    );
+  }
+
+  return updatedStep;
+}
+
+export async function submitGoogleDriveWriteApprovalRuntime({
+  adminClient,
+  localRunnerGateway,
+  stepId,
+  decision,
+  comment,
+}: {
+  adminClient: SupabaseClient;
+  localRunnerGateway: RuntimeLocalRunnerGateway;
+  stepId: string;
+  decision: "approved" | "rejected";
+  comment?: string;
+}) {
+  const trimmedComment = comment?.trim() ?? "";
+  const stepRun = await loadWorkflowRunStep(adminClient, stepId);
+  const run = await loadWorkflowRun(adminClient, stepRun.workflow_run_id);
+
+  if (!isWorkflowStepWaitingForApproval(stepRun.status)) {
+    throw new Error("Google Drive MCP approval is only available for waiting steps.");
+  }
+
+  const approvalId = extractGoogleDriveWriteApprovalIdFromText(stepRun.error_message);
+  if (!approvalId) {
+    throw new Error("Google Drive MCP approval id is missing for this waiting step.");
+  }
+
+  const approval = await loadPendingGoogleDriveWriteApproval({
+    localRunnerGateway,
+    workflowRunId: run.id,
+    stepRunId: stepRun.id,
+    approvalId,
+  });
+  if (!approval) {
+    throw new Error("No pending Google Drive MCP approval was found for this step.");
+  }
+
+  const stepDefinitions = await loadStepDefinitions(adminClient, [stepRun.step_type]);
+  const stepDefinition = stepDefinitions.get(stepRun.step_type);
+  if (!stepDefinition) {
+    throw new Error(`Step definition "${stepRun.step_type}" could not be loaded.`);
+  }
+  const allowWrite = stepAllowsGoogleDriveWrites(stepDefinition);
+
+  await localRunnerGateway.decideGoogleDriveProxyApproval(approval.id, {
+    decision,
+    comment: trimmedComment || undefined,
+  });
+
+  const operation = googleDriveApprovalOperation(approval);
+  const approvalLabel = operation === "write"
+    ? "Google Drive write request"
+    : "Google Drive tool request";
+  const exactRetryLine = operation === "write"
+    ? "Retry the exact approved Google Drive write now."
+    : "Retry the exact approved Google Drive tool call now.";
+  const scopeGuardLine = operation === "write"
+    ? "Do not add new writes, broaden the scope, or change the tool arguments."
+    : "Do not broaden the scope or change the tool arguments.";
+  const rejectionContinueLine = operation === "write"
+    ? "Continue the task without executing that exact write and include a clear notice in the final output."
+    : "Continue the task without using that exact Google Drive tool call and include a clear notice if the missing Drive context limits the answer.";
+
+  if (decision === "rejected") {
+    const retryPrompt = [
+      `FlowPilot rejected ${approvalLabel} ${approval.id}.`,
+      `Do not retry the rejected Google Drive tool call for ${approval.toolName}.`,
+      approval.targetSummary?.trim() ? `Rejected target: ${approval.targetSummary.trim()}` : null,
+      trimmedComment ? `Reviewer note: ${trimmedComment}` : null,
+      rejectionContinueLine,
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    await submitWorkflowStepFollowUpRuntime({
+      adminClient,
+      localRunnerGateway,
+      stepId,
+      comment: trimmedComment,
+      allowWrite,
+      prebuiltFollowUpPrompt: retryPrompt,
+      approvalDecision: "rejected",
+    });
+  } else {
+    const retryPrompt = [
+      `FlowPilot approved ${approvalLabel} ${approval.id}.`,
+      exactRetryLine,
+      `Use the exact same tool and arguments for ${approval.toolName}.`,
+      approval.targetSummary?.trim() ? `Approved target: ${approval.targetSummary.trim()}` : null,
+      trimmedComment ? `Reviewer note: ${trimmedComment}` : null,
+      scopeGuardLine,
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    await submitWorkflowStepFollowUpRuntime({
+      adminClient,
+      localRunnerGateway,
+      stepId,
+      comment: trimmedComment,
+      allowWrite,
+      prebuiltFollowUpPrompt: retryPrompt,
+      approvalDecision: "approved",
+    });
   }
 
   const { data: updatedStep, error: updatedStepError } = await adminClient
@@ -2960,7 +3518,7 @@ export async function runWorkflowStartRuntime({
       provider: firstStepProvider,
       model: firstStepModel,
       reasoning_effort: firstStepReasoningEffort,
-      yolo_mode: false,
+      yolo_mode: Boolean(workflow.yolo_mode),
       started_by: user.email ?? user.id,
     })
     .select("*")
@@ -3165,7 +3723,8 @@ export async function runWorkflowStartRuntime({
           prompt: finalPrompt,
           skillIds: stepPlan.definition.required_skills ?? [],
           requiredMcps: stepPlan.definition.required_mcps ?? [],
-          allowWrite: false,
+          allowWrite: stepAllowsGoogleDriveWrites(stepPlan.definition),
+          yoloMode: stepPlan.yoloMode,
           idleTTLSeconds: projectDefaults.session_idle_ttl_minutes
             ? projectDefaults.session_idle_ttl_minutes * 60
             : undefined,
@@ -3203,6 +3762,18 @@ export async function runWorkflowStartRuntime({
           workingDirectory,
           commandText: result.command,
           providerKey: stepPlan.providerKey,
+          artifactWorkspaceRoot,
+        });
+        await createGoogleDriveWriteAuditArtifacts({
+          adminClient,
+          localRunnerGateway,
+          projectId: request.projectId,
+          workflowId: workflow.id,
+          workflowRunId: String(runRow.id),
+          stepRunId,
+          stepType: stepPlan.stepType,
+          mcpAccessMode: stepAllowsGoogleDriveWrites(stepPlan.definition) ? "read_write" : "read_only",
+          yoloMode: stepPlan.yoloMode,
           artifactWorkspaceRoot,
         });
         const artifactRunId = artifactOutputResult.artifactRunId;
@@ -3301,6 +3872,19 @@ export async function runWorkflowStartRuntime({
         );
       }
     } catch (error) {
+      if (activeStepRunId && isMcpWriteApprovalRequiredError(error)) {
+        const activePlan = stepPlans.find((plan) => stepRunIds.get(plan.planKey) === activeStepRunId);
+        await pauseWorkflowForGoogleDriveWriteApproval({
+          adminClient,
+          localRunnerGateway,
+          workflowRunId: String(runRow.id),
+          stepRunId: activeStepRunId,
+          stepType: activePlan?.stepType ?? "workflow_step",
+          error,
+        });
+        return;
+      }
+
       const message =
         error instanceof Error ? error.message : "Workflow execution failed.";
       await finalizeWorkflowRunSessions(

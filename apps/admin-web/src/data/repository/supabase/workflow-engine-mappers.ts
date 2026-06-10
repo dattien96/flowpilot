@@ -19,6 +19,7 @@ import type {
 import {
   STEP_MODEL_OPTIONS,
   coerceSupportedStepModel,
+  normalizeMcpAccessMode,
   normalizeStepModel,
 } from "@/domain/model/entity/workflow-engine";
 
@@ -50,6 +51,7 @@ export function mapStepDefinition(row: SupabaseRow): StepDefinition {
     description: String(row.description),
     promptBase: row.prompt_base ? String(row.prompt_base) : null,
     requiredMcps: mcps,
+    mcpAccessMode: normalizeMcpAccessMode(row.mcp_access_mode),
     requiredSkills: skills,
     teamRole: row.team_role ? String(row.team_role) : null,
     subagent: row.subagent ? String(row.subagent) : null,
@@ -62,6 +64,7 @@ export function mapStepDefinition(row: SupabaseRow): StepDefinition {
         STEP_MODEL_OPTIONS[0].value,
     ) as SupportedStepModel,
     reasoningEffort: row.reasoning_effort ? (String(row.reasoning_effort) as ReasoningEffort) : null,
+    yoloMode: typeof row.yolo_mode === "boolean" ? row.yolo_mode : null,
     agentType: row.agent_type as "standard" | "autonomous",
     inputArtifactDefinitions,
     outputArtifactDefinitions,
@@ -148,6 +151,7 @@ export function mapWorkflow(row: SupabaseRow): Workflow {
       ? normalizeStepModel(String(row.model_override)) ?? String(row.model_override)
       : null,
     reasoningEffortOverride: row.reasoning_effort_override ? String(row.reasoning_effort_override) : null,
+    yoloMode: Boolean(row.yolo_mode),
     createdBy: String(row.created_by),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
@@ -166,6 +170,7 @@ export function mapWorkflowStep(row: SupabaseRow): WorkflowStep {
       ? normalizeStepModel(String(row.model_override)) ?? String(row.model_override)
       : null,
     reasoningEffortOverride: row.reasoning_effort_override ? String(row.reasoning_effort_override) : null,
+    yoloMode: typeof row.yolo_mode === "boolean" ? row.yolo_mode : null,
     requiresApproval: Boolean(row.requires_approval),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),

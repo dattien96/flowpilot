@@ -25,6 +25,8 @@ import type {
   LocalRunnerAiSessionMessageRequest,
   GoogleDriveMcpProviderConfigRequest,
   GoogleDriveMcpProviderConfigResponse,
+  LocalRunnerGoogleDriveProxyApproval,
+  LocalRunnerGoogleDriveProxyApprovalDecisionRequest,
 } from "@/domain/model/entity/local-runner";
 
 export interface LocalRunnerGateway {
@@ -80,6 +82,15 @@ export interface LocalRunnerGateway {
   closeSession(
     session: LocalRunnerAiSessionHandle,
   ): Promise<void>;
+  listGoogleDriveProxyApprovals(
+    workflowRunId?: string,
+    workflowStepRunId?: string,
+    status?: string,
+  ): Promise<LocalRunnerGoogleDriveProxyApproval[]>;
+  decideGoogleDriveProxyApproval(
+    approvalId: string,
+    request: LocalRunnerGoogleDriveProxyApprovalDecisionRequest,
+  ): Promise<LocalRunnerGoogleDriveProxyApproval>;
   authenticateProvider(providerName: string): Promise<void>;
   readFile(path: string): Promise<string>;
   shutdownStack(): Promise<void>;

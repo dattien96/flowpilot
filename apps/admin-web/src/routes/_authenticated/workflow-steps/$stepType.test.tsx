@@ -89,6 +89,7 @@ function buildStep(overrides: Partial<StepDefinition> = {}): StepDefinition {
     outputArtifactDefinitions: ["tech_spec_artifact"],
     model: "gpt-5.4",
     reasoningEffort: "medium",
+    yoloMode: null,
     agentType: "standard",
     createdAt: "2026-05-20T00:00:00.000Z",
     updatedAt: "2026-05-21T00:00:00.000Z",
@@ -174,6 +175,7 @@ describe("WorkflowStepDetailPage", () => {
     expect(screen.getByText("Input artifact definitions")).toBeInTheDocument();
     expect(screen.getByText("Output artifact definitions")).toBeInTheDocument();
     expect(screen.getByLabelText("Reasoning effort")).toHaveValue("medium");
+    expect(screen.getByLabelText("YOLO default")).toHaveValue("inherit");
 
     fireEvent.change(screen.getByDisplayValue("Tech Spec"), {
       target: { value: "Updated Tech Spec" },
@@ -187,6 +189,9 @@ describe("WorkflowStepDetailPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Remove" }));
     fireEvent.change(screen.getByRole("combobox", { name: /available mcp/i }), {
       target: { value: "figma" },
+    });
+    fireEvent.change(screen.getByLabelText("YOLO default"), {
+      target: { value: "disabled" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Add MCP" }));
     fireEvent.click(screen.getAllByRole("button", { name: "Add artifact" })[1]);
@@ -204,6 +209,7 @@ describe("WorkflowStepDetailPage", () => {
           outputArtifactDefinitions: ["tech_spec_artifact", "coding_plan_artifact"],
           model: "gpt-5.4",
           reasoningEffort: "medium",
+          yoloMode: false,
         })
       );
     });

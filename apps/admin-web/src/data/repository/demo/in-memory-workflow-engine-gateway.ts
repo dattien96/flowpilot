@@ -367,6 +367,8 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
         isTemplate: true,
         providerOverride: null,
         modelOverride: null,
+        reasoningEffortOverride: null,
+        yoloMode: false,
         createdBy: "seed",
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -381,6 +383,8 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
           isEnabled: true,
           providerOverride: null,
           modelOverride: null,
+          reasoningEffortOverride: null,
+          yoloMode: null,
           requiresApproval: true,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
@@ -422,6 +426,7 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
       teamRole: step.teamRole ?? null,
       subagent: step.subagent ?? null,
       model: step.model,
+      yoloMode: typeof step.yoloMode === "boolean" ? step.yoloMode : null,
     };
     const existingIndex = this.stepDefinitions.findIndex(
       (current) => current.stepType === next.stepType
@@ -475,6 +480,7 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
         providerOverride: resolvedWorkflowProvider,
         modelOverride: resolvedWorkflowModel,
         reasoningEffortOverride: resolvedWorkflowReasoning,
+        yoloMode: Boolean(workflow.yoloMode),
         createdBy: "demo-user",
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -490,6 +496,7 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
         match.providerOverride = resolvedWorkflowProvider;
         match.modelOverride = resolvedWorkflowModel;
         match.reasoningEffortOverride = resolvedWorkflowReasoning;
+        match.yoloMode = workflow.yoloMode ?? match.yoloMode;
         match.updatedAt = new Date().toISOString();
       }
     }
@@ -512,6 +519,7 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
             step.reasoningEffortOverride,
             resolvedWorkflowReasoning,
           ),
+          yoloMode: typeof step.yoloMode === "boolean" ? step.yoloMode : null,
           requiresApproval: step.requiresApproval ?? true,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
@@ -604,6 +612,7 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
         providerOverride: resolveProviderKeyFromModel(selectedModel),
         modelOverride: selectedModel,
         reasoningEffortOverride: selectedReasoningEffort,
+        yoloMode: false,
         createdBy: "flowpilot-runtime",
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -617,6 +626,7 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
         providerOverride: resolveProviderKeyFromModel(selectedModel),
         modelOverride: selectedModel,
         reasoningEffortOverride: selectedReasoningEffort,
+        yoloMode: null,
         requiresApproval: false,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -643,7 +653,7 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
       ),
       model: normalizeModel(workflowDetail.modelOverride),
       reasoningEffort: normalizeReasoningEffort(workflowDetail.reasoningEffortOverride),
-      yoloMode: false,
+      yoloMode: Boolean(workflowDetail.yoloMode),
       startedBy: "demo-user",
       startedAt: new Date().toISOString(),
       finishedAt: null,
@@ -821,6 +831,14 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
     }
 
     return step;
+  }
+
+  async submitGoogleDriveWriteApproval(
+    stepId: string,
+    decision: "approved" | "rejected",
+    comment?: string,
+  ): Promise<WorkflowRunStep> {
+    return this.submitStepApproval(stepId, decision === "approved", comment);
   }
 
   private supportedModels: SupportedModel[] = [

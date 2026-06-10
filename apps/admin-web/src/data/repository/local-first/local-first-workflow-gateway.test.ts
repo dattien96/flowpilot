@@ -118,6 +118,10 @@ function createLocalRunnerMock(): LocalRunnerGateway {
       throw new Error("not implemented");
     }),
     closeSession: vi.fn(async () => {}),
+    listGoogleDriveProxyApprovals: vi.fn(async () => []),
+    decideGoogleDriveProxyApproval: vi.fn(async () => {
+      throw new Error("not implemented");
+    }),
     authenticateProvider: vi.fn(async () => {
       throw new Error("not implemented");
     }),

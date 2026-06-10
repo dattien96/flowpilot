@@ -48,4 +48,9 @@ export interface WorkflowEngineGateway {
     approve: boolean,
     comment?: string
   ): Promise<WorkflowRunStep>;
+  submitGoogleDriveWriteApproval(
+    stepId: string,
+    decision: "approved" | "rejected",
+    comment?: string,
+  ): Promise<WorkflowRunStep>;
 }

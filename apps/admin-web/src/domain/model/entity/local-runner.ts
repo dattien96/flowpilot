@@ -226,6 +226,7 @@ export interface LocalRunnerPromptExecutionRequest {
   timeoutMs: number;
   workingDirectory: string | null;
   allowWrite?: boolean;
+  yoloMode?: boolean;
   providerAccountId?: string;
   accountHomePath?: string;
   providerAccountHomePath?: string;
@@ -313,8 +314,37 @@ export interface LocalRunnerAiSessionMessageRequest {
   skillIds: string[];
   contextSourceIds: string[];
   allowWrite?: boolean;
+  yoloMode?: boolean;
   accountHomePath?: string;
   idleTTLSeconds?: number | null;
+}
+
+export interface LocalRunnerGoogleDriveProxyApproval {
+  id: string;
+  workflowRunId?: string;
+  workflowStepRunId?: string;
+  processKey?: string;
+  accountHomePath?: string;
+  toolName: string;
+  operation?: string;
+  canonicalArgsJson: string;
+  argumentsHash: string;
+  targetSummary?: string;
+  status: string;
+  decisionMode: string;
+  decisionComment?: string;
+  requestedAt: string;
+  decidedAt?: string;
+  expiresAt: string;
+  resultJson?: string;
+  resultDriveId?: string;
+  resultDriveUrl?: string;
+  errorMessage?: string;
+}
+
+export interface LocalRunnerGoogleDriveProxyApprovalDecisionRequest {
+  decision: "approved" | "rejected";
+  comment?: string;
 }
 
 
@@ -325,6 +355,11 @@ export interface GoogleDriveMcpProviderConfigStatus {
   accountHomePath: string;
   configPath: string;
   status: "not_started" | "configured" | "config_stale" | "failed";
+  configKind?: "proxy" | "legacy_raw" | "unknown";
+  command?: string;
+  args?: string[];
+  mode?: "read_only" | "read_write" | "";
+  approvalMode?: string;
   lastCheckedAt?: string;
   lastError?: string;
 }
@@ -334,6 +369,10 @@ export interface GoogleDriveMcpProviderConfigRequest {
   accountHomePath: string;
   scope: "account" | "workspace";
   mode: "read_only" | "read_write";
+  yoloMode?: boolean;
+  workflowRunId?: string;
+  workflowStepRunId?: string;
+  processKey?: string;
 }
 
 export interface GoogleDriveMcpProviderConfigResponse {
@@ -348,14 +387,45 @@ export interface GoogleDriveMcpProviderConfigResponse {
 export interface GoogleDriveMcpStatus {
   status: string;
   configured: boolean;
+  proxyMcpEnabled: boolean;
   credentialPath?: string;
   tokenPath?: string;
   credentialFileExists: boolean;
   credentialFileValid: boolean;
   tokenFileExists: boolean;
+  tokenRefreshValid: boolean;
   needsAuth: boolean;
   backendPackageAvailable: boolean;
+  accountId?: string;
+  accountEmail?: string;
+  accountSelectionRequired?: boolean;
+  grantedScopes?: string[];
+  missingScopes?: string[];
+  accountReady: boolean;
+  artifactBindingPresent?: boolean;
+  artifactReady: boolean;
+  mcpReadReady: boolean;
+  mcpWriteReady: boolean;
+  reconnectRequired?: boolean;
   missingFields?: string[];
+}
+
+export interface GoogleDriveAccountStatus {
+  accountId: string;
+  accountEmail?: string;
+  accountSubject?: string;
+  oauthClientId?: string;
+  grantedScopes?: string[];
+  missingScopes?: string[];
+  status: string;
+  projectCount: number;
+  accountReady: boolean;
+  mcpReadReady: boolean;
+  mcpWriteReady: boolean;
+  reconnectRequired?: boolean;
+  connectedAt?: string;
+  updatedAt?: string;
+  lastError?: string;
 }
 
 export interface GoogleDriveArtifactSyncStatus {
@@ -372,6 +442,7 @@ export interface GoogleDriveArtifactSyncStatus {
 export interface GoogleDriveWorkspaceConfigResponse {
   artifactSync: GoogleDriveArtifactSyncStatus;
   mcp: GoogleDriveMcpStatus;
+  accounts?: GoogleDriveAccountStatus[];
   providerConfigs?: GoogleDriveMcpProviderConfigStatus[];
   runnerReachable: boolean;
   lastError?: string | null;
