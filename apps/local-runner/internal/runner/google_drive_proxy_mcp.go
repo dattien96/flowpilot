@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -613,16 +614,78 @@ func summarizeGoogleDriveProxyWrite(toolName string, args map[string]any) string
 
 func (s *proxyMcpServer) authStatusText() string {
 	if flowpilotGoogleDriveProxyMcpEnabled() {
-		projectID, connection, err := s.proxyArtifactConnection()
+		accountID, accountEmail, connection, err := s.proxyAccountConnection()
 		if err != nil {
 			return "status=failed source=artifact_sync error=" + err.Error()
 		}
+		accountStatus, statusErr := s.runner.googleDriveAccountStatusByID(accountID)
+		if statusErr != nil {
+			if strings.TrimSpace(connection.ProjectID) == "" {
+				return fmt.Sprintf(
+					"status=failed source=account accountId=%s accountEmail=%s artifactBinding=absent error=%s",
+					accountID,
+					strings.TrimSpace(accountEmail),
+					statusErr.Error(),
+				)
+			}
+			return fmt.Sprintf(
+				"status=failed source=artifact_sync accountId=%s accountEmail=%s projectId=%s folderId=%s artifactBinding=present error=%s",
+				accountID,
+				strings.TrimSpace(connection.AccountEmail),
+				strings.TrimSpace(connection.ProjectID),
+				strings.TrimSpace(connection.FolderID),
+				statusErr.Error(),
+			)
+		}
+		scopeSummary := strings.Join(accountStatus.GrantedScopes, ",")
+		missingScopeSummary := strings.Join(accountStatus.MissingScopes, ",")
+		artifactBinding := "absent"
+		effectiveStatus := strings.TrimSpace(accountStatus.Status)
+		switch {
+		case accountStatus.ReconnectRequired:
+			effectiveStatus = "reconnect_required"
+		case !accountStatus.AccountReady:
+			effectiveStatus = "failed"
+		case !accountStatus.McpReadReady:
+			effectiveStatus = "needs_auth"
+		default:
+			effectiveStatus = "configured"
+		}
+		if strings.TrimSpace(connection.ProjectID) != "" {
+			artifactBinding = "present"
+			if strings.EqualFold(strings.TrimSpace(connection.Status), "reconnect_required") {
+				effectiveStatus = "reconnect_required"
+			}
+		}
+		if strings.TrimSpace(connection.ProjectID) == "" {
+			return fmt.Sprintf(
+				"status=%s source=account accountId=%s accountEmail=%s artifactBinding=%s grantedScopes=%s missingScopes=%s accountReady=%t mcpReadReady=%t mcpWriteReady=%t error=%s",
+				effectiveStatus,
+				accountStatus.AccountID,
+				strings.TrimSpace(accountStatus.AccountEmail),
+				artifactBinding,
+				scopeSummary,
+				missingScopeSummary,
+				accountStatus.AccountReady,
+				accountStatus.McpReadReady,
+				accountStatus.McpWriteReady,
+				strings.TrimSpace(accountStatus.LastError),
+			)
+		}
 		return fmt.Sprintf(
-			"status=%s source=artifact_sync projectId=%s accountEmail=%s folderId=%s",
-			strings.TrimSpace(connection.Status),
-			projectID,
+			"status=%s source=artifact_sync accountId=%s accountEmail=%s projectId=%s folderId=%s artifactBinding=%s grantedScopes=%s missingScopes=%s accountReady=%t mcpReadReady=%t mcpWriteReady=%t error=%s",
+			effectiveStatus,
+			accountStatus.AccountID,
 			strings.TrimSpace(connection.AccountEmail),
+			strings.TrimSpace(connection.ProjectID),
 			strings.TrimSpace(connection.FolderID),
+			artifactBinding,
+			scopeSummary,
+			missingScopeSummary,
+			accountStatus.AccountReady,
+			accountStatus.McpReadReady,
+			accountStatus.McpWriteReady,
+			strings.TrimSpace(accountStatus.LastError),
 		)
 	}
 
@@ -635,9 +698,10 @@ func (s *proxyMcpServer) authStatusText() string {
 
 func (s *proxyMcpServer) authScopes() []string {
 	return []string{
-		"https://www.googleapis.com/auth/drive.file",
-		"https://www.googleapis.com/auth/drive.readonly",
-		"https://www.googleapis.com/auth/documents",
+		googleDriveScopeDriveFile,
+		googleDriveScopeDriveReadonly,
+		googleDriveScopeOpenID,
+		googleDriveScopeEmail,
 	}
 }
 
@@ -647,11 +711,11 @@ func (s *proxyMcpServer) accessToken() (string, error) {
 		if err != nil {
 			return "", err
 		}
-		projectID, _, err := s.proxyArtifactConnection()
+		accountID, _, _, err := s.proxyAccountConnection()
 		if err != nil {
 			return "", err
 		}
-		creds, err := s.runner.loadGoogleDriveCredentialByProject(projectID)
+		creds, err := s.runner.loadGoogleDriveCredentialByAccount(accountID)
 		if err != nil {
 			return "", err
 		}
@@ -683,52 +747,84 @@ func (s *proxyMcpServer) accessToken() (string, error) {
 }
 
 func (s *proxyMcpServer) proxyOAuthClient() (string, string, error) {
-	configFile, err := s.runner.loadGoogleDriveWorkspaceConfigFile()
-	if err == nil {
-		clientID := strings.TrimSpace(configFile.ArtifactSync.ClientID)
-		clientSecret, secretErr := s.runner.ensureSecretStore().Get(googleDriveArtifactSyncClientSecretKey)
-		if secretErr != nil {
-			return "", "", secretErr
-		}
-		clientSecret = strings.TrimSpace(clientSecret)
-		if clientID == "" || clientSecret == "" {
-			return "", "", errors.New("FlowPilot proxy Google Drive auth is incomplete")
-		}
-		return clientID, clientSecret, nil
-	}
-	if !os.IsNotExist(err) {
+	config, err := s.runner.resolveGoogleDriveProxyOAuthConfig()
+	if err != nil {
 		return "", "", err
 	}
-
-	clientID := strings.TrimSpace(os.Getenv("GOOGLE_DRIVE_CLIENT_ID"))
-	clientSecret := strings.TrimSpace(os.Getenv("GOOGLE_DRIVE_CLIENT_SECRET"))
-	if clientID == "" || clientSecret == "" {
-		return "", "", errors.New("FlowPilot proxy Google Drive auth is incomplete")
-	}
-	return clientID, clientSecret, nil
+	return strings.TrimSpace(config.clientID), strings.TrimSpace(config.clientSecret), nil
 }
 
 func (s *proxyMcpServer) proxyArtifactConnection() (string, artifactStorageGoogleDriveConnectionRecord, error) {
+	accountID, _, connection, err := s.proxyAccountConnection()
+	return accountID, connection, err
+}
+
+func (s *proxyMcpServer) proxyAccountConnection() (string, string, artifactStorageGoogleDriveConnectionRecord, error) {
+	configFile, err := s.runner.loadGoogleDriveWorkspaceConfigFile()
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", "", artifactStorageGoogleDriveConnectionRecord{}, err
+	}
+	selection, err := s.runner.resolveGoogleDriveProxyAccountSelection(configFile)
+	if err != nil {
+		return "", "", artifactStorageGoogleDriveConnectionRecord{}, err
+	}
+	if selection.Required {
+		if strings.TrimSpace(selection.AccountID) == "" {
+			return "", "", artifactStorageGoogleDriveConnectionRecord{}, errors.New("select an active Google account in Google Drive setup before using the proxy MCP")
+		}
+	}
+
 	state, err := s.runner.loadArtifactStorageGoogleDriveState()
 	if err != nil {
-		return "", artifactStorageGoogleDriveConnectionRecord{}, err
+		if errors.Is(err, os.ErrNotExist) {
+			return selection.AccountID, selection.AccountEmail, artifactStorageGoogleDriveConnectionRecord{}, nil
+		}
+		return selection.AccountID, selection.AccountEmail, artifactStorageGoogleDriveConnectionRecord{}, err
 	}
 
 	connected := make([]artifactStorageGoogleDriveConnectionRecord, 0, len(state.Connections))
 	for _, connection := range state.Connections {
-		if strings.EqualFold(strings.TrimSpace(connection.Status), "connected") && strings.TrimSpace(connection.ProjectID) != "" {
-			connected = append(connected, connection)
+		if !strings.EqualFold(strings.TrimSpace(connection.Status), "connected") && !strings.EqualFold(strings.TrimSpace(connection.Status), "reconnect_required") {
+			continue
 		}
+		accountID := strings.TrimSpace(connection.AccountID)
+		if accountID == "" {
+			accountID = strings.ToLower(strings.TrimSpace(connection.AccountEmail))
+		}
+		if accountID == "" {
+			accountID = strings.ToLower(strings.TrimSpace(connection.ProjectID))
+		}
+		if selection.AccountID != "" && !strings.EqualFold(accountID, strings.TrimSpace(selection.AccountID)) {
+			continue
+		}
+		connected = append(connected, connection)
 	}
 
-	switch len(connected) {
-	case 0:
-		return "", artifactStorageGoogleDriveConnectionRecord{}, errors.New("no artifact-sync Google Drive connection is available for the proxy MCP")
-	case 1:
-		return strings.TrimSpace(connected[0].ProjectID), connected[0], nil
-	default:
-		return "", artifactStorageGoogleDriveConnectionRecord{}, errors.New("multiple artifact-sync Google Drive connections are configured; proxy MCP project scoping is still required")
+	if len(connected) == 0 {
+		return selection.AccountID, selection.AccountEmail, artifactStorageGoogleDriveConnectionRecord{}, nil
 	}
+
+	sort.SliceStable(connected, func(i, j int) bool {
+		if connected[i].ProjectID == connected[j].ProjectID {
+			return connected[i].FolderID < connected[j].FolderID
+		}
+		return connected[i].ProjectID < connected[j].ProjectID
+	})
+	selected := connected[0]
+	selectedAccountID := strings.TrimSpace(selected.AccountID)
+	if selectedAccountID == "" {
+		selectedAccountID = strings.ToLower(strings.TrimSpace(selected.AccountEmail))
+	}
+	if selectedAccountID == "" {
+		selectedAccountID = strings.ToLower(strings.TrimSpace(selected.ProjectID))
+	}
+	if selection.AccountID == "" {
+		selection.AccountID = selectedAccountID
+	}
+	if selection.AccountEmail == "" {
+		selection.AccountEmail = strings.TrimSpace(selected.AccountEmail)
+	}
+	return selection.AccountID, selection.AccountEmail, selected, nil
 }
 
 func textToolResult(text string) map[string]any {
