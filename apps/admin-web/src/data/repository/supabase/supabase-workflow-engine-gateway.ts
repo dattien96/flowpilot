@@ -376,7 +376,7 @@ async function invokeWorkflowGoogleDriveWriteApprovalRuntime<TResponse>(
   },
 ) {
   if (typeof window === "undefined") {
-    throw new Error("Google Drive write approval runtime is only available in the browser.");
+    throw new Error("Google Drive MCP approval runtime is only available in the browser.");
   }
 
   const accessToken = (await supabase.auth.getSession()).data.session?.access_token ?? null;
@@ -393,8 +393,8 @@ async function invokeWorkflowGoogleDriveWriteApprovalRuntime<TResponse>(
   } catch (error) {
     throw new Error(
       error instanceof Error
-        ? `Google Drive write approval runtime is unavailable: ${error.message}`
-        : "Google Drive write approval runtime is unavailable.",
+        ? `Google Drive MCP approval runtime is unavailable: ${error.message}`
+        : "Google Drive MCP approval runtime is unavailable.",
     );
   }
 
@@ -406,7 +406,7 @@ async function invokeWorkflowGoogleDriveWriteApprovalRuntime<TResponse>(
   throw new Error(
     typeof body?.error === "string"
       ? body.error
-      : `Google Drive write approval runtime failed (${response.status}).`,
+      : `Google Drive MCP approval runtime failed (${response.status}).`,
   );
 }
 
