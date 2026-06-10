@@ -56,10 +56,45 @@ const mockGoogleDriveStatus: GoogleDriveWorkspaceConfigResponse = {
     credentialFileExists: true,
     credentialFileValid: true,
     tokenFileExists: true,
+    tokenRefreshValid: true,
     needsAuth: false,
     backendPackageAvailable: true,
+    accountId: 'google-account-1',
+    accountEmail: 'user@example.com',
+    accountSelectionRequired: false,
+    grantedScopes: [
+      'https://www.googleapis.com/auth/drive.file',
+      'https://www.googleapis.com/auth/drive.readonly',
+      'openid',
+      'email',
+    ],
+    missingScopes: [],
+    accountReady: true,
+    artifactBindingPresent: false,
+    artifactReady: false,
+    mcpReadReady: true,
+    mcpWriteReady: true,
+    reconnectRequired: false,
     missingFields: [],
   },
+  accounts: [
+    {
+      accountId: 'google-account-1',
+      accountEmail: 'user@example.com',
+      status: 'connected',
+      projectCount: 0,
+      accountReady: true,
+      mcpReadReady: true,
+      mcpWriteReady: true,
+      grantedScopes: [
+        'https://www.googleapis.com/auth/drive.file',
+        'https://www.googleapis.com/auth/drive.readonly',
+        'openid',
+        'email',
+      ],
+      missingScopes: [],
+    },
+  ],
   providerConfigs: mockProviderConfigs,
   runnerReachable: true,
   lastError: null,
@@ -74,7 +109,20 @@ const mockGoogleDriveStatusNotConfigured: GoogleDriveWorkspaceConfigResponse = {
   mcp: {
     ...mockGoogleDriveStatus.mcp,
     proxyMcpEnabled: true,
-    status: 'needs_oauth',
+    configured: false,
+    needsAuth: true,
+    accountSelectionRequired: true,
+    accountId: '',
+    accountEmail: '',
+    grantedScopes: [],
+    missingScopes: [],
+    accountReady: false,
+    artifactBindingPresent: false,
+    artifactReady: false,
+    mcpReadReady: false,
+    mcpWriteReady: false,
+    reconnectRequired: false,
+    status: 'needs_input',
   },
 };
 
@@ -129,7 +177,6 @@ describe('GoogleDriveProviderConfigCard', () => {
       expect(
         screen.getByText(/Configure Codex, Gemini, and Claude to use the FlowPilot proxy Google Drive MCP/)
       ).toBeInTheDocument();
-      expect(screen.getByText(/The Desktop OAuth flow is legacy fallback only\./)).toBeInTheDocument();
     });
 
     it('displays all three provider badges when configs are available', () => {
@@ -185,9 +232,34 @@ describe('GoogleDriveProviderConfigCard', () => {
     it('shows informational message when proxy auth is not configured', () => {
       renderComponent(mockGoogleDriveStatusNotConfigured);
 
-      expect(screen.getByText('FlowPilot proxy Google Drive auth must be configured first')).toBeInTheDocument();
       expect(
-        screen.getByText(/Save the artifact-sync Google OAuth values first\. Use the Desktop OAuth upload only if you need the legacy raw-MCP fallback\./)
+        screen.getByText('Select an active Google account in Google Drive setup before configuring provider MCPs.')
+      ).toBeInTheDocument();
+    });
+
+    it('explains missing proxy scopes when the selected account needs reconnect', () => {
+      renderComponent({
+        ...mockGoogleDriveStatus,
+        mcp: {
+          ...mockGoogleDriveStatus.mcp,
+          status: 'needs_auth',
+          configured: false,
+          reconnectRequired: false,
+          accountSelectionRequired: false,
+          missingScopes: ['https://www.googleapis.com/auth/drive.readonly'],
+          mcpReadReady: false,
+        },
+      });
+
+      expect(
+        screen.getByText(
+          'Reconnect user@example.com and grant these scopes before configuring provider MCPs: https://www.googleapis.com/auth/drive.readonly.'
+        )
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          'Reconnect the selected Google account and grant the missing scopes: https://www.googleapis.com/auth/drive.readonly.'
+        )
       ).toBeInTheDocument();
     });
 
@@ -210,9 +282,6 @@ describe('GoogleDriveProviderConfigCard', () => {
 
       const configButton = screen.getByRole('button', { name: /Configure AI Providers/ });
       expect(configButton).toBeDisabled();
-      expect(
-        screen.getByText(/FlowPilot proxy Google Drive MCP is disabled in this runner/)
-      ).toBeInTheDocument();
     });
 
     it('keeps button enabled when all providers are already configured', () => {
