@@ -1,0 +1,131 @@
+# BUG-035: Google Drive Proxy MCP Auth Status False Negative
+
+## Metadata
+
+- Document ID: `BUG-035`
+- Title: `Google Drive Proxy MCP Auth Status False Negative`
+- Phase: `bugfix`
+- Status: `done`
+- Owner: `FlowPilot`
+- Reviewers: `FlowPilot`
+- Created: `2026-06-10`
+- Last Updated: `2026-06-10`
+- Parent Documents: `requirements/07-Coding-Plan/priority/CP-29-MCP-Proxy-Google-Drive.md`, `requirements/06-System-Tech-Design/SD-11-MCP-Connection-Flows.md`, `requirements/05-System-Specs/SS-05-Workflow-Ai-Provider.md`
+- Child Documents: `none`
+- Related Documents: `requirements/09-BugFix/done/BUG-032-Codex-Google-Drive-MCP-Model-And-Approval.md`, `requirements/09-BugFix/done/BUG-033-Proxy-MCP-Provider-Config-Uses-Unlaunchable-Flowpilot-Command.md`, `requirements/09-BugFix/done/BUG-034-Proxy-Provider-Setup-Cannot-Reapply-Configured-Accounts.md`, `change-audit/CA-043-cp29-google-drive-mcp-manual-approval-ui.md`
+- Replaces: `none`
+- Tags: `google-drive, proxy-mcp, codex, provider-config, auth, regression`
+
+## AI Quick View
+
+### Summary
+
+- Codex Google Drive MCP still failed with `mcp_auth_required` after the settings page reported provider configuration as complete.
+- The generated provider config carried the selected account id, OAuth client fields, and refresh token, and direct Drive `search` calls could read data.
+- `authGetStatus` still returned `needs_auth` because it checked only runner-local account credentials and ignored the env refresh token injected into provider MCP config.
+- Provider preflight could also report stale config because the expected-config comparison did not hydrate the same proxy OAuth env fields it wrote.
+
+### Current Ask
+
+- Record the fixed Google Drive proxy MCP auth/status regression and the validation that Codex can now read Drive data through the generated provider config.
+
+### Key Decisions
+
+- `V-1` Proxy MCP provider configs must include the selected account id, OAuth client id, OAuth client secret, and selected account refresh token in the MCP server environment.
+- `V-2` `authGetStatus` must validate the same env-backed refresh token path used by actual Google Drive tool calls.
+- `V-3` Provider stale-config checks must hydrate expected proxy OAuth runtime fields before comparing generated provider config.
+- `V-4` Missing Google Drive credentials must return explicit auth-required status instead of a generic MCP-unavailable failure.
+
+### Constraints
+
+- Keep Google OAuth refresh tokens local to the provider account home and runner environment; do not store them in Supabase.
+- Keep provider-host MCP approval non-blocking for the proxy path so FlowPilot can own read/write approval behavior.
+- Preserve account-home isolation for Codex, Gemini, and Claude provider configs.
+
+### Open Questions
+
+- Should the setup UI show a separate health line for env-backed provider MCP auth versus runner-local selected-account credential storage?
+
+### Source Refs
+
+- `requirements/07-Coding-Plan/priority/CP-29-MCP-Proxy-Google-Drive.md`
+- `apps/local-runner/internal/runner/google_drive_proxy_mcp.go`
+- `apps/local-runner/internal/runner/google_drive_mcp_provider_config.go`
+- `apps/local-runner/internal/runner/mcp_prompt_instructions.go`
+- Observed errors: `MCP_UNAVAILABLE`, `mcp_auth_required`, and `Provider has stale Google Drive MCP config`
+
+## 1. Issue Summary
+
+Google Drive proxy MCP failed during provider execution even after the settings page completed setup and wrote provider config. The failure moved through several related symptoms: missing approval scope surfaced as MCP unavailable, missing credentials surfaced as generic unavailable status, expected provider config was considered stale after refresh-token env fields were added, and finally `authGetStatus` returned `needs_auth` even though actual Drive `search` could succeed with the env refresh token.
+
+## 2. Parent Links
+
+- impacted coding plan: `requirements/07-Coding-Plan/priority/CP-29-MCP-Proxy-Google-Drive.md`
+- impacted tech design: `requirements/06-System-Tech-Design/SD-11-MCP-Connection-Flows.md`
+- impacted system spec: `requirements/05-System-Specs/SS-05-Workflow-Ai-Provider.md`
+
+## 3. Environment and Reproduction
+
+- environment: local runner proxy MCP enabled, Codex provider account-home config generated from the Google Drive setup page
+- reproduction steps:
+  1. Configure Google Drive setup until all provider rows report configured.
+  2. Run a Codex workflow step requiring `google_drive`.
+  3. Observe provider failure before Drive lookup, or run proxy MCP `authGetStatus` through the generated account home.
+  4. Compare `authGetStatus` with an actual `search` tool call using the same provider MCP env.
+- frequency: reproducible when provider config used env-backed proxy OAuth credentials while the runner-local selected account credential was missing or not readable from the provider process.
+
+## 4. Expected vs Actual
+
+- expected: provider config generated by FlowPilot should let Codex connect to FlowPilot Google Drive MCP, report `status=configured`, and call read tools when the selected Google Drive account is connected.
+- actual: the provider stopped with `mcp_auth_required` because `authGetStatus` returned `needs_auth`; earlier paths also produced `MCP_UNAVAILABLE` or stale-config messages before the Drive tool call could run.
+
+## 5. Impact
+
+- users affected: users configuring Google Drive MCP for Codex through the FlowPilot settings page.
+- workflows affected: CP-29 Google Drive read and write workflow steps, provider preflight, and account-home based provider config refresh.
+- severity: high because setup appeared successful but workflow execution could not reach Google Drive data.
+
+## 6. Root Cause
+
+- hypothesis: provider setup and proxy MCP runtime were using different sources of truth for selected account credentials.
+- confirmed cause: provider config generation injected env-backed OAuth fields and refresh token, but `authGetStatus` only trusted `googleDriveAccountStatusByID`; provider preflight also compared expected config before hydrating the new env-backed OAuth fields.
+- evidence:
+  - generated Codex config contained selected account id, client id, client secret, and refresh token env values
+  - direct proxy MCP `search` using those env values returned Drive data
+  - proxy MCP `authGetStatus` returned `needs_auth` before the status path was changed to validate the env refresh token
+  - stale-config checks passed after expected runtime config was hydrated with the same proxy env fields
+
+## 7. Fix Strategy
+
+- `F-1` Allow read MCP tools to execute directly when no FlowPilot approval scope is present, and use explicit `MCP_TOOL_APPROVAL_REQUIRED` only when a scoped manual approval is required.
+- `F-2` Return explicit `mcp_auth_required: MCP_AUTH_REQUIRED` for missing Google Drive OAuth config or selected account credentials.
+- `F-3` Inject selected account id, OAuth client id, OAuth client secret, and refresh token into generated proxy MCP provider env.
+- `F-4` Hydrate expected proxy OAuth runtime config before provider stale-config comparison.
+- `F-5` Make `authGetStatus` validate the env-backed refresh token fallback and report configured when the token refresh succeeds.
+
+## 8. Validation
+
+- `V-1` Focused local-runner tests pass for proxy MCP auth status, provider config hydration, read/write approval handling, and preflight stale-config behavior.
+- `V-2` Direct proxy MCP probe using the generated Codex account home returns `authGetStatus: status=configured`.
+- `V-3` Direct proxy MCP `search` using the same generated config returns Google Drive data.
+- `V-4` Provider-driven MCP failure detection recognizes `MCP_TOOL_APPROVAL_REQUIRED`, `MCP_WRITE_APPROVAL_REQUIRED`, and `MCP_AUTH_REQUIRED` as distinct failure modes.
+
+## 9. Regression Guard
+
+- tests:
+  - `TestProxyMcpAuthStatusText_UsesRefreshTokenEnvWhenSelectedAccountCredentialMissing`
+  - `TestProxyMcpAccessToken_UsesRefreshTokenEnvWhenSelectedAccountCredentialMissing`
+  - `TestPreflightGoogleDriveMcp_ProxyPathAcceptsHydratedProviderConfig`
+  - `TestEnsureCodexGoogleDriveMcpConfig_ProxyPathInjectsSelectedAccountID`
+- alerts:
+  - none added; provider execution still surfaces MCP failure codes to workflow status.
+- audit checks:
+  - confirm generated provider config and expected stale-check config use the same proxy env fields
+  - confirm status and tool execution paths use the same refresh-token source
+
+## 10. Follow-Up Document Updates
+
+- upstream docs that must change:
+  - `requirements/07-Coding-Plan/priority/CP-29-MCP-Proxy-Google-Drive.md` was updated to reflect FlowPilot-owned proxy approval and non-blocking provider-host approval.
+- notes left unchanged on purpose:
+  - `SD-11` and `SS-05` do not need behavior changes for this fix because the issue was an implementation/configuration regression inside the CP-29 proxy path.
