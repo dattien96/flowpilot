@@ -606,7 +606,7 @@ export function ArtifactCloudStoragePanel({ projects }: ArtifactCloudStoragePane
 
 	              <div className="mt-4 rounded-2xl border border-border bg-background px-4 py-3">
 	                <label className="space-y-2">
-	                  <span className="text-sm font-medium">Connected Google account</span>
+	                  <span className="text-sm font-medium">Project Google account</span>
 	                  <select
 	                    className="w-full rounded-2xl border border-border bg-card px-4 py-3 text-sm outline-none"
 	                    value={selectedGoogleDriveAccountId}
@@ -621,11 +621,11 @@ export function ArtifactCloudStoragePanel({ projects }: ArtifactCloudStoragePane
 	                  </select>
 	                </label>
 	                <p className="mt-2 text-xs text-muted-foreground">
-	                  Pick the connected Google account first, then choose the artifact folder for this project.
+	                  Pick the Google account for this project first, then choose the artifact folder that this project should use.
 	                </p>
 	                {selectedGoogleDriveAccount ? (
 	                  <p className="mt-2 text-xs text-muted-foreground">
-	                    Account status: {selectedGoogleDriveAccount.status}. MCP read: {selectedGoogleDriveAccount.mcpReadReady ? "ready" : "missing scope"}.
+	                    Account status: {selectedGoogleDriveAccount.status}. Artifact write: {selectedGoogleDriveAccount.mcpWriteReady ? "ready" : "missing scope"}.
 	                  </p>
 	                ) : null}
 	              </div>
@@ -703,7 +703,7 @@ export function ArtifactCloudStoragePanel({ projects }: ArtifactCloudStoragePane
 	            {statusMessage ??
 	              (detailProvider === "google_drive"
 	                ? googleDriveConfigured
-	                  ? "Select a connected Google account, choose one folder for this project, then select Google Drive as the active provider."
+	                  ? "Select the Google account for this project, choose its artifact folder, then select Google Drive as the active provider."
 	                  : "Finish Google Console setup first, then return here to connect a Google account and choose a project folder."
 	                : "Supabase stays available immediately and does not require any extra host setup.")}
 	          </p>

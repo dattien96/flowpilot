@@ -154,6 +154,7 @@ function renderPage() {
 
 describe("GoogleDriveSetupPage", () => {
   beforeEach(() => {
+    localStorage.clear();
     mocks.invalidate.mockReset();
     mocks.navigate.mockReset();
     mocks.createGatewayBundle.mockReset();
@@ -228,6 +229,7 @@ describe("GoogleDriveSetupPage", () => {
 
     renderPage();
 
+    fireEvent.click(await screen.findByText("owner@example.com"));
     fireEvent.click(await screen.findByRole("button", { name: "Disconnect account" }));
 
     await waitFor(() => {
@@ -236,6 +238,144 @@ describe("GoogleDriveSetupPage", () => {
         expect.objectContaining({ method: "DELETE" }),
       );
     });
-    expect(await screen.findByText("No Google accounts are connected on this runner yet. Start a new account connection, finish OAuth in the popup, then come back here to select the account for proxy MCP and artifact binding.")).toBeInTheDocument();
+    expect(await screen.findByText("No Google accounts are connected on this runner yet. Start a new account connection, finish OAuth in the popup, then come back here to select the proxy MCP account or bind project artifact folders.")).toBeInTheDocument();
+  });
+
+  it("collapses account items by default and resets expanded state when step changes", async () => {
+    mocks.loadGoogleDriveRuntimeStatus.mockResolvedValue(createRuntimeStatus());
+    renderPage();
+
+    // Initially, account is collapsed, so "Disconnect account" is not in the document.
+    expect(screen.queryByRole("button", { name: "Disconnect account" })).not.toBeInTheDocument();
+
+    // Click the header to expand
+    fireEvent.click(await screen.findByText("owner@example.com"));
+    expect(await screen.findByRole("button", { name: "Disconnect account" })).toBeInTheDocument();
+
+    // Switch to Step 1
+    fireEvent.click(screen.getByText("Step 1"));
+    // Verify Step 1 content is visible
+    expect(await screen.findByText("Use one Google Cloud project for this MVP and keep the active project selected.")).toBeInTheDocument();
+
+    // Switch back to Step 6
+    fireEvent.click(screen.getByText("Step 6"));
+    
+    // Account should be collapsed again
+    expect(await screen.findByText("owner@example.com")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Disconnect account" })).not.toBeInTheDocument();
+  });
+
+  it("handles manual confirmation on Steps 1, 2, and 3", async () => {
+    // Start with all unconfigured/empty
+    const status = createRuntimeStatus({
+      artifactSync: {
+        status: "needs_input",
+        source: "local",
+        configured: false,
+        clientId: "",
+        redirectUri: "",
+        hasClientSecret: false,
+        hasPickerApiKey: false,
+        missingFields: [],
+      },
+    });
+    mocks.loadGoogleDriveRuntimeStatus.mockResolvedValue(status);
+    
+    const localStorageSpySet = vi.spyOn(Storage.prototype, "setItem");
+
+    renderPage();
+
+    // Verify step 1 instructions are visible
+    expect(await screen.findByText("Use one Google Cloud project for this MVP and keep the active project selected.")).toBeInTheDocument();
+
+    // Click "Confirm it done" on step 1
+    fireEvent.click(screen.getByRole("button", { name: "Confirm it done" }));
+    expect(localStorageSpySet).toHaveBeenCalledWith("flowpilot_gdrive_step1_done", "true");
+
+    // Verify active step is now step 2
+    expect(await screen.findByText("Use External for personal testing, add test users, and switch to Production when you are done testing.")).toBeInTheDocument();
+
+    // Click "Confirm it done" on step 2
+    fireEvent.click(screen.getByRole("button", { name: "Confirm it done" }));
+    expect(localStorageSpySet).toHaveBeenCalledWith("flowpilot_gdrive_step2_done", "true");
+
+    // Verify active step is now step 3
+    expect(await screen.findByText("Enable Google Drive API, Google Picker API, and the Docs/Sheets/Slides APIs if the MCP tools need them.")).toBeInTheDocument();
+
+    // Click "Confirm it done" on step 3
+    fireEvent.click(screen.getByRole("button", { name: "Confirm it done" }));
+    expect(localStorageSpySet).toHaveBeenCalledWith("flowpilot_gdrive_step3_done", "true");
+
+    // Verify active step is now step 4
+    expect(await screen.findByText("Save the Web OAuth client locally so FlowPilot can reuse it for artifact sync and the proxy MCP without editing .env.")).toBeInTheDocument();
+  });
+
+  it("supports navigation via Next Step buttons on Steps 1 to 6", async () => {
+    const status = createRuntimeStatus({
+      artifactSync: {
+        status: "needs_input",
+        source: "local",
+        configured: false,
+        clientId: "",
+        redirectUri: "",
+        hasClientSecret: false,
+        hasPickerApiKey: false,
+        missingFields: [],
+      },
+      mcp: {
+        status: "needs_input",
+        configured: false,
+        proxyMcpEnabled: true,
+        credentialPath: "/tmp/gcp-oauth.keys.json",
+        tokenPath: "/tmp/tokens.json",
+        credentialFileExists: false,
+        credentialFileValid: false,
+        tokenFileExists: false,
+        tokenRefreshValid: false,
+        needsAuth: true,
+        backendPackageAvailable: true,
+        accountId: "",
+        accountEmail: "",
+        accountSelectionRequired: true,
+        grantedScopes: [],
+        missingScopes: [],
+        accountReady: false,
+        artifactBindingPresent: false,
+        artifactReady: false,
+        mcpReadReady: false,
+        mcpWriteReady: false,
+        reconnectRequired: false,
+        missingFields: [],
+      },
+      accounts: [],
+    });
+    mocks.loadGoogleDriveRuntimeStatus.mockResolvedValue(status);
+    renderPage();
+    // Wait for initial load to finish so setActiveStep doesn't get reset
+    expect(await screen.findByText("Use one Google Cloud project for this MVP and keep the active project selected.")).toBeInTheDocument();
+
+    // Step 1: Click "Next Step"
+    fireEvent.click(await screen.findByRole("button", { name: "Next Step" }));
+    expect(await screen.findByText("Use External for personal testing, add test users, and switch to Production when you are done testing.")).toBeInTheDocument();
+
+    // Step 2: Click "Next Step"
+    fireEvent.click(screen.getByRole("button", { name: "Next Step" }));
+    expect(await screen.findByText("Enable Google Drive API, Google Picker API, and the Docs/Sheets/Slides APIs if the MCP tools need them.")).toBeInTheDocument();
+
+    // Step 3: Click "Next Step"
+    fireEvent.click(screen.getByRole("button", { name: "Next Step" }));
+    expect(await screen.findByText("Save the Web OAuth client locally so FlowPilot can reuse it for artifact sync and the proxy MCP without editing .env.")).toBeInTheDocument();
+
+    // Step 4: Click "Next Step"
+    fireEvent.click(screen.getByRole("button", { name: "Next Step" }));
+    expect(await screen.findByText("Save the browser-side Picker API key separately from the OAuth client secret.")).toBeInTheDocument();
+
+    // Step 5: Click "Next Step"
+    fireEvent.click(screen.getByRole("button", { name: "Next Step" }));
+    expect(await screen.findByText("Select Google account for proxy MCP")).toBeInTheDocument();
+
+    // Step 6: Click "Next Step"
+    fireEvent.click(screen.getByRole("button", { name: "Next Step" }));
+    expect(await screen.findByText("Google Drive proxy MCP setup")).toBeInTheDocument();
   });
 });

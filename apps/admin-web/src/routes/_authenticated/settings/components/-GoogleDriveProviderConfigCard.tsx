@@ -243,7 +243,7 @@ export function GoogleDriveProviderConfigCard({
           </p>
           <p className="mt-2">
             {proxySelectionRequired
-              ? 'The proxy MCP uses the selected Google account token; artifact sync still binds the per-project folder underneath that account.'
+              ? 'The proxy MCP uses the selected Google account token. Project artifact sync keeps a separate per-project Google account and folder binding.'
               : proxyReconnectRequired
                 ? 'Reconnect the selected Google account in Google Drive setup so the proxy MCP can refresh its token again.'
                 : proxyMissingScopes.length > 0
