@@ -97,6 +97,7 @@ function buildWorkflow(overrides: Partial<Workflow> = {}): Workflow {
     providerOverride: null,
     modelOverride: null,
     reasoningEffortOverride: null,
+    yoloMode: false,
     createdBy: "user-1",
     createdAt: "2026-05-29T10:00:00.000Z",
     updatedAt: "2026-05-29T10:00:00.000Z",

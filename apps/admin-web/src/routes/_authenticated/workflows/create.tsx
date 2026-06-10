@@ -56,6 +56,7 @@ export function CreateWorkflowPage() {
   const [description, setDescription] = useState("");
   const [modelOverride, setModelOverride] = useState(DEFAULT_MODEL);
   const [reasoningEffortOverride, setReasoningEffortOverride] = useState(DEFAULT_REASONING_EFFORT);
+  const [yoloMode, setYoloMode] = useState(false);
   const [selectedStepType, setSelectedStepType] = useState("");
   const [steps, setSteps] = useState<Partial<WorkflowStep>[]>([]);
 
@@ -161,6 +162,7 @@ export function CreateWorkflowPage() {
         isTemplate: false,
         modelOverride: modelOverride || DEFAULT_MODEL,
         reasoningEffortOverride: reasoningEffortOverride || DEFAULT_REASONING_EFFORT,
+        yoloMode,
         steps,
       });
       await navigate({
@@ -255,6 +257,20 @@ export function CreateWorkflowPage() {
               </option>
             ))}
           </select>
+        </label>
+        <label className="flex items-start gap-3 rounded-2xl border border-border bg-card px-4 py-3 text-sm md:col-span-2">
+          <input
+            type="checkbox"
+            className="mt-1 h-4 w-4 rounded border-border"
+            checked={yoloMode}
+            onChange={(event) => setYoloMode(event.target.checked)}
+          />
+          <span>
+            <span className="block font-medium">YOLO mode</span>
+            <span className="mt-1 block text-xs text-muted-foreground">
+              Runs created from this workflow auto-approve approval gates.
+            </span>
+          </span>
         </label>
       </div>
 

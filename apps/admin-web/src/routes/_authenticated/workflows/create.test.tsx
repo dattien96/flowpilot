@@ -95,6 +95,7 @@ function buildWorkflow(overrides: Partial<Workflow> = {}): Workflow {
     providerOverride: null,
     modelOverride: null,
     reasoningEffortOverride: null,
+    yoloMode: false,
     createdBy: "demo-user",
     createdAt: "2026-05-20T00:00:00.000Z",
     updatedAt: "2026-05-20T00:00:00.000Z",
@@ -155,6 +156,7 @@ describe("CreateWorkflowPage", () => {
           projectId: null,
           modelOverride: "gpt-5.4",
           reasoningEffortOverride: "medium",
+          yoloMode: false,
         })
       );
     });

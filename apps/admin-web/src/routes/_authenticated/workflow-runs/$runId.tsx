@@ -1218,7 +1218,6 @@ function WorkflowRunDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [decisionComment, setDecisionComment] = useState("");
   const [submittingDecision, setSubmittingDecision] = useState(false);
-  const [togglingYolo, setTogglingYolo] = useState(false);
   const [processingAction, setProcessingAction] = useState(false);
   const [runPromptText, setRunPromptText] = useState<string | null>(null);
   const [optimisticFollowUps, setOptimisticFollowUps] = useState<
@@ -1916,23 +1915,6 @@ function WorkflowRunDetailPage() {
     }
   };
 
-  const handleToggleYolo = async () => {
-    if (!detail?.run) return;
-    setTogglingYolo(true);
-    try {
-      const updatedRun =
-        await getGatewayBundle().workflowEngineGateway.toggleYoloMode(
-          detail.run.id,
-          !detail.run.yoloMode,
-        );
-      setDetail((prev: any) => (prev ? { ...prev, run: updatedRun } : null));
-    } catch (err: any) {
-      alert(`YOLO toggle failed: ${err.message}`);
-    } finally {
-      setTogglingYolo(false);
-    }
-  };
-
   const handleResume = async () => {
     if (!runId) return;
     setProcessingAction(true);
@@ -2294,17 +2276,16 @@ function WorkflowRunDetailPage() {
                   <span className="font-medium text-muted-foreground uppercase tracking-wider">
                     YOLO
                   </span>
-                  <button
-                    disabled={togglingYolo}
-                    onClick={handleToggleYolo}
-                    className={`relative inline-flex h-4 w-7 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${detail.run.yoloMode ? "bg-accent" : "bg-muted"
+                  <span
+                    aria-label={`YOLO mode ${detail.run.yoloMode ? "enabled" : "disabled"}`}
+                    className={`relative inline-flex h-4 w-7 shrink-0 rounded-full border-2 border-transparent ${detail.run.yoloMode ? "bg-accent" : "bg-muted"
                       }`}
                   >
                     <span
-                      className={`pointer-events-none inline-block h-3 w-3 transform rounded-full bg-background shadow ring-0 transition duration-200 ease-in-out ${detail.run.yoloMode ? "translate-x-3" : "translate-x-0"
+                      className={`pointer-events-none inline-block h-3 w-3 transform rounded-full bg-background shadow ring-0 ${detail.run.yoloMode ? "translate-x-3" : "translate-x-0"
                         }`}
                     />
-                  </button>
+                  </span>
                 </div>
               </div>
             </div>

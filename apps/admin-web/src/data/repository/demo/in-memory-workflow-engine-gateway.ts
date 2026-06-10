@@ -475,6 +475,7 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
         providerOverride: resolvedWorkflowProvider,
         modelOverride: resolvedWorkflowModel,
         reasoningEffortOverride: resolvedWorkflowReasoning,
+        yoloMode: Boolean(workflow.yoloMode),
         createdBy: "demo-user",
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -490,6 +491,7 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
         match.providerOverride = resolvedWorkflowProvider;
         match.modelOverride = resolvedWorkflowModel;
         match.reasoningEffortOverride = resolvedWorkflowReasoning;
+        match.yoloMode = workflow.yoloMode ?? match.yoloMode;
         match.updatedAt = new Date().toISOString();
       }
     }
@@ -604,6 +606,7 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
         providerOverride: resolveProviderKeyFromModel(selectedModel),
         modelOverride: selectedModel,
         reasoningEffortOverride: selectedReasoningEffort,
+        yoloMode: false,
         createdBy: "flowpilot-runtime",
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -643,7 +646,7 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
       ),
       model: normalizeModel(workflowDetail.modelOverride),
       reasoningEffort: normalizeReasoningEffort(workflowDetail.reasoningEffortOverride),
-      yoloMode: false,
+      yoloMode: Boolean(workflowDetail.yoloMode),
       startedBy: "demo-user",
       startedAt: new Date().toISOString(),
       finishedAt: null,

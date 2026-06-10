@@ -46,6 +46,7 @@ type WorkflowDefinitionRow = {
   provider_override: string | null;
   model_override: string | null;
   reasoning_effort_override: string | null;
+  yolo_mode?: boolean | null;
   session_idle_ttl_minutes?: number | null;
 };
 
@@ -3513,7 +3514,7 @@ export async function runWorkflowStartRuntime({
       provider: firstStepProvider,
       model: firstStepModel,
       reasoning_effort: firstStepReasoningEffort,
-      yolo_mode: false,
+      yolo_mode: Boolean(workflow.yolo_mode),
       started_by: user.email ?? user.id,
     })
     .select("*")

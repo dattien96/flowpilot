@@ -702,6 +702,7 @@ export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
           provider_override: resolvedWorkflowProvider,
           model_override: resolvedWorkflowModel,
           reasoning_effort_override: resolvedWorkflowReasoning,
+          yolo_mode: Boolean(workflow.yoloMode),
         })
         .select("*")
         .maybeSingle();
@@ -723,6 +724,7 @@ export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
           provider_override: resolvedWorkflowProvider,
           model_override: resolvedWorkflowModel,
           reasoning_effort_override: resolvedWorkflowReasoning,
+          yolo_mode: Boolean(workflow.yoloMode),
           updated_at: new Date().toISOString(),
         })
         .eq("id", workflow.id)

@@ -98,11 +98,28 @@ describe("WorkflowEngine mappers", () => {
         provider_override: "gemini",
         model_override: "gemini-pro",
         reasoning_effort_override: null,
+        yolo_mode: true,
         created_by: "dev-1",
         created_at: "2026-05-20T00:00:00Z",
         updated_at: "2026-05-20T01:00:00Z",
       }).modelOverride,
     ).toBe("gemini-2.5-pro");
+    expect(
+      mapWorkflow({
+        id: "wf-yolo",
+        project_id: null,
+        name: "YOLO Workflow",
+        description: "Uses YOLO mode",
+        is_template: false,
+        provider_override: "codex",
+        model_override: "gpt-5.4",
+        reasoning_effort_override: null,
+        yolo_mode: true,
+        created_by: "dev-1",
+        created_at: "2026-05-20T00:00:00Z",
+        updated_at: "2026-05-20T01:00:00Z",
+      }).yoloMode,
+    ).toBe(true);
   });
 
   it("maps artifact definitions", () => {
@@ -214,6 +231,7 @@ describe("WorkflowEngine mappers", () => {
       providerOverride: "claude",
       modelOverride: "sonnet-3.7",
       reasoningEffortOverride: "high",
+      yoloMode: false,
       createdBy: "dev-1",
       createdAt: "2026-05-20T00:00:00Z",
       updatedAt: "2026-05-20T01:00:00Z",

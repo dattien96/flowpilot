@@ -207,6 +207,7 @@ export interface Workflow {
   providerOverride: string | null;
   modelOverride: string | null;
   reasoningEffortOverride?: string | null;
+  yoloMode: boolean;
   createdBy: string;
   createdAt: string;
   updatedAt: string;
