@@ -749,6 +749,54 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 					"config":  status,
 				})
 			})
+			mux.HandleFunc("/google-drive-config/accounts", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				accounts, err := instance.ListGoogleDriveAccounts()
+				if err != nil {
+					writeHTTPError(w, http.StatusInternalServerError, err)
+					return
+				}
+				writeHTTPJSON(w, map[string]any{"accounts": accounts})
+			})
+			mux.HandleFunc("/google-drive-config/accounts/connect-sessions", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				var payload runner.GoogleDriveAccountConnectRequest
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+				if strings.TrimSpace(payload.BaseURL) == "" {
+					payload.BaseURL = requestBaseURL(r)
+				}
+				session, err := instance.CreateGoogleDriveAccountConnectSession(payload)
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+				writeHTTPJSON(w, session)
+			})
+			mux.HandleFunc("/google-drive-config/accounts/", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodDelete {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				accountID := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/google-drive-config/accounts/"))
+				if accountID == "" {
+					writeHTTPError(w, http.StatusBadRequest, errors.New("accountId is required"))
+					return
+				}
+				if err := instance.DisconnectGoogleDriveAccount(accountID); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+				w.WriteHeader(http.StatusNoContent)
+			})
 			mux.HandleFunc("/google-drive-proxy-approvals", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodGet {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1014,6 +1062,9 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
 					return
 				}
+				if strings.TrimSpace(payload.BaseURL) == "" {
+					payload.BaseURL = requestBaseURL(r)
+				}
 
 				session, err := instance.CreateGoogleDriveArtifactConnectSession(payload)
 				if err != nil {
@@ -1069,8 +1120,21 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 					writeHTTPError(w, http.StatusBadRequest, err)
 					return
 				}
-
+				if strings.TrimSpace(session.ProjectID) == "" {
+					http.Redirect(w, r, "/artifact-storage/google-drive/account-complete", http.StatusTemporaryRedirect)
+					return
+				}
 				http.Redirect(w, r, fmt.Sprintf("%s?sessionId=%s", "/artifact-storage/google-drive/picker", url.QueryEscape(session.SessionID)), http.StatusTemporaryRedirect)
+			})
+			mux.HandleFunc("/artifact-storage/google-drive/account-complete", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				if _, err := w.Write([]byte(runner.RenderGoogleDriveAccountConnectedHTML())); err != nil {
+					writeHTTPError(w, http.StatusInternalServerError, err)
+				}
 			})
 			mux.HandleFunc("/artifact-storage/google-drive/picker", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodGet {
@@ -1589,6 +1653,17 @@ func withCORS(next http.Handler) http.Handler {
 
 func netJoinHostPort(host string, port int) string {
 	return host + ":" + strconv.Itoa(port)
+}
+
+func requestBaseURL(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	return fmt.Sprintf("%s://%s", scheme, r.Host)
 }
 
 func writeSupervisorCommand(workspace string, command string) error {
