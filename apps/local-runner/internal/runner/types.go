@@ -150,6 +150,12 @@ type ArtifactHydrationRequest struct {
 type ArtifactStorageGoogleDriveConnectRequest struct {
 	ProjectID string `json:"projectId"`
 	BaseURL   string `json:"baseUrl,omitempty"`
+	AccountID string `json:"accountId,omitempty"`
+}
+
+type GoogleDriveAccountConnectRequest struct {
+	BaseURL   string `json:"baseUrl,omitempty"`
+	AccountID string `json:"accountId,omitempty"`
 }
 
 type ArtifactStorageGoogleDriveSessionStatus string
@@ -171,6 +177,7 @@ type ArtifactStorageGoogleDriveSession struct {
 	ConnectURL   string                                  `json:"connectUrl,omitempty"`
 	ExpiresAt    string                                  `json:"expiresAt"`
 	ConnectedAt  string                                  `json:"connectedAt,omitempty"`
+	AccountID    string                                  `json:"accountId,omitempty"`
 	AccountEmail string                                  `json:"accountEmail,omitempty"`
 	FolderID     string                                  `json:"folderId,omitempty"`
 	FolderName   string                                  `json:"folderName,omitempty"`
@@ -182,6 +189,7 @@ type ArtifactStorageGoogleDriveConnection struct {
 	Status          string `json:"status"`
 	FolderID        string `json:"folderId,omitempty"`
 	FolderName      string `json:"folderName,omitempty"`
+	AccountID       string `json:"accountId,omitempty"`
 	AccountEmail    string `json:"accountEmail,omitempty"`
 	LastError       string `json:"lastError,omitempty"`
 	LastValidatedAt string `json:"lastValidatedAt,omitempty"`
@@ -243,6 +251,7 @@ type GoogleDriveWorkspaceConfigRequest struct {
 	ClientSecret string `json:"clientSecret"`
 	RedirectURI  string `json:"redirectUri"`
 	PickerAPIKey string `json:"pickerApiKey"`
+	MCPAccountID string `json:"mcpAccountId,omitempty"`
 }
 
 type GoogleDriveMcpOAuthUploadRequest struct {
@@ -261,23 +270,54 @@ type GoogleDriveArtifactSyncStatus struct {
 	MissingFields   []string `json:"missingFields,omitempty"`
 }
 
+type GoogleDriveAccountStatus struct {
+	AccountID         string   `json:"accountId"`
+	AccountEmail      string   `json:"accountEmail,omitempty"`
+	AccountSubject    string   `json:"accountSubject,omitempty"`
+	OAuthClientID     string   `json:"oauthClientId,omitempty"`
+	GrantedScopes     []string `json:"grantedScopes,omitempty"`
+	MissingScopes     []string `json:"missingScopes,omitempty"`
+	Status            string   `json:"status"`
+	ProjectCount      int      `json:"projectCount"`
+	AccountReady      bool     `json:"accountReady"`
+	McpReadReady      bool     `json:"mcpReadReady"`
+	McpWriteReady     bool     `json:"mcpWriteReady"`
+	ReconnectRequired bool     `json:"reconnectRequired,omitempty"`
+	ConnectedAt       string   `json:"connectedAt,omitempty"`
+	UpdatedAt         string   `json:"updatedAt,omitempty"`
+	LastError         string   `json:"lastError,omitempty"`
+}
+
 type GoogleDriveMcpStatus struct {
-	Status                  string   `json:"status"`
-	Configured              bool     `json:"configured"`
-	ProxyMcpEnabled         bool     `json:"proxyMcpEnabled"`
-	CredentialPath          string   `json:"credentialPath,omitempty"`
-	TokenPath               string   `json:"tokenPath,omitempty"`
-	CredentialFileExists    bool     `json:"credentialFileExists"`
-	CredentialFileValid     bool     `json:"credentialFileValid"`
-	TokenFileExists         bool     `json:"tokenFileExists"`
-	NeedsAuth               bool     `json:"needsAuth"`
-	BackendPackageAvailable bool     `json:"backendPackageAvailable"`
-	MissingFields           []string `json:"missingFields,omitempty"`
+	Status                   string   `json:"status"`
+	Configured               bool     `json:"configured"`
+	ProxyMcpEnabled          bool     `json:"proxyMcpEnabled"`
+	CredentialPath           string   `json:"credentialPath,omitempty"`
+	TokenPath                string   `json:"tokenPath,omitempty"`
+	CredentialFileExists     bool     `json:"credentialFileExists"`
+	CredentialFileValid      bool     `json:"credentialFileValid"`
+	TokenFileExists          bool     `json:"tokenFileExists"`
+	TokenRefreshValid        bool     `json:"tokenRefreshValid"`
+	NeedsAuth                bool     `json:"needsAuth"`
+	BackendPackageAvailable  bool     `json:"backendPackageAvailable"`
+	AccountID                string   `json:"accountId,omitempty"`
+	AccountEmail             string   `json:"accountEmail,omitempty"`
+	AccountSelectionRequired bool     `json:"accountSelectionRequired,omitempty"`
+	GrantedScopes            []string `json:"grantedScopes,omitempty"`
+	MissingScopes            []string `json:"missingScopes,omitempty"`
+	AccountReady             bool     `json:"accountReady"`
+	ArtifactBindingPresent   bool     `json:"artifactBindingPresent,omitempty"`
+	ArtifactReady            bool     `json:"artifactReady"`
+	McpReadReady             bool     `json:"mcpReadReady"`
+	McpWriteReady            bool     `json:"mcpWriteReady"`
+	ReconnectRequired        bool     `json:"reconnectRequired,omitempty"`
+	MissingFields            []string `json:"missingFields,omitempty"`
 }
 
 type GoogleDriveWorkspaceConfigResponse struct {
 	ArtifactSync    GoogleDriveArtifactSyncStatus        `json:"artifactSync"`
 	MCP             GoogleDriveMcpStatus                 `json:"mcp"`
+	Accounts        []GoogleDriveAccountStatus          `json:"accounts,omitempty"`
 	ProviderConfigs []GoogleDriveMcpProviderConfigStatus `json:"providerConfigs,omitempty"`
 	RunnerReachable bool                                 `json:"runnerReachable"`
 	LastError       string                               `json:"lastError,omitempty"`
