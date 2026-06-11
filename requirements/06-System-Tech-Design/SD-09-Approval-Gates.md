@@ -3,13 +3,14 @@
 This document translates `SS-08-Approve-Gate` into technical implementation details.
 
 ## 1. UI/UX Design (Frontend - React)
-- **YOLO Mode Toggle:** A global switch on the Project Settings and Workflow Settings to enable YOLO mode.
+- **YOLO Status:** Runtime UI shows the current effective YOLO value as read-only state. It must not expose a run-detail YOLO toggle.
+- **YOLO SSOT:** Workflow-definition runs read current `workflows.yolo_mode`; direct single-step runs read current `step_definitions.yolo_mode`. A workflow containing exactly one step is still a workflow-definition run.
 - **Approval Gate UI:** When a step finishes and requires approval, the UI shows a blocking modal or banner: "Waiting for Approval". Includes buttons for "Approve & Continue" and "Reject & Retry".
 
 ## 2. State Machine & Realtime (Supabase)
 - `workflow_run_steps` states: `PENDING`, `RUNNING`, `WAITING_USER_APPROVAL`, `DONE`, `FAILED`, `SKIPPED`.
 - `SKIPPED` is used when a step is disabled (`is_enabled = false`) in the workflow configuration. The Go-runner marks it as `SKIPPED` and moves to the next step.
-- When a step completes, the Go-runner evaluates if an approval gate is configured and YOLO mode is OFF.
+- When a step completes, the runner evaluates if an approval gate is configured and the current live YOLO SSOT is OFF.
   - If YES: It updates the state to `WAITING_USER_APPROVAL`. The runner stops polling for this specific workflow.
   - If NO (YOLO is ON): It updates the state to `DONE` and proceeds to mark the next step as `PENDING`.
 - The React frontend subscribes to `workflow_run_steps` via Supabase Realtime. When a state changes to `WAITING_USER_APPROVAL`, the UI instantly updates.

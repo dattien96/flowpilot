@@ -22,8 +22,16 @@ For highly trusted workflows, routine tasks, or rapid prototyping, users can ena
 - The AI will execute the entire workflow from start to finish continuously, using its own self-evaluations (like the Code/Review Loop) without ever stopping to ask for human confirmation.
 - **Value:** Maximizes speed and automation. This is particularly useful for Solo Developers who want to sprint from idea to code instantly, or for automated background tasks (like Analytics Reviews or Root Cause Investigations) where human intervention mid-flight is unnecessary.
 
+### Current SSOT rule
+
+- YOLO may be stored on `workflows.yolo_mode` and `step_definitions.yolo_mode`.
+- Workflow-definition runs always use the current `workflows.yolo_mode`, including workflows that contain exactly one step.
+- Direct single-step runs use the current `step_definitions.yolo_mode`.
+- `workflow_runs.yolo_mode` is historical and must not drive resume, continue, or follow-up behavior.
+- Run detail UI displays the current effective YOLO value only; it must not allow YOLO changes.
+
 ## 4. Configuration & Flexibility
 The approval system is designed to be highly configurable:
-- **Global Toggle:** Users can toggle YOLO Mode on/off at the Project level.
-- **Workflow-Specific:** Specific workflows can be configured to always run in YOLO Mode or Safe Mode, regardless of the project default.
+- **Workflow-Specific:** Specific workflows can be configured to run in YOLO Mode or Safe Mode through `workflows.yolo_mode`.
+- **Single-Step-Specific:** Direct single-step launches use the selected step definition's `step_definitions.yolo_mode`.
 - **Granular Gates:** Even when operating in Safe Mode, users can customize exactly *which* steps require a gate. For instance, a user might require an Approval Gate after the "Architecture Step", but let the "Coding" and "Testing" steps run autonomously.
