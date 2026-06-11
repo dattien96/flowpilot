@@ -1,0 +1,1 @@
+Can co 1 quick view limit + acc luc run flow detail thay vi phai out ra ngoai xem
