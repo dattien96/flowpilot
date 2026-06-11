@@ -193,7 +193,7 @@ describe("workflow-start-runtime", () => {
     expect(actualPrompt).toContain("# Previous Conversation Context");
   });
 
-  it("copies the step definition YOLO default into runtime-generated single-step workflows", async () => {
+  it("uses step-definition YOLO as the single-step launch policy", async () => {
     const workflowInsertRows: Array<Record<string, unknown>> = [];
     const workflowStepInsertRows: Array<Record<string, unknown>> = [];
     let selectedStepDefinitionColumns = "";
@@ -264,7 +264,7 @@ describe("workflow-start-runtime", () => {
             subagent: null,
             model: "gpt-5.4",
             reasoning_effort: "medium",
-            yolo_mode: false,
+            yolo_mode: true,
           },
         ],
         error: null,
@@ -294,18 +294,14 @@ describe("workflow-start-runtime", () => {
     });
 
     expect(workflowInsertRows[0]).toMatchObject({
-      yolo_mode: false,
+      yolo_mode: true,
     });
     expect(selectedStepDefinitionColumns).toContain("yolo_mode");
-    expect(workflowStepInsertRows[0]).toMatchObject({
-      yolo_mode: false,
-    });
+    expect(workflowStepInsertRows[0]).not.toHaveProperty("yolo_mode");
     expect(result.workflow).toMatchObject({
-      yolo_mode: false,
+      yolo_mode: true,
     });
-    expect(result.workflowSteps[0]).toMatchObject({
-      yolo_mode: false,
-    });
+    expect(result.workflowSteps[0].yolo_mode).toBeUndefined();
   });
 
   it("creates a fallback artifact run when a step has no output binding", async () => {

@@ -123,6 +123,7 @@ describe("SupabaseWorkflowEngineGateway", () => {
         requiredSkills: [],
         model: "gpt-5.5",
         reasoningEffort: "high",
+        yoloMode: true,
         agentType: "standard",
         inputArtifactDefinitions: ["business_summary_artifact"],
         outputArtifactDefinitions: ["tech_spec_artifact"],
@@ -140,6 +141,7 @@ describe("SupabaseWorkflowEngineGateway", () => {
       requiredSkills: [],
       model: "gpt-5.5",
       reasoningEffort: "high",
+      yoloMode: true,
       agentType: "standard",
       inputArtifactDefinitions: ["business_summary_artifact"],
       outputArtifactDefinitions: ["tech_spec_artifact"],
@@ -158,6 +160,7 @@ describe("SupabaseWorkflowEngineGateway", () => {
         required_skills: [],
         model: "gpt-5.5",
         reasoning_effort: "high",
+        yolo_mode: true,
         agent_type: "standard",
       }),
       { onConflict: "step_type" }
@@ -540,6 +543,203 @@ describe("SupabaseWorkflowEngineGateway", () => {
       { runId: "run-123", yoloMode: true }
     );
     expect(result.yoloMode).toBe(true);
+  });
+
+  it("loads run detail YOLO from the current workflow definition", async () => {
+    const runMaybeSingle = vi.fn().mockResolvedValue({
+      data: {
+        id: "run-123",
+        workflow_id: "wf-1",
+        project_id: "project-1",
+        status: "RUNNING",
+        provider: "codex",
+        model: "gpt-5.4",
+        reasoning_effort: "medium",
+        yolo_mode: false,
+        started_by: "dev",
+        started_at: "2026-06-11T00:00:00Z",
+        finished_at: null,
+        error_message: null,
+      },
+      error: null,
+    });
+    const workflowMaybeSingle = vi.fn().mockResolvedValue({
+      data: { yolo_mode: true },
+      error: null,
+    });
+    const runOrder = vi.fn().mockResolvedValue({
+      data: [],
+      error: null,
+    });
+    const sessionsOrder = vi.fn().mockResolvedValue({
+      data: [],
+      error: null,
+    });
+    const from = vi.fn((table: string) => {
+      if (table === "workflow_runs") {
+        return {
+          select: () => ({
+            eq: () => ({
+              maybeSingle: runMaybeSingle,
+            }),
+          }),
+        };
+      }
+      if (table === "workflows") {
+        return {
+          select: () => ({
+            eq: () => ({
+              maybeSingle: workflowMaybeSingle,
+            }),
+          }),
+        };
+      }
+      if (table === "workflow_run_steps") {
+        return {
+          select: () => ({
+            eq: () => ({
+              order: runOrder,
+            }),
+          }),
+        };
+      }
+      if (table === "workflow_run_sessions") {
+        return {
+          select: () => ({
+            eq: () => ({
+              order: sessionsOrder,
+            }),
+          }),
+        };
+      }
+      throw new Error(`Unexpected table ${table}`);
+    });
+
+    const gateway = new SupabaseWorkflowEngineGateway({ from } as any);
+    const detail = await gateway.getWorkflowRunDetail("run-123");
+
+    expect(detail?.run.yoloMode).toBe(true);
+    expect(workflowMaybeSingle).toHaveBeenCalledTimes(1);
+  });
+
+  it("loads generated single-step run detail YOLO from the current step definition", async () => {
+    const runMaybeSingle = vi.fn().mockResolvedValue({
+      data: {
+        id: "run-123",
+        workflow_id: "wf-single",
+        project_id: "project-1",
+        status: "RUNNING",
+        provider: "codex",
+        model: "gpt-5.4",
+        reasoning_effort: "medium",
+        yolo_mode: false,
+        started_by: "dev",
+        started_at: "2026-06-11T00:00:00Z",
+        finished_at: null,
+        error_message: null,
+      },
+      error: null,
+    });
+    const workflowMaybeSingle = vi.fn().mockResolvedValue({
+      data: { created_by: "flowpilot-runtime", yolo_mode: false },
+      error: null,
+    });
+    const stepDefinitionMaybeSingle = vi.fn().mockResolvedValue({
+      data: { yolo_mode: true },
+      error: null,
+    });
+    const runStepsOrder = vi.fn().mockResolvedValue({
+      data: [
+        {
+          id: "wrs-1",
+          workflow_run_id: "run-123",
+          workflow_step_id: "wfs-1",
+          execution_order_index: 0,
+          step_type: "business_idea",
+          status: "PENDING",
+          artifact_id: null,
+          artifact_run_id: null,
+          prompt_cache_id: null,
+          rejection_note: null,
+          retry_count: 0,
+          started_at: null,
+          finished_at: null,
+          error_message: null,
+        },
+      ],
+      error: null,
+    });
+    const logsOrder = vi.fn().mockResolvedValue({
+      data: [],
+      error: null,
+    });
+    const sessionsOrder = vi.fn().mockResolvedValue({
+      data: [],
+      error: null,
+    });
+    const from = vi.fn((table: string) => {
+      if (table === "workflow_runs") {
+        return {
+          select: () => ({
+            eq: () => ({
+              maybeSingle: runMaybeSingle,
+            }),
+          }),
+        };
+      }
+      if (table === "workflows") {
+        return {
+          select: () => ({
+            eq: () => ({
+              maybeSingle: workflowMaybeSingle,
+            }),
+          }),
+        };
+      }
+      if (table === "workflow_run_steps") {
+        return {
+          select: () => ({
+            eq: () => ({
+              order: runStepsOrder,
+            }),
+          }),
+        };
+      }
+      if (table === "workflow_run_logs") {
+        return {
+          select: () => ({
+            in: () => ({
+              order: logsOrder,
+            }),
+          }),
+        };
+      }
+      if (table === "workflow_run_sessions") {
+        return {
+          select: () => ({
+            eq: () => ({
+              order: sessionsOrder,
+            }),
+          }),
+        };
+      }
+      if (table === "step_definitions") {
+        return {
+          select: () => ({
+            eq: () => ({
+              maybeSingle: stepDefinitionMaybeSingle,
+            }),
+          }),
+        };
+      }
+      throw new Error(`Unexpected table ${table}`);
+    });
+
+    const gateway = new SupabaseWorkflowEngineGateway({ from } as any);
+    const detail = await gateway.getWorkflowRunDetail("run-123");
+
+    expect(detail?.run.yoloMode).toBe(true);
+    expect(stepDefinitionMaybeSingle).toHaveBeenCalledTimes(1);
   });
 
   it("starts workflow runs via the local runtime API when running in the browser", async () => {
