@@ -1830,6 +1830,86 @@ describe("workflow-start-runtime", () => {
       expect(result.outputMarkdown).toBe("success");
     });
 
+    it("keeps the workflow running when writing a workflow log fails", async () => {
+      const mockSendMessage = vi.fn().mockResolvedValue({
+        outputMarkdown: "success",
+        actualPromptText: "hello",
+      });
+      const mockInsert = vi.fn().mockRejectedValue(new TypeError("fetch failed"));
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+      const mockQueryBuilder = {
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        filter: vi.fn().mockReturnThis(),
+        order: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: {
+            id: "session-old",
+            process_key: null,
+            provider_session_id: "thread-old",
+            transport_type: "codex_mcp",
+            status: "completed",
+            provider: "codex",
+            model: "codex-mcp",
+            metadata_json: {
+              providerAccountId: "account-b",
+              providerAccountHomePath: "/accounts/b",
+            },
+          },
+          error: null,
+        }),
+        insert: vi.fn().mockReturnThis(),
+        update: vi.fn().mockReturnThis(),
+        single: vi.fn().mockResolvedValue({ data: { id: "session-new" }, error: null }),
+      };
+      const adminClient = {
+        from: vi.fn((table: string) => {
+          if (table === "workflow_run_logs") {
+            return { insert: mockInsert };
+          }
+
+          return mockQueryBuilder;
+        }),
+      } as any;
+      const localRunnerGateway = {
+        sendMessage: mockSendMessage,
+        closeSession: vi.fn().mockResolvedValue(undefined),
+        startSession: vi.fn().mockResolvedValue({
+          processKey: "proc-new",
+          providerSessionId: "thread-new",
+          transportType: "codex_mcp",
+        }),
+      } as any;
+
+      const result = await sendMessageWithRetry({
+        adminClient,
+        localRunnerGateway,
+        workflowRunId: "run-123",
+        stepRunId: "step-456",
+        providerKey: "codex",
+        modelName: "codex-mcp",
+        reasoningEffort: null,
+        workingDirectory: "/repo",
+        subagent: null,
+        prompt: "hello",
+        skillIds: [],
+        idleTTLSeconds: 60,
+      });
+
+      expect(result.outputMarkdown).toBe("success");
+      expect(mockInsert).toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Skipping workflow run log write after request failure:"),
+        expect.objectContaining({
+          workflowRunStepId: "step-456",
+          errorMessage: "fetch failed",
+        }),
+      );
+      warnSpy.mockRestore();
+    });
+
     it("does not reconnect when the session was intentionally terminated", async () => {
       const err = new Error("session was intentionally terminated");
       (err as any).code = "session_terminated";

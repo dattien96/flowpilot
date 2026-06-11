@@ -1724,31 +1724,47 @@ async function insertLog(
   logLevel: "info" | "warn" | "error" | "debug",
   message: string,
 ) {
-  const { error } = await adminClient.from("workflow_run_logs").insert({
-    workflow_run_step_id: workflowRunStepId,
-    log_level: logLevel,
-    message,
-  });
+  try {
+    const { error } = await adminClient.from("workflow_run_logs").insert({
+      workflow_run_step_id: workflowRunStepId,
+      log_level: logLevel,
+      message,
+    });
 
-  if (error) {
-    const errorCode =
-      typeof (error as any)?.code === "string"
-        ? String((error as any).code)
-        : "";
-    const errorMessage = String((error as any)?.message ?? error);
-    if (
-      errorCode === "23503" ||
-      errorMessage.includes("workflow_run_logs_workflow_run_step_id_fkey")
-    ) {
-      console.warn("Skipping workflow run log write for missing step row:", {
+    if (error) {
+      const errorCode =
+        typeof (error as any)?.code === "string"
+          ? String((error as any).code)
+          : "";
+      const errorMessage = String((error as any)?.message ?? error);
+      if (
+        errorCode === "23503" ||
+        errorMessage.includes("workflow_run_logs_workflow_run_step_id_fkey")
+      ) {
+        console.warn("Skipping workflow run log write for missing step row:", {
+          workflowRunStepId,
+          logLevel,
+          message,
+        });
+        return;
+      }
+
+      console.warn("Skipping workflow run log write after insert error:", {
         workflowRunStepId,
         logLevel,
         message,
+        errorMessage,
       });
       return;
     }
-
-    throw new Error(`Unable to write workflow run log: ${errorMessage}`);
+  } catch (error) {
+    const errorMessage = String((error as any)?.message ?? error);
+    console.warn("Skipping workflow run log write after request failure:", {
+      workflowRunStepId,
+      logLevel,
+      message,
+      errorMessage,
+    });
   }
 }
 
