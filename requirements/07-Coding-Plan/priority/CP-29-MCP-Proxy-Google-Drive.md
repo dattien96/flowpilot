@@ -1496,12 +1496,7 @@ Monitoring:
 
 Use this guide to validate the current proxy MCP slice and to track the remaining CP-29 acceptance checks. Steps marked `Current expected result` should pass with the current implementation. Steps marked `Target expected result` describe the full CP-29 behavior and currently expose the remaining open work.
 
-1. Enable the proxy feature flag in the runner environment with `FLOWPILOT_GOOGLE_DRIVE_PROXY_MCP=true`.
-Web test steps:
-- Restart the local runner with `FLOWPILOT_GOOGLE_DRIVE_PROXY_MCP=true`.
-- Open the admin web app and navigate to `/settings/google-drive-setup`.
-- Wait for the page to finish loading `Google Drive proxy MCP setup`.
-- Refresh the page once to confirm the status is stable after startup.
+1. Check config file in Ai provider config
 Current expected result: `/google-drive-config` reports `mcp.proxyMcpEnabled = true`, and provider config generation points to the FlowPilot `google-drive-mcp` subcommand instead of `@piotr-agier/google-drive-mcp`.
 
 2. Save artifact-sync Google OAuth values in the Google Drive setup page or runner config.
@@ -1519,7 +1514,7 @@ Web test steps:
 - Return to the status section and confirm the selected account shows proxy-read readiness.
 Current expected result: proxy MCP read tools can refresh an access token through the selected-account credential path. If zero or multiple connected accounts exist and no account is selected, the proxy server fails clearly instead of guessing.
 
-4. Leave the legacy Desktop OAuth JSON and token files absent, then refresh Google Drive status.
+4. Legacy desktop OAuth: Leave the legacy Desktop OAuth JSON and token files absent, then refresh Google Drive status.
 Web test steps:
 - Do not upload the legacy Desktop OAuth JSON on `/settings/google-drive-setup`.
 - Keep the proxy flag enabled from step 1.
@@ -1535,15 +1530,7 @@ Web test steps:
 - Expand or inspect the rendered provider config preview in the page if available, then refresh to verify the configured state persists.
 Current expected result: each provider config points to `flowpilot google-drive-mcp --workspace <workspace> --account-home <home> --mode <mode>`, includes `FLOWPILOT_GOOGLE_DRIVE_PROXY_MCP=true`, and reports configured unless the existing config is stale or invalid.
 
-6. Disable `FLOWPILOT_GOOGLE_DRIVE_PROXY_MCP` and refresh status.
-Web test steps:
-- Stop the local runner.
-- Restart it without `FLOWPILOT_GOOGLE_DRIVE_PROXY_MCP=true`.
-- Reopen `/settings/google-drive-setup` and refresh the page.
-- Re-run the provider config actions from step 5 and compare the reported status against the proxy-enabled case.
-Current expected result: provider configuration falls back to the legacy raw MCP path and again requires Desktop OAuth JSON plus token readiness before provider configuration succeeds.
-
-7. Run a read-only MCP smoke test with proxy mode enabled and a provider account that has a configured `google-drive` server.
+6. Run a read-only MCP smoke test with proxy mode enabled and a provider account that has a configured `google-drive` server.
 Web test steps:
 - Re-enable the proxy flag and confirm step 1 still passes.
 - Open `/workflow-steps/create`.
@@ -1551,7 +1538,7 @@ Web test steps:
 - Use that step in a workflow, start a workflow run from the project UI, then open `/workflow-runs/$runId` and inspect the step output and logs for the MCP read calls.
 Current expected result: `authGetStatus`, `search`, `listFolder`, and Google Doc read tools execute through the FlowPilot proxy MCP and use the selected-account credential source.
 
-8. Re-run the read-only smoke test after removing artifact-sync client secret, client ID, redirect URI, the selected account token, or the selected account scopes.
+7. Re-run the read-only smoke test after removing artifact-sync client secret, client ID, redirect URI, the selected account token, or the selected account scopes.
 Web test steps:
 - Open `/settings/google-drive-setup` and clear one required artifact-sync value, disconnect the selected account, or reconnect the selected account with insufficient scopes.
 - Save the change and refresh the page.
@@ -1559,7 +1546,7 @@ Web test steps:
 - Open `/workflow-runs/$runId` and inspect the failed step message and logs in the run detail page.
 Current expected result: preflight fails before prompt execution and returns a clear proxy-auth or connection error instead of silently falling back to Desktop OAuth JSON.
 
-9. Generate provider config for `read_only` mode.
+8. Generate provider config for `read_only` mode.
 Web test steps:
 - Open `/workflow-steps/create` or `/workflow-steps/$stepType` for a Google Drive step.
 - Set `Required MCPs` to include `google_drive`.
@@ -1567,7 +1554,7 @@ Web test steps:
 - Return to `/settings/google-drive-setup`, refresh provider status, and inspect the provider config shown by the page for that account.
 Current expected result: only read tools are exposed in the provider config. `createGoogleDoc`, `updateGoogleDoc`, and `createFolder` are absent from the read-only allowlist.
 
-10. Generate provider config for `read_write` mode.
+9. Generate provider config for `read_write` mode.
 Web test steps:
 - Open `/workflow-steps/create` or `/workflow-steps/$stepType` for the same Google Drive step.
 - Keep `Required MCPs` including `google_drive`.
@@ -1575,7 +1562,7 @@ Web test steps:
 - Return to `/settings/google-drive-setup`, refresh provider status, and inspect the provider config again.
 Current expected result: read tools plus `createGoogleDoc`, `updateGoogleDoc`, and `createFolder` are exposed in the provider config. This verifies tool-surface gating only; it does not verify the approval workflow.
 
-11. Generate provider config with YOLO off and inspect provider settings.
+10. Generate provider config with YOLO off and inspect provider settings.
 Web test steps:
 - Open `/workflow-runs/$runId` for a run on the target workflow.
 - Confirm the `YOLO` toggle in the run header is off.
@@ -1584,7 +1571,7 @@ Web test steps:
 Current expected result: Codex uses approve-style MCP host configuration for the proxy server even with YOLO off, and Gemini and Claude remain proxy-based and account-home aware.
 Target expected result: FlowPilot proxy approval is proven end-to-end for both read and write tools with YOLO off across the supported providers.
 
-12. Generate provider config with YOLO on and inspect provider settings.
+11. Generate provider config with YOLO on and inspect provider settings.
 Web test steps:
 - Open `/workflow-runs/$runId`.
 - Toggle `YOLO` on in the run header and wait for the UI to settle.
@@ -1593,7 +1580,7 @@ Web test steps:
 Current expected result: Codex still uses approve-style MCP host configuration for the proxy server, and the `--yolo-mode` flag is present in proxy server arguments.
 Target expected result: FlowPilot proxy auto-approval is proven end-to-end for read and policy-allowed write tools with YOLO on across the supported providers.
 
-13. Run a `read_write` workflow or MCP session that attempts `createGoogleDoc` while YOLO is off.
+12. Run a `read_write` workflow or MCP session that attempts `createGoogleDoc` while YOLO is off.
 Web test steps:
 - Open `/workflow-steps/$stepType` for a Google Drive step and confirm `Google Drive access` is `Read + write`.
 - Start a workflow run from the project page or workflow launcher with the run `YOLO` setting left off.
@@ -1602,7 +1589,7 @@ Web test steps:
 Current expected result: CP-29 manual write approval is implemented. The write does not execute immediately, FlowPilot creates a pending approval record, the workflow pauses in `waiting_approval`, and the run UI shows the exact tool, operation, target summary, and expiry details.
 Target expected result: the write does not execute immediately, FlowPilot creates a pending approval record, the workflow pauses in `waiting_approval`, and the UI shows the exact tool, operation, target summary, and expiry details.
 
-14. Approve the pending write request after step 13.
+13. Approve the pending write request after step 13.
 Web test steps:
 - Stay on `/workflow-runs/$runId` while the step is in `waiting_approval`.
 - Select the waiting step in the timeline if it is not already selected.
@@ -1611,7 +1598,7 @@ Web test steps:
 Current expected result: the approval API/UI is implemented. Approving the pending request resumes the step with an exact-write retry prompt, and the proxy only executes the exact approved tool and arguments. Full manual verification of the returned Drive ID/URL is still pending.
 Target expected result: FlowPilot executes only the exact approved write call and returns the created or updated Drive item ID and URL.
 
-15. Reject the pending write request after step 13.
+14. Reject the pending write request after step 13.
 Web test steps:
 - Re-run step 13 so the run is back in `waiting_approval`.
 - Open `/workflow-runs/$runId` and select the waiting step.
@@ -1620,7 +1607,7 @@ Web test steps:
 Current expected result: the approval API/UI is implemented. Rejecting the pending request resumes the provider with a clear rejected-write notice, and the proxy refuses to execute the rejected exact write on retry.
 Target expected result: the write does not execute, the provider continues with a clear rejected-write notice, and the run remains auditable.
 
-16. Run the same `read_write` workflow or MCP session with YOLO on.
+15. Run the same `read_write` workflow or MCP session with YOLO on.
 Web test steps:
 - Start the same workflow again.
 - Open `/workflow-runs/$runId` immediately after creation.
@@ -1629,7 +1616,7 @@ Web test steps:
 Current expected result: provider config and proxy approval state carry YOLO intent, and the proxy auto-approves policy-allowed writes for the active run/session. Successful write results are captured in proxy approval state and mirrored into write audit artifacts.
 Target expected result: the policy-allowed write auto-approves for the active run, executes immediately, and returns the Drive item ID and URL without waiting for user input.
 
-17. Inspect artifacts and logs after any successful write-path execution.
+16. Inspect artifacts and logs after any successful write-path execution.
 Web test steps:
 - Open `/workflow-runs/$runId` for the run from step 14 or step 16.
 - Inspect the step output, run timeline, and any artifact links shown in the run detail UI.
@@ -1638,7 +1625,7 @@ Web test steps:
 Current expected result: CP-29 write audit artifacts are created from completed or rejected proxy approval records.
 Target expected result: FlowPilot records audit metadata that includes `mcpAccessMode`, `yoloMode`, approval ID if applicable, tool name, argument hash, sanitized target summary, decision, decision mode, and resulting Drive ID/URL without leaking secrets.
 
-18. Validate prompt injection for Google Drive-required steps.
+17. Validate prompt injection for Google Drive-required steps.
 Web test steps:
 - Open `/workflow-runs/$runId` for a run that used a Google Drive step.
 - Inspect the step session output, prompt summary, and related logs shown in the run detail view.
@@ -1647,7 +1634,7 @@ Web test steps:
 Current expected result: the runner injects `read_only` versus `read_write` guidance, manual versus YOLO MCP approval behavior, the `MCP_WRITE_APPROVAL_REQUIRED` retry rule, and preflight readiness checks.
 Target expected result: the prompt contract explicitly states `read_only` versus `read_write`, manual versus YOLO MCP call approval behavior, the `MCP_WRITE_APPROVAL_REQUIRED` retry rule, and destructive-write prohibitions.
 
-19. Validate regression behavior with the proxy flag off after completing the proxy checks.
+18. Validate regression behavior with the proxy flag off after completing the proxy checks.
 Web test steps:
 - Stop the runner and restart it with the proxy flag disabled.
 - Open `/settings/google-drive-setup` and refresh status.
@@ -1655,7 +1642,7 @@ Web test steps:
 - Open `/workflow-runs/$runId` and confirm the legacy raw-MCP prerequisites and failure modes match the fallback design rather than the proxy path.
 Current expected result: the legacy raw MCP fallback still relies on Desktop OAuth JSON plus token auth, and existing CP-05-03 read-only behavior remains intact.
 
-20. Close the feature only after every checked item in Definition of Done can be demonstrated by this guide without using the previous `Current expected result` exceptions.
+19. Close the feature only after every checked item in Definition of Done can be demonstrated by this guide without using the previous `Current expected result` exceptions.
 Web test steps:
 - Re-run steps 1 through 19 against the current build without changing the document expectations mid-run.
 - Capture one passing web evidence point for each item: setup status, provider config state, workflow run state, approval action, or audit artifact.
