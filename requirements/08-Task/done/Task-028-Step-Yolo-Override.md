@@ -111,4 +111,4 @@ Workflow-level YOLO alone is not enough for mixed approval workflows. A workflow
 
 - Historical status: the `step > workflow` YOLO precedence defined in Task-028 is no longer the active rule for new work.
 - New rule: use workflow-level YOLO only, do not read step-level YOLO to decide runtime execution or run-detail indicators, and default to `false`.
-- Current source of truth: `requirements/08-Task/todo/Task-030-Workflow-Runs-Detail-Page-Yolo-Indicators.md`
+- Current source of truth: `requirements/08-Task/done/Task-030-Workflow-Runs-Detail-Page-Yolo-Indicators.md`
