@@ -1079,26 +1079,24 @@ export async function sendMessageWithRetry({
   forceNewProviderSession?: boolean;
   providerAccountId?: string | null;
 }): Promise<WorkflowSessionSendResult> {
+  const requestedAccount = await resolveLocalProviderAccount(
+    providerKey,
+    providerAccountId,
+  );
   const stepScopedProcessKey = requiresStepScopedSession(requiredMcps)
     ? `workflow-${workflowRunId}-step-${stepRunId}`
     : null;
 
-  if (requiresStepScopedSession(requiredMcps)) {
-    const requestedAccount = await resolveLocalProviderAccount(
-      providerKey,
-      providerAccountId,
-    );
-    await localRunnerGateway.ensureGoogleDriveMcpProviderConfig({
-      providerKey,
-      accountHomePath: requestedAccount.home_path,
-      scope: "account",
-      mode: allowWrite ? "read_write" : "read_only",
-      yoloMode,
-      workflowRunId,
-      workflowStepRunId: stepRunId,
-      processKey: stepScopedProcessKey ?? undefined,
-    });
-  }
+  await localRunnerGateway.ensureGoogleDriveMcpProviderConfig({
+    providerKey,
+    accountHomePath: requestedAccount.home_path,
+    scope: "account",
+    mode: allowWrite ? "read_write" : "read_only",
+    yoloMode,
+    workflowRunId,
+    workflowStepRunId: stepRunId,
+    processKey: stepScopedProcessKey ?? undefined,
+  });
 
   const sessionScopeKey = requiresStepScopedSession(requiredMcps) ? stepRunId : null;
   let handle = await getOrCreateSession({

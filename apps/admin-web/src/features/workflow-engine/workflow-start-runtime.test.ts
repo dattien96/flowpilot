@@ -1588,6 +1588,9 @@ describe("workflow-start-runtime", () => {
       });
 
       const localRunnerGateway = {
+        ensureGoogleDriveMcpProviderConfig: vi.fn().mockResolvedValue({
+          configChanged: false,
+        }),
         sendMessage: mockSendMessage,
         closeSession: mockCloseSession,
         startSession: mockStartSession
@@ -1624,6 +1627,16 @@ describe("workflow-start-runtime", () => {
       });
 
       expect(callCount).toBe(2);
+      expect(localRunnerGateway.ensureGoogleDriveMcpProviderConfig).toHaveBeenCalledWith({
+        providerKey: "codex",
+        accountHomePath: "/accounts/b",
+        scope: "account",
+        mode: "read_only",
+        yoloMode: false,
+        workflowRunId: "run-123",
+        workflowStepRunId: "step-456",
+        processKey: undefined,
+      });
       expect(mockStartSession).toHaveBeenCalledWith(expect.objectContaining({
         resumeProviderSessionId: "thread-old",
       }));
@@ -1766,6 +1779,9 @@ describe("workflow-start-runtime", () => {
       });
 
       const localRunnerGateway = {
+        ensureGoogleDriveMcpProviderConfig: vi.fn().mockResolvedValue({
+          configChanged: false,
+        }),
         sendMessage: mockSendMessage,
         closeSession: vi.fn().mockResolvedValue(undefined),
         startSession: mockStartSession,
@@ -1874,6 +1890,9 @@ describe("workflow-start-runtime", () => {
         }),
       } as any;
       const localRunnerGateway = {
+        ensureGoogleDriveMcpProviderConfig: vi.fn().mockResolvedValue({
+          configChanged: false,
+        }),
         sendMessage: mockSendMessage,
         closeSession: vi.fn().mockResolvedValue(undefined),
         startSession: vi.fn().mockResolvedValue({
@@ -1922,6 +1941,9 @@ describe("workflow-start-runtime", () => {
       });
 
       const localRunnerGateway = {
+        ensureGoogleDriveMcpProviderConfig: vi.fn().mockResolvedValue({
+          configChanged: false,
+        }),
         sendMessage: mockSendMessage,
         closeSession: vi.fn().mockResolvedValue(undefined),
         startSession: mockStartSession,
@@ -1985,6 +2007,9 @@ describe("workflow-start-runtime", () => {
       });
 
       const localRunnerGateway = {
+        ensureGoogleDriveMcpProviderConfig: vi.fn().mockResolvedValue({
+          configChanged: false,
+        }),
         sendMessage: mockSendMessage,
         closeSession: vi.fn().mockResolvedValue(undefined),
         startSession: mockStartSession,
@@ -2052,6 +2077,9 @@ describe("workflow-start-runtime", () => {
       });
 
       const localRunnerGateway = {
+        ensureGoogleDriveMcpProviderConfig: vi.fn().mockResolvedValue({
+          configChanged: false,
+        }),
         sendMessage: mockSendMessage,
         closeSession: mockCloseSession,
         startSession: mockStartSession
@@ -2116,6 +2144,9 @@ describe("workflow-start-runtime", () => {
       });
 
       const localRunnerGateway = {
+        ensureGoogleDriveMcpProviderConfig: vi.fn().mockResolvedValue({
+          configChanged: false,
+        }),
         sendMessage: mockSendMessage,
         closeSession: mockCloseSession,
         startSession: mockStartSession
@@ -2247,6 +2278,9 @@ describe("workflow-start-runtime", () => {
       });
 
       const localRunnerGateway = {
+        ensureGoogleDriveMcpProviderConfig: vi.fn().mockResolvedValue({
+          configChanged: false,
+        }),
         sendMessage: mockSendMessage,
         closeSession: mockCloseSession,
         startSession: mockStartSession,
@@ -2356,6 +2390,9 @@ describe("workflow-start-runtime", () => {
         });
 
       const localRunnerGateway = {
+        ensureGoogleDriveMcpProviderConfig: vi.fn().mockResolvedValue({
+          configChanged: false,
+        }),
         sendMessage: mockSendMessage,
         closeSession: vi.fn().mockResolvedValue(undefined),
         startSession: vi.fn().mockResolvedValue({
