@@ -2125,7 +2125,7 @@ async function loadWorkflowDefinition(
   const { data, error } = await adminClient
     .from("workflows")
     .select(
-      "id, name, project_id, provider_override, model_override, reasoning_effort_override",
+      "id, name, project_id, provider_override, model_override, reasoning_effort_override, yolo_mode",
     )
     .eq("id", workflowId)
     .or(`project_id.is.null,project_id.eq.${projectId}`)
@@ -2166,7 +2166,7 @@ async function loadWorkflowRunStep(
     .from("workflow_run_steps")
     .select(
       "id, workflow_run_id, workflow_step_id, execution_order_index, step_type, status, retry_count, error_message, " +
-        "workflow_steps ( id, step_type, order_index, is_enabled, provider_override, model_override, reasoning_effort_override, yolo_mode, provider_account_override_id, requires_approval )",
+        "workflow_steps ( id, step_type, order_index, is_enabled, provider_override, model_override, reasoning_effort_override, provider_account_override_id, requires_approval )",
     )
     .eq("id", stepRunId)
     .maybeSingle();
@@ -2207,7 +2207,7 @@ async function loadWorkflowSteps(
   const { data, error } = await adminClient
     .from("workflow_steps")
     .select(
-      "id, step_type, order_index, is_enabled, provider_override, model_override, reasoning_effort_override, yolo_mode, provider_account_override_id, requires_approval",
+      "id, step_type, order_index, is_enabled, provider_override, model_override, reasoning_effort_override, provider_account_override_id, requires_approval",
     )
     .eq("workflow_id", workflowId)
     .order("order_index", { ascending: true });
@@ -2226,7 +2226,7 @@ async function loadWorkflowStepById(
   const { data, error } = await adminClient
     .from("workflow_steps")
     .select(
-      "id, step_type, order_index, is_enabled, provider_override, model_override, reasoning_effort_override, yolo_mode, provider_account_override_id, requires_approval",
+      "id, step_type, order_index, is_enabled, provider_override, model_override, reasoning_effort_override, provider_account_override_id, requires_approval",
     )
     .eq("id", workflowStepId)
     .maybeSingle();
@@ -2278,8 +2278,6 @@ export async function createSingleStepWorkflow(
   if (!definition) {
     throw new Error(`Step definition "${stepType}" could not be loaded.`);
   }
-  const singleStepYoloMode =
-    typeof definition.yolo_mode === "boolean" ? definition.yolo_mode : false;
 
   const { data: workflowData, error: workflowError } = await adminClient
     .from("workflows")
@@ -2295,7 +2293,7 @@ export async function createSingleStepWorkflow(
       model_override: definition.model ?? DEFAULT_MODEL,
       reasoning_effort_override:
         definition.reasoning_effort ?? DEFAULT_REASONING_EFFORT,
-      yolo_mode: singleStepYoloMode,
+      yolo_mode: Boolean(definition.yolo_mode),
       created_by: SINGLE_STEP_RUNTIME_CREATED_BY,
     })
     .select(
@@ -2323,11 +2321,10 @@ export async function createSingleStepWorkflow(
       model_override: definition.model ?? DEFAULT_MODEL,
       reasoning_effort_override:
         definition.reasoning_effort ?? DEFAULT_REASONING_EFFORT,
-      yolo_mode: singleStepYoloMode,
       requires_approval: false,
     })
     .select(
-      "id, step_type, order_index, is_enabled, provider_override, model_override, reasoning_effort_override, yolo_mode, requires_approval",
+      "id, step_type, order_index, is_enabled, provider_override, model_override, reasoning_effort_override, requires_approval",
     )
     .single();
 
@@ -2454,7 +2451,7 @@ async function resolvePlannedStepExecution(
     model: normalizedModel,
     providerKey: resolvedProvider,
     reasoningEffort: resolvedReasoningEffort,
-    yoloMode: step.yolo_mode ?? Boolean(workflow.yolo_mode),
+    yoloMode: Boolean(workflow.yolo_mode),
     providerAccountId: step.provider_account_override_id ?? null,
   };
 }

@@ -64,7 +64,7 @@ export function mapStepDefinition(row: SupabaseRow): StepDefinition {
         STEP_MODEL_OPTIONS[0].value,
     ) as SupportedStepModel,
     reasoningEffort: row.reasoning_effort ? (String(row.reasoning_effort) as ReasoningEffort) : null,
-    yoloMode: typeof row.yolo_mode === "boolean" ? row.yolo_mode : null,
+    yoloMode: Boolean(row.yolo_mode),
     agentType: row.agent_type as "standard" | "autonomous",
     inputArtifactDefinitions,
     outputArtifactDefinitions,
@@ -170,7 +170,6 @@ export function mapWorkflowStep(row: SupabaseRow): WorkflowStep {
       ? normalizeStepModel(String(row.model_override)) ?? String(row.model_override)
       : null,
     reasoningEffortOverride: row.reasoning_effort_override ? String(row.reasoning_effort_override) : null,
-    yoloMode: typeof row.yolo_mode === "boolean" ? row.yolo_mode : null,
     requiresApproval: Boolean(row.requires_approval),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),

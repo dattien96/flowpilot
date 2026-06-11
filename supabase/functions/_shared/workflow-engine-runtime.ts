@@ -228,10 +228,11 @@ export async function getWorkflowDefinition(
   provider_override: string | null;
   model_override: string | null;
   reasoning_effort_override: string | null;
+  yolo_mode?: boolean | null;
 }> {
   const { data, error } = await adminClient
     .from("workflows")
-    .select("id, provider_override, model_override, reasoning_effort_override")
+    .select("id, provider_override, model_override, reasoning_effort_override, yolo_mode")
     .eq("id", workflowId)
     .or(`project_id.is.null,project_id.eq.${projectId}`)
     .single();
@@ -315,8 +316,6 @@ export async function createSingleStepWorkflow(
   const definition = definitionData as WorkflowStepDefinitionRow;
   const resolvedModel = definition.model ?? DEFAULT_MODEL;
   const resolvedReasoningEffort = definition.reasoning_effort ?? DEFAULT_REASONING_EFFORT;
-  const singleStepYoloMode =
-    typeof definition.yolo_mode === "boolean" ? definition.yolo_mode : false;
   const { data: workflowData, error: workflowError } = await adminClient
     .from("workflows")
     .insert({
@@ -327,7 +326,7 @@ export async function createSingleStepWorkflow(
       provider_override: resolveProviderKeyFromModel(resolvedModel),
       model_override: resolvedModel,
       reasoning_effort_override: resolvedReasoningEffort,
-      yolo_mode: singleStepYoloMode,
+      yolo_mode: Boolean(definition.yolo_mode),
       created_by: SINGLE_STEP_RUNTIME_CREATED_BY,
     })
     .select("id, provider_override, model_override, reasoning_effort_override, yolo_mode")
@@ -347,10 +346,9 @@ export async function createSingleStepWorkflow(
       provider_override: resolveProviderKeyFromModel(resolvedModel),
       model_override: resolvedModel,
       reasoning_effort_override: resolvedReasoningEffort,
-      yolo_mode: singleStepYoloMode,
       requires_approval: false,
     })
-    .select("id, step_type, order_index, is_enabled, yolo_mode, requires_approval")
+    .select("id, step_type, order_index, is_enabled, requires_approval")
     .single();
 
   if (workflowStepError) {
@@ -401,7 +399,7 @@ async function listRuntimeSteps(
   if (workflowStepIds.length > 0) {
     const { data: definitionData, error: definitionError } = await adminClient
       .from("workflow_steps")
-      .select("id, is_enabled, requires_approval, yolo_mode")
+      .select("id, is_enabled, requires_approval")
       .in("id", workflowStepIds);
 
     if (definitionError) {
@@ -422,8 +420,6 @@ async function listRuntimeSteps(
       id: step.id,
       stepType: step.step_type,
       status: step.status,
-      yoloMode:
-        typeof definition?.yolo_mode === "boolean" ? definition.yolo_mode : null,
       requiresApproval: definition?.requires_approval ?? true,
       startedAt: step.started_at,
       retryCount: step.retry_count,
@@ -592,11 +588,16 @@ async function applyStepPatch(
 
 export async function progressWorkflowRun(adminClient: SupabaseClient, runId: string) {
   const run = await getWorkflowRun(adminClient, runId);
+  const workflow = await getWorkflowDefinition(
+    adminClient,
+    run.workflow_id,
+    run.project_id,
+  );
   const runtimeSteps = await listRuntimeSteps(adminClient, runId);
   const now = new Date().toISOString();
   const plan = planWorkflowProgress({
     steps: runtimeSteps,
-    yoloMode: run.yolo_mode,
+    yoloMode: Boolean(workflow.yolo_mode),
     now,
   });
 

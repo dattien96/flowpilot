@@ -569,7 +569,7 @@ export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
           subagent: step.subagent ?? null,
           model: step.model,
           reasoning_effort: normalizeReasoningEffort(step.reasoningEffort),
-          yolo_mode: typeof step.yoloMode === "boolean" ? step.yoloMode : null,
+          yolo_mode: Boolean(step.yoloMode),
           agent_type: step.agentType,
         },
         { onConflict: "step_type" }
@@ -767,7 +767,6 @@ export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
             step.reasoningEffortOverride,
             resolvedWorkflowReasoning,
           ),
-          yolo_mode: typeof step.yoloMode === "boolean" ? step.yoloMode : null,
           requires_approval: step.requiresApproval ?? true,
         }))
       );
@@ -811,7 +810,15 @@ export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
     if (runError) throw new Error(`Unable to load run: ${runError.message}`);
     if (!runData) return null;
 
-    const run = mapWorkflowRun(runData);
+    const { data: workflowData, error: workflowError } = await this.supabase
+      .from("workflows")
+      .select("created_by, yolo_mode")
+      .eq("id", runData.workflow_id)
+      .maybeSingle();
+
+    if (workflowError) {
+      throw new Error(`Unable to load workflow for run detail: ${workflowError.message}`);
+    }
 
     const { data: stepsData, error: stepsError } = await this.supabase
       .from("workflow_run_steps")
@@ -821,6 +828,31 @@ export class SupabaseWorkflowEngineGateway implements WorkflowEngineGateway {
 
     if (stepsError) throw new Error(`Unable to load run steps: ${stepsError.message}`);
     const steps = (stepsData ?? []).map(mapWorkflowRunStep);
+
+    let effectiveYoloMode =
+      typeof workflowData?.yolo_mode === "boolean" ? workflowData.yolo_mode : false;
+    if (workflowData?.created_by === "flowpilot-runtime" && steps.length === 1) {
+      const { data: stepDefinitionData, error: stepDefinitionError } = await this.supabase
+        .from("step_definitions")
+        .select("yolo_mode")
+        .eq("step_type", steps[0].stepType)
+        .maybeSingle();
+
+      if (stepDefinitionError) {
+        throw new Error(
+          `Unable to load single-step YOLO policy: ${stepDefinitionError.message}`,
+        );
+      }
+      effectiveYoloMode =
+        typeof stepDefinitionData?.yolo_mode === "boolean"
+          ? stepDefinitionData.yolo_mode
+          : false;
+    }
+
+    const run = mapWorkflowRun({
+      ...runData,
+      yolo_mode: effectiveYoloMode,
+    });
 
     let logs: WorkflowRunLog[] = [];
     if (steps.length > 0) {
