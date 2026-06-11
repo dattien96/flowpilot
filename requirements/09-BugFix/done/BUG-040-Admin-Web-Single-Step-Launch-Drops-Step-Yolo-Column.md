@@ -12,7 +12,7 @@
 - Last Updated: `2026-06-11`
 - Parent Documents: `requirements/07-Coding-Plan/priority/CP-29-MCP-Proxy-Google-Drive.md`, `requirements/06-System-Tech-Design/SD-11-MCP-Connection-Flows.md`, `requirements/06-System-Tech-Design/SD-09-Approval-Gates.md`, `requirements/05-System-Specs/SS-04-Workflow.md`, `requirements/05-System-Specs/SS-08-Approve-Gate.md`, `requirements/05-System-Specs/SS-05-Workflow-Ai-Provider.md`
 - Child Documents: `none`
-- Related Documents: `requirements/08-Task/done/Task-028-Step-Yolo-Override.md`, `requirements/09-BugFix/done/BUG-038-Single-Step-Yolo-Config-Is-Dropped-At-Runtime.md`, `requirements/09-BugFix/done/BUG-039-Google-Drive-Approval-Replay-Loses-Step-Scoped-Process-Key.md`, `change-audit/CA-046-fix-single-step-yolo-config-drift.md`, `change-audit/CA-047-fix-google-drive-approval-replay-process-key.md`, `change-audit/CA-048-fix-admin-web-single-step-yolo-select.md`
+- Related Documents: `requirements/08-Task/done/Task-028-Step-Yolo-Override.md`, `requirements/08-Task/todo/Task-030-Workflow-Runs-Detail-Page-Yolo-Indicators.md`, `requirements/09-BugFix/done/BUG-038-Single-Step-Yolo-Config-Is-Dropped-At-Runtime.md`, `requirements/09-BugFix/done/BUG-039-Google-Drive-Approval-Replay-Loses-Step-Scoped-Process-Key.md`, `change-audit/CA-046-fix-single-step-yolo-config-drift.md`, `change-audit/CA-047-fix-google-drive-approval-replay-process-key.md`, `change-audit/CA-048-fix-admin-web-single-step-yolo-select.md`
 - Replaces: `none`
 - Tags: `workflow-engine, yolo, single-step, admin-web, cp-29, regression`
 
@@ -20,10 +20,10 @@
 
 ### Summary
 
-- Task-028 requires single-step launches to preserve the reusable step definition YOLO value.
+- This bug fix corrected the admin-web single-step launch path under the older Task-028 step-level YOLO model.
 - The admin-web runtime had already been updated to write `definition.yolo_mode`, but its shared `loadStepDefinitions()` query still did not select the `yolo_mode` column.
 - That meant browser-launched single-step runs materialized runtime-generated workflow rows with `false` even when the reusable step definition stored `true`.
-- Run `d24532ef-bc25-4b80-bb38-993d9a2259ef` is direct evidence: the step definition was `true`, but the generated workflow, workflow step, and run rows were all `false`, so the proxy correctly required approval.
+- Task-030 now supersedes that older rule for new work and simplifies current behavior back to workflow-level YOLO only.
 
 ### Current Ask
 
@@ -36,9 +36,9 @@
 
 ### Constraints
 
-- Keep Task-028 precedence intact: effective runtime YOLO remains `workflow_steps.yolo_mode ?? workflows.yolo_mode`.
+- Preserve this bug record as historical evidence of the older step-level launch contract.
 - Keep CP-29 approval behavior unchanged; the bug is in launch-time data materialization, not in proxy approval semantics.
-- Do not silently treat an omitted query column as if the step definition explicitly stored `false`.
+- Current YOLO-rule changes should follow Task-030, not the older step-level model restored here.
 
 ### Open Questions
 
@@ -118,6 +118,12 @@ The admin-web single-step launch path still dropped the reusable step definition
 ## 10. Follow-Up Document Updates
 
 - upstream docs that must change:
-  - none required because this fix restores the existing Task-028 and CP-29 contract
+  - Task-030 is now the active YOLO rule document for current runtime and UI work
 - notes left unchanged on purpose:
   - run `d24532ef-bc25-4b80-bb38-993d9a2259ef` remains historical evidence of the broken launch path and is not retroactively rewritten by this code fix
+
+### Historical Rule Notice
+
+- The `step_definitions.yolo_mode` launch fix documented here was correct under the older Task-028 rule.
+- New rule: workflow-level YOLO only, with no step-level YOLO reads driving current execution or run-detail indicators.
+- See `requirements/08-Task/todo/Task-030-Workflow-Runs-Detail-Page-Yolo-Indicators.md`.

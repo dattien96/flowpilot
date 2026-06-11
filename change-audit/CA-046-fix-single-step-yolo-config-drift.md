@@ -25,3 +25,9 @@ Aligned the single-step runtime materialization path with Task-028 so reusable s
 
 - The targeted Vitest invocation in this shell still fails before test discovery because direct file runs are not resolving the repo's `@/...` path aliases in this environment.
 - GitNexus tools were not available in this thread, so the repo's normal symbol impact analysis flow had to be replaced with careful local inspection only.
+
+## Historical Rule Status
+
+- This audit documents a correct fix under the earlier Task-028 step-level YOLO contract.
+- Current YOLO rule: workflow-level only, no step-level YOLO reads for current execution or run-detail behavior.
+- See `requirements/08-Task/todo/Task-030-Workflow-Runs-Detail-Page-Yolo-Indicators.md`.

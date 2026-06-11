@@ -12,7 +12,7 @@
 - Last Updated: `2026-06-11`
 - Parent Documents: `requirements/07-Coding-Plan/priority/CP-29-MCP-Proxy-Google-Drive.md`, `requirements/06-System-Tech-Design/SD-11-MCP-Connection-Flows.md`, `requirements/06-System-Tech-Design/SD-09-Approval-Gates.md`, `requirements/05-System-Specs/SS-04-Workflow.md`, `requirements/05-System-Specs/SS-08-Approve-Gate.md`, `requirements/05-System-Specs/SS-05-Workflow-Ai-Provider.md`
 - Child Documents: `none`
-- Related Documents: `requirements/08-Task/done/Task-028-Step-Yolo-Override.md`, `requirements/09-BugFix/done/BUG-036-Workflow-Run-Yolo-State-Drifts-From-Definition.md`, `change-audit/CA-043-cp29-google-drive-mcp-manual-approval-ui.md`, `change-audit/CA-044-fix-workflow-run-yolo-default-drift.md`, `change-audit/CA-046-fix-single-step-yolo-config-drift.md`
+- Related Documents: `requirements/08-Task/done/Task-028-Step-Yolo-Override.md`, `requirements/08-Task/todo/Task-030-Workflow-Runs-Detail-Page-Yolo-Indicators.md`, `requirements/09-BugFix/done/BUG-036-Workflow-Run-Yolo-State-Drifts-From-Definition.md`, `change-audit/CA-043-cp29-google-drive-mcp-manual-approval-ui.md`, `change-audit/CA-044-fix-workflow-run-yolo-default-drift.md`, `change-audit/CA-046-fix-single-step-yolo-config-drift.md`
 - Replaces: `none`
 - Tags: `workflow-engine, yolo, single-step, cp-29, approval, regression`
 
@@ -20,10 +20,10 @@
 
 ### Summary
 
-- Reusable step definitions can store a nullable YOLO default from Task-028.
+- This bug fix corrected single-step YOLO propagation under the older Task-028 step-level YOLO model.
 - Single-step launches materialize a temporary workflow and workflow step before execution starts.
 - Both single-step creation paths were dropping the saved `step_definitions.yolo_mode` value when creating that temporary workflow state.
-- That let single-step runtime approval behavior drift from the YOLO setting the operator had configured on the reusable step.
+- Task-030 now supersedes this older rule for new work and simplifies current runtime behavior back to workflow-level YOLO only.
 
 ### Current Ask
 
@@ -36,8 +36,8 @@
 
 ### Constraints
 
-- Keep Task-028 precedence intact: effective runtime YOLO remains `workflow_steps.yolo_mode ?? workflows.yolo_mode`.
-- Do not change CP-29 provider-host approval policy; only fix the lost YOLO configuration in the single-step materialization path.
+- Preserve this bug record as historical evidence of the old step-level YOLO contract.
+- Current runtime-rule changes should follow Task-030, not the Task-028 step precedence referenced here.
 - Do not claim automated verification that could not be executed in the current shell.
 
 ### Open Questions
@@ -118,6 +118,12 @@ Single-step execution creates a runtime-generated one-step workflow from a reusa
 ## 10. Follow-Up Document Updates
 
 - upstream docs that must change:
-  - none required because the implementation is being brought back into alignment with Task-028 and CP-29
+  - Task-030 is now the active YOLO rule document for current runtime and UI work
 - notes left unchanged on purpose:
-  - Task-028 remains the source of truth for YOLO precedence and semantics
+  - this bug record remains historically correct for the implementation contract that existed at the time
+
+### Historical Rule Notice
+
+- The step-definition YOLO propagation restored by this bug was correct under the older Task-028 model.
+- New rule: workflow-level YOLO only, with no step-level YOLO reads driving current execution or run-detail logic.
+- See `requirements/08-Task/todo/Task-030-Workflow-Runs-Detail-Page-Yolo-Indicators.md`.

@@ -24,3 +24,9 @@ Aligned workflow run startup and runtime labeling with the saved workflow YOLO d
 
 - The targeted Vitest invocation in this shell currently fails before test execution because direct file runs are not resolving the repo's `@/...` path aliases in this environment.
 - The run detail page still shows workflow-level YOLO only; it does not yet render the selected step's effective YOLO when a step override differs from the workflow default.
+
+## Historical Rule Status
+
+- The step-level override note above reflects the Task-028 contract that existed when this change shipped.
+- Current YOLO rule: workflow-level only, no step-level YOLO reads for execution or run-detail state.
+- See `requirements/08-Task/todo/Task-030-Workflow-Runs-Detail-Page-Yolo-Indicators.md`.

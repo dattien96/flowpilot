@@ -25,3 +25,9 @@ Closed the remaining browser launch gap in the single-step YOLO flow so the admi
 
 - The specific run `d24532ef-bc25-4b80-bb38-993d9a2259ef` was launched with persisted non-YOLO runtime rows, so it remains a bad historical run and should be re-launched rather than treated as corrected in place.
 - GitNexus tools were not available in this thread, so the repo's normal symbol impact analysis flow had to be replaced with careful local inspection only.
+
+## Historical Rule Status
+
+- This audit documents a correct fix under the earlier Task-028 step-level YOLO contract.
+- Current YOLO rule: workflow-level only, no step-level YOLO reads for current execution or run-detail behavior.
+- See `requirements/08-Task/todo/Task-030-Workflow-Runs-Detail-Page-Yolo-Indicators.md`.

@@ -12,7 +12,7 @@
 - Last Updated: `2026-06-11`
 - Parent Documents: `requirements/07-Coding-Plan/priority/CP-29-MCP-Proxy-Google-Drive.md`, `requirements/06-System-Tech-Design/SD-11-MCP-Connection-Flows.md`, `requirements/06-System-Tech-Design/SD-09-Approval-Gates.md`, `requirements/05-System-Specs/SS-04-Workflow.md`, `requirements/05-System-Specs/SS-08-Approve-Gate.md`
 - Child Documents: `none`
-- Related Documents: `requirements/08-Task/done/Task-028-Step-Yolo-Override.md`
+- Related Documents: `requirements/08-Task/done/Task-028-Step-Yolo-Override.md`, `requirements/08-Task/todo/Task-030-Workflow-Runs-Detail-Page-Yolo-Indicators.md`
 - Replaces: `none`
 - Tags: `workflow-engine, yolo, runtime, cp-29, regression`
 
@@ -20,10 +20,10 @@
 
 ### Summary
 
-- Workflow definitions and workflow-attached steps can already store YOLO intent, including step overrides from Task-028.
+- This bug fix corrected workflow-run YOLO initialization under the older Task-028 step-override model.
 - The local runtime path starts runs with the workflow default, but the Supabase start-run edge path still hardcoded `workflow_runs.yolo_mode = false`.
 - That made runtime state look like a separate YOLO configuration instead of reflecting the saved workflow definition.
-- The run detail header also labeled the indicator as plain `YOLO`, which reinforced the impression that it was an independent runtime switch.
+- Task-030 now supersedes the older mixed step/workflow YOLO rule and keeps current YOLO behavior workflow-level only.
 
 ### Current Ask
 
@@ -36,9 +36,9 @@
 
 ### Constraints
 
-- Keep Task-028 behavior where step execution still resolves effective YOLO as `workflow_steps.yolo_mode ?? workflows.yolo_mode`.
-- Do not silently redefine `workflow_runs.yolo_mode` as per-step state in this fix.
-- Keep CP-29 provider-session YOLO behavior driven by effective step execution state.
+- Preserve this fix as historical evidence of the older runtime contract.
+- For current product behavior, follow Task-030 instead of Task-028 when interpreting YOLO rules.
+- Keep CP-29 provider-session semantics unchanged: `false` requires approval and `true` allows uninterrupted execution.
 
 ### Open Questions
 
@@ -116,6 +116,12 @@ Workflow execution already resolves step-level YOLO correctly, but the runtime-f
 ## 10. Follow-Up Document Updates
 
 - upstream docs that must change:
-  - none required for this fix because the implementation is being brought back into alignment with Task-028 and CP-29
+  - Task-030 is now the current document for YOLO UI/runtime behavior and supersedes the older step-level interpretation used here
 - notes left unchanged on purpose:
-  - Task-028 continues to treat `workflow_runs.yolo_mode` as the workflow-level default and effective per-step YOLO as a separate runtime resolution
+  - this bug fix remains historically correct for the contract that existed when it was implemented
+
+### Historical Rule Notice
+
+- The step-level YOLO interpretation referenced in this bug is obsolete for new work.
+- New rule: workflow-level YOLO only, no step-level YOLO reads for execution or run-detail state.
+- See `requirements/08-Task/todo/Task-030-Workflow-Runs-Detail-Page-Yolo-Indicators.md`.
