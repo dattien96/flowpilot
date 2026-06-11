@@ -59,6 +59,7 @@ function buildStep(overrides: Partial<StepDefinition> = {}): StepDefinition {
     outputArtifactDefinitions: ["tech_spec_artifact"],
     model: "gpt-5.5",
     reasoningEffort: "high",
+    yoloMode: false,
     agentType: "standard",
     createdAt: "2026-05-20T00:00:00.000Z",
     updatedAt: "2026-05-20T00:00:00.000Z",

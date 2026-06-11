@@ -26,13 +26,6 @@ const DEFAULT_STEP_MODEL =
   STEP_MODEL_OPTIONS.find((option) => option.value === "gpt-5.4")?.value ??
   STEP_MODEL_OPTIONS[0].value;
 const DEFAULT_REASONING_EFFORT = "medium";
-type YoloModeValue = "inherit" | "enabled" | "disabled";
-
-function parseYoloModeValue(value: string): boolean | null {
-  if (value === "enabled") return true;
-  if (value === "disabled") return false;
-  return null;
-}
 
 export function CreateWorkflowStepPage() {
   const navigate = useNavigate();
@@ -65,7 +58,7 @@ export function CreateWorkflowStepPage() {
   const [subagent, setSubagent] = useState("");
   const [model, setModel] = useState<string>(DEFAULT_STEP_MODEL);
   const [reasoningEffort, setReasoningEffort] = useState(DEFAULT_REASONING_EFFORT);
-  const [yoloMode, setYoloMode] = useState<YoloModeValue>("inherit");
+  const [yoloMode, setYoloMode] = useState(false);
   const [inputArtifactDefinitions, setInputArtifactDefinitions] = useState<string[]>([]);
   const [outputArtifactDefinitions, setOutputArtifactDefinitions] = useState<string[]>([]);
   const [agentType, setAgentType] = useState<"standard" | "autonomous">("standard");
@@ -126,7 +119,7 @@ export function CreateWorkflowStepPage() {
         subagent: subagent.trim() || null,
         model,
         reasoningEffort: reasoningEffort || DEFAULT_REASONING_EFFORT,
-        yoloMode: parseYoloModeValue(yoloMode),
+        yoloMode,
         inputArtifactDefinitions,
         outputArtifactDefinitions,
         agentType,
@@ -274,17 +267,19 @@ export function CreateWorkflowStepPage() {
             ))}
           </select>
         </label>
-        <label className="space-y-2 text-sm">
-          <span className="font-medium">YOLO default</span>
-          <select
-            className="w-full rounded-2xl border border-border bg-card px-4 py-3"
-            value={yoloMode}
-            onChange={(event) => setYoloMode(event.target.value as YoloModeValue)}
-          >
-            <option value="inherit">Inherit workflow</option>
-            <option value="enabled">On</option>
-            <option value="disabled">Off</option>
-          </select>
+        <label className="flex items-start gap-3 rounded-2xl border border-border bg-card px-4 py-3 text-sm">
+          <input
+            checked={yoloMode}
+            className="mt-1"
+            type="checkbox"
+            onChange={(event) => setYoloMode(event.target.checked)}
+          />
+          <span>
+            <span className="block font-medium">YOLO for single-step runs</span>
+            <span className="block text-xs text-muted-foreground">
+              Used only when this step is launched directly. Workflows use workflow YOLO.
+            </span>
+          </span>
         </label>
         <div className="space-y-2 md:col-span-2">
           <ArtifactDefinitionSelector

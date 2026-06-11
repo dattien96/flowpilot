@@ -103,7 +103,6 @@ function buildWorkflowStep(overrides: Partial<WorkflowStep> = {}): WorkflowStep 
     providerOverride: null,
     modelOverride: null,
     reasoningEffortOverride: null,
-    yoloMode: null,
     createdAt: "2026-05-20T00:00:00.000Z",
     updatedAt: "2026-05-20T00:00:00.000Z",
     ...overrides,
@@ -195,9 +194,6 @@ describe("WorkflowDetailPage", () => {
     expect(screen.queryByText("Run in project")).not.toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: /add step/i })).toBeEnabled();
     expect(screen.getByRole("combobox", { name: /launch in project/i })).toBeInTheDocument();
-    fireEvent.change(screen.getByRole("combobox", { name: /yolo/i }), {
-      target: { value: "disabled" },
-    });
 
     fireEvent.click(screen.getByRole("button", { name: "Save workflow" }));
 
@@ -211,7 +207,8 @@ describe("WorkflowDetailPage", () => {
           yoloMode: false,
           steps: [
             expect.objectContaining({
-              yoloMode: false,
+              stepType: "generate_spec",
+              requiresApproval: true,
             }),
           ],
         })

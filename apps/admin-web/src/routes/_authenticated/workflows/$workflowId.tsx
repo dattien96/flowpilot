@@ -19,19 +19,6 @@ import { StartWorkflowRunUseCase } from "@/domain/usecase/workflow-engine/start-
 
 const DEFAULT_MODEL = "gpt-5.4";
 const DEFAULT_REASONING_EFFORT = "medium";
-type StepYoloModeValue = "inherit" | "enabled" | "disabled";
-
-function stepYoloValue(value: boolean | null | undefined): StepYoloModeValue {
-  if (value === true) return "enabled";
-  if (value === false) return "disabled";
-  return "inherit";
-}
-
-function parseStepYoloValue(value: string): boolean | null {
-  if (value === "enabled") return true;
-  if (value === "disabled") return false;
-  return null;
-}
 
 function providerForModel(model: string) {
   if (model.startsWith("gpt-")) {
@@ -179,7 +166,6 @@ export function WorkflowDetailPage() {
         orderIndex: current.length,
         isEnabled: true,
         requiresApproval: true,
-        yoloMode: selectedStep?.yoloMode ?? null,
         modelOverride: selectedStep?.model ?? DEFAULT_MODEL,
         reasoningEffortOverride: selectedStep?.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
       },
@@ -504,7 +490,7 @@ export function WorkflowDetailPage() {
                   </Button>
                 </div>
               </div>
-              <div className="grid gap-3 md:grid-cols-3">
+              <div className="grid gap-3 md:grid-cols-2">
                 <label className="space-y-2 text-sm">
                   <span className="font-medium">Model</span>
                   <select
@@ -552,27 +538,6 @@ export function WorkflowDetailPage() {
                         {option.label}
                       </option>
                     ))}
-                  </select>
-                </label>
-                <label className="space-y-2 text-sm">
-                  <span className="font-medium">YOLO</span>
-                  <select
-                    className="w-full rounded-2xl border border-border bg-background px-4 py-3"
-                    disabled={!canEdit}
-                    value={stepYoloValue(step.yoloMode)}
-                    onChange={(event) =>
-                      setSteps((current) =>
-                        current.map((item, currentIndex) =>
-                          currentIndex === index
-                            ? { ...item, yoloMode: parseStepYoloValue(event.target.value) }
-                            : item,
-                        ),
-                      )
-                    }
-                  >
-                    <option value="inherit">Inherit workflow</option>
-                    <option value="enabled">On</option>
-                    <option value="disabled">Off</option>
                   </select>
                 </label>
               </div>

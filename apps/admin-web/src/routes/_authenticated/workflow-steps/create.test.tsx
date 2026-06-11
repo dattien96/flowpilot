@@ -86,6 +86,7 @@ function buildStep(overrides: Partial<StepDefinition> = {}): StepDefinition {
     requiredSkills: ["tech_spec_skill"],
     model: "gpt-5.4",
     reasoningEffort: "medium",
+    yoloMode: false,
     agentType: "standard",
     createdAt: "2026-05-20T00:00:00.000Z",
     updatedAt: "2026-05-21T00:00:00.000Z",
@@ -176,9 +177,7 @@ describe("CreateWorkflowStepPage", () => {
     fireEvent.change(screen.getByLabelText("Reasoning effort"), {
       target: { value: "medium" },
     });
-    fireEvent.change(screen.getByLabelText("YOLO default"), {
-      target: { value: "enabled" },
-    });
+    fireEvent.click(screen.getByRole("checkbox", { name: /yolo for single-step runs/i }));
     fireEvent.click(screen.getAllByRole("button", { name: "Add artifact" })[0]);
     fireEvent.click(screen.getAllByRole("button", { name: "Add artifact" })[1]);
     fireEvent.click(screen.getByRole("button", { name: "Save step" }));
