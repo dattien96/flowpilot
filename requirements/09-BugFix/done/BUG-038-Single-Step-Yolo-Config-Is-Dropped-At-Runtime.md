@@ -12,7 +12,7 @@
 - Last Updated: `2026-06-11`
 - Parent Documents: `requirements/07-Coding-Plan/priority/CP-29-MCP-Proxy-Google-Drive.md`, `requirements/06-System-Tech-Design/SD-11-MCP-Connection-Flows.md`, `requirements/06-System-Tech-Design/SD-09-Approval-Gates.md`, `requirements/05-System-Specs/SS-04-Workflow.md`, `requirements/05-System-Specs/SS-08-Approve-Gate.md`, `requirements/05-System-Specs/SS-05-Workflow-Ai-Provider.md`
 - Child Documents: `none`
-- Related Documents: `requirements/08-Task/done/Task-028-Step-Yolo-Override.md`, `requirements/08-Task/todo/Task-030-Workflow-Runs-Detail-Page-Yolo-Indicators.md`, `requirements/09-BugFix/done/BUG-036-Workflow-Run-Yolo-State-Drifts-From-Definition.md`, `change-audit/CA-043-cp29-google-drive-mcp-manual-approval-ui.md`, `change-audit/CA-044-fix-workflow-run-yolo-default-drift.md`, `change-audit/CA-046-fix-single-step-yolo-config-drift.md`
+- Related Documents: `requirements/08-Task/done/Task-028-Step-Yolo-Override.md`, `requirements/08-Task/done/Task-030-Workflow-Runs-Detail-Page-Yolo-Indicators.md`, `requirements/09-BugFix/done/BUG-036-Workflow-Run-Yolo-State-Drifts-From-Definition.md`, `change-audit/CA-043-cp29-google-drive-mcp-manual-approval-ui.md`, `change-audit/CA-044-fix-workflow-run-yolo-default-drift.md`, `change-audit/CA-046-fix-single-step-yolo-config-drift.md`
 - Replaces: `none`
 - Tags: `workflow-engine, yolo, single-step, cp-29, approval, regression`
 
@@ -126,4 +126,4 @@ Single-step execution creates a runtime-generated one-step workflow from a reusa
 
 - The step-definition YOLO propagation restored by this bug was correct under the older Task-028 model.
 - New rule: workflow-level YOLO only, with no step-level YOLO reads driving current execution or run-detail logic.
-- See `requirements/08-Task/todo/Task-030-Workflow-Runs-Detail-Page-Yolo-Indicators.md`.
+- See `requirements/08-Task/done/Task-030-Workflow-Runs-Detail-Page-Yolo-Indicators.md`.
