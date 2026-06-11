@@ -12,7 +12,7 @@
 - Last Updated: `2026-06-11`
 - Parent Documents: `requirements/07-Coding-Plan/done/CP-07-Workflow-Engine-UI.md`, `requirements/07-Coding-Plan/priority/CP-29-MCP-Proxy-Google-Drive.md`, `requirements/06-System-Tech-Design/SD-11-MCP-Connection-Flows.md`, `requirements/06-System-Tech-Design/SD-09-Approval-Gates.md`, `requirements/05-System-Specs/SS-04-Workflow.md`, `requirements/05-System-Specs/SS-05-Workflow-Ai-Provider.md`, `requirements/05-System-Specs/SS-08-Approve-Gate.md`
 - Child Documents: `none`
-- Related Documents: `requirements/08-Task/done/Task-028-Step-Yolo-Override.md`, `requirements/08-Task/done/Task-029-Workflow-Runs-Detail-Page-UX-Refinements.md`, `requirements/08-Task/done/Task-031-Single-Step-Step-Definition-Yolo-Policy.md`, `requirements/09-BugFix/done/BUG-036-Workflow-Run-Yolo-State-Drifts-From-Definition.md`, `requirements/09-BugFix/done/BUG-038-Single-Step-Yolo-Config-Is-Dropped-At-Runtime.md`, `requirements/09-BugFix/done/BUG-040-Admin-Web-Single-Step-Launch-Drops-Step-Yolo-Column.md`, `change-audit/CA-044-fix-workflow-run-yolo-default-drift.md`, `change-audit/CA-046-fix-single-step-yolo-config-drift.md`, `change-audit/CA-048-fix-admin-web-single-step-yolo-select.md`, `change-audit/CA-051-single-step-step-definition-yolo-policy.md`
+- Related Documents: `requirements/08-Task/done/Task-028-Step-Yolo-Override.md`, `requirements/08-Task/done/Task-029-Workflow-Runs-Detail-Page-UX-Refinements.md`, `requirements/08-Task/done/Task-031-Single-Step-Step-Definition-Yolo-Policy.md`, `requirements/09-BugFix/done/BUG-032-Codex-Google-Drive-MCP-Model-And-Approval.md`, `requirements/09-BugFix/done/BUG-036-Workflow-Run-Yolo-State-Drifts-From-Definition.md`, `requirements/09-BugFix/done/BUG-038-Single-Step-Yolo-Config-Is-Dropped-At-Runtime.md`, `requirements/09-BugFix/done/BUG-040-Admin-Web-Single-Step-Launch-Drops-Step-Yolo-Column.md`, `change-audit/CA-044-fix-workflow-run-yolo-default-drift.md`, `change-audit/CA-046-fix-single-step-yolo-config-drift.md`, `change-audit/CA-048-fix-admin-web-single-step-yolo-select.md`, `change-audit/CA-051-single-step-step-definition-yolo-policy.md`
 - Replaces: `none`
 - Tags: `ui, workflow-runs, yolo-mode, workflow-engine, refactor`
 
@@ -20,9 +20,9 @@
 
 ### Summary
 
-- Task-030 is the source of truth for workflow-definition runs: always use current `workflows.yolo_mode`.
-- A workflow with exactly one child step is still a workflow-definition run and must use `workflows.yolo_mode`.
+- Task-030 is the source of truth for workflow-definition runs: always use current `workflows.yolo_mode`, including workflows with exactly one child step.
 - Run detail UI should show the current effective YOLO policy, not a frozen run-time snapshot, and must not mutate YOLO.
+- Provider CLI approval prompts are intentionally bypassed with provider-side full/auto approval where needed to avoid non-interactive runner hangs; FlowPilot approval enforcement is only guaranteed where FlowPilot owns the gate.
 - Task-031 defines the only accepted exception: direct single-step runs use current `step_definitions.yolo_mode`.
 
 ### Current Ask
@@ -37,10 +37,12 @@
 - `T-4` Do not read `workflow_steps.yolo_mode`; that column must not be part of the current model.
 - `T-5` Treat `workflow_runs.yolo_mode` as historical data only, not the source of truth for current continue/resume behavior.
 - `T-6` Follow Task-031 for direct single-step runs, where `step_definitions.yolo_mode` is the SSOT.
+- `T-7` Keep provider-side full/auto approval enabled for non-interactive provider CLIs when required to avoid hangs; YOLO is not a general-purpose dangerous-command approval bridge for Codex, Claude, or Gemini.
 
 ### Constraints
 
 - Preserve the current CP-29 approval meaning: `false` requires approval and `true` allows uninterrupted auto-approved MCP execution.
+- Preserve the current runner stability tradeoff: provider-native approval prompts must not be allowed to hang FlowPilot-run executions, so provider-side full/auto approval may stay enabled while FlowPilot-owned proxy gates enforce the product policy.
 - Show and enforce the current workflow-level YOLO policy from `workflows.yolo_mode`, not the old persisted run snapshot.
 - Show YOLO in run detail as read-only status; do not provide a run-page mutation control.
 - Default to `false` when no workflow-level YOLO value exists.
@@ -53,6 +55,7 @@
 
 - `requirements/08-Task/done/Task-028-Step-Yolo-Override.md`
 - `requirements/09-BugFix/done/BUG-036-Workflow-Run-Yolo-State-Drifts-From-Definition.md`
+- `requirements/09-BugFix/done/BUG-032-Codex-Google-Drive-MCP-Model-And-Approval.md`
 - `requirements/09-BugFix/done/BUG-038-Single-Step-Yolo-Config-Is-Dropped-At-Runtime.md`
 - `requirements/09-BugFix/done/BUG-040-Admin-Web-Single-Step-Launch-Drops-Step-Yolo-Column.md`
 - `change-audit/CA-044-fix-workflow-run-yolo-default-drift.md`
@@ -107,6 +110,11 @@ The current `step > workflow` YOLO model is harder to reason about than the prod
   - Drop the legacy `workflow_steps.yolo_mode` column with a forward SQL migration.
   - Keep `step_definitions.yolo_mode` only for Task-031 direct single-step launches.
   - Remove workflow child-step YOLO controls from workflow editor pages.
+- `T-7` Provider permission boundary clarification:
+  - Keep the current provider-side full/auto approval behavior for Codex, Claude, and Gemini when needed to prevent provider-native permission prompts from hanging non-interactive FlowPilot runs.
+  - Treat FlowPilot YOLO as approval policy only for FlowPilot-owned gates: workflow approval gates and owned MCP proxy gates such as the Google Drive proxy MCP.
+  - Do not claim that Task-030 safely gates arbitrary provider shell/file commands such as destructive delete commands. If a provider has direct host access and its own prompt is bypassed, FlowPilot cannot inspect or approve every dangerous action.
+  - Future work should define a separate provider permission policy if FlowPilot needs sandboxing, command interception, or provider-specific approval bridging for dangerous host operations.
 
 ## 5. Touched Areas
 
@@ -133,6 +141,7 @@ The current `step > workflow` YOLO model is harder to reason about than the prod
 - The run detail page displays YOLO only and does not allow changing it.
 - Sidebar step rows and the step details workspace, if they display YOLO, reflect current workflow-level YOLO only and do not show override or inherited wording.
 - Runtime start, approval gating, and resume logic use current workflow YOLO only, with `false` as the default when no workflow-level YOLO value is present.
+- Provider-side full/auto approval remains compatible with this task only as a hang-avoidance mechanism; the FlowPilot safe gate is considered enforced only for FlowPilot-owned gates.
 
 ## 7. Out of Scope
 
@@ -140,6 +149,8 @@ The current `step > workflow` YOLO model is harder to reason about than the prod
 - Removing the workflow-level `workflows.yolo_mode` or historical `workflow_runs.yolo_mode` columns.
 - Adding or preserving a run-detail YOLO mutation control.
 - Defining direct single-step YOLO behavior beyond the Task-031 rule that direct single-step launches use `step_definitions.yolo_mode`.
+- Solving general provider dangerous-command approvals for Codex, Claude, or Gemini when those providers access the host directly.
+- Replacing provider-native sandboxing or approval systems with a full FlowPilot command approval bridge.
 
 ## 8. Completion Notes
 
@@ -147,6 +158,7 @@ The current `step > workflow` YOLO model is harder to reason about than the prod
 - result: Dropped legacy workflow-step YOLO persistence with `supabase/migrations/20260611103000_drop_step_level_yolo_columns.sql` and removed builder-time child-step YOLO controls from workflow editor pages.
 - follow-ups: `Task-031` restores `step_definitions.yolo_mode` only for direct single-step launches; normal workflow runs, including one-step workflows, remain workflow-level-only and `workflow_steps.yolo_mode` stays removed.
 - follow-ups: Remove or disable any remaining legacy run-level YOLO mutation API/UI in a separate cleanup task.
+- follow-ups: Define a separate provider permission policy before claiming FlowPilot can approve or block arbitrary dangerous host commands from provider CLIs. Until then, provider-side full/auto approval is an intentional hang-avoidance tradeoff, and FlowPilot-owned gates remain the enforceable safety boundary.
 - upstream docs updated: `Task-028`, `BUG-036`, `BUG-038`, `BUG-040`, `CA-044`, `CA-046`, and `CA-048` now point to Task-030 as the current YOLO contract.
 
 ## 9. Manual Test Steps - Passed
