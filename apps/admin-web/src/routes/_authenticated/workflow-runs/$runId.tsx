@@ -995,11 +995,12 @@ function SessionGroupSection({
 }) {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [isKilling, setIsKilling] = useState(false);
-  const sessionRecovery = resolveSessionRecoveryDisplay(group.session);
+  const session = group.session;
+  const sessionRecovery = session ? resolveSessionRecoveryDisplay(session) : null;
 
   return (
     <section className="space-y-4">
-      {group.session ? (
+      {session ? (
         <div
           onClick={() => setIsCollapsed(!isCollapsed)}
           className="group/session rounded-xl border border-border/40 bg-[#161d28]/35 px-5 py-4 cursor-pointer hover:bg-[#161d28]/55 transition-colors flex items-center justify-between gap-4 select-none shadow-sm"
@@ -1012,11 +1013,11 @@ function SessionGroupSection({
               </span>
               <span>&bull;</span>
               <span className="text-foreground/90 font-medium font-sans">
-                {group.session.provider} ({group.session.model})
+                {session.provider} ({session.model})
               </span>
               <span>&bull;</span>
-              <span className={`font-semibold ${group.session.status === "active" ? "text-success" : "text-muted-foreground"}`}>
-                {group.session.status}
+              <span className={`font-semibold ${session.status === "active" ? "text-success" : "text-muted-foreground"}`}>
+                {session.status}
               </span>
 
 
@@ -1032,36 +1033,35 @@ function SessionGroupSection({
                 </>
               ) : null}
             </p>
-            {group.session.status === "active" && group.session.processKey != null ? (
+            {session.status === "active" && session.processKey != null ? (
               <p className="flex flex-wrap items-center gap-1.5 text-xs font-mono text-muted-foreground">
                 <span className="font-mono text-[9px] text-foreground/80 flex items-center">
-                  {group.session.processPid != null ? (
+                  {session.processPid != null ? (
                     <>
                       <span className="text-muted-foreground/70 mr-1 font-semibold uppercase tracking-wider">PID</span>
-                      {group.session.processPid}
+                      {session.processPid}
                     </>
                   ) : (
                     <span className="text-muted-foreground/70 mr-1 font-semibold uppercase tracking-wider">Active Session</span>
                   )}
                   <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={isKilling || !group.session.processKey}
+                    variant="secondary"
+                    disabled={isKilling || !session.processKey}
                     className="h-5 px-2 hover:bg-destructive/10 text-[9px] font-bold uppercase tracking-wider text-destructive border border-destructive/40 hover:border-destructive/60 transition-colors ml-3"
                     onClick={async (e) => {
                       e.stopPropagation();
-                      if (!group.session.processKey || isKilling) {
+                      if (!session.processKey || isKilling) {
                         return;
                       }
-                      const confirmMsg = group.session.processPid != null
-                        ? `Are you sure you want to kill PID ${group.session.processPid}?`
+                      const confirmMsg = session.processPid != null
+                        ? `Are you sure you want to kill PID ${session.processPid}?`
                         : "Are you sure you want to terminate this active session?";
                       if (!window.confirm(confirmMsg)) {
                         return;
                       }
                       setIsKilling(true);
                       try {
-                        await onKillSession(group.session);
+                        await onKillSession(session);
                       } catch (error: any) {
                         console.error("Failed to manually kill workflow session:", error);
                         alert(error?.message ?? "Failed to kill the workflow session.");
@@ -1076,11 +1076,11 @@ function SessionGroupSection({
               </p>
             ) : null}
 
-            {group.session.providerSessionId ? (
+            {session.providerSessionId ? (
               <p className="flex flex-wrap items-center gap-1.5 text-xs font-mono text-muted-foreground">
                 <span className="font-mono text-[9px] text-foreground/80">
                   <span className="text-muted-foreground/70 mr-1 font-semibold uppercase tracking-wider">Session ID</span>
-                  {group.session.providerSessionId}
+                  {session.providerSessionId}
                 </span>
               </p>
             ) : null}
@@ -1117,7 +1117,7 @@ function SessionGroupSection({
             const isLiveThinking = isLiveThinkingPrompt({
               promptIndex: index,
               promptCount: group.promptGroups.length,
-              sessionStatus: group.session?.status,
+              sessionStatus: session?.status,
               stepStatus,
             });
             return (
@@ -1676,7 +1676,10 @@ function WorkflowRunDetailPage() {
   }, [detail?.outputs]);
 
   const allLogs = useMemo(
-    () => (Array.isArray(detail?.logs) ? detail.logs : []),
+    () =>
+      Array.isArray(detail?.logs)
+        ? [...detail.logs].sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+        : [],
     [detail?.logs],
   );
 
@@ -2078,7 +2081,7 @@ function WorkflowRunDetailPage() {
               statusIcon = <Check className="h-4 w-4 text-emerald-400 bg-emerald-950/40 rounded-full p-0.5 border border-emerald-500/20" />;
             } else if (status === "RUNNING") {
               statusIcon = <RefreshCw className="h-3.5 w-3.5 animate-spin text-accent" />;
-            } else if (status === "WAITING_USER_APPROVAL") {
+            } else if (isWorkflowStepWaitingForApproval(status)) {
               statusIcon = <ShieldAlert className="h-4 w-4 text-amber-500 animate-pulse" />;
             } else if (status === "FAILED" || status === "REJECTED") {
               statusIcon = <X className="h-4 w-4 text-destructive bg-destructive/10 rounded-full p-0.5 border border-destructive/20" />;
@@ -2119,6 +2122,59 @@ function WorkflowRunDetailPage() {
             );
           })}
         </div>
+
+        {/* Sidebar Approval UI */}
+        {(() => {
+          if (!selectedStep) return null;
+          const stepStatus = selectedStep.status?.toUpperCase();
+          const isWaiting = isWorkflowStepWaitingForApproval(stepStatus);
+          const runStatus = detail.run.status?.toUpperCase();
+
+          if (isWaiting && runStatus !== "REJECTED" && runStatus !== "FAILED") {
+            return (
+              <div className="p-4 border-t border-border/45 bg-[#0e1017] shrink-0 space-y-3">
+                <div className="rounded-xl border border-warning/30 bg-warning/10 p-3 text-xs text-warning">
+                  <p className="font-semibold uppercase tracking-wider flex items-center gap-1.5 mb-1.5">
+                    <ShieldAlert className="h-4 w-4 shrink-0 text-warning" />
+                    Approval Required
+                  </p>
+                  <p className="text-[11px] leading-relaxed text-warning/90">
+                    {selectedStep.errorMessage || "Permission required to run step command."}
+                  </p>
+                </div>
+
+                <div className="flex items-center justify-end gap-2.5">
+                  <Button
+                    variant="secondary"
+                    className="h-8 w-8 rounded-lg p-0 bg-destructive/10 border border-destructive/20 text-destructive hover:bg-destructive/25 flex items-center justify-center shrink-0"
+                    disabled={submittingDecision}
+                    onClick={() => handleDecision(selectedStep.id, isGoogleDriveMcpApproval ? "rejected" : "changes_requested")}
+                    title={isGoogleDriveMcpApproval ? "Reject Request" : "Reject & Retry"}
+                  >
+                    {submittingDecision ? (
+                      <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <X className="h-4 w-4" />
+                    )}
+                  </Button>
+                  <Button
+                    className="h-8 w-8 rounded-lg p-0 bg-emerald-600/20 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20 flex items-center justify-center shrink-0"
+                    disabled={submittingDecision}
+                    onClick={() => handleDecision(selectedStep.id, "approved")}
+                    title={isGoogleDriveMcpApproval ? "Approve Request" : "Approve & Continue"}
+                  >
+                    {submittingDecision ? (
+                      <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Check className="h-4 w-4 text-emerald-400" />
+                    )}
+                  </Button>
+                </div>
+              </div>
+            );
+          }
+          return null;
+        })()}
       </aside>
 
       {/* Right Details Workspace */}
@@ -2272,19 +2328,10 @@ function WorkflowRunDetailPage() {
                   <div className="h-4 w-[1px] bg-border/20" />
                 ) : null}
 
-                <div className="flex items-center gap-2 rounded-full border border-border bg-card/60 px-3 py-1 text-[11px]">
-                  <span className="font-medium text-muted-foreground uppercase tracking-wider">
-                    Workflow YOLO
-                  </span>
-                  <span
-                    aria-label={`Workflow YOLO mode ${detail.run.yoloMode ? "enabled" : "disabled"}`}
-                    className={`relative inline-flex h-4 w-7 shrink-0 rounded-full border-2 border-transparent ${detail.run.yoloMode ? "bg-accent" : "bg-muted"
-                      }`}
-                  >
-                    <span
-                      className={`pointer-events-none inline-block h-3 w-3 transform rounded-full bg-background shadow ring-0 ${detail.run.yoloMode ? "translate-x-3" : "translate-x-0"
-                        }`}
-                    />
+                <div className="flex items-center gap-1.5 rounded-full border border-border bg-card/60 px-3 py-1 text-[11px] font-bold uppercase tracking-wider">
+                  <span className="text-muted-foreground">YOLO</span>
+                  <span className={detail.run.yoloMode ? "text-emerald-400" : "text-muted-foreground/60"}>
+                    {detail.run.yoloMode ? "ENABLED" : "DISABLED"}
                   </span>
                 </div>
               </div>
@@ -2344,129 +2391,61 @@ function WorkflowRunDetailPage() {
             <div className="pt-4 border-t border-border/30">
 
               {/* Safe Gate / Follow-up Section inside the card footer */}
-              <div className="p-6 bg-[#11131c] border-t border-border/10">
-                {(() => {
-                  const stepStatus = selectedStep.status?.toUpperCase();
-                  const runStatus = detail.run.status?.toUpperCase();
-                  const isWaiting = isWorkflowStepWaitingForApproval(stepStatus);
-                  const isDone = stepStatus === "DONE" || stepStatus === "COMPLETED";
-                  const canContinue =
-                    ((isWaiting || isDone) &&
-                      runStatus !== "REJECTED" &&
-                      runStatus !== "FAILED") ||
-                    isInterruptedFailedStep;
+              {(() => {
+                const stepStatus = selectedStep.status?.toUpperCase();
+                const runStatus = detail.run.status?.toUpperCase();
+                const isWaiting = isWorkflowStepWaitingForApproval(stepStatus);
+                const isDone = stepStatus === "DONE" || stepStatus === "COMPLETED";
+                const canContinue =
+                  ((isWaiting || isDone) &&
+                    runStatus !== "REJECTED" &&
+                    runStatus !== "FAILED") ||
+                  isInterruptedFailedStep;
 
-                  if (!canContinue) return null;
+                if (!canContinue || isWaiting || subagent) return null;
 
-                  if (isWaiting) {
-                    return (
-                      <div className="border border-border/80 bg-card/45 p-6 rounded-2xl shadow-xl space-y-4">
-                        <div className="flex items-center gap-2 pb-2 border-b border-border/30">
-                          <ShieldAlert className="h-5 w-5 text-warning shrink-0" />
-                          <span className="text-sm font-semibold text-warning">
-                            {isGoogleDriveMcpApproval
-                              ? "Google Drive MCP approval is waiting for your decision"
-                              : "Safe Gate: Approving compiles files & begins coding stage"}
-                          </span>
-                        </div>
-
-                        <div className="space-y-3">
-                          <textarea
-                            className="w-full min-h-[70px] max-h-[200px] resize-none bg-[#090a0f] border border-border/60 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-1 focus:ring-accent/50 placeholder:text-muted-foreground/60 text-[#eaeaea]"
-                            placeholder={isGoogleDriveMcpApproval
-                              ? "Optional comment for this Google Drive approval..."
-                              : "Provide revision notes for Reject & Retry..."}
-                            value={decisionComment}
-                            onChange={(e) => {
-                              setDecisionComment(e.target.value);
-                            }}
-                            rows={2}
-                          />
-
-                          <div className="flex flex-wrap items-center justify-end gap-3 pt-1">
-                            {isGoogleDriveMcpApproval ? (
-                              <Button
-                                variant="secondary"
-                                className="h-10 rounded-xl border-border/80 px-5 text-foreground hover:bg-muted"
-                                disabled={submittingDecision}
-                                onClick={() => handleDecision(selectedStep.id, "rejected")}
-                              >
-                                {submittingDecision ? <RefreshCw className="h-4 w-4 animate-spin" /> : "Reject Request"}
-                              </Button>
-                            ) : (
-                              <Button
-                                variant="secondary"
-                                className="h-10 rounded-xl border-border/80 px-5 text-foreground hover:bg-muted"
-                                disabled={submittingDecision || !decisionComment.trim()}
-                                onClick={() => handleDecision(selectedStep.id, "changes_requested")}
-                              >
-                                {submittingDecision ? <RefreshCw className="h-4 w-4 animate-spin" /> : "Reject & Retry"}
-                              </Button>
-                            )}
-                            <Button
-                              className="rounded-xl px-5 h-10 bg-emerald-600 text-white hover:bg-emerald-700 border-none flex items-center gap-1.5"
-                              disabled={submittingDecision}
-                              onClick={() => handleDecision(selectedStep.id, "approved")}
-                            >
-                              {submittingDecision ? (
-                                <RefreshCw className="h-4 w-4 animate-spin" />
-                              ) : isGoogleDriveMcpApproval ? (
-                                <>Approve Request &rarr;</>
-                              ) : (
-                                <>Approve & Continue &rarr;</>
-                              )}
-                            </Button>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  } else {
-                    if (subagent) {
-                      return null;
-                    }
-
-                    return (
-                      <div className="relative border border-border/60 bg-[#090a0f] rounded-xl p-3 focus-within:border-emerald-500/50 transition-colors">
-                        <textarea
-                          className="w-full min-h-[60px] pb-12 resize-none bg-transparent text-sm text-foreground focus:outline-none placeholder:text-muted-foreground/60 leading-relaxed"
-                          placeholder={
-                            isInterruptedFailedStep
-                              ? "Replay the prompt in a new session, or edit it before sending..."
-                              : "Type chat for follow-up interactions..."
+                return (
+                  <div className="p-6 bg-[#11131c] border-t border-border/10">
+                    <div className="relative border border-border/60 bg-[#090a0f] rounded-xl p-3 focus-within:border-emerald-500/50 transition-colors">
+                      <textarea
+                        className="w-full min-h-[60px] pb-12 resize-none bg-transparent text-sm text-foreground focus:outline-none placeholder:text-muted-foreground/60 leading-relaxed"
+                        placeholder={
+                          isInterruptedFailedStep
+                            ? "Replay the prompt in a new session, or edit it before sending..."
+                            : "Type chat for follow-up interactions..."
+                        }
+                        value={decisionComment}
+                        onChange={(e) => {
+                          setDecisionComment(e.target.value);
+                        }}
+                        rows={2}
+                      />
+                      <div className="absolute bottom-3 right-3">
+                        <Button
+                          className="rounded-lg px-4 h-8 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs transition-colors"
+                          disabled={
+                            submittingDecision ||
+                            (!isInterruptedFailedStep && !decisionComment.trim())
                           }
-                          value={decisionComment}
-                          onChange={(e) => {
-                            setDecisionComment(e.target.value);
-                          }}
-                          rows={2}
-                        />
-                        <div className="absolute bottom-3 right-3">
-                          <Button
-                            className="rounded-lg px-4 h-8 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs transition-colors"
-                            disabled={
-                              submittingDecision ||
-                              (!isInterruptedFailedStep && !decisionComment.trim())
-                            }
-                            onClick={() =>
-                              isInterruptedFailedStep
-                                ? handleReplayInterruptedStep()
-                                : handleDecision(selectedStep.id, "changes_requested")
-                            }
-                          >
-                            {submittingDecision ? (
-                              <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-                            ) : isInterruptedFailedStep ? (
-                              "Replay"
-                            ) : (
-                              "Send"
-                            )}
-                          </Button>
-                        </div>
+                          onClick={() =>
+                            isInterruptedFailedStep
+                              ? handleReplayInterruptedStep()
+                              : handleDecision(selectedStep.id, "changes_requested")
+                          }
+                        >
+                          {submittingDecision ? (
+                            <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                          ) : isInterruptedFailedStep ? (
+                            "Replay"
+                          ) : (
+                            "Send"
+                          )}
+                        </Button>
                       </div>
-                    );
-                  }
-                })()}
-              </div>
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* Custom Run Logs Collapsible Card */}
               <div className="border border-border/20 bg-[#11131c] rounded-[1.6rem] overflow-hidden shadow-lg">
