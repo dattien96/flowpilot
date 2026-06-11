@@ -29,4 +29,4 @@ Aligned workflow run startup and runtime labeling with the saved workflow YOLO d
 
 - The step-level override note above reflects the Task-028 contract that existed when this change shipped.
 - Current YOLO rule: workflow-level only, no step-level YOLO reads for execution or run-detail state.
-- See `requirements/08-Task/todo/Task-030-Workflow-Runs-Detail-Page-Yolo-Indicators.md`.
+- See `requirements/08-Task/done/Task-030-Workflow-Runs-Detail-Page-Yolo-Indicators.md`.
