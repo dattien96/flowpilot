@@ -9,6 +9,7 @@ import {
   buildWorkflowStepPrompt,
   createArtifactOutputs,
   createGoogleDriveWriteAuditArtifacts,
+  createSingleStepWorkflow,
   createLocalWorkflowOutputArtifactSnapshot,
   deactivateWorkflowRunSession,
   finalizeWorkflowRunSessions,
@@ -190,6 +191,117 @@ describe("workflow-start-runtime", () => {
     expect(manifest.title).toBe("Response.md");
     expect(content).toContain("Hello from the step.");
     expect(actualPrompt).toContain("# Previous Conversation Context");
+  });
+
+  it("uses step-definition YOLO as the single-step launch policy", async () => {
+    const workflowInsertRows: Array<Record<string, unknown>> = [];
+    const workflowStepInsertRows: Array<Record<string, unknown>> = [];
+    let selectedStepDefinitionColumns = "";
+    const workflowsBuilder = {
+      insert(row: Record<string, unknown>) {
+        workflowInsertRows.push(row);
+        return {
+          select() {
+            return {
+              single: vi.fn().mockResolvedValue({
+                data: {
+                  id: "wf-single",
+                  name: row.name,
+                  project_id: row.project_id,
+                  provider_override: row.provider_override,
+                  model_override: row.model_override,
+                  reasoning_effort_override: row.reasoning_effort_override,
+                  yolo_mode: row.yolo_mode,
+                },
+                error: null,
+              }),
+            };
+          },
+        };
+      },
+    };
+    const workflowStepsBuilder = {
+      insert(row: Record<string, unknown>) {
+        workflowStepInsertRows.push(row);
+        return {
+          select() {
+            return {
+              single: vi.fn().mockResolvedValue({
+                data: {
+                  id: "wf-step-single",
+                  step_type: row.step_type,
+                  order_index: row.order_index,
+                  is_enabled: row.is_enabled,
+                  provider_override: row.provider_override,
+                  model_override: row.model_override,
+                  reasoning_effort_override: row.reasoning_effort_override,
+                  yolo_mode: row.yolo_mode,
+                  requires_approval: row.requires_approval,
+                },
+                error: null,
+              }),
+            };
+          },
+        };
+      },
+    };
+    const stepDefinitionsBuilder = {
+      select: vi.fn((columns: string) => {
+        selectedStepDefinitionColumns = columns;
+        return stepDefinitionsBuilder;
+      }),
+      in: vi.fn().mockResolvedValue({
+        data: [
+          {
+            step_type: "test_codex_step",
+            name: "Test - Codex Single Step",
+            description: "Single-step test definition.",
+            prompt_base: null,
+            required_mcps: ["google_drive"],
+            mcp_access_mode: "read_only",
+            required_skills: [],
+            team_role: null,
+            subagent: null,
+            model: "gpt-5.4",
+            reasoning_effort: "medium",
+            yolo_mode: true,
+          },
+        ],
+        error: null,
+      }),
+    };
+    const aiSupportedModelsBuilder = {
+      select: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      maybeSingle: vi.fn().mockResolvedValue({
+        data: { model_id: "gpt-5.4", is_enabled: true },
+        error: null,
+      }),
+    };
+    const adminClient = {
+      from: vi.fn((table: string) => {
+        if (table === "step_definitions") return stepDefinitionsBuilder;
+        if (table === "workflows") return workflowsBuilder;
+        if (table === "workflow_steps") return workflowStepsBuilder;
+        if (table === "ai_supported_models") return aiSupportedModelsBuilder;
+        throw new Error(`Unexpected table ${table}`);
+      }),
+    } as any;
+
+    const result = await createSingleStepWorkflow(adminClient, {
+      projectId: "proj-1",
+      stepType: "test_codex_step",
+    });
+
+    expect(workflowInsertRows[0]).toMatchObject({
+      yolo_mode: true,
+    });
+    expect(selectedStepDefinitionColumns).toContain("yolo_mode");
+    expect(workflowStepInsertRows[0]).not.toHaveProperty("yolo_mode");
+    expect(result.workflow).toMatchObject({
+      yolo_mode: true,
+    });
+    expect(result.workflowSteps[0].yolo_mode).toBeUndefined();
   });
 
   it("creates a fallback artifact run when a step has no output binding", async () => {
@@ -1476,6 +1588,9 @@ describe("workflow-start-runtime", () => {
       });
 
       const localRunnerGateway = {
+        ensureGoogleDriveMcpProviderConfig: vi.fn().mockResolvedValue({
+          configChanged: false,
+        }),
         sendMessage: mockSendMessage,
         closeSession: mockCloseSession,
         startSession: mockStartSession
@@ -1512,6 +1627,16 @@ describe("workflow-start-runtime", () => {
       });
 
       expect(callCount).toBe(2);
+      expect(localRunnerGateway.ensureGoogleDriveMcpProviderConfig).toHaveBeenCalledWith({
+        providerKey: "codex",
+        accountHomePath: "/accounts/b",
+        scope: "account",
+        mode: "read_only",
+        yoloMode: false,
+        workflowRunId: "run-123",
+        workflowStepRunId: "step-456",
+        processKey: undefined,
+      });
       expect(mockStartSession).toHaveBeenCalledWith(expect.objectContaining({
         resumeProviderSessionId: "thread-old",
       }));
@@ -1525,6 +1650,126 @@ describe("workflow-start-runtime", () => {
       expect(result.actualPromptText).toBe("hello");
     });
 
+    it("keeps the step-scoped process key when recovering a Google Drive session after session_dead", async () => {
+      let callCount = 0;
+      const sessionDeadError = new Error(
+        "Local runner session message failed: session process exited or is no longer registered",
+      );
+      (sessionDeadError as any).code = "session_dead";
+
+      const mockSendMessage = vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          throw sessionDeadError;
+        }
+        return Promise.resolve({
+          status: "success",
+          outputMarkdown: "approved replay completed",
+          providerSessionId: "thread-old",
+          actualPromptText: "hello",
+        });
+      });
+      const mockCloseSession = vi.fn().mockResolvedValue(undefined);
+      const mockStartSession = vi
+        .fn()
+        .mockResolvedValueOnce({
+          processKey: "workflow-run-123-step-step-456",
+          providerSessionId: "thread-old",
+          transportType: "codex_mcp",
+        })
+        .mockResolvedValueOnce({
+          processKey: "workflow-run-123-step-step-456",
+          providerSessionId: "thread-old",
+          transportType: "codex_mcp",
+        });
+      const mockEnsureGoogleDriveMcpProviderConfig = vi.fn().mockResolvedValue({
+        configChanged: false,
+      });
+
+      const localRunnerGateway = {
+        ensureGoogleDriveMcpProviderConfig: mockEnsureGoogleDriveMcpProviderConfig,
+        sendMessage: mockSendMessage,
+        closeSession: mockCloseSession,
+        startSession: mockStartSession,
+      } as any;
+
+      const mockQueryBuilder = {
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        filter: vi.fn().mockReturnThis(),
+        order: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockReturnThis(),
+        maybeSingle: vi
+          .fn()
+          .mockResolvedValueOnce({ data: null, error: null })
+          .mockResolvedValueOnce({
+            data: {
+              id: "session-old",
+              process_key: "workflow-run-123-step-step-456",
+              provider_session_id: "thread-old",
+              transport_type: "codex_mcp",
+              status: "completed",
+              provider: "codex",
+              model: "codex-mcp",
+              metadata_json: {
+                step_run_id: "step-456",
+                sessionScopeKey: "step-456",
+                providerAccountId: "account-b",
+                providerAccountHomePath: "/accounts/b",
+              },
+            },
+            error: null,
+          }),
+        insert: vi.fn().mockReturnThis(),
+        update: vi.fn().mockReturnThis(),
+        single: vi
+          .fn()
+          .mockResolvedValueOnce({ data: { id: "session-new" }, error: null })
+          .mockResolvedValueOnce({ data: { id: "session-old" }, error: null }),
+      };
+      const adminClient = {
+        from: vi.fn(() => mockQueryBuilder),
+      } as any;
+
+      const result = await sendMessageWithRetry({
+        adminClient,
+        localRunnerGateway,
+        workflowRunId: "run-123",
+        stepRunId: "step-456",
+        providerKey: "codex",
+        modelName: "codex-mcp",
+        reasoningEffort: null,
+        workingDirectory: "/repo",
+        subagent: "worker",
+        prompt: "hello",
+        skillIds: [],
+        requiredMcps: ["google_drive"],
+        yoloMode: false,
+        idleTTLSeconds: 60,
+      });
+
+      expect(callCount).toBe(2);
+      expect(mockEnsureGoogleDriveMcpProviderConfig).toHaveBeenCalledTimes(1);
+      expect(mockStartSession).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          customEnv: expect.objectContaining({
+            FLOWPILOT_PROCESS_KEY: "workflow-run-123-step-step-456",
+          }),
+        }),
+      );
+      expect(mockStartSession).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          customEnv: expect.objectContaining({
+            FLOWPILOT_PROCESS_KEY: "workflow-run-123-step-step-456",
+          }),
+          resumeProviderSessionId: "thread-old",
+        }),
+      );
+      expect(result.outputMarkdown).toBe("approved replay completed");
+    });
+
     it("does not resume an old provider thread after the active account changes", async () => {
       const mockSendMessage = vi.fn().mockResolvedValue({ outputMarkdown: "success" });
       const mockStartSession = vi.fn().mockResolvedValue({
@@ -1534,6 +1779,9 @@ describe("workflow-start-runtime", () => {
       });
 
       const localRunnerGateway = {
+        ensureGoogleDriveMcpProviderConfig: vi.fn().mockResolvedValue({
+          configChanged: false,
+        }),
         sendMessage: mockSendMessage,
         closeSession: vi.fn().mockResolvedValue(undefined),
         startSession: mockStartSession,
@@ -1598,6 +1846,89 @@ describe("workflow-start-runtime", () => {
       expect(result.outputMarkdown).toBe("success");
     });
 
+    it("keeps the workflow running when writing a workflow log fails", async () => {
+      const mockSendMessage = vi.fn().mockResolvedValue({
+        outputMarkdown: "success",
+        actualPromptText: "hello",
+      });
+      const mockInsert = vi.fn().mockRejectedValue(new TypeError("fetch failed"));
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+      const mockQueryBuilder = {
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        filter: vi.fn().mockReturnThis(),
+        order: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: {
+            id: "session-old",
+            process_key: null,
+            provider_session_id: "thread-old",
+            transport_type: "codex_mcp",
+            status: "completed",
+            provider: "codex",
+            model: "codex-mcp",
+            metadata_json: {
+              providerAccountId: "account-b",
+              providerAccountHomePath: "/accounts/b",
+            },
+          },
+          error: null,
+        }),
+        insert: vi.fn().mockReturnThis(),
+        update: vi.fn().mockReturnThis(),
+        single: vi.fn().mockResolvedValue({ data: { id: "session-new" }, error: null }),
+      };
+      const adminClient = {
+        from: vi.fn((table: string) => {
+          if (table === "workflow_run_logs") {
+            return { insert: mockInsert };
+          }
+
+          return mockQueryBuilder;
+        }),
+      } as any;
+      const localRunnerGateway = {
+        ensureGoogleDriveMcpProviderConfig: vi.fn().mockResolvedValue({
+          configChanged: false,
+        }),
+        sendMessage: mockSendMessage,
+        closeSession: vi.fn().mockResolvedValue(undefined),
+        startSession: vi.fn().mockResolvedValue({
+          processKey: "proc-new",
+          providerSessionId: "thread-new",
+          transportType: "codex_mcp",
+        }),
+      } as any;
+
+      const result = await sendMessageWithRetry({
+        adminClient,
+        localRunnerGateway,
+        workflowRunId: "run-123",
+        stepRunId: "step-456",
+        providerKey: "codex",
+        modelName: "codex-mcp",
+        reasoningEffort: null,
+        workingDirectory: "/repo",
+        subagent: null,
+        prompt: "hello",
+        skillIds: [],
+        idleTTLSeconds: 60,
+      });
+
+      expect(result.outputMarkdown).toBe("success");
+      expect(mockInsert).toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Skipping workflow run log write after request failure:"),
+        expect.objectContaining({
+          workflowRunStepId: "step-456",
+          errorMessage: "fetch failed",
+        }),
+      );
+      warnSpy.mockRestore();
+    });
+
     it("does not reconnect when the session was intentionally terminated", async () => {
       const err = new Error("session was intentionally terminated");
       (err as any).code = "session_terminated";
@@ -1610,6 +1941,9 @@ describe("workflow-start-runtime", () => {
       });
 
       const localRunnerGateway = {
+        ensureGoogleDriveMcpProviderConfig: vi.fn().mockResolvedValue({
+          configChanged: false,
+        }),
         sendMessage: mockSendMessage,
         closeSession: vi.fn().mockResolvedValue(undefined),
         startSession: mockStartSession,
@@ -1673,6 +2007,9 @@ describe("workflow-start-runtime", () => {
       });
 
       const localRunnerGateway = {
+        ensureGoogleDriveMcpProviderConfig: vi.fn().mockResolvedValue({
+          configChanged: false,
+        }),
         sendMessage: mockSendMessage,
         closeSession: vi.fn().mockResolvedValue(undefined),
         startSession: mockStartSession,
@@ -1740,6 +2077,9 @@ describe("workflow-start-runtime", () => {
       });
 
       const localRunnerGateway = {
+        ensureGoogleDriveMcpProviderConfig: vi.fn().mockResolvedValue({
+          configChanged: false,
+        }),
         sendMessage: mockSendMessage,
         closeSession: mockCloseSession,
         startSession: mockStartSession
@@ -1804,6 +2144,9 @@ describe("workflow-start-runtime", () => {
       });
 
       const localRunnerGateway = {
+        ensureGoogleDriveMcpProviderConfig: vi.fn().mockResolvedValue({
+          configChanged: false,
+        }),
         sendMessage: mockSendMessage,
         closeSession: mockCloseSession,
         startSession: mockStartSession
@@ -1935,6 +2278,9 @@ describe("workflow-start-runtime", () => {
       });
 
       const localRunnerGateway = {
+        ensureGoogleDriveMcpProviderConfig: vi.fn().mockResolvedValue({
+          configChanged: false,
+        }),
         sendMessage: mockSendMessage,
         closeSession: mockCloseSession,
         startSession: mockStartSession,
@@ -2044,6 +2390,9 @@ describe("workflow-start-runtime", () => {
         });
 
       const localRunnerGateway = {
+        ensureGoogleDriveMcpProviderConfig: vi.fn().mockResolvedValue({
+          configChanged: false,
+        }),
         sendMessage: mockSendMessage,
         closeSession: vi.fn().mockResolvedValue(undefined),
         startSession: vi.fn().mockResolvedValue({

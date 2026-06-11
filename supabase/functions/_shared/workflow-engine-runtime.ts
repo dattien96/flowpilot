@@ -42,10 +42,13 @@ interface WorkflowRunStepRow {
 }
 
 interface WorkflowStepDefinitionRow {
+  id?: string;
   step_type: string;
   name: string;
   model: string | null;
   reasoning_effort: string | null;
+  requires_approval?: boolean;
+  yolo_mode?: boolean | null;
 }
 
 interface StepArtifactBindingRow {
@@ -225,10 +228,11 @@ export async function getWorkflowDefinition(
   provider_override: string | null;
   model_override: string | null;
   reasoning_effort_override: string | null;
+  yolo_mode?: boolean | null;
 }> {
   const { data, error } = await adminClient
     .from("workflows")
-    .select("id, provider_override, model_override, reasoning_effort_override")
+    .select("id, provider_override, model_override, reasoning_effort_override, yolo_mode")
     .eq("id", workflowId)
     .or(`project_id.is.null,project_id.eq.${projectId}`)
     .single();
@@ -285,18 +289,20 @@ export async function createSingleStepWorkflow(
     provider_override: string | null;
     model_override: string | null;
     reasoning_effort_override: string | null;
+    yolo_mode?: boolean | null;
   };
   workflowSteps: Array<{
     id: string;
     step_type: string;
     order_index: number;
     is_enabled: boolean;
+    yolo_mode?: boolean | null;
     requires_approval: boolean;
   }>;
 }> {
   const { data: definitionData, error: definitionError } = await adminClient
     .from("step_definitions")
-    .select("step_type, name, model, reasoning_effort")
+    .select("step_type, name, model, reasoning_effort, yolo_mode")
     .eq("step_type", stepType)
     .maybeSingle();
 
@@ -320,9 +326,10 @@ export async function createSingleStepWorkflow(
       provider_override: resolveProviderKeyFromModel(resolvedModel),
       model_override: resolvedModel,
       reasoning_effort_override: resolvedReasoningEffort,
+      yolo_mode: Boolean(definition.yolo_mode),
       created_by: SINGLE_STEP_RUNTIME_CREATED_BY,
     })
-    .select("id, provider_override, model_override, reasoning_effort_override")
+    .select("id, provider_override, model_override, reasoning_effort_override, yolo_mode")
     .single();
 
   if (workflowError) {
@@ -354,6 +361,7 @@ export async function createSingleStepWorkflow(
       provider_override: string | null;
       model_override: string | null;
       reasoning_effort_override: string | null;
+      yolo_mode?: boolean | null;
     },
     workflowSteps: [
       workflowStepData as {
@@ -361,6 +369,7 @@ export async function createSingleStepWorkflow(
         step_type: string;
         order_index: number;
         is_enabled: boolean;
+        yolo_mode?: boolean | null;
         requires_approval: boolean;
       },
     ],
@@ -579,11 +588,16 @@ async function applyStepPatch(
 
 export async function progressWorkflowRun(adminClient: SupabaseClient, runId: string) {
   const run = await getWorkflowRun(adminClient, runId);
+  const workflow = await getWorkflowDefinition(
+    adminClient,
+    run.workflow_id,
+    run.project_id,
+  );
   const runtimeSteps = await listRuntimeSteps(adminClient, runId);
   const now = new Date().toISOString();
   const plan = planWorkflowProgress({
     steps: runtimeSteps,
-    yoloMode: run.yolo_mode,
+    yoloMode: Boolean(workflow.yolo_mode),
     now,
   });
 

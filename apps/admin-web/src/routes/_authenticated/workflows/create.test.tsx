@@ -77,7 +77,6 @@ function buildStepDefinition(overrides: Partial<StepDefinition> = {}): StepDefin
     promptBase: "Generate the initial project spec.",
     requiredMcps: [],
     requiredSkills: [],
-    yoloMode: true,
     model: "gpt-5.4",
     agentType: "standard",
     createdAt: "2026-05-20T00:00:00.000Z",
@@ -168,7 +167,7 @@ describe("CreateWorkflowPage", () => {
     });
   });
 
-  it("saves a step YOLO override", async () => {
+  it("adds workflow steps without per-step YOLO overrides", async () => {
     const gatewayBundle = buildGatewayBundle();
     mocks.createGatewayBundle.mockReturnValue(gatewayBundle);
 
@@ -176,9 +175,6 @@ describe("CreateWorkflowPage", () => {
 
     expect(await screen.findByRole("button", { name: "Add step" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Add step" }));
-    fireEvent.change(screen.getByRole("combobox", { name: /yolo/i }), {
-      target: { value: "enabled" },
-    });
     fireEvent.click(screen.getByRole("button", { name: "Save workflow" }));
 
     await waitFor(() => {
@@ -187,7 +183,8 @@ describe("CreateWorkflowPage", () => {
           steps: [
             expect.objectContaining({
               stepType: "generate_spec",
-              yoloMode: true,
+              modelOverride: "gpt-5.4",
+              reasoningEffortOverride: "medium",
             }),
           ],
         })

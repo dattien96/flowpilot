@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
-import { Check, ChevronDown, ChevronRight, Copy, Eye, EyeOff } from "lucide-react";
+import { AlertCircle, Check, ChevronDown, ChevronRight, Copy, Eye, EyeOff, TriangleAlert } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -119,7 +119,7 @@ export function GoogleDriveSetupPage() {
           nextStatus.artifactSync.hasPickerApiKey ? "configured" : "needs_input",
         );
         const s6Conf = isStepConfigured(nextStatus.mcp.status ?? "not_started");
-        const s7Conf = isStepConfigured(nextStatus.mcp.status ?? "not_started");
+        const s7Conf = isStepConfigured(providerSetupStepStatus(nextStatus));
 
         if (!projectConf) setActiveStep(1);
         else if (!consentConf) setActiveStep(2);
@@ -423,7 +423,7 @@ export function GoogleDriveSetupPage() {
       index: 7,
       title: "Step 7",
       subtitle: "Proxy MCP setup",
-      status: status?.mcp.status ?? "not_started",
+      status: providerSetupStatus,
     },
   ];
 
@@ -502,6 +502,12 @@ export function GoogleDriveSetupPage() {
               {steps.map((step, idx) => {
                 const stepStatus = step.status;
                 const isConfigured = isStepConfigured(stepStatus);
+                const isError = stepStatus === "failed";
+                const isWarning =
+                  stepStatus === "needs_auth" ||
+                  stepStatus === "reconnect_required" ||
+                  stepStatus === "config_stale" ||
+                  stepStatus === "needs_input";
                 const isActive = activeStep === step.index;
 
                 return (
@@ -523,13 +529,29 @@ export function GoogleDriveSetupPage() {
                         className={`w-8 h-8 rounded-full flex items-center justify-center transition-all duration-300 ${
                           isConfigured
                             ? "bg-success text-white border-2 border-success shadow-md shadow-success/20"
-                            : isActive
-                              ? "bg-background border-2 border-success shadow-md shadow-success/15"
-                              : "bg-background border-2 border-border text-muted-foreground"
-                        } ${isActive ? "ring-4 ring-success/20 scale-105" : "hover:border-muted-foreground/50 hover:scale-105"}`}
+                            : isError
+                              ? "bg-background border-2 border-danger text-danger shadow-md shadow-danger/15"
+                              : isWarning
+                                ? "bg-background border-2 border-warning text-warning shadow-md shadow-warning/15"
+                                : isActive
+                                  ? "bg-background border-2 border-success shadow-md shadow-success/15"
+                                  : "bg-background border-2 border-border text-muted-foreground"
+                        } ${
+                          isActive
+                            ? isError
+                              ? "ring-4 ring-danger/20 scale-105"
+                              : isWarning
+                                ? "ring-4 ring-warning/20 scale-105"
+                                : "ring-4 ring-success/20 scale-105"
+                            : "hover:border-muted-foreground/50 hover:scale-105"
+                        }`}
                       >
                         {isConfigured ? (
                           <Check className="h-4 w-4 text-white stroke-[3px]" />
+                        ) : isError ? (
+                          <AlertCircle className="h-4 w-4 text-danger" />
+                        ) : isWarning ? (
+                          <TriangleAlert className="h-4 w-4 text-warning" />
                         ) : isActive ? (
                           <div className="w-2 h-2 rounded-[0.15rem] bg-success" />
                         ) : (
@@ -1130,6 +1152,9 @@ function providerSetupStepStatus(status: GoogleDriveRuntimeStatus | null) {
   }
   if (providerConfigs.some((config) => config.status === "failed")) {
     return "failed";
+  }
+  if (providerConfigs.some((config) => config.status === "config_stale")) {
+    return "config_stale";
   }
   if (providerConfigs.every((config) => config.status === "configured")) {
     return "configured";

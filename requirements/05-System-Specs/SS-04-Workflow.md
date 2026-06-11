@@ -364,7 +364,7 @@ If a required MCP is missing on the project, the runner must stop the step and s
 - Allow a project to start a workflow run from either a global workflow or a private workflow.
 - Allow a project to start a single step without creating a full workflow definition first.
 - Allow user to enable/disable approval gate per step.
-- Allow user to toggle YOLO mode per workflow run. When YOLO mode is ON, approval gates are skipped and the workflow continues automatically.
+- Current YOLO rule: do not toggle YOLO per workflow run. Workflow-definition runs read live YOLO from `workflows.yolo_mode`; direct single-step runs read live YOLO from `step_definitions.yolo_mode`. A workflow with exactly one step is still a workflow-definition run.
 - Allow user to enable/disable step.
 - Allow user to re-order steps.
 - Allow user to add/remove steps.
@@ -374,7 +374,7 @@ If a required MCP is missing on the project, the runner must stop the step and s
 - Workflow run status: `PENDING`, `RUNNING`, `DONE`, `FAILED`, `CANCELED`.
 - Workflow step status: `PENDING`, `RUNNING`, `WAITING_USER_APPROVAL`, `DONE`, `FAILED`, `SKIPPED`.
 - If a step is disabled for a run, it becomes `SKIPPED`.
-- If approval gate is enabled and YOLO mode is OFF, the step waits at `WAITING_USER_APPROVAL`.
+- If approval gate is enabled and the current live YOLO SSOT is OFF, the step waits at `WAITING_USER_APPROVAL`.
 - If user rejects an artifact, the same step retries with the rejection note as context.
 
 # 5. Built-in flows for MVP by Persona Use Cases

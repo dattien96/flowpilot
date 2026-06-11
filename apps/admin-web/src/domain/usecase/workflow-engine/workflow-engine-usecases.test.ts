@@ -56,6 +56,7 @@ describe("WorkflowEngine UseCases", () => {
       requiredMcps: [],
       requiredSkills: [],
       model: "gpt-5.5" as const,
+      yoloMode: false,
       agentType: "standard" as const,
       createdAt: "2026-05-20T00:00:00.000Z",
       updatedAt: "2026-05-20T00:00:00.000Z",

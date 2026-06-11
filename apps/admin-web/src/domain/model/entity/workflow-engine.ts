@@ -141,7 +141,7 @@ export interface StepDefinition {
   subagent?: string | null;
   model: SupportedStepModel;
   reasoningEffort?: string | null;
-  yoloMode?: boolean | null;
+  yoloMode: boolean;
   agentType: "standard" | "autonomous";
   inputArtifactDefinitions?: string[];
   outputArtifactDefinitions?: string[];
@@ -224,7 +224,6 @@ export interface WorkflowStep {
   providerOverride: string | null;
   modelOverride: string | null;
   reasoningEffortOverride?: string | null;
-  yoloMode: boolean | null;
   requiresApproval: boolean;
   createdAt: string;
   updatedAt: string;

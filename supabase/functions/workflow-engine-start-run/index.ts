@@ -69,7 +69,7 @@ Deno.serve(async (req) => {
     const { data: stepDefinitionRows, error: stepDefinitionError } = stepTypes.length > 0
       ? await adminClient
           .from("step_definitions")
-          .select("step_type, model, reasoning_effort")
+          .select("step_type, model, reasoning_effort, yolo_mode")
           .in("step_type", stepTypes)
       : { data: [], error: null };
 
@@ -115,7 +115,7 @@ Deno.serve(async (req) => {
         provider: resolvedProvider,
         model: firstStepModel,
         reasoning_effort: resolvedReasoningEffort,
-        yolo_mode: false,
+        yolo_mode: Boolean(workflow.yolo_mode),
         started_by: user.email ?? user.id,
       })
       .select("*")

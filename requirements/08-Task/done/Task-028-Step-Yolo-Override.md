@@ -5,14 +5,14 @@
 - Document ID: `Task-028`
 - Title: `Step YOLO Override`
 - Phase: `task`
-- Status: `done`
+- Status: `superseded`
 - Owner: `FlowPilot`
 - Reviewers: `FlowPilot`
 - Created: `2026-06-10`
-- Last Updated: `2026-06-10`
+- Last Updated: `2026-06-11`
 - Parent Documents: `CP-29-MCP-Proxy-Google-Drive`, `SD-11-MCP-Connection-Flows`, `SD-09-Approval-Gates`, `SS-04-Workflow`, `SS-05-Workflow-Ai-Provider`
-- Child Documents: `none`
-- Related Documents: `Task-010-Yolo-Mode`, `Task-025-Drive-MCP-Auth-Flow`
+- Child Documents: `Task-030-Workflow-Runs-Detail-Page-Yolo-Indicators`
+- Related Documents: `Task-010-Yolo-Mode`, `Task-025-Drive-MCP-Auth-Flow`, `Task-030-Workflow-Runs-Detail-Page-Yolo-Indicators`
 - Replaces: `none`
 - Tags: `workflow-engine`, `yolo`, `approval`, `mcp`
 
@@ -20,13 +20,13 @@
 
 ### Summary
 
-- Workflow definitions already carry a workflow-level YOLO default.
-- Reusable workflow step definitions and workflow-attached steps need YOLO config.
-- Workflow-attached step config must take precedence over workflow config when it is explicitly set.
+- This document is historical: it records the shipped step-level YOLO override model.
+- That model added reusable step YOLO defaults and workflow-attached step overrides with `step > workflow` precedence.
+- Task-030 supersedes this behavior for current work and restores workflow-only YOLO handling.
 
 ### Current Ask
 
-- Add reusable step YOLO defaults plus workflow-attached step YOLO override support, and enforce `step > workflow` precedence during workflow execution.
+- No new work should use this document as the active YOLO contract. Use Task-030 for the current workflow-only rule.
 
 ### Key Decisions
 
@@ -37,9 +37,9 @@
 
 ### Constraints
 
-- Preserve existing workflow-level YOLO behavior for workflows with no step overrides.
-- Avoid moving approval control back into Codex host approval prompts.
-- Keep this task scoped to workflow and step definition config plus runtime precedence.
+- Preserve this file as historical audit evidence of the earlier implementation.
+- Do not treat `step_definitions.yolo_mode` or `workflow_steps.yolo_mode` precedence from this task as the current product rule.
+- Use Task-030 when deciding current UI or runtime YOLO behavior.
 
 ### Open Questions
 
@@ -104,5 +104,11 @@ Workflow-level YOLO alone is not enough for mixed approval workflows. A workflow
 ## 8. Completion Notes
 
 - result: `implemented reusable step definition YOLO defaults and workflow-attached step YOLO overrides with nullable inherit/on/off semantics`
-- follow-ups: `none`
-- upstream docs updated: `not required; this task narrows the existing YOLO behavior`
+- follow-ups: `Task-030 supersedes this rule and simplifies current YOLO handling back to workflow-level only`
+- upstream docs updated: `Task-030 is now the current YOLO contract for runtime and run-detail behavior`
+
+### Superseded Rule Notice
+
+- Historical status: the `step > workflow` YOLO precedence defined in Task-028 is no longer the active rule for new work.
+- New rule: use workflow-level YOLO only, do not read step-level YOLO to decide runtime execution or run-detail indicators, and default to `false`.
+- Current source of truth: `requirements/08-Task/done/Task-030-Workflow-Runs-Detail-Page-Yolo-Indicators.md`

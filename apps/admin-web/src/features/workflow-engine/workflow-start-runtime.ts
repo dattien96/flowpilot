@@ -75,6 +75,7 @@ type StepDefinitionRow = {
   subagent: string | null;
   model: string;
   reasoning_effort: string | null;
+  yolo_mode?: boolean | null;
 };
 
 type ArtifactDefinitionRow = {
@@ -1078,26 +1079,24 @@ export async function sendMessageWithRetry({
   forceNewProviderSession?: boolean;
   providerAccountId?: string | null;
 }): Promise<WorkflowSessionSendResult> {
+  const requestedAccount = await resolveLocalProviderAccount(
+    providerKey,
+    providerAccountId,
+  );
   const stepScopedProcessKey = requiresStepScopedSession(requiredMcps)
     ? `workflow-${workflowRunId}-step-${stepRunId}`
     : null;
 
-  if (requiresStepScopedSession(requiredMcps)) {
-    const requestedAccount = await resolveLocalProviderAccount(
-      providerKey,
-      providerAccountId,
-    );
-    await localRunnerGateway.ensureGoogleDriveMcpProviderConfig({
-      providerKey,
-      accountHomePath: requestedAccount.home_path,
-      scope: "account",
-      mode: allowWrite ? "read_write" : "read_only",
-      yoloMode,
-      workflowRunId,
-      workflowStepRunId: stepRunId,
-      processKey: stepScopedProcessKey ?? undefined,
-    });
-  }
+  await localRunnerGateway.ensureGoogleDriveMcpProviderConfig({
+    providerKey,
+    accountHomePath: requestedAccount.home_path,
+    scope: "account",
+    mode: allowWrite ? "read_write" : "read_only",
+    yoloMode,
+    workflowRunId,
+    workflowStepRunId: stepRunId,
+    processKey: stepScopedProcessKey ?? undefined,
+  });
 
   const sessionScopeKey = requiresStepScopedSession(requiredMcps) ? stepRunId : null;
   let handle = await getOrCreateSession({
@@ -1255,6 +1254,7 @@ export async function sendMessageWithRetry({
           recoveredFromSessionId: handle?.dbId ?? null,
           recoveredFromProviderSessionId: handle?.providerSessionId ?? null,
           sessionScopeKey,
+          requestedProcessKey: stepScopedProcessKey,
         });
         attempt++;
         continue;
@@ -1307,6 +1307,7 @@ export async function sendMessageWithRetry({
           recoveredFromProviderSessionId: handle?.providerSessionId ?? null,
           replayCheckpointCount: checkpoints.length,
           sessionScopeKey,
+          requestedProcessKey: stepScopedProcessKey,
         });
         attempt++;
         continue;
@@ -1721,31 +1722,47 @@ async function insertLog(
   logLevel: "info" | "warn" | "error" | "debug",
   message: string,
 ) {
-  const { error } = await adminClient.from("workflow_run_logs").insert({
-    workflow_run_step_id: workflowRunStepId,
-    log_level: logLevel,
-    message,
-  });
+  try {
+    const { error } = await adminClient.from("workflow_run_logs").insert({
+      workflow_run_step_id: workflowRunStepId,
+      log_level: logLevel,
+      message,
+    });
 
-  if (error) {
-    const errorCode =
-      typeof (error as any)?.code === "string"
-        ? String((error as any).code)
-        : "";
-    const errorMessage = String((error as any)?.message ?? error);
-    if (
-      errorCode === "23503" ||
-      errorMessage.includes("workflow_run_logs_workflow_run_step_id_fkey")
-    ) {
-      console.warn("Skipping workflow run log write for missing step row:", {
+    if (error) {
+      const errorCode =
+        typeof (error as any)?.code === "string"
+          ? String((error as any).code)
+          : "";
+      const errorMessage = String((error as any)?.message ?? error);
+      if (
+        errorCode === "23503" ||
+        errorMessage.includes("workflow_run_logs_workflow_run_step_id_fkey")
+      ) {
+        console.warn("Skipping workflow run log write for missing step row:", {
+          workflowRunStepId,
+          logLevel,
+          message,
+        });
+        return;
+      }
+
+      console.warn("Skipping workflow run log write after insert error:", {
         workflowRunStepId,
         logLevel,
         message,
+        errorMessage,
       });
       return;
     }
-
-    throw new Error(`Unable to write workflow run log: ${errorMessage}`);
+  } catch (error) {
+    const errorMessage = String((error as any)?.message ?? error);
+    console.warn("Skipping workflow run log write after request failure:", {
+      workflowRunStepId,
+      logLevel,
+      message,
+      errorMessage,
+    });
   }
 }
 
@@ -2122,7 +2139,7 @@ async function loadWorkflowDefinition(
   const { data, error } = await adminClient
     .from("workflows")
     .select(
-      "id, name, project_id, provider_override, model_override, reasoning_effort_override",
+      "id, name, project_id, provider_override, model_override, reasoning_effort_override, yolo_mode",
     )
     .eq("id", workflowId)
     .or(`project_id.is.null,project_id.eq.${projectId}`)
@@ -2163,7 +2180,7 @@ async function loadWorkflowRunStep(
     .from("workflow_run_steps")
     .select(
       "id, workflow_run_id, workflow_step_id, execution_order_index, step_type, status, retry_count, error_message, " +
-        "workflow_steps ( id, step_type, order_index, is_enabled, provider_override, model_override, reasoning_effort_override, yolo_mode, provider_account_override_id, requires_approval )",
+        "workflow_steps ( id, step_type, order_index, is_enabled, provider_override, model_override, reasoning_effort_override, provider_account_override_id, requires_approval )",
     )
     .eq("id", stepRunId)
     .maybeSingle();
@@ -2204,7 +2221,7 @@ async function loadWorkflowSteps(
   const { data, error } = await adminClient
     .from("workflow_steps")
     .select(
-      "id, step_type, order_index, is_enabled, provider_override, model_override, reasoning_effort_override, yolo_mode, provider_account_override_id, requires_approval",
+      "id, step_type, order_index, is_enabled, provider_override, model_override, reasoning_effort_override, provider_account_override_id, requires_approval",
     )
     .eq("workflow_id", workflowId)
     .order("order_index", { ascending: true });
@@ -2223,7 +2240,7 @@ async function loadWorkflowStepById(
   const { data, error } = await adminClient
     .from("workflow_steps")
     .select(
-      "id, step_type, order_index, is_enabled, provider_override, model_override, reasoning_effort_override, yolo_mode, provider_account_override_id, requires_approval",
+      "id, step_type, order_index, is_enabled, provider_override, model_override, reasoning_effort_override, provider_account_override_id, requires_approval",
     )
     .eq("id", workflowStepId)
     .maybeSingle();
@@ -2247,7 +2264,7 @@ async function loadStepDefinitions(
   const { data, error } = await adminClient
     .from("step_definitions")
     .select(
-      "step_type, name, description, prompt_base, required_mcps, mcp_access_mode, required_skills, team_role, subagent, model, reasoning_effort",
+      "step_type, name, description, prompt_base, required_mcps, mcp_access_mode, required_skills, team_role, subagent, model, reasoning_effort, yolo_mode",
     )
     .in("step_type", stepTypes);
 
@@ -2260,7 +2277,7 @@ async function loadStepDefinitions(
   );
 }
 
-async function createSingleStepWorkflow(
+export async function createSingleStepWorkflow(
   adminClient: SupabaseClient,
   {
     projectId,
@@ -2290,10 +2307,11 @@ async function createSingleStepWorkflow(
       model_override: definition.model ?? DEFAULT_MODEL,
       reasoning_effort_override:
         definition.reasoning_effort ?? DEFAULT_REASONING_EFFORT,
+      yolo_mode: Boolean(definition.yolo_mode),
       created_by: SINGLE_STEP_RUNTIME_CREATED_BY,
     })
     .select(
-      "id, name, project_id, provider_override, model_override, reasoning_effort_override",
+      "id, name, project_id, provider_override, model_override, reasoning_effort_override, yolo_mode",
     )
     .single();
 
@@ -2447,7 +2465,7 @@ async function resolvePlannedStepExecution(
     model: normalizedModel,
     providerKey: resolvedProvider,
     reasoningEffort: resolvedReasoningEffort,
-    yoloMode: step.yolo_mode ?? Boolean(workflow.yolo_mode),
+    yoloMode: Boolean(workflow.yolo_mode),
     providerAccountId: step.provider_account_override_id ?? null,
   };
 }

@@ -287,6 +287,7 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
     ...step,
     promptBase: deriveStepPromptBase(step),
     model: DEFAULT_STEP_MODEL,
+    yoloMode: false,
     ...BUILT_IN_STEP_ARTIFACT_BINDINGS[step.stepType],
     createdAt: DEMO_STEP_DEFINITION_CREATED_AT,
     updatedAt: DEMO_STEP_DEFINITION_CREATED_AT,
@@ -368,7 +369,7 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
         providerOverride: null,
         modelOverride: null,
         reasoningEffortOverride: null,
-        yoloMode: false,
+        yoloMode: Boolean(selectedStep.yoloMode),
         createdBy: "seed",
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -384,7 +385,6 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
           providerOverride: null,
           modelOverride: null,
           reasoningEffortOverride: null,
-          yoloMode: null,
           requiresApproval: true,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
@@ -426,7 +426,6 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
       teamRole: step.teamRole ?? null,
       subagent: step.subagent ?? null,
       model: step.model,
-      yoloMode: typeof step.yoloMode === "boolean" ? step.yoloMode : null,
     };
     const existingIndex = this.stepDefinitions.findIndex(
       (current) => current.stepType === next.stepType
@@ -519,7 +518,6 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
             step.reasoningEffortOverride,
             resolvedWorkflowReasoning,
           ),
-          yoloMode: typeof step.yoloMode === "boolean" ? step.yoloMode : null,
           requiresApproval: step.requiresApproval ?? true,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
@@ -626,7 +624,6 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
         providerOverride: resolveProviderKeyFromModel(selectedModel),
         modelOverride: selectedModel,
         reasoningEffortOverride: selectedReasoningEffort,
-        yoloMode: null,
         requiresApproval: false,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
