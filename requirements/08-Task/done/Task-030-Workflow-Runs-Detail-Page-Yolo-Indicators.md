@@ -149,7 +149,7 @@ The current `step > workflow` YOLO model is harder to reason about than the prod
 - follow-ups: Remove or disable any remaining legacy run-level YOLO mutation API/UI in a separate cleanup task.
 - upstream docs updated: `Task-028`, `BUG-036`, `BUG-038`, `BUG-040`, `CA-044`, `CA-046`, and `CA-048` now point to Task-030 as the current YOLO contract.
 
-## 9. Manual Test Steps
+## 9. Manual Test Steps - Passed
 
 1. Prepare one workflow with at least one approval-gated step:
    - Open the workflow in the builder.
