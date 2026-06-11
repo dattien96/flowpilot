@@ -13,6 +13,7 @@ import {
   Copy,
   ChevronUp,
   ChevronDown,
+  Loader2,
 } from "lucide-react";
 
 import { PageFrame } from "@/components/common/page-frame";
@@ -1218,6 +1219,9 @@ function WorkflowRunDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [decisionComment, setDecisionComment] = useState("");
   const [submittingDecision, setSubmittingDecision] = useState(false);
+  const [pendingDecision, setPendingDecision] = useState<
+    "approved" | "changes_requested" | "rejected" | null
+  >(null);
   const [processingAction, setProcessingAction] = useState(false);
   const [runPromptText, setRunPromptText] = useState<string | null>(null);
   const [optimisticFollowUps, setOptimisticFollowUps] = useState<
@@ -1554,6 +1558,10 @@ function WorkflowRunDetailPage() {
           processed
             ? {
               ...processed,
+              run: {
+                ...processed.run,
+                yoloMode: engineDetail?.run?.yoloMode ?? false,
+              },
               steps: mergedSteps,
               outputs: mergedOutputs,
               logs: engineDetail?.logs ?? [],
@@ -1785,6 +1793,7 @@ function WorkflowRunDetailPage() {
     }
 
     setSubmittingDecision(true);
+    setPendingDecision(decision);
     const followUpComment = decisionComment.trim();
     const canOptimisticallyContinue =
       decision === "changes_requested" &&
@@ -1889,6 +1898,7 @@ function WorkflowRunDetailPage() {
       }
     } finally {
       setSubmittingDecision(false);
+      setPendingDecision(null);
     }
   };
 
@@ -2129,6 +2139,9 @@ function WorkflowRunDetailPage() {
           const stepStatus = selectedStep.status?.toUpperCase();
           const isWaiting = isWorkflowStepWaitingForApproval(stepStatus);
           const runStatus = detail.run.status?.toUpperCase();
+          const rejectDecision = isGoogleDriveMcpApproval ? "rejected" : "changes_requested";
+          const isRejectPending = submittingDecision && pendingDecision === rejectDecision;
+          const isApprovePending = submittingDecision && pendingDecision === "approved";
 
           if (isWaiting && runStatus !== "REJECTED" && runStatus !== "FAILED") {
             return (
@@ -2146,27 +2159,31 @@ function WorkflowRunDetailPage() {
                 <div className="flex items-center justify-end gap-2.5">
                   <Button
                     variant="secondary"
-                    className="h-8 w-8 rounded-lg p-0 bg-destructive/10 border border-destructive/20 text-destructive hover:bg-destructive/25 flex items-center justify-center shrink-0"
+                    aria-label={isGoogleDriveMcpApproval ? "Reject request" : "Reject and retry"}
+                    aria-busy={isRejectPending}
+                    className="h-8 w-8 rounded-lg p-0 bg-destructive/10 border border-destructive/20 text-red-400 hover:bg-destructive/25 flex items-center justify-center shrink-0 overflow-hidden"
                     disabled={submittingDecision}
-                    onClick={() => handleDecision(selectedStep.id, isGoogleDriveMcpApproval ? "rejected" : "changes_requested")}
+                    onClick={() => handleDecision(selectedStep.id, rejectDecision)}
                     title={isGoogleDriveMcpApproval ? "Reject Request" : "Reject & Retry"}
                   >
-                    {submittingDecision ? (
-                      <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                    {isRejectPending ? (
+                      <Loader2 aria-hidden="true" className="h-4 w-4 shrink-0 animate-spin text-current" />
                     ) : (
-                      <X className="h-4 w-4" />
+                      <X aria-hidden="true" className="h-4 w-4 shrink-0" strokeWidth={2.5} />
                     )}
                   </Button>
                   <Button
-                    className="h-8 w-8 rounded-lg p-0 bg-emerald-600/20 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20 flex items-center justify-center shrink-0"
+                    aria-label={isGoogleDriveMcpApproval ? "Approve request" : "Approve and continue"}
+                    aria-busy={isApprovePending}
+                    className="h-8 w-8 rounded-lg p-0 bg-emerald-600/20 border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/20 flex items-center justify-center shrink-0 overflow-hidden"
                     disabled={submittingDecision}
                     onClick={() => handleDecision(selectedStep.id, "approved")}
                     title={isGoogleDriveMcpApproval ? "Approve Request" : "Approve & Continue"}
                   >
-                    {submittingDecision ? (
-                      <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                    {isApprovePending ? (
+                      <Loader2 aria-hidden="true" className="h-4 w-4 shrink-0 animate-spin text-current" />
                     ) : (
-                      <Check className="h-4 w-4 text-emerald-400" />
+                      <Check aria-hidden="true" className="h-4 w-4 shrink-0" strokeWidth={2.5} />
                     )}
                   </Button>
                 </div>
