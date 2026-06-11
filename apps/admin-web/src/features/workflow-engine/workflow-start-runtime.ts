@@ -1256,6 +1256,7 @@ export async function sendMessageWithRetry({
           recoveredFromSessionId: handle?.dbId ?? null,
           recoveredFromProviderSessionId: handle?.providerSessionId ?? null,
           sessionScopeKey,
+          requestedProcessKey: stepScopedProcessKey,
         });
         attempt++;
         continue;
@@ -1308,6 +1309,7 @@ export async function sendMessageWithRetry({
           recoveredFromProviderSessionId: handle?.providerSessionId ?? null,
           replayCheckpointCount: checkpoints.length,
           sessionScopeKey,
+          requestedProcessKey: stepScopedProcessKey,
         });
         attempt++;
         continue;

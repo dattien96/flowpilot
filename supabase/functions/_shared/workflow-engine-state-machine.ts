@@ -10,6 +10,7 @@ export interface RuntimeWorkflowStep {
   id: string;
   stepType: string;
   status: RuntimeWorkflowStepStatus;
+  yoloMode?: boolean | null;
   requiresApproval: boolean;
   startedAt: string | null;
   retryCount: number;
@@ -52,12 +53,15 @@ export function planWorkflowProgress({
   const stepTransitions: WorkflowStepTransition[] = [];
 
   for (const step of steps) {
+    const effectiveYoloMode =
+      typeof step.yoloMode === "boolean" ? step.yoloMode : yoloMode;
+
     if (step.status === "DONE" || step.status === "SKIPPED" || step.status === "FAILED") {
       continue;
     }
 
     if (step.status === "WAITING_USER_APPROVAL") {
-      if (!yoloMode) {
+      if (!effectiveYoloMode) {
         return {
           runStatus: "RUNNING",
           runFinishedAt: null,
@@ -85,7 +89,7 @@ export function planWorkflowProgress({
     }
 
     if (step.status === "PENDING" || step.status === "RUNNING") {
-      if (step.requiresApproval && !yoloMode) {
+      if (step.requiresApproval && !effectiveYoloMode) {
         stepTransitions.push({
           stepId: step.id,
           patch: {
@@ -121,7 +125,7 @@ export function planWorkflowProgress({
           {
             logLevel: "info",
             message:
-              yoloMode && step.requiresApproval
+              effectiveYoloMode && step.requiresApproval
                 ? `YOLO mode auto-approved step ${step.stepType}.`
                 : `Completed step ${step.stepType}.`,
           },

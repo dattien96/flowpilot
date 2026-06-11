@@ -108,6 +108,68 @@ describe("workflow-engine-state-machine", () => {
     ]);
   });
 
+  it("keeps waiting when a step-level YOLO override is false even if the run default is true", () => {
+    const plan = planWorkflowProgress({
+      yoloMode: true,
+      now: "2026-05-20T01:00:00Z",
+      steps: [
+        {
+          id: "step-1",
+          stepType: "tech_spec",
+          status: "WAITING_USER_APPROVAL",
+          yoloMode: false,
+          requiresApproval: true,
+          startedAt: "2026-05-20T00:58:00Z",
+          retryCount: 0,
+          rejectionNote: null,
+        },
+      ],
+    });
+
+    expect(plan.runStatus).toBe("RUNNING");
+    expect(plan.pausedStepId).toBe("step-1");
+    expect(plan.stepTransitions).toEqual([]);
+  });
+
+  it("auto-approves when a step-level YOLO override is true even if the run default is false", () => {
+    const plan = planWorkflowProgress({
+      yoloMode: false,
+      now: "2026-05-20T01:00:00Z",
+      steps: [
+        {
+          id: "step-1",
+          stepType: "tech_spec",
+          status: "PENDING",
+          yoloMode: true,
+          requiresApproval: true,
+          startedAt: null,
+          retryCount: 0,
+          rejectionNote: null,
+        },
+      ],
+    });
+
+    expect(plan.runStatus).toBe("DONE");
+    expect(plan.pausedStepId).toBe(null);
+    expect(plan.stepTransitions).toEqual([
+      {
+        stepId: "step-1",
+        patch: {
+          status: "DONE",
+          startedAt: "2026-05-20T01:00:00Z",
+          finishedAt: "2026-05-20T01:00:00Z",
+          rejectionNote: null,
+        },
+        logs: [
+          {
+            logLevel: "info",
+            message: "YOLO mode auto-approved step tech_spec.",
+          },
+        ],
+      },
+    ]);
+  });
+
   it("prepares a rejected step for another pass", () => {
     const plan = planRejectedStepRetry({
       stepId: "step-3",

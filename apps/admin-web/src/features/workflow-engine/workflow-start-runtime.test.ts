@@ -1641,6 +1641,126 @@ describe("workflow-start-runtime", () => {
       expect(result.actualPromptText).toBe("hello");
     });
 
+    it("keeps the step-scoped process key when recovering a Google Drive session after session_dead", async () => {
+      let callCount = 0;
+      const sessionDeadError = new Error(
+        "Local runner session message failed: session process exited or is no longer registered",
+      );
+      (sessionDeadError as any).code = "session_dead";
+
+      const mockSendMessage = vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          throw sessionDeadError;
+        }
+        return Promise.resolve({
+          status: "success",
+          outputMarkdown: "approved replay completed",
+          providerSessionId: "thread-old",
+          actualPromptText: "hello",
+        });
+      });
+      const mockCloseSession = vi.fn().mockResolvedValue(undefined);
+      const mockStartSession = vi
+        .fn()
+        .mockResolvedValueOnce({
+          processKey: "workflow-run-123-step-step-456",
+          providerSessionId: "thread-old",
+          transportType: "codex_mcp",
+        })
+        .mockResolvedValueOnce({
+          processKey: "workflow-run-123-step-step-456",
+          providerSessionId: "thread-old",
+          transportType: "codex_mcp",
+        });
+      const mockEnsureGoogleDriveMcpProviderConfig = vi.fn().mockResolvedValue({
+        configChanged: false,
+      });
+
+      const localRunnerGateway = {
+        ensureGoogleDriveMcpProviderConfig: mockEnsureGoogleDriveMcpProviderConfig,
+        sendMessage: mockSendMessage,
+        closeSession: mockCloseSession,
+        startSession: mockStartSession,
+      } as any;
+
+      const mockQueryBuilder = {
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        filter: vi.fn().mockReturnThis(),
+        order: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockReturnThis(),
+        maybeSingle: vi
+          .fn()
+          .mockResolvedValueOnce({ data: null, error: null })
+          .mockResolvedValueOnce({
+            data: {
+              id: "session-old",
+              process_key: "workflow-run-123-step-step-456",
+              provider_session_id: "thread-old",
+              transport_type: "codex_mcp",
+              status: "completed",
+              provider: "codex",
+              model: "codex-mcp",
+              metadata_json: {
+                step_run_id: "step-456",
+                sessionScopeKey: "step-456",
+                providerAccountId: "account-b",
+                providerAccountHomePath: "/accounts/b",
+              },
+            },
+            error: null,
+          }),
+        insert: vi.fn().mockReturnThis(),
+        update: vi.fn().mockReturnThis(),
+        single: vi
+          .fn()
+          .mockResolvedValueOnce({ data: { id: "session-new" }, error: null })
+          .mockResolvedValueOnce({ data: { id: "session-old" }, error: null }),
+      };
+      const adminClient = {
+        from: vi.fn(() => mockQueryBuilder),
+      } as any;
+
+      const result = await sendMessageWithRetry({
+        adminClient,
+        localRunnerGateway,
+        workflowRunId: "run-123",
+        stepRunId: "step-456",
+        providerKey: "codex",
+        modelName: "codex-mcp",
+        reasoningEffort: null,
+        workingDirectory: "/repo",
+        subagent: "worker",
+        prompt: "hello",
+        skillIds: [],
+        requiredMcps: ["google_drive"],
+        yoloMode: false,
+        idleTTLSeconds: 60,
+      });
+
+      expect(callCount).toBe(2);
+      expect(mockEnsureGoogleDriveMcpProviderConfig).toHaveBeenCalledTimes(1);
+      expect(mockStartSession).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          customEnv: expect.objectContaining({
+            FLOWPILOT_PROCESS_KEY: "workflow-run-123-step-step-456",
+          }),
+        }),
+      );
+      expect(mockStartSession).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          customEnv: expect.objectContaining({
+            FLOWPILOT_PROCESS_KEY: "workflow-run-123-step-step-456",
+          }),
+          resumeProviderSessionId: "thread-old",
+        }),
+      );
+      expect(result.outputMarkdown).toBe("approved replay completed");
+    });
+
     it("does not resume an old provider thread after the active account changes", async () => {
       const mockSendMessage = vi.fn().mockResolvedValue({ outputMarkdown: "success" });
       const mockStartSession = vi.fn().mockResolvedValue({
