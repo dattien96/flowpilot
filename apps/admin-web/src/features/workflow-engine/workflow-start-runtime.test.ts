@@ -9,6 +9,7 @@ import {
   buildWorkflowStepPrompt,
   createArtifactOutputs,
   createGoogleDriveWriteAuditArtifacts,
+  createSingleStepWorkflow,
   createLocalWorkflowOutputArtifactSnapshot,
   deactivateWorkflowRunSession,
   finalizeWorkflowRunSessions,
@@ -190,6 +191,121 @@ describe("workflow-start-runtime", () => {
     expect(manifest.title).toBe("Response.md");
     expect(content).toContain("Hello from the step.");
     expect(actualPrompt).toContain("# Previous Conversation Context");
+  });
+
+  it("copies the step definition YOLO default into runtime-generated single-step workflows", async () => {
+    const workflowInsertRows: Array<Record<string, unknown>> = [];
+    const workflowStepInsertRows: Array<Record<string, unknown>> = [];
+    let selectedStepDefinitionColumns = "";
+    const workflowsBuilder = {
+      insert(row: Record<string, unknown>) {
+        workflowInsertRows.push(row);
+        return {
+          select() {
+            return {
+              single: vi.fn().mockResolvedValue({
+                data: {
+                  id: "wf-single",
+                  name: row.name,
+                  project_id: row.project_id,
+                  provider_override: row.provider_override,
+                  model_override: row.model_override,
+                  reasoning_effort_override: row.reasoning_effort_override,
+                  yolo_mode: row.yolo_mode,
+                },
+                error: null,
+              }),
+            };
+          },
+        };
+      },
+    };
+    const workflowStepsBuilder = {
+      insert(row: Record<string, unknown>) {
+        workflowStepInsertRows.push(row);
+        return {
+          select() {
+            return {
+              single: vi.fn().mockResolvedValue({
+                data: {
+                  id: "wf-step-single",
+                  step_type: row.step_type,
+                  order_index: row.order_index,
+                  is_enabled: row.is_enabled,
+                  provider_override: row.provider_override,
+                  model_override: row.model_override,
+                  reasoning_effort_override: row.reasoning_effort_override,
+                  yolo_mode: row.yolo_mode,
+                  requires_approval: row.requires_approval,
+                },
+                error: null,
+              }),
+            };
+          },
+        };
+      },
+    };
+    const stepDefinitionsBuilder = {
+      select: vi.fn((columns: string) => {
+        selectedStepDefinitionColumns = columns;
+        return stepDefinitionsBuilder;
+      }),
+      in: vi.fn().mockResolvedValue({
+        data: [
+          {
+            step_type: "test_codex_step",
+            name: "Test - Codex Single Step",
+            description: "Single-step test definition.",
+            prompt_base: null,
+            required_mcps: ["google_drive"],
+            mcp_access_mode: "read_only",
+            required_skills: [],
+            team_role: null,
+            subagent: null,
+            model: "gpt-5.4",
+            reasoning_effort: "medium",
+            yolo_mode: false,
+          },
+        ],
+        error: null,
+      }),
+    };
+    const aiSupportedModelsBuilder = {
+      select: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      maybeSingle: vi.fn().mockResolvedValue({
+        data: { model_id: "gpt-5.4", is_enabled: true },
+        error: null,
+      }),
+    };
+    const adminClient = {
+      from: vi.fn((table: string) => {
+        if (table === "step_definitions") return stepDefinitionsBuilder;
+        if (table === "workflows") return workflowsBuilder;
+        if (table === "workflow_steps") return workflowStepsBuilder;
+        if (table === "ai_supported_models") return aiSupportedModelsBuilder;
+        throw new Error(`Unexpected table ${table}`);
+      }),
+    } as any;
+
+    const result = await createSingleStepWorkflow(adminClient, {
+      projectId: "proj-1",
+      stepType: "test_codex_step",
+    });
+
+    expect(workflowInsertRows[0]).toMatchObject({
+      yolo_mode: false,
+    });
+    expect(selectedStepDefinitionColumns).toContain("yolo_mode");
+    expect(workflowStepInsertRows[0]).toMatchObject({
+      yolo_mode: false,
+    });
+    expect(result.workflow).toMatchObject({
+      yolo_mode: false,
+    });
+    expect(result.workflowSteps[0]).toMatchObject({
+      yolo_mode: false,
+    });
   });
 
   it("creates a fallback artifact run when a step has no output binding", async () => {

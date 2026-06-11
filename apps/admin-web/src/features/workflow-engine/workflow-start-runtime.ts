@@ -75,6 +75,7 @@ type StepDefinitionRow = {
   subagent: string | null;
   model: string;
   reasoning_effort: string | null;
+  yolo_mode?: boolean | null;
 };
 
 type ArtifactDefinitionRow = {
@@ -2247,7 +2248,7 @@ async function loadStepDefinitions(
   const { data, error } = await adminClient
     .from("step_definitions")
     .select(
-      "step_type, name, description, prompt_base, required_mcps, mcp_access_mode, required_skills, team_role, subagent, model, reasoning_effort",
+      "step_type, name, description, prompt_base, required_mcps, mcp_access_mode, required_skills, team_role, subagent, model, reasoning_effort, yolo_mode",
     )
     .in("step_type", stepTypes);
 
@@ -2260,7 +2261,7 @@ async function loadStepDefinitions(
   );
 }
 
-async function createSingleStepWorkflow(
+export async function createSingleStepWorkflow(
   adminClient: SupabaseClient,
   {
     projectId,
@@ -2275,6 +2276,8 @@ async function createSingleStepWorkflow(
   if (!definition) {
     throw new Error(`Step definition "${stepType}" could not be loaded.`);
   }
+  const singleStepYoloMode =
+    typeof definition.yolo_mode === "boolean" ? definition.yolo_mode : false;
 
   const { data: workflowData, error: workflowError } = await adminClient
     .from("workflows")
@@ -2290,10 +2293,11 @@ async function createSingleStepWorkflow(
       model_override: definition.model ?? DEFAULT_MODEL,
       reasoning_effort_override:
         definition.reasoning_effort ?? DEFAULT_REASONING_EFFORT,
+      yolo_mode: singleStepYoloMode,
       created_by: SINGLE_STEP_RUNTIME_CREATED_BY,
     })
     .select(
-      "id, name, project_id, provider_override, model_override, reasoning_effort_override",
+      "id, name, project_id, provider_override, model_override, reasoning_effort_override, yolo_mode",
     )
     .single();
 
@@ -2317,10 +2321,11 @@ async function createSingleStepWorkflow(
       model_override: definition.model ?? DEFAULT_MODEL,
       reasoning_effort_override:
         definition.reasoning_effort ?? DEFAULT_REASONING_EFFORT,
+      yolo_mode: singleStepYoloMode,
       requires_approval: false,
     })
     .select(
-      "id, step_type, order_index, is_enabled, provider_override, model_override, reasoning_effort_override, requires_approval",
+      "id, step_type, order_index, is_enabled, provider_override, model_override, reasoning_effort_override, yolo_mode, requires_approval",
     )
     .single();
 
