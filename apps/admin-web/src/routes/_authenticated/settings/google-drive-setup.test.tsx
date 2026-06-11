@@ -378,4 +378,35 @@ describe("GoogleDriveSetupPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Next Step" }));
     expect(await screen.findByText("Google Drive proxy MCP setup")).toBeInTheDocument();
   });
+
+  it("renders error/warning indicator states on steps if they have error/warning statuses", async () => {
+    const status = createRuntimeStatus({
+      mcp: {
+        ...createRuntimeStatus().mcp,
+        status: "failed",
+      },
+      providerConfigs: [
+        {
+          providerKey: "codex",
+          accountHomePath: "/home/codex",
+          configPath: "/home/codex/config",
+          status: "config_stale",
+          configKind: "proxy",
+          mode: "read_only",
+        },
+      ],
+    });
+    mocks.loadGoogleDriveRuntimeStatus.mockResolvedValue(status);
+
+    renderPage();
+
+    await screen.findByText(/credentials invalid/i);
+    
+    const alertCircle = document.querySelector(".lucide-circle-alert");
+    const triangleAlert = document.querySelector(".lucide-triangle-alert");
+    
+    expect(alertCircle).toBeInTheDocument();
+    expect(triangleAlert).toBeInTheDocument();
+  });
 });
+
