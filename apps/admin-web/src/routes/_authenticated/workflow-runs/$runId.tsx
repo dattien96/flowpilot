@@ -2241,7 +2241,7 @@ function WorkflowRunDetailPage() {
                 </h2>
               </div>
 
-              {/* Action Buttons: Resume, Cancel, YOLO */}
+              {/* Action Buttons: Resume, Cancel, Workflow YOLO */}
               <div className="flex items-center gap-3 shrink-0">
                 {canResumeRun || canCancelRun ? (
                   <>
@@ -2274,10 +2274,10 @@ function WorkflowRunDetailPage() {
 
                 <div className="flex items-center gap-2 rounded-full border border-border bg-card/60 px-3 py-1 text-[11px]">
                   <span className="font-medium text-muted-foreground uppercase tracking-wider">
-                    YOLO
+                    Workflow YOLO
                   </span>
                   <span
-                    aria-label={`YOLO mode ${detail.run.yoloMode ? "enabled" : "disabled"}`}
+                    aria-label={`Workflow YOLO mode ${detail.run.yoloMode ? "enabled" : "disabled"}`}
                     className={`relative inline-flex h-4 w-7 shrink-0 rounded-full border-2 border-transparent ${detail.run.yoloMode ? "bg-accent" : "bg-muted"
                       }`}
                   >

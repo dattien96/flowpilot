@@ -115,7 +115,7 @@ Deno.serve(async (req) => {
         provider: resolvedProvider,
         model: firstStepModel,
         reasoning_effort: resolvedReasoningEffort,
-        yolo_mode: false,
+        yolo_mode: Boolean(workflow.yolo_mode),
         started_by: user.email ?? user.id,
       })
       .select("*")
