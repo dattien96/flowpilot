@@ -30,4 +30,4 @@ Closed the remaining browser launch gap in the single-step YOLO flow so the admi
 
 - This audit documents a correct fix under the earlier Task-028 step-level YOLO contract.
 - Current YOLO rule: workflow-level only, no step-level YOLO reads for current execution or run-detail behavior.
-- See `requirements/08-Task/todo/Task-030-Workflow-Runs-Detail-Page-Yolo-Indicators.md`.
+- See `requirements/08-Task/done/Task-030-Workflow-Runs-Detail-Page-Yolo-Indicators.md`.
