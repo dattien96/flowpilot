@@ -12,7 +12,7 @@
 - Last Updated: `2026-06-11`
 - Parent Documents: `requirements/07-Coding-Plan/priority/CP-29-MCP-Proxy-Google-Drive.md`, `requirements/06-System-Tech-Design/SD-11-MCP-Connection-Flows.md`, `requirements/06-System-Tech-Design/SD-09-Approval-Gates.md`, `requirements/05-System-Specs/SS-04-Workflow.md`, `requirements/05-System-Specs/SS-08-Approve-Gate.md`, `requirements/05-System-Specs/SS-05-Workflow-Ai-Provider.md`
 - Child Documents: `none`
-- Related Documents: `requirements/08-Task/done/Task-028-Step-Yolo-Override.md`, `requirements/08-Task/todo/Task-030-Workflow-Runs-Detail-Page-Yolo-Indicators.md`, `requirements/09-BugFix/done/BUG-038-Single-Step-Yolo-Config-Is-Dropped-At-Runtime.md`, `requirements/09-BugFix/done/BUG-039-Google-Drive-Approval-Replay-Loses-Step-Scoped-Process-Key.md`, `change-audit/CA-046-fix-single-step-yolo-config-drift.md`, `change-audit/CA-047-fix-google-drive-approval-replay-process-key.md`, `change-audit/CA-048-fix-admin-web-single-step-yolo-select.md`
+- Related Documents: `requirements/08-Task/done/Task-028-Step-Yolo-Override.md`, `requirements/08-Task/done/Task-030-Workflow-Runs-Detail-Page-Yolo-Indicators.md`, `requirements/09-BugFix/done/BUG-038-Single-Step-Yolo-Config-Is-Dropped-At-Runtime.md`, `requirements/09-BugFix/done/BUG-039-Google-Drive-Approval-Replay-Loses-Step-Scoped-Process-Key.md`, `change-audit/CA-046-fix-single-step-yolo-config-drift.md`, `change-audit/CA-047-fix-google-drive-approval-replay-process-key.md`, `change-audit/CA-048-fix-admin-web-single-step-yolo-select.md`
 - Replaces: `none`
 - Tags: `workflow-engine, yolo, single-step, admin-web, cp-29, regression`
 
@@ -126,4 +126,4 @@ The admin-web single-step launch path still dropped the reusable step definition
 
 - The `step_definitions.yolo_mode` launch fix documented here was correct under the older Task-028 rule.
 - New rule: workflow-level YOLO only, with no step-level YOLO reads driving current execution or run-detail indicators.
-- See `requirements/08-Task/todo/Task-030-Workflow-Runs-Detail-Page-Yolo-Indicators.md`.
+- See `requirements/08-Task/done/Task-030-Workflow-Runs-Detail-Page-Yolo-Indicators.md`.
