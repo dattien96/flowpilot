@@ -427,7 +427,7 @@ If broad read scopes are missing, MCP should fail preflight with a clear message
   - Multiple accounts exist and no MCP account is selected.
   - Legacy migration sees duplicate email with conflicting or unverifiable token metadata.
 
-### 7.1 Manual Test Guide
+### 7.1 Manual Test Guide - Passed
 
 1. Start with a clean runner state or back up `.flowpilot/settings/google-drive-config.json`, `.flowpilot/settings/google-drive-accounts.json`, and `.flowpilot/settings/artifact-storage-google-drive.json`.
 2. Open Google Drive setup in admin-web.
@@ -439,10 +439,8 @@ If broad read scopes are missing, MCP should fail preflight with a clear message
 8. Open Project B settings or artifact storage UI.
 9. Select account A again and choose folder Y for artifact sync.
 10. Confirm Project B shows `google_drive connected`, account A, and folder Y.
-
 11. Run a Google Drive MCP read-only workflow for Project A.
 12. Ask the provider to list or search for a file outside folder X but inside account A's Drive.
-
 13. Confirm MCP can read the file if OAuth scopes permit it.
 14. Generate an artifact in Project A and run manual sync.
 15. Confirm the remote artifact appears under folder X only.
