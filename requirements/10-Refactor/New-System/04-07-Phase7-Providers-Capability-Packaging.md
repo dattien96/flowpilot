@@ -29,6 +29,11 @@ provider capabilities in the UI, and package/sign the desktop app for distributi
   skillSelection, mcp, interrupt }`.
 - UI shows disabled/lower-confidence providers clearly; disabled providers cannot be
   default.
+- **Enforced runner-side, not just in the UI:** the runner rejects a turn/resume to a
+  disabled or incapable provider with a typed `UnsupportedProviderRuntimeError`
+  (`04-02`) — the UI gate is a convenience, not the boundary.
+- The provider-neutral `ask_user` MCP tool works for Claude/Gemini too (it rides the
+  MCP proxy); only `approvalEvents`/`interrupt` are provider-capability gated.
 
 ## Packaging & distribution (desktop)
 
@@ -36,7 +41,10 @@ provider capabilities in the UI, and package/sign the desktop app for distributi
 - **macOS requires a Mac** for code-signing + Apple notarization; build/sign via CI
   (e.g. GitHub Actions with Windows + macOS runners). One push → both signed
   installers.
-- Auto-update wiring. Mobile (iOS/Android) is out of scope.
+- **Linux:** ship AppImage/`.deb`; signing/notarization not required (document it as
+  unsigned/self-signed) — only Windows + macOS are signed.
+- Auto-update wiring (update server + signature verification). Mobile (iOS/Android)
+  is out of scope.
 
 ## Documentation & migration notes
 
@@ -61,7 +69,8 @@ provider capabilities in the UI, and package/sign the desktop app for distributi
 
 - [ ] Core depends on provider interfaces, not Codex classes; Codex registered implemented.
 - [ ] Claude/Gemini placeholders visible-but-unavailable (T-19); cannot be default.
-- [ ] Provider capability model + UI surfaces disabled/lower-confidence clearly.
+- [ ] Provider capability model + UI surfaces disabled/lower-confidence clearly; **runner-side rejection** of disabled/incapable providers (typed error), not UI-only.
+- [ ] Linux AppImage/`.deb` shipped (unsigned/self-signed, documented); Windows + macOS signed.
 - [ ] Electron build → Windows + macOS from one codebase; macOS signed/notarized via CI; auto-update wired.
 - [ ] Operator docs (YOLO posture, sandbox requirement) + migration notes (retire `="approve"`, orchestration moved to runner).
 - [ ] **Review gate:** human + AI review this checklist after the phase.
