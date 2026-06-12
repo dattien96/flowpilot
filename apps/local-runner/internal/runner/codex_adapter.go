@@ -21,6 +21,11 @@ type codexAdapter struct {
 	cwd               string
 	defaultMcpServers []any
 
+	// promptPrep assembles the final prompt before turn/start. Defaults to ask_user
+	// reinforcement; the live process adapter overrides it to also run
+	// injectSkillContent + preparePromptForRequiredMcps (04-03 runner-side assembly).
+	promptPrep func(TurnRequest) string
+
 	mu         sync.Mutex
 	bridges    map[string]TurnBridge // threadId -> active turn bridge
 	codexTurns map[string]string     // threadId -> Codex turn id (for interrupt)
@@ -37,6 +42,42 @@ func newCodexAdapter(dispatcher *codexDispatcher, cwd string) *codexAdapter {
 	return a
 }
 
+// askUserReinforcement is appended to every prompt so the model knows the
+// FlowPilot-owned ask_user tool exists and when to use it (best-effort, 04-04).
+const askUserReinforcement = "\n\n---\nIf you need a decision or clarification before continuing, call the `ask_user` tool (prompt, options[], multiSelect?) instead of guessing."
+
+// preparePrompt builds the final turn prompt. The default applies ask_user
+// reinforcement; promptPrep (when set) replaces it with full runner-side assembly.
+func (a *codexAdapter) preparePrompt(req TurnRequest) string {
+	if a.promptPrep != nil {
+		return a.promptPrep(req)
+	}
+	return req.Prompt + askUserReinforcement
+}
+
+// codexAskUserMcpServer is the registration entry for the FlowPilot-owned ask_user
+// custom MCP tool, carried on thread/start so the provider lists it via tools/list.
+func codexAskUserMcpServer() any {
+	return map[string]any{
+		"name": "flowpilot",
+		"tools": []any{
+			map[string]any{
+				"name":        "ask_user",
+				"description": "Ask the user a structured question and wait for their answer before continuing. Use when you need a decision or clarification.",
+				"inputSchema": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"prompt":      map[string]any{"type": "string"},
+						"options":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+						"multiSelect": map[string]any{"type": "boolean"},
+					},
+					"required": []any{"prompt"},
+				},
+			},
+		},
+	}
+}
+
 func (a *codexAdapter) Key() ProviderKey { return ProviderKeyCodex }
 
 func (a *codexAdapter) Capabilities() ProviderCapabilities {
@@ -49,7 +90,18 @@ func (a *codexAdapter) Capabilities() ProviderCapabilities {
 func (a *codexAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge TurnBridge) error {
 	sandbox, approvalMode := codexYoloDerive(req.YoloMode)
 
-	startRes, err := a.dispatcher.call(ctx, "thread/start", codexThreadStartParams(a.cwd, sandbox, approvalMode, a.defaultMcpServers))
+	// Per-thread cwd is authoritative (04-06 multi-workspace): the run's cwd takes
+	// precedence over the adapter default.
+	cwd := a.cwd
+	if req.Cwd != "" {
+		cwd = req.Cwd
+	}
+
+	// Register the FlowPilot proxy + required MCPs + the ask_user custom tool on the
+	// thread (04-04): the model discovers ask_user via tools/list at session start.
+	mcpServers := append(append([]any{}, a.defaultMcpServers...), codexAskUserMcpServer())
+
+	startRes, err := a.dispatcher.call(ctx, "thread/start", codexThreadStartParams(cwd, sandbox, approvalMode, mcpServers))
 	if err != nil {
 		return err
 	}
@@ -79,10 +131,16 @@ func (a *codexAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tur
 		skill = &req.SelectedSkills[0]
 	}
 
+	// Runner-side prompt assembly before turn/start (04-03): skill reinforcement +
+	// ask_user usage reinforcement. The pluggable promptPrep hook lets the live
+	// process adapter inject full skill content (injectSkillContent) and required-MCP
+	// instructions (preparePromptForRequiredMcps); the default reinforces ask_user.
+	prompt := a.preparePrompt(req)
+
 	// Fire turn/start; rely on notifications for completion (don't block the pump).
 	turnErr := make(chan error, 1)
 	go func() {
-		res, e := a.dispatcher.call(ctx, "turn/start", codexTurnStartParams(threadID, req.Prompt, skill))
+		res, e := a.dispatcher.call(ctx, "turn/start", codexTurnStartParams(threadID, prompt, skill))
 		if e == nil {
 			if tid, ok := res["turnId"].(string); ok {
 				a.mu.Lock()
