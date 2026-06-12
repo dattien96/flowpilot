@@ -18,7 +18,7 @@ import (
 // this Supabase store both satisfy the navigator's needs.
 type CatalogStore interface {
 	ListProjects(ctx context.Context) ([]Project, error)
-	ListWorkflows(ctx context.Context, projectID string) ([]Workflow, error)
+	ListWorkflows(ctx context.Context) ([]Workflow, error)
 	ListSteps(ctx context.Context, workflowID string) ([]Step, error)
 }
 
@@ -93,8 +93,8 @@ func (s *SupabaseCatalogStore) ListProjects(ctx context.Context) ([]Project, err
 	return out, nil
 }
 
-func (s *SupabaseCatalogStore) ListWorkflows(ctx context.Context, projectID string) ([]Workflow, error) {
-	endpoint := fmt.Sprintf("%s/workflows?project_id=eq.%s&select=id,project_id,name,description&order=name.asc", s.restURL, projectID)
+func (s *SupabaseCatalogStore) ListWorkflows(ctx context.Context) ([]Workflow, error) {
+	endpoint := s.restURL + "/workflows?created_by=neq.flowpilot-runtime&select=id,project_id,name,description&order=created_at.desc"
 	var raw []struct {
 		ID          string `json:"id"`
 		ProjectID   string `json:"project_id"`

@@ -200,11 +200,11 @@ func TestSupabaseCatalogStoreShaping(t *testing.T) {
 	}
 
 	cap2 := withMockHTTP(t, 200, []byte(`[{"id":"w1","project_id":"p1","name":"Feature","description":"d"}]`))
-	wfs, err := store.ListWorkflows(context.Background(), "p1")
+	wfs, err := store.ListWorkflows(context.Background())
 	if err != nil || len(wfs) != 1 || wfs[0].ProjectID != "p1" {
 		t.Fatalf("workflows = %+v err=%v", wfs, err)
 	}
-	if !strings.Contains((*cap2)[0].endpoint, "workflows?project_id=eq.p1") {
+	if !strings.Contains((*cap2)[0].endpoint, "workflows?created_by=neq.flowpilot-runtime") {
 		t.Fatalf("workflows endpoint = %s", (*cap2)[0].endpoint)
 	}
 

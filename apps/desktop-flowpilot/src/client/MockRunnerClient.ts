@@ -91,9 +91,9 @@ export class MockRunnerClient implements RunnerClient {
     return MOCK_PROJECTS;
   }
 
-  async listWorkflows(projectId: string): Promise<Workflow[]> {
+  async listWorkflows(): Promise<Workflow[]> {
     await delay(60);
-    return MOCK_WORKFLOWS[projectId] ?? [];
+    return Object.values(MOCK_WORKFLOWS).flat();
   }
 
   async listSteps(workflowId: string): Promise<Step[]> {

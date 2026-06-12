@@ -161,7 +161,7 @@ export interface QuestionOption {
 
 export interface RunnerClient {
   listProjects(): Promise<Project[]>;
-  listWorkflows(projectId: string): Promise<Workflow[]>;
+  listWorkflows(): Promise<Workflow[]>;
   listSteps(workflowId: string): Promise<Step[]>;
   startRun(input: StartRunInput): Promise<RunHandle>;
   resumeRun(runId: string): Promise<RunHandle>;

@@ -13,15 +13,16 @@ import (
 
 // customCatalogStore is a test CatalogStore returning canned data or an error.
 type customCatalogStore struct {
-	projects []Project
-	err      error
+	projects  []Project
+	workflows []Workflow
+	err       error
 }
 
 func (c customCatalogStore) ListProjects(context.Context) ([]Project, error) {
 	return c.projects, c.err
 }
-func (c customCatalogStore) ListWorkflows(context.Context, string) ([]Workflow, error) {
-	return nil, c.err
+func (c customCatalogStore) ListWorkflows(context.Context) ([]Workflow, error) {
+	return c.workflows, c.err
 }
 func (c customCatalogStore) ListSteps(context.Context, string) ([]Step, error) {
 	return nil, c.err
@@ -48,6 +49,18 @@ func TestServiceUsesInjectedCatalogStore(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "My Real Project") || strings.Contains(string(body), "Acme Web App") {
 		t.Fatalf("expected injected projects (not the fake catalog), got %s", body)
+	}
+}
+
+// The desktop workflow selector mirrors Admin Web's /workflows screen: workflows
+// are a global catalog and are not scoped to the selected project.
+func TestServiceListsInjectedWorkflowsGlobally(t *testing.T) {
+	srv := newCatalogTestServer(t, customCatalogStore{
+		workflows: []Workflow{{ID: "wf9", Name: "Global Workflow"}},
+	})
+	status, body := doJSON(t, "GET", srv.URL+"/client/workflows", nil, nil)
+	if status != http.StatusOK || !strings.Contains(string(body), "Global Workflow") {
+		t.Fatalf("expected injected global workflows, got status=%d body=%s", status, body)
 	}
 }
 

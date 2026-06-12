@@ -58,11 +58,12 @@ func (c *interactiveCatalog) ListProjects(context.Context) ([]Project, error) {
 	return c.projects, nil
 }
 
-func (c *interactiveCatalog) ListWorkflows(_ context.Context, projectID string) ([]Workflow, error) {
-	if w, ok := c.workflows[projectID]; ok {
-		return w, nil
+func (c *interactiveCatalog) ListWorkflows(context.Context) ([]Workflow, error) {
+	var out []Workflow
+	for _, workflows := range c.workflows {
+		out = append(out, workflows...)
 	}
-	return []Workflow{}, nil
+	return out, nil
 }
 
 func (c *interactiveCatalog) ListSteps(_ context.Context, workflowID string) ([]Step, error) {

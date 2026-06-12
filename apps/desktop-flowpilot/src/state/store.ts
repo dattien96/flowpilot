@@ -126,7 +126,7 @@ export const useStore = create<AppState>((set, get) => ({
       // listens — so the first fetches can hit connection-refused ("Failed to fetch").
       // Retry ONLY connection-level errors (not HTTP errors like 502, which won't fix
       // themselves) so the navigator fills in once the runner is up, without a manual
-      // reload. Load projects/skills independently and surface a final error.
+      // reload. Load navigator data independently and surface a final error.
       const withRetry = async <T>(fn: () => Promise<T>): Promise<T> => {
         let lastErr: unknown;
         for (let i = 0; i < 10; i++) {
@@ -156,6 +156,13 @@ export const useStore = create<AppState>((set, get) => ({
         }));
       }
       try {
+        const workflows = await withRetry(() => client.listWorkflows());
+        set({ workflows });
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("[FlowPilot] listWorkflows failed:", err);
+      }
+      try {
         const skills = await withRetry(() => client.listSkills("codex"));
         set({ skills });
       } catch (err) {
@@ -170,8 +177,7 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   async selectProject(projectId) {
-    const workflows = await get().client.listWorkflows(projectId);
-    set({ selectedProjectId: projectId, selectedWorkflowId: undefined, selectedStepId: undefined, workflows, steps: [] });
+    set({ selectedProjectId: projectId, selectedWorkflowId: undefined, selectedStepId: undefined, steps: [] });
   },
 
   async selectWorkflow(workflowId) {
