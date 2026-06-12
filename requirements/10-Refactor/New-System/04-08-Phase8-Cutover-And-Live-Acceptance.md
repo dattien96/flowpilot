@@ -270,7 +270,7 @@ Run `.github/workflows/desktop-release.yml` with signing secrets present
 ## Acceptance / Definition of Done
 
 ### Part A — implement first
-- [ ] A1 — orchestrator + `CatalogStore`/`WorkflowStore` wired into the live run path (store-backed, fake-store tested).
+- [~] A1 — **catalog wired**: `InteractiveService` depends on `CatalogStore`; `CatalogStoreFor(runner)` selects `SupabaseCatalogStore` when Supabase is configured, else fake; handlers pass ctx + surface `catalog_unavailable` (tested). _Driving run progression through `WorkflowOrchestrator`/`WorkflowStore` (vs the per-turn flow) is the remaining half of A1, lands with A2._
 - [ ] A2 — run/step/session/approval/question/event/artifact state persisted to Supabase (idempotent, ordered; shaping tested).
 - [ ] A3 — Admin Web thin: server orchestration removed, routes call the runner; config + history retained.
 - [ ] A4 — Admin Web read-only provider-runtime audit timeline (T-18).
