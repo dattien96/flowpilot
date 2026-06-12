@@ -78,6 +78,7 @@ Grounded in `05` work items (W1–W8) and `04` implementation order.
 ### Multi-workspace runner + shared app-server (W1)
 - [ ] `Runner.workspace` (`runner.go:121`) demoted to a default; per-thread `cwd` is authoritative
 - [ ] One shared `codex app-server --listen stdio://` per runner, reused across workspaces/threads
+- [ ] **One active account at a time:** cross-account workspaces serialized via recreate; account switch interrupts in-flight (recoverable, not silent replay); auto-switch-on-usage-limit notifies the user (T-43)
 - [ ] Workspace registration/binding path; client can select active `cwd`
 
 ### Codex JSON-RPC + thread APIs (W2, W3)
@@ -96,9 +97,11 @@ Grounded in `05` work items (W1–W8) and `04` implementation order.
 - [ ] **YOLO resolver**: one resolved per-turn YOLO value maps to Codex thread/turn sandbox + approval mode **and** runner approval behavior (SSOT table in `05`)
 - [ ] YOLO=true → Codex full-access + never-approve; runner auto-approves; run audited as gating-disabled
 - [ ] YOLO=false → Codex workspace-write + on-request; runner shows approval card
+- [ ] **Approval policy engine** (YOLO=false): allowlist auto-approve / denylist auto-deny / else ask; every auto-decision **replies to the inbound request** (T-39)
 - [ ] Always-on `default_tools_approval_mode = "approve"` hack removed; config-ensure writes YOLO-derived values
 - [ ] Codex approval → `permission_required`, turn paused, record persisted
 - [ ] Client decision validated against FlowPilot policy, forwarded to Codex, turn resumed
+- [ ] Expiry/interrupt while pending replies deny/error to the inbound request + error `ask_user` tool result (provider never hangs) (T-40)
 - [ ] Pending approval survives client reconnect (state in runner)
 - [ ] Codex sandbox + approval config documented as required for real safety
 
@@ -109,8 +112,15 @@ Grounded in `05` work items (W1–W8) and `04` implementation order.
 
 ### Lifecycle, finalizer, fallback (W7, W8)
 - [ ] `LiveSession.Status` formalized to the `03` state set (incl. `waiting_for_question`); recovery rules: **client** disconnect does not fail the run (reconnect + `afterSeq` replay), **provider-stream** death → recoverable fail; approval/question expiry → recoverable fail
-- [ ] `TurnFinalizer` runs after `turn_completed`: artifact, diff snapshot, summary, RAG, step status; failure retryable without erasing the turn
+- [ ] `TurnFinalizer` runs after `turn_completed`: artifact, diff snapshot, summary, RAG, step status; failure retryable without erasing the turn; **idempotent** — retry never double-writes (T-41)
 - [ ] `ExecutePrompt` one-shot retained as compatibility fallback
+
+### Orchestration port + Supabase (P5 / `04-05`)
+- [ ] `deriveStepPromptBase`, session sync, send-with-retry, finalize (summary/RAG/GDrive) ported TS→Go; golden parity vs old path (fixture run, normalized ids/timestamps)
+- [ ] Go Supabase access for run/step/history — **least-privilege / RLS-scoped** key, trust model documented
+- [ ] **Edge-function reconciliation:** `workflow-engine-*` subsumed by the runner or reduced to thin triggers — orchestration not split across runner + edge functions
+- [ ] Concurrent runs safe: per-run locking; idempotent + ordered state/finalize writes; partial-failure retryable (T-42)
+- [ ] Navigator catalog (projects/workflows/steps) backed by real Go Supabase reads (replaces P2 fake catalog)
 
 ### Clients
 - [ ] Admin Web: provider/policy config + read-only provider event/session audit
@@ -172,6 +182,15 @@ back to the PP-xx it proves (Part A).
 - [ ] **T-34** a concurrent `POST /turns` while a turn is in flight returns `409 turn_in_progress` → PP-11, PP-17
 - [ ] **T-35** an unanswered approval/question **expires** → record `expired`, turn fails recoverably (never blocked forever) → PP-30
 - [ ] **T-36** resume/turn with a session whose `provider_account_id` ≠ active account returns typed `409 provider_account_changed` → PP-06, PP-25
+
+### Approval policy & finalizer (`04-04`)
+- [ ] **T-39** approval policy: allowlist auto-approves, denylist auto-denies, else card; each auto-decision replies to the inbound request → PP-12, PP-27
+- [ ] **T-40** expiry/interrupt while pending replies deny/error to the inbound request and returns an error `ask_user` tool result (provider does not hang) → PP-30, PP-31
+- [ ] **T-41** finalizer is idempotent: a retried finalize does not double-write artifacts/RAG/audit → PP-21, PP-30
+
+### Orchestration & multi-account (`04-05` / `04-06`)
+- [ ] **T-42** two concurrent runs (different workspaces) stay isolated; per-run state not corrupted; finalize idempotent under retry → PP-11, PP-17
+- [ ] **T-43** account switch recreates the app-server, interrupts in-flight (recoverable), hides the other account's threads; cross-account workspaces cannot run concurrently (serialized) → PP-24, PP-26
 
 ### Regression / fallback
 - [ ] **T-19** fallback `ExecutePrompt` path still passes existing runner tests
