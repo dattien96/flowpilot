@@ -141,17 +141,17 @@ compute workflow progression.
 
 ## How It Resolves Current Pain Points
 
-| Pain Point | App-Server Resolution |
-|---|---|
-| weak web chat UX | move coding UX to desktop client while runner controls turns |
-| noisy full file paths | render structured file events as file-name links |
-| mixed logs and final answer | separate event types in UI |
-| dangerous command approval | surface structured `permission_required` events |
-| weak workflow step enforcement | runner owns turn dispatch and step state |
-| unreliable artifact/RAG sync | finalizer runs after normalized `turn_completed` |
-| fragile resume | persist provider session/thread ids |
-| hard `/` and skill UX | client provides picker, adapter sends selected skill |
-| hard failure diagnosis | centralized provider event log |
+| Pain Point                     | App-Server Resolution                                        |
+| --------------------------------| --------------------------------------------------------------|
+| weak web chat UX               | move coding UX to desktop client while runner controls turns |
+| noisy full file paths          | render structured file events as file-name links             |
+| mixed logs and final answer    | separate event types in UI                                   |
+| dangerous command approval     | surface structured `permission_required` events              |
+| weak workflow step enforcement | runner owns turn dispatch and step state                     |
+| unreliable artifact/RAG sync   | finalizer runs after normalized `turn_completed`             |
+| fragile resume                 | persist provider session/thread ids                          |
+| hard `/` and skill UX          | client provides picker, adapter sends selected skill         |
+| hard failure diagnosis         | centralized provider event log                               |
 
 ## Client-To-Runner API Shape
 
