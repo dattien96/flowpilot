@@ -95,6 +95,7 @@ event extends the base:
 interface ProviderEventBase {
   id: string; workflowRunId: string; workflowStepRunId?: string;
   providerSessionId: string; providerKey: ProviderKey; providerTurnId?: string;
+  seq: number;        // monotonic per-run sequence — reconnect cursor (04-02)
   occurredAt: string;
 }
 
@@ -161,6 +162,12 @@ End-to-end scenarios (the per-phase `T-xx` ids are tracked in
 - **Concurrency:** the shared app-server uses an **async dispatcher** (id→waiter
   map, per-thread routing, non-blocking read loop, stdin write mutex) — not the
   current synchronous single-in-flight model.
+- **Streaming & reconnect (P2):** **one persistent per-run event stream** (SSE-style,
+  reusing the `/sessions/message/stream` precedent); `POST .../turns` returns a
+  `turnId` and events flow on the stream. Every event carries a **monotonic per-run
+  `seq`**; reconnect uses `?afterSeq=`/`Last-Event-ID` to replay only what was
+  missed. **One turn per session** (concurrent → `409`). **Multiple windows** share
+  the one stream; approval/question decisions are **idempotent + first-write-wins**.
 - **User interaction (confirm/options popup):** structured "ask the user" prompts
   use the **same pause/resume bridge as approvals**, surfaced as a
   `user_question_required` event with options. **Two origination paths:** (1) a
@@ -172,9 +179,10 @@ End-to-end scenarios (the per-phase `T-xx` ids are tracked in
 ## Open Implementation Questions
 
 - Go Supabase access approach (official client vs hand-rolled REST/RPC; service-role
-  auth in the runner) and TS→Go parity validation (P5).
-- HTTP/WebSocket vs local socket first; desktop client auth to the local runner.
-- How multiple desktop windows attach to the same run/thread.
+  auth in the runner) and TS→Go parity validation (P5). Until then P2 serves the
+  navigator catalog from a fake catalog / existing read path (`04-02`).
+- Desktop client **auth** to the local runner (P2 stance: loopback-only, no token;
+  token auth deferred). _(Transport itself is resolved — see below.)_
 - Approval decisions the installed Codex app-server exposes; whether `thread/start`
   accepts per-thread `mcpServers` (as Gemini ACP `session/new` does, `sessions.go:276`).
 - Multi-workspace registration/binding API and active-`cwd` selection.
