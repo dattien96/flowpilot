@@ -4,13 +4,14 @@ import { Timeline } from "@/components/Timeline";
 import { RunStatus } from "@/components/RunStatus";
 import { ScenarioSwitcher } from "@/components/ScenarioSwitcher";
 import { SystemControls } from "@/components/SystemControls";
+import { runnerModeLabel } from "@/client/createRunnerClient";
 
 export function App(): React.ReactElement {
   return (
     <div className="app">
       <header className="app-header">
         <div className="brand">
-          FlowPilot <span className="brand-sub">desktop · mock</span>
+          FlowPilot <span className="brand-sub">desktop · {runnerModeLabel()}</span>
         </div>
         <RunStatus />
       </header>

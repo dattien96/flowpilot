@@ -46,7 +46,7 @@ function createWindow(): void {
     minWidth: 960,
     minHeight: 640,
     backgroundColor: "#0e1117",
-    title: "FlowPilot Desktop (mock)",
+    title: "FlowPilot Desktop",
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,

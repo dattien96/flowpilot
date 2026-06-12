@@ -113,8 +113,28 @@ export const useStore = create<AppState>((set, get) => ({
 
   async loadProjects() {
     const client = get().client;
-    const [projects, skills] = await Promise.all([client.listProjects(), client.listSkills("codex")]);
-    set({ projects, skills });
+    // Load independently so one failure does not blank the other, and surface any
+    // error (a silent empty list was impossible to diagnose otherwise).
+    try {
+      const projects = await client.listProjects();
+      set({ projects });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] listProjects failed:", err);
+      set((s) => ({
+        timeline: [
+          ...s.timeline,
+          { kind: "system", id: `err-projects-${s.timeline.length}`, text: `Failed to load projects: ${String(err)}`, tone: "error" },
+        ],
+      }));
+    }
+    try {
+      const skills = await client.listSkills("codex");
+      set({ skills });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] listSkills failed:", err);
+    }
   },
 
   async selectProject(projectId) {

@@ -8,12 +8,25 @@ import { RUNNER_URL } from "@/config";
 //   - VITE_USE_RUNNER=1     -> HttpWsRunnerClient against the default RUNNER_URL
 //   - otherwise            -> MockRunnerClient (offline / UI dev)
 // The renderer never references a concrete client — only this factory does.
-export function createRunnerClient(): RunnerClient {
+function resolvedRunnerUrl(): string | null {
   const env = import.meta.env as Record<string, string | undefined>;
-  const explicit = env.VITE_RUNNER_URL;
-  if (explicit) return new HttpWsRunnerClient(explicit);
-  if (env.VITE_USE_RUNNER === "1" || env.VITE_USE_RUNNER === "true") {
-    return new HttpWsRunnerClient(RUNNER_URL);
-  }
-  return new MockRunnerClient();
+  if (env.VITE_RUNNER_URL) return env.VITE_RUNNER_URL;
+  if (env.VITE_USE_RUNNER === "1" || env.VITE_USE_RUNNER === "true") return RUNNER_URL;
+  return null;
+}
+
+export function createRunnerClient(): RunnerClient {
+  const url = resolvedRunnerUrl();
+  return url ? new HttpWsRunnerClient(url) : new MockRunnerClient();
+}
+
+/** True when the offline mock client is in use (no runner URL configured). */
+export function isMockMode(): boolean {
+  return resolvedRunnerUrl() === null;
+}
+
+/** Header label: "mock" or "runner <url>" — so the active transport is visible. */
+export function runnerModeLabel(): string {
+  const url = resolvedRunnerUrl();
+  return url ? `runner ${url}` : "mock";
 }
