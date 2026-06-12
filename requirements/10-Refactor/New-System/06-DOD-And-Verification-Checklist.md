@@ -106,13 +106,13 @@ Grounded in `05` work items (W1–W8) and `04` implementation order.
 - [ ] All `ExecutePrompt` callers traced (workflow engine + `root.go:1239`) and migrated
 
 ### Lifecycle, finalizer, fallback (W7, W8)
-- [ ] `LiveSession.Status` formalized to the `03` state set + recovery rules
+- [ ] `LiveSession.Status` formalized to the `03` state set (incl. `waiting_for_question`); recovery rules: **client** disconnect does not fail the run (reconnect + `afterSeq` replay), **provider-stream** death → recoverable fail; approval/question expiry → recoverable fail
 - [ ] `TurnFinalizer` runs after `turn_completed`: artifact, diff snapshot, summary, RAG, step status; failure retryable without erasing the turn
 - [ ] `ExecutePrompt` one-shot retained as compatibility fallback
 
 ### Clients
 - [ ] Admin Web: provider/policy config + read-only provider event/session audit
-- [ ] Interactive client = **Electron desktop app** MVP (`apps/desktop-flowpilot/`): workflow/step selector, chat+stream, approval card, file links via IDE CLI, `/` + skill picker
+- [~] Interactive client = **Electron desktop app** (`apps/desktop-flowpilot/`): workflow/step selector, chat+stream, approval card, **question/options card**, file links via IDE CLI, `/` **multi-skill** picker, **system controls** (open Admin Web / restart / shutdown) — *mock MVP built (04-01 Part A); real runner wiring lands in P2*
 - [ ] Desktop app builds + runs on Windows and macOS from one codebase (macOS signed/notarized via CI)
 - [ ] React webview kept IDE-agnostic (no Electron/IDE specifics) so a future VS Code/JetBrains plugin can reuse it
 
