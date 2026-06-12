@@ -40,10 +40,18 @@ On a `permission_required` notification (from the Phase 3 dispatcher):
 `SubmitApprovalDecision(approvalId, decision)`: validate vs FlowPilot policy, send
 `codexApprovalDecisionParams` back, unblock, persist outcome. Mirror the existing
 `SubmitApprovalDecisionUseCase`
-(`apps/admin-web/.../submit-approval-decision-usecase.ts`).
+(`apps/admin-web/.../submit-approval-decision-usecase.ts`). Exposed to clients as
+`POST /client/approvals/{approvalId}/decision` (`04-02`).
 
 YOLO=true → Codex `never` approval mode means it does not ask; if a request still
 arrives, auto-approve and record it.
+
+**Robustness (contract in `04-02`, enforced here):**
+- **Idempotent + first-write-wins:** multiple windows may watch one run; the first
+  valid decision resolves it, later/duplicate submits return the resolved outcome.
+- **Validation:** a decision outside the offered set → `400 invalid_decision`.
+- **Expiry:** an unanswered approval times out → record `expired`, turn fails
+  **recoverably** (never blocked forever). Same policy applies to questions below.
 
 **Boundary:** real safety = `permission_required` + Codex sandbox + FlowPilot policy
 together. App-server is the gate channel, not enforcement alone.
@@ -87,7 +95,10 @@ into a user-interaction bridge handling approvals and questions. A question can 
 
 - **`AnswerQuestion(questionId, choice)`**: client submits the pick (single/multi);
   the bridge unblocks. Path 1 returns the choice as the tool result; Path 2 feeds the
-  workflow step. Survives client reconnect (state in the runner).
+  workflow step. Survives client reconnect (state in the runner). Exposed as
+  `POST /client/questions/{questionId}/answer` (`04-02`); **idempotent +
+  first-write-wins**, invalid choice → `400`, unanswered → **expires** (recoverable
+  fail) — same policy as approvals.
 - **Native option:** if the installed Codex app-server exposes a native
   elicitation/user-input request, map it to the same `user_question_required` event.
   Verify availability; Path 1's MCP-tool path is the robust default.
@@ -104,10 +115,11 @@ This is the mechanism behind the desktop "options popup" in `04-01`.
 
 ## Interrupt / cancel
 
-A user "stop" cancels the in-flight turn via `codexInterruptParams`; mark the turn
-`cancelled`, drain its event channel, free pending-request/approval entries. A
-`ctx` cancel on the turn must also issue the interrupt so the shared app-server is
-not left mid-turn.
+A user "stop" (client `POST /client/workflow-runs/{runId}/interrupt`, `04-02`)
+cancels the in-flight turn via `codexInterruptParams`; mark the turn `cancelled`,
+drain its event channel, free pending-request/approval entries. A `ctx` cancel on
+the turn must also issue the interrupt so the shared app-server is not left
+mid-turn.
 
 ## Finalizer hook
 
@@ -139,6 +151,9 @@ separately for retry.
   pick resumes the turn with the chosen value.
 - T-30 a workflow-driven `user_question_required` (no model tool call) renders the
   same card and the answer resumes the step.
+- T-31 interrupt cancels an in-flight turn cleanly (turn marked `cancelled`).
+- T-33 decision/answer idempotent + first-write-wins (multi-window).
+- T-35 unanswered approval/question expires → turn fails recoverably.
 
 ## Definition of Done (checklist)
 
@@ -148,6 +163,7 @@ separately for retry.
 - [ ] Approval bridge: pause turn (per-`approvalId` channel), survive reconnect, decision round-trip.
 - [ ] **`ask_user` MCP tool (model-driven, best-effort)**: registered via `tools/list`, prompt-reinforced → `user_question_required` → options card → `AnswerQuestion` → turn resumes (T-29).
 - [ ] **Workflow-driven question (deterministic)**: runner/step emits `user_question_required` directly → same card → resumes the step (T-30).
-- [ ] Interrupt/cancel: stop cancels the turn cleanly via `codexInterruptParams`.
+- [ ] Interrupt/cancel: stop cancels the turn cleanly via `codexInterruptParams` (T-31).
+- [ ] Decisions/answers **idempotent + first-write-wins**; invalid → `400`; unanswered **expires** to a recoverable fail (T-33/T-35).
 - [ ] Finalizer hook on `turn_completed`; failure retryable without erasing the turn (T-27/T-28).
 - [ ] **Review gate:** human + AI review this checklist after the phase.

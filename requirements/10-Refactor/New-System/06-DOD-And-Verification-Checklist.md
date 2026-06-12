@@ -66,6 +66,15 @@ Grounded in `05` work items (W1–W8) and `04` implementation order.
 - [ ] `ProviderRuntimeAdapter`-equivalent contract in the runner; core imports no Codex-specific types
 - [ ] Provider registry with Codex implemented, Claude/Gemini as disabled placeholders
 
+### Interactive APIs, streaming & reconnect (P2 / `04-02`)
+- [ ] Client API fulfils the full `04-01` `RunnerClient`: incl. single-run GET, **answer-question**, **interrupt**; `/system/*` referenced for sidebar controls
+- [ ] One persistent per-run SSE stream; `POST /turns` returns `{turnId}`; one-turn-per-session (`409 turn_in_progress`)
+- [ ] Every event carries a monotonic per-run `seq`; reconnect via `afterSeq`/`Last-Event-ID` (no gaps/dupes); `message_delta` ephemeral
+- [ ] Decisions/answers idempotent + first-write-wins (multi-window); expiry → recoverable fail; invalid → `400`
+- [ ] Account-scope validation on resume/turn (typed `409 provider_account_changed`); standard error envelope; loopback bind
+- [ ] Catalog (projects/workflows/steps) served in P2 (fake catalog / existing path), real Go Supabase reads in P5
+- [ ] `workflow_provider_questions` persistence + run/step status state set + resolved/expired on approvals & questions
+
 ### Multi-workspace runner + shared app-server (W1)
 - [ ] `Runner.workspace` (`runner.go:121`) demoted to a default; per-thread `cwd` is authoritative
 - [ ] One shared `codex app-server --listen stdio://` per runner, reused across workspaces/threads
@@ -149,6 +158,14 @@ back to the PP-xx it proves (Part A).
 - [ ] **T-28** a `turn_failed` with `recoverable=true` can be re-sent and completes → PP-30
 - [ ] **T-29** `ask_user` (FlowPilot MCP tool, model-driven) emits `user_question_required` with options; selecting an option resumes the turn with the chosen value → PP-31
 - [ ] **T-30** a workflow-driven `user_question_required` (runner-emitted, no model tool call) renders the same card and the answer resumes the step → PP-31
+
+### P2 API robustness & reconnect (`04-02`)
+- [ ] **T-31** interrupt cancels an in-flight turn cleanly; turn marked `cancelled` → PP-16
+- [ ] **T-32** reconnect via `afterSeq`/`Last-Event-ID` replays with **no gaps or duplicates** (events ordered by `seq`) → PP-07
+- [ ] **T-33** approval/answer decision is idempotent + first-write-wins across two windows; late/duplicate submit returns the resolved outcome → PP-13
+- [ ] **T-34** a concurrent `POST /turns` while a turn is in flight returns `409 turn_in_progress` → PP-11, PP-17
+- [ ] **T-35** an unanswered approval/question **expires** → record `expired`, turn fails recoverably (never blocked forever) → PP-30
+- [ ] **T-36** resume/turn with a session whose `provider_account_id` ≠ active account returns typed `409 provider_account_changed` → PP-06, PP-25
 
 ### Regression / fallback
 - [ ] **T-19** fallback `ExecutePrompt` path still passes existing runner tests

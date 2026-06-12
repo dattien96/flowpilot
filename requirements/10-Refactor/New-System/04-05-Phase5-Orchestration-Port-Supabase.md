@@ -22,6 +22,9 @@ Client are both thin clients of the same runner.
   `createGoogleDriveWriteAuditArtifacts`)
 - **Supabase reads/writes** for run/step/history (Go client / REST — precedent:
   artifact cloud sync, `supabase_config.go`)
+- **navigator catalog** (`projects`/`workflows`/`steps`): P2 served these from a
+  fake catalog / existing read path (`04-02`); P5 replaces that with **real Go
+  Supabase reads** so the desktop navigator is backed by live data
 - **workflow-driven questions:** the ported state machine can emit
   `user_question_required` directly at defined steps (the deterministic question
   path from `04-04`) — required confirmations/branches that must not depend on the
@@ -70,6 +73,7 @@ Client are both thin clients of the same runner.
 
 - [ ] `deriveStepPromptBase`, session sync, send-with-retry, finalize (summary/RAG/GDrive) ported to Go.
 - [ ] Go Supabase access for run/step/history.
+- [ ] Navigator catalog (projects/workflows/steps) backed by real Go Supabase reads (replaces the P2 fake catalog).
 - [ ] Admin Web no longer orchestrates server-side; it is a thin client of the runner.
 - [ ] Golden parity: old TS path vs new Go path produce identical artifacts/RAG/audit.
 - [ ] Desktop and web runs go through the same Go-runner path (T-20).
