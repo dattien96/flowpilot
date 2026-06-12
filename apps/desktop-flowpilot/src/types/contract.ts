@@ -28,7 +28,7 @@ export interface Workflow {
 
 export interface Step {
   id: string;
-  workflowId: string;
+  workflowId?: string;
   name: string;
   order: number;
   /** Skill auto-selected for this step, if any (source: workflow_default). */
@@ -66,7 +66,7 @@ export type RunStatus =
 
 export interface StartRunInput {
   projectId: string;
-  workflowId: string;
+  workflowId?: string;
   stepId: string;
   /** YOLO is the single source of truth for approval posture (see 04-04). */
   yoloMode?: boolean;
@@ -162,7 +162,7 @@ export interface QuestionOption {
 export interface RunnerClient {
   listProjects(): Promise<Project[]>;
   listWorkflows(): Promise<Workflow[]>;
-  listSteps(workflowId: string): Promise<Step[]>;
+  listSteps(): Promise<Step[]>;
   startRun(input: StartRunInput): Promise<RunHandle>;
   resumeRun(runId: string): Promise<RunHandle>;
   /** Streaming turn: yields normalized provider events until terminal. */

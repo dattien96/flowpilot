@@ -19,7 +19,7 @@ import (
 type CatalogStore interface {
 	ListProjects(ctx context.Context) ([]Project, error)
 	ListWorkflows(ctx context.Context) ([]Workflow, error)
-	ListSteps(ctx context.Context, workflowID string) ([]Step, error)
+	ListSteps(ctx context.Context) ([]Step, error)
 }
 
 // CatalogStoreFor returns the live SupabaseCatalogStore when the runner has a
@@ -111,20 +111,18 @@ func (s *SupabaseCatalogStore) ListWorkflows(ctx context.Context) ([]Workflow, e
 	return out, nil
 }
 
-func (s *SupabaseCatalogStore) ListSteps(ctx context.Context, workflowID string) ([]Step, error) {
-	endpoint := fmt.Sprintf("%s/workflow_steps?workflow_id=eq.%s&select=id,workflow_id,step_type,order_index&order=order_index.asc", s.restURL, workflowID)
+func (s *SupabaseCatalogStore) ListSteps(ctx context.Context) ([]Step, error) {
+	endpoint := s.restURL + "/step_definitions?select=step_type,name&order=name.asc"
 	var raw []struct {
-		ID         string `json:"id"`
-		WorkflowID string `json:"workflow_id"`
-		StepType   string `json:"step_type"`
-		OrderIndex int    `json:"order_index"`
+		StepType string `json:"step_type"`
+		Name     string `json:"name"`
 	}
 	if err := s.getJSON(ctx, endpoint, &raw); err != nil {
 		return nil, err
 	}
 	out := make([]Step, len(raw))
 	for i, r := range raw {
-		out[i] = Step{ID: r.ID, WorkflowID: r.WorkflowID, Name: r.StepType, Order: r.OrderIndex}
+		out[i] = Step{ID: r.StepType, Name: r.Name, Order: i + 1}
 	}
 	return out, nil
 }

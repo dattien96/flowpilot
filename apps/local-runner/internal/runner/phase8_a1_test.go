@@ -15,6 +15,7 @@ import (
 type customCatalogStore struct {
 	projects  []Project
 	workflows []Workflow
+	steps     []Step
 	err       error
 }
 
@@ -24,8 +25,8 @@ func (c customCatalogStore) ListProjects(context.Context) ([]Project, error) {
 func (c customCatalogStore) ListWorkflows(context.Context) ([]Workflow, error) {
 	return c.workflows, c.err
 }
-func (c customCatalogStore) ListSteps(context.Context, string) ([]Step, error) {
-	return nil, c.err
+func (c customCatalogStore) ListSteps(context.Context) ([]Step, error) {
+	return c.steps, c.err
 }
 
 func newCatalogTestServer(t *testing.T, catalog CatalogStore) *httptest.Server {
@@ -61,6 +62,18 @@ func TestServiceListsInjectedWorkflowsGlobally(t *testing.T) {
 	status, body := doJSON(t, "GET", srv.URL+"/client/workflows", nil, nil)
 	if status != http.StatusOK || !strings.Contains(string(body), "Global Workflow") {
 		t.Fatalf("expected injected global workflows, got status=%d body=%s", status, body)
+	}
+}
+
+// The desktop single-step selector mirrors Admin Web's /workflow-steps screen:
+// step definitions are global and not scoped to a selected workflow.
+func TestServiceListsInjectedStepsGlobally(t *testing.T) {
+	srv := newCatalogTestServer(t, customCatalogStore{
+		steps: []Step{{ID: "analysis", Name: "Analysis"}},
+	})
+	status, body := doJSON(t, "GET", srv.URL+"/client/steps", nil, nil)
+	if status != http.StatusOK || !strings.Contains(string(body), "Analysis") {
+		t.Fatalf("expected injected global steps, got status=%d body=%s", status, body)
 	}
 }
 

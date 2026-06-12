@@ -13,6 +13,7 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /client/projects", s.handleListProjects)
 	mux.HandleFunc("GET /client/workflows", s.handleListWorkflows)
 	mux.HandleFunc("GET /client/projects/{projectId}/workflows", s.handleListWorkflows)
+	mux.HandleFunc("GET /client/steps", s.handleListSteps)
 	mux.HandleFunc("GET /client/workflows/{workflowId}/steps", s.handleListSteps)
 	mux.HandleFunc("POST /client/workflow-runs", s.handleStartRun)
 	mux.HandleFunc("GET /client/workflow-runs/{runId}", s.handleGetRun)
@@ -70,7 +71,7 @@ func (s *InteractiveService) handleListWorkflows(w http.ResponseWriter, r *http.
 }
 
 func (s *InteractiveService) handleListSteps(w http.ResponseWriter, r *http.Request) {
-	steps, err := s.catalog.ListSteps(r.Context(), r.PathValue("workflowId"))
+	steps, err := s.catalog.ListSteps(r.Context())
 	if err != nil {
 		writeInteractiveError(w, newAPIErr(http.StatusBadGateway, "catalog_unavailable", err.Error()))
 		return

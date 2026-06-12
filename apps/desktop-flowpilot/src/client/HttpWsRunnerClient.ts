@@ -68,8 +68,8 @@ export class HttpWsRunnerClient implements RunnerClient {
   listWorkflows(): Promise<Workflow[]> {
     return this.getJSON<Workflow[]>("/client/workflows");
   }
-  listSteps(workflowId: string): Promise<Step[]> {
-    return this.getJSON<Step[]>(`/client/workflows/${encodeURIComponent(workflowId)}/steps`);
+  listSteps(): Promise<Step[]> {
+    return this.getJSON<Step[]>("/client/steps");
   }
   listArtifacts(runId: string): Promise<Artifact[]> {
     return this.getJSON<Artifact[]>(`/client/workflow-runs/${encodeURIComponent(runId)}/artifacts`);

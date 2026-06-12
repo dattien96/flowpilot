@@ -20,6 +20,8 @@ import { ADMIN_WEB_URL } from "@/config";
 
 let loadProjectsInFlight: Promise<void> | null = null;
 
+export type LaunchMode = "workflow" | "step";
+
 // ---- Timeline item model (what the renderer draws) -------------------------
 
 export type TimelineItem =
@@ -52,6 +54,7 @@ interface AppState {
   selectedProjectId?: string;
   selectedWorkflowId?: string;
   selectedStepId?: string;
+  launchMode: LaunchMode;
 
   // run
   runId?: string;
@@ -70,6 +73,7 @@ interface AppState {
   // actions
   loadProjects(): Promise<void>;
   selectProject(projectId: string): Promise<void>;
+  setLaunchMode(mode: LaunchMode): void;
   selectWorkflow(workflowId: string): Promise<void>;
   selectStep(stepId: string): void;
   setScenario(scenario: ScenarioName): void;
@@ -113,6 +117,7 @@ export const useStore = create<AppState>((set, get) => ({
   artifacts: [],
   recoverable: false,
   scenario: "normal",
+  launchMode: "workflow",
 
   async loadProjects() {
     if (loadProjectsInFlight) return loadProjectsInFlight;
@@ -163,6 +168,13 @@ export const useStore = create<AppState>((set, get) => ({
         console.error("[FlowPilot] listWorkflows failed:", err);
       }
       try {
+        const steps = await withRetry(() => client.listSteps());
+        set({ steps });
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("[FlowPilot] listSteps failed:", err);
+      }
+      try {
         const skills = await withRetry(() => client.listSkills("codex"));
         set({ skills });
       } catch (err) {
@@ -177,12 +189,17 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   async selectProject(projectId) {
-    set({ selectedProjectId: projectId, selectedWorkflowId: undefined, selectedStepId: undefined, steps: [] });
+    set({ selectedProjectId: projectId });
+  },
+
+  setLaunchMode(mode) {
+    set({
+      launchMode: mode,
+    });
   },
 
   async selectWorkflow(workflowId) {
-    const steps = await get().client.listSteps(workflowId);
-    set({ selectedWorkflowId: workflowId, selectedStepId: steps[0]?.id, steps });
+    set({ selectedWorkflowId: workflowId });
   },
 
   selectStep(stepId) {
@@ -195,22 +212,23 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   async sendPrompt(prompt, skills) {
-    const { client, selectedProjectId, selectedWorkflowId, selectedStepId } = get();
-    if (!selectedProjectId || !selectedWorkflowId || !selectedStepId) return;
+    const { client, launchMode, selectedProjectId, selectedWorkflowId, selectedStepId } = get();
+    const launchTargetId = launchMode === "workflow" ? selectedWorkflowId : selectedStepId;
+    if (!selectedProjectId || !launchTargetId) return;
 
     let runId = get().runId;
     if (!runId) {
       const handle = await client.startRun({
         projectId: selectedProjectId,
-        workflowId: selectedWorkflowId,
-        stepId: selectedStepId,
+        workflowId: launchMode === "workflow" ? selectedWorkflowId : undefined,
+        stepId: launchTargetId,
       });
       runId = handle.runId;
     }
 
     const turnInput: TurnInput = {
       runId,
-      stepId: selectedStepId,
+      stepId: launchTargetId,
       prompt,
       selectedSkills:
         skills && skills.length > 0

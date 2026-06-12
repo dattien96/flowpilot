@@ -66,11 +66,22 @@ func (c *interactiveCatalog) ListWorkflows(context.Context) ([]Workflow, error) 
 	return out, nil
 }
 
-func (c *interactiveCatalog) ListSteps(_ context.Context, workflowID string) ([]Step, error) {
-	if s, ok := c.steps[workflowID]; ok {
-		return s, nil
+func (c *interactiveCatalog) ListSteps(context.Context) ([]Step, error) {
+	seen := map[string]Step{}
+	for _, steps := range c.steps {
+		for _, step := range steps {
+			if _, ok := seen[step.ID]; !ok {
+				step.WorkflowID = ""
+				seen[step.ID] = step
+			}
+		}
 	}
-	return []Step{}, nil
+	out := make([]Step, 0, len(seen))
+	for _, step := range seen {
+		step.Order = len(out) + 1
+		out = append(out, step)
+	}
+	return out, nil
 }
 
 func (c *interactiveCatalog) listSkills() []ProviderSkill { return c.skills }

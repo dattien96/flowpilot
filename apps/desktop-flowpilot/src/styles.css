@@ -148,6 +148,36 @@ body {
   font-family: var(--mono);
   word-break: break-all;
 }
+.tab-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-3);
+}
+.tab {
+  display: flex;
+  justify-content: center;
+  padding: 6px 8px;
+  border-radius: 5px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+  background: transparent;
+  border: 0;
+}
+.tab.active {
+  background: var(--accent-2);
+  color: var(--text);
+}
+.nav-panel.hidden {
+  display: none;
+}
+.nav-panel.active {
+  display: block;
+}
 
 .sidebar-bottom {
   display: flex;
