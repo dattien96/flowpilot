@@ -12,6 +12,7 @@ ADMIN_WEB_PATH := "apps/admin-web"
 ADMIN_WEB_PORT := "3002"
 LOCAL_RUNNER_PATH := "apps/local-runner"
 LOCAL_RUNNER_PORT := "4317"
+DESKTOP_PATH := "apps/desktop-flowpilot"
 
 # --- Default Target ---
 default: help
@@ -66,8 +67,29 @@ runner-dev:
     @echo "Starting local runner on port {{LOCAL_RUNNER_PORT}}..."
     @cd {{LOCAL_RUNNER_PATH}} && go run ./cmd/flowpilot runner serve --port {{LOCAL_RUNNER_PORT}}
 
-# Start admin web and local runner together
+# Install desktop app dependencies
+desktop-install:
+    @echo "Installing desktop app dependencies..."
+    @cd {{DESKTOP_PATH}} && npm install
+    @echo "Done"
+
+# Start the desktop app standalone with offline MOCK data (no runner needed)
+desktop-dev:
+    @echo "Starting desktop app (offline mock data)..."
+    @cd {{DESKTOP_PATH}} && npm run dev
+
+# Start the desktop app standalone pointed at a running local runner (real HTTP/SSE)
+desktop-dev-runner:
+    @echo "Starting desktop app against runner on port {{LOCAL_RUNNER_PORT}}..."
+    @cd {{DESKTOP_PATH}} && VITE_RUNNER_URL=http://127.0.0.1:{{LOCAL_RUNNER_PORT}} npm run dev
+
+# Start admin web + local runner + desktop app together (all 3 components).
+# The desktop is auto-pointed at the local runner (real HTTP/SSE, not mock).
 dev:
+    @node scripts/supervisor.js --web-port {{ADMIN_WEB_PORT}} --runner-port {{LOCAL_RUNNER_PORT}} --restart-existing --with-desktop --desktop-path {{DESKTOP_PATH}}
+
+# Start admin web + local runner only (no desktop app)
+dev-no-desktop:
     @node scripts/supervisor.js --web-port {{ADMIN_WEB_PORT}} --runner-port {{LOCAL_RUNNER_PORT}} --restart-existing
 
 

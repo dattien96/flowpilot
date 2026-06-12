@@ -8,6 +8,8 @@ const http = require('http');
 let webPort = '3002';
 let runnerPort = '4317';
 let restartExisting = false;
+let withDesktop = false;
+let desktopPath = 'apps/desktop-flowpilot';
 const args = process.argv.slice(2);
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--web-port' && args[i + 1]) {
@@ -18,6 +20,11 @@ for (let i = 0; i < args.length; i++) {
     i++;
   } else if (args[i] === '--restart-existing') {
     restartExisting = true;
+  } else if (args[i] === '--with-desktop') {
+    withDesktop = true;
+  } else if (args[i] === '--desktop-path' && args[i + 1]) {
+    desktopPath = args[i + 1];
+    i++;
   }
 }
 
@@ -28,6 +35,8 @@ const controlPath = path.join(flowpilotDir, 'supervisor.cmd');
 
 let webProcess = null;
 let runnerProcess = null;
+let desktopProcess = null;
+let hintDesktopPid = null;
 let isExiting = false;
 let isRestarting = false;
 
@@ -173,6 +182,7 @@ async function startServices() {
       const oldMeta = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
       if (oldMeta.webPid) hintWebPid = oldMeta.webPid;
       if (oldMeta.runnerPid) hintRunnerPid = oldMeta.runnerPid;
+      if (oldMeta.desktopPid) hintDesktopPid = oldMeta.desktopPid;
     } catch (e) {}
   }
 
@@ -237,6 +247,7 @@ async function startServices() {
       supervisorPid: process.pid,
       webPid: adoptedWebPid,
       runnerPid: adoptedRunnerPid,
+      desktopPid: hintDesktopPid,
       controlPath: controlPath,
     };
     fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2));
@@ -310,14 +321,50 @@ async function startServicesFresh(existing = {}) {
     }
   }
 
+  // Spawn the desktop app (Electron + Vite). It has no fixed managed port, so we
+  // kill any stale instance from a previous run by its recorded PID, then start
+  // fresh. Closing the desktop window does NOT tear down web/runner.
+  if (withDesktop) {
+    if (hintDesktopPid && isPidAlive(hintDesktopPid)) {
+      console.log(`[Supervisor] Stopping stale desktop process ${hintDesktopPid}...`);
+      killProcessTree(createManagedProcessRef(hintDesktopPid, false));
+    }
+    // Point the desktop at the runner we just (re)started so it uses the real
+    // HttpWsRunnerClient instead of the offline mock. An explicit VITE_RUNNER_URL in
+    // the environment still wins (e.g. to target a remote runner).
+    const desktopRunnerUrl = process.env.VITE_RUNNER_URL || `http://127.0.0.1:${runnerPort}`;
+    console.log(`[Supervisor] Starting desktop app (Electron + Vite) → runner ${desktopRunnerUrl}...`);
+    const desktopCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+    desktopProcess = spawn(desktopCmd, ['run', 'dev'], {
+      cwd: path.join(rootDir, desktopPath),
+      shell: true,
+      stdio: 'inherit',
+      detached: process.platform !== 'win32',
+      env: { ...process.env, VITE_RUNNER_URL: desktopRunnerUrl },
+    });
+    desktopProcess.detached = process.platform !== 'win32';
+    attachDesktopExitHandler(desktopProcess);
+  }
+
   // Write supervisor metadata
   const metadata = {
     supervisorPid: process.pid,
     webPid: webProcess ? webProcess.pid : null,
     runnerPid: runnerProcess ? runnerProcess.pid : null,
+    desktopPid: desktopProcess ? desktopProcess.pid : null,
     controlPath: controlPath,
   };
   fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2));
+}
+
+// The desktop window closing is a normal user action — log it but keep the
+// rest of the stack running (unlike web/runner, which exit the supervisor).
+function attachDesktopExitHandler(child) {
+  child.on('exit', (code) => {
+    if (!isExiting && !isRestarting) {
+      console.log(`[Supervisor] Desktop app exited with code ${code}. Web + runner keep running.`);
+    }
+  });
 }
 
 function killProcessTree(child) {
@@ -366,6 +413,7 @@ function cleanupAndExit() {
   // Signal the process groups on Unix to let them shut down gracefully
   signalManagedProcess(runnerProcess, 'SIGINT');
   signalManagedProcess(webProcess, 'SIGINT');
+  signalManagedProcess(desktopProcess, 'SIGINT');
 
   // Wait up to 3 seconds for processes to exit on their own before force-killing
   let checks = 0;
@@ -373,8 +421,9 @@ function cleanupAndExit() {
   const interval = setInterval(() => {
     const runnerAlive = runnerProcess && runnerProcess.exitCode === null && !runnerProcess.killed && isPidAlive(runnerProcess.pid);
     const webAlive = webProcess && webProcess.exitCode === null && !webProcess.killed && isPidAlive(webProcess.pid);
+    const desktopAlive = desktopProcess && desktopProcess.exitCode === null && !desktopProcess.killed && isPidAlive(desktopProcess.pid);
 
-    if (!runnerAlive && !webAlive) {
+    if (!runnerAlive && !webAlive && !desktopAlive) {
       clearInterval(interval);
       finishExit();
     } else {
@@ -384,6 +433,7 @@ function cleanupAndExit() {
         clearInterval(interval);
         if (runnerAlive) killProcessTree(runnerProcess);
         if (webAlive) killProcessTree(webProcess);
+        if (desktopAlive) killProcessTree(desktopProcess);
         finishExit();
       }
     }
@@ -408,6 +458,7 @@ function handleRestart() {
   // Signal the process groups on Unix first
   signalManagedProcess(runnerProcess, 'SIGINT');
   signalManagedProcess(webProcess, 'SIGINT');
+  signalManagedProcess(desktopProcess, 'SIGINT');
 
   // Wait up to 2 seconds for processes to exit, then force-kill if still alive
   let checks = 0;
@@ -415,8 +466,9 @@ function handleRestart() {
   const interval = setInterval(() => {
     const runnerAlive = runnerProcess && runnerProcess.exitCode === null && !runnerProcess.killed && isPidAlive(runnerProcess.pid);
     const webAlive = webProcess && webProcess.exitCode === null && !webProcess.killed && isPidAlive(webProcess.pid);
+    const desktopAlive = desktopProcess && desktopProcess.exitCode === null && !desktopProcess.killed && isPidAlive(desktopProcess.pid);
 
-    if (!runnerAlive && !webAlive) {
+    if (!runnerAlive && !webAlive && !desktopAlive) {
       clearInterval(interval);
       isRestarting = false;
       startServices();
@@ -427,6 +479,7 @@ function handleRestart() {
         clearInterval(interval);
         if (runnerAlive) killProcessTree(runnerProcess);
         if (webAlive) killProcessTree(webProcess);
+        if (desktopAlive) killProcessTree(desktopProcess);
         setTimeout(() => {
           isRestarting = false;
           startServices();

@@ -162,6 +162,18 @@ Operator review of the current Google Drive setup and workflow runtime behavior 
 
 ## 8. Completion Notes
 
+> Forward reference: the App-Server refactor
+> (`requirements/10-Refactor/New-System/`, see `05` "YOLO As SSOT" and `06`) changes
+> this picture. Under Codex app-server, approvals arrive as structured
+> `permission_required` events that FlowPilot answers programmatically, so gating no
+> longer hangs. The always-on `default_tools_approval_mode = "approve"` hack is
+> **superseded**: YOLO becomes the single source of truth that drives both the
+> FlowPilot runner policy and the Codex thread/turn sandbox + approval mode
+> (YOLO=true → full-access + never-approve; YOLO=false → workspace-write +
+> on-request). This is the "command interception / provider approval bridge" this
+> task anticipated as a follow-up. The sandbox-enforcement caveat still stands:
+> app-server is the gate channel, not enforcement by itself.
+
 - result: `planned only; no code or upstream document updates yet`
 - follow-ups:
   - create an implementation task if we want Step 7 and runtime to surface provider approval-mode drift more clearly

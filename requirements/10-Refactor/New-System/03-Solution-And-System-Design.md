@@ -1,0 +1,852 @@
+# 03 - Solution And System Design
+
+## Chosen Direction
+
+FlowPilot moves to a **three-part system** with the **Go Runner as the single
+backend**:
+
+1. **Go Runner** — the single backend and source of truth (`apps/local-runner`). It
+   owns **all** business logic: workflow run/step state machine & sequencing,
+   base-prompt build from step definitions, skill + required-MCP injection, the
+   Codex app-server (one shared instance per active account), threads/turns,
+   normalized events, approval bridge, YOLO resolver, MCP proxy enforcement, and
+   post-turn finalize (artifacts, summary, Supabase RAG, Google-Drive audit). **The
+   Go runner calls Supabase directly** (in Go) for run/step/history state.
+2. **Web UI (Admin)** — thin React client for config, history, and audit; calls the
+   runner.
+3. **Desktop Client (Electron)** — thin cross-platform coding client (any IDE);
+   calls the runner.
+
+There is **no separate orchestration tier**. All logic flows through the Go runner;
+clients render only and never duplicate workflow rules. This makes "the runner owns
+business logic" literally true, and gives the Desktop Client the exact same backend
+the Web UI uses.
+
+> **Migration consequence:** the orchestration that lives in the Admin Web **server**
+> tier today (`workflow-start-runtime.ts`: prompt build, session sync,
+> send-with-retry, finalize, RAG, Google-Drive audit) must be **ported from TS into
+> the Go runner**, and the runner must call Supabase in Go (there is precedent —
+> artifact cloud sync / Supabase config already run in the runner). This is a
+> substantial migration — see `04-05` and Open Architecture Risks.
+
+Codex app-server is not the whole architecture. It is the Codex implementation
+inside a provider-neutral runtime gateway in the Go Runner.
+
+## Architecture Goals
+
+The new system must satisfy these goals:
+
+- preserve FlowPilot-owned workflow control
+- make provider runtimes replaceable
+- keep Codex-specific details out of core workflow logic
+- support a fast IDE-based client UX
+- keep Admin Web focused on configuration and audit
+- make provider events durable and inspectable
+- support approval decisions as first-class workflow events
+- keep MCP proxy policy centralized in the runner
+- allow Claude and Gemini adapters later without redesigning the runner
+
+## Architecture Non-Goals
+
+The new system should not:
+
+- turn Codex app-server into the whole product architecture
+- make desktop client responsible for workflow business rules
+- make Admin Web responsible for low-latency coding interaction
+- expose raw provider protocol details to clients
+- force every provider to have the same feature depth on day one
+- claim dangerous-command safety without sandbox and approval policy
+
+## Why Choose App-Server
+
+App-server resolves the current pain without giving up FlowPilot's workflow
+control.
+
+It gives FlowPilot:
+
+- structured provider events
+- provider session/thread lifecycle
+- command and permission approval events
+- final response capture
+- file and tool activity capture
+- stronger resume semantics
+- reliable turn completion signal
+
+These are the missing pieces needed to build a better client UX without falling
+back to native Codex App as the main product surface.
+
+## System Components
+
+### Runner Runtime
+
+The runner should be a long-lived local or server-side process that exposes APIs
+to Admin Web and interactive clients.
+
+All modules below live in the **Go Runner** (the single backend). Those marked
+**(port)** are migrated from the current Admin Web server tier
+(`workflow-start-runtime.ts`) into Go.
+
+Internal modules:
+
+- `WorkflowRuntime`: owns run and step lifecycle **(port** from admin-web server**)**
+- `PromptOptimizer`: builds the turn prompt — base-prompt build from step definitions
+  (`deriveStepPromptBase`, **port** from admin-web) plus skill + required-MCP injection
+  (`injectSkillContent` + `preparePromptForRequiredMcps`, already in the Go runner)
+- `ProviderRuntimeGateway`: selects and calls provider adapters
+- `McpProxyRuntime`: owns FlowPilot proxy tools and policy
+- `ApprovalPolicyEngine`: decides what can be auto-approved, blocked, or shown
+  to the user
+- `ProviderEventStore`: persists normalized provider events
+- `ProviderSessionStore`: persists provider session/thread metadata
+- `TurnFinalizer`: saves final response, artifacts, summary, RAG, Google-Drive audit
+  **(port** from admin-web server**)**
+- `ClientEventHub`: streams normalized events to the desktop client and Admin Web
+
+### Admin Web
+
+Admin Web should be a client of the runner/admin APIs.
+
+Main modules:
+
+- provider settings
+- MCP/proxy settings
+- approval policy settings
+- workflow configuration
+- workflow run history
+- provider session/event audit
+- artifact and summary browser
+- desktop client connection/setup page
+
+### Interactive Desktop Client (Electron)
+
+The interactive client is a **cross-platform Electron desktop app** (final
+decision — see `04-01` and `05` "Interactive Client Strategy"). One codebase runs
+on Windows + macOS (+ Linux) and works alongside any IDE (VS Code, Android Studio,
+Xcode). It is a client of the runner interactive APIs.
+
+Main modules:
+
+- `RunnerClient`: HTTP/WebSocket/local transport wrapper (React renderer)
+- `WorkflowNavigator`: project/workflow/step navigation
+- `ChatPanel`: chat input, streaming output, run timeline
+- `ApprovalView`: command/tool approval card
+- `QuestionView`: structured "ask the user" options card (single/multi + "Other")
+- `FileEventRenderer`: changed-file rows; opens files in the user's IDE via its CLI
+- `SkillPicker`: `/` command and **multi-skill** selection
+- `SystemControls`: open Admin Web (:3002), restart, turn off the dev stack
+- `IdeBridge` (Electron main): detect + invoke IDE CLI (`code -g` / `studio` / `xed`)
+- `LocalConfig`: runner URL, auth token, workspace binding
+
+The renderer (React webview) stays IDE-agnostic so it can be reused inside an
+optional VS Code/JetBrains plugin later. The client renders state; it must not
+compute workflow progression.
+
+## How It Resolves Current Pain Points
+
+| Pain Point                     | App-Server Resolution                                        |
+| --------------------------------| --------------------------------------------------------------|
+| weak web chat UX               | move coding UX to desktop client while runner controls turns |
+| noisy full file paths          | render structured file events as file-name links             |
+| mixed logs and final answer    | separate event types in UI                                   |
+| dangerous command approval     | surface structured `permission_required` events              |
+| weak workflow step enforcement | runner owns turn dispatch and step state                     |
+| unreliable artifact/RAG sync   | finalizer runs after normalized `turn_completed`             |
+| fragile resume                 | persist provider session/thread ids                          |
+| hard `/` and skill UX          | client provides multi-skill picker, adapter sends skills     |
+| hard failure diagnosis         | centralized provider event log                               |
+| no structured "ask the user"   | runner emits `user_question_required`; client shows options  |
+
+## Approval & YOLO (Single Source of Truth)
+
+**YOLO is the single source of truth for approval posture.** One per-run/step value
+drives **both** layers together, so they can never disagree:
+
+- `yolo = true` → Codex full-access + never-approve **and** the runner auto-approves;
+  the run is audited as gating-disabled.
+- `yolo = false` → Codex workspace-write + on-request **and** the runner surfaces a
+  `permission_required` card; **deny blocks** the command.
+
+This retires the legacy `default_tools_approval_mode = "approve"` hack. Real
+dangerous-command safety = `permission_required` + Codex sandbox + FlowPilot policy
+configured **together** — not approval UX alone. Resolver + bridge detail in `04-04`.
+
+## Client-To-Runner API Shape
+
+The exact transport can be HTTP plus WebSocket, local socket, or another local
+transport. The contract should be stable regardless of transport.
+
+> The **authoritative** endpoint list, request/response shapes, error envelope, and
+> streaming/reconnect semantics live in `04-02`. The shape below is the design-level
+> summary and must stay consistent with it (`/client/*` namespace, Go-1.26
+> `{param}` patterns).
+
+Required commands (client):
+
+```text
+GET  /client/projects
+GET  /client/projects/{projectId}/workflows
+GET  /client/workflows/{workflowId}/steps
+POST /client/workflow-runs                      # {projectId,workflowId,stepId,yoloMode?}
+GET  /client/workflow-runs/{runId}              # cold-open status + handle + pending approval/question
+POST /client/workflow-runs/{runId}/resume       # validates active account
+POST /client/workflow-runs/{runId}/turns        # {stepId,prompt,selectedSkills?} -> {turnId}
+POST /client/workflow-runs/{runId}/interrupt    # Stop the in-flight turn
+POST /client/approvals/{approvalId}/decision     # idempotent, first-write-wins
+POST /client/questions/{questionId}/answer       # idempotent, first-write-wins
+GET  /client/workflow-runs/{runId}/artifacts
+GET  /client/provider-skills?provider=codex
+POST /system/restart, /system/shutdown           # desktop sidebar controls
+```
+
+Required event stream (one persistent per-run stream; reconnect cursor):
+
+```text
+GET /client/workflow-runs/{runId}/events/stream?afterSeq=N
+```
+
+The stream emits normalized FlowPilot events (each with a monotonic per-run `seq`),
+not raw provider events; reconnect replays only missed events via `afterSeq` /
+`Last-Event-ID`.
+
+## State Ownership
+
+| State | Owner | Notes |
+|---|---|---|
+| project config | Runner/Admin APIs | rendered and edited by Admin Web |
+| workflow definitions | Runner/Admin APIs | source for prompt optimization |
+| active workflow run | Runner | clients can request state changes |
+| active step | Runner | desktop client can select/request step actions |
+| provider session id | Runner | stored for resume |
+| active provider account | Runner | app-server bound to it; threads account-scoped (Risk #1) |
+| provider events | Runner | persisted for audit and replay (monotonic `seq`) |
+| approval decision | Runner | client submits, runner persists; idempotent |
+| pending question | Runner | `user_question_required`; client submits the answer |
+| chat rendering state | Client | derived from event stream |
+| editor file navigation | desktop client | opens files in the user's IDE via its CLI |
+
+## Event Flow
+
+> "optimize prompt" below = base-prompt build (ported into the runner) + skill/MCP
+> injection — all in the Go runner before `turn/start`. Finalize also runs in the
+> runner on `turn_completed`.
+
+Normal turn:
+
+```text
+Desktop Client
+  -> send turn request
+Runner
+  -> validate workflow run and step
+  -> optimize prompt
+  -> call ProviderRuntimeGateway
+CodexAdapter
+  -> start/resume app-server thread
+  -> send turn/start
+  -> map provider stream to ProviderEvent
+Runner
+  -> persist events
+  -> stream events to clients
+  -> run TurnFinalizer after turn_completed
+Desktop Client
+  -> render final answer, files, tools, artifacts
+```
+
+Approval turn:
+
+```text
+CodexAdapter
+  -> receives provider approval request
+  -> emits permission_required
+Runner
+  -> persists approval request
+  -> streams permission_required to clients
+Desktop Client
+  -> shows approval card
+  -> submits decision
+Runner
+  -> validates decision against policy
+  -> persists decision
+  -> forwards provider-specific decision to CodexAdapter
+CodexAdapter
+  -> resumes provider turn
+```
+
+Question turn (structured "ask the user"):
+
+```text
+origin (either)
+  -> model calls the `ask_user` MCP tool (model-driven, best-effort), OR
+  -> a workflow step emits the question directly (deterministic)
+Runner (user-interaction bridge)
+  -> persists a question record, emits user_question_required, pauses the turn
+Desktop Client
+  -> shows the options card (single/multi + free-text "Other")
+  -> submits the choice (answerQuestion)
+Runner
+  -> records the answer (idempotent, first-write-wins); resumes the turn/step
+```
+
+## Layer Responsibilities Summary
+
+### 1. Runner Runtime
+
+The Go Runner is the single backend and source of truth; clients never duplicate
+workflow rules. Items marked **(port)** are migrated from the admin-web server tier.
+
+Responsibilities:
+
+- workflow state machine **(port)**
+- workflow run and step state **(port)**
+- base-prompt build **(port)** + skill/MCP injection ("prompt optimization")
+- Provider Runtime Gateway
+- Codex app-server adapter
+- Claude and Gemini adapter placeholders
+- MCP proxy
+- approval bridge + approval/proxy policy
+- provider session persistence
+- normalized provider event persistence
+- artifact writer **(port)**
+- summary generator **(port)**
+- Supabase RAG indexer **(port)**
+- calls Supabase directly (in Go) for run/step/history state
+
+The Go runner owns business logic. No client should duplicate workflow rules.
+
+### 2. Admin Web
+
+The React web app should become the admin/configuration surface.
+
+Responsibilities:
+
+- project setup
+- workflow configuration
+- provider configuration
+- MCP/proxy configuration
+- YOLO and approval policy configuration
+- run history
+- audit views
+- artifact browsing
+- non-latency-critical actions
+
+The admin web can still show workflow run details, but it should not be the main
+real-time coding chat.
+
+### 3. Interactive Client UX
+
+The interactive client is a cross-platform Electron desktop app (works alongside
+any IDE; optional VS Code/JetBrains plugins may reuse the same webview later).
+
+Responsibilities:
+
+- chat input and streaming response
+- `/` commands and multi-skill picker
+- workflow selector
+- workflow step selector
+- approval cards or modals
+- structured question / options card ("ask the user")
+- file links and changed-file navigation (open in the user's IDE via its CLI)
+- tool/MCP activity timeline
+- compact run status
+- system controls (open Admin Web, restart, turn off)
+- editor-aware context selection
+
+The desktop app consumes FlowPilot runner APIs and normalized event streams. It
+must not speak raw Codex app-server JSON-RPC directly.
+
+### Layer Dependency Rule
+
+```text
+Web UI (Admin) ---+
+                  +--> Go Runner ----> Provider Runtime Gateway
+Desktop Client ---+   (single backend)     +--> Codex app-server
+                          |                 +--> Claude adapter
+                      Supabase (direct)     +--> Gemini adapter
+```
+
+Allowed dependencies:
+
+- Web UI and Desktop Client depend on the Go Runner APIs + its normalized event
+  stream.
+- Go Runner depends on provider adapter interfaces and calls Supabase directly.
+- Provider adapters depend on provider-specific runtimes.
+
+Disallowed dependencies:
+
+- Admin Web directly calls Codex app-server.
+- desktop client directly calls Codex app-server.
+- Workflow core imports Codex app-server JSON-RPC types.
+- Provider adapters update workflow state directly.
+
+## Provider Runtime Gateway
+
+> **Note on language:** the runner is implemented in **Go** (`apps/local-runner`).
+> The TypeScript interfaces below are **illustrative, language-neutral contracts**;
+> the authoritative implementation shapes are the Go ones in `04-03`/`04-04`. Only the
+> desktop client and Admin Web are TypeScript.
+
+The runner should define a provider-neutral adapter contract.
+
+```ts
+type ProviderKey = "codex" | "claude" | "gemini";
+
+interface ProviderRuntimeAdapter {
+  startSession(input: ProviderSessionStartInput): Promise<ProviderSession>;
+  resumeSession(input: ProviderSessionResumeInput): Promise<ProviderSession>;
+  sendTurn(input: ProviderTurnInput): AsyncIterable<ProviderEvent>;
+  submitApproval(input: ProviderApprovalDecisionInput): Promise<void>;
+  interrupt(input: ProviderInterruptInput): Promise<void>;
+  closeSession(input: ProviderCloseInput): Promise<void>;
+  listSkills?(input: ProviderListSkillsInput): Promise<ProviderSkill[]>;
+}
+```
+
+Normalized event examples (illustrative):
+
+```ts
+type ProviderEvent =
+  | { type: "turn_started"; providerTurnId: string }
+  | { type: "message_delta"; text: string }
+  | { type: "message_completed"; text: string }
+  | { type: "tool_started"; toolName: string; input?: unknown }
+  | { type: "tool_completed"; toolName: string; output?: unknown; status: "success" | "failed" | "cancelled" }
+  | { type: "file_changed"; path: string; changeType?: string }
+  | { type: "permission_required"; approvalId: string; provider: string; details: unknown }
+  | { type: "user_question_required"; questionId: string; prompt: string; options: { label: string; description?: string }[]; multiSelect?: boolean }
+  | { type: "turn_failed"; error: string; recoverable: boolean }
+  | { type: "turn_completed"; finalMessage: string };
+```
+
+> The **authoritative** union — including the correlation base and the monotonic
+> per-run `seq` (reconnect cursor) — lives in `04-Detailed-Coding-Plan.md`.
+> `user_question_required` backs the structured "ask the user" / options-popup UX
+> (model-driven `ask_user` MCP tool **or** deterministic workflow-driven; see
+> `04-04`). Provider-specific details stay inside provider adapters.
+
+## Adapter Contract Details
+
+The adapter contract should be concrete enough that Codex, Claude, and Gemini can
+share runner logic while still hiding provider-specific protocol differences.
+
+```ts
+interface ProviderSessionStartInput {
+  workflowRunId: string;
+  workflowStepRunId?: string;
+  providerKey: ProviderKey;
+  workingDirectory: string;
+  modelName?: string;
+  reasoningEffort?: string;
+  requiredMcps?: string[];
+  mcpAccessMode?: "read_only" | "read_write";
+  yoloMode: boolean;
+}
+
+interface ProviderSessionResumeInput {
+  workflowRunId: string;
+  workflowStepRunId?: string;
+  providerSessionId: string;
+  providerThreadId?: string;
+  workingDirectory: string;
+}
+
+interface ProviderTurnInput {
+  sessionId: string;
+  workflowRunId: string;
+  workflowStepRunId: string;
+  optimizedPrompt: string;
+  workingDirectory: string;
+  selectedSkill?: ProviderSkillSelection;
+  modelName?: string;
+  reasoningEffort?: string;
+  requiredMcps?: string[];
+  mcpAccessMode?: "read_only" | "read_write";
+  yoloMode: boolean;
+}
+
+interface ProviderApprovalDecisionInput {
+  workflowRunId: string;
+  workflowStepRunId?: string;
+  providerSessionId: string;
+  providerTurnId?: string;
+  approvalId: string;
+  decision: string;
+}
+
+interface ProviderInterruptInput {
+  providerSessionId: string;
+  providerTurnId?: string;
+  reason: string;
+}
+
+interface ProviderCloseInput {
+  providerSessionId: string;
+  reason: "completed" | "cancelled" | "failed" | "shutdown";
+}
+
+interface ProviderListSkillsInput {
+  providerSessionId?: string;
+  workingDirectory: string;
+}
+
+interface ProviderSkill {
+  name: string;
+  path?: string;
+  description?: string;
+  source: "provider" | "flowpilot" | "workspace";
+}
+
+interface ProviderSkillSelection {
+  name: string;
+  path?: string;
+  source: "slash_picker" | "text_shortcut" | "workflow_default";
+}
+```
+
+## Provider Adapter Responsibilities
+
+| Responsibility | Runner Core | Provider Adapter |
+|---|---|---|
+| workflow state | owns | receives ids only |
+| prompt optimization | owns | receives optimized prompt |
+| provider protocol | no provider-specific imports | owns |
+| event normalization | defines event schema | maps provider events |
+| approval policy | owns | forwards provider approval requests/decisions |
+| artifacts/RAG | owns finalizer | emits enough event data |
+| skills UI | client/runner owns selection | lists or invokes provider skill when supported |
+| session persistence | owns database records | returns provider session/thread ids |
+
+Adapters must not update workflow run or step state directly. They emit events
+and return results; the runner decides how workflow state changes.
+
+## Provider-Specific Adapter Shape
+
+### Codex Adapter
+
+Codex is the first implemented adapter.
+
+Runtime:
+
+```text
+CodexAdapter
+  -> CodexAppServerProcess   (one shared, long-lived process per runner)
+  -> CodexJsonRpcClient
+  -> codex app-server        (hosts many threads across many cwds)
+```
+
+**Scoping and thread model (final decision — see
+`05-Codex-AppServer-Migration-Detail.md`):** one shared app-server, a
+multi-workspace runner, and `cwd`-per-thread, mirroring the native Codex App
+Client. A FlowPilot workspace is a Codex `cwd`; a FlowPilot chat session is a Codex
+**thread** (own id + JSONL log on disk). Lean on Codex thread APIs
+(`thread/start`, `thread/resume`, `thread/list`, `thread/read`, `thread/archive`)
+rather than a custom session registry; FlowPilot persists only the
+`(workspace, threadId)` mapping.
+
+Responsibilities:
+
+- start one shared `codex app-server --listen stdio://` per runner
+- initialize JSON-RPC
+- start/resume/list/read Codex threads, each bound to a `cwd`
+- send `turn/start`
+- include selected skill input when supported
+- map Codex streamed events to `ProviderEvent`
+- map Codex approval request to `permission_required`
+- submit approval decisions back to Codex
+- expose Codex skills through `listSkills`
+- persist the `(workspace, threadId)` mapping through the runner session store
+
+### Claude Adapter
+
+Claude must be a separate adapter, not a Codex wrapper.
+
+Initial status:
+
+- registered as placeholder
+- disabled for controlled runs until implemented
+- exposes capabilities as unavailable or unknown
+- returns typed unsupported-provider errors
+
+Future runtime choices:
+
+- Claude Agent SDK for stronger lifecycle, tool, and approval control
+- `claude -p` for simpler non-interactive execution if SDK is not used
+
+The future Claude adapter must map Claude session, text, tool-use, permission,
+file-change, final-message, and failure events into the same `ProviderEvent`
+schema.
+
+### Gemini Adapter
+
+Gemini must also be a separate adapter.
+
+Initial status:
+
+- registered as placeholder
+- disabled for controlled runs until implemented
+- exposes capabilities as unavailable or lower-confidence
+- returns typed unsupported-provider errors
+
+Future runtime choice:
+
+```bash
+gemini -p "<optimized prompt>" --output-format stream-json
+```
+
+The future Gemini adapter must prove stream-json stability, resume behavior, MCP
+event visibility, permission behavior, and non-hanging failure behavior before
+it is treated as equivalent to Codex.
+
+## Provider Capability Model
+
+Each provider should advertise capabilities so UI and runner policy do not assume
+Codex-level support for every provider.
+
+```ts
+interface ProviderCapabilities {
+  streaming: boolean;
+  resume: boolean;
+  approvalEvents: boolean;
+  fileEvents: boolean;
+  skillSelection: boolean;
+  mcp: boolean;
+  interrupt: boolean;
+}
+```
+
+Initial expected values:
+
+| Provider | Status | Notes |
+|---|---|---|
+| Codex | implemented first | app-server adapter, highest confidence |
+| Claude | placeholder | Agent SDK preferred later |
+| Gemini | placeholder | CLI stream-json investigation later |
+
+The UI should show disabled or lower-confidence providers clearly.
+
+## Target Flow
+
+```text
+Desktop Client
+        |
+        | start/resume run, send turn, approve permission
+        v
+FlowPilot Runner Runtime
+        |
+        +-- prompt optimizer
+        +-- workflow state machine
+        +-- MCP proxy
+        +-- artifact/RAG finalizer
+        |
+        v
+Provider Runtime Gateway
+        |
+        +-- Codex app-server adapter
+        +-- Claude adapter placeholder
+        +-- Gemini adapter placeholder
+```
+
+## Data Model Additions
+
+Provider session metadata:
+
+```text
+workflow_provider_sessions
+  id
+  workflow_run_id
+  workflow_step_run_id nullable
+  provider_key
+  provider_account_id        # owning account — thread JSONL lives under its CODEX_HOME
+  provider_session_id        # for Codex this equals provider_thread_id (document the mapping)
+  provider_thread_id nullable
+  provider_turn_id nullable
+  transport
+  working_directory
+  model_name
+  reasoning_effort
+  capabilities_json
+  status
+  last_error nullable
+  created_at
+  updated_at
+```
+
+Provider event telemetry:
+
+```text
+workflow_provider_events
+  id
+  seq                        # monotonic per-run sequence — reconnect/replay cursor
+  workflow_run_id
+  workflow_step_run_id nullable
+  provider_session_id
+  provider_key
+  provider_turn_id nullable
+  event_type
+  payload_json
+  occurred_at
+```
+
+Approval records:
+
+```text
+workflow_provider_approvals
+  id
+  workflow_run_id
+  workflow_step_run_id nullable
+  provider_session_id
+  provider_key
+  provider_turn_id nullable
+  request_payload_json
+  available_decisions_json
+  selected_decision nullable
+  decided_by nullable
+  status                     # pending | resolved | expired
+  requested_at
+  decided_at nullable
+  expires_at nullable        # unanswered → expired, turn fails recoverably
+```
+
+Structured user questions (the "ask the user" / options-popup path):
+
+```text
+workflow_provider_questions
+  id
+  workflow_run_id
+  workflow_step_run_id nullable
+  provider_session_id
+  provider_key
+  provider_turn_id nullable
+  origin                     # ask_user_tool (model-driven) | workflow (deterministic)
+  prompt
+  options_json
+  multi_select
+  selected_choice_json nullable
+  status                     # pending | resolved | expired
+  requested_at
+  answered_at nullable
+  expires_at nullable
+```
+
+These tables are provider-runtime telemetry. They should not replace existing
+workflow run and step state.
+
+## Error And Recovery States
+
+The runner should model provider runtime failures explicitly.
+
+Provider session status:
+
+- `starting`
+- `ready`
+- `running`
+- `waiting_for_approval`
+- `interrupted`
+- `failed`
+- `completed`
+- `closed`
+
+Turn status:
+
+- `queued`
+- `running`
+- `waiting_for_approval`
+- `waiting_for_question`
+- `finalizing`
+- `completed`
+- `failed`
+- `cancelled`
+
+> These provider session/turn states are runtime telemetry; the client's
+> `RunStatus` (`04-01`) is the user-facing projection of them.
+
+Recovery rules:
+
+- if provider process dies before turn starts, mark turn failed and allow retry
+- **client** disconnect (network blip, window closed) does **not** fail the run:
+  the runner keeps streaming/persisting; the client reconnects and replays missed
+  events via `afterSeq` / `Last-Event-ID`
+- if the **provider/app-server** stream dies mid-turn, mark the turn
+  `failed (recoverable)` and keep persisted events; the turn can be re-sent
+- if finalizer fails after `turn_completed`, keep provider turn completed but
+  mark finalization failed for retry
+- if an approval/question is pending, clients may reconnect and reload it from
+  runner state; an unanswered approval/question **expires** to a recoverable fail
+- if multiple clients are connected, the runner remains the single decision
+  authority; approval/question submits are idempotent + first-write-wins
+
+## Open Architecture Risks
+
+Unresolved design tensions surfaced by code review; resolve before/with
+implementation (mirrored in `04` Open Questions).
+
+1. **App-server is bound to the active provider account (RESOLVED).** Provider auth
+   (`CODEX_HOME`/`HOME`), proxy, and custom env are applied **per request** today
+   (`getEnvForExecution`, `runner.go:3394`), and FlowPilot supports an **active
+   account per provider** (plus optional per-step override
+   `provider_account_override_id`). The shared app-server is therefore bound to the
+   **currently active Codex account**; changing the active/effective account
+   (manual switch, or the future auto-switch-on-usage-limit feature) **recreates**
+   the app-server instance. Consequence — **threads are account-scoped**: a thread's
+   JSONL log lives under that account's `CODEX_HOME`, so the `(workspace, threadId)`
+   mapping must also store the owning account, and `thread/resume`/`thread/list` are
+   valid only while that account is active. See `05` and `04-03`/`04-06`.
+2. **Concurrency/dispatch.** A shared app-server multiplexes many threads over one
+   stdio; it needs an async request/notification dispatcher (id→waiter map,
+   per-thread event routing, non-blocking read loop, stdin write mutex), not the
+   current synchronous single-in-flight model (`readJsonRpcResponseWithHandler` +
+   `SendMu`, hardcoded id `3`). See `04-03`.
+3. **Prompt construction location — RESOLVED (see #6).** Base-prompt build
+   (`deriveStepPromptBase`) is **ported into the Go runner**, not a separate service;
+   clients send step id + user input.
+4. **Provider session vs thread identity.** For Codex, `provider_session_id` and
+   `provider_thread_id` collapse to the Codex thread id. The data model keeps both
+   columns; the adapter must document the mapping (Codex: both = thread id) so the
+   schema is not misread as two distinct ids.
+5. **Multi-workspace `r.workspace` dependencies.** Going multi-workspace requires
+   auditing every `r.workspace` use (`.env` load, runs dir `runner.go:872`, Google
+   Drive config, artifacts) to key off the active workspace/`cwd`.
+6. **Orchestration tier — RESOLVED: port into the Go runner.** Much business logic
+   (prompt build `deriveStepPromptBase`, provider-session sync, send-with-retry,
+   artifact snapshot, Google-Drive write audit, RAG finalize) lives in the Admin Web
+   **server** tier today (`workflow-start-runtime.ts`, `node:fs`/`node:crypto`).
+   **Decision:** port it into the **Go runner** so the runner is the single backend
+   and calls Supabase directly in Go. Web UI and Desktop Client are thin and call
+   the runner. This is the main scope item — a substantial TS→Go migration (prompt
+   build, session sync, retry, finalize, RAG, GDrive audit, Supabase access).
+
+## Design Rules
+
+- Runner owns workflow business logic.
+- Admin Web owns configuration and audit views.
+- desktop client owns interaction and rendering.
+- MCP proxy stays in the runner.
+- Codex app-server is inside `CodexAdapter`.
+- FlowPilot core consumes normalized events only.
+- Provider adapters hide provider-specific protocols.
+- Native provider clients remain convenience mode, not the reliable automation
+  path.
+
+## MVP Definition
+
+MVP should prove the architecture with Codex first.
+
+MVP includes:
+
+- provider runtime interfaces
+- Codex app-server adapter
+- provider session/event persistence
+- runner event stream
+- desktop client workflow/step selector
+- desktop client chat and streaming response
+- command approval round trip
+- structured question / options round trip ("ask the user")
+- multi-skill `/` picker + sidebar system controls
+- file-change rendering with clickable paths
+- Admin Web provider/policy configuration and event audit
+
+MVP excludes:
+
+- full Claude implementation
+- full Gemini implementation
+- signed installers / auto-update distribution for the desktop client
+- advanced approval scopes beyond provider-supported basics
+- full native provider client parity

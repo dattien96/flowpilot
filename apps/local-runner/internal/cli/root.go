@@ -86,6 +86,20 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 			instance.StartOrphanedWorkflowArtifactCleanup(ctx)
 
 			mux := http.NewServeMux()
+
+			// Interactive + admin APIs (04-02). The provider registry is built for
+			// this runner: when FLOWPILOT_CODEX_APPSERVER is set it backs Codex with
+			// the live shared app-server adapter (04-03 registry swap); otherwise the
+			// fake adapter keeps the demo/tests green without a codex binary.
+			// The catalog (projects/workflows/steps) reads from Supabase when the
+			// runner has a Supabase config, else serves the offline fake catalog
+			// (04-08 A1).
+			interactive := runner.NewInteractiveServiceWith(
+				runner.ProviderRegistryFor(instance),
+				runner.CatalogStoreFor(instance),
+			)
+			interactive.RegisterInteractiveRoutes(mux)
+
 			mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodGet {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1634,13 +1648,16 @@ func writeHTTPError(w http.ResponseWriter, status int, err error) {
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		if origin == "http://127.0.0.1:3002" || origin == "http://localhost:3002" {
+		// Loopback stance (04-02): reflect any localhost/127.0.0.1 origin so both the
+		// admin web (:3002) and the desktop client (Electron / Vite dev server on any
+		// port) can call the runner; default to the admin-web origin otherwise.
+		if isLoopbackOrigin(origin) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 		} else {
 			w.Header().Set("Access-Control-Allow-Origin", "http://127.0.0.1:3002")
 		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Idempotency-Key, Last-Event-ID")
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -1653,6 +1670,13 @@ func withCORS(next http.Handler) http.Handler {
 
 func netJoinHostPort(host string, port int) string {
 	return host + ":" + strconv.Itoa(port)
+}
+
+func isLoopbackOrigin(origin string) bool {
+	return strings.HasPrefix(origin, "http://localhost:") ||
+		strings.HasPrefix(origin, "http://127.0.0.1:") ||
+		origin == "http://localhost" ||
+		origin == "http://127.0.0.1"
 }
 
 func requestBaseURL(r *http.Request) string {
