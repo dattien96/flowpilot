@@ -33,6 +33,11 @@ type InteractiveService struct {
 	policy *ApprovalPolicyEngine
 	// finalizer runs the post-turn hook on turn_completed (04-04), idempotent.
 	finalizer *finalizer
+	// workflowStore/orchestrator are the Phase 8 cut-over bridge: the interactive
+	// path seeds and progresses workflow steps through the shared orchestration
+	// boundary instead of remaining fully ad hoc/in-memory.
+	workflowStore WorkflowStore
+	orchestrator  *WorkflowOrchestrator
 
 	mu        sync.Mutex
 	runs      map[string]*interactiveRun
@@ -58,6 +63,8 @@ type InteractiveService struct {
 
 type interactiveRun struct {
 	id                string
+	projectID         string
+	workflowID        string
 	providerKey       ProviderKey
 	providerSessionID string
 	providerAccountID string
@@ -105,6 +112,45 @@ type questionRecord struct {
 	resolve     chan []string
 }
 
+func approvalStateFromRecord(rs *interactiveRun, rec *approvalRecord, expiresAt string) ProviderApprovalState {
+	state := ProviderApprovalState{
+		ApprovalID: rec.id,
+		RunID:      rec.runID,
+		Status:     rec.status,
+		Decision:   rec.decision,
+		Policy:     rec.policy,
+		ExpiresAt:  expiresAt,
+	}
+	if rs != nil {
+		state.ProviderKey = rs.providerKey
+		state.ProviderTurnID = rs.currentTurnID
+	}
+	if rec.details.Command != "" {
+		state.Command = rec.details.Command
+	}
+	if rec.details.Cwd != "" {
+		state.Cwd = rec.details.Cwd
+	}
+	if rec.details.Reason != "" {
+		state.Reason = rec.details.Reason
+	}
+	return state
+}
+
+func questionStateFromRecord(rec *questionRecord, providerTurnID, expiresAt string) ProviderQuestionState {
+	return ProviderQuestionState{
+		QuestionID:     rec.id,
+		RunID:          rec.runID,
+		ProviderTurnID: providerTurnID,
+		Prompt:         rec.prompt,
+		Options:        rec.options,
+		MultiSelect:    rec.multiSelect,
+		Status:         rec.status,
+		Choice:         rec.choice,
+		ExpiresAt:      expiresAt,
+	}
+}
+
 // NewInteractiveService builds the Phase 2 service with the default registry
 // (Codex fake-backed; Claude/Gemini disabled placeholders) and fake catalog.
 func NewInteractiveService() *InteractiveService {
@@ -117,7 +163,7 @@ func NewInteractiveService() *InteractiveService {
 // swap). All other state matches NewInteractiveService.
 func NewInteractiveServiceWithRegistry(registry *ProviderRegistry) *InteractiveService {
 	fake := newInteractiveCatalog()
-	return newInteractiveService(registry, fake)
+	return newInteractiveService(registry, fake, nil)
 }
 
 // NewInteractiveServiceWith builds the service with a caller-supplied registry +
@@ -127,16 +173,21 @@ func NewInteractiveServiceWith(registry *ProviderRegistry, catalog CatalogStore)
 	if catalog == nil {
 		catalog = newInteractiveCatalog()
 	}
-	return newInteractiveService(registry, catalog)
+	return newInteractiveService(registry, catalog, nil)
 }
 
-func newInteractiveService(registry *ProviderRegistry, catalog CatalogStore) *InteractiveService {
+func newInteractiveService(registry *ProviderRegistry, catalog CatalogStore, workflowStore WorkflowStore) *InteractiveService {
+	if workflowStore == nil {
+		workflowStore = newFakeWorkflowStore()
+	}
 	return &InteractiveService{
 		catalog:         catalog,
 		skillsCatalog:   newInteractiveCatalog(),
 		registry:        registry,
 		policy:          DefaultApprovalPolicyEngine(),
 		finalizer:       newFinalizer(),
+		workflowStore:   workflowStore,
+		orchestrator:    NewWorkflowOrchestrator(workflowStore),
 		runs:            map[string]*interactiveRun{},
 		approvals:       map[string]*approvalRecord{},
 		questions:       map[string]*questionRecord{},
@@ -147,8 +198,49 @@ func newInteractiveService(registry *ProviderRegistry, catalog CatalogStore) *In
 	}
 }
 
+type workflowRunSeeder interface {
+	seed(runID string, steps []RuntimeWorkflowStep)
+}
+
 func (s *InteractiveService) nextID(prefix string) string {
 	return prefix + "-" + strconv.FormatInt(s.idCounter.Add(1), 10)
+}
+
+func (s *InteractiveService) persistenceStore() InteractiveStateStore {
+	store, _ := s.workflowStore.(InteractiveStateStore)
+	return store
+}
+
+func (s *InteractiveService) persistProviderSession(session ProviderSessionState) error {
+	store := s.persistenceStore()
+	if store == nil {
+		return nil
+	}
+	return store.UpsertProviderSession(context.Background(), session)
+}
+
+func (s *InteractiveService) persistApproval(record ProviderApprovalState) error {
+	store := s.persistenceStore()
+	if store == nil {
+		return nil
+	}
+	return store.UpsertApproval(context.Background(), record)
+}
+
+func (s *InteractiveService) persistQuestion(record ProviderQuestionState) error {
+	store := s.persistenceStore()
+	if store == nil {
+		return nil
+	}
+	return store.UpsertQuestion(context.Background(), record)
+}
+
+func (s *InteractiveService) persistEvent(event ProviderEvent) error {
+	store := s.persistenceStore()
+	if store == nil || event.Type == EventMessageDelta {
+		return nil
+	}
+	return store.AppendEvent(context.Background(), event)
 }
 
 // ---- errors (stable codes per 04-02 error envelope) ------------------------
@@ -190,6 +282,7 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 
 	rs.events = append(rs.events, ev)
 	rs.lastEventType = ev.Type
+	_ = s.persistEvent(ev)
 
 	switch ev.Type {
 	case EventPermissionRequired:
@@ -360,24 +453,38 @@ func (b *turnBridge) AskQuestion(prompt string, options []QuestionOption, multiS
 }
 
 func (s *InteractiveService) expireApproval(id string) {
+	var snapshot *ProviderApprovalState
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if rec := s.approvals[id]; rec != nil && rec.status == "pending" {
 		rec.status = "expired"
 		if rs := s.runs[rec.runID]; rs != nil && rs.pendingApprovalID == id {
 			rs.pendingApprovalID = ""
+			state := approvalStateFromRecord(rs, rec, "")
+			snapshot = &state
 		}
+	}
+	s.mu.Unlock()
+	if snapshot != nil {
+		_ = s.persistApproval(*snapshot)
 	}
 }
 
 func (s *InteractiveService) clearPendingApproval(id string) {
+	var snapshot *ProviderApprovalState
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if rec := s.approvals[id]; rec != nil && rec.status == "pending" {
 		rec.status = "expired"
+		if rs := s.runs[rec.runID]; rs != nil {
+			state := approvalStateFromRecord(rs, rec, "")
+			snapshot = &state
+		}
 	}
 	if rs := s.runs[s.approvalRunID(id)]; rs != nil && rs.pendingApprovalID == id {
 		rs.pendingApprovalID = ""
+	}
+	s.mu.Unlock()
+	if snapshot != nil {
+		_ = s.persistApproval(*snapshot)
 	}
 }
 
@@ -386,7 +493,6 @@ func (s *InteractiveService) clearPendingApproval(id string) {
 // does NOT block — the decision is replied to the inbound request by the caller.
 func (s *InteractiveService) recordAutoApproval(rs *interactiveRun, details ApprovalDetails, decision, policy string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	rec := &approvalRecord{
 		id:       s.nextID("appr"),
 		runID:    rs.id,
@@ -396,6 +502,9 @@ func (s *InteractiveService) recordAutoApproval(rs *interactiveRun, details Appr
 		policy:   policy,
 	}
 	s.approvals[rec.id] = rec
+	state := approvalStateFromRecord(rs, rec, "")
+	s.mu.Unlock()
+	_ = s.persistApproval(state)
 }
 
 func (s *InteractiveService) approvalRunID(id string) string {
@@ -406,26 +515,38 @@ func (s *InteractiveService) approvalRunID(id string) string {
 }
 
 func (s *InteractiveService) expireQuestion(id string) {
+	var snapshot *ProviderQuestionState
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if rec := s.questions[id]; rec != nil && rec.status == "pending" {
 		rec.status = "expired"
 		if rs := s.runs[rec.runID]; rs != nil && rs.pendingQuestionID == id {
 			rs.pendingQuestionID = ""
 		}
+		state := questionStateFromRecord(rec, "", "")
+		snapshot = &state
+	}
+	s.mu.Unlock()
+	if snapshot != nil {
+		_ = s.persistQuestion(*snapshot)
 	}
 }
 
 func (s *InteractiveService) clearPendingQuestion(id string) {
+	var snapshot *ProviderQuestionState
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if rec := s.questions[id]; rec != nil && rec.status == "pending" {
 		rec.status = "expired"
+		state := questionStateFromRecord(rec, "", "")
+		snapshot = &state
 	}
 	if rec := s.questions[id]; rec != nil {
 		if rs := s.runs[rec.runID]; rs != nil && rs.pendingQuestionID == id {
 			rs.pendingQuestionID = ""
 		}
+	}
+	s.mu.Unlock()
+	if snapshot != nil {
+		_ = s.persistQuestion(*snapshot)
 	}
 }
 
@@ -443,6 +564,13 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	}
 	bridge := &turnBridge{svc: s, rs: rs, ctx: ctx, turnID: turnID}
 	err := s.sendTurnWithRetry(ctx, adapter, req, bridge)
+	if err == nil {
+		// The provider turn owns interactive UX/events; once it returns cleanly we
+		// advance the shared workflow planner so the live run path no longer bypasses
+		// WorkflowStore/WorkflowOrchestrator entirely. A2 will replace the fake
+		// backing store and make this durable/auditable.
+		_, _ = s.orchestrator.Progress(ctx, rs.id, rs.yolo)
+	}
 
 	completed, fin := s.finishTurn(rs, turnID, err)
 
@@ -451,6 +579,22 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	if completed {
 		_ = s.finalizer.Finalize(fin)
 	}
+}
+
+func (s *InteractiveService) markStepRunning(ctx context.Context, runID, stepID string) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if err := s.workflowStore.ApplyStepTransition(ctx, runID, WorkflowStepTransition{
+		StepID: stepID,
+		Patch: WorkflowStepPatch{
+			Status:     StepStatusRunning,
+			StartedAt:  strptr(now),
+			FinishedAt: strptr(""),
+		},
+		Logs: []WorkflowLog{{LogInfo, "Started interactive provider turn."}},
+	}); err != nil {
+		return err
+	}
+	return s.workflowStore.SetRunStatus(ctx, runID, RunStatusEngineRunning, "")
 }
 
 // sendTurnWithRetry runs the adapter turn, re-sending on a recoverable error up to
@@ -587,7 +731,18 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	if idempotencyKey != "" {
 		rs.idempotency[idempotencyKey] = turnID
 	}
-	s.emitLocked(rs, ProviderEvent{Type: EventTurnStarted, ProviderTurnID: turnID})
+	if err := s.markStepRunning(ctx, runID, in.StepID); err != nil {
+		rs.turnInFlight = false
+		rs.currentTurnID = ""
+		rs.turnCancel = nil
+		if idempotencyKey != "" {
+			delete(rs.idempotency, idempotencyKey)
+		}
+		s.mu.Unlock()
+		cancel()
+		return "", newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
+	}
+	s.emitLocked(rs, ProviderEvent{Type: EventTurnStarted, ProviderTurnID: turnID, WorkflowStepRunID: in.StepID})
 	s.mu.Unlock()
 
 	go s.runTurn(ctx, rs, adapter, in, scenario, turnID)

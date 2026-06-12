@@ -19,6 +19,8 @@ type customCatalogStore struct {
 	err       error
 }
 
+type failingWorkflowStore struct{}
+
 func (c customCatalogStore) ListProjects(context.Context) ([]Project, error) {
 	return c.projects, c.err
 }
@@ -29,9 +31,25 @@ func (c customCatalogStore) ListSteps(context.Context) ([]Step, error) {
 	return c.steps, c.err
 }
 
+func (f failingWorkflowStore) LoadRunSteps(context.Context, string) ([]RuntimeWorkflowStep, error) {
+	return nil, context.DeadlineExceeded
+}
+
+func (f failingWorkflowStore) ApplyStepTransition(context.Context, string, WorkflowStepTransition) error {
+	return context.DeadlineExceeded
+}
+
+func (f failingWorkflowStore) SetRunStatus(context.Context, string, WorkflowRunStatus, string) error {
+	return context.DeadlineExceeded
+}
+
+func (f failingWorkflowStore) AppendLog(context.Context, string, WorkflowLog) error {
+	return context.DeadlineExceeded
+}
+
 func newCatalogTestServer(t *testing.T, catalog CatalogStore) *httptest.Server {
 	t.Helper()
-	svc := NewInteractiveServiceWith(DefaultProviderRegistry(), catalog)
+	svc := newInteractiveService(DefaultProviderRegistry(), catalog, nil)
 	mux := http.NewServeMux()
 	svc.RegisterInteractiveRoutes(mux)
 	srv := httptest.NewServer(mux)
@@ -128,5 +146,20 @@ func TestCatalogStoreForUsesSupabaseWhenConfigured(t *testing.T) {
 	}
 	if _, ok := CatalogStoreFor(r).(*SupabaseCatalogStore); !ok {
 		t.Fatalf("a configured runner should yield SupabaseCatalogStore, got %T", CatalogStoreFor(r))
+	}
+}
+
+func TestStartTurnSurfacesWorkflowStateStoreErrors(t *testing.T) {
+	svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), failingWorkflowStore{})
+	mux := http.NewServeMux()
+	svc.RegisterInteractiveRoutes(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	runID := startRun(t, srv.URL)
+	status, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+runID+"/turns",
+		map[string]any{"stepId": "step-plan", "prompt": "hi", "scenario": "normal"}, nil)
+	if status != http.StatusBadGateway || !strings.Contains(string(body), "workflow_state_unavailable") {
+		t.Fatalf("expected 502 workflow_state_unavailable, got status=%d body=%s", status, body)
 	}
 }

@@ -107,7 +107,8 @@ methods) so state survives runner restart and is auditable.
 - Add `workflow_provider_sessions` (run→thread mapping, `provider_account_id`,
   `working_directory`, status) and `workflow_provider_approvals` /
   `workflow_provider_questions` persistence (records + resolved/expired).
-- Persist the normalized event log + finalizer artifacts (`artifact_runs`).
+- Persist the normalized event log (`workflow_provider_events`) — done.
+- Persist finalizer artifacts (`artifact_runs`).
 - Idempotent + ordered writes (keys per run/step/turn) — the concurrency contract
   from `04-05`.
 - _Closes:_ `06` "(workspace, threadId) persistence", "question/approval persistence
@@ -115,6 +116,10 @@ methods) so state survives runner restart and is auditable.
 - _Files:_ `supabase_workflow_store.go` (new methods), `interactive_service.go`,
   `finalizer.go` (live write hook).
 - _Test:_ request shaping over a mocked transport (in-repo); live round-trip is B2.
+
+**Status:** the runner now persists normalized provider events to Supabase and
+keeps `message_delta` ephemeral for replay. The remaining Supabase writes in this
+item, including finalizer artifacts, stay pending.
 
 ### A3 — Make Admin Web a thin client (drop server-side orchestration)
 
@@ -297,7 +302,7 @@ Run `.github/workflows/desktop-release.yml` with signing secrets present
 
 ### Part A — implement first
 
-- [~] A1 — **catalog wired**: `InteractiveService` depends on `CatalogStore`; `CatalogStoreFor(runner)` selects `SupabaseCatalogStore` when Supabase is configured, else fake; handlers pass ctx + surface `catalog_unavailable` (tested). _Driving run progression through `WorkflowOrchestrator`/`WorkflowStore` (vs the per-turn flow) is the remaining half of A1, lands with A2._
+- [~] A1 — **catalog wired + interactive bridge started**: `InteractiveService` depends on `CatalogStore`; `CatalogStoreFor(runner)` selects `SupabaseCatalogStore` when Supabase is configured, else fake; handlers pass ctx + surface `catalog_unavailable` (tested). The interactive path now owns a `WorkflowStore`/`WorkflowOrchestrator`, seeds the fake workflow store per run, marks the active step `RUNNING` at turn start, and advances clean turns through `WorkflowOrchestrator.Progress` (tested). _The remaining half of A1 is still step-definition-driven execution + live `WorkflowStore` wiring instead of the current fake bootstrap; that lands with A2._
 - [ ] A2 — run/step/session/approval/question/event/artifact state persisted to Supabase (idempotent, ordered; shaping tested).
 - [ ] A3 — Admin Web thin: server orchestration removed, routes call the runner; config + history retained.
 - [ ] A4 — Admin Web read-only provider-runtime audit timeline (T-18).

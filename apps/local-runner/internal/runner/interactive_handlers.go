@@ -407,6 +407,8 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 	sessionID := s.nextID("thread")
 	rs := &interactiveRun{
 		id:                runID,
+		projectID:         in.ProjectID,
+		workflowID:        in.WorkflowID,
 		providerKey:       providerKey,
 		providerSessionID: sessionID,
 		providerAccountID: s.activeAccountID,
@@ -417,6 +419,27 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		idempotency:       map[string]string{},
 	}
 	s.runs[runID] = rs
+	if seeder, ok := s.workflowStore.(workflowRunSeeder); ok {
+		seeder.seed(runID, []RuntimeWorkflowStep{{
+			ID:               in.StepID,
+			StepType:         in.StepID,
+			Status:           StepStatusPending,
+			RequiresApproval: false,
+		}})
+	}
+	if err := s.persistProviderSession(ProviderSessionState{
+		RunID:             runID,
+		ProjectID:         in.ProjectID,
+		WorkflowID:        in.WorkflowID,
+		ProviderSessionID: sessionID,
+		ProviderKey:       providerKey,
+		ProviderAccountID: s.activeAccountID,
+		WorkingDirectory:  in.Cwd,
+		Status:            rs.status,
+	}); err != nil {
+		delete(s.runs, runID)
+		return RunHandle{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
+	}
 	return RunHandle{RunID: runID, ProviderSessionID: sessionID, ProviderKey: providerKey, Status: rs.status}, nil
 }
 

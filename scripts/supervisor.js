@@ -305,11 +305,22 @@ async function startServicesFresh(existing = {}) {
   if (!runnerInUse) {
     console.log(`[Supervisor] Starting runner service on port ${runnerPort}...`);
     const runnerCmd = process.platform === 'win32' ? 'go.exe' : 'go';
+    const hasCodexAppServerFlag = Object.prototype.hasOwnProperty.call(
+      process.env,
+      'FLOWPILOT_CODEX_APPSERVER',
+    );
+    const runnerEnv = {
+      ...process.env,
+      FLOWPILOT_CODEX_APPSERVER: hasCodexAppServerFlag
+        ? process.env.FLOWPILOT_CODEX_APPSERVER
+        : '1',
+    };
     runnerProcess = spawn(runnerCmd, ['run', './cmd/flowpilot', 'runner', 'serve', '--port', runnerPort], {
       cwd: path.join(rootDir, 'apps', 'local-runner'),
       shell: true,
       stdio: 'inherit',
       detached: process.platform !== 'win32',
+      env: runnerEnv,
     });
     runnerProcess.detached = process.platform !== 'win32';
 

@@ -174,7 +174,7 @@ func TestCatalogAndRegistry(t *testing.T) {
 }
 
 func TestNormalTurnPersistsWithSeq(t *testing.T) {
-	_, srv := newTestServer(t)
+	svc, srv := newTestServer(t)
 	runID := startRun(t, srv.URL)
 
 	if status, turnID := sendTurn(t, srv.URL, runID, "normal", nil); status != http.StatusOK || turnID == "" {
@@ -191,6 +191,35 @@ func TestNormalTurnPersistsWithSeq(t *testing.T) {
 	}
 	if got := getSnapshot(t, srv.URL, runID).Status; got != RunStatusCompleted {
 		t.Fatalf("status = %s, want completed", got)
+	}
+
+	store, ok := svc.workflowStore.(*fakeWorkflowStore)
+	if !ok {
+		t.Fatalf("expected fakeWorkflowStore, got %T", svc.workflowStore)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	steps := store.steps[runID]
+	if len(steps) != 1 || steps[0].Status != StepStatusDone {
+		t.Fatalf("workflow steps = %+v, want one DONE step", steps)
+	}
+	if store.runStatus[runID] != RunStatusEngineDone {
+		t.Fatalf("run status = %s, want DONE", store.runStatus[runID])
+	}
+	if store.applies < 2 {
+		t.Fatalf("expected running + orchestrator transitions, got applies=%d", store.applies)
+	}
+	events := store.events[runID]
+	if len(events) != 3 {
+		t.Fatalf("persisted events = %d, want 3 non-delta events", len(events))
+	}
+	if events[0].Type != EventTurnStarted || events[1].Type != EventMessageCompleted || events[2].Type != EventTurnCompleted {
+		t.Fatalf("persisted events = %+v, want turn_started/message_completed/turn_completed", events)
+	}
+	for _, ev := range events {
+		if ev.Type == EventMessageDelta {
+			t.Fatalf("delta event should not be persisted: %+v", ev)
+		}
 	}
 }
 
