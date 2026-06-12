@@ -9,10 +9,11 @@ declare global {
   }
 }
 
-// Part A stub. Prefers the Electron preload bridge (which itself just logs in
-// Part A); falls back to console.log so the renderer also works in a plain
-// browser tab during UI development. Part B swaps the main-side handler for real
-// IDE CLI invocation — this renderer code does not change.
+// Prefers the Electron preload bridge (whose main-side handler invokes the real
+// IDE CLI in Part B — code -g / cursor / studio / xed); falls back to console.log
+// so the renderer also works in a plain browser tab during UI development. This
+// renderer code is unchanged between Part A and Part B — only the main-side handler
+// swapped from a stub to real invocation.
 export const ideBridge: IdeBridge = {
   async openInIde(file: string, line?: number): Promise<void> {
     if (window.flowpilot?.openInIde) {
