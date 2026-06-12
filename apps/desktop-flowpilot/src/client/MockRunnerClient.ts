@@ -52,9 +52,38 @@ export class MockRunnerClient implements RunnerClient {
   private readonly approvalGates = new Map<string, (decision: string) => void>();
   private readonly questionGates = new Map<string, (choice: string | string[]) => void>();
   private readonly replayRuns = new Set<string>();
+  /** Persisted per-run event log so streamRun can replay on reconnect. */
+  private readonly eventLog = new Map<string, ProviderEventDTO[]>();
+  /** Runs an interrupt has been requested for. */
+  private readonly aborted = new Set<string>();
+  /** Cancels the pending approval/question gate for a run (used by interrupt). */
+  private readonly pendingGateCancel = new Map<string, () => void>();
 
   setScenario(scenario: ScenarioName): void {
     this.scenario = scenario;
+  }
+
+  private rec(runId: string, ev: ProviderEventDTO): ProviderEventDTO {
+    const log = this.eventLog.get(runId);
+    if (log) log.push(ev);
+    else this.eventLog.set(runId, [ev]);
+    return ev;
+  }
+
+  async interrupt(runId: string): Promise<void> {
+    this.aborted.add(runId);
+    const cancel = this.pendingGateCancel.get(runId);
+    if (cancel) cancel();
+  }
+
+  async *streamRun(runId: string, afterSeq = 0): AsyncIterable<ProviderEventDTO> {
+    const log = this.eventLog.get(runId) ?? [];
+    for (const ev of log) {
+      if (ev.seq > afterSeq) {
+        await delay(40); // small pause so the rebuilt timeline is visible
+        yield ev;
+      }
+    }
   }
 
   async listProjects(): Promise<Project[]> {
@@ -142,6 +171,7 @@ export class MockRunnerClient implements RunnerClient {
 
     const isReplay = this.replayRuns.has(input.runId);
     if (isReplay) this.replayRuns.delete(input.runId);
+    this.aborted.delete(input.runId);
 
     const base = (): ProviderEventBaseDTO => ({
       id: nextId("evt"),
@@ -156,18 +186,27 @@ export class MockRunnerClient implements RunnerClient {
 
     // turn_started always leads.
     await delay(120);
-    yield { ...base(), type: "turn_started", providerTurnId: state.providerTurnId };
+    yield this.rec(input.runId, { ...base(), type: "turn_started", providerTurnId: state.providerTurnId });
 
     const steps = scriptFor(this.scenario, { replay: isReplay });
-    yield* this.runSteps(steps, base);
+    // Record every scripted event into the per-run log as it streams.
+    for await (const ev of this.runSteps(steps, base, input.runId)) {
+      yield this.rec(input.runId, ev);
+    }
   }
 
   private async *runSteps(
     steps: ScriptStep[],
     base: () => ProviderEventBaseDTO,
+    runId: string,
   ): AsyncIterable<ProviderEventDTO> {
     for (const step of steps) {
       await delay(step.delay);
+      if (this.aborted.has(runId)) {
+        this.aborted.delete(runId);
+        yield { ...base(), type: "turn_failed", error: "interrupted by user", recoverable: true };
+        return;
+      }
       switch (step.kind) {
         case "delta":
           yield { ...base(), type: "message_delta", text: step.text };
@@ -204,9 +243,17 @@ export class MockRunnerClient implements RunnerClient {
           };
           const decision = await new Promise<string>((resolve) => {
             this.approvalGates.set(approvalId, resolve);
+            this.pendingGateCancel.set(runId, () => resolve("__cancelled__"));
           });
+          this.approvalGates.delete(approvalId);
+          this.pendingGateCancel.delete(runId);
+          if (decision === "__cancelled__" || this.aborted.has(runId)) {
+            this.aborted.delete(runId);
+            yield { ...base(), type: "turn_failed", error: "interrupted by user", recoverable: true };
+            return;
+          }
           const cont = decision === "deny" ? step.onDeny : step.onApprove;
-          yield* this.runSteps(cont, base);
+          yield* this.runSteps(cont, base, runId);
           return;
         }
         case "await_question": {
@@ -221,8 +268,16 @@ export class MockRunnerClient implements RunnerClient {
           };
           const choice = await new Promise<string | string[]>((resolve) => {
             this.questionGates.set(questionId, resolve);
+            this.pendingGateCancel.set(runId, () => resolve("__cancelled__"));
           });
-          yield* this.runSteps(step.onAnswer(choice), base);
+          this.questionGates.delete(questionId);
+          this.pendingGateCancel.delete(runId);
+          if (choice === "__cancelled__" || this.aborted.has(runId)) {
+            this.aborted.delete(runId);
+            yield { ...base(), type: "turn_failed", error: "interrupted by user", recoverable: true };
+            return;
+          }
+          yield* this.runSteps(step.onAnswer(choice), base, runId);
           return;
         }
       }
