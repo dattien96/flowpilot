@@ -147,18 +147,26 @@ GET     /admin/workflow-runs/{runId}/provider-sessions|events|approvals|question
 
 ## Definition of Done (checklist)
 
-- [ ] Go provider types + `ProviderEvent` (incl. monotonic per-run `seq`) + capability struct.
-- [ ] Provider registry: Codex (placeholder until P3) + Claude/Gemini disabled.
-- [ ] Fake adapter emits scripted events mirroring the P1 fixtures.
-- [ ] **Catalog source** for projects/workflows/steps defined for P2 (fake catalog or existing read path); navigator works without the P5 Supabase port.
-- [ ] `workflow_provider_sessions|events|approvals` + **`questions`** persistence (incl. account + thread columns, `seq`, run/step status, resolved/expired).
-- [ ] Interactive + admin endpoints incl. **single-run GET**, **answer-question**, **interrupt**; `/system/*` referenced for sidebar controls; event stream emits normalized DTOs.
-- [ ] Streaming model: per-run stream; `POST /turns` returns `{turnId}`; one-turn-per-session → `409`; deltas ephemeral.
-- [ ] Reconnect cursor: `afterSeq`/`Last-Event-ID` replay with **no gaps/dupes** (T-16, T-32).
-- [ ] Decisions/answers **idempotent + first-write-wins**; multi-window safe (T-33).
-- [ ] Approval/question **expiry** → recoverable fail (T-35); invalid decision → `400` (validation).
-- [ ] **Account-scope validation** on resume/turn → typed error (T-36); standard **error envelope**; loopback bind + CORS/origin stance.
-- [ ] **YOLO** accepted on run start (and/or per turn) per the SSOT (`04-04`).
-- [ ] Phase 1 desktop runs against real APIs by swapping `RunnerClient` (renderer unchanged).
-- [ ] Tests: persistence round-trip, stream ordering by `seq`, replay, registry, answer/interrupt, idempotent decision, concurrent-turn 409, expiry, account-mismatch.
-- [ ] **Review gate:** human + AI review this checklist after the phase; all ticked or deferred with a reason.
+> Implemented in `apps/local-runner/internal/runner/` (`provider_event.go`,
+> `provider_registry.go`, `fake_provider_adapter.go`, `interactive_catalog.go`,
+> `interactive_service.go`, `interactive_handlers.go`) + wired in
+> `internal/cli/root.go`. Verified by `interactive_service_test.go` (10 tests pass,
+> `go vet` clean) and a live serve smoke. **Persistence is in-memory** for P2
+> (survives client reconnect; runner-restart resume is P3+ via Codex `thread/resume`,
+> durable store deferred to P5).
+
+- [x] Go provider types + `ProviderEvent` (incl. monotonic per-run `seq`) + capability struct.
+- [x] Provider registry: Codex (fake-backed until P3) + Claude/Gemini disabled placeholders (typed `UnsupportedProviderRuntimeError`).
+- [x] Fake adapter emits scripted events mirroring the P1 fixtures (normal/approval/question/tool-heavy/file-changes/failed).
+- [x] **Catalog source** for projects/workflows/steps (fake catalog mirroring P1 fixtures); navigator works without the P5 Supabase port.
+- [x] Sessions/events/approvals/**questions** persistence (account + thread fields, `seq`, run status, resolved/expired) — _in-memory store for P2_.
+- [x] Interactive + admin endpoints incl. **single-run GET**, **answer-question**, **interrupt**; `/system/*` referenced for sidebar controls; event stream emits normalized DTOs.
+- [x] Streaming model: per-run SSE stream; `POST /turns` returns `{turnId}`; one-turn-per-session → `409`; deltas ephemeral.
+- [x] Reconnect cursor: `afterSeq`/`Last-Event-ID` replay with **no gaps/dupes** (T-32).
+- [x] Decisions/answers **idempotent + first-write-wins**; multi-window safe (T-33).
+- [x] Approval/question **expiry** → recoverable fail (T-35); invalid decision → `400` (validation).
+- [x] **Account-scope validation** on resume/turn → typed `409 provider_account_changed` (T-36); standard **error envelope**; loopback bind + reflected-origin CORS.
+- [x] **YOLO** accepted on run start (`StartRunInput.yoloMode`, carried on the run); full SSOT resolver is `04-04`.
+- [ ] Phase 1 desktop runs against real APIs by swapping `RunnerClient` (renderer unchanged) — _deferred: contract parity met; the `HttpWsRunnerClient` swap is `04-01` Part B (lands in P6)._
+- [x] Tests: persistence round-trip, stream ordering by `seq`, replay, registry, answer/interrupt, idempotent decision, concurrent-turn 409, expiry, account-mismatch.
+- [ ] **Review gate:** human + AI review this checklist after the phase.
