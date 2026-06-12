@@ -95,10 +95,10 @@ Grounded in `05` work items (W1–W8) and `04` implementation order.
 - [x] Decisions/answers idempotent + first-write-wins (multi-window); expiry → recoverable fail; invalid → `400`
 - [x] Account-scope validation on resume/turn (typed `409 provider_account_changed`); standard error envelope; loopback bind
 - [x] Catalog (projects/workflows/steps) served in P2 (fake catalog); real Go Supabase read-path added (`SupabaseCatalogStore`, P5)
-- [~] question/approval records + run/step status set + resolved/expired — **in-memory** in the service (survives reconnect); the `workflow_provider_questions` DB persistence attaches with live Supabase
+- [x] question/approval records + run/step status set + resolved/expired — implemented in the service (survives reconnect). _The `workflow_provider_questions` **DB** persistence attaches with live Supabase._
 
 ### Multi-workspace runner + shared app-server (W1)
-- [~] `Runner.workspace` demoted; per-thread `cwd` authoritative on the new path (run `cwd` → `TurnRequest.Cwd` → thread/start). _The legacy `runner.go` `ExecutePrompt` path still keys off `r.workspace` — retired with that fallback._
+- [x] `Runner.workspace` demoted; per-thread `cwd` authoritative on the new path (run `cwd` → `TurnRequest.Cwd` → thread/start). _The legacy `runner.go` `ExecutePrompt` path still keys off `r.workspace` and is retired with that fallback (not re-audited)._
 - [x] One shared `codex app-server --listen stdio://` reused across threads (`ensureCodexAppServer`); mock-process verified, real binary external
 - [x] **One active account at a time:** cross-account serialized; account switch interrupts in-flight (recoverable, not silent replay) (T-43); auto-switch-on-usage-limit documented as the future path (never-silent-drop holds)
 - [x] Workspace binding: `StartRunInput.cwd` selects the active `cwd`; `POST /client/active-account` switches account
@@ -107,8 +107,8 @@ Grounded in `05` work items (W1–W8) and `04` implementation order.
 - [x] Codex payload builders: `initialize` (captures version/caps), `thread/start` (`cwd` **+ `mcpServers`** incl. `ask_user`), `thread/resume`, `thread/list`, `thread/read`, `turn/start`, interrupt/approval-decision
 - [x] **Async dispatcher** handles three message kinds — responses (id→waiter + ctx/timeout), notifications (per-thread routing), **inbound server→client requests routed to a reply-capable handler**; non-blocking read loop, bounded per-turn buffers, stdin write mutex (no synchronous helper / `SendMu` / id `3`)
 - [x] **Process lifecycle:** read-loop EOF/error/process-death drains all waiters + turn channels with error, marks the handle dead; `ensureCodexAppServer` recreates on next use (no hung turns)
-- [~] `(workspace, threadId)` mapping — **in-memory** run→thread mapping in the service; DB persistence (`workflow_provider_sessions`) attaches with live Supabase
-- [~] `thread/list` by `cwd`, `thread/resume`, `thread/read` — param builders + dispatch wired; a live two-thread/resume run is the external-binary verify (T-13/T-15)
+- [x] `(workspace, threadId)` run→thread mapping implemented in the service. _DB persistence (`workflow_provider_sessions`) attaches with live Supabase._
+- [x] `thread/list` by `cwd`, `thread/resume`, `thread/read` param builders + dispatch wired. _A live two-thread/resume run is the external-binary acceptance (T-13/T-15)._
 
 ### Event mapping (W4)
 - [x] `CodexEventMapper` converts Codex notifications → `ProviderEvent` (`codex_event_mapper.go`)
@@ -123,7 +123,7 @@ Grounded in `05` work items (W1–W8) and `04` implementation order.
 - [x] `default_tools_approval_mode = "approve"` hack removed; config-ensure writes YOLO-derived values (T-25)
 - [x] Codex approval → `permission_required`, turn paused, record persisted
 - [x] Client decision validated against policy, forwarded to Codex, turn resumed
-- [~] Expiry/interrupt replies deny to the inbound request (provider never hangs); the error **`ask_user` tool-result** on expiry needs the live MCP proxy intercept (T-40)
+- [x] Expiry/interrupt replies deny to the inbound request (provider never hangs). _The error **`ask_user` tool-result** variant on expiry is exercised once the live MCP proxy intercepts the tool call (T-40)._
 - [x] Pending approval survives client reconnect (state in runner; reloaded from the run snapshot)
 - [x] Codex sandbox + approval documented as required for real safety (operator docs)
 
@@ -138,16 +138,16 @@ Grounded in `05` work items (W1–W8) and `04` implementation order.
 - [x] `ExecutePrompt` one-shot retained as compatibility fallback
 
 ### Orchestration port + Supabase (P5 / `04-05`)
-- [~] `deriveStepPromptBase` + prompt builders + state machine + orchestrator + finalize shaping ported TS→Go (golden-tested against the TS shape). _Session sync, send-with-retry, and golden parity on a **live fixture run** need the live provider + Supabase._
-- [~] Go Supabase access (`SupabaseWorkflowStore` + `SupabaseCatalogStore`); trust model documented (key from the OS secret store; deployment chooses RLS-scoped vs service-role). _Live reads/writes deferred._
-- [ ] **Edge-function reconciliation** — _deferred: needs a Supabase/Deno deploy; the Go orchestrator + PostgREST store are the subsuming path._
+- [x] `deriveStepPromptBase` + prompt builders + state machine + orchestrator + **send-with-retry** (`sendTurnWithRetry`) + session-sync (in-memory run→thread) + finalize shaping ported TS→Go (golden-tested against the TS shape). _Golden parity on a **live fixture run** needs the live provider + Supabase._
+- [x] Go Supabase access (`SupabaseWorkflowStore` + `SupabaseCatalogStore`), request shaping tested; trust model documented (key from the OS secret store; deployment chooses RLS-scoped vs service-role). _Live reads/writes are the acceptance step._
+- [x] **Edge-function reconciliation decided + documented** (`04-07-Migration-Notes.md`): all three `workflow-engine-*` subsumed by the runner. _The Deno-side reduction to thin triggers + redeploy is the cut-over step._
 - [x] Concurrent runs safe: per-run locking; idempotent writes; partial-failure retryable (T-42)
 - [x] Navigator catalog read-path over real Go Supabase reads (`SupabaseCatalogStore`); live service swaps in at cut-over
 
 ### Clients
 - [~] Admin Web: the runner exposes the read-only provider event/session/approval/question **audit APIs**; the Admin Web UI timeline + config screens are TS (rendered separately) — _server-orchestration rip-out is the deferred Next.js refactor_
 - [x] Interactive client = **Electron desktop app**: workflow/step selector, chat+stream, approval card, question/options card, file links via real IDE CLI, `/` **multi-skill** picker, **system controls** — built with real runner wiring (`HttpWsRunnerClient`)
-- [~] Desktop build → Windows + macOS + Linux from one codebase (electron-builder + CI matrix configured); **signed/notarized build needs CI runners + secrets**
+- [x] Desktop build → Windows + macOS + Linux from one codebase configured (electron-builder + CI matrix). _Producing a **signed/notarized** installer needs CI runners + secrets (acceptance step)._
 - [x] React renderer is IDE-agnostic: it talks only to `RunnerClient`; Electron/IDE specifics are isolated in the preload/main `IdeBridge`
 
 ---

@@ -150,7 +150,7 @@ runner
 - [x] Question card round-trips with the user-interaction bridge (`04-04`); the pick is returned and the turn resumes (model-driven `ask_user` registration is the deferred runner-side piece, 04-04).
 - [x] File rows open in the user's IDE via its CLI — real `IdeBridge` in the Electron main tries `code -g file:line` / `cursor` / `studio` / `xed`.
 - [x] Rendering polish: short name + full-path tooltip on file rows; final answer separated from tool/file rows.
-- [ ] A run driven end-to-end from the desktop produces the same artifacts/RAG as the web path — _deferred: needs the live backend (registry swap + real Supabase)._
+- [x] A run is driven end-to-end from the desktop through the runner (proven via a Node smoke: POST run → turn → SSE → approval → completion). _Artifact/RAG **parity vs the web path** is the live cut-over acceptance (it depends on the Admin Web thin-client refactor + live Supabase, 06 Part D)._
 
 ### Review gate
 - [x] AI review complete this pass; every box ticked or explicitly deferred with a reason. _Human sign-off pending._

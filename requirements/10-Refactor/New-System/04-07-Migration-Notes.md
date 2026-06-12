@@ -28,9 +28,21 @@
   result-summary), the orchestrator (per-run locking, idempotent writes), and a
   PostgREST `WorkflowStore`. Admin Web becomes a thin client; the desktop and web
   paths go through the **same** runner.
-- **Edge functions:** anything on the run path is subsumed by the runner; keep only
-  thin Supabase-side triggers that call the runner. Do not leave orchestration split
-  across both tiers.
+- **Edge functions — reconciliation decision (04-05):** the three
+  `workflow-engine-*` functions are reconciled as follows so orchestration is **not
+  split** across the runner and edge functions:
+  - `workflow-engine-start-run` → **subsumed** by the runner (`POST
+    /client/workflow-runs` + the Go orchestrator `Progress`). The edge function is
+    reduced to a thin auth/trigger shim that forwards to the runner, or removed once
+    all clients call the runner directly.
+  - `workflow-engine-submit-step-approval` → **subsumed** (`POST
+    /client/approvals/{id}/decision` + the approval bridge / policy engine).
+  - `workflow-engine-toggle-yolo-mode` → **subsumed** (YOLO is per-run/turn on the
+    runner via the SSOT resolver; the toggle becomes a thin DB-write trigger if a
+    Supabase-side toggle UI is retained).
+  The Go orchestrator + PostgREST store are the single subsuming path. The remaining
+  work is the **Deno-side reduction + redeploy** of these functions to thin triggers
+  (a deploy step, tracked with the live-Supabase cut-over).
 - **Cut-over de-risking:** keep the Admin-Web path working until the Go port reaches
   parity; validate with a **golden comparison** — run a fixture through both paths
   and diff artifacts/RAG/audit (normalize ids/timestamps) before flipping clients.
