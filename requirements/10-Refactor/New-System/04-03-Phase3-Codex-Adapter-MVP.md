@@ -39,28 +39,64 @@ multiplex a shared app-server.
   `Runner.workspace` (`runner.go:122`) is demoted to a default cwd; per-thread `cwd`
   is authoritative.
 - `ensureCodexAppServer(ctx, scopeKey)`: start one `codex app-server --listen
-  stdio://` if not running for that scope; reuse otherwise. (Account-scoped recreate
-  is Phase 6; here assume the active account.)
+  stdio://` if not running for that scope; reuse otherwise. **`scopeKey` = the active
+  provider account id** (Phase 6 adds account-scoped recreate; here assume the active
+  account).
+- **`initialize` captures the negotiated protocol version + capabilities** on the
+  handle; the adapter **degrades gracefully** if a method is unsupported by the
+  installed build (e.g. `thread/list` / `thread/read` / `thread/resume`) instead of
+  hanging — see the 06 Part D build-verification caveat.
 
 ## Codex JSON-RPC methods + async dispatcher
 
 - Payload builders next to `geminiACP*Params` (`sessions.go:265`):
-  `codexInitializeParams`, `codexThreadStartParams(cwd, sandbox, approvalMode)`,
+  `codexInitializeParams`, `codexThreadStartParams(cwd, sandbox, approvalMode, mcpServers)`,
   `codexThreadResumeParams`, `codexThreadListParams(cwd)`, `codexThreadReadParams`,
   `codexTurnStartParams(threadId, prompt, skill)`, `codexInterruptParams`.
-- **Async dispatcher (replaces the synchronous helper):** one dedicated read-loop
-  goroutine reads every line and dispatches —
-  - responses → matched by **unique monotonic id** via `map[id]chan response`;
-  - notifications → routed by **thread id** to the owning turn's event channel.
-  Read loop **never blocks**; per-turn consumers drain their channel. Guard `stdin`
-  writes with a mutex (many turns interleave on one pipe).
+- **MCP servers on the thread.** `thread/start` carries an `mcpServers` list — ACP
+  precedent: `geminiACPSessionNewParams` already passes `mcpServers`
+  (`sessions.go:276`). Attach the **FlowPilot MCP proxy** here so required MCPs **and**
+  the Phase-4 `ask_user` custom tool are reachable. Decide process-level vs
+  per-`thread/start` wiring and document it; verify the param against the installed
+  Codex build.
+- **Async dispatcher (replaces the synchronous helper).** One dedicated read-loop
+  goroutine reads every message and dispatches by **three** kinds:
+  - **responses** (`id`, no `method`) → matched by unique monotonic id via
+    `map[id]chan response`; a per-request `ctx`/timeout removes the waiter and fails
+    the caller if no response arrives (no leaked waiters);
+  - **notifications** (`method`, no `id`) → routed by **thread id** to the owning
+    turn's event channel;
+  - **inbound requests** (`method` **and** `id` — server→client, e.g. command/patch
+    approval or elicitation) → routed to a request handler that **must reply** with a
+    matching-id response. Approval/`ask_user` reply logic is Phase 4, but the
+    dispatcher must already route this third kind — the current
+    `readJsonRpcResponseWithHandler` (`sessions.go:157`) cannot, its handler only
+    observes.
+  The read loop **never blocks**: sends to per-turn channels are **non-blocking onto
+  bounded buffers** (define overflow policy — spool or fail the turn, never block the
+  loop). Guard `stdin` writes with a mutex (many turns interleave on one pipe).
+
+## Process lifecycle & failure handling
+
+- On read-loop EOF / read error / malformed JSON, or process exit: **fail every
+  pending id-waiter and drain every per-turn channel with an error**, mark the handle
+  dead, and let the next `ensureCodexAppServer` start a fresh process. A dead
+  app-server must never leave a turn blocked — this is the exact hang the synchronous
+  model caused.
+- A `ctx` cancel on a turn issues `codexInterruptParams` and **drains trailing
+  notifications** so the shared process is not left mid-turn (full interrupt/cancel
+  semantics in `04-04`).
 
 ## Thread mapping + persistence
 
-- Persist `(workspace, account, threadId, providerThreadId, model, status)`
-  (`provider_session_store.go`).
+- Persist into `workflow_provider_sessions` (`04-02`): `working_directory`,
+  `provider_account_id`, `provider_thread_id` (= `provider_session_id` for Codex),
+  `model_name`, `status` — keep column names aligned with the P2 schema.
 - `thread/start` (cwd), `thread/resume`, `thread/list` (by cwd), `thread/read`.
   Codex owns the JSONL log; FlowPilot keeps only the mapping.
+- `providerTurnId` comes from the `turn/start` response (or the first `turn_started`);
+  the mapper stamps it on every event of that turn. One-turn-per-thread (`04-02`'s
+  `409`) is what makes thread-id routing unambiguous.
 
 ## Event mapping (`codex_event_mapper.go`)
 
@@ -69,6 +105,10 @@ multiplex a shared app-server.
   execution → `tool_started`/`tool_completed` with exit status (distinct event)**;
   file change → `file_changed`; turn error → `turn_failed`; complete →
   `turn_completed`. Emit through `SessionStreamCallback`.
+- **Correlation:** the mapper fills the event base (run/step/session ids,
+  `providerTurnId`) and **preserves provider event order within a turn**; the
+  monotonic per-run **`seq` is assigned by runner core at a single serialization
+  point** (not the adapter), so ordering stays stable across interleaved threads.
 
 ## Runner-side prompt assembly
 
@@ -83,22 +123,30 @@ build from step definitions is ported in Phase 5.)
 3. streaming `message_delta`s render in the (real-wired) client.
 4. `file_changed` and command-execution events map correctly.
 5. `thread/list` by cwd; `thread/resume` reattaches.
-6. two threads with different cwd run concurrently in one app-server.
+6. two threads with different cwd run concurrently in one app-server (verify the
+   installed Codex build supports concurrent turns across threads on one stdio).
 
 ## Tests (Go, mock `commandContextFn` per `sessions_test.go:89-129`)
 
 - T-01 start/init, T-05 stream deltas, T-07 final-message separation.
 - T-26 command-exec distinct mapping.
 - T-13 `thread/list` by cwd; T-23 two concurrent threads.
+- T-37 inbound server→client request is routed to a reply-capable handler
+  (Phase-4 readiness).
+- T-38 dispatcher failure: a response timeout frees its waiter; process death drains
+  all waiters/turns with error (no hung turns); per-turn backpressure never blocks
+  the read loop.
 
 ## Definition of Done (checklist)
 
 - [ ] `provider_event.go`, `codex_appserver.go`, `codex_event_mapper.go` added.
-- [ ] Shared app-server starts; `initialize` succeeds (T-01).
-- [ ] Async dispatcher: id→waiter map, per-thread routing, non-blocking read loop, stdin write mutex (no reuse of the synchronous helper / `SendMu` / id `3`).
-- [ ] `thread/start|resume|list|read` + `turn/start` wired; `(workspace, account, threadId)` persisted.
+- [ ] Shared app-server starts; `initialize` succeeds and **captures protocol version + capabilities**; unsupported methods degrade gracefully, not hang (T-01).
+- [ ] Async dispatcher handles **three** kinds — responses (id→waiter map + per-request timeout), notifications (per-thread routing), and **inbound server→client requests routed to a reply-capable handler** (Phase-4 approval/`ask_user` readiness); non-blocking read loop with **bounded per-turn buffers**; stdin write mutex (no reuse of the synchronous helper / `SendMu` / id `3`).
+- [ ] **Process lifecycle:** read-loop EOF/error/process-death **drains all waiters + turn channels with error**, marks the handle dead, restarts on next ensure (no hung turns).
+- [ ] `thread/start|resume|list|read` + `turn/start` wired; **`mcpServers` attached on `thread/start`** (FlowPilot proxy + required MCPs + Phase-4 `ask_user`); persisted into `workflow_provider_sessions` with P2 column names.
 - [ ] Streaming `message_delta` (T-05); final answer separated (T-07).
-- [ ] Event mapping incl. distinct command-execution events (T-26) and `file_changed`.
+- [ ] Event mapping incl. distinct command-execution events (T-26) and `file_changed`; `providerTurnId` stamped; **`seq` assigned by runner core** (single serialization point).
 - [ ] Runner-side skill + MCP injection before `turn/start`.
-- [ ] Two concurrent threads in one app-server (T-23); `thread/list` by cwd (T-13).
+- [ ] Two concurrent threads in one app-server (T-23, verify against installed build); `thread/list` by cwd (T-13).
+- [ ] Dispatcher robustness tests: inbound-request routing (T-37), response timeout + process-death drain + backpressure (T-38).
 - [ ] **Review gate:** human + AI review this checklist after the phase.
