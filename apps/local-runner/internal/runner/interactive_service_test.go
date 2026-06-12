@@ -69,6 +69,19 @@ func startRun(t *testing.T, base string) string {
 	return h.RunID
 }
 
+func startProjectRun(t *testing.T, base, projectID, workflowID string) string {
+	t.Helper()
+	status, body := doJSON(t, "POST", base+"/client/workflow-runs", StartRunInput{ProjectID: projectID, WorkflowID: workflowID, StepID: "step-plan"}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("start project run status=%d body=%s", status, body)
+	}
+	var h RunHandle
+	if err := json.Unmarshal(body, &h); err != nil {
+		t.Fatalf("decode handle: %v", err)
+	}
+	return h.RunID
+}
+
 func sendTurn(t *testing.T, base, runID, scenario string, headers map[string]string) (int, string) {
 	t.Helper()
 	status, body := doJSON(t, "POST", base+"/client/workflow-runs/"+runID+"/turns",
@@ -220,6 +233,44 @@ func TestNormalTurnPersistsWithSeq(t *testing.T) {
 		if ev.Type == EventMessageDelta {
 			t.Fatalf("delta event should not be persisted: %+v", ev)
 		}
+	}
+}
+
+func TestProjectRunHistoryFiltersRunsByProject(t *testing.T) {
+	_, srv := newTestServer(t)
+	first := startProjectRun(t, srv.URL, "proj-web", "wf-feature")
+	other := startProjectRun(t, srv.URL, "proj-mobile", "wf-feature")
+	second := startProjectRun(t, srv.URL, "proj-web", "wf-feature")
+
+	if status, turnID := sendTurn(t, srv.URL, first, "normal", nil); status != http.StatusOK || turnID == "" {
+		t.Fatalf("send turn status=%d turnId=%q", status, turnID)
+	}
+	waitTerminal(t, srv.URL, first)
+
+	status, body := doJSON(t, "GET", srv.URL+"/client/projects/proj-web/workflow-runs", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("history status=%d body=%s", status, body)
+	}
+	var history []runHistoryItem
+	if err := json.Unmarshal(body, &history); err != nil {
+		t.Fatalf("decode history: %v", err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("history len=%d want 2: %+v", len(history), history)
+	}
+	for _, item := range history {
+		if item.ProjectID != "proj-web" {
+			t.Fatalf("history included other project: %+v", item)
+		}
+		if item.RunID == other {
+			t.Fatalf("history included excluded run %s", other)
+		}
+	}
+	if history[0].RunID != first {
+		t.Fatalf("first history run=%s want updated run %s (second created run was %s)", history[0].RunID, first, second)
+	}
+	if history[0].LastPrompt != "hi" || history[0].LastMessage == "" || history[0].Status != RunStatusCompleted {
+		t.Fatalf("updated history item missing summary: %+v", history[0])
 	}
 }
 

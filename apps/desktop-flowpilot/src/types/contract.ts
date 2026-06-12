@@ -111,6 +111,18 @@ export interface RunHandle {
   status: RunStatus;
 }
 
+export interface RunHistoryItem {
+  runId: string;
+  projectId: string;
+  workflowId?: string;
+  providerKey: ProviderKey;
+  status: RunStatus;
+  startedAt: string;
+  updatedAt: string;
+  lastPrompt?: string;
+  lastMessage?: string;
+}
+
 export interface SkillSelection {
   name: string;
   path?: string;
@@ -196,6 +208,7 @@ export interface RunnerClient {
   listWorkflows(): Promise<Workflow[]>;
   listSteps(): Promise<Step[]>;
   listProviderAccounts(): Promise<ProviderAccountSummary[]>;
+  listRunHistory(projectId: string): Promise<RunHistoryItem[]>;
   startRun(input: StartRunInput): Promise<RunHandle>;
   resumeRun(runId: string): Promise<RunHandle>;
   /** Streaming turn: yields normalized provider events until terminal. */

@@ -5,6 +5,7 @@ import type {
   ProviderEventDTO,
   ProviderSkill,
   RunHandle,
+  RunHistoryItem,
   RunnerClient,
   StartRunInput,
   Step,
@@ -143,6 +144,9 @@ export class HttpWsRunnerClient implements RunnerClient {
   }
   listArtifacts(runId: string): Promise<Artifact[]> {
     return this.getJSON<Artifact[]>(`/client/workflow-runs/${encodeURIComponent(runId)}/artifacts`);
+  }
+  listRunHistory(projectId: string): Promise<RunHistoryItem[]> {
+    return this.getJSON<RunHistoryItem[]>(`/client/projects/${encodeURIComponent(projectId)}/workflow-runs`);
   }
   listSkills(provider: string): Promise<ProviderSkill[]> {
     return this.getJSON<ProviderSkill[]>(`/client/provider-skills?provider=${encodeURIComponent(provider)}`);

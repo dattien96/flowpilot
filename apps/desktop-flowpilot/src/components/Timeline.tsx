@@ -43,6 +43,10 @@ function Item({ it }: { it: TimelineItem }): React.ReactElement | null {
           {!it.finalized && <span className="caret">▌</span>}
         </div>
       );
+    case "prompt":
+      return <div className="bubble prompt">{it.text}</div>;
+    case "thinking":
+      return <div className="system-line thinking">{it.text}</div>;
     case "tool":
       return <ToolRow it={it} />;
     case "file":

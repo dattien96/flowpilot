@@ -72,6 +72,10 @@ type interactiveRun struct {
 	yolo              bool
 
 	status        RunStatus
+	createdAt     string
+	updatedAt     string
+	lastPrompt    string
+	lastMessage   string
 	seq           int64
 	lastEventType ProviderEventType
 	events        []ProviderEvent
@@ -282,6 +286,21 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 
 	rs.events = append(rs.events, ev)
 	rs.lastEventType = ev.Type
+	rs.updatedAt = ev.OccurredAt
+	switch ev.Type {
+	case EventMessageCompleted:
+		if ev.Text != "" {
+			rs.lastMessage = ev.Text
+		}
+	case EventTurnCompleted:
+		if ev.FinalMessage != "" {
+			rs.lastMessage = ev.FinalMessage
+		}
+	case EventTurnFailed:
+		if ev.Error != "" {
+			rs.lastMessage = ev.Error
+		}
+	}
 	_ = s.persistEvent(ev)
 
 	switch ev.Type {
@@ -726,6 +745,8 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	turnID := s.nextID("turn")
 	rs.turnInFlight = true
 	rs.currentTurnID = turnID
+	rs.lastPrompt = in.Prompt
+	rs.updatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	ctx, cancel := context.WithCancel(context.Background())
 	rs.turnCancel = cancel
 	if idempotencyKey != "" {

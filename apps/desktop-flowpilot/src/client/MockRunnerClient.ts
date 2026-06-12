@@ -6,6 +6,7 @@ import type {
   ProviderEventDTO,
   ProviderSkill,
   RunHandle,
+  RunHistoryItem,
   RunnerClient,
   StartRunInput,
   Step,
@@ -136,8 +137,15 @@ const MOCK_PROVIDER_ACCOUNTS: ProviderAccountSummary[] = [
 
 interface RunState {
   runId: string;
+  projectId: string;
+  workflowId?: string;
   providerSessionId: string;
   providerTurnId: string;
+  status: RunHistoryItem["status"];
+  startedAt: string;
+  updatedAt: string;
+  lastPrompt?: string;
+  lastMessage?: string;
   /** Monotonic per-run event sequence (reconnect cursor, 04-02). */
   seq: number;
   lastTurnInput?: TurnInput;
@@ -174,6 +182,22 @@ export class MockRunnerClient implements RunnerClient {
     const log = this.eventLog.get(runId);
     if (log) log.push(ev);
     else this.eventLog.set(runId, [ev]);
+    const state = this.runs.get(runId);
+    if (state) {
+      state.updatedAt = ev.occurredAt;
+      if (ev.type === "turn_started") state.status = "running";
+      if (ev.type === "permission_required") state.status = "waiting_approval";
+      if (ev.type === "user_question_required") state.status = "waiting_question";
+      if (ev.type === "message_completed" && ev.text) state.lastMessage = ev.text;
+      if (ev.type === "turn_completed") {
+        state.status = "completed";
+        if (ev.finalMessage) state.lastMessage = ev.finalMessage;
+      }
+      if (ev.type === "turn_failed") {
+        state.status = "failed";
+        state.lastMessage = ev.error;
+      }
+    }
     return ev;
   }
 
@@ -223,6 +247,24 @@ export class MockRunnerClient implements RunnerClient {
     return mockArtifacts(runId);
   }
 
+  async listRunHistory(projectId: string): Promise<RunHistoryItem[]> {
+    await delay(60);
+    return Array.from(this.runs.values())
+      .filter((run) => run.projectId === projectId)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .map((run) => ({
+        runId: run.runId,
+        projectId: run.projectId,
+        workflowId: run.workflowId,
+        providerKey: "codex",
+        status: run.status,
+        startedAt: run.startedAt,
+        updatedAt: run.updatedAt,
+        lastPrompt: run.lastPrompt,
+        lastMessage: run.lastMessage,
+      }));
+  }
+
   async restartStack(): Promise<void> {
     // Part A stub. Part B → POST /system/restart on the runner.
     await delay(120);
@@ -256,7 +298,18 @@ export class MockRunnerClient implements RunnerClient {
     await delay(80);
     const runId = nextId("run");
     const providerSessionId = nextId("thread");
-    this.runs.set(runId, { runId, providerSessionId, providerTurnId: "", seq: 0 });
+    const now = new Date().toISOString();
+    this.runs.set(runId, {
+      runId,
+      projectId: input.projectId,
+      workflowId: input.workflowId,
+      providerSessionId,
+      providerTurnId: "",
+      status: "running",
+      startedAt: now,
+      updatedAt: now,
+      seq: 0,
+    });
     return { runId, providerSessionId, providerKey: "codex", status: "running" };
   }
 
@@ -288,12 +341,19 @@ export class MockRunnerClient implements RunnerClient {
   async *sendTurn(input: TurnInput): AsyncIterable<ProviderEventDTO> {
     const state = this.runs.get(input.runId) ?? {
       runId: input.runId,
+      projectId: "",
       providerSessionId: nextId("thread"),
       providerTurnId: "",
+      status: "running" as const,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
       seq: 0,
     };
     state.providerTurnId = nextId("turn");
     state.lastTurnInput = input;
+    state.lastPrompt = input.prompt;
+    state.status = "running";
+    state.updatedAt = new Date().toISOString();
     this.runs.set(input.runId, state);
 
     const isReplay = this.replayRuns.has(input.runId);

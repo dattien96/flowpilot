@@ -7,6 +7,7 @@ import type {
   ProviderEventDTO,
   ProviderSkill,
   QuestionOption,
+  RunHistoryItem,
   RunStatus,
   Step,
   TurnInput,
@@ -27,6 +28,8 @@ export type LaunchMode = "workflow" | "step";
 
 export type TimelineItem =
   | { kind: "assistant"; id: string; text: string; finalized: boolean }
+  | { kind: "prompt"; id: string; text: string }
+  | { kind: "thinking"; id: string; text: string }
   | { kind: "tool"; id: string; toolName: string; status: "running" | "success" | "failed" | "cancelled"; input?: unknown; output?: unknown }
   | { kind: "file"; id: string; path: string; changeType?: string }
   | { kind: "approval"; id: string; approvalId: string; details: ApprovalDetails; decision?: string }
@@ -63,6 +66,9 @@ interface AppState {
   status: RunStatus;
   timeline: TimelineItem[];
   artifacts: Artifact[];
+  runHistory: RunHistoryItem[];
+  historyOpen: boolean;
+  historyLoading: boolean;
   pendingApproval?: PendingApproval;
   pendingQuestion?: PendingQuestion;
   lastTurnInput?: TurnInput;
@@ -85,6 +91,9 @@ interface AppState {
   answer(choice: string | string[]): Promise<void>;
   stop(): Promise<void>;
   reconnect(): Promise<void>;
+  loadRunHistory(): Promise<void>;
+  toggleRunHistory(): Promise<void>;
+  openHistoryRun(runId: string): Promise<void>;
   resetRun(): void;
   openInIde(path: string, line?: number): void;
   openAdminWeb(): void;
@@ -109,6 +118,10 @@ function statusFromEvent(e: ProviderEventDTO, prev: RunStatus): RunStatus {
   }
 }
 
+function isTurnCompletedPlaceholder(text: string): boolean {
+  return text.trim().toLowerCase().replace(/\.$/, "") === "turn completed";
+}
+
 export const useStore = create<AppState>((set, get) => ({
   client: createRunnerClient(),
   projects: [],
@@ -119,6 +132,9 @@ export const useStore = create<AppState>((set, get) => ({
   status: "idle",
   timeline: [],
   artifacts: [],
+  runHistory: [],
+  historyOpen: false,
+  historyLoading: false,
   recoverable: false,
   scenario: "normal",
   launchMode: "workflow",
@@ -211,7 +227,7 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   async selectProject(projectId) {
-    set({ selectedProjectId: projectId });
+    set({ selectedProjectId: projectId, runHistory: [], historyOpen: false });
   },
 
   setLaunchMode(mode) {
@@ -258,17 +274,26 @@ export const useStore = create<AppState>((set, get) => ({
           : undefined,
     };
 
-    // Echo the user's prompt into the timeline as a system line for context.
     set((s) => ({
       runId,
       lastTurnInput: turnInput,
       recoverable: false,
       status: "running",
       _streamingAssistantId: undefined,
-      timeline: [...s.timeline, { kind: "system", id: `user-${s.timeline.length}`, text: `▸ ${prompt}`, tone: "info" }],
+      timeline: [
+        ...s.timeline,
+        { kind: "prompt", id: `prompt-${s.timeline.length}`, text: prompt },
+        { kind: "thinking", id: `thinking-${s.timeline.length}`, text: "Thinking..." },
+      ],
     }));
 
-    await consumeStream(client.sendTurn(turnInput), set, get);
+    try {
+      await consumeStream(client.sendTurn(turnInput), set, get);
+    } finally {
+      if (get().historyOpen) {
+        void get().loadRunHistory();
+      }
+    }
   },
 
   async approve(decision) {
@@ -313,6 +338,55 @@ export const useStore = create<AppState>((set, get) => ({
     await consumeStream(client.streamRun(runId, 0), set, get);
   },
 
+  async loadRunHistory() {
+    const { client, selectedProjectId } = get();
+    if (!selectedProjectId) {
+      set({ runHistory: [], historyLoading: false });
+      return;
+    }
+    set({ historyLoading: true });
+    try {
+      const runHistory = await client.listRunHistory(selectedProjectId);
+      set({ runHistory, historyLoading: false });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] listRunHistory failed:", err);
+      set((s) => ({
+        historyLoading: false,
+        timeline: [
+          ...s.timeline,
+          { kind: "system", id: `err-history-${s.timeline.length}`, text: `Failed to load run history: ${String(err)}`, tone: "error" },
+        ],
+      }));
+    }
+  },
+
+  async toggleRunHistory() {
+    const open = !get().historyOpen;
+    set({ historyOpen: open });
+    if (open) {
+      await get().loadRunHistory();
+    }
+  },
+
+  async openHistoryRun(runId) {
+    const { client } = get();
+    const handle = await client.resumeRun(runId);
+    set({
+      runId: handle.runId,
+      status: handle.status,
+      timeline: [],
+      artifacts: [],
+      pendingApproval: undefined,
+      pendingQuestion: undefined,
+      lastTurnInput: undefined,
+      recoverable: false,
+      historyOpen: false,
+      _streamingAssistantId: undefined,
+    });
+    await consumeStream(client.streamRun(runId, 0), set, get);
+  },
+
   resetRun() {
     set({
       runId: undefined,
@@ -323,6 +397,7 @@ export const useStore = create<AppState>((set, get) => ({
       pendingQuestion: undefined,
       lastTurnInput: undefined,
       recoverable: false,
+      historyOpen: false,
       _streamingAssistantId: undefined,
     });
   },
@@ -362,7 +437,8 @@ async function consumeStream(
 
 function applyEvent(s: AppState, e: ProviderEventDTO): Partial<AppState> {
   const status = statusFromEvent(e, s.status);
-  const timeline = [...s.timeline];
+  const keepThinking = e.type === "turn_started";
+  const timeline = keepThinking ? [...s.timeline] : s.timeline.filter((it) => it.kind !== "thinking");
   let streamingAssistantId = s._streamingAssistantId;
 
   const closeAssistant = () => {
@@ -389,6 +465,10 @@ function applyEvent(s: AppState, e: ProviderEventDTO): Partial<AppState> {
     }
 
     case "message_completed": {
+      if (isTurnCompletedPlaceholder(e.text)) {
+        closeAssistant();
+        break;
+      }
       if (streamingAssistantId) {
         const idx = timeline.findIndex((it) => it.id === streamingAssistantId);
         if (idx >= 0 && timeline[idx].kind === "assistant") {
@@ -454,8 +534,7 @@ function applyEvent(s: AppState, e: ProviderEventDTO): Partial<AppState> {
 
     case "turn_completed":
       closeAssistant();
-      timeline.push({ kind: "system", id: e.id, text: "Turn completed.", tone: "info" });
-      break;
+      return { timeline, status, _streamingAssistantId: streamingAssistantId };
 
     case "turn_failed":
       closeAssistant();
