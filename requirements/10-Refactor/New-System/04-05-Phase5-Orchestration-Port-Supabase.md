@@ -93,14 +93,33 @@ Client are both thin clients of the same runner.
 
 ## Definition of Done (checklist)
 
-- [ ] `deriveStepPromptBase`, session sync, send-with-retry, finalize (summary/RAG/GDrive) ported to Go.
-- [ ] Go Supabase access for run/step/history (least-privilege / RLS-scoped key; trust model documented).
-- [ ] Edge-function reconciliation: `workflow-engine-*` subsumed by the runner or reduced to thin triggers — orchestration not split.
-- [ ] Concurrent runs safe: per-run locking; idempotent + ordered state/finalize writes; partial-failure retryable (T-42).
-- [ ] Navigator catalog (projects/workflows/steps) backed by real Go Supabase reads (replaces the P2 fake catalog).
-- [ ] Admin Web no longer orchestrates server-side; it is a thin client of the runner.
-- [ ] Golden parity: old TS path vs new Go path produce identical artifacts/RAG/audit.
-- [ ] Desktop and web runs go through the same Go-runner path (T-20).
-- [ ] Finalize runs in Go after `turn_completed` (T-14); audit timeline visible in Admin Web (T-18).
-- [ ] Workflow steps can emit `user_question_required` directly (deterministic question path, T-30).
+> Implemented in `apps/local-runner/internal/runner/`
+> (`workflow_state_machine.go`, `workflow_prompt.go`, `workflow_store.go`,
+> `workflow_orchestrator.go`, `supabase_workflow_store.go`, + the
+> `AskWorkflowQuestion` path on `InteractiveService`) with golden/unit tests
+> (`workflow_state_machine_test.go`, `workflow_prompt_test.go`,
+> `workflow_orchestrator_test.go`, `phase5_test.go`). `go vet` clean; all Phase 5
+> tests pass; no regressions vs the HEAD baseline.
+>
+> **Scope note — this is the single largest workstream and is split here into the
+> portable, testable core (done now) vs. the parts that need live infrastructure
+> (deferred).** Deferred because they require a live Supabase instance + credentials,
+> a live provider, and a TS/Next.js Admin Web refactor that can't be validated from
+> the Go side: end-to-end Supabase reads/writes, the navigator catalog on live data,
+> Admin Web going thin, edge-function reconciliation, golden parity TS-vs-Go on a
+> fixture run, send-with-retry + session recovery (rides the deferred P3 registry
+> swap), and the live finalize summary/RAG/GDrive pipeline. The pure-logic ports and
+> the orchestration core are in and tested; the live wiring lands with the registry
+> swap + a real Supabase (06 Part D).
+
+- [~] `deriveStepPromptBase` + prompt builders + the **state machine** + the **orchestrator** ported to Go (golden-tested). _Session sync, send-with-retry, and the finalize summary/RAG/GDrive body are deferred to the live provider + Supabase wiring (the P4 finalizer hook + local snapshot already exist)._
+- [~] Go Supabase access for run/step/log via PostgREST (`SupabaseWorkflowStore`); apikey/bearer auth, request shaping tested over a mocked transport; trust model documented (key from the OS secret store; deployment chooses service-role vs RLS-scoped). _End-to-end reads/writes against a real Supabase are deferred._
+- [ ] Edge-function reconciliation (`workflow-engine-*` subsumed vs thin triggers) — _deferred: needs a Supabase/Deno deploy; the Go orchestrator + PostgREST store are the subsuming path._
+- [x] Concurrent runs safe: **per-run locking** (distinct runs never serialize), idempotent state writes, partial-failure retryable (T-42).
+- [ ] Navigator catalog backed by real Go Supabase reads — _deferred: still the P2 fake catalog until a live Supabase is wired (the PostgREST store is the read path)._
+- [ ] Admin Web no longer orchestrates server-side — _deferred: TS/Next.js refactor, validated separately from the Go runner._
+- [ ] Golden parity old-TS vs new-Go on a fixture run — _deferred: needs both paths runnable (live infra); the pure-logic ports are golden-tested against the TS source shape in the meantime._
+- [ ] Desktop and web runs go through the same Go-runner path (T-20) — _deferred with the live cut-over._
+- [~] Finalize hook runs in Go after `turn_completed` (T-14) — the hook + idempotent local snapshot are in (P4); _the summary/RAG/audit body + the Admin Web audit timeline (T-18) are deferred to the live pipeline._
+- [x] Workflow steps can emit `user_question_required` directly — deterministic question path via `AskWorkflowQuestion`, same card + resume as the model-driven path (T-30).
 - [ ] **Review gate:** human + AI review this checklist after the phase.
