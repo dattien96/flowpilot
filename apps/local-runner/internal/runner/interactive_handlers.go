@@ -66,6 +66,12 @@ func (s *InteractiveService) handleListSkills(w http.ResponseWriter, r *http.Req
 
 func (s *InteractiveService) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 	runID := r.PathValue("runId")
+	// Prefer real finalizer artifacts once a turn has finalized (04-04); fall back
+	// to the fake catalog before the first finalize.
+	if arts, ok := s.finalizer.artifactsForRun(runID); ok {
+		writeInteractiveJSON(w, http.StatusOK, arts)
+		return
+	}
 	writeInteractiveJSON(w, http.StatusOK, fakeArtifacts(runID))
 }
 
@@ -304,7 +310,8 @@ func (s *InteractiveService) handleAdminApprovals(w http.ResponseWriter, r *http
 			continue
 		}
 		out = append(out, map[string]any{
-			"id": rec.id, "status": rec.status, "decision": rec.decision, "details": rec.details,
+			"id": rec.id, "status": rec.status, "decision": rec.decision,
+			"policy": rec.policy, "details": rec.details,
 		})
 	}
 	writeInteractiveJSON(w, http.StatusOK, out)

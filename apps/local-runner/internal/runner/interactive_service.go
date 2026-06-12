@@ -23,6 +23,12 @@ type InteractiveService struct {
 	catalog  *interactiveCatalog
 	registry *ProviderRegistry
 
+	// policy decides auto-approve/auto-deny/ask for YOLO=false approvals (04-04).
+	// Default is ask-everything; Admin Web (03) configures the lists.
+	policy *ApprovalPolicyEngine
+	// finalizer runs the post-turn hook on turn_completed (04-04), idempotent.
+	finalizer *finalizer
+
 	mu        sync.Mutex
 	runs      map[string]*interactiveRun
 	approvals map[string]*approvalRecord
@@ -70,7 +76,10 @@ type approvalRecord struct {
 	details  ApprovalDetails
 	status   string // pending | resolved | expired
 	decision string
-	resolve  chan string
+	// policy records why an auto-decision was made (empty for human decisions):
+	// "yolo_gating_disabled" | "policy_allowlist" | "policy_denylist".
+	policy  string
+	resolve chan string
 }
 
 type questionRecord struct {
@@ -90,6 +99,8 @@ func NewInteractiveService() *InteractiveService {
 	return &InteractiveService{
 		catalog:         newInteractiveCatalog(),
 		registry:        DefaultProviderRegistry(),
+		policy:          DefaultApprovalPolicyEngine(),
+		finalizer:       newFinalizer(),
 		runs:            map[string]*interactiveRun{},
 		approvals:       map[string]*approvalRecord{},
 		questions:       map[string]*questionRecord{},
@@ -218,6 +229,28 @@ func (b *turnBridge) Emit(ev ProviderEvent) {
 
 func (b *turnBridge) RequestApproval(details ApprovalDetails) (string, error) {
 	s := b.svc
+
+	// YOLO=true (RunnerAutoApprove): the runtime runs in "never" approval mode and
+	// should not ask; if a request still arrives, auto-approve and audit as
+	// gating-disabled (04-04). Reply is the returned decision (adapter sends it).
+	if resolveYoloPosture(b.rs.yolo).RunnerAutoApprove {
+		s.recordAutoApproval(b.rs, details, "approve", "yolo_gating_disabled")
+		return "approve", nil
+	}
+
+	// YOLO=false: the policy engine may auto-decide known-safe/known-dangerous
+	// operations; everything else falls through to ask-the-human. Every
+	// auto-decision is recorded AND returned so the adapter replies to the inbound
+	// request (the provider never hangs).
+	switch s.policy.Decide(details) {
+	case PolicyAutoApprove:
+		s.recordAutoApproval(b.rs, details, "approve", "policy_allowlist")
+		return "approve", nil
+	case PolicyAutoDeny:
+		s.recordAutoApproval(b.rs, details, "deny", "policy_denylist")
+		return "deny", nil
+	}
+
 	s.mu.Lock()
 	rec := &approvalRecord{
 		id:      s.nextID("appr"),
@@ -311,6 +344,23 @@ func (s *InteractiveService) clearPendingApproval(id string) {
 	}
 }
 
+// recordAutoApproval persists an auto-decision (YOLO gating-disabled or a policy
+// allow/deny) for audit. It does NOT emit permission_required (no card shown) and
+// does NOT block — the decision is replied to the inbound request by the caller.
+func (s *InteractiveService) recordAutoApproval(rs *interactiveRun, details ApprovalDetails, decision, policy string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec := &approvalRecord{
+		id:       s.nextID("appr"),
+		runID:    rs.id,
+		details:  details,
+		status:   "resolved",
+		decision: decision,
+		policy:   policy,
+	}
+	s.approvals[rec.id] = rec
+}
+
 func (s *InteractiveService) approvalRunID(id string) string {
 	if rec := s.approvals[id]; rec != nil {
 		return rec.runID
@@ -356,6 +406,20 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	bridge := &turnBridge{svc: s, rs: rs, ctx: ctx, turnID: turnID}
 	err := adapter.SendTurn(ctx, req, bridge)
 
+	completed, fin := s.finishTurn(rs, turnID, err)
+
+	// Finalizer hook runs OUTSIDE s.mu and only on a clean completion. A finalize
+	// failure is recorded as retryable and must not erase the completed turn (04-04).
+	if completed {
+		_ = s.finalizer.Finalize(fin)
+	}
+}
+
+// finishTurn does the locked post-turn bookkeeping: clears in-flight state, emits
+// the terminal event when the adapter did not, and maps the error to a status. It
+// returns whether the turn completed cleanly (so the caller runs the finalizer) and
+// the finalize input gathered from the run's events.
+func (s *InteractiveService) finishTurn(rs *interactiveRun, turnID string, err error) (bool, finalizeInput) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rs.turnInFlight = false
@@ -367,6 +431,7 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		if rs.lastEventType != EventTurnCompleted && rs.lastEventType != EventTurnFailed {
 			s.emitLocked(rs, ProviderEvent{Type: EventTurnCompleted, ProviderTurnID: turnID, FinalMessage: ""})
 		}
+		return rs.status == RunStatusCompleted, s.finalizeInputLocked(rs, turnID)
 	case errors.Is(err, context.Canceled):
 		s.emitLocked(rs, ProviderEvent{Type: EventTurnFailed, ProviderTurnID: turnID, Error: "interrupted by user", Recoverable: true})
 		rs.status = RunStatusCancelled // override the failed mapping for a clean interrupt
@@ -375,6 +440,33 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	default:
 		s.emitLocked(rs, ProviderEvent{Type: EventTurnFailed, ProviderTurnID: turnID, Error: err.Error(), Recoverable: false})
 	}
+	return false, finalizeInput{}
+}
+
+// finalizeInputLocked gathers the post-turn context (final message + changed files)
+// from this turn's events. Caller holds s.mu.
+func (s *InteractiveService) finalizeInputLocked(rs *interactiveRun, turnID string) finalizeInput {
+	in := finalizeInput{RunID: rs.id, TurnID: turnID}
+	for _, e := range rs.events {
+		if e.ProviderTurnID != turnID {
+			continue
+		}
+		switch e.Type {
+		case EventTurnCompleted:
+			if e.FinalMessage != "" {
+				in.FinalMessage = e.FinalMessage
+			}
+		case EventMessageCompleted:
+			if in.FinalMessage == "" {
+				in.FinalMessage = e.Text
+			}
+		case EventFileChanged:
+			if e.Path != "" {
+				in.ChangedFiles = append(in.ChangedFiles, e.Path)
+			}
+		}
+	}
+	return in
 }
 
 // startTurn validates, enforces one-turn-per-session, applies idempotency, emits
