@@ -586,6 +586,54 @@ func (s *InteractiveService) AnswerQuestion(questionID string, choice []string) 
 	return nil
 }
 
+// AskWorkflowQuestion is the deterministic, workflow-driven question path (04-04
+// Path 2 / 04-05 T-30): the runner/orchestration emits `user_question_required`
+// directly at a defined step — no model `ask_user` tool call involved, so the card
+// always appears. It reuses the exact same question record + `AnswerQuestion`
+// resume machinery as the model-driven path (idempotent, first-write-wins, expiry),
+// blocking the calling step until the user answers, the question expires, or ctx is
+// cancelled (interrupt). Survives client reconnect (state in the runner).
+func (s *InteractiveService) AskWorkflowQuestion(ctx context.Context, runID, prompt string, options []QuestionOption, multiSelect bool) ([]string, *apiErr) {
+	s.mu.Lock()
+	rs := s.runs[runID]
+	if rs == nil {
+		s.mu.Unlock()
+		return nil, newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")
+	}
+	rec := &questionRecord{
+		id:          s.nextID("q"),
+		runID:       runID,
+		prompt:      prompt,
+		options:     options,
+		multiSelect: multiSelect,
+		status:      "pending",
+		resolve:     make(chan []string, 1),
+	}
+	s.questions[rec.id] = rec
+	rs.pendingQuestionID = rec.id
+	s.emitLocked(rs, ProviderEvent{
+		Type:        EventUserQuestionRequired,
+		QuestionID:  rec.id,
+		Prompt:      prompt,
+		Options:     options,
+		MultiSelect: multiSelect,
+	})
+	s.mu.Unlock()
+
+	timer := time.NewTimer(s.questionTTL)
+	defer timer.Stop()
+	select {
+	case c := <-rec.resolve:
+		return c, nil
+	case <-timer.C:
+		s.expireQuestion(rec.id)
+		return nil, newAPIErr(http.StatusConflict, "question_expired", "question expired")
+	case <-ctx.Done():
+		s.clearPendingQuestion(rec.id)
+		return nil, newAPIErr(http.StatusConflict, "interrupted", "question interrupted")
+	}
+}
+
 // Interrupt cancels the in-flight turn for a run.
 func (s *InteractiveService) Interrupt(runID string) *apiErr {
 	s.mu.Lock()
