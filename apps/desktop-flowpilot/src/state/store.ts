@@ -18,6 +18,8 @@ import type { ScenarioName } from "@/client/mockData";
 import { ideBridge } from "@/client/ideBridge";
 import { ADMIN_WEB_URL } from "@/config";
 
+let loadProjectsInFlight: Promise<void> | null = null;
+
 // ---- Timeline item model (what the renderer draws) -------------------------
 
 export type TimelineItem =
@@ -113,46 +115,58 @@ export const useStore = create<AppState>((set, get) => ({
   scenario: "normal",
 
   async loadProjects() {
+    if (loadProjectsInFlight) return loadProjectsInFlight;
     const client = get().client;
-    // The runner starts via `go run`, which compiles first (~10-30s) before it
-    // listens — so the first fetches can hit connection-refused ("Failed to fetch").
-    // Retry ONLY connection-level errors (not HTTP errors like 502, which won't fix
-    // themselves) so the navigator fills in once the runner is up, without a manual
-    // reload. Load projects/skills independently and surface a final error.
-    const withRetry = async <T>(fn: () => Promise<T>): Promise<T> => {
-      let lastErr: unknown;
-      for (let i = 0; i < 10; i++) {
-        try {
-          return await fn();
-        } catch (err) {
-          lastErr = err;
-          if (err instanceof RunnerApiError) throw err; // got an HTTP response — real error
-          await new Promise((r) => setTimeout(r, 1500)); // connection refused — runner still booting
-        }
-      }
-      throw lastErr;
-    };
+    if (!get().runId) {
+      set((s) => (s.status === "idle" ? { status: "starting" } : {}));
+    }
 
-    try {
-      const projects = await withRetry(() => client.listProjects());
-      set({ projects });
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error("[FlowPilot] listProjects failed:", err);
-      set((s) => ({
-        timeline: [
-          ...s.timeline,
-          { kind: "system", id: `err-projects-${s.timeline.length}`, text: `Failed to load projects: ${String(err)}`, tone: "error" },
-        ],
-      }));
-    }
-    try {
-      const skills = await withRetry(() => client.listSkills("codex"));
-      set({ skills });
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error("[FlowPilot] listSkills failed:", err);
-    }
+    loadProjectsInFlight = (async () => {
+      // The runner starts via `go run`, which compiles first (~10-30s) before it
+      // listens — so the first fetches can hit connection-refused ("Failed to fetch").
+      // Retry ONLY connection-level errors (not HTTP errors like 502, which won't fix
+      // themselves) so the navigator fills in once the runner is up, without a manual
+      // reload. Load projects/skills independently and surface a final error.
+      const withRetry = async <T>(fn: () => Promise<T>): Promise<T> => {
+        let lastErr: unknown;
+        for (let i = 0; i < 10; i++) {
+          try {
+            return await fn();
+          } catch (err) {
+            lastErr = err;
+            if (err instanceof RunnerApiError) throw err; // got an HTTP response — real error
+            await new Promise((r) => setTimeout(r, 1500)); // connection refused — runner still booting
+          }
+        }
+        throw lastErr;
+      };
+
+      try {
+        const projects = await withRetry(() => client.listProjects());
+        set((s) => ({ projects, ...(s.runId ? {} : { status: "idle" }) }));
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("[FlowPilot] listProjects failed:", err);
+        set((s) => ({
+          ...(s.runId ? {} : { status: "failed" }),
+          timeline: [
+            ...s.timeline,
+            { kind: "system", id: `err-projects-${s.timeline.length}`, text: `Failed to load projects: ${String(err)}`, tone: "error" },
+          ],
+        }));
+      }
+      try {
+        const skills = await withRetry(() => client.listSkills("codex"));
+        set({ skills });
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("[FlowPilot] listSkills failed:", err);
+      }
+    })().finally(() => {
+      loadProjectsInFlight = null;
+    });
+
+    return loadProjectsInFlight;
   },
 
   async selectProject(projectId) {

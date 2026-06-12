@@ -15,15 +15,19 @@ const LABEL: Record<RunStatusValue, string> = {
 export function RunStatus(): React.ReactElement {
   const status = useStore((s) => s.status);
   const runId = useStore((s) => s.runId);
+  const projects = useStore((s) => s.projects);
   const resetRun = useStore((s) => s.resetRun);
   const stop = useStore((s) => s.stop);
 
   const active = status === "running" || status === "waiting_approval" || status === "waiting_question";
+  const ready = status === "idle" && !runId && projects.length > 0;
+  const statusClass = ready ? "ready" : status;
+  const statusLabel = ready ? "Ready" : LABEL[status];
 
   return (
     <div className="run-status">
-      <span className={`status-dot status-${status}`} />
-      <span className="status-label">{LABEL[status]}</span>
+      <span className={`status-dot status-${statusClass}`} />
+      <span className="status-label">{statusLabel}</span>
       {runId && <span className="run-id">{runId}</span>}
       {active && (
         <button className="btn btn-ghost" onClick={() => void stop()}>

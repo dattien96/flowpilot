@@ -72,8 +72,12 @@ body {
 .status-running {
   background: var(--accent);
 }
+.status-ready,
 .status-waiting_approval {
   background: var(--warn);
+}
+.status-ready {
+  background: var(--ok);
 }
 .status-waiting_question {
   background: var(--ask);
