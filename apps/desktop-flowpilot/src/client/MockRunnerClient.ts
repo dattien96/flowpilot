@@ -31,6 +31,8 @@ interface RunState {
   runId: string;
   providerSessionId: string;
   providerTurnId: string;
+  /** Monotonic per-run event sequence (reconnect cursor, 04-02). */
+  seq: number;
   lastTurnInput?: TurnInput;
 }
 
@@ -98,7 +100,7 @@ export class MockRunnerClient implements RunnerClient {
     await delay(80);
     const runId = nextId("run");
     const providerSessionId = nextId("thread");
-    this.runs.set(runId, { runId, providerSessionId, providerTurnId: "" });
+    this.runs.set(runId, { runId, providerSessionId, providerTurnId: "", seq: 0 });
     return { runId, providerSessionId, providerKey: "codex", status: "running" };
   }
 
@@ -132,6 +134,7 @@ export class MockRunnerClient implements RunnerClient {
       runId: input.runId,
       providerSessionId: nextId("thread"),
       providerTurnId: "",
+      seq: 0,
     };
     state.providerTurnId = nextId("turn");
     state.lastTurnInput = input;
@@ -147,6 +150,7 @@ export class MockRunnerClient implements RunnerClient {
       providerSessionId: state.providerSessionId,
       providerKey: "codex",
       providerTurnId: state.providerTurnId,
+      seq: ++state.seq,
       occurredAt: new Date().toISOString(),
     });
 

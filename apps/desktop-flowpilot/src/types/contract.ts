@@ -102,6 +102,8 @@ export interface ProviderEventBaseDTO {
   providerSessionId: string;
   providerKey: ProviderKey;
   providerTurnId?: string;
+  /** Monotonic per-run sequence — the reconnect/replay cursor (04-02). */
+  seq: number;
   occurredAt: string;
 }
 
