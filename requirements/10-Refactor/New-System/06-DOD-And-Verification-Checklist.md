@@ -239,3 +239,9 @@ The refactor is **done** only when all of the following hold:
 > Web Next.js server-orchestration rip-out, and signed desktop installers. All
 > deferrals are recorded with a reason (#5), so the gate's reconciliation clause is
 > met; final sign-off awaits those external steps + human review.
+>
+> **All remaining work is consolidated as an actionable plan in
+> `04-08-Phase8-Cutover-And-Live-Acceptance.md`** — Part A (implement first: live
+> store wiring, DB persistence, Admin Web thin client, `ExecutePrompt` retirement,
+> edge-function reduction) and Part B (live acceptance against real infra). This gate
+> closes when 04-08 Parts A + B are done.
