@@ -185,15 +185,28 @@ double-write artifacts/RAG/audit (key by run/step/turn id; upsert).
 
 ## Definition of Done (checklist)
 
-- [ ] `yolo_resolver.go`: one YOLO value → Codex sandbox/approval + runner policy; `="approve"` hack removed (T-25).
-- [ ] YOLO=false: dangerous command → `permission_required`; **deny blocks**, approve runs (T-08/T-09/T-22).
-- [ ] YOLO=true: full-access + never; no `permission_required`; run audited gating-disabled (T-21/T-24).
-- [ ] Approval bridge: pause turn (per-`approvalId` channel), survive reconnect, decision round-trip.
-- [ ] **Approval policy engine** (YOLO=false): allowlist auto-approve / denylist auto-deny / else ask; every auto-decision replies to the inbound request (T-39).
-- [ ] Expiry/interrupt while pending replies deny/error and returns an error `ask_user` tool result — provider never hangs (T-40).
-- [ ] **`ask_user` MCP tool (model-driven, best-effort)**: registered via `tools/list`, prompt-reinforced → `user_question_required` → options card → `AnswerQuestion` → turn resumes (T-29).
-- [ ] **Workflow-driven question (deterministic)**: runner/step emits `user_question_required` directly → same card → resumes the step (T-30).
-- [ ] Interrupt/cancel: stop cancels the turn cleanly via `codexInterruptParams` (T-31).
-- [ ] Decisions/answers **idempotent + first-write-wins**; invalid → `400`; unanswered **expires** to a recoverable fail (T-33/T-35).
-- [ ] Finalizer hook on `turn_completed`; failure retryable without erasing the turn (T-27/T-28); finalize is **idempotent** — retry never double-writes (T-41).
+> Implemented in `apps/local-runner/internal/runner/` (`yolo_resolver.go`,
+> `approval_policy.go`, `finalizer.go` + the `InteractiveService` bridge wiring) and
+> tested via `phase4_test.go` over the fake adapter + httptest (`go vet` clean; all
+> Phase 4 tests pass; no regressions vs the HEAD baseline). The approval/question
+> pause-resume, expiry, idempotency, and interrupt machinery was already built in P2
+> against the fake adapter; P4 adds the YOLO SSOT, the policy engine, the
+> auto-decision wiring, and the finalizer hook on top.
+> **Deferred to the registry swap / a real Codex build (06 Part D) or Phase 5:** the
+> `ask_user` MCP-tool *registration* (`tools/list` injection +
+> `preparePromptForRequiredMcps` reinforcement) and the workflow-driven question
+> path (needs the Go-ported workflow state machine from 04-05). The live system
+> stays on the fake adapter until validated against the installed Codex.
+
+- [x] `yolo_resolver.go`: one YOLO value → Codex sandbox/approval + runner posture (`RunnerAutoApprove`); `codexYoloDerive` + the proxy MCP approval mode both delegate to it; `="approve"` pin removed (T-25).
+- [x] YOLO=false: dangerous command → `permission_required`; **deny blocks**, approve runs; invalid → `400`; decision persisted (T-08/T-09/T-22 — P2 bridge + P4 default ask policy).
+- [x] YOLO=true: full-access + never; **no `permission_required`**; a request that still arrives is auto-approved and audited gating-disabled (`policy="yolo_gating_disabled"`) (T-21/T-24).
+- [x] Approval bridge: pauses the turn on a per-`approvalId` channel (survives reconnect — state in the runner) without blocking the read loop; decision round-trip (P2).
+- [x] **Approval policy engine** (YOLO=false): allowlist auto-approve / denylist auto-deny (denylist wins) / else ask; every auto-decision is recorded **and returned** so the inbound request is replied to — no card shown for auto-decisions (T-39).
+- [~] Expiry/interrupt while pending: approval/question expires → **recoverable** `turn_failed`; the bridge returns an error on expiry/ctx-cancel so the codex adapter replies **deny** to the inbound request (provider never hangs). _The error `ask_user` **tool-result** path is deferred with the MCP-tool registration (T-40 partial)._
+- [~] **`ask_user` MCP tool (model-driven, best-effort)**: the pause→`user_question_required`→options card→`AnswerQuestion`→resume mechanism is built and tested (P2 question scenario over the fake adapter exercises the same machinery). _The `tools/list` registration + prompt reinforcement is deferred to the registry swap / real MCP proxy (T-29 partial)._
+- [ ] **Workflow-driven question (deterministic)**: _deferred to 04-05 — the runner/step emitter needs the Go-ported workflow state machine (T-30)._
+- [x] Interrupt/cancel: stop cancels the turn cleanly; `ctx` cancel drives `codexInterruptParams` in the adapter; turn marked `cancelled` (T-31 — P2 `Interrupt` + P3 adapter).
+- [x] Decisions/answers **idempotent + first-write-wins**; invalid → `400`; unanswered **expires** to a recoverable fail (T-33/T-35 — P2).
+- [x] Finalizer hook on `turn_completed`; failure recorded as retryable without erasing the turn; finalize is **idempotent** — retry never double-writes (keyed by run+turn) (T-27/T-28/T-41).
 - [ ] **Review gate:** human + AI review this checklist after the phase.
