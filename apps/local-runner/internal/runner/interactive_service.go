@@ -21,8 +21,12 @@ import (
 // State is in-memory: it survives client reconnect (which is what P2 needs);
 // runner-restart resume is Phase 3+ via Codex thread/resume.
 type InteractiveService struct {
-	catalog  *interactiveCatalog
-	registry *ProviderRegistry
+	// catalog serves projects/workflows/steps — the fake interactiveCatalog when
+	// Supabase is not configured, SupabaseCatalogStore when it is (04-08 A1).
+	catalog CatalogStore
+	// skillsCatalog serves the local provider-skill list (not from Supabase).
+	skillsCatalog *interactiveCatalog
+	registry      *ProviderRegistry
 
 	// policy decides auto-approve/auto-deny/ask for YOLO=false approvals (04-04).
 	// Default is ask-everything; Admin Web (03) configures the lists.
@@ -112,8 +116,24 @@ func NewInteractiveService() *InteractiveService {
 // live app-server adapter when FLOWPILOT_CODEX_APPSERVER is set (04-03 registry
 // swap). All other state matches NewInteractiveService.
 func NewInteractiveServiceWithRegistry(registry *ProviderRegistry) *InteractiveService {
+	fake := newInteractiveCatalog()
+	return newInteractiveService(registry, fake)
+}
+
+// NewInteractiveServiceWith builds the service with a caller-supplied registry +
+// catalog store (e.g. CatalogStoreFor(runner), which returns SupabaseCatalogStore
+// when Supabase is configured). The local skill list stays on the fake catalog.
+func NewInteractiveServiceWith(registry *ProviderRegistry, catalog CatalogStore) *InteractiveService {
+	if catalog == nil {
+		catalog = newInteractiveCatalog()
+	}
+	return newInteractiveService(registry, catalog)
+}
+
+func newInteractiveService(registry *ProviderRegistry, catalog CatalogStore) *InteractiveService {
 	return &InteractiveService{
-		catalog:         newInteractiveCatalog(),
+		catalog:         catalog,
+		skillsCatalog:   newInteractiveCatalog(),
 		registry:        registry,
 		policy:          DefaultApprovalPolicyEngine(),
 		finalizer:       newFinalizer(),

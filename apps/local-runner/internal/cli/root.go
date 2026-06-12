@@ -91,7 +91,13 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 			// this runner: when FLOWPILOT_CODEX_APPSERVER is set it backs Codex with
 			// the live shared app-server adapter (04-03 registry swap); otherwise the
 			// fake adapter keeps the demo/tests green without a codex binary.
-			interactive := runner.NewInteractiveServiceWithRegistry(runner.ProviderRegistryFor(instance))
+			// The catalog (projects/workflows/steps) reads from Supabase when the
+			// runner has a Supabase config, else serves the offline fake catalog
+			// (04-08 A1).
+			interactive := runner.NewInteractiveServiceWith(
+				runner.ProviderRegistryFor(instance),
+				runner.CatalogStoreFor(instance),
+			)
 			interactive.RegisterInteractiveRoutes(mux)
 
 			mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {

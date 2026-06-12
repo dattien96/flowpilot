@@ -1,9 +1,11 @@
 package runner
 
-// Phase 2 (04-02) catalog source. Projects/workflows/steps ultimately come from
-// Supabase, but Go Supabase access doesn't land until P5 — so P2 serves a fake
-// catalog mirroring the Phase 1 desktop fixtures (04-01) so the navigator works
-// end-to-end without the P5 port. Swapped for real Supabase reads in P5.
+import "context"
+
+// Phase 2 (04-02) catalog source — the offline fake. Implements CatalogStore
+// (projects/workflows/steps) so it is interchangeable with SupabaseCatalogStore:
+// `CatalogStoreFor` picks this when Supabase is not configured, the live store
+// otherwise (04-08 A1). It also serves the local skill list (listSkills).
 type interactiveCatalog struct {
 	projects  []Project
 	workflows map[string][]Workflow
@@ -51,20 +53,23 @@ func newInteractiveCatalog() *interactiveCatalog {
 	}
 }
 
-func (c *interactiveCatalog) listProjects() []Project { return c.projects }
-
-func (c *interactiveCatalog) listWorkflows(projectID string) []Workflow {
-	if w, ok := c.workflows[projectID]; ok {
-		return w
-	}
-	return []Workflow{}
+// CatalogStore implementation (ctx ignored — the fake is in-memory).
+func (c *interactiveCatalog) ListProjects(context.Context) ([]Project, error) {
+	return c.projects, nil
 }
 
-func (c *interactiveCatalog) listSteps(workflowID string) []Step {
-	if s, ok := c.steps[workflowID]; ok {
-		return s
+func (c *interactiveCatalog) ListWorkflows(_ context.Context, projectID string) ([]Workflow, error) {
+	if w, ok := c.workflows[projectID]; ok {
+		return w, nil
 	}
-	return []Step{}
+	return []Workflow{}, nil
+}
+
+func (c *interactiveCatalog) ListSteps(_ context.Context, workflowID string) ([]Step, error) {
+	if s, ok := c.steps[workflowID]; ok {
+		return s, nil
+	}
+	return []Step{}, nil
 }
 
 func (c *interactiveCatalog) listSkills() []ProviderSkill { return c.skills }

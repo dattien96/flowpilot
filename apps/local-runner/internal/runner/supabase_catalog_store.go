@@ -22,6 +22,28 @@ type CatalogStore interface {
 	ListSteps(ctx context.Context, workflowID string) ([]Step, error)
 }
 
+// CatalogStoreFor returns the live SupabaseCatalogStore when the runner has a
+// Supabase workspace config (API URL + a usable key), else the offline fake catalog
+// (04-08 A1). Prefers the service-role key (server-side reads); falls back to the
+// anon key. This is the single switch that turns the real project list on.
+func CatalogStoreFor(r *Runner) CatalogStore {
+	if r == nil {
+		return newInteractiveCatalog()
+	}
+	resp, err := r.LoadSupabaseWorkspaceConfigWithSecret()
+	if err != nil {
+		return newInteractiveCatalog()
+	}
+	key := strings.TrimSpace(resp.ServiceRoleKey)
+	if key == "" {
+		key = strings.TrimSpace(resp.AnonKey)
+	}
+	if strings.TrimSpace(resp.APIURL) == "" || key == "" {
+		return newInteractiveCatalog()
+	}
+	return NewSupabaseCatalogStore(resp.SupabaseWorkspaceConfig, key)
+}
+
 // SupabaseCatalogStore reads the navigator catalog from Supabase via PostgREST.
 type SupabaseCatalogStore struct {
 	restURL string

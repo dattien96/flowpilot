@@ -51,19 +51,34 @@ func writeInteractiveError(w http.ResponseWriter, e *apiErr) {
 // ---- catalog handlers ------------------------------------------------------
 
 func (s *InteractiveService) handleListProjects(w http.ResponseWriter, r *http.Request) {
-	writeInteractiveJSON(w, http.StatusOK, s.catalog.listProjects())
+	projects, err := s.catalog.ListProjects(r.Context())
+	if err != nil {
+		writeInteractiveError(w, newAPIErr(http.StatusBadGateway, "catalog_unavailable", err.Error()))
+		return
+	}
+	writeInteractiveJSON(w, http.StatusOK, projects)
 }
 
 func (s *InteractiveService) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
-	writeInteractiveJSON(w, http.StatusOK, s.catalog.listWorkflows(r.PathValue("projectId")))
+	workflows, err := s.catalog.ListWorkflows(r.Context(), r.PathValue("projectId"))
+	if err != nil {
+		writeInteractiveError(w, newAPIErr(http.StatusBadGateway, "catalog_unavailable", err.Error()))
+		return
+	}
+	writeInteractiveJSON(w, http.StatusOK, workflows)
 }
 
 func (s *InteractiveService) handleListSteps(w http.ResponseWriter, r *http.Request) {
-	writeInteractiveJSON(w, http.StatusOK, s.catalog.listSteps(r.PathValue("workflowId")))
+	steps, err := s.catalog.ListSteps(r.Context(), r.PathValue("workflowId"))
+	if err != nil {
+		writeInteractiveError(w, newAPIErr(http.StatusBadGateway, "catalog_unavailable", err.Error()))
+		return
+	}
+	writeInteractiveJSON(w, http.StatusOK, steps)
 }
 
 func (s *InteractiveService) handleListSkills(w http.ResponseWriter, r *http.Request) {
-	writeInteractiveJSON(w, http.StatusOK, s.catalog.listSkills())
+	writeInteractiveJSON(w, http.StatusOK, s.skillsCatalog.listSkills())
 }
 
 func (s *InteractiveService) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
