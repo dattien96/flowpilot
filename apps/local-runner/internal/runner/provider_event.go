@@ -132,7 +132,11 @@ type StartRunInput struct {
 	ProjectID  string `json:"projectId"`
 	WorkflowID string `json:"workflowId"`
 	StepID     string `json:"stepId"`
-	YoloMode   bool   `json:"yoloMode,omitempty"`
+	// ProviderKey selects the provider runtime; empty defaults to the first
+	// available provider. A disabled/placeholder provider is rejected runner-side
+	// (04-07 capability enforcement).
+	ProviderKey ProviderKey `json:"providerKey,omitempty"`
+	YoloMode    bool        `json:"yoloMode,omitempty"`
 	// Cwd is the active workspace directory for this run (04-06 multi-workspace).
 	// Per-run/per-thread cwd is authoritative; Runner.workspace is only a default.
 	Cwd string `json:"cwd,omitempty"`

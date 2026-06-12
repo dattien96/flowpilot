@@ -85,7 +85,12 @@ func (s *InteractiveService) handleStartRun(w http.ResponseWriter, r *http.Reque
 		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_request", "invalid request body"))
 		return
 	}
-	writeInteractiveJSON(w, http.StatusOK, s.createRun(in))
+	handle, e := s.createRun(in)
+	if e != nil {
+		writeInteractiveError(w, e)
+		return
+	}
+	writeInteractiveJSON(w, http.StatusOK, handle)
 }
 
 func (s *InteractiveService) handleGetRun(w http.ResponseWriter, r *http.Request) {
@@ -363,14 +368,29 @@ func (s *InteractiveService) handleAdminQuestions(w http.ResponseWriter, r *http
 
 // ---- run creation / snapshot / fake artifacts ------------------------------
 
-func (s *InteractiveService) createRun(in StartRunInput) RunHandle {
+func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
+	// Resolve + enforce the provider runner-side (04-07): an empty key takes the
+	// default available provider; an explicitly requested disabled/placeholder
+	// provider is rejected with the typed UnsupportedProviderRuntimeError envelope.
+	providerKey := in.ProviderKey
+	if providerKey == "" {
+		def, ok := s.registry.DefaultProviderKey()
+		if !ok {
+			return RunHandle{}, newAPIErr(http.StatusServiceUnavailable, "provider_unavailable", "no provider runtime is available")
+		}
+		providerKey = def
+	}
+	if _, err := s.registry.Selectable(providerKey); err != nil {
+		return RunHandle{}, newAPIErr(http.StatusUnprocessableEntity, "provider_unavailable", err.Error())
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	runID := s.nextID("run")
 	sessionID := s.nextID("thread")
 	rs := &interactiveRun{
 		id:                runID,
-		providerKey:       ProviderKeyCodex,
+		providerKey:       providerKey,
 		providerSessionID: sessionID,
 		providerAccountID: s.activeAccountID,
 		workspaceCwd:      in.Cwd,
@@ -380,7 +400,7 @@ func (s *InteractiveService) createRun(in StartRunInput) RunHandle {
 		idempotency:       map[string]string{},
 	}
 	s.runs[runID] = rs
-	return RunHandle{RunID: runID, ProviderSessionID: sessionID, ProviderKey: ProviderKeyCodex, Status: rs.status}
+	return RunHandle{RunID: runID, ProviderSessionID: sessionID, ProviderKey: providerKey, Status: rs.status}, nil
 }
 
 func (s *InteractiveService) resumeRun(runID string) (RunHandle, *apiErr) {

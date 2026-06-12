@@ -110,6 +110,33 @@ func (r *ProviderRegistry) Adapter(key ProviderKey) (ProviderRuntimeAdapter, err
 	return reg.newAdapter(), nil
 }
 
+// Selectable reports whether a provider may be chosen for a controlled run. A
+// disabled/placeholder provider (no adapter) is NOT selectable and returns a typed
+// UnsupportedProviderRuntimeError — this is the runner-side boundary (04-07): the
+// UI gate is a convenience, the runner is the enforcement point.
+func (r *ProviderRegistry) Selectable(key ProviderKey) (ProviderRegistration, error) {
+	reg, ok := r.regs[key]
+	if !ok {
+		return ProviderRegistration{}, &UnsupportedProviderRuntimeError{ProviderKey: key}
+	}
+	if reg.newAdapter == nil || reg.Status != ProviderStatusAvailable {
+		return ProviderRegistration{}, &UnsupportedProviderRuntimeError{ProviderKey: key}
+	}
+	return reg, nil
+}
+
+// DefaultProviderKey returns the first available (selectable) provider — the safe
+// default for a run when the client does not specify one. A disabled/placeholder
+// provider can never be the default. Returns false if none are available.
+func (r *ProviderRegistry) DefaultProviderKey() (ProviderKey, bool) {
+	for _, k := range r.order {
+		if _, err := r.Selectable(k); err == nil {
+			return k, true
+		}
+	}
+	return "", false
+}
+
 // DefaultProviderRegistry builds the P2 registry: Codex backed by the fake adapter
 // (the real app-server adapter lands in P3), Claude/Gemini as disabled placeholders
 // that surface UnsupportedProviderRuntimeError.
