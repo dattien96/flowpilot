@@ -104,7 +104,10 @@ func (r *ProviderRegistry) Get(key ProviderKey) (ProviderRegistration, bool) {
 // the provider is disabled/placeholder (no adapter factory).
 func (r *ProviderRegistry) Adapter(key ProviderKey) (ProviderRuntimeAdapter, error) {
 	reg, ok := r.regs[key]
-	if !ok || reg.newAdapter == nil || reg.Status == ProviderStatusDisabled {
+	// Only an available provider with a factory yields an adapter; disabled/
+	// placeholder providers surface the typed error here (runner-side boundary),
+	// regardless of whether a placeholder factory is registered.
+	if !ok || reg.newAdapter == nil || reg.Status != ProviderStatusAvailable {
 		return nil, &UnsupportedProviderRuntimeError{ProviderKey: key}
 	}
 	return reg.newAdapter(), nil
@@ -157,12 +160,43 @@ func DefaultProviderRegistry() *ProviderRegistry {
 		DisplayName:  "Claude",
 		Status:       ProviderStatusPlaceholder,
 		Capabilities: ProviderCapabilities{},
+		newAdapter:   func() ProviderRuntimeAdapter { return newPlaceholderAdapter(ProviderKeyClaude) },
 	})
 	r.register(ProviderRegistration{
 		Key:          ProviderKeyGemini,
 		DisplayName:  "Gemini",
 		Status:       ProviderStatusPlaceholder,
 		Capabilities: ProviderCapabilities{},
+		newAdapter:   func() ProviderRuntimeAdapter { return newPlaceholderAdapter(ProviderKeyGemini) },
 	})
 	return r
+}
+
+// ProviderRegistryFor builds the registry for a live runner. When the Codex
+// app-server path is enabled (FLOWPILOT_CODEX_APPSERVER) the Codex registration is
+// backed by the real shared-process adapter (ensureCodexAppServer); otherwise the
+// fake adapter is kept (demo/tests stay green without a codex binary). Claude/Gemini
+// remain placeholders either way.
+func ProviderRegistryFor(r *Runner) *ProviderRegistry {
+	reg := DefaultProviderRegistry()
+	if r == nil || !codexAppServerEnabled() {
+		return reg
+	}
+	reg.register(ProviderRegistration{
+		Key:         ProviderKeyCodex,
+		DisplayName: "Codex",
+		Status:      ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{
+			Streaming: true, Resume: true, ApprovalEvents: true, FileEvents: true,
+			SkillSelection: true, Mcp: true, Interrupt: true,
+		},
+		newAdapter: func() ProviderRuntimeAdapter {
+			h, err := r.ensureCodexAppServer(context.Background(), "default", r.workspace)
+			if err != nil {
+				return errorAdapter{key: ProviderKeyCodex, err: err}
+			}
+			return h.adapter
+		},
+	})
+	return reg
 }

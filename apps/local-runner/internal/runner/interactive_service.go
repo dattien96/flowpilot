@@ -97,9 +97,17 @@ type questionRecord struct {
 // NewInteractiveService builds the Phase 2 service with the default registry
 // (Codex fake-backed; Claude/Gemini disabled placeholders) and fake catalog.
 func NewInteractiveService() *InteractiveService {
+	return NewInteractiveServiceWithRegistry(DefaultProviderRegistry())
+}
+
+// NewInteractiveServiceWithRegistry builds the service with a caller-supplied
+// provider registry — e.g. ProviderRegistryFor(runner), which backs Codex with the
+// live app-server adapter when FLOWPILOT_CODEX_APPSERVER is set (04-03 registry
+// swap). All other state matches NewInteractiveService.
+func NewInteractiveServiceWithRegistry(registry *ProviderRegistry) *InteractiveService {
 	return &InteractiveService{
 		catalog:         newInteractiveCatalog(),
-		registry:        DefaultProviderRegistry(),
+		registry:        registry,
 		policy:          DefaultApprovalPolicyEngine(),
 		finalizer:       newFinalizer(),
 		runs:            map[string]*interactiveRun{},

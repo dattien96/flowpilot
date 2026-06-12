@@ -87,10 +87,11 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 
 			mux := http.NewServeMux()
 
-			// Phase 2 (04-02): interactive + admin APIs backed by the fake provider
-			// adapter, so the desktop client (04-01) can swap MockRunnerClient for
-			// the real HttpWsRunnerClient against the same contract.
-			interactive := runner.NewInteractiveService()
+			// Interactive + admin APIs (04-02). The provider registry is built for
+			// this runner: when FLOWPILOT_CODEX_APPSERVER is set it backs Codex with
+			// the live shared app-server adapter (04-03 registry swap); otherwise the
+			// fake adapter keeps the demo/tests green without a codex binary.
+			interactive := runner.NewInteractiveServiceWithRegistry(runner.ProviderRegistryFor(instance))
 			interactive.RegisterInteractiveRoutes(mux)
 
 			mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {

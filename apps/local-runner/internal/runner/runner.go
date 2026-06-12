@@ -124,6 +124,11 @@ type Runner struct {
 	secretStore SecretStore
 	sessionsMu  sync.Mutex
 	sessions    map[string]*LiveSession
+
+	// codexAppServer is the single shared `codex app-server` process (04-03/04-06),
+	// bound to the active provider account scope. nil until first ensure.
+	codexAppServerMu sync.Mutex
+	codexAppServer   *codexAppServerHandle
 }
 
 func New(workspace string) (*Runner, error) {
