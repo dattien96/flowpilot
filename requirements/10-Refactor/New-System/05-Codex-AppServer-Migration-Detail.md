@@ -1,6 +1,6 @@
 # 05 - Codex App-Server Migration Detail (Code-Grounded, Final Decision)
 
-This document grounds the abstract plan in `01`–`04` and `R2` into the **actual
+This document grounds the abstract plan in `01`–`04` into the **actual
 Go runner code** (`apps/local-runner`), and records the **final scoping decision**:
 one shared Codex app-server, a multi-workspace runner, and `cwd`-per-thread,
 mirroring how the native Codex App Client works.
@@ -30,7 +30,10 @@ model, the final decision, and the exact migration surface.
     future auto-switch-on-usage-limit feature) **recreates** the app-server, and
     **threads are account-scoped** (persist the owning account; resume only while it
     is active). Precisely: one shared app-server **per active account**,
-    multi-workspace via `cwd`-per-thread.
+    multi-workspace via `cwd`-per-thread. **Constraint:** because the shared
+    app-server is bound to one account, workspaces on **different** accounts cannot
+    run concurrently — account use is serialized via recreate (a per-account process
+    is a future option). See `04-06`.
 - **Session model:** **lean on Codex thread APIs**, do not build a custom session
   registry. FlowPilot workspace = Codex `cwd`; FlowPilot chat session = Codex
   thread; persist only the `(workspace, threadId)` mapping for list/resume.
@@ -44,7 +47,8 @@ model, the final decision, and the exact migration surface.
   VS Code/JetBrains plugins may reuse it later. See "Interactive Client Strategy".
 - **Single backend:** the **Go runner owns all logic** and calls Supabase directly;
   the orchestration that lives in the admin-web server tier today
-  (`workflow-start-runtime.ts`) is **ported into the runner**. Web UI + Desktop are
+  (`workflow-start-runtime.ts`, **plus the Supabase `workflow-engine-*` edge
+  functions**) is **ported into / reconciled with the runner**. Web UI + Desktop are
   thin clients. There is no separate orchestration service. (See `03` / `04-05`.)
 - **Approval model:** **YOLO is the single source of truth (SSOT)** for approval
   posture. One resolved YOLO value drives **both** the FlowPilot runner policy and
@@ -138,6 +142,25 @@ must be:
   the audit trail explains why no `permission_required` events exist.
 
 YOLO is a posture selector, not a claim of safety.
+
+---
+
+## User Interaction (Structured Questions)
+
+Separate from approvals, FlowPilot can ask the user a structured question
+(confirm/options popup) through the **same pause/resume bridge**. Two origination
+paths with different guarantees (detail in `04-04`):
+
+- **`ask_user` MCP tool** — a FlowPilot-registered custom tool (not built-in) the
+  model discovers via `tools/list` and *may* call → **best-effort**.
+- **Workflow-driven** — the ported Go state machine emits `user_question_required`
+  directly at a defined step → **deterministic** (use for required asks).
+
+Both surface the same `user_question_required` event + desktop options card. The
+answer is idempotent + first-write-wins; an unanswered question expires
+(recoverable), and a pending `ask_user` `tools/call` is returned an error result so
+the model does not hang. The tool rides the MCP proxy, so it is provider-neutral
+(Codex/Claude/Gemini).
 
 ---
 
@@ -284,7 +307,8 @@ own design.
 | Capability | Status in `sessions.go` | Work needed |
 |---|---|---|
 | Spawn long-lived process, set cwd | ✅ `StartSession` | add Codex `app-server --listen stdio://` branch; one shared process |
-| JSON-RPC framing over stdio | ✅ `writeJsonRpcRequest` / `readJsonRpc*` | reuse as-is |
+| JSON-RPC framing over stdio | ✅ `writeJsonRpcRequest` / `readJsonRpcMessage` | reuse framing only |
+| Concurrent multiplexing over one stdio | ❌ synchronous single-in-flight (`readJsonRpcResponseWithHandler`, id `3`) | **async dispatcher**: 3 message kinds, id→waiter, thread routing, stdin mutex (`04-03`) |
 | Streaming turn output | ✅ `SendMessageWithCallback` + `SessionStreamCallback` | reuse; map Codex notifications |
 | Protocol handshake | ✅ (Gemini ACP) | add Codex `initialize` |
 | Thread lifecycle | ⚠️ custom per-run session map | replace with Codex `thread/start` / `thread/resume` / `thread/list` / `thread/read` / `thread/archive` |
@@ -306,13 +330,20 @@ own design.
   `commandContextFn`, owned by the `Runner` and reused across all workspaces and
   threads.
 
-### W2 — Codex JSON-RPC methods
+### W2 — Codex JSON-RPC methods + async dispatcher
 - Add Codex payload builders alongside `geminiACP*Params` (`sessions.go:265`):
-  `codexInitializeParams`, `codexThreadStartParams` (with `cwd`),
-  `codexThreadResumeParams`, `codexThreadListParams`, `codexThreadReadParams`,
-  `codexTurnStartParams`, `codexApprovalDecisionParams`.
-- Reuse `writeJsonRpcRequest` / `readJsonRpcResponseWithHandler` for handshake and
-  the streaming read loop.
+  `codexInitializeParams`, `codexThreadStartParams` (with `cwd` **+ `mcpServers`** —
+  FlowPilot proxy + required MCPs + the `ask_user` tool), `codexThreadResumeParams`,
+  `codexThreadListParams`, `codexThreadReadParams`, `codexTurnStartParams`,
+  `codexApprovalDecisionParams`, `codexInterruptParams`.
+- **Async dispatcher — do NOT reuse the synchronous `readJsonRpcResponseWithHandler`
+  / `SendMu` / id-`3` model** (single-in-flight; cannot multiplex a shared
+  app-server). One read-loop goroutine classifies **three** message kinds:
+  **responses** (id→waiter map + per-request timeout), **notifications** (routed by
+  thread id), and **inbound server→client requests** (approval/elicitation → a
+  reply-capable handler). Non-blocking read loop with bounded per-turn buffers;
+  stdin write mutex; process death drains all waiters/turns with error. Full detail
+  in `04-03`. (Reuse only the `writeJsonRpcRequest` / `readJsonRpcMessage` framing.)
 
 ### W3 — Thread API mapping (replaces the per-run session map)
 - Map FlowPilot workspace → Codex `cwd`, chat session → Codex thread.
@@ -325,6 +356,9 @@ own design.
 - Define the normalized `ProviderEvent` union (per `04`) as Go types.
 - Add a `CodexEventMapper` converting Codex `turn`/`item` notifications into
   `ProviderEvent`, emitted through the existing `SessionStreamCallback`.
+- The union includes `permission_required` and **`user_question_required`** (the
+  options-popup path). Each event carries a **monotonic per-run `seq`** assigned by
+  runner core at a single serialization point — the reconnect cursor (`04-02`).
 - This fixes "raw output": final answer arrives as `message_completed` /
   `turn_completed`, separate from tool/log events.
 
@@ -340,6 +374,14 @@ own design.
   `permission_required` emitted); runner auto-approves; record gating-disabled in
   the audit trail.
 - Pending approval state lives in the runner (survives client reconnect).
+- An **approval policy** (allowlist auto-approve / denylist auto-deny / else ask)
+  sits before the card so FlowPilot can gate *some* actions, not all-or-nothing
+  (Task-032). Decisions are **idempotent + first-write-wins**; unanswered → expire
+  (recoverable), replying to the inbound request so the provider never hangs.
+- **User-interaction bridge:** generalize this same bridge to handle structured
+  questions too — `ask_user` (model-driven, best-effort) + workflow-driven
+  `user_question_required` (deterministic). See the "User Interaction" section and
+  `04-04`.
 - **Boundary:** pair with Codex sandbox + approval config for real
   dangerous-command safety. App-server gives the gate; sandbox gives enforcement.
 
@@ -352,11 +394,13 @@ own design.
 
 ### W7 — Lifecycle & failure states
 - Formalize `LiveSession.Status` into the `03` state set:
-  `starting / ready / running / waiting_for_approval / interrupted / failed /
-  completed / closed`.
-- Recovery rules: process dies before turn → fail + retry; stream disconnect →
-  fail session, keep events; finalizer fails after `turn_completed` → keep turn,
-  retry finalize; pending approval + reconnect → reload from runner.
+  `starting / ready / running / waiting_for_approval / waiting_for_question /
+  interrupted / failed / completed / closed`.
+- Recovery rules: process dies before turn → fail + retry; **client** disconnect →
+  does not fail the run (reconnect + `afterSeq` replay); **provider-stream** death →
+  fail the turn (recoverable), keep events; finalizer fails after `turn_completed` →
+  keep turn, retry finalize (idempotent); pending approval/question + reconnect →
+  reload from runner; unanswered → expire (recoverable).
 
 ### W8 — Keep one-shot fallback
 - Leave `ExecutePrompt` in place as a compatibility adapter until app-server covers
@@ -371,6 +415,9 @@ own design.
 - After reboot: start the shared app-server, then `thread/resume(thread.id)` to
   reload the conversation.
 - An **in-flight turn is not resumable** — it is re-sent.
+- Distinct from thread resume: a **client reconnect** (no reboot) rebuilds the
+  timeline by replaying persisted events via `afterSeq` / `Last-Event-ID` — the run
+  itself keeps going (`04-02`).
 
 ---
 
@@ -378,7 +425,8 @@ own design.
 
 After normalized `turn_completed`, run the provider-neutral finalizer (per `04`):
 final-response artifact, changed-files/diff snapshot, summary, Supabase RAG, step
-status. Finalizer failure must not erase the completed turn.
+status. Finalizer failure must not erase the completed turn; the finalizer is
+**idempotent** (retry never double-writes).
 
 ---
 
@@ -410,6 +458,12 @@ status. Finalizer failure must not erase the completed turn.
 - approval request maps to `permission_required`; decision round-trips and resumes.
 - `thread/resume` after process restart reattaches with context.
 - in-flight turn lost on process kill → marked failed, re-sendable.
+- inbound server→client request routed to a reply-capable handler; response timeout
+  + process death drain all waiters (`04-03` T-37/T-38).
+- `ask_user` and workflow-driven `user_question_required` both render the options
+  card and resume (`04-04` T-29/T-30).
+- client reconnect replays the timeline via `afterSeq` with no gaps/dupes
+  (`04-02` T-16/T-32).
 - fallback `ExecutePrompt` path still passes existing tests.
 
 ---
@@ -429,12 +483,21 @@ Resolved:
 - **Approval model** → YOLO is the SSOT; one value drives runner policy + Codex
   sandbox/approval per turn. Retires the `="approve"` hack. Sandbox levels:
   YOLO=true → full-access; YOLO=false → workspace-write.
+- **Dispatcher** → async, three message kinds incl. **inbound server→client
+  requests** (`04-03`); not the synchronous single-in-flight helper.
+- **Streaming/reconnect** → one per-run SSE stream; events carry a monotonic `seq`;
+  reconnect replays via `afterSeq` (`04-02`). Multiple windows: idempotent
+  first-write-wins.
+- **User interaction** → `ask_user` MCP tool (best-effort) + workflow-driven
+  `user_question_required` (deterministic), same card (`04-04`).
 
 Still open (verify against the real Codex build):
 
-- Exact `cwd` param placement and availability of `thread/list` / `thread/read` in
-  the installed version, and `thread/resume` guarantees across a full restart.
-- Which approval decisions the installed Codex app-server version exposes.
-- Extension ↔ runner auth and transport (HTTP/WebSocket/local socket).
+- Exact `cwd` param placement, availability of `thread/list` / `thread/read`, whether
+  `thread/start` accepts `mcpServers`, and `thread/resume` guarantees across restart.
+- Which approval/elicitation requests the installed version exposes — and that they
+  arrive as **server→client requests** the dispatcher must answer.
+- Desktop↔runner **auth** (P2 stance: loopback-only; token later). _(Transport is
+  resolved — per-run SSE stream + `seq`/`afterSeq` cursor, `04-02`.)_
 - Multi-workspace runner: workspace registration/binding API and how clients pick
   the active `cwd`.
