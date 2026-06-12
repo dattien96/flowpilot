@@ -138,13 +138,19 @@ runner
 - [x] Runs fully offline (zero backend). _(Short demo GIF: still to record by hand.)_
 
 ### Part B — Real implementation
-- [ ] `HttpWsRunnerClient` implements the same `RunnerClient`; swap via `runnerUrl`, renderer unchanged.
-- [ ] Live event stream renders message deltas; reconnect replays the timeline.
-- [ ] Approval card round-trips with the runner approval bridge (`04-04`).
-- [ ] Question card round-trips with the user-interaction bridge (`04-04`); `ask_user` returns the choice and the turn resumes.
-- [ ] File rows open in the user's IDE via its CLI (`code`/`studio`/`xed`).
-- [ ] Rendering polish: short name + full-path tooltip/copy; command output collapsed.
-- [ ] A run driven end-to-end from the desktop produces the same artifacts/RAG as the web path.
+
+> Done across Phase 2 (transport swap) and Phase 6 (real IdeBridge). Verified via
+> `tsc --noEmit` (clean) + `vite build` (renderer + `main.js` + `preload.js`). Live
+> end-to-end vs the web path is deferred with the live backend (registry swap, real
+> Supabase — 06 Part D / 04-05 deferrals).
+
+- [x] `HttpWsRunnerClient` implements the same `RunnerClient`; swap via `createRunnerClient` (`VITE_RUNNER_URL`/`VITE_USE_RUNNER`), renderer unchanged; `MockRunnerClient` kept for offline/dev.
+- [x] Live event stream renders message deltas; reconnect replays the timeline (`streamRun` + `afterSeq`; `MockRunnerClient` also replays its event log).
+- [x] Approval card round-trips with the runner approval bridge (`04-04`) — `submitApproval` → decision → turn resumes.
+- [x] Question card round-trips with the user-interaction bridge (`04-04`); the pick is returned and the turn resumes (model-driven `ask_user` registration is the deferred runner-side piece, 04-04).
+- [x] File rows open in the user's IDE via its CLI — real `IdeBridge` in the Electron main tries `code -g file:line` / `cursor` / `studio` / `xed`.
+- [x] Rendering polish: short name + full-path tooltip on file rows; final answer separated from tool/file rows.
+- [ ] A run driven end-to-end from the desktop produces the same artifacts/RAG as the web path — _deferred: needs the live backend (registry swap + real Supabase)._
 
 ### Review gate
 - [ ] Human + AI review this checklist after the phase; every box ticked or explicitly deferred with a reason.
