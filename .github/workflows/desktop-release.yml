@@ -1,0 +1,88 @@
+# 04-07 — Desktop packaging & distribution.
+#
+# One Electron codebase → Windows + macOS + Linux installers from a single tag push,
+# using electron-builder. macOS code-signing + Apple notarization require a macOS
+# runner and signing secrets (see below); without those secrets the macOS job builds
+# an UNSIGNED app (fine for local/testing, not for distribution). Linux ships
+# AppImage/.deb unsigned (documented). Windows uses NSIS (sign with a cert when the
+# WIN_CSC_* secrets are present).
+#
+# Required repository secrets for signed macOS builds:
+#   APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID  (notarization)
+#   CSC_LINK, CSC_KEY_PASSWORD                             (Developer ID cert .p12, base64)
+# Optional for signed Windows builds:
+#   WIN_CSC_LINK, WIN_CSC_KEY_PASSWORD
+# GITHUB_TOKEN is provided automatically for the GitHub publish target.
+
+name: desktop-release
+
+on:
+  push:
+    tags:
+      - "desktop-v*"
+  workflow_dispatch: {}
+
+defaults:
+  run:
+    working-directory: apps/desktop-flowpilot
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/desktop-flowpilot/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # Build the renderer + main/preload, then package per-OS. electron-builder picks
+      # the host OS targets (win→nsis, mac→dmg/zip, linux→AppImage/deb).
+      - name: Package (Windows)
+        if: matrix.os == 'windows-latest'
+        run: npm run dist:win
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+
+      - name: Package (macOS, signed + notarized when secrets present)
+        if: matrix.os == 'macos-latest'
+        run: npm run dist:mac
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Package (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: npm run dist:linux
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: flowpilot-${{ matrix.os }}
+          path: |
+            apps/desktop-flowpilot/release/*.exe
+            apps/desktop-flowpilot/release/*.dmg
+            apps/desktop-flowpilot/release/*.zip
+            apps/desktop-flowpilot/release/*.AppImage
+            apps/desktop-flowpilot/release/*.deb
+          if-no-files-found: ignore
