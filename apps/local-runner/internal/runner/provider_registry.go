@@ -34,6 +34,9 @@ type TurnRequest struct {
 	Prompt            string
 	SelectedSkills    []SkillSelection
 	YoloMode          bool
+	// Cwd is the run's active workspace directory (04-06). The adapter binds the
+	// provider thread to this cwd; it takes precedence over any adapter default.
+	Cwd string
 	// Scenario is a P2 fake-adapter hint (mirrors the desktop scenario switcher);
 	// the real Codex adapter (P3) ignores it.
 	Scenario string

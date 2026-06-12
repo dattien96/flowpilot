@@ -50,6 +50,7 @@ type interactiveRun struct {
 	providerKey       ProviderKey
 	providerSessionID string
 	providerAccountID string
+	workspaceCwd      string
 	yolo              bool
 
 	status        RunStatus
@@ -401,6 +402,7 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		Prompt:            in.Prompt,
 		SelectedSkills:    in.SelectedSkills,
 		YoloMode:          rs.yolo,
+		Cwd:               rs.workspaceCwd,
 		Scenario:          scenario,
 	}
 	bridge := &turnBridge{svc: s, rs: rs, ctx: ctx, turnID: turnID}
@@ -646,4 +648,41 @@ func (s *InteractiveService) Interrupt(runID string) *apiErr {
 		rs.turnCancel()
 	}
 	return nil
+}
+
+// SetActiveAccount switches the active provider account (04-06). Because the single
+// shared app-server is bound to one account, switching:
+//   - interrupts every in-flight turn and marks it recoverable (re-sendable) — not a
+//     silent auto-replay, consistent with the resume model;
+//   - flips the active account, after which runs bound to the previous account fail
+//     turn/resume with `409 provider_account_changed` (their threads are hidden
+//     until that account is active again).
+//
+// This enforces the "one active account at a time / workspaces on different accounts
+// cannot run concurrently (serialized)" constraint. The actual app-server teardown +
+// recreate (ensureCodexAppServer) is the deferred live-Codex layer (06 Part D); here
+// we own the interrupt + recoverable + scoping orchestration. Returns the number of
+// in-flight turns interrupted.
+func (s *InteractiveService) SetActiveAccount(accountID string) int {
+	s.mu.Lock()
+	var cancels []context.CancelFunc
+	for _, rs := range s.runs {
+		if rs.turnInFlight && rs.turnCancel != nil {
+			cancels = append(cancels, rs.turnCancel)
+		}
+	}
+	s.activeAccountID = accountID
+	s.mu.Unlock()
+
+	for _, cancel := range cancels {
+		cancel() // ctx cancel → finishTurn emits a recoverable turn_failed + cancelled
+	}
+	return len(cancels)
+}
+
+// ActiveAccount returns the currently active provider account id.
+func (s *InteractiveService) ActiveAccount() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.activeAccountID
 }

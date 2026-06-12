@@ -133,6 +133,9 @@ type StartRunInput struct {
 	WorkflowID string `json:"workflowId"`
 	StepID     string `json:"stepId"`
 	YoloMode   bool   `json:"yoloMode,omitempty"`
+	// Cwd is the active workspace directory for this run (04-06 multi-workspace).
+	// Per-run/per-thread cwd is authoritative; Runner.workspace is only a default.
+	Cwd string `json:"cwd,omitempty"`
 }
 
 type SkillSelection struct {

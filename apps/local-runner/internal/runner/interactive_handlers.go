@@ -23,6 +23,8 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /client/questions/{questionId}/answer", s.handleAnswerQuestion)
 	mux.HandleFunc("GET /client/workflow-runs/{runId}/artifacts", s.handleListArtifacts)
 	mux.HandleFunc("GET /client/provider-skills", s.handleListSkills)
+	mux.HandleFunc("GET /client/active-account", s.handleGetActiveAccount)
+	mux.HandleFunc("POST /client/active-account", s.handleSetActiveAccount)
 
 	// admin
 	mux.HandleFunc("GET /admin/providers", s.handleAdminProviders)
@@ -128,6 +130,30 @@ func (s *InteractiveService) handleStartTurn(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeInteractiveJSON(w, http.StatusOK, map[string]string{"turnId": turnID})
+}
+
+func (s *InteractiveService) handleGetActiveAccount(w http.ResponseWriter, r *http.Request) {
+	writeInteractiveJSON(w, http.StatusOK, map[string]string{"activeAccountId": s.ActiveAccount()})
+}
+
+func (s *InteractiveService) handleSetActiveAccount(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		AccountID string `json:"accountId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_request", "invalid request body"))
+		return
+	}
+	if body.AccountID == "" {
+		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_request", "accountId is required"))
+		return
+	}
+	interrupted := s.SetActiveAccount(body.AccountID)
+	writeInteractiveJSON(w, http.StatusOK, map[string]any{
+		"activeAccountId":   body.AccountID,
+		"interruptedTurns":  interrupted,
+		"recoverableResend": true,
+	})
 }
 
 func (s *InteractiveService) handleInterrupt(w http.ResponseWriter, r *http.Request) {
@@ -283,6 +309,7 @@ func (s *InteractiveService) handleAdminSessions(w http.ResponseWriter, r *http.
 		"providerSessionId": rs.providerSessionID,
 		"providerKey":       rs.providerKey,
 		"providerAccountId": rs.providerAccountID,
+		"workingDirectory":  rs.workspaceCwd,
 		"status":            rs.status,
 	}})
 }
@@ -346,6 +373,7 @@ func (s *InteractiveService) createRun(in StartRunInput) RunHandle {
 		providerKey:       ProviderKeyCodex,
 		providerSessionID: sessionID,
 		providerAccountID: s.activeAccountID,
+		workspaceCwd:      in.Cwd,
 		yolo:              in.YoloMode,
 		status:            RunStatusIdle,
 		subs:              map[int64]chan ProviderEvent{},
