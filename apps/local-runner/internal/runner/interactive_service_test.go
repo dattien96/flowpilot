@@ -1,0 +1,396 @@
+package runner
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+)
+
+func init() { fakeAdapterDelay = 0 }
+
+func newTestServer(t *testing.T) (*InteractiveService, *httptest.Server) {
+	t.Helper()
+	svc := NewInteractiveService()
+	svc.approvalTTL = 50 * time.Millisecond
+	svc.questionTTL = 50 * time.Millisecond
+	mux := http.NewServeMux()
+	svc.RegisterInteractiveRoutes(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return svc, srv
+}
+
+func doJSON(t *testing.T, method, url string, body any, headers map[string]string) (int, []byte) {
+	t.Helper()
+	var rdr *bytes.Reader
+	if body != nil {
+		b, _ := json.Marshal(body)
+		rdr = bytes.NewReader(b)
+	} else {
+		rdr = bytes.NewReader(nil)
+	}
+	req, err := http.NewRequest(method, url, rdr)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, url, err)
+	}
+	defer resp.Body.Close()
+	buf := new(bytes.Buffer)
+	_, _ = buf.ReadFrom(resp.Body)
+	return resp.StatusCode, buf.Bytes()
+}
+
+func startRun(t *testing.T, base string) string {
+	t.Helper()
+	status, body := doJSON(t, "POST", base+"/client/workflow-runs", StartRunInput{ProjectID: "proj-web", WorkflowID: "wf-feature", StepID: "step-plan"}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("start run status=%d body=%s", status, body)
+	}
+	var h RunHandle
+	if err := json.Unmarshal(body, &h); err != nil {
+		t.Fatalf("decode handle: %v", err)
+	}
+	if h.RunID == "" || h.ProviderSessionID == "" {
+		t.Fatalf("empty handle: %+v", h)
+	}
+	return h.RunID
+}
+
+func sendTurn(t *testing.T, base, runID, scenario string, headers map[string]string) (int, string) {
+	t.Helper()
+	status, body := doJSON(t, "POST", base+"/client/workflow-runs/"+runID+"/turns",
+		map[string]any{"stepId": "step-plan", "prompt": "hi", "scenario": scenario}, headers)
+	var out struct {
+		TurnID string `json:"turnId"`
+	}
+	_ = json.Unmarshal(body, &out)
+	return status, out.TurnID
+}
+
+func getSnapshot(t *testing.T, base, runID string) runSnapshotView {
+	t.Helper()
+	status, body := doJSON(t, "GET", base+"/client/workflow-runs/"+runID, nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("snapshot status=%d body=%s", status, body)
+	}
+	var v runSnapshotView
+	if err := json.Unmarshal(body, &v); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+	return v
+}
+
+func waitFor(t *testing.T, cond func() bool, what string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+func adminEvents(t *testing.T, base, runID string) []ProviderEvent {
+	t.Helper()
+	status, body := doJSON(t, "GET", base+"/admin/workflow-runs/"+runID+"/events", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("admin events status=%d", status)
+	}
+	var evs []ProviderEvent
+	if err := json.Unmarshal(body, &evs); err != nil {
+		t.Fatalf("decode events: %v", err)
+	}
+	return evs
+}
+
+func waitTerminal(t *testing.T, base, runID string) []ProviderEvent {
+	t.Helper()
+	var evs []ProviderEvent
+	waitFor(t, func() bool {
+		evs = adminEvents(t, base, runID)
+		if len(evs) == 0 {
+			return false
+		}
+		last := evs[len(evs)-1].Type
+		return last == EventTurnCompleted || last == EventTurnFailed
+	}, "terminal event")
+	return evs
+}
+
+func assertSeqContiguous(t *testing.T, evs []ProviderEvent) {
+	t.Helper()
+	for i, e := range evs {
+		if e.Seq != int64(i+1) {
+			t.Fatalf("seq not contiguous at %d: got %d (%s)", i, e.Seq, e.Type)
+		}
+	}
+}
+
+// ---- tests -----------------------------------------------------------------
+
+func TestCatalogAndRegistry(t *testing.T) {
+	svc, srv := newTestServer(t)
+
+	status, body := doJSON(t, "GET", srv.URL+"/client/projects", nil, nil)
+	if status != http.StatusOK || !strings.Contains(string(body), "Acme Web App") {
+		t.Fatalf("projects status=%d body=%s", status, body)
+	}
+	status, body = doJSON(t, "GET", srv.URL+"/client/workflows/wf-feature/steps", nil, nil)
+	if status != http.StatusOK || !strings.Contains(string(body), "step-plan") {
+		t.Fatalf("steps status=%d body=%s", status, body)
+	}
+
+	// registry: codex available, claude/gemini placeholders
+	status, body = doJSON(t, "GET", srv.URL+"/admin/providers", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("providers status=%d", status)
+	}
+	for _, want := range []string{`"codex"`, `"claude"`, `"gemini"`, `"available"`, `"placeholder"`} {
+		if !strings.Contains(string(body), want) {
+			t.Fatalf("providers missing %s in %s", want, body)
+		}
+	}
+	// disabled/placeholder adapters surface the typed error
+	if _, err := svc.registry.Adapter(ProviderKeyClaude); err == nil {
+		t.Fatal("expected UnsupportedProviderRuntimeError for claude")
+	} else if _, ok := err.(*UnsupportedProviderRuntimeError); !ok {
+		t.Fatalf("expected UnsupportedProviderRuntimeError, got %T", err)
+	}
+}
+
+func TestNormalTurnPersistsWithSeq(t *testing.T) {
+	_, srv := newTestServer(t)
+	runID := startRun(t, srv.URL)
+
+	if status, turnID := sendTurn(t, srv.URL, runID, "normal", nil); status != http.StatusOK || turnID == "" {
+		t.Fatalf("send turn status=%d turnId=%q", status, turnID)
+	}
+	evs := waitTerminal(t, srv.URL, runID)
+
+	assertSeqContiguous(t, evs)
+	if evs[0].Type != EventTurnStarted {
+		t.Fatalf("first event = %s, want turn_started", evs[0].Type)
+	}
+	if last := evs[len(evs)-1]; last.Type != EventTurnCompleted {
+		t.Fatalf("last event = %s, want turn_completed", last.Type)
+	}
+	if got := getSnapshot(t, srv.URL, runID).Status; got != RunStatusCompleted {
+		t.Fatalf("status = %s, want completed", got)
+	}
+}
+
+func TestEventStreamReplayNoGapsOrDupes(t *testing.T) {
+	_, srv := newTestServer(t)
+	runID := startRun(t, srv.URL)
+	sendTurn(t, srv.URL, runID, "tool-heavy", nil)
+	all := waitTerminal(t, srv.URL, runID)
+	maxSeq := all[len(all)-1].Seq
+
+	// reconnect from the middle: replay only seq > after
+	after := int64(3)
+	want := int(maxSeq - after)
+	got := streamEvents(t, srv.URL, runID, after, want)
+	if len(got) != want {
+		t.Fatalf("replay got %d events, want %d", len(got), want)
+	}
+	for i, e := range got {
+		if e.Seq != after+int64(i)+1 {
+			t.Fatalf("replay gap/dupe at %d: seq=%d", i, e.Seq)
+		}
+	}
+}
+
+func TestApprovalDenyThenApprove(t *testing.T) {
+	_, srv := newTestServer(t)
+
+	// deny
+	runID := startRun(t, srv.URL)
+	sendTurn(t, srv.URL, runID, "approval-required", nil)
+	var approvalID string
+	waitFor(t, func() bool {
+		s := getSnapshot(t, srv.URL, runID)
+		if s.PendingApproval != nil {
+			approvalID = s.PendingApproval.ApprovalID
+			return true
+		}
+		return false
+	}, "pending approval")
+
+	// invalid decision → 400
+	if st, _ := doJSON(t, "POST", srv.URL+"/client/approvals/"+approvalID+"/decision", map[string]string{"decision": "bogus"}, nil); st != http.StatusBadRequest {
+		t.Fatalf("invalid decision status=%d, want 400", st)
+	}
+	// deny
+	if st, _ := doJSON(t, "POST", srv.URL+"/client/approvals/"+approvalID+"/decision", map[string]string{"decision": "deny"}, nil); st != http.StatusOK {
+		t.Fatalf("deny status=%d", st)
+	}
+	// idempotent: second submit still 200 (first-write-wins)
+	if st, _ := doJSON(t, "POST", srv.URL+"/client/approvals/"+approvalID+"/decision", map[string]string{"decision": "approve"}, nil); st != http.StatusOK {
+		t.Fatalf("idempotent resubmit status=%d", st)
+	}
+	evs := waitTerminal(t, srv.URL, runID)
+	if !hasToolStatus(evs, "shell", "cancelled") {
+		t.Fatal("deny: expected shell tool_completed cancelled")
+	}
+
+	// approve (fresh run)
+	runID2 := startRun(t, srv.URL)
+	sendTurn(t, srv.URL, runID2, "approval-required", nil)
+	var approvalID2 string
+	waitFor(t, func() bool {
+		s := getSnapshot(t, srv.URL, runID2)
+		if s.PendingApproval != nil {
+			approvalID2 = s.PendingApproval.ApprovalID
+			return true
+		}
+		return false
+	}, "pending approval 2")
+	doJSON(t, "POST", srv.URL+"/client/approvals/"+approvalID2+"/decision", map[string]string{"decision": "approve"}, nil)
+	evs2 := waitTerminal(t, srv.URL, runID2)
+	if !hasToolStatus(evs2, "shell", "success") {
+		t.Fatal("approve: expected shell tool_completed success")
+	}
+}
+
+func TestQuestionAnswer(t *testing.T) {
+	_, srv := newTestServer(t)
+	runID := startRun(t, srv.URL)
+	sendTurn(t, srv.URL, runID, "question-required", nil)
+	var qID string
+	waitFor(t, func() bool {
+		s := getSnapshot(t, srv.URL, runID)
+		if s.PendingQuestion != nil {
+			qID = s.PendingQuestion.QuestionID
+			return true
+		}
+		return false
+	}, "pending question")
+	if st, _ := doJSON(t, "POST", srv.URL+"/client/questions/"+qID+"/answer", map[string]any{"choice": "css-modules"}, nil); st != http.StatusOK {
+		t.Fatalf("answer status=%d", st)
+	}
+	evs := waitTerminal(t, srv.URL, runID)
+	if evs[len(evs)-1].Type != EventTurnCompleted {
+		t.Fatal("question: expected turn_completed after answer")
+	}
+}
+
+func TestInterruptCancelsTurn(t *testing.T) {
+	_, srv := newTestServer(t)
+	runID := startRun(t, srv.URL)
+	sendTurn(t, srv.URL, runID, "question-required", nil)
+	waitFor(t, func() bool { return getSnapshot(t, srv.URL, runID).Status == RunStatusWaitingQuestion }, "waiting_question")
+
+	if st, _ := doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+runID+"/interrupt", nil, nil); st != http.StatusOK {
+		t.Fatalf("interrupt status=%d", st)
+	}
+	waitFor(t, func() bool { return getSnapshot(t, srv.URL, runID).Status == RunStatusCancelled }, "cancelled")
+}
+
+func TestConcurrentTurnConflict(t *testing.T) {
+	_, srv := newTestServer(t)
+	runID := startRun(t, srv.URL)
+	sendTurn(t, srv.URL, runID, "question-required", nil) // blocks in-flight
+	waitFor(t, func() bool { return getSnapshot(t, srv.URL, runID).Status == RunStatusWaitingQuestion }, "in-flight")
+
+	if st, _ := sendTurn(t, srv.URL, runID, "normal", nil); st != http.StatusConflict {
+		t.Fatalf("concurrent turn status=%d, want 409", st)
+	}
+}
+
+func TestIdempotentTurn(t *testing.T) {
+	_, srv := newTestServer(t)
+	runID := startRun(t, srv.URL)
+	h := map[string]string{"Idempotency-Key": "k1"}
+	_, t1 := sendTurn(t, srv.URL, runID, "question-required", h) // in-flight
+	waitFor(t, func() bool { return getSnapshot(t, srv.URL, runID).Status == RunStatusWaitingQuestion }, "in-flight")
+	st, t2 := sendTurn(t, srv.URL, runID, "question-required", h)
+	if st != http.StatusOK || t2 != t1 {
+		t.Fatalf("idempotent turn status=%d t1=%s t2=%s", st, t1, t2)
+	}
+}
+
+func TestApprovalExpiry(t *testing.T) {
+	_, srv := newTestServer(t) // TTL = 50ms
+	runID := startRun(t, srv.URL)
+	sendTurn(t, srv.URL, runID, "approval-required", nil)
+	evs := waitTerminal(t, srv.URL, runID)
+	last := evs[len(evs)-1]
+	if last.Type != EventTurnFailed || !last.Recoverable {
+		t.Fatalf("expiry: last event=%s recoverable=%v, want turn_failed recoverable", last.Type, last.Recoverable)
+	}
+}
+
+func TestAccountMismatch(t *testing.T) {
+	svc, srv := newTestServer(t)
+	runID := startRun(t, srv.URL)
+	svc.activeAccountID = "switched"
+
+	if st, _ := sendTurn(t, srv.URL, runID, "normal", nil); st != http.StatusConflict {
+		t.Fatalf("turn after account switch status=%d, want 409", st)
+	}
+	if st, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+runID+"/resume", nil, nil); st != http.StatusConflict || !strings.Contains(string(body), "provider_account_changed") {
+		t.Fatalf("resume after switch status=%d body=%s", st, body)
+	}
+}
+
+// ---- helpers ---------------------------------------------------------------
+
+func hasToolStatus(evs []ProviderEvent, tool, status string) bool {
+	for _, e := range evs {
+		if e.Type == EventToolCompleted && e.ToolName == tool && e.Status == status {
+			return true
+		}
+	}
+	return false
+}
+
+// streamEvents connects to the SSE endpoint and returns up to wantCount events,
+// then cancels.
+func streamEvents(t *testing.T, base, runID string, afterSeq int64, wantCount int) []ProviderEvent {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	url := base + "/client/workflow-runs/" + runID + "/events/stream?afterSeq=" +
+		strconv.FormatInt(afterSeq, 10)
+	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("stream connect: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var out []ProviderEvent
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		var ev ProviderEvent
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev); err != nil {
+			continue
+		}
+		out = append(out, ev)
+		if len(out) >= wantCount {
+			cancel()
+			return out
+		}
+	}
+	return out
+}
