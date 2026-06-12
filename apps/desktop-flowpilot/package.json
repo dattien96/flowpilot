@@ -1,0 +1,29 @@
+{
+  "name": "desktop-flowpilot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "FlowPilot desktop client (Electron) — Phase 1 mock MVP (04-01 Part A)",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "zustand": "^5.0.8"
+  },
+  "devDependencies": {
+    "@types/node": "20.19.41",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "^19.2.2",
+    "@vitejs/plugin-react": "^4.4.1",
+    "electron": "^33.0.0",
+    "typescript": "5.9.3",
+    "vite": "^6.1.0",
+    "vite-plugin-electron": "^0.29.0",
+    "vite-plugin-electron-renderer": "^0.14.6"
+  }
+}
