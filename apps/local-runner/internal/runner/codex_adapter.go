@@ -168,11 +168,10 @@ func (a *codexAdapter) handleInbound(req codexInboundRequest) {
 	_ = a.dispatcher.reply(req.ID, map[string]any{"decision": decision})
 }
 
-// codexYoloDerive is the minimal P3 posture mapping; the full YOLO SSOT resolver
-// (yolo_resolver.go) lands in P4.
+// codexYoloDerive maps YOLO → Codex thread params via the SSOT resolver
+// (yolo_resolver.go, P4). The same posture drives the runner approval bridge, so
+// the two layers can never drift.
 func codexYoloDerive(yolo bool) (sandbox, approvalMode string) {
-	if yolo {
-		return "full-access", "never"
-	}
-	return "workspace-write", "on-request"
+	p := resolveYoloPosture(yolo)
+	return p.CodexSandbox, p.CodexApprovalMode
 }
