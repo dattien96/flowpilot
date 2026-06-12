@@ -75,12 +75,22 @@ func (s *SupabaseCatalogStore) getJSON(ctx context.Context, endpoint string, out
 }
 
 func (s *SupabaseCatalogStore) ListProjects(ctx context.Context) ([]Project, error) {
-	endpoint := s.restURL + "/projects?select=id,name,path&order=name.asc"
-	var rows []Project
-	if err := s.getJSON(ctx, endpoint, &rows); err != nil {
+	// The projects table has no `path` column (a project's working directory is a
+	// runtime binding, not a DB column). Select only real columns; Path is filled by
+	// the client's cwd selection (04-06), not from here.
+	endpoint := s.restURL + "/projects?select=id,name&order=name.asc"
+	var raw []struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := s.getJSON(ctx, endpoint, &raw); err != nil {
 		return nil, err
 	}
-	return rows, nil
+	out := make([]Project, len(raw))
+	for i, r := range raw {
+		out[i] = Project{ID: r.ID, Name: r.Name}
+	}
+	return out, nil
 }
 
 func (s *SupabaseCatalogStore) ListWorkflows(ctx context.Context, projectID string) ([]Workflow, error) {
