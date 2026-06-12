@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { useStore } from "@/state/store";
 import type { ProviderAccountSummary } from "@/types/contract";
 
+const PROVIDER_VISIBILITY_STORAGE_KEY = "flowpilot.desktop.account-provider-visibility";
+
 const PROVIDERS = [
   { key: "claude", label: "Claude" },
   { key: "codex", label: "Codex" },
@@ -34,6 +36,33 @@ function usageTone(percent: number): "ok" | "warn" | "err" {
   return "err";
 }
 
+function loadProviderVisibility(): Record<string, boolean> {
+  if (typeof window === "undefined") {
+    return {};
+  }
+
+  try {
+    const raw = window.localStorage.getItem(PROVIDER_VISIBILITY_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, boolean>;
+    return typeof parsed === "object" && parsed !== null ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveProviderVisibility(next: Record<string, boolean>): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(PROVIDER_VISIBILITY_STORAGE_KEY, JSON.stringify(next));
+  } catch {
+    // ignore localStorage write failures
+  }
+}
+
 function compactUsageLines(account: ProviderAccountSummary): ProviderAccountSummary["usageDetailLines"] {
   if (account.providerKey !== "gemini") {
     return account.usageDetailLines;
@@ -52,34 +81,41 @@ export function ProviderAccountsPanel(): React.ReactElement | null {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [providerVisibility, setProviderVisibility] = useState<Record<string, boolean>>(() => loadProviderVisibility());
 
   const providerGroups = useMemo(() => {
     return PROVIDERS.map((provider) => {
       const accounts = providerAccounts.filter((account) => account.providerKey === provider.key);
       const connectedAccounts = accounts.filter((account) => account.authStatus === "connected");
       const pinnedAccount = connectedAccounts.find((account) => account.isActive) ?? connectedAccounts[0] ?? null;
+      const enabled = providerVisibility[provider.key] ?? true;
       return {
         ...provider,
         accounts,
         connectedAccounts,
         pinnedAccount,
-        visible: pinnedAccount !== null,
+        enabled,
+        visible: pinnedAccount !== null && enabled,
       };
-    }).filter((group) => group.visible);
-  }, [providerAccounts]);
+    });
+  }, [providerAccounts, providerVisibility]);
+
+  const visibleProviderGroups = providerGroups.filter((group) => group.visible);
 
   useEffect(() => {
-    if (!openProviderKey) return;
+    if (!openProviderKey && !settingsOpen) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setOpenProviderKey(null);
+        setSettingsOpen(false);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [openProviderKey]);
+  }, [openProviderKey, settingsOpen]);
 
-  if (providerGroups.length === 0) {
+  if (visibleProviderGroups.length === 0 && providerGroups.every((group) => group.pinnedAccount === null)) {
     return null;
   }
 
@@ -126,24 +162,43 @@ export function ProviderAccountsPanel(): React.ReactElement | null {
     }
   };
 
+  const updateProviderVisibility = (providerKey: string, checked: boolean) => {
+    setProviderVisibility((current) => {
+      const next = { ...current, [providerKey]: checked };
+      saveProviderVisibility(next);
+      return next;
+    });
+  };
+
   return (
     <>
       <section className="accounts-panel">
         <div className="accounts-title-row">
           <div className="accounts-title">Accounts</div>
-          <button
-            type="button"
-            className="account-mini-btn icon"
-            onClick={() => void refreshAccounts()}
-            disabled={refreshing}
-            title="Refresh account limits"
-            aria-label="Refresh account limits"
-          >
-            {refreshing ? "…" : "↻"}
-          </button>
+          <div className="accounts-title-actions">
+            <button
+              type="button"
+              className="account-mini-btn icon"
+              onClick={() => setSettingsOpen(true)}
+              title="Account display settings"
+              aria-label="Account display settings"
+            >
+              ⚙
+            </button>
+            <button
+              type="button"
+              className="account-mini-btn icon"
+              onClick={() => void refreshAccounts()}
+              disabled={refreshing}
+              title="Refresh account limits"
+              aria-label="Refresh account limits"
+            >
+              {refreshing ? "…" : "↻"}
+            </button>
+          </div>
         </div>
         <div className="accounts-list">
-          {providerGroups.map((group) => {
+          {visibleProviderGroups.map((group) => {
             const pinned = group.pinnedAccount;
             if (!pinned) return null;
             const lines = compactUsageLines(pinned);
@@ -195,6 +250,48 @@ export function ProviderAccountsPanel(): React.ReactElement | null {
           })}
         </div>
       </section>
+
+      {settingsOpen ? (
+        <div className="modal-backdrop" onClick={() => setSettingsOpen(false)}>
+          <div className="modal account-settings-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-head">
+              <div>
+                <div className="modal-title">Account Menu Settings</div>
+                <div className="modal-subtitle">Choose which valid providers are shown in the sidebar.</div>
+              </div>
+              <button type="button" className="modal-close" onClick={() => setSettingsOpen(false)}>
+                Close
+              </button>
+            </div>
+
+            <div className="provider-settings-list">
+              {providerGroups.map((group) => {
+                const disabled = group.pinnedAccount === null;
+                const checked = group.enabled;
+                return (
+                  <label
+                    key={group.key}
+                    className={`provider-setting-row ${disabled ? "disabled" : ""}`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      disabled={disabled}
+                      onChange={(event) => updateProviderVisibility(group.key, event.target.checked)}
+                    />
+                    <div className="provider-setting-copy">
+                      <div className="provider-setting-title">{group.label}</div>
+                      <div className="provider-setting-sub">
+                        {disabled ? "No valid active/connected account available." : "Show this provider in the accounts menu."}
+                      </div>
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {activeGroup ? (
         <div className="modal-backdrop" onClick={() => setOpenProviderKey(null)}>

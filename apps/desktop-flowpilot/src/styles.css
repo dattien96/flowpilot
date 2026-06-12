@@ -190,6 +190,11 @@ body {
   gap: 8px;
   padding: 0 0 8px;
 }
+.accounts-title-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 .accounts-title {
   font-size: 11px;
   text-transform: uppercase;
@@ -504,6 +509,10 @@ body {
 .account-modal {
   padding: 16px;
 }
+.account-settings-modal {
+  padding: 16px;
+  width: min(460px, 100%);
+}
 .modal-head {
   display: flex;
   align-items: flex-start;
@@ -615,6 +624,40 @@ body {
 .account-action-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+.provider-settings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.provider-setting-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-3);
+  cursor: pointer;
+}
+.provider-setting-row.disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.provider-setting-row input {
+  margin-top: 2px;
+}
+.provider-setting-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.provider-setting-title {
+  font-weight: 600;
+}
+.provider-setting-sub {
+  font-size: 12px;
+  color: var(--text-dim);
 }
 .file-change {
   font-size: 11px;
