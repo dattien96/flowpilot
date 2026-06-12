@@ -122,6 +122,15 @@ function isTurnCompletedPlaceholder(text: string): boolean {
   return text.trim().toLowerCase().replace(/\.$/, "") === "turn completed";
 }
 
+function hasPendingPrompt(timeline: TimelineItem[], prompt: string): boolean {
+  for (let i = timeline.length - 1; i >= 0; i--) {
+    const item = timeline[i];
+    if (item.kind === "thinking") continue;
+    return item.kind === "prompt" && item.text === prompt;
+  }
+  return false;
+}
+
 export const useStore = create<AppState>((set, get) => ({
   client: createRunnerClient(),
   projects: [],
@@ -447,6 +456,9 @@ function applyEvent(s: AppState, e: ProviderEventDTO): Partial<AppState> {
 
   switch (e.type) {
     case "turn_started":
+      if (e.prompt && !hasPendingPrompt(timeline, e.prompt)) {
+        timeline.push({ kind: "prompt", id: `prompt-${e.providerTurnId}`, text: e.prompt });
+      }
       break;
 
     case "message_delta": {

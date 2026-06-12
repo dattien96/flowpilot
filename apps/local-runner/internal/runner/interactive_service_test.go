@@ -199,6 +199,9 @@ func TestNormalTurnPersistsWithSeq(t *testing.T) {
 	if evs[0].Type != EventTurnStarted {
 		t.Fatalf("first event = %s, want turn_started", evs[0].Type)
 	}
+	if evs[0].Prompt != "hi" {
+		t.Fatalf("turn_started prompt = %q, want hi", evs[0].Prompt)
+	}
 	if last := evs[len(evs)-1]; last.Type != EventTurnCompleted {
 		t.Fatalf("last event = %s, want turn_completed", last.Type)
 	}
@@ -229,10 +232,17 @@ func TestNormalTurnPersistsWithSeq(t *testing.T) {
 	if events[0].Type != EventTurnStarted || events[1].Type != EventMessageCompleted || events[2].Type != EventTurnCompleted {
 		t.Fatalf("persisted events = %+v, want turn_started/message_completed/turn_completed", events)
 	}
+	if events[0].Prompt != "hi" {
+		t.Fatalf("persisted turn_started prompt = %q, want hi", events[0].Prompt)
+	}
 	for _, ev := range events {
 		if ev.Type == EventMessageDelta {
 			t.Fatalf("delta event should not be persisted: %+v", ev)
 		}
+	}
+	replayed := streamEvents(t, srv.URL, runID, 0, 1)
+	if len(replayed) != 1 || replayed[0].Type != EventTurnStarted || replayed[0].Prompt != "hi" {
+		t.Fatalf("replayed first event = %+v, want turn_started with prompt", replayed)
 	}
 }
 

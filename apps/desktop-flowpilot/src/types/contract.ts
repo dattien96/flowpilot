@@ -152,7 +152,7 @@ export interface ProviderEventBaseDTO {
 }
 
 export type ProviderEventDTO =
-  | (ProviderEventBaseDTO & { type: "turn_started"; providerTurnId: string })
+  | (ProviderEventBaseDTO & { type: "turn_started"; providerTurnId: string; prompt?: string })
   | (ProviderEventBaseDTO & { type: "message_delta"; text: string })
   | (ProviderEventBaseDTO & { type: "message_completed"; text: string })
   | (ProviderEventBaseDTO & { type: "tool_started"; toolName: string; input?: unknown })

@@ -763,7 +763,7 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		cancel()
 		return "", newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
 	}
-	s.emitLocked(rs, ProviderEvent{Type: EventTurnStarted, ProviderTurnID: turnID, WorkflowStepRunID: in.StepID})
+	s.emitLocked(rs, ProviderEvent{Type: EventTurnStarted, ProviderTurnID: turnID, WorkflowStepRunID: in.StepID, Prompt: in.Prompt})
 	s.mu.Unlock()
 
 	go s.runTurn(ctx, rs, adapter, in, scenario, turnID)

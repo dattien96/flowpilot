@@ -373,7 +373,12 @@ export class MockRunnerClient implements RunnerClient {
 
     // turn_started always leads.
     await delay(120);
-    yield this.rec(input.runId, { ...base(), type: "turn_started", providerTurnId: state.providerTurnId });
+    yield this.rec(input.runId, {
+      ...base(),
+      type: "turn_started",
+      providerTurnId: state.providerTurnId,
+      prompt: input.prompt,
+    });
 
     const steps = scriptFor(this.scenario, { replay: isReplay });
     // Record every scripted event into the per-run log as it streams.
