@@ -51,10 +51,29 @@ arrives, auto-approve and record it.
   valid decision resolves it, later/duplicate submits return the resolved outcome.
 - **Validation:** a decision outside the offered set → `400 invalid_decision`.
 - **Expiry:** an unanswered approval times out → record `expired`, turn fails
-  **recoverably** (never blocked forever). Same policy applies to questions below.
+  **recoverably** (never blocked forever); the pending inbound request is **answered
+  with a deny/error** so the provider unblocks. Same policy applies to questions below.
 
 **Boundary:** real safety = `permission_required` + Codex sandbox + FlowPilot policy
 together. App-server is the gate channel, not enforcement alone.
+
+### Approval policy engine (YOLO=false)
+
+`permission_required` does not always mean "ask the human." An `ApprovalPolicyEngine`
+(`03`) sits between the inbound approval request and the user and decides, per
+command/tool:
+
+- **auto-approve** known-safe operations (allowlist) → reply immediately, record;
+- **auto-deny** known-dangerous operations (denylist) → reply deny, record;
+- **ask** everything else → emit `permission_required`, show the card.
+
+This is what makes "gate **some** actions" possible (Task-032) instead of
+all-or-nothing. Policy is configured in Admin Web (`03`); the **default is ask**.
+The proxy MCP gate keeps keying on YOLO (CP-29).
+
+> Every auto-decision and the YOLO=true auto-approve **must reply to the inbound
+> request** (the third dispatcher category in `04-03`), not merely record it — else
+> Codex hangs waiting for a response.
 
 ## User-interaction bridge (approvals + questions)
 
@@ -98,7 +117,9 @@ into a user-interaction bridge handling approvals and questions. A question can 
   workflow step. Survives client reconnect (state in the runner). Exposed as
   `POST /client/questions/{questionId}/answer` (`04-02`); **idempotent +
   first-write-wins**, invalid choice → `400`, unanswered → **expires** (recoverable
-  fail) — same policy as approvals.
+  fail) — same policy as approvals. On expiry/interrupt while a Path-1 question is
+  pending, the **`ask_user` `tools/call` is returned an error result** so the model
+  does not hang waiting for the tool.
 - **Native option:** if the installed Codex app-server exposes a native
   elicitation/user-input request, map it to the same `user_question_required` event.
   Verify availability; Path 1's MCP-tool path is the robust default.
@@ -130,7 +151,8 @@ state):
 workspace on disk), 3–4. summary + Supabase RAG (Phase 5), 5. update step status,
 6. persist event audit trail.
 Finalizer failure must **not** erase the completed turn — mark finalize state
-separately for retry.
+separately for retry. The finalizer must be **idempotent**: a retry must not
+double-write artifacts/RAG/audit (key by run/step/turn id; upsert).
 
 ## Acceptance
 
@@ -154,6 +176,12 @@ separately for retry.
 - T-31 interrupt cancels an in-flight turn cleanly (turn marked `cancelled`).
 - T-33 decision/answer idempotent + first-write-wins (multi-window).
 - T-35 unanswered approval/question expires → turn fails recoverably.
+- T-39 approval policy: allowlisted command auto-approves, denylisted auto-denies,
+  others show the card; each auto-decision replies to the inbound request.
+- T-40 expiry/interrupt while pending replies deny/error to the inbound request and
+  returns an error `ask_user` tool result (provider does not hang).
+- T-41 finalizer is idempotent: a retried finalize does not double-write
+  artifacts/RAG/audit.
 
 ## Definition of Done (checklist)
 
@@ -161,9 +189,11 @@ separately for retry.
 - [ ] YOLO=false: dangerous command → `permission_required`; **deny blocks**, approve runs (T-08/T-09/T-22).
 - [ ] YOLO=true: full-access + never; no `permission_required`; run audited gating-disabled (T-21/T-24).
 - [ ] Approval bridge: pause turn (per-`approvalId` channel), survive reconnect, decision round-trip.
+- [ ] **Approval policy engine** (YOLO=false): allowlist auto-approve / denylist auto-deny / else ask; every auto-decision replies to the inbound request (T-39).
+- [ ] Expiry/interrupt while pending replies deny/error and returns an error `ask_user` tool result — provider never hangs (T-40).
 - [ ] **`ask_user` MCP tool (model-driven, best-effort)**: registered via `tools/list`, prompt-reinforced → `user_question_required` → options card → `AnswerQuestion` → turn resumes (T-29).
 - [ ] **Workflow-driven question (deterministic)**: runner/step emits `user_question_required` directly → same card → resumes the step (T-30).
 - [ ] Interrupt/cancel: stop cancels the turn cleanly via `codexInterruptParams` (T-31).
 - [ ] Decisions/answers **idempotent + first-write-wins**; invalid → `400`; unanswered **expires** to a recoverable fail (T-33/T-35).
-- [ ] Finalizer hook on `turn_completed`; failure retryable without erasing the turn (T-27/T-28).
+- [ ] Finalizer hook on `turn_completed`; failure retryable without erasing the turn (T-27/T-28); finalize is **idempotent** — retry never double-writes (T-41).
 - [ ] **Review gate:** human + AI review this checklist after the phase.
