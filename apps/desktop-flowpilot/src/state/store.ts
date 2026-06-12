@@ -11,7 +11,8 @@ import type {
   TurnInput,
   Workflow,
 } from "@/types/contract";
-import { MockRunnerClient } from "@/client/MockRunnerClient";
+import type { RunnerClient } from "@/types/contract";
+import { createRunnerClient } from "@/client/createRunnerClient";
 import type { ScenarioName } from "@/client/mockData";
 import { ideBridge } from "@/client/ideBridge";
 import { ADMIN_WEB_URL } from "@/config";
@@ -38,7 +39,7 @@ interface PendingQuestion {
 }
 
 interface AppState {
-  client: MockRunnerClient;
+  client: RunnerClient;
 
   // navigator
   projects: Project[];
@@ -72,6 +73,7 @@ interface AppState {
   sendPrompt(prompt: string, skills?: string[]): Promise<void>;
   approve(decision: string): Promise<void>;
   answer(choice: string | string[]): Promise<void>;
+  stop(): Promise<void>;
   reconnect(): Promise<void>;
   resetRun(): void;
   openInIde(path: string, line?: number): void;
@@ -98,7 +100,7 @@ function statusFromEvent(e: ProviderEventDTO, prev: RunStatus): RunStatus {
 }
 
 export const useStore = create<AppState>((set, get) => ({
-  client: new MockRunnerClient(),
+  client: createRunnerClient(),
   projects: [],
   workflows: [],
   steps: [],
@@ -130,7 +132,7 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   setScenario(scenario) {
-    get().client.setScenario(scenario);
+    get().client.setScenario?.(scenario);
     set({ scenario });
   },
 
@@ -197,13 +199,20 @@ export const useStore = create<AppState>((set, get) => ({
     await get().client.answerQuestion(pending.questionId, choice);
   },
 
+  async stop() {
+    const { client, runId } = get();
+    if (!runId) return;
+    await client.interrupt(runId);
+  },
+
   async reconnect() {
-    const { client, runId, lastTurnInput } = get();
-    if (!runId || !lastTurnInput) return;
+    const { client, runId } = get();
+    if (!runId) return;
     await client.resumeRun(runId);
-    // Clear the timeline so the replay visibly rebuilds it from persisted events.
+    // Clear the timeline so the replay visibly rebuilds it from persisted events
+    // via the run's event stream (attach + replay from seq 0).
     set({ timeline: [], recoverable: false, status: "running", _streamingAssistantId: undefined });
-    await consumeStream(client.sendTurn(lastTurnInput), set, get);
+    await consumeStream(client.streamRun(runId, 0), set, get);
   },
 
   resetRun() {

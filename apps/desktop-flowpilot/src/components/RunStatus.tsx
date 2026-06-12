@@ -16,12 +16,20 @@ export function RunStatus(): React.ReactElement {
   const status = useStore((s) => s.status);
   const runId = useStore((s) => s.runId);
   const resetRun = useStore((s) => s.resetRun);
+  const stop = useStore((s) => s.stop);
+
+  const active = status === "running" || status === "waiting_approval" || status === "waiting_question";
 
   return (
     <div className="run-status">
       <span className={`status-dot status-${status}`} />
       <span className="status-label">{LABEL[status]}</span>
       {runId && <span className="run-id">{runId}</span>}
+      {active && (
+        <button className="btn btn-ghost" onClick={() => void stop()}>
+          Stop
+        </button>
+      )}
       {runId && (
         <button className="btn btn-ghost" onClick={resetRun}>
           New run
