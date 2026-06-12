@@ -130,8 +130,10 @@ Main modules:
 - `WorkflowNavigator`: project/workflow/step navigation
 - `ChatPanel`: chat input, streaming output, run timeline
 - `ApprovalView`: command/tool approval card
+- `QuestionView`: structured "ask the user" options card (single/multi + "Other")
 - `FileEventRenderer`: changed-file rows; opens files in the user's IDE via its CLI
-- `SkillPicker`: `/` command and skill selection
+- `SkillPicker`: `/` command and **multi-skill** selection
+- `SystemControls`: open Admin Web (:3002), restart, turn off the dev stack
 - `IdeBridge` (Electron main): detect + invoke IDE CLI (`code -g` / `studio` / `xed`)
 - `LocalConfig`: runner URL, auth token, workspace binding
 
@@ -150,36 +152,61 @@ compute workflow progression.
 | weak workflow step enforcement | runner owns turn dispatch and step state                     |
 | unreliable artifact/RAG sync   | finalizer runs after normalized `turn_completed`             |
 | fragile resume                 | persist provider session/thread ids                          |
-| hard `/` and skill UX          | client provides picker, adapter sends selected skill         |
+| hard `/` and skill UX          | client provides multi-skill picker, adapter sends skills     |
 | hard failure diagnosis         | centralized provider event log                               |
+| no structured "ask the user"   | runner emits `user_question_required`; client shows options  |
+
+## Approval & YOLO (Single Source of Truth)
+
+**YOLO is the single source of truth for approval posture.** One per-run/step value
+drives **both** layers together, so they can never disagree:
+
+- `yolo = true` → Codex full-access + never-approve **and** the runner auto-approves;
+  the run is audited as gating-disabled.
+- `yolo = false` → Codex workspace-write + on-request **and** the runner surfaces a
+  `permission_required` card; **deny blocks** the command.
+
+This retires the legacy `default_tools_approval_mode = "approve"` hack. Real
+dangerous-command safety = `permission_required` + Codex sandbox + FlowPilot policy
+configured **together** — not approval UX alone. Resolver + bridge detail in `04-04`.
 
 ## Client-To-Runner API Shape
 
 The exact transport can be HTTP plus WebSocket, local socket, or another local
 transport. The contract should be stable regardless of transport.
 
-Required commands:
+> The **authoritative** endpoint list, request/response shapes, error envelope, and
+> streaming/reconnect semantics live in `04-02`. The shape below is the design-level
+> summary and must stay consistent with it (`/client/*` namespace, Go-1.26
+> `{param}` patterns).
+
+Required commands (client):
 
 ```text
-GET  /projects
-GET  /projects/:projectId/workflows
-GET  /workflows/:workflowId/steps
-POST /workflow-runs
-POST /workflow-runs/:runId/resume
-POST /workflow-runs/:runId/steps/:stepRunId/turns
-POST /workflow-runs/:runId/approvals/:approvalId/decision
-GET  /workflow-runs/:runId/events
-GET  /workflow-runs/:runId/artifacts
-GET  /provider-capabilities
+GET  /client/projects
+GET  /client/projects/{projectId}/workflows
+GET  /client/workflows/{workflowId}/steps
+POST /client/workflow-runs                      # {projectId,workflowId,stepId,yoloMode?}
+GET  /client/workflow-runs/{runId}              # cold-open status + handle + pending approval/question
+POST /client/workflow-runs/{runId}/resume       # validates active account
+POST /client/workflow-runs/{runId}/turns        # {stepId,prompt,selectedSkills?} -> {turnId}
+POST /client/workflow-runs/{runId}/interrupt    # Stop the in-flight turn
+POST /client/approvals/{approvalId}/decision     # idempotent, first-write-wins
+POST /client/questions/{questionId}/answer       # idempotent, first-write-wins
+GET  /client/workflow-runs/{runId}/artifacts
+GET  /client/provider-skills?provider=codex
+POST /system/restart, /system/shutdown           # desktop sidebar controls
 ```
 
-Required event stream:
+Required event stream (one persistent per-run stream; reconnect cursor):
 
 ```text
-GET /workflow-runs/:runId/events/stream
+GET /client/workflow-runs/{runId}/events/stream?afterSeq=N
 ```
 
-The stream should emit normalized FlowPilot events, not raw provider events.
+The stream emits normalized FlowPilot events (each with a monotonic per-run `seq`),
+not raw provider events; reconnect replays only missed events via `afterSeq` /
+`Last-Event-ID`.
 
 ## State Ownership
 
@@ -190,8 +217,10 @@ The stream should emit normalized FlowPilot events, not raw provider events.
 | active workflow run | Runner | clients can request state changes |
 | active step | Runner | desktop client can select/request step actions |
 | provider session id | Runner | stored for resume |
-| provider events | Runner | persisted for audit and replay |
-| approval decision | Runner | client submits, runner persists |
+| active provider account | Runner | app-server bound to it; threads account-scoped (Risk #1) |
+| provider events | Runner | persisted for audit and replay (monotonic `seq`) |
+| approval decision | Runner | client submits, runner persists; idempotent |
+| pending question | Runner | `user_question_required`; client submits the answer |
 | chat rendering state | Client | derived from event stream |
 | editor file navigation | desktop client | opens files in the user's IDE via its CLI |
 
@@ -240,6 +269,21 @@ Runner
   -> forwards provider-specific decision to CodexAdapter
 CodexAdapter
   -> resumes provider turn
+```
+
+Question turn (structured "ask the user"):
+
+```text
+origin (either)
+  -> model calls the `ask_user` MCP tool (model-driven, best-effort), OR
+  -> a workflow step emits the question directly (deterministic)
+Runner (user-interaction bridge)
+  -> persists a question record, emits user_question_required, pauses the turn
+Desktop Client
+  -> shows the options card (single/multi + free-text "Other")
+  -> submits the choice (answerQuestion)
+Runner
+  -> records the answer (idempotent, first-write-wins); resumes the turn/step
 ```
 
 ## Layer Responsibilities Summary
@@ -295,13 +339,15 @@ any IDE; optional VS Code/JetBrains plugins may reuse the same webview later).
 Responsibilities:
 
 - chat input and streaming response
-- `/` commands and skill picker
+- `/` commands and multi-skill picker
 - workflow selector
 - workflow step selector
 - approval cards or modals
+- structured question / options card ("ask the user")
 - file links and changed-file navigation (open in the user's IDE via its CLI)
 - tool/MCP activity timeline
 - compact run status
+- system controls (open Admin Web, restart, turn off)
 - editor-aware context selection
 
 The desktop app consumes FlowPilot runner APIs and normalized event streams. It
@@ -354,7 +400,7 @@ interface ProviderRuntimeAdapter {
 }
 ```
 
-Normalized event examples:
+Normalized event examples (illustrative):
 
 ```ts
 type ProviderEvent =
@@ -362,14 +408,19 @@ type ProviderEvent =
   | { type: "message_delta"; text: string }
   | { type: "message_completed"; text: string }
   | { type: "tool_started"; toolName: string; input?: unknown }
-  | { type: "tool_completed"; toolName: string; output?: unknown }
-  | { type: "file_changed"; path: string }
-  | { type: "permission_required"; provider: string; details: unknown }
-  | { type: "turn_failed"; error: string }
+  | { type: "tool_completed"; toolName: string; output?: unknown; status: "success" | "failed" | "cancelled" }
+  | { type: "file_changed"; path: string; changeType?: string }
+  | { type: "permission_required"; approvalId: string; provider: string; details: unknown }
+  | { type: "user_question_required"; questionId: string; prompt: string; options: { label: string; description?: string }[]; multiSelect?: boolean }
+  | { type: "turn_failed"; error: string; recoverable: boolean }
   | { type: "turn_completed"; finalMessage: string };
 ```
 
-Provider-specific details stay inside provider adapters.
+> The **authoritative** union — including the correlation base and the monotonic
+> per-run `seq` (reconnect cursor) — lives in `04-Detailed-Coding-Plan.md`.
+> `user_question_required` backs the structured "ask the user" / options-popup UX
+> (model-driven `ask_user` MCP tool **or** deterministic workflow-driven; see
+> `04-04`). Provider-specific details stay inside provider adapters.
 
 ## Adapter Contract Details
 
@@ -623,6 +674,7 @@ Provider event telemetry:
 ```text
 workflow_provider_events
   id
+  seq                        # monotonic per-run sequence — reconnect/replay cursor
   workflow_run_id
   workflow_step_run_id nullable
   provider_session_id
@@ -647,9 +699,31 @@ workflow_provider_approvals
   available_decisions_json
   selected_decision nullable
   decided_by nullable
-  status
+  status                     # pending | resolved | expired
   requested_at
   decided_at nullable
+  expires_at nullable        # unanswered → expired, turn fails recoverably
+```
+
+Structured user questions (the "ask the user" / options-popup path):
+
+```text
+workflow_provider_questions
+  id
+  workflow_run_id
+  workflow_step_run_id nullable
+  provider_session_id
+  provider_key
+  provider_turn_id nullable
+  origin                     # ask_user_tool (model-driven) | workflow (deterministic)
+  prompt
+  options_json
+  multi_select
+  selected_choice_json nullable
+  status                     # pending | resolved | expired
+  requested_at
+  answered_at nullable
+  expires_at nullable
 ```
 
 These tables are provider-runtime telemetry. They should not replace existing
@@ -675,22 +749,29 @@ Turn status:
 - `queued`
 - `running`
 - `waiting_for_approval`
+- `waiting_for_question`
 - `finalizing`
 - `completed`
 - `failed`
 - `cancelled`
 
+> These provider session/turn states are runtime telemetry; the client's
+> `RunStatus` (`04-01`) is the user-facing projection of them.
+
 Recovery rules:
 
 - if provider process dies before turn starts, mark turn failed and allow retry
-- if stream disconnects during turn, mark session failed and keep persisted
-  events
+- **client** disconnect (network blip, window closed) does **not** fail the run:
+  the runner keeps streaming/persisting; the client reconnects and replays missed
+  events via `afterSeq` / `Last-Event-ID`
+- if the **provider/app-server** stream dies mid-turn, mark the turn
+  `failed (recoverable)` and keep persisted events; the turn can be re-sent
 - if finalizer fails after `turn_completed`, keep provider turn completed but
   mark finalization failed for retry
-- if approval is pending, clients may reconnect and reload pending approval from
-  runner state
+- if an approval/question is pending, clients may reconnect and reload it from
+  runner state; an unanswered approval/question **expires** to a recoverable fail
 - if multiple clients are connected, the runner remains the single decision
-  authority
+  authority; approval/question submits are idempotent + first-write-wins
 
 ## Open Architecture Risks
 
@@ -757,6 +838,8 @@ MVP includes:
 - desktop client workflow/step selector
 - desktop client chat and streaming response
 - command approval round trip
+- structured question / options round trip ("ask the user")
+- multi-skill `/` picker + sidebar system controls
 - file-change rendering with clickable paths
 - Admin Web provider/policy configuration and event audit
 
