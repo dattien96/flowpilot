@@ -329,13 +329,18 @@ async function startServicesFresh(existing = {}) {
       console.log(`[Supervisor] Stopping stale desktop process ${hintDesktopPid}...`);
       killProcessTree(createManagedProcessRef(hintDesktopPid, false));
     }
-    console.log('[Supervisor] Starting desktop app (Electron + Vite)...');
+    // Point the desktop at the runner we just (re)started so it uses the real
+    // HttpWsRunnerClient instead of the offline mock. An explicit VITE_RUNNER_URL in
+    // the environment still wins (e.g. to target a remote runner).
+    const desktopRunnerUrl = process.env.VITE_RUNNER_URL || `http://127.0.0.1:${runnerPort}`;
+    console.log(`[Supervisor] Starting desktop app (Electron + Vite) → runner ${desktopRunnerUrl}...`);
     const desktopCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
     desktopProcess = spawn(desktopCmd, ['run', 'dev'], {
       cwd: path.join(rootDir, desktopPath),
       shell: true,
       stdio: 'inherit',
       detached: process.platform !== 'win32',
+      env: { ...process.env, VITE_RUNNER_URL: desktopRunnerUrl },
     });
     desktopProcess.detached = process.platform !== 'win32';
     attachDesktopExitHandler(desktopProcess);

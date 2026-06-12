@@ -73,12 +73,18 @@ desktop-install:
     @cd {{DESKTOP_PATH}} && npm install
     @echo "Done"
 
-# Start the desktop app standalone (Electron + Vite, mock data)
+# Start the desktop app standalone with offline MOCK data (no runner needed)
 desktop-dev:
-    @echo "Starting desktop app..."
+    @echo "Starting desktop app (offline mock data)..."
     @cd {{DESKTOP_PATH}} && npm run dev
 
-# Start admin web + local runner + desktop app together (all 3 components)
+# Start the desktop app standalone pointed at a running local runner (real HTTP/SSE)
+desktop-dev-runner:
+    @echo "Starting desktop app against runner on port {{LOCAL_RUNNER_PORT}}..."
+    @cd {{DESKTOP_PATH}} && VITE_RUNNER_URL=http://127.0.0.1:{{LOCAL_RUNNER_PORT}} npm run dev
+
+# Start admin web + local runner + desktop app together (all 3 components).
+# The desktop is auto-pointed at the local runner (real HTTP/SSE, not mock).
 dev:
     @node scripts/supervisor.js --web-port {{ADMIN_WEB_PORT}} --runner-port {{LOCAL_RUNNER_PORT}} --restart-existing --with-desktop --desktop-path {{DESKTOP_PATH}}
 
