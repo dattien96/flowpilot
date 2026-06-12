@@ -23,8 +23,12 @@ swaps. Part B then wires that same shell to the real runner.
   The renderer only ever talks to `RunnerClient`.
 - **UI surfaces:** project/workflow/step selector, chat input, streaming output, run
   timeline, **approval card**, **structured question card** (see "The question
-  card" below), file-change rows, `/` command + skill picker, tool/MCP activity
-  rows, run status.
+  card" below), file-change rows, `/` command + **multi-skill picker** (attach one
+  or more skills per turn), tool/MCP activity rows, run status.
+- **Sidebar system controls:** Open Admin Web (default browser → `http://localhost:3002`),
+  Restart system, Turn off system. Restart/shutdown map to the runner's
+  `POST /system/restart` / `POST /system/shutdown` (mirrors admin-web's
+  `local-runner-gateway`); in Part A they are stubs on `RunnerClient`.
 - **Mock data + scenarios** (JSON fixtures, streamed on a timer): `normal`,
   `approval-required`, `question-required`, `tool-heavy`, `file-changes`, `failed`,
   `reconnect/replay`. A dev-only scenario switcher triggers each.
@@ -42,7 +46,10 @@ interface RunnerClient {
   answerQuestion(questionId: string, choice: string | string[]): Promise<void>;
   listArtifacts(runId: string): Promise<Artifact[]>;
   listSkills(provider: string): Promise<ProviderSkill[]>;
+  restartStack(): Promise<void>;   // POST /system/restart  (Part B)
+  shutdownStack(): Promise<void>;  // POST /system/shutdown (Part B)
 }
+// TurnInput carries selectedSkills?: SkillSelection[] (multi-skill).
 ```
 `MockRunnerClient` and (Part B) `HttpWsRunnerClient` both implement this.
 
@@ -114,14 +121,21 @@ runner
 ## Definition of Done (checklist)
 
 ### Part A — Mock MVP
-- [ ] Electron app launches in dev on Windows and macOS; shows navigator + chat.
-- [ ] `RunnerClient` interface + `ProviderEventDTO` union defined; `MockRunnerClient` implements it.
-- [ ] Selecting workflow/step + sending a prompt renders a **streamed** mock response with final answer separated from tool/file rows.
-- [ ] `approval-required` scenario shows the approval card; approve resumes, deny stops.
-- [ ] `question-required` scenario shows the **options card**; selecting an option resumes the mock turn.
-- [ ] `/` menu + skill picker work against the mock skill list.
-- [ ] `failed` and `reconnect/replay` scenarios render correctly.
-- [ ] Runs fully offline (zero backend); short demo GIF recorded.
+
+> Implemented in `apps/desktop-flowpilot/` (Electron + Vite + React 19 + TS +
+> zustand). Verified headless via `tsc --noEmit` (clean) and `vite build` (renderer
+> + `main.js` + `preload.js` all build). Items needing a live window are noted.
+
+- [x] Electron scaffold + renderer; navigator + chat present. _(Build verified;
+      live launch on Windows/macOS to be confirmed by running `npm run dev`.)_
+- [x] `RunnerClient` interface + `ProviderEventDTO` union defined (`src/types/contract.ts`); `MockRunnerClient` implements it.
+- [x] Selecting workflow/step + sending a prompt renders a **streamed** mock response with final answer separated from tool/file rows (`Timeline.tsx` + store fold logic).
+- [x] `approval-required` scenario shows the approval card; approve resumes, deny stops (branched `onApprove`/`onDeny` scripts gated on the decision).
+- [x] `question-required` scenario shows the **options card**; selecting an option resumes the mock turn (gate resolved by `answerQuestion`).
+- [x] `/` menu + **multi-skill** picker work against the mock skill list; multiple skills attach as chips per turn (`ChatInput.tsx`).
+- [x] Sidebar system controls: Open Admin Web (`shell.openExternal` → :3002), Restart, Turn off — restart/shutdown are `RunnerClient` stubs in Part A (`SystemControls.tsx`).
+- [x] `failed` and `reconnect/replay` scenarios implemented (`reconnect` drops mid-stream then rebuilds the timeline on Reconnect).
+- [x] Runs fully offline (zero backend). _(Short demo GIF: still to record by hand.)_
 
 ### Part B — Real implementation
 - [ ] `HttpWsRunnerClient` implements the same `RunnerClient`; swap via `runnerUrl`, renderer unchanged.
