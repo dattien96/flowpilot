@@ -169,12 +169,18 @@ export interface RunnerClient {
   sendTurn(input: TurnInput): AsyncIterable<ProviderEventDTO>;
   submitApproval(approvalId: string, decision: string): Promise<void>;
   answerQuestion(questionId: string, choice: string | string[]): Promise<void>;
+  /** Stop the in-flight turn (POST /client/workflow-runs/{runId}/interrupt). */
+  interrupt(runId: string): Promise<void>;
+  /** Attach to a run's event stream and replay from afterSeq — used on reconnect. */
+  streamRun(runId: string, afterSeq?: number): AsyncIterable<ProviderEventDTO>;
   listArtifacts(runId: string): Promise<Artifact[]>;
   listSkills(provider: string): Promise<ProviderSkill[]>;
   /** System control — mirrors admin-web's runner gateway (`POST /system/restart`). */
   restartStack(): Promise<void>;
   /** System control — mirrors admin-web's runner gateway (`POST /system/shutdown`). */
   shutdownStack(): Promise<void>;
+  /** Dev-only fake-adapter scenario hint (mock + P2 fake adapter); real runtimes ignore it. */
+  setScenario?(scenario: string): void;
 }
 
 // ---- IdeBridge (Part A stub) -----------------------------------------------
