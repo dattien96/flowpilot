@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"sync"
@@ -43,6 +44,12 @@ type InteractiveService struct {
 
 	approvalTTL time.Duration
 	questionTTL time.Duration
+
+	// maxTurnAttempts bounds send-with-retry: a turn whose adapter call fails with a
+	// recoverable error (e.g. the shared app-server stream died mid-turn) is re-sent
+	// up to this many times before failing the turn (04-05 send-with-retry). A user
+	// interrupt or an approval/question expiry is NOT retried.
+	maxTurnAttempts int
 }
 
 type interactiveRun struct {
@@ -116,6 +123,7 @@ func NewInteractiveServiceWithRegistry(registry *ProviderRegistry) *InteractiveS
 		activeAccountID: "default",
 		approvalTTL:     10 * time.Minute,
 		questionTTL:     10 * time.Minute,
+		maxTurnAttempts: 3,
 	}
 }
 
@@ -414,7 +422,7 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		Scenario:          scenario,
 	}
 	bridge := &turnBridge{svc: s, rs: rs, ctx: ctx, turnID: turnID}
-	err := adapter.SendTurn(ctx, req, bridge)
+	err := s.sendTurnWithRetry(ctx, adapter, req, bridge)
 
 	completed, fin := s.finishTurn(rs, turnID, err)
 
@@ -423,6 +431,44 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	if completed {
 		_ = s.finalizer.Finalize(fin)
 	}
+}
+
+// sendTurnWithRetry runs the adapter turn, re-sending on a recoverable error up to
+// maxTurnAttempts (04-05 send-with-retry). A user interrupt (ctx cancel) and an
+// approval/question expiry are terminal — not retried. Between attempts it emits a
+// note so the timeline shows the recovery.
+func (s *InteractiveService) sendTurnWithRetry(ctx context.Context, adapter ProviderRuntimeAdapter, req TurnRequest, bridge TurnBridge) error {
+	attempts := s.maxTurnAttempts
+	if attempts < 1 {
+		attempts = 1
+	}
+	var err error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		err = adapter.SendTurn(ctx, req, bridge)
+		if err == nil || !isRecoverableSendError(err) || attempt == attempts {
+			return err
+		}
+		bridge.Emit(ProviderEvent{
+			Type: EventMessageDelta,
+			Text: fmt.Sprintf("\n[recovering: re-sending turn after a recoverable error (attempt %d/%d)]\n", attempt+1, attempts),
+		})
+	}
+	return err
+}
+
+// isRecoverableSendError reports whether a failed SendTurn should be re-sent. A user
+// interrupt and an approval/question expiry are intentional terminal outcomes.
+func isRecoverableSendError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if errors.Is(err, errApprovalExpired) || errors.Is(err, errQuestionExpired) {
+		return false
+	}
+	return true
 }
 
 // finishTurn does the locked post-turn bookkeeping: clears in-flight state, emits
