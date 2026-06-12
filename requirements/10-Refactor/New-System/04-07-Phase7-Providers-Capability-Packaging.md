@@ -67,10 +67,21 @@ provider capabilities in the UI, and package/sign the desktop app for distributi
 
 ## Definition of Done (checklist)
 
-- [ ] Core depends on provider interfaces, not Codex classes; Codex registered implemented.
-- [ ] Claude/Gemini placeholders visible-but-unavailable (T-19); cannot be default.
-- [ ] Provider capability model + UI surfaces disabled/lower-confidence clearly; **runner-side rejection** of disabled/incapable providers (typed error), not UI-only.
-- [ ] Linux AppImage/`.deb` shipped (unsigned/self-signed, documented); Windows + macOS signed.
-- [ ] Electron build → Windows + macOS from one codebase; macOS signed/notarized via CI; auto-update wired.
-- [ ] Operator docs (YOLO posture, sandbox requirement) + migration notes (retire `="approve"`, orchestration moved to runner).
+> Implemented in `apps/local-runner/internal/runner/` (`provider_registry.go`
+> Selectable/DefaultProviderKey + `createRun` enforcement) with `phase7_test.go`;
+> desktop packaging in `apps/desktop-flowpilot/package.json` (electron-builder) +
+> `.github/workflows/desktop-release.yml`; docs in `04-07-Operator-Docs.md` +
+> `04-07-Migration-Notes.md`. `go vet` clean; all Phase 7 tests pass; no regressions
+> vs the HEAD baseline; desktop `tsc`/`vite build` green.
+> **Deferred:** real Claude/Gemini adapters (their own adapters + tests, future);
+> signed installers + an actual packaging smoke run (needs CI runners + Apple/Win
+> signing secrets — the config + workflow are in, signing activates when secrets are
+> present); auto-update server wiring.
+
+- [x] Core depends on provider **interfaces** (`ProviderRuntimeAdapter` + registry), not Codex classes; Codex registered (fake-backed available until the live registry swap, 06 Part D).
+- [x] Claude/Gemini placeholders visible-but-unavailable (T-19); never the default (`DefaultProviderKey` skips non-available).
+- [x] Provider capability model surfaced (`/admin/providers` returns status + capability flags); **runner-side rejection** of disabled/incapable providers with the typed `UnsupportedProviderRuntimeError` envelope (`createRun` + the `startTurn` adapter guard), not UI-only. _(Desktop capability badges are a thin-client display detail on top of this data.)_
+- [~] Packaging targets configured: Linux AppImage/`.deb` (unsigned, documented), Windows nsis, macOS dmg/zip with notarize. _Signing/notarization + the signed-installer launch smoke are deferred to CI with secrets._
+- [~] Electron build → Windows + macOS + Linux from one codebase via the CI matrix; macOS signed/notarized **when secrets present**. _Auto-update server wiring deferred (electron-builder GitHub publish target is configured)._
+- [x] Operator docs (YOLO posture incl. YOLO=true disables gating, sandbox requirement) + migration notes (retire `="approve"`, orchestration moved to the runner, `ExecutePrompt` retirement criteria).
 - [ ] **Review gate:** human + AI review this checklist after the phase.
