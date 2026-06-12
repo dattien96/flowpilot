@@ -24,6 +24,13 @@ model, the final decision, and the exact migration surface.
     (1 runner = 1 workspace). To support "many projects, many chats each" in one
     client, the runner must become multi-workspace, and then one shared app-server
     is the natural fit.
+  - **Account dimension (from code review):** auth (`CODEX_HOME`), proxy, and env
+    are process-scoped (`getEnvForExecution`), so the shared app-server is bound to
+    the **active provider account**. Changing the active account (manual, or the
+    future auto-switch-on-usage-limit feature) **recreates** the app-server, and
+    **threads are account-scoped** (persist the owning account; resume only while it
+    is active). Precisely: one shared app-server **per active account**,
+    multi-workspace via `cwd`-per-thread.
 - **Session model:** **lean on Codex thread APIs**, do not build a custom session
   registry. FlowPilot workspace = Codex `cwd`; FlowPilot chat session = Codex
   thread; persist only the `(workspace, threadId)` mapping for list/resume.
@@ -35,6 +42,10 @@ model, the final decision, and the exact migration surface.
   Windows + macOS + Linux), used alongside any IDE (VS Code, Android Studio,
   Xcode) — not a VS Code extension. The React webview stays IDE-agnostic; optional
   VS Code/JetBrains plugins may reuse it later. See "Interactive Client Strategy".
+- **Single backend:** the **Go runner owns all logic** and calls Supabase directly;
+  the orchestration that lives in the admin-web server tier today
+  (`workflow-start-runtime.ts`) is **ported into the runner**. Web UI + Desktop are
+  thin clients. There is no separate orchestration service. (See `03` / `04-05`.)
 - **Approval model:** **YOLO is the single source of truth (SSOT)** for approval
   posture. One resolved YOLO value drives **both** the FlowPilot runner policy and
   the Codex thread/turn config (sandbox + approval mode), consistently. This
@@ -153,10 +164,13 @@ Electron     (later) VS Code  (later) JetBrains
 desktop app   plugin shell     plugin shell
    +-------------+--------------+
                  |
-        FlowPilot Runner (Go, SSOT) -- Codex app-server
+   Go Runner (single backend: workflow logic, app-server, finalize, Supabase)
+                 |
+            Codex app-server
 ```
 
-- **Runner** (Go) stays the single source of truth — shared by all clients.
+- The **Go Runner is the single backend** — it owns all workflow logic and calls
+  Supabase directly (see `03` topology + `04-05`). Clients stay thin.
 - **React webview** holds the chat UI and talks only to the runner over HTTP/WS.
   Keep it free of Electron/IDE specifics so a future VS Code/JetBrains plugin can
   reuse it.

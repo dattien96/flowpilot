@@ -50,6 +50,7 @@ the verification item (T-xx in Part C) that proves it.
 | PP-28 | YOLO=true posture not visible/audited | explicit per-run YOLO + audit record | YOLO=true run is auditable as gating-disabled (explains absent approvals) | T-24 |
 | PP-29 | Command execution not captured as a distinct event | `commandExecution` → `tool_started`/`tool_completed` with exit status | A command run maps to discrete command events with status, separate from the assistant message | T-26 |
 | PP-30 | Retry semantics unverified (finalizer / failed turn) | finalizer-failure + `turn_failed(recoverable)` retry paths | Finalizer failure is retried without erasing the completed turn; a recoverable failed turn is re-sendable | T-27, T-28 |
+| PP-31 | No structured "ask the user" interaction (confirm/options popup) | `ask_user` MCP tool (model-driven) **and** workflow-driven `user_question_required` (deterministic), via the user-interaction bridge | Both paths render an options card; selecting an option resumes the turn/step with the choice | T-29, T-30 |
 
 **Coverage rule:** the refactor is not done until every PP-xx row is `[x]` and its
 linked T-xx passes.
@@ -146,6 +147,8 @@ back to the PP-xx it proves (Part A).
 - [ ] **T-26** `commandExecution` notification maps to `tool_started`/`tool_completed` with exit status, separate from the assistant message → PP-04, PP-29
 - [ ] **T-27** finalizer failure is retried and succeeds while the provider turn stays `completed` (turn not erased) → PP-30
 - [ ] **T-28** a `turn_failed` with `recoverable=true` can be re-sent and completes → PP-30
+- [ ] **T-29** `ask_user` (FlowPilot MCP tool, model-driven) emits `user_question_required` with options; selecting an option resumes the turn with the chosen value → PP-31
+- [ ] **T-30** a workflow-driven `user_question_required` (runner-emitted, no model tool call) renders the same card and the answer resumes the step → PP-31
 
 ### Regression / fallback
 - [ ] **T-19** fallback `ExecutePrompt` path still passes existing runner tests

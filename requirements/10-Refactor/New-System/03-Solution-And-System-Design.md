@@ -2,14 +2,35 @@
 
 ## Chosen Direction
 
-FlowPilot should move to a three-part system:
+FlowPilot moves to a **three-part system** with the **Go Runner as the single
+backend**:
 
-1. Runner Runtime
-2. Admin Web
-3. Interactive Client UX
+1. **Go Runner** — the single backend and source of truth (`apps/local-runner`). It
+   owns **all** business logic: workflow run/step state machine & sequencing,
+   base-prompt build from step definitions, skill + required-MCP injection, the
+   Codex app-server (one shared instance per active account), threads/turns,
+   normalized events, approval bridge, YOLO resolver, MCP proxy enforcement, and
+   post-turn finalize (artifacts, summary, Supabase RAG, Google-Drive audit). **The
+   Go runner calls Supabase directly** (in Go) for run/step/history state.
+2. **Web UI (Admin)** — thin React client for config, history, and audit; calls the
+   runner.
+3. **Desktop Client (Electron)** — thin cross-platform coding client (any IDE);
+   calls the runner.
+
+There is **no separate orchestration tier**. All logic flows through the Go runner;
+clients render only and never duplicate workflow rules. This makes "the runner owns
+business logic" literally true, and gives the Desktop Client the exact same backend
+the Web UI uses.
+
+> **Migration consequence:** the orchestration that lives in the Admin Web **server**
+> tier today (`workflow-start-runtime.ts`: prompt build, session sync,
+> send-with-retry, finalize, RAG, Google-Drive audit) must be **ported from TS into
+> the Go runner**, and the runner must call Supabase in Go (there is precedent —
+> artifact cloud sync / Supabase config already run in the runner). This is a
+> substantial migration — see `04-05` and Open Architecture Risks.
 
 Codex app-server is not the whole architecture. It is the Codex implementation
-inside a provider-neutral runtime gateway.
+inside a provider-neutral runtime gateway in the Go Runner.
 
 ## Architecture Goals
 
@@ -61,17 +82,24 @@ back to native Codex App as the main product surface.
 The runner should be a long-lived local or server-side process that exposes APIs
 to Admin Web and interactive clients.
 
+All modules below live in the **Go Runner** (the single backend). Those marked
+**(port)** are migrated from the current Admin Web server tier
+(`workflow-start-runtime.ts`) into Go.
+
 Internal modules:
 
-- `WorkflowRuntime`: owns run and step lifecycle
-- `PromptOptimizer`: creates optimized prompts from workflow definitions
+- `WorkflowRuntime`: owns run and step lifecycle **(port** from admin-web server**)**
+- `PromptOptimizer`: builds the turn prompt — base-prompt build from step definitions
+  (`deriveStepPromptBase`, **port** from admin-web) plus skill + required-MCP injection
+  (`injectSkillContent` + `preparePromptForRequiredMcps`, already in the Go runner)
 - `ProviderRuntimeGateway`: selects and calls provider adapters
 - `McpProxyRuntime`: owns FlowPilot proxy tools and policy
 - `ApprovalPolicyEngine`: decides what can be auto-approved, blocked, or shown
   to the user
 - `ProviderEventStore`: persists normalized provider events
 - `ProviderSessionStore`: persists provider session/thread metadata
-- `TurnFinalizer`: saves final response, artifacts, summary, and RAG metadata
+- `TurnFinalizer`: saves final response, artifacts, summary, RAG, Google-Drive audit
+  **(port** from admin-web server**)**
 - `ClientEventHub`: streams normalized events to the desktop client and Admin Web
 
 ### Admin Web
@@ -92,7 +120,7 @@ Main modules:
 ### Interactive Desktop Client (Electron)
 
 The interactive client is a **cross-platform Electron desktop app** (final
-decision — see `04 §4.2` and `05` "Interactive Client Strategy"). One codebase runs
+decision — see `04-01` and `05` "Interactive Client Strategy"). One codebase runs
 on Windows + macOS (+ Linux) and works alongside any IDE (VS Code, Android Studio,
 Xcode). It is a client of the runner interactive APIs.
 
@@ -169,6 +197,10 @@ The stream should emit normalized FlowPilot events, not raw provider events.
 
 ## Event Flow
 
+> "optimize prompt" below = base-prompt build (ported into the runner) + skill/MCP
+> injection — all in the Go runner before `turn/start`. Finalize also runs in the
+> runner on `turn_completed`.
+
 Normal turn:
 
 ```text
@@ -214,25 +246,27 @@ CodexAdapter
 
 ### 1. Runner Runtime
 
-The runner is the source of truth.
+The Go Runner is the single backend and source of truth; clients never duplicate
+workflow rules. Items marked **(port)** are migrated from the admin-web server tier.
 
 Responsibilities:
 
-- workflow state machine
-- workflow run and step state
-- prompt optimization
+- workflow state machine **(port)**
+- workflow run and step state **(port)**
+- base-prompt build **(port)** + skill/MCP injection ("prompt optimization")
 - Provider Runtime Gateway
 - Codex app-server adapter
 - Claude and Gemini adapter placeholders
 - MCP proxy
-- approval/proxy policy
+- approval bridge + approval/proxy policy
 - provider session persistence
 - normalized provider event persistence
-- artifact writer
-- summary generator
-- Supabase RAG indexer
+- artifact writer **(port)**
+- summary generator **(port)**
+- Supabase RAG indexer **(port)**
+- calls Supabase directly (in Go) for run/step/history state
 
-The runner owns business logic. No client should duplicate workflow rules.
+The Go runner owns business logic. No client should duplicate workflow rules.
 
 ### 2. Admin Web
 
@@ -276,20 +310,18 @@ must not speak raw Codex app-server JSON-RPC directly.
 ### Layer Dependency Rule
 
 ```text
-Admin Web -----------+
-                     |
-Desktop Client ---+--> Runner Runtime --> Provider Runtime Gateway
-                                             |
-                                             +--> Codex app-server
-                                             +--> Claude adapter
-                                             +--> Gemini adapter
+Web UI (Admin) ---+
+                  +--> Go Runner ----> Provider Runtime Gateway
+Desktop Client ---+   (single backend)     +--> Codex app-server
+                          |                 +--> Claude adapter
+                      Supabase (direct)     +--> Gemini adapter
 ```
 
 Allowed dependencies:
 
-- Admin Web depends on runner/admin APIs.
-- desktop client depends on runner/interactive APIs.
-- Runner depends on provider adapter interfaces.
+- Web UI and Desktop Client depend on the Go Runner APIs + its normalized event
+  stream.
+- Go Runner depends on provider adapter interfaces and calls Supabase directly.
 - Provider adapters depend on provider-specific runtimes.
 
 Disallowed dependencies:
@@ -300,6 +332,11 @@ Disallowed dependencies:
 - Provider adapters update workflow state directly.
 
 ## Provider Runtime Gateway
+
+> **Note on language:** the runner is implemented in **Go** (`apps/local-runner`).
+> The TypeScript interfaces below are **illustrative, language-neutral contracts**;
+> the authoritative implementation shapes are the Go ones in `04-03`/`04-04`. Only the
+> desktop client and Admin Web are TypeScript.
 
 The runner should define a provider-neutral adapter contract.
 
@@ -566,7 +603,8 @@ workflow_provider_sessions
   workflow_run_id
   workflow_step_run_id nullable
   provider_key
-  provider_session_id
+  provider_account_id        # owning account — thread JSONL lives under its CODEX_HOME
+  provider_session_id        # for Codex this equals provider_thread_id (document the mapping)
   provider_thread_id nullable
   provider_turn_id nullable
   transport
@@ -653,6 +691,46 @@ Recovery rules:
   runner state
 - if multiple clients are connected, the runner remains the single decision
   authority
+
+## Open Architecture Risks
+
+Unresolved design tensions surfaced by code review; resolve before/with
+implementation (mirrored in `04` Open Questions).
+
+1. **App-server is bound to the active provider account (RESOLVED).** Provider auth
+   (`CODEX_HOME`/`HOME`), proxy, and custom env are applied **per request** today
+   (`getEnvForExecution`, `runner.go:3394`), and FlowPilot supports an **active
+   account per provider** (plus optional per-step override
+   `provider_account_override_id`). The shared app-server is therefore bound to the
+   **currently active Codex account**; changing the active/effective account
+   (manual switch, or the future auto-switch-on-usage-limit feature) **recreates**
+   the app-server instance. Consequence — **threads are account-scoped**: a thread's
+   JSONL log lives under that account's `CODEX_HOME`, so the `(workspace, threadId)`
+   mapping must also store the owning account, and `thread/resume`/`thread/list` are
+   valid only while that account is active. See `05` and `04-03`/`04-06`.
+2. **Concurrency/dispatch.** A shared app-server multiplexes many threads over one
+   stdio; it needs an async request/notification dispatcher (id→waiter map,
+   per-thread event routing, non-blocking read loop, stdin write mutex), not the
+   current synchronous single-in-flight model (`readJsonRpcResponseWithHandler` +
+   `SendMu`, hardcoded id `3`). See `04-03`.
+3. **Prompt construction location — RESOLVED (see #6).** Base-prompt build
+   (`deriveStepPromptBase`) is **ported into the Go runner**, not a separate service;
+   clients send step id + user input.
+4. **Provider session vs thread identity.** For Codex, `provider_session_id` and
+   `provider_thread_id` collapse to the Codex thread id. The data model keeps both
+   columns; the adapter must document the mapping (Codex: both = thread id) so the
+   schema is not misread as two distinct ids.
+5. **Multi-workspace `r.workspace` dependencies.** Going multi-workspace requires
+   auditing every `r.workspace` use (`.env` load, runs dir `runner.go:872`, Google
+   Drive config, artifacts) to key off the active workspace/`cwd`.
+6. **Orchestration tier — RESOLVED: port into the Go runner.** Much business logic
+   (prompt build `deriveStepPromptBase`, provider-session sync, send-with-retry,
+   artifact snapshot, Google-Drive write audit, RAG finalize) lives in the Admin Web
+   **server** tier today (`workflow-start-runtime.ts`, `node:fs`/`node:crypto`).
+   **Decision:** port it into the **Go runner** so the runner is the single backend
+   and calls Supabase directly in Go. Web UI and Desktop Client are thin and call
+   the runner. This is the main scope item — a substantial TS→Go migration (prompt
+   build, session sync, retry, finalize, RAG, GDrive audit, Supabase access).
 
 ## Design Rules
 
