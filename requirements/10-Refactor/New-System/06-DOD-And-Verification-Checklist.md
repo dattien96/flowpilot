@@ -81,7 +81,9 @@ Grounded in `05` work items (W1–W8) and `04` implementation order.
 - [ ] Workspace registration/binding path; client can select active `cwd`
 
 ### Codex JSON-RPC + thread APIs (W2, W3)
-- [ ] Codex payload builders next to `geminiACP*Params` (`sessions.go:265`): `initialize`, `thread/start` (with `cwd`), `thread/resume`, `thread/list`, `thread/read`, `turn/start`, approval decision
+- [ ] Codex payload builders next to `geminiACP*Params` (`sessions.go:265`): `initialize` (capture version/caps), `thread/start` (with `cwd` **+ `mcpServers`** — FlowPilot proxy + required MCPs + `ask_user`), `thread/resume`, `thread/list`, `thread/read`, `turn/start`, approval decision
+- [ ] **Async dispatcher** handles three message kinds — responses (id→waiter + per-request timeout), notifications (per-thread routing), and **inbound server→client requests routed to a reply-capable handler** (approval/`ask_user`); non-blocking read loop with bounded per-turn buffers; stdin write mutex (no synchronous helper / `SendMu` / id `3`)
+- [ ] **Process lifecycle:** read-loop EOF/error/process-death drains all waiters + turn channels with error, marks the handle dead, restarts on next ensure (no hung turns)
 - [ ] `(workspace, threadId)` persistence (no custom session registry)
 - [ ] `thread/list` filtered by `cwd`, `thread/resume`, `thread/read` wired
 
@@ -158,6 +160,10 @@ back to the PP-xx it proves (Part A).
 - [ ] **T-28** a `turn_failed` with `recoverable=true` can be re-sent and completes → PP-30
 - [ ] **T-29** `ask_user` (FlowPilot MCP tool, model-driven) emits `user_question_required` with options; selecting an option resumes the turn with the chosen value → PP-31
 - [ ] **T-30** a workflow-driven `user_question_required` (runner-emitted, no model tool call) renders the same card and the answer resumes the step → PP-31
+
+### Dispatcher robustness (`04-03`)
+- [ ] **T-37** an inbound server→client request (e.g. approval/elicitation) is routed to a reply-capable handler, not just observed → PP-03
+- [ ] **T-38** dispatcher failure handling: a response timeout frees its waiter; process death drains all pending waiters + turn channels with error (no hung turns); per-turn backpressure never blocks the read loop → PP-07, PP-30
 
 ### P2 API robustness & reconnect (`04-02`)
 - [ ] **T-31** interrupt cancels an in-flight turn cleanly; turn marked `cancelled` → PP-16
