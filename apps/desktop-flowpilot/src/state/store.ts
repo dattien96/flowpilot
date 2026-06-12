@@ -13,6 +13,7 @@ import type {
 } from "@/types/contract";
 import type { RunnerClient } from "@/types/contract";
 import { createRunnerClient } from "@/client/createRunnerClient";
+import { RunnerApiError } from "@/client/HttpWsRunnerClient";
 import type { ScenarioName } from "@/client/mockData";
 import { ideBridge } from "@/client/ideBridge";
 import { ADMIN_WEB_URL } from "@/config";
@@ -113,10 +114,27 @@ export const useStore = create<AppState>((set, get) => ({
 
   async loadProjects() {
     const client = get().client;
-    // Load independently so one failure does not blank the other, and surface any
-    // error (a silent empty list was impossible to diagnose otherwise).
+    // The runner starts via `go run`, which compiles first (~10-30s) before it
+    // listens — so the first fetches can hit connection-refused ("Failed to fetch").
+    // Retry ONLY connection-level errors (not HTTP errors like 502, which won't fix
+    // themselves) so the navigator fills in once the runner is up, without a manual
+    // reload. Load projects/skills independently and surface a final error.
+    const withRetry = async <T>(fn: () => Promise<T>): Promise<T> => {
+      let lastErr: unknown;
+      for (let i = 0; i < 10; i++) {
+        try {
+          return await fn();
+        } catch (err) {
+          lastErr = err;
+          if (err instanceof RunnerApiError) throw err; // got an HTTP response — real error
+          await new Promise((r) => setTimeout(r, 1500)); // connection refused — runner still booting
+        }
+      }
+      throw lastErr;
+    };
+
     try {
-      const projects = await client.listProjects();
+      const projects = await withRetry(() => client.listProjects());
       set({ projects });
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -129,7 +147,7 @@ export const useStore = create<AppState>((set, get) => ({
       }));
     }
     try {
-      const skills = await client.listSkills("codex");
+      const skills = await withRetry(() => client.listSkills("codex"));
       set({ skills });
     } catch (err) {
       // eslint-disable-next-line no-console
