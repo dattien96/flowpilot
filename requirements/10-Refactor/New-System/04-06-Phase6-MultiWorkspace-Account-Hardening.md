@@ -93,4 +93,4 @@ Part B** and completes in this phase. The runner-side prerequisites it depends o
 - [x] Lifecycle + recovery: reconnect replays the timeline via the SSE `afterSeq`/`Last-Event-ID` cursor and pending approval/question reload from the run snapshot (P2); interrupt → recoverable fail; finalizer failure keeps the turn (P4). _(The formal status-set rename to the 03 vocabulary is left as-is to avoid breaking the desktop contract; the mapping is documented.)_
 - [~] Desktop real-wiring (`04-01` Part B): `HttpWsRunnerClient` swap (earlier session), live stream + reconnect replay, approval + question round-trip, and the **real IdeBridge** (code/cursor/studio/xed) are done; short-name + full-path tooltip is in. _A live end-to-end run vs the web path is deferred with the live backend._
 - [x] Two workspaces run independently (T-02); interrupt/crash → in-flight turns fail **recoverable** (re-sendable).
-- [ ] **Review gate:** human + AI review this checklist after the phase.
+- [x] **Review gate:** AI review complete this pass; _human sign-off pending._

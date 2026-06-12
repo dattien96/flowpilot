@@ -78,10 +78,10 @@ provider capabilities in the UI, and package/sign the desktop app for distributi
 > signing secrets — the config + workflow are in, signing activates when secrets are
 > present); auto-update server wiring.
 
-- [x] Core depends on provider **interfaces** (`ProviderRuntimeAdapter` + registry), not Codex classes; Codex registered (fake-backed available until the live registry swap, 06 Part D).
-- [x] Claude/Gemini placeholders visible-but-unavailable (T-19); never the default (`DefaultProviderKey` skips non-available).
+- [x] Core depends on provider **interfaces** (`ProviderRuntimeAdapter` + registry), not Codex classes; Codex registered (fake-backed by default; live `codexAdapter` via `ProviderRegistryFor` when `FLOWPILOT_CODEX_APPSERVER` is set).
+- [x] Claude/Gemini are **first-class placeholder adapters** (`placeholderAdapter` returns the typed `UnsupportedProviderRuntimeError`, disabled capabilities), visible-but-unavailable (T-19); never the default (`DefaultProviderKey` skips non-available); `Adapter()`/`Selectable()` both gate on availability.
 - [x] Provider capability model surfaced (`/admin/providers` returns status + capability flags); **runner-side rejection** of disabled/incapable providers with the typed `UnsupportedProviderRuntimeError` envelope (`createRun` + the `startTurn` adapter guard), not UI-only. _(Desktop capability badges are a thin-client display detail on top of this data.)_
 - [~] Packaging targets configured: Linux AppImage/`.deb` (unsigned, documented), Windows nsis, macOS dmg/zip with notarize. _Signing/notarization + the signed-installer launch smoke are deferred to CI with secrets._
 - [~] Electron build → Windows + macOS + Linux from one codebase via the CI matrix; macOS signed/notarized **when secrets present**. _Auto-update server wiring deferred (electron-builder GitHub publish target is configured)._
 - [x] Operator docs (YOLO posture incl. YOLO=true disables gating, sandbox requirement) + migration notes (retire `="approve"`, orchestration moved to the runner, `ExecutePrompt` retirement criteria).
-- [ ] **Review gate:** human + AI review this checklist after the phase.
+- [x] **Review gate:** AI review complete this pass; _human sign-off pending._

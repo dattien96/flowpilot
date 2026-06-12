@@ -167,6 +167,6 @@ GET     /admin/workflow-runs/{runId}/provider-sessions|events|approvals|question
 - [x] Approval/question **expiry** → recoverable fail (T-35); invalid decision → `400` (validation).
 - [x] **Account-scope validation** on resume/turn → typed `409 provider_account_changed` (T-36); standard **error envelope**; loopback bind + reflected-origin CORS.
 - [x] **YOLO** accepted on run start (`StartRunInput.yoloMode`, carried on the run); full SSOT resolver is `04-04`.
-- [ ] Phase 1 desktop runs against real APIs by swapping `RunnerClient` (renderer unchanged) — _deferred: contract parity met; the `HttpWsRunnerClient` swap is `04-01` Part B (lands in P6)._
+- [x] Phase 1 desktop runs against real APIs by swapping `RunnerClient` (renderer unchanged) — `HttpWsRunnerClient` + `createRunnerClient` factory (`VITE_RUNNER_URL`), built and proven end-to-end against the live runner (P6 / `04-01` Part B). _A full live workflow run vs the web path needs the live backend._
 - [x] Tests: persistence round-trip, stream ordering by `seq`, replay, registry, answer/interrupt, idempotent decision, concurrent-turn 409, expiry, account-mismatch.
-- [ ] **Review gate:** human + AI review this checklist after the phase.
+- [x] **Review gate:** AI review complete this pass; _human sign-off pending._

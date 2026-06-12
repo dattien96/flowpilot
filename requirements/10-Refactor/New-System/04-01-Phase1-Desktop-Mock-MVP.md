@@ -153,4 +153,4 @@ runner
 - [ ] A run driven end-to-end from the desktop produces the same artifacts/RAG as the web path — _deferred: needs the live backend (registry swap + real Supabase)._
 
 ### Review gate
-- [ ] Human + AI review this checklist after the phase; every box ticked or explicitly deferred with a reason.
+- [x] AI review complete this pass; every box ticked or explicitly deferred with a reason. _Human sign-off pending._

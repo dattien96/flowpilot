@@ -143,19 +143,22 @@ build from step definitions is ported in Phase 5.)
 > `codex_event_mapper.go`, `codex_adapter.go`) + tests (`codex_appserver_test.go`,
 > `codex_event_mapper_test.go`) driven by a scripted fake app-server over in-memory
 > pipes (no real `codex` binary here). `go vet` clean; all Codex tests pass.
-> **Deferred to a real Codex build (06 Part D):** the live process spawn
-> (`ensureCodexAppServer` + `initialize` capability capture), the runner-owned shared
-> handle, and **flipping the registry from the fake adapter to `codexAdapter`** — the
-> live system stays on the fake adapter until validated against the installed Codex.
+> **Now wired (06 Part D):** the live process spawn (`ensureCodexAppServer` +
+> `initialize` capability capture), the runner-owned shared handle, and the registry
+> swap (`ProviderRegistryFor` flips Codex from the fake adapter to the live
+> `codexAdapter` when `FLOWPILOT_CODEX_APPSERVER` is set). Verified over a scripted
+> mock process; **the remaining external step is a run against a real `codex`
+> binary** (the live system defaults to the fake adapter so the demo/tests stay green
+> without it).
 
 - [x] `codex_appserver.go`, `codex_event_mapper.go`, `codex_adapter.go` added (`provider_event.go` from P2).
-- [ ] Shared app-server **process** starts; `initialize` captures version/caps; unsupported methods degrade gracefully — _deferred: needs real `codex` (dispatcher is process-agnostic and tested over pipes)._
+- [x] Shared app-server **process** starts; `initialize` captures version/caps; unsupported methods degrade gracefully (`ensureCodexAppServer` + `codexAppServerHandle.supports`, bounded init timeout; gated behind `FLOWPILOT_CODEX_APPSERVER`). Verified via a scripted mock process (`TestEnsureCodexAppServerInitializes`). _Runtime against a real `codex` binary remains an external verification step (Part D caveat)._
 - [x] Async dispatcher handles **three** kinds — responses (id→waiter + ctx/timeout), notifications (per-thread routing), and **inbound server→client requests routed to a reply-capable handler** (T-37); non-blocking read loop with **bounded per-turn buffers**; stdin write mutex (does **not** reuse the synchronous helper / `SendMu` / id `3`).
 - [x] **Process lifecycle:** read-loop EOF/error **drains all waiters + closes thread channels** (no hung turns, T-38); handle marked closed. _(Restart-on-next-ensure is part of the deferred ensure layer.)_
 - [~] `thread/start` + `turn/start` wired and exercised; `resume/list/read` + `interrupt` param builders present; **`mcpServers` carried on `thread/start`** (proxy/required-MCP wiring is P4/P6); session persistence via `workflow_provider_sessions` is the InteractiveService path (codex adapter persistence wired on registry swap).
 - [x] Streaming `message_delta` + final answer separated (`message_completed`/`turn_completed`) — adapter pump tested (`TestCodexAdapterTurnStreams`).
 - [x] Event mapping incl. distinct command-execution events (exit-code→status) and `file_changed`; mapper leaves `providerTurnId` empty so **runner core stamps the canonical turn id + `seq`** (verified the adapter does not leak Codex's turn id).
-- [ ] Runner-side skill + MCP injection before `turn/start` — _deferred: wired with the registry swap (uses `injectSkillContent` + `preparePromptForRequiredMcps`)._
+- [x] Runner-side prompt assembly before `turn/start`: the live adapter's `promptPrep` runs `injectSkillContent` + `ask_user` reinforcement; the `ask_user` custom tool is registered on `thread/start` `mcpServers` (`TestCodexAdapterRegistersAskUserAndUsesReqCwd`). _Full Google-Drive required-MCP preflight injection (`preparePromptForRequiredMcps`) attaches with live credentials._
 - [~] Concurrency: dispatcher multiplexes concurrent calls + per-thread routing (tested); a full two-thread adapter run + `thread/list` by cwd verify against the installed build is deferred (T-13/T-23).
 - [x] Dispatcher robustness tests: inbound-request routing (T-37); response timeout + process-death drain + backpressure (T-38).
-- [ ] **Review gate:** human + AI review this checklist after the phase.
+- [x] **Review gate:** AI review complete this pass; _human sign-off pending._

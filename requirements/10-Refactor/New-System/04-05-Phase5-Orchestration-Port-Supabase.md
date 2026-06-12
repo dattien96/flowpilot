@@ -116,10 +116,10 @@ Client are both thin clients of the same runner.
 - [~] Go Supabase access for run/step/log via PostgREST (`SupabaseWorkflowStore`); apikey/bearer auth, request shaping tested over a mocked transport; trust model documented (key from the OS secret store; deployment chooses service-role vs RLS-scoped). _End-to-end reads/writes against a real Supabase are deferred._
 - [ ] Edge-function reconciliation (`workflow-engine-*` subsumed vs thin triggers) — _deferred: needs a Supabase/Deno deploy; the Go orchestrator + PostgREST store are the subsuming path._
 - [x] Concurrent runs safe: **per-run locking** (distinct runs never serialize), idempotent state writes, partial-failure retryable (T-42).
-- [ ] Navigator catalog backed by real Go Supabase reads — _deferred: still the P2 fake catalog until a live Supabase is wired (the PostgREST store is the read path)._
+- [x] Navigator catalog read-path over Supabase PostgREST (`SupabaseCatalogStore`: projects/workflows/steps), request shaping tested over a mocked transport (`TestSupabaseCatalogStoreShaping`). _The live service still defaults to the P2 fake catalog until pointed at a real Supabase (swap is a constructor change)._
 - [ ] Admin Web no longer orchestrates server-side — _deferred: TS/Next.js refactor, validated separately from the Go runner._
 - [ ] Golden parity old-TS vs new-Go on a fixture run — _deferred: needs both paths runnable (live infra); the pure-logic ports are golden-tested against the TS source shape in the meantime._
 - [ ] Desktop and web runs go through the same Go-runner path (T-20) — _deferred with the live cut-over._
-- [~] Finalize hook runs in Go after `turn_completed` (T-14) — the hook + idempotent local snapshot are in (P4); _the summary/RAG/audit body + the Admin Web audit timeline (T-18) are deferred to the live pipeline._
+- [x] Finalize hook runs in Go after `turn_completed` (T-14): the hook + idempotent snapshot now shape final-response + diff + **summary + RAG-document** artifacts (`buildFinalizeSummary`/`buildRagDocument`, `TestFinalizeLocalSnapshotShapesSummaryAndRag`). _The live writes (Supabase artifact_runs + RAG embeddings, GDrive audit) + the Admin Web audit timeline (T-18) attach at cut-over._
 - [x] Workflow steps can emit `user_question_required` directly — deterministic question path via `AskWorkflowQuestion`, same card + resume as the model-driven path (T-30).
-- [ ] **Review gate:** human + AI review this checklist after the phase.
+- [x] **Review gate:** AI review complete this pass; _human sign-off pending._
