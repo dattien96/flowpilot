@@ -12,6 +12,7 @@ ADMIN_WEB_PATH := "apps/admin-web"
 ADMIN_WEB_PORT := "3002"
 LOCAL_RUNNER_PATH := "apps/local-runner"
 LOCAL_RUNNER_PORT := "4317"
+DESKTOP_PATH := "apps/desktop-flowpilot"
 
 # --- Default Target ---
 default: help
@@ -66,8 +67,23 @@ runner-dev:
     @echo "Starting local runner on port {{LOCAL_RUNNER_PORT}}..."
     @cd {{LOCAL_RUNNER_PATH}} && go run ./cmd/flowpilot runner serve --port {{LOCAL_RUNNER_PORT}}
 
-# Start admin web and local runner together
+# Install desktop app dependencies
+desktop-install:
+    @echo "Installing desktop app dependencies..."
+    @cd {{DESKTOP_PATH}} && npm install
+    @echo "Done"
+
+# Start the desktop app standalone (Electron + Vite, mock data)
+desktop-dev:
+    @echo "Starting desktop app..."
+    @cd {{DESKTOP_PATH}} && npm run dev
+
+# Start admin web + local runner + desktop app together (all 3 components)
 dev:
+    @node scripts/supervisor.js --web-port {{ADMIN_WEB_PORT}} --runner-port {{LOCAL_RUNNER_PORT}} --restart-existing --with-desktop --desktop-path {{DESKTOP_PATH}}
+
+# Start admin web + local runner only (no desktop app)
+dev-no-desktop:
     @node scripts/supervisor.js --web-port {{ADMIN_WEB_PORT}} --runner-port {{LOCAL_RUNNER_PORT}} --restart-existing
 
 
