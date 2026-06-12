@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { useStore } from "@/state/store";
+import { ProviderAccountsPanel } from "@/components/ProviderAccountsPanel";
 
 // Project / workflow / step selector (the navigator).
 export function Navigator(): React.ReactElement {
@@ -117,6 +118,8 @@ export function Navigator(): React.ReactElement {
           </select>
         </div>
       </div>
+
+      <ProviderAccountsPanel />
     </div>
   );
 }

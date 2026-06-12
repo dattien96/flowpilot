@@ -42,6 +42,38 @@ export interface ProviderSkill {
   source: "provider" | "flowpilot" | "workspace";
 }
 
+export interface ProviderAccountUsageLine {
+  label: string;
+  remainingPercent: number;
+  resetAt: string | null;
+}
+
+export interface ProviderAccountSummary {
+  id: string;
+  providerKey: ProviderKey;
+  displayName: string;
+  displayLabel: string;
+  homePath: string;
+  authStorePath: string | null;
+  slotIndex: number;
+  authStatus: "pending" | "connecting" | "connected" | "failed";
+  isActive: boolean;
+  createdAt: string;
+  lastAuthenticatedAt: string | null;
+  accountEmail: string | null;
+  accountName: string | null;
+  usageSummary: string | null;
+  remaining5hPercent: number | null;
+  remaining7dPercent: number | null;
+  remaining5hResetAt: string | null;
+  remaining7dResetAt: string | null;
+  usageSource: "provider_api" | "unavailable";
+  accessTokenExpiresAt: string | null;
+  refreshTokenExpiresAt: string | null;
+  refreshTokenExpiryNote: string | null;
+  usageDetailLines: ProviderAccountUsageLine[];
+}
+
 export interface Artifact {
   id: string;
   runId: string;
@@ -163,6 +195,7 @@ export interface RunnerClient {
   listProjects(): Promise<Project[]>;
   listWorkflows(): Promise<Workflow[]>;
   listSteps(): Promise<Step[]>;
+  listProviderAccounts(): Promise<ProviderAccountSummary[]>;
   startRun(input: StartRunInput): Promise<RunHandle>;
   resumeRun(runId: string): Promise<RunHandle>;
   /** Streaming turn: yields normalized provider events until terminal. */
@@ -175,6 +208,8 @@ export interface RunnerClient {
   streamRun(runId: string, afterSeq?: number): AsyncIterable<ProviderEventDTO>;
   listArtifacts(runId: string): Promise<Artifact[]>;
   listSkills(provider: string): Promise<ProviderSkill[]>;
+  activateProviderAccount(accountId: string): Promise<void>;
+  openProviderAccountTerminal(accountId: string): Promise<void>;
   /** System control — mirrors admin-web's runner gateway (`POST /system/restart`). */
   restartStack(): Promise<void>;
   /** System control — mirrors admin-web's runner gateway (`POST /system/shutdown`). */

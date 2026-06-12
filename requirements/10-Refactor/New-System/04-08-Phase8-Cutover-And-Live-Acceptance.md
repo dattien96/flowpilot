@@ -31,16 +31,17 @@ providers/data.
 
 There are **two independent layers** between you and a "real" run:
 
-| Layer | Mock/fake default | Real |
-|-------|-------------------|------|
+| Layer                            | Mock/fake default                          | Real                                   |
+| -------------------------------- | ------------------------------------------ | -------------------------------------- |
 | **Transport** (desktop ↔ runner) | `MockRunnerClient` (offline JSON fixtures) | `HttpWsRunnerClient` (live HTTP + SSE) |
-| **Provider** (runner ↔ AI) | fake scripted adapter (scenarios) | real Codex adapter |
+| **Provider** (runner ↔ AI)       | fake scripted adapter (scenarios)          | real Codex adapter                     |
 
 `just dev` now sets `VITE_RUNNER_URL` so the desktop runs on the **real transport**
 (Layer 1 = real). The **provider** still defaults to the **fake adapter** (Layer 2 =
 fake) until `FLOWPILOT_CODEX_APPSERVER=1` + a real `codex` (B1).
 
 **What is real and testable right now (`just dev`, fake provider):**
+
 - Live HTTP + SSE streaming, message deltas rendering incrementally.
 - Real approval round-trip (`permission_required` → decision → resume) and the
   structured question card (`user_question_required` → answer → resume), both over
@@ -55,6 +56,7 @@ fake) until `FLOWPILOT_CODEX_APPSERVER=1` + a real `codex` (B1).
 turn (or via the desktop dev scenario switcher):
 `normal` · `approval-required` · `question-required` · `tool-heavy` ·
 `file-changes` · `failed`. Example against the runner directly:
+
 ```bash
 # start a run, then a turn with a scenario:
 curl -s localhost:4317/client/workflow-runs -d '{"projectId":"proj-web","workflowId":"wf-feature","stepId":"step-plan"}'
@@ -63,6 +65,7 @@ curl -N localhost:4317/client/workflow-runs/<runId>/events/stream   # watch the 
 ```
 
 **What is NOT real yet (needs 04-08):**
+
 - The streamed **content** is scripted, not a real model (Layer 2 → B1).
 - State is **in-memory** (lost on runner restart); no Supabase persistence (A1/A2).
 - The navigator catalog is the **fake** projects/workflows/steps (A1).
@@ -76,6 +79,7 @@ plumbing** end to end now; the model content + persistence come with 04-08.
 ## Part A — Implement first (FlowPilot code / refactor)
 
 ### A1 — Wire the orchestrator + Supabase stores into the live run path
+
 The `InteractiveService` currently uses the **fake catalog** + **in-memory** run/
 step/event/approval/question state. Make these pluggable and back them with the live
 stores behind a config flag (mirroring `FLOWPILOT_CODEX_APPSERVER`).
@@ -94,6 +98,7 @@ stores behind a config flag (mirroring `FLOWPILOT_CODEX_APPSERVER`).
   (in-repo); live DB is Part B (B2).
 
 ### A2 — Persist run/step/session/question/event state to Supabase
+
 Replace the in-memory maps with durable writes via `SupabaseWorkflowStore` (+ new
 methods) so state survives runner restart and is auditable.
 
@@ -112,6 +117,7 @@ methods) so state survives runner restart and is auditable.
 - _Test:_ request shaping over a mocked transport (in-repo); live round-trip is B2.
 
 ### A3 — Make Admin Web a thin client (drop server-side orchestration)
+
 Rip the orchestration out of the Admin Web **server** tier; routes call the runner.
 
 - Repoint `POST /api/workflow-engine/start-run`, `submit-step-approval`,
@@ -128,25 +134,31 @@ Rip the orchestration out of the Admin Web **server** tier; routes call the runn
   read its docs first; this must be done where it can be built + run.
 
 ### A4 — Admin Web read-only provider-runtime audit timeline (T-18)
+
 Render the runner's audit (session started, turn events grouped, approvals, finalize,
 errors) read-only in the run-detail view. Live approval stays in the interactive
 client.
+
 - _Closes:_ T-18; `06` Part B "Admin Web audit", Part C T-18.
 - _Files:_ `apps/admin-web/src/features/…/run-detail`.
 - _Dep:_ A3.
 
 ### A5 — Retire the `ExecutePrompt` fallback (cut-over)
+
 Once A1–A2 reach parity: repoint the legacy chat path to the Codex-thread
 `turn/start`, trace every `ExecutePrompt` caller (workflow engine + `root.go`), and
 migrate them; keep `ExecutePrompt` only until criteria in
 `04-07-Migration-Notes.md` §3 are met, then remove.
+
 - _Closes:_ `06` Part B "Chat path migration" (W6) rows.
 - _Dep:_ A1, A2, and B1 (live verification) before deletion.
 
 ### A6 — Reduce the Deno edge functions to thin triggers
+
 Per the reconciliation decision (`04-07-Migration-Notes.md`): reduce
 `workflow-engine-start-run` / `submit-step-approval` / `toggle-yolo-mode` to thin
 shims that forward to the runner (or remove once clients call the runner directly).
+
 - _Closes:_ `04-05` edge-function reconciliation (deploy side).
 - _Files:_ `supabase/functions/workflow-engine-*`.
 - _Note:_ needs a Supabase/Deno deploy to validate (overlaps Part B infra).
@@ -171,13 +183,16 @@ shims that forward to the runner (or remove once clients call the runner directl
 > be verified or the adapter pointed at `mcp-server` instead.
 
 **Step 0 — discover what your installed codex supports.** Run and record:
+
 ```bash
 codex --version
 codex --help                 # list subcommands — is "app-server" present? "mcp-server"?
 codex app-server --help      # if it exists: flags, transport (stdio?), schema hints
 codex mcp-server --help      # the proven surface (the old system used this)
 ```
+
 Decision:
+
 - **`app-server` exists** → reconcile its protocol (Step 1) and use the existing
   `codexAdapter` (Steps 2–3).
 - **`app-server` absent / unstable** → use `mcp-server` instead (Step 4): write a
@@ -186,11 +201,13 @@ Decision:
 
 **Step 1 — capture the real `app-server` wire (if present).** Drive it by hand and
 record the actual JSON so we map real names, not guesses:
+
 ```bash
 codex app-server --listen stdio://     # or whatever Step 0 showed
 # paste an initialize request, then observe the response + notifications:
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"flowpilot","version":"1.0"}}}
 ```
+
 Record: the **`initialize` result** (`protocolVersion`, `capabilities` keys), the
 exact **method names** for start/turn (is it `thread/start`+`turn/start`? `newThread`?
 `sendUserTurn`?), the **notification** names (`turn.delta`? `item.delta`?
@@ -200,9 +217,10 @@ authoritative.)
 
 **Step 2 — reconcile the assumed names to reality.** The assumptions are localized;
 update only these:
+
 - `codex_appserver.go`: `codexInitializeParams`, `codexThreadStartParams`
   (`cwd`/`sandbox`/`approvalMode`/`mcpServers` placement), `codexThreadResume/List/
-  ReadParams`, `codexTurnStartParams`, `codexInterruptParams`, and
+ReadParams`, `codexTurnStartParams`, `codexInterruptParams`, and
   `codexThreadIDFromParams` (the notification key holding the thread id).
 - `codex_event_mapper.go`: `mapCodexNotification` — the `switch` on method names
   (`turn.delta`→`message_delta`, `command.completed`→`tool_completed`+exit status,
@@ -217,12 +235,14 @@ update only these:
   real names** so the unit tests lock the reconciled protocol.
 
 **Step 3 — run it live + iterate.**
+
 ```bash
 # codex on PATH; turn the live path on:
 FLOWPILOT_CODEX_APPSERVER=1 FLOWPILOT_CODEX_BIN=codex \
   go run ./cmd/flowpilot runner serve --port 4317
 # then drive a real turn from the desktop (just dev) or curl /turns (no scenario field)
 ```
+
 The runner logs `ensureCodexAppServer` start + the `initialize` result. Verify, in
 order: `initialize` succeeds → a simple `turn/start` streams `message_delta` →
 `turn_completed`; then `file_changed`, command-exec exit status, `thread/list` by
@@ -246,23 +266,29 @@ preferred `app-server`; pick per what Step 0 reveals.)_
   `codex_appserver_process.go`, (+ `codex_mcp_adapter.go` for Step 4); their tests.
 
 ### B2 — Live Supabase round-trip + golden parity
+
 Point the runner at a real Supabase (least-privilege/RLS-scoped key):
+
 - run/step/log/session/approval/question/artifact reads+writes succeed (A1/A2 live).
 - **Golden parity:** run a fixture through the old TS path and the new Go path; diff
   artifacts/RAG/audit with volatile fields normalized (T-20).
 - _Unblocks:_ `04-05` Supabase live rows; T-20.
 
 ### B3 — `ask_user` live model call + tool-result-on-expiry
+
 With a live model + the MCP proxy intercepting the registered `ask_user` tool:
+
 - the model calls `ask_user` → `user_question_required` → answer resumes (T-29).
 - on expiry/interrupt while pending, the `ask_user` `tools/call` returns an **error
   tool result** so the model does not hang (T-40, the tool-result variant).
 - _Unblocks:_ T-29, T-40.
 
 ### B4 — Signed desktop installers + auto-update
+
 Run `.github/workflows/desktop-release.yml` with signing secrets present
 (`CSC_*`/`APPLE_*`/`WIN_CSC_*`): produce signed Windows + macOS installers
 (notarized), confirm launch smoke; stand up the auto-update server.
+
 - _Unblocks:_ `04-07` signed-installer rows; `06` packaging acceptance.
 
 ---
@@ -270,6 +296,7 @@ Run `.github/workflows/desktop-release.yml` with signing secrets present
 ## Acceptance / Definition of Done
 
 ### Part A — implement first
+
 - [~] A1 — **catalog wired**: `InteractiveService` depends on `CatalogStore`; `CatalogStoreFor(runner)` selects `SupabaseCatalogStore` when Supabase is configured, else fake; handlers pass ctx + surface `catalog_unavailable` (tested). _Driving run progression through `WorkflowOrchestrator`/`WorkflowStore` (vs the per-turn flow) is the remaining half of A1, lands with A2._
 - [ ] A2 — run/step/session/approval/question/event/artifact state persisted to Supabase (idempotent, ordered; shaping tested).
 - [ ] A3 — Admin Web thin: server orchestration removed, routes call the runner; config + history retained.
@@ -278,12 +305,14 @@ Run `.github/workflows/desktop-release.yml` with signing secrets present
 - [ ] A6 — Deno `workflow-engine-*` reduced to thin triggers / removed.
 
 ### Part B — live acceptance
+
 - [ ] B1 — real `codex` build: (Step 0) discover `app-server` vs `mcp-server`; (Steps 1–2) capture the real wire + reconcile method/param names in `codex_appserver.go`/`codex_event_mapper.go`/`codex_adapter.go` + their tests; (Step 3) init/caps, stream, `thread/list`/`resume` (T-13/T-15), concurrent + mixed-YOLO threads (T-23), terminal **deny blocks** (T-22); or (Step 4) the `codex_mcp_adapter.go` fallback on the proven `mcp-server` surface.
 - [ ] B2 — live Supabase reads/writes; golden parity old-TS vs new-Go on a fixture run (T-20).
 - [ ] B3 — `ask_user` live model call (T-29) + error tool-result on expiry (T-40).
 - [ ] B4 — signed/notarized Windows + macOS installers via CI; auto-update wired.
 
 ### Sign-off
+
 - [ ] All Part A done + in-repo tests green; all Part B verified against real infra.
 - [ ] `06` Part D gate fully satisfied (every PP `[x]`, every T `[x]`, caveats met).
 - [ ] Human + AI review.

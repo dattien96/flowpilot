@@ -1,6 +1,7 @@
 import type {
   Artifact,
   Project,
+  ProviderAccountSummary,
   ProviderEventBaseDTO,
   ProviderEventDTO,
   ProviderSkill,
@@ -26,6 +27,112 @@ const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 let seq = 0;
 const nextId = (prefix: string): string => `${prefix}-${++seq}`;
+
+const MOCK_PROVIDER_ACCOUNTS: ProviderAccountSummary[] = [
+  {
+    id: "acct-codex-1",
+    providerKey: "codex",
+    displayName: "Account 1",
+    displayLabel: "codex.dev@example.com",
+    homePath: "/Users/demo/.codexHome1",
+    authStorePath: "/Users/demo/.codexHome1/.codex",
+    slotIndex: 1,
+    authStatus: "connected",
+    isActive: true,
+    createdAt: "2026-06-10T10:00:00.000Z",
+    lastAuthenticatedAt: "2026-06-12T08:00:00.000Z",
+    accountEmail: "codex.dev@example.com",
+    accountName: "Codex Dev",
+    usageSummary: "plus until 2026-06-30",
+    remaining5hPercent: 56,
+    remaining7dPercent: 92,
+    remaining5hResetAt: "2026-06-13T06:25:00.000Z",
+    remaining7dResetAt: "2026-06-18T15:11:00.000Z",
+    usageSource: "provider_api",
+    accessTokenExpiresAt: "2026-06-20T09:20:00.000Z",
+    refreshTokenExpiresAt: null,
+    refreshTokenExpiryNote: "Unknown. Re-login is required only when a refresh attempt fails.",
+    usageDetailLines: [
+      { label: "Remaining 5h", remainingPercent: 56, resetAt: "2026-06-13T06:25:00.000Z" },
+      { label: "Remaining 7d", remainingPercent: 92, resetAt: "2026-06-18T15:11:00.000Z" },
+    ],
+  },
+  {
+    id: "acct-claude-1",
+    providerKey: "claude",
+    displayName: "Account 1",
+    displayLabel: "claude.user@example.com",
+    homePath: "/Users/demo/.claudeHome1",
+    authStorePath: "/Users/demo/.claudeHome1/.claude",
+    slotIndex: 1,
+    authStatus: "connected",
+    isActive: true,
+    createdAt: "2026-06-09T10:00:00.000Z",
+    lastAuthenticatedAt: "2026-06-12T07:30:00.000Z",
+    accountEmail: "claude.user@example.com",
+    accountName: "Claude User",
+    usageSummary: "pro since 2026-05-30 | extra usage enabled",
+    remaining5hPercent: null,
+    remaining7dPercent: null,
+    remaining5hResetAt: null,
+    remaining7dResetAt: null,
+    usageSource: "unavailable",
+    accessTokenExpiresAt: null,
+    refreshTokenExpiresAt: null,
+    refreshTokenExpiryNote: null,
+    usageDetailLines: [],
+  },
+  {
+    id: "acct-gemini-1",
+    providerKey: "gemini",
+    displayName: "Account 1",
+    displayLabel: "gemini.user@example.com",
+    homePath: "/Users/demo/.geminiHome1",
+    authStorePath: "/Users/demo/.geminiHome1/.gemini",
+    slotIndex: 1,
+    authStatus: "connected",
+    isActive: true,
+    createdAt: "2026-06-08T10:00:00.000Z",
+    lastAuthenticatedAt: "2026-06-12T07:00:00.000Z",
+    accountEmail: "gemini.user@example.com",
+    accountName: "Gemini User",
+    usageSummary: "Google AI Pro",
+    remaining5hPercent: null,
+    remaining7dPercent: null,
+    remaining5hResetAt: null,
+    remaining7dResetAt: null,
+    usageSource: "provider_api",
+    accessTokenExpiresAt: null,
+    refreshTokenExpiresAt: null,
+    refreshTokenExpiryNote: null,
+    usageDetailLines: [{ label: "Remaining quota", remainingPercent: 73, resetAt: "2026-06-13T00:00:00.000Z" }],
+  },
+  {
+    id: "acct-codex-2",
+    providerKey: "codex",
+    displayName: "Account 2",
+    displayLabel: "backup.codex@example.com",
+    homePath: "/Users/demo/.codexHome2",
+    authStorePath: "/Users/demo/.codexHome2/.codex",
+    slotIndex: 2,
+    authStatus: "failed",
+    isActive: false,
+    createdAt: "2026-06-01T10:00:00.000Z",
+    lastAuthenticatedAt: null,
+    accountEmail: "backup.codex@example.com",
+    accountName: "Backup Codex",
+    usageSummary: null,
+    remaining5hPercent: null,
+    remaining7dPercent: null,
+    remaining5hResetAt: null,
+    remaining7dResetAt: null,
+    usageSource: "unavailable",
+    accessTokenExpiresAt: null,
+    refreshTokenExpiresAt: null,
+    refreshTokenExpiryNote: null,
+    usageDetailLines: [],
+  },
+];
 
 interface RunState {
   runId: string;
@@ -101,6 +208,11 @@ export class MockRunnerClient implements RunnerClient {
     return Object.values(MOCK_STEPS).flat().map((step, index) => ({ ...step, workflowId: undefined, order: index + 1 }));
   }
 
+  async listProviderAccounts(): Promise<ProviderAccountSummary[]> {
+    await delay(80);
+    return MOCK_PROVIDER_ACCOUNTS;
+  }
+
   async listSkills(_provider: string): Promise<ProviderSkill[]> {
     await delay(40);
     return MOCK_SKILLS;
@@ -123,6 +235,21 @@ export class MockRunnerClient implements RunnerClient {
     await delay(120);
     // eslint-disable-next-line no-console
     console.log("[MockRunnerClient] shutdownStack (stub)");
+  }
+
+  async activateProviderAccount(accountId: string): Promise<void> {
+    await delay(60);
+    const target = MOCK_PROVIDER_ACCOUNTS.find((account) => account.id === accountId);
+    if (!target) return;
+    for (const account of MOCK_PROVIDER_ACCOUNTS) {
+      if (account.providerKey === target.providerKey) {
+        account.isActive = account.id === accountId;
+      }
+    }
+  }
+
+  async openProviderAccountTerminal(_accountId: string): Promise<void> {
+    await delay(60);
   }
 
   async startRun(input: StartRunInput): Promise<RunHandle> {

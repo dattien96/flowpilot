@@ -179,6 +179,26 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 
 				writeHTTPJSON(w, map[string]any{"accounts": accounts})
 			})
+			mux.HandleFunc("/client/provider-accounts", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+
+				accounts, err := instance.ListProviderAccounts()
+				if err != nil {
+					writeHTTPError(w, http.StatusInternalServerError, err)
+					return
+				}
+
+				summaries, err := buildProviderAccountSummaryResponses(accounts)
+				if err != nil {
+					writeHTTPError(w, http.StatusInternalServerError, err)
+					return
+				}
+
+				writeHTTPJSON(w, summaries)
+			})
 			mux.HandleFunc("/provider-accounts/allocate-slot", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

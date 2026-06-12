@@ -3,6 +3,7 @@ import type {
   ApprovalDetails,
   Artifact,
   Project,
+  ProviderAccountSummary,
   ProviderEventDTO,
   ProviderSkill,
   QuestionOption,
@@ -51,6 +52,7 @@ interface AppState {
   workflows: Workflow[];
   steps: Step[];
   skills: ProviderSkill[];
+  providerAccounts: ProviderAccountSummary[];
   selectedProjectId?: string;
   selectedWorkflowId?: string;
   selectedStepId?: string;
@@ -72,6 +74,7 @@ interface AppState {
 
   // actions
   loadProjects(): Promise<void>;
+  loadProviderAccounts(): Promise<void>;
   selectProject(projectId: string): Promise<void>;
   setLaunchMode(mode: LaunchMode): void;
   selectWorkflow(workflowId: string): Promise<void>;
@@ -112,6 +115,7 @@ export const useStore = create<AppState>((set, get) => ({
   workflows: [],
   steps: [],
   skills: [],
+  providerAccounts: [],
   status: "idle",
   timeline: [],
   artifacts: [],
@@ -181,11 +185,29 @@ export const useStore = create<AppState>((set, get) => ({
         // eslint-disable-next-line no-console
         console.error("[FlowPilot] listSkills failed:", err);
       }
+      try {
+        const providerAccounts = await withRetry(() => client.listProviderAccounts());
+        set({ providerAccounts });
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("[FlowPilot] listProviderAccounts failed:", err);
+      }
     })().finally(() => {
       loadProjectsInFlight = null;
     });
 
     return loadProjectsInFlight;
+  },
+
+  async loadProviderAccounts() {
+    const client = get().client;
+    try {
+      const providerAccounts = await client.listProviderAccounts();
+      set({ providerAccounts });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] listProviderAccounts refresh failed:", err);
+    }
   },
 
   async selectProject(projectId) {
