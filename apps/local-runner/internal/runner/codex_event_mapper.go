@@ -24,10 +24,17 @@ func mapCodexNotification(n codexNotification) (ProviderEvent, bool) {
 	turnID := str("turnId")
 
 	switch n.Method {
-	case "turn.started", "codex/turn.started":
+	case "error":
+		msg := codexErrorMessage(p)
+		if msg == "" {
+			return ProviderEvent{}, false
+		}
+		return ProviderEvent{Type: EventTurnFailed, ProviderTurnID: turnID, Error: msg, Recoverable: false}, true
+
+	case "turn.started", "codex/turn.started", "turn/started":
 		return ProviderEvent{Type: EventTurnStarted, ProviderTurnID: turnID}, true
 
-	case "turn.delta", "codex/agent_message_chunk", "agent_message_chunk":
+	case "turn.delta", "codex/agent_message_chunk", "agent_message_chunk", "item/agentMessage/delta":
 		text := str("text")
 		if text == "" {
 			text = str("delta")
@@ -39,6 +46,9 @@ func mapCodexNotification(n codexNotification) (ProviderEvent, bool) {
 
 	case "turn.message", "codex/agent_message", "agent_message":
 		return ProviderEvent{Type: EventMessageCompleted, ProviderTurnID: turnID, Text: str("text")}, true
+
+	case "item/completed":
+		return mapCodexCompletedItem(p, turnID)
 
 	case "tool.started", "mcp.tool.started":
 		return ProviderEvent{Type: EventToolStarted, ProviderTurnID: turnID, ToolName: str("name"), Input: paramAny(p, "input")}, true
@@ -81,12 +91,56 @@ func mapCodexNotification(n codexNotification) (ProviderEvent, bool) {
 		rec, _ := p["recoverable"].(bool)
 		return ProviderEvent{Type: EventTurnFailed, ProviderTurnID: turnID, Error: str("error"), Recoverable: rec}, true
 
-	case "turn.completed", "codex/turn.completed":
+	case "turn.completed", "codex/turn.completed", "turn/completed":
+		if msg := codexTurnErrorMessage(paramAny(p, "turn")); msg != "" {
+			return ProviderEvent{Type: EventTurnFailed, ProviderTurnID: turnID, Error: msg, Recoverable: false}, true
+		}
 		final := str("finalMessage")
 		if final == "" {
 			final = str("text")
 		}
+		if final == "" {
+			final = lastAgentMessageText(paramAny(p, "turn"))
+		}
 		return ProviderEvent{Type: EventTurnCompleted, ProviderTurnID: turnID, FinalMessage: final}, true
+	}
+	return ProviderEvent{}, false
+}
+
+func mapCodexCompletedItem(p map[string]any, turnID string) (ProviderEvent, bool) {
+	item, _ := paramAny(p, "item").(map[string]any)
+	if item == nil {
+		return ProviderEvent{}, false
+	}
+	itemType, _ := item["type"].(string)
+	switch itemType {
+	case "agentMessage":
+		text, _ := item["text"].(string)
+		return ProviderEvent{Type: EventMessageCompleted, ProviderTurnID: turnID, Text: text}, true
+	case "commandExecution":
+		status := defaultStatus(stringAny(item, "status"))
+		if code, ok := toInt(item["exitCode"]); ok && code != 0 {
+			status = "failed"
+		}
+		return ProviderEvent{
+			Type: EventToolCompleted, ProviderTurnID: turnID,
+			ToolName: stringDefault(stringAny(item, "command"), "command"),
+			Status:   status,
+			Output:   item["aggregatedOutput"],
+		}, true
+	case "fileChange":
+		return ProviderEvent{
+			Type: EventFileChanged, ProviderTurnID: turnID,
+			Path:       firstFileChangePath(item["changes"]),
+			ChangeType: stringDefault(stringAny(item, "status"), "modified"),
+		}, true
+	case "mcpToolCall":
+		return ProviderEvent{
+			Type: EventToolCompleted, ProviderTurnID: turnID,
+			ToolName: stringDefault(stringAny(item, "tool"), stringAny(item, "server")),
+			Status:   defaultStatus(stringAny(item, "status")),
+			Output:   item["result"],
+		}, true
 	}
 	return ProviderEvent{}, false
 }
@@ -102,7 +156,77 @@ func defaultStatus(s string) string {
 	if s == "" {
 		return "success"
 	}
+	if s == "completed" {
+		return "success"
+	}
 	return s
+}
+
+func stringAny(p map[string]any, key string) string {
+	if p == nil {
+		return ""
+	}
+	s, _ := p[key].(string)
+	return s
+}
+
+func stringDefault(s, fallback string) string {
+	if s == "" {
+		return fallback
+	}
+	return s
+}
+
+func firstFileChangePath(v any) string {
+	changes, _ := v.([]any)
+	if len(changes) == 0 {
+		return ""
+	}
+	first, _ := changes[0].(map[string]any)
+	if first == nil {
+		return ""
+	}
+	for _, key := range []string{"path", "file", "uri"} {
+		if s, _ := first[key].(string); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func lastAgentMessageText(v any) string {
+	turn, _ := v.(map[string]any)
+	items, _ := turn["items"].([]any)
+	for i := len(items) - 1; i >= 0; i-- {
+		item, _ := items[i].(map[string]any)
+		if item == nil || stringAny(item, "type") != "agentMessage" {
+			continue
+		}
+		return stringAny(item, "text")
+	}
+	return ""
+}
+
+func codexErrorMessage(p map[string]any) string {
+	if msg := stringAny(p, "message"); msg != "" {
+		return msg
+	}
+	errObj, _ := paramAny(p, "error").(map[string]any)
+	return stringAny(errObj, "message")
+}
+
+func codexTurnErrorMessage(v any) string {
+	turn, _ := v.(map[string]any)
+	if turn == nil {
+		return ""
+	}
+	status, _ := turn["status"].(string)
+	errObj, _ := turn["error"].(map[string]any)
+	msg := stringAny(errObj, "message")
+	if status == "failed" && msg == "" {
+		return "Codex turn failed."
+	}
+	return msg
 }
 
 func toInt(v any) (int, bool) {

@@ -97,6 +97,11 @@ stores behind a config flag (mirroring `FLOWPILOT_CODEX_APPSERVER`).
 - _Test:_ store-backed service over the **fake** `WorkflowStore`/`CatalogStore`
   (in-repo); live DB is Part B (B2).
 
+Provider resolution stays model-driven for this path: `gpt-*` routes to Codex,
+`gemini-*` routes to Gemini, and `claude-*` routes to Claude. The live acceptance
+checks in this phase still exercise the Codex path first; Gemini/Claude live
+verification stays deferred until their live adapters are implemented.
+
 ### A2 — Persist run/step/session/question/event state to Supabase
 
 Replace the in-memory maps with durable writes via `SupabaseWorkflowStore` (+ new

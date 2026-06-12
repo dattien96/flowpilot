@@ -105,7 +105,7 @@ func (a *codexAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tur
 	if err != nil {
 		return err
 	}
-	threadID, _ := startRes["threadId"].(string)
+	threadID := codexThreadIDFromResponse(startRes)
 	if threadID == "" {
 		return fmt.Errorf("codex thread/start returned no threadId")
 	}
@@ -142,7 +142,7 @@ func (a *codexAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tur
 	go func() {
 		res, e := a.dispatcher.call(ctx, "turn/start", codexTurnStartParams(threadID, prompt, skill))
 		if e == nil {
-			if tid, ok := res["turnId"].(string); ok {
+			if tid := codexTurnIDFromResponse(res); tid != "" {
 				a.mu.Lock()
 				a.codexTurns[threadID] = tid
 				a.mu.Unlock()

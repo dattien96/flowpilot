@@ -82,7 +82,7 @@ func (h *codexAppServerHandle) close() {
 // the account-switch recreate, 04-06) when needed. Reuses a live handle for the same
 // scope. The dispatcher/adapter wiring is identical to the pipe-tested path; only
 // the transport is a real subprocess here.
-func (r *Runner) ensureCodexAppServer(ctx context.Context, scopeKey, cwd string) (*codexAppServerHandle, error) {
+func (r *Runner) ensureCodexAppServer(ctx context.Context, scopeKey, cwd string, extraEnv map[string]string) (*codexAppServerHandle, error) {
 	r.codexAppServerMu.Lock()
 	defer r.codexAppServerMu.Unlock()
 
@@ -97,6 +97,11 @@ func (r *Runner) ensureCodexAppServer(ctx context.Context, scopeKey, cwd string)
 
 	cmd := commandContextFn(ctx, codexBinaryName(), "app-server", "--listen", "stdio://")
 	cmd.Env = os.Environ()
+	for key, value := range extraEnv {
+		if strings.TrimSpace(key) != "" {
+			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", key, value))
+		}
+	}
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

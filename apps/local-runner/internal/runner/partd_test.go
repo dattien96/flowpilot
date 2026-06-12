@@ -29,7 +29,7 @@ func TestEnsureCodexAppServerInitializes(t *testing.T) {
 	defer mockCodexInitProcess(t)()
 	r, _ := New(".")
 
-	h, err := r.ensureCodexAppServer(context.Background(), "default", ".")
+	h, err := r.ensureCodexAppServer(context.Background(), "default", ".", nil)
 	if err != nil {
 		t.Fatalf("ensureCodexAppServer: %v", err)
 	}
@@ -45,13 +45,13 @@ func TestEnsureCodexAppServerInitializes(t *testing.T) {
 	}
 
 	// reuse: same scope returns the same handle (one shared process)
-	h2, err := r.ensureCodexAppServer(context.Background(), "default", ".")
+	h2, err := r.ensureCodexAppServer(context.Background(), "default", ".", nil)
 	if err != nil || h2 != h {
 		t.Fatalf("same-scope ensure should reuse the handle (h2==h=%v, err=%v)", h2 == h, err)
 	}
 
 	// account switch: a different scope tears down + recreates (new handle)
-	h3, err := r.ensureCodexAppServer(context.Background(), "acct-2", ".")
+	h3, err := r.ensureCodexAppServer(context.Background(), "acct-2", ".", nil)
 	if err != nil {
 		t.Fatalf("recreate ensure: %v", err)
 	}

@@ -41,6 +41,7 @@ func codexThreadStartParams(cwd, sandbox, approvalMode string, mcpServers []any)
 	}
 	if approvalMode != "" {
 		p["approvalMode"] = approvalMode
+		p["approvalPolicy"] = approvalMode
 	}
 	return p
 }
@@ -58,7 +59,16 @@ func codexThreadReadParams(threadID string) map[string]any {
 }
 
 func codexTurnStartParams(threadID, prompt string, skill *SkillSelection) map[string]any {
-	p := map[string]any{"threadId": threadID, "input": prompt}
+	p := map[string]any{
+		"threadId": threadID,
+		"input": []any{
+			map[string]any{
+				"type":          "text",
+				"text":          prompt,
+				"text_elements": []any{},
+			},
+		},
+	}
 	if skill != nil && skill.Name != "" {
 		p["skill"] = skill.Name
 	}
@@ -332,6 +342,33 @@ func codexThreadIDFromParams(params map[string]any) string {
 	}
 	if id, ok := params["threadId"].(string); ok {
 		return id
+	}
+	if id, ok := params["conversationId"].(string); ok {
+		return id
+	}
+	if thread, ok := params["thread"].(map[string]any); ok {
+		if id, ok := thread["id"].(string); ok {
+			return id
+		}
+	}
+	return ""
+}
+
+func codexThreadIDFromResponse(result map[string]any) string {
+	return codexThreadIDFromParams(result)
+}
+
+func codexTurnIDFromResponse(result map[string]any) string {
+	if result == nil {
+		return ""
+	}
+	if id, ok := result["turnId"].(string); ok {
+		return id
+	}
+	if turn, ok := result["turn"].(map[string]any); ok {
+		if id, ok := turn["id"].(string); ok {
+			return id
+		}
 	}
 	return ""
 }
