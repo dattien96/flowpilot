@@ -1,7 +1,9 @@
 package runner
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -121,13 +123,17 @@ func (f *finalizer) artifactsForRun(runID string) ([]Artifact, bool) {
 	return found, found != nil
 }
 
-// localSnapshot is the default Phase-4 finalize: a final-response artifact plus a
-// changed-files/diff snapshot. Phase 5 replaces this with summary + RAG + GDrive.
+// localSnapshot is the default finalize pipeline (04-04 hook + 04-05 body shaping):
+// final-response + diff snapshot + summary + a RAG document. The artifact bodies are
+// shaped here (pure); the live writes (Supabase artifact_runs + RAG embeddings,
+// Google-Drive write audit) are layered on at cut-over (04-05 deferral). All ids are
+// keyed by run+turn so a retry upserts the same rows — never double-writes (T-41).
 func (f *finalizer) localSnapshot(in finalizeInput) ([]Artifact, error) {
 	now := f.clock().UTC().Format(time.RFC3339Nano)
+	key := in.RunID + ":" + in.TurnID
 	artifacts := []Artifact{
 		{
-			ID:        in.RunID + ":" + in.TurnID + ":final",
+			ID:        key + ":final",
 			RunID:     in.RunID,
 			Kind:      "final_response",
 			Name:      "final-response.md",
@@ -135,13 +141,59 @@ func (f *finalizer) localSnapshot(in finalizeInput) ([]Artifact, error) {
 			CreatedAt: now,
 		},
 		{
-			ID:        in.RunID + ":" + in.TurnID + ":diff",
+			ID:        key + ":diff",
 			RunID:     in.RunID,
 			Kind:      "diff_snapshot",
 			Name:      "changes.diff",
 			Preview:   fmt.Sprintf("%d file(s) changed", len(in.ChangedFiles)),
 			CreatedAt: now,
 		},
+		{
+			ID:        key + ":summary",
+			RunID:     in.RunID,
+			Kind:      "summary",
+			Name:      "summary.md",
+			Preview:   buildFinalizeSummary(in),
+			CreatedAt: now,
+		},
+		{
+			ID:        key + ":rag",
+			RunID:     in.RunID,
+			Kind:      "rag_document",
+			Name:      "rag.json",
+			Preview:   buildRagDocument(in),
+			CreatedAt: now,
+		},
 	}
 	return artifacts, nil
+}
+
+// buildFinalizeSummary shapes the human-readable finalize summary.
+func buildFinalizeSummary(in finalizeInput) string {
+	b := &strings.Builder{}
+	fmt.Fprintf(b, "Turn %s completed.\n", in.TurnID)
+	if in.FinalMessage != "" {
+		fmt.Fprintf(b, "Result: %s\n", in.FinalMessage)
+	}
+	fmt.Fprintf(b, "%d file(s) changed", len(in.ChangedFiles))
+	for _, p := range in.ChangedFiles {
+		fmt.Fprintf(b, "\n- %s", p)
+	}
+	return b.String()
+}
+
+// buildRagDocument shapes the JSON document fed to the Supabase RAG index at
+// cut-over (the embedding/insert is the deferred live step).
+func buildRagDocument(in finalizeInput) string {
+	doc := map[string]any{
+		"runId":        in.RunID,
+		"turnId":       in.TurnID,
+		"finalMessage": in.FinalMessage,
+		"changedFiles": in.ChangedFiles,
+	}
+	b, err := json.Marshal(doc)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
 }
