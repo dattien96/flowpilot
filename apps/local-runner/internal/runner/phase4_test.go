@@ -11,7 +11,7 @@ import (
 
 func TestResolveYoloPosture(t *testing.T) {
 	on := resolveYoloPosture(true)
-	if on.CodexSandbox != "full-access" || on.CodexApprovalMode != "never" || !on.RunnerAutoApprove {
+	if on.CodexSandbox != "danger-full-access" || on.CodexApprovalMode != "never" || !on.RunnerAutoApprove {
 		t.Fatalf("yolo=true posture = %+v", on)
 	}
 	off := resolveYoloPosture(false)

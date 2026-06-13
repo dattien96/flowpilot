@@ -483,13 +483,42 @@ body {
 }
 
 .bubble {
+  position: relative;
   max-width: 80%;
-  padding: 10px 13px;
+  padding: 10px 42px 10px 13px;
   border-radius: 10px;
   background: var(--bg-2);
   border: 1px solid var(--border);
   white-space: pre-wrap;
   line-height: 1.5;
+}
+.copyable-bubble {
+  min-width: 120px;
+}
+.bubble-copy {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0.72;
+}
+.bubble-copy:hover,
+.bubble-copy:focus-visible {
+  border-color: var(--border);
+  background: var(--bg-3);
+  color: var(--text);
+  opacity: 1;
 }
 .bubble.streaming {
   border-color: var(--accent-2);
@@ -529,6 +558,8 @@ body {
   display: flex;
   align-items: baseline;
   gap: 8px;
+  flex: 1;
+  min-width: 0;
 }
 .row-main code {
   font-family: var(--mono);
@@ -536,6 +567,14 @@ body {
 .row-status {
   font-size: 11px;
   color: var(--text-dim);
+}
+.row-output {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+  font-size: 11px;
 }
 .tool-success .row-icon {
   color: var(--ok);
@@ -545,6 +584,88 @@ body {
 }
 .tool-cancelled .row-icon {
   color: var(--warn);
+}
+.tool-group-summary {
+  appearance: none;
+  align-self: flex-start;
+  width: min(100%, 760px);
+  min-height: 33px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-2);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.35;
+  text-align: left;
+  user-select: none;
+  box-sizing: border-box;
+  overflow: visible;
+}
+.tool-group-summary-open {
+  border-radius: 8px 8px 0 0;
+  margin-bottom: -10px;
+}
+.tool-group-summary:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.03);
+}
+.tool-group-caret {
+  flex: 0 0 12px;
+  color: var(--text-dim);
+  line-height: 1;
+}
+.tool-group-title {
+  display: block;
+  color: var(--text);
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: visible;
+  white-space: nowrap;
+}
+.tool-group-body {
+  align-self: flex-start;
+  width: min(100%, 760px);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-top: 0;
+  border-radius: 0 0 8px 8px;
+  background: var(--bg-2);
+  box-sizing: border-box;
+}
+.tool-group-body .row {
+  width: 100%;
+  min-height: 34px;
+  background: var(--bg-3);
+}
+.tool-group-body .row-main {
+  display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.tool-group-body code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-label {
+  display: inline-block;
+  min-width: 120px;
+  max-width: 100%;
+  color: var(--text);
+}
+.tool-empty {
+  padding: 8px 4px;
+  color: var(--text-dim);
+  font-size: 12px;
 }
 
 .file-row {

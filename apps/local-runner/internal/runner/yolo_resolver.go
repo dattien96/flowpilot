@@ -8,7 +8,7 @@ package runner
 // `default_tools_approval_mode = "approve"` somewhere and hoping it lines up with
 // runner behavior.
 //
-//	resolveYoloPosture(true)  -> {"full-access",     "never",      true}
+//	resolveYoloPosture(true)  -> {"danger-full-access", "never",      true}
 //	resolveYoloPosture(false) -> {"workspace-write", "on-request", false}
 //
 // Input flows in via PromptExecutionRequest.YoloMode (types.go) / session-start
@@ -28,7 +28,7 @@ type YoloPosture struct {
 func resolveYoloPosture(yolo bool) YoloPosture {
 	if yolo {
 		return YoloPosture{
-			CodexSandbox:      "full-access",
+			CodexSandbox:      "danger-full-access",
 			CodexApprovalMode: "never",
 			RunnerAutoApprove: true,
 		}

@@ -1,12 +1,10 @@
 import { create } from "zustand";
 import type {
-  ApprovalDetails,
   Artifact,
   Project,
   ProviderAccountSummary,
   ProviderEventDTO,
   ProviderSkill,
-  QuestionOption,
   RunHistoryItem,
   RunStatus,
   Step,
@@ -19,33 +17,18 @@ import { RunnerApiError } from "@/client/HttpWsRunnerClient";
 import type { ScenarioName } from "@/client/mockData";
 import { ideBridge } from "@/client/ideBridge";
 import { ADMIN_WEB_URL } from "@/config";
+import {
+  applyTimelineEvent,
+  type PendingApproval,
+  type PendingQuestion,
+  type TimelineItem,
+} from "./timelineReducer";
+
+export type { TimelineItem } from "./timelineReducer";
 
 let loadProjectsInFlight: Promise<void> | null = null;
 
 export type LaunchMode = "workflow" | "step";
-
-// ---- Timeline item model (what the renderer draws) -------------------------
-
-export type TimelineItem =
-  | { kind: "assistant"; id: string; text: string; finalized: boolean }
-  | { kind: "prompt"; id: string; text: string }
-  | { kind: "thinking"; id: string; text: string }
-  | { kind: "tool"; id: string; toolName: string; status: "running" | "success" | "failed" | "cancelled"; input?: unknown; output?: unknown }
-  | { kind: "file"; id: string; path: string; changeType?: string }
-  | { kind: "approval"; id: string; approvalId: string; details: ApprovalDetails; decision?: string }
-  | { kind: "question"; id: string; questionId: string; prompt: string; options: QuestionOption[]; multiSelect?: boolean; answer?: string | string[] }
-  | { kind: "system"; id: string; text: string; tone: "info" | "error" };
-
-interface PendingApproval {
-  approvalId: string;
-  details: ApprovalDetails;
-}
-interface PendingQuestion {
-  questionId: string;
-  prompt: string;
-  options: QuestionOption[];
-  multiSelect?: boolean;
-}
 
 interface AppState {
   client: RunnerClient;
@@ -99,36 +82,6 @@ interface AppState {
   openAdminWeb(): void;
   restartSystem(): Promise<void>;
   shutdownSystem(): Promise<void>;
-}
-
-function statusFromEvent(e: ProviderEventDTO, prev: RunStatus): RunStatus {
-  switch (e.type) {
-    case "turn_started":
-      return "running";
-    case "permission_required":
-      return "waiting_approval";
-    case "user_question_required":
-      return "waiting_question";
-    case "turn_completed":
-      return "completed";
-    case "turn_failed":
-      return "failed";
-    default:
-      return prev === "waiting_approval" || prev === "waiting_question" ? "running" : prev;
-  }
-}
-
-function isTurnCompletedPlaceholder(text: string): boolean {
-  return text.trim().toLowerCase().replace(/\.$/, "") === "turn completed";
-}
-
-function hasPendingPrompt(timeline: TimelineItem[], prompt: string): boolean {
-  for (let i = timeline.length - 1; i >= 0; i--) {
-    const item = timeline[i];
-    if (item.kind === "thinking") continue;
-    return item.kind === "prompt" && item.text === prompt;
-  }
-  return false;
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -445,114 +398,5 @@ async function consumeStream(
 }
 
 function applyEvent(s: AppState, e: ProviderEventDTO): Partial<AppState> {
-  const status = statusFromEvent(e, s.status);
-  const keepThinking = e.type === "turn_started";
-  const timeline = keepThinking ? [...s.timeline] : s.timeline.filter((it) => it.kind !== "thinking");
-  let streamingAssistantId = s._streamingAssistantId;
-
-  const closeAssistant = () => {
-    streamingAssistantId = undefined;
-  };
-
-  switch (e.type) {
-    case "turn_started":
-      if (e.prompt && !hasPendingPrompt(timeline, e.prompt)) {
-        timeline.push({ kind: "prompt", id: `prompt-${e.providerTurnId}`, text: e.prompt });
-      }
-      break;
-
-    case "message_delta": {
-      if (streamingAssistantId) {
-        const idx = timeline.findIndex((it) => it.id === streamingAssistantId);
-        if (idx >= 0 && timeline[idx].kind === "assistant") {
-          const cur = timeline[idx] as Extract<TimelineItem, { kind: "assistant" }>;
-          timeline[idx] = { ...cur, text: cur.text + e.text };
-        }
-      } else {
-        const id = e.id;
-        streamingAssistantId = id;
-        timeline.push({ kind: "assistant", id, text: e.text, finalized: false });
-      }
-      break;
-    }
-
-    case "message_completed": {
-      if (isTurnCompletedPlaceholder(e.text)) {
-        closeAssistant();
-        break;
-      }
-      if (streamingAssistantId) {
-        const idx = timeline.findIndex((it) => it.id === streamingAssistantId);
-        if (idx >= 0 && timeline[idx].kind === "assistant") {
-          timeline[idx] = { kind: "assistant", id: streamingAssistantId, text: e.text, finalized: true };
-        }
-      } else {
-        timeline.push({ kind: "assistant", id: e.id, text: e.text, finalized: true });
-      }
-      closeAssistant();
-      break;
-    }
-
-    case "tool_started":
-      closeAssistant();
-      timeline.push({ kind: "tool", id: e.id, toolName: e.toolName, status: "running", input: e.input });
-      break;
-
-    case "tool_completed": {
-      closeAssistant();
-      // update the most recent running tool with the same name
-      for (let i = timeline.length - 1; i >= 0; i--) {
-        const it = timeline[i];
-        if (it.kind === "tool" && it.toolName === e.toolName && it.status === "running") {
-          timeline[i] = { ...it, status: e.status, output: e.output };
-          return { timeline, status, _streamingAssistantId: streamingAssistantId };
-        }
-      }
-      timeline.push({ kind: "tool", id: e.id, toolName: e.toolName, status: e.status, output: e.output });
-      break;
-    }
-
-    case "file_changed":
-      closeAssistant();
-      timeline.push({ kind: "file", id: e.id, path: e.path, changeType: e.changeType });
-      break;
-
-    case "permission_required":
-      closeAssistant();
-      timeline.push({ kind: "approval", id: e.id, approvalId: e.approvalId, details: e.details });
-      return {
-        timeline,
-        status,
-        _streamingAssistantId: streamingAssistantId,
-        pendingApproval: { approvalId: e.approvalId, details: e.details },
-      };
-
-    case "user_question_required":
-      closeAssistant();
-      timeline.push({
-        kind: "question",
-        id: e.id,
-        questionId: e.questionId,
-        prompt: e.prompt,
-        options: e.options,
-        multiSelect: e.multiSelect,
-      });
-      return {
-        timeline,
-        status,
-        _streamingAssistantId: streamingAssistantId,
-        pendingQuestion: { questionId: e.questionId, prompt: e.prompt, options: e.options, multiSelect: e.multiSelect },
-      };
-
-    case "turn_completed":
-      closeAssistant();
-      return { timeline, status, _streamingAssistantId: streamingAssistantId };
-
-    case "turn_failed":
-      closeAssistant();
-      timeline.push({ kind: "system", id: e.id, text: e.error, tone: "error" });
-      return { timeline, status, _streamingAssistantId: streamingAssistantId, recoverable: e.recoverable };
-  }
-
-  return { timeline, status, _streamingAssistantId: streamingAssistantId };
+  return applyTimelineEvent(s, e);
 }

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useStore, type TimelineItem } from "@/state/store";
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
@@ -8,15 +8,120 @@ const shortName = (path: string): string => path.split("/").pop() ?? path;
 const TOOL_ICON: Record<string, string> = { running: "⏳", success: "✓", failed: "✗", cancelled: "⊘" };
 const FILE_ICON: Record<string, string> = { created: "＋", modified: "✎", deleted: "－", renamed: "→" };
 
-function ToolRow({ it }: { it: Extract<TimelineItem, { kind: "tool" }> }): React.ReactElement {
+type ToolItem = Extract<TimelineItem, { kind: "tool" }>;
+type TimelineGroup = TimelineItem | { kind: "tool-group"; id: string; tools: ToolItem[] };
+
+function previewValue(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map((part) => (typeof part === "string" ? part : JSON.stringify(part))).join(" ");
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const command = record.command ?? record.cmd ?? record.name ?? record.path;
+    if (typeof command === "string") return command;
+    if (Array.isArray(command)) return command.map((part) => String(part)).join(" ");
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+  return String(value);
+}
+
+function toolLabel(tool: ToolItem): string {
+  const name = typeof tool.toolName === "string" ? tool.toolName.trim() : "";
+  if (name && name !== "command" && name !== "shell") return name;
+  return previewValue(tool.input) ?? previewValue(tool.output) ?? (name || `tool ${tool.id || "call"}`);
+}
+
+function CopyBubble({
+  text,
+  className,
+  children,
+}: {
+  text: string;
+  className: string;
+  children: React.ReactNode;
+}): React.ReactElement {
+  const [copied, setCopied] = useState(false);
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] copy failed:", err);
+    }
+  };
+
   return (
-    <div className={`row tool-row tool-${it.status}`}>
-      <span className="row-icon">{TOOL_ICON[it.status]}</span>
+    <div className={`${className} copyable-bubble`}>
+      <button
+        type="button"
+        className="bubble-copy"
+        onClick={copy}
+        aria-label={copied ? "Copied" : "Copy message"}
+        title={copied ? "Copied" : "Copy"}
+      >
+        {copied ? "✓" : "⧉"}
+      </button>
+      {children}
+    </div>
+  );
+}
+
+function ToolRow({ it }: { it: Extract<TimelineItem, { kind: "tool" }> }): React.ReactElement {
+  const label = toolLabel(it);
+  const output = previewValue(it.output);
+  const status = it.status || "success";
+  return (
+    <div className={`row tool-row tool-${status}`}>
+      <span className="row-icon">{TOOL_ICON[status] ?? "•"}</span>
       <span className="row-main">
-        <code>{it.toolName}</code>
-        {it.status !== "running" && <span className="row-status">{it.status}</span>}
+        <code className="tool-label">{label}</code>
+        {status !== "running" && <span className="row-status">{status}</span>}
+        {output && output !== label && <span className="row-output">{output}</span>}
       </span>
     </div>
+  );
+}
+
+function toolGroupLabel(tools: ToolItem[]): string {
+  if (tools.some((tool) => tool.status === "running")) return `${tools.length} tool call${tools.length === 1 ? "" : "s"} running`;
+  if (tools.some((tool) => tool.status === "failed")) return `${tools.length} tool call${tools.length === 1 ? "" : "s"} · failed`;
+  if (tools.some((tool) => tool.status === "cancelled")) return `${tools.length} tool call${tools.length === 1 ? "" : "s"} · cancelled`;
+  return `${tools.length} tool call${tools.length === 1 ? "" : "s"} completed`;
+}
+
+function ToolGroup({ tools }: { tools: ToolItem[] }): React.ReactElement {
+  const [open, setOpen] = useState(false);
+  const label = toolGroupLabel(tools);
+  return (
+    <>
+      <button
+        type="button"
+        className={`tool-group-summary ${open ? "tool-group-summary-open" : ""}`}
+        aria-expanded={open}
+        aria-label={label}
+        title={label}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span className="tool-group-caret">{open ? "▾" : "▸"}</span>
+        <span className="tool-group-title">{label}</span>
+      </button>
+      {open && (
+        <div className="tool-group-body">
+          {tools.length === 0 ? (
+            <div className="tool-empty">No tool calls captured.</div>
+          ) : (
+            tools.map((tool, index) => <ToolRow key={tool.id || `tool-${index}`} it={tool} />)
+          )}
+        </div>
+      )}
+    </>
   );
 }
 
@@ -34,21 +139,51 @@ function FileRow({ it }: { it: Extract<TimelineItem, { kind: "file" }> }): React
   );
 }
 
-function Item({ it }: { it: TimelineItem }): React.ReactElement | null {
+function buildTimelineGroups(timeline: TimelineItem[]): TimelineGroup[] {
+  const groups: TimelineGroup[] = [];
+  let pendingTools: ToolItem[] = [];
+
+  const flushTools = () => {
+    if (pendingTools.length === 0) return;
+    const firstToolId = pendingTools[0].id || `${pendingTools[0].toolName}-${groups.length}`;
+    groups.push({ kind: "tool-group", id: `tool-group-${firstToolId}`, tools: pendingTools });
+    pendingTools = [];
+  };
+
+  for (const item of timeline) {
+    if (item.kind === "tool") {
+      pendingTools.push(item);
+    } else {
+      flushTools();
+      groups.push(item);
+    }
+  }
+  flushTools();
+
+  return groups;
+}
+
+function Item({ it }: { it: TimelineGroup }): React.ReactElement | null {
   switch (it.kind) {
     case "assistant":
       return (
-        <div className={`bubble assistant ${it.finalized ? "final" : "streaming"}`}>
+        <CopyBubble text={it.text} className={`bubble assistant ${it.finalized ? "final" : "streaming"}`}>
           {it.text}
           {!it.finalized && <span className="caret">▌</span>}
-        </div>
+        </CopyBubble>
       );
     case "prompt":
-      return <div className="bubble prompt">{it.text}</div>;
+      return (
+        <CopyBubble text={it.text} className="bubble prompt">
+          {it.text}
+        </CopyBubble>
+      );
     case "thinking":
       return <div className="system-line thinking">{it.text}</div>;
     case "tool":
       return <ToolRow it={it} />;
+    case "tool-group":
+      return <ToolGroup tools={it.tools} />;
     case "file":
       return <FileRow it={it} />;
     case "approval":
@@ -75,6 +210,7 @@ export function Timeline(): React.ReactElement {
   const recoverable = useStore((s) => s.recoverable);
   const reconnect = useStore((s) => s.reconnect);
   const endRef = useRef<HTMLDivElement>(null);
+  const timelineGroups = buildTimelineGroups(timeline);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -83,7 +219,7 @@ export function Timeline(): React.ReactElement {
   return (
     <div className="timeline">
       {timeline.length === 0 && <div className="empty">Select a workflow/step and send a prompt to begin.</div>}
-      {timeline.map((it) => (
+      {timelineGroups.map((it) => (
         <Item key={it.id} it={it} />
       ))}
       {recoverable && (
