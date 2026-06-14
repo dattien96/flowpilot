@@ -20,6 +20,16 @@ declare global {
         email?: string | null;
       }): Promise<{ ok: boolean }>;
       clearAuthSession(): Promise<{ ok: boolean }>;
+      requestHttp(payload: {
+        url: string;
+        method?: string;
+        headers?: Record<string, string>;
+        body?: string;
+      }): Promise<{
+        status: number;
+        headers: Array<[string, string]>;
+        body: string;
+      }>;
     };
   }
 }

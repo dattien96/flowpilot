@@ -126,6 +126,7 @@ type RunHandle struct {
 	ProviderSessionID string      `json:"providerSessionId"`
 	ProviderKey       ProviderKey `json:"providerKey"`
 	Status            RunStatus   `json:"status"`
+	StepID            string      `json:"stepId,omitempty"`
 }
 
 type StartRunInput struct {

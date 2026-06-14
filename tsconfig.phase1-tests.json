@@ -19,6 +19,8 @@
   "include": [
     "packages/flowpilot-client-core/src/**/*.ts",
     "apps/desktop-flowpilot/src/app/**/*.ts",
+    "apps/desktop-flowpilot/src/auth/desktopAdminSupabaseClient.ts",
+    "apps/desktop-flowpilot/src/auth/desktopBridgeHttp.ts",
     "apps/desktop-flowpilot/src/components/settings/settingsHelpers.ts",
     "tests/phase1/**/*.ts"
   ]

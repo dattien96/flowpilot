@@ -109,6 +109,7 @@ export interface RunHandle {
   providerSessionId: string; // for Codex this equals the thread id
   providerKey: ProviderKey;
   status: RunStatus;
+  stepId?: string;
 }
 
 export interface RunHistoryItem {

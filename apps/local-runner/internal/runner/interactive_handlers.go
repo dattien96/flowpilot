@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"sort"
@@ -393,6 +394,43 @@ func (s *InteractiveService) handleAdminQuestions(w http.ResponseWriter, r *http
 // ---- run creation / snapshot / fake artifacts ------------------------------
 
 func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
+	stepID := in.StepID
+	seedSteps := []RuntimeWorkflowStep{{
+		ID:               stepID,
+		StepType:         stepID,
+		Status:           StepStatusPending,
+		RequiresApproval: false,
+	}}
+	if in.WorkflowID != "" && (stepID == "" || stepID == in.WorkflowID) {
+		stepCatalog, ok := s.catalog.(WorkflowStepCatalogStore)
+		if !ok {
+			return RunHandle{}, newAPIErr(http.StatusBadGateway, "catalog_unavailable", "workflow step catalog is unavailable")
+		}
+		steps, err := stepCatalog.ListWorkflowSteps(context.Background(), in.WorkflowID)
+		if err != nil {
+			return RunHandle{}, newAPIErr(http.StatusBadGateway, "catalog_unavailable", err.Error())
+		}
+		if len(steps) == 0 {
+			return RunHandle{}, newAPIErr(http.StatusUnprocessableEntity, "workflow_has_no_steps", "workflow has no enabled steps")
+		}
+		stepID = steps[0].ID
+		seedSteps = make([]RuntimeWorkflowStep, len(steps))
+		for i, step := range steps {
+			stepType := step.ID
+			if step.Name != "" {
+				stepType = step.Name
+			}
+			seedSteps[i] = RuntimeWorkflowStep{
+				ID:               step.ID,
+				StepType:         stepType,
+				Status:           StepStatusPending,
+				RequiresApproval: false,
+			}
+		}
+	} else if stepID == "" {
+		return RunHandle{}, newAPIErr(http.StatusBadRequest, "invalid_request", "stepId is required")
+	}
+
 	// Resolve + enforce the provider runner-side (04-07): an empty key takes the
 	// default available provider; an explicitly requested disabled/placeholder
 	// provider is rejected with the typed UnsupportedProviderRuntimeError envelope.
@@ -430,12 +468,7 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 	}
 	s.runs[runID] = rs
 	if seeder, ok := s.workflowStore.(workflowRunSeeder); ok {
-		seeder.seed(runID, []RuntimeWorkflowStep{{
-			ID:               in.StepID,
-			StepType:         in.StepID,
-			Status:           StepStatusPending,
-			RequiresApproval: false,
-		}})
+		seeder.seed(runID, seedSteps)
 	}
 	if err := s.persistProviderSession(ProviderSessionState{
 		RunID:             runID,
@@ -450,7 +483,7 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		delete(s.runs, runID)
 		return RunHandle{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
 	}
-	return RunHandle{RunID: runID, ProviderSessionID: sessionID, ProviderKey: providerKey, Status: rs.status}, nil
+	return RunHandle{RunID: runID, ProviderSessionID: sessionID, ProviderKey: providerKey, Status: rs.status, StepID: stepID}, nil
 }
 
 func (s *InteractiveService) resumeRun(runID string) (RunHandle, *apiErr) {

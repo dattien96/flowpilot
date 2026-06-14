@@ -119,6 +119,15 @@ input {
   border-radius: 50%;
   background: var(--text-dim);
 }
+.status-online {
+  background: var(--ok);
+}
+.status-offline {
+  background: var(--err);
+}
+.status-starting {
+  background: var(--warn);
+}
 .status-running {
   background: var(--accent);
 }

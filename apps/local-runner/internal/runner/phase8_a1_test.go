@@ -13,10 +13,11 @@ import (
 
 // customCatalogStore is a test CatalogStore returning canned data or an error.
 type customCatalogStore struct {
-	projects  []Project
-	workflows []Workflow
-	steps     []Step
-	err       error
+	projects      []Project
+	workflows     []Workflow
+	steps         []Step
+	workflowSteps map[string][]Step
+	err           error
 }
 
 type failingWorkflowStore struct{}
@@ -29,6 +30,9 @@ func (c customCatalogStore) ListWorkflows(context.Context) ([]Workflow, error) {
 }
 func (c customCatalogStore) ListSteps(context.Context) ([]Step, error) {
 	return c.steps, c.err
+}
+func (c customCatalogStore) ListWorkflowSteps(_ context.Context, workflowID string) ([]Step, error) {
+	return c.workflowSteps[workflowID], c.err
 }
 
 func (f failingWorkflowStore) LoadRunSteps(context.Context, string) ([]RuntimeWorkflowStep, error) {
@@ -161,5 +165,44 @@ func TestStartTurnSurfacesWorkflowStateStoreErrors(t *testing.T) {
 		map[string]any{"stepId": "step-plan", "prompt": "hi", "scenario": "normal"}, nil)
 	if status != http.StatusBadGateway || !strings.Contains(string(body), "workflow_state_unavailable") {
 		t.Fatalf("expected 502 workflow_state_unavailable, got status=%d body=%s", status, body)
+	}
+}
+
+func TestStartRunResolvesWorkflowLaunchToFirstWorkflowStep(t *testing.T) {
+	svc := newInteractiveService(DefaultProviderRegistry(), customCatalogStore{
+		workflowSteps: map[string][]Step{
+			"wf-live": {
+				{ID: "ws-plan", WorkflowID: "wf-live", Name: "plan", Order: 1},
+				{ID: "ws-code", WorkflowID: "wf-live", Name: "code", Order: 2},
+			},
+		},
+	}, nil)
+	mux := http.NewServeMux()
+	svc.RegisterInteractiveRoutes(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	status, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs", StartRunInput{
+		ProjectID:  "proj-web",
+		WorkflowID: "wf-live",
+		StepID:     "wf-live",
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("start run status=%d body=%s", status, body)
+	}
+	var handle RunHandle
+	if err := json.Unmarshal(body, &handle); err != nil {
+		t.Fatalf("decode handle: %v", err)
+	}
+	if handle.StepID != "ws-plan" {
+		t.Fatalf("handle step id = %q, want ws-plan", handle.StepID)
+	}
+
+	store := svc.workflowStore.(*fakeWorkflowStore)
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	steps := store.steps[handle.RunID]
+	if len(steps) != 2 || steps[0].ID != "ws-plan" || steps[1].ID != "ws-code" {
+		t.Fatalf("seeded steps = %+v, want workflow steps", steps)
 	}
 }

@@ -216,4 +216,14 @@ func TestSupabaseCatalogStoreShaping(t *testing.T) {
 	if !strings.Contains((*cap3)[0].endpoint, "step_definitions?select=step_type,name") {
 		t.Fatalf("steps endpoint = %s", (*cap3)[0].endpoint)
 	}
+
+	cap4 := withMockHTTP(t, 200, []byte(`[{"id":"ws1","workflow_id":"w1","step_type":"plan","order_index":0,"step_definitions":{"name":"Plan","required_skills":["planner"]}}]`))
+	workflowSteps, err := store.ListWorkflowSteps(context.Background(), "w1")
+	if err != nil || len(workflowSteps) != 1 || workflowSteps[0].ID != "ws1" || workflowSteps[0].DefaultSkill != "planner" {
+		t.Fatalf("workflow steps = %+v err=%v", workflowSteps, err)
+	}
+	if !strings.Contains((*cap4)[0].endpoint, "workflow_steps?workflow_id=eq.w1") ||
+		!strings.Contains((*cap4)[0].endpoint, "is_enabled=is.true") {
+		t.Fatalf("workflow steps endpoint = %s", (*cap4)[0].endpoint)
+	}
 }

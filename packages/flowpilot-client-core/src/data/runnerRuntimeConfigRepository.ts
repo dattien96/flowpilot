@@ -12,6 +12,13 @@ interface SupabaseWorkspaceConfigPayload {
   edgeFunctionUrl?: string;
   projectRef?: string;
   hasServiceRoleKey?: boolean;
+  serviceRoleKey?: string;
+}
+
+export interface SupabaseWorkspaceConfigWithSecret {
+  apiUrl: string;
+  anonKey: string;
+  serviceRoleKey: string | null;
 }
 
 function deriveProjectRef(apiUrl: string) {
@@ -115,6 +122,30 @@ export class RunnerRuntimeConfigRepository implements RuntimeConfigRepository {
     }
 
     return this.loadSupabaseRuntimeStatus();
+  }
+
+  async loadSupabaseWorkspaceConfigWithSecret(): Promise<SupabaseWorkspaceConfigWithSecret | null> {
+    const response = await this.httpClient.request(
+      new URL("/supabase-config?includeSecret=1", this.runnerBaseUrl),
+      { cache: "no-store" },
+    );
+
+    if (response.status === 404) {
+      return null;
+    }
+    if (!response.ok) {
+      throw new Error(await readError(response));
+    }
+
+    const payload = (await response.json()) as SupabaseWorkspaceConfigPayload;
+    if (!payload.apiUrl || !payload.anonKey) {
+      return null;
+    }
+    return {
+      apiUrl: payload.apiUrl,
+      anonKey: payload.anonKey,
+      serviceRoleKey: payload.serviceRoleKey?.trim() || null,
+    };
   }
 
   private demoStatus(

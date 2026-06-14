@@ -65,7 +65,7 @@ export function RunStatus(): React.ReactElement {
   const active = status === "running" || status === "waiting_approval" || status === "waiting_question";
   const ready = status === "idle" && !runId && projects.length > 0;
   const statusClass = ready ? "ready" : status;
-  const statusLabel = ready ? "Ready" : LABEL[status];
+  const statusLabel = ready ? "Run Ready" : LABEL[status];
 
   return (
     <div className="run-status">

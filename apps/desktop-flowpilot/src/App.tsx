@@ -100,6 +100,7 @@ export function App(): React.ReactElement {
     setBusy(true);
     try {
       await loginUseCase.execute(email, password);
+      resetAdminUseCases();
       setAuthenticatedView("chat");
       await refreshBootstrap();
     } finally {
@@ -111,6 +112,7 @@ export function App(): React.ReactElement {
     setBusy(true);
     try {
       await logoutUseCase.execute();
+      resetAdminUseCases();
       setUnauthenticatedView("login");
       setPhase("unauthenticated");
       await refreshBootstrap();

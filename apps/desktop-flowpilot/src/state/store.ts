@@ -16,7 +16,12 @@ import { createRunnerClient } from "@/client/createRunnerClient";
 import { RunnerApiError } from "@/client/HttpWsRunnerClient";
 import type { ScenarioName } from "@/client/mockData";
 import { ideBridge } from "@/client/ideBridge";
+import { getAdminUseCases } from "@/clientCore";
 import { ADMIN_WEB_URL } from "@/config";
+import {
+  mapNavigatorStep,
+  mapNavigatorWorkflow,
+} from "@/app/navigatorCatalog";
 import {
   applyTimelineEvent,
   type PendingApproval,
@@ -143,18 +148,18 @@ export const useStore = create<AppState>((set, get) => ({
         }));
       }
       try {
-        const workflows = await withRetry(() => client.listWorkflows());
-        set({ workflows });
+        const admin = await getAdminUseCases();
+        const [workflowDefinitions, stepDefinitions] = await Promise.all([
+          admin.workflows.listWorkflows(),
+          admin.workflows.listStepDefinitions(),
+        ]);
+        set({
+          workflows: workflowDefinitions.map(mapNavigatorWorkflow),
+          steps: stepDefinitions.map(mapNavigatorStep),
+        });
       } catch (err) {
         // eslint-disable-next-line no-console
-        console.error("[FlowPilot] listWorkflows failed:", err);
-      }
-      try {
-        const steps = await withRetry(() => client.listSteps());
-        set({ steps });
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error("[FlowPilot] listSteps failed:", err);
+        console.error("[FlowPilot] definition catalog failed:", err);
       }
       try {
         const skills = await withRetry(() => client.listSkills("codex"));
@@ -189,7 +194,13 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   async selectProject(projectId) {
-    set({ selectedProjectId: projectId, runHistory: [], historyOpen: false });
+    set({
+      selectedProjectId: projectId,
+      selectedWorkflowId: undefined,
+      selectedStepId: undefined,
+      runHistory: [],
+      historyOpen: false,
+    });
   },
 
   setLaunchMode(mode) {
@@ -215,6 +226,7 @@ export const useStore = create<AppState>((set, get) => ({
     const { client, launchMode, selectedProjectId, selectedWorkflowId, selectedStepId } = get();
     const launchTargetId = launchMode === "workflow" ? selectedWorkflowId : selectedStepId;
     if (!selectedProjectId || !launchTargetId) return;
+    let turnStepId = launchTargetId;
 
     let runId = get().runId;
     if (!runId) {
@@ -224,11 +236,14 @@ export const useStore = create<AppState>((set, get) => ({
         stepId: launchTargetId,
       });
       runId = handle.runId;
+      if (handle.stepId) {
+        turnStepId = handle.stepId;
+      }
     }
 
     const turnInput: TurnInput = {
       runId,
-      stepId: launchTargetId,
+      stepId: turnStepId,
       prompt,
       selectedSkills:
         skills && skills.length > 0

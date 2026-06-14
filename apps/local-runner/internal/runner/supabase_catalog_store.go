@@ -22,6 +22,10 @@ type CatalogStore interface {
 	ListSteps(ctx context.Context) ([]Step, error)
 }
 
+type WorkflowStepCatalogStore interface {
+	ListWorkflowSteps(ctx context.Context, workflowID string) ([]Step, error)
+}
+
 // CatalogStoreFor returns the live SupabaseCatalogStore when the runner has a
 // Supabase workspace config (API URL + a usable key), else the offline fake catalog
 // (04-08 A1). Prefers the service-role key (server-side reads); falls back to the
@@ -123,6 +127,48 @@ func (s *SupabaseCatalogStore) ListSteps(ctx context.Context) ([]Step, error) {
 	out := make([]Step, len(raw))
 	for i, r := range raw {
 		out[i] = Step{ID: r.StepType, Name: r.Name, Order: i + 1}
+	}
+	return out, nil
+}
+
+func (s *SupabaseCatalogStore) ListWorkflowSteps(ctx context.Context, workflowID string) ([]Step, error) {
+	endpoint := fmt.Sprintf(
+		"%s/workflow_steps?workflow_id=eq.%s&is_enabled=is.true&select=id,workflow_id,step_type,order_index,step_definitions(name,required_skills)&order=order_index.asc",
+		s.restURL,
+		workflowID,
+	)
+	var raw []struct {
+		ID              string `json:"id"`
+		WorkflowID      string `json:"workflow_id"`
+		StepType        string `json:"step_type"`
+		OrderIndex      int    `json:"order_index"`
+		StepDefinitions *struct {
+			Name           string   `json:"name"`
+			RequiredSkills []string `json:"required_skills"`
+		} `json:"step_definitions"`
+	}
+	if err := s.getJSON(ctx, endpoint, &raw); err != nil {
+		return nil, err
+	}
+	out := make([]Step, len(raw))
+	for i, r := range raw {
+		name := r.StepType
+		defaultSkill := ""
+		if r.StepDefinitions != nil {
+			if strings.TrimSpace(r.StepDefinitions.Name) != "" {
+				name = r.StepDefinitions.Name
+			}
+			if len(r.StepDefinitions.RequiredSkills) > 0 {
+				defaultSkill = r.StepDefinitions.RequiredSkills[0]
+			}
+		}
+		out[i] = Step{
+			ID:           r.ID,
+			WorkflowID:   r.WorkflowID,
+			Name:         name,
+			Order:        r.OrderIndex + 1,
+			DefaultSkill: defaultSkill,
+		}
 	}
 	return out, nil
 }

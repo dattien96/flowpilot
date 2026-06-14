@@ -84,6 +84,13 @@ func (c *interactiveCatalog) ListSteps(context.Context) ([]Step, error) {
 	return out, nil
 }
 
+func (c *interactiveCatalog) ListWorkflowSteps(_ context.Context, workflowID string) ([]Step, error) {
+	steps := c.steps[workflowID]
+	out := make([]Step, len(steps))
+	copy(out, steps)
+	return out, nil
+}
+
 func (c *interactiveCatalog) listSkills() []ProviderSkill { return c.skills }
 
 // stepExists reports whether a step id is known (turn validation).

@@ -22,6 +22,12 @@ type PersistedAuthSession = {
   userId: string;
   email?: string | null;
 };
+type BridgeHttpRequest = {
+  url: string;
+  method?: string;
+  headers?: Record<string, string>;
+  body?: string;
+};
 
 const IDE_CANDIDATES: IdeCandidate[] = [
   { bin: "code", args: (f, l) => ["-g", l ? `${f}:${l}` : f] },
@@ -123,6 +129,18 @@ ipcMain.handle("auth-session:save", async (_event, payload: PersistedAuthSession
 ipcMain.handle("auth-session:clear", async () => {
   await clearPersistedAuthSession();
   return { ok: true };
+});
+ipcMain.handle("http:request", async (_event, payload: BridgeHttpRequest) => {
+  const response = await fetch(payload.url, {
+    method: payload.method ?? "GET",
+    headers: payload.headers,
+    body: payload.body,
+  });
+  return {
+    status: response.status,
+    headers: Array.from(response.headers.entries()),
+    body: await response.text(),
+  };
 });
 
 void app.whenReady().then(createWindow);

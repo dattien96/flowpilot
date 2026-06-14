@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { useStore } from "@/state/store";
 import { ProviderAccountsPanel } from "@/components/ProviderAccountsPanel";
+import { filterNavigatorWorkflows } from "@/app/navigatorCatalog";
 
 // Project / workflow / step selector (the navigator).
 export function Navigator(): React.ReactElement {
@@ -18,6 +19,7 @@ export function Navigator(): React.ReactElement {
     selectWorkflow,
     selectStep,
   } = useStore();
+  const visibleWorkflows = filterNavigatorWorkflows(workflows, selectedProjectId);
 
   useEffect(() => {
     void loadProjects();
@@ -84,7 +86,7 @@ export function Navigator(): React.ReactElement {
             <option value="" disabled>
               Select a workflow…
             </option>
-            {workflows.map((w) => (
+            {visibleWorkflows.map((w) => (
               <option key={w.id} value={w.id}>
                 {w.name}
               </option>
