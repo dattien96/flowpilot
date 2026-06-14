@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { useStore } from "@/state/store";
+import { ProviderAccountsPanel } from "@/components/ProviderAccountsPanel";
 
 // Project / workflow / step selector (the navigator).
 export function Navigator(): React.ReactElement {
@@ -10,8 +11,10 @@ export function Navigator(): React.ReactElement {
     selectedProjectId,
     selectedWorkflowId,
     selectedStepId,
+    launchMode,
     loadProjects,
     selectProject,
+    setLaunchMode,
     selectWorkflow,
     selectStep,
   } = useStore();
@@ -40,41 +43,83 @@ export function Navigator(): React.ReactElement {
       </div>
 
       <div className="nav-group">
-        <label>Workflow</label>
-        <select
-          value={selectedWorkflowId ?? ""}
-          disabled={!selectedProjectId}
-          onChange={(e) => void selectWorkflow(e.target.value)}
-        >
-          <option value="" disabled>
-            Select a workflow…
-          </option>
-          {workflows.map((w) => (
-            <option key={w.id} value={w.id}>
-              {w.name}
-            </option>
-          ))}
-        </select>
+        <label>Run type</label>
+        <div className="tab-list" role="tablist" aria-label="Run type">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={launchMode === "workflow"}
+            aria-controls="workflow-panel"
+            className={`tab ${launchMode === "workflow" ? "active" : ""}`}
+            onClick={() => setLaunchMode("workflow")}
+          >
+            Workflow
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={launchMode === "step"}
+            aria-controls="step-panel"
+            className={`tab ${launchMode === "step" ? "active" : ""}`}
+            onClick={() => setLaunchMode("step")}
+          >
+            Single step
+          </button>
+        </div>
       </div>
 
-      <div className="nav-group">
-        <label>Step</label>
-        <select
-          value={selectedStepId ?? ""}
-          disabled={!selectedWorkflowId}
-          onChange={(e) => selectStep(e.target.value)}
-        >
-          <option value="" disabled>
-            Select a step…
-          </option>
-          {steps.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.order}. {s.name}
-              {s.defaultSkill ? ` · /${s.defaultSkill}` : ""}
+      <div
+        id="workflow-panel"
+        role="tabpanel"
+        aria-hidden={launchMode !== "workflow"}
+        className={`nav-panel ${launchMode === "workflow" ? "active" : "hidden"}`}
+      >
+        <div className="nav-group">
+          <label>Workflow</label>
+          <select
+            value={selectedWorkflowId ?? ""}
+            disabled={!selectedProjectId || launchMode !== "workflow"}
+            onChange={(e) => void selectWorkflow(e.target.value)}
+          >
+            <option value="" disabled>
+              Select a workflow…
             </option>
-          ))}
-        </select>
+            {workflows.map((w) => (
+              <option key={w.id} value={w.id}>
+                {w.name}
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
+
+      <div
+        id="step-panel"
+        role="tabpanel"
+        aria-hidden={launchMode !== "step"}
+        className={`nav-panel ${launchMode === "step" ? "active" : "hidden"}`}
+      >
+        <div className="nav-group">
+          <label>Single step</label>
+          <select
+            value={selectedStepId ?? ""}
+            disabled={!selectedProjectId || launchMode !== "step"}
+            onChange={(e) => selectStep(e.target.value)}
+          >
+            <option value="" disabled>
+              Select a step…
+            </option>
+            {steps.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+                {s.defaultSkill ? ` · /${s.defaultSkill}` : ""}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <ProviderAccountsPanel />
     </div>
   );
 }

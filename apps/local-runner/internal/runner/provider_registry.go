@@ -3,6 +3,8 @@ package runner
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 )
 
 // UnsupportedProviderRuntimeError is returned when a provider runtime is requested
@@ -191,7 +193,24 @@ func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 			SkillSelection: true, Mcp: true, Interrupt: true,
 		},
 		newAdapter: func() ProviderRuntimeAdapter {
-			h, err := r.ensureCodexAppServer(context.Background(), "default", r.workspace)
+			scopeKey := "default"
+			env := map[string]string{}
+			account, err := r.ResolveProviderAccount(string(ProviderKeyCodex), "")
+			if err == nil {
+				scopeKey = account.ID
+				for key, value := range account.ExtraEnv {
+					env[key] = value
+				}
+				if account.HomePath != "" {
+					env["CODEX_HOME"] = account.HomePath
+				}
+			} else if codexHome := strings.TrimSpace(os.Getenv("CODEX_HOME")); codexHome != "" {
+				scopeKey = "env:" + codexHome
+				env["CODEX_HOME"] = codexHome
+			} else {
+				return errorAdapter{key: ProviderKeyCodex, err: err}
+			}
+			h, err := r.ensureCodexAppServer(context.Background(), scopeKey, r.workspace, env)
 			if err != nil {
 				return errorAdapter{key: ProviderKeyCodex, err: err}
 			}

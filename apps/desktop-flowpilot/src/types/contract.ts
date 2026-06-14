@@ -28,7 +28,7 @@ export interface Workflow {
 
 export interface Step {
   id: string;
-  workflowId: string;
+  workflowId?: string;
   name: string;
   order: number;
   /** Skill auto-selected for this step, if any (source: workflow_default). */
@@ -40,6 +40,38 @@ export interface ProviderSkill {
   path?: string;
   description?: string;
   source: "provider" | "flowpilot" | "workspace";
+}
+
+export interface ProviderAccountUsageLine {
+  label: string;
+  remainingPercent: number;
+  resetAt: string | null;
+}
+
+export interface ProviderAccountSummary {
+  id: string;
+  providerKey: ProviderKey;
+  displayName: string;
+  displayLabel: string;
+  homePath: string;
+  authStorePath: string | null;
+  slotIndex: number;
+  authStatus: "pending" | "connecting" | "connected" | "failed";
+  isActive: boolean;
+  createdAt: string;
+  lastAuthenticatedAt: string | null;
+  accountEmail: string | null;
+  accountName: string | null;
+  usageSummary: string | null;
+  remaining5hPercent: number | null;
+  remaining7dPercent: number | null;
+  remaining5hResetAt: string | null;
+  remaining7dResetAt: string | null;
+  usageSource: "provider_api" | "unavailable";
+  accessTokenExpiresAt: string | null;
+  refreshTokenExpiresAt: string | null;
+  refreshTokenExpiryNote: string | null;
+  usageDetailLines: ProviderAccountUsageLine[];
 }
 
 export interface Artifact {
@@ -66,7 +98,7 @@ export type RunStatus =
 
 export interface StartRunInput {
   projectId: string;
-  workflowId: string;
+  workflowId?: string;
   stepId: string;
   /** YOLO is the single source of truth for approval posture (see 04-04). */
   yoloMode?: boolean;
@@ -77,6 +109,18 @@ export interface RunHandle {
   providerSessionId: string; // for Codex this equals the thread id
   providerKey: ProviderKey;
   status: RunStatus;
+}
+
+export interface RunHistoryItem {
+  runId: string;
+  projectId: string;
+  workflowId?: string;
+  providerKey: ProviderKey;
+  status: RunStatus;
+  startedAt: string;
+  updatedAt: string;
+  lastPrompt?: string;
+  lastMessage?: string;
 }
 
 export interface SkillSelection {
@@ -108,7 +152,7 @@ export interface ProviderEventBaseDTO {
 }
 
 export type ProviderEventDTO =
-  | (ProviderEventBaseDTO & { type: "turn_started"; providerTurnId: string })
+  | (ProviderEventBaseDTO & { type: "turn_started"; providerTurnId: string; prompt?: string })
   | (ProviderEventBaseDTO & { type: "message_delta"; text: string })
   | (ProviderEventBaseDTO & { type: "message_completed"; text: string })
   | (ProviderEventBaseDTO & { type: "tool_started"; toolName: string; input?: unknown })
@@ -161,8 +205,10 @@ export interface QuestionOption {
 
 export interface RunnerClient {
   listProjects(): Promise<Project[]>;
-  listWorkflows(projectId: string): Promise<Workflow[]>;
-  listSteps(workflowId: string): Promise<Step[]>;
+  listWorkflows(): Promise<Workflow[]>;
+  listSteps(): Promise<Step[]>;
+  listProviderAccounts(): Promise<ProviderAccountSummary[]>;
+  listRunHistory(projectId: string): Promise<RunHistoryItem[]>;
   startRun(input: StartRunInput): Promise<RunHandle>;
   resumeRun(runId: string): Promise<RunHandle>;
   /** Streaming turn: yields normalized provider events until terminal. */
@@ -175,6 +221,8 @@ export interface RunnerClient {
   streamRun(runId: string, afterSeq?: number): AsyncIterable<ProviderEventDTO>;
   listArtifacts(runId: string): Promise<Artifact[]>;
   listSkills(provider: string): Promise<ProviderSkill[]>;
+  activateProviderAccount(accountId: string): Promise<void>;
+  openProviderAccountTerminal(accountId: string): Promise<void>;
   /** System control — mirrors admin-web's runner gateway (`POST /system/restart`). */
   restartStack(): Promise<void>;
   /** System control — mirrors admin-web's runner gateway (`POST /system/shutdown`). */

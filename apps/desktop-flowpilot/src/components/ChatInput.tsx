@@ -7,6 +7,8 @@ export function ChatInput(): React.ReactElement {
   const skills = useStore((s) => s.skills);
   const sendPrompt = useStore((s) => s.sendPrompt);
   const status = useStore((s) => s.status);
+  const launchMode = useStore((s) => s.launchMode);
+  const selectedWorkflowId = useStore((s) => s.selectedWorkflowId);
   const selectedStepId = useStore((s) => s.selectedStepId);
   const pendingApproval = useStore((s) => s.pendingApproval);
   const pendingQuestion = useStore((s) => s.pendingQuestion);
@@ -22,7 +24,8 @@ export function ChatInput(): React.ReactElement {
   );
 
   const blocked = status === "running" || status === "waiting_approval" || status === "waiting_question";
-  const canSend = !!selectedStepId && !blocked && text.trim().length > 0 && !showPicker;
+  const hasLaunchTarget = launchMode === "workflow" ? !!selectedWorkflowId : !!selectedStepId;
+  const canSend = hasLaunchTarget && !blocked && text.trim().length > 0 && !showPicker;
 
   // Add a skill (multi-select). Keeps the picker open so several can be chosen
   // in a row; clearing the text closes it.
@@ -92,9 +95,11 @@ export function ChatInput(): React.ReactElement {
           placeholder={
             blocked
               ? "Waiting for the current turn…"
-              : selectedStepId
+              : hasLaunchTarget
                 ? "Type a message, or / to pick a skill. Enter to send."
-                : "Select a step first."
+                : launchMode === "workflow"
+                  ? "Select a workflow first."
+                  : "Select a step first."
           }
           value={text}
           onChange={(e) => setText(e.target.value)}

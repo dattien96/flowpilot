@@ -13,23 +13,43 @@ import (
 
 // customCatalogStore is a test CatalogStore returning canned data or an error.
 type customCatalogStore struct {
-	projects []Project
-	err      error
+	projects  []Project
+	workflows []Workflow
+	steps     []Step
+	err       error
 }
+
+type failingWorkflowStore struct{}
 
 func (c customCatalogStore) ListProjects(context.Context) ([]Project, error) {
 	return c.projects, c.err
 }
-func (c customCatalogStore) ListWorkflows(context.Context, string) ([]Workflow, error) {
-	return nil, c.err
+func (c customCatalogStore) ListWorkflows(context.Context) ([]Workflow, error) {
+	return c.workflows, c.err
 }
-func (c customCatalogStore) ListSteps(context.Context, string) ([]Step, error) {
-	return nil, c.err
+func (c customCatalogStore) ListSteps(context.Context) ([]Step, error) {
+	return c.steps, c.err
+}
+
+func (f failingWorkflowStore) LoadRunSteps(context.Context, string) ([]RuntimeWorkflowStep, error) {
+	return nil, context.DeadlineExceeded
+}
+
+func (f failingWorkflowStore) ApplyStepTransition(context.Context, string, WorkflowStepTransition) error {
+	return context.DeadlineExceeded
+}
+
+func (f failingWorkflowStore) SetRunStatus(context.Context, string, WorkflowRunStatus, string) error {
+	return context.DeadlineExceeded
+}
+
+func (f failingWorkflowStore) AppendLog(context.Context, string, WorkflowLog) error {
+	return context.DeadlineExceeded
 }
 
 func newCatalogTestServer(t *testing.T, catalog CatalogStore) *httptest.Server {
 	t.Helper()
-	svc := NewInteractiveServiceWith(DefaultProviderRegistry(), catalog)
+	svc := newInteractiveService(DefaultProviderRegistry(), catalog, nil)
 	mux := http.NewServeMux()
 	svc.RegisterInteractiveRoutes(mux)
 	srv := httptest.NewServer(mux)
@@ -48,6 +68,30 @@ func TestServiceUsesInjectedCatalogStore(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "My Real Project") || strings.Contains(string(body), "Acme Web App") {
 		t.Fatalf("expected injected projects (not the fake catalog), got %s", body)
+	}
+}
+
+// The desktop workflow selector mirrors Admin Web's /workflows screen: workflows
+// are a global catalog and are not scoped to the selected project.
+func TestServiceListsInjectedWorkflowsGlobally(t *testing.T) {
+	srv := newCatalogTestServer(t, customCatalogStore{
+		workflows: []Workflow{{ID: "wf9", Name: "Global Workflow"}},
+	})
+	status, body := doJSON(t, "GET", srv.URL+"/client/workflows", nil, nil)
+	if status != http.StatusOK || !strings.Contains(string(body), "Global Workflow") {
+		t.Fatalf("expected injected global workflows, got status=%d body=%s", status, body)
+	}
+}
+
+// The desktop single-step selector mirrors Admin Web's /workflow-steps screen:
+// step definitions are global and not scoped to a selected workflow.
+func TestServiceListsInjectedStepsGlobally(t *testing.T) {
+	srv := newCatalogTestServer(t, customCatalogStore{
+		steps: []Step{{ID: "analysis", Name: "Analysis"}},
+	})
+	status, body := doJSON(t, "GET", srv.URL+"/client/steps", nil, nil)
+	if status != http.StatusOK || !strings.Contains(string(body), "Analysis") {
+		t.Fatalf("expected injected global steps, got status=%d body=%s", status, body)
 	}
 }
 
@@ -102,5 +146,20 @@ func TestCatalogStoreForUsesSupabaseWhenConfigured(t *testing.T) {
 	}
 	if _, ok := CatalogStoreFor(r).(*SupabaseCatalogStore); !ok {
 		t.Fatalf("a configured runner should yield SupabaseCatalogStore, got %T", CatalogStoreFor(r))
+	}
+}
+
+func TestStartTurnSurfacesWorkflowStateStoreErrors(t *testing.T) {
+	svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), failingWorkflowStore{})
+	mux := http.NewServeMux()
+	svc.RegisterInteractiveRoutes(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	runID := startRun(t, srv.URL)
+	status, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+runID+"/turns",
+		map[string]any{"stepId": "step-plan", "prompt": "hi", "scenario": "normal"}, nil)
+	if status != http.StatusBadGateway || !strings.Contains(string(body), "workflow_state_unavailable") {
+		t.Fatalf("expected 502 workflow_state_unavailable, got status=%d body=%s", status, body)
 	}
 }

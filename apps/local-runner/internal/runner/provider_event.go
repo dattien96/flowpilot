@@ -130,7 +130,7 @@ type RunHandle struct {
 
 type StartRunInput struct {
 	ProjectID  string `json:"projectId"`
-	WorkflowID string `json:"workflowId"`
+	WorkflowID string `json:"workflowId,omitempty"`
 	StepID     string `json:"stepId"`
 	// ProviderKey selects the provider runtime; empty defaults to the first
 	// available provider. A disabled/placeholder provider is rejected runner-side
@@ -171,7 +171,7 @@ type Workflow struct {
 
 type Step struct {
 	ID           string `json:"id"`
-	WorkflowID   string `json:"workflowId"`
+	WorkflowID   string `json:"workflowId,omitempty"`
 	Name         string `json:"name"`
 	Order        int    `json:"order"`
 	DefaultSkill string `json:"defaultSkill,omitempty"`

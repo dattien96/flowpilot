@@ -117,6 +117,65 @@ func (r *Runner) ResetSupabaseWorkspaceConfig() error {
 	return r.ensureSecretStore().Delete(supabaseServiceRoleSecretKey)
 }
 
+func (r *Runner) LoginSupabaseWithPassword(input SupabasePasswordLoginRequest) (SupabasePasswordLoginResponse, error) {
+	config, err := r.loadSupabaseWorkspaceConfig()
+	if err != nil {
+		return SupabasePasswordLoginResponse{}, err
+	}
+
+	email := strings.TrimSpace(input.Email)
+	password := strings.TrimSpace(input.Password)
+	if email == "" || password == "" {
+		return SupabasePasswordLoginResponse{}, errors.New("email and password are required")
+	}
+
+	payload, err := json.Marshal(map[string]string{
+		"email":    email,
+		"password": password,
+	})
+	if err != nil {
+		return SupabasePasswordLoginResponse{}, err
+	}
+
+	endpoint := strings.TrimRight(config.APIURL, "/") + "/auth/v1/token?grant_type=password"
+	statusCode, responseBody, err := httpRequestFn(context.Background(), http.MethodPost, endpoint, map[string]string{
+		"Content-Type":  "application/json",
+		"apikey":        config.AnonKey,
+		"Authorization": "Bearer " + config.AnonKey,
+	}, payload)
+	if err != nil {
+		return SupabasePasswordLoginResponse{}, err
+	}
+	if statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices {
+		return SupabasePasswordLoginResponse{}, fmt.Errorf("Supabase auth responded with %d: %s", statusCode, strings.TrimSpace(string(responseBody)))
+	}
+
+	var result struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		User         struct {
+			ID    string `json:"id"`
+			Email string `json:"email"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(responseBody, &result); err != nil {
+		return SupabasePasswordLoginResponse{}, fmt.Errorf("unable to decode Supabase auth response: %w", err)
+	}
+	if strings.TrimSpace(result.AccessToken) == "" || strings.TrimSpace(result.RefreshToken) == "" {
+		return SupabasePasswordLoginResponse{}, errors.New("Supabase auth response did not include session tokens")
+	}
+	if strings.TrimSpace(result.User.ID) == "" {
+		return SupabasePasswordLoginResponse{}, errors.New("Supabase auth response did not include a user id")
+	}
+
+	return SupabasePasswordLoginResponse{
+		AccessToken:  result.AccessToken,
+		RefreshToken: result.RefreshToken,
+		UserID:       result.User.ID,
+		Email:        result.User.Email,
+	}, nil
+}
+
 func (r *Runner) ValidateSupabaseWorkspaceConfig(input SupabaseWorkspaceConfigRequest) (SupabaseValidationResult, error) {
 	config := normalizeSupabaseWorkspaceConfig(input.SupabaseWorkspaceConfig)
 	serviceRoleKey := strings.TrimSpace(input.ServiceRoleKey)

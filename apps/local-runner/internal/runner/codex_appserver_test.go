@@ -273,6 +273,62 @@ func TestCodexAdapterTurnStreams(t *testing.T) {
 	bridge.mu.Unlock()
 }
 
+func TestCodexAdapterAcceptsGeneratedAppServerThreadAndTurnShapes(t *testing.T) {
+	d, fc := startFakeCodex(t, nil)
+	adapter := newCodexAdapter(d, "/workspace")
+	d.setInbound(adapter.handleInbound)
+
+	observedInputArray := make(chan bool, 1)
+	fc.serve(func(fc *fakeCodex, m map[string]any) {
+		method, _ := m["method"].(string)
+		switch method {
+		case "thread/start":
+			fc.reply(m["id"], map[string]any{
+				"thread": map[string]any{"id": "th-live"},
+			})
+		case "turn/start":
+			params, _ := m["params"].(map[string]any)
+			_, ok := params["input"].([]any)
+			observedInputArray <- ok
+			fc.reply(m["id"], map[string]any{
+				"turn": map[string]any{"id": "turn-live"},
+			})
+			fc.notify("item/agentMessage/delta", map[string]any{"threadId": "th-live", "turnId": "turn-live", "delta": "working..."})
+			fc.notify("item/completed", map[string]any{
+				"threadId": "th-live",
+				"turnId":   "turn-live",
+				"item":     map[string]any{"type": "agentMessage", "text": "done"},
+			})
+			fc.notify("turn/completed", map[string]any{
+				"threadId": "th-live",
+				"turn": map[string]any{
+					"id": "turn-live",
+					"items": []any{
+						map[string]any{"type": "agentMessage", "text": "done"},
+					},
+				},
+			})
+		}
+	})
+
+	bridge := &captureBridge{}
+	if err := adapter.SendTurn(context.Background(), TurnRequest{RunID: "r1", Prompt: "hi"}, bridge); err != nil {
+		t.Fatalf("SendTurn: %v", err)
+	}
+	select {
+	case ok := <-observedInputArray:
+		if !ok {
+			t.Fatal("turn/start input was not encoded as generated app-server UserInput[]")
+		}
+	default:
+		t.Fatal("did not observe turn/start")
+	}
+	got := bridge.types()
+	if !containsType(got, EventMessageDelta) || !containsType(got, EventMessageCompleted) || got[len(got)-1] != EventTurnCompleted {
+		t.Fatalf("expected generated app-server events to map, got %v", got)
+	}
+}
+
 func TestCodexAdapterApprovalRoundTrip(t *testing.T) {
 	d, fc := startFakeCodex(t, nil)
 	adapter := newCodexAdapter(d, "/workspace")

@@ -29,7 +29,7 @@ func TestEnsureCodexAppServerInitializes(t *testing.T) {
 	defer mockCodexInitProcess(t)()
 	r, _ := New(".")
 
-	h, err := r.ensureCodexAppServer(context.Background(), "default", ".")
+	h, err := r.ensureCodexAppServer(context.Background(), "default", ".", nil)
 	if err != nil {
 		t.Fatalf("ensureCodexAppServer: %v", err)
 	}
@@ -45,13 +45,13 @@ func TestEnsureCodexAppServerInitializes(t *testing.T) {
 	}
 
 	// reuse: same scope returns the same handle (one shared process)
-	h2, err := r.ensureCodexAppServer(context.Background(), "default", ".")
+	h2, err := r.ensureCodexAppServer(context.Background(), "default", ".", nil)
 	if err != nil || h2 != h {
 		t.Fatalf("same-scope ensure should reuse the handle (h2==h=%v, err=%v)", h2 == h, err)
 	}
 
 	// account switch: a different scope tears down + recreates (new handle)
-	h3, err := r.ensureCodexAppServer(context.Background(), "acct-2", ".")
+	h3, err := r.ensureCodexAppServer(context.Background(), "acct-2", ".", nil)
 	if err != nil {
 		t.Fatalf("recreate ensure: %v", err)
 	}
@@ -200,20 +200,20 @@ func TestSupabaseCatalogStoreShaping(t *testing.T) {
 	}
 
 	cap2 := withMockHTTP(t, 200, []byte(`[{"id":"w1","project_id":"p1","name":"Feature","description":"d"}]`))
-	wfs, err := store.ListWorkflows(context.Background(), "p1")
+	wfs, err := store.ListWorkflows(context.Background())
 	if err != nil || len(wfs) != 1 || wfs[0].ProjectID != "p1" {
 		t.Fatalf("workflows = %+v err=%v", wfs, err)
 	}
-	if !strings.Contains((*cap2)[0].endpoint, "workflows?project_id=eq.p1") {
+	if !strings.Contains((*cap2)[0].endpoint, "workflows?created_by=neq.flowpilot-runtime") {
 		t.Fatalf("workflows endpoint = %s", (*cap2)[0].endpoint)
 	}
 
-	cap3 := withMockHTTP(t, 200, []byte(`[{"id":"s1","workflow_id":"w1","step_type":"plan","order_index":0}]`))
-	steps, err := store.ListSteps(context.Background(), "w1")
-	if err != nil || len(steps) != 1 || steps[0].Name != "plan" {
+	cap3 := withMockHTTP(t, 200, []byte(`[{"step_type":"plan","name":"Plan"}]`))
+	steps, err := store.ListSteps(context.Background())
+	if err != nil || len(steps) != 1 || steps[0].Name != "Plan" {
 		t.Fatalf("steps = %+v err=%v", steps, err)
 	}
-	if !strings.Contains((*cap3)[0].endpoint, "workflow_steps?workflow_id=eq.w1") {
+	if !strings.Contains((*cap3)[0].endpoint, "step_definitions?select=step_type,name") {
 		t.Fatalf("steps endpoint = %s", (*cap3)[0].endpoint)
 	}
 }

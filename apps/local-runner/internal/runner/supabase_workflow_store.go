@@ -182,3 +182,109 @@ func (s *SupabaseWorkflowStore) AppendLog(ctx context.Context, stepID string, lo
 	}
 	return nil
 }
+
+func (s *SupabaseWorkflowStore) AppendEvent(ctx context.Context, event ProviderEvent) error {
+	endpoint := s.restURL + "/workflow_provider_events"
+	payload, err := json.Marshal(map[string]any{
+		"id":                  event.ID,
+		"seq":                 event.Seq,
+		"workflow_run_id":     event.WorkflowRunID,
+		"workflow_step_run_id": nilIfEmpty(event.WorkflowStepRunID),
+		"provider_session_id": event.ProviderSessionID,
+		"provider_key":        string(event.ProviderKey),
+		"provider_turn_id":    nilIfEmpty(event.ProviderTurnID),
+		"event_type":          string(event.Type),
+		"payload_json":        event,
+		"occurred_at":         event.OccurredAt,
+	})
+	if err != nil {
+		return err
+	}
+	status, respBody, err := httpRequestFn(ctx, http.MethodPost, endpoint, s.headers("return=minimal"), payload)
+	if err != nil {
+		return err
+	}
+	if status < 200 || status >= 300 {
+		return fmt.Errorf("supabase append event failed: status %d: %s", status, string(respBody))
+	}
+	return nil
+}
+
+func (s *SupabaseWorkflowStore) UpsertProviderSession(ctx context.Context, session ProviderSessionState) error {
+	endpoint := s.restURL + "/workflow_provider_sessions"
+	payload, err := json.Marshal(map[string]any{
+		"workflow_run_id":     session.RunID,
+		"project_id":          nilIfEmpty(session.ProjectID),
+		"workflow_id":         nilIfEmpty(session.WorkflowID),
+		"provider_session_id": session.ProviderSessionID,
+		"provider_key":        string(session.ProviderKey),
+		"provider_account_id": nilIfEmpty(session.ProviderAccountID),
+		"working_directory":   nilIfEmpty(session.WorkingDirectory),
+		"status":              string(session.Status),
+	})
+	if err != nil {
+		return err
+	}
+	status, respBody, err := httpRequestFn(ctx, http.MethodPost, endpoint, s.headers("resolution=merge-duplicates,return=minimal"), payload)
+	if err != nil {
+		return err
+	}
+	if status < 200 || status >= 300 {
+		return fmt.Errorf("supabase upsert provider session failed: status %d: %s", status, string(respBody))
+	}
+	return nil
+}
+
+func (s *SupabaseWorkflowStore) UpsertApproval(ctx context.Context, approval ProviderApprovalState) error {
+	endpoint := s.restURL + "/workflow_provider_approvals"
+	payload, err := json.Marshal(map[string]any{
+		"id":               approval.ApprovalID,
+		"workflow_run_id":  approval.RunID,
+		"provider_key":     string(approval.ProviderKey),
+		"provider_turn_id": nilIfEmpty(approval.ProviderTurnID),
+		"command":          nilIfEmpty(approval.Command),
+		"cwd":              nilIfEmpty(approval.Cwd),
+		"reason":           nilIfEmpty(approval.Reason),
+		"status":           approval.Status,
+		"decision":         nilIfEmpty(approval.Decision),
+		"policy":           nilIfEmpty(approval.Policy),
+		"expires_at":       nilIfEmpty(approval.ExpiresAt),
+	})
+	if err != nil {
+		return err
+	}
+	status, respBody, err := httpRequestFn(ctx, http.MethodPost, endpoint, s.headers("resolution=merge-duplicates,return=minimal"), payload)
+	if err != nil {
+		return err
+	}
+	if status < 200 || status >= 300 {
+		return fmt.Errorf("supabase upsert approval failed: status %d: %s", status, string(respBody))
+	}
+	return nil
+}
+
+func (s *SupabaseWorkflowStore) UpsertQuestion(ctx context.Context, question ProviderQuestionState) error {
+	endpoint := s.restURL + "/workflow_provider_questions"
+	payload, err := json.Marshal(map[string]any{
+		"id":               question.QuestionID,
+		"workflow_run_id":  question.RunID,
+		"provider_turn_id": nilIfEmpty(question.ProviderTurnID),
+		"prompt":           question.Prompt,
+		"options":          question.Options,
+		"multi_select":     question.MultiSelect,
+		"status":           question.Status,
+		"choice":           question.Choice,
+		"expires_at":       nilIfEmpty(question.ExpiresAt),
+	})
+	if err != nil {
+		return err
+	}
+	status, respBody, err := httpRequestFn(ctx, http.MethodPost, endpoint, s.headers("resolution=merge-duplicates,return=minimal"), payload)
+	if err != nil {
+		return err
+	}
+	if status < 200 || status >= 300 {
+		return fmt.Errorf("supabase upsert question failed: status %d: %s", status, string(respBody))
+	}
+	return nil
+}

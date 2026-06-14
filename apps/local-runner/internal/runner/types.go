@@ -246,6 +246,18 @@ type SupabaseWorkspaceConfigRequest struct {
 	ServiceRoleKey string `json:"serviceRoleKey"`
 }
 
+type SupabasePasswordLoginRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+type SupabasePasswordLoginResponse struct {
+	AccessToken  string `json:"accessToken"`
+	RefreshToken string `json:"refreshToken"`
+	UserID       string `json:"userId"`
+	Email        string `json:"email,omitempty"`
+}
+
 type GoogleDriveWorkspaceConfigRequest struct {
 	ClientID     string `json:"clientId"`
 	ClientSecret string `json:"clientSecret"`

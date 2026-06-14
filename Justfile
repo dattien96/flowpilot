@@ -73,8 +73,12 @@ desktop-install:
     @cd {{DESKTOP_PATH}} && npm install
     @echo "Done"
 
-# Start the desktop app standalone with offline MOCK data (no runner needed)
+# Start the desktop app in real runner mode (matches `just dev` desktop transport)
 desktop-dev:
+    @node scripts/supervisor.js --runner-port {{LOCAL_RUNNER_PORT}} --restart-existing --with-desktop --desktop-path {{DESKTOP_PATH}} --without-web
+
+# Start the desktop app standalone with offline MOCK data (no runner needed)
+desktop-dev-mock:
     @echo "Starting desktop app (offline mock data)..."
     @cd {{DESKTOP_PATH}} && npm run dev
 

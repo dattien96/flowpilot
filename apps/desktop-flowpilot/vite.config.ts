@@ -7,7 +7,13 @@ import path from "node:path";
 // plus Electron main/preload built by vite-plugin-electron. Zero backend.
 export default defineConfig({
   resolve: {
-    alias: { "@": path.resolve(__dirname, "src") },
+    alias: {
+      "@": path.resolve(__dirname, "src"),
+      "@flowpilot/client-core": path.resolve(
+        __dirname,
+        "../../packages/flowpilot-client-core/src/index.ts",
+      ),
+    },
   },
   plugins: [
     react(),

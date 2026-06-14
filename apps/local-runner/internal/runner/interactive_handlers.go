@@ -3,7 +3,9 @@ package runner
 import (
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strconv"
+	"time"
 )
 
 // RegisterInteractiveRoutes wires the Phase 2 interactive + admin endpoints onto
@@ -11,8 +13,11 @@ import (
 func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	// interactive (client)
 	mux.HandleFunc("GET /client/projects", s.handleListProjects)
+	mux.HandleFunc("GET /client/workflows", s.handleListWorkflows)
 	mux.HandleFunc("GET /client/projects/{projectId}/workflows", s.handleListWorkflows)
+	mux.HandleFunc("GET /client/steps", s.handleListSteps)
 	mux.HandleFunc("GET /client/workflows/{workflowId}/steps", s.handleListSteps)
+	mux.HandleFunc("GET /client/projects/{projectId}/workflow-runs", s.handleListProjectRunHistory)
 	mux.HandleFunc("POST /client/workflow-runs", s.handleStartRun)
 	mux.HandleFunc("GET /client/workflow-runs/{runId}", s.handleGetRun)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/resume", s.handleResumeRun)
@@ -60,7 +65,7 @@ func (s *InteractiveService) handleListProjects(w http.ResponseWriter, r *http.R
 }
 
 func (s *InteractiveService) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
-	workflows, err := s.catalog.ListWorkflows(r.Context(), r.PathValue("projectId"))
+	workflows, err := s.catalog.ListWorkflows(r.Context())
 	if err != nil {
 		writeInteractiveError(w, newAPIErr(http.StatusBadGateway, "catalog_unavailable", err.Error()))
 		return
@@ -69,7 +74,7 @@ func (s *InteractiveService) handleListWorkflows(w http.ResponseWriter, r *http.
 }
 
 func (s *InteractiveService) handleListSteps(w http.ResponseWriter, r *http.Request) {
-	steps, err := s.catalog.ListSteps(r.Context(), r.PathValue("workflowId"))
+	steps, err := s.catalog.ListSteps(r.Context())
 	if err != nil {
 		writeInteractiveError(w, newAPIErr(http.StatusBadGateway, "catalog_unavailable", err.Error()))
 		return
@@ -90,6 +95,10 @@ func (s *InteractiveService) handleListArtifacts(w http.ResponseWriter, r *http.
 		return
 	}
 	writeInteractiveJSON(w, http.StatusOK, fakeArtifacts(runID))
+}
+
+func (s *InteractiveService) handleListProjectRunHistory(w http.ResponseWriter, r *http.Request) {
+	writeInteractiveJSON(w, http.StatusOK, s.projectRunHistory(r.PathValue("projectId")))
 }
 
 // ---- run lifecycle handlers ------------------------------------------------
@@ -403,18 +412,44 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 	defer s.mu.Unlock()
 	runID := s.nextID("run")
 	sessionID := s.nextID("thread")
+	now := time.Now().UTC().Format(time.RFC3339Nano)
 	rs := &interactiveRun{
 		id:                runID,
+		projectID:         in.ProjectID,
+		workflowID:        in.WorkflowID,
 		providerKey:       providerKey,
 		providerSessionID: sessionID,
 		providerAccountID: s.activeAccountID,
 		workspaceCwd:      in.Cwd,
 		yolo:              in.YoloMode,
 		status:            RunStatusIdle,
+		createdAt:         now,
+		updatedAt:         now,
 		subs:              map[int64]chan ProviderEvent{},
 		idempotency:       map[string]string{},
 	}
 	s.runs[runID] = rs
+	if seeder, ok := s.workflowStore.(workflowRunSeeder); ok {
+		seeder.seed(runID, []RuntimeWorkflowStep{{
+			ID:               in.StepID,
+			StepType:         in.StepID,
+			Status:           StepStatusPending,
+			RequiresApproval: false,
+		}})
+	}
+	if err := s.persistProviderSession(ProviderSessionState{
+		RunID:             runID,
+		ProjectID:         in.ProjectID,
+		WorkflowID:        in.WorkflowID,
+		ProviderSessionID: sessionID,
+		ProviderKey:       providerKey,
+		ProviderAccountID: s.activeAccountID,
+		WorkingDirectory:  in.Cwd,
+		Status:            rs.status,
+	}); err != nil {
+		delete(s.runs, runID)
+		return RunHandle{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
+	}
 	return RunHandle{RunID: runID, ProviderSessionID: sessionID, ProviderKey: providerKey, Status: rs.status}, nil
 }
 
@@ -450,6 +485,44 @@ type runSnapshotView struct {
 	Status            RunStatus            `json:"status"`
 	PendingApproval   *pendingApprovalView `json:"pendingApproval,omitempty"`
 	PendingQuestion   *pendingQuestionView `json:"pendingQuestion,omitempty"`
+}
+
+type runHistoryItem struct {
+	RunID       string      `json:"runId"`
+	ProjectID   string      `json:"projectId"`
+	WorkflowID  string      `json:"workflowId,omitempty"`
+	ProviderKey ProviderKey `json:"providerKey"`
+	Status      RunStatus   `json:"status"`
+	StartedAt   string      `json:"startedAt"`
+	UpdatedAt   string      `json:"updatedAt"`
+	LastPrompt  string      `json:"lastPrompt,omitempty"`
+	LastMessage string      `json:"lastMessage,omitempty"`
+}
+
+func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryItem {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]runHistoryItem, 0, len(s.runs))
+	for _, rs := range s.runs {
+		if rs.projectID != projectID {
+			continue
+		}
+		out = append(out, runHistoryItem{
+			RunID:       rs.id,
+			ProjectID:   rs.projectID,
+			WorkflowID:  rs.workflowID,
+			ProviderKey: rs.providerKey,
+			Status:      rs.status,
+			StartedAt:   rs.createdAt,
+			UpdatedAt:   rs.updatedAt,
+			LastPrompt:  rs.lastPrompt,
+			LastMessage: rs.lastMessage,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].UpdatedAt > out[j].UpdatedAt
+	})
+	return out
 }
 
 func (s *InteractiveService) runSnapshot(runID string) (runSnapshotView, *apiErr) {

@@ -25,6 +25,56 @@ type WorkflowStore interface {
 	AppendLog(ctx context.Context, stepID string, log WorkflowLog) error
 }
 
+// InteractiveStateStore is the Phase 8 A2 persistence boundary for interactive
+// session/question/approval state. It is optional so the Phase 5 workflow store can
+// evolve incrementally without forcing every caller to depend on the new tables at
+// once.
+type InteractiveStateStore interface {
+	AppendEvent(ctx context.Context, event ProviderEvent) error
+	UpsertProviderSession(ctx context.Context, session ProviderSessionState) error
+	UpsertApproval(ctx context.Context, approval ProviderApprovalState) error
+	UpsertQuestion(ctx context.Context, question ProviderQuestionState) error
+}
+
+type ProviderSessionState struct {
+	RunID             string
+	ProjectID         string
+	WorkflowID        string
+	ProviderSessionID string
+	ProviderKey       ProviderKey
+	ProviderAccountID string
+	WorkingDirectory  string
+	Status            RunStatus
+}
+
+type ProviderApprovalState struct {
+	ApprovalID      string
+	RunID           string
+	ProviderKey     ProviderKey
+	ProviderTurnID  string
+	Command         string
+	Cwd             string
+	Reason          string
+	Status          string
+	Decision        string
+	Policy          string
+	ExpiresAt       string
+	ResolvedChoices []string
+}
+
+type ProviderQuestionState struct {
+	QuestionID      string
+	RunID           string
+	ProviderTurnID  string
+	Prompt          string
+	Options         []QuestionOption
+	MultiSelect     bool
+	Status          string
+	Choice          []string
+	ExpiresAt       string
+	ResolvedChoices []string
+}
+
 // ---- in-memory fake (tests) ------------------------------------------------
 
 type fakeWorkflowStore struct {
@@ -34,6 +84,10 @@ type fakeWorkflowStore struct {
 	finished  map[string]string
 	logs      map[string][]WorkflowLog // stepID -> logs
 	applies   int                      // total ApplyStepTransition calls (idempotency probe)
+	events    map[string][]ProviderEvent
+	sessions  map[string]ProviderSessionState
+	approvals map[string]ProviderApprovalState
+	questions map[string]ProviderQuestionState
 }
 
 func newFakeWorkflowStore() *fakeWorkflowStore {
@@ -42,6 +96,10 @@ func newFakeWorkflowStore() *fakeWorkflowStore {
 		runStatus: map[string]WorkflowRunStatus{},
 		finished:  map[string]string{},
 		logs:      map[string][]WorkflowLog{},
+		events:    map[string][]ProviderEvent{},
+		sessions:  map[string]ProviderSessionState{},
+		approvals: map[string]ProviderApprovalState{},
+		questions: map[string]ProviderQuestionState{},
 	}
 }
 
@@ -95,5 +153,33 @@ func (f *fakeWorkflowStore) AppendLog(_ context.Context, stepID string, log Work
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.logs[stepID] = append(f.logs[stepID], log)
+	return nil
+}
+
+func (f *fakeWorkflowStore) AppendEvent(_ context.Context, event ProviderEvent) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.events[event.WorkflowRunID] = append(f.events[event.WorkflowRunID], event)
+	return nil
+}
+
+func (f *fakeWorkflowStore) UpsertProviderSession(_ context.Context, session ProviderSessionState) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sessions[session.RunID] = session
+	return nil
+}
+
+func (f *fakeWorkflowStore) UpsertApproval(_ context.Context, approval ProviderApprovalState) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.approvals[approval.ApprovalID] = approval
+	return nil
+}
+
+func (f *fakeWorkflowStore) UpsertQuestion(_ context.Context, question ProviderQuestionState) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.questions[question.QuestionID] = question
 	return nil
 }

@@ -9,6 +9,7 @@ let webPort = '3002';
 let runnerPort = '4317';
 let restartExisting = false;
 let withDesktop = false;
+let withWeb = true;
 let desktopPath = 'apps/desktop-flowpilot';
 const args = process.argv.slice(2);
 for (let i = 0; i < args.length; i++) {
@@ -22,6 +23,8 @@ for (let i = 0; i < args.length; i++) {
     restartExisting = true;
   } else if (args[i] === '--with-desktop') {
     withDesktop = true;
+  } else if (args[i] === '--without-web') {
+    withWeb = false;
   } else if (args[i] === '--desktop-path' && args[i + 1]) {
     desktopPath = args[i + 1];
     i++;
@@ -186,12 +189,12 @@ async function startServices() {
     } catch (e) {}
   }
 
-  const webInUse = await isPortInUse(parseInt(webPort, 10));
+  const webInUse = withWeb ? await isPortInUse(parseInt(webPort, 10)) : false;
   const runnerInUse = await isPortInUse(parseInt(runnerPort, 10));
 
   // Resolve actual PIDs if in use and verify their ownership to prevent PID reuse issues
   let adoptedWebPid = null;
-  if (webInUse) {
+  if (withWeb && webInUse) {
     if (hintWebPid && isPidAlive(hintWebPid) && verifyProcessOwner(hintWebPid, 'web')) {
       adoptedWebPid = hintWebPid;
     } else {
@@ -214,7 +217,7 @@ async function startServices() {
     }
   }
 
-  if (webInUse && !adoptedWebPid) {
+  if (withWeb && webInUse && !adoptedWebPid) {
     throw new Error(
       `Port ${webPort} is already in use by a process that does not look like the FlowPilot web app. Stop that process or choose another port.`,
     );
@@ -226,17 +229,24 @@ async function startServices() {
     );
   }
 
-  if (restartExisting && (adoptedWebPid || adoptedRunnerPid)) {
+  if (restartExisting && ((withWeb && adoptedWebPid) || adoptedRunnerPid)) {
     console.log('[Supervisor] Restarting existing owned dev processes so env and code changes take effect...');
     await stopManagedProcess(adoptedRunnerPid ? createManagedProcessRef(adoptedRunnerPid, false) : null, 'runner');
-    await stopManagedProcess(adoptedWebPid ? createManagedProcessRef(adoptedWebPid, false) : null, 'web');
+    if (withWeb) {
+      await stopManagedProcess(adoptedWebPid ? createManagedProcessRef(adoptedWebPid, false) : null, 'web');
+    }
     return startServicesFresh();
   }
 
-  if (webInUse && runnerInUse) {
-    console.log('[Supervisor] Both services are already running. Watching for control commands...');
+  const allManagedServicesRunning = withWeb ? webInUse && runnerInUse : runnerInUse;
+  if (allManagedServicesRunning) {
+    console.log(
+      withWeb
+        ? '[Supervisor] Both services are already running. Watching for control commands...'
+        : '[Supervisor] Runner service is already running. Watching for control commands...',
+    );
     
-    if (adoptedWebPid) {
+    if (withWeb && adoptedWebPid) {
       webProcess = createManagedProcessRef(adoptedWebPid, false);
     }
     if (adoptedRunnerPid) {
@@ -282,22 +292,24 @@ async function startServicesFresh(existing = {}) {
   }
 
   // Spawn web app if not running
-  if (!webInUse) {
-    console.log(`[Supervisor] Starting web service on port ${webPort}...`);
-    const webCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-    webProcess = spawn(webCmd, ['run', 'dev', '--', '--port', webPort], {
-      cwd: path.join(rootDir, 'apps', 'admin-web'),
-      shell: true,
-      stdio: 'inherit',
-      detached: process.platform !== 'win32',
-    });
-    webProcess.detached = process.platform !== 'win32';
+  if (withWeb) {
+    if (!webInUse) {
+      console.log(`[Supervisor] Starting web service on port ${webPort}...`);
+      const webCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+      webProcess = spawn(webCmd, ['run', 'dev', '--', '--port', webPort], {
+        cwd: path.join(rootDir, 'apps', 'admin-web'),
+        shell: true,
+        stdio: 'inherit',
+        detached: process.platform !== 'win32',
+      });
+      webProcess.detached = process.platform !== 'win32';
 
-    attachExitHandlers(webProcess, 'Web');
-  } else {
-    console.log(`[Supervisor] Web service is already running on port ${webPort}, skipping start.`);
-    if (adoptedWebPid) {
-      webProcess = createManagedProcessRef(adoptedWebPid, false);
+      attachExitHandlers(webProcess, 'Web');
+    } else {
+      console.log(`[Supervisor] Web service is already running on port ${webPort}, skipping start.`);
+      if (adoptedWebPid) {
+        webProcess = createManagedProcessRef(adoptedWebPid, false);
+      }
     }
   }
 
@@ -305,11 +317,22 @@ async function startServicesFresh(existing = {}) {
   if (!runnerInUse) {
     console.log(`[Supervisor] Starting runner service on port ${runnerPort}...`);
     const runnerCmd = process.platform === 'win32' ? 'go.exe' : 'go';
+    const hasCodexAppServerFlag = Object.prototype.hasOwnProperty.call(
+      process.env,
+      'FLOWPILOT_CODEX_APPSERVER',
+    );
+    const runnerEnv = {
+      ...process.env,
+      FLOWPILOT_CODEX_APPSERVER: hasCodexAppServerFlag
+        ? process.env.FLOWPILOT_CODEX_APPSERVER
+        : '1',
+    };
     runnerProcess = spawn(runnerCmd, ['run', './cmd/flowpilot', 'runner', 'serve', '--port', runnerPort], {
       cwd: path.join(rootDir, 'apps', 'local-runner'),
       shell: true,
       stdio: 'inherit',
       detached: process.platform !== 'win32',
+      env: runnerEnv,
     });
     runnerProcess.detached = process.platform !== 'win32';
 

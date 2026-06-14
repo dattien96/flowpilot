@@ -1,0 +1,560 @@
+import type {
+  ArtifactCatalogRepository,
+  ArtifactRunRepository,
+  IntegrationCrudRepository,
+  ProjectRepository,
+  ProjectIntegrationRepository,
+  SupportedModelRepository,
+  TeamRepository,
+  WorkflowRepository,
+} from "../domain/adminRepositories";
+import type {
+  ArtifactDefinition,
+  ArtifactRun,
+  Integration,
+  IntegrationType,
+  Project,
+  ProjectPlatform,
+  ProjectWorkspaceBinding,
+  ReasoningEffort,
+  StepDefinition,
+  SupportedModel,
+  Team,
+  TeamMember,
+  Workflow,
+  WorkflowRun,
+  WorkflowStep,
+} from "../domain/adminModels";
+
+type SupabaseLike = {
+  from(table: string): any;
+};
+
+type Row = Record<string, any>;
+
+function assertNoError(error: { message?: string } | null | undefined, fallback: string) {
+  if (error) throw new Error(error.message || fallback);
+}
+
+function now() {
+  return new Date().toISOString();
+}
+
+function mapProject(row: Row): Project {
+  return {
+    id: String(row.id),
+    name: String(row.name ?? ""),
+    description: String(row.description ?? ""),
+    platform: (row.platform ?? "multi") as ProjectPlatform,
+    repositoryUrl: String(row.repository_url ?? ""),
+    directoryPath: row.directory_path ? String(row.directory_path) : null,
+    status: String(row.status ?? "active"),
+    artifactStoragePreference: (row.artifact_storage_preference ?? "supabase") as Project["artifactStoragePreference"],
+    defaultProvider: row.default_provider ? String(row.default_provider) : null,
+    defaultModel: row.default_model ? String(row.default_model) : null,
+    defaultReasoningEffort: row.default_reasoning_effort ? (row.default_reasoning_effort as ReasoningEffort) : null,
+    sessionIdleTtlMinutes: row.session_idle_ttl_minutes == null ? null : Number(row.session_idle_ttl_minutes),
+    createdAt: String(row.created_at ?? ""),
+    updatedAt: String(row.updated_at ?? ""),
+  };
+}
+
+function mapBinding(row: Row): ProjectWorkspaceBinding {
+  return {
+    id: String(row.id),
+    projectId: String(row.project_id),
+    localPath: String(row.local_path ?? ""),
+    label: row.label ? String(row.label) : null,
+    createdAt: String(row.created_at ?? ""),
+    updatedAt: String(row.updated_at ?? ""),
+  };
+}
+
+function mapTeam(row: Row): Team {
+  return {
+    id: String(row.id),
+    name: String(row.name ?? ""),
+    createdAt: String(row.created_at ?? ""),
+    updatedAt: String(row.updated_at ?? ""),
+  };
+}
+
+function mapMember(row: Row): TeamMember {
+  return {
+    id: String(row.id),
+    teamId: String(row.team_id),
+    name: String(row.name ?? ""),
+    email: row.email ? String(row.email) : null,
+    jiraAccountId: row.jira_account_id ? String(row.jira_account_id) : null,
+    role: row.role ?? "backend",
+    levelLabel: row.level_label ?? "L3_middle",
+    skillTags: Array.isArray(row.skill_tags) ? row.skill_tags.map(String) : [],
+    weeklyCapacityHours: Number(row.weekly_capacity_hours ?? 40),
+    createdAt: String(row.created_at ?? ""),
+    updatedAt: String(row.updated_at ?? ""),
+  };
+}
+
+function mapIntegration(row: Row): Integration {
+  return {
+    id: String(row.id),
+    projectId: String(row.project_id),
+    type: row.type as IntegrationType,
+    label: String(row.label ?? ""),
+    mcpTypeEnabled: Boolean(row.mcp_type_enabled ?? false),
+    configEncrypted: row.config_encrypted && typeof row.config_encrypted === "object" ? row.config_encrypted : {},
+    status: row.status ?? "pending",
+    lastSyncedAt: row.last_synced_at ? String(row.last_synced_at) : null,
+    lastError: row.last_error ? String(row.last_error) : null,
+    createdAt: String(row.created_at ?? ""),
+    updatedAt: String(row.updated_at ?? ""),
+  };
+}
+
+function mapSupportedModel(row: Row): SupportedModel {
+  return {
+    id: String(row.id),
+    providerKey: row.provider_key,
+    modelId: String(row.model_id ?? ""),
+    displayName: String(row.display_name ?? row.model_id ?? ""),
+    isEnabled: Boolean(row.is_enabled ?? true),
+    sortOrder: Number(row.sort_order ?? 0),
+    source: String(row.source ?? "manual"),
+    detectionMethod: row.detection_method ? String(row.detection_method) : null,
+    detectedCliVersion: row.detected_cli_version ? String(row.detected_cli_version) : null,
+    lastDetectedAt: row.last_detected_at ? String(row.last_detected_at) : null,
+    createdAt: String(row.created_at ?? ""),
+    updatedAt: String(row.updated_at ?? ""),
+  };
+}
+
+function mapWorkflow(row: Row): Workflow {
+  return {
+    id: String(row.id),
+    projectId: row.project_id ? String(row.project_id) : null,
+    name: String(row.name ?? ""),
+    description: String(row.description ?? ""),
+    isTemplate: Boolean(row.is_template ?? false),
+    providerOverride: row.provider_override ? String(row.provider_override) : null,
+    modelOverride: row.model_override ? String(row.model_override) : null,
+    reasoningEffortOverride: row.reasoning_effort_override ? String(row.reasoning_effort_override) : null,
+    yoloMode: Boolean(row.yolo_mode ?? false),
+    createdAt: String(row.created_at ?? ""),
+    updatedAt: String(row.updated_at ?? ""),
+  };
+}
+
+function mapWorkflowStep(row: Row): WorkflowStep {
+  return {
+    id: String(row.id),
+    workflowId: String(row.workflow_id),
+    stepType: String(row.step_type ?? ""),
+    orderIndex: Number(row.order_index ?? 0),
+    isEnabled: Boolean(row.is_enabled ?? true),
+    providerOverride: row.provider_override ? String(row.provider_override) : null,
+    modelOverride: row.model_override ? String(row.model_override) : null,
+    reasoningEffortOverride: row.reasoning_effort_override ? String(row.reasoning_effort_override) : null,
+    requiresApproval: Boolean(row.requires_approval ?? true),
+    createdAt: String(row.created_at ?? ""),
+    updatedAt: String(row.updated_at ?? ""),
+  };
+}
+
+function mapStepDefinition(row: Row): StepDefinition {
+  return {
+    stepType: String(row.step_type ?? ""),
+    name: String(row.name ?? ""),
+    description: String(row.description ?? ""),
+    promptBase: row.prompt_base ? String(row.prompt_base) : null,
+    requiredMcps: Array.isArray(row.required_mcps) ? row.required_mcps.map(String) : [],
+    mcpAccessMode: row.mcp_access_mode === "read_write" ? "read_write" : "read_only",
+    requiredSkills: Array.isArray(row.required_skills) ? row.required_skills.map(String) : [],
+    teamRole: row.team_role ? String(row.team_role) : null,
+    subagent: row.subagent ? String(row.subagent) : null,
+    model: String(row.model ?? "gpt-5.4"),
+    reasoningEffort: row.reasoning_effort ? String(row.reasoning_effort) : null,
+    yoloMode: Boolean(row.yolo_mode ?? false),
+    agentType: row.agent_type === "autonomous" ? "autonomous" : "standard",
+    inputArtifactDefinitions: Array.isArray(row.input_artifact_definitions) ? row.input_artifact_definitions.map(String) : [],
+    outputArtifactDefinitions: Array.isArray(row.output_artifact_definitions) ? row.output_artifact_definitions.map(String) : [],
+    createdAt: String(row.created_at ?? ""),
+    updatedAt: String(row.updated_at ?? ""),
+  };
+}
+
+function mapArtifactDefinition(row: Row): ArtifactDefinition {
+  return {
+    key: String(row.key ?? ""),
+    name: String(row.name ?? ""),
+    description: String(row.description ?? ""),
+    localPathTemplate: String(row.local_path_template ?? ""),
+    remotePathTemplate: String(row.remote_path_template ?? ""),
+    defaultFileName: String(row.default_file_name ?? ""),
+    createdAt: String(row.created_at ?? ""),
+    updatedAt: String(row.updated_at ?? ""),
+  };
+}
+
+function mapArtifactRun(row: Row): ArtifactRun {
+  return {
+    id: String(row.id),
+    artifactDefinitionKey: row.artifact_definition_key ? String(row.artifact_definition_key) : null,
+    workflowId: String(row.workflow_id ?? ""),
+    workflowRunId: String(row.workflow_run_id ?? ""),
+    workflowRunStepId: row.workflow_run_step_id ? String(row.workflow_run_step_id) : null,
+    projectId: row.project_id ? String(row.project_id) : null,
+    title: String(row.title ?? ""),
+    localPath: String(row.local_path ?? ""),
+    remotePath: String(row.remote_path ?? ""),
+    remoteUrl: String(row.remote_url ?? ""),
+    storageProvider: row.storage_provider ?? null,
+    remoteObjectId: row.remote_object_id ? String(row.remote_object_id) : null,
+    syncStatus: String(row.sync_status ?? "local_only"),
+    createdAt: String(row.created_at ?? ""),
+    updatedAt: String(row.updated_at ?? ""),
+  };
+}
+
+function mapWorkflowRun(row: Row): WorkflowRun {
+  return {
+    id: String(row.id),
+    workflowId: String(row.workflow_id ?? ""),
+    projectId: String(row.project_id ?? ""),
+    status: String(row.status ?? ""),
+    provider: row.provider ? String(row.provider) : null,
+    model: row.model ? String(row.model) : null,
+    reasoningEffort: row.reasoning_effort ? String(row.reasoning_effort) : null,
+    yoloMode: Boolean(row.yolo_mode ?? false),
+    startedAt: String(row.started_at ?? ""),
+    finishedAt: row.finished_at ? String(row.finished_at) : null,
+    errorMessage: row.error_message ? String(row.error_message) : null,
+  };
+}
+
+export class SupabaseAdminRepository implements
+  ProjectRepository,
+  TeamRepository,
+  WorkflowRepository,
+  SupportedModelRepository,
+  IntegrationCrudRepository,
+  ProjectIntegrationRepository,
+  ArtifactCatalogRepository,
+  ArtifactRunRepository
+{
+  constructor(private readonly supabase: SupabaseLike) {}
+
+  async listProjects() {
+    const { data, error } = await this.supabase.from("projects").select("*").order("updated_at", { ascending: false });
+    assertNoError(error, "Unable to list projects.");
+    return (data ?? []).map(mapProject);
+  }
+
+  async createProject(input: Partial<Project> & Pick<Project, "name" | "description" | "platform" | "repositoryUrl">) {
+    const { data, error } = await this.supabase.from("projects").insert({
+      name: input.name,
+      description: input.description,
+      platform: input.platform,
+      repository_url: input.repositoryUrl,
+      directory_path: input.directoryPath ?? "",
+      status: input.status ?? "active",
+      artifact_storage_preference: input.artifactStoragePreference ?? "supabase",
+      default_provider: input.defaultProvider ?? null,
+      default_model: input.defaultModel ?? null,
+      default_reasoning_effort: input.defaultReasoningEffort ?? null,
+      session_idle_ttl_minutes: input.sessionIdleTtlMinutes ?? 120,
+    }).select("*").single();
+    assertNoError(error, "Unable to create project.");
+    return mapProject(data);
+  }
+
+  async updateProject(projectId: string, patch: Partial<Project>) {
+    const payload: Row = {};
+    if (patch.name !== undefined) payload.name = patch.name;
+    if (patch.description !== undefined) payload.description = patch.description;
+    if (patch.platform !== undefined) payload.platform = patch.platform;
+    if (patch.repositoryUrl !== undefined) payload.repository_url = patch.repositoryUrl;
+    if (patch.directoryPath !== undefined) payload.directory_path = patch.directoryPath;
+    if (patch.status !== undefined) payload.status = patch.status;
+    if (patch.artifactStoragePreference !== undefined) payload.artifact_storage_preference = patch.artifactStoragePreference;
+    if (patch.defaultProvider !== undefined) payload.default_provider = patch.defaultProvider;
+    if (patch.defaultModel !== undefined) payload.default_model = patch.defaultModel;
+    if (patch.defaultReasoningEffort !== undefined) payload.default_reasoning_effort = patch.defaultReasoningEffort;
+    if (patch.sessionIdleTtlMinutes !== undefined) payload.session_idle_ttl_minutes = patch.sessionIdleTtlMinutes;
+    payload.updated_at = now();
+    const { data, error } = await this.supabase.from("projects").update(payload).eq("id", projectId).select("*").single();
+    assertNoError(error, "Unable to update project.");
+    return mapProject(data);
+  }
+
+  async listBindings(projectId: string) {
+    const { data, error } = await this.supabase.from("project_workspace_bindings").select("*").eq("project_id", projectId).order("created_at", { ascending: true });
+    assertNoError(error, "Unable to list directory bindings.");
+    return (data ?? []).map(mapBinding);
+  }
+
+  async saveBinding(projectId: string, binding: Partial<ProjectWorkspaceBinding> & { localPath: string }) {
+    const payload = {
+      id: binding.id,
+      project_id: projectId,
+      local_path: binding.localPath,
+      label: binding.label ?? null,
+      updated_at: now(),
+    };
+    const { data, error } = await this.supabase.from("project_workspace_bindings").upsert(payload).select("*").single();
+    assertNoError(error, "Unable to save directory binding.");
+    return mapBinding(data);
+  }
+
+  async deleteBinding(bindingId: string) {
+    const { error } = await this.supabase.from("project_workspace_bindings").delete().eq("id", bindingId);
+    assertNoError(error, "Unable to delete directory binding.");
+  }
+
+  async listTeams() {
+    const { data, error } = await this.supabase.from("teams").select("*").order("name", { ascending: true });
+    assertNoError(error, "Unable to list teams.");
+    return (data ?? []).map(mapTeam);
+  }
+
+  async createTeam(name: string) {
+    const { data, error } = await this.supabase.from("teams").insert({ name }).select("*").single();
+    assertNoError(error, "Unable to create team.");
+    return mapTeam(data);
+  }
+
+  async listMembers(teamId: string) {
+    const { data, error } = await this.supabase.from("team_members").select("*").eq("team_id", teamId).order("name", { ascending: true });
+    assertNoError(error, "Unable to list team members.");
+    return (data ?? []).map(mapMember);
+  }
+
+  async addMember(member: Omit<TeamMember, "id" | "createdAt" | "updatedAt">) {
+    const { data, error } = await this.supabase.from("team_members").insert({
+      team_id: member.teamId,
+      name: member.name,
+      email: member.email,
+      jira_account_id: member.jiraAccountId,
+      role: member.role,
+      level_label: member.levelLabel,
+      skill_tags: member.skillTags,
+      weekly_capacity_hours: member.weeklyCapacityHours,
+    }).select("*").single();
+    assertNoError(error, "Unable to add team member.");
+    return mapMember(data);
+  }
+
+  async removeMember(memberId: string) {
+    const { error } = await this.supabase.from("team_members").delete().eq("id", memberId);
+    assertNoError(error, "Unable to remove team member.");
+  }
+
+  async listTeamsByProject(projectId: string) {
+    const { data, error } = await this.supabase.from("project_team_links").select("team_id, teams(*)").eq("project_id", projectId);
+    assertNoError(error, "Unable to list project teams.");
+    return (data ?? []).map((row: Row) => mapTeam(row.teams));
+  }
+
+  async setProjectTeams(projectId: string, teamIds: string[]) {
+    const { error: deleteError } = await this.supabase.from("project_team_links").delete().eq("project_id", projectId);
+    assertNoError(deleteError, "Unable to update project team links.");
+    if (teamIds.length === 0) return;
+    const { error } = await this.supabase.from("project_team_links").insert(teamIds.map((teamId) => ({ project_id: projectId, team_id: teamId })));
+    assertNoError(error, "Unable to update project team links.");
+  }
+
+  async listIntegrations() {
+    const { data, error } = await this.supabase.from("integrations").select("*").order("updated_at", { ascending: false });
+    assertNoError(error, "Unable to list integrations.");
+    return (data ?? []).map(mapIntegration);
+  }
+
+  async createIntegration(input: { projectId: string; type: IntegrationType; label: string; configEncrypted: Record<string, unknown>; status: string; mcpTypeEnabled?: boolean }) {
+    const { data, error } = await this.supabase.from("integrations").insert({
+      project_id: input.projectId,
+      type: input.type,
+      label: input.label,
+      config_encrypted: input.configEncrypted,
+      status: input.status,
+      mcp_type_enabled: input.mcpTypeEnabled ?? false,
+    }).select("*").single();
+    assertNoError(error, "Unable to create integration.");
+    return mapIntegration(data);
+  }
+
+  async updateIntegration(id: string, patch: Partial<Integration>) {
+    const payload: Row = {};
+    if (patch.label !== undefined) payload.label = patch.label;
+    if (patch.configEncrypted !== undefined) payload.config_encrypted = patch.configEncrypted;
+    if (patch.status !== undefined) payload.status = patch.status;
+    if (patch.mcpTypeEnabled !== undefined) payload.mcp_type_enabled = patch.mcpTypeEnabled;
+    const { data, error } = await this.supabase.from("integrations").update(payload).eq("id", id).select("*").single();
+    assertNoError(error, "Unable to update integration.");
+    return mapIntegration(data);
+  }
+
+  async listLinkedIntegrations(projectId: string) {
+    const { data, error } = await this.supabase.from("project_integration_links").select("integration_id, integrations(*)").eq("project_id", projectId);
+    assertNoError(error, "Unable to list linked integrations.");
+    return (data ?? []).map((row: Row) => mapIntegration(row.integrations));
+  }
+
+  async setProjectIntegration(projectId: string, type: IntegrationType, integrationId: string | null) {
+    const linked: Integration[] = await this.listLinkedIntegrations(projectId);
+    await Promise.all(linked.filter((item: Integration) => item.type === type).map((item: Integration) =>
+      this.supabase.from("project_integration_links").delete().eq("project_id", projectId).eq("integration_id", item.id),
+    ));
+    if (!integrationId) return;
+    const { error } = await this.supabase.from("project_integration_links").insert({ project_id: projectId, integration_id: integrationId });
+    assertNoError(error, "Unable to link integration.");
+  }
+
+  async listWorkflows() {
+    const { data, error } = await this.supabase.from("workflows").select("*").order("updated_at", { ascending: false });
+    assertNoError(error, "Unable to list workflows.");
+    return (data ?? []).map(mapWorkflow);
+  }
+
+  async saveWorkflow(workflow: Partial<Workflow> & { steps?: Partial<WorkflowStep>[] }) {
+    const payload = {
+      id: workflow.id,
+      project_id: workflow.projectId ?? null,
+      name: workflow.name ?? "Untitled Workflow",
+      description: workflow.description ?? "",
+      is_template: workflow.isTemplate ?? false,
+      provider_override: workflow.providerOverride ?? null,
+      model_override: workflow.modelOverride ?? null,
+      reasoning_effort_override: workflow.reasoningEffortOverride ?? null,
+      yolo_mode: workflow.yoloMode ?? false,
+      updated_at: now(),
+    };
+    const { data, error } = await this.supabase.from("workflows").upsert(payload).select("*").single();
+    assertNoError(error, "Unable to save workflow.");
+    const saved = mapWorkflow(data);
+    if (workflow.steps) {
+      await this.supabase.from("workflow_steps").delete().eq("workflow_id", saved.id);
+      if (workflow.steps.length > 0) {
+        const { error: stepsError } = await this.supabase.from("workflow_steps").insert(workflow.steps.map((step, index) => ({
+          workflow_id: saved.id,
+          step_type: step.stepType,
+          order_index: step.orderIndex ?? index,
+          is_enabled: step.isEnabled ?? true,
+          provider_override: step.providerOverride ?? null,
+          model_override: step.modelOverride ?? null,
+          reasoning_effort_override: step.reasoningEffortOverride ?? null,
+          requires_approval: step.requiresApproval ?? true,
+        })));
+        assertNoError(stepsError, "Unable to save workflow steps.");
+      }
+    }
+    return saved;
+  }
+
+  async listWorkflowSteps(workflowId: string) {
+    const { data, error } = await this.supabase.from("workflow_steps").select("*").eq("workflow_id", workflowId).order("order_index", { ascending: true });
+    assertNoError(error, "Unable to list workflow steps.");
+    return (data ?? []).map(mapWorkflowStep);
+  }
+
+  async listStepDefinitions() {
+    const { data, error } = await this.supabase.from("workflow_step_definitions").select("*").order("updated_at", { ascending: false });
+    assertNoError(error, "Unable to list step definitions.");
+    return (data ?? []).map(mapStepDefinition);
+  }
+
+  async saveStepDefinition(step: StepDefinition) {
+    const { data, error } = await this.supabase.from("workflow_step_definitions").upsert({
+      step_type: step.stepType,
+      name: step.name,
+      description: step.description,
+      prompt_base: step.promptBase,
+      required_mcps: step.requiredMcps,
+      mcp_access_mode: step.mcpAccessMode,
+      required_skills: step.requiredSkills,
+      team_role: step.teamRole,
+      subagent: step.subagent,
+      model: step.model,
+      reasoning_effort: step.reasoningEffort,
+      yolo_mode: step.yoloMode,
+      agent_type: step.agentType,
+      input_artifact_definitions: step.inputArtifactDefinitions,
+      output_artifact_definitions: step.outputArtifactDefinitions,
+      updated_at: now(),
+    }).select("*").single();
+    assertNoError(error, "Unable to save step definition.");
+    return mapStepDefinition(data);
+  }
+
+  async listWorkflowRuns(projectId?: string) {
+    let query = this.supabase.from("workflow_runs").select("*").order("started_at", { ascending: false });
+    if (projectId) query = query.eq("project_id", projectId);
+    const { data, error } = await query;
+    assertNoError(error, "Unable to list workflow runs.");
+    return (data ?? []).map(mapWorkflowRun);
+  }
+
+  async listDefinitions() {
+    const { data, error } = await this.supabase.from("artifact_definitions").select("*").order("updated_at", { ascending: false });
+    assertNoError(error, "Unable to list artifact definitions.");
+    return (data ?? []).map(mapArtifactDefinition);
+  }
+
+  async saveDefinition(definition: ArtifactDefinition) {
+    const { data, error } = await this.supabase.from("artifact_definitions").upsert({
+      key: definition.key,
+      name: definition.name,
+      description: definition.description,
+      local_path_template: definition.localPathTemplate,
+      remote_path_template: definition.remotePathTemplate,
+      default_file_name: definition.defaultFileName,
+      updated_at: now(),
+    }).select("*").single();
+    assertNoError(error, "Unable to save artifact definition.");
+    return mapArtifactDefinition(data);
+  }
+
+  async listRuns(projectId?: string) {
+    let query = this.supabase.from("artifact_runs").select("*").order("updated_at", { ascending: false });
+    if (projectId) query = query.eq("project_id", projectId);
+    const { data, error } = await query;
+    assertNoError(error, "Unable to list artifact runs.");
+    return (data ?? []).map(mapArtifactRun);
+  }
+
+  async listSupportedModels() {
+    const { data, error } = await this.supabase.from("ai_supported_models").select("*").order("sort_order", { ascending: true });
+    assertNoError(error, "Unable to list supported models.");
+    return (data ?? []).map(mapSupportedModel);
+  }
+
+  async createSupportedModel(model: Omit<SupportedModel, "id" | "createdAt" | "updatedAt">) {
+    const { data, error } = await this.supabase.from("ai_supported_models").insert({
+      provider_key: model.providerKey,
+      model_id: model.modelId,
+      display_name: model.displayName,
+      is_enabled: model.isEnabled,
+      sort_order: model.sortOrder,
+      source: model.source,
+      detection_method: model.detectionMethod,
+      detected_cli_version: model.detectedCliVersion,
+      last_detected_at: model.lastDetectedAt,
+    }).select("*").single();
+    assertNoError(error, "Unable to create supported model.");
+    return mapSupportedModel(data);
+  }
+
+  async updateSupportedModel(id: string, patch: Partial<SupportedModel>) {
+    const payload: Row = {};
+    if (patch.displayName !== undefined) payload.display_name = patch.displayName;
+    if (patch.isEnabled !== undefined) payload.is_enabled = patch.isEnabled;
+    if (patch.sortOrder !== undefined) payload.sort_order = patch.sortOrder;
+    const { data, error } = await this.supabase.from("ai_supported_models").update(payload).eq("id", id).select("*").single();
+    assertNoError(error, "Unable to update supported model.");
+    return mapSupportedModel(data);
+  }
+
+  async deleteSupportedModel(id: string) {
+    const { error } = await this.supabase.from("ai_supported_models").delete().eq("id", id);
+    assertNoError(error, "Unable to delete supported model.");
+  }
+
+}

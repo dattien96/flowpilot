@@ -25,15 +25,18 @@ import (
 )
 
 type accountLaunchMetadata struct {
-	authStorePath      string
-	accountEmail       string
-	accountName        string
-	usageSummary       string
-	remaining5hPercent *int
-	remaining7dPercent *int
-	remaining5hResetAt string
-	remaining7dResetAt string
-	usageDetailLines   []usageDetailLine
+	authStorePath          string
+	accountEmail           string
+	accountName            string
+	usageSummary           string
+	accessTokenExpiresAt   string
+	refreshTokenExpiresAt  string
+	refreshTokenExpiryNote string
+	remaining5hPercent     *int
+	remaining7dPercent     *int
+	remaining5hResetAt     string
+	remaining7dResetAt     string
+	usageDetailLines       []usageDetailLine
 }
 
 type usageDetailLine struct {
@@ -408,9 +411,11 @@ func loadCodexAccountMetadata(homePath string) (accountLaunchMetadata, error) {
 
 	payload := decodeJWTPayload(auth.Tokens.IDToken)
 	metadata := accountLaunchMetadata{
-		authStorePath: filepath.Dir(authPath),
-		accountEmail:  stringClaim(payload, "email"),
-		accountName:   stringClaim(payload, "name"),
+		authStorePath:          filepath.Dir(authPath),
+		accountEmail:           stringClaim(payload, "email"),
+		accountName:            stringClaim(payload, "name"),
+		accessTokenExpiresAt:   parseTokenExpiry(auth.Tokens.AccessToken),
+		refreshTokenExpiryNote: "Unknown. Codex refresh token expiry is not exposed in local auth data; re-login is required only when a refresh attempt fails.",
 	}
 
 	if openAIAuth := mapClaim(payload, "https://api.openai.com/auth"); openAIAuth != nil {
@@ -848,6 +853,20 @@ func decodeJWTPayload(token string) map[string]any {
 		return nil
 	}
 	return payload
+}
+
+func parseTokenExpiry(token string) string {
+	payload := decodeJWTPayload(token)
+	if payload == nil {
+		return ""
+	}
+
+	expiry, ok := numberFromAny(payload["exp"])
+	if !ok {
+		return ""
+	}
+
+	return time.Unix(int64(expiry), 0).UTC().Format(time.RFC3339)
 }
 
 func stringClaim(payload map[string]any, key string) string {

@@ -1,14 +1,5 @@
 import type { IdeBridge } from "@/types/contract";
 
-declare global {
-  interface Window {
-    flowpilot?: {
-      openInIde(file: string, line?: number): Promise<{ ok: boolean; stub?: boolean }>;
-      openExternal(url: string): Promise<{ ok: boolean }>;
-    };
-  }
-}
-
 // Prefers the Electron preload bridge (whose main-side handler invokes the real
 // IDE CLI in Part B — code -g / cursor / studio / xed); falls back to console.log
 // so the renderer also works in a plain browser tab during UI development. This

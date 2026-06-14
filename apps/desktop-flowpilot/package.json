@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
+    "test:phase1": "tsc -p ../../tsconfig.phase1-tests.json && node --test ../../.phase1-tests/tests/phase1",
     "typecheck": "tsc --noEmit",
     "dist": "npm run build && electron-builder",
     "dist:win": "npm run build && electron-builder --win",
@@ -54,6 +55,7 @@
     ]
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.56.1",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "zustand": "^5.0.8"

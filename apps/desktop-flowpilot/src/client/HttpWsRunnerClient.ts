@@ -1,15 +1,81 @@
 import type {
   Artifact,
   Project,
+  ProviderAccountSummary,
   ProviderEventDTO,
   ProviderSkill,
   RunHandle,
+  RunHistoryItem,
   RunnerClient,
   StartRunInput,
   Step,
   TurnInput,
   Workflow,
 } from "@/types/contract";
+
+interface RawProviderAccountUsageLine {
+  label: string;
+  remaining_percent: number;
+  reset_at: string | null;
+}
+
+interface RawProviderAccountSummary {
+  id: string;
+  provider_key: ProviderAccountSummary["providerKey"];
+  display_name: string;
+  display_label: string;
+  home_path: string;
+  auth_store_path: string | null;
+  slot_index: number;
+  auth_status: ProviderAccountSummary["authStatus"];
+  is_active: boolean;
+  created_at: string;
+  last_authenticated_at: string | null;
+  account_email: string | null;
+  account_name: string | null;
+  usage_summary: string | null;
+  remaining_5h_percent: number | null;
+  remaining_7d_percent: number | null;
+  remaining_5h_reset_at: string | null;
+  remaining_7d_reset_at: string | null;
+  usage_source: ProviderAccountSummary["usageSource"];
+  access_token_expires_at: string | null;
+  refresh_token_expires_at: string | null;
+  refresh_token_expiry_note: string | null;
+  usage_detail_lines: RawProviderAccountUsageLine[];
+}
+
+function mapProviderAccountSummary(raw: RawProviderAccountSummary): ProviderAccountSummary {
+  return {
+    id: raw.id,
+    providerKey: raw.provider_key,
+    displayName: raw.display_name,
+    displayLabel: raw.display_label,
+    homePath: raw.home_path,
+    authStorePath: raw.auth_store_path,
+    slotIndex: raw.slot_index,
+    authStatus: raw.auth_status,
+    isActive: raw.is_active,
+    createdAt: raw.created_at,
+    lastAuthenticatedAt: raw.last_authenticated_at,
+    accountEmail: raw.account_email,
+    accountName: raw.account_name,
+    usageSummary: raw.usage_summary,
+    remaining5hPercent: raw.remaining_5h_percent,
+    remaining7dPercent: raw.remaining_7d_percent,
+    remaining5hResetAt: raw.remaining_5h_reset_at,
+    remaining7dResetAt: raw.remaining_7d_reset_at,
+    usageSource: raw.usage_source,
+    accessTokenExpiresAt: raw.access_token_expires_at,
+    refreshTokenExpiresAt: raw.refresh_token_expires_at,
+    refreshTokenExpiryNote: raw.refresh_token_expiry_note,
+    usageDetailLines: raw.usage_detail_lines.map((line) => ({
+      label: line.label,
+      remainingPercent: line.remaining_percent,
+      resetAt: line.reset_at,
+    })),
+  };
+}
 
 // HttpWsRunnerClient (04-01 Part B) — the real transport against the Phase 2
 // runner API (04-02). Implements the SAME RunnerClient interface as
@@ -65,14 +131,22 @@ export class HttpWsRunnerClient implements RunnerClient {
   listProjects(): Promise<Project[]> {
     return this.getJSON<Project[]>("/client/projects");
   }
-  listWorkflows(projectId: string): Promise<Workflow[]> {
-    return this.getJSON<Workflow[]>(`/client/projects/${encodeURIComponent(projectId)}/workflows`);
+  listWorkflows(): Promise<Workflow[]> {
+    return this.getJSON<Workflow[]>("/client/workflows");
   }
-  listSteps(workflowId: string): Promise<Step[]> {
-    return this.getJSON<Step[]>(`/client/workflows/${encodeURIComponent(workflowId)}/steps`);
+  listSteps(): Promise<Step[]> {
+    return this.getJSON<Step[]>("/client/steps");
+  }
+  listProviderAccounts(): Promise<ProviderAccountSummary[]> {
+    return this.getJSON<RawProviderAccountSummary[]>("/client/provider-accounts").then((accounts) =>
+      accounts.map(mapProviderAccountSummary),
+    );
   }
   listArtifacts(runId: string): Promise<Artifact[]> {
     return this.getJSON<Artifact[]>(`/client/workflow-runs/${encodeURIComponent(runId)}/artifacts`);
+  }
+  listRunHistory(projectId: string): Promise<RunHistoryItem[]> {
+    return this.getJSON<RunHistoryItem[]>(`/client/projects/${encodeURIComponent(projectId)}/workflow-runs`);
   }
   listSkills(provider: string): Promise<ProviderSkill[]> {
     return this.getJSON<ProviderSkill[]>(`/client/provider-skills?provider=${encodeURIComponent(provider)}`);
@@ -94,6 +168,12 @@ export class HttpWsRunnerClient implements RunnerClient {
   }
   interrupt(runId: string): Promise<void> {
     return this.postJSON<void>(`/client/workflow-runs/${encodeURIComponent(runId)}/interrupt`);
+  }
+  activateProviderAccount(accountId: string): Promise<void> {
+    return this.postJSON<void>("/provider-accounts/activate", { accountId });
+  }
+  openProviderAccountTerminal(accountId: string): Promise<void> {
+    return this.postJSON<void>("/provider-accounts/test", { accountId });
   }
   restartStack(): Promise<void> {
     return this.postJSON<void>("/system/restart");

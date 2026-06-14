@@ -162,6 +162,47 @@ func TestSupabaseStoreApplyTransitionShaping(t *testing.T) {
 	}
 }
 
+func TestSupabaseStoreAppendEventShaping(t *testing.T) {
+	cap := withMockHTTP(t, 204, nil)
+
+	event := ProviderEvent{
+		ID:                "evt-1",
+		Seq:               7,
+		Type:              EventTurnCompleted,
+		WorkflowRunID:     "run-1",
+		WorkflowStepRunID: "step-1",
+		ProviderSessionID: "sess-1",
+		ProviderKey:       ProviderKeyCodex,
+		ProviderTurnID:    "turn-1",
+		OccurredAt:        "2026-06-12T10:00:00Z",
+		FinalMessage:      "done",
+	}
+	if err := newTestSupabaseStore().AppendEvent(context.Background(), event); err != nil {
+		t.Fatalf("append event: %v", err)
+	}
+
+	req := (*cap)[0]
+	if req.method != http.MethodPost {
+		t.Fatalf("method = %s, want POST", req.method)
+	}
+	if !strings.Contains(req.endpoint, "workflow_provider_events") {
+		t.Fatalf("endpoint = %s", req.endpoint)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(req.body, &body); err != nil {
+		t.Fatalf("body decode: %v", err)
+	}
+	if body["id"] != "evt-1" || body["seq"].(float64) != 7 {
+		t.Fatalf("body id/seq = %#v", body)
+	}
+	if body["event_type"] != string(EventTurnCompleted) {
+		t.Fatalf("body event_type = %v", body["event_type"])
+	}
+	if body["workflow_run_id"] != "run-1" || body["provider_session_id"] != "sess-1" {
+		t.Fatalf("body correlation fields = %#v", body)
+	}
+}
+
 func TestSupabaseStoreSurfacesHTTPError(t *testing.T) {
 	withMockHTTP(t, 401, []byte(`{"message":"unauthorized"}`))
 	_, err := newTestSupabaseStore().LoadRunSteps(context.Background(), "run-1")
