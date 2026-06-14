@@ -14,7 +14,8 @@
     "jsx": "react-jsx",
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@flowpilot/client-core": ["../../packages/flowpilot-client-core/src/index.ts"]
     },
     "types": ["vite/client", "node"]
   },
