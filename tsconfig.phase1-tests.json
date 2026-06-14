@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "jsx": "react-jsx",
+    "rootDir": ".",
+    "outDir": ".phase1-tests",
+    "baseUrl": ".",
+    "paths": {
+      "@flowpilot/client-core": ["packages/flowpilot-client-core/src/index.ts"]
+    },
+    "typeRoots": ["./apps/desktop-flowpilot/node_modules/@types"],
+    "types": ["node"]
+  },
+  "include": [
+    "packages/flowpilot-client-core/src/**/*.ts",
+    "apps/desktop-flowpilot/src/app/**/*.ts",
+    "apps/desktop-flowpilot/src/components/settings/settingsHelpers.ts",
+    "tests/phase1/**/*.ts"
+  ]
+}
