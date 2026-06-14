@@ -676,6 +676,23 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				}
 				writeHTTPJSON(w, result)
 			})
+			mux.HandleFunc("/supabase-auth/login", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				var payload runner.SupabasePasswordLoginRequest
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+				result, err := instance.LoginSupabaseWithPassword(payload)
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+				writeHTTPJSON(w, result)
+			})
 			mux.HandleFunc("/google-drive-config", func(w http.ResponseWriter, r *http.Request) {
 				switch r.Method {
 				case http.MethodGet:
