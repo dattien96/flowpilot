@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain, shell } from "electron";
 import { execFile } from "node:child_process";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 // Electron shell (04-01). Loads the Vite dev server in dev, the built renderer in
@@ -14,6 +15,13 @@ const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL;
 // small candidate list per IDE and fall back across them. execFile (not a shell)
 // avoids quoting/injection issues with the file path.
 type IdeCandidate = { bin: string; args: (file: string, line?: number) => string[] };
+type PersistedAuthSession = {
+  clientKey: string;
+  accessToken: string;
+  refreshToken: string;
+  userId: string;
+  email?: string | null;
+};
 
 const IDE_CANDIDATES: IdeCandidate[] = [
   { bin: "code", args: (f, l) => ["-g", l ? `${f}:${l}` : f] },
@@ -23,6 +31,36 @@ const IDE_CANDIDATES: IdeCandidate[] = [
   { bin: "studio.sh", args: (f, l) => (l ? [`${f}:${l}`] : [f]) },
   { bin: "xed", args: (f, l) => (l ? ["-l", String(l), f] : [f]) },
 ];
+
+function authSessionFilePath(): string {
+  return path.join(app.getPath("userData"), "supabase-auth-session.json");
+}
+
+async function loadPersistedAuthSession(): Promise<PersistedAuthSession | null> {
+  try {
+    const raw = await readFile(authSessionFilePath(), "utf8");
+    return JSON.parse(raw) as PersistedAuthSession;
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      (error as { code?: string }).code === "ENOENT"
+    ) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function savePersistedAuthSession(payload: PersistedAuthSession): Promise<void> {
+  await mkdir(path.dirname(authSessionFilePath()), { recursive: true });
+  await writeFile(authSessionFilePath(), JSON.stringify(payload), "utf8");
+}
+
+async function clearPersistedAuthSession(): Promise<void> {
+  await rm(authSessionFilePath(), { force: true });
+}
 
 function tryOpen(candidates: IdeCandidate[], file: string, line: number | undefined): Promise<boolean> {
   if (candidates.length === 0) return Promise.resolve(false);
@@ -74,6 +112,16 @@ ipcMain.handle("ide:open", async (_event, payload: { file: string; line?: number
 // Open a URL in the default browser (used by the "Open Admin Web" button).
 ipcMain.handle("shell:openExternal", (_event, payload: { url: string }) => {
   void shell.openExternal(payload.url);
+  return { ok: true };
+});
+
+ipcMain.handle("auth-session:load", async () => loadPersistedAuthSession());
+ipcMain.handle("auth-session:save", async (_event, payload: PersistedAuthSession) => {
+  await savePersistedAuthSession(payload);
+  return { ok: true };
+});
+ipcMain.handle("auth-session:clear", async () => {
+  await clearPersistedAuthSession();
   return { ok: true };
 });
 

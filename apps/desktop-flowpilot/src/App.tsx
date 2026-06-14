@@ -178,6 +178,7 @@ export function App(): React.ReactElement {
         onSelectSection={setSettingsSection}
         onValidateSupabase={handleValidateSupabase}
         runtimeStatus={runtimeStatus}
+        visibleSections={["supabase"]}
       />
     );
   }

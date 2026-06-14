@@ -27,6 +27,7 @@ interface SettingsShellProps {
   onSelectSection: (section: SettingsSection) => void;
   onValidateSupabase: (input: SupabaseConfigInput) => Promise<SupabaseConfigValidation>;
   onSaveSupabase: (input: SupabaseConfigInput) => Promise<void>;
+  visibleSections?: readonly SettingsSection[];
 }
 
 export function SettingsShell({
@@ -37,10 +38,26 @@ export function SettingsShell({
   onSelectSection,
   onValidateSupabase,
   onSaveSupabase,
+  visibleSections,
 }: SettingsShellProps): React.ReactElement {
   const runnerOffline = !runtimeStatus.runnerReachable;
   const sectionDisabled = (section: SettingsSection) =>
     runnerOffline && section !== "supabase" && section !== "runner";
+  const allowedSections = visibleSections ?? [
+    "supabase",
+    "projects",
+    "workflows",
+    "teams",
+    "artifacts",
+    "ai-providers",
+    "google-drive",
+    "jira-mcp",
+    "runner",
+  ];
+  const currentSection = allowedSections.includes(activeSection)
+    ? activeSection
+    : allowedSections[0] ?? "supabase";
+  const showSection = (section: SettingsSection) => allowedSections.includes(section);
 
   return (
     <div className="settings-shell">
@@ -53,87 +70,105 @@ export function SettingsShell({
         </div>
 
         <nav className="settings-nav">
-          <button
-            className={`settings-nav-item ${activeSection === "supabase" ? "active" : ""}`}
-            onClick={() => onSelectSection("supabase")}
-            type="button"
-          >
-            Supabase
-          </button>
-          <button
-            className={`settings-nav-item ${activeSection === "projects" ? "active" : ""} ${sectionDisabled("projects") ? "disabled" : ""}`}
-            disabled={sectionDisabled("projects")}
-            onClick={() => onSelectSection("projects")}
-            type="button"
-          >
-            Projects
-          </button>
-          <button
-            className={`settings-nav-item ${activeSection === "workflows" ? "active" : ""} ${sectionDisabled("workflows") ? "disabled" : ""}`}
-            disabled={sectionDisabled("workflows")}
-            onClick={() => onSelectSection("workflows")}
-            type="button"
-          >
-            Workflows
-          </button>
-          <button
-            className={`settings-nav-item ${activeSection === "teams" ? "active" : ""} ${sectionDisabled("teams") ? "disabled" : ""}`}
-            disabled={sectionDisabled("teams")}
-            onClick={() => onSelectSection("teams")}
-            type="button"
-          >
-            Teams
-          </button>
-          <button
-            className={`settings-nav-item ${activeSection === "artifacts" ? "active" : ""} ${sectionDisabled("artifacts") ? "disabled" : ""}`}
-            disabled={sectionDisabled("artifacts")}
-            onClick={() => onSelectSection("artifacts")}
-            type="button"
-          >
-            Artifacts
-          </button>
-          <button
-            className={`settings-nav-item ${activeSection === "ai-providers" ? "active" : ""} ${sectionDisabled("ai-providers") ? "disabled" : ""}`}
-            disabled={sectionDisabled("ai-providers")}
-            onClick={() => onSelectSection("ai-providers")}
-            type="button"
-          >
-            AI Providers
-          </button>
-          <button
-            className={`settings-nav-item ${activeSection === "google-drive" ? "active" : ""} ${sectionDisabled("google-drive") ? "disabled" : ""}`}
-            disabled={sectionDisabled("google-drive")}
-            onClick={() => onSelectSection("google-drive")}
-            type="button"
-          >
-            Google Drive
-          </button>
-          <button
-            className={`settings-nav-item ${activeSection === "jira-mcp" ? "active" : ""} ${sectionDisabled("jira-mcp") ? "disabled" : ""}`}
-            disabled={sectionDisabled("jira-mcp")}
-            onClick={() => onSelectSection("jira-mcp")}
-            type="button"
-          >
-            Jira MCP
-          </button>
-          <button
-            className={`settings-nav-item ${activeSection === "runner" ? "active" : ""}`}
-            onClick={() => onSelectSection("runner")}
-            type="button"
-          >
-            Runner
-          </button>
+          {showSection("supabase") ? (
+            <button
+              className={`settings-nav-item ${currentSection === "supabase" ? "active" : ""}`}
+              onClick={() => onSelectSection("supabase")}
+              type="button"
+            >
+              Supabase
+            </button>
+          ) : null}
+          {showSection("projects") ? (
+            <button
+              className={`settings-nav-item ${currentSection === "projects" ? "active" : ""} ${sectionDisabled("projects") ? "disabled" : ""}`}
+              disabled={sectionDisabled("projects")}
+              onClick={() => onSelectSection("projects")}
+              type="button"
+            >
+              Projects
+            </button>
+          ) : null}
+          {showSection("workflows") ? (
+            <button
+              className={`settings-nav-item ${currentSection === "workflows" ? "active" : ""} ${sectionDisabled("workflows") ? "disabled" : ""}`}
+              disabled={sectionDisabled("workflows")}
+              onClick={() => onSelectSection("workflows")}
+              type="button"
+            >
+              Workflows
+            </button>
+          ) : null}
+          {showSection("teams") ? (
+            <button
+              className={`settings-nav-item ${currentSection === "teams" ? "active" : ""} ${sectionDisabled("teams") ? "disabled" : ""}`}
+              disabled={sectionDisabled("teams")}
+              onClick={() => onSelectSection("teams")}
+              type="button"
+            >
+              Teams
+            </button>
+          ) : null}
+          {showSection("artifacts") ? (
+            <button
+              className={`settings-nav-item ${currentSection === "artifacts" ? "active" : ""} ${sectionDisabled("artifacts") ? "disabled" : ""}`}
+              disabled={sectionDisabled("artifacts")}
+              onClick={() => onSelectSection("artifacts")}
+              type="button"
+            >
+              Artifacts
+            </button>
+          ) : null}
+          {showSection("ai-providers") ? (
+            <button
+              className={`settings-nav-item ${currentSection === "ai-providers" ? "active" : ""} ${sectionDisabled("ai-providers") ? "disabled" : ""}`}
+              disabled={sectionDisabled("ai-providers")}
+              onClick={() => onSelectSection("ai-providers")}
+              type="button"
+            >
+              AI Providers
+            </button>
+          ) : null}
+          {showSection("google-drive") ? (
+            <button
+              className={`settings-nav-item ${currentSection === "google-drive" ? "active" : ""} ${sectionDisabled("google-drive") ? "disabled" : ""}`}
+              disabled={sectionDisabled("google-drive")}
+              onClick={() => onSelectSection("google-drive")}
+              type="button"
+            >
+              Google Drive
+            </button>
+          ) : null}
+          {showSection("jira-mcp") ? (
+            <button
+              className={`settings-nav-item ${currentSection === "jira-mcp" ? "active" : ""} ${sectionDisabled("jira-mcp") ? "disabled" : ""}`}
+              disabled={sectionDisabled("jira-mcp")}
+              onClick={() => onSelectSection("jira-mcp")}
+              type="button"
+            >
+              Jira MCP
+            </button>
+          ) : null}
+          {showSection("runner") ? (
+            <button
+              className={`settings-nav-item ${currentSection === "runner" ? "active" : ""}`}
+              onClick={() => onSelectSection("runner")}
+              type="button"
+            >
+              Runner
+            </button>
+          ) : null}
         </nav>
       </aside>
 
       <main className="settings-main">
-        {runnerOffline && activeSection !== "supabase" && activeSection !== "runner" ? (
+        {runnerOffline && currentSection !== "supabase" && currentSection !== "runner" ? (
           <div className="settings-feedback error">
             Local runner is offline. Reconnect the runner from the Runner panel before
             using settings that call runner APIs.
           </div>
         ) : null}
-        {activeSection === "supabase" ? (
+        {currentSection === "supabase" ? (
           <SupabaseSetupScreen
             busy={busy}
             onBack={onBack}
@@ -141,19 +176,19 @@ export function SettingsShell({
             onValidate={onValidateSupabase}
             runtimeStatus={runtimeStatus}
           />
-        ) : activeSection === "projects" ? (
+        ) : currentSection === "projects" ? (
           <ProjectsSettings />
-        ) : activeSection === "workflows" ? (
+        ) : currentSection === "workflows" ? (
           <WorkflowsSettings />
-        ) : activeSection === "teams" ? (
+        ) : currentSection === "teams" ? (
           <TeamsSettings />
-        ) : activeSection === "artifacts" ? (
+        ) : currentSection === "artifacts" ? (
           <ArtifactsSettings />
-        ) : activeSection === "ai-providers" ? (
+        ) : currentSection === "ai-providers" ? (
           <AiProvidersSettings />
-        ) : activeSection === "google-drive" ? (
+        ) : currentSection === "google-drive" ? (
           <McpSettings mode="google-drive" />
-        ) : activeSection === "jira-mcp" ? (
+        ) : currentSection === "jira-mcp" ? (
           <McpSettings mode="jira" />
         ) : (
           <RunnerHealthPanel />

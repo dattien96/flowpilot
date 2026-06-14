@@ -7,4 +7,19 @@ contextBridge.exposeInMainWorld("flowpilot", {
   openInIde: (file: string, line?: number): Promise<{ ok: boolean; stub?: boolean }> =>
     ipcRenderer.invoke("ide:open", { file, line }),
   openExternal: (url: string): Promise<{ ok: boolean }> => ipcRenderer.invoke("shell:openExternal", { url }),
+  loadAuthSession: (): Promise<{
+    clientKey: string;
+    accessToken: string;
+    refreshToken: string;
+    userId: string;
+    email?: string | null;
+  } | null> => ipcRenderer.invoke("auth-session:load"),
+  saveAuthSession: (payload: {
+    clientKey: string;
+    accessToken: string;
+    refreshToken: string;
+    userId: string;
+    email?: string | null;
+  }): Promise<{ ok: boolean }> => ipcRenderer.invoke("auth-session:save", payload),
+  clearAuthSession: (): Promise<{ ok: boolean }> => ipcRenderer.invoke("auth-session:clear"),
 });
