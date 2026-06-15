@@ -3,20 +3,25 @@ import { useStore } from "@/state/store";
 
 // Chat input with a `/` command + skill picker. Typing "/" opens a filtered
 // skill list; picking one attaches it to the next turn (shown as a chip).
+// The skill picker is only active in normal_chat mode; workflow_step_auto uses
+// the step's defaultSkill instead.
 export function ChatInput(): React.ReactElement {
   const skills = useStore((s) => s.skills);
   const sendPrompt = useStore((s) => s.sendPrompt);
   const status = useStore((s) => s.status);
+  const chatMode = useStore((s) => s.chatMode);
   const launchMode = useStore((s) => s.launchMode);
   const selectedWorkflowId = useStore((s) => s.selectedWorkflowId);
   const selectedStepId = useStore((s) => s.selectedStepId);
+  const selectedProvider = useStore((s) => s.selectedProvider);
   const pendingApproval = useStore((s) => s.pendingApproval);
   const pendingQuestion = useStore((s) => s.pendingQuestion);
 
   const [text, setText] = useState("");
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
 
-  const slashQuery = text.startsWith("/") ? text.slice(1).toLowerCase() : null;
+  const isChatMode = chatMode === "normal_chat";
+  const slashQuery = isChatMode && text.startsWith("/") ? text.slice(1).toLowerCase() : null;
   const showPicker = slashQuery !== null;
   const filtered = useMemo(
     () => (slashQuery === null ? [] : skills.filter((s) => s.name.toLowerCase().includes(slashQuery))),
@@ -24,8 +29,12 @@ export function ChatInput(): React.ReactElement {
   );
 
   const blocked = status === "running" || status === "waiting_approval" || status === "waiting_question";
-  const hasLaunchTarget = launchMode === "workflow" ? !!selectedWorkflowId : !!selectedStepId;
-  const canSend = hasLaunchTarget && !blocked && text.trim().length > 0 && !showPicker;
+
+  const canSend = isChatMode
+    ? !!selectedProvider && !blocked && text.trim().length > 0 && !showPicker
+    : (launchMode === "workflow" ? !!selectedWorkflowId : !!selectedStepId) &&
+      !blocked &&
+      text.trim().length > 0;
 
   // Add a skill (multi-select). Keeps the picker open so several can be chosen
   // in a row; clearing the text closes it.
@@ -40,7 +49,7 @@ export function ChatInput(): React.ReactElement {
 
   const send = () => {
     if (!canSend) return;
-    void sendPrompt(text.trim(), selectedSkills);
+    void sendPrompt(text.trim(), isChatMode ? selectedSkills : undefined);
     setText("");
     setSelectedSkills([]);
   };
@@ -51,6 +60,20 @@ export function ChatInput(): React.ReactElement {
       send();
     }
   };
+
+  const placeholder = blocked
+    ? "Waiting for the current turn…"
+    : isChatMode
+      ? selectedProvider
+        ? "Type a message, or / to pick a skill. Enter to send."
+        : "Select a provider first."
+      : launchMode === "workflow"
+        ? selectedWorkflowId
+          ? "Type a message. Enter to send."
+          : "Select a workflow first."
+        : selectedStepId
+          ? "Type a message. Enter to send."
+          : "Select a step first.";
 
   return (
     <div className="chat-input">
@@ -77,7 +100,7 @@ export function ChatInput(): React.ReactElement {
       )}
 
       <div className="input-bar">
-        {selectedSkills.length > 0 && (
+        {selectedSkills.length > 0 && isChatMode && (
           <div className="skill-chips">
             {selectedSkills.map((name) => (
               <span key={name} className="skill-chip">
@@ -92,15 +115,7 @@ export function ChatInput(): React.ReactElement {
         <textarea
           className="text-area"
           rows={2}
-          placeholder={
-            blocked
-              ? "Waiting for the current turn…"
-              : hasLaunchTarget
-                ? "Type a message, or / to pick a skill. Enter to send."
-                : launchMode === "workflow"
-                  ? "Select a workflow first."
-                  : "Select a step first."
-          }
+          placeholder={placeholder}
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKeyDown}
