@@ -39,6 +39,10 @@ let loadProjectsInFlight: Promise<void> | null = null;
 export type LaunchMode = "workflow" | "step";
 export type ChatMode = "normal_chat" | "workflow_step_auto";
 
+function selectedProjectPath(state: Pick<AppState, "projects" | "selectedProjectId">): string | undefined {
+  return state.projects.find((project) => project.id === state.selectedProjectId)?.path;
+}
+
 interface AppState {
   client: RunnerClient;
 
@@ -193,7 +197,7 @@ export const useStore = create<AppState>((set, get) => ({
       }
       try {
         const provider = get().selectedProvider ?? "codex";
-        const skills = await withRetry(() => client.listSkills(provider));
+        const skills = await withRetry(() => client.listSkills(provider, selectedProjectPath(get())));
         set({ skills });
       } catch (err) {
         // eslint-disable-next-line no-console
@@ -233,6 +237,7 @@ export const useStore = create<AppState>((set, get) => ({
       historyOpen: false,
       historyLoadError: undefined,
     });
+    void get().loadSkills(get().selectedProvider ?? "codex");
   },
 
   setLaunchMode(mode) {
@@ -279,7 +284,7 @@ export const useStore = create<AppState>((set, get) => ({
   async loadSkills(provider, cwd) {
     const { client } = get();
     try {
-      const skills = await client.listSkills(provider, cwd);
+      const skills = await client.listSkills(provider, cwd ?? selectedProjectPath(get()));
       set({ skills });
     } catch (err) {
       // eslint-disable-next-line no-console

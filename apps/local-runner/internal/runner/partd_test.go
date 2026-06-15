@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -190,12 +191,23 @@ func TestFinalizeLocalSnapshotShapesSummaryAndRag(t *testing.T) {
 func TestSupabaseCatalogStoreShaping(t *testing.T) {
 	store := NewSupabaseCatalogStore(SupabaseWorkspaceConfig{APIURL: "https://proj.supabase.co"}, "k")
 
-	cap := withMockHTTP(t, 200, []byte(`[{"id":"p1","name":"Acme"}]`))
+	usableBinding := t.TempDir()
+	cap := withMockHTTP(t, 200, []byte(`[
+		{
+			"id":"p1",
+			"name":"Acme",
+			"directory_path":"/missing/primary",
+			"project_workspace_bindings":[
+				{"local_path":"/missing/binding"},
+				{"local_path":`+strconv.Quote(usableBinding)+`}
+			]
+		}
+	]`))
 	projects, err := store.ListProjects(context.Background())
-	if err != nil || len(projects) != 1 || projects[0].Name != "Acme" {
+	if err != nil || len(projects) != 1 || projects[0].Name != "Acme" || projects[0].Path != usableBinding {
 		t.Fatalf("projects = %+v err=%v", projects, err)
 	}
-	if !strings.Contains((*cap)[0].endpoint, "/rest/v1/projects?select=id,name") {
+	if !strings.Contains((*cap)[0].endpoint, "/rest/v1/projects?select=id,name,directory_path,project_workspace_bindings(local_path)") {
 		t.Fatalf("projects endpoint = %s", (*cap)[0].endpoint)
 	}
 

@@ -15,6 +15,10 @@ const REASONING_OPTIONS = [
   { value: "high", label: "High" },
 ];
 
+function skillSourceLabel(source: "provider" | "flowpilot" | "workspace"): string {
+  return source === "provider" ? "Account" : "Project";
+}
+
 // Chat composer + bottom controller strip. The controller keeps the current
 // skill picker active while visually de-emphasizing the other workspace
 // controls so the desktop layout reads like the mockup.
@@ -44,9 +48,11 @@ export function ChatInput(): React.ReactElement {
 
   const [text, setText] = useState("");
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
+  const [pickerSortSelection, setPickerSortSelection] = useState<string[]>([]);
   const [skillPickerOpen, setSkillPickerOpen] = useState(false);
   const [controllerExpanded, setControllerExpanded] = useState(true);
   const rootRef = useRef<HTMLDivElement>(null);
+  const wasPickerVisibleRef = useRef(false);
 
   const isChatMode = chatMode === "normal_chat";
   const selectedProjectPath = useMemo(
@@ -62,15 +68,20 @@ export function ChatInput(): React.ReactElement {
   );
   const slashQuery = isChatMode && text.startsWith("/") ? text.slice(1).toLowerCase() : null;
   const showPicker = isChatMode && !!selectedProvider && (skillPickerOpen || slashQuery !== null);
+  const totalSkills = skills.length;
   const filtered = useMemo(
     () => {
       if (!showPicker) return [];
       const query = slashQuery?.trim() ?? "";
-      return query.length === 0
+      const matchingSkills = query.length === 0
         ? skills
         : skills.filter((s) => s.name.toLowerCase().includes(query));
+      const sortedSkills = [...matchingSkills].sort((left, right) => left.name.localeCompare(right.name));
+      const selected = sortedSkills.filter((skill) => pickerSortSelection.includes(skill.name));
+      const remaining = sortedSkills.filter((skill) => !pickerSortSelection.includes(skill.name));
+      return [...selected, ...remaining];
     },
-    [showPicker, slashQuery, skills],
+    [showPicker, slashQuery, skills, pickerSortSelection],
   );
 
   useEffect(() => {
@@ -107,16 +118,29 @@ export function ChatInput(): React.ReactElement {
   }, [isChatMode, runId]);
 
   useEffect(() => {
+    setSelectedSkills((prev) => prev.filter((name) => skills.some((skill) => skill.name === name)));
+  }, [skills]);
+
+  useEffect(() => {
+    if (showPicker && !wasPickerVisibleRef.current) {
+      setPickerSortSelection(selectedSkills);
+    }
+    wasPickerVisibleRef.current = showPicker;
+  }, [showPicker, selectedSkills]);
+
+  useEffect(() => {
     if (!showPicker) return;
     const onPointerDown = (event: PointerEvent) => {
       const root = rootRef.current;
       if (!root || root.contains(event.target as Node)) return;
       setSkillPickerOpen(false);
-      setText("");
+      if (slashQuery !== null) {
+        setText("");
+      }
     };
     window.addEventListener("pointerdown", onPointerDown);
     return () => window.removeEventListener("pointerdown", onPointerDown);
-  }, [showPicker]);
+  }, [showPicker, slashQuery]);
 
   const blocked = status === "running" || status === "waiting_approval" || status === "waiting_question";
 
@@ -197,8 +221,8 @@ export function ChatInput(): React.ReactElement {
                     aria-expanded={showPicker}
                     disabled={!selectedProvider}
                     aria-label={
-                      selectedSkills.length > 0
-                        ? `Select skills, ${selectedSkills.length} selected`
+                      selectedProvider
+                        ? `Selected skills ${selectedSkills.length} of ${totalSkills}`
                         : "Select skills"
                     }
                   >
@@ -210,9 +234,7 @@ export function ChatInput(): React.ReactElement {
                     <span className="skill-select-text">
                       {!selectedProvider
                         ? "Select provider first"
-                        : selectedSkills.length > 0
-                          ? `Select skills (${selectedSkills.length})`
-                          : "Select skills"}
+                        : `Selected skills ${selectedSkills.length}/${totalSkills}`}
                     </span>
                     <span className="skill-select-caret" aria-hidden="true">
                       ▾
@@ -312,9 +334,11 @@ export function ChatInput(): React.ReactElement {
                 onClick={() => (active ? removeSkill(s.name) : pickSkill(s.name))}
               >
                 <span className="skill-mark">{active ? "☑" : "☐"}</span>
-                <span className="skill-name">/{s.name}</span>
-                {s.description && <span className="skill-desc">{s.description}</span>}
-                <span className={`skill-src src-${s.source}`}>{s.source}</span>
+                <span className="skill-copy">
+                  <span className={`skill-name ${active ? "skill-name-active" : "skill-name-idle"}`}>/{s.name}</span>
+                  {s.description && <span className="skill-desc" title={s.description}>{s.description}</span>}
+                </span>
+                <span className={`skill-src src-${s.source}`}>{skillSourceLabel(s.source)}</span>
               </button>
             );
           })}
