@@ -540,6 +540,7 @@ status. Finalizer failure must not erase the completed turn; the finalizer is
 
 ---
 
+
 ## Schema Gap & Persistence (checked-in migrations) — RESOLVED
 
 > Folded in from the working note (originally an **open risk**); **now addressed** by the

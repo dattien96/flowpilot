@@ -25,6 +25,7 @@ import {
 } from "@/app/navigatorCatalog";
 import {
   applyTimelineEvent,
+  shouldApplyRunEvent,
   type PendingApproval,
   type PendingQuestion,
   type TimelineItem,
@@ -279,10 +280,13 @@ export const useStore = create<AppState>((set, get) => ({
       };
       set({ runId, lastTurnInput: turnInput });
 
-      await consumeStream(client.sendTurn(turnInput), set, get);
+      await consumeStream(runId, client.sendTurn(turnInput), set, get);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("[FlowPilot] sendPrompt failed:", err);
+      if (runId && !shouldApplyRunEvent(get().runId, runId)) {
+        return;
+      }
       set((s) => ({
         status: "failed",
         // Only offer Reconnect if a run was actually created; a failed startRun has none.
@@ -338,7 +342,7 @@ export const useStore = create<AppState>((set, get) => ({
     // Clear the timeline so the replay visibly rebuilds it from persisted events
     // via the run's event stream (attach + replay from seq 0).
     set({ timeline: [], recoverable: false, status: "running", _streamingAssistantId: undefined });
-    await consumeStream(client.streamRun(runId, 0), set, get);
+    await consumeStream(runId, client.streamRun(runId, 0), set, get);
   },
 
   async loadRunHistory() {
@@ -387,7 +391,7 @@ export const useStore = create<AppState>((set, get) => ({
       historyOpen: false,
       _streamingAssistantId: undefined,
     });
-    await consumeStream(client.streamRun(runId, 0), set, get);
+    await consumeStream(handle.runId, client.streamRun(handle.runId, 0), set, get);
   },
 
   resetRun() {
@@ -424,12 +428,19 @@ export const useStore = create<AppState>((set, get) => ({
 
 // Consumes a turn stream and folds each event into the timeline + status.
 async function consumeStream(
+  runId: string,
   stream: AsyncIterable<ProviderEventDTO>,
   set: (fn: (s: AppState) => Partial<AppState>) => void,
   get: () => AppState,
 ): Promise<void> {
   for await (const e of stream) {
+    if (!shouldApplyRunEvent(get().runId, runId)) {
+      return;
+    }
     set((s) => applyEvent(s, e));
+  }
+  if (!shouldApplyRunEvent(get().runId, runId)) {
+    return;
   }
   // settle recoverable flag for the Reconnect affordance
   const last = get().timeline[get().timeline.length - 1];

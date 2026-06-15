@@ -31,6 +31,10 @@ export interface TimelineState {
   _streamingAssistantId?: string;
 }
 
+export function shouldApplyRunEvent(activeRunId: string | undefined, streamRunId: string): boolean {
+  return activeRunId === streamRunId;
+}
+
 function statusFromEvent(e: ProviderEventDTO, prev: RunStatus): RunStatus {
   switch (e.type) {
     case "turn_started":
