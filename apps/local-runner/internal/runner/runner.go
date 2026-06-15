@@ -1721,6 +1721,7 @@ func defaultAuthCandidates(providerKey, dir string) []authCandidate {
 		}
 	case "claude":
 		return []authCandidate{
+			{homePath: dir, authPath: filepath.Join(dir, ".claude", ".credentials.json")},
 			{homePath: dir, authPath: filepath.Join(dir, ".claude.json")},
 			{homePath: dir, authPath: filepath.Join(dir, "claude", "auth.json")},
 			{homePath: dir, authPath: filepath.Join(dir, ".config", "claude", "auth.json")},
@@ -1745,6 +1746,7 @@ func accountAuthPaths(providerKey, homePath string) []string {
 		}
 	case "claude":
 		return []string{
+			filepath.Join(homePath, ".claude", ".credentials.json"),
 			filepath.Join(homePath, ".claude.json"),
 			filepath.Join(homePath, "claude", "auth.json"),
 			filepath.Join(homePath, ".config", "claude", "auth.json"),
@@ -1775,12 +1777,26 @@ func hasValidProviderAuthFile(providerKey, path string) bool {
 	case "codex":
 		return strings.Contains(content, `"id_token"`) || strings.Contains(content, `"OPENAI_API_KEY"`)
 	case "claude":
-		return strings.Contains(content, `"emailAddress"`)
+		return claudeAuthFileLooksValid(data)
 	case "gemini":
 		return strings.Contains(content, `"access_token"`) || strings.Contains(content, `"refresh_token"`)
 	default:
 		return false
 	}
+}
+
+func claudeAuthFileLooksValid(data []byte) bool {
+	var payload map[string]any
+	if err := json.Unmarshal(stripUTF8BOM(data), &payload); err != nil {
+		return false
+	}
+	if oauth, ok := payload["claudeAiOauth"].(map[string]any); ok {
+		return hasNonEmptyJSONString(oauth, "accessToken") || hasNonEmptyJSONString(oauth, "refreshToken")
+	}
+	if tokens, ok := payload["tokens"].(map[string]any); ok {
+		return hasNonEmptyJSONString(tokens, "access_token") || hasNonEmptyJSONString(tokens, "refresh_token")
+	}
+	return hasNonEmptyJSONString(payload, "accessToken") || hasNonEmptyJSONString(payload, "refreshToken")
 }
 
 func DetectDefaultAccountHomePath(providerKey string) (string, bool) {
@@ -3508,6 +3524,24 @@ func (r *Runner) getEnvForExecution(
 	}
 
 	return newEnv
+}
+
+func windowsHomeDriveAndPath(homePath string) (string, string, bool) {
+	if runtime.GOOS != "windows" {
+		return "", "", false
+	}
+	trimmed := strings.TrimSpace(homePath)
+	if trimmed == "" {
+		return "", "", false
+	}
+	drive := "C:"
+	path := strings.TrimPrefix(trimmed, "C:")
+	if strings.Contains(trimmed, ":") {
+		parts := strings.SplitN(trimmed, ":", 2)
+		drive = parts[0] + ":"
+		path = parts[1]
+	}
+	return drive, path, true
 }
 
 func NextAccountHomePath(providerKey string, existing []string) (string, int, error) {

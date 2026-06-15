@@ -378,6 +378,107 @@ func TestClaudeRegistryGating(t *testing.T) {
 	}
 }
 
+func TestClaudeRegistryIgnoresStaleUsageLimitMetadata(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", homeDir)
+	t.Setenv("APPDATA", filepath.Join(homeDir, "AppData", "Roaming"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(homeDir, ".config"))
+
+	accountHome := filepath.Join(homeDir, ".claudeHome1")
+	if err := os.MkdirAll(filepath.Join(accountHome, ".claude"), 0o700); err != nil {
+		t.Fatalf("mkdir account config: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(accountHome, ".claude", ".credentials.json"),
+		[]byte(`{"claudeAiOauth":{"accessToken":"token"},"cachedExtraUsageDisabledReason":"out_of_credits"}`),
+		0o600,
+	); err != nil {
+		t.Fatalf("write credentials: %v", err)
+	}
+
+	r, err := New(".")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := r.saveProviderAccountState(providerAccountState{Accounts: []ProviderAccount{
+		{
+			ID:          "claude-reset-account",
+			ProviderKey: "claude",
+			DisplayName: "Claude Reset Account",
+			HomePath:    accountHome,
+			SlotIndex:   1,
+			IsActive:    true,
+			AuthStatus:  "connected",
+			ExtraEnv:    map[string]string{},
+		},
+	}}); err != nil {
+		t.Fatalf("save account state: %v", err)
+	}
+
+	adapter, err := ProviderRegistryFor(r).Adapter(ProviderKeyClaude)
+	if err != nil {
+		t.Fatalf("Claude adapter should be available: %v", err)
+	}
+	if _, ok := adapter.(*claudeAdapter); !ok {
+		t.Fatalf("Claude adapter = %T, want *claudeAdapter", adapter)
+	}
+}
+
+func TestClaudeRegistryUsesCredentialConfigDirForAccount(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", homeDir)
+	t.Setenv("APPDATA", filepath.Join(homeDir, "AppData", "Roaming"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(homeDir, ".config"))
+
+	accountHome := filepath.Join(homeDir, ".claudeHome1")
+	if err := os.MkdirAll(filepath.Join(accountHome, ".claude"), 0o700); err != nil {
+		t.Fatalf("mkdir account config: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(accountHome, ".claude", ".credentials.json"),
+		[]byte(`{"claudeAiOauth":{"accessToken":"token"}}`),
+		0o600,
+	); err != nil {
+		t.Fatalf("write credentials: %v", err)
+	}
+
+	r, err := New(".")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := r.saveProviderAccountState(providerAccountState{Accounts: []ProviderAccount{
+		{
+			ID:          "claude-credential-account",
+			ProviderKey: "claude",
+			DisplayName: "Claude Credential Account",
+			HomePath:    accountHome,
+			SlotIndex:   1,
+			IsActive:    true,
+			AuthStatus:  "connected",
+			ExtraEnv:    map[string]string{},
+		},
+	}}); err != nil {
+		t.Fatalf("save account state: %v", err)
+	}
+
+	adapter, err := ProviderRegistryFor(r).Adapter(ProviderKeyClaude)
+	if err != nil {
+		t.Fatalf("Claude adapter should be available: %v", err)
+	}
+	claude, ok := adapter.(*claudeAdapter)
+	if !ok {
+		t.Fatalf("Claude adapter = %T, want *claudeAdapter", adapter)
+	}
+	if got, want := claude.env["CLAUDE_CONFIG_DIR"], filepath.Join(accountHome, ".claude"); got != want {
+		t.Fatalf("CLAUDE_CONFIG_DIR = %q, want %q", got, want)
+	}
+	if got := claude.env["HOME"]; got != accountHome {
+		t.Fatalf("HOME = %q, want %q", got, accountHome)
+	}
+}
+
 // ---- CL-01/CL-07/CL-10/CL-12: event mapper units ---------------------------
 
 func TestMapClaudeLineInit(t *testing.T) {
@@ -468,7 +569,7 @@ func TestClaudeUsageLimitErrorFromAuthMetadata(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected usage limit error")
 	}
-	if got := err.Error(); got != "Claude usage limit reached: extra usage unavailable (out of credits). Switch Claude account or wait for quota reset; login is still present" {
+	if got := err.Error(); got != "Claude usage limit reached: extra usage unavailable (out of credits). Switch Claude account or wait for quota reset" {
 		t.Fatalf("usage limit error = %q", got)
 	}
 }
