@@ -1011,6 +1011,9 @@ func (r *Runner) SendMessageWithCallback(ctx context.Context, req AiSessionMessa
 			stderrText := strings.TrimSpace(stderr.String())
 			captureMu.Unlock()
 			if stderrText != "" {
+				if msg := claudeUsageLimitMessage(map[string]any{"message": stderrText}); msg != "" {
+					return PromptExecutionResult{}, fmt.Errorf("provider error: %s", msg)
+				}
 				return PromptExecutionResult{}, fmt.Errorf("provider error: %s", stderrText)
 			}
 			return PromptExecutionResult{}, fmt.Errorf("provider error: Claude print command failed: %w", err)
@@ -1022,6 +1025,9 @@ func (r *Runner) SendMessageWithCallback(ctx context.Context, req AiSessionMessa
 		captureMu.Unlock()
 		if len(outputBytes) == 0 {
 			if stderrText != "" {
+				if msg := claudeUsageLimitMessage(map[string]any{"message": stderrText}); msg != "" {
+					return PromptExecutionResult{}, fmt.Errorf("provider error: %s", msg)
+				}
 				return PromptExecutionResult{}, fmt.Errorf("provider error: %s", stderrText)
 			}
 			return PromptExecutionResult{}, fmt.Errorf("provider error: Claude response was empty")
@@ -1039,7 +1045,13 @@ func (r *Runner) SendMessageWithCallback(ctx context.Context, req AiSessionMessa
 		}
 
 		if isError, _ := resp["is_error"].(bool); isError {
+			if msg := claudeUsageLimitMessage(resp); msg != "" {
+				return PromptExecutionResult{}, fmt.Errorf("provider error: %s", msg)
+			}
 			if resultText, ok := resp["result"].(string); ok && strings.TrimSpace(resultText) != "" {
+				if msg := claudeUsageLimitMessage(map[string]any{"message": resultText}); msg != "" {
+					return PromptExecutionResult{}, fmt.Errorf("provider error: %s", msg)
+				}
 				return PromptExecutionResult{}, fmt.Errorf("provider error: %s", resultText)
 			}
 			return PromptExecutionResult{}, fmt.Errorf("provider error: Claude request failed")

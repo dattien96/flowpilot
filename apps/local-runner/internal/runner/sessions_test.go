@@ -675,6 +675,111 @@ func TestSendMessageClaudeRespawnsPrintCommandPerTurnAndResumesSession(t *testin
 	}
 }
 
+func TestSendMessageClaudeStaleUsageLimitMetadataStillRunsCommand(t *testing.T) {
+	originalCmdCtx := commandContextFn
+	originalLookPath := lookPathFn
+	defer func() {
+		commandContextFn = originalCmdCtx
+		lookPathFn = originalLookPath
+	}()
+
+	lookPathFn = func(file string) (string, error) {
+		return file, nil
+	}
+
+	commandStarted := false
+	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+		commandStarted = true
+		output := strings.Join([]string{
+			`{"type":"system","subtype":"init","session_id":"claude-real-session"}`,
+			`{"type":"result","subtype":"success","is_error":false,"result":"ok after reset","session_id":"claude-real-session"}`,
+		}, "\n")
+		script := "$input | Out-Null; Write-Output '" + output + "'"
+		return exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
+	}
+
+	accountHomePath := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(accountHomePath, ".claude.json"),
+		[]byte(`{"oauthAccount":{"emailAddress":"user@example.com"},"cachedExtraUsageDisabledReason":"out_of_credits"}`),
+		0o600,
+	); err != nil {
+		t.Fatalf("write auth: %v", err)
+	}
+
+	r, _ := New(".")
+	handle, err := r.StartSession(context.Background(), AiSessionStartRequest{
+		ProviderKey:      "claude",
+		ModelName:        "claude-haiku",
+		WorkingDirectory: ".",
+		AccountHomePath:  accountHomePath,
+	})
+	if err != nil {
+		t.Fatalf("StartSession failed: %v", err)
+	}
+
+	result, err := r.SendMessage(context.Background(), AiSessionMessageRequest{
+		Session:         handle,
+		Prompt:          "First prompt",
+		AccountHomePath: accountHomePath,
+	})
+	if err != nil {
+		t.Fatalf("expected stale usage metadata not to block Claude command, got %v", err)
+	}
+	if !commandStarted {
+		t.Fatal("expected Claude SendMessage to run the print command")
+	}
+	if result.OutputMarkdown != "ok after reset" {
+		t.Fatalf("output markdown = %q, want reset response", result.OutputMarkdown)
+	}
+}
+
+func TestSendMessageClaudeResultLimitDoesNotReportLogin(t *testing.T) {
+	originalCmdCtx := commandContextFn
+	originalLookPath := lookPathFn
+	defer func() {
+		commandContextFn = originalCmdCtx
+		lookPathFn = originalLookPath
+	}()
+
+	lookPathFn = func(file string) (string, error) {
+		return file, nil
+	}
+
+	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+		output := strings.Join([]string{
+			`{"type":"system","subtype":"init","session_id":"claude-real-session"}`,
+			`{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Not logged in · Please run /login","rate_limit":{"cachedExtraUsageDisabledReason":"out_of_credits"}}`,
+		}, "\n")
+		script := "$input | Out-Null; Write-Output '" + output + "'"
+		return exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
+	}
+
+	r, _ := New(".")
+	handle, err := r.StartSession(context.Background(), AiSessionStartRequest{
+		ProviderKey:      "claude",
+		ModelName:        "claude-haiku",
+		WorkingDirectory: ".",
+	})
+	if err != nil {
+		t.Fatalf("StartSession failed: %v", err)
+	}
+
+	_, err = r.SendMessage(context.Background(), AiSessionMessageRequest{
+		Session: handle,
+		Prompt:  "First prompt",
+	})
+	if err == nil {
+		t.Fatal("expected Claude SendMessage to fail")
+	}
+	if strings.Contains(err.Error(), "/login") {
+		t.Fatalf("expected normalized usage-limit error, got %q", err.Error())
+	}
+	if got := err.Error(); got != "provider error: Claude usage limit reached. Switch Claude account or wait for quota reset." {
+		t.Fatalf("usage limit error = %q", got)
+	}
+}
+
 func TestCloseSessionKillsMatchingOrphanProcessByPID(t *testing.T) {
 	originalLookupProcessName := lookupProcessNameFn
 	originalKillProcessByPID := killProcessByPIDFn
