@@ -561,6 +561,134 @@ input {
   flex-wrap: wrap;
   gap: 8px;
 }
+.project-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+  gap: 16px;
+  margin-top: 18px;
+  align-items: start;
+}
+.project-registry-panel,
+.project-detail-column .settings-subpanel {
+  margin-top: 0;
+}
+.project-detail-column {
+  display: grid;
+  gap: 16px;
+}
+.project-registry-head,
+.project-create-head,
+.project-detail-hero,
+.project-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.project-count-badge {
+  min-width: 32px;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: rgba(76, 141, 255, 0.12);
+  border: 1px solid rgba(76, 141, 255, 0.3);
+  color: var(--accent);
+  text-align: center;
+  font-size: 12px;
+}
+.project-muted-copy {
+  margin: 6px 0 0;
+  color: var(--text-dim);
+  line-height: 1.45;
+}
+.project-create-fab {
+  min-width: 42px;
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  border-radius: 999px;
+  font-size: 24px;
+  line-height: 1;
+}
+.project-create-team-picker {
+  margin-top: 20px;
+}
+.project-create-back-row {
+  display: flex;
+  justify-content: flex-start;
+  margin-bottom: 10px;
+}
+.project-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  padding: 0;
+}
+.project-detail-panel {
+  padding-top: 14px;
+}
+.project-panel-toggle {
+  flex: 1;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  padding: 0;
+  cursor: pointer;
+}
+.project-panel-toggle strong,
+.project-inline-card strong {
+  display: block;
+  margin-bottom: 4px;
+}
+.project-panel-toggle small {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.project-panel-chevron {
+  color: var(--text-dim);
+  line-height: 0;
+}
+.project-panel-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.project-panel-body {
+  margin-top: 16px;
+}
+.project-inline-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.project-inline-card {
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-3);
+}
+.project-inline-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+.project-inline-row:first-of-type {
+  border-top: 0;
+}
+.project-delete-modal {
+  width: min(520px, 100%);
+}
 .runner-pill {
   border-radius: 999px;
   padding: 7px 10px;
@@ -1584,6 +1712,11 @@ input {
   }
 
   .settings-two-column {
+    grid-template-columns: 1fr;
+  }
+
+  .project-layout,
+  .project-inline-list {
     grid-template-columns: 1fr;
   }
 

@@ -134,7 +134,7 @@ export function SettingsShell({
             runtimeStatus={runtimeStatus}
           />
         ) : currentSection === "projects" ? (
-          <ProjectsSettings />
+          <ProjectsSettings onNavigateSection={onSelectSection} />
         ) : currentSection === "workflows" ? (
           <WorkflowsSettings />
         ) : currentSection === "teams" ? (

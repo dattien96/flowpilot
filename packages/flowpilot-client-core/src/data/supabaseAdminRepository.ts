@@ -286,6 +286,11 @@ export class SupabaseAdminRepository implements
     return mapProject(data);
   }
 
+  async deleteProject(projectId: string) {
+    const { error } = await this.supabase.from("projects").delete().eq("id", projectId);
+    assertNoError(error, "Unable to delete project.");
+  }
+
   async listBindings(projectId: string) {
     const { data, error } = await this.supabase.from("project_workspace_bindings").select("*").eq("project_id", projectId).order("created_at", { ascending: true });
     assertNoError(error, "Unable to list directory bindings.");

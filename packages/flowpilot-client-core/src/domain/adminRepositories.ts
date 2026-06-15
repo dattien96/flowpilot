@@ -22,6 +22,7 @@ export interface ProjectRepository {
   listProjects(): Promise<Project[]>;
   createProject(input: Partial<Project> & Pick<Project, "name" | "description" | "platform" | "repositoryUrl">): Promise<Project>;
   updateProject(projectId: string, patch: Partial<Project>): Promise<Project>;
+  deleteProject(projectId: string): Promise<void>;
   listBindings(projectId: string): Promise<ProjectWorkspaceBinding[]>;
   saveBinding(projectId: string, binding: Partial<ProjectWorkspaceBinding> & { localPath: string }): Promise<ProjectWorkspaceBinding>;
   deleteBinding(bindingId: string): Promise<void>;
