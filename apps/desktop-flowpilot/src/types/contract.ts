@@ -229,6 +229,7 @@ export interface RunnerClient {
   streamRun(runId: string, afterSeq?: number): AsyncIterable<ProviderEventDTO>;
   listArtifacts(runId: string): Promise<Artifact[]>;
   listSkills(provider: string): Promise<ProviderSkill[]>;
+  connectProviderAccount(providerKey: ProviderKey): Promise<void>;
   activateProviderAccount(accountId: string): Promise<void>;
   openProviderAccountTerminal(accountId: string): Promise<void>;
   /** System control — mirrors admin-web's runner gateway (`POST /system/restart`). */

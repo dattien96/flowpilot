@@ -237,6 +237,40 @@ export class MockRunnerClient implements RunnerClient {
     return MOCK_PROVIDER_ACCOUNTS;
   }
 
+  async connectProviderAccount(providerKey: "codex" | "claude" | "gemini"): Promise<void> {
+    await delay(80);
+    const nextSlotIndex =
+      MOCK_PROVIDER_ACCOUNTS.filter((account) => account.providerKey === providerKey).reduce(
+        (max, account) => Math.max(max, account.slotIndex),
+        0,
+      ) + 1;
+    MOCK_PROVIDER_ACCOUNTS.push({
+      id: `acct-${providerKey}-${nextSlotIndex}`,
+      providerKey,
+      displayName: `Account ${nextSlotIndex}`,
+      displayLabel: `${providerKey}.new${nextSlotIndex}@example.com`,
+      homePath: `/Users/demo/.${providerKey}Home${nextSlotIndex}`,
+      authStorePath: `/Users/demo/.${providerKey}Home${nextSlotIndex}/.${providerKey}`,
+      slotIndex: nextSlotIndex,
+      authStatus: "connected",
+      isActive: false,
+      createdAt: new Date().toISOString(),
+      lastAuthenticatedAt: new Date().toISOString(),
+      accountEmail: `${providerKey}.new${nextSlotIndex}@example.com`,
+      accountName: `${providerKey} Account ${nextSlotIndex}`,
+      usageSummary: null,
+      remaining5hPercent: null,
+      remaining7dPercent: null,
+      remaining5hResetAt: null,
+      remaining7dResetAt: null,
+      usageSource: "unavailable",
+      accessTokenExpiresAt: null,
+      refreshTokenExpiresAt: null,
+      refreshTokenExpiryNote: null,
+      usageDetailLines: [],
+    });
+  }
+
   async listSkills(_provider: string): Promise<ProviderSkill[]> {
     await delay(40);
     return MOCK_SKILLS;

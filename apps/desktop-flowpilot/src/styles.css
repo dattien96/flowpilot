@@ -515,6 +515,18 @@ input {
 .settings-list-item.static {
   cursor: default;
 }
+.settings-provider-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.settings-provider-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
 .settings-empty {
   padding: 14px;
   border-radius: 12px;
@@ -1125,6 +1137,12 @@ input {
 .modal-close {
   padding: 7px 10px;
   font-size: 12px;
+}
+.account-modal-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
 }
 .panel-message {
   margin-bottom: 10px;

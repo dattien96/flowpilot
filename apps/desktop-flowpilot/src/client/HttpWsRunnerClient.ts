@@ -169,6 +169,9 @@ export class HttpWsRunnerClient implements RunnerClient {
   interrupt(runId: string): Promise<void> {
     return this.postJSON<void>(`/client/workflow-runs/${encodeURIComponent(runId)}/interrupt`);
   }
+  async connectProviderAccount(providerKey: string): Promise<void> {
+    await this.postJSON<unknown>("/provider-accounts/connect", { providerKey });
+  }
   activateProviderAccount(accountId: string): Promise<void> {
     return this.postJSON<void>("/provider-accounts/activate", { accountId });
   }
