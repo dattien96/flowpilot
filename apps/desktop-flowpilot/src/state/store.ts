@@ -13,6 +13,7 @@ import type {
   Workflow,
 } from "@/types/contract";
 import type { RunnerClient } from "@/types/contract";
+import type { SupportedModel } from "@flowpilot/client-core";
 import { createRunnerClient } from "@/client/createRunnerClient";
 import { RunnerApiError } from "@/client/HttpWsRunnerClient";
 import type { ScenarioName } from "@/client/mockData";
@@ -36,6 +37,7 @@ export type { TimelineItem } from "./timelineReducer";
 let loadProjectsInFlight: Promise<void> | null = null;
 
 export type LaunchMode = "workflow" | "step";
+export type ChatMode = "normal_chat" | "workflow_step_auto";
 
 interface AppState {
   client: RunnerClient;
@@ -46,21 +48,31 @@ interface AppState {
   steps: Step[];
   skills: ProviderSkill[];
   providerAccounts: ProviderAccountSummary[];
+  supportedModels: SupportedModel[];
   selectedProjectId?: string;
   selectedWorkflowId?: string;
   selectedStepId?: string;
   launchMode: LaunchMode;
-  /** Provider override for direct chat; undefined = Auto (runner picks from model/default). */
+  /** Top-level mode: direct provider chat vs workflow/step auto-routing. */
+  chatMode: ChatMode;
+  /** Provider override. Required in normal_chat; optional (Auto) in workflow_step_auto. */
   selectedProvider?: ProviderKey;
+  /** Model selected in normal_chat mode. */
+  selectedModel?: string;
+  reasoningEffort?: string;
+  yoloMode: boolean;
 
   // run
   runId?: string;
+  /** Step id for the active run's turns; the synthetic chat step in normal_chat. */
+  activeStepId?: string;
   status: RunStatus;
   timeline: TimelineItem[];
   artifacts: Artifact[];
   runHistory: RunHistoryItem[];
   historyOpen: boolean;
   historyLoading: boolean;
+  historyLoadError?: string;
   pendingApproval?: PendingApproval;
   pendingQuestion?: PendingQuestion;
   lastTurnInput?: TurnInput;
@@ -69,13 +81,20 @@ interface AppState {
 
   // internal: id of the assistant bubble currently accumulating deltas
   _streamingAssistantId?: string;
+  // stale-response guard for loadRunHistory (BUG-060 F-3)
+  _historyLoadSeq: number;
 
   // actions
   loadProjects(): Promise<void>;
   loadProviderAccounts(): Promise<void>;
+  loadSkills(provider: string, cwd?: string): Promise<void>;
   selectProject(projectId: string): Promise<void>;
   setLaunchMode(mode: LaunchMode): void;
+  setChatMode(mode: ChatMode): void;
   selectProvider(provider?: ProviderKey): void;
+  setSelectedModel(model?: string): void;
+  setReasoningEffort(effort?: string): void;
+  setYoloMode(yolo: boolean): void;
   selectWorkflow(workflowId: string): Promise<void>;
   selectStep(stepId: string): void;
   setScenario(scenario: ScenarioName): void;
@@ -101,6 +120,7 @@ export const useStore = create<AppState>((set, get) => ({
   steps: [],
   skills: [],
   providerAccounts: [],
+  supportedModels: [],
   status: "idle",
   timeline: [],
   artifacts: [],
@@ -110,6 +130,9 @@ export const useStore = create<AppState>((set, get) => ({
   recoverable: false,
   scenario: "normal",
   launchMode: "workflow",
+  chatMode: "workflow_step_auto",
+  yoloMode: false,
+  _historyLoadSeq: 0,
 
   async loadProjects() {
     if (loadProjectsInFlight) return loadProjectsInFlight;
@@ -154,20 +177,23 @@ export const useStore = create<AppState>((set, get) => ({
       }
       try {
         const admin = await getAdminUseCases();
-        const [workflowDefinitions, stepDefinitions] = await Promise.all([
+        const [workflowDefinitions, stepDefinitions, supportedModels] = await Promise.all([
           admin.workflows.listWorkflows(),
           admin.workflows.listStepDefinitions(),
+          admin.providers.listSupportedModels(),
         ]);
         set({
           workflows: workflowDefinitions.map(mapNavigatorWorkflow),
           steps: stepDefinitions.map(mapNavigatorStep),
+          supportedModels,
         });
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error("[FlowPilot] definition catalog failed:", err);
       }
       try {
-        const skills = await withRetry(() => client.listSkills("codex"));
+        const provider = get().selectedProvider ?? "codex";
+        const skills = await withRetry(() => client.listSkills(provider));
         set({ skills });
       } catch (err) {
         // eslint-disable-next-line no-console
@@ -205,13 +231,17 @@ export const useStore = create<AppState>((set, get) => ({
       selectedStepId: undefined,
       runHistory: [],
       historyOpen: false,
+      historyLoadError: undefined,
     });
   },
 
   setLaunchMode(mode) {
-    set({
-      launchMode: mode,
-    });
+    set({ launchMode: mode });
+  },
+
+  setChatMode(mode) {
+    set({ chatMode: mode });
+    get().resetRun();
   },
 
   async selectWorkflow(workflowId) {
@@ -229,13 +259,57 @@ export const useStore = create<AppState>((set, get) => ({
 
   selectProvider(provider) {
     set({ selectedProvider: provider });
+    if (provider) {
+      void get().loadSkills(provider);
+    }
+  },
+
+  setSelectedModel(model) {
+    set({ selectedModel: model });
+  },
+
+  setReasoningEffort(effort) {
+    set({ reasoningEffort: effort });
+  },
+
+  setYoloMode(yolo) {
+    set({ yoloMode: yolo });
+  },
+
+  async loadSkills(provider, cwd) {
+    const { client } = get();
+    try {
+      const skills = await client.listSkills(provider, cwd);
+      set({ skills });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] loadSkills failed:", err);
+    }
   },
 
   async sendPrompt(prompt, skills) {
-    const { client, launchMode, selectedProjectId, selectedWorkflowId, selectedStepId, selectedProvider } = get();
+    const {
+      client, chatMode, launchMode,
+      selectedProjectId, selectedWorkflowId, selectedStepId,
+      selectedProvider, selectedModel, reasoningEffort, yoloMode,
+    } = get();
+
+    if (chatMode === "normal_chat") {
+      if (!selectedProjectId || !selectedProvider) return;
+    } else {
+      const launchTargetId = launchMode === "workflow" ? selectedWorkflowId : selectedStepId;
+      if (!selectedProjectId || !launchTargetId) return;
+    }
+
     const launchTargetId = launchMode === "workflow" ? selectedWorkflowId : selectedStepId;
-    if (!selectedProjectId || !launchTargetId) return;
-    let turnStepId = launchTargetId;
+    // In normal_chat the runner mints one synthetic step ("chat-<runId>") for the whole
+    // run and surfaces it via startRun (turn 1) / resumeRun (from history). It is held in
+    // `activeStepId` so follow-up turns reuse it instead of sending an empty stepId, which
+    // startTurn rejects with 400. Workflow/step mode keeps using its stable launchTargetId.
+    let turnStepId =
+      chatMode === "normal_chat"
+        ? get().activeStepId ?? launchTargetId ?? ""
+        : launchTargetId ?? "";
 
     // Render the prompt + a "Thinking…" bubble UP FRONT. The composer clears its input
     // the instant it calls us, so if startRun/sendTurn rejects (e.g. an unsupported
@@ -256,13 +330,23 @@ export const useStore = create<AppState>((set, get) => ({
     let runId = get().runId;
     try {
       if (!runId) {
-        const handle = await client.startRun({
-          projectId: selectedProjectId,
-          workflowId: launchMode === "workflow" ? selectedWorkflowId : undefined,
-          stepId: launchTargetId,
-          // Direct-chat override; Auto (undefined) → runner picks from model/default.
-          providerKey: selectedProvider,
-        });
+        const handle = await client.startRun(
+          chatMode === "normal_chat"
+            ? {
+                projectId: selectedProjectId!,
+                providerKey: selectedProvider,
+                model: selectedModel,
+                reasoningEffort,
+                yoloMode,
+                chatMode: "normal_chat",
+              }
+            : {
+                projectId: selectedProjectId!,
+                workflowId: launchMode === "workflow" ? selectedWorkflowId : undefined,
+                stepId: launchTargetId || undefined,
+                providerKey: selectedProvider,
+              },
+        );
         runId = handle.runId;
         if (handle.stepId) {
           turnStepId = handle.stepId;
@@ -277,8 +361,9 @@ export const useStore = create<AppState>((set, get) => ({
           skills && skills.length > 0
             ? skills.map((name) => ({ name, source: "slash_picker" as const }))
             : undefined,
+        reasoningEffort: chatMode === "normal_chat" ? reasoningEffort : undefined,
       };
-      set({ runId, lastTurnInput: turnInput });
+      set({ runId, lastTurnInput: turnInput, activeStepId: turnStepId });
 
       await consumeStream(runId, client.sendTurn(turnInput), set, get);
     } catch (err) {
@@ -348,23 +433,22 @@ export const useStore = create<AppState>((set, get) => ({
   async loadRunHistory() {
     const { client, selectedProjectId } = get();
     if (!selectedProjectId) {
-      set({ runHistory: [], historyLoading: false });
+      set({ runHistory: [], historyLoading: false, historyLoadError: undefined });
       return;
     }
-    set({ historyLoading: true });
+    // F-3: stale-response guard — bump seq before the async call, discard result if seq moved on
+    const seq = get()._historyLoadSeq + 1;
+    set({ historyLoading: true, _historyLoadSeq: seq });
     try {
       const runHistory = await client.listRunHistory(selectedProjectId);
-      set({ runHistory, historyLoading: false });
+      if (get()._historyLoadSeq !== seq) return;
+      set({ runHistory, historyLoading: false, historyLoadError: undefined });
     } catch (err) {
+      if (get()._historyLoadSeq !== seq) return;
       // eslint-disable-next-line no-console
       console.error("[FlowPilot] listRunHistory failed:", err);
-      set((s) => ({
-        historyLoading: false,
-        timeline: [
-          ...s.timeline,
-          { kind: "system", id: `err-history-${s.timeline.length}`, text: `Failed to load run history: ${String(err)}`, tone: "error" },
-        ],
-      }));
+      // F-4: surface error in the history panel instead of injecting into the chat timeline
+      set({ historyLoading: false, historyLoadError: String(err) });
     }
   },
 
@@ -382,6 +466,7 @@ export const useStore = create<AppState>((set, get) => ({
     set({
       runId: handle.runId,
       status: handle.status,
+      activeStepId: handle.stepId,
       timeline: [],
       artifacts: [],
       pendingApproval: undefined,
@@ -397,6 +482,7 @@ export const useStore = create<AppState>((set, get) => ({
   resetRun() {
     set({
       runId: undefined,
+      activeStepId: undefined,
       status: "idle",
       timeline: [],
       artifacts: [],
