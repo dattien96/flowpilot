@@ -63,9 +63,9 @@
   and passes via `--mcp-config` — *not* an in-process SDK tool (those are TS/Python-only).
 - **Foundation:** build on the existing live-process infra (`codex_appserver_process.go`,
   the `codexDispatcher` newline-JSON read loop) as a sibling Claude transport.
-- **Enablement:** gated behind `FLOWPILOT_CLAUDE_ADAPTER` (mirrors
-  `FLOWPILOT_CODEX_APPSERVER`); Claude stays a placeholder in the default registry so
-  demos/tests stay green without a real `claude` binary.
+- **Enablement:** Claude is available in the live runner registry without an extra
+  feature flag; Claude stays a placeholder in the default registry so demos/tests stay
+  green without a real `claude` binary.
 - **Auth/account:** reuse the existing Claude account/auth machinery already in the runner
   (`runner.go:791`, `:1311`, `:1708`, `:1795`): `ANTHROPIC_API_KEY` / `~/.claude/auth.json`
   / `CLAUDE_CONFIG_DIR`. **Billing caveat:** for embedded/server use, authenticate with an
@@ -283,7 +283,7 @@ claude_stream.go         newline-JSON read loop (codexDispatcher-shaped); stdin 
 claude_event_mapper.go   stream-json line → normalized ProviderEvent (mirror codex_event_mapper.go)
 claude_permission_mcp.go FlowPilot MCP server: approve + ask_user tools → TurnBridge
 yolo_resolver.go (edit)  add ClaudePermissionMode to YoloPosture (SSOT stays one function)
-provider_registry.go (edit) ProviderRegistryFor: add FLOWPILOT_CLAUDE_ADAPTER-gated claude branch
+provider_registry.go (edit) ProviderRegistryFor: add live-runner claude branch
 ```
 
 ---
@@ -397,8 +397,8 @@ In-process SDK tools are TS/Python-only, so FlowPilot serves a **real external M
 
 ### 6. Registry wiring (`provider_registry.go`)
 
-Add a `FLOWPILOT_CLAUDE_ADAPTER`-gated branch in `ProviderRegistryFor` (mirror the Codex
-branch, `provider_registry.go:187`): resolve the Claude account → build `claudeAdapter` backed
+Add a live-runner branch in `ProviderRegistryFor` (mirror the Codex branch,
+`provider_registry.go:187`): resolve the Claude account → build `claudeAdapter` backed
 by `r.claudePool`; on resolve failure return `errorAdapter{key: ProviderKeyClaude, err}` so a
 turn fails typed instead of hanging. Default registry keeps Claude a `placeholderAdapter`
 (`placeholder_adapters.go`). `Selectable`/`DefaultProviderKey`/`createRun` enforcement already
@@ -451,9 +451,9 @@ args from the resolved posture. Factor the shared `AskQuestion` MCP route used b
 
 ### Phase 4 — Registry, capabilities, enablement
 
-`FLOWPILOT_CLAUDE_ADAPTER`-gated Claude branch in `ProviderRegistryFor`; flip capabilities to
-all-true when enabled; `errorAdapter` on resolve failure. Admin Web `/admin/providers` already
-renders status+capabilities — Claude shows Available when enabled.
+Live Claude branch in `ProviderRegistryFor`; flip capabilities to all-true in the live runner;
+`errorAdapter` on resolve failure. Admin Web `/admin/providers` already renders
+status+capabilities — Claude shows Available in the live runner.
 
 ### Phase 5 — Sessions/resume + list/read on disk
 
@@ -464,7 +464,8 @@ JSONL enumeration/parse. Account-switch drops pooled processes.
 
 Failure/interrupt parity (`finishTurn` maps ctx-cancel; verify process death = recoverable
 turn fail); version-pin doc; operator notes (API-key auth requirement + billing caveat; YOLO
-posture). Update `04-07` placeholder status: Claude → implemented-but-gated.
+posture). Update `04-07` placeholder status: Claude → implemented in live runner while
+remaining placeholder-only in the default registry.
 
 ---
 
@@ -487,14 +488,14 @@ posture). Update `04-07` placeholder status: Claude → implemented-but-gated.
 - ✅ CL-30 resume uses the **real** captured `session_id`, never the synthetic id; first turn has no `--resume` (`TestClaudeAdapterResumeUsesRealSessionID`).
 - ✅ CL-31 process death mid-turn → recoverable error, no hung turn (`TestClaudeAdapterProcessDeathRecoverable`).
 - ✅ CL-35 two sessions in different cwds run as two processes concurrently (`TestClaudeAdapterConcurrentSessions`).
-- ✅ CL-40 registry: gated off → placeholder/not-selectable; gated on → Available + capabilities + selectable (`TestClaudeRegistryGating`).
+- ✅ CL-40 registry: default registry → placeholder/not-selectable; live runner registry → Available + capabilities + selectable (`TestClaudeRegistryGating`).
 - ✅ Regression: full runner suite — only pre-existing Google-Drive-auth / Windows-path failures; no Claude/Codex/`ExecutePrompt` regressions.
 
 ---
 
 ## Definition of Done
 
-> **Status** (gated behind `FLOWPILOT_CLAUDE_ADAPTER`, off by default). Legend: **✅ DONE** ·
+> **Status** (available in the live runner registry; placeholder-only in the default registry). Legend: **✅ DONE** ·
 > **🟡 PARTIAL** · **⛔ PENDING**. Verified: `go build` clean · `go vet` clean · **~30
 > Claude/permission/persistence/MCP tests pass** · full suite **418 passed / 20 failed** (all 20
 > pre-existing Google-Drive-auth / Windows-path failures, none in our files) · Codex review **OK** ·
@@ -507,7 +508,7 @@ posture). Update `04-07` placeholder status: Claude → implemented-but-gated.
 
 - [x] **✅ Files + wiring** — `claude_process.go`, `claude_stream.go`, `claude_adapter.go`,
       `claude_event_mapper.go`, `claude_permission_mcp.go`, `supabase_provider_session_store.go` added;
-      `YoloPosture.ClaudePermissionMode` + `FLOWPILOT_CLAUDE_ADAPTER`-gated branch + `Runner.claudePool` wired.
+      `YoloPosture.ClaudePermissionMode` + live-runner Claude branch + `Runner.claudePool` wired.
 - [x] **✅ Contract parity** — implements `ProviderRuntimeAdapter`, all 7 capabilities true when enabled;
       **no** contract/orchestration changes (`TurnBridge`, `sendTurnWithRetry`, `finishTurn`, finalizer reused).
 - [x] **✅ YOLO SSOT** — `resolveYoloPosture` drives `--permission-mode` + the runner bridge from one
@@ -557,7 +558,7 @@ posture). Update `04-07` placeholder status: Claude → implemented-but-gated.
 
 **To turn it on in your env** (no code changes):
 1. `supabase db push` (apply `20260615120000_add_workflow_provider_tables.sql`).
-2. `FLOWPILOT_CLAUDE_ADAPTER=1` + your logged-in claude (Team sub) or `ANTHROPIC_API_KEY`.
+2. Use your logged-in claude (Team sub) or set `ANTHROPIC_API_KEY`.
 3. Start a run, send a YOLO=false turn that edits a file → the approval card appears and **deny blocks**
    (matches the spike) → that satisfies live-acceptance.
 
@@ -677,8 +678,10 @@ route, encoded-cwd scheme).
   `mcp_servers`, `permissionMode`; `assistant.message.content[]` = `text` / `thinking` / `tool_use`
   blocks; `user.message.content[]` = `tool_result` `{tool_use_id, content, is_error}` **plus** a sibling
   `tool_use_result` `{stdout, stderr, interrupted, …}`; terminal `result` = `{subtype:"success", result,
-  session_id, total_cost_usd, usage, permission_denials[]}`. Bonus `rate_limit_event` /
-  `system/post_turn_summary` frames are safely ignored. → event mapper confirmed.
+  session_id, total_cost_usd, usage, permission_denials[]}`. Bonus `system/post_turn_summary`
+  frames are safely ignored. Quota-shaped `rate_limit_event` / result metadata is normalized
+  to a usage-limit failure so exhausted Claude accounts are not mislabeled as logged out.
+  → event mapper confirmed.
 - **Permission route (the P0):** `--permission-mode default --permission-prompt-tool mcp__flowpilot__approve
   --mcp-config <stub>` → Claude calls the `approve` MCP tool with
   `arguments={tool_name:"Write", input:{file_path, content}, tool_use_id}` (+ `_meta.claudecode/toolUseId`).
@@ -707,8 +710,6 @@ route, encoded-cwd scheme).
 
 ```go
 // claude_process.go — process pool + spawn (mirror codex_appserver_process.go)
-const claudeAdapterEnvFlag = "FLOWPILOT_CLAUDE_ADAPTER"
-func claudeAdapterEnabled() bool        { /* env 1/true/yes, mirror codexAppServerEnabled */ }
 var claudeBinaryName = func() string    { /* FLOWPILOT_CLAUDE_BIN or "claude" */ }
 
 type claudeProcKey struct{ account, cwd, session string }
@@ -759,9 +760,9 @@ type YoloPosture struct { CodexSandbox, CodexApprovalMode, ClaudePermissionMode 
 ```
 
 ```go
-// provider_registry.go (EDIT) — ProviderRegistryFor: add a FLOWPILOT_CLAUDE_ADAPTER-gated claude branch
-// if claudeAdapterEnabled() { register Available claude backed by claudeAdapter(r.claudePool, account env) }
-// else keep the placeholderAdapter (default registry unchanged)
+// provider_registry.go (EDIT) — ProviderRegistryFor: add live-runner claude branch
+// register Available claude backed by claudeAdapter(r.claudePool, account env)
+// default registry remains placeholder-only
 ```
 
 Test skeletons (`claude_*_test.go`, scripted fake `claude` over in-memory pipes, per `sessions_test.go:89`):
@@ -777,5 +778,5 @@ func TestClaudeYoloTrueBypassNoPrompt(t *testing.T)    {} // CL-21 bypassPermiss
 func TestClaudeAskUserQuestionRoundTrip(t *testing.T)  {} // CL-25 ask_user → user_question_required
 func TestClaudeResumeKeepsCwd(t *testing.T)            {} // CL-30 resume same cwd / mismatch detected
 func TestClaudeProcessDeathRecoverable(t *testing.T)   {} // CL-31 pool drain, no hung turn
-func TestClaudeRegistryGating(t *testing.T)            {} // CL-40 gated off/on + errorAdapter
+func TestClaudeRegistryGating(t *testing.T)            {} // CL-40 default placeholder + live available + errorAdapter
 ```

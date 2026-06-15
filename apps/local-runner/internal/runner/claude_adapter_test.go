@@ -2,7 +2,9 @@ package runner
 
 import (
 	"context"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -346,7 +348,7 @@ func TestClaudeAdapterPersistsSession(t *testing.T) {
 	}
 }
 
-// ---- CL-40: registry gating ------------------------------------------------
+// ---- CL-40: registry availability ------------------------------------------
 
 func TestClaudeRegistryGating(t *testing.T) {
 	// Default registry: claude is a non-selectable placeholder.
@@ -358,8 +360,7 @@ func TestClaudeRegistryGating(t *testing.T) {
 		t.Fatalf("placeholder claude must not be selectable")
 	}
 
-	// Flag on: claude becomes an available, selectable provider.
-	t.Setenv(claudeAdapterEnvFlag, "1")
+	// Live runner registry: claude is available and selectable without an env flag.
 	r, err := New(".")
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -370,10 +371,10 @@ func TestClaudeRegistryGating(t *testing.T) {
 		t.Fatalf("gated-on claude status = %q (ok=%v), want available", got.Status, ok)
 	}
 	if !got.Capabilities.Streaming || !got.Capabilities.ApprovalEvents {
-		t.Fatalf("gated-on claude must advertise capabilities: %+v", got.Capabilities)
+		t.Fatalf("live claude must advertise capabilities: %+v", got.Capabilities)
 	}
 	if _, err := reg.Selectable(ProviderKeyClaude); err != nil {
-		t.Fatalf("gated-on claude should be selectable: %v", err)
+		t.Fatalf("live claude should be selectable: %v", err)
 	}
 }
 
@@ -434,6 +435,43 @@ func TestMapClaudeLineResultError(t *testing.T) {
 }
 
 // ---- CL-21 arg builder (YOLO SSOT → CLI flags) -----------------------------
+
+func TestMapClaudeLineResultLimitDoesNotReportLogin(t *testing.T) {
+	evs := mapClaudeLine(claudeLine{Type: "result", Subtype: "error_during_execution", Raw: map[string]any{
+		"subtype":    "error_during_execution",
+		"is_error":   true,
+		"result":     "Not logged in · Please run /login",
+		"rate_limit": map[string]any{"cachedExtraUsageDisabledReason": "out_of_credits"},
+	}})
+	if len(evs) != 1 || evs[0].Type != EventTurnFailed {
+		t.Fatalf("limit result mapping = %+v, want one turn_failed", evs)
+	}
+	if evs[0].Error == "Not logged in · Please run /login" {
+		t.Fatalf("limit result should not report login error: %+v", evs[0])
+	}
+	if evs[0].Error != "Claude usage limit reached. Switch Claude account or wait for quota reset; login is still present." {
+		t.Fatalf("limit error = %q", evs[0].Error)
+	}
+}
+
+func TestClaudeUsageLimitErrorFromAuthMetadata(t *testing.T) {
+	home := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(home, ".claude.json"),
+		[]byte(`{"oauthAccount":{"emailAddress":"user@example.com"},"cachedExtraUsageDisabledReason":"out_of_credits"}`),
+		0o600,
+	); err != nil {
+		t.Fatalf("write auth: %v", err)
+	}
+
+	err := claudeUsageLimitError(home)
+	if err == nil {
+		t.Fatalf("expected usage limit error")
+	}
+	if got := err.Error(); got != "Claude usage limit reached: extra usage unavailable (out of credits). Switch Claude account or wait for quota reset; login is still present" {
+		t.Fatalf("usage limit error = %q", got)
+	}
+}
 
 func TestClaudeArgsYoloPosture(t *testing.T) {
 	yes := claudeArgs(resolveYoloPosture(true), "", "", nil)

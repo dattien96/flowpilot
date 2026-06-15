@@ -12,8 +12,8 @@ import (
 // Phase 1 (07 plan): the live `claude` CLI process layer + pool. Mirrors the role of
 // codex_appserver_process.go, but Claude has no single shared multi-thread process —
 // each (account, cwd, session) is its own `claude -p` process, and the Go runner is
-// the multiplexer. Enablement is gated behind FLOWPILOT_CLAUDE_ADAPTER so the default
-// registry keeps Claude a placeholder (demo/tests stay green without a real binary).
+// the multiplexer. The default registry keeps Claude a placeholder for demo/tests,
+// while the live runner registry wires the real adapter.
 //
 // MVP process model (explicitly accepted, 07 plan "Final Decision"): spawn-per-turn
 // with --resume continuity, NOT a warm long-lived process per session. Each SendTurn
@@ -21,14 +21,6 @@ import (
 // captured real Claude session_id via --resume. Warm-process reuse keyed by
 // (account,cwd,session) is a documented future optimization. The pool therefore tracks
 // in-flight processes (for account-switch teardown) and the synthetic→real session map.
-
-const claudeAdapterEnvFlag = "FLOWPILOT_CLAUDE_ADAPTER"
-
-// claudeAdapterEnabled reports whether the live Claude adapter path is turned on.
-func claudeAdapterEnabled() bool {
-	v := strings.TrimSpace(strings.ToLower(os.Getenv(claudeAdapterEnvFlag)))
-	return v == "1" || v == "true" || v == "yes"
-}
 
 // claudeBinaryName is the CLI binary; overridable for tests.
 var claudeBinaryName = func() string {

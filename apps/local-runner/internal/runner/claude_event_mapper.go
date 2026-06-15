@@ -128,23 +128,81 @@ func mapClaudeResult(raw map[string]any) []ProviderEvent {
 }
 
 func claudeResultErrorMessage(raw map[string]any, subtype string) string {
+	if msg := claudeUsageLimitMessage(raw); msg != "" {
+		return msg
+	}
 	if errs, ok := raw["errors"].([]any); ok && len(errs) > 0 {
 		if s, ok := errs[0].(string); ok && s != "" {
+			if msg := claudeUsageLimitMessage(map[string]any{"message": s}); msg != "" {
+				return msg
+			}
 			return s
 		}
 		if m, ok := errs[0].(map[string]any); ok {
 			if s, _ := m["message"].(string); s != "" {
+				if msg := claudeUsageLimitMessage(m); msg != "" {
+					return msg
+				}
 				return s
 			}
 		}
 	}
 	if s, _ := raw["result"].(string); s != "" {
+		if msg := claudeUsageLimitMessage(raw); msg != "" {
+			return msg
+		}
 		return s
 	}
 	if subtype != "" {
 		return "claude turn " + subtype
 	}
 	return "claude turn failed"
+}
+
+func claudeUsageLimitMessage(raw map[string]any) string {
+	if raw == nil {
+		return ""
+	}
+	flat := strings.ToLower(flattenClaudeStrings(raw))
+	if flat == "" {
+		return ""
+	}
+	hasLimitSignal := strings.Contains(flat, "out_of_credits") ||
+		strings.Contains(flat, "out of credits") ||
+		strings.Contains(flat, "usage limit") ||
+		strings.Contains(flat, "rate limit") ||
+		strings.Contains(flat, "quota") ||
+		strings.Contains(flat, "credits exhausted") ||
+		strings.Contains(flat, "credit balance")
+	if !hasLimitSignal {
+		return ""
+	}
+	return "Claude usage limit reached. Switch Claude account or wait for quota reset; login is still present."
+}
+
+func flattenClaudeStrings(v any) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case map[string]any:
+		var parts []string
+		for _, value := range t {
+			if s := flattenClaudeStrings(value); s != "" {
+				parts = append(parts, s)
+			}
+		}
+		return strings.Join(parts, " ")
+	case []any:
+		var parts []string
+		for _, value := range t {
+			if s := flattenClaudeStrings(value); s != "" {
+				parts = append(parts, s)
+			}
+		}
+		return strings.Join(parts, " ")
+	default:
+		return ""
+	}
 }
 
 // claudeSessionIDFromLine returns the real Claude session_id carried on system/result

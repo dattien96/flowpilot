@@ -194,8 +194,8 @@ func DefaultProviderRegistry() *ProviderRegistry {
 // ProviderRegistryFor builds the registry for a live runner. When the Codex
 // app-server path is enabled (FLOWPILOT_CODEX_APPSERVER) the Codex registration is
 // backed by the real shared-process adapter (ensureCodexAppServer); otherwise the
-// fake adapter is kept (demo/tests stay green without a codex binary). Claude/Gemini
-// remain placeholders either way.
+// fake adapter is kept (demo/tests stay green without a codex binary). Claude is
+// backed by its live adapter in the live runner; Gemini remains a placeholder.
 func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 	reg := DefaultProviderRegistry()
 	if r == nil {
@@ -236,71 +236,72 @@ func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 			},
 		})
 	}
-	// Claude controlled-mode adapter (07 plan), gated independently of Codex behind
-	// FLOWPILOT_CLAUDE_ADAPTER. The factory resolves the active account lazily, so a
-	// missing account surfaces as a typed errorAdapter at turn time, not at registration.
-	if claudeAdapterEnabled() {
-		reg.register(ProviderRegistration{
-			Key:         ProviderKeyClaude,
-			DisplayName: "Claude",
-			Status:      ProviderStatusAvailable,
-			Capabilities: ProviderCapabilities{
-				Streaming: true, Resume: true, ApprovalEvents: true, FileEvents: true,
-				SkillSelection: true, Mcp: true, Interrupt: true,
-			},
-			newAdapter: func() ProviderRuntimeAdapter {
-				scopeKey := "default"
-				env := map[string]string{}
-				account, err := r.ResolveProviderAccount(string(ProviderKeyClaude), "")
-				if err == nil {
-					scopeKey = account.ID
-					for key, value := range account.ExtraEnv {
-						env[key] = value
-					}
-					if account.HomePath != "" {
-						env["CLAUDE_CONFIG_DIR"] = account.HomePath
-						// Gating only engages if the config dir has no broad allow-rules
-						// (spike finding). Seed a gating posture into FlowPilot's managed
-						// dir (best-effort; never clobbers an existing settings.json).
-						_ = ensureClaudeConfigSettings(account.HomePath)
-					}
-				} else if apiKey := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")); apiKey != "" {
-					scopeKey = "env:anthropic"
-					// Isolate config so ambient ~/.claude allow-rules can't silently bypass
-					// gating (review finding 2): the env-key path authenticates via the API key,
-					// so a fresh FlowPilot-managed dir (gating posture, no allow-list) is safe.
-					if cfgDir := flowpilotManagedClaudeConfigDir(r.workspace); cfgDir != "" {
-						env["CLAUDE_CONFIG_DIR"] = cfgDir
-						_ = ensureClaudeConfigSettings(cfgDir)
-					}
-				} else {
-					return errorAdapter{key: ProviderKeyClaude, err: err}
+	// Claude controlled-mode adapter (07 plan). The factory resolves the active
+	// account lazily, so a missing account surfaces as a typed errorAdapter at turn
+	// time, not at registration.
+	reg.register(ProviderRegistration{
+		Key:         ProviderKeyClaude,
+		DisplayName: "Claude",
+		Status:      ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{
+			Streaming: true, Resume: true, ApprovalEvents: true, FileEvents: true,
+			SkillSelection: true, Mcp: true, Interrupt: true,
+		},
+		newAdapter: func() ProviderRuntimeAdapter {
+			scopeKey := "default"
+			env := map[string]string{}
+			account, err := r.ResolveProviderAccount(string(ProviderKeyClaude), "")
+			if err == nil {
+				scopeKey = account.ID
+				for key, value := range account.ExtraEnv {
+					env[key] = value
 				}
-				pool := r.claudePool
-				if pool == nil {
-					pool = newClaudeProcessPool()
-				}
-				// mcpConfig is empty until the live FlowPilot MCP server is wired (07
-				// Appendix A spike); the adapter handles the in-stream control_request
-				// route meanwhile. promptPrep injects skill content + ask_user reinforcement.
-				a := newClaudeAdapter(pool, r.workspace, scopeKey, env, "")
-				// Durable (run, cwd, session) persistence for cross-restart resume (07);
-				// no-op when Supabase is unconfigured.
-				a.sessionStore = ProviderSessionStoreFor(r)
-				// Per-turn permission MCP (07): the adapter registers the turn's bridge on
-				// the runner-hosted MCP server and points claude's --mcp-config at it.
-				a.mcpServer = r.claudeMCP
-				a.mcpBaseURL = r.mcpBaseURLValue
-				a.promptPrep = func(req TurnRequest) string {
-					workspace := r.workspace
-					if req.Cwd != "" {
-						workspace = req.Cwd
+				if account.HomePath != "" {
+					env["CLAUDE_CONFIG_DIR"] = account.HomePath
+					// Gating only engages if the config dir has no broad allow-rules
+					// (spike finding). Seed a gating posture into FlowPilot's managed
+					// dir (best-effort; never clobbers an existing settings.json).
+					_ = ensureClaudeConfigSettings(account.HomePath)
+					if limitErr := claudeUsageLimitError(account.HomePath); limitErr != nil {
+						return errorAdapter{key: ProviderKeyClaude, err: limitErr}
 					}
-					return r.injectSkillContent(workspace, req.Prompt, skillIDsOf(req.SelectedSkills)) + claudeAskUserReinforcement
 				}
-				return a
-			},
-		})
-	}
+			} else if apiKey := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")); apiKey != "" {
+				scopeKey = "env:anthropic"
+				// Isolate config so ambient ~/.claude allow-rules can't silently bypass
+				// gating (review finding 2): the env-key path authenticates via the API key,
+				// so a fresh FlowPilot-managed dir (gating posture, no allow-list) is safe.
+				if cfgDir := flowpilotManagedClaudeConfigDir(r.workspace); cfgDir != "" {
+					env["CLAUDE_CONFIG_DIR"] = cfgDir
+					_ = ensureClaudeConfigSettings(cfgDir)
+				}
+			} else {
+				return errorAdapter{key: ProviderKeyClaude, err: err}
+			}
+			pool := r.claudePool
+			if pool == nil {
+				pool = newClaudeProcessPool()
+			}
+			// mcpConfig is empty until the live FlowPilot MCP server is wired (07
+			// Appendix A spike); the adapter handles the in-stream control_request
+			// route meanwhile. promptPrep injects skill content + ask_user reinforcement.
+			a := newClaudeAdapter(pool, r.workspace, scopeKey, env, "")
+			// Durable (run, cwd, session) persistence for cross-restart resume (07);
+			// no-op when Supabase is unconfigured.
+			a.sessionStore = ProviderSessionStoreFor(r)
+			// Per-turn permission MCP (07): the adapter registers the turn's bridge on
+			// the runner-hosted MCP server and points claude's --mcp-config at it.
+			a.mcpServer = r.claudeMCP
+			a.mcpBaseURL = r.mcpBaseURLValue
+			a.promptPrep = func(req TurnRequest) string {
+				workspace := r.workspace
+				if req.Cwd != "" {
+					workspace = req.Cwd
+				}
+				return r.injectSkillContent(workspace, req.Prompt, skillIDsOf(req.SelectedSkills)) + claudeAskUserReinforcement
+			}
+			return a
+		},
+	})
 	return reg
 }

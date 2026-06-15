@@ -236,34 +236,12 @@ export const useStore = create<AppState>((set, get) => ({
     if (!selectedProjectId || !launchTargetId) return;
     let turnStepId = launchTargetId;
 
-    let runId = get().runId;
-    if (!runId) {
-      const handle = await client.startRun({
-        projectId: selectedProjectId,
-        workflowId: launchMode === "workflow" ? selectedWorkflowId : undefined,
-        stepId: launchTargetId,
-        // Direct-chat override; Auto (undefined) → runner picks from model/default.
-        providerKey: selectedProvider,
-      });
-      runId = handle.runId;
-      if (handle.stepId) {
-        turnStepId = handle.stepId;
-      }
-    }
-
-    const turnInput: TurnInput = {
-      runId,
-      stepId: turnStepId,
-      prompt,
-      selectedSkills:
-        skills && skills.length > 0
-          ? skills.map((name) => ({ name, source: "slash_picker" as const }))
-          : undefined,
-    };
-
+    // Render the prompt + a "Thinking…" bubble UP FRONT. The composer clears its input
+    // the instant it calls us, so if startRun/sendTurn rejects (e.g. an unsupported
+    // provider → 422 provider_unavailable) we must not be left with a blank screen and
+    // no record of what the user typed (BUG-050). The catch below replaces the thinking
+    // bubble with a visible error instead of failing silently.
     set((s) => ({
-      runId,
-      lastTurnInput: turnInput,
       recoverable: false,
       status: "running",
       _streamingAssistantId: undefined,
@@ -274,8 +252,46 @@ export const useStore = create<AppState>((set, get) => ({
       ],
     }));
 
+    let runId = get().runId;
     try {
+      if (!runId) {
+        const handle = await client.startRun({
+          projectId: selectedProjectId,
+          workflowId: launchMode === "workflow" ? selectedWorkflowId : undefined,
+          stepId: launchTargetId,
+          // Direct-chat override; Auto (undefined) → runner picks from model/default.
+          providerKey: selectedProvider,
+        });
+        runId = handle.runId;
+        if (handle.stepId) {
+          turnStepId = handle.stepId;
+        }
+      }
+
+      const turnInput: TurnInput = {
+        runId,
+        stepId: turnStepId,
+        prompt,
+        selectedSkills:
+          skills && skills.length > 0
+            ? skills.map((name) => ({ name, source: "slash_picker" as const }))
+            : undefined,
+      };
+      set({ runId, lastTurnInput: turnInput });
+
       await consumeStream(client.sendTurn(turnInput), set, get);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] sendPrompt failed:", err);
+      set((s) => ({
+        status: "failed",
+        // Only offer Reconnect if a run was actually created; a failed startRun has none.
+        recoverable: Boolean(runId),
+        timeline: [
+          ...s.timeline.filter((it) => it.kind !== "thinking"),
+          { kind: "system", id: `err-run-${s.timeline.length}`, text: runErrorMessage(err), tone: "error" },
+        ],
+      }));
     } finally {
       if (get().historyOpen) {
         void get().loadRunHistory();
@@ -424,4 +440,15 @@ async function consumeStream(
 
 function applyEvent(s: AppState, e: ProviderEventDTO): Partial<AppState> {
   return applyTimelineEvent(s, e);
+}
+
+function runErrorMessage(err: unknown): string {
+  if (err instanceof RunnerApiError) {
+    const suffix = `HTTP ${err.status}${err.code ? ` / ${err.code}` : ""}`;
+    return err.message ? `${err.message} (${suffix})` : `Runner request failed (${suffix})`;
+  }
+  if (err instanceof Error) {
+    return err.message;
+  }
+  return String(err);
 }
