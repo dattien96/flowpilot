@@ -257,14 +257,20 @@ func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 					env[key] = value
 				}
 				if account.HomePath != "" {
-					env["CLAUDE_CONFIG_DIR"] = account.HomePath
+					env["HOME"] = account.HomePath
+					env["XDG_CONFIG_HOME"] = filepath.Join(account.HomePath, ".config")
+					env["CLAUDE_CONFIG_DIR"] = filepath.Join(account.HomePath, ".claude")
+					if drive, path, ok := windowsHomeDriveAndPath(account.HomePath); ok {
+						env["USERPROFILE"] = account.HomePath
+						env["APPDATA"] = filepath.Join(account.HomePath, "AppData", "Roaming")
+						env["LOCALAPPDATA"] = filepath.Join(account.HomePath, "AppData", "Local")
+						env["HOMEDRIVE"] = drive
+						env["HOMEPATH"] = path
+					}
 					// Gating only engages if the config dir has no broad allow-rules
 					// (spike finding). Seed a gating posture into FlowPilot's managed
 					// dir (best-effort; never clobbers an existing settings.json).
-					_ = ensureClaudeConfigSettings(account.HomePath)
-					if limitErr := claudeUsageLimitError(account.HomePath); limitErr != nil {
-						return errorAdapter{key: ProviderKeyClaude, err: limitErr}
-					}
+					_ = ensureClaudeConfigSettings(env["CLAUDE_CONFIG_DIR"])
 				}
 			} else if apiKey := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")); apiKey != "" {
 				scopeKey = "env:anthropic"

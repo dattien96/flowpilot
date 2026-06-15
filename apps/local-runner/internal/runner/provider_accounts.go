@@ -360,13 +360,28 @@ func (r *Runner) syncProviderAccounts(accounts []ProviderAccount) ([]ProviderAcc
 			}
 		} else if defaultIndex >= 0 {
 			account := synced[defaultIndex]
-			if account.AuthStatus != "failed" {
-				account.AuthStatus = "failed"
-				changed = true
-			}
-			if account.IsActive {
-				account.IsActive = false
-				changed = true
+			if HasLocalAuthAtPath(providerKey, account.HomePath) {
+				if account.AuthStatus != "connected" {
+					account.AuthStatus = "connected"
+					changed = true
+				}
+				if account.ExtraEnv == nil {
+					account.ExtraEnv = map[string]string{}
+					changed = true
+				}
+				if !hasActiveProviderAccount(synced, providerKey) {
+					account.IsActive = true
+					changed = true
+				}
+			} else {
+				if account.AuthStatus != "failed" {
+					account.AuthStatus = "failed"
+					changed = true
+				}
+				if account.IsActive {
+					account.IsActive = false
+					changed = true
+				}
 			}
 			synced[defaultIndex] = account
 		}
