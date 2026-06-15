@@ -689,6 +689,122 @@ input {
 .project-delete-modal {
   width: min(520px, 100%);
 }
+.workflow-editor-column {
+  display: grid;
+  gap: 16px;
+  margin-top: 18px;
+}
+.workflow-steps-panel {
+  margin-top: 0;
+}
+.workflow-step-add-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  margin-top: 16px;
+}
+.workflow-step-add-field {
+  flex: 1;
+  min-width: 240px;
+}
+.workflow-step-card {
+  display: grid;
+  gap: 14px;
+}
+.workflow-step-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.workflow-step-grid {
+  margin-top: 0;
+}
+.workflow-artifact-selector {
+  display: grid;
+  gap: 10px;
+}
+.workflow-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.workflow-choice-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-3);
+}
+.workflow-choice-card span {
+  display: grid;
+  gap: 4px;
+}
+.workflow-choice-card small {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.workflow-chip-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.workflow-chip-add-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.workflow-chip-empty {
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 4px 0;
+}
+.workflow-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+.workflow-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-3);
+  font-size: 13px;
+}
+.workflow-chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  width: 16px;
+  height: 16px;
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  border-radius: 50%;
+}
+.workflow-chip-remove:hover {
+  color: var(--err);
+}
+.workflow-picker-grid {
+  margin-top: 16px;
+}
+.workflow-picker-sub {
+  margin-top: 16px;
+  max-width: 280px;
+}
 .runner-pill {
   border-radius: 999px;
   padding: 7px 10px;

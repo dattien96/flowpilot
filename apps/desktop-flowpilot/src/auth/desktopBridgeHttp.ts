@@ -42,7 +42,8 @@ export const desktopBridgeFetch: typeof fetch = async (input, init) => {
     body,
   });
 
-  return new Response(response.body, {
+  const nullBodyStatuses = new Set([101, 103, 204, 205, 304]);
+  return new Response(nullBodyStatuses.has(response.status) ? null : response.body, {
     status: response.status,
     headers: response.headers,
   });

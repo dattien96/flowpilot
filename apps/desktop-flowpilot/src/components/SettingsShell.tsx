@@ -80,6 +80,8 @@ export function SettingsShell({
             const label =
               section === "ai-providers"
                 ? "AI Providers"
+                : section === "workflows"
+                  ? "Workflows/Steps"
                 : section === "google-drive"
                   ? "Google Drive"
                   : section === "jira-mcp"

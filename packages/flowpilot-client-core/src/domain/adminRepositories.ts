@@ -41,9 +41,11 @@ export interface TeamRepository {
 export interface WorkflowRepository {
   listWorkflows(): Promise<Workflow[]>;
   saveWorkflow(workflow: Partial<Workflow> & { steps?: Partial<WorkflowStep>[] }): Promise<Workflow>;
+  deleteWorkflow(workflowId: string): Promise<void>;
   listWorkflowSteps(workflowId: string): Promise<WorkflowStep[]>;
   listStepDefinitions(): Promise<StepDefinition[]>;
   saveStepDefinition(step: StepDefinition): Promise<StepDefinition>;
+  deleteStepDefinition(stepType: string): Promise<void>;
   listWorkflowRuns(projectId?: string): Promise<WorkflowRun[]>;
 }
 

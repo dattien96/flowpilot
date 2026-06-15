@@ -474,6 +474,11 @@ export class SupabaseAdminRepository implements
     return saved;
   }
 
+  async deleteWorkflow(workflowId: string) {
+    const { error } = await this.supabase.from("workflows").delete().eq("id", workflowId);
+    assertNoError(error, "Unable to delete workflow.");
+  }
+
   async listWorkflowSteps(workflowId: string) {
     const { data, error } = await this.supabase.from("workflow_steps").select("*").eq("workflow_id", workflowId).order("order_index", { ascending: true });
     assertNoError(error, "Unable to list workflow steps.");
@@ -585,6 +590,23 @@ export class SupabaseAdminRepository implements
       input_artifact_definitions: step.inputArtifactDefinitions,
       output_artifact_definitions: step.outputArtifactDefinitions,
     });
+  }
+
+  async deleteStepDefinition(stepType: string) {
+    const { error: deleteInputError } = await this.supabase
+      .from("step_input_artifact_definitions")
+      .delete()
+      .eq("step_type", stepType);
+    assertNoError(deleteInputError, "Unable to delete step input artifact bindings.");
+
+    const { error: deleteOutputError } = await this.supabase
+      .from("step_output_artifact_definitions")
+      .delete()
+      .eq("step_type", stepType);
+    assertNoError(deleteOutputError, "Unable to delete step output artifact bindings.");
+
+    const { error } = await this.supabase.from("step_definitions").delete().eq("step_type", stepType);
+    assertNoError(error, "Unable to delete step definition.");
   }
 
   async listWorkflowRuns(projectId?: string) {
