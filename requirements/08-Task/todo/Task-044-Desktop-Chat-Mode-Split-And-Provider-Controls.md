@@ -5,14 +5,14 @@
 - Document ID: `Task-044`
 - Title: `Desktop Chat Mode Split And Provider Controls`
 - Phase: `task`
-- Status: `draft`
+- Status: `in_progress`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-15`
 - Last Updated: `2026-06-15`
 - Parent Documents: [04: Detailed Coding Plan](../../10-Refactor/New-System/04-Detailed-Coding-Plan.md), [04-01: Desktop App Implementation Plan](../../10-Refactor/New-System/04-01-Phase1-Desktop-Mock-MVP.md), [05: Codex App-Server Migration Detail](../../10-Refactor/New-System/05-Codex-AppServer-Migration-Detail.md), [07: Claude Provider Adapter Plan](../../10-Refactor/New-System/07-Claude-Adapter-Plan.md), [CP-18: Refactor Workflow With Session](../../07-Coding-Plan/done/CP-18-Refactor-Workflow-With_Session.md)
 - Child Documents: `none`
-- Related Documents: [08: Desktop Chat New Plan](../../10-Refactor/New-System/08-Desktop-Chat-New-Plan.md), [SS-11: Workflow With Session](../../05-System-Specs/SS-11-Workflow-With_Session.md), [SD-12: Refactor Workflow With Session](../../06-System-Tech-Design/SD-12-Refactor-Workflow-With_Session.md), [SS-05: Workflow AI Provider](../../05-System-Specs/SS-05-Workflow-Ai-Provider.md), [SS-06: Workflow Skill Agent](../../05-System-Specs/SS-06-Workflow-Skill-Agent.md), [Task-010: Yolo Mode](./Task-010-Yolo-Mode.md), [Task-013: Dynamic Way To Add Support Model](../done/Task-013-Dynamic-Way-To-Add-Support-Model.md), [Task-032: Document Proxy Yolo And Provider Approval Config](./Task-032-Document-Proxy-Yolo-And-Provider-Approval-Config.md), [CA-020: Workflow UI Chat Feed and Continue Flow](../../change-audit/CA-020-workflow-ui-chat-feed-and-continue-flow.md), [CA-021: Workflow Chat Runtime and Font Tuning](../../change-audit/CA-021-workflow-chat-runtime-and-font-tuning.md), [CA-036: Update Supported Models Constraint](../../change-audit/CA-036-update-supported-models-constraint.md)
+- Related Documents: [08: Desktop Chat New Plan](../../10-Refactor/New-System/08-Desktop-Chat-New-Plan.md), [SS-11: Workflow With Session](../../05-System-Specs/SS-11-Workflow-With_Session.md), [SD-12: Refactor Workflow With Session](../../06-System-Tech-Design/SD-12-Refactor-Workflow-With_Session.md), [SS-05: Workflow AI Provider](../../05-System-Specs/SS-05-Workflow-Ai-Provider.md), [SS-06: Workflow Skill Agent](../../05-System-Specs/SS-06-Workflow-Skill-Agent.md), [Task-010: Yolo Mode](./Task-010-Yolo-Mode.md), [Task-013: Dynamic Way To Add Support Model](../done/Task-013-Dynamic-Way-To-Add-Support-Model.md), [Task-032: Document Proxy Yolo And Provider Approval Config](./Task-032-Document-Proxy-Yolo-And-Provider-Approval-Config.md), [CA-020: Workflow UI Chat Feed and Continue Flow](../../change-audit/CA-020-workflow-ui-chat-feed-and-continue-flow.md), [CA-021: Workflow Chat Runtime and Font Tuning](../../change-audit/CA-021-workflow-chat-runtime-and-font-tuning.md), [CA-036: Update Supported Models Constraint](../../change-audit/CA-036-update-supported-models-constraint.md), [BUG-060: Desktop Run History Empties After Switching Runs](../../09-BugFix/todo/BUG-060-Desktop-Run-History-Empties-After-Switching-Runs.md)
 - Replaces: `none`
 - Tags: `desktop, chat, provider-controls, codex, claude, workflow-run, skills, yolo`
 
@@ -32,13 +32,13 @@
 
 ### Key Decisions
 
-- `T-1` Add an explicit chat mode state with values `normal_chat` and `workflow_step_auto`.
-- `T-2` In `normal_chat`, require only a selected project/workspace and provider; do not require a workflow or step.
-- `T-3` In `workflow_step_auto`, require a workflow or step target exactly as the current flow does.
-- `T-4` Model options in `normal_chat` are filtered to enabled supported models for the selected provider.
-- `T-5` Reasoning effort options are provider/model aware, not a single global list.
-- `T-6` YOLO remains the approval posture switch for normal chat and must flow into the runner start/turn request.
-- `T-7` Slash skills are loaded from the selected provider's real local skill registry and refreshed when provider or project changes.
+- `KD-1` Add an explicit chat mode state with values `normal_chat` and `workflow_step_auto`.
+- `KD-2` In `normal_chat`, require only a selected project/workspace and provider; do not require a workflow or step.
+- `KD-3` In `workflow_step_auto`, require a workflow or step target exactly as the current flow does.
+- `KD-4` Model options in `normal_chat` are filtered to enabled supported models for the selected provider.
+- `KD-5` Reasoning effort options are provider/model aware, not a single global list.
+- `KD-6` YOLO remains the approval posture switch for normal chat and must flow into the runner start/turn request.
+- `KD-7` Slash skills are loaded from the selected provider's real local skill registry and refreshed when provider or project changes.
 
 ### Constraints
 
@@ -47,14 +47,14 @@
 - Do not show model, reasoning, YOLO, or slash skill controls in workflow/step automation mode; those are configured in workflow and step definitions.
 - `reasoningEffort` already exists end-to-end on the Go side (`StartRunInput`, the turn request), in `SS-05`, the `2026-05-25` reasoning-effort migrations, and admin-web; this task only adds it to the desktop TS contract. Only provider-specific values BEYOND the existing `low | medium | high | xhigh` (Claude `Max`, Opus `Extra`, `Ultracode`) require an upstream contract update to `SS-05` and the shared runner/client DTOs before implementation is marked complete.
 - The `normal_chat` mode must reconcile with the existing `selectedProvider` "direct chat" override and its `Auto (from model)` option; do not ship two overlapping chat concepts.
+- DECIDED — normal-chat history reuses the existing workflow-run + provider-session + event tables via a synthetic `chat` step and a `run_kind` (`chat` | `workflow`) discriminator; no new `chat_sessions` table or route. Durability depends on the [BUG-060](../../09-BugFix/todo/BUG-060-Desktop-Run-History-Empties-After-Switching-Runs.md) rehydration fix. See `T-7`.
+- DECIDED — provider slash skills load ALL sources (provider home + workspace/project `.agents/skills` + `.codex` / `.claude/skills`), deduped by name with precedence `workspace` > `flowpilot` > `provider`, showing the winning source badge. See `T-6`.
+- Gemini is out of scope for this task (normal chat is limited to Codex and Claude); revisit when the Gemini adapter is no longer placeholder.
 - GitNexus MCP tools were not exposed in this planning thread; no application symbols were edited.
 
 ### Open Questions
 
-- Should Gemini be enabled in normal chat once its controlled adapter is available, or should this task initially limit normal chat to Codex and Claude?
 - What are the canonical stored values for Claude Sonnet `Max`, Claude Opus `Extra`, and `Ultracode` reasoning modes, and how do they map to CLI flags?
-- Should normal chat runs persist in existing workflow run history using a synthetic "chat" workflow/step, or should the runner expose a first-class chat-session history endpoint?
-- Should provider skill loading include global provider home skills only, workspace/project `.agents/skills`, or both with source badges?
 
 ### Source Refs
 
@@ -123,7 +123,7 @@ Already-existing infrastructure this task wires through (do NOT rebuild):
   - Add model selection UI in the chat controller for normal chat.
   - Reuse the EXISTING supported-model source — `getAdminUseCases().providers.listSupportedModels()` with the `SupportedModel` type and `buildModelOptions` helper already used by `WorkflowsSettings.tsx`. Do NOT add a new `GET /client/supported-models` runner route.
   - Preferred: extract the model-option logic from `WorkflowsSettings.tsx` into a shared helper so desktop chat and settings stay in sync.
-  - Filter model options by the current selected provider (`codex`, `claude`, later `gemini`).
+  - Filter model options by the current selected provider (`codex`, `claude`; Gemini out of scope for this task).
   - When provider changes, keep the selected model only if it belongs to that provider; otherwise select the provider's default enabled model.
   - Pass selected `model` into `StartRunInput`.
 
@@ -145,16 +145,22 @@ Already-existing infrastructure this task wires through (do NOT rebuild):
   - Replace the current `client.listSkills("codex")` hard-code in `store.loadProjects` with provider-reactive loading, re-fetched when provider or project changes.
   - The `GET /client/provider-skills` route ALREADY EXISTS (`interactive_handlers.go` → `handleListSkills`) but `interactive_catalog.go listSkills()` returns a static catalog ignoring `provider`/`cwd`. The work is making that existing route resolve real skill directories by `provider` + `cwd` — not adding a new route.
   - Add a `cwd`/project parameter to the contract method `listSkills` (today it takes only `provider`) and to the route query (`?provider=<provider>&cwd=<projectPath>`).
-  - Codex source candidates: active `CODEX_HOME` skills plus workspace/project `.codex` or `.agents/skills` where supported by the adapter.
-  - Claude source candidates: active Claude config skills plus project `.claude/skills` and workspace/project `.agents/skills` where supported by the adapter.
-  - Keep source badges (`provider`, `flowpilot`, `workspace`) so users can tell where a skill came from.
+  - Load ALL sources and merge (decision resolved):
+    - `provider` source: Codex active `CODEX_HOME` skills; Claude active config skills.
+    - `workspace` source: project/workspace `.agents/skills`, plus `.codex` (Codex) and `.claude/skills` (Claude) where supported by the adapter.
+    - `flowpilot` source: FlowPilot-managed skills if/where the adapter exposes them.
+  - Dedupe by skill `name` with precedence `workspace` > `flowpilot` > `provider` (most-specific wins). The surviving entry keeps the badge of its winning source; a duplicate `name` must NOT appear twice in the picker.
+  - Keep source badges (`provider`, `flowpilot`, `workspace`) so users can tell where the winning skill came from (matches the existing `ProviderSkill.source` type).
   - Hide slash skill UI entirely in workflow/step automation mode because step definitions already declare required skills.
 
-- `T-7` Update runner/client contracts for normal chat launch.
-  - Decide whether normal chat uses a synthetic step id, a dedicated chat route, or a first-class chat session run type.
-  - The preferred narrow implementation is a runner-created synthetic chat step/run only if it does not leak into workflow catalogs.
-  - Ensure `TurnInput.stepId` remains valid or update the contract so normal chat turns can omit a workflow step id safely.
-  - Persist run history so normal chat conversations can be reopened without mixing them with workflow automation unless intentionally filtered together.
+- `T-7` Update runner/client contracts for normal chat launch (strategy resolved: synthetic chat run reusing existing tables).
+  - Normal chat creates a workflow-run + provider-session in the EXISTING run/session tables, with a runner-created synthetic `chat` step. Do NOT add a `chat_sessions` table or a dedicated chat route — reuse `POST /client/workflow-runs` + `POST /client/workflow-runs/{runId}/turns`.
+  - Add a `run_kind` discriminator (`chat` | `workflow`) on the run/session record so:
+    - the synthetic chat step never leaks into workflow catalogs (`listWorkflows`/`listSteps`/admin catalogs filter `run_kind = "workflow"`); and
+    - history can filter chat vs workflow runs (default: show both, labeled; allow filtering to one kind).
+  - Chat logs persist through the SAME path as workflow runs (`persistProviderSession` for the session, `persistEvent` for the message/turn timeline) — no new persistence code. This satisfies "save the chat log even in normal chat".
+  - `StartRunInput`: when `chatMode = normal_chat`, the runner mints the synthetic step id and sets `run_kind = "chat"`; the client sends `providerKey` + `model` + `reasoningEffort` + `yoloMode` and omits `workflowId`/`stepId`. Keep `TurnInput.stepId` populated with the synthetic step id so the existing turn contract is unchanged.
+  - **Hard prerequisite:** the run-history read path is in-memory-only and empties on runner/app-server recreation — see [BUG-060](../../09-BugFix/todo/BUG-060-Desktop-Run-History-Empties-After-Switching-Runs.md). Chat-log durability rides on the SAME rehydration fix, so BUG-060 must land before (or with) this task; otherwise chat logs are lost on restart exactly like workflow runs are today.
 
 - `T-8` Update tests.
   - Desktop unit/component tests cover mode switching, hidden selectors, normal-chat send enabled without workflow/step, and workflow/step send still blocked until target is selected.
@@ -197,8 +203,8 @@ Already-existing infrastructure this task wires through (do NOT rebuild):
   - models: reuse the existing `getAdminUseCases().providers.listSupportedModels()` client-core path — no new runner route.
 - tables:
   - `ai_supported_models` read path
-  - `workflow_provider_sessions` or `workflow_run_sessions` depending on final normal-chat persistence decision
-  - possible no schema change if normal chat reuses existing run/session tables with a safe synthetic target
+  - existing workflow-run + `workflow_provider_sessions` + provider-event tables (reused; normal chat persists through the same path)
+  - schema change: add a `run_kind` discriminator (`chat` | `workflow`) to the run/session record so chat runs are filterable and excluded from workflow catalogs. No new `chat_sessions` table.
 
 ## 6. Acceptance Check
 
@@ -211,13 +217,15 @@ Already-existing infrastructure this task wires through (do NOT rebuild):
   - reasoning dropdown shows options valid for the selected provider/model;
   - YOLO toggle is visible and the chosen value reaches the runner;
   - typing `/` shows real local skills for the selected provider and selected project/workspace, not the current fake/static Codex list;
+  - the skill list merges all sources (provider + workspace + flowpilot), deduped by name with `workspace` > `flowpilot` > `provider` precedence, each row showing its winning source badge, with no duplicate `/name`;
   - selected skills attach to the next normal-chat turn.
 - In `Workflow/step auto` mode:
   - workflow or step selection remains required before send;
   - model, reasoning, YOLO, and slash skill controls are hidden from the chat controller;
   - workflow/step configured model, reasoning, YOLO, MCP, and skills remain the source of truth;
   - existing workflow/step run behavior does not regress.
-- A normal chat run can be reopened from history or a documented follow-up explains why history is deferred. (The synthetic-step vs first-class-session decision in `T-7` should be settled before this task leaves `draft`, since it determines whether there is a schema change.)
+- A normal chat run is persisted and reopenable from history: it appears in the project run history with its chat prompt/message, distinguished from workflow runs by `run_kind = "chat"`, and reopening replays its event timeline. The synthetic `chat` step does NOT appear in any workflow/step catalog.
+- Chat-log durability survives a runner/app-server restart (gated on the [BUG-060](../../09-BugFix/todo/BUG-060-Desktop-Run-History-Empties-After-Switching-Runs.md) rehydration fix landing before or with this task).
 - TypeScript build passes for `apps/desktop-flowpilot`.
 - Targeted Go tests pass for runner contract changes.
 - The base reasoning values (`low | medium | high | xhigh`) already exist and need no doc change. If provider-specific reasoning values are added beyond that set (`Max`, `Extra`, `Ultracode`), `SS-05` and the shared contract docs are updated in the same implementation pass.
@@ -238,6 +246,7 @@ Already-existing infrastructure this task wires through (do NOT rebuild):
 - follow-ups:
   - Run GitNexus impact analysis before editing `store.ts`, `Navigator.tsx`, `ChatInput.tsx`, runner `StartRunInput`, or provider adapter symbols when GitNexus tools are available.
   - Confirm canonical Claude reasoning wire values before adding `Max`, `Extra`, or `Ultracode` to persisted contracts.
-  - Decide whether normal chat uses synthetic workflow-run records or a first-class chat-session history route before implementation starts.
+  - Sequence [BUG-060](../../09-BugFix/todo/BUG-060-Desktop-Run-History-Empties-After-Switching-Runs.md) (run-history rehydration) before or with this task — chat-log durability depends on it.
   - Update upstream `SS-05` and `04-Detailed-Coding-Plan` if provider-specific reasoning values become official.
+- resolved decisions this pass: normal-chat history = synthetic `chat` run reusing existing tables + `run_kind` discriminator (not a first-class chat-session table); provider skills = all sources deduped by name with `workspace` > `flowpilot` > `provider` precedence.
 - upstream docs updated: none in this planning pass; upstream updates are explicitly listed as part of the implementation follow-up when the reasoning contract is finalized.
