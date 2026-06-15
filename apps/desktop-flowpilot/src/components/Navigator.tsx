@@ -2,6 +2,13 @@ import { useEffect } from "react";
 import { useStore } from "@/state/store";
 import { ProviderAccountsPanel } from "@/components/ProviderAccountsPanel";
 import { filterNavigatorWorkflows } from "@/app/navigatorCatalog";
+import type { ProviderKey } from "@/types/contract";
+
+const PROVIDER_OPTIONS: { value: ProviderKey; label: string }[] = [
+  { value: "codex", label: "Codex" },
+  { value: "claude", label: "Claude" },
+  { value: "gemini", label: "Gemini" },
+];
 
 // Project / workflow / step selector (the navigator).
 export function Navigator(): React.ReactElement {
@@ -13,9 +20,11 @@ export function Navigator(): React.ReactElement {
     selectedWorkflowId,
     selectedStepId,
     launchMode,
+    selectedProvider,
     loadProjects,
     selectProject,
     setLaunchMode,
+    selectProvider,
     selectWorkflow,
     selectStep,
   } = useStore();
@@ -67,6 +76,26 @@ export function Navigator(): React.ReactElement {
           >
             Single step
           </button>
+        </div>
+      </div>
+
+      <div className="nav-group">
+        <label>Provider</label>
+        <select
+          value={selectedProvider ?? ""}
+          onChange={(e) =>
+            selectProvider(e.target.value ? (e.target.value as ProviderKey) : undefined)
+          }
+        >
+          <option value="">Auto (from model)</option>
+          {PROVIDER_OPTIONS.map((p) => (
+            <option key={p.value} value={p.value}>
+              {p.label}
+            </option>
+          ))}
+        </select>
+        <div className="nav-hint">
+          Auto: workflow/step picks the provider from its model. Choose one to chat directly.
         </div>
       </div>
 

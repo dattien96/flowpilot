@@ -142,6 +142,23 @@ func (r *ProviderRegistry) DefaultProviderKey() (ProviderKey, bool) {
 	return "", false
 }
 
+// providerKeyFromModel maps a model name to its provider — the canonical mapping used to
+// auto-select the provider for a workflow/step run from its configured model. Mirrors the
+// prefix logic in resolvePromptExecutionAdapter (gpt-→codex, claude-→claude,
+// gemini-/auto-gemini-→gemini). Returns ("", false) for an unrecognized model.
+func providerKeyFromModel(model string) (ProviderKey, bool) {
+	m := strings.ToLower(strings.TrimSpace(model))
+	switch {
+	case strings.HasPrefix(m, "gpt-"):
+		return ProviderKeyCodex, true
+	case strings.HasPrefix(m, "gemini-"), strings.HasPrefix(m, "auto-gemini-"):
+		return ProviderKeyGemini, true
+	case strings.HasPrefix(m, "claude-"):
+		return ProviderKeyClaude, true
+	}
+	return "", false
+}
+
 // DefaultProviderRegistry builds the P2 registry: Codex backed by the fake adapter
 // (the real app-server adapter lands in P3), Claude/Gemini as disabled placeholders
 // that surface UnsupportedProviderRuntimeError.
@@ -181,41 +198,109 @@ func DefaultProviderRegistry() *ProviderRegistry {
 // remain placeholders either way.
 func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 	reg := DefaultProviderRegistry()
-	if r == nil || !codexAppServerEnabled() {
+	if r == nil {
 		return reg
 	}
-	reg.register(ProviderRegistration{
-		Key:         ProviderKeyCodex,
-		DisplayName: "Codex",
-		Status:      ProviderStatusAvailable,
-		Capabilities: ProviderCapabilities{
-			Streaming: true, Resume: true, ApprovalEvents: true, FileEvents: true,
-			SkillSelection: true, Mcp: true, Interrupt: true,
-		},
-		newAdapter: func() ProviderRuntimeAdapter {
-			scopeKey := "default"
-			env := map[string]string{}
-			account, err := r.ResolveProviderAccount(string(ProviderKeyCodex), "")
-			if err == nil {
-				scopeKey = account.ID
-				for key, value := range account.ExtraEnv {
-					env[key] = value
+	if codexAppServerEnabled() {
+		reg.register(ProviderRegistration{
+			Key:         ProviderKeyCodex,
+			DisplayName: "Codex",
+			Status:      ProviderStatusAvailable,
+			Capabilities: ProviderCapabilities{
+				Streaming: true, Resume: true, ApprovalEvents: true, FileEvents: true,
+				SkillSelection: true, Mcp: true, Interrupt: true,
+			},
+			newAdapter: func() ProviderRuntimeAdapter {
+				scopeKey := "default"
+				env := map[string]string{}
+				account, err := r.ResolveProviderAccount(string(ProviderKeyCodex), "")
+				if err == nil {
+					scopeKey = account.ID
+					for key, value := range account.ExtraEnv {
+						env[key] = value
+					}
+					if account.HomePath != "" {
+						env["CODEX_HOME"] = account.HomePath
+					}
+				} else if codexHome := strings.TrimSpace(os.Getenv("CODEX_HOME")); codexHome != "" {
+					scopeKey = "env:" + codexHome
+					env["CODEX_HOME"] = codexHome
+				} else {
+					return errorAdapter{key: ProviderKeyCodex, err: err}
 				}
-				if account.HomePath != "" {
-					env["CODEX_HOME"] = account.HomePath
+				h, err := r.ensureCodexAppServer(context.Background(), scopeKey, r.workspace, env)
+				if err != nil {
+					return errorAdapter{key: ProviderKeyCodex, err: err}
 				}
-			} else if codexHome := strings.TrimSpace(os.Getenv("CODEX_HOME")); codexHome != "" {
-				scopeKey = "env:" + codexHome
-				env["CODEX_HOME"] = codexHome
-			} else {
-				return errorAdapter{key: ProviderKeyCodex, err: err}
-			}
-			h, err := r.ensureCodexAppServer(context.Background(), scopeKey, r.workspace, env)
-			if err != nil {
-				return errorAdapter{key: ProviderKeyCodex, err: err}
-			}
-			return h.adapter
-		},
-	})
+				return h.adapter
+			},
+		})
+	}
+	// Claude controlled-mode adapter (07 plan), gated independently of Codex behind
+	// FLOWPILOT_CLAUDE_ADAPTER. The factory resolves the active account lazily, so a
+	// missing account surfaces as a typed errorAdapter at turn time, not at registration.
+	if claudeAdapterEnabled() {
+		reg.register(ProviderRegistration{
+			Key:         ProviderKeyClaude,
+			DisplayName: "Claude",
+			Status:      ProviderStatusAvailable,
+			Capabilities: ProviderCapabilities{
+				Streaming: true, Resume: true, ApprovalEvents: true, FileEvents: true,
+				SkillSelection: true, Mcp: true, Interrupt: true,
+			},
+			newAdapter: func() ProviderRuntimeAdapter {
+				scopeKey := "default"
+				env := map[string]string{}
+				account, err := r.ResolveProviderAccount(string(ProviderKeyClaude), "")
+				if err == nil {
+					scopeKey = account.ID
+					for key, value := range account.ExtraEnv {
+						env[key] = value
+					}
+					if account.HomePath != "" {
+						env["CLAUDE_CONFIG_DIR"] = account.HomePath
+						// Gating only engages if the config dir has no broad allow-rules
+						// (spike finding). Seed a gating posture into FlowPilot's managed
+						// dir (best-effort; never clobbers an existing settings.json).
+						_ = ensureClaudeConfigSettings(account.HomePath)
+					}
+				} else if apiKey := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")); apiKey != "" {
+					scopeKey = "env:anthropic"
+					// Isolate config so ambient ~/.claude allow-rules can't silently bypass
+					// gating (review finding 2): the env-key path authenticates via the API key,
+					// so a fresh FlowPilot-managed dir (gating posture, no allow-list) is safe.
+					if cfgDir := flowpilotManagedClaudeConfigDir(r.workspace); cfgDir != "" {
+						env["CLAUDE_CONFIG_DIR"] = cfgDir
+						_ = ensureClaudeConfigSettings(cfgDir)
+					}
+				} else {
+					return errorAdapter{key: ProviderKeyClaude, err: err}
+				}
+				pool := r.claudePool
+				if pool == nil {
+					pool = newClaudeProcessPool()
+				}
+				// mcpConfig is empty until the live FlowPilot MCP server is wired (07
+				// Appendix A spike); the adapter handles the in-stream control_request
+				// route meanwhile. promptPrep injects skill content + ask_user reinforcement.
+				a := newClaudeAdapter(pool, r.workspace, scopeKey, env, "")
+				// Durable (run, cwd, session) persistence for cross-restart resume (07);
+				// no-op when Supabase is unconfigured.
+				a.sessionStore = ProviderSessionStoreFor(r)
+				// Per-turn permission MCP (07): the adapter registers the turn's bridge on
+				// the runner-hosted MCP server and points claude's --mcp-config at it.
+				a.mcpServer = r.claudeMCP
+				a.mcpBaseURL = r.mcpBaseURLValue
+				a.promptPrep = func(req TurnRequest) string {
+					workspace := r.workspace
+					if req.Cwd != "" {
+						workspace = req.Cwd
+					}
+					return r.injectSkillContent(workspace, req.Prompt, skillIDsOf(req.SelectedSkills)) + claudeAskUserReinforcement
+				}
+				return a
+			},
+		})
+	}
 	return reg
 }

@@ -129,6 +129,18 @@ type Runner struct {
 	// bound to the active provider account scope. nil until first ensure.
 	codexAppServerMu sync.Mutex
 	codexAppServer   *codexAppServerHandle
+
+	// claudePool owns the per-(account,cwd,session) `claude` CLI processes (07 plan).
+	// Claude has no shared multi-thread process like Codex app-server, so the Go runner
+	// is the multiplexer: concurrent sessions = concurrent processes.
+	claudePool *claudeProcessPool
+
+	// claudeMCP is the runner-hosted MCP server for the Claude permission/ask_user tools
+	// (07); mcpBaseURL is the runner's own base URL ("http://host:port"), set at startup
+	// so the adapter can build per-turn --mcp-config URLs.
+	claudeMCP    *claudeMCPServer
+	mcpBaseURLMu sync.RWMutex
+	mcpBaseURL   string
 }
 
 func New(workspace string) (*Runner, error) {
@@ -145,6 +157,8 @@ func New(workspace string) (*Runner, error) {
 		startedAt:   time.Now().UTC(),
 		secretStore: newDefaultSecretStore(),
 		sessions:    make(map[string]*LiveSession),
+		claudePool:  newClaudeProcessPool(),
+		claudeMCP:   newClaudeMCPServer(),
 	}, nil
 }
 

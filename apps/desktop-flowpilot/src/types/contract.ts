@@ -100,6 +100,13 @@ export interface StartRunInput {
   projectId: string;
   workflowId?: string;
   stepId: string;
+  /**
+   * Explicit provider for direct chat (the provider selector). When omitted the runner
+   * auto-selects: from `model` if given (workflow/step mode), else the first available provider.
+   */
+  providerKey?: ProviderKey;
+  /** Workflow/step model; the runner derives the provider from it when `providerKey` is empty. */
+  model?: string;
   /** YOLO is the single source of truth for approval posture (see 04-04). */
   yoloMode?: boolean;
 }

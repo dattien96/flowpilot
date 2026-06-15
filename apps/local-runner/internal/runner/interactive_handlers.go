@@ -436,11 +436,18 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 	// provider is rejected with the typed UnsupportedProviderRuntimeError envelope.
 	providerKey := in.ProviderKey
 	if providerKey == "" {
-		def, ok := s.registry.DefaultProviderKey()
-		if !ok {
-			return RunHandle{}, newAPIErr(http.StatusServiceUnavailable, "provider_unavailable", "no provider runtime is available")
+		// Workflow/step mode auto-selects the provider from the configured model; direct
+		// chat sets ProviderKey explicitly. Fall back to the default available provider
+		// when neither a provider nor a recognized model is supplied.
+		if pk, ok := providerKeyFromModel(in.Model); ok {
+			providerKey = pk
+		} else {
+			def, ok := s.registry.DefaultProviderKey()
+			if !ok {
+				return RunHandle{}, newAPIErr(http.StatusServiceUnavailable, "provider_unavailable", "no provider runtime is available")
+			}
+			providerKey = def
 		}
-		providerKey = def
 	}
 	if _, err := s.registry.Selectable(providerKey); err != nil {
 		return RunHandle{}, newAPIErr(http.StatusUnprocessableEntity, "provider_unavailable", err.Error())

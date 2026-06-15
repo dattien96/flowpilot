@@ -20,7 +20,12 @@ package runner
 type YoloPosture struct {
 	CodexSandbox      string
 	CodexApprovalMode string
-	RunnerAutoApprove bool
+	// ClaudePermissionMode is the Claude Code --permission-mode derived from the same
+	// YOLO value (07 plan): yolo=true -> "bypassPermissions" (full auto, no prompts),
+	// yolo=false -> "default" (gated; the runner surfaces permission_required + the
+	// --permission-prompt-tool / in-stream control_request route, deny blocks).
+	ClaudePermissionMode string
+	RunnerAutoApprove    bool
 }
 
 // resolveYoloPosture is the SSOT mapping. Keep this the only place the YOLO boolean
@@ -28,14 +33,16 @@ type YoloPosture struct {
 func resolveYoloPosture(yolo bool) YoloPosture {
 	if yolo {
 		return YoloPosture{
-			CodexSandbox:      "danger-full-access",
-			CodexApprovalMode: "never",
-			RunnerAutoApprove: true,
+			CodexSandbox:         "danger-full-access",
+			CodexApprovalMode:    "never",
+			ClaudePermissionMode: "bypassPermissions",
+			RunnerAutoApprove:    true,
 		}
 	}
 	return YoloPosture{
-		CodexSandbox:      "workspace-write",
-		CodexApprovalMode: "on-request",
-		RunnerAutoApprove: false,
+		CodexSandbox:         "workspace-write",
+		CodexApprovalMode:    "on-request",
+		ClaudePermissionMode: "default",
+		RunnerAutoApprove:    false,
 	}
 }

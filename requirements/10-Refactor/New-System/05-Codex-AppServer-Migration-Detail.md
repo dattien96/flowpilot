@@ -94,6 +94,78 @@ Protocol can drift across versions.
 
 ---
 
+## Session Model — Run / Project / Thread / Resume
+
+> Folded in from the working note (`Note-Understanding.md`); `05` is the canonical home.
+
+`codex app-server` is **not** the FlowPilot architecture — it is the Codex runtime
+`CodexAdapter` talks to. FlowPilot still owns workflow state, run lifecycle, prompt
+building, approval policy, event normalization, persistence, and project↔workspace
+mapping.
+
+### Vocabulary
+
+- **Codex side:** `app-server` (one long-lived process) · `cwd` (working dir bound to a
+  thread) · `thread` (a chat identity with its own persisted JSONL history) · `turn`
+  (one user-message + assistant-response cycle).
+- **FlowPilot side:** `project` (workspace record) · `run` (one workflow/chat execution
+  instance) · `provider session` (stored link to the provider conversation).
+
+Mapping:
+
+```text
+FlowPilot project/workspace   -> Codex cwd
+FlowPilot chat session        -> Codex thread
+FlowPilot provider_session_id -> Codex threadId   (provider_session_id == provider_thread_id)
+FlowPilot run turn            -> Codex turn/start
+```
+
+### What a run is (and is not)
+
+A `run` is FlowPilot's execution container — it owns status, events, approvals, and
+persistence. It is **not** the app-server process, a thread, or a turn:
+
+```text
+run    = FlowPilot execution record
+thread = provider conversation identity
+turn   = one interaction inside that conversation
+cwd    = project path attached to the thread
+```
+
+### How a run attaches to a project (two layers)
+
+- **Business layer:** the run stores `project_id` → the project supplies the canonical
+  workspace path.
+- **Runtime layer:** the provider session stores `working_directory` → passed to Codex
+  as `cwd` so Codex knows which repo the chat belongs to.
+
+So "this chat belongs to this project" = `run.project_id` + provider-session
+`working_directory` + provider-session `provider_session_id (threadId)`. End-to-end:
+
+```text
+FlowPilot project (project_id, local_path)
+  -> FlowPilot run (run_id, project_id)
+  -> workflow_provider_sessions row (working_directory, provider_session_id=threadId)
+  -> Codex thread (thread.id, cwd)
+  -> Codex turns
+```
+
+### Reconnect vs Resume (different cases)
+
+- **Reconnect** — the client UI drops and reconnects while the runner + thread are still
+  alive: rebuild the timeline from persisted event `seq`; no thread reopen.
+- **Resume** — reattach later (runner restart / time passed): load the stored `threadId`,
+  validate the active account, ensure the shared app-server, call `thread/resume(threadId)`;
+  Codex reloads the JSONL history; continue with new turns.
+
+Resume requires the stored `threadId` (Codex) / `session_id` (Claude) **and** the session log
+present on the **same machine**. It is **not bound to the specific account** that created it —
+**any active account for that provider** can resume, as long as the session log is reachable.
+Different machine / missing log → resume may fail. (FlowPilot therefore does **not** persist an
+owning account on the session row.)
+
+---
+
 ## YOLO As SSOT (Approval Model)
 
 **Real safety = `permission_required` (app-server) + Codex sandbox + FlowPilot
@@ -465,6 +537,33 @@ status. Finalizer failure must not erase the completed turn; the finalizer is
 - client reconnect replays the timeline via `afterSeq` with no gaps/dupes
   (`04-02` T-16/T-32).
 - fallback `ExecutePrompt` path still passes existing tests.
+
+---
+
+## Schema Gap & Persistence (checked-in migrations) — RESOLVED
+
+> Folded in from the working note (originally an **open risk**); **now addressed** by the
+> migration below. Applies to **both** Codex and the Claude adapter (`07`).
+
+**History:** the refactor docs + new runner store referenced `workflow_provider_sessions`,
+`workflow_provider_events`, `workflow_provider_approvals`, `workflow_provider_questions`, but
+the checked-in migrations only created the older `workflow_run_sessions`. So the
+Supabase-backed provider-persistence path was unproven and would fail against a DB without
+those tables.
+
+**Resolved:** migration **`supabase/migrations/20260615120000_add_workflow_provider_tables.sql`**
+creates all four `workflow_provider_*` tables (RLS mirrors `workflow_run_sessions`; the
+sessions table has a plain-column unique key `(workflow_run_id, provider_key, working_directory)`
+so the runner can PostgREST-upsert it). The Go write-path for sessions is wired
+(`SupabaseProviderSessionStore` / `ProviderSessionStoreFor`, mirroring `SupabaseWorkflowStore`)
+and the **Claude** adapter persists its `(run, cwd, real session_id, account)` mapping on
+capture (07). In-memory mapping still works within one runner lifetime; the tables add durable
+cross-restart resume + audit.
+
+**Still pending (not blockers, tracked in `07` DoD):** wiring the **Codex** adapter to the same
+store; persisting **events/approvals/questions** (tables exist, writes deferred); and an
+end-to-end run against a real Supabase instance (request shaping is unit-tested over the mocked
+transport).
 
 ---
 

@@ -4,6 +4,7 @@ import type {
   Project,
   ProviderAccountSummary,
   ProviderEventDTO,
+  ProviderKey,
   ProviderSkill,
   RunHistoryItem,
   RunStatus,
@@ -48,6 +49,8 @@ interface AppState {
   selectedWorkflowId?: string;
   selectedStepId?: string;
   launchMode: LaunchMode;
+  /** Provider override for direct chat; undefined = Auto (runner picks from model/default). */
+  selectedProvider?: ProviderKey;
 
   // run
   runId?: string;
@@ -71,6 +74,7 @@ interface AppState {
   loadProviderAccounts(): Promise<void>;
   selectProject(projectId: string): Promise<void>;
   setLaunchMode(mode: LaunchMode): void;
+  selectProvider(provider?: ProviderKey): void;
   selectWorkflow(workflowId: string): Promise<void>;
   selectStep(stepId: string): void;
   setScenario(scenario: ScenarioName): void;
@@ -222,8 +226,12 @@ export const useStore = create<AppState>((set, get) => ({
     set({ scenario });
   },
 
+  selectProvider(provider) {
+    set({ selectedProvider: provider });
+  },
+
   async sendPrompt(prompt, skills) {
-    const { client, launchMode, selectedProjectId, selectedWorkflowId, selectedStepId } = get();
+    const { client, launchMode, selectedProjectId, selectedWorkflowId, selectedStepId, selectedProvider } = get();
     const launchTargetId = launchMode === "workflow" ? selectedWorkflowId : selectedStepId;
     if (!selectedProjectId || !launchTargetId) return;
     let turnStepId = launchTargetId;
@@ -234,6 +242,8 @@ export const useStore = create<AppState>((set, get) => ({
         projectId: selectedProjectId,
         workflowId: launchMode === "workflow" ? selectedWorkflowId : undefined,
         stepId: launchTargetId,
+        // Direct-chat override; Auto (undefined) → runner picks from model/default.
+        providerKey: selectedProvider,
       });
       runId = handle.runId;
       if (handle.stepId) {
