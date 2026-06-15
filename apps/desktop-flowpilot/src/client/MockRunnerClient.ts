@@ -271,7 +271,7 @@ export class MockRunnerClient implements RunnerClient {
     });
   }
 
-  async listSkills(_provider: string): Promise<ProviderSkill[]> {
+  async listSkills(_provider: string, _cwd?: string): Promise<ProviderSkill[]> {
     await delay(40);
     return MOCK_SKILLS;
   }
@@ -344,7 +344,9 @@ export class MockRunnerClient implements RunnerClient {
       updatedAt: now,
       seq: 0,
     });
-    return { runId, providerSessionId, providerKey: "codex", status: "running" };
+    const providerKey = input.providerKey ?? "codex";
+    const stepId = input.chatMode === "normal_chat" ? `chat-${runId}` : undefined;
+    return { runId, providerSessionId, providerKey, status: "running", ...(stepId ? { stepId } : {}) };
   }
 
   async resumeRun(runId: string): Promise<RunHandle> {

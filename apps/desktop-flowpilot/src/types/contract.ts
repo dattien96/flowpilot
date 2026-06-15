@@ -99,7 +99,8 @@ export type RunStatus =
 export interface StartRunInput {
   projectId: string;
   workflowId?: string;
-  stepId: string;
+  /** Omitted for normal_chat runs; the runner mints a synthetic chat step. */
+  stepId?: string;
   /**
    * Explicit provider for direct chat (the provider selector). When omitted the runner
    * auto-selects: from `model` if given (workflow/step mode), else the first available provider.
@@ -109,6 +110,9 @@ export interface StartRunInput {
   model?: string;
   /** YOLO is the single source of truth for approval posture (see 04-04). */
   yoloMode?: boolean;
+  reasoningEffort?: string;
+  /** "normal_chat" signals provider-chat mode; the runner tags the run as chat and mints a synthetic step. */
+  chatMode?: string;
 }
 
 export interface RunHandle {
@@ -129,6 +133,8 @@ export interface RunHistoryItem {
   updatedAt: string;
   lastPrompt?: string;
   lastMessage?: string;
+  /** "chat" for normal_chat runs; undefined for workflow/step runs. */
+  runKind?: string;
 }
 
 export interface SkillSelection {
@@ -143,6 +149,7 @@ export interface TurnInput {
   prompt: string;
   /** One or more skills attached to this turn (via the `/` picker). */
   selectedSkills?: SkillSelection[];
+  reasoningEffort?: string;
 }
 
 // ---- ProviderEventDTO (serialized ProviderEvent union) ---------------------
@@ -228,7 +235,7 @@ export interface RunnerClient {
   /** Attach to a run's event stream and replay from afterSeq — used on reconnect. */
   streamRun(runId: string, afterSeq?: number): AsyncIterable<ProviderEventDTO>;
   listArtifacts(runId: string): Promise<Artifact[]>;
-  listSkills(provider: string): Promise<ProviderSkill[]>;
+  listSkills(provider: string, cwd?: string): Promise<ProviderSkill[]>;
   connectProviderAccount(providerKey: ProviderKey): Promise<void>;
   activateProviderAccount(accountId: string): Promise<void>;
   openProviderAccountTerminal(accountId: string): Promise<void>;
