@@ -1,6 +1,7 @@
 import type { SupabaseConfigInput, SupabaseConfigValidation, SupabaseRuntimeStatus } from "@flowpilot/client-core";
 import { AiProvidersSettings } from "@/components/settings/AiProvidersSettings";
 import { ArtifactsSettings } from "@/components/settings/ArtifactsSettings";
+import { GoogleDriveSettings } from "@/components/settings/GoogleDriveSettings";
 import { McpSettings } from "@/components/settings/McpSettings";
 import { ProjectsSettings } from "@/components/settings/ProjectsSettings";
 import { TeamsSettings } from "@/components/settings/TeamsSettings";
@@ -146,7 +147,7 @@ export function SettingsShell({
         ) : currentSection === "ai-providers" ? (
           <AiProvidersSettings />
         ) : currentSection === "google-drive" ? (
-          <McpSettings mode="google-drive" />
+          <GoogleDriveSettings />
         ) : currentSection === "jira-mcp" ? (
           <McpSettings mode="jira" />
         ) : (
