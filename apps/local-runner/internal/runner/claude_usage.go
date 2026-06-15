@@ -18,7 +18,7 @@ func claudeUsageLimitError(homePath string) error {
 			continue
 		}
 		var auth claudeLocalAuthFile
-		if err := json.Unmarshal(raw, &auth); err != nil {
+		if err := json.Unmarshal(stripUTF8BOM(raw), &auth); err != nil {
 			continue
 		}
 		reason := strings.TrimSpace(auth.CachedExtraUsageDisabledReason)

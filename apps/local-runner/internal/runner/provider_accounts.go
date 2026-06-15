@@ -281,7 +281,7 @@ func (r *Runner) loadProviderAccountState() (providerAccountState, error) {
 	}
 
 	var state providerAccountState
-	if err := json.Unmarshal(raw, &state); err != nil {
+	if err := json.Unmarshal(stripUTF8BOM(raw), &state); err != nil {
 		return providerAccountState{}, err
 	}
 	if state.Accounts == nil {
@@ -1020,7 +1020,7 @@ func isValidJSONConfigFile(path string) bool {
 	}
 
 	var payload any
-	if err := json.Unmarshal(data, &payload); err != nil {
+	if err := json.Unmarshal(stripUTF8BOM(data), &payload); err != nil {
 		return false
 	}
 

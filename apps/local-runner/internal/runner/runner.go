@@ -3059,7 +3059,14 @@ func readJSONFile(path string, target any) error {
 	if err != nil {
 		return err
 	}
-	return json.Unmarshal(raw, target)
+	return json.Unmarshal(stripUTF8BOM(raw), target)
+}
+
+func stripUTF8BOM(raw []byte) []byte {
+	if len(raw) >= 3 && raw[0] == 0xef && raw[1] == 0xbb && raw[2] == 0xbf {
+		return raw[3:]
+	}
+	return raw
 }
 
 func LaunchTerminalWithCommand(command string) error {
