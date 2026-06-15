@@ -37,6 +37,7 @@ type TurnRequest struct {
 	Prompt            string
 	SelectedSkills    []SkillSelection
 	YoloMode          bool
+	ReasoningEffort   string
 	// Cwd is the run's active workspace directory (04-06). The adapter binds the
 	// provider thread to this cwd; it takes precedence over any adapter default.
 	Cwd string

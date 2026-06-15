@@ -71,6 +71,10 @@ type interactiveRun struct {
 	providerAccountID string
 	workspaceCwd      string
 	yolo              bool
+	// reasoningEffort is the desktop-selected effort level passed per-turn (T-4).
+	reasoningEffort string
+	// runKind is "chat" for normal-chat runs, "" / "workflow" for workflow runs (T-7).
+	runKind string
 
 	status        RunStatus
 	createdAt     string
@@ -571,6 +575,11 @@ func (s *InteractiveService) clearPendingQuestion(id string) {
 }
 
 func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, adapter ProviderRuntimeAdapter, in TurnInput, scenario, turnID string) {
+	// Turn-level reasoning effort overrides the run-level default when present.
+	effort := rs.reasoningEffort
+	if in.ReasoningEffort != "" {
+		effort = in.ReasoningEffort
+	}
 	req := TurnRequest{
 		RunID:             rs.id,
 		StepID:            in.StepID,
@@ -579,6 +588,7 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		Prompt:            in.Prompt,
 		SelectedSkills:    in.SelectedSkills,
 		YoloMode:          rs.yolo,
+		ReasoningEffort:   effort,
 		Cwd:               rs.workspaceCwd,
 		Scenario:          scenario,
 	}

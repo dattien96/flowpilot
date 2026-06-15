@@ -132,7 +132,7 @@ type RunHandle struct {
 type StartRunInput struct {
 	ProjectID  string `json:"projectId"`
 	WorkflowID string `json:"workflowId,omitempty"`
-	StepID     string `json:"stepId"`
+	StepID     string `json:"stepId,omitempty"`
 	// ProviderKey selects the provider runtime explicitly (direct-chat UI selector).
 	// Empty → the runner auto-selects: from Model if given (workflow/step mode), else the
 	// first available provider. A disabled/placeholder provider is rejected runner-side
@@ -140,8 +140,13 @@ type StartRunInput struct {
 	ProviderKey ProviderKey `json:"providerKey,omitempty"`
 	// Model is the workflow/step's configured model; when ProviderKey is empty the runner
 	// derives the provider from it (providerKeyFromModel). Ignored when ProviderKey is set.
-	Model    string `json:"model,omitempty"`
-	YoloMode bool   `json:"yoloMode,omitempty"`
+	Model           string `json:"model,omitempty"`
+	YoloMode        bool   `json:"yoloMode,omitempty"`
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
+	// ChatMode == "normal_chat" signals that the desktop is in provider-chat mode (no
+	// workflow/step selection). The runner mints a synthetic chat step and tags the run
+	// with RunKind="chat" so it is excluded from workflow catalogs (T-7).
+	ChatMode string `json:"chatMode,omitempty"`
 	// Cwd is the active workspace directory for this run (04-06 multi-workspace).
 	// Per-run/per-thread cwd is authoritative; Runner.workspace is only a default.
 	Cwd string `json:"cwd,omitempty"`
@@ -154,9 +159,10 @@ type SkillSelection struct {
 }
 
 type TurnInput struct {
-	StepID         string           `json:"stepId"`
-	Prompt         string           `json:"prompt"`
-	SelectedSkills []SkillSelection `json:"selectedSkills,omitempty"`
+	StepID          string           `json:"stepId"`
+	Prompt          string           `json:"prompt"`
+	SelectedSkills  []SkillSelection `json:"selectedSkills,omitempty"`
+	ReasoningEffort string           `json:"reasoningEffort,omitempty"`
 }
 
 // ---- Catalog DTOs (navigator; fake catalog in P2) --------------------------
