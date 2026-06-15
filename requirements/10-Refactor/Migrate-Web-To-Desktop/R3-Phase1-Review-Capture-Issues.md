@@ -24,20 +24,18 @@ after PHASE 1 of R3-Migrate-Web-To-Desktop.md + R3-Phase1-Checklist.md was imple
 - (DONE) del team: confirmation modal requiring typed "delete"
 - (DONE) creating new team in another page (separate create view with back button)
 - (DONE) member detail page: clicking a member opens a modal with all fields editable (name, email, jira, role, level, skills, capacity) + save/remove
-6. Google Driver tab: refer /settings/google-drive-setup in web
+6. (DONE) Google Driver tab: refer /settings/google-drive-setup in web
 - BIG BUG: completely missing comparing with web. Check again
-7. Artifacts page: refer /artifacts?tab=generated in web
-7.1 Tab Catalog: refer /artifacts?tab=catalog
-- Same issue with create in new page + missinge del button
-7.2 Tab Storage: refer /artifacts?tab=storage
-Completely wrong with web version
-This page show project list in left side. Right side show storate of this project
-We have supabase or googdrive. If suspabase is active then do not show driver setup
-If googlder is active or change by user -> show driver config like this
+7. (DONE) Artifacts page: refer /artifacts?tab=generated in web
+7.1 (DONE) Tab Catalog: refer /artifacts?tab=catalog
+- (DONE) Create in new page pattern added. Del button is a follow-up (no backend deleteDefinition yet)
+7.2 (DONE) Tab Storage: refer /artifacts?tab=storage
+Two-column layout: project list left, storage config right.
+Supabase active → info panel (no driver setup). Google Drive active → driver config form.
 ![alt text](image-11.png) (Follow the concept, UI can be adapt in style of desktop app)
-7.3 Tab Generated
+7.3 (DONE) Tab Generated
 /artifacts?tab=generated
 ![alt text](image-12.png)
-You missed local/remote tab concept
-You missed Sync artifact button
-Missed concept of collapsible with level group by project, supabase/driver. step,...
+(DONE) Local/Not Synced | Remote/Sync sub-tabs added
+(DONE) Sync artifacts button added
+(DONE) Collapsible grouping by project → provider → workflowRunId added

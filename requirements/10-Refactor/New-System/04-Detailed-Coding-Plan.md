@@ -190,7 +190,14 @@ End-to-end scenarios (the per-phase `T-xx` ids are tracked in
   `selectedSkill`, and `yoloMode`, and `listSkills?(ProviderListSkillsInput)` is
   already in the adapter contract — so `normal_chat` wires the desktop layer through
   to existing fields rather than extending the runtime contract. `normal_chat`
-  subsumes the old `selectedProvider` "direct chat" override. See `Task-044`.
+  subsumes the old `selectedProvider` "direct chat" override. **Persistence:** normal
+  chat reuses the existing workflow-run + provider-session + event tables via a
+  runner-minted synthetic `chat` step, tagged with a `run_kind` (`chat` | `workflow`)
+  discriminator so chat runs stay out of workflow catalogs and are filterable in
+  history — no separate `chat_sessions` table. Chat-log durability rides on the
+  `BUG-060` run-history rehydration fix. **Skills:** the `/` picker merges all
+  sources (provider + workspace + flowpilot), deduped by name with
+  `workspace` > `flowpilot` > `provider` precedence. See `Task-044`.
 
 ## Open Implementation Questions
 
