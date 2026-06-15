@@ -30,6 +30,18 @@ interface SettingsShellProps {
   visibleSections?: readonly SettingsSection[];
 }
 
+const defaultSectionOrder: readonly SettingsSection[] = [
+  "projects",
+  "workflows",
+  "teams",
+  "artifacts",
+  "ai-providers",
+  "google-drive",
+  "jira-mcp",
+  "supabase",
+  "runner",
+];
+
 export function SettingsShell({
   activeSection,
   busy,
@@ -43,21 +55,14 @@ export function SettingsShell({
   const runnerOffline = !runtimeStatus.runnerReachable;
   const sectionDisabled = (section: SettingsSection) =>
     runnerOffline && section !== "supabase" && section !== "runner";
-  const allowedSections = visibleSections ?? [
-    "supabase",
-    "projects",
-    "workflows",
-    "teams",
-    "artifacts",
-    "ai-providers",
-    "google-drive",
-    "jira-mcp",
-    "runner",
-  ];
+  const allowedSections = visibleSections ?? defaultSectionOrder;
   const currentSection = allowedSections.includes(activeSection)
     ? activeSection
-    : allowedSections[0] ?? "supabase";
+    : allowedSections.includes("supabase")
+      ? "supabase"
+      : allowedSections[0] ?? "supabase";
   const showSection = (section: SettingsSection) => allowedSections.includes(section);
+  const navSections = defaultSectionOrder.filter(showSection);
 
   return (
     <div className="settings-shell">
@@ -70,94 +75,46 @@ export function SettingsShell({
         </div>
 
         <nav className="settings-nav">
-          {showSection("supabase") ? (
-            <button
-              className={`settings-nav-item ${currentSection === "supabase" ? "active" : ""}`}
-              onClick={() => onSelectSection("supabase")}
-              type="button"
-            >
-              Supabase
-            </button>
-          ) : null}
-          {showSection("projects") ? (
-            <button
-              className={`settings-nav-item ${currentSection === "projects" ? "active" : ""} ${sectionDisabled("projects") ? "disabled" : ""}`}
-              disabled={sectionDisabled("projects")}
-              onClick={() => onSelectSection("projects")}
-              type="button"
-            >
-              Projects
-            </button>
-          ) : null}
-          {showSection("workflows") ? (
-            <button
-              className={`settings-nav-item ${currentSection === "workflows" ? "active" : ""} ${sectionDisabled("workflows") ? "disabled" : ""}`}
-              disabled={sectionDisabled("workflows")}
-              onClick={() => onSelectSection("workflows")}
-              type="button"
-            >
-              Workflows
-            </button>
-          ) : null}
-          {showSection("teams") ? (
-            <button
-              className={`settings-nav-item ${currentSection === "teams" ? "active" : ""} ${sectionDisabled("teams") ? "disabled" : ""}`}
-              disabled={sectionDisabled("teams")}
-              onClick={() => onSelectSection("teams")}
-              type="button"
-            >
-              Teams
-            </button>
-          ) : null}
-          {showSection("artifacts") ? (
-            <button
-              className={`settings-nav-item ${currentSection === "artifacts" ? "active" : ""} ${sectionDisabled("artifacts") ? "disabled" : ""}`}
-              disabled={sectionDisabled("artifacts")}
-              onClick={() => onSelectSection("artifacts")}
-              type="button"
-            >
-              Artifacts
-            </button>
-          ) : null}
-          {showSection("ai-providers") ? (
-            <button
-              className={`settings-nav-item ${currentSection === "ai-providers" ? "active" : ""} ${sectionDisabled("ai-providers") ? "disabled" : ""}`}
-              disabled={sectionDisabled("ai-providers")}
-              onClick={() => onSelectSection("ai-providers")}
-              type="button"
-            >
-              AI Providers
-            </button>
-          ) : null}
-          {showSection("google-drive") ? (
-            <button
-              className={`settings-nav-item ${currentSection === "google-drive" ? "active" : ""} ${sectionDisabled("google-drive") ? "disabled" : ""}`}
-              disabled={sectionDisabled("google-drive")}
-              onClick={() => onSelectSection("google-drive")}
-              type="button"
-            >
-              Google Drive
-            </button>
-          ) : null}
-          {showSection("jira-mcp") ? (
-            <button
-              className={`settings-nav-item ${currentSection === "jira-mcp" ? "active" : ""} ${sectionDisabled("jira-mcp") ? "disabled" : ""}`}
-              disabled={sectionDisabled("jira-mcp")}
-              onClick={() => onSelectSection("jira-mcp")}
-              type="button"
-            >
-              Jira MCP
-            </button>
-          ) : null}
-          {showSection("runner") ? (
-            <button
-              className={`settings-nav-item ${currentSection === "runner" ? "active" : ""}`}
-              onClick={() => onSelectSection("runner")}
-              type="button"
-            >
-              Runner
-            </button>
-          ) : null}
+          {navSections.map((section) => {
+            const disabled = sectionDisabled(section);
+            const label =
+              section === "ai-providers"
+                ? "AI Providers"
+                : section === "google-drive"
+                  ? "Google Drive"
+                  : section === "jira-mcp"
+                    ? "Jira MCP"
+                    : section === "runner"
+                      ? "Runner"
+                      : section.charAt(0).toUpperCase() + section.slice(1);
+
+            return (
+              <button
+                aria-label={
+                  section === "runner"
+                    ? `Runner ${runnerOffline ? "offline" : "online"}`
+                    : undefined
+                }
+                className={`settings-nav-item ${currentSection === section ? "active" : ""} ${disabled ? "disabled" : ""}`}
+                disabled={disabled}
+                key={section}
+                onClick={() => onSelectSection(section)}
+                type="button"
+              >
+                {section === "runner" ? (
+                  <span className="settings-nav-item-row">
+                    <span>{label}</span>
+                    <span
+                      aria-hidden="true"
+                      className={`status-dot status-${runnerOffline ? "offline" : "online"}`}
+                    />
+                  </span>
+                ) : (
+                  label
+                )}
+              </button>
+            );
+          })}
         </nav>
       </aside>
 

@@ -406,6 +406,11 @@ input {
   padding: 10px 12px;
   cursor: pointer;
 }
+.settings-nav-item-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
 .settings-nav-item.active {
   border-color: var(--accent);
   background: rgba(76, 141, 255, 0.12);
