@@ -19,13 +19,35 @@ class FakeQuery {
   order() {
     return this.runner();
   }
+
+  eq() {
+    return this;
+  }
+
+  neq() {
+    return this;
+  }
+
+  delete() {
+    return this.runner();
+  }
+
+  insert() {
+    return this.runner();
+  }
+
+  upsert() {
+    return this;
+  }
 }
 
 class FakeSupabase {
   public insertedProject: Record<string, unknown> | null = null;
   public updatedProject: Record<string, unknown> | null = null;
+  public touchedTables: string[] = [];
 
   from(table: string) {
+    this.touchedTables.push(table);
     if (table !== "projects") {
       throw new Error(`unexpected table ${table}`);
     }
@@ -108,4 +130,151 @@ test("SupabaseAdminRepository saves project session idle TTL on update", async (
 
   assert.equal(project.sessionIdleTtlMinutes, 90);
   assert.equal(supabase.updatedProject?.session_idle_ttl_minutes, 90);
+});
+
+test("SupabaseAdminRepository reads step definitions from the migrated step tables", async () => {
+  const touchedTables: string[] = [];
+  const supabase = {
+    from(table: string) {
+      touchedTables.push(table);
+      if (table === "step_definitions") {
+        return new FakeQuery(async () => ({
+          data: [{
+            step_type: "tech_spec",
+            name: "Tech Spec",
+            description: "Describe the technical solution",
+            prompt_base: null,
+            required_mcps: ["jira"],
+            mcp_access_mode: "read_only",
+            required_skills: ["tech_spec_skill"],
+            team_role: null,
+            subagent: null,
+            model: "gpt-5.4",
+            reasoning_effort: "medium",
+            yolo_mode: false,
+            agent_type: "standard",
+            created_at: "",
+            updated_at: "",
+          }],
+          error: null,
+        }));
+      }
+      if (table === "step_input_artifact_definitions") {
+        return new FakeQuery(async () => ({
+          data: [{ step_type: "tech_spec", artifact_definition_key: "prd", order_index: 0 }],
+          error: null,
+        }));
+      }
+      if (table === "step_output_artifact_definitions") {
+        return new FakeQuery(async () => ({
+          data: [{ step_type: "tech_spec", artifact_definition_key: "spec", order_index: 0 }],
+          error: null,
+        }));
+      }
+      throw new Error(`unexpected table ${table}`);
+    },
+  };
+
+  const repository = new SupabaseAdminRepository(supabase as never);
+  const [definition] = await repository.listStepDefinitions();
+
+  assert.equal(definition.stepType, "tech_spec");
+  assert.deepEqual(definition.inputArtifactDefinitions, ["prd"]);
+  assert.deepEqual(definition.outputArtifactDefinitions, ["spec"]);
+  assert.deepEqual(touchedTables, [
+    "step_definitions",
+    "step_input_artifact_definitions",
+    "step_output_artifact_definitions",
+  ]);
+});
+
+test("SupabaseAdminRepository lists only definition workflows, not runtime-generated rows", async () => {
+  const filters: Array<{ operator: string; column: string; value: string }> = [];
+  const supabase = {
+    from(table: string) {
+      if (table !== "workflows") {
+        throw new Error(`unexpected table ${table}`);
+      }
+      return {
+        select() {
+          return this;
+        },
+        neq(column: string, value: string) {
+          filters.push({ operator: "neq", column, value });
+          return this;
+        },
+        order() {
+          return Promise.resolve({
+            data: [{
+              id: "workflow-1",
+              project_id: "project-1",
+              name: "Definition Workflow",
+              description: "Reusable flow",
+              is_template: false,
+              provider_override: null,
+              model_override: null,
+              reasoning_effort_override: null,
+              yolo_mode: false,
+              created_at: "",
+              updated_at: "",
+            }],
+            error: null,
+          });
+        },
+      };
+    },
+  };
+
+  const repository = new SupabaseAdminRepository(supabase as never);
+  const [workflow] = await repository.listWorkflows();
+
+  assert.equal(workflow.id, "workflow-1");
+  assert.deepEqual(filters, [
+    { operator: "neq", column: "created_by", value: "flowpilot-runtime" },
+  ]);
+});
+
+test("SupabaseAdminRepository reads linked integrations from project_mcp_links", async () => {
+  const touchedTables: string[] = [];
+  const supabase = {
+    from(table: string) {
+      touchedTables.push(table);
+      if (table === "project_mcp_links") {
+        return {
+          select() {
+            return this;
+          },
+          eq() {
+            return Promise.resolve({
+              data: [{
+                integration_id: "integration-1",
+                integrations: {
+                  id: "integration-1",
+                  project_id: "project-1",
+                  type: "jira",
+                  label: "Jira",
+                  mcp_type_enabled: true,
+                  config_encrypted: {},
+                  status: "connected",
+                  last_synced_at: null,
+                  last_error: null,
+                  created_at: "",
+                  updated_at: "",
+                },
+              }],
+              error: null,
+            });
+          },
+        };
+      }
+      throw new Error(`unexpected table ${table}`);
+    },
+  };
+
+  const repository = new SupabaseAdminRepository(supabase as never);
+  const [integration] = await repository.listLinkedIntegrations("project-1");
+
+  assert.equal(integration.id, "integration-1");
+  assert.equal(integration.type, "jira");
+  assert.deepEqual(touchedTables, ["project_mcp_links"]);
 });

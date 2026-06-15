@@ -148,8 +148,10 @@ export class HttpWsRunnerClient implements RunnerClient {
   listRunHistory(projectId: string): Promise<RunHistoryItem[]> {
     return this.getJSON<RunHistoryItem[]>(`/client/projects/${encodeURIComponent(projectId)}/workflow-runs`);
   }
-  listSkills(provider: string): Promise<ProviderSkill[]> {
-    return this.getJSON<ProviderSkill[]>(`/client/provider-skills?provider=${encodeURIComponent(provider)}`);
+  listSkills(provider: string, cwd?: string): Promise<ProviderSkill[]> {
+    let url = `/client/provider-skills?provider=${encodeURIComponent(provider)}`;
+    if (cwd) url += `&cwd=${encodeURIComponent(cwd)}`;
+    return this.getJSON<ProviderSkill[]>(url);
   }
 
   // ---- run lifecycle -------------------------------------------------------
@@ -168,6 +170,9 @@ export class HttpWsRunnerClient implements RunnerClient {
   }
   interrupt(runId: string): Promise<void> {
     return this.postJSON<void>(`/client/workflow-runs/${encodeURIComponent(runId)}/interrupt`);
+  }
+  async connectProviderAccount(providerKey: string): Promise<void> {
+    await this.postJSON<unknown>("/provider-accounts/connect", { providerKey });
   }
   activateProviderAccount(accountId: string): Promise<void> {
     return this.postJSON<void>("/provider-accounts/activate", { accountId });
@@ -192,6 +197,7 @@ export class HttpWsRunnerClient implements RunnerClient {
         stepId: input.stepId,
         prompt: input.prompt,
         selectedSkills: input.selectedSkills,
+        reasoningEffort: input.reasoningEffort,
         scenario: this.scenario,
       },
     );

@@ -22,4 +22,14 @@ contextBridge.exposeInMainWorld("flowpilot", {
     email?: string | null;
   }): Promise<{ ok: boolean }> => ipcRenderer.invoke("auth-session:save", payload),
   clearAuthSession: (): Promise<{ ok: boolean }> => ipcRenderer.invoke("auth-session:clear"),
+  requestHttp: (payload: {
+    url: string;
+    method?: string;
+    headers?: Record<string, string>;
+    body?: string;
+  }): Promise<{
+    status: number;
+    headers: Array<[string, string]>;
+    body: string;
+  }> => ipcRenderer.invoke("http:request", payload),
 });

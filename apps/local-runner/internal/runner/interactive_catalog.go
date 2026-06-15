@@ -1,6 +1,11 @@
 package runner
 
-import "context"
+import (
+	"context"
+	"path/filepath"
+	"slices"
+	"strings"
+)
 
 // Phase 2 (04-02) catalog source — the offline fake. Implements CatalogStore
 // (projects/workflows/steps) so it is interchangeable with SupabaseCatalogStore:
@@ -84,7 +89,144 @@ func (c *interactiveCatalog) ListSteps(context.Context) ([]Step, error) {
 	return out, nil
 }
 
-func (c *interactiveCatalog) listSkills() []ProviderSkill { return c.skills }
+func (c *interactiveCatalog) ListWorkflowSteps(_ context.Context, workflowID string) ([]Step, error) {
+	steps := c.steps[workflowID]
+	out := make([]Step, len(steps))
+	copy(out, steps)
+	return out, nil
+}
+
+// listSkills returns skills for the given provider and workspace directory.
+// The interactive API merges:
+// - project-local provider skills:
+//   - Codex/Gemini from `.agents/skills` as `flowpilot`
+//   - Claude from `.claude/skills` as `workspace`
+//
+// - provider-home skills as `provider`
+// using project-local > provider precedence by skill name.
+func (c *interactiveCatalog) listSkills(provider string, cwd string) []ProviderSkill {
+	merged := make([]ProviderSkill, 0, 16)
+	seen := make(map[string]struct{})
+	appendSkills := func(skills []ProviderSkill) {
+		for _, skill := range skills {
+			key := strings.ToLower(strings.TrimSpace(skill.Name))
+			if key == "" {
+				continue
+			}
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			merged = append(merged, skill)
+		}
+	}
+
+	appendSkills(discoverProjectSkills(provider, cwd))
+	appendSkills(discoverProviderHomeSkills(provider))
+
+	if len(merged) == 0 {
+		return slices.Clone(c.skills)
+	}
+
+	slices.SortFunc(merged, func(left, right ProviderSkill) int {
+		return strings.Compare(strings.ToLower(left.Name), strings.ToLower(right.Name))
+	})
+	return merged
+}
+
+func discoverProjectSkills(provider string, cwd string) []ProviderSkill {
+	cwd = strings.TrimSpace(cwd)
+	if cwd == "" {
+		return nil
+	}
+
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "codex", "gemini":
+		return providerSkillsFromDir(filepath.Join(cwd, ".agents", "skills"), "flowpilot")
+	case "claude":
+		return providerSkillsFromDir(filepath.Join(cwd, ".claude", "skills"), "workspace")
+	default:
+		return nil
+	}
+}
+
+func discoverProviderHomeSkills(provider string) []ProviderSkill {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" {
+		return nil
+	}
+
+	homePaths, err := DiscoverProviderAccountHomes(provider)
+	if err != nil {
+		return nil
+	}
+
+	skills := make([]ProviderSkill, 0, 8)
+	seenRoots := make(map[string]struct{})
+	for _, homePath := range homePaths {
+		for _, root := range providerHomeSkillDirs(provider, homePath) {
+			cleanRoot := canonicalPathKey(root)
+			if cleanRoot == "" {
+				continue
+			}
+			if _, exists := seenRoots[cleanRoot]; exists {
+				continue
+			}
+			seenRoots[cleanRoot] = struct{}{}
+			skills = append(skills, providerSkillsFromDir(root, "provider")...)
+		}
+	}
+	return skills
+}
+
+func providerHomeSkillDirs(provider string, homePath string) []string {
+	homePath = strings.TrimSpace(homePath)
+	if homePath == "" {
+		return nil
+	}
+
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "codex":
+		return []string{
+			filepath.Join(homePath, "skills"),
+			filepath.Join(homePath, ".codex", "skills"),
+		}
+	case "claude":
+		return []string{
+			filepath.Join(homePath, ".claude", "skills"),
+			filepath.Join(homePath, "skills"),
+		}
+	case "gemini":
+		return []string{
+			filepath.Join(homePath, ".gemini", "skills"),
+			filepath.Join(homePath, "skills"),
+		}
+	default:
+		return nil
+	}
+}
+
+func providerSkillsFromDir(baseDir string, source string) []ProviderSkill {
+	entries, err := discoverMarkdownEntries(baseDir, true)
+	if err != nil {
+		return nil
+	}
+
+	skills := make([]ProviderSkill, 0, len(entries))
+	for _, entry := range entries {
+		name := strings.TrimSpace(entry.Name)
+		if name == "" {
+			continue
+		}
+		skills = append(skills, ProviderSkill{
+			Name:        name,
+			Path:        filepath.Join(baseDir, filepath.FromSlash(entry.FilePath)),
+			Description: entry.Description,
+			Source:      source,
+		})
+	}
+	return skills
+}
 
 // stepExists reports whether a step id is known (turn validation).
 func (c *interactiveCatalog) stepExists(stepID string) bool {

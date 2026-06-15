@@ -129,6 +129,18 @@ type Runner struct {
 	// bound to the active provider account scope. nil until first ensure.
 	codexAppServerMu sync.Mutex
 	codexAppServer   *codexAppServerHandle
+
+	// claudePool owns the per-(account,cwd,session) `claude` CLI processes (07 plan).
+	// Claude has no shared multi-thread process like Codex app-server, so the Go runner
+	// is the multiplexer: concurrent sessions = concurrent processes.
+	claudePool *claudeProcessPool
+
+	// claudeMCP is the runner-hosted MCP server for the Claude permission/ask_user tools
+	// (07); mcpBaseURL is the runner's own base URL ("http://host:port"), set at startup
+	// so the adapter can build per-turn --mcp-config URLs.
+	claudeMCP    *claudeMCPServer
+	mcpBaseURLMu sync.RWMutex
+	mcpBaseURL   string
 }
 
 func New(workspace string) (*Runner, error) {
@@ -145,6 +157,8 @@ func New(workspace string) (*Runner, error) {
 		startedAt:   time.Now().UTC(),
 		secretStore: newDefaultSecretStore(),
 		sessions:    make(map[string]*LiveSession),
+		claudePool:  newClaudeProcessPool(),
+		claudeMCP:   newClaudeMCPServer(),
 	}, nil
 }
 
@@ -1707,6 +1721,7 @@ func defaultAuthCandidates(providerKey, dir string) []authCandidate {
 		}
 	case "claude":
 		return []authCandidate{
+			{homePath: dir, authPath: filepath.Join(dir, ".claude", ".credentials.json")},
 			{homePath: dir, authPath: filepath.Join(dir, ".claude.json")},
 			{homePath: dir, authPath: filepath.Join(dir, "claude", "auth.json")},
 			{homePath: dir, authPath: filepath.Join(dir, ".config", "claude", "auth.json")},
@@ -1731,6 +1746,7 @@ func accountAuthPaths(providerKey, homePath string) []string {
 		}
 	case "claude":
 		return []string{
+			filepath.Join(homePath, ".claude", ".credentials.json"),
 			filepath.Join(homePath, ".claude.json"),
 			filepath.Join(homePath, "claude", "auth.json"),
 			filepath.Join(homePath, ".config", "claude", "auth.json"),
@@ -1761,12 +1777,26 @@ func hasValidProviderAuthFile(providerKey, path string) bool {
 	case "codex":
 		return strings.Contains(content, `"id_token"`) || strings.Contains(content, `"OPENAI_API_KEY"`)
 	case "claude":
-		return strings.Contains(content, `"emailAddress"`)
+		return claudeAuthFileLooksValid(data)
 	case "gemini":
 		return strings.Contains(content, `"access_token"`) || strings.Contains(content, `"refresh_token"`)
 	default:
 		return false
 	}
+}
+
+func claudeAuthFileLooksValid(data []byte) bool {
+	var payload map[string]any
+	if err := json.Unmarshal(stripUTF8BOM(data), &payload); err != nil {
+		return false
+	}
+	if oauth, ok := payload["claudeAiOauth"].(map[string]any); ok {
+		return hasNonEmptyJSONString(oauth, "accessToken") || hasNonEmptyJSONString(oauth, "refreshToken")
+	}
+	if tokens, ok := payload["tokens"].(map[string]any); ok {
+		return hasNonEmptyJSONString(tokens, "access_token") || hasNonEmptyJSONString(tokens, "refresh_token")
+	}
+	return hasNonEmptyJSONString(payload, "accessToken") || hasNonEmptyJSONString(payload, "refreshToken")
 }
 
 func DetectDefaultAccountHomePath(providerKey string) (string, bool) {
@@ -3045,7 +3075,14 @@ func readJSONFile(path string, target any) error {
 	if err != nil {
 		return err
 	}
-	return json.Unmarshal(raw, target)
+	return json.Unmarshal(stripUTF8BOM(raw), target)
+}
+
+func stripUTF8BOM(raw []byte) []byte {
+	if len(raw) >= 3 && raw[0] == 0xef && raw[1] == 0xbb && raw[2] == 0xbf {
+		return raw[3:]
+	}
+	return raw
 }
 
 func LaunchTerminalWithCommand(command string) error {
@@ -3487,6 +3524,24 @@ func (r *Runner) getEnvForExecution(
 	}
 
 	return newEnv
+}
+
+func windowsHomeDriveAndPath(homePath string) (string, string, bool) {
+	if runtime.GOOS != "windows" {
+		return "", "", false
+	}
+	trimmed := strings.TrimSpace(homePath)
+	if trimmed == "" {
+		return "", "", false
+	}
+	drive := "C:"
+	path := strings.TrimPrefix(trimmed, "C:")
+	if strings.Contains(trimmed, ":") {
+		parts := strings.SplitN(trimmed, ":", 2)
+		drive = parts[0] + ":"
+		path = parts[1]
+	}
+	return drive, path, true
 }
 
 func NextAccountHomePath(providerKey string, existing []string) (string, int, error) {

@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -77,6 +78,23 @@ func TestSendTurnWithRetryDoesNotRetryTerminal(t *testing.T) {
 	}
 	if exp.attempts != 1 {
 		t.Fatalf("expiry attempts = %d, want 1", exp.attempts)
+	}
+}
+
+func TestSendTurnWithRetryDoesNotRetryUsageLimit(t *testing.T) {
+	a := &flakyAdapter{
+		failUntil: 5,
+		failErr:   errors.New("Claude usage limit reached: extra usage unavailable (out of credits). Switch Claude account or wait for quota reset"),
+	}
+	svc := NewInteractiveServiceWithRegistry(registryWithAdapter(a))
+	err := svc.sendTurnWithRetry(context.Background(), a, TurnRequest{RunID: "r1"}, &captureBridge{})
+	if err == nil || !strings.Contains(err.Error(), "usage limit reached") {
+		t.Fatalf("expected usage limit error passed through, got %v", err)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.attempts != 1 {
+		t.Fatalf("attempts = %d, want 1 (usage limit is terminal)", a.attempts)
 	}
 }
 

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applyTimelineEvent, type TimelineState, type TimelineItem } from "./timelineReducer";
+import { applyTimelineEvent, shouldApplyRunEvent, type TimelineState, type TimelineItem } from "./timelineReducer";
 import type { ProviderEventDTO } from "../types/contract";
 
 function baseEvent(overrides: Partial<ProviderEventDTO>): ProviderEventDTO {
@@ -73,4 +73,10 @@ test("turn_completed removes the thinking row once the answer is done", () => {
   );
 
   assert.equal(next.timeline?.some((item) => item.kind === "thinking"), false);
+});
+
+test("run events only apply to the currently active run", () => {
+  assert.equal(shouldApplyRunEvent("run-claude", "run-claude"), true);
+  assert.equal(shouldApplyRunEvent("run-claude", "run-codex"), false);
+  assert.equal(shouldApplyRunEvent(undefined, "run-codex"), false);
 });

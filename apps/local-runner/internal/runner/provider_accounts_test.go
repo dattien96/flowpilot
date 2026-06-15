@@ -123,6 +123,162 @@ func TestListProviderAccountsMarksMissingManagedSlotFailed(t *testing.T) {
 	}
 }
 
+func TestListProviderAccountsKeepsStoredDefaultClaudeAccountConnected(t *testing.T) {
+	homeDir := t.TempDir()
+	configDir := filepath.Join(homeDir, ".config")
+	t.Setenv("HOME", filepath.Join(homeDir, "codexHome4"))
+	t.Setenv("USERPROFILE", filepath.Join(homeDir, "codexHome4"))
+	t.Setenv("APPDATA", filepath.Join(homeDir, "AppData", "Roaming"))
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+
+	accountHome := filepath.Join(homeDir, "real-user")
+	mustWriteTestFile(t, filepath.Join(accountHome, ".claude", ".credentials.json"), `{"claudeAiOauth":{"accessToken":"token"}}`)
+
+	r, err := New(".")
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+
+	state := providerAccountState{
+		Accounts: []ProviderAccount{
+			{
+				ID:          "stored-default-claude",
+				ProviderKey: "claude",
+				DisplayName: "Default Account",
+				HomePath:    accountHome,
+				SlotIndex:   0,
+				IsActive:    false,
+				AuthStatus:  "failed",
+				CreatedAt:   "2026-06-15T00:00:00Z",
+				ExtraEnv:    map[string]string{},
+			},
+		},
+	}
+	if err := r.saveProviderAccountState(state); err != nil {
+		t.Fatalf("saveProviderAccountState() failed: %v", err)
+	}
+
+	accounts, err := r.ListProviderAccounts()
+	if err != nil {
+		t.Fatalf("ListProviderAccounts() failed: %v", err)
+	}
+
+	claudeAccounts := filterProviderAccounts(accounts, "claude")
+	if len(claudeAccounts) != 1 {
+		t.Fatalf("expected one Claude account, got %d: %#v", len(claudeAccounts), claudeAccounts)
+	}
+	if claudeAccounts[0].AuthStatus != "connected" {
+		t.Fatalf("expected stored Claude account to remain connected, got %#v", claudeAccounts[0])
+	}
+	if !claudeAccounts[0].IsActive {
+		t.Fatalf("expected stored Claude account to become active, got %#v", claudeAccounts[0])
+	}
+}
+
+func TestListProviderAccountsKeepsStoredDefaultClaudeAccountConnectedWithBOMAuth(t *testing.T) {
+	homeDir := t.TempDir()
+	configDir := filepath.Join(homeDir, ".config")
+	t.Setenv("HOME", filepath.Join(homeDir, "codexHome4"))
+	t.Setenv("USERPROFILE", filepath.Join(homeDir, "codexHome4"))
+	t.Setenv("APPDATA", filepath.Join(homeDir, "AppData", "Roaming"))
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+
+	accountHome := filepath.Join(homeDir, "real-user")
+	mustWriteTestFile(t, filepath.Join(accountHome, ".claude", ".credentials.json"), "\xef\xbb\xbf"+`{"claudeAiOauth":{"accessToken":"token"}}`)
+
+	r, err := New(".")
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+
+	state := providerAccountState{
+		Accounts: []ProviderAccount{
+			{
+				ID:          "stored-default-claude",
+				ProviderKey: "claude",
+				DisplayName: "Default Account",
+				HomePath:    accountHome,
+				SlotIndex:   0,
+				IsActive:    false,
+				AuthStatus:  "failed",
+				CreatedAt:   "2026-06-15T00:00:00Z",
+				ExtraEnv:    map[string]string{},
+			},
+		},
+	}
+	if err := r.saveProviderAccountState(state); err != nil {
+		t.Fatalf("saveProviderAccountState() failed: %v", err)
+	}
+
+	accounts, err := r.ListProviderAccounts()
+	if err != nil {
+		t.Fatalf("ListProviderAccounts() failed: %v", err)
+	}
+
+	claudeAccounts := filterProviderAccounts(accounts, "claude")
+	if len(claudeAccounts) != 1 {
+		t.Fatalf("expected one Claude account, got %d: %#v", len(claudeAccounts), claudeAccounts)
+	}
+	if claudeAccounts[0].AuthStatus != "connected" {
+		t.Fatalf("expected stored Claude account to remain connected, got %#v", claudeAccounts[0])
+	}
+	if !claudeAccounts[0].IsActive {
+		t.Fatalf("expected stored Claude account to become active, got %#v", claudeAccounts[0])
+	}
+}
+
+func TestListProviderAccountsMarksClaudeMetadataOnlyAccountFailed(t *testing.T) {
+	homeDir := t.TempDir()
+	configDir := filepath.Join(homeDir, ".config")
+	t.Setenv("HOME", filepath.Join(homeDir, "codexHome4"))
+	t.Setenv("USERPROFILE", filepath.Join(homeDir, "codexHome4"))
+	t.Setenv("APPDATA", filepath.Join(homeDir, "AppData", "Roaming"))
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+
+	accountHome := filepath.Join(homeDir, "real-user")
+	mustWriteTestFile(t, filepath.Join(accountHome, ".claude.json"), `{"oauthAccount":{"emailAddress":"user@example.com"}}`)
+
+	r, err := New(".")
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+
+	state := providerAccountState{
+		Accounts: []ProviderAccount{
+			{
+				ID:          "metadata-only-claude",
+				ProviderKey: "claude",
+				DisplayName: "Default Account",
+				HomePath:    accountHome,
+				SlotIndex:   0,
+				IsActive:    true,
+				AuthStatus:  "connected",
+				CreatedAt:   "2026-06-15T00:00:00Z",
+				ExtraEnv:    map[string]string{},
+			},
+		},
+	}
+	if err := r.saveProviderAccountState(state); err != nil {
+		t.Fatalf("saveProviderAccountState() failed: %v", err)
+	}
+
+	accounts, err := r.ListProviderAccounts()
+	if err != nil {
+		t.Fatalf("ListProviderAccounts() failed: %v", err)
+	}
+
+	claudeAccounts := filterProviderAccounts(accounts, "claude")
+	if len(claudeAccounts) != 1 {
+		t.Fatalf("expected one Claude account, got %d: %#v", len(claudeAccounts), claudeAccounts)
+	}
+	if claudeAccounts[0].AuthStatus != "failed" {
+		t.Fatalf("expected metadata-only Claude account to fail auth, got %#v", claudeAccounts[0])
+	}
+	if claudeAccounts[0].IsActive {
+		t.Fatalf("expected metadata-only Claude account to be inactive, got %#v", claudeAccounts[0])
+	}
+}
+
 func filterProviderAccounts(accounts []ProviderAccount, providerKey string) []ProviderAccount {
 	filtered := make([]ProviderAccount, 0)
 	for _, account := range accounts {

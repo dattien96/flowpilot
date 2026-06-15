@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 )
 
@@ -20,6 +21,10 @@ type CatalogStore interface {
 	ListProjects(ctx context.Context) ([]Project, error)
 	ListWorkflows(ctx context.Context) ([]Workflow, error)
 	ListSteps(ctx context.Context) ([]Step, error)
+}
+
+type WorkflowStepCatalogStore interface {
+	ListWorkflowSteps(ctx context.Context, workflowID string) ([]Step, error)
 }
 
 // CatalogStoreFor returns the live SupabaseCatalogStore when the runner has a
@@ -75,22 +80,45 @@ func (s *SupabaseCatalogStore) getJSON(ctx context.Context, endpoint string, out
 }
 
 func (s *SupabaseCatalogStore) ListProjects(ctx context.Context) ([]Project, error) {
-	// The projects table has no `path` column (a project's working directory is a
-	// runtime binding, not a DB column). Select only real columns; Path is filled by
-	// the client's cwd selection (04-06), not from here.
-	endpoint := s.restURL + "/projects?select=id,name&order=name.asc"
+	endpoint := s.restURL + "/projects?select=id,name,directory_path,project_workspace_bindings(local_path)&order=name.asc"
 	var raw []struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
+		ID                    string `json:"id"`
+		Name                  string `json:"name"`
+		DirectoryPath         string `json:"directory_path"`
+		ProjectWorkspaceBinds []struct {
+			LocalPath string `json:"local_path"`
+		} `json:"project_workspace_bindings"`
 	}
 	if err := s.getJSON(ctx, endpoint, &raw); err != nil {
 		return nil, err
 	}
 	out := make([]Project, len(raw))
 	for i, r := range raw {
-		out[i] = Project{ID: r.ID, Name: r.Name}
+		candidates := make([]string, 0, len(r.ProjectWorkspaceBinds)+1)
+		for _, binding := range r.ProjectWorkspaceBinds {
+			candidates = append(candidates, binding.LocalPath)
+		}
+		candidates = append(candidates, r.DirectoryPath)
+		out[i] = Project{ID: r.ID, Name: r.Name, Path: chooseUsableProjectPath(candidates)}
 	}
 	return out, nil
+}
+
+func chooseUsableProjectPath(candidates []string) string {
+	fallback := ""
+	for _, candidate := range candidates {
+		path := strings.TrimSpace(candidate)
+		if path == "" {
+			continue
+		}
+		if fallback == "" {
+			fallback = path
+		}
+		if info, err := os.Stat(path); err == nil && info.IsDir() {
+			return path
+		}
+	}
+	return fallback
 }
 
 func (s *SupabaseCatalogStore) ListWorkflows(ctx context.Context) ([]Workflow, error) {
@@ -123,6 +151,48 @@ func (s *SupabaseCatalogStore) ListSteps(ctx context.Context) ([]Step, error) {
 	out := make([]Step, len(raw))
 	for i, r := range raw {
 		out[i] = Step{ID: r.StepType, Name: r.Name, Order: i + 1}
+	}
+	return out, nil
+}
+
+func (s *SupabaseCatalogStore) ListWorkflowSteps(ctx context.Context, workflowID string) ([]Step, error) {
+	endpoint := fmt.Sprintf(
+		"%s/workflow_steps?workflow_id=eq.%s&is_enabled=is.true&select=id,workflow_id,step_type,order_index,step_definitions(name,required_skills)&order=order_index.asc",
+		s.restURL,
+		workflowID,
+	)
+	var raw []struct {
+		ID              string `json:"id"`
+		WorkflowID      string `json:"workflow_id"`
+		StepType        string `json:"step_type"`
+		OrderIndex      int    `json:"order_index"`
+		StepDefinitions *struct {
+			Name           string   `json:"name"`
+			RequiredSkills []string `json:"required_skills"`
+		} `json:"step_definitions"`
+	}
+	if err := s.getJSON(ctx, endpoint, &raw); err != nil {
+		return nil, err
+	}
+	out := make([]Step, len(raw))
+	for i, r := range raw {
+		name := r.StepType
+		defaultSkill := ""
+		if r.StepDefinitions != nil {
+			if strings.TrimSpace(r.StepDefinitions.Name) != "" {
+				name = r.StepDefinitions.Name
+			}
+			if len(r.StepDefinitions.RequiredSkills) > 0 {
+				defaultSkill = r.StepDefinitions.RequiredSkills[0]
+			}
+		}
+		out[i] = Step{
+			ID:           r.ID,
+			WorkflowID:   r.WorkflowID,
+			Name:         name,
+			Order:        r.OrderIndex + 1,
+			DefaultSkill: defaultSkill,
+		}
 	}
 	return out, nil
 }

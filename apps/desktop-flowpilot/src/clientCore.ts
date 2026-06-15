@@ -1,4 +1,3 @@
-import { createClient } from "@supabase/supabase-js";
 import {
   AdminUseCases,
   CompositeArtifactRepository,
@@ -19,6 +18,7 @@ import {
   fetchHttpClient,
 } from "@flowpilot/client-core";
 import { RUNNER_URL } from "@/config";
+import { createDesktopAdminSupabaseClient } from "@/auth/desktopAdminSupabaseClient";
 import { DesktopSupabaseAuthRepository } from "@/auth/desktopSupabaseAuthRepository";
 
 export const runtimeConfigRepository = new RunnerRuntimeConfigRepository(
@@ -68,12 +68,15 @@ export function getAdminUseCases() {
 }
 
 async function createAdminUseCases() {
-  const runtimeStatus = await runtimeConfigRepository.loadSupabaseRuntimeStatus();
-  if (!runtimeStatus.configured || !runtimeStatus.apiUrl || !runtimeStatus.anonKey) {
+  const config = await runtimeConfigRepository.loadSupabaseWorkspaceConfigWithSecret();
+  if (!config?.apiUrl || !config.anonKey) {
     throw new Error("Supabase database is not configured.");
   }
 
-  const supabase = createClient(runtimeStatus.apiUrl, runtimeStatus.anonKey);
+  const supabase = await createDesktopAdminSupabaseClient(
+    config.apiUrl,
+    config.serviceRoleKey ?? config.anonKey,
+  );
   const supabaseRepository = new SupabaseAdminRepository(supabase);
   const runnerAdminRepository = new RunnerAdminRepository(fetchHttpClient, RUNNER_URL);
 

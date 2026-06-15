@@ -237,8 +237,48 @@ export class MockRunnerClient implements RunnerClient {
     return MOCK_PROVIDER_ACCOUNTS;
   }
 
-  async listSkills(_provider: string): Promise<ProviderSkill[]> {
+  async connectProviderAccount(providerKey: "codex" | "claude" | "gemini"): Promise<void> {
+    await delay(80);
+    const nextSlotIndex =
+      MOCK_PROVIDER_ACCOUNTS.filter((account) => account.providerKey === providerKey).reduce(
+        (max, account) => Math.max(max, account.slotIndex),
+        0,
+      ) + 1;
+    MOCK_PROVIDER_ACCOUNTS.push({
+      id: `acct-${providerKey}-${nextSlotIndex}`,
+      providerKey,
+      displayName: `Account ${nextSlotIndex}`,
+      displayLabel: `${providerKey}.new${nextSlotIndex}@example.com`,
+      homePath: `/Users/demo/.${providerKey}Home${nextSlotIndex}`,
+      authStorePath: `/Users/demo/.${providerKey}Home${nextSlotIndex}/.${providerKey}`,
+      slotIndex: nextSlotIndex,
+      authStatus: "connected",
+      isActive: false,
+      createdAt: new Date().toISOString(),
+      lastAuthenticatedAt: new Date().toISOString(),
+      accountEmail: `${providerKey}.new${nextSlotIndex}@example.com`,
+      accountName: `${providerKey} Account ${nextSlotIndex}`,
+      usageSummary: null,
+      remaining5hPercent: null,
+      remaining7dPercent: null,
+      remaining5hResetAt: null,
+      remaining7dResetAt: null,
+      usageSource: "unavailable",
+      accessTokenExpiresAt: null,
+      refreshTokenExpiresAt: null,
+      refreshTokenExpiryNote: null,
+      usageDetailLines: [],
+    });
+  }
+
+  async listSkills(provider: string, _cwd?: string): Promise<ProviderSkill[]> {
     await delay(40);
+    if (provider === "claude") {
+      return MOCK_SKILLS.filter((skill) => skill.name !== "test-writer");
+    }
+    if (provider === "gemini") {
+      return MOCK_SKILLS.filter((skill) => skill.name === "architect" || skill.name === "reviewer");
+    }
     return MOCK_SKILLS;
   }
 
@@ -310,7 +350,9 @@ export class MockRunnerClient implements RunnerClient {
       updatedAt: now,
       seq: 0,
     });
-    return { runId, providerSessionId, providerKey: "codex", status: "running" };
+    const providerKey = input.providerKey ?? "codex";
+    const stepId = input.chatMode === "normal_chat" ? `chat-${runId}` : undefined;
+    return { runId, providerSessionId, providerKey, status: "running", ...(stepId ? { stepId } : {}) };
   }
 
   async resumeRun(runId: string): Promise<RunHandle> {

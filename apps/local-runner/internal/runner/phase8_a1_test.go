@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,10 +14,11 @@ import (
 
 // customCatalogStore is a test CatalogStore returning canned data or an error.
 type customCatalogStore struct {
-	projects  []Project
-	workflows []Workflow
-	steps     []Step
-	err       error
+	projects      []Project
+	workflows     []Workflow
+	steps         []Step
+	workflowSteps map[string][]Step
+	err           error
 }
 
 type failingWorkflowStore struct{}
@@ -29,6 +31,9 @@ func (c customCatalogStore) ListWorkflows(context.Context) ([]Workflow, error) {
 }
 func (c customCatalogStore) ListSteps(context.Context) ([]Step, error) {
 	return c.steps, c.err
+}
+func (c customCatalogStore) ListWorkflowSteps(_ context.Context, workflowID string) ([]Step, error) {
+	return c.workflowSteps[workflowID], c.err
 }
 
 func (f failingWorkflowStore) LoadRunSteps(context.Context, string) ([]RuntimeWorkflowStep, error) {
@@ -113,6 +118,183 @@ func TestSkillsServedLocallyWithInjectedStore(t *testing.T) {
 	}
 }
 
+func TestSkillsMergeClaudeProjectAndProviderHomeWithPrecedence(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", "")
+
+	if err := os.WriteFile(filepath.Join(homeDir, ".claude.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write claude config: %v", err)
+	}
+
+	projectDir := t.TempDir()
+	writeSkillFile := func(baseDir string, folder string, frontMatterName string, description string) {
+		t.Helper()
+		skillDir := filepath.Join(baseDir, folder)
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", skillDir, err)
+		}
+		body := "---\nname: " + frontMatterName + "\ndescription: " + description + "\n---\n"
+		if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(body), 0o644); err != nil {
+			t.Fatalf("write skill %s: %v", skillDir, err)
+		}
+	}
+
+	writeSkillFile(filepath.Join(homeDir, ".claude", "skills"), "shared", "shared", "provider shared")
+	writeSkillFile(filepath.Join(homeDir, ".claude", "skills"), "provider-only", "provider-only", "provider only")
+	writeSkillFile(filepath.Join(projectDir, ".agents", "skills"), "shared", "shared", "flowpilot shared")
+	writeSkillFile(filepath.Join(projectDir, ".agents", "skills"), "flowpilot-only", "flowpilot-only", "flowpilot only")
+	writeSkillFile(filepath.Join(projectDir, ".claude", "skills"), "shared", "shared", "workspace shared")
+	writeSkillFile(filepath.Join(projectDir, ".claude", "skills"), "workspace-only", "workspace-only", "workspace only")
+
+	srv := newCatalogTestServer(t, customCatalogStore{})
+	status, body := doJSON(t, "GET", srv.URL+"/client/provider-skills?provider=claude&cwd="+url.QueryEscape(projectDir), nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("skills status=%d body=%s", status, body)
+	}
+
+	var skills []ProviderSkill
+	if err := json.Unmarshal(body, &skills); err != nil {
+		t.Fatalf("decode skills: %v", err)
+	}
+
+	byName := make(map[string]ProviderSkill, len(skills))
+	for _, skill := range skills {
+		byName[skill.Name] = skill
+	}
+
+	if got := byName["shared"]; got.Source != "workspace" || got.Description != "workspace shared" {
+		t.Fatalf("shared skill = %+v, want workspace precedence", got)
+	}
+	if got := byName["provider-only"]; got.Source != "provider" {
+		t.Fatalf("provider-only skill = %+v, want provider source", got)
+	}
+	if _, ok := byName["workspace-only"]; !ok {
+		t.Fatalf("workspace-only skill missing: %+v", skills)
+	}
+	if _, ok := byName["flowpilot-only"]; ok {
+		t.Fatalf("flowpilot-only should not load for claude project skills: %+v", skills)
+	}
+}
+
+func TestSkillsMergeCodexProjectAgentsAndProviderHomeWithPrecedence(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", "")
+	codexHome := filepath.Join(homeDir, ".codexHome")
+
+	if err := os.MkdirAll(codexHome, 0o755); err != nil {
+		t.Fatalf("mkdir codex home: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(codexHome, "config.toml"), []byte("[core]\nmodel = \"gpt-5\"\n"), 0o644); err != nil {
+		t.Fatalf("write codex config: %v", err)
+	}
+
+	projectDir := t.TempDir()
+	writeSkillFile := func(baseDir string, folder string, frontMatterName string, description string) {
+		t.Helper()
+		skillDir := filepath.Join(baseDir, folder)
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", skillDir, err)
+		}
+		body := "---\nname: " + frontMatterName + "\ndescription: " + description + "\n---\n"
+		if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(body), 0o644); err != nil {
+			t.Fatalf("write skill %s: %v", skillDir, err)
+		}
+	}
+
+	writeSkillFile(filepath.Join(codexHome, "skills"), "shared", "shared", "provider shared")
+	writeSkillFile(filepath.Join(codexHome, "skills"), "provider-only", "provider-only", "provider only")
+	writeSkillFile(filepath.Join(projectDir, ".agents", "skills"), "shared", "shared", "project shared")
+	writeSkillFile(filepath.Join(projectDir, ".agents", "skills"), "project-only", "project-only", "project only")
+	writeSkillFile(filepath.Join(projectDir, ".codex", "skills"), "ignored-local", "ignored-local", "ignored local")
+
+	srv := newCatalogTestServer(t, customCatalogStore{})
+	status, body := doJSON(t, "GET", srv.URL+"/client/provider-skills?provider=codex&cwd="+url.QueryEscape(projectDir), nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("skills status=%d body=%s", status, body)
+	}
+
+	var skills []ProviderSkill
+	if err := json.Unmarshal(body, &skills); err != nil {
+		t.Fatalf("decode skills: %v", err)
+	}
+
+	byName := make(map[string]ProviderSkill, len(skills))
+	for _, skill := range skills {
+		byName[skill.Name] = skill
+	}
+
+	if got := byName["shared"]; got.Source != "flowpilot" || got.Description != "project shared" {
+		t.Fatalf("shared skill = %+v, want .agents/skills precedence", got)
+	}
+	if got := byName["project-only"]; got.Source != "flowpilot" {
+		t.Fatalf("project-only skill = %+v, want flowpilot source", got)
+	}
+	if got := byName["provider-only"]; got.Source != "provider" {
+		t.Fatalf("provider-only skill = %+v, want provider source", got)
+	}
+	if _, ok := byName["ignored-local"]; ok {
+		t.Fatalf(".codex/skills should not load for codex project skills: %+v", skills)
+	}
+}
+
+func TestSkillsMergeGeminiProjectAgentsAndProviderHomeWithPrecedence(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", "")
+
+	if err := os.MkdirAll(filepath.Join(homeDir, ".gemini"), 0o755); err != nil {
+		t.Fatalf("mkdir gemini config dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(homeDir, ".gemini", "settings.json"), []byte(`{"user":"test"}`), 0o644); err != nil {
+		t.Fatalf("write gemini settings: %v", err)
+	}
+
+	projectDir := t.TempDir()
+	writeSkillFile := func(baseDir string, folder string, frontMatterName string, description string) {
+		t.Helper()
+		skillDir := filepath.Join(baseDir, folder)
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", skillDir, err)
+		}
+		body := "---\nname: " + frontMatterName + "\ndescription: " + description + "\n---\n"
+		if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(body), 0o644); err != nil {
+			t.Fatalf("write skill %s: %v", skillDir, err)
+		}
+	}
+
+	writeSkillFile(filepath.Join(homeDir, ".gemini", "skills"), "provider-only", "provider-only", "provider only")
+	writeSkillFile(filepath.Join(projectDir, ".agents", "skills"), "project-only", "project-only", "project only")
+	writeSkillFile(filepath.Join(projectDir, ".gemini", "skills"), "ignored-local", "ignored-local", "ignored local")
+
+	srv := newCatalogTestServer(t, customCatalogStore{})
+	status, body := doJSON(t, "GET", srv.URL+"/client/provider-skills?provider=gemini&cwd="+url.QueryEscape(projectDir), nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("skills status=%d body=%s", status, body)
+	}
+
+	var skills []ProviderSkill
+	if err := json.Unmarshal(body, &skills); err != nil {
+		t.Fatalf("decode skills: %v", err)
+	}
+
+	byName := make(map[string]ProviderSkill, len(skills))
+	for _, skill := range skills {
+		byName[skill.Name] = skill
+	}
+
+	if got := byName["project-only"]; got.Source != "flowpilot" {
+		t.Fatalf("project-only skill = %+v, want flowpilot source", got)
+	}
+	if got := byName["provider-only"]; got.Source != "provider" {
+		t.Fatalf("provider-only skill = %+v, want provider source", got)
+	}
+	if _, ok := byName["ignored-local"]; ok {
+		t.Fatalf(".gemini/skills should not load for gemini project skills: %+v", skills)
+	}
+}
+
 // CatalogStoreFor falls back to the fake catalog with no runner / no Supabase config.
 func TestCatalogStoreForFallsBackToFake(t *testing.T) {
 	if _, ok := CatalogStoreFor(nil).(*interactiveCatalog); !ok {
@@ -161,5 +343,44 @@ func TestStartTurnSurfacesWorkflowStateStoreErrors(t *testing.T) {
 		map[string]any{"stepId": "step-plan", "prompt": "hi", "scenario": "normal"}, nil)
 	if status != http.StatusBadGateway || !strings.Contains(string(body), "workflow_state_unavailable") {
 		t.Fatalf("expected 502 workflow_state_unavailable, got status=%d body=%s", status, body)
+	}
+}
+
+func TestStartRunResolvesWorkflowLaunchToFirstWorkflowStep(t *testing.T) {
+	svc := newInteractiveService(DefaultProviderRegistry(), customCatalogStore{
+		workflowSteps: map[string][]Step{
+			"wf-live": {
+				{ID: "ws-plan", WorkflowID: "wf-live", Name: "plan", Order: 1},
+				{ID: "ws-code", WorkflowID: "wf-live", Name: "code", Order: 2},
+			},
+		},
+	}, nil)
+	mux := http.NewServeMux()
+	svc.RegisterInteractiveRoutes(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	status, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs", StartRunInput{
+		ProjectID:  "proj-web",
+		WorkflowID: "wf-live",
+		StepID:     "wf-live",
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("start run status=%d body=%s", status, body)
+	}
+	var handle RunHandle
+	if err := json.Unmarshal(body, &handle); err != nil {
+		t.Fatalf("decode handle: %v", err)
+	}
+	if handle.StepID != "ws-plan" {
+		t.Fatalf("handle step id = %q, want ws-plan", handle.StepID)
+	}
+
+	store := svc.workflowStore.(*fakeWorkflowStore)
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	steps := store.steps[handle.RunID]
+	if len(steps) != 2 || steps[0].ID != "ws-plan" || steps[1].ID != "ws-code" {
+		t.Fatalf("seeded steps = %+v, want workflow steps", steps)
 	}
 }

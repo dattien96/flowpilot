@@ -45,6 +45,8 @@ export function App(): React.ReactElement {
   const modeLabel = runnerModeLabel();
   const [phase, setPhase] = useState<AppPhase>("loading");
   const [busy, setBusy] = useState(false);
+  const [leftSidebarVisible, setLeftSidebarVisible] = useState(true);
+  const [rightSidebarVisible, setRightSidebarVisible] = useState(true);
   const [runtimeStatus, setRuntimeStatus] = useState<SupabaseRuntimeStatus>(emptyRuntimeStatus);
   const [unauthenticatedView, setUnauthenticatedView] =
     useState<UnauthenticatedView>("login");
@@ -100,6 +102,7 @@ export function App(): React.ReactElement {
     setBusy(true);
     try {
       await loginUseCase.execute(email, password);
+      resetAdminUseCases();
       setAuthenticatedView("chat");
       await refreshBootstrap();
     } finally {
@@ -111,6 +114,7 @@ export function App(): React.ReactElement {
     setBusy(true);
     try {
       await logoutUseCase.execute();
+      resetAdminUseCases();
       setUnauthenticatedView("login");
       setPhase("unauthenticated");
       await refreshBootstrap();
@@ -186,6 +190,32 @@ export function App(): React.ReactElement {
   return (
     <div className="app">
       <header className="app-header">
+        <div className="header-chrome">
+          <button
+            className={`sidebar-toggle ${leftSidebarVisible ? "active" : ""}`}
+            onClick={() => setLeftSidebarVisible((value) => !value)}
+            type="button"
+            aria-pressed={leftSidebarVisible}
+            title={leftSidebarVisible ? "Hide left sidebar" : "Show left sidebar"}
+            aria-label={leftSidebarVisible ? "Hide left sidebar" : "Show left sidebar"}
+          >
+            <span className="sidebar-toggle-icon" aria-hidden="true">
+              ◧
+            </span>
+          </button>
+          <button
+            className={`sidebar-toggle ${rightSidebarVisible ? "active" : ""}`}
+            onClick={() => setRightSidebarVisible((value) => !value)}
+            type="button"
+            aria-pressed={rightSidebarVisible}
+            title={rightSidebarVisible ? "Hide right sidebar" : "Show right sidebar"}
+            aria-label={rightSidebarVisible ? "Hide right sidebar" : "Show right sidebar"}
+          >
+            <span className="sidebar-toggle-icon" aria-hidden="true">
+              ◨
+            </span>
+          </button>
+        </div>
         <div className="brand">
           FlowPilot <span className="brand-sub">desktop · {modeLabel}</span>
         </div>
@@ -223,12 +253,15 @@ export function App(): React.ReactElement {
         </div>
       </header>
 
-      {authenticatedView === "chat" ? (
-        runtimeStatus.runnerReachable ? (
-          <ChatWorkspace />
-        ) : (
-          <SettingsShell
-            activeSection="runner"
+        {authenticatedView === "chat" ? (
+          runtimeStatus.runnerReachable ? (
+          <ChatWorkspace
+            leftSidebarVisible={leftSidebarVisible}
+            rightSidebarVisible={rightSidebarVisible}
+          />
+          ) : (
+            <SettingsShell
+              activeSection="runner"
             busy={busy}
             onSaveSupabase={handleSaveSupabase}
             onSelectSection={setSettingsSection}

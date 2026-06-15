@@ -29,8 +29,8 @@ func TestResolveYoloPosture(t *testing.T) {
 	if got := googleDriveProxyMcpApprovalMode(true); got != "approve" {
 		t.Fatalf("proxy approval yolo=true = %q, want approve", got)
 	}
-	if got := googleDriveProxyMcpApprovalMode(false); got != "on-request" {
-		t.Fatalf("proxy approval yolo=false = %q, want on-request (no standalone =approve)", got)
+	if got := googleDriveProxyMcpApprovalMode(false); got != "prompt" {
+		t.Fatalf("proxy approval yolo=false = %q, want prompt", got)
 	}
 }
 

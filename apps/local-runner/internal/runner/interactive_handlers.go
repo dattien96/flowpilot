@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"sort"
@@ -83,7 +84,9 @@ func (s *InteractiveService) handleListSteps(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *InteractiveService) handleListSkills(w http.ResponseWriter, r *http.Request) {
-	writeInteractiveJSON(w, http.StatusOK, s.skillsCatalog.listSkills())
+	provider := r.URL.Query().Get("provider")
+	cwd := r.URL.Query().Get("cwd")
+	writeInteractiveJSON(w, http.StatusOK, s.skillsCatalog.listSkills(provider, cwd))
 }
 
 func (s *InteractiveService) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
@@ -136,10 +139,11 @@ func (s *InteractiveService) handleResumeRun(w http.ResponseWriter, r *http.Requ
 }
 
 type turnBody struct {
-	StepID         string           `json:"stepId"`
-	Prompt         string           `json:"prompt"`
-	SelectedSkills []SkillSelection `json:"selectedSkills"`
-	Scenario       string           `json:"scenario"` // P2 fake-adapter hint only
+	StepID          string           `json:"stepId"`
+	Prompt          string           `json:"prompt"`
+	SelectedSkills  []SkillSelection `json:"selectedSkills"`
+	ReasoningEffort string           `json:"reasoningEffort"` // per-turn override (T-4)
+	Scenario        string           `json:"scenario"`        // P2 fake-adapter hint only
 }
 
 func (s *InteractiveService) handleStartTurn(w http.ResponseWriter, r *http.Request) {
@@ -150,7 +154,7 @@ func (s *InteractiveService) handleStartTurn(w http.ResponseWriter, r *http.Requ
 	}
 	turnID, e := s.startTurn(
 		r.PathValue("runId"),
-		TurnInput{StepID: body.StepID, Prompt: body.Prompt, SelectedSkills: body.SelectedSkills},
+		TurnInput{StepID: body.StepID, Prompt: body.Prompt, SelectedSkills: body.SelectedSkills, ReasoningEffort: body.ReasoningEffort},
 		body.Scenario,
 		r.Header.Get("Idempotency-Key"),
 	)
@@ -393,16 +397,68 @@ func (s *InteractiveService) handleAdminQuestions(w http.ResponseWriter, r *http
 // ---- run creation / snapshot / fake artifacts ------------------------------
 
 func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
+	stepID := in.StepID
+	runKind := "workflow"
+	if in.ChatMode == "normal_chat" {
+		runKind = "chat"
+	}
+
+	seedSteps := []RuntimeWorkflowStep{{
+		ID:               stepID,
+		StepType:         stepID,
+		Status:           StepStatusPending,
+		RequiresApproval: false,
+	}}
+
+	if in.WorkflowID != "" && (stepID == "" || stepID == in.WorkflowID) {
+		stepCatalog, ok := s.catalog.(WorkflowStepCatalogStore)
+		if !ok {
+			return RunHandle{}, newAPIErr(http.StatusBadGateway, "catalog_unavailable", "workflow step catalog is unavailable")
+		}
+		steps, err := stepCatalog.ListWorkflowSteps(context.Background(), in.WorkflowID)
+		if err != nil {
+			return RunHandle{}, newAPIErr(http.StatusBadGateway, "catalog_unavailable", err.Error())
+		}
+		if len(steps) == 0 {
+			return RunHandle{}, newAPIErr(http.StatusUnprocessableEntity, "workflow_has_no_steps", "workflow has no enabled steps")
+		}
+		stepID = steps[0].ID
+		seedSteps = make([]RuntimeWorkflowStep, len(steps))
+		for i, step := range steps {
+			stepType := step.ID
+			if step.Name != "" {
+				stepType = step.Name
+			}
+			seedSteps[i] = RuntimeWorkflowStep{
+				ID:               step.ID,
+				StepType:         stepType,
+				Status:           StepStatusPending,
+				RequiresApproval: false,
+			}
+		}
+	} else if stepID == "" && runKind != "chat" {
+		// Normal chat: synthetic step is minted after the runID is known (see below).
+		// Workflow/step mode: stepId is required.
+		return RunHandle{}, newAPIErr(http.StatusBadRequest, "invalid_request", "stepId is required")
+	}
+
 	// Resolve + enforce the provider runner-side (04-07): an empty key takes the
 	// default available provider; an explicitly requested disabled/placeholder
 	// provider is rejected with the typed UnsupportedProviderRuntimeError envelope.
 	providerKey := in.ProviderKey
 	if providerKey == "" {
-		def, ok := s.registry.DefaultProviderKey()
-		if !ok {
-			return RunHandle{}, newAPIErr(http.StatusServiceUnavailable, "provider_unavailable", "no provider runtime is available")
+		// Workflow/step mode auto-selects the provider from the configured model; direct
+		// chat sets ProviderKey explicitly. Fall back to the default available provider
+		// when neither a provider nor a recognized model is supplied.
+		if pk, ok := providerKeyFromModel(in.Model); ok {
+			providerKey = pk
+		} else {
+			def, ok := s.registry.DefaultProviderKey()
+			if !ok {
+				return RunHandle{}, newAPIErr(http.StatusServiceUnavailable, "provider_unavailable", "no provider runtime is available")
+			}
+			providerKey = def
 		}
-		providerKey = def
 	}
 	if _, err := s.registry.Selectable(providerKey); err != nil {
 		return RunHandle{}, newAPIErr(http.StatusUnprocessableEntity, "provider_unavailable", err.Error())
@@ -413,6 +469,18 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 	runID := s.nextID("run")
 	sessionID := s.nextID("thread")
 	now := time.Now().UTC().Format(time.RFC3339Nano)
+
+	// For normal_chat, mint a synthetic step id now that we have the runID.
+	if runKind == "chat" && stepID == "" {
+		stepID = "chat-" + runID
+		seedSteps = []RuntimeWorkflowStep{{
+			ID:               stepID,
+			StepType:         "chat",
+			Status:           StepStatusPending,
+			RequiresApproval: false,
+		}}
+	}
+
 	rs := &interactiveRun{
 		id:                runID,
 		projectID:         in.ProjectID,
@@ -422,6 +490,8 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		providerAccountID: s.activeAccountID,
 		workspaceCwd:      in.Cwd,
 		yolo:              in.YoloMode,
+		reasoningEffort:   in.ReasoningEffort,
+		runKind:           runKind,
 		status:            RunStatusIdle,
 		createdAt:         now,
 		updatedAt:         now,
@@ -430,12 +500,7 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 	}
 	s.runs[runID] = rs
 	if seeder, ok := s.workflowStore.(workflowRunSeeder); ok {
-		seeder.seed(runID, []RuntimeWorkflowStep{{
-			ID:               in.StepID,
-			StepType:         in.StepID,
-			Status:           StepStatusPending,
-			RequiresApproval: false,
-		}})
+		seeder.seed(runID, seedSteps)
 	}
 	if err := s.persistProviderSession(ProviderSessionState{
 		RunID:             runID,
@@ -450,7 +515,7 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		delete(s.runs, runID)
 		return RunHandle{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
 	}
-	return RunHandle{RunID: runID, ProviderSessionID: sessionID, ProviderKey: providerKey, Status: rs.status}, nil
+	return RunHandle{RunID: runID, ProviderSessionID: sessionID, ProviderKey: providerKey, Status: rs.status, StepID: stepID}, nil
 }
 
 func (s *InteractiveService) resumeRun(runID string) (RunHandle, *apiErr) {
@@ -463,7 +528,14 @@ func (s *InteractiveService) resumeRun(runID string) (RunHandle, *apiErr) {
 	if rs.providerAccountID != s.activeAccountID {
 		return RunHandle{}, newAPIErr(http.StatusConflict, "provider_account_changed", "active provider account changed since the run started")
 	}
-	return RunHandle{RunID: rs.id, ProviderSessionID: rs.providerSessionID, ProviderKey: rs.providerKey, Status: rs.status}, nil
+	handle := RunHandle{RunID: rs.id, ProviderSessionID: rs.providerSessionID, ProviderKey: rs.providerKey, Status: rs.status}
+	// Surface the synthetic chat step so the desktop can continue a resumed normal_chat
+	// run; its turns need a stepId and the chat step id is deterministic (T-7). Workflow
+	// runs resume as before (the desktop drives the step via the navigator selection).
+	if rs.runKind == "chat" {
+		handle.StepID = "chat-" + rs.id
+	}
+	return handle, nil
 }
 
 type pendingApprovalView struct {
@@ -497,11 +569,14 @@ type runHistoryItem struct {
 	UpdatedAt   string      `json:"updatedAt"`
 	LastPrompt  string      `json:"lastPrompt,omitempty"`
 	LastMessage string      `json:"lastMessage,omitempty"`
+	// RunKind distinguishes normal chat runs from workflow runs so chat runs
+	// are excluded from workflow catalogs and labeled correctly in history (T-7).
+	RunKind string `json:"runKind,omitempty"`
 }
 
 func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryItem {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	seen := map[string]bool{}
 	out := make([]runHistoryItem, 0, len(s.runs))
 	for _, rs := range s.runs {
 		if rs.projectID != projectID {
@@ -517,8 +592,33 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 			UpdatedAt:   rs.updatedAt,
 			LastPrompt:  rs.lastPrompt,
 			LastMessage: rs.lastMessage,
+			RunKind:     rs.runKind,
 		})
+		seen[rs.id] = true
 	}
+	s.mu.Unlock()
+
+	// BUG-060 F-1: augment with persisted sessions not in the current in-memory
+	// map (e.g. after a runner/app-server restart). The store holds the truth;
+	// s.runs is a write-through cache that is empty on a new service instance.
+	if reader, ok := s.workflowStore.(SessionHistoryReader); ok {
+		sessions, err := reader.ListProviderSessionsByProject(context.Background(), projectID)
+		if err == nil {
+			for _, sess := range sessions {
+				if seen[sess.RunID] {
+					continue
+				}
+				out = append(out, runHistoryItem{
+					RunID:       sess.RunID,
+					ProjectID:   sess.ProjectID,
+					WorkflowID:  sess.WorkflowID,
+					ProviderKey: sess.ProviderKey,
+					Status:      sess.Status,
+				})
+			}
+		}
+	}
+
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].UpdatedAt > out[j].UpdatedAt
 	})

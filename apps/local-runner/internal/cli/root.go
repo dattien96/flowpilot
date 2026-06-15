@@ -99,6 +99,9 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				runner.CatalogStoreFor(instance),
 			)
 			interactive.RegisterInteractiveRoutes(mux)
+			// Runner-hosted MCP server for the Claude permission/ask_user tools (07):
+			// the per-turn --mcp-config URL points claude back at this route.
+			mux.Handle(runner.ClaudeMCPPath, instance.ClaudeMCPHandler())
 
 			mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodGet {
@@ -1481,6 +1484,8 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 			}()
 
 			addr := netJoinHostPort(cfg.host, cfg.port)
+			// Loopback base URL the Claude adapter uses to build per-turn --mcp-config URLs (07).
+			instance.SetMCPBaseURL(fmt.Sprintf("http://127.0.0.1:%v", cfg.port))
 			fmt.Fprintf(os.Stdout, "FlowPilot runner listening on http://%s\n", addr)
 			listenErr := http.ListenAndServe(addr, withCORS(mux))
 			instance.CleanupSessions()

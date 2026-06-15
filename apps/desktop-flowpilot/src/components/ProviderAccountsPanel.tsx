@@ -83,6 +83,9 @@ export function ProviderAccountsPanel(): React.ReactElement | null {
   const [refreshing, setRefreshing] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [providerVisibility, setProviderVisibility] = useState<Record<string, boolean>>(() => loadProviderVisibility());
+  const [connectingProviderKey, setConnectingProviderKey] = useState<string | null>(null);
+  const [pendingProviderKey, setPendingProviderKey] = useState<string | null>(null);
+  const [pendingKnownAccountIds, setPendingKnownAccountIds] = useState<string[]>([]);
 
   const providerGroups = useMemo(() => {
     return PROVIDERS.map((provider) => {
@@ -114,6 +117,25 @@ export function ProviderAccountsPanel(): React.ReactElement | null {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [openProviderKey, settingsOpen]);
+
+  useEffect(() => {
+    if (!pendingProviderKey) return;
+    const intervalId = window.setInterval(() => {
+      void loadProviderAccounts();
+    }, 2000);
+    return () => window.clearInterval(intervalId);
+  }, [loadProviderAccounts, pendingProviderKey]);
+
+  useEffect(() => {
+    if (!pendingProviderKey) return;
+    const nextAccounts = providerAccounts.filter((account) => account.providerKey === pendingProviderKey);
+    const hasNewAccount = nextAccounts.some((account) => !pendingKnownAccountIds.includes(account.id));
+    if (!hasNewAccount) return;
+    setPendingProviderKey(null);
+    setPendingKnownAccountIds([]);
+    setMessage("New account detected. The modal refreshed automatically.");
+    setError(null);
+  }, [pendingKnownAccountIds, pendingProviderKey, providerAccounts]);
 
   if (visibleProviderGroups.length === 0 && providerGroups.every((group) => group.pinnedAccount === null)) {
     return null;
@@ -159,6 +181,30 @@ export function ProviderAccountsPanel(): React.ReactElement | null {
       setError(err instanceof Error ? err.message : "Failed to refresh accounts.");
     } finally {
       setRefreshing(false);
+    }
+  };
+
+  const connectAccount = async (providerKey: string) => {
+    setConnectingProviderKey(providerKey);
+    setMessage(null);
+    setError(null);
+    try {
+      const knownAccountIds = providerAccounts
+        .filter((account) => account.providerKey === providerKey)
+        .map((account) => account.id);
+      await client.connectProviderAccount(providerKey as "claude" | "codex" | "gemini");
+      setPendingKnownAccountIds(knownAccountIds);
+      setPendingProviderKey(providerKey);
+      setMessage(
+        "Login terminal requested. Complete authentication in the opened terminal/browser. FlowPilot will refresh this modal automatically when the new account is detected.",
+      );
+      await loadProviderAccounts();
+    } catch (err) {
+      setPendingProviderKey(null);
+      setPendingKnownAccountIds([]);
+      setError(err instanceof Error ? err.message : "Failed to connect account.");
+    } finally {
+      setConnectingProviderKey(null);
     }
   };
 
@@ -301,9 +347,21 @@ export function ProviderAccountsPanel(): React.ReactElement | null {
                 <div className="modal-title">{activeGroup.label} Accounts</div>
                 <div className="modal-subtitle">{activeGroup.accounts.length} account(s)</div>
               </div>
-              <button type="button" className="modal-close" onClick={() => setOpenProviderKey(null)}>
-                Close
-              </button>
+              <div className="account-modal-head-actions">
+                <button
+                  type="button"
+                  className="account-action-btn"
+                  disabled={connectingProviderKey === activeGroup.key}
+                  onClick={() => void connectAccount(activeGroup.key)}
+                >
+                  {connectingProviderKey === activeGroup.key || pendingProviderKey === activeGroup.key
+                    ? "Connecting..."
+                    : "Connect New Account"}
+                </button>
+                <button type="button" className="modal-close" onClick={() => setOpenProviderKey(null)}>
+                  Close
+                </button>
+              </div>
             </div>
 
             {message ? <div className="panel-message ok">{message}</div> : null}

@@ -84,6 +84,7 @@ interface ProviderSkillSelection { name: string; path?: string; source: "slash_p
 interface ProviderApprovalDecisionInput { workflowRunId: string; workflowStepRunId?: string; providerSessionId: string; providerTurnId?: string; approvalId: string; decision: string; }
 interface ProviderInterruptInput { providerSessionId: string; providerTurnId?: string; reason: string; }
 interface ProviderCloseInput { providerSessionId: string; reason: "completed" | "cancelled" | "failed" | "shutdown"; }
+interface ProviderListSkillsInput { providerKey: ProviderKey; workingDirectory?: string; }  // skills resolve per provider + cwd (Task-044), not a static catalog
 interface ProviderSkill { name: string; path?: string; description?: string; source: "provider" | "flowpilot" | "workspace"; }
 interface ProviderCapabilities { streaming: boolean; resume: boolean; approvalEvents: boolean; fileEvents: boolean; skillSelection: boolean; mcp: boolean; interrupt: boolean; }
 ```
@@ -143,6 +144,10 @@ End-to-end scenarios (the per-phase `T-xx` ids are tracked in
 6. finalizer fails and can be retried (turn stays completed)
 7. Admin Web shows provider event audit for the same run
 8. Claude/Gemini placeholders are visible but unavailable
+9. desktop `normal_chat` mode: send a turn with only project + provider selected (no
+   workflow/step), with chosen model/reasoning/YOLO and a real provider-local slash
+   skill reaching the runner; `workflow_step_auto` still blocks send until a target
+   is selected and hides those controls (Task-044)
 
 ## Resolved Decisions
 
@@ -175,6 +180,24 @@ End-to-end scenarios (the per-phase `T-xx` ids are tracked in
   **best-effort** (discovered via `tools/list`, reinforced by prompt injection);
   (2) a **workflow-driven** question the runner emits directly — **deterministic**,
   for required asks. Both render the same card. See `04-01` (UI) + `04-04` (bridge).
+- **Desktop chat modes:** the desktop client has **two launch modes** —
+  `normal_chat` (provider chat: requires only project + provider; exposes model,
+  reasoning, YOLO, and slash-skill controls) and `workflow_step_auto` (the existing
+  forced workflow/step launch, where the workflow/step definition owns model,
+  reasoning, YOLO, MCP, and skills — those controls are hidden in the chat
+  controller). This is a **client surface change only**: the shared
+  `ProviderTurnInput` already carries `modelName`, `reasoningEffort`,
+  `selectedSkill`, and `yoloMode`, and `listSkills?(ProviderListSkillsInput)` is
+  already in the adapter contract — so `normal_chat` wires the desktop layer through
+  to existing fields rather than extending the runtime contract. `normal_chat`
+  subsumes the old `selectedProvider` "direct chat" override. **Persistence:** normal
+  chat reuses the existing workflow-run + provider-session + event tables via a
+  runner-minted synthetic `chat` step, tagged with a `run_kind` (`chat` | `workflow`)
+  discriminator so chat runs stay out of workflow catalogs and are filterable in
+  history — no separate `chat_sessions` table. Chat-log durability rides on the
+  `BUG-060` run-history rehydration fix. **Skills:** the `/` picker merges all
+  sources (provider + workspace + flowpilot), deduped by name with
+  `workspace` > `flowpilot` > `provider` precedence. See `Task-044`.
 
 ## Open Implementation Questions
 

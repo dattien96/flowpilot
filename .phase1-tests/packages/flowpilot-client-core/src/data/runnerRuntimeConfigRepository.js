@@ -83,6 +83,24 @@ class RunnerRuntimeConfigRepository {
         }
         return this.loadSupabaseRuntimeStatus();
     }
+    async loadSupabaseWorkspaceConfigWithSecret() {
+        const response = await this.httpClient.request(new URL("/supabase-config?includeSecret=1", this.runnerBaseUrl), { cache: "no-store" });
+        if (response.status === 404) {
+            return null;
+        }
+        if (!response.ok) {
+            throw new Error(await readError(response));
+        }
+        const payload = (await response.json());
+        if (!payload.apiUrl || !payload.anonKey) {
+            return null;
+        }
+        return {
+            apiUrl: payload.apiUrl,
+            anonKey: payload.anonKey,
+            serviceRoleKey: payload.serviceRoleKey?.trim() || null,
+        };
+    }
     demoStatus(runnerReachable, lastError) {
         return {
             mode: "demo",

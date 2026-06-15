@@ -1,37 +1,161 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "@/state/store";
+import type { ProviderKey } from "@/types/contract";
 
-// Chat input with a `/` command + skill picker. Typing "/" opens a filtered
-// skill list; picking one attaches it to the next turn (shown as a chip).
+const PROVIDER_OPTIONS: { value: ProviderKey; label: string }[] = [
+  { value: "codex", label: "Codex" },
+  { value: "claude", label: "Claude" },
+  { value: "gemini", label: "Gemini" },
+];
+
+const REASONING_OPTIONS = [
+  { value: "", label: "Default" },
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+];
+
+function skillSourceLabel(source: "provider" | "flowpilot" | "workspace"): string {
+  return source === "provider" ? "Account" : "Project";
+}
+
+// Chat composer + bottom controller strip. The controller keeps the current
+// skill picker active while visually de-emphasizing the other workspace
+// controls so the desktop layout reads like the mockup.
 export function ChatInput(): React.ReactElement {
   const skills = useStore((s) => s.skills);
+  const projects = useStore((s) => s.projects);
   const sendPrompt = useStore((s) => s.sendPrompt);
   const status = useStore((s) => s.status);
+  const runId = useStore((s) => s.runId);
+  const chatMode = useStore((s) => s.chatMode);
   const launchMode = useStore((s) => s.launchMode);
+  const supportedModels = useStore((s) => s.supportedModels);
+  const selectedProjectId = useStore((s) => s.selectedProjectId);
   const selectedWorkflowId = useStore((s) => s.selectedWorkflowId);
   const selectedStepId = useStore((s) => s.selectedStepId);
+  const selectedProvider = useStore((s) => s.selectedProvider);
+  const selectedModel = useStore((s) => s.selectedModel);
+  const reasoningEffort = useStore((s) => s.reasoningEffort);
+  const yoloMode = useStore((s) => s.yoloMode);
+  const loadSkills = useStore((s) => s.loadSkills);
+  const selectProvider = useStore((s) => s.selectProvider);
+  const setSelectedModel = useStore((s) => s.setSelectedModel);
+  const setReasoningEffort = useStore((s) => s.setReasoningEffort);
+  const setYoloMode = useStore((s) => s.setYoloMode);
   const pendingApproval = useStore((s) => s.pendingApproval);
   const pendingQuestion = useStore((s) => s.pendingQuestion);
 
   const [text, setText] = useState("");
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
+  const [pickerSortSelection, setPickerSortSelection] = useState<string[]>([]);
+  const [skillPickerOpen, setSkillPickerOpen] = useState(false);
+  const [controllerExpanded, setControllerExpanded] = useState(true);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const wasPickerVisibleRef = useRef(false);
 
-  const slashQuery = text.startsWith("/") ? text.slice(1).toLowerCase() : null;
-  const showPicker = slashQuery !== null;
+  const isChatMode = chatMode === "normal_chat";
+  const hasSelectedProject = !!selectedProjectId;
+  const selectedProjectPath = useMemo(
+    () => projects.find((project) => project.id === selectedProjectId)?.path,
+    [projects, selectedProjectId],
+  );
+  const availableModels = useMemo(
+    () =>
+      supportedModels
+        .filter((model) => model.providerKey === selectedProvider && model.isEnabled)
+        .sort((a, b) => a.sortOrder - b.sortOrder),
+    [selectedProvider, supportedModels],
+  );
+  const slashQuery = isChatMode && text.startsWith("/") ? text.slice(1).toLowerCase() : null;
+  const showPicker = isChatMode && !!selectedProvider && (skillPickerOpen || slashQuery !== null);
+  const totalSkills = skills.length;
   const filtered = useMemo(
-    () => (slashQuery === null ? [] : skills.filter((s) => s.name.toLowerCase().includes(slashQuery))),
-    [skills, slashQuery],
+    () => {
+      if (!showPicker) return [];
+      const query = slashQuery?.trim() ?? "";
+      const matchingSkills = query.length === 0
+        ? skills
+        : skills.filter((s) => s.name.toLowerCase().includes(query));
+      const sortedSkills = [...matchingSkills].sort((left, right) => left.name.localeCompare(right.name));
+      const selected = sortedSkills.filter((skill) => pickerSortSelection.includes(skill.name));
+      const remaining = sortedSkills.filter((skill) => !pickerSortSelection.includes(skill.name));
+      return [...selected, ...remaining];
+    },
+    [showPicker, slashQuery, skills, pickerSortSelection],
   );
 
-  const blocked = status === "running" || status === "waiting_approval" || status === "waiting_question";
-  const hasLaunchTarget = launchMode === "workflow" ? !!selectedWorkflowId : !!selectedStepId;
-  const canSend = hasLaunchTarget && !blocked && text.trim().length > 0 && !showPicker;
+  useEffect(() => {
+    if (!isChatMode) {
+      setSkillPickerOpen(false);
+      setSelectedSkills([]);
+      return;
+    }
 
-  // Add a skill (multi-select). Keeps the picker open so several can be chosen
-  // in a row; clearing the text closes it.
+    if (!selectedProvider) {
+      setSkillPickerOpen(false);
+      setSelectedSkills([]);
+      return;
+    }
+
+    setSkillPickerOpen(false);
+    setSelectedSkills([]);
+    void loadSkills(selectedProvider, selectedProjectPath);
+  }, [isChatMode, loadSkills, selectedProjectPath, selectedProvider]);
+
+  useEffect(() => {
+    if (!isChatMode) return;
+    if (availableModels.length === 0) return;
+    if (!selectedModel) return;
+    if (!availableModels.some((model) => model.modelId === selectedModel)) {
+      setSelectedModel(undefined);
+    }
+  }, [availableModels, isChatMode, selectedModel, setSelectedModel]);
+
+  useEffect(() => {
+    if (isChatMode) {
+      setControllerExpanded(true);
+    }
+  }, [isChatMode, runId]);
+
+  useEffect(() => {
+    setSelectedSkills((prev) => prev.filter((name) => skills.some((skill) => skill.name === name)));
+  }, [skills]);
+
+  useEffect(() => {
+    if (showPicker && !wasPickerVisibleRef.current) {
+      setPickerSortSelection(selectedSkills);
+    }
+    wasPickerVisibleRef.current = showPicker;
+  }, [showPicker, selectedSkills]);
+
+  useEffect(() => {
+    if (!showPicker) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const root = rootRef.current;
+      if (!root || root.contains(event.target as Node)) return;
+      setSkillPickerOpen(false);
+      if (slashQuery !== null) {
+        setText("");
+      }
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => window.removeEventListener("pointerdown", onPointerDown);
+  }, [showPicker, slashQuery]);
+
+  const blocked = status === "running" || status === "waiting_approval" || status === "waiting_question";
+
+  const canSend = isChatMode
+    ? hasSelectedProject && !!selectedProvider && !blocked && text.trim().length > 0 && !showPicker
+    : hasSelectedProject &&
+      (launchMode === "workflow" ? !!selectedWorkflowId : !!selectedStepId) &&
+      !blocked &&
+      text.trim().length > 0;
+
+  // Keep the skill picker multi-select active; the controller strip visually
+  // downplays the other options but still reflects the current runtime state.
   const pickSkill = (name: string) => {
     setSelectedSkills((prev) => (prev.includes(name) ? prev : [...prev, name]));
-    setText("");
   };
 
   const removeSkill = (name: string) => {
@@ -40,9 +164,10 @@ export function ChatInput(): React.ReactElement {
 
   const send = () => {
     if (!canSend) return;
-    void sendPrompt(text.trim(), selectedSkills);
+    void sendPrompt(text.trim(), isChatMode ? selectedSkills : undefined);
     setText("");
     setSelectedSkills([]);
+    setSkillPickerOpen(false);
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -52,8 +177,146 @@ export function ChatInput(): React.ReactElement {
     }
   };
 
+  const placeholder = blocked
+    ? "Waiting for the current turn…"
+    : !hasSelectedProject
+      ? "Select a project first."
+    : isChatMode
+      ? selectedProvider
+        ? "Type a message, or / to pick a skill. Enter to send."
+        : "Select a provider first."
+      : launchMode === "workflow"
+        ? selectedWorkflowId
+          ? "Type a message. Enter to send."
+          : "Select a workflow first."
+        : selectedStepId
+          ? "Type a message. Enter to send."
+          : "Select a step first.";
+
   return (
-    <div className="chat-input">
+    <div ref={rootRef} className={`chat-input ${!hasSelectedProject ? "chat-input-locked" : ""}`}>
+      {isChatMode && (
+        <div className={`chat-controller ${controllerExpanded ? "expanded" : "collapsed"}`}>
+          {controllerExpanded && (
+            <>
+              <div className="chat-controller-top">
+                <div className="chat-controller-skill-strip">
+                  <span className="chat-controller-label">Skills</span>
+                  <button
+                    type="button"
+                    className={`skill-select-button ${showPicker ? "active" : ""}`}
+                    onClick={() => setSkillPickerOpen((current) => !current)}
+                    aria-expanded={showPicker}
+                    disabled={!selectedProvider}
+                    aria-label={
+                      selectedProvider
+                        ? `Selected skills ${selectedSkills.length} of ${totalSkills}`
+                        : "Select skills"
+                    }
+                  >
+                    <span className="skill-select-icon" aria-hidden="true">
+                      <span />
+                      <span />
+                      <span />
+                    </span>
+                    <span className="skill-select-text">
+                      {!selectedProvider
+                        ? "Select provider first"
+                        : `Selected skills ${selectedSkills.length}/${totalSkills}`}
+                    </span>
+                    <span className="skill-select-caret" aria-hidden="true">
+                      ▾
+                    </span>
+                  </button>
+                </div>
+                <div className="chat-controller-head">
+                  <div className="chat-controller-switch chat-controller-switch-top">
+                    <span className="chat-controller-label">YOLO</span>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={yoloMode}
+                      className={`yolo-toggle ${yoloMode ? "active" : ""}`}
+                      onClick={() => setYoloMode(!yoloMode)}
+                    >
+                      <span className="yolo-toggle-track" aria-hidden="true">
+                        <span className="yolo-toggle-thumb" />
+                      </span>
+                      <span className="yolo-toggle-label">{yoloMode ? "On" : "Off"}</span>
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    className="chat-controller-toggle"
+                    onClick={() => setControllerExpanded(false)}
+                    aria-label="Collapse chat controls"
+                  >
+                    <span aria-hidden="true">▾</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="chat-controller-grid">
+                <label className="chat-controller-field muted">
+                  <span>Provider</span>
+                  <select
+                    value={selectedProvider ?? ""}
+                    onChange={(e) =>
+                      selectProvider(e.target.value ? (e.target.value as ProviderKey) : undefined)
+                    }
+                  >
+                    <option value="">Auto</option>
+                    {PROVIDER_OPTIONS.map((provider) => (
+                      <option key={provider.value} value={provider.value}>
+                        {provider.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="chat-controller-field muted">
+                  <span>Model</span>
+                  {availableModels.length > 0 ? (
+                    <select
+                      value={selectedModel ?? ""}
+                      onChange={(e) => setSelectedModel(e.target.value || undefined)}
+                    >
+                      <option value="">Default</option>
+                      {availableModels.map((model) => (
+                        <option key={model.id} value={model.modelId}>
+                          {model.displayName}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      value={selectedModel ?? ""}
+                      onChange={(e) => setSelectedModel(e.target.value || undefined)}
+                      placeholder="Default"
+                    />
+                  )}
+                </label>
+
+                <label className="chat-controller-field muted">
+                  <span>Reasoning</span>
+                  <select
+                    value={reasoningEffort ?? ""}
+                    onChange={(e) => setReasoningEffort(e.target.value || undefined)}
+                  >
+                    {REASONING_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
       {showPicker && (
         <div className="skill-picker">
           <div className="skill-picker-head">Skills · pick one or more</div>
@@ -63,13 +326,16 @@ export function ChatInput(): React.ReactElement {
             return (
               <button
                 key={s.name}
+                type="button"
                 className={`skill-item ${active ? "skill-item-active" : ""}`}
                 onClick={() => (active ? removeSkill(s.name) : pickSkill(s.name))}
               >
                 <span className="skill-mark">{active ? "☑" : "☐"}</span>
-                <span className="skill-name">/{s.name}</span>
-                {s.description && <span className="skill-desc">{s.description}</span>}
-                <span className={`skill-src src-${s.source}`}>{s.source}</span>
+                <span className="skill-copy">
+                  <span className={`skill-name ${active ? "skill-name-active" : "skill-name-idle"}`}>/{s.name}</span>
+                  {s.description && <span className="skill-desc" title={s.description}>{s.description}</span>}
+                </span>
+                <span className={`skill-src src-${s.source}`}>{skillSourceLabel(s.source)}</span>
               </button>
             );
           })}
@@ -77,30 +343,24 @@ export function ChatInput(): React.ReactElement {
       )}
 
       <div className="input-bar">
-        {selectedSkills.length > 0 && (
-          <div className="skill-chips">
-            {selectedSkills.map((name) => (
-              <span key={name} className="skill-chip">
-                /{name}
-                <button className="chip-x" onClick={() => removeSkill(name)} aria-label={`remove ${name}`}>
-                  ×
-                </button>
-              </span>
-            ))}
-          </div>
+        {isChatMode && !controllerExpanded && (
+          <button
+            type="button"
+            className="chat-controller-toggle chat-controller-toggle-inline"
+            onClick={() => setControllerExpanded(true)}
+            aria-label="Expand chat controls"
+          >
+            <span className="chat-controller-menu-icon" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </span>
+          </button>
         )}
         <textarea
           className="text-area"
           rows={2}
-          placeholder={
-            blocked
-              ? "Waiting for the current turn…"
-              : hasLaunchTarget
-                ? "Type a message, or / to pick a skill. Enter to send."
-                : launchMode === "workflow"
-                  ? "Select a workflow first."
-                  : "Select a step first."
-          }
+          placeholder={placeholder}
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKeyDown}
@@ -113,6 +373,19 @@ export function ChatInput(): React.ReactElement {
 
       {(pendingApproval || pendingQuestion) && (
         <div className="input-note">Action required above before continuing.</div>
+      )}
+
+      {!hasSelectedProject && (
+        <div className={`chat-input-guard ${isChatMode ? "" : "chat-input-guard-compact"}`.trim()} aria-live="polite">
+          <div className={`chat-input-guard-card ${isChatMode ? "" : "chat-input-guard-card-compact"}`.trim()}>
+            <div className="chat-input-guard-title">Select a project first</div>
+            <div className="chat-input-guard-copy">
+              {isChatMode
+                ? "Choose a project before using chat, skills, or send."
+                : "Choose a project before continuing in workflow mode."}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

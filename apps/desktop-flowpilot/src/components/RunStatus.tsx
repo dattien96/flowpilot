@@ -34,6 +34,7 @@ export function RunStatus(): React.ReactElement {
   const runHistory = useStore((s) => s.runHistory);
   const historyOpen = useStore((s) => s.historyOpen);
   const historyLoading = useStore((s) => s.historyLoading);
+  const historyLoadError = useStore((s) => s.historyLoadError);
   const resetRun = useStore((s) => s.resetRun);
   const stop = useStore((s) => s.stop);
   const toggleRunHistory = useStore((s) => s.toggleRunHistory);
@@ -65,7 +66,7 @@ export function RunStatus(): React.ReactElement {
   const active = status === "running" || status === "waiting_approval" || status === "waiting_question";
   const ready = status === "idle" && !runId && projects.length > 0;
   const statusClass = ready ? "ready" : status;
-  const statusLabel = ready ? "Ready" : LABEL[status];
+  const statusLabel = ready ? "Run Ready" : LABEL[status];
 
   return (
     <div className="run-status">
@@ -86,6 +87,8 @@ export function RunStatus(): React.ReactElement {
             <div className="run-history-popover" role="dialog" aria-label="Run history">
               {historyLoading ? (
                 <div className="run-history-empty">Loading...</div>
+              ) : historyLoadError ? (
+                <div className="run-history-empty run-history-error">Failed to load history</div>
               ) : runHistory.length === 0 ? (
                 <div className="run-history-empty">No runs for this project</div>
               ) : (

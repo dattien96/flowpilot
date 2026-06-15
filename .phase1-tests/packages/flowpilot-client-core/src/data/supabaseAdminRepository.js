@@ -298,16 +298,24 @@ class SupabaseAdminRepository {
         assertNoError(error, "Unable to remove team member.");
     }
     async listTeamsByProject(projectId) {
-        const { data, error } = await this.supabase.from("project_team_links").select("team_id, teams(*)").eq("project_id", projectId);
+        const { data, error } = await this.supabase.from("project_teams").select("team_id, teams(*)").eq("project_id", projectId);
         assertNoError(error, "Unable to list project teams.");
-        return (data ?? []).map((row) => mapTeam(row.teams));
+        return (data ?? [])
+            .map((row) => {
+            if (Array.isArray(row.teams)) {
+                return row.teams[0] ?? null;
+            }
+            return row.teams ?? null;
+        })
+            .filter((row) => Boolean(row))
+            .map(mapTeam);
     }
     async setProjectTeams(projectId, teamIds) {
-        const { error: deleteError } = await this.supabase.from("project_team_links").delete().eq("project_id", projectId);
+        const { error: deleteError } = await this.supabase.from("project_teams").delete().eq("project_id", projectId);
         assertNoError(deleteError, "Unable to update project team links.");
         if (teamIds.length === 0)
             return;
-        const { error } = await this.supabase.from("project_team_links").insert(teamIds.map((teamId) => ({ project_id: projectId, team_id: teamId })));
+        const { error } = await this.supabase.from("project_teams").insert(teamIds.map((teamId) => ({ project_id: projectId, team_id: teamId })));
         assertNoError(error, "Unable to update project team links.");
     }
     async listIntegrations() {
@@ -342,20 +350,32 @@ class SupabaseAdminRepository {
         return mapIntegration(data);
     }
     async listLinkedIntegrations(projectId) {
-        const { data, error } = await this.supabase.from("project_integration_links").select("integration_id, integrations(*)").eq("project_id", projectId);
+        const { data, error } = await this.supabase.from("project_mcp_links").select("integration_id, integrations(*)").eq("project_id", projectId);
         assertNoError(error, "Unable to list linked integrations.");
-        return (data ?? []).map((row) => mapIntegration(row.integrations));
+        return (data ?? [])
+            .map((row) => {
+            if (Array.isArray(row.integrations)) {
+                return row.integrations[0] ?? null;
+            }
+            return row.integrations ?? null;
+        })
+            .filter((row) => Boolean(row))
+            .map(mapIntegration);
     }
     async setProjectIntegration(projectId, type, integrationId) {
         const linked = await this.listLinkedIntegrations(projectId);
-        await Promise.all(linked.filter((item) => item.type === type).map((item) => this.supabase.from("project_integration_links").delete().eq("project_id", projectId).eq("integration_id", item.id)));
+        await Promise.all(linked.filter((item) => item.type === type).map((item) => this.supabase.from("project_mcp_links").delete().eq("project_id", projectId).eq("integration_id", item.id)));
         if (!integrationId)
             return;
-        const { error } = await this.supabase.from("project_integration_links").insert({ project_id: projectId, integration_id: integrationId });
+        const { error } = await this.supabase.from("project_mcp_links").insert({ project_id: projectId, integration_id: integrationId, type });
         assertNoError(error, "Unable to link integration.");
     }
     async listWorkflows() {
-        const { data, error } = await this.supabase.from("workflows").select("*").order("updated_at", { ascending: false });
+        const { data, error } = await this.supabase
+            .from("workflows")
+            .select("*")
+            .neq("created_by", "flowpilot-runtime")
+            .order("updated_at", { ascending: false });
         assertNoError(error, "Unable to list workflows.");
         return (data ?? []).map(mapWorkflow);
     }
@@ -399,12 +419,42 @@ class SupabaseAdminRepository {
         return (data ?? []).map(mapWorkflowStep);
     }
     async listStepDefinitions() {
-        const { data, error } = await this.supabase.from("workflow_step_definitions").select("*").order("updated_at", { ascending: false });
-        assertNoError(error, "Unable to list step definitions.");
-        return (data ?? []).map(mapStepDefinition);
+        const [definitionsResult, inputBindingsResult, outputBindingsResult] = await Promise.all([
+            this.supabase.from("step_definitions").select("*").order("name", { ascending: true }),
+            this.supabase
+                .from("step_input_artifact_definitions")
+                .select("step_type, artifact_definition_key, order_index")
+                .order("order_index", { ascending: true }),
+            this.supabase
+                .from("step_output_artifact_definitions")
+                .select("step_type, artifact_definition_key, order_index")
+                .order("order_index", { ascending: true }),
+        ]);
+        assertNoError(definitionsResult.error, "Unable to list step definitions.");
+        assertNoError(inputBindingsResult.error, "Unable to list step input artifact bindings.");
+        assertNoError(outputBindingsResult.error, "Unable to list step output artifact bindings.");
+        const inputBindings = new Map();
+        for (const row of inputBindingsResult.data ?? []) {
+            const stepType = String(row.step_type);
+            const current = inputBindings.get(stepType) ?? [];
+            current[Number(row.order_index ?? current.length)] = String(row.artifact_definition_key);
+            inputBindings.set(stepType, current.filter(Boolean));
+        }
+        const outputBindings = new Map();
+        for (const row of outputBindingsResult.data ?? []) {
+            const stepType = String(row.step_type);
+            const current = outputBindings.get(stepType) ?? [];
+            current[Number(row.order_index ?? current.length)] = String(row.artifact_definition_key);
+            outputBindings.set(stepType, current.filter(Boolean));
+        }
+        return (definitionsResult.data ?? []).map((row) => mapStepDefinition({
+            ...row,
+            input_artifact_definitions: inputBindings.get(String(row.step_type)) ?? [],
+            output_artifact_definitions: outputBindings.get(String(row.step_type)) ?? [],
+        }));
     }
     async saveStepDefinition(step) {
-        const { data, error } = await this.supabase.from("workflow_step_definitions").upsert({
+        const { data, error } = await this.supabase.from("step_definitions").upsert({
             step_type: step.stepType,
             name: step.name,
             description: step.description,
@@ -418,12 +468,44 @@ class SupabaseAdminRepository {
             reasoning_effort: step.reasoningEffort,
             yolo_mode: step.yoloMode,
             agent_type: step.agentType,
+            updated_at: now(),
+        }, { onConflict: "step_type" }).select("*").single();
+        assertNoError(error, "Unable to save step definition.");
+        const { error: deleteInputError } = await this.supabase
+            .from("step_input_artifact_definitions")
+            .delete()
+            .eq("step_type", step.stepType);
+        assertNoError(deleteInputError, "Unable to reset step input artifact bindings.");
+        const { error: deleteOutputError } = await this.supabase
+            .from("step_output_artifact_definitions")
+            .delete()
+            .eq("step_type", step.stepType);
+        assertNoError(deleteOutputError, "Unable to reset step output artifact bindings.");
+        if (step.inputArtifactDefinitions.length > 0) {
+            const { error: inputError } = await this.supabase
+                .from("step_input_artifact_definitions")
+                .insert(step.inputArtifactDefinitions.map((artifactDefinitionKey, orderIndex) => ({
+                step_type: step.stepType,
+                artifact_definition_key: artifactDefinitionKey,
+                order_index: orderIndex,
+            })));
+            assertNoError(inputError, "Unable to save step input artifact bindings.");
+        }
+        if (step.outputArtifactDefinitions.length > 0) {
+            const { error: outputError } = await this.supabase
+                .from("step_output_artifact_definitions")
+                .insert(step.outputArtifactDefinitions.map((artifactDefinitionKey, orderIndex) => ({
+                step_type: step.stepType,
+                artifact_definition_key: artifactDefinitionKey,
+                order_index: orderIndex,
+            })));
+            assertNoError(outputError, "Unable to save step output artifact bindings.");
+        }
+        return mapStepDefinition({
+            ...data,
             input_artifact_definitions: step.inputArtifactDefinitions,
             output_artifact_definitions: step.outputArtifactDefinitions,
-            updated_at: now(),
-        }).select("*").single();
-        assertNoError(error, "Unable to save step definition.");
-        return mapStepDefinition(data);
+        });
     }
     async listWorkflowRuns(projectId) {
         let query = this.supabase.from("workflow_runs").select("*").order("started_at", { ascending: false });

@@ -22,6 +22,7 @@ export interface ProjectRepository {
   listProjects(): Promise<Project[]>;
   createProject(input: Partial<Project> & Pick<Project, "name" | "description" | "platform" | "repositoryUrl">): Promise<Project>;
   updateProject(projectId: string, patch: Partial<Project>): Promise<Project>;
+  deleteProject(projectId: string): Promise<void>;
   listBindings(projectId: string): Promise<ProjectWorkspaceBinding[]>;
   saveBinding(projectId: string, binding: Partial<ProjectWorkspaceBinding> & { localPath: string }): Promise<ProjectWorkspaceBinding>;
   deleteBinding(bindingId: string): Promise<void>;
@@ -30,8 +31,11 @@ export interface ProjectRepository {
 export interface TeamRepository {
   listTeams(): Promise<Team[]>;
   createTeam(name: string): Promise<Team>;
+  updateTeam(teamId: string, name: string): Promise<Team>;
+  deleteTeam(teamId: string): Promise<void>;
   listMembers(teamId: string): Promise<TeamMember[]>;
   addMember(member: Omit<TeamMember, "id" | "createdAt" | "updatedAt">): Promise<TeamMember>;
+  updateMember(memberId: string, patch: Partial<Omit<TeamMember, "id" | "teamId" | "createdAt" | "updatedAt">>): Promise<TeamMember>;
   removeMember(memberId: string): Promise<void>;
   listTeamsByProject(projectId: string): Promise<Team[]>;
   setProjectTeams(projectId: string, teamIds: string[]): Promise<void>;
@@ -40,9 +44,11 @@ export interface TeamRepository {
 export interface WorkflowRepository {
   listWorkflows(): Promise<Workflow[]>;
   saveWorkflow(workflow: Partial<Workflow> & { steps?: Partial<WorkflowStep>[] }): Promise<Workflow>;
+  deleteWorkflow(workflowId: string): Promise<void>;
   listWorkflowSteps(workflowId: string): Promise<WorkflowStep[]>;
   listStepDefinitions(): Promise<StepDefinition[]>;
   saveStepDefinition(step: StepDefinition): Promise<StepDefinition>;
+  deleteStepDefinition(stepType: string): Promise<void>;
   listWorkflowRuns(projectId?: string): Promise<WorkflowRun[]>;
 }
 

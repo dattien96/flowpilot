@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -190,12 +191,23 @@ func TestFinalizeLocalSnapshotShapesSummaryAndRag(t *testing.T) {
 func TestSupabaseCatalogStoreShaping(t *testing.T) {
 	store := NewSupabaseCatalogStore(SupabaseWorkspaceConfig{APIURL: "https://proj.supabase.co"}, "k")
 
-	cap := withMockHTTP(t, 200, []byte(`[{"id":"p1","name":"Acme"}]`))
+	usableBinding := t.TempDir()
+	cap := withMockHTTP(t, 200, []byte(`[
+		{
+			"id":"p1",
+			"name":"Acme",
+			"directory_path":"/missing/primary",
+			"project_workspace_bindings":[
+				{"local_path":"/missing/binding"},
+				{"local_path":`+strconv.Quote(usableBinding)+`}
+			]
+		}
+	]`))
 	projects, err := store.ListProjects(context.Background())
-	if err != nil || len(projects) != 1 || projects[0].Name != "Acme" {
+	if err != nil || len(projects) != 1 || projects[0].Name != "Acme" || projects[0].Path != usableBinding {
 		t.Fatalf("projects = %+v err=%v", projects, err)
 	}
-	if !strings.Contains((*cap)[0].endpoint, "/rest/v1/projects?select=id,name") {
+	if !strings.Contains((*cap)[0].endpoint, "/rest/v1/projects?select=id,name,directory_path,project_workspace_bindings(local_path)") {
 		t.Fatalf("projects endpoint = %s", (*cap)[0].endpoint)
 	}
 
@@ -215,5 +227,15 @@ func TestSupabaseCatalogStoreShaping(t *testing.T) {
 	}
 	if !strings.Contains((*cap3)[0].endpoint, "step_definitions?select=step_type,name") {
 		t.Fatalf("steps endpoint = %s", (*cap3)[0].endpoint)
+	}
+
+	cap4 := withMockHTTP(t, 200, []byte(`[{"id":"ws1","workflow_id":"w1","step_type":"plan","order_index":0,"step_definitions":{"name":"Plan","required_skills":["planner"]}}]`))
+	workflowSteps, err := store.ListWorkflowSteps(context.Background(), "w1")
+	if err != nil || len(workflowSteps) != 1 || workflowSteps[0].ID != "ws1" || workflowSteps[0].DefaultSkill != "planner" {
+		t.Fatalf("workflow steps = %+v err=%v", workflowSteps, err)
+	}
+	if !strings.Contains((*cap4)[0].endpoint, "workflow_steps?workflow_id=eq.w1") ||
+		!strings.Contains((*cap4)[0].endpoint, "is_enabled=is.true") {
+		t.Fatalf("workflow steps endpoint = %s", (*cap4)[0].endpoint)
 	}
 }

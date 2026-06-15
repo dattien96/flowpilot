@@ -2,6 +2,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { AuthRepository, AuthSession } from "@flowpilot/client-core";
 import type { RuntimeConfigRepository, SupabaseRuntimeStatus } from "@flowpilot/client-core";
 import type { HttpClient } from "@flowpilot/client-core";
+import { desktopBridgeFetch } from "./desktopBridgeHttp";
 
 type PersistedAuthSession = {
   clientKey: string;
@@ -231,7 +232,9 @@ export class DesktopSupabaseAuthRepository implements AuthRepository {
 
     const nextKey = this.clientIdentity(runtimeStatus);
     if (!this.client || this.clientKey !== nextKey) {
-      this.client = createClient(runtimeStatus.apiUrl, runtimeStatus.anonKey);
+      this.client = createClient(runtimeStatus.apiUrl, runtimeStatus.anonKey, {
+        global: { fetch: desktopBridgeFetch },
+      });
       this.clientKey = nextKey;
     }
     return this.client;

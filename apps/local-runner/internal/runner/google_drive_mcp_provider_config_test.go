@@ -770,9 +770,9 @@ func TestEnsureGoogleDriveMcpProviderConfig_ProxyConfigsIncludeSharedAccountHome
 					t.Fatalf("expected proxy env flag to be omitted, got %#v", server.Env)
 				}
 				// 04-04: proxy approval is YOLO-derived (no standalone =approve).
-				// This case runs yolo=false → on-request.
-				if server.ApprovalMode != "on-request" {
-					t.Fatalf("expected on-request approval for proxy path (yolo=false), got %q", server.ApprovalMode)
+				// This case runs yolo=false → prompt.
+				if server.ApprovalMode != "prompt" {
+					t.Fatalf("expected prompt approval for proxy path (yolo=false), got %q", server.ApprovalMode)
 				}
 			case "gemini":
 				var config geminiSettings
@@ -830,11 +830,11 @@ func TestEnsureGoogleDriveMcpProviderConfig_ProxyCodexApprovalAndToolSurfaceFoll
 		wantTools    []string
 	}{
 		{
-			// 04-04: yolo=false → on-request (proxy approval is YOLO-derived).
-			name:         "read_only_on_request",
+			// 04-04: yolo=false → prompt (proxy approval is YOLO-derived).
+			name:         "read_only_prompt",
 			mode:         "read_only",
 			yoloMode:     false,
-			wantApproval: "on-request",
+			wantApproval: "prompt",
 			wantTools:    googleDriveMcpReadOnlyTools,
 		},
 		{
@@ -1017,8 +1017,8 @@ func TestEnsureGoogleDriveMcpProviderConfig_RewritesInvalidExistingConfigs(t *te
 				assertStringSliceEqual(t, server.Args[:len(expectedPrefix)], expectedPrefix)
 				assertStringSliceEqual(t, server.Args, expectedArgs)
 				// 04-04: proxy approval is YOLO-derived; this rewrite runs yolo=false.
-				if server.ApprovalMode != "on-request" {
-					t.Fatalf("expected proxy approval mode 'on-request' (yolo=false), got %q", server.ApprovalMode)
+				if server.ApprovalMode != "prompt" {
+					t.Fatalf("expected proxy approval mode 'prompt' (yolo=false), got %q", server.ApprovalMode)
 				}
 				if server.Env[googleDriveProxyAccountIDEnv] == "" {
 					t.Fatalf("expected account id env to be populated, got %#v", server.Env)

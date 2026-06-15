@@ -281,7 +281,7 @@ func (r *Runner) loadProviderAccountState() (providerAccountState, error) {
 	}
 
 	var state providerAccountState
-	if err := json.Unmarshal(raw, &state); err != nil {
+	if err := json.Unmarshal(stripUTF8BOM(raw), &state); err != nil {
 		return providerAccountState{}, err
 	}
 	if state.Accounts == nil {
@@ -360,13 +360,28 @@ func (r *Runner) syncProviderAccounts(accounts []ProviderAccount) ([]ProviderAcc
 			}
 		} else if defaultIndex >= 0 {
 			account := synced[defaultIndex]
-			if account.AuthStatus != "failed" {
-				account.AuthStatus = "failed"
-				changed = true
-			}
-			if account.IsActive {
-				account.IsActive = false
-				changed = true
+			if HasLocalAuthAtPath(providerKey, account.HomePath) {
+				if account.AuthStatus != "connected" {
+					account.AuthStatus = "connected"
+					changed = true
+				}
+				if account.ExtraEnv == nil {
+					account.ExtraEnv = map[string]string{}
+					changed = true
+				}
+				if !hasActiveProviderAccount(synced, providerKey) {
+					account.IsActive = true
+					changed = true
+				}
+			} else {
+				if account.AuthStatus != "failed" {
+					account.AuthStatus = "failed"
+					changed = true
+				}
+				if account.IsActive {
+					account.IsActive = false
+					changed = true
+				}
 			}
 			synced[defaultIndex] = account
 		}
@@ -1005,7 +1020,7 @@ func isValidJSONConfigFile(path string) bool {
 	}
 
 	var payload any
-	if err := json.Unmarshal(data, &payload); err != nil {
+	if err := json.Unmarshal(stripUTF8BOM(data), &payload); err != nil {
 		return false
 	}
 
