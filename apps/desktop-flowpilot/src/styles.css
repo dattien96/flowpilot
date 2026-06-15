@@ -1926,57 +1926,75 @@ input {
   font-size: 11px;
   color: var(--text);
 }
+/* Horizontal step stepper */
 .gdrive-stepper {
   display: flex;
-  gap: 4px;
+  align-items: flex-start;
   overflow-x: auto;
-  padding: 4px 0;
+  padding: 8px 0;
+}
+/* connector is a direct flex sibling of .gdrive-step buttons */
+.gdrive-connector-wrap {
+  flex: 1;
+  min-width: 16px;
+  /* eyebrow (~12px) + half circle (16px) = 28px from top */
+  padding-top: 28px;
+}
+.gdrive-connector-line {
+  height: 2px;
+  background: var(--border);
+  transition: background 0.2s;
+}
+.gdrive-connector-line.done {
+  background: rgba(63, 185, 80, 0.5);
 }
 .gdrive-step {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
-  flex: 1;
-  min-width: 80px;
-  padding: 8px 4px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--bg-3);
+  gap: 0;
+  min-width: 68px;
+  max-width: 90px;
+  padding: 0 2px;
+  background: none;
+  border: none;
   cursor: pointer;
   color: var(--text-dim);
+  flex-shrink: 0;
 }
-.gdrive-step:hover {
+.gdrive-step:hover .gdrive-step-circle {
   border-color: var(--accent);
 }
-.gdrive-step.active {
-  border-color: var(--accent);
-  background: rgba(76, 141, 255, 0.08);
-  color: var(--text);
-}
-.gdrive-step.done {
-  border-color: rgba(63, 185, 80, 0.35);
-  background: rgba(63, 185, 80, 0.06);
-  color: var(--ok);
+.gdrive-step-eyebrow {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+  white-space: nowrap;
 }
 .gdrive-step-circle {
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
   border: 2px solid var(--border);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 700;
+  background: var(--bg-3);
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
 .gdrive-step-circle.active {
   border-color: var(--accent);
   color: var(--accent);
+  box-shadow: 0 0 0 4px rgba(76, 141, 255, 0.18);
 }
 .gdrive-step-circle.done {
   border-color: var(--ok);
-  background: rgba(63, 185, 80, 0.15);
+  background: rgba(63, 185, 80, 0.12);
   color: var(--ok);
 }
 .gdrive-step-circle.warn {
@@ -1988,9 +2006,17 @@ input {
   color: var(--err);
 }
 .gdrive-step-label {
-  font-size: 11px;
+  margin-top: 6px;
+  font-size: 10px;
+  font-weight: 500;
   text-align: center;
-  line-height: 1.3;
+  line-height: 1.35;
+  color: var(--text-dim);
+  white-space: normal;
+}
+.gdrive-step-label.active {
+  color: var(--text);
+  font-weight: 600;
 }
 .gdrive-step-header {
   display: flex;
@@ -2003,6 +2029,11 @@ input {
   color: var(--text-dim);
   margin: 4px 0 0;
   line-height: 1.5;
+}
+.gdrive-referrer-grid {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
 }
 .gdrive-guide {
   margin-top: 12px;

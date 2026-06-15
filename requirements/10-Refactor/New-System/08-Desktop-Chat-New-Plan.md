@@ -1,6 +1,7 @@
 
 2 mode: normal chat - workflow
 normal phai co du change model, yolo
+See Task-044-Desktop-Chat-Mode-Split-And-Provider-Controls.md
 
 page /workflow-runs
 co ca vu kill process before timeout setting o page proj
