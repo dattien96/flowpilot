@@ -91,7 +91,11 @@ func (c *interactiveCatalog) ListWorkflowSteps(_ context.Context, workflowID str
 	return out, nil
 }
 
-func (c *interactiveCatalog) listSkills() []ProviderSkill { return c.skills }
+// listSkills returns skills for the given provider and workspace directory.
+// The fake catalog returns a static set; real adapters would resolve provider
+// home skills + workspace .agents/skills + .codex/.claude/skills merged with
+// workspace > flowpilot > provider precedence (T-6).
+func (c *interactiveCatalog) listSkills(_ string, _ string) []ProviderSkill { return c.skills }
 
 // stepExists reports whether a step id is known (turn validation).
 func (c *interactiveCatalog) stepExists(stepID string) bool {

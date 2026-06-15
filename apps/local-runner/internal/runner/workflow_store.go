@@ -36,6 +36,14 @@ type InteractiveStateStore interface {
 	UpsertQuestion(ctx context.Context, question ProviderQuestionState) error
 }
 
+// SessionHistoryReader is an optional extension of InteractiveStateStore that
+// lets projectRunHistory rehydrate run history after a runner/app-server restart
+// (BUG-060 F-1). Stores that implement this allow history to survive the
+// process-scoped in-memory map being empty on a new service instance.
+type SessionHistoryReader interface {
+	ListProviderSessionsByProject(ctx context.Context, projectID string) ([]ProviderSessionState, error)
+}
+
 type ProviderSessionState struct {
 	RunID             string
 	ProjectID         string
@@ -182,4 +190,16 @@ func (f *fakeWorkflowStore) UpsertQuestion(_ context.Context, question ProviderQ
 	defer f.mu.Unlock()
 	f.questions[question.QuestionID] = question
 	return nil
+}
+
+func (f *fakeWorkflowStore) ListProviderSessionsByProject(_ context.Context, projectID string) ([]ProviderSessionState, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []ProviderSessionState
+	for _, s := range f.sessions {
+		if s.ProjectID == projectID {
+			out = append(out, s)
+		}
+	}
+	return out, nil
 }
