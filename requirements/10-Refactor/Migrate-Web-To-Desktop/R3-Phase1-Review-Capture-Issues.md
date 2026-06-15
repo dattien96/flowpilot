@@ -20,9 +20,10 @@ after PHASE 1 of R3-Migrate-Web-To-Desktop.md + R3-Phase1-Checklist.md was imple
     2. (DONE) Update for both workflow and step
   4. (DONE) Workflow Detail missed: Reasoning effort + YOLO mode setting
   5. (DONE) Step detail missed: Required MCPs + Required skills + Prompt base + Subagent + Reasoning + Input artifact definitions + Ouput artifact definitions
-6. Page Teams: ref /teams?teamId=id in web
-- same above when we miss: del team, missing creating new team in another page
-- missing member detail page
+6. (DONE) Page Teams: ref /teams?teamId=id in web
+- (DONE) del team: confirmation modal requiring typed "delete"
+- (DONE) creating new team in another page (separate create view with back button)
+- (DONE) member detail page: clicking a member opens a modal with all fields editable (name, email, jira, role, level, skills, capacity) + save/remove
 6. Google Driver tab: refer /settings/google-drive-setup in web
 - BIG BUG: completely missing comparing with web. Check again
 7. Artifacts page: refer /artifacts?tab=generated in web

@@ -31,8 +31,11 @@ export interface ProjectRepository {
 export interface TeamRepository {
   listTeams(): Promise<Team[]>;
   createTeam(name: string): Promise<Team>;
+  updateTeam(teamId: string, name: string): Promise<Team>;
+  deleteTeam(teamId: string): Promise<void>;
   listMembers(teamId: string): Promise<TeamMember[]>;
   addMember(member: Omit<TeamMember, "id" | "createdAt" | "updatedAt">): Promise<TeamMember>;
+  updateMember(memberId: string, patch: Partial<Omit<TeamMember, "id" | "teamId" | "createdAt" | "updatedAt">>): Promise<TeamMember>;
   removeMember(memberId: string): Promise<void>;
   listTeamsByProject(projectId: string): Promise<Team[]>;
   setProjectTeams(projectId: string, teamIds: string[]): Promise<void>;

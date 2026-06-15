@@ -42,3 +42,10 @@ Separate from approvals, FlowPilot can ask the user a structured question (confi
 
 - ask_user MCP tool — a FlowPilot-registered custom tool (not built-in) the model discovers via tools/list and may call → best-effort, can not make sure it asked users
 - Workflow-driven — the ported Go state machine emits user_question_required directly at a defined step → deterministic (use for required asks).
+
+
+# Test for codex
+Test all items in this checklist: 06-DOD-And-Verification-Checklist.md
+
+# Test for claude
+Follow 07-Claude-Adapter-Plan.md

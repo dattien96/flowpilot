@@ -327,6 +327,22 @@ export class SupabaseAdminRepository implements
     return mapTeam(data);
   }
 
+  async updateTeam(teamId: string, name: string) {
+    const { data, error } = await this.supabase
+      .from("teams")
+      .update({ name, updated_at: now() })
+      .eq("id", teamId)
+      .select("*")
+      .single();
+    assertNoError(error, "Unable to update team.");
+    return mapTeam(data);
+  }
+
+  async deleteTeam(teamId: string) {
+    const { error } = await this.supabase.from("teams").delete().eq("id", teamId);
+    assertNoError(error, "Unable to delete team.");
+  }
+
   async listMembers(teamId: string) {
     const { data, error } = await this.supabase.from("team_members").select("*").eq("team_id", teamId).order("name", { ascending: true });
     assertNoError(error, "Unable to list team members.");
@@ -345,6 +361,25 @@ export class SupabaseAdminRepository implements
       weekly_capacity_hours: member.weeklyCapacityHours,
     }).select("*").single();
     assertNoError(error, "Unable to add team member.");
+    return mapMember(data);
+  }
+
+  async updateMember(memberId: string, patch: Partial<Omit<TeamMember, "id" | "teamId" | "createdAt" | "updatedAt">>) {
+    const updateFields: Record<string, unknown> = { updated_at: now() };
+    if (patch.name !== undefined) updateFields.name = patch.name;
+    if (patch.email !== undefined) updateFields.email = patch.email;
+    if (patch.jiraAccountId !== undefined) updateFields.jira_account_id = patch.jiraAccountId;
+    if (patch.role !== undefined) updateFields.role = patch.role;
+    if (patch.levelLabel !== undefined) updateFields.level_label = patch.levelLabel;
+    if (patch.skillTags !== undefined) updateFields.skill_tags = patch.skillTags;
+    if (patch.weeklyCapacityHours !== undefined) updateFields.weekly_capacity_hours = patch.weeklyCapacityHours;
+    const { data, error } = await this.supabase
+      .from("team_members")
+      .update(updateFields)
+      .eq("id", memberId)
+      .select("*")
+      .single();
+    assertNoError(error, "Unable to update team member.");
     return mapMember(data);
   }
 
