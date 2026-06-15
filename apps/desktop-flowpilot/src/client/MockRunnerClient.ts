@@ -271,8 +271,14 @@ export class MockRunnerClient implements RunnerClient {
     });
   }
 
-  async listSkills(_provider: string, _cwd?: string): Promise<ProviderSkill[]> {
+  async listSkills(provider: string, _cwd?: string): Promise<ProviderSkill[]> {
     await delay(40);
+    if (provider === "claude") {
+      return MOCK_SKILLS.filter((skill) => skill.name !== "test-writer");
+    }
+    if (provider === "gemini") {
+      return MOCK_SKILLS.filter((skill) => skill.name === "architect" || skill.name === "reviewer");
+    }
     return MOCK_SKILLS;
   }
 

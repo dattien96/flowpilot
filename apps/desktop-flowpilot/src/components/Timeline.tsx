@@ -218,7 +218,7 @@ export function Timeline(): React.ReactElement {
 
   return (
     <div className="timeline">
-      {timeline.length === 0 && <div className="empty">Select a workflow/step and send a prompt to begin.</div>}
+      {timeline.length === 0 && <div className="empty">Select a project, choose your chat controls, and send a prompt to begin.</div>}
       {timelineGroups.map((it) => (
         <Item key={it.id} it={it} />
       ))}

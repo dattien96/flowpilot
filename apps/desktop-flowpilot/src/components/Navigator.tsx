@@ -1,273 +1,262 @@
-import { useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useStore } from "@/state/store";
-import { ProviderAccountsPanel } from "@/components/ProviderAccountsPanel";
-import { filterNavigatorWorkflows } from "@/app/navigatorCatalog";
-import type { ProviderKey } from "@/types/contract";
-import type { ChatMode } from "@/state/store";
+import type { RunHistoryItem } from "@/types/contract";
 
-const PROVIDER_OPTIONS: { value: ProviderKey; label: string }[] = [
-  { value: "codex", label: "Codex" },
-  { value: "claude", label: "Claude" },
-  { value: "gemini", label: "Gemini" },
-];
+const PROJECT_LIMIT = 3;
+const HISTORY_LIMIT = 10;
 
-const REASONING_OPTIONS = [
-  { value: "", label: "Default" },
-  { value: "low", label: "Low" },
-  { value: "medium", label: "Medium" },
-  { value: "high", label: "High" },
-];
+const RUN_TIME_FORMAT = new Intl.DateTimeFormat(undefined, {
+  month: "short",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+});
 
-// Project / workflow / step selector (the navigator).
+const RUN_LABEL: Record<RunHistoryItem["status"], string> = {
+  idle: "Idle",
+  starting: "Starting",
+  running: "Running",
+  waiting_approval: "Waiting · approval",
+  waiting_question: "Waiting · question",
+  completed: "Completed",
+  failed: "Failed",
+  cancelled: "Cancelled",
+};
+
+function runTitle(text?: string): string {
+  if (!text) return "Untitled run";
+  return text.length > 68 ? `${text.slice(0, 65)}...` : text;
+}
+
+function sortByRecent(items: RunHistoryItem[]): RunHistoryItem[] {
+  return [...items].sort((a, b) => {
+    const delta = new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+    if (delta !== 0) return delta;
+    return new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime();
+  });
+}
+
+function projectLabel(projectId: string, projects: { id: string; name: string; path: string }[]): string {
+  return projects.find((project) => project.id === projectId)?.name ?? projectId;
+}
+
 export function Navigator(): React.ReactElement {
-  const {
-    projects,
-    workflows,
-    steps,
-    supportedModels,
-    selectedProjectId,
-    selectedWorkflowId,
-    selectedStepId,
-    launchMode,
-    chatMode,
-    selectedProvider,
-    selectedModel,
-    reasoningEffort,
-    yoloMode,
-    loadProjects,
-    selectProject,
-    setLaunchMode,
-    setChatMode,
-    selectProvider,
-    setSelectedModel,
-    setReasoningEffort,
-    setYoloMode,
-    selectWorkflow,
-    selectStep,
-  } = useStore();
-  const visibleWorkflows = filterNavigatorWorkflows(workflows, selectedProjectId);
+  const projects = useStore((s) => s.projects);
+  const selectedProjectId = useStore((s) => s.selectedProjectId);
+  const runHistory = useStore((s) => s.runHistory);
+  const historyLoading = useStore((s) => s.historyLoading);
+  const historyLoadError = useStore((s) => s.historyLoadError);
+  const loadProjects = useStore((s) => s.loadProjects);
+  const selectProject = useStore((s) => s.selectProject);
+  const loadRunHistory = useStore((s) => s.loadRunHistory);
+  const openHistoryRun = useStore((s) => s.openHistoryRun);
 
-  const modelsForProvider = supportedModels.filter(
-    (m) => m.isEnabled && (!selectedProvider || m.providerKey === selectedProvider),
-  );
+  const [showAllProjects, setShowAllProjects] = useState(false);
+  const [recentProjectIds, setRecentProjectIds] = useState<string[]>([]);
+  const [projectHistoryById, setProjectHistoryById] = useState<Record<string, RunHistoryItem[]>>({});
+  const [openProjectIds, setOpenProjectIds] = useState<Record<string, boolean>>({});
+  const [visibleHistoryCounts, setVisibleHistoryCounts] = useState<Record<string, number>>({});
 
   useEffect(() => {
     void loadProjects();
   }, [loadProjects]);
 
+  useEffect(() => {
+    if (!selectedProjectId) return;
+    void loadRunHistory();
+  }, [loadRunHistory, selectedProjectId]);
+
+  useEffect(() => {
+    if (!selectedProjectId || historyLoading || runHistory.length === 0) return;
+    setProjectHistoryById((current) => ({
+      ...current,
+      [selectedProjectId]: sortByRecent(runHistory),
+    }));
+    setOpenProjectIds((current) => (current[selectedProjectId] ? current : { ...current, [selectedProjectId]: true }));
+    setVisibleHistoryCounts((current) => (current[selectedProjectId] ? current : { ...current, [selectedProjectId]: HISTORY_LIMIT }));
+  }, [historyLoading, runHistory, selectedProjectId]);
+
+  useEffect(() => {
+    if (!selectedProjectId) return;
+    setRecentProjectIds((current) => {
+      const next = [selectedProjectId, ...current.filter((id) => id !== selectedProjectId)];
+      return next.slice(0, 8);
+    });
+  }, [selectedProjectId]);
+
+  const orderedProjects = useMemo(() => {
+    const recent = recentProjectIds.filter((projectId) => projects.some((project) => project.id === projectId));
+    const remaining = projects
+      .map((project) => project.id)
+      .filter((projectId) => !recent.includes(projectId));
+    return [...recent, ...remaining]
+      .map((projectId) => projects.find((project) => project.id === projectId))
+      .filter((project): project is (typeof projects)[number] => Boolean(project));
+  }, [projects, recentProjectIds]);
+
+  const visibleProjects = showAllProjects ? orderedProjects : orderedProjects.slice(0, PROJECT_LIMIT);
+  const canShowMoreProjects = orderedProjects.length > PROJECT_LIMIT;
+
+  const historyGroups = useMemo(() => {
+    return Object.entries(projectHistoryById)
+      .map(([projectId, history]) => ({ projectId, history }))
+      .filter((group) => group.history.length > 0)
+      .sort((a, b) => {
+        const aTime = new Date(a.history[0]?.updatedAt ?? 0).getTime();
+        const bTime = new Date(b.history[0]?.updatedAt ?? 0).getTime();
+        return bTime - aTime;
+      });
+  }, [projectHistoryById]);
+
+  const visibleHistoryFor = (projectId: string, history: RunHistoryItem[]): RunHistoryItem[] => {
+    const count = visibleHistoryCounts[projectId] ?? HISTORY_LIMIT;
+    return history.slice(0, count);
+  };
+
+  const toggleProjectHistory = (projectId: string) => {
+    setOpenProjectIds((current) => ({ ...current, [projectId]: !current[projectId] }));
+  };
+
+  const showMoreHistory = (projectId: string, total: number) => {
+    setVisibleHistoryCounts((current) => ({ ...current, [projectId]: total }));
+  };
+
+  const selectProjectAndTrack = (projectId: string) => {
+    setRecentProjectIds((current) => {
+      const next = [projectId, ...current.filter((id) => id !== projectId)];
+      return next.slice(0, 8);
+    });
+    void selectProject(projectId);
+  };
+
   return (
-    <div className="navigator">
-      <div className="nav-group">
-        <label>Project</label>
-        <select value={selectedProjectId ?? ""} onChange={(e) => void selectProject(e.target.value)}>
-          <option value="" disabled>
-            Select a project…
-          </option>
-          {projects.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-            </option>
-          ))}
-        </select>
-        {selectedProjectId && (
-          <div className="nav-hint">{projects.find((p) => p.id === selectedProjectId)?.path}</div>
-        )}
-      </div>
-
-      {/* Top-level mode: Chat vs Workflow */}
-      <div className="nav-group">
-        <label>Mode</label>
-        <div className="tab-list" role="tablist" aria-label="Chat mode">
-          {(["normal_chat", "workflow_step_auto"] as ChatMode[]).map((mode) => (
-            <button
-              key={mode}
-              type="button"
-              role="tab"
-              aria-selected={chatMode === mode}
-              className={`tab ${chatMode === mode ? "active" : ""}`}
-              onClick={() => setChatMode(mode)}
-            >
-              {mode === "normal_chat" ? "Chat" : "Workflow"}
-            </button>
-          ))}
+    <div className="navigator project-rail">
+      <section className="project-rail-section">
+        <div className="project-rail-head">
+          <div>
+            <label>Projects</label>
+            <p>Recent workspaces first, with the active project highlighted.</p>
+          </div>
+          <span className="project-count-badge">{projects.length}</span>
         </div>
-      </div>
 
-      {chatMode === "normal_chat" ? (
-        /* ── Chat mode controls ── */
-        <>
-          <div className="nav-group">
-            <label>Provider</label>
-            <select
-              value={selectedProvider ?? ""}
-              onChange={(e) =>
-                selectProvider(e.target.value ? (e.target.value as ProviderKey) : undefined)
-              }
-            >
-              <option value="" disabled>
-                Select a provider…
-              </option>
-              {PROVIDER_OPTIONS.map((p) => (
-                <option key={p.value} value={p.value}>
-                  {p.label}
-                </option>
-              ))}
-            </select>
-          </div>
+        <div className="project-rail-list">
+          {visibleProjects.length === 0 ? (
+            <div className="project-rail-empty">No projects loaded yet.</div>
+          ) : (
+            visibleProjects.map((project) => {
+              const active = project.id === selectedProjectId;
+              const recentIndex = recentProjectIds.indexOf(project.id);
+              return (
+                <button
+                  key={project.id}
+                  type="button"
+                  className={`project-rail-item ${active ? "active" : ""}`}
+                  onClick={() => selectProjectAndTrack(project.id)}
+                >
+                  <span className="project-rail-item-top">
+                    <strong>{project.name}</strong>
+                    {active && <span className="project-rail-active">Active</span>}
+                    {!active && recentIndex >= 0 && <span className="project-rail-recent">Recent</span>}
+                  </span>
+                  <span className="project-rail-path">{project.path}</span>
+                </button>
+              );
+            })
+          )}
+        </div>
 
-          <div className="nav-group">
-            <label>Model</label>
-            {modelsForProvider.length > 0 ? (
-              <select
-                value={selectedModel ?? ""}
-                onChange={(e) => setSelectedModel(e.target.value || undefined)}
-              >
-                <option value="">Default</option>
-                {modelsForProvider.map((m) => (
-                  <option key={m.id} value={m.modelId}>
-                    {m.displayName}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <input
-                type="text"
-                className="nav-text-input"
-                placeholder="e.g. claude-sonnet-4-5"
-                value={selectedModel ?? ""}
-                onChange={(e) => setSelectedModel(e.target.value || undefined)}
-              />
-            )}
-          </div>
-
-          <div className="nav-group">
-            <label>Reasoning effort</label>
-            <select
-              value={reasoningEffort ?? ""}
-              onChange={(e) => setReasoningEffort(e.target.value || undefined)}
-            >
-              {REASONING_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="nav-group nav-group-inline">
-            <label htmlFor="yolo-toggle">YOLO mode</label>
-            <input
-              id="yolo-toggle"
-              type="checkbox"
-              checked={yoloMode}
-              onChange={(e) => setYoloMode(e.target.checked)}
-            />
-            <div className="nav-hint">Skip approval prompts (auto-approve all tool calls).</div>
-          </div>
-        </>
-      ) : (
-        /* ── Workflow mode controls ── */
-        <>
-          <div className="nav-group">
-            <label>Provider</label>
-            <select
-              value={selectedProvider ?? ""}
-              onChange={(e) =>
-                selectProvider(e.target.value ? (e.target.value as ProviderKey) : undefined)
-              }
-            >
-              <option value="">Auto (from model)</option>
-              {PROVIDER_OPTIONS.map((p) => (
-                <option key={p.value} value={p.value}>
-                  {p.label}
-                </option>
-              ))}
-            </select>
-            <div className="nav-hint">
-              Auto: workflow/step picks the provider from its model. Choose one to override.
-            </div>
-          </div>
-
-          <div className="nav-group">
-            <label>Run type</label>
-            <div className="tab-list" role="tablist" aria-label="Run type">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={launchMode === "workflow"}
-                aria-controls="workflow-panel"
-                className={`tab ${launchMode === "workflow" ? "active" : ""}`}
-                onClick={() => setLaunchMode("workflow")}
-              >
-                Workflow
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={launchMode === "step"}
-                aria-controls="step-panel"
-                className={`tab ${launchMode === "step" ? "active" : ""}`}
-                onClick={() => setLaunchMode("step")}
-              >
-                Single step
-              </button>
-            </div>
-          </div>
-
-          <div
-            id="workflow-panel"
-            role="tabpanel"
-            aria-hidden={launchMode !== "workflow"}
-            className={`nav-panel ${launchMode === "workflow" ? "active" : "hidden"}`}
+        {canShowMoreProjects && (
+          <button
+            type="button"
+            className="project-rail-more"
+            onClick={() => setShowAllProjects((value) => !value)}
           >
-            <div className="nav-group">
-              <label>Workflow</label>
-              <select
-                value={selectedWorkflowId ?? ""}
-                disabled={!selectedProjectId || launchMode !== "workflow"}
-                onChange={(e) => void selectWorkflow(e.target.value)}
-              >
-                <option value="" disabled>
-                  Select a workflow…
-                </option>
-                {visibleWorkflows.map((w) => (
-                  <option key={w.id} value={w.id}>
-                    {w.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
+            {showAllProjects ? "Show fewer projects" : "Show more projects"}
+          </button>
+        )}
+      </section>
 
-          <div
-            id="step-panel"
-            role="tabpanel"
-            aria-hidden={launchMode !== "step"}
-            className={`nav-panel ${launchMode === "step" ? "active" : "hidden"}`}
-          >
-            <div className="nav-group">
-              <label>Single step</label>
-              <select
-                value={selectedStepId ?? ""}
-                disabled={!selectedProjectId || launchMode !== "step"}
-                onChange={(e) => selectStep(e.target.value)}
-              >
-                <option value="" disabled>
-                  Select a step…
-                </option>
-                {steps.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}
-                    {s.defaultSkill ? ` · /${s.defaultSkill}` : ""}
-                  </option>
-                ))}
-              </select>
-            </div>
+      <section className="project-history-section">
+        <div className="project-rail-head">
+          <div>
+            <label>History</label>
+            <p>Grouped by project and sorted by latest activity.</p>
           </div>
-        </>
-      )}
+          {historyLoading && <span className="project-rail-state">Loading</span>}
+        </div>
 
-      <ProviderAccountsPanel />
+        {historyLoadError && (
+          <div className="project-history-error">
+            <strong>History failed to load</strong>
+            <span>{historyLoadError}</span>
+          </div>
+        )}
+
+        {historyGroups.length === 0 ? (
+          <div className="project-rail-empty">
+            {selectedProjectId ? "Open a run to build project history." : "Select a project to load history."}
+          </div>
+        ) : (
+          <div className="project-history-groups">
+            {historyGroups.map(({ projectId, history }) => {
+              const projectName = projectLabel(projectId, projects);
+              const expanded = openProjectIds[projectId] ?? projectId === selectedProjectId;
+              const visibleHistory = expanded ? visibleHistoryFor(projectId, history) : [];
+              const hiddenCount = history.length - visibleHistory.length;
+              return (
+                <section key={projectId} className="project-history-group">
+                  <button
+                    type="button"
+                    className={`project-history-group-head ${expanded ? "active" : ""}`}
+                    onClick={() => toggleProjectHistory(projectId)}
+                  >
+                    <span className="project-history-group-title">
+                      <strong>{projectName}</strong>
+                      <small>{history.length} chats</small>
+                    </span>
+                    <span className="project-history-group-chevron">{expanded ? "▾" : "▸"}</span>
+                  </button>
+
+                  {expanded && (
+                    <div className="project-history-list">
+                      {visibleHistory.map((item) => (
+                        <button
+                          key={item.runId}
+                          type="button"
+                          className="project-history-item"
+                          onClick={() => void openHistoryRun(item.runId)}
+                          title={item.runId}
+                        >
+                          <span className="project-history-item-top">
+                            <span className={`status-dot status-${item.status}`} />
+                            <span className="project-history-item-title">
+                              {runTitle(item.lastPrompt || item.lastMessage)}
+                            </span>
+                          </span>
+                          <span className="project-history-item-meta">
+                            {RUN_LABEL[item.status]} · {RUN_TIME_FORMAT.format(new Date(item.updatedAt))}
+                          </span>
+                        </button>
+                      ))}
+
+                      {hiddenCount > 0 && (
+                        <button
+                          type="button"
+                          className="project-history-more"
+                          onClick={() => showMoreHistory(projectId, history.length)}
+                        >
+                          Show more ({hiddenCount} more)
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </section>
+              );
+            })}
+          </div>
+        )}
+      </section>
     </div>
   );
 }
