@@ -9,7 +9,7 @@ package runner
 // runner behavior.
 //
 //	resolveYoloPosture(true)  -> {"danger-full-access", "never",      true}
-//	resolveYoloPosture(false) -> {"workspace-write", "on-request", false}
+//	resolveYoloPosture(false) -> {"workspace-write",   "on-request", false}
 //
 // Input flows in via PromptExecutionRequest.YoloMode (types.go) / session-start
 // ApprovalMode+AllowWrite; it is resolved per run/step and carried on the turn.

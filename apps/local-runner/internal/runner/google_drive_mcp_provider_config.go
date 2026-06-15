@@ -420,14 +420,14 @@ func googleDriveProxyMcpCommandWithLookup(workspace string, lookPath func(string
 // 04-04). The old hack pinned this to "approve" unconditionally, decoupling it from
 // YOLO; approval mode is now YOLO-derived per the SSOT resolver so the proxy stays
 // in lockstep with the rest of the run. YOLO=true → "approve" (gating disabled, the
-// proxy auto-runs); YOLO=false → "on-request" (Codex surfaces the request, which
+// proxy auto-runs); YOLO=false → "prompt" (Codex surfaces the request, which
 // flows through the FlowPilot approval bridge / policy engine). The proxy still
 // gates internally via its --yolo-mode arg.
 func googleDriveProxyMcpApprovalMode(yoloMode bool) string {
 	if resolveYoloPosture(yoloMode).RunnerAutoApprove {
 		return "approve"
 	}
-	return "on-request"
+	return "prompt"
 }
 
 func googleDriveProxyMcpServerEnv(mcpStatus googleDriveMcpRuntimeConfig) map[string]string {

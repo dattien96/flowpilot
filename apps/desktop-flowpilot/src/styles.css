@@ -2128,3 +2128,191 @@ input {
   background: transparent !important;
   min-width: 0;
 }
+
+/* ── Artifact browser ─────────────────────────────────────────── */
+.settings-list-empty {
+  padding: 16px;
+  color: var(--text-muted, #666);
+  font-size: 13px;
+  text-align: center;
+}
+
+.artifact-subtabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.artifact-subtab {
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.artifact-subtab.active {
+  background: var(--accent, #1e8e4f);
+  border-color: var(--accent, #1e8e4f);
+  color: #fff;
+}
+
+.artifact-project-group {
+  margin-bottom: 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.artifact-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  background: var(--bg-2, #1a1a1a);
+}
+
+.artifact-group-name {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.artifact-group-count {
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--bg-3, #222);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1px 7px;
+  color: var(--text-muted, #888);
+}
+
+.artifact-provider-group {
+  border-top: 1px solid var(--border);
+}
+
+.artifact-provider-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 14px 6px 24px;
+  background: var(--bg-3, #1c1c1c);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted, #888);
+}
+
+.artifact-run-row {
+  border-top: 1px solid var(--border);
+}
+
+.artifact-run-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 14px 8px 36px;
+  background: transparent;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  color: var(--text);
+  font-size: 12px;
+  transition: background 0.1s;
+}
+
+.artifact-run-header:hover {
+  background: var(--bg-hover, rgba(255,255,255,0.04));
+}
+
+.artifact-run-chevron {
+  font-size: 11px;
+  width: 12px;
+  flex-shrink: 0;
+  color: var(--text-muted, #888);
+}
+
+.artifact-run-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted, #888);
+  flex-shrink: 0;
+}
+
+.artifact-run-id {
+  font-family: var(--mono, monospace);
+  font-size: 12px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.artifact-run-count {
+  font-size: 11px;
+  color: var(--text-muted, #888);
+  flex-shrink: 0;
+}
+
+.artifact-status-badge {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 2px 8px;
+  border-radius: 10px;
+  flex-shrink: 0;
+  background: var(--bg-3, #222);
+  color: var(--text-muted, #888);
+}
+
+.artifact-status-synced {
+  background: rgba(30, 142, 79, 0.15);
+  color: #4caf50;
+}
+
+.artifact-status-syncing {
+  background: rgba(33, 150, 243, 0.15);
+  color: #64b5f6;
+}
+
+.artifact-status-failed {
+  background: rgba(244, 67, 54, 0.15);
+  color: #ef5350;
+}
+
+.artifact-run-items {
+  padding: 4px 0 4px 48px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-3, #161616);
+}
+
+.artifact-info-panel {
+  margin-top: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-2, #1a1a1a);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.artifact-info-panel strong {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--text);
+}
+
+.artifact-info-panel p {
+  margin: 0;
+  color: var(--text-muted, #888);
+}
