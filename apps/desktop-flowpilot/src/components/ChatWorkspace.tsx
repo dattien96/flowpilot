@@ -143,14 +143,34 @@ export function ChatWorkspace({
   leftSidebarVisible,
   rightSidebarVisible,
 }: ChatWorkspaceProps): React.ReactElement {
+  const defaultWidthsAppliedRef = useRef(false);
   const shellRef = useRef<HTMLDivElement>(null);
   const dragStateRef = useRef<{
     side: "left" | "right";
     startX: number;
     startWidth: number;
   } | null>(null);
-  const [leftSidebarWidth, setLeftSidebarWidth] = useState(280);
-  const [rightSidebarWidth, setRightSidebarWidth] = useState(360);
+  const [leftSidebarWidth, setLeftSidebarWidth] = useState(320);
+  const [rightSidebarWidth, setRightSidebarWidth] = useState(320);
+
+  useEffect(() => {
+    if (defaultWidthsAppliedRef.current) return;
+    const shell = shellRef.current;
+    if (!shell) return;
+
+    const visibleSidebarCount = Number(leftSidebarVisible) + Number(rightSidebarVisible);
+    if (visibleSidebarCount === 0) return;
+
+    const resizerWidth = visibleSidebarCount * 8;
+    const availableWidth = shell.clientWidth - resizerWidth;
+    const targetWidth = Math.round((availableWidth * 1.7) / 8.4);
+    const leftDefault = Math.min(380, Math.max(220, targetWidth));
+    const rightDefault = Math.min(480, Math.max(300, targetWidth));
+
+    setLeftSidebarWidth(leftDefault);
+    setRightSidebarWidth(rightDefault);
+    defaultWidthsAppliedRef.current = true;
+  }, [leftSidebarVisible, rightSidebarVisible]);
 
   useEffect(() => {
     const onPointerMove = (event: PointerEvent) => {

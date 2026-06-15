@@ -1,9 +1,15 @@
+# OK
+
 2 mode: normal chat - workflow
 normal phai co du change model, yolo
 See Task-044-Desktop-Chat-Mode-Split-And-Provider-Controls.md
 
 - Lam button cho attach image temporarily -> save vao local file ??
-- Task default save previous project that has run with latest time
+
+# Test CHAT MODE
+
+- model-reason-skill
+- attach image
 
 page /workflow-runs
 co ca vu kill process before timeout setting o page proj

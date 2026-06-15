@@ -55,6 +55,7 @@ export function ChatInput(): React.ReactElement {
   const wasPickerVisibleRef = useRef(false);
 
   const isChatMode = chatMode === "normal_chat";
+  const hasSelectedProject = !!selectedProjectId;
   const selectedProjectPath = useMemo(
     () => projects.find((project) => project.id === selectedProjectId)?.path,
     [projects, selectedProjectId],
@@ -145,8 +146,9 @@ export function ChatInput(): React.ReactElement {
   const blocked = status === "running" || status === "waiting_approval" || status === "waiting_question";
 
   const canSend = isChatMode
-    ? !!selectedProvider && !blocked && text.trim().length > 0 && !showPicker
-    : (launchMode === "workflow" ? !!selectedWorkflowId : !!selectedStepId) &&
+    ? hasSelectedProject && !!selectedProvider && !blocked && text.trim().length > 0 && !showPicker
+    : hasSelectedProject &&
+      (launchMode === "workflow" ? !!selectedWorkflowId : !!selectedStepId) &&
       !blocked &&
       text.trim().length > 0;
 
@@ -177,6 +179,8 @@ export function ChatInput(): React.ReactElement {
 
   const placeholder = blocked
     ? "Waiting for the current turn…"
+    : !hasSelectedProject
+      ? "Select a project first."
     : isChatMode
       ? selectedProvider
         ? "Type a message, or / to pick a skill. Enter to send."
@@ -190,25 +194,9 @@ export function ChatInput(): React.ReactElement {
           : "Select a step first.";
 
   return (
-    <div ref={rootRef} className="chat-input">
+    <div ref={rootRef} className={`chat-input ${!hasSelectedProject ? "chat-input-locked" : ""}`}>
       {isChatMode && (
         <div className={`chat-controller ${controllerExpanded ? "expanded" : "collapsed"}`}>
-          <div className="chat-controller-head">
-            <div className="chat-controller-head-copy">
-              <span className="chat-controller-label">Chat controls</span>
-              <strong>Provider, skills, and run settings</strong>
-            </div>
-            <button
-              type="button"
-              className="chat-controller-toggle"
-              onClick={() => setControllerExpanded((current) => !current)}
-              aria-expanded={controllerExpanded}
-              aria-label={controllerExpanded ? "Collapse chat controls" : "Expand chat controls"}
-            >
-              <span aria-hidden="true">{controllerExpanded ? "▾" : "▸"}</span>
-            </button>
-          </div>
-
           {controllerExpanded && (
             <>
               <div className="chat-controller-top">
@@ -241,20 +229,29 @@ export function ChatInput(): React.ReactElement {
                     </span>
                   </button>
                 </div>
-
-                <div className="chat-controller-switch chat-controller-switch-top">
-                  <span className="chat-controller-label">YOLO</span>
+                <div className="chat-controller-head">
+                  <div className="chat-controller-switch chat-controller-switch-top">
+                    <span className="chat-controller-label">YOLO</span>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={yoloMode}
+                      className={`yolo-toggle ${yoloMode ? "active" : ""}`}
+                      onClick={() => setYoloMode(!yoloMode)}
+                    >
+                      <span className="yolo-toggle-track" aria-hidden="true">
+                        <span className="yolo-toggle-thumb" />
+                      </span>
+                      <span className="yolo-toggle-label">{yoloMode ? "On" : "Off"}</span>
+                    </button>
+                  </div>
                   <button
                     type="button"
-                    role="switch"
-                    aria-checked={yoloMode}
-                    className={`yolo-toggle ${yoloMode ? "active" : ""}`}
-                    onClick={() => setYoloMode(!yoloMode)}
+                    className="chat-controller-toggle"
+                    onClick={() => setControllerExpanded(false)}
+                    aria-label="Collapse chat controls"
                   >
-                    <span className="yolo-toggle-track" aria-hidden="true">
-                      <span className="yolo-toggle-thumb" />
-                    </span>
-                    <span className="yolo-toggle-label">{yoloMode ? "On" : "Off"}</span>
+                    <span aria-hidden="true">▾</span>
                   </button>
                 </div>
               </div>
@@ -346,6 +343,20 @@ export function ChatInput(): React.ReactElement {
       )}
 
       <div className="input-bar">
+        {isChatMode && !controllerExpanded && (
+          <button
+            type="button"
+            className="chat-controller-toggle chat-controller-toggle-inline"
+            onClick={() => setControllerExpanded(true)}
+            aria-label="Expand chat controls"
+          >
+            <span className="chat-controller-menu-icon" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </span>
+          </button>
+        )}
         <textarea
           className="text-area"
           rows={2}
@@ -362,6 +373,19 @@ export function ChatInput(): React.ReactElement {
 
       {(pendingApproval || pendingQuestion) && (
         <div className="input-note">Action required above before continuing.</div>
+      )}
+
+      {!hasSelectedProject && (
+        <div className={`chat-input-guard ${isChatMode ? "" : "chat-input-guard-compact"}`.trim()} aria-live="polite">
+          <div className={`chat-input-guard-card ${isChatMode ? "" : "chat-input-guard-card-compact"}`.trim()}>
+            <div className="chat-input-guard-title">Select a project first</div>
+            <div className="chat-input-guard-copy">
+              {isChatMode
+                ? "Choose a project before using chat, skills, or send."
+                : "Choose a project before continuing in workflow mode."}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
