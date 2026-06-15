@@ -25,7 +25,7 @@ func claudeUsageLimitError(homePath string) error {
 		if !isClaudeUsageLimitReason(reason) {
 			continue
 		}
-		return fmt.Errorf("Claude usage limit reached: extra usage unavailable (%s). Switch Claude account or wait for quota reset; login is still present", humanizeReason(reason))
+		return fmt.Errorf("Claude usage limit reached: extra usage unavailable (%s). Switch Claude account or wait for quota reset", humanizeReason(reason))
 	}
 	return nil
 }

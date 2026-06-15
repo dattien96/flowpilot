@@ -177,7 +177,7 @@ func claudeUsageLimitMessage(raw map[string]any) string {
 	if !hasLimitSignal {
 		return ""
 	}
-	return "Claude usage limit reached. Switch Claude account or wait for quota reset; login is still present."
+	return "Claude usage limit reached. Switch Claude account or wait for quota reset."
 }
 
 func flattenClaudeStrings(v any) string {

@@ -449,7 +449,7 @@ func TestMapClaudeLineResultLimitDoesNotReportLogin(t *testing.T) {
 	if evs[0].Error == "Not logged in · Please run /login" {
 		t.Fatalf("limit result should not report login error: %+v", evs[0])
 	}
-	if evs[0].Error != "Claude usage limit reached. Switch Claude account or wait for quota reset; login is still present." {
+	if evs[0].Error != "Claude usage limit reached. Switch Claude account or wait for quota reset." {
 		t.Fatalf("limit error = %q", evs[0].Error)
 	}
 }
