@@ -549,10 +549,4 @@ Acceptance:
 
 ## Phase 2: improve the chat location
 
-2 mode: normal chat - workflow
-normal phai co du change model, yolo
-
-page /workflow-runs
-co ca vu kill process before timeout setting o page proj
-
-luu history nhu nao
+move to 08-Desktop-Chat-New-Plan.md
