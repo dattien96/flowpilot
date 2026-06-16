@@ -916,6 +916,23 @@ input {
   flex-wrap: wrap;
   justify-content: flex-end;
 }
+.check-version-run-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.check-version-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-2);
+  font-size: 12px;
+  text-transform: lowercase;
+}
+.check-version-checkbox input {
+  margin: 0;
+}
 .check-version-badge {
   font-size: 11px;
   padding: 2px 8px;

@@ -83,11 +83,11 @@ export function CheckVersionSettings(): React.ReactElement {
     testedClaudeVersion: "",
     testedCodexVersion: "",
   });
+  const [deepRun, setDeepRun] = useState(false);
   const [info, setInfo] = useState<CompatVersionInfo | null>(null);
   const [result, setResult] = useState<CompatCheckResult | null>(null);
   const [resultMode, setResultMode] = useState<CheckMode | null>(null);
   const [running, setRunning] = useState(false);
-  const [runningDeep, setRunningDeep] = useState(false);
   const [savingConfig, setSavingConfig] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -114,26 +114,23 @@ export function CheckVersionSettings(): React.ReactElement {
     setResult(null);
     setResultMode(null);
     try {
-      setResult(await runCompatCheckUseCase.execute());
-      setResultMode("fast");
+      if (deepRun) {
+        setResult(await runCompatDeepCheckUseCase.execute());
+        setResultMode("deep");
+      } else {
+        setResult(await runCompatCheckUseCase.execute());
+        setResultMode("fast");
+      }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Check failed.");
+      setError(
+        e instanceof Error
+          ? e.message
+          : deepRun
+            ? "Deep check failed."
+            : "Check failed.",
+      );
     } finally {
       setRunning(false);
-    }
-  };
-
-  const runDeepChecks = async () => {
-    setRunningDeep(true);
-    setError(null);
-    setMessage(null);
-    try {
-      setResult(await runCompatDeepCheckUseCase.execute());
-      setResultMode("deep");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Deep check failed.");
-    } finally {
-      setRunningDeep(false);
     }
   };
 
@@ -176,7 +173,6 @@ export function CheckVersionSettings(): React.ReactElement {
         ? "Only patch drift was detected. Deep checks are optional, but this usually does not require a tool fix."
         : "The installed tools still match the validated baseline."
     : null;
-  const canRunDeepChecks = result ? result.failed > 0 : false;
   const deepProbeItems = result?.items.filter((item) => item.name.includes("live probe") || item.name === "codex app-server initialize") ?? [];
   const regularItems = result?.items.filter((item) => !deepProbeItems.includes(item)) ?? [];
   const resultLabel = resultMode === "deep" ? "Deep check result" : "Fast check result";
@@ -193,14 +189,25 @@ export function CheckVersionSettings(): React.ReactElement {
             app was built and tested against.
           </p>
         </div>
-        <button
-          className="btn btn-primary"
-          disabled={running}
-          onClick={() => void runChecks()}
-          type="button"
-        >
-          {running ? "Running…" : "Run Checks"}
-        </button>
+        <div className="check-version-run-controls">
+          <label className="check-version-checkbox">
+            <input
+              checked={deepRun}
+              disabled={running}
+              onChange={(event) => setDeepRun(event.target.checked)}
+              type="checkbox"
+            />
+            <span>deep run</span>
+          </label>
+          <button
+            className="btn btn-primary"
+            disabled={running}
+            onClick={() => void runChecks()}
+            type="button"
+          >
+            {running ? (deepRun ? "Running Deep Checks…" : "Running…") : "Run Checks"}
+          </button>
+        </div>
       </div>
 
       {error ? <div className="settings-feedback error">{error}</div> : null}
@@ -248,7 +255,7 @@ export function CheckVersionSettings(): React.ReactElement {
         <div className="settings-actions">
           <button
             className="primary-btn"
-            disabled={savingConfig || running || runningDeep}
+            disabled={savingConfig || running}
             onClick={() => void saveConfig()}
             type="button"
           >
@@ -279,16 +286,6 @@ export function CheckVersionSettings(): React.ReactElement {
                 </div>
               ))}
             </div>
-          ) : null}
-          {canRunDeepChecks ? (
-            <button
-              className="btn btn-ghost"
-              disabled={running || runningDeep}
-              onClick={() => void runDeepChecks()}
-              type="button"
-            >
-              {runningDeep ? "Running Deep Checks..." : "Run Deep Checks"}
-            </button>
           ) : null}
           <div className="settings-validation check-version-items">
             {[...deepProbeItems, ...regularItems].map((item) => (
