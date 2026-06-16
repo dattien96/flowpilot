@@ -7,6 +7,7 @@ import type {
 } from "@flowpilot/client-core";
 import { RunStatus } from "@/components/RunStatus";
 import { RunnerStatusIndicator } from "@/components/RunnerStatusIndicator";
+import { RunToast } from "@/components/RunToast";
 import { ChatWorkspace } from "@/components/ChatWorkspace";
 import { LoginScreen } from "@/components/LoginScreen";
 import { SettingsShell, type SettingsSection } from "@/components/SettingsShell";
@@ -253,7 +254,8 @@ export function App(): React.ReactElement {
         </div>
       </header>
 
-        {authenticatedView === "chat" ? (
+        <RunToast />
+      {authenticatedView === "chat" ? (
           runtimeStatus.runnerReachable ? (
           <ChatWorkspace
             leftSidebarVisible={leftSidebarVisible}

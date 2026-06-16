@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell } from "electron";
+import { app, BrowserWindow, ipcMain, Notification, shell } from "electron";
 import { execFile } from "node:child_process";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -8,6 +8,14 @@ import path from "node:path";
 // IDE CLI and opens the file at a line.
 
 const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL;
+
+// Required on Windows for native notifications to appear in the Action Center.
+// In dev mode the packaged app ID is not registered, so we use the executable
+// path as the AUMID — Windows can always resolve it and will show the banner.
+// In production the build sets its own AUMID via electron-builder.
+if (process.platform === "win32") {
+  app.setAppUserModelId(VITE_DEV_SERVER_URL ? process.execPath : "com.flowpilot.desktop");
+}
 
 // openInIde (04-06 / 04-01 Part B): invoke the first available IDE CLI to open a
 // file at a line. VS Code `code -g file:line`, Android Studio `studio file:line`,
@@ -161,6 +169,16 @@ ipcMain.handle("auth-session:clear", async () => {
   await clearPersistedAuthSession();
   return { ok: true };
 });
+ipcMain.handle("notification:show", (_event, payload: { title: string; body: string }) => {
+  console.log("[notification] isSupported:", Notification.isSupported(), "payload:", payload);
+  try {
+    new Notification({ title: payload.title, body: payload.body }).show();
+  } catch (err) {
+    console.error("[notification] show failed:", err);
+  }
+  return { ok: true };
+});
+
 ipcMain.handle("http:request", async (_event, payload: BridgeHttpRequest) => {
   const response = await fetch(payload.url, {
     method: payload.method ?? "GET",
