@@ -66,29 +66,39 @@ func claudeArgs(posture YoloPosture, resumeID, mcpConfig, modelName, reasoningEf
 	return args
 }
 
-// ensureClaudeConfigSettings writes a minimal settings.json into FlowPilot's claude
-// config dir so gating engages: defaultMode=default + an empty allow-list (no auto-run).
-// It will NOT clobber an existing settings.json (so a deliberately-configured account
-// dir is respected); a fresh FlowPilot-managed dir gets the gating posture. Without this,
-// an inherited allow-rule (e.g. Bash(*)) silently bypasses YOLO=false gating.
+// ensureClaudeConfigSettings enforces the gating posture in the FlowPilot-managed claude
+// config dir's settings.json: defaultMode=default + empty allow-list (no auto-run).
+//
+// It ALWAYS overwrites the permissions section, even when settings.json already exists.
+// Write-once was the original design ("respect an existing settings.json"), but Claude CLI
+// persists allow-rules to settings.json each time the user approves a tool via the
+// --permission-prompt-tool MCP route. On the next YOLO=false turn the stale allow-rules
+// bypass our gating entirely — Claude auto-runs the tool without calling the approval MCP
+// and no approval card appears (BUG-069). Non-permission fields (e.g. theme) are preserved
+// by merging the existing file before writing.
 func ensureClaudeConfigSettings(configDir string) error {
 	if strings.TrimSpace(configDir) == "" {
 		return nil
 	}
-	path := filepath.Join(configDir, "settings.json")
-	if _, err := os.Stat(path); err == nil {
-		return nil // respect an existing settings.json
-	}
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		return err
 	}
-	settings := map[string]any{
-		"permissions": map[string]any{
-			"defaultMode": "default",
-			"allow":       []any{},
-		},
+	path := filepath.Join(configDir, "settings.json")
+
+	// Merge with existing settings so non-permission fields survive.
+	existing := map[string]any{}
+	if raw, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(raw, &existing) // best-effort; ignore parse errors
 	}
-	b, err := json.MarshalIndent(settings, "", "  ")
+
+	// Always force the permissions section to the gating posture. An inherited
+	// allow-rule (e.g. Bash(*)) silently bypasses YOLO=false gating (spike finding).
+	existing["permissions"] = map[string]any{
+		"defaultMode": "default",
+		"allow":       []any{},
+	}
+
+	b, err := json.MarshalIndent(existing, "", "  ")
 	if err != nil {
 		return err
 	}
