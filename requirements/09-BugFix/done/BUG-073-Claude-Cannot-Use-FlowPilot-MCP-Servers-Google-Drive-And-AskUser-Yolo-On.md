@@ -111,12 +111,21 @@ When the user references the Google Drive MCP in desktop chat with the Claude pr
 
 - `V-1` `go build ./...` clean in `apps/local-runner`.
 - `V-2` `go test ./internal/runner -run "TestWriteClaudeMCPConfig|TestClaudeArgs|TestClaudeAdapter|TestHandleClaude|TestEnsureClaudeConfig" -count=1` — all pass (incl. new `TestWriteClaudeMCPConfigMergesExtraServers` and the YOLO=true mcpConfig assertion in `TestClaudeArgsYoloPosture`).
-- `V-3` Full-package regression: `go test ./internal/runner` shows the IDENTICAL 25 pre-existing failures on both the clean tree and the changed tree (verified via git stash + name-level diff). All 25 are environmental (Google Drive OAuth/credentials/launcher absent in test env, `sh` not on PATH on Windows, skill-source env). No new failures introduced.
-- `V-4` NOT run this session: a live `claude` binary against real Google Drive auth. The config-file mechanism is unit-proven; the live end-to-end smoke check is left open (see §10 / Open Questions).
+- `V-3` Full 2×2 matrix proven with the per-turn MCP server WIRED (production path): `TestClaudeSendTurnMcpAvailabilityMatrix` (YOLO on/off → `--mcp-config` + `--strict-mcp-config` present AND config merges both `flowpilot` and `google-drive`; `--permission-prompt-tool` present iff YOLO=off; `--permission-mode` tracks YOLO) and `TestClaudeSendTurnBaseURLMissingFailClosedVsDegrade` (YOLO=off + missing base URL → fail closed, no spawn; YOLO=on → degrades, spawns without `--mcp-config`).
+- `V-4` Full-package regression: `go test ./internal/runner` shows the IDENTICAL 25 pre-existing failures on both the clean tree and the changed tree, INCLUDING after the new matrix tests were added (verified via git stash + name-level diff). All 25 are environmental (Google Drive OAuth/credentials/launcher absent in test env, `sh` not on PATH on Windows, skill-source env). No new failures introduced.
+- `V-5` NOT run this session: a live `claude` binary against real Google Drive auth. The config-file mechanism is unit-proven; the live end-to-end smoke check is left open (see §10 / Open Questions).
 
 ## 9. Regression Guard
 
-- tests: `TestWriteClaudeMCPConfigMergesExtraServers` (new — merge + no-shadow guard), `TestClaudeArgsYoloPosture` (extended — YOLO=true keeps `--mcp-config`, drops `--permission-prompt-tool`), `TestClaudeArgsIncludesStrictMcpConfig` (unchanged — strict flag stays), `TestClaudeAdapterAskUserRoundTrip` / `TestClaudeAdapterApprovalRoundTrip` (unchanged — bridge round-trips), `TestEnsureClaudeConfigSettingsClearsAllowRules` (BUG-069 guard, unchanged).
+- tests (full {YOLO on/off} × {command-tool gating, MCP availability} matrix):
+  - `TestClaudeSendTurnMcpAvailabilityMatrix` (new — SendTurn with MCP server wired: both YOLO states get `--mcp-config` with `flowpilot`+`google-drive` merged; `--permission-prompt-tool` iff YOLO=off).
+  - `TestClaudeSendTurnBaseURLMissingFailClosedVsDegrade` (new — YOLO=off fails closed / no spawn; YOLO=on degrades without `--mcp-config`).
+  - `TestWriteClaudeMCPConfigMergesExtraServers` (new — helper-level merge + no-shadow guard).
+  - `TestClaudeArgsYoloPosture` (extended — YOLO=true keeps `--mcp-config` and drops `--permission-prompt-tool`; empty mcpConfig emits neither flag).
+  - `TestClaudeArgsIncludesStrictMcpConfig` (unchanged — strict flag always present).
+  - `TestClaudeAdapterYoloTrueNoPermission` (unchanged — YOLO=on surfaces no permission_required).
+  - `TestClaudeAdapterAskUserRoundTrip` / `TestClaudeAdapterApprovalRoundTrip` (unchanged — bridge round-trips via in-stream fallback).
+  - `TestEnsureClaudeConfigSettingsClearsAllowRules` (BUG-069 guard, unchanged).
 - alerts: none.
 - audit checks: [CA-083](../../../change-audit/CA-083-fix-claude-flowpilot-mcp-availability-yolo-and-google-drive.md) records the change; clean-vs-changed failure diff captured to confirm no new regressions.
 

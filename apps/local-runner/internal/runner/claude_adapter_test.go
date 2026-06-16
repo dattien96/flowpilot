@@ -609,6 +609,17 @@ func TestClaudeArgsYoloPosture(t *testing.T) {
 	if !flagHasValue(gated, "--resume", "sess-1") {
 		t.Fatalf("session id must produce --resume: %v", gated)
 	}
+
+	// YOLO=false with an EMPTY mcpConfig: neither flag is emitted. --permission-prompt-tool
+	// lives inside the `mcpConfig != ""` guard, so without a config there is nothing to point
+	// it at (the offline/in-stream fallback path).
+	gatedNoCfg := claudeArgs(resolveYoloPosture(false), "", "", "", "", nil)
+	if argIndex(gatedNoCfg, "--mcp-config") >= 0 {
+		t.Fatalf("empty mcpConfig must not add --mcp-config: %v", gatedNoCfg)
+	}
+	if argIndex(gatedNoCfg, "--permission-prompt-tool") >= 0 {
+		t.Fatalf("empty mcpConfig must not add --permission-prompt-tool: %v", gatedNoCfg)
+	}
 }
 
 func argIndex(args []string, flag string) int {
