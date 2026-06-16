@@ -243,6 +243,10 @@ class SupabaseAdminRepository {
         assertNoError(error, "Unable to update project.");
         return mapProject(data);
     }
+    async deleteProject(projectId) {
+        const { error } = await this.supabase.from("projects").delete().eq("id", projectId);
+        assertNoError(error, "Unable to delete project.");
+    }
     async listBindings(projectId) {
         const { data, error } = await this.supabase.from("project_workspace_bindings").select("*").eq("project_id", projectId).order("created_at", { ascending: true });
         assertNoError(error, "Unable to list directory bindings.");
@@ -274,6 +278,20 @@ class SupabaseAdminRepository {
         assertNoError(error, "Unable to create team.");
         return mapTeam(data);
     }
+    async updateTeam(teamId, name) {
+        const { data, error } = await this.supabase
+            .from("teams")
+            .update({ name, updated_at: now() })
+            .eq("id", teamId)
+            .select("*")
+            .single();
+        assertNoError(error, "Unable to update team.");
+        return mapTeam(data);
+    }
+    async deleteTeam(teamId) {
+        const { error } = await this.supabase.from("teams").delete().eq("id", teamId);
+        assertNoError(error, "Unable to delete team.");
+    }
     async listMembers(teamId) {
         const { data, error } = await this.supabase.from("team_members").select("*").eq("team_id", teamId).order("name", { ascending: true });
         assertNoError(error, "Unable to list team members.");
@@ -291,6 +309,31 @@ class SupabaseAdminRepository {
             weekly_capacity_hours: member.weeklyCapacityHours,
         }).select("*").single();
         assertNoError(error, "Unable to add team member.");
+        return mapMember(data);
+    }
+    async updateMember(memberId, patch) {
+        const updateFields = { updated_at: now() };
+        if (patch.name !== undefined)
+            updateFields.name = patch.name;
+        if (patch.email !== undefined)
+            updateFields.email = patch.email;
+        if (patch.jiraAccountId !== undefined)
+            updateFields.jira_account_id = patch.jiraAccountId;
+        if (patch.role !== undefined)
+            updateFields.role = patch.role;
+        if (patch.levelLabel !== undefined)
+            updateFields.level_label = patch.levelLabel;
+        if (patch.skillTags !== undefined)
+            updateFields.skill_tags = patch.skillTags;
+        if (patch.weeklyCapacityHours !== undefined)
+            updateFields.weekly_capacity_hours = patch.weeklyCapacityHours;
+        const { data, error } = await this.supabase
+            .from("team_members")
+            .update(updateFields)
+            .eq("id", memberId)
+            .select("*")
+            .single();
+        assertNoError(error, "Unable to update team member.");
         return mapMember(data);
     }
     async removeMember(memberId) {
@@ -413,6 +456,10 @@ class SupabaseAdminRepository {
         }
         return saved;
     }
+    async deleteWorkflow(workflowId) {
+        const { error } = await this.supabase.from("workflows").delete().eq("id", workflowId);
+        assertNoError(error, "Unable to delete workflow.");
+    }
     async listWorkflowSteps(workflowId) {
         const { data, error } = await this.supabase.from("workflow_steps").select("*").eq("workflow_id", workflowId).order("order_index", { ascending: true });
         assertNoError(error, "Unable to list workflow steps.");
@@ -507,6 +554,20 @@ class SupabaseAdminRepository {
             output_artifact_definitions: step.outputArtifactDefinitions,
         });
     }
+    async deleteStepDefinition(stepType) {
+        const { error: deleteInputError } = await this.supabase
+            .from("step_input_artifact_definitions")
+            .delete()
+            .eq("step_type", stepType);
+        assertNoError(deleteInputError, "Unable to delete step input artifact bindings.");
+        const { error: deleteOutputError } = await this.supabase
+            .from("step_output_artifact_definitions")
+            .delete()
+            .eq("step_type", stepType);
+        assertNoError(deleteOutputError, "Unable to delete step output artifact bindings.");
+        const { error } = await this.supabase.from("step_definitions").delete().eq("step_type", stepType);
+        assertNoError(error, "Unable to delete step definition.");
+    }
     async listWorkflowRuns(projectId) {
         let query = this.supabase.from("workflow_runs").select("*").order("started_at", { ascending: false });
         if (projectId)
@@ -563,6 +624,8 @@ class SupabaseAdminRepository {
     }
     async updateSupportedModel(id, patch) {
         const payload = {};
+        if (patch.modelId !== undefined)
+            payload.model_id = patch.modelId;
         if (patch.displayName !== undefined)
             payload.display_name = patch.displayName;
         if (patch.isEnabled !== undefined)

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"sync"
@@ -211,6 +212,7 @@ type captureBridge struct {
 	events           []ProviderEvent
 	approvalRequests []ApprovalDetails
 	approveWith      string
+	approveErr       error
 }
 
 func (b *captureBridge) Emit(ev ProviderEvent) {
@@ -222,7 +224,7 @@ func (b *captureBridge) RequestApproval(details ApprovalDetails) (string, error)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.approvalRequests = append(b.approvalRequests, details)
-	return b.approveWith, nil
+	return b.approveWith, b.approveErr
 }
 func (b *captureBridge) AskQuestion(string, []QuestionOption, bool) ([]string, error) {
 	return nil, nil
@@ -504,6 +506,50 @@ func TestCodexAdapterPermissionsApprovalRoundTrip(t *testing.T) {
 	}
 }
 
+func TestCodexAdapterFileChangeApprovalRoundTrip(t *testing.T) {
+	d, fc := startFakeCodex(t, nil)
+	adapter := newCodexAdapter(d, "/workspace")
+	d.setInbound(adapter.handleInbound)
+
+	decisionReplies := make(chan string, 1)
+	fc.serve(func(fc *fakeCodex, m map[string]any) {
+		method, _ := m["method"].(string)
+		switch method {
+		case "thread/start":
+			fc.reply(m["id"], map[string]any{"threadId": "th1"})
+		case "turn/start":
+			fc.reply(m["id"], map[string]any{"turnId": "ct1"})
+			fc.send(map[string]any{"jsonrpc": "2.0", "id": 500, "method": "item/fileChange/requestApproval",
+				"params": map[string]any{
+					"threadId": "th1",
+					"turnId":   "ct1",
+					"itemId":   "item1",
+					"path":     "a.go",
+				}})
+		default:
+			if res, ok := m["result"].(map[string]any); ok {
+				if dec, ok := res["decision"].(string); ok {
+					decisionReplies <- dec
+					fc.notify("turn.completed", map[string]any{"threadId": "th1", "finalMessage": "ok"})
+				}
+			}
+		}
+	})
+
+	bridge := &captureBridge{approveWith: "approve"}
+	if err := adapter.SendTurn(context.Background(), TurnRequest{RunID: "r1", Prompt: "edit file"}, bridge); err != nil {
+		t.Fatalf("SendTurn: %v", err)
+	}
+	select {
+	case dec := <-decisionReplies:
+		if dec != "accept" {
+			t.Fatalf("decision = %q, want accept", dec)
+		}
+	default:
+		t.Fatal("file-change approval decision was not replied to Codex")
+	}
+}
+
 func TestCodexAdapterMcpElicitationApprovalRoundTrip(t *testing.T) {
 	d, fc := startFakeCodex(t, nil)
 	adapter := newCodexAdapter(d, "/workspace")
@@ -568,6 +614,8 @@ func TestCodexAdapterYoloApprovalMatrix(t *testing.T) {
 		wantApprovalMode     string
 		wantApprovalRequests int
 		wantDecision         string
+		wantAction           string
+		wantNoDecision       bool
 		wantPermissionScope  string
 	}{
 		{
@@ -591,6 +639,26 @@ func TestCodexAdapterYoloApprovalMatrix(t *testing.T) {
 			wantApprovalRequests: 0,
 		},
 		{
+			name:             "file change yolo off prompts",
+			yolo:             false,
+			approvalMethod:   "item/fileChange/requestApproval",
+			approvalParams:   map[string]any{"threadId": "th1", "turnId": "ct1", "itemId": "item1", "path": "a.go"},
+			wantSandbox:      "workspace-write",
+			wantApprovalMode: "untrusted",
+
+			wantApprovalRequests: 1,
+			wantDecision:         "accept",
+		},
+		{
+			name:                 "file change yolo on does not prompt",
+			yolo:                 true,
+			approvalMethod:       "item/fileChange/requestApproval",
+			approvalParams:       map[string]any{"threadId": "th1", "turnId": "ct1", "itemId": "item1", "path": "a.go"},
+			wantSandbox:          "danger-full-access",
+			wantApprovalMode:     "never",
+			wantApprovalRequests: 0,
+		},
+		{
 			name:           "mcp permission yolo off prompts",
 			yolo:           false,
 			approvalMethod: "item/permissions/requestApproval",
@@ -607,6 +675,7 @@ func TestCodexAdapterYoloApprovalMatrix(t *testing.T) {
 			wantSandbox:          "workspace-write",
 			wantApprovalMode:     "untrusted",
 			wantApprovalRequests: 1,
+			wantNoDecision:       true,
 			wantPermissionScope:  "turn",
 		},
 		{
@@ -622,6 +691,40 @@ func TestCodexAdapterYoloApprovalMatrix(t *testing.T) {
 				"permissions": map[string]any{
 					"network": map[string]any{"enabled": true},
 				},
+			},
+			wantSandbox:          "danger-full-access",
+			wantApprovalMode:     "never",
+			wantApprovalRequests: 0,
+		},
+		{
+			name:           "mcp elicitation yolo off prompts",
+			yolo:           false,
+			approvalMethod: "mcpServer/elicitation/request",
+			approvalParams: map[string]any{
+				"threadId":   "th1",
+				"turnId":     "ct1",
+				"serverName": "google-drive",
+				"message":    "Allow Google Drive MCP access",
+				"mode":       "url",
+				"url":        "https://example.test/approve",
+			},
+			wantSandbox:          "workspace-write",
+			wantApprovalMode:     "untrusted",
+			wantApprovalRequests: 1,
+			wantAction:           "accept",
+			wantNoDecision:       true,
+		},
+		{
+			name:           "mcp elicitation yolo on does not prompt",
+			yolo:           true,
+			approvalMethod: "mcpServer/elicitation/request",
+			approvalParams: map[string]any{
+				"threadId":   "th1",
+				"turnId":     "ct1",
+				"serverName": "google-drive",
+				"message":    "Allow Google Drive MCP access",
+				"mode":       "url",
+				"url":        "https://example.test/approve",
 			},
 			wantSandbox:          "danger-full-access",
 			wantApprovalMode:     "never",
@@ -674,7 +777,7 @@ func TestCodexAdapterYoloApprovalMatrix(t *testing.T) {
 			if got := bridge.approvalRequestCount(); got != tc.wantApprovalRequests {
 				t.Fatalf("approval requests = %d, want %d", got, tc.wantApprovalRequests)
 			}
-			if tc.wantDecision == "" && tc.wantPermissionScope == "" {
+			if tc.wantDecision == "" && tc.wantPermissionScope == "" && tc.wantAction == "" {
 				select {
 				case res := <-approvalReplies:
 					t.Fatalf("unexpected approval reply in YOLO case: %+v", res)
@@ -687,11 +790,166 @@ func TestCodexAdapterYoloApprovalMatrix(t *testing.T) {
 				if tc.wantDecision != "" && res["decision"] != tc.wantDecision {
 					t.Fatalf("decision = %v, want %s", res["decision"], tc.wantDecision)
 				}
+				if tc.wantAction != "" && res["action"] != tc.wantAction {
+					t.Fatalf("action = %v, want %s", res["action"], tc.wantAction)
+				}
+				if tc.wantNoDecision {
+					if _, hasDecision := res["decision"]; hasDecision {
+						t.Fatalf("approval reply must not include decision: %+v", res)
+					}
+				}
 				if tc.wantPermissionScope != "" && res["scope"] != tc.wantPermissionScope {
 					t.Fatalf("scope = %v, want %s", res["scope"], tc.wantPermissionScope)
 				}
 			default:
 				t.Fatal("approval reply was not sent")
+			}
+		})
+	}
+}
+
+func TestCodexPermissionsApprovalResponseBranches(t *testing.T) {
+	params := map[string]any{
+		"permissions": map[string]any{
+			"network":    map[string]any{"enabled": true},
+			"fileSystem": map[string]any{"writeRoots": []any{"/workspace"}},
+		},
+	}
+
+	denied := codexPermissionsApprovalResponse(params, "deny")
+	if denied["scope"] != "turn" {
+		t.Fatalf("deny scope = %v, want turn", denied["scope"])
+	}
+	permissions, _ := denied["permissions"].(map[string]any)
+	if len(permissions) != 0 {
+		t.Fatalf("deny permissions = %+v, want empty", permissions)
+	}
+
+	session := codexPermissionsApprovalResponse(params, "approve_for_session")
+	if session["scope"] != "session" {
+		t.Fatalf("approve_for_session scope = %v, want session", session["scope"])
+	}
+	sessionPermissions, _ := session["permissions"].(map[string]any)
+	if _, ok := sessionPermissions["network"]; !ok {
+		t.Fatalf("session permissions missing network: %+v", sessionPermissions)
+	}
+	if _, ok := sessionPermissions["fileSystem"]; !ok {
+		t.Fatalf("session permissions missing fileSystem: %+v", sessionPermissions)
+	}
+}
+
+func TestCodexMcpElicitationApprovalResponseBranches(t *testing.T) {
+	cases := map[string]string{
+		"approve": "accept",
+		"deny":    "decline",
+		"abort":   "cancel",
+	}
+	for decision, want := range cases {
+		got := codexMcpElicitationApprovalResponse(decision)
+		if got["action"] != want {
+			t.Fatalf("decision %q action = %v, want %s", decision, got["action"], want)
+		}
+		if _, hasDecision := got["decision"]; hasDecision {
+			t.Fatalf("decision %q unexpectedly produced decision payload: %+v", decision, got)
+		}
+	}
+}
+
+func TestCodexAdapterApprovalErrorFailsSafe(t *testing.T) {
+	cases := []struct {
+		name           string
+		method         string
+		params         map[string]any
+		wantDecision   string
+		wantAction     string
+		wantScope      string
+		wantNoDecision bool
+	}{
+		{
+			name:         "command declines on bridge error",
+			method:       "item/commandExecution/requestApproval",
+			params:       map[string]any{"threadId": "th1", "turnId": "ct1", "itemId": "item1", "command": "echo hi"},
+			wantDecision: "decline",
+		},
+		{
+			name:   "permissions empty on bridge error",
+			method: "item/permissions/requestApproval",
+			params: map[string]any{
+				"threadId": "th1",
+				"turnId":   "ct1",
+				"itemId":   "item1",
+				"permissions": map[string]any{
+					"network": map[string]any{"enabled": true},
+				},
+			},
+			wantScope:      "turn",
+			wantNoDecision: true,
+		},
+		{
+			name:   "mcp elicitation declines on bridge error",
+			method: "mcpServer/elicitation/request",
+			params: map[string]any{
+				"threadId":   "th1",
+				"turnId":     "ct1",
+				"serverName": "google-drive",
+				"message":    "Allow Google Drive MCP access",
+			},
+			wantAction:     "decline",
+			wantNoDecision: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d, fc := startFakeCodex(t, nil)
+			adapter := newCodexAdapter(d, "/workspace")
+			d.setInbound(adapter.handleInbound)
+
+			approvalReplies := make(chan map[string]any, 1)
+			fc.serve(func(fc *fakeCodex, m map[string]any) {
+				method, _ := m["method"].(string)
+				switch method {
+				case "thread/start":
+					fc.reply(m["id"], map[string]any{"threadId": "th1"})
+				case "turn/start":
+					fc.reply(m["id"], map[string]any{"turnId": "ct1"})
+					fc.send(map[string]any{"jsonrpc": "2.0", "id": 500, "method": tc.method, "params": tc.params})
+				default:
+					if res, ok := m["result"].(map[string]any); ok {
+						approvalReplies <- res
+						fc.notify("turn.completed", map[string]any{"threadId": "th1", "finalMessage": "ok"})
+					}
+				}
+			})
+
+			bridge := &captureBridge{approveErr: errors.New("approval bridge closed")}
+			if err := adapter.SendTurn(context.Background(), TurnRequest{RunID: "r1", Prompt: "go"}, bridge); err != nil {
+				t.Fatalf("SendTurn: %v", err)
+			}
+			select {
+			case res := <-approvalReplies:
+				if tc.wantDecision != "" && res["decision"] != tc.wantDecision {
+					t.Fatalf("decision = %v, want %s", res["decision"], tc.wantDecision)
+				}
+				if tc.wantAction != "" && res["action"] != tc.wantAction {
+					t.Fatalf("action = %v, want %s", res["action"], tc.wantAction)
+				}
+				if tc.wantScope != "" && res["scope"] != tc.wantScope {
+					t.Fatalf("scope = %v, want %s", res["scope"], tc.wantScope)
+				}
+				if tc.wantNoDecision {
+					if _, hasDecision := res["decision"]; hasDecision {
+						t.Fatalf("approval reply must not include decision: %+v", res)
+					}
+				}
+				if tc.method == "item/permissions/requestApproval" {
+					permissions, _ := res["permissions"].(map[string]any)
+					if len(permissions) != 0 {
+						t.Fatalf("permissions = %+v, want empty", permissions)
+					}
+				}
+			default:
+				t.Fatal("approval failure reply was not sent")
 			}
 		})
 	}

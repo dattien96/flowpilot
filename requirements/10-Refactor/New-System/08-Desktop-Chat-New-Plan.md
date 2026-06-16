@@ -27,14 +27,11 @@ Based on current provider
 # 2. YOLO
 
 ## 2.1 Chat mode
-### 2.1.1 Normal approve
-- test ok for codex. YOLO cho normal command nhu write file
-- Chua test claude
+### 2.1.1 Codex - Passed
+OK for both MCP + Command tool
 
-### 2.1.2 MCP approve
-Chua test cho ca codex/claude
+### 2.1.2 CLAUDE - NOt Test
 
-- Codex: MCP ok for YOLO_on
 
 ## Flow mode
 Chua test
