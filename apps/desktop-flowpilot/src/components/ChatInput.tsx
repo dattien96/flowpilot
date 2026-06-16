@@ -156,6 +156,10 @@ export function ChatInput(): React.ReactElement {
   // downplays the other options but still reflects the current runtime state.
   const pickSkill = (name: string) => {
     setSelectedSkills((prev) => (prev.includes(name) ? prev : [...prev, name]));
+    if (slashQuery !== null) {
+      setText("");
+      setSkillPickerOpen(false);
+    }
   };
 
   const removeSkill = (name: string) => {
@@ -178,7 +182,7 @@ export function ChatInput(): React.ReactElement {
   };
 
   const placeholder = blocked
-    ? "Waiting for the current turn…"
+    ? "Waiting for the current turn..."
     : !hasSelectedProject
       ? "Select a project first."
     : isChatMode
@@ -207,7 +211,7 @@ export function ChatInput(): React.ReactElement {
                     className={`skill-select-button ${showPicker ? "active" : ""}`}
                     onClick={() => setSkillPickerOpen((current) => !current)}
                     aria-expanded={showPicker}
-                    disabled={!selectedProvider}
+                    disabled={!selectedProvider || blocked}
                     aria-label={
                       selectedProvider
                         ? `Selected skills ${selectedSkills.length} of ${totalSkills}`
@@ -238,6 +242,7 @@ export function ChatInput(): React.ReactElement {
                       aria-checked={yoloMode}
                       className={`yolo-toggle ${yoloMode ? "active" : ""}`}
                       onClick={() => setYoloMode(!yoloMode)}
+                      disabled={blocked}
                     >
                       <span className="yolo-toggle-track" aria-hidden="true">
                         <span className="yolo-toggle-thumb" />
@@ -264,6 +269,7 @@ export function ChatInput(): React.ReactElement {
                     onChange={(e) =>
                       selectProvider(e.target.value ? (e.target.value as ProviderKey) : undefined)
                     }
+                    disabled={blocked}
                   >
                     <option value="">Auto</option>
                     {PROVIDER_OPTIONS.map((provider) => (
@@ -280,6 +286,7 @@ export function ChatInput(): React.ReactElement {
                     <select
                       value={selectedModel ?? ""}
                       onChange={(e) => setSelectedModel(e.target.value || undefined)}
+                      disabled={blocked}
                     >
                       <option value="">Default</option>
                       {availableModels.map((model) => (
@@ -294,6 +301,7 @@ export function ChatInput(): React.ReactElement {
                       value={selectedModel ?? ""}
                       onChange={(e) => setSelectedModel(e.target.value || undefined)}
                       placeholder="Default"
+                      disabled={blocked}
                     />
                   )}
                 </label>
@@ -303,6 +311,7 @@ export function ChatInput(): React.ReactElement {
                   <select
                     value={reasoningEffort ?? ""}
                     onChange={(e) => setReasoningEffort(e.target.value || undefined)}
+                    disabled={blocked}
                   >
                     {REASONING_OPTIONS.map((option) => (
                       <option key={option.value} value={option.value}>

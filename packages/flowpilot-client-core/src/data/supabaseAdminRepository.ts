@@ -704,6 +704,7 @@ export class SupabaseAdminRepository implements
 
   async updateSupportedModel(id: string, patch: Partial<SupportedModel>) {
     const payload: Row = {};
+    if (patch.modelId !== undefined) payload.model_id = patch.modelId;
     if (patch.displayName !== undefined) payload.display_name = patch.displayName;
     if (patch.isEnabled !== undefined) payload.is_enabled = patch.isEnabled;
     if (patch.sortOrder !== undefined) payload.sort_order = patch.sortOrder;

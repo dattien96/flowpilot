@@ -121,7 +121,7 @@ func (s *claudeMCPServer) dispatch(method string, msg map[string]any, token stri
 		return map[string]any{
 			"protocolVersion": pv,
 			"capabilities":    map[string]any{"tools": map[string]any{}},
-			"serverInfo":      map[string]any{"name": "flowpilot", "version": "1.0"},
+			"serverInfo":      map[string]any{"name": claudeMCPServerName, "version": "1.0"},
 		}, nil
 	case "tools/list":
 		return map[string]any{"tools": claudeMCPToolDefs()}, nil
@@ -191,13 +191,24 @@ func (r *Runner) mcpBaseURLValue() string {
 // writeClaudeMCPConfig writes a per-turn --mcp-config file pointing claude at the runner's
 // HTTP MCP endpoint with this turn's token. Uses os.CreateTemp (random name) so concurrent
 // turns / runner restarts never collide in a shared temp dir. Returns path + cleanup.
-func writeClaudeMCPConfig(baseURL, token string) (string, func(), error) {
+//
+// extra carries FlowPilot-managed servers (e.g. google-drive) merged next to the flowpilot
+// permission server. Because claudeArgs always passes --strict-mcp-config, claude loads ONLY
+// the servers in this file and ignores the account's .claude.json mcpServers — so any
+// FlowPilot-managed MCP the user configured (Google Drive setup, step 7) MUST be merged here
+// or claude never sees it (unlike Codex, which reads config.toml natively).
+func writeClaudeMCPConfig(baseURL, token string, extra map[string]claudeMcpServer) (string, func(), error) {
 	url := strings.TrimRight(baseURL, "/") + ClaudeMCPPath + "?token=" + token
-	cfg := map[string]any{
-		"mcpServers": map[string]any{
-			"flowpilot": map[string]any{"type": "http", "url": url},
-		},
+	servers := map[string]any{
+		claudeMCPServerName: map[string]any{"type": "http", "url": url},
 	}
+	for name, s := range extra {
+		if strings.TrimSpace(name) == "" || name == claudeMCPServerName {
+			continue // never let an extra server shadow the permission route
+		}
+		servers[name] = s
+	}
+	cfg := map[string]any{"mcpServers": servers}
 	b, err := json.Marshal(cfg)
 	if err != nil {
 		return "", func() {}, err

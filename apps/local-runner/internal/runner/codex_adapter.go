@@ -101,7 +101,7 @@ func (a *codexAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tur
 	// thread (04-04): the model discovers ask_user via tools/list at session start.
 	mcpServers := append(append([]any{}, a.defaultMcpServers...), codexAskUserMcpServer())
 
-	startRes, err := a.dispatcher.call(ctx, "thread/start", codexThreadStartParams(cwd, sandbox, approvalMode, mcpServers))
+	startRes, err := a.dispatcher.call(ctx, "thread/start", codexThreadStartParams(cwd, sandbox, approvalMode, req.ModelName, req.ReasoningEffort, mcpServers))
 	if err != nil {
 		return err
 	}
@@ -192,6 +192,11 @@ func (a *codexAdapter) codexTurnID(threadID string) string {
 // Approval requests are forwarded through the active turn's bridge and the chosen
 // decision is replied back to Codex, so the model unblocks.
 func (a *codexAdapter) handleInbound(req codexInboundRequest) {
+	if !codexInboundApprovalMethod(req.Method) {
+		_ = a.dispatcher.replyError(req.ID, "unsupported Codex inbound request: "+req.Method)
+		return
+	}
+
 	threadID := codexThreadIDFromParams(req.Params)
 	a.mu.Lock()
 	bridge := a.bridges[threadID]
@@ -201,11 +206,22 @@ func (a *codexAdapter) handleInbound(req codexInboundRequest) {
 		return
 	}
 
+	details := codexApprovalDetails(req.Method, req.Params)
+	decision, err := bridge.RequestApproval(details)
+	if err != nil {
+		// expiry/interrupt while pending → deny so Codex never hangs (04-04)
+		_ = a.dispatcher.reply(req.ID, codexApprovalResponse(req.Method, req.Params, "deny"))
+		return
+	}
+	_ = a.dispatcher.reply(req.ID, codexApprovalResponse(req.Method, req.Params, decision))
+}
+
+func codexApprovalDetails(method string, params map[string]any) ApprovalDetails {
 	str := func(k string) string {
-		if req.Params == nil {
+		if params == nil {
 			return ""
 		}
-		s, _ := req.Params[k].(string)
+		s, _ := params[k].(string)
 		return s
 	}
 	details := ApprovalDetails{
@@ -217,13 +233,145 @@ func (a *codexAdapter) handleInbound(req codexInboundRequest) {
 			{Value: "deny", Label: "Deny"},
 		},
 	}
-	decision, err := bridge.RequestApproval(details)
-	if err != nil {
-		// expiry/interrupt while pending → deny so Codex never hangs (04-04)
-		_ = a.dispatcher.reply(req.ID, map[string]any{"decision": "deny"})
-		return
+	if method == "mcpServer/elicitation/request" {
+		serverName := str("serverName")
+		message := str("message")
+		if serverName != "" {
+			details.Command = "MCP server: " + serverName
+		}
+		details.Reason = message
 	}
-	_ = a.dispatcher.reply(req.ID, map[string]any{"decision": decision})
+	return details
+}
+
+func codexInboundApprovalMethod(method string) bool {
+	switch method {
+	case "approval/request",
+		"execCommandApproval",
+		"applyPatchApproval",
+		"item/commandExecution/requestApproval",
+		"item/fileChange/requestApproval",
+		"item/permissions/requestApproval",
+		"mcpServer/elicitation/request":
+		return true
+	default:
+		return false
+	}
+}
+
+func codexApprovalResponse(method string, params map[string]any, decision string) map[string]any {
+	switch method {
+	case "item/permissions/requestApproval":
+		return codexPermissionsApprovalResponse(params, decision)
+	case "mcpServer/elicitation/request":
+		return codexMcpElicitationApprovalResponse(decision)
+	default:
+		return map[string]any{"decision": codexReviewDecision(method, decision)}
+	}
+}
+
+// codexReviewDecision maps FlowPilot's internal approval vocabulary to the
+// decision enum expected by the specific Codex app-server request method.
+func codexReviewDecision(method string, decision string) string {
+	switch method {
+	case "item/commandExecution/requestApproval", "item/fileChange/requestApproval":
+		return codexV2ReviewDecision(decision)
+	default:
+		return codexLegacyReviewDecision(decision)
+	}
+}
+
+// codexPermissionsApprovalResponse maps Codex v2 permission approval requests to
+// the response shape expected by item/permissions/requestApproval:
+// { permissions, scope }. Approve grants the requested per-turn profile; deny
+// returns an empty profile so Codex can continue without the extra permission.
+func codexPermissionsApprovalResponse(params map[string]any, decision string) map[string]any {
+	if !codexDecisionApproved(decision) {
+		return map[string]any{
+			"permissions": map[string]any{},
+			"scope":       "turn",
+		}
+	}
+	permissions, _ := params["permissions"].(map[string]any)
+	granted := map[string]any{}
+	if network, ok := permissions["network"].(map[string]any); ok && network != nil {
+		granted["network"] = network
+	}
+	if fileSystem, ok := permissions["fileSystem"].(map[string]any); ok && fileSystem != nil {
+		granted["fileSystem"] = fileSystem
+	}
+	scope := "turn"
+	if decision == "approve_for_session" || decision == "approved_for_session" {
+		scope = "session"
+	}
+	return map[string]any{
+		"permissions": granted,
+		"scope":       scope,
+	}
+}
+
+func codexDecisionApproved(decision string) bool {
+	switch decision {
+	case "approve", "approved", "approve_for_session", "approved_for_session", "accept", "acceptForSession":
+		return true
+	default:
+		return false
+	}
+}
+
+// codexMcpElicitationApprovalResponse maps MCP server elicitations to the
+// app-server response shape: { action, content, _meta }.
+func codexMcpElicitationApprovalResponse(decision string) map[string]any {
+	action := "decline"
+	if codexDecisionApproved(decision) {
+		action = "accept"
+	} else if decision == "abort" || decision == "cancel" {
+		action = "cancel"
+	}
+	return map[string]any{
+		"action":  action,
+		"content": nil,
+		"_meta":   nil,
+	}
+}
+
+// codexLegacyReviewDecision maps FlowPilot's internal approval vocabulary (approve/deny,
+// the values the desktop card and the runner bridge speak) to Codex's app-server
+// `ReviewDecision` serde values: approved | approved_for_session | denied | abort.
+// The real app-server cannot deserialize "approve"/"deny" — it rejects the inbound
+// approval as if the user declined (BUG-064; BUG-066 covers the v2 enum). Any
+// unknown/empty decision fails safe to "denied".
+func codexLegacyReviewDecision(decision string) string {
+	switch decision {
+	case "approve", "approved":
+		return "approved"
+	case "approve_for_session", "approved_for_session":
+		return "approved_for_session"
+	case "deny", "denied":
+		return "denied"
+	case "abort":
+		return "abort"
+	default:
+		return "denied"
+	}
+}
+
+// codexV2ReviewDecision maps FlowPilot's internal values to the v2 command/file
+// approval enums used by item/commandExecution/requestApproval and
+// item/fileChange/requestApproval: accept | acceptForSession | decline | cancel.
+func codexV2ReviewDecision(decision string) string {
+	switch decision {
+	case "approve", "approved", "accept":
+		return "accept"
+	case "approve_for_session", "approved_for_session", "acceptForSession":
+		return "acceptForSession"
+	case "deny", "denied", "decline":
+		return "decline"
+	case "abort", "cancel":
+		return "cancel"
+	default:
+		return "decline"
+	}
 }
 
 // codexYoloDerive maps YOLO → Codex thread params via the SSOT resolver

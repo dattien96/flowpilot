@@ -35,6 +35,7 @@ type TurnRequest struct {
 	ProviderSessionID string
 	ProviderTurnID    string
 	Prompt            string
+	ModelName         string
 	SelectedSkills    []SkillSelection
 	YoloMode          bool
 	ReasoningEffort   string
@@ -301,12 +302,19 @@ func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 			// the runner-hosted MCP server and points claude's --mcp-config at it.
 			a.mcpServer = r.claudeMCP
 			a.mcpBaseURL = r.mcpBaseURLValue
+			// Merge FlowPilot-managed servers (google-drive) into the per-turn --mcp-config
+			// so --strict-mcp-config doesn't hide them. accountHome is "" for the API-key
+			// path (no managed account home) → no extras, which is correct.
+			accountHome := env["HOME"]
+			a.extraMCPServers = func(yolo bool) map[string]claudeMcpServer {
+				return r.flowpilotClaudeExtraMCPServers(accountHome, yolo)
+			}
 			a.promptPrep = func(req TurnRequest) string {
 				workspace := r.workspace
 				if req.Cwd != "" {
 					workspace = req.Cwd
 				}
-				return r.injectSkillContent(workspace, req.Prompt, skillIDsOf(req.SelectedSkills)) + claudeAskUserReinforcement
+				return r.injectSelectedSkills(workspace, req.Prompt, req.SelectedSkills) + claudeAskUserReinforcement
 			}
 			return a
 		},

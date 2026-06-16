@@ -118,7 +118,7 @@ Grounded in `05` work items (W1–W8) and `04` implementation order.
 ### Approval bridge + YOLO SSOT (W5)
 - [x] **YOLO resolver** SSOT: one value → Codex sandbox + approval mode **and** runner approval behavior (`resolveYoloPosture`)
 - [x] YOLO=true → full-access + never-approve; runner auto-approves; audited gating-disabled
-- [x] YOLO=false → workspace-write + on-request; runner shows approval card
+- [x] YOLO=false → workspace-write + untrusted; runner shows approval card before command/file tool use
 - [x] **Approval policy engine** (YOLO=false): allowlist auto-approve / denylist auto-deny / else ask; every auto-decision **replies to the inbound request** (T-39)
 - [x] `default_tools_approval_mode = "approve"` hack removed; config-ensure writes YOLO-derived values (T-25)
 - [x] Codex approval → `permission_required`, turn paused, record persisted

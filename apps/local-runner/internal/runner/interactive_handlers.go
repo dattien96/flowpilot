@@ -139,11 +139,16 @@ func (s *InteractiveService) handleResumeRun(w http.ResponseWriter, r *http.Requ
 }
 
 type turnBody struct {
-	StepID          string           `json:"stepId"`
-	Prompt          string           `json:"prompt"`
-	SelectedSkills  []SkillSelection `json:"selectedSkills"`
-	ReasoningEffort string           `json:"reasoningEffort"` // per-turn override (T-4)
-	Scenario        string           `json:"scenario"`        // P2 fake-adapter hint only
+	StepID         string           `json:"stepId"`
+	Prompt         string           `json:"prompt"`
+	SelectedSkills []SkillSelection `json:"selectedSkills"`
+	// ReasoningEffort/Model/YoloMode are per-turn chat overrides (T-4 / BUG-063). Model and
+	// YoloMode are pointers so an omitted field falls back to the run-level default rather
+	// than being read as "" / false; the desktop sends them on every chat turn.
+	ReasoningEffort string  `json:"reasoningEffort"`
+	Model           *string `json:"model"`
+	YoloMode        *bool   `json:"yoloMode"`
+	Scenario        string  `json:"scenario"` // P2 fake-adapter hint only
 }
 
 func (s *InteractiveService) handleStartTurn(w http.ResponseWriter, r *http.Request) {
@@ -154,7 +159,7 @@ func (s *InteractiveService) handleStartTurn(w http.ResponseWriter, r *http.Requ
 	}
 	turnID, e := s.startTurn(
 		r.PathValue("runId"),
-		TurnInput{StepID: body.StepID, Prompt: body.Prompt, SelectedSkills: body.SelectedSkills, ReasoningEffort: body.ReasoningEffort},
+		TurnInput{StepID: body.StepID, Prompt: body.Prompt, SelectedSkills: body.SelectedSkills, ReasoningEffort: body.ReasoningEffort, Model: body.Model, YoloMode: body.YoloMode},
 		body.Scenario,
 		r.Header.Get("Idempotency-Key"),
 	)
@@ -489,6 +494,7 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		providerSessionID: sessionID,
 		providerAccountID: s.activeAccountID,
 		workspaceCwd:      in.Cwd,
+		modelName:         in.Model,
 		yolo:              in.YoloMode,
 		reasoningEffort:   in.ReasoningEffort,
 		runKind:           runKind,

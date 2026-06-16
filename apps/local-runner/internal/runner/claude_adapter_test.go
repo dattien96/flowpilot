@@ -575,15 +575,31 @@ func TestClaudeUsageLimitErrorFromAuthMetadata(t *testing.T) {
 }
 
 func TestClaudeArgsYoloPosture(t *testing.T) {
-	yes := claudeArgs(resolveYoloPosture(true), "", "", nil)
+	yes := claudeArgs(resolveYoloPosture(true), "", "", "claude-sonnet-4-5", "high", nil)
 	if !flagHasValue(yes, "--permission-mode", "bypassPermissions") {
 		t.Fatalf("yolo=true args missing bypassPermissions: %v", yes)
+	}
+	if !flagHasValue(yes, "--model", "sonnet-4-5") {
+		t.Fatalf("selected model must produce normalized --model: %v", yes)
+	}
+	if !flagHasValue(yes, "--effort", "high") {
+		t.Fatalf("selected reasoning effort must produce --effort: %v", yes)
 	}
 	if argIndex(yes, "--permission-prompt-tool") >= 0 {
 		t.Fatalf("yolo=true must not add a permission-prompt-tool: %v", yes)
 	}
 
-	gated := claudeArgs(resolveYoloPosture(false), "sess-1", "cfg.json", nil)
+	// YOLO=true with a non-empty mcpConfig: --mcp-config must pass through so ask_user
+	// is available, but --permission-prompt-tool must NOT be added (no gating).
+	yoloWithMCP := claudeArgs(resolveYoloPosture(true), "", "cfg.json", "", "", nil)
+	if !flagHasValue(yoloWithMCP, "--mcp-config", "cfg.json") {
+		t.Fatalf("yolo=true + mcpConfig must include --mcp-config: %v", yoloWithMCP)
+	}
+	if argIndex(yoloWithMCP, "--permission-prompt-tool") >= 0 {
+		t.Fatalf("yolo=true must not add --permission-prompt-tool even with mcpConfig: %v", yoloWithMCP)
+	}
+
+	gated := claudeArgs(resolveYoloPosture(false), "sess-1", "cfg.json", "", "", nil)
 	if !flagHasValue(gated, "--permission-mode", "default") {
 		t.Fatalf("yolo=false args missing default mode: %v", gated)
 	}
@@ -592,6 +608,17 @@ func TestClaudeArgsYoloPosture(t *testing.T) {
 	}
 	if !flagHasValue(gated, "--resume", "sess-1") {
 		t.Fatalf("session id must produce --resume: %v", gated)
+	}
+
+	// YOLO=false with an EMPTY mcpConfig: neither flag is emitted. --permission-prompt-tool
+	// lives inside the `mcpConfig != ""` guard, so without a config there is nothing to point
+	// it at (the offline/in-stream fallback path).
+	gatedNoCfg := claudeArgs(resolveYoloPosture(false), "", "", "", "", nil)
+	if argIndex(gatedNoCfg, "--mcp-config") >= 0 {
+		t.Fatalf("empty mcpConfig must not add --mcp-config: %v", gatedNoCfg)
+	}
+	if argIndex(gatedNoCfg, "--permission-prompt-tool") >= 0 {
+		t.Fatalf("empty mcpConfig must not add --permission-prompt-tool: %v", gatedNoCfg)
 	}
 }
 

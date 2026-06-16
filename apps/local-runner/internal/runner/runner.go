@@ -1057,6 +1057,90 @@ func (r *Runner) injectSkillContent(workspace string, prompt string, skillIds []
 	return strings.Join(injected, "")
 }
 
+// injectSelectedSkills appends the FULL content of every user-selected skill to the prompt
+// so the model always reads the skills the user picked (BUG-063 follow-up). The model may
+// still auto-read other skills via its native discovery — that is acceptable; this only
+// guarantees the selected ones are delivered, not that others are excluded.
+//
+// It resolves each selection by its explicit Path first (the absolute skill-file path the
+// desktop picker captured, so it works for any provider layout and the run's own cwd) and
+// falls back to discovering the skill by id/name under the run workspace. Unlike
+// injectSkillContent it does not depend on r.workspace and matches id OR display name.
+func (r *Runner) injectSelectedSkills(workspace string, prompt string, selections []SkillSelection) string {
+	if len(selections) == 0 {
+		return prompt
+	}
+	blocks := make([]string, 0, len(selections))
+	for _, sel := range selections {
+		content, name, ok := r.readSelectedSkill(workspace, sel)
+		if !ok {
+			continue
+		}
+		blocks = append(blocks, fmt.Sprintf("\n### Skill: %s\n```markdown\n%s\n```\n", name, content))
+	}
+	if len(blocks) == 0 {
+		return prompt
+	}
+	names := make([]string, 0, len(selections))
+	for _, sel := range selections {
+		if name := strings.TrimSpace(sel.Name); name != "" {
+			names = append(names, "/"+name)
+		}
+	}
+	header := "\n\n## Selected Skills\n\n" +
+		"The user explicitly selected the skill(s) below for this turn. Read and apply them"
+	if len(names) > 0 {
+		header += "\n\nSelected skill names: " + strings.Join(names, ", ")
+	}
+	return prompt + header + strings.Join(blocks, "")
+}
+
+// readSelectedSkill loads one selected skill's markdown, preferring the explicit path the
+// desktop picker captured and falling back to discovery under the run workspace.
+func (r *Runner) readSelectedSkill(workspace string, sel SkillSelection) (content string, name string, ok bool) {
+	if p := strings.TrimSpace(sel.Path); p != "" {
+		if b, err := os.ReadFile(p); err == nil {
+			label := strings.TrimSpace(sel.Name)
+			if label == "" {
+				label = strings.TrimSuffix(filepath.Base(p), filepath.Ext(p))
+			}
+			return string(b), label, true
+		}
+	}
+	for _, sk := range r.listSkillsInWorkspace(workspace) {
+		if sk.ID == sel.Name || strings.EqualFold(sk.Name, sel.Name) {
+			if b, err := os.ReadFile(sk.FilePath); err == nil {
+				return string(b), sk.Name, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+// listSkillsInWorkspace discovers skills under the given run workspace (the run's cwd), not
+// the runner's default workspace, returning absolute file paths so the content is readable
+// regardless of the process cwd. The path-less fallback for injectSelectedSkills.
+func (r *Runner) listSkillsInWorkspace(workspace string) []Skill {
+	base := strings.TrimSpace(workspace)
+	if base == "" {
+		base = r.workspace
+	}
+	skillsDir := filepath.Join(base, ".agents", "skills")
+	entries, err := discoverMarkdownEntries(skillsDir, true)
+	if err != nil {
+		return nil
+	}
+	skills := make([]Skill, 0, len(entries))
+	for _, entry := range entries {
+		skills = append(skills, Skill{
+			ID:       entry.ID,
+			Name:     entry.Name,
+			FilePath: filepath.Join(skillsDir, filepath.FromSlash(entry.FilePath)),
+		})
+	}
+	return skills
+}
+
 func summarizeCommandFailure(runErr error, stderrSummary string) string {
 	errorMessage := ""
 	if runErr != nil {

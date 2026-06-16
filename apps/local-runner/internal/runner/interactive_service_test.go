@@ -106,6 +106,162 @@ func getSnapshot(t *testing.T, base, runID string) runSnapshotView {
 	return v
 }
 
+type captureTurnAdapter struct {
+	ch chan TurnRequest
+}
+
+func (a *captureTurnAdapter) Key() ProviderKey { return ProviderKeyClaude }
+func (a *captureTurnAdapter) Capabilities() ProviderCapabilities {
+	return ProviderCapabilities{Streaming: true, SkillSelection: true}
+}
+func (a *captureTurnAdapter) SendTurn(_ context.Context, req TurnRequest, bridge TurnBridge) error {
+	a.ch <- req
+	bridge.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "ok"})
+	return nil
+}
+
+func TestChatModeSelectedControlsReachProviderTurnRequest(t *testing.T) {
+	svc := NewInteractiveService()
+	capture := &captureTurnAdapter{ch: make(chan TurnRequest, 1)}
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key:         ProviderKeyClaude,
+		DisplayName: "Claude",
+		Status:      ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{
+			Streaming: true, SkillSelection: true, ApprovalEvents: true,
+		},
+		newAdapter: func() ProviderRuntimeAdapter { return capture },
+	})
+	svc.registry = reg
+
+	mux := http.NewServeMux()
+	svc.RegisterInteractiveRoutes(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	status, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs", StartRunInput{
+		ProjectID:       "proj-web",
+		ProviderKey:     ProviderKeyClaude,
+		Model:           "claude-sonnet-4-5",
+		ReasoningEffort: "high",
+		YoloMode:        true,
+		ChatMode:        "normal_chat",
+		Cwd:             "/Users/dev/project",
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("start chat run status=%d body=%s", status, body)
+	}
+	var handle RunHandle
+	if err := json.Unmarshal(body, &handle); err != nil {
+		t.Fatalf("decode handle: %v", err)
+	}
+	if handle.StepID == "" {
+		t.Fatalf("chat run must return synthetic step id: %+v", handle)
+	}
+
+	status, body = doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+handle.RunID+"/turns", map[string]any{
+		"stepId": handle.StepID,
+		"prompt": "hello",
+		"selectedSkills": []map[string]any{
+			{"name": "planner", "source": "slash_picker"},
+			{"name": "code-review", "source": "slash_picker"},
+		},
+		"reasoningEffort": "high",
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("send chat turn status=%d body=%s", status, body)
+	}
+
+	select {
+	case req := <-capture.ch:
+		if req.ModelName != "claude-sonnet-4-5" {
+			t.Fatalf("ModelName = %q, want claude-sonnet-4-5", req.ModelName)
+		}
+		if req.ReasoningEffort != "high" {
+			t.Fatalf("ReasoningEffort = %q, want high", req.ReasoningEffort)
+		}
+		if !req.YoloMode {
+			t.Fatal("YoloMode = false, want true")
+		}
+		if req.Cwd != "/Users/dev/project" {
+			t.Fatalf("Cwd = %q, want /Users/dev/project", req.Cwd)
+		}
+		if len(req.SelectedSkills) != 2 || req.SelectedSkills[0].Name != "planner" || req.SelectedSkills[1].Name != "code-review" {
+			t.Fatalf("SelectedSkills = %+v, want planner + code-review", req.SelectedSkills)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for captured provider turn request")
+	}
+}
+
+// TestChatModeTurnLevelControlsOverrideRunDefaults locks BUG-063: model + YOLO are
+// per-turn in chat mode, so changing them between prompts reaches the provider turn
+// request — they are no longer frozen at the run-level values captured at startRun.
+func TestChatModeTurnLevelControlsOverrideRunDefaults(t *testing.T) {
+	svc := NewInteractiveService()
+	capture := &captureTurnAdapter{ch: make(chan TurnRequest, 1)}
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key:          ProviderKeyClaude,
+		DisplayName:  "Claude",
+		Status:       ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true, SkillSelection: true, ApprovalEvents: true},
+		newAdapter:   func() ProviderRuntimeAdapter { return capture },
+	})
+	svc.registry = reg
+
+	mux := http.NewServeMux()
+	svc.RegisterInteractiveRoutes(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	status, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs", StartRunInput{
+		ProjectID:   "proj-web",
+		ProviderKey: ProviderKeyClaude,
+		Model:       "model-a",
+		YoloMode:    true,
+		ChatMode:    "normal_chat",
+		Cwd:         "/w",
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("start run status=%d body=%s", status, body)
+	}
+	var handle RunHandle
+	if err := json.Unmarshal(body, &handle); err != nil {
+		t.Fatalf("decode handle: %v", err)
+	}
+
+	// Turn 1 omits model/yolo → the run-level defaults (model-a, yolo=true) are used.
+	status, body = doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+handle.RunID+"/turns", map[string]any{
+		"stepId": handle.StepID, "prompt": "one",
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("turn 1 status=%d body=%s", status, body)
+	}
+	req1 := <-capture.ch
+	if req1.ModelName != "model-a" || !req1.YoloMode {
+		t.Fatalf("turn 1 req = {model:%q yolo:%v}, want {model-a true}", req1.ModelName, req1.YoloMode)
+	}
+	waitFor(t, func() bool {
+		svc.mu.Lock()
+		defer svc.mu.Unlock()
+		return !svc.runs[handle.RunID].turnInFlight
+	}, "turn 1 to finish")
+
+	// Turn 2 supplies new per-turn values → they override the run-level defaults.
+	status, body = doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+handle.RunID+"/turns", map[string]any{
+		"stepId": handle.StepID, "prompt": "two", "model": "model-b", "yoloMode": false,
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("turn 2 status=%d body=%s", status, body)
+	}
+	req2 := <-capture.ch
+	if req2.ModelName != "model-b" || req2.YoloMode {
+		t.Fatalf("turn 2 req = {model:%q yolo:%v}, want {model-b false}", req2.ModelName, req2.YoloMode)
+	}
+}
+
 func waitFor(t *testing.T, cond func() bool, what string) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)

@@ -28,8 +28,13 @@ import (
 // remaining wiring (07 DoD).
 
 const (
-	claudeApproveToolName = "mcp__flowpilot__approve"
-	claudeAskUserToolName = "mcp__flowpilot__ask_user"
+	// claudeMCPServerName is the single source of truth for FlowPilot's MCP server name in
+	// the per-turn --mcp-config. The tool names below encode it (claude's mcp__<server>__<tool>
+	// convention), and writeClaudeMCPConfig guards against an injected extra server shadowing
+	// it — so the name MUST be referenced via this const, never re-typed as a literal.
+	claudeMCPServerName   = "flowpilot"
+	claudeApproveToolName = "mcp__" + claudeMCPServerName + "__approve"
+	claudeAskUserToolName = "mcp__" + claudeMCPServerName + "__ask_user"
 )
 
 // claudeArgs builds the headless stream-json invocation. YOLO drives --permission-mode
@@ -38,7 +43,7 @@ const (
 // --strict-mcp-config loads ONLY FlowPilot's MCP config (ignores the user's ambient
 // servers). resumeID MUST be a real Claude session_id (never the synthetic id; finding 1).
 // Skills ride the prompt (promptPrep), not args.
-func claudeArgs(posture YoloPosture, resumeID, mcpConfig string, _ []SkillSelection) []string {
+func claudeArgs(posture YoloPosture, resumeID, mcpConfig, modelName, reasoningEffort string, _ []SkillSelection) []string {
 	args := []string{
 		"-p",
 		"--input-format", "stream-json",
@@ -51,8 +56,17 @@ func claudeArgs(posture YoloPosture, resumeID, mcpConfig string, _ []SkillSelect
 	if posture.ClaudePermissionMode != "" {
 		args = append(args, "--permission-mode", posture.ClaudePermissionMode)
 	}
-	if !posture.RunnerAutoApprove && strings.TrimSpace(mcpConfig) != "" {
-		args = append(args, "--permission-prompt-tool", claudeApproveToolName, "--mcp-config", mcpConfig)
+	if model := strings.TrimSpace(modelName); model != "" {
+		args = append(args, "--model", normalizeClaudeModelName(model))
+	}
+	if effort := strings.TrimSpace(reasoningEffort); effort != "" {
+		args = append(args, "--effort", normalizeClaudeEffort(effort))
+	}
+	if strings.TrimSpace(mcpConfig) != "" {
+		args = append(args, "--mcp-config", mcpConfig)
+		if !posture.RunnerAutoApprove {
+			args = append(args, "--permission-prompt-tool", claudeApproveToolName)
+		}
 	}
 	if strings.TrimSpace(resumeID) != "" {
 		args = append(args, "--resume", resumeID)
@@ -60,29 +74,39 @@ func claudeArgs(posture YoloPosture, resumeID, mcpConfig string, _ []SkillSelect
 	return args
 }
 
-// ensureClaudeConfigSettings writes a minimal settings.json into FlowPilot's claude
-// config dir so gating engages: defaultMode=default + an empty allow-list (no auto-run).
-// It will NOT clobber an existing settings.json (so a deliberately-configured account
-// dir is respected); a fresh FlowPilot-managed dir gets the gating posture. Without this,
-// an inherited allow-rule (e.g. Bash(*)) silently bypasses YOLO=false gating.
+// ensureClaudeConfigSettings enforces the gating posture in the FlowPilot-managed claude
+// config dir's settings.json: defaultMode=default + empty allow-list (no auto-run).
+//
+// It ALWAYS overwrites the permissions section, even when settings.json already exists.
+// Write-once was the original design ("respect an existing settings.json"), but Claude CLI
+// persists allow-rules to settings.json each time the user approves a tool via the
+// --permission-prompt-tool MCP route. On the next YOLO=false turn the stale allow-rules
+// bypass our gating entirely — Claude auto-runs the tool without calling the approval MCP
+// and no approval card appears (BUG-069). Non-permission fields (e.g. theme) are preserved
+// by merging the existing file before writing.
 func ensureClaudeConfigSettings(configDir string) error {
 	if strings.TrimSpace(configDir) == "" {
 		return nil
 	}
-	path := filepath.Join(configDir, "settings.json")
-	if _, err := os.Stat(path); err == nil {
-		return nil // respect an existing settings.json
-	}
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		return err
 	}
-	settings := map[string]any{
-		"permissions": map[string]any{
-			"defaultMode": "default",
-			"allow":       []any{},
-		},
+	path := filepath.Join(configDir, "settings.json")
+
+	// Merge with existing settings so non-permission fields survive.
+	existing := map[string]any{}
+	if raw, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(raw, &existing) // best-effort; ignore parse errors
 	}
-	b, err := json.MarshalIndent(settings, "", "  ")
+
+	// Always force the permissions section to the gating posture. An inherited
+	// allow-rule (e.g. Bash(*)) silently bypasses YOLO=false gating (spike finding).
+	existing["permissions"] = map[string]any{
+		"defaultMode": "default",
+		"allow":       []any{},
+	}
+
+	b, err := json.MarshalIndent(existing, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -106,7 +130,7 @@ func flowpilotManagedClaudeConfigDir(workspace string) string {
 func flowpilotClaudeMcpConfig(command string, cmdArgs []string) map[string]any {
 	return map[string]any{
 		"mcpServers": map[string]any{
-			"flowpilot": map[string]any{"command": command, "args": cmdArgs},
+			claudeMCPServerName: map[string]any{"command": command, "args": cmdArgs},
 		},
 	}
 }

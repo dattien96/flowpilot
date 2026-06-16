@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -85,7 +84,7 @@ func TestHandleClaudeAskUser(t *testing.T) {
 }
 
 func TestClaudeArgsIncludesStrictMcpConfig(t *testing.T) {
-	args := claudeArgs(resolveYoloPosture(false), "", "", nil)
+	args := claudeArgs(resolveYoloPosture(false), "", "", "", "", nil)
 	if argIndex(args, "--strict-mcp-config") < 0 {
 		t.Fatalf("--strict-mcp-config must always be present: %v", args)
 	}
@@ -114,17 +113,37 @@ func TestEnsureClaudeConfigSettingsWritesGatingPosture(t *testing.T) {
 	}
 }
 
-func TestEnsureClaudeConfigSettingsDoesNotClobber(t *testing.T) {
+// TestEnsureClaudeConfigSettingsClearsAllowRules is the regression guard for BUG-069:
+// Claude CLI persists approved tools as allow-rules in settings.json, which then bypass
+// YOLO=false gating. ensureClaudeConfigSettings must always clear the allow list even
+// when settings.json already exists, while preserving non-permission fields.
+func TestEnsureClaudeConfigSettingsClearsAllowRules(t *testing.T) {
 	dir := t.TempDir()
-	custom := `{"permissions":{"allow":["Bash(*)"]},"theme":"dark"}`
-	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(custom), 0o644); err != nil {
+	// Seed a settings.json that looks like what Claude writes after a user approves a
+	// tool (allow-rule) while also carrying a user preference ("theme").
+	existing := `{"permissions":{"allow":["Bash(*)"],"defaultMode":"default"},"theme":"dark"}`
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(existing), 0o644); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	if err := ensureClaudeConfigSettings(dir); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
 	raw, _ := os.ReadFile(filepath.Join(dir, "settings.json"))
-	if !strings.Contains(string(raw), `"theme":"dark"`) {
-		t.Fatalf("must not clobber an existing settings.json, got %s", raw)
+	var cfg map[string]any
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("result not JSON: %v", err)
+	}
+	// Allow-rules must be cleared so gating engages.
+	perms, _ := cfg["permissions"].(map[string]any)
+	allow, _ := perms["allow"].([]any)
+	if len(allow) != 0 {
+		t.Fatalf("allow-rules not cleared: %v", allow)
+	}
+	if perms["defaultMode"] != "default" {
+		t.Fatalf("defaultMode must be default, got %v", perms["defaultMode"])
+	}
+	// Non-permission fields must be preserved.
+	if cfg["theme"] != "dark" {
+		t.Fatalf("non-permission field 'theme' must be preserved, got %v", cfg["theme"])
 	}
 }

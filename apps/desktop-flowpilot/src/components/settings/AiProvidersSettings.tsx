@@ -24,6 +24,8 @@ export function AiProvidersSettings(): React.ReactElement {
   const [message, setMessage] = useState<string | null>(null);
   const [messageTone, setMessageTone] = useState<"info" | "error">("info");
   const [draft, setDraft] = useState<ProviderDraft>({ providerKey: "codex", modelId: "", displayName: "" });
+  const [editingModelId, setEditingModelId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState<{ modelId: string; displayName: string }>({ modelId: "", displayName: "" });
 
   const refresh = async () => {
     try {
@@ -87,6 +89,40 @@ export function AiProvidersSettings(): React.ReactElement {
     } catch (error) {
       setMessageTone("error");
       setMessage(toErrorMessage(error, "Unable to add supported model."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const deleteModel = async (model: SupportedModel) => {
+    if (!window.confirm(`Delete "${model.displayName}"?`)) return;
+    setBusy(true);
+    try {
+      const admin = await getAdminUseCases();
+      await admin.providers.deleteSupportedModel(model.id);
+      await refresh();
+    } catch (error) {
+      setMessageTone("error");
+      setMessage(toErrorMessage(error, "Unable to delete supported model."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveEditModel = async () => {
+    if (!editingModelId) return;
+    setBusy(true);
+    try {
+      const admin = await getAdminUseCases();
+      const updated = await admin.providers.updateSupportedModel(editingModelId, {
+        modelId: editDraft.modelId.trim(),
+        displayName: editDraft.displayName.trim(),
+      });
+      setModels((current) => current.map((m) => (m.id === updated.id ? updated : m)));
+      setEditingModelId(null);
+    } catch (error) {
+      setMessageTone("error");
+      setMessage(toErrorMessage(error, "Unable to update supported model."));
     } finally {
       setBusy(false);
     }
@@ -165,7 +201,55 @@ export function AiProvidersSettings(): React.ReactElement {
         <div className="settings-subpanel"><h3>Local Providers</h3><div className="settings-list">{providers.map((provider) => <div className="settings-list-item static" key={provider.key}><div className="settings-provider-meta"><strong>{provider.label}</strong><span>{provider.installed ? "installed" : "not installed"} / {provider.version ?? "unknown"}</span><span>{providerAccountSummary(provider.key as ProviderKey)}</span></div><div className="settings-provider-actions"><button className="secondary-btn" disabled={busy || connectingProviderKey === provider.key || !provider.installed} onClick={() => void connectAccount(provider.key as ProviderKey)} type="button">{connectingProviderKey === provider.key || pendingProviderKey === provider.key ? "Connecting..." : "Connect New Account"}</button><button className="secondary-btn" disabled={busy} onClick={() => void authenticate(provider.key)} type="button">Auth</button></div></div>)}</div></div>
         <div className="settings-subpanel"><h3>Add Supported Model</h3><div className="settings-grid"><label className="settings-field"><span>Provider</span><select value={draft.providerKey} onChange={(event) => setDraft((current) => ({ ...current, providerKey: event.target.value as "codex" | "claude" | "gemini" }))}><option value="codex">codex</option><option value="claude">claude</option><option value="gemini">gemini</option></select></label><label className="settings-field"><span>Model ID</span><input value={draft.modelId} onChange={(event) => setDraft((current) => ({ ...current, modelId: event.target.value }))} /></label><label className="settings-field settings-field-full"><span>Display Name</span><input value={draft.displayName} onChange={(event) => setDraft((current) => ({ ...current, displayName: event.target.value }))} /></label></div><div className="settings-actions"><button className="primary-btn" disabled={busy} onClick={() => void addModel()} type="button">Add Model</button></div></div>
       </div>
-      <div className="settings-subpanel"><h3>Supported Models</h3><div className="settings-list">{models.map((model) => <div className="settings-list-item static" key={model.id}><div><strong>{model.displayName}</strong><span>{model.providerKey} / {model.modelId} / {model.isEnabled ? "enabled" : "disabled"}</span></div><button className="secondary-btn" disabled={busy} onClick={() => void toggleModel(model)} type="button">{model.isEnabled ? "Disable" : "Enable"}</button></div>)}</div></div>
+      <div className="settings-subpanel">
+        <h3>Supported Models</h3>
+        <div className="settings-list">
+          {models.map((model) => {
+            const isEditing = editingModelId === model.id;
+            if (isEditing) {
+              return (
+                <div className="settings-list-item static" key={model.id}>
+                  <div className="settings-grid" style={{ flex: 1, marginRight: "0.5rem" }}>
+                    <label className="settings-field">
+                      <span>Display Name</span>
+                      <input
+                        value={editDraft.displayName}
+                        disabled={busy}
+                        onChange={(e) => setEditDraft((d) => ({ ...d, displayName: e.target.value }))}
+                      />
+                    </label>
+                    <label className="settings-field">
+                      <span>Model ID</span>
+                      <input
+                        value={editDraft.modelId}
+                        disabled={busy}
+                        onChange={(e) => setEditDraft((d) => ({ ...d, modelId: e.target.value }))}
+                      />
+                    </label>
+                  </div>
+                  <div style={{ display: "flex", gap: "0.5rem", alignSelf: "center" }}>
+                    <button className="primary-btn" disabled={busy || !editDraft.modelId.trim() || !editDraft.displayName.trim()} onClick={() => void saveEditModel()} type="button">Save</button>
+                    <button className="secondary-btn" disabled={busy} onClick={() => setEditingModelId(null)} type="button">Cancel</button>
+                  </div>
+                </div>
+              );
+            }
+            return (
+              <div className="settings-list-item static" key={model.id}>
+                <div>
+                  <strong>{model.displayName}</strong>
+                  <span>{model.providerKey} / {model.modelId} / {model.isEnabled ? "enabled" : "disabled"}</span>
+                </div>
+                <div style={{ display: "flex", gap: "0.5rem" }}>
+                  <button className="secondary-btn" disabled={busy} onClick={() => void toggleModel(model)} type="button">{model.isEnabled ? "Disable" : "Enable"}</button>
+                  <button className="secondary-btn" disabled={busy} onClick={() => { setEditDraft({ modelId: model.modelId, displayName: model.displayName }); setEditingModelId(model.id); }} type="button">Edit</button>
+                  <button className="secondary-btn" disabled={busy} onClick={() => void deleteModel(model)} type="button">Delete</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
     </section>
   );
 }

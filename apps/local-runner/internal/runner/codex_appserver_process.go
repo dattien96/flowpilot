@@ -137,26 +137,13 @@ func (r *Runner) ensureCodexAppServer(ctx context.Context, scopeKey, cwd string,
 		if req.Cwd != "" {
 			workspace = req.Cwd
 		}
-		prompt := r.injectSkillContent(workspace, req.Prompt, skillIDsOf(req.SelectedSkills))
+		prompt := r.injectSelectedSkills(workspace, req.Prompt, req.SelectedSkills)
 		return prompt + askUserReinforcement
 	}
 
 	h := &codexAppServerHandle{scopeKey: scopeKey, dispatcher: dispatcher, adapter: adapter, caps: caps, kill: kill}
 	r.codexAppServer = h
 	return h, nil
-}
-
-func skillIDsOf(skills []SkillSelection) []string {
-	if len(skills) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(skills))
-	for _, s := range skills {
-		if s.Name != "" {
-			out = append(out, s.Name)
-		}
-	}
-	return out
 }
 
 // errorAdapter is returned by the live registry when the app-server cannot be

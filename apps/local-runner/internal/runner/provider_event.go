@@ -159,10 +159,17 @@ type SkillSelection struct {
 }
 
 type TurnInput struct {
-	StepID          string           `json:"stepId"`
-	Prompt          string           `json:"prompt"`
-	SelectedSkills  []SkillSelection `json:"selectedSkills,omitempty"`
-	ReasoningEffort string           `json:"reasoningEffort,omitempty"`
+	StepID         string           `json:"stepId"`
+	Prompt         string           `json:"prompt"`
+	SelectedSkills []SkillSelection `json:"selectedSkills,omitempty"`
+	// ReasoningEffort/Model/YoloMode are per-turn chat overrides (BUG-063): the desktop
+	// resends the current control values on every chat turn so model, reasoning, and YOLO
+	// can be changed between prompts (the providers re-apply them per turn). nil pointers
+	// mean "not supplied" (workflow/step mode, or an older client) and fall back to the
+	// run-level value captured at startRun. An empty Model string is a deliberate "Default".
+	ReasoningEffort string  `json:"reasoningEffort,omitempty"`
+	Model           *string `json:"model,omitempty"`
+	YoloMode        *bool   `json:"yoloMode,omitempty"`
 }
 
 // ---- Catalog DTOs (navigator; fake catalog in P2) --------------------------
