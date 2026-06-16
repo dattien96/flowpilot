@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -10,7 +11,16 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
+
+// claudeMCPReadyDefaultTimeout bounds how long SendTurn withholds the user prompt waiting
+// for claude's MCP client to finish connecting (initialize -> tools/list). claude connects
+// --mcp-config servers asynchronously ("running fully async (nonblocking)"); the FIRST turn's
+// tool set is otherwise snapshotted before mcp__flowpilot__ask_user is registered, so the
+// model never sees ask_user (validated against claude 2.1.178). A normal local connect is
+// ~0.1-1.2s; on a slow/failed connect we degrade to sending anyway rather than hang.
+const claudeMCPReadyDefaultTimeout = 10 * time.Second
 
 // Phase 4 / 07: the runner-hosted MCP server that lets the real `claude` CLI reach
 // FlowPilot's approve + ask_user tools (the spike-validated permission path). It speaks
@@ -33,10 +43,14 @@ const ClaudeMCPPath = "/internal/claude-permission-mcp"
 type claudeMCPServer struct {
 	mu      sync.Mutex
 	bridges map[string]TurnBridge
+	// ready holds a per-token channel closed the first time claude's MCP client calls
+	// tools/list for that token — i.e. the per-turn server is connected and its tools
+	// (including ask_user) are live. SendTurn waits on this before delivering the prompt.
+	ready map[string]chan struct{}
 }
 
 func newClaudeMCPServer() *claudeMCPServer {
-	return &claudeMCPServer{bridges: map[string]TurnBridge{}}
+	return &claudeMCPServer{bridges: map[string]TurnBridge{}, ready: map[string]chan struct{}{}}
 }
 
 // register binds a turn's bridge to a fresh crypto-random token (used in the per-turn
@@ -50,6 +64,7 @@ func (s *claudeMCPServer) register(bridge TurnBridge) string {
 	tok := hex.EncodeToString(b)
 	s.mu.Lock()
 	s.bridges[tok] = bridge
+	s.ready[tok] = make(chan struct{})
 	s.mu.Unlock()
 	return tok
 }
@@ -57,7 +72,49 @@ func (s *claudeMCPServer) register(bridge TurnBridge) string {
 func (s *claudeMCPServer) unregister(tok string) {
 	s.mu.Lock()
 	delete(s.bridges, tok)
+	delete(s.ready, tok)
 	s.mu.Unlock()
+}
+
+// signalReady closes the token's ready channel the first time it's called (tools/list seen).
+// Idempotent: a second tools/list (or none) is harmless.
+func (s *claudeMCPServer) signalReady(tok string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ch, ok := s.ready[tok]
+	if !ok {
+		return
+	}
+	select {
+	case <-ch: // already closed
+	default:
+		close(ch)
+	}
+}
+
+// waitReady blocks until claude's MCP client has fetched tools/list for tok (connection
+// live), the timeout elapses, or ctx is cancelled. Reports whether the connection became
+// ready. An unknown/already-unregistered token returns false immediately.
+func (s *claudeMCPServer) waitReady(ctx context.Context, tok string, timeout time.Duration) bool {
+	s.mu.Lock()
+	ch, ok := s.ready[tok]
+	s.mu.Unlock()
+	if !ok {
+		return false
+	}
+	if timeout <= 0 {
+		timeout = claudeMCPReadyDefaultTimeout
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-ch:
+		return true
+	case <-timer.C:
+		return false
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func (s *claudeMCPServer) bridgeFor(tok string) TurnBridge {
@@ -73,9 +130,17 @@ func (s *claudeMCPServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
+	if r.Method == http.MethodGet {
+		// Streamable-HTTP: claude opens a GET SSE stream and only marks the server
+		// "connected" once it succeeds. Declining it with 405 leaves the server stuck
+		// "pending", so its tools (ask_user!) are NEVER exposed to the model — the live-flow
+		// defect (validated against claude 2.1.178). We never push server->client messages
+		// (approve/ask_user are request/response), so the stream just stays open with
+		// keepalive comments until claude disconnects.
+		s.serveSSE(w, r)
+		return
+	}
 	if r.Method != http.MethodPost {
-		// Streamable-HTTP clients may probe GET for an SSE channel; we only do
-		// request/response, so decline GET cleanly.
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
@@ -108,6 +173,43 @@ func (s *claudeMCPServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+// serveSSE answers claude's GET probe with an open text/event-stream so the Streamable-HTTP
+// client considers the server connected. FlowPilot never initiates server->client messages,
+// so the stream only carries keepalive comments and stays open until claude disconnects
+// (request ctx cancelled) — one goroutine per live turn.
+func (s *claudeMCPServer) serveSSE(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		// Without flushing the client can't observe the open stream; fail cleanly.
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", "text/event-stream")
+	h.Set("Cache-Control", "no-cache")
+	h.Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write([]byte(": connected\n\n")); err != nil {
+		return
+	}
+	flusher.Flush()
+
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if _, err := w.Write([]byte(": keepalive\n\n")); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
+}
+
 func (s *claudeMCPServer) dispatch(method string, msg map[string]any, token string) (any, map[string]any) {
 	params, _ := msg["params"].(map[string]any)
 	switch method {
@@ -124,6 +226,9 @@ func (s *claudeMCPServer) dispatch(method string, msg map[string]any, token stri
 			"serverInfo":      map[string]any{"name": claudeMCPServerName, "version": "1.0"},
 		}, nil
 	case "tools/list":
+		// The handshake reached tools/list: the per-turn server is connected and its tools
+		// are live. Unblock SendTurn so it can deliver the prompt with ask_user available.
+		s.signalReady(token)
 		return map[string]any{"tools": claudeMCPToolDefs()}, nil
 	case "tools/call":
 		name, _ := params["name"].(string)
@@ -148,10 +253,24 @@ func (s *claudeMCPServer) dispatch(method string, msg map[string]any, token stri
 }
 
 func claudeMCPToolDefs() []any {
-	objSchema := func() map[string]any { return map[string]any{"type": "object"} }
 	return []any{
-		map[string]any{"name": "approve", "description": "FlowPilot permission prompt: approve or deny a tool use.", "inputSchema": objSchema()},
-		map[string]any{"name": "ask_user", "description": "Ask the user a structured question and wait for the answer.", "inputSchema": objSchema()},
+		map[string]any{"name": "approve", "description": "FlowPilot permission prompt: approve or deny a tool use.", "inputSchema": map[string]any{"type": "object"}},
+		// ask_user MUST advertise its parameter schema (prompt/options/multiSelect) so the model
+		// knows how to call it and prefers it over its disabled built-in AskUserQuestion. Mirrors
+		// the Codex registration (codexAskUserMcpServer) for cross-provider parity.
+		map[string]any{
+			"name":        "ask_user",
+			"description": "Ask the user a structured question and wait for their answer before continuing. Use when you need a decision or clarification instead of guessing.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"prompt":      map[string]any{"type": "string", "description": "The question to ask the user."},
+					"options":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Selectable answer options."},
+					"multiSelect": map[string]any{"type": "boolean", "description": "Allow selecting more than one option."},
+				},
+				"required": []any{"prompt"},
+			},
+		},
 	}
 }
 

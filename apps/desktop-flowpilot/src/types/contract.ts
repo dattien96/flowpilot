@@ -145,6 +145,26 @@ export interface SkillSelection {
   source: "slash_picker" | "text_shortcut" | "workflow_default";
 }
 
+/**
+ * An image attached to a chat turn (Task-052). Filled by the renderer AFTER
+ * normalization (downscale + recompress); `data` is the base64 of the normalized
+ * bytes (no `data:` prefix) and is carried inline in the turn payload (V1 — D-2).
+ * A desktop-only local path/preview URL is NOT part of this wire shape: the runner
+ * is a separate process and a renderer path is not guaranteed readable there.
+ */
+export interface PromptAttachment {
+  id: string;
+  kind: "image";
+  originalName: string;
+  /** Encoded MIME after normalization: image/webp | image/jpeg | image/png | image/gif. */
+  mimeType: string;
+  /** Base64 of the normalized bytes (no `data:...;base64,` prefix). */
+  data: string;
+  sizeBytes: number;
+  width?: number;
+  height?: number;
+}
+
 export interface TurnInput {
   runId: string;
   stepId: string;
@@ -160,6 +180,12 @@ export interface TurnInput {
   reasoningEffort?: string;
   model?: string;
   yoloMode?: boolean;
+  /**
+   * Image attachments for this chat turn (Task-052). Carried inline as base64.
+   * Omitted in workflow/step mode and when no images are attached. Supported only
+   * by vision-capable providers; the composer gates the attach control accordingly.
+   */
+  attachments?: PromptAttachment[];
 }
 
 // ---- ProviderEventDTO (serialized ProviderEvent union) ---------------------

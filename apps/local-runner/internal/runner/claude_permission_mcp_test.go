@@ -1,10 +1,12 @@
 package runner
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // Validates the FlowPilot approve/ask_user MCP handlers + config isolation against the
@@ -88,6 +90,108 @@ func TestClaudeArgsIncludesStrictMcpConfig(t *testing.T) {
 	if argIndex(args, "--strict-mcp-config") < 0 {
 		t.Fatalf("--strict-mcp-config must always be present: %v", args)
 	}
+}
+
+// TestClaudeArgsDisablesBuiltinAskUserQuestion guards the live-flow defect: Claude's built-in
+// AskUserQuestion tool runs in the headless CLI with no TTY (returns "user did not answer" and
+// renders as plain text), bypassing FlowPilot's bridge so no QuestionCard appears. claudeArgs
+// MUST disable it in BOTH YOLO states so the model is forced onto mcp__flowpilot__ask_user.
+func TestClaudeArgsDisablesBuiltinAskUserQuestion(t *testing.T) {
+	for _, yolo := range []bool{false, true} {
+		args := claudeArgs(resolveYoloPosture(yolo), "", "", "", "", nil)
+		if !flagHasValue(args, "--disallowed-tools", "AskUserQuestion") {
+			t.Fatalf("yolo=%v: built-in AskUserQuestion must be disabled so ask_user MCP tool is used: %v", yolo, args)
+		}
+	}
+}
+
+// TestClaudeAskUserToolAdvertisesSchema guards that the ask_user MCP tool exposes its
+// prompt/options/multiSelect parameters via tools/list — an empty schema left the model unsure
+// how to call it and biased it toward the (now-disabled) built-in AskUserQuestion.
+func TestClaudeAskUserToolAdvertisesSchema(t *testing.T) {
+	var askUser map[string]any
+	for _, def := range claudeMCPToolDefs() {
+		if m, ok := def.(map[string]any); ok && m["name"] == "ask_user" {
+			askUser = m
+		}
+	}
+	if askUser == nil {
+		t.Fatalf("claudeMCPToolDefs must include an ask_user tool")
+	}
+	schema, _ := askUser["inputSchema"].(map[string]any)
+	props, _ := schema["properties"].(map[string]any)
+	for _, key := range []string{"prompt", "options", "multiSelect"} {
+		if _, ok := props[key]; !ok {
+			t.Fatalf("ask_user inputSchema must advertise %q: %+v", key, schema)
+		}
+	}
+	req, _ := schema["required"].([]any)
+	if len(req) != 1 || req[0] != "prompt" {
+		t.Fatalf("ask_user inputSchema must require prompt, got %+v", req)
+	}
+}
+
+// TestClaudeMCPServerPromptGate guards the core live-flow fix: claude connects --mcp-config
+// servers asynchronously, so SendTurn must withhold the prompt until tools/list arrives or
+// ask_user is never in the first turn's tool set. waitReady must block until the connection
+// signal, unblock the instant tools/list is dispatched, and bound itself on timeout + ctx.
+func TestClaudeMCPServerPromptGate(t *testing.T) {
+	t.Run("unblocks when tools/list is dispatched", func(t *testing.T) {
+		s := newClaudeMCPServer()
+		tok := s.register(&fakeClaudeBridge{})
+		defer s.unregister(tok)
+
+		// Not ready before the handshake reaches tools/list.
+		if s.waitReady(context.Background(), tok, 30*time.Millisecond) {
+			t.Fatalf("waitReady must not report ready before tools/list")
+		}
+
+		done := make(chan bool, 1)
+		go func() { done <- s.waitReady(context.Background(), tok, 2*time.Second) }()
+		// Simulate claude's client fetching the tool list for this token (the real wire path).
+		if _, rpcErr := s.dispatch("tools/list", map[string]any{"id": 1}, tok); rpcErr != nil {
+			t.Fatalf("tools/list dispatch error: %+v", rpcErr)
+		}
+		select {
+		case ok := <-done:
+			if !ok {
+				t.Fatalf("waitReady must report ready once tools/list is dispatched")
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("waitReady did not unblock after tools/list")
+		}
+	})
+
+	t.Run("times out without a connection", func(t *testing.T) {
+		s := newClaudeMCPServer()
+		tok := s.register(&fakeClaudeBridge{})
+		defer s.unregister(tok)
+		start := time.Now()
+		if s.waitReady(context.Background(), tok, 40*time.Millisecond) {
+			t.Fatalf("waitReady must time out (return false) when claude never connects")
+		}
+		if elapsed := time.Since(start); elapsed > time.Second {
+			t.Fatalf("waitReady overran its timeout: %v", elapsed)
+		}
+	})
+
+	t.Run("returns on ctx cancel", func(t *testing.T) {
+		s := newClaudeMCPServer()
+		tok := s.register(&fakeClaudeBridge{})
+		defer s.unregister(tok)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if s.waitReady(ctx, tok, time.Hour) {
+			t.Fatalf("waitReady must return false promptly when ctx is cancelled")
+		}
+	})
+
+	t.Run("unknown token returns false", func(t *testing.T) {
+		s := newClaudeMCPServer()
+		if s.waitReady(context.Background(), "no-such-token", 10*time.Millisecond) {
+			t.Fatalf("waitReady must return false for an unregistered token")
+		}
+	})
 }
 
 func TestEnsureClaudeConfigSettingsWritesGatingPosture(t *testing.T) {

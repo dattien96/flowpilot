@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -17,9 +18,8 @@ import (
 // registry stays on the fake adapter until validated against a real Codex build
 // (06 Part D). The full YOLO SSOT resolver + approval policy + finalizer are P4.
 type codexAdapter struct {
-	dispatcher        *codexDispatcher
-	cwd               string
-	defaultMcpServers []any
+	dispatcher *codexDispatcher
+	cwd        string
 
 	// promptPrep assembles the final prompt before turn/start. Defaults to ask_user
 	// reinforcement; the live process adapter overrides it to also run
@@ -42,9 +42,12 @@ func newCodexAdapter(dispatcher *codexDispatcher, cwd string) *codexAdapter {
 	return a
 }
 
-// askUserReinforcement is appended to every prompt so the model knows the
-// FlowPilot-owned ask_user tool exists and when to use it (best-effort, 04-04).
-const askUserReinforcement = "\n\n---\nIf you need a decision or clarification before continuing, call the `ask_user` tool (prompt, options[], multiSelect?) instead of guessing."
+// askUserReinforcement is appended to every prompt so the model knows the FlowPilot-owned
+// ask_user tool exists and when to use it (best-effort, 04-04). It deliberately biases toward
+// ACTING: complete the clear parts of the task first (normal tools + approval gates apply) and
+// reserve ask_user for a required decision that genuinely blocks progress — otherwise the model
+// front-loads clarifying questions instead of doing obvious work (e.g. a plain file write).
+const askUserReinforcement = "\n\n---\nComplete the clear, unambiguous parts of the task directly — your normal tools and approval gates still apply. Only call the `ask_user` tool (prompt, options[], multiSelect?) when a required decision genuinely blocks you and you cannot reasonably infer the answer or make progress without it; do not use it for things you can do or reasonably assume first."
 
 // preparePrompt builds the final turn prompt. The default applies ask_user
 // reinforcement; promptPrep (when set) replaces it with full runner-side assembly.
@@ -55,25 +58,21 @@ func (a *codexAdapter) preparePrompt(req TurnRequest) string {
 	return req.Prompt + askUserReinforcement
 }
 
-// codexAskUserMcpServer is the registration entry for the FlowPilot-owned ask_user
-// custom MCP tool, carried on thread/start so the provider lists it via tools/list.
-func codexAskUserMcpServer() any {
+// codexAskUserDynamicTool is the FlowPilot-owned ask_user tool registered on thread/start
+// as a `DynamicToolSpec` (the real app-server registration channel). The model discovers it
+// and a call arrives back as an `item/tool/call` server->client request (handleInbound).
+func codexAskUserDynamicTool() any {
 	return map[string]any{
-		"name": "flowpilot",
-		"tools": []any{
-			map[string]any{
-				"name":        "ask_user",
-				"description": "Ask the user a structured question and wait for their answer before continuing. Use when you need a decision or clarification.",
-				"inputSchema": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"prompt":      map[string]any{"type": "string"},
-						"options":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-						"multiSelect": map[string]any{"type": "boolean"},
-					},
-					"required": []any{"prompt"},
-				},
+		"name":        "ask_user",
+		"description": "Ask the user a structured question and wait for their answer before continuing. Use when you need a decision or clarification instead of guessing.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"prompt":      map[string]any{"type": "string", "description": "The question to ask the user."},
+				"options":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Selectable answer options."},
+				"multiSelect": map[string]any{"type": "boolean", "description": "Allow selecting more than one option."},
 			},
+			"required": []any{"prompt"},
 		},
 	}
 }
@@ -83,7 +82,7 @@ func (a *codexAdapter) Key() ProviderKey { return ProviderKeyCodex }
 func (a *codexAdapter) Capabilities() ProviderCapabilities {
 	return ProviderCapabilities{
 		Streaming: true, Resume: true, ApprovalEvents: true, FileEvents: true,
-		SkillSelection: true, Mcp: true, Interrupt: true,
+		SkillSelection: true, Mcp: true, Interrupt: true, Vision: true,
 	}
 }
 
@@ -97,11 +96,11 @@ func (a *codexAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tur
 		cwd = req.Cwd
 	}
 
-	// Register the FlowPilot proxy + required MCPs + the ask_user custom tool on the
-	// thread (04-04): the model discovers ask_user via tools/list at session start.
-	mcpServers := append(append([]any{}, a.defaultMcpServers...), codexAskUserMcpServer())
+	// Register the FlowPilot-owned ask_user tool as a thread dynamicTool (04-04): the model
+	// discovers it at session start and a call returns as an item/tool/call request.
+	dynamicTools := []any{codexAskUserDynamicTool()}
 
-	startRes, err := a.dispatcher.call(ctx, "thread/start", codexThreadStartParams(cwd, sandbox, approvalMode, req.ModelName, req.ReasoningEffort, mcpServers))
+	startRes, err := a.dispatcher.call(ctx, "thread/start", codexThreadStartParams(cwd, sandbox, approvalMode, req.ModelName, req.ReasoningEffort, dynamicTools))
 	if err != nil {
 		return err
 	}
@@ -131,6 +130,17 @@ func (a *codexAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tur
 		skill = &req.SelectedSkills[0]
 	}
 
+	// Persist image attachments to a per-turn temp dir on the runner host so Codex can
+	// read them by path (Task-052, D-3). Cleanup is deferred to turn return: SendTurn
+	// blocks on the event pump below until a terminal event or interrupt, by which point
+	// the app-server has already read the files — so deletion never races a read. A boot
+	// sweep (sweepCodexImageAttachments) reclaims any orphans left by a hard crash.
+	imagePaths, cleanupImages, err := writeCodexImageAttachments(req.ProviderTurnID, req.Attachments)
+	if err != nil {
+		return err
+	}
+	defer cleanupImages()
+
 	// Runner-side prompt assembly before turn/start (04-03): skill reinforcement +
 	// ask_user usage reinforcement. The pluggable promptPrep hook lets the live
 	// process adapter inject full skill content (injectSkillContent) and required-MCP
@@ -140,7 +150,7 @@ func (a *codexAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tur
 	// Fire turn/start; rely on notifications for completion (don't block the pump).
 	turnErr := make(chan error, 1)
 	go func() {
-		res, e := a.dispatcher.call(ctx, "turn/start", codexTurnStartParams(threadID, prompt, skill))
+		res, e := a.dispatcher.call(ctx, "turn/start", codexTurnStartParams(threadID, prompt, skill, imagePaths))
 		if e == nil {
 			if tid := codexTurnIDFromResponse(res); tid != "" {
 				a.mu.Lock()
@@ -192,6 +202,13 @@ func (a *codexAdapter) codexTurnID(threadID string) string {
 // Approval requests are forwarded through the active turn's bridge and the chosen
 // decision is replied back to Codex, so the model unblocks.
 func (a *codexAdapter) handleInbound(req codexInboundRequest) {
+	// Dynamic-tool call (the ask_user structured question): the model invoked a thread
+	// dynamicTool, delivered as `item/tool/call` with DynamicToolCallParams. Route it to
+	// the user-interaction bridge and reply with the answer as a DynamicToolCallResponse.
+	if req.Method == "item/tool/call" {
+		a.handleDynamicToolCall(req)
+		return
+	}
 	if !codexInboundApprovalMethod(req.Method) {
 		_ = a.dispatcher.replyError(req.ID, "unsupported Codex inbound request: "+req.Method)
 		return
@@ -214,6 +231,66 @@ func (a *codexAdapter) handleInbound(req codexInboundRequest) {
 		return
 	}
 	_ = a.dispatcher.reply(req.ID, codexApprovalResponse(req.Method, req.Params, decision))
+}
+
+// handleDynamicToolCall services an `item/tool/call` for the ask_user tool: it forwards the
+// structured question to the active turn's bridge (pause → user_question_required → options
+// card → resume) and replies with a DynamicToolCallResponse. Unknown tool / no bridge / a
+// bridge error all reply success=false so the model gets a result and never hangs.
+func (a *codexAdapter) handleDynamicToolCall(req codexInboundRequest) {
+	threadID := codexThreadIDFromParams(req.Params)
+	a.mu.Lock()
+	bridge := a.bridges[threadID]
+	a.mu.Unlock()
+
+	tool, _ := req.Params["tool"].(string)
+	if bridge == nil || tool != "ask_user" {
+		_ = a.dispatcher.reply(req.ID, codexDynamicToolResult("Tool is not available.", false))
+		return
+	}
+
+	prompt, options, multi := codexAskUserArgs(req.Params)
+	choice, err := bridge.AskQuestion(prompt, options, multi)
+	if err != nil || len(choice) == 0 {
+		// expiry/interrupt or no answer → return a result (not hang) so the model continues.
+		_ = a.dispatcher.reply(req.ID, codexDynamicToolResult("No answer was provided.", false))
+		return
+	}
+	_ = a.dispatcher.reply(req.ID, codexDynamicToolResult(strings.Join(choice, ", "), true))
+}
+
+// codexAskUserArgs parses DynamicToolCallParams.arguments into AskQuestion inputs. Options
+// may be plain strings or {label, description} objects (mirrors claudeAskUserParams).
+func codexAskUserArgs(params map[string]any) (string, []QuestionOption, bool) {
+	args, _ := params["arguments"].(map[string]any)
+	if args == nil {
+		return "", nil, false
+	}
+	prompt, _ := args["prompt"].(string)
+	multi, _ := args["multiSelect"].(bool)
+	var opts []QuestionOption
+	if raw, ok := args["options"].([]any); ok {
+		for _, o := range raw {
+			switch v := o.(type) {
+			case string:
+				opts = append(opts, QuestionOption{Label: v, Value: v})
+			case map[string]any:
+				label, _ := v["label"].(string)
+				desc, _ := v["description"].(string)
+				opts = append(opts, QuestionOption{Label: label, Description: desc, Value: label})
+			}
+		}
+	}
+	return prompt, opts, multi
+}
+
+// codexDynamicToolResult builds the DynamicToolCallResponse reply shape
+// ({ contentItems:[{type:"inputText",text}], success }).
+func codexDynamicToolResult(text string, success bool) map[string]any {
+	return map[string]any{
+		"contentItems": []any{map[string]any{"type": "inputText", "text": text}},
+		"success":      success,
+	}
 }
 
 func codexApprovalDetails(method string, params map[string]any) ApprovalDetails {

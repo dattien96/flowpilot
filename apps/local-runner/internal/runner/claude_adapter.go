@@ -34,6 +34,11 @@ type claudeAdapter struct {
 	mcpServer  *claudeMCPServer
 	mcpBaseURL func() string
 
+	// mcpReadyTimeout bounds how long SendTurn withholds the prompt waiting for claude's
+	// MCP client to connect (tools/list). 0 => claudeMCPReadyDefaultTimeout. Tests set a
+	// small value because the scripted fake process never connects to the MCP server.
+	mcpReadyTimeout time.Duration
+
 	// extraMCPServers returns FlowPilot-managed MCP servers (e.g. google-drive) to merge
 	// into the per-turn --mcp-config alongside the flowpilot permission server. Needed
 	// because --strict-mcp-config makes claude ignore the account's .claude.json mcpServers.
@@ -55,16 +60,18 @@ func newClaudeAdapter(pool *claudeProcessPool, cwd, scopeKey string, env map[str
 	}
 }
 
-// claudeAskUserReinforcement mirrors the Codex askUserReinforcement: it nudges the model
-// to use the FlowPilot-owned ask_user tool instead of guessing (best-effort, 04-04).
-const claudeAskUserReinforcement = "\n\n---\nIf you need a decision or clarification before continuing, call the `ask_user` tool (prompt, options[], multiSelect?) instead of guessing."
+// claudeAskUserReinforcement mirrors the Codex askUserReinforcement: it biases the model
+// toward ACTING — complete the clear parts of the task first (normal tools + approval gates
+// apply) and reserve ask_user for a required decision that genuinely blocks progress, so the
+// model does not front-load clarifying questions instead of doing obvious work (best-effort, 04-04).
+const claudeAskUserReinforcement = "\n\n---\nComplete the clear, unambiguous parts of the task directly — your normal tools and approval gates still apply. Only call the `ask_user` tool (prompt, options[], multiSelect?) when a required decision genuinely blocks you and you cannot reasonably infer the answer or make progress without it; do not use it for things you can do or reasonably assume first."
 
 func (a *claudeAdapter) Key() ProviderKey { return ProviderKeyClaude }
 
 func (a *claudeAdapter) Capabilities() ProviderCapabilities {
 	return ProviderCapabilities{
 		Streaming: true, Resume: true, ApprovalEvents: true, FileEvents: true,
-		SkillSelection: true, Mcp: true, Interrupt: true,
+		SkillSelection: true, Mcp: true, Interrupt: true, Vision: true,
 	}
 }
 
@@ -92,6 +99,7 @@ func (a *claudeAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tu
 	// in claudeArgs only when YOLO=false. Falls back to a.mcpConfig (offline/tests) when
 	// the server or base URL is unavailable.
 	mcpConfig := a.mcpConfig
+	var mcpToken string // non-empty only when a per-turn MCP config was actually written
 	if a.mcpServer != nil {
 		base := ""
 		if a.mcpBaseURL != nil {
@@ -118,6 +126,7 @@ func (a *claudeAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tu
 				// YOLO=true: proceed without per-turn MCP config; ask_user unavailable.
 			} else {
 				mcpConfig = path
+				mcpToken = token // gate the prompt on this token's MCP connection below
 				defer cleanup()
 			}
 		}
@@ -146,7 +155,17 @@ func (a *claudeAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tu
 		a.mu.Unlock()
 	}()
 
-	if err := proc.stream.writeUserTurn(a.preparePrompt(req)); err != nil {
+	// Withhold the prompt until claude's MCP client has connected (tools/list fetched).
+	// claude connects --mcp-config servers asynchronously, so delivering the prompt
+	// immediately races the connection and the FIRST turn's tool set omits ask_user (and
+	// any other FlowPilot MCP tool). The runner hosts the MCP server, so it knows exactly
+	// when claude connects; bounded by a timeout so a slow/failed connect degrades to
+	// sending anyway rather than hanging the turn.
+	if mcpToken != "" {
+		a.mcpServer.waitReady(turnCtx, mcpToken, a.mcpReadyTimeout)
+	}
+
+	if err := proc.stream.writeUserTurn(a.preparePrompt(req), req.Attachments); err != nil {
 		return err
 	}
 

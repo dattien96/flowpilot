@@ -106,11 +106,29 @@ func (s *claudeStream) writeJSON(v any) error {
 	return err
 }
 
-// writeUserTurn sends a user message on stdin (the turn input).
-func (s *claudeStream) writeUserTurn(text string) error {
+// writeUserTurn sends a user message on stdin (the turn input). With no images the
+// content is a plain string (back-compat); with image attachments (Task-052) it
+// becomes a content-block array — a text block plus one base64 `image` block per
+// attachment — which is the multimodal shape the stream-json input accepts.
+func (s *claudeStream) writeUserTurn(text string, images []PromptAttachment) error {
+	var content any = text
+	if len(images) > 0 {
+		blocks := []any{map[string]any{"type": "text", "text": text}}
+		for _, im := range images {
+			blocks = append(blocks, map[string]any{
+				"type": "image",
+				"source": map[string]any{
+					"type":       "base64",
+					"media_type": im.MimeType,
+					"data":       im.Data,
+				},
+			})
+		}
+		content = blocks
+	}
 	return s.writeJSON(map[string]any{
 		"type":               "user",
-		"message":            map[string]any{"role": "user", "content": text},
+		"message":            map[string]any{"role": "user", "content": content},
 		"parent_tool_use_id": nil,
 	})
 }

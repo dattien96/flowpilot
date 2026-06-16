@@ -2,6 +2,7 @@ package runner
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -56,6 +57,30 @@ func TestClaudeMCPInitializeAndList(t *testing.T) {
 	tools, _ := lr["tools"].([]any)
 	if len(tools) != 2 {
 		t.Fatalf("tools/list = %+v", list)
+	}
+}
+
+// TestClaudeMCPGetOpensSSEStream guards the primary live-flow fix: claude's Streamable-HTTP
+// client opens a GET SSE stream and only marks the server "connected" once it succeeds.
+// Declining GET with 405 left the server "pending" so ask_user was never exposed to the model.
+// GET must now return 200 text/event-stream with the open-stream prelude.
+func TestClaudeMCPGetOpensSSEStream(t *testing.T) {
+	srv := newClaudeMCPServer()
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, ClaudeMCPPath, nil).WithContext(ctx)
+	req.RemoteAddr = "127.0.0.1:54321" // loopback-only handler
+	rec := httptest.NewRecorder()
+	cancel() // so serveSSE writes the prelude then returns instead of blocking on keepalive
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET must open an SSE stream with 200, got %d", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "text/event-stream" {
+		t.Fatalf("GET must be text/event-stream, got %q", ct)
+	}
+	if !strings.Contains(rec.Body.String(), ": connected") {
+		t.Fatalf("SSE stream must emit the open-stream prelude, got %q", rec.Body.String())
 	}
 }
 

@@ -58,6 +58,9 @@ func wiredClaudeAdapter() *claudeAdapter {
 	a := newTestClaudeAdapter()
 	a.mcpServer = newClaudeMCPServer()
 	a.mcpBaseURL = func() string { return "http://127.0.0.1:9999" }
+	// The scripted fake `claude` never connects to the MCP server (no tools/list), so the
+	// prompt-gate would otherwise wait the full default. Keep the matrix test fast.
+	a.mcpReadyTimeout = 50 * time.Millisecond
 	a.extraMCPServers = func(_ bool) map[string]claudeMcpServer {
 		return map[string]claudeMcpServer{
 			googleDriveMcpServerName: {Type: "stdio", Command: "flowpilot", Args: []string{"google-drive-mcp"}},

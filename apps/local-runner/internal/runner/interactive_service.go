@@ -190,6 +190,9 @@ func newInteractiveService(registry *ProviderRegistry, catalog CatalogStore, wor
 	if workflowStore == nil {
 		workflowStore = newFakeWorkflowStore()
 	}
+	// Reclaim Codex image-attachment temp dirs orphaned by a prior hard crash/kill
+	// (Task-052); the per-turn deferred cleanup cannot run in that case. Best-effort.
+	sweepCodexImageAttachments(time.Hour, time.Now())
 	return &InteractiveService{
 		catalog:         catalog,
 		skillsCatalog:   newInteractiveCatalog(),
@@ -608,6 +611,7 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		ReasoningEffort:   effort,
 		Cwd:               rs.workspaceCwd,
 		Scenario:          scenario,
+		Attachments:       in.Attachments,
 	}
 	bridge := &turnBridge{svc: s, rs: rs, ctx: ctx, turnID: turnID, yolo: yolo}
 	err := s.sendTurnWithRetry(ctx, adapter, req, bridge)

@@ -148,7 +148,9 @@ type turnBody struct {
 	ReasoningEffort string  `json:"reasoningEffort"`
 	Model           *string `json:"model"`
 	YoloMode        *bool   `json:"yoloMode"`
-	Scenario        string  `json:"scenario"` // P2 fake-adapter hint only
+	// Attachments carries chat-turn image attachments (Task-052), inline base64.
+	Attachments []PromptAttachment `json:"attachments,omitempty"`
+	Scenario    string             `json:"scenario"` // P2 fake-adapter hint only
 }
 
 func (s *InteractiveService) handleStartTurn(w http.ResponseWriter, r *http.Request) {
@@ -159,7 +161,7 @@ func (s *InteractiveService) handleStartTurn(w http.ResponseWriter, r *http.Requ
 	}
 	turnID, e := s.startTurn(
 		r.PathValue("runId"),
-		TurnInput{StepID: body.StepID, Prompt: body.Prompt, SelectedSkills: body.SelectedSkills, ReasoningEffort: body.ReasoningEffort, Model: body.Model, YoloMode: body.YoloMode},
+		TurnInput{StepID: body.StepID, Prompt: body.Prompt, SelectedSkills: body.SelectedSkills, ReasoningEffort: body.ReasoningEffort, Model: body.Model, YoloMode: body.YoloMode, Attachments: body.Attachments},
 		body.Scenario,
 		r.Header.Get("Idempotency-Key"),
 	)
