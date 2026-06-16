@@ -824,6 +824,63 @@ func expectedClaudeGoogleDriveMcpServer(workspace string, accountHomePath string
 	}
 }
 
+// flowpilotClaudeExtraMCPServers returns FlowPilot-managed MCP servers to merge into a
+// Claude turn's --mcp-config (keyed by server name). claude is launched with
+// --strict-mcp-config and only the flowpilot permission server in its --mcp-config, so it
+// ignores the google-drive server that EnsureGoogleDriveMcpProviderConfig wrote to the
+// account's .claude.json. To give claude the same Google Drive access Codex gets natively,
+// we re-derive that server here and hand it back for merging.
+//
+// Gate: only inject when the user actually configured google-drive for Claude (an entry is
+// present in .claude.json). The server is recomputed with the turn's yolo + fresh proxy
+// OAuth/runtime so its approval mode and refresh token stay current (the on-disk entry may
+// have been written under a different yolo). Best-effort: any failure returns no extras so a
+// turn never breaks over an optional MCP.
+func (r *Runner) flowpilotClaudeExtraMCPServers(accountHomePath string, yolo bool) map[string]claudeMcpServer {
+	out := map[string]claudeMcpServer{}
+	accountHomePath = strings.TrimSpace(accountHomePath)
+	if accountHomePath == "" {
+		return out
+	}
+
+	configPath := filepath.Join(accountHomePath, ".claude.json")
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		return out
+	}
+	var cfg claudeConfig
+	if json.Unmarshal(raw, &cfg) != nil {
+		return out
+	}
+	existing, ok := cfg.McpServers[googleDriveMcpServerName]
+	if !ok {
+		return out // user did not configure Google Drive for Claude
+	}
+
+	// Parse the configured mode; for a non-proxy/legacy shape pass the entry through as-is.
+	_, _, mode, _, parsed := parseGoogleDriveProxyMcpInvocation(existing.Command, existing.Args)
+	if !parsed {
+		out[googleDriveMcpServerName] = existing
+		return out
+	}
+
+	configFile, ferr := r.loadGoogleDriveWorkspaceConfigFile()
+	if ferr != nil && !errors.Is(ferr, os.ErrNotExist) {
+		out[googleDriveMcpServerName] = existing
+		return out
+	}
+	mcpStatus := r.resolveGoogleDriveMcpStatus(configFile)
+	if !mcpStatus.Configured {
+		// Auth no longer configured — skip rather than launch a server that will fail auth.
+		return out
+	}
+	runtime := googleDriveMcpStatusRuntimeConfig(mcpStatus)
+	r.hydrateGoogleDriveProxyOAuthRuntimeConfig(&runtime)
+
+	out[googleDriveMcpServerName] = expectedClaudeGoogleDriveMcpServer(r.workspace, accountHomePath, mode, yolo, runtime)
+	return out
+}
+
 // resolveGoogleDriveMcpProviderStatuses checks provider config status for all providers
 func (r *Runner) resolveGoogleDriveMcpProviderStatuses() ([]GoogleDriveMcpProviderConfigStatus, error) {
 	configFile, err := r.loadGoogleDriveWorkspaceConfigFile()

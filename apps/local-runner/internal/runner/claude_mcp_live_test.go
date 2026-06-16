@@ -51,7 +51,7 @@ func TestLiveClaudeHTTPMCPDenyBlocks(t *testing.T) {
 	}
 
 	// 3. Per-turn --mcp-config pointing at the httptest MCP endpoint with this turn's token.
-	cfgPath, cleanup, err := writeClaudeMCPConfig(ts.URL, token)
+	cfgPath, cleanup, err := writeClaudeMCPConfig(ts.URL, token, nil)
 	if err != nil {
 		t.Fatalf("write mcp-config: %v", err)
 	}

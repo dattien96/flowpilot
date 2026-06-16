@@ -131,7 +131,7 @@ func TestClaudeMCPNoTokenIsError(t *testing.T) {
 }
 
 func TestWriteClaudeMCPConfigShape(t *testing.T) {
-	path, cleanup, err := writeClaudeMCPConfig("http://127.0.0.1:9999", "tABC")
+	path, cleanup, err := writeClaudeMCPConfig("http://127.0.0.1:9999", "tABC", nil)
 	if err != nil {
 		t.Fatalf("writeClaudeMCPConfig: %v", err)
 	}
@@ -141,5 +141,41 @@ func TestWriteClaudeMCPConfigShape(t *testing.T) {
 	if !strings.Contains(raw, `"type":"http"`) ||
 		!strings.Contains(raw, ClaudeMCPPath+"?token=tABC") {
 		t.Fatalf("mcp-config shape wrong: %s", raw)
+	}
+}
+
+// TestWriteClaudeMCPConfigMergesExtraServers guards the Google Drive fix: a FlowPilot-managed
+// server (e.g. google-drive) must be merged next to the flowpilot permission server, since
+// --strict-mcp-config makes claude ignore .claude.json mcpServers.
+func TestWriteClaudeMCPConfigMergesExtraServers(t *testing.T) {
+	extra := map[string]claudeMcpServer{
+		"google-drive": {Type: "stdio", Command: "flowpilot", Args: []string{"google-drive-mcp"}, Env: map[string]string{"X": "1"}},
+		"flowpilot":    {Type: "stdio", Command: "should-be-ignored"}, // must not shadow the permission route
+	}
+	path, cleanup, err := writeClaudeMCPConfig("http://127.0.0.1:9999", "tABC", extra)
+	if err != nil {
+		t.Fatalf("writeClaudeMCPConfig: %v", err)
+	}
+	defer cleanup()
+
+	rawb, _ := os.ReadFile(path)
+	var cfg struct {
+		McpServers map[string]map[string]any `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(rawb, &cfg); err != nil {
+		t.Fatalf("config not JSON: %v\n%s", err, rawb)
+	}
+	// flowpilot must remain the HTTP permission route, not the shadowing extra.
+	fp := cfg.McpServers["flowpilot"]
+	if fp["type"] != "http" {
+		t.Fatalf("flowpilot must stay the http permission route, got %v", fp)
+	}
+	// google-drive must be present as the stdio server.
+	gd, ok := cfg.McpServers["google-drive"]
+	if !ok {
+		t.Fatalf("google-drive extra server not merged: %s", rawb)
+	}
+	if gd["command"] != "flowpilot" {
+		t.Fatalf("google-drive command wrong: %v", gd)
 	}
 }

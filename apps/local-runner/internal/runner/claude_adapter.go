@@ -34,6 +34,12 @@ type claudeAdapter struct {
 	mcpServer  *claudeMCPServer
 	mcpBaseURL func() string
 
+	// extraMCPServers returns FlowPilot-managed MCP servers (e.g. google-drive) to merge
+	// into the per-turn --mcp-config alongside the flowpilot permission server. Needed
+	// because --strict-mcp-config makes claude ignore the account's .claude.json mcpServers.
+	// nil in offline/tests. yolo is the turn's resolved mode (drives proxy approval/token).
+	extraMCPServers func(yolo bool) map[string]claudeMcpServer
+
 	// promptPrep assembles the final prompt before the turn. Defaults to ask_user
 	// reinforcement; the live registry overrides it to also run injectSkillContent.
 	promptPrep func(TurnRequest) string
@@ -80,31 +86,41 @@ func (a *claudeAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tu
 	// synthetic FlowPilot run session id (review finding 1). Empty on the first turn.
 	resumeID := a.pool.realSession(req.ProviderSessionID)
 
-	// Gated turn (YOLO=false): stand up the per-turn permission MCP so claude's approve
-	// calls route to THIS turn's bridge (07 spike-validated). Falls back to a.mcpConfig
-	// (offline/tests) when the server or base URL is unavailable — then the in-stream
-	// control_request handler is the (untested) fallback.
+	// Stand up the per-turn MCP config so claude can reach FlowPilot's approve + ask_user
+	// tools. Done for ALL YOLO states — not only YOLO=false — so that ask_user works in
+	// YOLO=true turns too. The approval gate (--permission-prompt-tool) is added separately
+	// in claudeArgs only when YOLO=false. Falls back to a.mcpConfig (offline/tests) when
+	// the server or base URL is unavailable.
 	mcpConfig := a.mcpConfig
-	if !posture.RunnerAutoApprove && a.mcpServer != nil {
-		// Production gated path: the permission MCP MUST be wired, else a YOLO=false turn
-		// would run UNGATED. Fail CLOSED if we cannot set it up (review finding 4). When
-		// mcpServer is nil (offline/tests) this is skipped and the in-stream control_request
-		// handler is the fallback.
+	if a.mcpServer != nil {
 		base := ""
 		if a.mcpBaseURL != nil {
 			base = a.mcpBaseURL()
 		}
 		if base == "" {
-			return fmt.Errorf("claude gated turn: runner MCP base URL not configured (fail closed)")
+			if !posture.RunnerAutoApprove {
+				// Gated turn: approval MCP is mandatory — fail closed (review finding 4).
+				return fmt.Errorf("claude gated turn: runner MCP base URL not configured (fail closed)")
+			}
+			// YOLO=true: ask_user falls back to in-stream control_request path.
+		} else {
+			var extra map[string]claudeMcpServer
+			if a.extraMCPServers != nil {
+				extra = a.extraMCPServers(req.YoloMode)
+			}
+			token := a.mcpServer.register(bridge)
+			defer a.mcpServer.unregister(token)
+			path, cleanup, err := writeClaudeMCPConfig(base, token, extra)
+			if err != nil {
+				if !posture.RunnerAutoApprove {
+					return fmt.Errorf("claude gated turn: could not set up permission MCP (fail closed): %w", err)
+				}
+				// YOLO=true: proceed without per-turn MCP config; ask_user unavailable.
+			} else {
+				mcpConfig = path
+				defer cleanup()
+			}
 		}
-		token := a.mcpServer.register(bridge)
-		defer a.mcpServer.unregister(token)
-		path, cleanup, err := writeClaudeMCPConfig(base, token)
-		if err != nil {
-			return fmt.Errorf("claude gated turn: could not set up permission MCP (fail closed): %w", err)
-		}
-		mcpConfig = path
-		defer cleanup()
 	}
 	args := claudeArgs(posture, resumeID, mcpConfig, req.ModelName, req.ReasoningEffort, req.SelectedSkills)
 	key := claudeProcKey{account: a.scopeKey, cwd: cwd, session: req.ProviderSessionID}

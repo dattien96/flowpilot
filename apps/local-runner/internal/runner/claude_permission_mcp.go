@@ -28,8 +28,13 @@ import (
 // remaining wiring (07 DoD).
 
 const (
-	claudeApproveToolName = "mcp__flowpilot__approve"
-	claudeAskUserToolName = "mcp__flowpilot__ask_user"
+	// claudeMCPServerName is the single source of truth for FlowPilot's MCP server name in
+	// the per-turn --mcp-config. The tool names below encode it (claude's mcp__<server>__<tool>
+	// convention), and writeClaudeMCPConfig guards against an injected extra server shadowing
+	// it — so the name MUST be referenced via this const, never re-typed as a literal.
+	claudeMCPServerName   = "flowpilot"
+	claudeApproveToolName = "mcp__" + claudeMCPServerName + "__approve"
+	claudeAskUserToolName = "mcp__" + claudeMCPServerName + "__ask_user"
 )
 
 // claudeArgs builds the headless stream-json invocation. YOLO drives --permission-mode
@@ -57,8 +62,11 @@ func claudeArgs(posture YoloPosture, resumeID, mcpConfig, modelName, reasoningEf
 	if effort := strings.TrimSpace(reasoningEffort); effort != "" {
 		args = append(args, "--effort", normalizeClaudeEffort(effort))
 	}
-	if !posture.RunnerAutoApprove && strings.TrimSpace(mcpConfig) != "" {
-		args = append(args, "--permission-prompt-tool", claudeApproveToolName, "--mcp-config", mcpConfig)
+	if strings.TrimSpace(mcpConfig) != "" {
+		args = append(args, "--mcp-config", mcpConfig)
+		if !posture.RunnerAutoApprove {
+			args = append(args, "--permission-prompt-tool", claudeApproveToolName)
+		}
 	}
 	if strings.TrimSpace(resumeID) != "" {
 		args = append(args, "--resume", resumeID)
@@ -122,7 +130,7 @@ func flowpilotManagedClaudeConfigDir(workspace string) string {
 func flowpilotClaudeMcpConfig(command string, cmdArgs []string) map[string]any {
 	return map[string]any{
 		"mcpServers": map[string]any{
-			"flowpilot": map[string]any{"command": command, "args": cmdArgs},
+			claudeMCPServerName: map[string]any{"command": command, "args": cmdArgs},
 		},
 	}
 }

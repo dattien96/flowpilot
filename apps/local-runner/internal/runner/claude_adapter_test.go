@@ -589,6 +589,16 @@ func TestClaudeArgsYoloPosture(t *testing.T) {
 		t.Fatalf("yolo=true must not add a permission-prompt-tool: %v", yes)
 	}
 
+	// YOLO=true with a non-empty mcpConfig: --mcp-config must pass through so ask_user
+	// is available, but --permission-prompt-tool must NOT be added (no gating).
+	yoloWithMCP := claudeArgs(resolveYoloPosture(true), "", "cfg.json", "", "", nil)
+	if !flagHasValue(yoloWithMCP, "--mcp-config", "cfg.json") {
+		t.Fatalf("yolo=true + mcpConfig must include --mcp-config: %v", yoloWithMCP)
+	}
+	if argIndex(yoloWithMCP, "--permission-prompt-tool") >= 0 {
+		t.Fatalf("yolo=true must not add --permission-prompt-tool even with mcpConfig: %v", yoloWithMCP)
+	}
+
 	gated := claudeArgs(resolveYoloPosture(false), "sess-1", "cfg.json", "", "", nil)
 	if !flagHasValue(gated, "--permission-mode", "default") {
 		t.Fatalf("yolo=false args missing default mode: %v", gated)
