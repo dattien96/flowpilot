@@ -34,14 +34,16 @@ Based on current provider
 ### 2.1.2 MCP approve
 Chua test cho ca codex/claude
 
+- Codex: MCP ok for YOLO_on
+
 ## Flow mode
 Chua test
 
-# 3. model.skill.reason
+# 3. model.skill.reason - PASSED
 ## 3.1 Codex
 ok
 ## 3.2 Claude
-Chua test
+ok
 
 # Image attached
 - Lam button cho attach image temporarily -> save vao local file ??
