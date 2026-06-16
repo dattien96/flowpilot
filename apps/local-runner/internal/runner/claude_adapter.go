@@ -60,9 +60,11 @@ func newClaudeAdapter(pool *claudeProcessPool, cwd, scopeKey string, env map[str
 	}
 }
 
-// claudeAskUserReinforcement mirrors the Codex askUserReinforcement: it nudges the model
-// to use the FlowPilot-owned ask_user tool instead of guessing (best-effort, 04-04).
-const claudeAskUserReinforcement = "\n\n---\nIf you need a decision or clarification before continuing, call the `ask_user` tool (prompt, options[], multiSelect?) instead of guessing."
+// claudeAskUserReinforcement mirrors the Codex askUserReinforcement: it biases the model
+// toward ACTING — complete the clear parts of the task first (normal tools + approval gates
+// apply) and reserve ask_user for a required decision that genuinely blocks progress, so the
+// model does not front-load clarifying questions instead of doing obvious work (best-effort, 04-04).
+const claudeAskUserReinforcement = "\n\n---\nComplete the clear, unambiguous parts of the task directly — your normal tools and approval gates still apply. Only call the `ask_user` tool (prompt, options[], multiSelect?) when a required decision genuinely blocks you and you cannot reasonably infer the answer or make progress without it; do not use it for things you can do or reasonably assume first."
 
 func (a *claudeAdapter) Key() ProviderKey { return ProviderKeyClaude }
 

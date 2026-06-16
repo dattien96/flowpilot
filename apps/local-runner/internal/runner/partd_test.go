@@ -148,9 +148,11 @@ func TestCodexAdapterRegistersAskUserAndUsesReqCwd(t *testing.T) {
 	if params["cwd"] != "/run-cwd" {
 		t.Fatalf("thread/start cwd = %v, want /run-cwd (per-run cwd authoritative)", params["cwd"])
 	}
-	raw, _ := json.Marshal(params["mcpServers"])
+	// ask_user is registered as a thread dynamicTool (DynamicToolSpec), the real app-server
+	// registration channel — not the old (ignored) inline mcpServers shape.
+	raw, _ := json.Marshal(params["dynamicTools"])
 	if !strings.Contains(string(raw), "ask_user") {
-		t.Fatalf("thread/start mcpServers should register ask_user: %s", raw)
+		t.Fatalf("thread/start dynamicTools should register ask_user: %s", raw)
 	}
 }
 

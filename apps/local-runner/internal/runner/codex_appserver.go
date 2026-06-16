@@ -26,16 +26,29 @@ import (
 func codexInitializeParams() map[string]any {
 	return map[string]any{
 		"clientInfo": map[string]any{"name": "flowpilot", "version": "1.0"},
+		// experimentalApi is REQUIRED to register thread/start `dynamicTools` (the ask_user
+		// tool). Without it the app-server rejects dynamicTools with JSON-RPC -32600
+		// ("requires experimentalApi capability"), so ask_user is never surfaced to the model
+		// (validated against codex-cli 0.137.0). It opts into experimental methods/fields
+		// additively; the event mapper already handles the v2 notification names.
+		"capabilities": map[string]any{
+			"experimentalApi":    true,
+			"requestAttestation": false,
+		},
 	}
 }
 
-// codexThreadStartParams carries cwd, the YOLO-derived sandbox + approval mode
-// (04-04), and the mcpServers list (FlowPilot proxy + required MCPs + ask_user).
-func codexThreadStartParams(cwd, sandbox, approvalMode, modelName, reasoningEffort string, mcpServers []any) map[string]any {
-	if mcpServers == nil {
-		mcpServers = []any{}
+// codexThreadStartParams carries cwd, the YOLO-derived sandbox + approval mode (04-04),
+// and the dynamicTools list (the FlowPilot-owned ask_user tool). dynamicTools is the real
+// app-server registration channel (`ThreadStartParams.dynamicTools`); the model's call comes
+// back as an `item/tool/call` server->client request. (The earlier inline
+// `mcpServers:[{name,tools:[]}]` shape was silently ignored — ThreadStartParams has no
+// mcpServers field; real external MCP servers ride config.toml, read by Codex natively.)
+func codexThreadStartParams(cwd, sandbox, approvalMode, modelName, reasoningEffort string, dynamicTools []any) map[string]any {
+	p := map[string]any{"cwd": cwd}
+	if len(dynamicTools) > 0 {
+		p["dynamicTools"] = dynamicTools
 	}
-	p := map[string]any{"cwd": cwd, "mcpServers": mcpServers}
 	if model := strings.TrimSpace(modelName); model != "" {
 		p["model"] = model
 	}

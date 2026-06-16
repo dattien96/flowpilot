@@ -213,6 +213,13 @@ type captureBridge struct {
 	approvalRequests []ApprovalDetails
 	approveWith      string
 	approveErr       error
+	// ask_user (dynamic tool) capture; zero values preserve the original nil/nil behavior.
+	askAnswer   []string
+	askErr      error
+	askPrompt   string
+	askOptions  []QuestionOption
+	askMulti    bool
+	askCallSeen bool
 }
 
 func (b *captureBridge) Emit(ev ProviderEvent) {
@@ -226,8 +233,14 @@ func (b *captureBridge) RequestApproval(details ApprovalDetails) (string, error)
 	b.approvalRequests = append(b.approvalRequests, details)
 	return b.approveWith, b.approveErr
 }
-func (b *captureBridge) AskQuestion(string, []QuestionOption, bool) ([]string, error) {
-	return nil, nil
+func (b *captureBridge) AskQuestion(prompt string, options []QuestionOption, multi bool) ([]string, error) {
+	b.mu.Lock()
+	b.askCallSeen = true
+	b.askPrompt = prompt
+	b.askOptions = options
+	b.askMulti = multi
+	b.mu.Unlock()
+	return b.askAnswer, b.askErr
 }
 func (b *captureBridge) types() []ProviderEventType {
 	b.mu.Lock()
@@ -410,6 +423,70 @@ func TestCodexAdapterApprovalRoundTrip(t *testing.T) {
 		}
 	default:
 		t.Fatal("approval decision was not replied to Codex")
+	}
+}
+
+// TestCodexAdapterAskUserDynamicToolRoundTrip guards the Codex ask_user fix: the model's
+// dynamicTool call arrives as an `item/tool/call` server->client request (DynamicToolCallParams);
+// the adapter must route the arguments to the bridge's AskQuestion and reply with the answer as
+// a DynamicToolCallResponse ({contentItems:[{type:"inputText",text}], success}). Verified shape
+// against codex-cli 0.137.0.
+func TestCodexAdapterAskUserDynamicToolRoundTrip(t *testing.T) {
+	d, fc := startFakeCodex(t, nil)
+	adapter := newCodexAdapter(d, "/workspace")
+	d.setInbound(adapter.handleInbound)
+
+	toolReplies := make(chan map[string]any, 1)
+	fc.serve(func(fc *fakeCodex, m map[string]any) {
+		method, _ := m["method"].(string)
+		switch method {
+		case "thread/start":
+			fc.reply(m["id"], map[string]any{"threadId": "th1"})
+		case "turn/start":
+			fc.reply(m["id"], map[string]any{"turnId": "ct1"})
+			// model invokes the ask_user dynamicTool → item/tool/call (DynamicToolCallParams)
+			fc.send(map[string]any{"jsonrpc": "2.0", "id": 600, "method": "item/tool/call",
+				"params": map[string]any{
+					"threadId": "th1", "turnId": "ct1", "callId": "call_1", "namespace": nil,
+					"tool":      "ask_user",
+					"arguments": map[string]any{"prompt": "Pick one", "options": []any{"Python", "Go"}, "multiSelect": false},
+				}})
+		default:
+			if res, ok := m["result"].(map[string]any); ok {
+				if _, ok := res["contentItems"]; ok {
+					toolReplies <- res
+					fc.notify("turn.completed", map[string]any{"threadId": "th1", "finalMessage": "Go"})
+				}
+			}
+		}
+	})
+
+	bridge := &captureBridge{approveWith: "approve", askAnswer: []string{"Go"}}
+	if err := adapter.SendTurn(context.Background(), TurnRequest{RunID: "r1", Prompt: "go"}, bridge); err != nil {
+		t.Fatalf("SendTurn: %v", err)
+	}
+
+	// The arguments must reach AskQuestion (the user-interaction bridge → options card).
+	bridge.mu.Lock()
+	seen, prompt, opts := bridge.askCallSeen, bridge.askPrompt, bridge.askOptions
+	bridge.mu.Unlock()
+	if !seen || prompt != "Pick one" || len(opts) != 2 {
+		t.Fatalf("ask_user not routed to bridge: seen=%v prompt=%q opts=%d", seen, prompt, len(opts))
+	}
+
+	// The answer must be replied as a DynamicToolCallResponse.
+	select {
+	case res := <-toolReplies:
+		if res["success"] != true {
+			t.Fatalf("dynamic tool result success = %v, want true", res["success"])
+		}
+		items, _ := res["contentItems"].([]any)
+		first, _ := items[0].(map[string]any)
+		if first["type"] != "inputText" || first["text"] != "Go" {
+			t.Fatalf("contentItems[0] = %+v, want inputText 'Go'", first)
+		}
+	default:
+		t.Fatal("ask_user answer was not replied to Codex as a DynamicToolCallResponse")
 	}
 }
 
