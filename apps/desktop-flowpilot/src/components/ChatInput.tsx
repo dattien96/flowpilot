@@ -525,7 +525,6 @@ export function ChatInput(): React.ReactElement {
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKeyDown}
           onPaste={onPaste}
-          disabled={blocked}
         />
         <button className="btn btn-primary send-btn" onClick={send} disabled={!canSend}>
           Send
