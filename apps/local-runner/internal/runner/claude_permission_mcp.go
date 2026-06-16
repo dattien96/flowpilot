@@ -52,6 +52,13 @@ func claudeArgs(posture YoloPosture, resumeID, mcpConfig, modelName, reasoningEf
 		"--include-partial-messages",
 		"--include-hook-events",
 		"--strict-mcp-config",
+		// Disable Claude's BUILT-IN AskUserQuestion tool so the model is forced to use
+		// FlowPilot's mcp__flowpilot__ask_user instead. The built-in tool runs inside the
+		// headless CLI with no TTY: it returns "the user did not answer" immediately and the
+		// question renders as plain text, never reaching FlowPilot's bridge — so no
+		// user_question_required event and no desktop QuestionCard (the live-flow defect).
+		// Routing through the MCP ask_user tool is the only path that surfaces the options card.
+		"--disallowed-tools", "AskUserQuestion",
 	}
 	if posture.ClaudePermissionMode != "" {
 		args = append(args, "--permission-mode", posture.ClaudePermissionMode)

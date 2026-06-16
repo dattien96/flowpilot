@@ -34,6 +34,11 @@ type claudeAdapter struct {
 	mcpServer  *claudeMCPServer
 	mcpBaseURL func() string
 
+	// mcpReadyTimeout bounds how long SendTurn withholds the prompt waiting for claude's
+	// MCP client to connect (tools/list). 0 => claudeMCPReadyDefaultTimeout. Tests set a
+	// small value because the scripted fake process never connects to the MCP server.
+	mcpReadyTimeout time.Duration
+
 	// extraMCPServers returns FlowPilot-managed MCP servers (e.g. google-drive) to merge
 	// into the per-turn --mcp-config alongside the flowpilot permission server. Needed
 	// because --strict-mcp-config makes claude ignore the account's .claude.json mcpServers.
@@ -92,6 +97,7 @@ func (a *claudeAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tu
 	// in claudeArgs only when YOLO=false. Falls back to a.mcpConfig (offline/tests) when
 	// the server or base URL is unavailable.
 	mcpConfig := a.mcpConfig
+	var mcpToken string // non-empty only when a per-turn MCP config was actually written
 	if a.mcpServer != nil {
 		base := ""
 		if a.mcpBaseURL != nil {
@@ -118,6 +124,7 @@ func (a *claudeAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tu
 				// YOLO=true: proceed without per-turn MCP config; ask_user unavailable.
 			} else {
 				mcpConfig = path
+				mcpToken = token // gate the prompt on this token's MCP connection below
 				defer cleanup()
 			}
 		}
@@ -145,6 +152,16 @@ func (a *claudeAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tu
 		delete(a.bridges, proc)
 		a.mu.Unlock()
 	}()
+
+	// Withhold the prompt until claude's MCP client has connected (tools/list fetched).
+	// claude connects --mcp-config servers asynchronously, so delivering the prompt
+	// immediately races the connection and the FIRST turn's tool set omits ask_user (and
+	// any other FlowPilot MCP tool). The runner hosts the MCP server, so it knows exactly
+	// when claude connects; bounded by a timeout so a slow/failed connect degrades to
+	// sending anyway rather than hanging the turn.
+	if mcpToken != "" {
+		a.mcpServer.waitReady(turnCtx, mcpToken, a.mcpReadyTimeout)
+	}
 
 	if err := proc.stream.writeUserTurn(a.preparePrompt(req), req.Attachments); err != nil {
 		return err
