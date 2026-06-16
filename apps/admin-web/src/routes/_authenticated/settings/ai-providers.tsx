@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useRouter, useRouterState } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { RefreshCw, Trash2, Plus } from "lucide-react";
+import { RefreshCw, Trash2, Plus, Pencil, Check, X } from "lucide-react";
 
 import { PageFrame } from "@/components/common/page-frame";
 import { Button } from "@/components/ui/button";
@@ -286,6 +286,27 @@ export function AiProvidersContent({
     },
   });
 
+  const editSupportedModel = useMutation({
+    mutationFn: async (input: { id: string; modelId: string; displayName: string }) => {
+      const gateways = await createGatewayBundle();
+      return gateways.workflowEngineGateway.updateSupportedModel(input.id, {
+        modelId: input.modelId,
+        displayName: input.displayName,
+      });
+    },
+    onSuccess: (updatedModel) => {
+      setSupportedModels((current) =>
+        current.map((m) => (m.id === updatedModel.id ? updatedModel : m))
+      );
+      setEditingModelId(null);
+      void queryClient.invalidateQueries({ queryKey: ["supportedModels"] });
+      void router.invalidate();
+    },
+  });
+
+  const [editingModelId, setEditingModelId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState<{ modelId: string; displayName: string }>({ modelId: "", displayName: "" });
+
   const anyPending =
     refreshInventory.isPending ||
     installProvider.isPending ||
@@ -293,6 +314,7 @@ export function AiProvidersContent({
     addSupportedModel.isPending ||
     deleteSupportedModel.isPending ||
     toggleSupportedModel.isPending ||
+    editSupportedModel.isPending ||
     importMissingModels.isPending ||
     isRouterPending;
 
@@ -503,52 +525,115 @@ export function AiProvidersContent({
                     <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                       {supportedModels
                         .filter((m) => m.providerKey === provider.key)
-                        .map((model) => (
-                          <div
-                            key={model.id}
-                            className="flex items-center justify-between rounded-xl border border-border bg-background px-3 py-2 text-sm"
-                          >
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center gap-1.5 min-w-0">
-                                <p className="font-medium truncate">{model.displayName}</p>
-                                {model.source === "detected" && (
-                                  <span className="inline-flex items-center rounded-full bg-primary/10 px-1.5 py-0.5 text-[9px] font-mono font-medium text-primary border border-primary/20">
-                                    detected
-                                  </span>
-                                )}
+                        .map((model) => {
+                          const isEditing = editingModelId === model.id;
+                          const isSaving = editSupportedModel.isPending && editSupportedModel.variables?.id === model.id;
+
+                          if (isEditing) {
+                            return (
+                              <div
+                                key={model.id}
+                                className="flex flex-col gap-2 rounded-xl border border-primary/40 bg-background px-3 py-2 text-sm"
+                              >
+                                <input
+                                  type="text"
+                                  className="flex h-8 w-full rounded-md border border-input bg-muted/40 px-2 py-1 text-sm font-medium focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                  value={editDraft.displayName}
+                                  placeholder="Display Name"
+                                  disabled={isSaving}
+                                  onChange={(e) => setEditDraft((d) => ({ ...d, displayName: e.target.value }))}
+                                />
+                                <input
+                                  type="text"
+                                  className="flex h-8 w-full rounded-md border border-input bg-muted/40 px-2 py-1 text-xs font-mono text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                  value={editDraft.modelId}
+                                  placeholder="model-id"
+                                  disabled={isSaving}
+                                  onChange={(e) => setEditDraft((d) => ({ ...d, modelId: e.target.value }))}
+                                />
+                                <div className="flex items-center justify-end gap-1">
+                                  <Button
+                                    size="icon"
+                                    variant="ghost"
+                                    className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                                    disabled={isSaving}
+                                    onClick={() => setEditingModelId(null)}
+                                  >
+                                    <X className="h-3.5 w-3.5" />
+                                  </Button>
+                                  <Button
+                                    size="icon"
+                                    variant="ghost"
+                                    className="h-7 w-7 text-success hover:text-success hover:bg-success/10"
+                                    disabled={isSaving || !editDraft.modelId.trim() || !editDraft.displayName.trim()}
+                                    onClick={() => editSupportedModel.mutate({ id: model.id, modelId: editDraft.modelId.trim(), displayName: editDraft.displayName.trim() })}
+                                  >
+                                    {isSaving ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+                                  </Button>
+                                </div>
                               </div>
-                              <p className="text-xs text-muted-foreground font-mono truncate">{model.modelId}</p>
-                            </div>
-                            <div className="ml-2 flex items-center gap-2">
-                              <button
-                                type="button"
-                                className={`text-xs px-2 py-1 rounded-full border transition-colors ${model.isEnabled
-                                  ? "bg-success/10 text-success border-success/30 hover:bg-success/20"
-                                  : "bg-muted text-muted-foreground border-border hover:bg-muted/80"
-                                  }`}
-                                disabled={anyPending}
-                                onClick={() =>
-                                  toggleSupportedModel.mutate({ id: model.id, isEnabled: !model.isEnabled })
-                                }
-                              >
-                                {model.isEnabled ? "Enabled" : "Disabled"}
-                              </button>
-                              <Button
-                                disabled={anyPending}
-                                size="icon"
-                                variant="ghost"
-                                className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10 flex items-center justify-center"
-                                onClick={() => {
-                                  if (confirm(`Are you sure you want to delete ${model.displayName}?`)) {
-                                    deleteSupportedModel.mutate(model.id);
+                            );
+                          }
+
+                          return (
+                            <div
+                              key={model.id}
+                              className="flex items-center justify-between rounded-xl border border-border bg-background px-3 py-2 text-sm"
+                            >
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                  <p className="font-medium truncate">{model.displayName}</p>
+                                  {model.source === "detected" && (
+                                    <span className="inline-flex items-center rounded-full bg-primary/10 px-1.5 py-0.5 text-[9px] font-mono font-medium text-primary border border-primary/20">
+                                      detected
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-xs text-muted-foreground font-mono truncate">{model.modelId}</p>
+                              </div>
+                              <div className="ml-2 flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  className={`text-xs px-2 py-1 rounded-full border transition-colors ${model.isEnabled
+                                    ? "bg-success/10 text-success border-success/30 hover:bg-success/20"
+                                    : "bg-muted text-muted-foreground border-border hover:bg-muted/80"
+                                    }`}
+                                  disabled={anyPending}
+                                  onClick={() =>
+                                    toggleSupportedModel.mutate({ id: model.id, isEnabled: !model.isEnabled })
                                   }
-                                }}
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </Button>
+                                >
+                                  {model.isEnabled ? "Enabled" : "Disabled"}
+                                </button>
+                                <Button
+                                  disabled={anyPending}
+                                  size="icon"
+                                  variant="ghost"
+                                  className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                                  onClick={() => {
+                                    setEditDraft({ modelId: model.modelId, displayName: model.displayName });
+                                    setEditingModelId(model.id);
+                                  }}
+                                >
+                                  <Pencil className="h-3.5 w-3.5" />
+                                </Button>
+                                <Button
+                                  disabled={anyPending}
+                                  size="icon"
+                                  variant="ghost"
+                                  className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10 flex items-center justify-center"
+                                  onClick={() => {
+                                    if (confirm(`Are you sure you want to delete ${model.displayName}?`)) {
+                                      deleteSupportedModel.mutate(model.id);
+                                    }
+                                  }}
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              </div>
                             </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                     </div>
                   )}
                 </div>
