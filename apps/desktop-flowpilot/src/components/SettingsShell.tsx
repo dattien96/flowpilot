@@ -1,6 +1,7 @@
 import type { SupabaseConfigInput, SupabaseConfigValidation, SupabaseRuntimeStatus } from "@flowpilot/client-core";
 import { AiProvidersSettings } from "@/components/settings/AiProvidersSettings";
 import { ArtifactsSettings } from "@/components/settings/ArtifactsSettings";
+import { CheckVersionSettings } from "@/components/settings/CheckVersionSettings";
 import { GoogleDriveSettings } from "@/components/settings/GoogleDriveSettings";
 import { McpSettings } from "@/components/settings/McpSettings";
 import { ProjectsSettings } from "@/components/settings/ProjectsSettings";
@@ -18,6 +19,7 @@ export type SettingsSection =
   | "ai-providers"
   | "google-drive"
   | "jira-mcp"
+  | "check-version"
   | "runner";
 
 interface SettingsShellProps {
@@ -39,6 +41,7 @@ const defaultSectionOrder: readonly SettingsSection[] = [
   "ai-providers",
   "google-drive",
   "jira-mcp",
+  "check-version",
   "supabase",
   "runner",
 ];
@@ -87,9 +90,11 @@ export function SettingsShell({
                   ? "Google Drive"
                   : section === "jira-mcp"
                     ? "Jira MCP"
-                    : section === "runner"
-                      ? "Runner"
-                      : section.charAt(0).toUpperCase() + section.slice(1);
+                    : section === "check-version"
+                      ? "Check Version"
+                      : section === "runner"
+                        ? "Runner"
+                        : section.charAt(0).toUpperCase() + section.slice(1);
 
             return (
               <button
@@ -150,6 +155,8 @@ export function SettingsShell({
           <GoogleDriveSettings />
         ) : currentSection === "jira-mcp" ? (
           <McpSettings mode="jira" />
+        ) : currentSection === "check-version" ? (
+          <CheckVersionSettings />
         ) : (
           <RunnerHealthPanel />
         )}

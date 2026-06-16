@@ -898,11 +898,139 @@ input {
   background: var(--bg-3);
   border: 1px solid var(--border);
 }
-.validation-row.failed {
+.validation-row.failed,
+.validation-row.fail {
   border-color: rgba(248, 81, 73, 0.24);
 }
-.validation-row.passed {
+.validation-row.passed,
+.validation-row.pass {
   border-color: rgba(63, 185, 80, 0.24);
+}
+.validation-row.warn {
+  border-color: rgba(210, 153, 34, 0.35);
+}
+.check-version-versions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.check-version-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 5px;
+  white-space: nowrap;
+}
+.check-version-badge.baseline {
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+}
+.check-version-badge.pass {
+  background: rgba(63, 185, 80, 0.12);
+  border: 1px solid rgba(63, 185, 80, 0.3);
+  color: rgb(63, 185, 80);
+}
+.check-version-badge.warn {
+  background: rgba(210, 153, 34, 0.12);
+  border: 1px solid rgba(210, 153, 34, 0.3);
+  color: rgb(210, 153, 34);
+}
+.check-version-badge.fail {
+  background: rgba(248, 81, 73, 0.12);
+  border: 1px solid rgba(248, 81, 73, 0.3);
+  color: rgb(248, 81, 73);
+}
+.check-version-summary {
+  margin-top: 14px;
+  padding: 10px 14px;
+  border-radius: 9px;
+  font-size: 13px;
+  font-weight: 500;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+}
+.check-version-summary.pass {
+  background: rgba(63, 185, 80, 0.08);
+  border-color: rgba(63, 185, 80, 0.25);
+  color: rgb(63, 185, 80);
+}
+.check-version-summary.warn {
+  background: rgba(210, 153, 34, 0.08);
+  border-color: rgba(210, 153, 34, 0.25);
+  color: rgb(210, 153, 34);
+}
+.check-version-summary.fail {
+  background: rgba(248, 81, 73, 0.08);
+  border-color: rgba(248, 81, 73, 0.25);
+  color: rgb(248, 81, 73);
+}
+.check-version-items {
+  max-height: 420px;
+  overflow-y: auto;
+}
+.check-version-item-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.check-version-status {
+  width: 68px;
+  padding: 3px 7px;
+  border-radius: 5px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.check-version-status.pass {
+  color: rgb(200, 255, 211);
+  background: rgba(63, 185, 80, 0.22);
+  border: 1px solid rgba(63, 185, 80, 0.46);
+}
+.check-version-status.warn {
+  color: rgb(255, 224, 138);
+  background: rgba(210, 153, 34, 0.22);
+  border: 1px solid rgba(210, 153, 34, 0.5);
+}
+.check-version-status.fail {
+  color: rgb(255, 210, 207);
+  background: rgba(248, 81, 73, 0.24);
+  border: 1px solid rgba(248, 81, 73, 0.52);
+}
+.check-version-item-name {
+  font-size: 12px;
+  font-family: var(--font-mono, monospace);
+  min-width: 0;
+  flex-shrink: 1;
+}
+.check-version-item-detail {
+  font-size: 12px;
+  color: var(--text-2);
+  text-align: right;
+  flex-shrink: 0;
+}
+.check-version-next-steps {
+  margin-top: 14px;
+  padding: 12px 14px;
+  display: grid;
+  gap: 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(210, 153, 34, 0.35);
+  background: rgba(210, 153, 34, 0.08);
+}
+.check-version-next-title {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
+.check-version-next-step {
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 /* navigator */

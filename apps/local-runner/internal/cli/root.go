@@ -1434,6 +1434,48 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				}
 				w.WriteHeader(http.StatusOK)
 			})
+			mux.HandleFunc("/compat", func(w http.ResponseWriter, r *http.Request) {
+				switch r.Method {
+				case http.MethodGet:
+					writeHTTPJSON(w, instance.CompatLoadInfo(r.Context()))
+				case http.MethodPost:
+					writeHTTPJSON(w, instance.RunCompatCheck(r.Context()))
+				default:
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				}
+			})
+			mux.HandleFunc("/compat-config", func(w http.ResponseWriter, r *http.Request) {
+				switch r.Method {
+				case http.MethodGet:
+					config, err := instance.LoadCompatConfig()
+					if err != nil {
+						writeHTTPError(w, http.StatusInternalServerError, err)
+						return
+					}
+					writeHTTPJSON(w, config)
+				case http.MethodPut:
+					var payload runner.CompatConfig
+					if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+						writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+						return
+					}
+					config, err := instance.SaveCompatConfig(payload)
+					if err != nil {
+						writeHTTPError(w, http.StatusBadRequest, err)
+						return
+					}
+					writeHTTPJSON(w, config)
+				default:
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				}
+			})
+			mux.HandleFunc("/compat/deep", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				writeHTTPJSON(w, instance.RunCompatDeepCheck(r.Context()))
+			})
 			mux.HandleFunc("/system/shutdown", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

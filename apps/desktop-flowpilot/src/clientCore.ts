@@ -4,12 +4,17 @@ import {
   CompositeIntegrationRepository,
   CompositeProviderRepository,
   HttpRunnerRepository,
+  LoadCompatConfigUseCase,
+  LoadCompatInfoUseCase,
   LoadDesktopBootstrapUseCase,
   LoadRunnerHealthUseCase,
   LoadSupabaseRuntimeStatusUseCase,
   LoginUseCase,
   LogoutUseCase,
   ResetAuthSessionStateUseCase,
+  RunCompatCheckUseCase,
+  RunCompatDeepCheckUseCase,
+  SaveCompatConfigUseCase,
   RunnerRuntimeConfigRepository,
   RunnerAdminRepository,
   SaveSupabaseConfigUseCase,
@@ -52,6 +57,11 @@ export const saveSupabaseConfigUseCase = new SaveSupabaseConfigUseCase(
 );
 
 export const loadRunnerHealthUseCase = new LoadRunnerHealthUseCase(runnerRepository);
+export const loadCompatConfigUseCase = new LoadCompatConfigUseCase(runnerRepository);
+export const loadCompatInfoUseCase = new LoadCompatInfoUseCase(runnerRepository);
+export const runCompatCheckUseCase = new RunCompatCheckUseCase(runnerRepository);
+export const runCompatDeepCheckUseCase = new RunCompatDeepCheckUseCase(runnerRepository);
+export const saveCompatConfigUseCase = new SaveCompatConfigUseCase(runnerRepository);
 export const loginUseCase = new LoginUseCase(authRepository);
 export const logoutUseCase = new LogoutUseCase(authRepository);
 export const resetAuthSessionStateUseCase = new ResetAuthSessionStateUseCase(authRepository);
