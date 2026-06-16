@@ -156,6 +156,10 @@ export function ChatInput(): React.ReactElement {
   // downplays the other options but still reflects the current runtime state.
   const pickSkill = (name: string) => {
     setSelectedSkills((prev) => (prev.includes(name) ? prev : [...prev, name]));
+    if (slashQuery !== null) {
+      setText("");
+      setSkillPickerOpen(false);
+    }
   };
 
   const removeSkill = (name: string) => {
@@ -178,7 +182,7 @@ export function ChatInput(): React.ReactElement {
   };
 
   const placeholder = blocked
-    ? "Waiting for the current turn…"
+    ? "Waiting for the current turn..."
     : !hasSelectedProject
       ? "Select a project first."
     : isChatMode

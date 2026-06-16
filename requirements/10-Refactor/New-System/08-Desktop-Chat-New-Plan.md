@@ -1,16 +1,6 @@
-# OK
 
-2 mode: normal chat - workflow
-normal phai co du change model, yolo
-See Task-044-Desktop-Chat-Mode-Split-And-Provider-Controls.md
 
-- Lam button cho attach image temporarily -> save vao local file ??
-
-# Test CHAT MODE
-
-- model-reason-skill
-- attach image
-
+# 1. History
 page /workflow-runs
 co ca vu kill process before timeout setting o page proj
 
@@ -34,15 +24,28 @@ press history run need see update of runs
 / agents list actually agent
 Based on current provider
 
-# YOLO
+# 2. YOLO
 
-- Real safety = permission_required (app-server) + Codex sandbox + FlowPilot policy, configured together. YOLO is the single value that configures all three consistently, resolved per workflow run/step and applied per Codex thread/turn.
+## 2.1 Chat mode
+### 2.1.1 Normal approve
+- test ok for codex. YOLO cho normal command nhu write file
+- Chua test claude
 
-- YOLO is not global to the shared app-server. It is resolved per workflow run/step
-  | YOLO | Codex sandbox | Codex approval mode | FlowPilot runner | Proxy MCP |
-  | -----------| -----------------| -----------------------------------------------------------| ----------------------------------------| -----------------------------|
-  | **true** | full-access | never (auto-run) | auto-approve any `permission_required` | auto-approve policy-allowed |
-  | **false** | workspace-write | on-request (emit `permission_required` for dangerous ops) | show approval card, require decision | require approval |
+### 2.1.2 MCP approve
+Chua test cho ca codex/claude
+
+## Flow mode
+Chua test
+
+# 3. model.skill.reason
+## 3.1 Codex
+ok
+## 3.2 Claude
+Chua test
+
+# Image attached
+- Lam button cho attach image temporarily -> save vao local file ??
+- attach image
 
 # User Interaction (Structured Questions)
 
@@ -51,11 +54,3 @@ Separate from approvals, FlowPilot can ask the user a structured question (confi
 
 - ask_user MCP tool — a FlowPilot-registered custom tool (not built-in) the model discovers via tools/list and may call → best-effort, can not make sure it asked users
 - Workflow-driven — the ported Go state machine emits user_question_required directly at a defined step → deterministic (use for required asks).
-
-# Test for codex
-
-Test all items in this checklist: 06-DOD-And-Verification-Checklist.md
-
-# Test for claude
-
-Follow 07-Claude-Adapter-Plan.md

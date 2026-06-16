@@ -5,7 +5,7 @@ import { QuestionCard } from "./QuestionCard";
 
 const shortName = (path: string): string => path.split("/").pop() ?? path;
 
-const TOOL_ICON: Record<string, string> = { running: "⏳", success: "✓", failed: "✗", cancelled: "⊘" };
+const TOOL_ICON: Record<string, string> = { running: "⏳", success: "✓", failed: "✕", cancelled: "⊘" };
 const FILE_ICON: Record<string, string> = { created: "＋", modified: "✎", deleted: "－", renamed: "→" };
 
 type ToolItem = Extract<TimelineItem, { kind: "tool" }>;
@@ -70,6 +70,42 @@ function CopyBubble({
       </button>
       {children}
     </div>
+  );
+}
+
+function PromptSkillsSummary({ skills }: { skills: string[] }): React.ReactElement {
+  const [open, setOpen] = useState(false);
+  const summary = `${skills.length} skill${skills.length === 1 ? "" : "s"} selected`;
+  const preview = skills.slice(0, 2).map((name) => `/${name}`).join(", ");
+  const remainder = skills.length - 2;
+
+  return (
+    <>
+      <button
+        type="button"
+        className={`prompt-skills-summary ${open ? "prompt-skills-summary-open" : ""}`}
+        aria-expanded={open}
+        aria-label={summary}
+        title={summary}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span className="prompt-skills-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
+        <span className="prompt-skills-title">{summary}</span>
+        <span className="prompt-skills-preview">
+          {preview}
+          {remainder > 0 ? ` +${remainder}` : ""}
+        </span>
+      </button>
+      {open && (
+        <div className="prompt-skills-body">
+          {skills.map((name) => (
+            <div key={name} className="prompt-skill-chip">
+              <span className="prompt-skill-name">/{name}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
   );
 }
 
@@ -174,9 +210,14 @@ function Item({ it }: { it: TimelineGroup }): React.ReactElement | null {
       );
     case "prompt":
       return (
-        <CopyBubble text={it.text} className="bubble prompt">
-          {it.text}
-        </CopyBubble>
+        <div className="prompt-stack">
+          <CopyBubble text={it.text} className="bubble prompt">
+            {it.text}
+          </CopyBubble>
+          {it.selectedSkills && it.selectedSkills.length > 0 && (
+            <PromptSkillsSummary skills={it.selectedSkills} />
+          )}
+        </div>
       );
     case "thinking":
       return <div className="system-line thinking">{it.text}</div>;

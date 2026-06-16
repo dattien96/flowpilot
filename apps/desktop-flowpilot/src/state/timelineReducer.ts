@@ -2,7 +2,7 @@ import type { ApprovalDetails, ProviderEventDTO, QuestionOption, RunStatus } fro
 
 export type TimelineItem =
   | { kind: "assistant"; id: string; text: string; finalized: boolean }
-  | { kind: "prompt"; id: string; text: string }
+  | { kind: "prompt"; id: string; text: string; selectedSkills?: string[] }
   | { kind: "thinking"; id: string; text: string }
   | { kind: "tool"; id: string; toolName: string; status: "running" | "success" | "failed" | "cancelled"; input?: unknown; output?: unknown }
   | { kind: "file"; id: string; path: string; changeType?: string }

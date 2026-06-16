@@ -329,7 +329,12 @@ export const useStore = create<AppState>((set, get) => ({
       _streamingAssistantId: undefined,
       timeline: [
         ...s.timeline,
-        { kind: "prompt", id: `prompt-${s.timeline.length}`, text: prompt },
+        {
+          kind: "prompt",
+          id: `prompt-${s.timeline.length}`,
+          text: prompt,
+          selectedSkills: skills && skills.length > 0 ? [...skills] : undefined,
+        },
         { kind: "thinking", id: `thinking-${s.timeline.length}`, text: "Thinking..." },
       ],
     }));
