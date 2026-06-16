@@ -12,7 +12,7 @@
 - Last Updated: `2026-06-16`
 - Parent Documents: [Task-044: Desktop Chat Mode Split And Provider Controls](../../08-Task/done/Task-044-Desktop-Chat-Mode-Split-And-Provider-Controls.md)
 - Child Documents: `none`
-- Related Documents: [BUG-062: Desktop Chat Skill Picker Clears Prompt And Ignores Provider Folders](./BUG-062-Desktop-Chat-Skill-Picker-Clears-Prompt-And-Ignores-Provider-Folders.md)
+- Related Documents: [BUG-062: Desktop Chat Skill Picker Clears Prompt And Ignores Provider Folders](./BUG-062-Desktop-Chat-Skill-Picker-Clears-Prompt-And-Ignores-Provider-Folders.md), [BUG-064: Codex Approval Decision Value Rejected By App-Server](./BUG-064-Codex-Approval-Decision-Value-Rejected-By-AppServer.md), [BUG-065: Desktop Open In IDE Fails With spawn EINVAL On Windows](./BUG-065-Desktop-Open-In-IDE-Spawn-EINVAL-On-Windows.md)
 - Replaces: `none`
 - Tags: `desktop, bugfix, chat, provider, codex, claude`
 
@@ -29,7 +29,9 @@
 
 - Done. Chat-mode provider runs now apply selected model, reasoning, YOLO, and skills for Codex and Claude.
 - Done (follow-up). Model and YOLO are now per-turn in chat mode (changeable between prompts); all chat controls and Send are disabled only while a turn is in flight; selected skills are cleared on send so they must be explicitly re-picked each turn (no silent re-injection); and every selected skill's full content is delivered to the model by its explicit path.
+- Done (follow-up #2). The desktop now opens in chat mode with Codex pre-selected, and the YOLO toggle shows a disabled style while a turn is in flight (completing the in-flight grey-out ask).
 - Flow mode is explicitly out of scope for this fix and will be handled later.
+- Split out: the YOLO=off "Approve doesn't unblock Codex" defect and the "open in IDE" `spawn EINVAL` defect are tracked as their own bug docs (see Related Documents), not here.
 
 ### Key Decisions
 
@@ -136,6 +138,7 @@ Desktop chat mode exposed provider, model, reasoning, YOLO, and skills controls.
 - `F-9` Disable all chat controls (provider/model/reasoning/YOLO/skills) and Send while a turn is in flight (`status` running/waiting); keep them enabled between turns.
 - `F-10` Clear selected skills immediately on send so skills are only injected when explicitly re-picked for a turn; persistent selection across turns would silently re-inject skills the user did not intend to re-send.
 - `F-11` Replace selected-skill injection with `injectSelectedSkills`: read each selected skill by the picker's explicit path (desktop now sends `SkillSelection.path`), fall back to run-cwd id/name discovery, and label the block "Selected Skills".
+- `F-12` Default the desktop to chat mode with Codex pre-selected on open (`chatMode:"normal_chat"`, `selectedProvider:"codex"` in the store initial state) and add a visible `:disabled` style for the YOLO toggle so the in-flight grey-out is visible.
 
 ## 8. Validation
 
