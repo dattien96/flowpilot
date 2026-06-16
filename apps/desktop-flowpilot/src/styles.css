@@ -3048,6 +3048,23 @@ body.is-resizing-sidebar {
 }
 .attach-btn:hover:not(:disabled) { background: var(--surface-2, #1c1c22); }
 .attach-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.attach-btn { position: relative; }
+.attach-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--accent, #6c63ff);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+  pointer-events: none;
+}
 
 .chat-attachments {
   display: flex;
@@ -3108,6 +3125,68 @@ body.is-resizing-sidebar {
   border: 1px solid var(--border, #2c2c34);
   object-fit: cover;
 }
+.chat-attachment-chip { cursor: pointer; }
+.chat-attachment-chip:hover { background: var(--surface-2, #1c1c22); }
+
+/* ── Attachment lightbox (Task-052) ──────────────────────────────────── */
+.attach-preview-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(0, 0, 0, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.attach-preview-box {
+  background: var(--surface, #111116);
+  border: 1px solid var(--border, #2c2c34);
+  border-radius: 10px;
+  max-width: min(90vw, 860px);
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.attach-preview-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border, #2c2c34);
+  flex-shrink: 0;
+}
+.attach-preview-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text, #ddd);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attach-preview-meta {
+  font-size: 11px;
+  color: var(--text-muted, #888);
+  white-space: nowrap;
+}
+.attach-preview-close {
+  background: transparent;
+  border: none;
+  color: var(--text-muted, #888);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.attach-preview-close:hover { color: var(--text, #ddd); }
+.attach-preview-img {
+  display: block;
+  max-width: 100%;
+  max-height: calc(90vh - 48px);
+  object-fit: contain;
+}
+
 .prompt-attachment-chip {
   display: inline-flex;
   align-items: center;

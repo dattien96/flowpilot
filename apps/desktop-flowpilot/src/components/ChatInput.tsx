@@ -66,6 +66,7 @@ export function ChatInput(): React.ReactElement {
   const [controllerExpanded, setControllerExpanded] = useState(true);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
+  const [previewAtt, setPreviewAtt] = useState<PendingAttachment | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const wasPickerVisibleRef = useRef(false);
@@ -145,6 +146,13 @@ export function ChatInput(): React.ReactElement {
   }, [isChatMode, supportsVision]);
 
   useEffect(() => {
+    if (!previewAtt) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setPreviewAtt(null); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [previewAtt]);
+
+  useEffect(() => {
     setSelectedSkills((prev) => prev.filter((name) => skills.some((skill) => skill.name === name)));
   }, [skills]);
 
@@ -190,6 +198,21 @@ export function ChatInput(): React.ReactElement {
 
   const removeSkill = (name: string) => {
     setSelectedSkills((prev) => prev.filter((s) => s !== name));
+  };
+
+  const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    if (!supportsVision || !isChatMode || blocked) return;
+    const items = Array.from(e.clipboardData?.items ?? []).filter(
+      (item) => item.kind === "file" && item.type.startsWith("image/"),
+    );
+    if (items.length === 0) return;
+    e.preventDefault();
+    const dt = new DataTransfer();
+    for (const item of items) {
+      const file = item.getAsFile();
+      if (file) dt.items.add(file);
+    }
+    if (dt.files.length > 0) void onPickFiles(dt.files);
   };
 
   const onPickFiles = async (fileList: FileList | null) => {
@@ -412,7 +435,16 @@ export function ChatInput(): React.ReactElement {
       {isChatMode && supportsVision && attachments.length > 0 && (
         <div className="chat-attachments" aria-label="Pending image attachments">
           {attachments.map((att) => (
-            <div key={att.id} className="chat-attachment-chip">
+            <div
+              key={att.id}
+              className="chat-attachment-chip"
+              role="button"
+              tabIndex={0}
+              onClick={() => setPreviewAtt(att)}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") setPreviewAtt(att); }}
+              aria-label={`Preview ${att.originalName}`}
+              title="Click to preview"
+            >
               <img className="chat-attachment-thumb" src={att.previewUrl} alt={att.originalName} />
               <span className="chat-attachment-name" title={att.originalName}>
                 {att.originalName}
@@ -420,7 +452,7 @@ export function ChatInput(): React.ReactElement {
               <button
                 type="button"
                 className="chat-attachment-remove"
-                onClick={() => removeAttachment(att.id)}
+                onClick={(e) => { e.stopPropagation(); removeAttachment(att.id); }}
                 disabled={blocked}
                 aria-label={`Remove ${att.originalName}`}
               >
@@ -474,9 +506,14 @@ export function ChatInput(): React.ReactElement {
                   ? "Attach image"
                   : "Image attachments are not supported by the selected provider"
               }
-              title={supportsVision ? "Attach image" : "Selected provider does not support images"}
+              title={supportsVision ? "Attach image (or paste with Ctrl+V)" : "Selected provider does not support images"}
             >
               <span aria-hidden="true">📎</span>
+              {attachments.length > 0 && (
+                <span className="attach-badge" aria-label={`${attachments.length} image${attachments.length > 1 ? "s" : ""} attached`}>
+                  {attachments.length}
+                </span>
+              )}
             </button>
           </>
         )}
@@ -487,6 +524,7 @@ export function ChatInput(): React.ReactElement {
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKeyDown}
+          onPaste={onPaste}
           disabled={blocked}
         />
         <button className="btn btn-primary send-btn" onClick={send} disabled={!canSend}>
@@ -496,6 +534,39 @@ export function ChatInput(): React.ReactElement {
 
       {(pendingApproval || pendingQuestion) && (
         <div className="input-note">Action required above before continuing.</div>
+      )}
+
+      {previewAtt && (
+        <div
+          className="attach-preview-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Preview: ${previewAtt.originalName}`}
+          onClick={() => setPreviewAtt(null)}
+        >
+          <div className="attach-preview-box" onClick={(e) => e.stopPropagation()}>
+            <div className="attach-preview-header">
+              <span className="attach-preview-name">{previewAtt.originalName}</span>
+              <span className="attach-preview-meta">
+                {previewAtt.width && previewAtt.height ? `${previewAtt.width}×${previewAtt.height} · ` : ""}
+                {(previewAtt.sizeBytes / 1024).toFixed(0)} KB
+              </span>
+              <button
+                type="button"
+                className="attach-preview-close"
+                onClick={() => setPreviewAtt(null)}
+                aria-label="Close preview"
+              >
+                ×
+              </button>
+            </div>
+            <img
+              className="attach-preview-img"
+              src={previewAtt.previewUrl}
+              alt={previewAtt.originalName}
+            />
+          </div>
+        </div>
       )}
 
       {!hasSelectedProject && (

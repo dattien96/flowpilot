@@ -26,12 +26,12 @@ Based on current provider
 
 # 2. YOLO
 
-## 2.1 Chat mode
-### 2.1.1 Codex - Passed
+## 2.1 Chat mode - Passed
+### 2.1.1 Codex
 OK for both MCP + Command tool
 
-### 2.1.2 CLAUDE - NOt Test
-
+### 2.1.2 CLAUDE
+OK for both MCP + Command tool
 
 ## Flow mode
 Chua test
@@ -42,9 +42,8 @@ ok
 ## 3.2 Claude
 ok
 
-# Image attached
-- Lam button cho attach image temporarily -> save vao local file ??
-- attach image
+# Image attached - PASSED
+Done in Task-052
 
 # User Interaction (Structured Questions)
 
