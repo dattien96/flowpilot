@@ -1,28 +1,56 @@
 
 
 # 1. History
-page /workflow-runs
-co ca vu kill process before timeout setting o page proj
 
-luu history nhu nao
-Threads persist as JSONL logs on disk. Resume reloads them. So resume needs both the stored thread.id and the local thread log on the same machine.
+> Status legend: ✅ resolved (verified in code) · ⚠️ open gap (real, still broken) · ❓ open decision · 🔭 new feature (separate from History core)
 
-Resume requires the stored threadId (Codex) / session_id (Claude) and the session log present on the same machine. It is not bound to the specific account that created it — any active account for that provider can resume, as long as the session log is reachable. Different machine / missing log → resume may fail. (FlowPilot therefore does not persist an owning account on the session row.)
--> Neu active acc nhung khac acc thi co tim thay local log khong?
-BUG: dang co 1 bug: start 2 run. swith qua lai 1 hoi , toi 1 luc press History se empty show
-show list nhu nao
-VI moi provider co cach lam khac nhau
-Vi du codex la thread/list
-Vay khi bam show history -> can call history cuar all available active provider-> sort lai theo time ?? Hay show theo history cuar run tren supabase
+## 1.1 Current model — ✅ resolved / verified in code
 
-dang miss table workflow_provider_sessions trong migration?
+### Persistence (luu history nhu nao)
+- The **transcript** stays as provider-owned **JSONL on disk** (Codex thread log / Claude session log). FlowPilot does not copy it.
+- A **pointer row** is persisted to Supabase `workflow_provider_sessions`, keyed by `(workflow_run_id, provider_key, working_directory)` → `provider_session_id` / `provider_thread_id`.
+  - Codex: `provider_session_id == provider_thread_id == Codex thread ID`.
+  - Claude: `provider_session_id == real Claude session_id (UUID)`, bound to `cwd`.
+- Files: `supabase/migrations/20260615120000_add_workflow_provider_tables.sql` (table), `apps/local-runner/internal/runner/supabase_provider_session_store.go:90` (`UpsertSession`, on-conflict upsert).
 
-support model+reason in CHAT MODE
-press history run need see update of runs
+### Resume semantics
+- Resume needs **both** the persisted row **and** the local JSONL log on **the same machine**. Different machine / missing log → resume fails.
+- Resume is bound to `(provider, cwd, session_id)`, **not** to an account → any active account of the same provider can resume, as long as the local log is reachable. FlowPilot therefore **does not** persist an owning account on the session row.
+- Resolves the note "Neu active acc nhung khac acc thi co tim thay local log khong?": **yes** — resume reads the local log, not the account's remote history.
+  - ❓ Assumption to keep explicit: this holds only while providers don't validate the session server-side against the owning account. If they ever do, cross-account resume breaks.
 
-/skills list actually skill
-/ agents list actually agent
-Based on current provider
+### How the list is built (show list nhu nao) — decision made
+- We do **NOT** fan out to each provider's native list API (e.g. Codex `thread/list`) and merge. That would mean N schemas + N sort/merge problems + history scoped to provider accounts instead of projects.
+- Instead `projectRunHistory()` merges **in-memory active runs** + **persisted provider sessions**, sorted by `UpdatedAt` desc — project-scoped and provider-agnostic.
+  - Endpoint: `GET /client/projects/{projectId}/workflow-runs` → `apps/local-runner/internal/runner/interactive_handlers.go:585` (`projectRunHistory`).
+  - Desktop: `loadRunHistory` → `apps/desktop-flowpilot/src/state/store.ts:476`; renders in `RunStatus.tsx`.
+- → The "thread/list vs supabase" question is **closed**: source of truth is the Supabase session rows.
+
+## 1.2 ⚠️ Confirmed open gap — production empty History (BUG-060 F-2 / F-5)
+
+The note "dang miss table workflow_provider_sessions trong migration?" is **literally fixed** (table exists in `20260615120000_add_workflow_provider_tables.sql`), but the real gap that causes "BUG: start 2 run, switch qua lai, press History show empty" is **still open in production**:
+
+- `projectRunHistory` rehydrates persisted sessions only via a type assertion to the `SessionHistoryReader` interface:
+  ```go
+  // interactive_handlers.go:612
+  if reader, ok := s.workflowStore.(SessionHistoryReader); ok { ... }
+  ```
+- `SessionHistoryReader.ListProviderSessionsByProject` is implemented **only by `fakeWorkflowStore`** (`workflow_store.go:195`). The production `SupabaseWorkflowStore` does **not** implement it.
+- → For Supabase the assertion is `false`, the read path falls back to **in-memory `s.runs` only**, so History **still empties** after any app-server / runner recreation.
+
+**Truth about BUG-060 status:** marked *done*, but only dev/demo (fake store) is actually fixed — stale-response guard (`_historyLoadSeq`), error-vs-empty distinction, and passing regression test (`bug060_test.go`) all exercise the fake store. **The user-visible prod bug is NOT fixed.**
+
+Action items (these are the actual fix, not "add a migration"):
+- **F-2** — implement `ListProviderSessionsByProject` on `SupabaseWorkflowStore` (`supabase_workflow_store.go`), querying `workflow_provider_sessions` by project.
+- **F-5** — confirm/verify `workflow_provider_sessions` migration is applied in the production Supabase project.
+- Re-label BUG-060 as "dev-only fixed; prod pending F-2/F-5" until F-2 lands.
+
+## 1.3 🔭 Separate follow-up items (not History-core — split into own tasks)
+
+- **Kill process before timeout on project page** ("co ca vu kill process before timeout setting o page proj"): today there is only graceful `interrupt` (pause) and `terminate-session` (refuses on finished runs). A hard kill-before-timeout is **net-new**, not a History fix.
+- **support model+reason in CHAT MODE**: model+reason is PASSED for Flow mode (see §3); extend into chat mode. Separate feature.
+- **Live History updates** ("press history run need see update of runs"): History is a point-in-time fetch and does not live-update while a run progresses. Needs refresh-on-event or subscribing the history panel to the event stream.
+- **Provider-aware slash lists** ("/skills list actually skill", "/agents list actually agent", "based on current provider"): enumerate the real skills/agents of the **currently selected provider**, not a static list. Provider-adapter work.
 
 # 2. YOLO
 
