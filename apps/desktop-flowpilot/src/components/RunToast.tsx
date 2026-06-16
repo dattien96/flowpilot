@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { buildToastGroupSummary, shouldCollapseToasts } from "@/app/runToastGrouping";
 import { useStore } from "@/state/store";
 import type { RunStatus } from "@/types/contract";
 
@@ -20,6 +21,13 @@ export function RunToast(): React.ReactElement | null {
   const status = useStore((s) => s.status);
   const prevRef = useRef<RunStatus>(status);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [groupExpanded, setGroupExpanded] = useState(false);
+
+  useEffect(() => {
+    if (!shouldCollapseToasts(toasts.length)) {
+      setGroupExpanded(false);
+    }
+  }, [toasts.length]);
 
   useEffect(() => {
     const prev = prevRef.current;
@@ -51,6 +59,60 @@ export function RunToast(): React.ReactElement | null {
   }, [status]);
 
   if (toasts.length === 0) return null;
+
+  const collapsed = shouldCollapseToasts(toasts.length);
+  const groupSummary = buildToastGroupSummary(toasts);
+
+  if (collapsed) {
+    return (
+      <div className="run-toast-stack" role="status" aria-live="polite" aria-label="Run notifications">
+        <div className="run-toast run-toast--grouped">
+          <button
+            type="button"
+            className="run-toast-group-toggle"
+            onClick={() => setGroupExpanded((value) => !value)}
+            aria-expanded={groupExpanded}
+            aria-controls="run-toast-group-list"
+          >
+            <span className="run-toast-icon" aria-hidden="true">⚑</span>
+            <span className="run-toast-group-copy">
+              <span className="run-toast-msg">{toasts.length} notifications</span>
+              <span className="run-toast-group-summary">{groupSummary}</span>
+            </span>
+            <span className="run-toast-group-caret" aria-hidden="true">
+              {groupExpanded ? "▾" : "▸"}
+            </span>
+          </button>
+          <button
+            type="button"
+            className="run-toast-close"
+            onClick={() => setToasts([])}
+            aria-label="Dismiss all notifications"
+          >
+            ✕
+          </button>
+          {groupExpanded ? (
+            <div id="run-toast-group-list" className="run-toast-group-list">
+              {toasts.map((toast) => (
+                <div key={toast.id} className="run-toast-group-item">
+                  <span className={`run-toast-group-dot run-toast-group-dot--${toast.kind}`} aria-hidden="true" />
+                  <span className="run-toast-msg">{toast.message}</span>
+                  <button
+                    type="button"
+                    className="run-toast-close"
+                    onClick={() => setToasts((ts) => ts.filter((t) => t.id !== toast.id))}
+                    aria-label={`Dismiss ${toast.message}`}
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="run-toast-stack" role="status" aria-live="polite" aria-label="Run notifications">
