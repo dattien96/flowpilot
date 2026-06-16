@@ -360,8 +360,9 @@ func TestCodexAdapterApprovalRoundTrip(t *testing.T) {
 			fc.reply(m["id"], map[string]any{"threadId": "th1"})
 		case "turn/start":
 			fc.reply(m["id"], map[string]any{"turnId": "ct1"})
-			// server asks for approval (server→client request)
-			fc.send(map[string]any{"jsonrpc": "2.0", "id": 500, "method": "approval/request",
+			// server asks for approval (server→client request). The real app-server
+			// method is execCommandApproval (verified against codex-cli 0.137.0).
+			fc.send(map[string]any{"jsonrpc": "2.0", "id": 500, "method": "execCommandApproval",
 				"params": map[string]any{"threadId": "th1", "command": "rm -rf x"}})
 		default:
 			if res, ok := m["result"].(map[string]any); ok {
@@ -379,11 +380,90 @@ func TestCodexAdapterApprovalRoundTrip(t *testing.T) {
 	}
 	select {
 	case dec := <-decisionReplies:
-		if dec != "approve" {
-			t.Fatalf("decision = %q, want approve", dec)
+		// The bridge approves with the internal "approve"; the adapter must translate
+		// it to Codex's ReviewDecision value "approved" on the wire (BUG-064).
+		if dec != "approved" {
+			t.Fatalf("decision = %q, want approved", dec)
 		}
 	default:
 		t.Fatal("approval decision was not replied to Codex")
+	}
+}
+
+func TestCodexAdapterV2ApprovalRoundTrip(t *testing.T) {
+	d, fc := startFakeCodex(t, nil)
+	adapter := newCodexAdapter(d, "/workspace")
+	d.setInbound(adapter.handleInbound)
+
+	decisionReplies := make(chan string, 1)
+	fc.serve(func(fc *fakeCodex, m map[string]any) {
+		method, _ := m["method"].(string)
+		switch method {
+		case "thread/start":
+			fc.reply(m["id"], map[string]any{"threadId": "th1"})
+		case "turn/start":
+			fc.reply(m["id"], map[string]any{"turnId": "ct1"})
+			fc.send(map[string]any{"jsonrpc": "2.0", "id": 500, "method": "item/commandExecution/requestApproval",
+				"params": map[string]any{"threadId": "th1", "turnId": "ct1", "itemId": "item1", "command": "echo hi"}})
+		default:
+			if res, ok := m["result"].(map[string]any); ok {
+				if dec, ok := res["decision"].(string); ok {
+					decisionReplies <- dec
+					fc.notify("turn.completed", map[string]any{"threadId": "th1", "finalMessage": "ok"})
+				}
+			}
+		}
+	})
+
+	bridge := &captureBridge{approveWith: "approve"}
+	if err := adapter.SendTurn(context.Background(), TurnRequest{RunID: "r1", Prompt: "go"}, bridge); err != nil {
+		t.Fatalf("SendTurn: %v", err)
+	}
+	select {
+	case dec := <-decisionReplies:
+		if dec != "accept" {
+			t.Fatalf("decision = %q, want accept", dec)
+		}
+	default:
+		t.Fatal("approval decision was not replied to Codex")
+	}
+}
+
+func TestCodexReviewDecisionMapsToAppServerEnum(t *testing.T) {
+	cases := map[string]string{
+		"approve":              "approved",
+		"approved":             "approved",
+		"approve_for_session":  "approved_for_session",
+		"approved_for_session": "approved_for_session",
+		"deny":                 "denied",
+		"denied":               "denied",
+		"abort":                "abort",
+		"":                     "denied", // unknown/empty fails safe
+		"garbage":              "denied",
+	}
+	for in, want := range cases {
+		if got := codexReviewDecision("execCommandApproval", in); got != want {
+			t.Errorf("codexReviewDecision(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestCodexReviewDecisionMapsV2AppServerEnum(t *testing.T) {
+	cases := map[string]string{
+		"approve":              "accept",
+		"approved":             "accept",
+		"approve_for_session":  "acceptForSession",
+		"approved_for_session": "acceptForSession",
+		"deny":                 "decline",
+		"denied":               "decline",
+		"abort":                "cancel",
+		"":                     "decline",
+		"garbage":              "decline",
+	}
+	for in, want := range cases {
+		if got := codexReviewDecision("item/commandExecution/requestApproval", in); got != want {
+			t.Errorf("codexReviewDecision(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

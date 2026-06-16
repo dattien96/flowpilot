@@ -192,6 +192,11 @@ func (a *codexAdapter) codexTurnID(threadID string) string {
 // Approval requests are forwarded through the active turn's bridge and the chosen
 // decision is replied back to Codex, so the model unblocks.
 func (a *codexAdapter) handleInbound(req codexInboundRequest) {
+	if !codexInboundApprovalMethod(req.Method) {
+		_ = a.dispatcher.replyError(req.ID, "unsupported Codex inbound request: "+req.Method)
+		return
+	}
+
 	threadID := codexThreadIDFromParams(req.Params)
 	a.mu.Lock()
 	bridge := a.bridges[threadID]
@@ -220,10 +225,73 @@ func (a *codexAdapter) handleInbound(req codexInboundRequest) {
 	decision, err := bridge.RequestApproval(details)
 	if err != nil {
 		// expiry/interrupt while pending → deny so Codex never hangs (04-04)
-		_ = a.dispatcher.reply(req.ID, map[string]any{"decision": "deny"})
+		_ = a.dispatcher.reply(req.ID, map[string]any{"decision": codexReviewDecision(req.Method, "deny")})
 		return
 	}
-	_ = a.dispatcher.reply(req.ID, map[string]any{"decision": decision})
+	_ = a.dispatcher.reply(req.ID, map[string]any{"decision": codexReviewDecision(req.Method, decision)})
+}
+
+func codexInboundApprovalMethod(method string) bool {
+	switch method {
+	case "approval/request",
+		"execCommandApproval",
+		"applyPatchApproval",
+		"item/commandExecution/requestApproval",
+		"item/fileChange/requestApproval":
+		return true
+	default:
+		return false
+	}
+}
+
+// codexReviewDecision maps FlowPilot's internal approval vocabulary to the
+// decision enum expected by the specific Codex app-server request method.
+func codexReviewDecision(method string, decision string) string {
+	switch method {
+	case "item/commandExecution/requestApproval", "item/fileChange/requestApproval":
+		return codexV2ReviewDecision(decision)
+	default:
+		return codexLegacyReviewDecision(decision)
+	}
+}
+
+// codexLegacyReviewDecision maps FlowPilot's internal approval vocabulary (approve/deny,
+// the values the desktop card and the runner bridge speak) to Codex's app-server
+// `ReviewDecision` serde values: approved | approved_for_session | denied | abort.
+// The real app-server cannot deserialize "approve"/"deny" — it rejects the inbound
+// approval as if the user declined (BUG-064; BUG-066 covers the v2 enum). Any
+// unknown/empty decision fails safe to "denied".
+func codexLegacyReviewDecision(decision string) string {
+	switch decision {
+	case "approve", "approved":
+		return "approved"
+	case "approve_for_session", "approved_for_session":
+		return "approved_for_session"
+	case "deny", "denied":
+		return "denied"
+	case "abort":
+		return "abort"
+	default:
+		return "denied"
+	}
+}
+
+// codexV2ReviewDecision maps FlowPilot's internal values to the v2 command/file
+// approval enums used by item/commandExecution/requestApproval and
+// item/fileChange/requestApproval: accept | acceptForSession | decline | cancel.
+func codexV2ReviewDecision(decision string) string {
+	switch decision {
+	case "approve", "approved", "accept":
+		return "accept"
+	case "approve_for_session", "approved_for_session", "acceptForSession":
+		return "acceptForSession"
+	case "deny", "denied", "decline":
+		return "decline"
+	case "abort", "cancel":
+		return "cancel"
+	default:
+		return "decline"
+	}
 }
 
 // codexYoloDerive maps YOLO → Codex thread params via the SSOT resolver
