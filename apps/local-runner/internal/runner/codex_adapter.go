@@ -225,10 +225,10 @@ func (a *codexAdapter) handleInbound(req codexInboundRequest) {
 	decision, err := bridge.RequestApproval(details)
 	if err != nil {
 		// expiry/interrupt while pending → deny so Codex never hangs (04-04)
-		_ = a.dispatcher.reply(req.ID, map[string]any{"decision": codexReviewDecision(req.Method, "deny")})
+		_ = a.dispatcher.reply(req.ID, codexApprovalResponse(req.Method, req.Params, "deny"))
 		return
 	}
-	_ = a.dispatcher.reply(req.ID, map[string]any{"decision": codexReviewDecision(req.Method, decision)})
+	_ = a.dispatcher.reply(req.ID, codexApprovalResponse(req.Method, req.Params, decision))
 }
 
 func codexInboundApprovalMethod(method string) bool {
@@ -237,11 +237,19 @@ func codexInboundApprovalMethod(method string) bool {
 		"execCommandApproval",
 		"applyPatchApproval",
 		"item/commandExecution/requestApproval",
-		"item/fileChange/requestApproval":
+		"item/fileChange/requestApproval",
+		"item/permissions/requestApproval":
 		return true
 	default:
 		return false
 	}
+}
+
+func codexApprovalResponse(method string, params map[string]any, decision string) map[string]any {
+	if method == "item/permissions/requestApproval" {
+		return codexPermissionsApprovalResponse(params, decision)
+	}
+	return map[string]any{"decision": codexReviewDecision(method, decision)}
 }
 
 // codexReviewDecision maps FlowPilot's internal approval vocabulary to the
@@ -252,6 +260,44 @@ func codexReviewDecision(method string, decision string) string {
 		return codexV2ReviewDecision(decision)
 	default:
 		return codexLegacyReviewDecision(decision)
+	}
+}
+
+// codexPermissionsApprovalResponse maps Codex v2 permission approval requests to
+// the response shape expected by item/permissions/requestApproval:
+// { permissions, scope }. Approve grants the requested per-turn profile; deny
+// returns an empty profile so Codex can continue without the extra permission.
+func codexPermissionsApprovalResponse(params map[string]any, decision string) map[string]any {
+	if !codexDecisionApproved(decision) {
+		return map[string]any{
+			"permissions": map[string]any{},
+			"scope":       "turn",
+		}
+	}
+	permissions, _ := params["permissions"].(map[string]any)
+	granted := map[string]any{}
+	if network, ok := permissions["network"].(map[string]any); ok && network != nil {
+		granted["network"] = network
+	}
+	if fileSystem, ok := permissions["fileSystem"].(map[string]any); ok && fileSystem != nil {
+		granted["fileSystem"] = fileSystem
+	}
+	scope := "turn"
+	if decision == "approve_for_session" || decision == "approved_for_session" {
+		scope = "session"
+	}
+	return map[string]any{
+		"permissions": granted,
+		"scope":       scope,
+	}
+}
+
+func codexDecisionApproved(decision string) bool {
+	switch decision {
+	case "approve", "approved", "approve_for_session", "approved_for_session", "accept", "acceptForSession":
+		return true
+	default:
+		return false
 	}
 }
 

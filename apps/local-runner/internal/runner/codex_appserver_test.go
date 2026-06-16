@@ -429,6 +429,60 @@ func TestCodexAdapterV2ApprovalRoundTrip(t *testing.T) {
 	}
 }
 
+func TestCodexAdapterPermissionsApprovalRoundTrip(t *testing.T) {
+	d, fc := startFakeCodex(t, nil)
+	adapter := newCodexAdapter(d, "/workspace")
+	d.setInbound(adapter.handleInbound)
+
+	approvalReplies := make(chan map[string]any, 1)
+	fc.serve(func(fc *fakeCodex, m map[string]any) {
+		method, _ := m["method"].(string)
+		switch method {
+		case "thread/start":
+			fc.reply(m["id"], map[string]any{"threadId": "th1"})
+		case "turn/start":
+			fc.reply(m["id"], map[string]any{"turnId": "ct1"})
+			fc.send(map[string]any{"jsonrpc": "2.0", "id": 500, "method": "item/permissions/requestApproval",
+				"params": map[string]any{
+					"threadId": "th1",
+					"turnId":   "ct1",
+					"itemId":   "item1",
+					"cwd":      "/workspace",
+					"reason":   "Allow google-drive MCP access",
+					"permissions": map[string]any{
+						"network": map[string]any{"enabled": true},
+					},
+				}})
+		default:
+			if res, ok := m["result"].(map[string]any); ok {
+				approvalReplies <- res
+				fc.notify("turn.completed", map[string]any{"threadId": "th1", "finalMessage": "ok"})
+			}
+		}
+	})
+
+	bridge := &captureBridge{approveWith: "approve"}
+	if err := adapter.SendTurn(context.Background(), TurnRequest{RunID: "r1", Prompt: "use drive"}, bridge); err != nil {
+		t.Fatalf("SendTurn: %v", err)
+	}
+	select {
+	case res := <-approvalReplies:
+		if _, hasDecision := res["decision"]; hasDecision {
+			t.Fatalf("permissions approval must not use decision response: %+v", res)
+		}
+		if res["scope"] != "turn" {
+			t.Fatalf("scope = %v, want turn", res["scope"])
+		}
+		permissions, _ := res["permissions"].(map[string]any)
+		network, _ := permissions["network"].(map[string]any)
+		if network["enabled"] != true {
+			t.Fatalf("network permission = %+v, want enabled true", network)
+		}
+	default:
+		t.Fatal("permission approval was not replied to Codex")
+	}
+}
+
 func TestCodexReviewDecisionMapsToAppServerEnum(t *testing.T) {
 	cases := map[string]string{
 		"approve":              "approved",
