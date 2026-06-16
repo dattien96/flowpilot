@@ -200,6 +200,7 @@ export class HttpWsRunnerClient implements RunnerClient {
         reasoningEffort: input.reasoningEffort,
         model: input.model,
         yoloMode: input.yoloMode,
+        attachments: input.attachments,
         scenario: this.scenario,
       },
     );

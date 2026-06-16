@@ -3030,3 +3030,91 @@ body.is-resizing-sidebar {
   margin: 0;
   color: var(--text-muted, #888);
 }
+
+/* ── Chat image attachments (Task-052) ─────────────────────────────── */
+.attach-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  border: 1px solid var(--border, #2c2c34);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text, #ddd);
+  font-size: 16px;
+  cursor: pointer;
+}
+.attach-btn:hover:not(:disabled) { background: var(--surface-2, #1c1c22); }
+.attach-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.chat-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 2px;
+}
+.chat-attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  padding: 4px 6px;
+  border: 1px solid var(--border, #2c2c34);
+  border-radius: 8px;
+  background: var(--surface-2, #1c1c22);
+}
+.chat-attachment-thumb {
+  width: 28px;
+  height: 28px;
+  object-fit: cover;
+  border-radius: 4px;
+  flex: 0 0 auto;
+}
+.chat-attachment-name {
+  font-size: 12px;
+  color: var(--text-muted, #aaa);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-attachment-remove {
+  border: none;
+  background: transparent;
+  color: var(--text-muted, #aaa);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.chat-attachment-remove:hover:not(:disabled) { color: var(--text, #fff); }
+.chat-attachment-remove:disabled { opacity: 0.4; cursor: not-allowed; }
+.chat-attachment-error {
+  padding: 4px 8px;
+  font-size: 12px;
+  color: var(--danger, #e5736b);
+}
+
+.prompt-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.prompt-attachment-thumb {
+  max-width: 160px;
+  max-height: 160px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #2c2c34);
+  object-fit: cover;
+}
+.prompt-attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+  border-radius: 8px;
+  background: var(--surface-2, #1c1c22);
+  color: var(--text-muted, #aaa);
+}

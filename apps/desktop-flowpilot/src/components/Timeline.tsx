@@ -211,6 +211,25 @@ function Item({ it }: { it: TimelineGroup }): React.ReactElement | null {
     case "prompt":
       return (
         <div className="prompt-stack">
+          {it.attachments && it.attachments.length > 0 && (
+            <div className="prompt-attachments" aria-label={`${it.attachments.length} image attachment(s)`}>
+              {it.attachments.map((att) =>
+                att.previewUrl ? (
+                  <img
+                    key={att.id}
+                    className="prompt-attachment-thumb"
+                    src={att.previewUrl}
+                    alt={att.originalName}
+                    title={att.originalName}
+                  />
+                ) : (
+                  <span key={att.id} className="prompt-attachment-chip" title={att.originalName}>
+                    🖼 {att.originalName}
+                  </span>
+                ),
+              )}
+            </div>
+          )}
           <CopyBubble text={it.text} className="bubble prompt">
             {it.text}
           </CopyBubble>

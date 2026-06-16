@@ -6,6 +6,7 @@ import type {
   ProviderEventDTO,
   ProviderKey,
   ProviderSkill,
+  PromptAttachment,
   RunHistoryItem,
   RunStatus,
   Step,
@@ -102,7 +103,7 @@ interface AppState {
   selectWorkflow(workflowId: string): Promise<void>;
   selectStep(stepId: string): void;
   setScenario(scenario: ScenarioName): void;
-  sendPrompt(prompt: string, skills?: string[]): Promise<void>;
+  sendPrompt(prompt: string, skills?: string[], attachments?: PromptAttachment[]): Promise<void>;
   approve(decision: string): Promise<void>;
   answer(choice: string | string[]): Promise<void>;
   stop(): Promise<void>;
@@ -293,7 +294,7 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
-  async sendPrompt(prompt, skills) {
+  async sendPrompt(prompt, skills, attachments) {
     const {
       client, chatMode, launchMode,
       selectedProjectId, selectedWorkflowId, selectedStepId,
@@ -334,6 +335,17 @@ export const useStore = create<AppState>((set, get) => ({
           id: `prompt-${s.timeline.length}`,
           text: prompt,
           selectedSkills: skills && skills.length > 0 ? [...skills] : undefined,
+          attachments:
+            attachments && attachments.length > 0
+              ? attachments.map((a) => ({
+                  id: a.id,
+                  originalName: a.originalName,
+                  mimeType: a.mimeType,
+                  // Normalized images are already small; the base64 doubles as the
+                  // preview so history-rendered bubbles still show a thumbnail.
+                  previewUrl: `data:${a.mimeType};base64,${a.data}`,
+                }))
+              : undefined,
         },
         { kind: "thinking", id: `thinking-${s.timeline.length}`, text: "Thinking..." },
       ],
@@ -389,6 +401,10 @@ export const useStore = create<AppState>((set, get) => ({
         // Workflow/step mode keeps the run-level values captured at startRun.
         model: chatMode === "normal_chat" ? (selectedModel ?? "") : undefined,
         yoloMode: chatMode === "normal_chat" ? yoloMode : undefined,
+        attachments:
+          chatMode === "normal_chat" && attachments && attachments.length > 0
+            ? attachments
+            : undefined,
       };
       set({ runId, lastTurnInput: turnInput, activeStepId: turnStepId });
 

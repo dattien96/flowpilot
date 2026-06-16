@@ -65,21 +65,40 @@ func codexThreadReadParams(threadID string) map[string]any {
 	return map[string]any{"threadId": threadID}
 }
 
-func codexTurnStartParams(threadID, prompt string, skill *SkillSelection) map[string]any {
+func codexTurnStartParams(threadID, prompt string, skill *SkillSelection, imagePaths []string) map[string]any {
+	input := []any{
+		map[string]any{
+			"type":          "text",
+			"text":          prompt,
+			"text_elements": []any{},
+		},
+	}
+	for _, path := range imagePaths {
+		if path != "" {
+			input = append(input, codexImageInputItem(path))
+		}
+	}
 	p := map[string]any{
 		"threadId": threadID,
-		"input": []any{
-			map[string]any{
-				"type":          "text",
-				"text":          prompt,
-				"text_elements": []any{},
-			},
-		},
+		"input":    input,
 	}
 	if skill != nil && skill.Name != "" {
 		p["skill"] = skill.Name
 	}
 	return p
+}
+
+// codexImageInputItem builds a single image input item for a turn (Task-052). Codex
+// reads the image by PATH on the runner host (the adapter writes attachments to a
+// runner-managed temp file first), so we pass a local-path item rather than inline
+// bytes. NOTE: the exact item type/keys must be validated against a real
+// `codex app-server` build — the scripted fake in tests cannot confirm this — which
+// is why the shape is isolated in this one helper.
+func codexImageInputItem(path string) any {
+	return map[string]any{
+		"type": "localImage",
+		"path": path,
+	}
 }
 
 func codexInterruptParams(threadID, turnID string) map[string]any {

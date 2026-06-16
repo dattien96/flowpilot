@@ -83,7 +83,7 @@ func (a *codexAdapter) Key() ProviderKey { return ProviderKeyCodex }
 func (a *codexAdapter) Capabilities() ProviderCapabilities {
 	return ProviderCapabilities{
 		Streaming: true, Resume: true, ApprovalEvents: true, FileEvents: true,
-		SkillSelection: true, Mcp: true, Interrupt: true,
+		SkillSelection: true, Mcp: true, Interrupt: true, Vision: true,
 	}
 }
 
@@ -131,6 +131,17 @@ func (a *codexAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tur
 		skill = &req.SelectedSkills[0]
 	}
 
+	// Persist image attachments to a per-turn temp dir on the runner host so Codex can
+	// read them by path (Task-052, D-3). Cleanup is deferred to turn return: SendTurn
+	// blocks on the event pump below until a terminal event or interrupt, by which point
+	// the app-server has already read the files — so deletion never races a read. A boot
+	// sweep (sweepCodexImageAttachments) reclaims any orphans left by a hard crash.
+	imagePaths, cleanupImages, err := writeCodexImageAttachments(req.ProviderTurnID, req.Attachments)
+	if err != nil {
+		return err
+	}
+	defer cleanupImages()
+
 	// Runner-side prompt assembly before turn/start (04-03): skill reinforcement +
 	// ask_user usage reinforcement. The pluggable promptPrep hook lets the live
 	// process adapter inject full skill content (injectSkillContent) and required-MCP
@@ -140,7 +151,7 @@ func (a *codexAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tur
 	// Fire turn/start; rely on notifications for completion (don't block the pump).
 	turnErr := make(chan error, 1)
 	go func() {
-		res, e := a.dispatcher.call(ctx, "turn/start", codexTurnStartParams(threadID, prompt, skill))
+		res, e := a.dispatcher.call(ctx, "turn/start", codexTurnStartParams(threadID, prompt, skill, imagePaths))
 		if e == nil {
 			if tid := codexTurnIDFromResponse(res); tid != "" {
 				a.mu.Lock()

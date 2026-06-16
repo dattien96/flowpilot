@@ -117,6 +117,24 @@ type ProviderCapabilities struct {
 	SkillSelection bool `json:"skillSelection"`
 	Mcp            bool `json:"mcp"`
 	Interrupt      bool `json:"interrupt"`
+	// Vision advertises that the adapter can accept image attachments on a turn
+	// (Task-052). The desktop gates the attach control on this; false for the
+	// placeholder/non-vision adapters.
+	Vision bool `json:"vision"`
+}
+
+// PromptAttachment is an image attached to a chat turn (Task-052), mirroring the
+// desktop `PromptAttachment` in contract.ts. Data is the base64 of the normalized
+// bytes (no `data:` prefix), carried inline in the turn payload (V1 — D-2).
+type PromptAttachment struct {
+	ID           string `json:"id"`
+	Kind         string `json:"kind"` // "image"
+	OriginalName string `json:"originalName"`
+	MimeType     string `json:"mimeType"`
+	Data         string `json:"data"` // base64, no data: prefix
+	SizeBytes    int64  `json:"sizeBytes"`
+	Width        int    `json:"width,omitempty"`
+	Height       int    `json:"height,omitempty"`
 }
 
 // ---- Run lifecycle DTOs (mirror 04-01 contract.ts) -------------------------
@@ -170,6 +188,9 @@ type TurnInput struct {
 	ReasoningEffort string  `json:"reasoningEffort,omitempty"`
 	Model           *string `json:"model,omitempty"`
 	YoloMode        *bool   `json:"yoloMode,omitempty"`
+	// Attachments carries image attachments for chat-mode turns (Task-052), inline as
+	// base64. Empty in workflow/step mode and when no images are attached.
+	Attachments []PromptAttachment `json:"attachments,omitempty"`
 }
 
 // ---- Catalog DTOs (navigator; fake catalog in P2) --------------------------

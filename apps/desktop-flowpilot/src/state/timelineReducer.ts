@@ -1,8 +1,17 @@
 import type { ApprovalDetails, ProviderEventDTO, QuestionOption, RunStatus } from "../types/contract";
 
+/** Lightweight image-attachment view for a sent prompt bubble (Task-052). Holds a
+ *  preview thumbnail (when available) and the filename, never the full payload. */
+export interface PromptAttachmentView {
+  id: string;
+  originalName: string;
+  mimeType: string;
+  previewUrl?: string;
+}
+
 export type TimelineItem =
   | { kind: "assistant"; id: string; text: string; finalized: boolean }
-  | { kind: "prompt"; id: string; text: string; selectedSkills?: string[] }
+  | { kind: "prompt"; id: string; text: string; selectedSkills?: string[]; attachments?: PromptAttachmentView[] }
   | { kind: "thinking"; id: string; text: string }
   | { kind: "tool"; id: string; toolName: string; status: "running" | "success" | "failed" | "cancelled"; input?: unknown; output?: unknown }
   | { kind: "file"; id: string; path: string; changeType?: string }

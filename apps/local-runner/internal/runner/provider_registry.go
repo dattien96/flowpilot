@@ -45,6 +45,9 @@ type TurnRequest struct {
 	// Scenario is a P2 fake-adapter hint (mirrors the desktop scenario switcher);
 	// the real Codex adapter (P3) ignores it.
 	Scenario string
+	// Attachments carries chat-turn image attachments (Task-052). Vision-capable
+	// adapters convert these into provider-specific multimodal payloads; others ignore them.
+	Attachments []PromptAttachment
 }
 
 // ProviderRuntimeAdapter is the provider-neutral adapter contract (03/04). The

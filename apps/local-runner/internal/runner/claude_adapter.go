@@ -64,7 +64,7 @@ func (a *claudeAdapter) Key() ProviderKey { return ProviderKeyClaude }
 func (a *claudeAdapter) Capabilities() ProviderCapabilities {
 	return ProviderCapabilities{
 		Streaming: true, Resume: true, ApprovalEvents: true, FileEvents: true,
-		SkillSelection: true, Mcp: true, Interrupt: true,
+		SkillSelection: true, Mcp: true, Interrupt: true, Vision: true,
 	}
 }
 
@@ -146,7 +146,7 @@ func (a *claudeAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tu
 		a.mu.Unlock()
 	}()
 
-	if err := proc.stream.writeUserTurn(a.preparePrompt(req)); err != nil {
+	if err := proc.stream.writeUserTurn(a.preparePrompt(req), req.Attachments); err != nil {
 		return err
 	}
 

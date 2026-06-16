@@ -5,7 +5,7 @@
 - Document ID: `Task-052`
 - Title: `Desktop Chat Image Attachments`
 - Phase: `task`
-- Status: `draft`
+- Status: `in_progress`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-16`
@@ -123,7 +123,7 @@ The desktop chat plan already calls out `attach image`, and the user wants a Cod
 
 ## 8. Completion Notes
 
-- result: Planned only. No code implementation was performed in this turn.
+- result: Implemented (base64-inline, D-2). Desktop: `PromptAttachment` contract type, renderer `normalizeImage` pipeline (downscale ≤1568px + WebP/PNG recompress + thumbnail), attach button + pending chips + vision gating in `ChatInput`, attachments threaded through `store.sendPrompt` / `HttpWsRunnerClient` / timeline bubble thumbnails. Runner: `attachments` plumbed turnBody → TurnInput → TurnRequest; Claude emits base64 image content blocks; Codex writes per-turn temp files (deferred cleanup + boot sweep) and appends image input items; `Vision` capability added (codex/claude true). Tests: 10 Go unit tests + TS wire-boundary test. `go build`, `go test` (new + existing, minus 4 pre-existing unrelated failures), and `tsc --noEmit` all green. Dev server loads with no console errors; interactive chat-composer verification is blocked by Supabase auth in the headless mock, so attachment behavior is covered by the unit tests instead.
 - follow-ups:
   - Run GitNexus impact analysis before modifying `ChatInput`, `sendPrompt`, `TurnInput`, `codexTurnStartParams`, `claudeStream.writeUserTurn`, or other runner turn handlers.
   - Resolve the `D-2` transport decision (base64-in-turn vs runner upload endpoint) and the first supported provider before implementation.
@@ -291,7 +291,12 @@ Thread `attachments` through the existing decode → TurnInput → TurnRequest c
 
 Codex reads images by **path on the runner host**, so the adapter writes the base64 bytes to a temp file and passes a path item:
 
-- `codex_adapter.go SendTurn`: before `turn/start`, for each image attachment, decode base64 and write to a runner-managed temp file (e.g. under `os.TempDir()/flowpilot-attach/<turnId>/`). Collect the absolute paths. `defer os.RemoveAll(dir)` after the turn.
+- `codex_adapter.go SendTurn`: before `turn/start`, for each image attachment, decode base64 and write to a per-turn temp dir (`os.TempDir()/flowpilot-attach/<turnId>/`). Collect the absolute paths.
+- **Temp-file lifecycle (Codex only — Claude never touches disk):**
+  - Create the per-turn dir and immediately `defer os.RemoveAll(dir)`. `SendTurn` blocks on the event pump until a terminal event (`EventTurnCompleted`/`EventTurnFailed`) or ctx cancel (interrupt), so the defer covers **all** normal exits: complete, fail, interrupt, and pre-`turn/start` errors.
+  - Deleting after the terminal event is safe: the image is part of the user message, so the app-server has already read/encoded it by `turn_completed` — there is no lazy read to race.
+  - Per-turn subdir (keyed by `turnId`) isolates concurrent turns and makes bulk cleanup safe.
+  - `defer` cannot cover a hard process crash/`kill`. Add a **best-effort boot sweep** on runner startup that removes `os.TempDir()/flowpilot-attach/*` (or entries older than ~1h) to reclaim orphaned files. Track this as a small companion item (`T-8` validation / runner init).
 - `codex_appserver.go codexTurnStartParams(threadID, prompt, skill, imagePaths []string)`: append image items to the existing `input` array:
 
 ```go
