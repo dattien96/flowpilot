@@ -31,11 +31,18 @@ func codexInitializeParams() map[string]any {
 
 // codexThreadStartParams carries cwd, the YOLO-derived sandbox + approval mode
 // (04-04), and the mcpServers list (FlowPilot proxy + required MCPs + ask_user).
-func codexThreadStartParams(cwd, sandbox, approvalMode string, mcpServers []any) map[string]any {
+func codexThreadStartParams(cwd, sandbox, approvalMode, modelName, reasoningEffort string, mcpServers []any) map[string]any {
 	if mcpServers == nil {
 		mcpServers = []any{}
 	}
 	p := map[string]any{"cwd": cwd, "mcpServers": mcpServers}
+	if model := strings.TrimSpace(modelName); model != "" {
+		p["model"] = model
+	}
+	if effort := strings.ToLower(strings.TrimSpace(reasoningEffort)); effort != "" {
+		p["reasoningEffort"] = effort
+		p["modelReasoningEffort"] = effort
+	}
 	if sandbox != "" {
 		p["sandbox"] = sandbox
 	}

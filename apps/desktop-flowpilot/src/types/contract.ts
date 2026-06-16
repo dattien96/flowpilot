@@ -113,6 +113,8 @@ export interface StartRunInput {
   reasoningEffort?: string;
   /** "normal_chat" signals provider-chat mode; the runner tags the run as chat and mints a synthetic step. */
   chatMode?: string;
+  /** Active project binding path used as the provider working directory. */
+  cwd?: string;
 }
 
 export interface RunHandle {
@@ -149,7 +151,15 @@ export interface TurnInput {
   prompt: string;
   /** One or more skills attached to this turn (via the `/` picker). */
   selectedSkills?: SkillSelection[];
+  /**
+   * Per-turn chat overrides (BUG-063). In chat mode the composer resends the current
+   * control values on every turn so model, reasoning, and YOLO can be changed between
+   * prompts — the providers re-apply them per turn. Omitted in workflow/step mode, where
+   * the run-level values captured at startRun are used.
+   */
   reasoningEffort?: string;
+  model?: string;
+  yoloMode?: boolean;
 }
 
 // ---- ProviderEventDTO (serialized ProviderEvent union) ---------------------

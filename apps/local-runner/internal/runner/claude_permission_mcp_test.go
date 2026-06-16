@@ -85,7 +85,7 @@ func TestHandleClaudeAskUser(t *testing.T) {
 }
 
 func TestClaudeArgsIncludesStrictMcpConfig(t *testing.T) {
-	args := claudeArgs(resolveYoloPosture(false), "", "", nil)
+	args := claudeArgs(resolveYoloPosture(false), "", "", "", "", nil)
 	if argIndex(args, "--strict-mcp-config") < 0 {
 		t.Fatalf("--strict-mcp-config must always be present: %v", args)
 	}

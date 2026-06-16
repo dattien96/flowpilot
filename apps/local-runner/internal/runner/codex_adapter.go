@@ -101,7 +101,7 @@ func (a *codexAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tur
 	// thread (04-04): the model discovers ask_user via tools/list at session start.
 	mcpServers := append(append([]any{}, a.defaultMcpServers...), codexAskUserMcpServer())
 
-	startRes, err := a.dispatcher.call(ctx, "thread/start", codexThreadStartParams(cwd, sandbox, approvalMode, mcpServers))
+	startRes, err := a.dispatcher.call(ctx, "thread/start", codexThreadStartParams(cwd, sandbox, approvalMode, req.ModelName, req.ReasoningEffort, mcpServers))
 	if err != nil {
 		return err
 	}

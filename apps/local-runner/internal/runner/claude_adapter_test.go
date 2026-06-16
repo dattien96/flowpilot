@@ -575,15 +575,21 @@ func TestClaudeUsageLimitErrorFromAuthMetadata(t *testing.T) {
 }
 
 func TestClaudeArgsYoloPosture(t *testing.T) {
-	yes := claudeArgs(resolveYoloPosture(true), "", "", nil)
+	yes := claudeArgs(resolveYoloPosture(true), "", "", "claude-sonnet-4-5", "high", nil)
 	if !flagHasValue(yes, "--permission-mode", "bypassPermissions") {
 		t.Fatalf("yolo=true args missing bypassPermissions: %v", yes)
+	}
+	if !flagHasValue(yes, "--model", "sonnet-4-5") {
+		t.Fatalf("selected model must produce normalized --model: %v", yes)
+	}
+	if !flagHasValue(yes, "--effort", "high") {
+		t.Fatalf("selected reasoning effort must produce --effort: %v", yes)
 	}
 	if argIndex(yes, "--permission-prompt-tool") >= 0 {
 		t.Fatalf("yolo=true must not add a permission-prompt-tool: %v", yes)
 	}
 
-	gated := claudeArgs(resolveYoloPosture(false), "sess-1", "cfg.json", nil)
+	gated := claudeArgs(resolveYoloPosture(false), "sess-1", "cfg.json", "", "", nil)
 	if !flagHasValue(gated, "--permission-mode", "default") {
 		t.Fatalf("yolo=false args missing default mode: %v", gated)
 	}

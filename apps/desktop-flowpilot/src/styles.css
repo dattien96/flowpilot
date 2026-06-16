@@ -2122,6 +2122,13 @@ input {
 .yolo-toggle:hover .yolo-toggle-track {
   border-color: var(--accent);
 }
+.yolo-toggle:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.yolo-toggle:disabled:hover .yolo-toggle-track {
+  border-color: var(--border);
+}
 .switch-pill {
   width: fit-content;
   background: var(--bg-3);

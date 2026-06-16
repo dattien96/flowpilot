@@ -198,6 +198,8 @@ export class HttpWsRunnerClient implements RunnerClient {
         prompt: input.prompt,
         selectedSkills: input.selectedSkills,
         reasoningEffort: input.reasoningEffort,
+        model: input.model,
+        yoloMode: input.yoloMode,
         scenario: this.scenario,
       },
     );

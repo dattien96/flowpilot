@@ -35,6 +35,7 @@ type TurnRequest struct {
 	ProviderSessionID string
 	ProviderTurnID    string
 	Prompt            string
+	ModelName         string
 	SelectedSkills    []SkillSelection
 	YoloMode          bool
 	ReasoningEffort   string
@@ -306,7 +307,7 @@ func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 				if req.Cwd != "" {
 					workspace = req.Cwd
 				}
-				return r.injectSkillContent(workspace, req.Prompt, skillIDsOf(req.SelectedSkills)) + claudeAskUserReinforcement
+				return r.injectSelectedSkills(workspace, req.Prompt, req.SelectedSkills) + claudeAskUserReinforcement
 			}
 			return a
 		},

@@ -38,7 +38,7 @@ const (
 // --strict-mcp-config loads ONLY FlowPilot's MCP config (ignores the user's ambient
 // servers). resumeID MUST be a real Claude session_id (never the synthetic id; finding 1).
 // Skills ride the prompt (promptPrep), not args.
-func claudeArgs(posture YoloPosture, resumeID, mcpConfig string, _ []SkillSelection) []string {
+func claudeArgs(posture YoloPosture, resumeID, mcpConfig, modelName, reasoningEffort string, _ []SkillSelection) []string {
 	args := []string{
 		"-p",
 		"--input-format", "stream-json",
@@ -50,6 +50,12 @@ func claudeArgs(posture YoloPosture, resumeID, mcpConfig string, _ []SkillSelect
 	}
 	if posture.ClaudePermissionMode != "" {
 		args = append(args, "--permission-mode", posture.ClaudePermissionMode)
+	}
+	if model := strings.TrimSpace(modelName); model != "" {
+		args = append(args, "--model", normalizeClaudeModelName(model))
+	}
+	if effort := strings.TrimSpace(reasoningEffort); effort != "" {
+		args = append(args, "--effort", normalizeClaudeEffort(effort))
 	}
 	if !posture.RunnerAutoApprove && strings.TrimSpace(mcpConfig) != "" {
 		args = append(args, "--permission-prompt-tool", claudeApproveToolName, "--mcp-config", mcpConfig)

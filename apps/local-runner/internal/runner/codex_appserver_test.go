@@ -279,10 +279,14 @@ func TestCodexAdapterAcceptsGeneratedAppServerThreadAndTurnShapes(t *testing.T) 
 	d.setInbound(adapter.handleInbound)
 
 	observedInputArray := make(chan bool, 1)
+	observedThreadParams := make(chan map[string]any, 1)
 	fc.serve(func(fc *fakeCodex, m map[string]any) {
 		method, _ := m["method"].(string)
 		switch method {
 		case "thread/start":
+			if params, ok := m["params"].(map[string]any); ok {
+				observedThreadParams <- params
+			}
 			fc.reply(m["id"], map[string]any{
 				"thread": map[string]any{"id": "th-live"},
 			})
@@ -312,8 +316,22 @@ func TestCodexAdapterAcceptsGeneratedAppServerThreadAndTurnShapes(t *testing.T) 
 	})
 
 	bridge := &captureBridge{}
-	if err := adapter.SendTurn(context.Background(), TurnRequest{RunID: "r1", Prompt: "hi"}, bridge); err != nil {
+	if err := adapter.SendTurn(context.Background(), TurnRequest{RunID: "r1", Prompt: "hi", ModelName: "gpt-5.4", ReasoningEffort: "HIGH", YoloMode: true}, bridge); err != nil {
 		t.Fatalf("SendTurn: %v", err)
+	}
+	select {
+	case params := <-observedThreadParams:
+		if params["model"] != "gpt-5.4" {
+			t.Fatalf("thread/start model = %v, want gpt-5.4", params["model"])
+		}
+		if params["reasoningEffort"] != "high" || params["modelReasoningEffort"] != "high" {
+			t.Fatalf("thread/start reasoning params = %v/%v, want high/high", params["reasoningEffort"], params["modelReasoningEffort"])
+		}
+		if params["sandbox"] != "danger-full-access" || params["approvalMode"] != "never" {
+			t.Fatalf("thread/start yolo params = sandbox:%v approval:%v", params["sandbox"], params["approvalMode"])
+		}
+	default:
+		t.Fatal("did not observe thread/start")
 	}
 	select {
 	case ok := <-observedInputArray:

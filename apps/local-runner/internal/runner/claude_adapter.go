@@ -106,7 +106,7 @@ func (a *claudeAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tu
 		mcpConfig = path
 		defer cleanup()
 	}
-	args := claudeArgs(posture, resumeID, mcpConfig, req.SelectedSkills)
+	args := claudeArgs(posture, resumeID, mcpConfig, req.ModelName, req.ReasoningEffort, req.SelectedSkills)
 	key := claudeProcKey{account: a.scopeKey, cwd: cwd, session: req.ProviderSessionID}
 
 	proc, err := a.pool.spawn(ctx, key, args, a.env, cwd)

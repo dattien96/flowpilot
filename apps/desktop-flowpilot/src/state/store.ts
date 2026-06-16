@@ -134,7 +134,8 @@ export const useStore = create<AppState>((set, get) => ({
   recoverable: false,
   scenario: "normal",
   launchMode: "workflow",
-  chatMode: "workflow_step_auto",
+  chatMode: "normal_chat",
+  selectedProvider: "codex",
   yoloMode: false,
   _historyLoadSeq: 0,
 
@@ -298,6 +299,7 @@ export const useStore = create<AppState>((set, get) => ({
       selectedProjectId, selectedWorkflowId, selectedStepId,
       selectedProvider, selectedModel, reasoningEffort, yoloMode,
     } = get();
+    const cwd = selectedProjectPath(get());
 
     if (chatMode === "normal_chat") {
       if (!selectedProjectId || !selectedProvider) return;
@@ -344,12 +346,14 @@ export const useStore = create<AppState>((set, get) => ({
                 reasoningEffort,
                 yoloMode,
                 chatMode: "normal_chat",
+                cwd,
               }
             : {
                 projectId: selectedProjectId!,
                 workflowId: launchMode === "workflow" ? selectedWorkflowId : undefined,
                 stepId: launchTargetId || undefined,
                 providerKey: selectedProvider,
+                cwd,
               },
         );
         runId = handle.runId;
@@ -364,9 +368,22 @@ export const useStore = create<AppState>((set, get) => ({
         prompt,
         selectedSkills:
           skills && skills.length > 0
-            ? skills.map((name) => ({ name, source: "slash_picker" as const }))
+            ? skills.map((name) => {
+                // Carry the picker's absolute skill path so the runner reads the exact
+                // selected skill file (BUG-063 follow-up) instead of matching by name/id,
+                // which is fragile across provider layouts and the run's cwd.
+                const found = get().skills.find((s) => s.name === name);
+                return { name, path: found?.path, source: "slash_picker" as const };
+              })
             : undefined,
         reasoningEffort: chatMode === "normal_chat" ? reasoningEffort : undefined,
+        // Resend model + YOLO on every chat turn so they can change between prompts
+        // (BUG-063); the runner applies them per turn. An empty string is sent for
+        // "Default" so switching back to Default reliably clears a previously-set model
+        // (undefined would be dropped by JSON and fall back to the run-level value).
+        // Workflow/step mode keeps the run-level values captured at startRun.
+        model: chatMode === "normal_chat" ? (selectedModel ?? "") : undefined,
+        yoloMode: chatMode === "normal_chat" ? yoloMode : undefined,
       };
       set({ runId, lastTurnInput: turnInput, activeStepId: turnStepId });
 

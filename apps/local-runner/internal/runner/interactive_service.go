@@ -70,6 +70,7 @@ type interactiveRun struct {
 	providerSessionID string
 	providerAccountID string
 	workspaceCwd      string
+	modelName         string
 	yolo              bool
 	// reasoningEffort is the desktop-selected effort level passed per-turn (T-4).
 	reasoningEffort string
@@ -370,6 +371,10 @@ type turnBridge struct {
 	rs     *interactiveRun
 	ctx    context.Context
 	turnID string
+	// yolo is the effective YOLO posture for THIS turn (BUG-063 per-turn override). The
+	// approval bridge must use it — not rs.yolo — so a YOLO change between chat prompts
+	// drives the runner's auto-approve the same way it drives the adapter's sandbox/mode.
+	yolo bool
 }
 
 func (b *turnBridge) Emit(ev ProviderEvent) {
@@ -387,7 +392,7 @@ func (b *turnBridge) RequestApproval(details ApprovalDetails) (string, error) {
 	// YOLO=true (RunnerAutoApprove): the runtime runs in "never" approval mode and
 	// should not ask; if a request still arrives, auto-approve and audit as
 	// gating-disabled (04-04). Reply is the returned decision (adapter sends it).
-	if resolveYoloPosture(b.rs.yolo).RunnerAutoApprove {
+	if resolveYoloPosture(b.yolo).RunnerAutoApprove {
 		s.recordAutoApproval(b.rs, details, "approve", "yolo_gating_disabled")
 		return "approve", nil
 	}
@@ -575,10 +580,21 @@ func (s *InteractiveService) clearPendingQuestion(id string) {
 }
 
 func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, adapter ProviderRuntimeAdapter, in TurnInput, scenario, turnID string) {
-	// Turn-level reasoning effort overrides the run-level default when present.
+	// Turn-level model/reasoning/YOLO override the run-level defaults when supplied
+	// (BUG-063). Chat mode resends these every turn so they can change between prompts;
+	// the providers re-apply them per turn (Codex thread/start per turn, Claude spawn-per-
+	// turn). A nil pointer means "not supplied" and keeps the run-level default.
 	effort := rs.reasoningEffort
 	if in.ReasoningEffort != "" {
 		effort = in.ReasoningEffort
+	}
+	model := rs.modelName
+	if in.Model != nil {
+		model = *in.Model
+	}
+	yolo := rs.yolo
+	if in.YoloMode != nil {
+		yolo = *in.YoloMode
 	}
 	req := TurnRequest{
 		RunID:             rs.id,
@@ -586,20 +602,21 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		ProviderSessionID: rs.providerSessionID,
 		ProviderTurnID:    turnID,
 		Prompt:            in.Prompt,
+		ModelName:         model,
 		SelectedSkills:    in.SelectedSkills,
-		YoloMode:          rs.yolo,
+		YoloMode:          yolo,
 		ReasoningEffort:   effort,
 		Cwd:               rs.workspaceCwd,
 		Scenario:          scenario,
 	}
-	bridge := &turnBridge{svc: s, rs: rs, ctx: ctx, turnID: turnID}
+	bridge := &turnBridge{svc: s, rs: rs, ctx: ctx, turnID: turnID, yolo: yolo}
 	err := s.sendTurnWithRetry(ctx, adapter, req, bridge)
 	if err == nil {
 		// The provider turn owns interactive UX/events; once it returns cleanly we
 		// advance the shared workflow planner so the live run path no longer bypasses
 		// WorkflowStore/WorkflowOrchestrator entirely. A2 will replace the fake
 		// backing store and make this durable/auditable.
-		_, _ = s.orchestrator.Progress(ctx, rs.id, rs.yolo)
+		_, _ = s.orchestrator.Progress(ctx, rs.id, yolo)
 	}
 
 	completed, fin := s.finishTurn(rs, turnID, err)
