@@ -44,6 +44,17 @@ func mapCodexNotification(n codexNotification) (ProviderEvent, bool) {
 		}
 		return ProviderEvent{Type: EventMessageDelta, ProviderTurnID: turnID, Text: text}, true
 
+	case "thread/tokenUsage/updated":
+		usage := codexTokenUsage(paramAny(p, "tokenUsage"))
+		if usage == nil {
+			return ProviderEvent{}, false
+		}
+		return ProviderEvent{
+			Type:           EventTokenUsageUpdated,
+			ProviderTurnID: turnID,
+			TokenUsage:     usage,
+		}, true
+
 	case "turn.message", "codex/agent_message", "agent_message":
 		return ProviderEvent{Type: EventMessageCompleted, ProviderTurnID: turnID, Text: str("text")}, true
 
@@ -239,4 +250,60 @@ func toInt(v any) (int, bool) {
 		return int(n), true
 	}
 	return 0, false
+}
+
+func toInt64(v any) (int64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return int64(n), true
+	case float32:
+		return int64(n), true
+	case int:
+		return int64(n), true
+	case int64:
+		return n, true
+	case int32:
+		return int64(n), true
+	}
+	return 0, false
+}
+
+func codexTokenUsage(v any) *TokenUsageSnapshot {
+	root, _ := v.(map[string]any)
+	if root == nil {
+		return nil
+	}
+	usage := &TokenUsageSnapshot{
+		Last:  codexTokenUsageBreakdown(root["last"]),
+		Total: codexTokenUsageBreakdown(root["total"]),
+	}
+	if window, ok := toInt64(root["modelContextWindow"]); ok {
+		usage.ModelContextWindow = &window
+	}
+	if usage.Last == nil && usage.Total == nil && usage.ModelContextWindow == nil {
+		return nil
+	}
+	return usage
+}
+
+func codexTokenUsageBreakdown(v any) *TokenUsageBreakdown {
+	root, _ := v.(map[string]any)
+	if root == nil {
+		return nil
+	}
+	cached, okCached := toInt64(root["cachedInputTokens"])
+	input, okInput := toInt64(root["inputTokens"])
+	output, okOutput := toInt64(root["outputTokens"])
+	reasoning, okReasoning := toInt64(root["reasoningOutputTokens"])
+	total, okTotal := toInt64(root["totalTokens"])
+	if !okCached && !okInput && !okOutput && !okReasoning && !okTotal {
+		return nil
+	}
+	return &TokenUsageBreakdown{
+		CachedInputTokens:     cached,
+		InputTokens:           input,
+		OutputTokens:          output,
+		ReasoningOutputTokens: reasoning,
+		TotalTokens:           total,
+	}
 }

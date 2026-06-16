@@ -18,7 +18,7 @@ import (
 // for claude's MCP client to finish connecting (initialize -> tools/list). claude connects
 // --mcp-config servers asynchronously ("running fully async (nonblocking)"); the FIRST turn's
 // tool set is otherwise snapshotted before mcp__flowpilot__ask_user is registered, so the
-// model never sees ask_user (validated against claude 2.1.178). A normal local connect is
+// model never sees ask_user (validated against claude 2.1.179). A normal local connect is
 // ~0.1-1.2s; on a slow/failed connect we degrade to sending anyway rather than hang.
 const claudeMCPReadyDefaultTimeout = 10 * time.Second
 
@@ -134,7 +134,7 @@ func (s *claudeMCPServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Streamable-HTTP: claude opens a GET SSE stream and only marks the server
 		// "connected" once it succeeds. Declining it with 405 leaves the server stuck
 		// "pending", so its tools (ask_user!) are NEVER exposed to the model — the live-flow
-		// defect (validated against claude 2.1.178). We never push server->client messages
+		// defect (validated against claude 2.1.179). We never push server->client messages
 		// (approve/ask_user are request/response), so the stream just stays open with
 		// keepalive comments until claude disconnects.
 		s.serveSSE(w, r)

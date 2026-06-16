@@ -1,13 +1,18 @@
-
 # CHAT MODE
+
 ## 1. History
+
+---
+
 Task 056: have code, pending test
 057: not execute
+
 > Status legend: ✅ resolved (verified in code) · ⚠️ open gap (real, still broken) · ❓ open decision · 🔭 new feature (separate from History core)
 
 ### 1.1 Current model — ✅ resolved / verified in code
 
 #### Persistence (luu history nhu nao)
+
 - The **transcript** stays as provider-owned **JSONL on disk** (Codex thread log / Claude session log). FlowPilot does not copy it.
 - A **pointer row** is persisted to Supabase `workflow_provider_sessions`, keyed by `(workflow_run_id, provider_key, working_directory)` → `provider_session_id` / `provider_thread_id`.
   - Codex: `provider_session_id == provider_thread_id == Codex thread ID`.
@@ -15,12 +20,14 @@ Task 056: have code, pending test
 - Files: `supabase/migrations/20260615120000_add_workflow_provider_tables.sql` (table), `apps/local-runner/internal/runner/supabase_provider_session_store.go:90` (`UpsertSession`, on-conflict upsert).
 
 #### Resume semantics
+
 - Resume needs **both** the persisted row **and** the local JSONL log on **the same machine**. Different machine / missing log → resume fails.
 - Resume is bound to `(provider, cwd, session_id)`, **not** to an account → any active account of the same provider can resume, as long as the local log is reachable. FlowPilot therefore **does not** persist an owning account on the session row.
 - Resolves the note "Neu active acc nhung khac acc thi co tim thay local log khong?": **yes** — resume reads the local log, not the account's remote history.
   - ❓ Assumption to keep explicit: this holds only while providers don't validate the session server-side against the owning account. If they ever do, cross-account resume breaks.
 
 #### How the list is built (show list nhu nao) — decision made
+
 - We do **NOT** fan out to each provider's native list API (e.g. Codex `thread/list`) and merge. That would mean N schemas + N sort/merge problems + history scoped to provider accounts instead of projects.
 - Instead `projectRunHistory()` merges **in-memory active runs** + **persisted provider sessions**, sorted by `UpdatedAt` desc — project-scoped and provider-agnostic.
   - Endpoint: `GET /client/projects/{projectId}/workflow-runs` → `apps/local-runner/internal/runner/interactive_handlers.go:585` (`projectRunHistory`).
@@ -39,9 +46,10 @@ The note "dang miss table workflow_provider_sessions trong migration?" is **lite
 - `SessionHistoryReader.ListProviderSessionsByProject` is implemented **only by `fakeWorkflowStore`** (`workflow_store.go:195`). The production `SupabaseWorkflowStore` does **not** implement it.
 - → For Supabase the assertion is `false`, the read path falls back to **in-memory `s.runs` only**, so History **still empties** after any app-server / runner recreation.
 
-**Truth about BUG-060 status:** marked *done*, but only dev/demo (fake store) is actually fixed — stale-response guard (`_historyLoadSeq`), error-vs-empty distinction, and passing regression test (`bug060_test.go`) all exercise the fake store. **The user-visible prod bug is NOT fixed.**
+**Truth about BUG-060 status:** marked _done_, but only dev/demo (fake store) is actually fixed — stale-response guard (`_historyLoadSeq`), error-vs-empty distinction, and passing regression test (`bug060_test.go`) all exercise the fake store. **The user-visible prod bug is NOT fixed.**
 
 Action items (these are the actual fix, not "add a migration"):
+
 - **F-2** — implement `ListProviderSessionsByProject` on `SupabaseWorkflowStore` (`supabase_workflow_store.go`), querying `workflow_provider_sessions` by project. → **[Task-056](../../08-Task/todo/Task-056-History-Supabase-Reader-Production-Fix.md)**
 - **F-5** — confirm/verify `workflow_provider_sessions` migration is applied in the production Supabase project. → **[Task-056](../../08-Task/todo/Task-056-History-Supabase-Reader-Production-Fix.md)**
 - Re-label BUG-060 as "dev-only fixed; prod pending F-2/F-5" until F-2 lands.
@@ -57,20 +65,29 @@ Action items (these are the actual fix, not "add a migration"):
 ## 2. YOLO
 
 ### 2.1.1 Codex
+
 OK for both MCP + Command tool
 
 ### 2.1.2 CLAUDE
+
 OK for both MCP + Command tool
 
-
 ## 3. model.skill.reason - PASSED
+
 ### 3.1 Codex
+
 ok
+
 ### 3.2 Claude
+
 ok
 
 ## 4 Image attached - PASSED
+
 Done in Task-052
+
+Has bug
+------------------------- later prompt can not see image attached in previous prompt
 
 ## 5. User Interaction (Structured Questions) - PASSED
 
@@ -80,16 +97,34 @@ Separate from approvals, FlowPilot can ask the user a structured question (confi
 - ask_user MCP tool — a FlowPilot-registered custom tool (not built-in) the model discovers via tools/list and may call → best-effort, can not make sure it asked users
 - Workflow-driven — the ported Go state machine emits user_question_required directly at a defined step → deterministic (use for required asks).
 
-## 6. Sync artiact for chat mode first
+Other input was not worked - Passed now
 
-## 7. How to check change in feature of codex/claude
+## 6. Show token/context
+
+Check for codex -> OK
+Check for claude -> OK
+
+Recorded in [Task-061: Desktop Chat Token Usage And Context Window](../../08-Task/done/Task-061-Desktop-Chat-Token-Usage-And-Context-Window.md)
+
+## 7. Sync artiact for chat mode first
+
+---
+
+## 8. How to check change in feature of codex/claude
+
+---
+
 If affected to our app cause we call its functions
 
+# Retest with codex/claude latest
+
+---
 
 # Flow mode - Pending
+
 model
 skill
-agen
+agen-multi auto interact with each other
 reasong
 yolo
 user question list

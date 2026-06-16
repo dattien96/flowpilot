@@ -2372,6 +2372,22 @@ input {
   align-items: center;
   min-width: 0;
 }
+.chat-usage-line {
+  margin-top: 6px;
+  padding: 0 2px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chat-usage-number {
+  color: var(--accent);
+}
+.chat-usage-separator {
+  color: var(--text-dim);
+}
 .chat-controller-toggle-inline {
   flex: 0 0 auto;
   align-self: center;

@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useStore } from "@/state/store";
-import type { ProviderKey } from "@/types/contract";
+import type { ProviderKey, TokenUsageSnapshot } from "@/types/contract";
 import {
   ACCEPT_ATTR,
   MAX_ATTACHMENTS,
@@ -32,6 +32,78 @@ function skillSourceLabel(source: "provider" | "flowpilot" | "workspace"): strin
   return source === "provider" ? "Account" : "Project";
 }
 
+function formatTokenCount(value: number): string {
+  if (value >= 1_000_000) {
+    return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}M`;
+  }
+  if (value >= 1_000) {
+    return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}k`;
+  }
+  return String(value);
+}
+
+function usageNumber(value: number): React.ReactElement {
+  return <span className="chat-usage-number">{formatTokenCount(value)}</span>;
+}
+
+function usageSeparator(): React.ReactElement {
+  return <span className="chat-usage-separator"> · </span>;
+}
+
+function usageSummaryLine(provider: ProviderKey | undefined, usage: TokenUsageSnapshot | undefined): ReactNode | null {
+  if (!provider) return null;
+  if (!usage) return null;
+
+  const last = usage.last;
+  const total = usage.total;
+  const windowSize = usage.modelContextWindow ?? null;
+  const contextUsed = total?.totalTokens ?? last?.totalTokens ?? null;
+  const parts: ReactNode[] = [];
+
+  if (windowSize && contextUsed !== null) {
+    const remaining = Math.max(windowSize - contextUsed, 0);
+    parts.push(
+      <span key="context">
+        Context {usageNumber(contextUsed)} / {usageNumber(windowSize)} used
+      </span>,
+    );
+    parts.push(
+      <span key="remaining">
+        {usageNumber(remaining)} left
+      </span>,
+    );
+  }
+
+  if (last) {
+    parts.push(
+      <span key="last-turn">
+        Last turn {usageNumber(last.totalTokens)} tokens
+      </span>,
+    );
+    parts.push(
+      <span key="in-out">
+        in {usageNumber(last.inputTokens)} · out {usageNumber(last.outputTokens)}
+      </span>,
+    );
+  }
+
+  if (parts.length === 0 && total) {
+    parts.push(
+      <span key="total">
+        Total {usageNumber(total.totalTokens)} tokens
+      </span>,
+    );
+  }
+
+  if (parts.length === 0) return null;
+  return parts.map((part, index) => (
+    <span key={index}>
+      {index > 0 ? usageSeparator() : null}
+      {part}
+    </span>
+  ));
+}
+
 // Chat composer + bottom controller strip. The controller keeps the current
 // skill picker active while visually de-emphasizing the other workspace
 // controls so the desktop layout reads like the mockup.
@@ -58,6 +130,7 @@ export function ChatInput(): React.ReactElement {
   const setYoloMode = useStore((s) => s.setYoloMode);
   const pendingApproval = useStore((s) => s.pendingApproval);
   const pendingQuestion = useStore((s) => s.pendingQuestion);
+  const latestTokenUsage = useStore((s) => s.latestTokenUsage);
 
   const [text, setText] = useState("");
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
@@ -67,6 +140,7 @@ export function ChatInput(): React.ReactElement {
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
   const [previewAtt, setPreviewAtt] = useState<PendingAttachment | null>(null);
+  const [displayedTokenUsage, setDisplayedTokenUsage] = useState<TokenUsageSnapshot | undefined>(undefined);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const wasPickerVisibleRef = useRef(false);
@@ -177,7 +251,21 @@ export function ChatInput(): React.ReactElement {
     return () => window.removeEventListener("pointerdown", onPointerDown);
   }, [showPicker, slashQuery]);
 
+  useEffect(() => {
+    if (latestTokenUsage) {
+      setDisplayedTokenUsage(latestTokenUsage);
+    }
+  }, [latestTokenUsage]);
+
+  useEffect(() => {
+    setDisplayedTokenUsage(undefined);
+  }, [selectedProvider]);
+
   const blocked = status === "running" || status === "waiting_approval" || status === "waiting_question";
+  const usageLine = useMemo(
+    () => usageSummaryLine(selectedProvider, displayedTokenUsage),
+    [displayedTokenUsage, selectedProvider],
+  );
 
   const canSend = isChatMode
     ? hasSelectedProject && !!selectedProvider && !blocked && text.trim().length > 0 && !showPicker
@@ -530,6 +618,12 @@ export function ChatInput(): React.ReactElement {
           Send
         </button>
       </div>
+
+      {isChatMode && usageLine && (
+        <div className="chat-usage-line" aria-live="polite">
+          {usageLine}
+        </div>
+      )}
 
       {(pendingApproval || pendingQuestion) && (
         <div className="input-note">Action required above before continuing.</div>

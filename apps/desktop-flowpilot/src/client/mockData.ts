@@ -5,6 +5,7 @@ import type {
   ProviderSkill,
   QuestionOption,
   Step,
+  TokenUsageSnapshot,
   Workflow,
 } from "@/types/contract";
 
@@ -84,6 +85,7 @@ export const SCENARIO_NAMES: ScenarioName[] = [
 /** A scripted step the MockRunnerClient interprets when streaming a turn. */
 export type ScriptStep =
   | { kind: "delta"; delay: number; text: string }
+  | { kind: "token_usage"; delay: number; tokenUsage: TokenUsageSnapshot }
   | { kind: "tool_started"; delay: number; toolName: string; input?: unknown }
   | { kind: "tool_completed"; delay: number; toolName: string; status: "success" | "failed" | "cancelled"; output?: unknown }
   | { kind: "file_changed"; delay: number; path: string; changeType?: "created" | "modified" | "deleted" | "renamed" }
@@ -111,6 +113,15 @@ export type ScriptStep =
 
 const NORMAL: ScriptStep[] = [
   { kind: "delta", delay: 250, text: "Sure — let me work through this step.\n\n" },
+  {
+    kind: "token_usage",
+    delay: 120,
+    tokenUsage: {
+      last: { cachedInputTokens: 320, inputTokens: 2400, outputTokens: 680, reasoningOutputTokens: 140, totalTokens: 3540 },
+      total: { cachedInputTokens: 320, inputTokens: 2400, outputTokens: 680, reasoningOutputTokens: 140, totalTokens: 3540 },
+      modelContextWindow: 200_000,
+    },
+  },
   { kind: "delta", delay: 350, text: "I reviewed the relevant files and the approach looks sound. " },
   { kind: "delta", delay: 350, text: "Proceeding with the implementation now." },
   { kind: "completed", delay: 400, finalMessage: "Done. The change is implemented and the step is complete." },

@@ -445,6 +445,9 @@ export class MockRunnerClient implements RunnerClient {
         case "delta":
           yield { ...base(), type: "message_delta", text: step.text };
           break;
+        case "token_usage":
+          yield { ...base(), type: "token_usage_updated", tokenUsage: step.tokenUsage };
+          break;
         case "tool_started":
           yield { ...base(), type: "tool_started", toolName: step.toolName, input: step.input };
           break;

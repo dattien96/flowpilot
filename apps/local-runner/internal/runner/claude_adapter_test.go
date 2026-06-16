@@ -497,12 +497,22 @@ func TestMapClaudeLineDelta(t *testing.T) {
 }
 
 func TestMapClaudeLineAssistantToolUseAndFileChange(t *testing.T) {
-	raw := map[string]any{"message": map[string]any{"content": []any{
-		map[string]any{"type": "tool_use", "name": "Edit", "input": map[string]any{"file_path": "a.go"}},
-		map[string]any{"type": "text", "text": "done"},
-	}}}
+	raw := map[string]any{
+		"message": map[string]any{
+			"content": []any{
+				map[string]any{"type": "tool_use", "name": "Edit", "input": map[string]any{"file_path": "a.go"}},
+				map[string]any{"type": "text", "text": "done"},
+			},
+		},
+		"usage": map[string]any{
+			"input_tokens":            float64(120),
+			"output_tokens":           float64(40),
+			"cache_read_input_tokens": float64(12),
+			"reasoning_output_tokens": float64(8),
+		},
+	}
 	evs := mapClaudeLine(claudeLine{Type: "assistant", Raw: raw})
-	var sawTool, sawFile, sawMsg bool
+	var sawTool, sawFile, sawMsg, sawUsage bool
 	for _, e := range evs {
 		switch e.Type {
 		case EventToolStarted:
@@ -511,10 +521,16 @@ func TestMapClaudeLineAssistantToolUseAndFileChange(t *testing.T) {
 			sawFile = e.Path == "a.go" && e.ChangeType == "modified"
 		case EventMessageCompleted:
 			sawMsg = e.Text == "done"
+		case EventTokenUsageUpdated:
+			sawUsage = e.TokenUsage != nil &&
+				e.TokenUsage.Last != nil &&
+				e.TokenUsage.Last.InputTokens == 120 &&
+				e.TokenUsage.Last.OutputTokens == 40 &&
+				e.TokenUsage.Last.TotalTokens == 180
 		}
 	}
-	if !sawTool || !sawFile || !sawMsg {
-		t.Fatalf("assistant mapping incomplete: tool=%v file=%v msg=%v (%+v)", sawTool, sawFile, sawMsg, evs)
+	if !sawTool || !sawFile || !sawMsg || !sawUsage {
+		t.Fatalf("assistant mapping incomplete: tool=%v file=%v msg=%v usage=%v (%+v)", sawTool, sawFile, sawMsg, sawUsage, evs)
 	}
 }
 
@@ -532,6 +548,31 @@ func TestMapClaudeLineResultError(t *testing.T) {
 	evs := mapClaudeLine(claudeLine{Type: "result", Subtype: "error_max_turns", Raw: map[string]any{"subtype": "error_max_turns", "is_error": true}})
 	if len(evs) != 1 || evs[0].Type != EventTurnFailed || evs[0].Recoverable {
 		t.Fatalf("error result mapping = %+v, want non-recoverable turn_failed", evs)
+	}
+}
+
+func TestMapClaudeLineResultUsage(t *testing.T) {
+	evs := mapClaudeLine(claudeLine{Type: "result", Subtype: "success", Raw: map[string]any{
+		"subtype":  "success",
+		"is_error": false,
+		"result":   "done",
+		"usage": map[string]any{
+			"input_tokens":            float64(150),
+			"output_tokens":           float64(50),
+			"cache_read_input_tokens": float64(10),
+		},
+	}})
+	if len(evs) != 2 {
+		t.Fatalf("result usage mapping len = %d, want 2 (%+v)", len(evs), evs)
+	}
+	if evs[0].Type != EventTokenUsageUpdated || evs[0].TokenUsage == nil || evs[0].TokenUsage.Last == nil {
+		t.Fatalf("first event = %+v, want token usage update", evs[0])
+	}
+	if got := evs[0].TokenUsage.Last.TotalTokens; got != 210 {
+		t.Fatalf("usage total = %d, want 210", got)
+	}
+	if evs[1].Type != EventTurnCompleted || evs[1].FinalMessage != "done" {
+		t.Fatalf("second event = %+v, want turn_completed", evs[1])
 	}
 }
 

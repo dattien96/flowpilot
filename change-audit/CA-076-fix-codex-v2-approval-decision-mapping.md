@@ -11,7 +11,7 @@
 - Added method-aware approval response mapping so legacy app-server approval methods still receive `approved | approved_for_session | denied | abort`.
 - Added v2 approval mapping for `item/commandExecution/requestApproval` and `item/fileChange/requestApproval`, returning `accept | acceptForSession | decline | cancel`.
 - Added a guard so unsupported inbound server requests no longer receive a misleading generic approval response.
-- Verified the live Codex `0.137.0` schema using `codex app-server generate-ts` before patching the mapper.
+- Verified the live Codex `0.140.0` schema using `codex app-server generate-ts` before patching the mapper.
 
 ## Verification
 

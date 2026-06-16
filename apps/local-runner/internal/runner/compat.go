@@ -17,8 +17,8 @@ import (
 // Tested-good versions — the CLI versions this build was validated against.
 // These are the source of truth shared between the HTTP API and compat_test.go.
 const (
-	CompatTestedClaudeVersion = "2.1.178"
-	CompatTestedCodexVersion  = "0.137.0"
+	CompatTestedClaudeVersion = "2.1.179"
+	CompatTestedCodexVersion  = "0.140.0"
 )
 
 // compatClaudeFlags are the CLI flags passed on every `claude -p` invocation.
@@ -406,8 +406,8 @@ func compatOutputSnippet(output string) string {
 	return ""
 }
 
-// compatMajorMinor extracts "X.Y" from version strings like "2.1.178 (Claude Code)"
-// or "codex-cli 0.137.0".
+// compatMajorMinor extracts "X.Y" from version strings like "2.1.179 (Claude Code)"
+// or "codex-cli 0.140.0".
 func compatMajorMinor(s string) string {
 	for _, tok := range strings.Fields(s) {
 		segs := strings.Split(tok, ".")

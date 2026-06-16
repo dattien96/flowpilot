@@ -20,7 +20,7 @@
 
 ### Summary
 
-- The Check Version page used hardcoded tested versions (`2.1.178` for Claude and `0.137.0` for Codex), which made baseline refreshes a code change instead of a workspace setting.
+- The Check Version page used hardcoded tested versions (`2.1.179` for Claude and `0.140.0` for Codex), which made baseline refreshes a code change instead of a workspace setting.
 - This task adds `.flowpilot/settings/compat-config.json` as the workspace-scoped source of truth for the latest tested versions, with fallback to the existing built-in defaults when the file does not exist.
 - The desktop Settings page now includes editable inputs for the tested Claude/Codex versions and saves them through the runner, creating the JSON file on first save.
 - `scripts/quicktest.ps1` now reads the same JSON file first, so the UI and terminal-side compatibility checks share one baseline.
@@ -39,7 +39,7 @@
 ### Constraints
 
 - Do not change the compatibility policy itself; only change where the tested baseline comes from.
-- If the config file is missing or incomplete, fallback must remain `2.1.178` for Claude and `0.137.0` for Codex.
+- If the config file is missing or incomplete, fallback must remain `2.1.179` for Claude and `0.140.0` for Codex.
 - The feature must remain workspace-scoped, not global-machine scoped.
 
 ### Open Questions
@@ -106,7 +106,7 @@ The current Check Version flow correctly identifies version drift, but the teste
 
 ## 6. Acceptance Check
 
-- If `.flowpilot/settings/compat-config.json` does not exist, the page still shows `2.1.178` for Claude and `0.137.0` for Codex as the tested baseline.
+- If `.flowpilot/settings/compat-config.json` does not exist, the page still shows `2.1.179` for Claude and `0.140.0` for Codex as the tested baseline.
 - Saving new tested versions from the Settings page creates `.flowpilot/settings/compat-config.json` if needed.
 - After save, the tested-version badges and compat checks use the saved values.
 - `scripts/quicktest.ps1` uses the same saved tested-version baseline when the file exists.

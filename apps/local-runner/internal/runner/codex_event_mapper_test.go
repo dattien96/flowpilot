@@ -15,6 +15,35 @@ func TestMapCodexNotification(t *testing.T) {
 			func(e ProviderEvent) bool { return e.Text == "hello" }},
 		{"generated delta", "item/agentMessage/delta", map[string]any{"turnId": "t1", "delta": "hello"}, EventMessageDelta, true,
 			func(e ProviderEvent) bool { return e.ProviderTurnID == "t1" && e.Text == "hello" }},
+		{"token usage", "thread/tokenUsage/updated", map[string]any{
+			"turnId": "t1",
+			"tokenUsage": map[string]any{
+				"last": map[string]any{
+					"cachedInputTokens":     float64(10),
+					"inputTokens":           float64(20),
+					"outputTokens":          float64(30),
+					"reasoningOutputTokens": float64(5),
+					"totalTokens":           float64(65),
+				},
+				"total": map[string]any{
+					"cachedInputTokens":     float64(15),
+					"inputTokens":           float64(25),
+					"outputTokens":          float64(35),
+					"reasoningOutputTokens": float64(7),
+					"totalTokens":           float64(82),
+				},
+				"modelContextWindow": float64(200000),
+			},
+		}, EventTokenUsageUpdated, true, func(e ProviderEvent) bool {
+			return e.ProviderTurnID == "t1" &&
+				e.TokenUsage != nil &&
+				e.TokenUsage.Last != nil &&
+				e.TokenUsage.Last.TotalTokens == 65 &&
+				e.TokenUsage.Total != nil &&
+				e.TokenUsage.Total.TotalTokens == 82 &&
+				e.TokenUsage.ModelContextWindow != nil &&
+				*e.TokenUsage.ModelContextWindow == 200000
+		}},
 		{"message", "turn.message", map[string]any{"text": "final"}, EventMessageCompleted, true,
 			func(e ProviderEvent) bool { return e.Text == "final" }},
 		{"generated agent message completed", "item/completed", map[string]any{"turnId": "t1", "item": map[string]any{"type": "agentMessage", "text": "final"}}, EventMessageCompleted, true,

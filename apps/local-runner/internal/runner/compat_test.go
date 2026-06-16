@@ -26,8 +26,8 @@ import (
 // Tested-good versions — sourced from compat.go constants.
 // A patch-level bump is usually safe; a minor/major bump requires protocol review.
 const (
-	compatClaudeVersion = CompatTestedClaudeVersion // "2.1.178"
-	compatCodexVersion  = CompatTestedCodexVersion  // "0.137.0"
+	compatClaudeVersion = CompatTestedClaudeVersion // "2.1.179"
+	compatCodexVersion  = CompatTestedCodexVersion  // "0.140.0"
 )
 
 // Stream-json frame types we parse in claude_event_mapper.go / claude_stream.go.
@@ -40,7 +40,7 @@ var claudeStreamFrameTypes = []string{
 	"stream_event",     // content_block_delta.text_delta (--include-partial-messages)
 	"result",           // terminal: subtype, is_error, session_id, errors[]
 	"control_request",  // permission / ask_user inbound from CLI
-	"rate_limit_event", // observed in 2.1.178; not parsed, silently ignored
+	"rate_limit_event", // observed in 2.1.179; not parsed, silently ignored
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -51,7 +51,6 @@ func compatSkip(t *testing.T) {
 		t.Skip("set FLOWPILOT_COMPAT=1 to run compatibility checks")
 	}
 }
-
 
 // ── version checks ────────────────────────────────────────────────────────────
 

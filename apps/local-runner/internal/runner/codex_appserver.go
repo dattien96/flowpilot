@@ -29,7 +29,7 @@ func codexInitializeParams() map[string]any {
 		// experimentalApi is REQUIRED to register thread/start `dynamicTools` (the ask_user
 		// tool). Without it the app-server rejects dynamicTools with JSON-RPC -32600
 		// ("requires experimentalApi capability"), so ask_user is never surfaced to the model
-		// (validated against codex-cli 0.137.0). It opts into experimental methods/fields
+		// (validated against codex-cli 0.140.0). It opts into experimental methods/fields
 		// additively; the event mapper already handles the v2 notification names.
 		"capabilities": map[string]any{
 			"experimentalApi":    true,

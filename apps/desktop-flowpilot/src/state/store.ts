@@ -10,6 +10,7 @@ import type {
   RunHistoryItem,
   RunStatus,
   Step,
+  TokenUsageSnapshot,
   TurnInput,
   Workflow,
 } from "@/types/contract";
@@ -81,6 +82,7 @@ interface AppState {
   pendingApproval?: PendingApproval;
   pendingQuestion?: PendingQuestion;
   lastTurnInput?: TurnInput;
+  latestTokenUsage?: TokenUsageSnapshot;
   recoverable: boolean;
   scenario: ScenarioName;
 
@@ -132,6 +134,7 @@ export const useStore = create<AppState>((set, get) => ({
   runHistory: [],
   historyOpen: false,
   historyLoading: false,
+  latestTokenUsage: undefined,
   recoverable: false,
   scenario: "normal",
   launchMode: "workflow",
@@ -326,6 +329,7 @@ export const useStore = create<AppState>((set, get) => ({
     // bubble with a visible error instead of failing silently.
     set((s) => ({
       recoverable: false,
+      latestTokenUsage: undefined,
       status: "running",
       _streamingAssistantId: undefined,
       timeline: [
@@ -514,6 +518,7 @@ export const useStore = create<AppState>((set, get) => ({
       artifacts: [],
       pendingApproval: undefined,
       pendingQuestion: undefined,
+      latestTokenUsage: undefined,
       lastTurnInput: undefined,
       recoverable: false,
       historyOpen: false,
@@ -531,6 +536,7 @@ export const useStore = create<AppState>((set, get) => ({
       artifacts: [],
       pendingApproval: undefined,
       pendingQuestion: undefined,
+      latestTokenUsage: undefined,
       lastTurnInput: undefined,
       recoverable: false,
       historyOpen: false,
@@ -579,7 +585,14 @@ async function consumeStream(
 }
 
 function applyEvent(s: AppState, e: ProviderEventDTO): Partial<AppState> {
-  return applyTimelineEvent(s, e);
+  const next = applyTimelineEvent(s, e);
+  if (e.type === "turn_started") {
+    return { ...next, latestTokenUsage: undefined };
+  }
+  if (e.type === "token_usage_updated") {
+    return { ...next, latestTokenUsage: e.tokenUsage };
+  }
+  return next;
 }
 
 function runErrorMessage(err: unknown): string {
