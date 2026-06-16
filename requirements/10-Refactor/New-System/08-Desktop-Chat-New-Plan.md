@@ -1,7 +1,8 @@
 
 # CHAT MODE
 ## 1. History
-Task 056-057
+Task 056: have code, pending test
+057: not execute
 > Status legend: ✅ resolved (verified in code) · ⚠️ open gap (real, still broken) · ❓ open decision · 🔭 new feature (separate from History core)
 
 ### 1.1 Current model — ✅ resolved / verified in code
@@ -80,6 +81,9 @@ Separate from approvals, FlowPilot can ask the user a structured question (confi
 - Workflow-driven — the ported Go state machine emits user_question_required directly at a defined step → deterministic (use for required asks).
 
 ## 6. Sync artiact for chat mode first
+
+## 7. How to check change in feature of codex/claude
+If affected to our app cause we call its functions
 
 
 # Flow mode - Pending
