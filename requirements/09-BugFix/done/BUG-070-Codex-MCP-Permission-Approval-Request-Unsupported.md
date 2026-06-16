@@ -1,8 +1,8 @@
-# BUG-069: Codex MCP Permission Approval Request Unsupported
+# BUG-070: Codex MCP Permission Approval Request Unsupported
 
 ## Metadata
 
-- Document ID: `BUG-069`
+- Document ID: `BUG-070`
 - Title: `Codex MCP Permission Approval Request Unsupported`
 - Phase: `bugfix`
 - Status: `done`
@@ -12,7 +12,7 @@
 - Last Updated: `2026-06-16`
 - Parent Documents: [Task-044: Desktop Chat Mode Split And Provider Controls](../../08-Task/done/Task-044-Desktop-Chat-Mode-Split-And-Provider-Controls.md), [CP-29: FlowPilot Proxy MCP Server For Google Drive](../../07-Coding-Plan/done/CP-29-MCP-Proxy-Google-Drive.md), [SD-06: AI Provider Integration](../../06-System-Tech-Design/SD-06-AI-Provider-Integration.md), [SD-11: MCP Connection Flows](../../06-System-Tech-Design/SD-11-MCP-Connection-Flows.md), [SS-08: Approval Gates & YOLO Mode](../../05-System-Specs/SS-08-Approve-Gate.md), [SS-11: Workflow With Session](../../05-System-Specs/SS-11-Workflow-With_Session.md)
 - Child Documents: `none`
-- Related Documents: [BUG-066: Codex V2 Approval Decision Rejected By App-Server](./BUG-066-Codex-V2-Approval-Decision-Rejected-By-AppServer.md), [BUG-064: Codex Approval Decision Value Rejected By App-Server](./BUG-064-Codex-Approval-Decision-Value-Rejected-By-AppServer.md), [BUG-061: Codex MCP Server Config Rejects on-request Approval Variant](./BUG-061-Codex-MCP-Config-On-Request-Invalid-Approval-Variant.md), [BUG-032: Codex Google Drive MCP Model Override And Tool Approval](./BUG-032-Codex-Google-Drive-MCP-Model-And-Approval.md), [CA-079: Fix Codex MCP Permission Approval Response](../../../change-audit/CA-079-fix-codex-mcp-permission-approval-response.md)
+- Related Documents: [BUG-066: Codex V2 Approval Decision Rejected By App-Server](./BUG-066-Codex-V2-Approval-Decision-Rejected-By-AppServer.md), [BUG-064: Codex Approval Decision Value Rejected By App-Server](./BUG-064-Codex-Approval-Decision-Value-Rejected-By-AppServer.md), [BUG-061: Codex MCP Server Config Rejects on-request Approval Variant](./BUG-061-Codex-MCP-Config-On-Request-Invalid-Approval-Variant.md), [BUG-032: Codex Google Drive MCP Model Override And Tool Approval](./BUG-032-Codex-Google-Drive-MCP-Model-And-Approval.md), [CA-080: Fix Codex MCP Permission Approval Response](../../../change-audit/CA-080-fix-codex-mcp-permission-approval-response.md)
 - Replaces: `none`
 - Tags: `codex, mcp, approval, app-server, google-drive, regression, high`
 
@@ -102,16 +102,26 @@ Codex desktop chat approval worked for shell/file operations after BUG-066, but 
 
 ## 8. Validation
 
-- `V-1` `go test ./internal/runner -run "Test(CodexAdapterApprovalRoundTrip|CodexAdapterV2ApprovalRoundTrip|CodexAdapterPermissionsApprovalRoundTrip|CodexReviewDecisionMapsToAppServerEnum|CodexReviewDecisionMapsV2AppServerEnum)$" -count=1` passes.
+- `V-1` `go test ./internal/runner -run "Test(CodexAdapterApprovalRoundTrip|CodexAdapterV2ApprovalRoundTrip|CodexAdapterPermissionsApprovalRoundTrip|CodexAdapterYoloApprovalMatrix|CodexReviewDecisionMapsToAppServerEnum|CodexReviewDecisionMapsV2AppServerEnum)$" -count=1` passes.
 - `V-2` `go build ./...` passes in `apps/local-runner`.
 - `V-3` `go test ./internal/runner -count=1` was run for broader signal and still fails on unrelated pre-existing Google Drive config/provider-home/registry tests.
-- `V-4` Local GitNexus index was refreshed with `npx gitnexus analyze`; impact checks on `handleInbound`, `codexInboundApprovalMethod`, and `codexReviewDecision` reported LOW risk with zero direct upstream callers and zero affected processes.
+- `V-4` Local GitNexus index was refreshed with `npx gitnexus analyze`; impact checks on `codexInboundApprovalMethod`, `codexApprovalResponse`, and `codexPermissionsApprovalResponse` reported LOW risk.
+
+ The Codex logic is now covered as:
+
+  - Write/command tool + YOLO off: workspace-write + untrusted, approval bridge is called.
+  - Write/command tool + YOLO on: danger-full-access + never, no approval bridge call.
+  - MCP permission + YOLO off: workspace-write + untrusted, approval bridge is called and replies with { permissions,
+    scope }.
+
+  - MCP permission + YOLO on: danger-full-access + never, no approval bridge call.
+
 
 ## 9. Regression Guard
 
-- tests: `TestCodexAdapterPermissionsApprovalRoundTrip` covers the v2 permission response shape; existing command/file approval tests cover legacy and v2 decision mappings.
+- tests: `TestCodexAdapterPermissionsApprovalRoundTrip` covers the v2 permission response shape; `TestCodexAdapterYoloApprovalMatrix` covers command/file write and MCP permission behavior with YOLO on and off; existing command/file approval tests cover legacy and v2 decision mappings.
 - alerts: none.
-- audit checks: [CA-079](../../../change-audit/CA-079-fix-codex-mcp-permission-approval-response.md) records the implementation and verification.
+- audit checks: [CA-080](../../../change-audit/CA-080-fix-codex-mcp-permission-approval-response.md) records the implementation and verification.
 
 ## 10. Follow-Up Document Updates
 
