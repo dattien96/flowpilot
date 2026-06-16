@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { QuestionOption } from "@/types/contract";
 import { useStore } from "@/state/store";
+import { resolveQuestionManualSubmit } from "./questionAnswer";
 
 interface Props {
   questionId: string;
@@ -24,16 +25,22 @@ export function QuestionCard({ prompt, options, multiSelect, answer }: Props): R
   const toggle = (value: string) => {
     if (multiSelect) {
       setSelected((prev) => (prev.includes(value) ? prev.filter((v) => v !== value) : [...prev, value]));
-    } else {
-      setSelected([value]);
     }
   };
 
+  const answerOption = (value: string) => {
+    if (!multiSelect) {
+      void submit(value);
+      return;
+    }
+
+    toggle(value);
+  };
+
   const onSubmit = () => {
-    const picks = [...selected];
-    if (other.trim()) picks.push(other.trim());
-    if (picks.length === 0) return;
-    void submit(multiSelect ? picks : picks[0]);
+    const answer = resolveQuestionManualSubmit(selected, other, multiSelect);
+    if (answer === undefined) return;
+    void submit(answer);
   };
 
   return (
@@ -56,7 +63,7 @@ export function QuestionCard({ prompt, options, multiSelect, answer }: Props): R
                 <button
                   key={value}
                   className={`option ${active ? "option-active" : ""}`}
-                  onClick={() => toggle(value)}
+                  onClick={() => answerOption(value)}
                 >
                   <span className="option-marker">{multiSelect ? (active ? "☑" : "☐") : active ? "◉" : "○"}</span>
                   <span className="option-body">
