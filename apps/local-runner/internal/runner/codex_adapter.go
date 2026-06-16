@@ -206,11 +206,22 @@ func (a *codexAdapter) handleInbound(req codexInboundRequest) {
 		return
 	}
 
+	details := codexApprovalDetails(req.Method, req.Params)
+	decision, err := bridge.RequestApproval(details)
+	if err != nil {
+		// expiry/interrupt while pending → deny so Codex never hangs (04-04)
+		_ = a.dispatcher.reply(req.ID, codexApprovalResponse(req.Method, req.Params, "deny"))
+		return
+	}
+	_ = a.dispatcher.reply(req.ID, codexApprovalResponse(req.Method, req.Params, decision))
+}
+
+func codexApprovalDetails(method string, params map[string]any) ApprovalDetails {
 	str := func(k string) string {
-		if req.Params == nil {
+		if params == nil {
 			return ""
 		}
-		s, _ := req.Params[k].(string)
+		s, _ := params[k].(string)
 		return s
 	}
 	details := ApprovalDetails{
@@ -222,13 +233,15 @@ func (a *codexAdapter) handleInbound(req codexInboundRequest) {
 			{Value: "deny", Label: "Deny"},
 		},
 	}
-	decision, err := bridge.RequestApproval(details)
-	if err != nil {
-		// expiry/interrupt while pending → deny so Codex never hangs (04-04)
-		_ = a.dispatcher.reply(req.ID, codexApprovalResponse(req.Method, req.Params, "deny"))
-		return
+	if method == "mcpServer/elicitation/request" {
+		serverName := str("serverName")
+		message := str("message")
+		if serverName != "" {
+			details.Command = "MCP server: " + serverName
+		}
+		details.Reason = message
 	}
-	_ = a.dispatcher.reply(req.ID, codexApprovalResponse(req.Method, req.Params, decision))
+	return details
 }
 
 func codexInboundApprovalMethod(method string) bool {
@@ -238,7 +251,8 @@ func codexInboundApprovalMethod(method string) bool {
 		"applyPatchApproval",
 		"item/commandExecution/requestApproval",
 		"item/fileChange/requestApproval",
-		"item/permissions/requestApproval":
+		"item/permissions/requestApproval",
+		"mcpServer/elicitation/request":
 		return true
 	default:
 		return false
@@ -246,10 +260,14 @@ func codexInboundApprovalMethod(method string) bool {
 }
 
 func codexApprovalResponse(method string, params map[string]any, decision string) map[string]any {
-	if method == "item/permissions/requestApproval" {
+	switch method {
+	case "item/permissions/requestApproval":
 		return codexPermissionsApprovalResponse(params, decision)
+	case "mcpServer/elicitation/request":
+		return codexMcpElicitationApprovalResponse(decision)
+	default:
+		return map[string]any{"decision": codexReviewDecision(method, decision)}
 	}
-	return map[string]any{"decision": codexReviewDecision(method, decision)}
 }
 
 // codexReviewDecision maps FlowPilot's internal approval vocabulary to the
@@ -298,6 +316,22 @@ func codexDecisionApproved(decision string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// codexMcpElicitationApprovalResponse maps MCP server elicitations to the
+// app-server response shape: { action, content, _meta }.
+func codexMcpElicitationApprovalResponse(decision string) map[string]any {
+	action := "decline"
+	if codexDecisionApproved(decision) {
+		action = "accept"
+	} else if decision == "abort" || decision == "cancel" {
+		action = "cancel"
+	}
+	return map[string]any{
+		"action":  action,
+		"content": nil,
+		"_meta":   nil,
 	}
 }
 

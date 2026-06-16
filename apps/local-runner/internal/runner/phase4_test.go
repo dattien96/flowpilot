@@ -15,7 +15,7 @@ func TestResolveYoloPosture(t *testing.T) {
 		t.Fatalf("yolo=true posture = %+v", on)
 	}
 	off := resolveYoloPosture(false)
-	if off.CodexSandbox != "workspace-write" || off.CodexApprovalMode != "on-request" || off.RunnerAutoApprove {
+	if off.CodexSandbox != "workspace-write" || off.CodexApprovalMode != "untrusted" || off.RunnerAutoApprove {
 		t.Fatalf("yolo=false posture = %+v", off)
 	}
 

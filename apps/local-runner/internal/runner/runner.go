@@ -1081,8 +1081,17 @@ func (r *Runner) injectSelectedSkills(workspace string, prompt string, selection
 	if len(blocks) == 0 {
 		return prompt
 	}
+	names := make([]string, 0, len(selections))
+	for _, sel := range selections {
+		if name := strings.TrimSpace(sel.Name); name != "" {
+			names = append(names, "/"+name)
+		}
+	}
 	header := "\n\n## Selected Skills\n\n" +
 		"The user explicitly selected the skill(s) below for this turn. Read and apply them"
+	if len(names) > 0 {
+		header += "\n\nSelected skill names: " + strings.Join(names, ", ")
+	}
 	return prompt + header + strings.Join(blocks, "")
 }
 

@@ -42,7 +42,7 @@ runner approval policy (`resolveYoloPosture`):
 
 | YOLO | Codex sandbox | Codex approval mode | Runner approvals |
 |------|---------------|---------------------|------------------|
-| **off** (default) | `workspace-write` | `on-request` | dangerous commands → `permission_required`; allow/deny policy or ask the human |
+| **off** (default) | `workspace-write` | `untrusted` | command/file tool use → `permission_required`; allow/deny policy or ask the human |
 | **on** | `full-access` | `never` | **gating disabled** — auto-approved, audited as gating-disabled |
 
 - **YOLO=true disables the safety gate.** The model can run dangerous commands

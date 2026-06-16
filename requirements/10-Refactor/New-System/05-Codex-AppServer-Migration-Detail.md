@@ -184,7 +184,7 @@ gating no longer hangs.
 | YOLO | Codex sandbox | Codex approval mode | FlowPilot runner | Proxy MCP |
 |------|---------------|---------------------|------------------|-----------|
 | **true** | full-access | never (auto-run) | auto-approve any `permission_required` | auto-approve policy-allowed |
-| **false** | workspace-write | on-request (emit `permission_required` for dangerous ops) | show approval card, require decision | require approval |
+| **false** | workspace-write | untrusted (emit `permission_required` before command/file tool use) | show approval card, require decision | require approval |
 
 ### Why this requires app-server
 

@@ -46,6 +46,9 @@ func TestInjectSelectedSkillsDeliversSelection(t *testing.T) {
 	if !strings.Contains(out, "ALPHA_SKILL_BODY") || !strings.Contains(out, "GAMMA_SKILL_BODY") {
 		t.Fatalf("not all selected skills were injected:\n%s", out)
 	}
+	if !strings.Contains(out, "Selected skill names: /alpha, /gamma") {
+		t.Fatalf("selected skill names were not listed explicitly:\n%s", out)
+	}
 	if strings.Contains(out, "BETA_SKILL_BODY") {
 		t.Fatalf("runner injected an unselected skill:\n%s", out)
 	}
