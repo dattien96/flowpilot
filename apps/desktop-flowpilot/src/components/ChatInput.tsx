@@ -497,7 +497,22 @@ export function ChatInput(): React.ReactElement {
 
       {showPicker && (
         <div className="skill-picker">
-          <div className="skill-picker-head">Skills · pick one or more</div>
+          <div className="skill-picker-head">
+            <span>Skills · pick one or more</span>
+            <button
+              type="button"
+              className="skill-picker-close"
+              onClick={() => {
+                setSkillPickerOpen(false);
+                if (slashQuery !== null) {
+                  setText("");
+                }
+              }}
+              aria-label="Close skills picker"
+            >
+              ×
+            </button>
+          </div>
           {filtered.length === 0 && <div className="skill-empty">No matching skill</div>}
           {filtered.map((s) => {
             const active = selectedSkills.includes(s.name);
