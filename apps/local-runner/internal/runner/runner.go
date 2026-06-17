@@ -1057,64 +1057,80 @@ func (r *Runner) injectSkillContent(workspace string, prompt string, skillIds []
 	return strings.Join(injected, "")
 }
 
-// injectSelectedSkills prepends the FULL content of every user-selected skill to the prompt
-// so the model reads process constraints BEFORE forming a plan for the user's request.
-// Prepending (not appending) ensures the skill instructions are not treated as trailing
-// context that the model can skip once the task intent is already clear from the leading text.
-//
-// It resolves each selection by its explicit Path first (the absolute skill-file path the
-// desktop picker captured, so it works for any provider layout and the run's own cwd) and
-// falls back to discovering the skill by id/name under the run workspace. Unlike
-// injectSkillContent it does not depend on r.workspace and matches id OR display name.
+// injectSelectedSkills prepends a compact skill reference block to the prompt so the model
+// reads process constraints BEFORE forming a plan for the user's request. Each skill is
+// represented as a file path pointer (+ one-line description from frontmatter) rather than
+// the full file content — the model uses its Read tool to load whichever skill it needs,
+// keeping the injected token count small regardless of skill file size.
 func (r *Runner) injectSelectedSkills(workspace string, prompt string, selections []SkillSelection) string {
 	if len(selections) == 0 {
 		return prompt
 	}
-	blocks := make([]string, 0, len(selections))
+	lines := make([]string, 0, len(selections))
 	for _, sel := range selections {
-		content, name, ok := r.readSelectedSkill(workspace, sel)
-		if !ok {
+		path, name := r.resolveSkillPath(workspace, sel)
+		if name == "" {
 			continue
 		}
-		blocks = append(blocks, fmt.Sprintf("\n### Skill: %s\n```markdown\n%s\n```\n", name, content))
+		entry := "- /" + name
+		if path != "" {
+			entry += " → " + path
+			if desc := readSkillFrontmatterDescription(path); desc != "" {
+				entry += "\n  > " + desc
+			}
+		}
+		lines = append(lines, entry)
 	}
-	if len(blocks) == 0 {
+	if len(lines) == 0 {
 		return prompt
 	}
-	names := make([]string, 0, len(selections))
-	for _, sel := range selections {
-		if name := strings.TrimSpace(sel.Name); name != "" {
-			names = append(names, "/"+name)
-		}
-	}
 	header := "## Selected Skills\n\n" +
-		"You MUST follow the process defined in the selected skill(s) below before responding to the user's request."
-	if len(names) > 0 {
-		header += "\n\nSelected skill names: " + strings.Join(names, ", ")
-	}
-	return header + strings.Join(blocks, "") + "\n\n---\n\n" + prompt
+		"Read each skill file with your Read tool and follow its process before responding.\n\n" +
+		strings.Join(lines, "\n")
+	return header + "\n\n---\n\n" + prompt
 }
 
-// readSelectedSkill loads one selected skill's markdown, preferring the explicit path the
-// desktop picker captured and falling back to discovery under the run workspace.
-func (r *Runner) readSelectedSkill(workspace string, sel SkillSelection) (content string, name string, ok bool) {
+// resolveSkillPath returns the resolved absolute file path and display name for a
+// SkillSelection. It prefers the explicit Path the desktop picker captured; falls back
+// to discovering the skill by id/name under the run workspace.
+func (r *Runner) resolveSkillPath(workspace string, sel SkillSelection) (path string, name string) {
+	name = strings.TrimSpace(sel.Name)
 	if p := strings.TrimSpace(sel.Path); p != "" {
-		if b, err := os.ReadFile(p); err == nil {
-			label := strings.TrimSpace(sel.Name)
-			if label == "" {
-				label = strings.TrimSuffix(filepath.Base(p), filepath.Ext(p))
+		if _, err := os.Stat(p); err == nil {
+			if name == "" {
+				name = strings.TrimSuffix(filepath.Base(p), filepath.Ext(p))
 			}
-			return string(b), label, true
+			return p, name
 		}
 	}
 	for _, sk := range r.listSkillsInWorkspace(workspace) {
 		if sk.ID == sel.Name || strings.EqualFold(sk.Name, sel.Name) {
-			if b, err := os.ReadFile(sk.FilePath); err == nil {
-				return string(b), sk.Name, true
+			if name == "" {
+				name = sk.Name
 			}
+			return sk.FilePath, name
 		}
 	}
-	return "", "", false
+	return "", name
+}
+
+// readSkillFrontmatterDescription extracts the description field from a skill file's YAML
+// frontmatter by reading only the first 512 bytes — enough for any realistic frontmatter block.
+func readSkillFrontmatterDescription(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	buf := make([]byte, 512)
+	n, _ := f.Read(buf)
+	for _, line := range strings.Split(string(buf[:n]), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "description:") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "description:"))
+		}
+	}
+	return ""
 }
 
 // listSkillsInWorkspace discovers skills under the given run workspace (the run's cwd), not
