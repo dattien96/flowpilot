@@ -1,20 +1,22 @@
-# Task-056: History Supabase Reader Production Fix
+# Task-070: History Supabase Reader Production Fix
 
 ## Metadata
 
-- Document ID: `Task-056`
+- Document ID: `Task-070`
 - Title: `History Supabase Reader Production Fix`
 - Phase: `task`
 - Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-16`
-- Last Updated: `2026-06-16`
+- Last Updated: `2026-06-17`
 - Parent Documents: [CP-18: Refactor Workflow With Session](../../07-Coding-Plan/done/CP-18-Refactor-Workflow-With_Session.md), [SD-12: Refactor Workflow With Session](../../06-System-Tech-Design/SD-12-Refactor-Workflow-With_Session.md), [SS-11: Workflow With Session](../../05-System-Specs/SS-11-Workflow-With_Session.md)
 - Child Documents: `none`
-- Related Documents: [BUG-060: Desktop Run History Empties After Switching Runs](../../09-BugFix/done/BUG-060-Desktop-Run-History-Empties-After-Switching-Runs.md), [Task-037: Desktop Project Run History Popover](../done/Task-037-Desktop-Project-Run-History-Popover.md), [CA-075: Desktop Chat Mode Split And BUG-060 History Fix](../../change-audit/CA-075-desktop-chat-mode-split-and-bug060-history-fix.md), [Task-057: Cross-PC Provider Chat Sync](./Task-057-Cross-PC-Provider-Chat-Sync.md)
+- Related Documents: [BUG-060: Desktop Run History Empties After Switching Runs](../../09-BugFix/done/BUG-060-Desktop-Run-History-Empties-After-Switching-Runs.md), [Task-037: Desktop Project Run History Popover](./Task-037-Desktop-Project-Run-History-Popover.md), [CA-075: Desktop Chat Mode Split And BUG-060 History Fix](../../change-audit/CA-075-desktop-chat-mode-split-and-bug060-history-fix.md), [Task-057: Cross-PC Provider Chat Sync](../todo/Task-057-Cross-PC-Provider-Chat-Sync.md)
 - Replaces: `none`
 - Tags: `local-runner, history, supabase, session, production, bug-060`
+
+> **Renumber note (2026-06-17):** this document was originally numbered `Task-056`, colliding with [Task-056: Fix Codex Ask-User Live Flow](./Task-056-Fix-Codex-Ask-User-Live-Flow.md). It was renumbered to `Task-070` and moved from `todo/` to `done/` (it was already `Status: done`). All inbound references updated.
 
 ## AI Quick View
 
@@ -112,4 +114,5 @@ BUG-060 was marked *done* after fixing the dev/demo (fake store) path with F-1, 
 
 - result: `SupabaseWorkflowStore.ListProviderSessionsByProject` implemented in `supabase_workflow_store.go` via PostgREST inner join (`workflow_provider_sessions?select=...workflow_runs!inner(project_id,workflow_id)&workflow_runs.project_id=eq.{projectID}&order=updated_at.desc`). `SupabaseWorkflowStore` now satisfies `SessionHistoryReader`; the type assertion at `interactive_handlers.go:612` will succeed in production. Compile-time guard and two unit tests added in `supabase_workflow_store_test.go` (both green). F-5 (migration confirmation) remains a deploy-time step.
 - follow-ups: Task-057 (Phase 2 cross-PC sync); F-5 confirm `20260615120000_add_workflow_provider_tables.sql` applied in production Supabase
+- renumbered: was `Task-056` (duplicate ID with [Task-056: Fix Codex Ask-User Live Flow](./Task-056-Fix-Codex-Ask-User-Live-Flow.md)); renumbered to `Task-070` and moved `todo/` → `done/` on 2026-06-17. Inbound references updated in BUG-080, BUG-060, Task-057, `08-Desktop-Chat-New-Plan.md`, CA-097.
 - upstream docs updated: BUG-060 (F-2 ✓, V-2 ✓, F-5 ⏳ noted)
