@@ -81,9 +81,8 @@ func codexThreadReadParams(threadID string) map[string]any {
 func codexTurnStartParams(threadID, prompt string, skills []SkillSelection, imagePaths []string) map[string]any {
 	input := []any{
 		map[string]any{
-			"type":          "text",
-			"text":          prompt,
-			"text_elements": []any{},
+			"type": "text",
+			"text": prompt,
 		},
 	}
 	for _, path := range imagePaths {
@@ -95,7 +94,7 @@ func codexTurnStartParams(threadID, prompt string, skills []SkillSelection, imag
 		"threadId": threadID,
 		"input":    input,
 	}
-	// Collect all selected skill names; the prompt already carries their full content via
+	// Collect all selected skill names; the prompt already carries the path pointer block via
 	// injectSelectedSkills. The skill/skills field here is a native Codex protocol hint —
 	// single skill uses "skill" (string) for backward compat; multiple uses "skills" (array).
 	names := make([]string, 0, len(skills))

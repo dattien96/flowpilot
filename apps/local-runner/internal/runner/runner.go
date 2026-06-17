@@ -1085,7 +1085,7 @@ func (r *Runner) injectSelectedSkills(workspace string, prompt string, selection
 		return prompt
 	}
 	header := "## Selected Skills\n\n" +
-		"Read each skill file with your Read tool and follow its process before responding.\n\n" +
+		"Read each skill file listed below and follow its process before responding.\n\n" +
 		strings.Join(lines, "\n")
 	return header + "\n\n---\n\n" + prompt
 }
