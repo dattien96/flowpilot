@@ -172,6 +172,7 @@ export function ChatInput(): React.ReactElement {
   const [text, setText] = useState("");
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const [pickerSortSelection, setPickerSortSelection] = useState<string[]>([]);
+  const [pickerSearch, setPickerSearch] = useState("");
   const [skillPickerOpen, setSkillPickerOpen] = useState(false);
   const [controllerExpanded, setControllerExpanded] = useState(true);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
@@ -179,6 +180,7 @@ export function ChatInput(): React.ReactElement {
   const [previewAtt, setPreviewAtt] = useState<PendingAttachment | null>(null);
   const [displayedTokenUsage, setDisplayedTokenUsage] = useState<TokenUsageSnapshot | undefined>(undefined);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const wasPickerVisibleRef = useRef(false);
 
@@ -204,7 +206,7 @@ export function ChatInput(): React.ReactElement {
   const filtered = useMemo(
     () => {
       if (!showPicker) return [];
-      const query = slashQuery?.trim() ?? "";
+      const query = pickerSearch.trim().toLowerCase();
       const matchingSkills = query.length === 0
         ? skills
         : skills.filter((s) => s.name.toLowerCase().includes(query));
@@ -213,7 +215,7 @@ export function ChatInput(): React.ReactElement {
       const remaining = sortedSkills.filter((skill) => !pickerSortSelection.includes(skill.name));
       return [...selected, ...remaining];
     },
-    [showPicker, slashQuery, skills, pickerSortSelection],
+    [showPicker, pickerSearch, skills, pickerSortSelection],
   );
 
   useEffect(() => {
@@ -272,9 +274,21 @@ export function ChatInput(): React.ReactElement {
   useEffect(() => {
     if (showPicker && !wasPickerVisibleRef.current) {
       setPickerSortSelection(selectedSkills);
+      searchInputRef.current?.focus();
     }
     wasPickerVisibleRef.current = showPicker;
   }, [showPicker, selectedSkills]);
+
+  // Keep pickerSearch in sync with the slash query so typing /foo in the textarea
+  // still drives the in-picker filter in real time.
+  useEffect(() => {
+    if (slashQuery !== null) setPickerSearch(slashQuery);
+  }, [slashQuery]);
+
+  // Clear the search box whenever the picker is dismissed.
+  useEffect(() => {
+    if (!showPicker) setPickerSearch("");
+  }, [showPicker]);
 
   useEffect(() => {
     if (!showPicker) return;
@@ -540,20 +554,29 @@ export function ChatInput(): React.ReactElement {
       {showPicker && (
         <div className="skill-picker">
           <div className="skill-picker-head">
-            <span>Skills · pick one or more</span>
-            <button
-              type="button"
-              className="skill-picker-close"
-              onClick={() => {
-                setSkillPickerOpen(false);
-                if (slashQuery !== null) {
-                  setText("");
-                }
-              }}
-              aria-label="Close skills picker"
-            >
-              ×
-            </button>
+            <div className="skill-picker-head-top">
+              <span>Skills · pick one or more</span>
+              <button
+                type="button"
+                className="skill-picker-close"
+                onClick={() => {
+                  setSkillPickerOpen(false);
+                  if (slashQuery !== null) setText("");
+                }}
+                aria-label="Close skills picker"
+              >
+                ×
+              </button>
+            </div>
+            <input
+              ref={searchInputRef}
+              type="text"
+              className="skill-picker-search"
+              placeholder="Search skills…"
+              value={pickerSearch}
+              onChange={(e) => setPickerSearch(e.target.value)}
+              aria-label="Search skills"
+            />
           </div>
           {filtered.length === 0 && <div className="skill-empty">No matching skill</div>}
           {filtered.map((s) => {
@@ -670,6 +693,12 @@ export function ChatInput(): React.ReactElement {
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKeyDown}
           onPaste={onPaste}
+          onPointerDown={() => {
+            if (showPicker) {
+              setSkillPickerOpen(false);
+              if (slashQuery !== null) setText("");
+            }
+          }}
         />
         {blocked ? (
           <button className="btn send-btn send-btn-stop" onClick={() => void stop()} aria-label="Stop AI">
