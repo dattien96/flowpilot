@@ -127,7 +127,8 @@ new rule: can not CHANGED provider after run started
 ## 10. Load long chat - PASSED
 Task 062
 
-## 11. skill attached - AI k doc dc ? sai folder?
+## 11. skill attached - AI k doc dc ? sai folder? - PASSED
+Via Bug 077 + Task 065
 
 ## 12. Sync artiact for chat mode first
 
