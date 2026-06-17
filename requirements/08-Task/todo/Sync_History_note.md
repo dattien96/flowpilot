@@ -1,0 +1,50 @@
+# Summary
+
+This doc is the entry for all detail tasks for sync chat accross accounts and pcs
+
+# Previous bugs
+
+Some previous Fix related to History save in local only
+BUG-060
+BUG-080
+
+Current behavior is: app can save and show history chat - but can not click to open it after restart server, just open when in 1 current lifecycle memory
+
+Basically we save data about the chat in sessions.ndjson
+-> based on that we found exactly the chat history in codex or claude in the current pc local directory where codex/claude save that chat data
+
+# New plan tasks
+
+## Task-067: Desktop Post-Restart Run Resume Via Provider Session ID
+
+This is core doc
+
+## Task-068: Desktop History Unified View; Account ID As Local-File Pointer
+
+This one show us how can we save chat for sync accross accounts
+
+## Task-069: Cross-PC Sync for Non-Supabase Users (sessions.ndjson + Provider Files)
+
+This one show us how can we save chat for sync accross PCs
+
+## Task-059: Desktop Check Version Tested Baseline Config
+
+This doc based on 1 already feature, that is call 1 script to verify that the current codex/claude version
+can break our system or not. Because they can change the api or the way we interact with it
+
+COme to this feature, we base on 1 thing
+COPY the history that to other pc/other acc
+Test with latest codex it worked -> so we need same test to make sure in other pc with other ver
+it can work too, or at least notify us to change code if the policy from codex/claude changed
+
+## 09 — Implementation Guide: Cross-Account Chat Resume (Codex + Claude)
+
+This is detail code guide we need follow
+
+## Testcase
+
+Task 072
+
+## DOD item checklist
+
+Task 071
