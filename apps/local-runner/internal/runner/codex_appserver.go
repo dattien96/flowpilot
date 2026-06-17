@@ -78,7 +78,7 @@ func codexThreadReadParams(threadID string) map[string]any {
 	return map[string]any{"threadId": threadID}
 }
 
-func codexTurnStartParams(threadID, prompt string, skill *SkillSelection, imagePaths []string) map[string]any {
+func codexTurnStartParams(threadID, prompt string, skills []SkillSelection, imagePaths []string) map[string]any {
 	input := []any{
 		map[string]any{
 			"type":          "text",
@@ -95,8 +95,22 @@ func codexTurnStartParams(threadID, prompt string, skill *SkillSelection, imageP
 		"threadId": threadID,
 		"input":    input,
 	}
-	if skill != nil && skill.Name != "" {
-		p["skill"] = skill.Name
+	// Collect all selected skill names; the prompt already carries their full content via
+	// injectSelectedSkills. The skill/skills field here is a native Codex protocol hint —
+	// single skill uses "skill" (string) for backward compat; multiple uses "skills" (array).
+	names := make([]string, 0, len(skills))
+	for _, s := range skills {
+		if n := strings.TrimSpace(s.Name); n != "" {
+			names = append(names, n)
+		}
+	}
+	switch len(names) {
+	case 1:
+		p["skill"] = names[0]
+	case 0:
+		// no skills selected
+	default:
+		p["skills"] = names
 	}
 	return p
 }

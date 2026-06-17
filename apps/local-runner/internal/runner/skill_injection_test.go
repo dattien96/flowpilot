@@ -43,6 +43,11 @@ func TestInjectSelectedSkillsDeliversSelection(t *testing.T) {
 	if !strings.Contains(out, "## Selected Skills") {
 		t.Fatalf("missing selected-skills header:\n%s", out)
 	}
+	// Skills must be prepended — the header must appear BEFORE the user's task text so
+	// the model reads process constraints before forming its response plan.
+	if strings.Index(out, "## Selected Skills") > strings.Index(out, "do the task") {
+		t.Fatalf("skill header appears after the user prompt — must be prepended:\n%s", out)
+	}
 	if !strings.Contains(out, "ALPHA_SKILL_BODY") || !strings.Contains(out, "GAMMA_SKILL_BODY") {
 		t.Fatalf("not all selected skills were injected:\n%s", out)
 	}

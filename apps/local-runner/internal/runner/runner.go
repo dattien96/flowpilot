@@ -1057,10 +1057,10 @@ func (r *Runner) injectSkillContent(workspace string, prompt string, skillIds []
 	return strings.Join(injected, "")
 }
 
-// injectSelectedSkills appends the FULL content of every user-selected skill to the prompt
-// so the model always reads the skills the user picked (BUG-063 follow-up). The model may
-// still auto-read other skills via its native discovery — that is acceptable; this only
-// guarantees the selected ones are delivered, not that others are excluded.
+// injectSelectedSkills prepends the FULL content of every user-selected skill to the prompt
+// so the model reads process constraints BEFORE forming a plan for the user's request.
+// Prepending (not appending) ensures the skill instructions are not treated as trailing
+// context that the model can skip once the task intent is already clear from the leading text.
 //
 // It resolves each selection by its explicit Path first (the absolute skill-file path the
 // desktop picker captured, so it works for any provider layout and the run's own cwd) and
@@ -1087,12 +1087,12 @@ func (r *Runner) injectSelectedSkills(workspace string, prompt string, selection
 			names = append(names, "/"+name)
 		}
 	}
-	header := "\n\n## Selected Skills\n\n" +
-		"The user explicitly selected the skill(s) below for this turn. Read and apply them"
+	header := "## Selected Skills\n\n" +
+		"You MUST follow the process defined in the selected skill(s) below before responding to the user's request."
 	if len(names) > 0 {
 		header += "\n\nSelected skill names: " + strings.Join(names, ", ")
 	}
-	return prompt + header + strings.Join(blocks, "")
+	return header + strings.Join(blocks, "") + "\n\n---\n\n" + prompt
 }
 
 // readSelectedSkill loads one selected skill's markdown, preferring the explicit path the
