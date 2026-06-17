@@ -509,6 +509,7 @@ export const useStore = create<AppState>((set, get) => ({
 
   async openHistoryRun(runId) {
     const { client } = get();
+    const historyItem = get().runHistory.find((item) => item.runId === runId);
     const handle = await client.resumeRun(runId);
     set({
       runId: handle.runId,
@@ -523,7 +524,11 @@ export const useStore = create<AppState>((set, get) => ({
       recoverable: false,
       historyOpen: false,
       _streamingAssistantId: undefined,
+      ...(historyItem ? { selectedProvider: historyItem.providerKey } : {}),
     });
+    if (historyItem?.providerKey) {
+      void get().loadSkills(historyItem.providerKey);
+    }
     await consumeStream(handle.runId, client.streamRun(handle.runId, 0), set, get);
   },
 

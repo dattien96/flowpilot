@@ -10,10 +10,37 @@ import {
   type PendingAttachment,
 } from "@/lib/normalizeImage";
 
-const PROVIDER_OPTIONS: { value: ProviderKey; label: string }[] = [
-  { value: "codex", label: "Codex" },
-  { value: "claude", label: "Claude" },
-  { value: "gemini", label: "Gemini" },
+function CodexIcon(): React.ReactElement {
+  return (
+    <svg width="18" height="18" viewBox="-3 -3 30 30" fill="currentColor" aria-hidden="true">
+      <path d="M22.282 9.821a5.985 5.985 0 0 0-.516-4.911 6.046 6.046 0 0 0-6.51-2.9A6.065 6.065 0 0 0 4.981 4.18a5.985 5.985 0 0 0-3.998 2.9 6.046 6.046 0 0 0 .743 7.097 5.98 5.98 0 0 0 .51 4.911 6.051 6.051 0 0 0 6.514 2.9A5.985 5.985 0 0 0 13.26 24a6.056 6.056 0 0 0 5.772-4.206 5.99 5.99 0 0 0 3.997-2.9 6.056 6.056 0 0 0-.747-7.073zm-8.33 11.69a4.476 4.476 0 0 1-2.876-1.04l.141-.081 4.779-2.758a.796.796 0 0 0 .392-.68v-6.738l2.02 1.168a.07.07 0 0 1 .038.053v5.582a4.504 4.504 0 0 1-4.494 4.494zm-9.652-3.82a4.47 4.47 0 0 1-.535-3.014l.141.085 4.784 2.759a.77.77 0 0 0 .78 0l5.843-3.369v2.333a.08.08 0 0 1-.033.062L9.74 19.95a4.499 4.499 0 0 1-6.14-1.647zM2.34 7.896a4.485 4.485 0 0 1 2.366-1.973V11.6a.767.767 0 0 0 .388.677l5.815 3.354-2.02 1.168a.076.076 0 0 1-.071 0l-4.83-2.786A4.504 4.504 0 0 1 2.34 7.872zm16.597 3.855l-5.833-3.387L15.118 7.2a.076.076 0 0 1 .071 0l4.83 2.791a4.494 4.494 0 0 1-.677 8.105v-5.678a.79.79 0 0 0-.407-.667zm2.01-3.023l-.141-.085-4.774-2.782a.776.776 0 0 0-.784 0L9.41 9.23V6.898a.066.066 0 0 1 .028-.061l4.83-2.787a4.5 4.5 0 0 1 6.679 4.66zm-12.64 4.134l-2.02-1.164a.08.08 0 0 1-.038-.057V6.074a4.5 4.5 0 0 1 7.374-3.453l-.142.08-4.777 2.758a.795.795 0 0 0-.393.681zm1.097-2.365l2.602-1.5 2.607 1.5v2.999l-2.597 1.5-2.607-1.5Z" />
+    </svg>
+  );
+}
+
+function ClaudeIcon(): React.ReactElement {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <rect x="10.75" y="5.5" width="2.5" height="13" rx="1.25" />
+      <rect x="10.75" y="5.5" width="2.5" height="13" rx="1.25" transform="rotate(45 12 12)" />
+      <rect x="10.75" y="5.5" width="2.5" height="13" rx="1.25" transform="rotate(90 12 12)" />
+      <rect x="10.75" y="5.5" width="2.5" height="13" rx="1.25" transform="rotate(135 12 12)" />
+    </svg>
+  );
+}
+
+function GeminiIcon(): React.ReactElement {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M12 2c0 5.52-4.48 10-10 10 5.52 0 10 4.48 10 10 0-5.52 4.48-10 10-10-5.52 0-10-4.48-10-10z" />
+    </svg>
+  );
+}
+
+const PROVIDER_CARDS: { value: ProviderKey; label: string; icon: React.ReactElement }[] = [
+  { value: "codex", label: "Codex", icon: <CodexIcon /> },
+  { value: "claude", label: "Claude", icon: <ClaudeIcon /> },
+  { value: "gemini", label: "Gemini", icon: <GeminiIcon /> },
 ];
 
 // Providers whose runner adapters advertise the Vision capability (Task-052). Mirrors
@@ -131,6 +158,7 @@ export function ChatInput(): React.ReactElement {
   const pendingApproval = useStore((s) => s.pendingApproval);
   const pendingQuestion = useStore((s) => s.pendingQuestion);
   const latestTokenUsage = useStore((s) => s.latestTokenUsage);
+  const timeline = useStore((s) => s.timeline);
 
   const [text, setText] = useState("");
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
@@ -146,6 +174,8 @@ export function ChatInput(): React.ReactElement {
   const wasPickerVisibleRef = useRef(false);
 
   const isChatMode = chatMode === "normal_chat";
+  // Lock provider once any turn has been sent in the current chat session.
+  const providerLocked = isChatMode && timeline.length > 0;
   const supportsVision = !!selectedProvider && VISION_PROVIDERS.has(selectedProvider);
   const hasSelectedProject = !!selectedProjectId;
   const selectedProjectPath = useMemo(
@@ -431,23 +461,26 @@ export function ChatInput(): React.ReactElement {
               </div>
 
               <div className="chat-controller-grid">
-                <label className="chat-controller-field muted">
-                  <span>Provider</span>
-                  <select
-                    value={selectedProvider ?? ""}
-                    onChange={(e) =>
-                      selectProvider(e.target.value ? (e.target.value as ProviderKey) : undefined)
-                    }
-                    disabled={blocked}
-                  >
-                    <option value="">Auto</option>
-                    {PROVIDER_OPTIONS.map((provider) => (
-                      <option key={provider.value} value={provider.value}>
-                        {provider.label}
-                      </option>
+                <div className={`provider-picker${providerLocked ? " provider-picker-locked" : ""}`}>
+                  <span className="chat-controller-label">Provider</span>
+                  <div className="provider-chips">
+                    {PROVIDER_CARDS.map((p) => (
+                      <button
+                        key={p.value}
+                        type="button"
+                        className={`provider-chip provider-chip-${p.value}${selectedProvider === p.value ? " provider-chip-selected" : ""}`}
+                        onClick={() => selectProvider(selectedProvider === p.value ? undefined : p.value)}
+                        disabled={blocked || providerLocked}
+                        aria-pressed={selectedProvider === p.value}
+                        aria-label={p.label}
+                        title={providerLocked ? "Start a new chat to change provider" : p.label}
+                      >
+                        <span className="provider-chip-icon">{p.icon}</span>
+                        <span className="provider-chip-name">{p.label}</span>
+                      </button>
                     ))}
-                  </select>
-                </label>
+                  </div>
+                </div>
 
                 <label className="chat-controller-field muted">
                   <span>Model</span>

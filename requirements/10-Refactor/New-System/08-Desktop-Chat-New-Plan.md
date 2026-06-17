@@ -2,10 +2,9 @@
 
 ## 1. History
 
----
-
 Task 056: have code, pending test
 057: not execute
+Sau khi done thi item history can co 1 state chi ra dang run hay da done hay dang wait approve
 
 > Status legend: ✅ resolved (verified in code) · ⚠️ open gap (real, still broken) · ❓ open decision · 🔭 new feature (separate from History core)
 
@@ -86,7 +85,8 @@ ok
 
 Done in Task-052
 
-Has bug
+### Has bug
+
 ------------------------- later prompt can not see image attached in previous prompt
 
 ## 5. User Interaction (Structured Questions) - PASSED
@@ -99,26 +99,38 @@ Separate from approvals, FlowPilot can ask the user a structured question (confi
 
 Other input was not worked - Passed now
 
-## 6. Show token/context
+## 6. Show token/context - PASSED
 
 Check for codex -> OK
 Check for claude -> OK
 
 Recorded in [Task-061: Desktop Chat Token Usage And Context Window](../../08-Task/done/Task-061-Desktop-Chat-Token-Usage-And-Context-Window.md)
 
-## 7. Sync artiact for chat mode first
+Whenever once AI return response
+-> Check current provider
+-> See is it configured to visible in account active right bar or not
+-> if yes, Check the current active acc of this provider
+-> reload IT ONLY to refresh the token on acc UI
 
----
-
-## 8. How to check change in feature of codex/claude
-
----
+## 7. How to check change in feature of codex/claude - PASSED
+Retest with codex/claude latest
+Task 059- DONE
 
 If affected to our app cause we call its functions
 
-# Retest with codex/claude latest
+## 8. Ui of provider with icon - PASSED
+update ui of provider selection
+new rule: can not CHANGED provider after run started
 
----
+## 9. Feature cancel current running chat turn
+
+## 10. Load long chat
+
+pending Task 062
+
+## 11. skill attached - AI k doc dc ? sai folder?
+
+## 12. Sync artiact for chat mode first
 
 # Flow mode - Pending
 
