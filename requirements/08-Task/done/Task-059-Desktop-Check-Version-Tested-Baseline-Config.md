@@ -125,4 +125,5 @@ The current Check Version flow correctly identifies version drift, but the teste
 - follow-ups:
   - optionally add a one-click `Use Installed Versions As Tested Baseline` action if the team wants faster baseline updates after successful deep checks
   - optionally show the exact saved config path in the UI
+  - planned: add **session-portability canaries** to `quicktest.ps1` (Codex `exec resume` CLI surface, rollout meta still account-agnostic, Claude session store) so a provider update that breaks chat copy/resume is caught by the same Check Version flow — spec in [09-IG §8](../../10-Refactor/New-System/09-Cross-Account-Chat-Resume-Implementation-Guide.md); proven by [CA-098](../../../change-audit/CA-098-spike-provider-session-portability.md)
 - upstream docs updated: `Task-059`
