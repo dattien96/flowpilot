@@ -530,6 +530,31 @@ export const useStore = create<AppState>((set, get) => ({
       void get().loadSkills(historyItem.providerKey);
     }
     await consumeStream(handle.runId, client.streamRun(handle.runId, 0), set, get);
+
+    // Post-stream stale cleanup (BUG-074): permission_required events are persisted
+    // in the event log but their resolution (approve() action) only clears
+    // pendingApproval on the client — no resolution event is emitted. If the stream
+    // ends and pendingApproval is still set, and the run is not genuinely waiting for
+    // approval (handle.status is the server's source of truth), stamp all unresolved
+    // approval cards as resolved and clear the stale pending state.
+    if (handle.status !== "waiting_approval" && handle.status !== "waiting_question") {
+      set((s) => {
+        if (!s.pendingApproval && !s.pendingQuestion) return {};
+        return {
+          pendingApproval: undefined,
+          pendingQuestion: undefined,
+          timeline: s.timeline.map((it) => {
+            if (it.kind === "approval" && it.decision === undefined) {
+              return { ...it, decision: "resolved" };
+            }
+            if (it.kind === "question" && it.answer === undefined) {
+              return { ...it, answer: "answered" };
+            }
+            return it;
+          }),
+        };
+      });
+    }
   },
 
   resetRun() {

@@ -5,7 +5,7 @@
 Task 056: have code, pending test
 057: not execute
 Sau khi done thi item history can co 1 state chi ra dang run hay da done hay dang wait approve
-
+now only press history button then the history tab left side update
 > Status legend: ✅ resolved (verified in code) · ⚠️ open gap (real, still broken) · ❓ open decision · 🔭 new feature (separate from History core)
 
 ### 1.1 Current model — ✅ resolved / verified in code
@@ -61,7 +61,7 @@ Action items (these are the actual fix, not "add a migration"):
 - **Provider-aware slash lists** ("/skills list actually skill", "/agents list actually agent", "based on current provider"): enumerate the real skills/agents of the **currently selected provider**, not a static list. Provider-adapter work.
 - **Cross-PC chat sync** — sync provider CLI session files (`~/.claude/`, `~/.codex/`) to Google Drive so history can be resumed on another PC. → **[Task-057](../../08-Task/todo/Task-057-Cross-PC-Provider-Chat-Sync.md)** (requires Task-056 first; portability test must pass before coding)
 
-## 2. YOLO
+## 2. YOLO - PASSED
 
 ### 2.1.1 Codex
 
@@ -122,11 +122,10 @@ If affected to our app cause we call its functions
 update ui of provider selection
 new rule: can not CHANGED provider after run started
 
-## 9. Feature cancel current running chat turn
+## 9. Feature cancel current running chat turn - PASSED
 
-## 10. Load long chat
-
-pending Task 062
+## 10. Load long chat - PASSED
+Task 062
 
 ## 11. skill attached - AI k doc dc ? sai folder?
 
