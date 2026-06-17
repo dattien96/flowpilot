@@ -49,7 +49,7 @@
 ### Source Refs
 
 - User report on `2026-06-16`: YOLO=off, clicked Approve on the file-write approval card, Codex still reported "exec command rejected by user".
-- Protocol literals extracted from the installed `codex.exe` (codex-cli `0.137.0`).
+- Protocol literals extracted from the installed `codex.exe` (codex-cli `0.140.0`).
 - Runner code: `apps/local-runner/internal/runner/codex_adapter.go` (`handleInbound`, `codexReviewDecision`).
 
 ## 1. Issue Summary
@@ -64,7 +64,7 @@ In direct chat mode with YOLO disabled, Codex runs in `workspace-write` sandbox 
 
 ## 3. Environment and Reproduction
 
-- environment: `apps/desktop-flowpilot` chat mode + `apps/local-runner` with `FLOWPILOT_CODEX_APPSERVER` enabled and a real `codex` binary (codex-cli 0.137.0)
+- environment: `apps/desktop-flowpilot` chat mode + `apps/local-runner` with `FLOWPILOT_CODEX_APPSERVER` enabled and a real `codex` binary (codex-cli 0.140.0)
 - reproduction steps:
   1. Open chat mode, select Codex, set YOLO **off**.
   2. Prompt: `Create a file called yolo-test.txt in the current directory with the text "yolo works"`.
