@@ -37,6 +37,14 @@ function GeminiIcon(): React.ReactElement {
   );
 }
 
+function StopIcon(): React.ReactElement {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" aria-hidden="true">
+      <rect x="2" y="2" width="10" height="10" rx="2" />
+    </svg>
+  );
+}
+
 const PROVIDER_CARDS: { value: ProviderKey; label: string; icon: React.ReactElement }[] = [
   { value: "codex", label: "Codex", icon: <CodexIcon /> },
   { value: "claude", label: "Claude", icon: <ClaudeIcon /> },
@@ -158,6 +166,7 @@ export function ChatInput(): React.ReactElement {
   const pendingApproval = useStore((s) => s.pendingApproval);
   const pendingQuestion = useStore((s) => s.pendingQuestion);
   const latestTokenUsage = useStore((s) => s.latestTokenUsage);
+  const stop = useStore((s) => s.stop);
   const timeline = useStore((s) => s.timeline);
 
   const [text, setText] = useState("");
@@ -662,9 +671,15 @@ export function ChatInput(): React.ReactElement {
           onKeyDown={onKeyDown}
           onPaste={onPaste}
         />
-        <button className="btn btn-primary send-btn" onClick={send} disabled={!canSend}>
-          Send
-        </button>
+        {blocked ? (
+          <button className="btn send-btn send-btn-stop" onClick={() => void stop()} aria-label="Stop AI">
+            <StopIcon />
+          </button>
+        ) : (
+          <button className="btn btn-primary send-btn" onClick={send} disabled={!canSend}>
+            Send
+          </button>
+        )}
       </div>
 
       {isChatMode && usageLine && (

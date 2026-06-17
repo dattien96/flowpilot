@@ -85,6 +85,27 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
   const timeline = s.timeline.filter((it) => it.kind !== "thinking");
   let streamingAssistantId = s._streamingAssistantId;
 
+  // When any event arrives while pendingApproval is set — other than a new
+  // permission_required — it means the approval was already resolved in a prior
+  // session (history replay). In live runs approve() clears pendingApproval
+  // synchronously before the server ever sends a follow-up event, so this is a
+  // no-op during normal execution. (BUG-074)
+  const staleApproval =
+    s.pendingApproval !== undefined &&
+    e.type !== "permission_required" &&
+    e.type !== "user_question_required"
+      ? s.pendingApproval
+      : undefined;
+  if (staleApproval) {
+    for (let i = timeline.length - 1; i >= 0; i--) {
+      const it = timeline[i];
+      if (it.kind === "approval" && it.approvalId === staleApproval.approvalId && it.decision === undefined) {
+        timeline[i] = { ...it, decision: "approved" };
+        break;
+      }
+    }
+  }
+
   const closeAssistant = () => {
     streamingAssistantId = undefined;
   };
@@ -98,6 +119,7 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
       : nextTimeline,
     status,
     _streamingAssistantId: streamingAssistantId,
+    ...(staleApproval ? { pendingApproval: undefined } : {}),
     ...extra,
   });
 
@@ -188,7 +210,9 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
 
     case "turn_failed":
       closeAssistant();
-      timeline.push({ kind: "system", id: e.id, text: e.error, tone: "error" });
+      if (e.error !== "interrupted by user") {
+        timeline.push({ kind: "system", id: e.id, text: e.error, tone: "error" });
+      }
       return finalize(timeline, { recoverable: e.recoverable });
   }
 
