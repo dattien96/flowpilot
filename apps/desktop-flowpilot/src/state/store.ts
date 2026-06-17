@@ -76,7 +76,6 @@ interface AppState {
   timeline: TimelineItem[];
   artifacts: Artifact[];
   runHistory: RunHistoryItem[];
-  historyOpen: boolean;
   historyLoading: boolean;
   historyLoadError?: string;
   pendingApproval?: PendingApproval;
@@ -90,6 +89,9 @@ interface AppState {
   _streamingAssistantId?: string;
   // stale-response guard for loadRunHistory (BUG-060 F-3)
   _historyLoadSeq: number;
+  // stream generation counter: incremented on every new consumeStream start so that
+  // a prior stream for the same runId exits immediately (BUG-079)
+  _streamRunSeq: number;
 
   // actions
   loadProjects(): Promise<void>;
@@ -111,7 +113,6 @@ interface AppState {
   stop(): Promise<void>;
   reconnect(): Promise<void>;
   loadRunHistory(): Promise<void>;
-  toggleRunHistory(): Promise<void>;
   openHistoryRun(runId: string): Promise<void>;
   resetRun(): void;
   openInIde(path: string, line?: number): void;
@@ -132,7 +133,6 @@ export const useStore = create<AppState>((set, get) => ({
   timeline: [],
   artifacts: [],
   runHistory: [],
-  historyOpen: false,
   historyLoading: false,
   latestTokenUsage: undefined,
   recoverable: false,
@@ -142,6 +142,7 @@ export const useStore = create<AppState>((set, get) => ({
   selectedProvider: "codex",
   yoloMode: false,
   _historyLoadSeq: 0,
+  _streamRunSeq: 0,
 
   async loadProjects() {
     if (loadProjectsInFlight) return loadProjectsInFlight;
@@ -239,7 +240,6 @@ export const useStore = create<AppState>((set, get) => ({
       selectedWorkflowId: undefined,
       selectedStepId: undefined,
       runHistory: [],
-      historyOpen: false,
       historyLoadError: undefined,
     });
     void get().loadSkills(get().selectedProvider ?? "codex");
@@ -429,9 +429,7 @@ export const useStore = create<AppState>((set, get) => ({
         ],
       }));
     } finally {
-      if (get().historyOpen) {
-        void get().loadRunHistory();
-      }
+      void get().loadRunHistory();
     }
   },
 
@@ -473,7 +471,7 @@ export const useStore = create<AppState>((set, get) => ({
     await client.resumeRun(runId);
     // Clear the timeline so the replay visibly rebuilds it from persisted events
     // via the run's event stream (attach + replay from seq 0).
-    set({ timeline: [], recoverable: false, status: "running", _streamingAssistantId: undefined });
+    set({ timeline: [], recoverable: false, status: "running", _streamingAssistantId: undefined, _streamRunSeq: get()._streamRunSeq + 1 });
     await consumeStream(runId, client.streamRun(runId, 0), set, get);
   },
 
@@ -499,14 +497,6 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
-  async toggleRunHistory() {
-    const open = !get().historyOpen;
-    set({ historyOpen: open });
-    if (open) {
-      await get().loadRunHistory();
-    }
-  },
-
   async openHistoryRun(runId) {
     const { client } = get();
     const historyItem = get().runHistory.find((item) => item.runId === runId);
@@ -522,8 +512,8 @@ export const useStore = create<AppState>((set, get) => ({
       latestTokenUsage: undefined,
       lastTurnInput: undefined,
       recoverable: false,
-      historyOpen: false,
       _streamingAssistantId: undefined,
+      _streamRunSeq: get()._streamRunSeq + 1,
       ...(historyItem ? { selectedProvider: historyItem.providerKey } : {}),
     });
     if (historyItem?.providerKey) {
@@ -569,7 +559,6 @@ export const useStore = create<AppState>((set, get) => ({
       latestTokenUsage: undefined,
       lastTurnInput: undefined,
       recoverable: false,
-      historyOpen: false,
       _streamingAssistantId: undefined,
     });
   },
@@ -592,19 +581,24 @@ export const useStore = create<AppState>((set, get) => ({
 }));
 
 // Consumes a turn stream and folds each event into the timeline + status.
+// mySeq captures _streamRunSeq at call time; if the counter advances (because
+// openHistoryRun or reconnect started a newer stream for the same runId) this
+// stream exits immediately rather than applying stale events. (BUG-079)
 async function consumeStream(
   runId: string,
   stream: AsyncIterable<ProviderEventDTO>,
   set: (fn: (s: AppState) => Partial<AppState>) => void,
   get: () => AppState,
 ): Promise<void> {
+  const mySeq = get()._streamRunSeq;
+  const isStale = () => !shouldApplyRunEvent(get().runId, runId) || get()._streamRunSeq !== mySeq;
   for await (const e of stream) {
-    if (!shouldApplyRunEvent(get().runId, runId)) {
+    if (isStale()) {
       return;
     }
     set((s) => applyEvent(s, e));
   }
-  if (!shouldApplyRunEvent(get().runId, runId)) {
+  if (isStale()) {
     return;
   }
   // settle recoverable flag for the Reconnect affordance
