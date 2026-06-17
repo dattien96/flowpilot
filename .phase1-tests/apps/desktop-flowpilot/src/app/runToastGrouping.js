@@ -3,7 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.COLLAPSIBLE_TOAST_THRESHOLD = void 0;
 exports.shouldCollapseToasts = shouldCollapseToasts;
 exports.buildToastGroupSummary = buildToastGroupSummary;
-exports.COLLAPSIBLE_TOAST_THRESHOLD = 3;
+exports.COLLAPSIBLE_TOAST_THRESHOLD = 1;
 const KIND_LABELS = {
     done: "Completed",
     approval: "Approvals",

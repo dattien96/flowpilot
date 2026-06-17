@@ -4,7 +4,7 @@ export interface RunToastGroupItem {
   kind: RunToastKind;
 }
 
-export const COLLAPSIBLE_TOAST_THRESHOLD = 3;
+export const COLLAPSIBLE_TOAST_THRESHOLD = 1;
 
 const KIND_LABELS: Record<RunToastKind, string> = {
   done: "Completed",

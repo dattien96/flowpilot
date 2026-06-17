@@ -6,8 +6,8 @@ import {
   shouldCollapseToasts,
 } from "../../apps/desktop-flowpilot/src/app/runToastGrouping";
 
-test("collapses once three or more notifications are active", () => {
-  assert.equal(shouldCollapseToasts(COLLAPSIBLE_TOAST_THRESHOLD - 1), false);
+test("always collapses — even a single notification shows grouped", () => {
+  assert.equal(shouldCollapseToasts(0), false);
   assert.equal(shouldCollapseToasts(COLLAPSIBLE_TOAST_THRESHOLD), true);
   assert.equal(shouldCollapseToasts(COLLAPSIBLE_TOAST_THRESHOLD + 2), true);
 });

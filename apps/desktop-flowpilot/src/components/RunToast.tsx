@@ -1,5 +1,6 @@
+import { createPortal } from "react-dom";
 import { useEffect, useRef, useState } from "react";
-import { buildToastGroupSummary, shouldCollapseToasts } from "@/app/runToastGrouping";
+import { buildToastGroupSummary } from "@/app/runToastGrouping";
 import { useStore } from "@/state/store";
 import type { RunStatus } from "@/types/contract";
 
@@ -21,11 +22,11 @@ export function RunToast(): React.ReactElement | null {
   const status = useStore((s) => s.status);
   const prevRef = useRef<RunStatus>(status);
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const [groupExpanded, setGroupExpanded] = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
 
   useEffect(() => {
-    if (!shouldCollapseToasts(toasts.length)) {
-      setGroupExpanded(false);
+    if (toasts.length === 0) {
+      setModalOpen(false);
     }
   }, [toasts.length]);
 
@@ -60,28 +61,27 @@ export function RunToast(): React.ReactElement | null {
 
   if (toasts.length === 0) return null;
 
-  const collapsed = shouldCollapseToasts(toasts.length);
   const groupSummary = buildToastGroupSummary(toasts);
 
-  if (collapsed) {
-    return (
+  return (
+    <>
       <div className="run-toast-stack" role="status" aria-live="polite" aria-label="Run notifications">
         <div className="run-toast run-toast--grouped">
           <button
             type="button"
             className="run-toast-group-toggle"
-            onClick={() => setGroupExpanded((value) => !value)}
-            aria-expanded={groupExpanded}
-            aria-controls="run-toast-group-list"
+            onClick={() => setModalOpen(true)}
+            aria-haspopup="dialog"
+            aria-label={`${toasts.length} notification${toasts.length !== 1 ? "s" : ""} — click to view`}
           >
             <span className="run-toast-icon" aria-hidden="true">⚑</span>
             <span className="run-toast-group-copy">
-              <span className="run-toast-msg">{toasts.length} notifications</span>
+              <span className="run-toast-msg">
+                {toasts.length} notification{toasts.length !== 1 ? "s" : ""}
+              </span>
               <span className="run-toast-group-summary">{groupSummary}</span>
             </span>
-            <span className="run-toast-group-caret" aria-hidden="true">
-              {groupExpanded ? "▾" : "▸"}
-            </span>
+            <span className="run-toast-group-caret" aria-hidden="true">▸</span>
           </button>
           <button
             type="button"
@@ -91,47 +91,70 @@ export function RunToast(): React.ReactElement | null {
           >
             ✕
           </button>
-          {groupExpanded ? (
-            <div id="run-toast-group-list" className="run-toast-group-list">
-              {toasts.map((toast) => (
-                <div key={toast.id} className="run-toast-group-item">
-                  <span className={`run-toast-group-dot run-toast-group-dot--${toast.kind}`} aria-hidden="true" />
-                  <span className="run-toast-msg">{toast.message}</span>
-                  <button
-                    type="button"
-                    className="run-toast-close"
-                    onClick={() => setToasts((ts) => ts.filter((t) => t.id !== toast.id))}
-                    aria-label={`Dismiss ${toast.message}`}
-                  >
-                    ✕
-                  </button>
-                </div>
-              ))}
-            </div>
-          ) : null}
         </div>
       </div>
-    );
-  }
 
-  return (
-    <div className="run-toast-stack" role="status" aria-live="polite" aria-label="Run notifications">
-      {toasts.map((toast) => (
-        <div key={toast.id} className={`run-toast run-toast--${toast.kind}`}>
-          <span className="run-toast-icon" aria-hidden="true">
-            {toast.kind === "done" ? "✓" : "⚑"}
-          </span>
-          <span className="run-toast-msg">{toast.message}</span>
-          <button
-            type="button"
-            className="run-toast-close"
-            onClick={() => setToasts((ts) => ts.filter((t) => t.id !== toast.id))}
-            aria-label="Dismiss"
+      {modalOpen &&
+        createPortal(
+          <div
+            className="run-toast-modal-backdrop"
+            onClick={() => setModalOpen(false)}
           >
-            ✕
-          </button>
-        </div>
-      ))}
-    </div>
+            <div
+              className="run-toast-modal"
+              role="dialog"
+              aria-label="Notification list"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="run-toast-modal-head">
+                <span>Notifications ({toasts.length})</span>
+                <button
+                  type="button"
+                  className="run-toast-close"
+                  onClick={() => setModalOpen(false)}
+                  aria-label="Close notification list"
+                >
+                  ✕
+                </button>
+              </div>
+              <div className="run-toast-modal-list">
+                {toasts.map((toast) => (
+                  <div
+                    key={toast.id}
+                    className={`run-toast-modal-item run-toast-modal-item--${toast.kind}`}
+                  >
+                    <span
+                      className={`run-toast-group-dot run-toast-group-dot--${toast.kind}`}
+                      aria-hidden="true"
+                    />
+                    <span className="run-toast-msg">{toast.message}</span>
+                    <button
+                      type="button"
+                      className="run-toast-close"
+                      onClick={() => setToasts((ts) => ts.filter((t) => t.id !== toast.id))}
+                      aria-label={`Dismiss ${toast.message}`}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <div className="run-toast-modal-footer">
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => {
+                    setToasts([]);
+                    setModalOpen(false);
+                  }}
+                >
+                  Dismiss all
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
+    </>
   );
 }

@@ -14,7 +14,7 @@ const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL;
 // path as the AUMID — Windows can always resolve it and will show the banner.
 // In production the build sets its own AUMID via electron-builder.
 if (process.platform === "win32") {
-  app.setAppUserModelId(VITE_DEV_SERVER_URL ? process.execPath : "com.flowpilot.desktop");
+  app.setAppUserModelId("com.flowpilot.desktop");
 }
 
 // openInIde (04-06 / 04-01 Part B): invoke the first available IDE CLI to open a
