@@ -53,6 +53,11 @@ type ProviderSessionState struct {
 	ProviderAccountID string
 	WorkingDirectory  string
 	Status            RunStatus
+	LastPrompt        string
+	LastMessage       string
+	StartedAt         string
+	UpdatedAt         string
+	RunKind           string
 }
 
 type ProviderApprovalState struct {

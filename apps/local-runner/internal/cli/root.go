@@ -94,9 +94,20 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 			// The catalog (projects/workflows/steps) reads from Supabase when the
 			// runner has a Supabase config, else serves the offline fake catalog
 			// (04-08 A1).
-			interactive := runner.NewInteractiveServiceWith(
+			// Build a local file session store so run history survives app
+			// restarts when Supabase is not configured (BUG-080). Fall back
+			// to the default in-memory store on any OS/filesystem error.
+			var sessionStore runner.WorkflowStore
+			if cacheDir, err := os.UserCacheDir(); err == nil {
+				storeDir := filepath.Join(cacheDir, "flowpilot")
+				if fs, err := runner.NewLocalFileSessionStore(storeDir); err == nil {
+					sessionStore = fs
+				}
+			}
+			interactive := runner.NewInteractiveServiceWithStore(
 				runner.ProviderRegistryFor(instance),
 				runner.CatalogStoreFor(instance),
+				sessionStore,
 			)
 			interactive.RegisterInteractiveRoutes(mux)
 			// Runner-hosted MCP server for the Claude permission/ask_user tools (07):

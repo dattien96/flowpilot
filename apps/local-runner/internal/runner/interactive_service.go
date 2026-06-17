@@ -186,6 +186,17 @@ func NewInteractiveServiceWith(registry *ProviderRegistry, catalog CatalogStore)
 	return newInteractiveService(registry, catalog, nil)
 }
 
+// NewInteractiveServiceWithStore builds the service with a caller-supplied
+// registry, catalog store, AND workflow store. Pass a non-nil store to override
+// the default fakeWorkflowStore — e.g. localFileSessionStore for history
+// persistence across restarts (BUG-080). A nil store falls back to the default.
+func NewInteractiveServiceWithStore(registry *ProviderRegistry, catalog CatalogStore, store WorkflowStore) *InteractiveService {
+	if catalog == nil {
+		catalog = newInteractiveCatalog()
+	}
+	return newInteractiveService(registry, catalog, store)
+}
+
 func newInteractiveService(registry *ProviderRegistry, catalog CatalogStore, workflowStore WorkflowStore) *InteractiveService {
 	if workflowStore == nil {
 		workflowStore = newFakeWorkflowStore()
@@ -230,6 +241,26 @@ func (s *InteractiveService) persistProviderSession(session ProviderSessionState
 		return nil
 	}
 	return store.UpsertProviderSession(context.Background(), session)
+}
+
+// sessionStateOf snapshots the display fields of rs into a ProviderSessionState.
+// Caller must hold s.mu or guarantee rs is not concurrently modified.
+func sessionStateOf(rs *interactiveRun) ProviderSessionState {
+	return ProviderSessionState{
+		RunID:             rs.id,
+		ProjectID:         rs.projectID,
+		WorkflowID:        rs.workflowID,
+		ProviderSessionID: rs.providerSessionID,
+		ProviderKey:       rs.providerKey,
+		ProviderAccountID: rs.providerAccountID,
+		WorkingDirectory:  rs.workspaceCwd,
+		Status:            rs.status,
+		LastPrompt:        rs.lastPrompt,
+		LastMessage:       rs.lastMessage,
+		StartedAt:         rs.createdAt,
+		UpdatedAt:         rs.updatedAt,
+		RunKind:           rs.runKind,
+	}
 }
 
 func (s *InteractiveService) persistApproval(record ProviderApprovalState) error {
@@ -625,6 +656,13 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 
 	completed, fin := s.finishTurn(rs, turnID, err)
 
+	// Persist settled state (status, lastMessage, updatedAt) for history survival
+	// across restarts (BUG-080 F-3). Take a snapshot under lock; persist outside.
+	s.mu.Lock()
+	snap := sessionStateOf(rs)
+	s.mu.Unlock()
+	_ = s.persistProviderSession(snap)
+
 	// Finalizer hook runs OUTSIDE s.mu and only on a clean completion. A finalize
 	// failure is recorded as retryable and must not erase the completed turn (04-04).
 	if completed {
@@ -812,7 +850,9 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		return "", newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
 	}
 	s.emitLocked(rs, ProviderEvent{Type: EventTurnStarted, ProviderTurnID: turnID, WorkflowStepRunID: in.StepID, Prompt: in.Prompt})
+	snap := sessionStateOf(rs) // capture under lock: lastPrompt + updatedAt now set
 	s.mu.Unlock()
+	_ = s.persistProviderSession(snap) // BUG-080 F-3: persist outside lock, best-effort
 
 	go s.runTurn(ctx, rs, adapter, in, scenario, turnID)
 	return turnID, nil

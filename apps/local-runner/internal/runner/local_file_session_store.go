@@ -1,0 +1,163 @@
+package runner
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+)
+
+const sessionStoreMaxAge = 90 * 24 * time.Hour
+
+// localFileSessionStore implements WorkflowStore + InteractiveStateStore +
+// SessionHistoryReader backed by a NDJSON file at dataDir/sessions.ndjson.
+// It embeds fakeWorkflowStore for all WorkflowStore methods so the orchestration
+// layer behaves identically to the default no-Supabase path. Only
+// UpsertProviderSession adds a disk write-through so session metadata survives
+// process restarts (BUG-080).
+type localFileSessionStore struct {
+	*fakeWorkflowStore
+	mu       sync.Mutex
+	filePath string
+}
+
+// NewLocalFileSessionStore creates a localFileSessionStore rooted at dataDir.
+// The directory is created if it does not exist. Sessions from a previous
+// process are loaded immediately so history is available from the first call
+// to ListProviderSessionsByProject.
+func NewLocalFileSessionStore(dataDir string) (*localFileSessionStore, error) {
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		return nil, err
+	}
+	s := &localFileSessionStore{
+		fakeWorkflowStore: newFakeWorkflowStore(),
+		filePath:          filepath.Join(dataDir, "sessions.ndjson"),
+	}
+	s.loadFromDisk()
+	return s, nil
+}
+
+// ndjsonSessionRecord is the on-disk JSON shape for a ProviderSessionState.
+type ndjsonSessionRecord struct {
+	RunID             string `json:"run_id"`
+	ProjectID         string `json:"project_id"`
+	WorkflowID        string `json:"workflow_id,omitempty"`
+	ProviderKey       string `json:"provider_key"`
+	ProviderSessionID string `json:"provider_session_id,omitempty"`
+	WorkingDirectory  string `json:"working_directory,omitempty"`
+	Status            string `json:"status"`
+	LastPrompt        string `json:"last_prompt,omitempty"`
+	LastMessage       string `json:"last_message,omitempty"`
+	StartedAt         string `json:"started_at,omitempty"`
+	UpdatedAt         string `json:"updated_at,omitempty"`
+	RunKind           string `json:"run_kind,omitempty"`
+}
+
+// loadFromDisk reads the NDJSON file, applies last-wins dedup per run_id, and
+// populates the in-memory sessions map. Entries older than sessionStoreMaxAge
+// (measured by updated_at) are pruned. Malformed lines are silently skipped.
+func (s *localFileSessionStore) loadFromDisk() {
+	f, err := os.Open(s.filePath)
+	if err != nil {
+		return // missing file is normal on first run
+	}
+	defer f.Close()
+
+	cutoff := time.Now().UTC().Add(-sessionStoreMaxAge)
+	seen := map[string]ndjsonSessionRecord{}
+
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := sc.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var rec ndjsonSessionRecord
+		if err := json.Unmarshal(line, &rec); err != nil {
+			continue
+		}
+		if rec.RunID == "" || rec.ProjectID == "" {
+			continue
+		}
+		if rec.UpdatedAt != "" {
+			if t, err := time.Parse(time.RFC3339Nano, rec.UpdatedAt); err == nil && t.Before(cutoff) {
+				continue
+			}
+		}
+		seen[rec.RunID] = rec // last-wins
+	}
+
+	s.fakeWorkflowStore.mu.Lock()
+	for _, rec := range seen {
+		s.fakeWorkflowStore.sessions[rec.RunID] = sessionStateFromRecord(rec)
+	}
+	s.fakeWorkflowStore.mu.Unlock()
+}
+
+// UpsertProviderSession updates the in-memory map and appends a NDJSON line to
+// the file so the state survives the next restart.
+func (s *localFileSessionStore) UpsertProviderSession(_ context.Context, session ProviderSessionState) error {
+	s.fakeWorkflowStore.mu.Lock()
+	s.fakeWorkflowStore.sessions[session.RunID] = session
+	s.fakeWorkflowStore.mu.Unlock()
+
+	rec := sessionRecordFrom(session)
+	line, err := json.Marshal(rec)
+	if err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fh, err := os.OpenFile(s.filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer fh.Close()
+	_, err = fh.Write(append(line, '\n'))
+	return err
+}
+
+// ListProviderSessionsByProject returns sessions for the given project from the
+// in-memory map (populated from disk on startup and kept current by
+// UpsertProviderSession). No extra file read is needed here.
+func (s *localFileSessionStore) ListProviderSessionsByProject(ctx context.Context, projectID string) ([]ProviderSessionState, error) {
+	return s.fakeWorkflowStore.ListProviderSessionsByProject(ctx, projectID)
+}
+
+func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
+	return ProviderSessionState{
+		RunID:             r.RunID,
+		ProjectID:         r.ProjectID,
+		WorkflowID:        r.WorkflowID,
+		ProviderKey:       ProviderKey(r.ProviderKey),
+		ProviderSessionID: r.ProviderSessionID,
+		WorkingDirectory:  r.WorkingDirectory,
+		Status:            RunStatus(r.Status),
+		LastPrompt:        r.LastPrompt,
+		LastMessage:       r.LastMessage,
+		StartedAt:         r.StartedAt,
+		UpdatedAt:         r.UpdatedAt,
+		RunKind:           r.RunKind,
+	}
+}
+
+func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
+	return ndjsonSessionRecord{
+		RunID:             s.RunID,
+		ProjectID:         s.ProjectID,
+		WorkflowID:        s.WorkflowID,
+		ProviderKey:       string(s.ProviderKey),
+		ProviderSessionID: s.ProviderSessionID,
+		WorkingDirectory:  s.WorkingDirectory,
+		Status:            string(s.Status),
+		LastPrompt:        s.LastPrompt,
+		LastMessage:       s.LastMessage,
+		StartedAt:         s.StartedAt,
+		UpdatedAt:         s.UpdatedAt,
+		RunKind:           s.RunKind,
+	}
+}

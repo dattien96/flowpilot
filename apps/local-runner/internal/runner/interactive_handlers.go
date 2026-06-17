@@ -519,6 +519,9 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		ProviderAccountID: s.activeAccountID,
 		WorkingDirectory:  in.Cwd,
 		Status:            rs.status,
+		StartedAt:         now,
+		UpdatedAt:         now,
+		RunKind:           runKind,
 	}); err != nil {
 		delete(s.runs, runID)
 		return RunHandle{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
@@ -622,6 +625,11 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 					WorkflowID:  sess.WorkflowID,
 					ProviderKey: sess.ProviderKey,
 					Status:      sess.Status,
+					StartedAt:   sess.StartedAt,
+					UpdatedAt:   sess.UpdatedAt,
+					LastPrompt:  sess.LastPrompt,
+					LastMessage: sess.LastMessage,
+					RunKind:     sess.RunKind,
 				})
 			}
 		}
