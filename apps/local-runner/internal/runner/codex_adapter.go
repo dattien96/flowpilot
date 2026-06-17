@@ -125,11 +125,6 @@ func (a *codexAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tur
 		a.mu.Unlock()
 	}()
 
-	var skill *SkillSelection
-	if len(req.SelectedSkills) > 0 {
-		skill = &req.SelectedSkills[0]
-	}
-
 	// Persist image attachments to a per-turn temp dir on the runner host so Codex can
 	// read them by path (Task-052, D-3). Cleanup is deferred to turn return: SendTurn
 	// blocks on the event pump below until a terminal event or interrupt, by which point
@@ -150,7 +145,7 @@ func (a *codexAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tur
 	// Fire turn/start; rely on notifications for completion (don't block the pump).
 	turnErr := make(chan error, 1)
 	go func() {
-		res, e := a.dispatcher.call(ctx, "turn/start", codexTurnStartParams(threadID, prompt, skill, imagePaths))
+		res, e := a.dispatcher.call(ctx, "turn/start", codexTurnStartParams(threadID, prompt, req.SelectedSkills, imagePaths))
 		if e == nil {
 			if tid := codexTurnIDFromResponse(res); tid != "" {
 				a.mu.Lock()

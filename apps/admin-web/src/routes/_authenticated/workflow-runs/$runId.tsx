@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import {
   ArrowLeft,
@@ -67,6 +67,12 @@ import {
   isResultSummaryStepType,
   RESULT_SUMMARY_STEP_NAME,
 } from "@/features/workflow-engine/workflow-result-summary";
+import {
+  getNextPromptGroupVisibleCount,
+  getTotalStepPromptGroupCount,
+  getVisibleStepSessionGroupSlice,
+  SESSION_PROMPT_GROUP_PAGE_SIZE,
+} from "@/features/workflow-engine/workflow-run-session-windowing";
 import type { ApprovalDecision } from "@/domain/model/entity/workflow";
 import type { LocalRunnerArtifact } from "@/domain/model/entity/local-runner";
 import type { ArtifactRun, WorkflowRunSession } from "@/domain/model/entity/workflow-engine";
@@ -285,7 +291,7 @@ function CollapsibleTextBlock({
   );
 }
 
-function CollapsibleChatBubble({
+const CollapsibleChatBubble = memo(function CollapsibleChatBubble({
   title,
   time,
   content,
@@ -330,7 +336,7 @@ function CollapsibleChatBubble({
       ) : null}
     </div>
   );
-}
+});
 
 function CollapsibleAttemptPanel({
   title,
@@ -376,7 +382,7 @@ function CollapsibleAttemptPanel({
   );
 }
 
-const ArtifactContentViewer = ({ content }: { content: string }) => {
+const ArtifactContentViewer = memo(function ArtifactContentViewer({ content }: { content: string }) {
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   const TRUNCATE_LENGTH = 350;
@@ -419,9 +425,9 @@ const ArtifactContentViewer = ({ content }: { content: string }) => {
       )}
     </div>
   );
-};
+});
 
-function StepOutputTabs({
+const StepOutputTabs = memo(function StepOutputTabs({
   artifactRun,
   output,
 }: {
@@ -578,7 +584,7 @@ function StepOutputTabs({
       ) : null}
     </div>
   );
-}
+});
 
 function formatBubbleTime(value?: string | null) {
   const normalized = value?.trim() ?? "";
@@ -1098,7 +1104,10 @@ function SessionGroupSection({
 
       {!isCollapsed && (
         <div className="ml-4 space-y-6 border-l border-border/20 pl-5">
-          {group.promptGroups.map((pg, index) => {
+          {group.promptGroups.map((pg) => {
+            const promptIndex = group.promptGroups.findIndex(
+              (promptGroup) => promptGroup.key === pg.key,
+            );
             const nextPromptCreatedAt = findNextPromptCreatedAt(
               pg.prompt.createdAt,
               stepPromptCreatedAts,
@@ -1116,13 +1125,16 @@ function SessionGroupSection({
               nextPromptCreatedAt,
             });
             const isLiveThinking = isLiveThinkingPrompt({
-              promptIndex: index,
+              promptIndex,
               promptCount: group.promptGroups.length,
               sessionStatus: session?.status,
               stepStatus,
             });
             return (
-              <div key={pg.key} className="space-y-5 bg-[#0f111a]/45 border border-border/10 p-6 rounded-2xl shadow-inner">
+              <div
+                key={pg.key}
+                className="space-y-5 bg-[#0f111a]/45 border border-border/10 p-6 rounded-2xl shadow-inner [content-visibility:auto] [contain-intrinsic-size:0_760px]"
+              >
                 {/* Prompt Chat Bubble */}
                 <div className="flex justify-end">
                   <CollapsibleChatBubble
@@ -1183,6 +1195,83 @@ function SessionGroupSection({
         </div>
       )}
     </section>
+  );
+}
+
+function StepSessionContent({
+  stepSessionGroups,
+  detail,
+  gatewayBundle,
+  stepOutputs,
+  stepCommandLogs,
+  stepLogs,
+  stepPromptCreatedAts,
+  stepStatus,
+  subagent,
+  onKillSession,
+}: {
+  stepSessionGroups: WorkflowStepSessionGroup[];
+  detail: any;
+  gatewayBundle: React.MutableRefObject<ReturnType<typeof createGatewayBundle>>;
+  stepOutputs: WorkflowOutputRecord[];
+  stepCommandLogs: Array<{ createdAt: string; message?: string | null }>;
+  stepLogs: Array<{ createdAt: string; message?: string | null }>;
+  stepPromptCreatedAts: string[];
+  stepStatus: string;
+  subagent: string | null;
+  onKillSession: (session: WorkflowRunSession) => Promise<void>;
+}) {
+  const totalCount = getTotalStepPromptGroupCount(stepSessionGroups);
+  const [visibleCount, setVisibleCount] = useState(() =>
+    Math.min(totalCount, SESSION_PROMPT_GROUP_PAGE_SIZE),
+  );
+
+  useEffect(() => {
+    setVisibleCount((current) => {
+      if (totalCount <= SESSION_PROMPT_GROUP_PAGE_SIZE) {
+        return totalCount;
+      }
+      return Math.min(Math.max(current, SESSION_PROMPT_GROUP_PAGE_SIZE), totalCount);
+    });
+  }, [totalCount]);
+
+  const visibleGroups = getVisibleStepSessionGroupSlice(stepSessionGroups, visibleCount);
+  const hiddenCount = Math.max(totalCount - visibleCount, 0);
+
+  return (
+    <div className="space-y-5">
+      {hiddenCount > 0 ? (
+        <div className="flex justify-center sticky top-4 z-10">
+          <Button
+            type="button"
+            variant="secondary"
+            className="h-8 px-4 text-[10px] font-bold uppercase tracking-wider shadow-md backdrop-blur-sm"
+            onClick={() =>
+              setVisibleCount((current) =>
+                getNextPromptGroupVisibleCount({ currentCount: current, totalCount }),
+              )
+            }
+          >
+            ↑ Load earlier prompts ({hiddenCount})
+          </Button>
+        </div>
+      ) : null}
+      {visibleGroups.map((group) => (
+        <SessionGroupSection
+          key={group.key}
+          detail={detail}
+          gatewayBundle={gatewayBundle}
+          group={group}
+          onKillSession={onKillSession}
+          stepOutputs={stepOutputs}
+          stepCommandLogs={stepCommandLogs}
+          stepLogs={stepLogs}
+          stepPromptCreatedAts={stepPromptCreatedAts}
+          stepStatus={stepStatus}
+          subagent={subagent}
+        />
+      ))}
+    </div>
   );
 }
 
@@ -1440,7 +1529,7 @@ function WorkflowRunDetailPage() {
         getWorkflowEngineRunDetailUseCase.current.execute(runId),
       ]);
       const engineDetail = engineDetailRaw as
-        | { steps?: any[]; logs: any[]; sessions?: any[] | null }
+        | { run?: { yoloMode?: boolean }; steps?: any[]; logs: any[]; sessions?: any[] | null }
         | null;
       if (data) {
         let processed = await processDetailData(data);
@@ -2384,23 +2473,19 @@ function WorkflowRunDetailPage() {
                   ) : null}
                 </div>
               ) : (
-                <div className="space-y-5">
-                  {stepSessionGroups.map((group) => (
-                    <SessionGroupSection
-                      key={group.key}
-                      detail={detail}
-                      gatewayBundle={gatewayBundle}
-                      group={group}
-                      onKillSession={handleKillSession}
-                      stepOutputs={stepOutputs}
-                      stepCommandLogs={stepCommandLogs}
-                      stepLogs={stepThinkingLogs}
-                      stepPromptCreatedAts={stepPromptCreatedAts}
-                      stepStatus={selectedStep.status}
-                      subagent={subagent}
-                    />
-                  ))}
-                </div>
+                <StepSessionContent
+                  key={selectedStep.id}
+                  stepSessionGroups={stepSessionGroups}
+                  detail={detail}
+                  gatewayBundle={gatewayBundle}
+                  onKillSession={handleKillSession}
+                  stepOutputs={stepOutputs}
+                  stepCommandLogs={stepCommandLogs}
+                  stepLogs={stepThinkingLogs}
+                  stepPromptCreatedAts={stepPromptCreatedAts}
+                  stepStatus={selectedStep.status}
+                  subagent={subagent}
+                />
               )}
             </div>
 

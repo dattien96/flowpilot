@@ -30,6 +30,7 @@ declare global {
         headers: Array<[string, string]>;
         body: string;
       }>;
+      showNotification(title: string, body: string): Promise<{ ok: boolean }>;
     };
   }
 }

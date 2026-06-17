@@ -1,4 +1,4 @@
-import type { RunnerHealth, RunnerRepository } from "../domain/runner";
+import type { CompatCheckResult, CompatConfig, CompatVersionInfo, RunnerHealth, RunnerRepository } from "../domain/runner";
 import type { HttpClient } from "./http";
 
 async function readError(response: Response) {
@@ -41,5 +41,65 @@ export class HttpRunnerRepository implements RunnerRepository {
       startedAt: payload.startedAt ?? null,
       version: payload.version ?? null,
     };
+  }
+
+  async loadCompatConfig(): Promise<CompatConfig> {
+    const response = await this.httpClient.request(
+      new URL("/compat-config", this.runnerBaseUrl),
+      { cache: "no-store" },
+    );
+    if (!response.ok) {
+      throw new Error(await readError(response));
+    }
+    return (await response.json()) as CompatConfig;
+  }
+
+  async saveCompatConfig(input: CompatConfig): Promise<CompatConfig> {
+    const response = await this.httpClient.request(
+      new URL("/compat-config", this.runnerBaseUrl),
+      {
+        method: "PUT",
+        cache: "no-store",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+      },
+    );
+    if (!response.ok) {
+      throw new Error(await readError(response));
+    }
+    return (await response.json()) as CompatConfig;
+  }
+
+  async loadCompatInfo(): Promise<CompatVersionInfo> {
+    const response = await this.httpClient.request(
+      new URL("/compat", this.runnerBaseUrl),
+      { cache: "no-store" },
+    );
+    if (!response.ok) {
+      throw new Error(await readError(response));
+    }
+    return (await response.json()) as CompatVersionInfo;
+  }
+
+  async runCompatCheck(): Promise<CompatCheckResult> {
+    const response = await this.httpClient.request(
+      new URL("/compat", this.runnerBaseUrl),
+      { method: "POST", cache: "no-store" },
+    );
+    if (!response.ok) {
+      throw new Error(await readError(response));
+    }
+    return (await response.json()) as CompatCheckResult;
+  }
+
+  async runCompatDeepCheck(): Promise<CompatCheckResult> {
+    const response = await this.httpClient.request(
+      new URL("/compat/deep", this.runnerBaseUrl),
+      { method: "POST", cache: "no-store" },
+    );
+    if (!response.ok) {
+      throw new Error(await readError(response));
+    }
+    return (await response.json()) as CompatCheckResult;
   }
 }

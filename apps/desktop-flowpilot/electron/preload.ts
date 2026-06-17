@@ -32,4 +32,6 @@ contextBridge.exposeInMainWorld("flowpilot", {
     headers: Array<[string, string]>;
     body: string;
   }> => ipcRenderer.invoke("http:request", payload),
+  showNotification: (title: string, body: string): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke("notification:show", { title, body }),
 });

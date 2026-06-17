@@ -37,6 +37,7 @@ const (
 	EventTurnStarted          ProviderEventType = "turn_started"
 	EventMessageDelta         ProviderEventType = "message_delta"
 	EventMessageCompleted     ProviderEventType = "message_completed"
+	EventTokenUsageUpdated    ProviderEventType = "token_usage_updated"
 	EventToolStarted          ProviderEventType = "tool_started"
 	EventToolCompleted        ProviderEventType = "tool_completed"
 	EventFileChanged          ProviderEventType = "file_changed"
@@ -67,6 +68,20 @@ type QuestionOption struct {
 	Value       string `json:"value,omitempty"`
 }
 
+type TokenUsageBreakdown struct {
+	CachedInputTokens     int64 `json:"cachedInputTokens"`
+	InputTokens           int64 `json:"inputTokens"`
+	OutputTokens          int64 `json:"outputTokens"`
+	ReasoningOutputTokens int64 `json:"reasoningOutputTokens"`
+	TotalTokens           int64 `json:"totalTokens"`
+}
+
+type TokenUsageSnapshot struct {
+	Last               *TokenUsageBreakdown `json:"last,omitempty"`
+	Total              *TokenUsageBreakdown `json:"total,omitempty"`
+	ModelContextWindow *int64               `json:"modelContextWindow,omitempty"`
+}
+
 // ProviderEvent is the normalized, serialized event — a single Go struct keyed by
 // Type (the Go-friendly form of the 04 discriminated union). Every event carries a
 // monotonic per-run Seq (the reconnect cursor, 04-02). Type-specific fields are
@@ -84,6 +99,8 @@ type ProviderEvent struct {
 
 	// message_delta / message_completed
 	Text string `json:"text,omitempty"`
+	// token_usage_updated
+	TokenUsage *TokenUsageSnapshot `json:"tokenUsage,omitempty"`
 	// turn_completed
 	FinalMessage string `json:"finalMessage,omitempty"`
 	// tool_started / tool_completed

@@ -17,7 +17,7 @@ MCP connection-handshake defect, fixed here. Closes the live-model gap left open
 
 The structured-question `ask_user` MCP tool never reached the Claude model in the running desktop
 app — the QuestionCard options UI never appeared and the model asked in plain text instead. Four
-compounding causes, root-caused by reproducing the failure against a real `claude` 2.1.178 process
+compounding causes, root-caused by reproducing the failure against a real `claude` 2.1.179 process
 and inspecting its MCP debug log.
 
 ### Defect A — built-in `AskUserQuestion` shadowed the MCP tool

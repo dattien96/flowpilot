@@ -87,6 +87,9 @@ func mapClaudeAssistant(raw map[string]any) []ProviderEvent {
 	if len(textParts) > 0 {
 		out = append(out, ProviderEvent{Type: EventMessageCompleted, Text: strings.Join(textParts, "")})
 	}
+	if usage := claudeTokenUsage(raw["usage"]); usage != nil {
+		out = append(out, ProviderEvent{Type: EventTokenUsageUpdated, TokenUsage: &TokenUsageSnapshot{Last: usage}})
+	}
 	return out
 }
 
@@ -118,13 +121,19 @@ func mapClaudeUser(raw map[string]any) []ProviderEvent {
 func mapClaudeResult(raw map[string]any) []ProviderEvent {
 	subtype, _ := raw["subtype"].(string)
 	isError, _ := raw["is_error"].(bool)
+	var out []ProviderEvent
+	if usage := claudeTokenUsage(raw["usage"]); usage != nil {
+		out = append(out, ProviderEvent{Type: EventTokenUsageUpdated, TokenUsage: &TokenUsageSnapshot{Last: usage}})
+	}
 	if isError || (subtype != "" && subtype != "success") {
 		// error_during_execution is transient/recoverable; max_turns/budget are not.
 		recoverable := subtype == "error_during_execution"
-		return []ProviderEvent{{Type: EventTurnFailed, Error: claudeResultErrorMessage(raw, subtype), Recoverable: recoverable}}
+		out = append(out, ProviderEvent{Type: EventTurnFailed, Error: claudeResultErrorMessage(raw, subtype), Recoverable: recoverable})
+		return out
 	}
 	final, _ := raw["result"].(string)
-	return []ProviderEvent{{Type: EventTurnCompleted, FinalMessage: final}}
+	out = append(out, ProviderEvent{Type: EventTurnCompleted, FinalMessage: final})
+	return out
 }
 
 func claudeResultErrorMessage(raw map[string]any, subtype string) string {
@@ -250,4 +259,50 @@ func claudeFileChangeFromToolUse(name string, input any) (ProviderEvent, bool) {
 		return ProviderEvent{}, false
 	}
 	return ProviderEvent{Type: EventFileChanged, Path: path, ChangeType: change}, true
+}
+
+func claudeTokenUsage(v any) *TokenUsageBreakdown {
+	usage, _ := v.(map[string]any)
+	if usage == nil {
+		return nil
+	}
+	input, okInput := claudeUsageInt(usage["input_tokens"])
+	output, okOutput := claudeUsageInt(usage["output_tokens"])
+	cached, okCached := claudeUsageInt(usage["cache_read_input_tokens"])
+	if !okCached {
+		cached, _ = claudeUsageInt(usage["cached_input_tokens"])
+	}
+	reasoning, okReasoning := claudeUsageInt(usage["reasoning_output_tokens"])
+	total, okTotal := claudeUsageInt(usage["total_tokens"])
+	if !okTotal {
+		total = input + output + cached + reasoning
+		okTotal = okInput || okOutput || okCached || okReasoning
+	}
+	if !okInput && !okOutput && !okCached && !okReasoning && !okTotal {
+		return nil
+	}
+	return &TokenUsageBreakdown{
+		CachedInputTokens:     cached,
+		InputTokens:           input,
+		OutputTokens:          output,
+		ReasoningOutputTokens: reasoning,
+		TotalTokens:           total,
+	}
+}
+
+func claudeUsageInt(v any) (int64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return int64(n), true
+	case float32:
+		return int64(n), true
+	case int:
+		return int64(n), true
+	case int32:
+		return int64(n), true
+	case int64:
+		return n, true
+	default:
+		return 0, false
+	}
 }

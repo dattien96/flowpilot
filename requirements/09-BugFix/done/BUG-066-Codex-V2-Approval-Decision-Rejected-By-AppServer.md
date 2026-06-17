@@ -22,7 +22,7 @@
 
 - After BUG-064, clicking **Approve** could still leave Codex reporting `exec command rejected by user`.
 - The old fix mapped FlowPilot `approve` to legacy Codex `ReviewDecision` value `approved`.
-- Codex 0.137.0 can also send v2 approval method `item/commandExecution/requestApproval`, whose response enum is `accept | acceptForSession | decline | cancel`.
+- Codex 0.140.0 can also send v2 approval method `item/commandExecution/requestApproval`, whose response enum is `accept | acceptForSession | decline | cancel`.
 - Returning legacy `approved` to that v2 method is invalid, so the command is still declined.
 
 ### Current Ask
@@ -49,7 +49,7 @@
 ### Source Refs
 
 - User retest on `2026-06-16`: approval card showed `decision: approve`, but Codex still reported the command was rejected.
-- Generated local Codex schema from `codex app-server generate-ts` on codex-cli `0.137.0`.
+- Generated local Codex schema from `codex app-server generate-ts` on codex-cli `0.140.0`.
 - Runner code: `apps/local-runner/internal/runner/codex_adapter.go`.
 
 ## 1. Issue Summary
@@ -64,7 +64,7 @@ The BUG-064 fix handled the legacy app-server approval response enum but missed 
 
 ## 3. Environment and Reproduction
 
-- environment: `apps/desktop-flowpilot` chat mode + `apps/local-runner` with `FLOWPILOT_CODEX_APPSERVER=1`, Codex CLI `0.137.0`.
+- environment: `apps/desktop-flowpilot` chat mode + `apps/local-runner` with `FLOWPILOT_CODEX_APPSERVER=1`, Codex CLI `0.140.0`.
 - reproduction steps:
   1. Open desktop chat mode with Codex and YOLO off.
   2. Ask Codex to create `yolo-test.txt`.

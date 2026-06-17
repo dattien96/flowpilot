@@ -85,6 +85,40 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
   const timeline = s.timeline.filter((it) => it.kind !== "thinking");
   let streamingAssistantId = s._streamingAssistantId;
 
+  // Stale pending-interaction detection (BUG-074): in live runs, approve() and
+  // answer() clear pendingApproval/pendingQuestion synchronously before the server
+  // sends any follow-up event, so these are undefined by the time the next event
+  // arrives — the blocks below are no-ops during normal execution.
+  //
+  // During history replay the resolution was client-side only; no resolution event
+  // exists in the stream. The first event that arrives after permission_required /
+  // user_question_required signals that the interaction was resolved. Stamp the
+  // card so it renders as resolved instead of re-showing the buttons.
+  //
+  // No type guards are needed: when a NEW permission_required or user_question_required
+  // fires and sets a new pending value via `...extra`, it overrides the `undefined`
+  // spread by finalize — so the net result is always correct. (BUG-074)
+  const staleApproval = s.pendingApproval;
+  if (staleApproval) {
+    for (let i = timeline.length - 1; i >= 0; i--) {
+      const it = timeline[i];
+      if (it.kind === "approval" && it.approvalId === staleApproval.approvalId && it.decision === undefined) {
+        timeline[i] = { ...it, decision: "resolved" };
+        break;
+      }
+    }
+  }
+  const staleQuestion = s.pendingQuestion;
+  if (staleQuestion) {
+    for (let i = timeline.length - 1; i >= 0; i--) {
+      const it = timeline[i];
+      if (it.kind === "question" && it.questionId === staleQuestion.questionId && it.answer === undefined) {
+        timeline[i] = { ...it, answer: "answered" };
+        break;
+      }
+    }
+  }
+
   const closeAssistant = () => {
     streamingAssistantId = undefined;
   };
@@ -98,6 +132,8 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
       : nextTimeline,
     status,
     _streamingAssistantId: streamingAssistantId,
+    ...(staleApproval ? { pendingApproval: undefined } : {}),
+    ...(staleQuestion ? { pendingQuestion: undefined } : {}),
     ...extra,
   });
 
@@ -188,7 +224,9 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
 
     case "turn_failed":
       closeAssistant();
-      timeline.push({ kind: "system", id: e.id, text: e.error, tone: "error" });
+      if (e.error !== "interrupted by user") {
+        timeline.push({ kind: "system", id: e.id, text: e.error, tone: "error" });
+      }
       return finalize(timeline, { recoverable: e.recoverable });
   }
 

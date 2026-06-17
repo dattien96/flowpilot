@@ -21,7 +21,7 @@
 ### Summary
 
 - The structured-question `ask_user` tool never reached the Codex model: it reported "I can't access the interactive user prompt tool" and answered in plain text.
-- Three causes, verified against codex-cli 0.137.0 via `codex app-server generate-json-schema` + live spikes: (A) `ask_user` was registered as an inline `mcpServers:[{name,tools:[]}]` entry, but `ThreadStartParams` has **no `mcpServers` field** — silently ignored; the real channel is `dynamicTools:[DynamicToolSpec]`; (B) `initialize` did not request `capabilities.experimentalApi=true`, which `dynamicTools` requires (else JSON-RPC -32600); (C) the model's call returns as a server→client `item/tool/call` (`DynamicToolCallParams`) that `handleInbound` had no handler for.
+- Three causes, verified against codex-cli 0.140.0 via `codex app-server generate-json-schema` + live spikes: (A) `ask_user` was registered as an inline `mcpServers:[{name,tools:[]}]` entry, but `ThreadStartParams` has **no `mcpServers` field** — silently ignored; the real channel is `dynamicTools:[DynamicToolSpec]`; (B) `initialize` did not request `capabilities.experimentalApi=true`, which `dynamicTools` requires (else JSON-RPC -32600); (C) the model's call returns as a server→client `item/tool/call` (`DynamicToolCallParams`) that `handleInbound` had no handler for.
 - Fixed all three (declare experimentalApi, register via dynamicTools, handle `item/tool/call` → `bridge.AskQuestion` → `DynamicToolCallResponse`). Proven by a real-codex end-to-end test.
 - Follow-up tuning: softened the `askUserReinforcement` nudge (Codex **and** Claude) so the model completes clear actions first (normal approval gates apply) and only calls `ask_user` when genuinely blocked — fixing an over-eager-question regression.
 

@@ -202,10 +202,25 @@ export interface ProviderEventBaseDTO {
   occurredAt: string;
 }
 
+export interface TokenUsageBreakdown {
+  cachedInputTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+  totalTokens: number;
+}
+
+export interface TokenUsageSnapshot {
+  last?: TokenUsageBreakdown;
+  total?: TokenUsageBreakdown;
+  modelContextWindow?: number | null;
+}
+
 export type ProviderEventDTO =
   | (ProviderEventBaseDTO & { type: "turn_started"; providerTurnId: string; prompt?: string })
   | (ProviderEventBaseDTO & { type: "message_delta"; text: string })
   | (ProviderEventBaseDTO & { type: "message_completed"; text: string })
+  | (ProviderEventBaseDTO & { type: "token_usage_updated"; tokenUsage: TokenUsageSnapshot })
   | (ProviderEventBaseDTO & { type: "tool_started"; toolName: string; input?: unknown })
   | (ProviderEventBaseDTO & {
       type: "tool_completed";

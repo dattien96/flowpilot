@@ -5,7 +5,7 @@
 - Document ID: `Task-056`
 - Title: `History Supabase Reader Production Fix`
 - Phase: `task`
-- Status: `todo`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-16`
@@ -110,6 +110,6 @@ BUG-060 was marked *done* after fixing the dev/demo (fake store) path with F-1, 
 
 ## 8. Completion Notes
 
-- result:
-- follow-ups: Task-057 (Phase 2 cross-PC sync)
-- upstream docs updated: BUG-060 (F-2/F-5/V-2), `08-Desktop-Chat-New-Plan.md §1.2`
+- result: `SupabaseWorkflowStore.ListProviderSessionsByProject` implemented in `supabase_workflow_store.go` via PostgREST inner join (`workflow_provider_sessions?select=...workflow_runs!inner(project_id,workflow_id)&workflow_runs.project_id=eq.{projectID}&order=updated_at.desc`). `SupabaseWorkflowStore` now satisfies `SessionHistoryReader`; the type assertion at `interactive_handlers.go:612` will succeed in production. Compile-time guard and two unit tests added in `supabase_workflow_store_test.go` (both green). F-5 (migration confirmation) remains a deploy-time step.
+- follow-ups: Task-057 (Phase 2 cross-PC sync); F-5 confirm `20260615120000_add_workflow_provider_tables.sql` applied in production Supabase
+- upstream docs updated: BUG-060 (F-2 ✓, V-2 ✓, F-5 ⏳ noted)

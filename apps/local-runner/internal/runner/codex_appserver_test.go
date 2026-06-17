@@ -397,7 +397,7 @@ func TestCodexAdapterApprovalRoundTrip(t *testing.T) {
 		case "turn/start":
 			fc.reply(m["id"], map[string]any{"turnId": "ct1"})
 			// server asks for approval (server→client request). The real app-server
-			// method is execCommandApproval (verified against codex-cli 0.137.0).
+			// method is execCommandApproval (verified against codex-cli 0.140.0).
 			fc.send(map[string]any{"jsonrpc": "2.0", "id": 500, "method": "execCommandApproval",
 				"params": map[string]any{"threadId": "th1", "command": "rm -rf x"}})
 		default:
@@ -430,7 +430,7 @@ func TestCodexAdapterApprovalRoundTrip(t *testing.T) {
 // dynamicTool call arrives as an `item/tool/call` server->client request (DynamicToolCallParams);
 // the adapter must route the arguments to the bridge's AskQuestion and reply with the answer as
 // a DynamicToolCallResponse ({contentItems:[{type:"inputText",text}], success}). Verified shape
-// against codex-cli 0.137.0.
+// against codex-cli 0.140.0.
 func TestCodexAdapterAskUserDynamicToolRoundTrip(t *testing.T) {
 	d, fc := startFakeCodex(t, nil)
 	adapter := newCodexAdapter(d, "/workspace")

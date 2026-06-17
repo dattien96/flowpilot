@@ -10,6 +10,7 @@ import type {
   RunHistoryItem,
   RunStatus,
   Step,
+  TokenUsageSnapshot,
   TurnInput,
   Workflow,
 } from "@/types/contract";
@@ -81,6 +82,7 @@ interface AppState {
   pendingApproval?: PendingApproval;
   pendingQuestion?: PendingQuestion;
   lastTurnInput?: TurnInput;
+  latestTokenUsage?: TokenUsageSnapshot;
   recoverable: boolean;
   scenario: ScenarioName;
 
@@ -132,6 +134,7 @@ export const useStore = create<AppState>((set, get) => ({
   runHistory: [],
   historyOpen: false,
   historyLoading: false,
+  latestTokenUsage: undefined,
   recoverable: false,
   scenario: "normal",
   launchMode: "workflow",
@@ -326,6 +329,7 @@ export const useStore = create<AppState>((set, get) => ({
     // bubble with a visible error instead of failing silently.
     set((s) => ({
       recoverable: false,
+      latestTokenUsage: undefined,
       status: "running",
       _streamingAssistantId: undefined,
       timeline: [
@@ -505,6 +509,7 @@ export const useStore = create<AppState>((set, get) => ({
 
   async openHistoryRun(runId) {
     const { client } = get();
+    const historyItem = get().runHistory.find((item) => item.runId === runId);
     const handle = await client.resumeRun(runId);
     set({
       runId: handle.runId,
@@ -514,12 +519,42 @@ export const useStore = create<AppState>((set, get) => ({
       artifacts: [],
       pendingApproval: undefined,
       pendingQuestion: undefined,
+      latestTokenUsage: undefined,
       lastTurnInput: undefined,
       recoverable: false,
       historyOpen: false,
       _streamingAssistantId: undefined,
+      ...(historyItem ? { selectedProvider: historyItem.providerKey } : {}),
     });
+    if (historyItem?.providerKey) {
+      void get().loadSkills(historyItem.providerKey);
+    }
     await consumeStream(handle.runId, client.streamRun(handle.runId, 0), set, get);
+
+    // Post-stream stale cleanup (BUG-074): permission_required events are persisted
+    // in the event log but their resolution (approve() action) only clears
+    // pendingApproval on the client — no resolution event is emitted. If the stream
+    // ends and pendingApproval is still set, and the run is not genuinely waiting for
+    // approval (handle.status is the server's source of truth), stamp all unresolved
+    // approval cards as resolved and clear the stale pending state.
+    if (handle.status !== "waiting_approval" && handle.status !== "waiting_question") {
+      set((s) => {
+        if (!s.pendingApproval && !s.pendingQuestion) return {};
+        return {
+          pendingApproval: undefined,
+          pendingQuestion: undefined,
+          timeline: s.timeline.map((it) => {
+            if (it.kind === "approval" && it.decision === undefined) {
+              return { ...it, decision: "resolved" };
+            }
+            if (it.kind === "question" && it.answer === undefined) {
+              return { ...it, answer: "answered" };
+            }
+            return it;
+          }),
+        };
+      });
+    }
   },
 
   resetRun() {
@@ -531,6 +566,7 @@ export const useStore = create<AppState>((set, get) => ({
       artifacts: [],
       pendingApproval: undefined,
       pendingQuestion: undefined,
+      latestTokenUsage: undefined,
       lastTurnInput: undefined,
       recoverable: false,
       historyOpen: false,
@@ -579,7 +615,14 @@ async function consumeStream(
 }
 
 function applyEvent(s: AppState, e: ProviderEventDTO): Partial<AppState> {
-  return applyTimelineEvent(s, e);
+  const next = applyTimelineEvent(s, e);
+  if (e.type === "turn_started") {
+    return { ...next, latestTokenUsage: undefined };
+  }
+  if (e.type === "token_usage_updated") {
+    return { ...next, latestTokenUsage: e.tokenUsage };
+  }
+  return next;
 }
 
 function runErrorMessage(err: unknown): string {

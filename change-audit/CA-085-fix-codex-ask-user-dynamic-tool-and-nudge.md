@@ -16,7 +16,7 @@ Sibling of CA-084 (Claude ask_user). Closes the Codex side of DOD `PP-31`/`T-29`
 The structured-question `ask_user` tool never reached the Codex model in the running app — Codex
 reported *"I can't access the interactive user prompt tool"* and answered in plain text. Three
 causes, root-caused by dumping the real protocol (`codex app-server generate-json-schema
---experimental`) and reproducing against a real `codex app-server` (codex-cli 0.137.0).
+--experimental`) and reproducing against a real `codex app-server` (codex-cli 0.140.0).
 
 ### Defect A — wrong registration channel (inline mcpServers, silently ignored)
 

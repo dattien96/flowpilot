@@ -263,6 +263,59 @@ func (s *SupabaseWorkflowStore) UpsertApproval(ctx context.Context, approval Pro
 	return nil
 }
 
+// dbProviderSessionRow is the PostgREST row shape returned by ListProviderSessionsByProject.
+// The workflow_runs field is populated via the !inner join on workflow_run_id.
+type dbProviderSessionRow struct {
+	WorkflowRunID     string  `json:"workflow_run_id"`
+	ProviderKey       string  `json:"provider_key"`
+	ProviderSessionID *string `json:"provider_session_id"`
+	WorkingDirectory  string  `json:"working_directory"`
+	Status            string  `json:"status"`
+	WorkflowRuns      *struct {
+		ProjectID  string `json:"project_id"`
+		WorkflowID string `json:"workflow_id"`
+	} `json:"workflow_runs"`
+}
+
+// ListProviderSessionsByProject implements SessionHistoryReader. It queries
+// workflow_provider_sessions joined with workflow_runs (inner) to filter by
+// project_id, sorted newest-first. Satisfies the BUG-060 F-2 production gap.
+func (s *SupabaseWorkflowStore) ListProviderSessionsByProject(ctx context.Context, projectID string) ([]ProviderSessionState, error) {
+	endpoint := fmt.Sprintf(
+		"%s/workflow_provider_sessions?select=workflow_run_id,provider_key,provider_session_id,working_directory,status,workflow_runs!inner(project_id,workflow_id)&workflow_runs.project_id=eq.%s&order=updated_at.desc",
+		s.restURL, projectID,
+	)
+	code, body, err := httpRequestFn(ctx, http.MethodGet, endpoint, s.headers(""), nil)
+	if err != nil {
+		return nil, err
+	}
+	if code < 200 || code >= 300 {
+		return nil, fmt.Errorf("supabase list provider sessions failed: status %d: %s", code, string(body))
+	}
+	var rows []dbProviderSessionRow
+	if err := json.Unmarshal(body, &rows); err != nil {
+		return nil, fmt.Errorf("supabase list provider sessions decode: %w", err)
+	}
+	out := make([]ProviderSessionState, 0, len(rows))
+	for _, r := range rows {
+		sess := ProviderSessionState{
+			RunID:            r.WorkflowRunID,
+			ProviderKey:      ProviderKey(r.ProviderKey),
+			WorkingDirectory: r.WorkingDirectory,
+			Status:           RunStatus(r.Status),
+		}
+		if r.ProviderSessionID != nil {
+			sess.ProviderSessionID = *r.ProviderSessionID
+		}
+		if r.WorkflowRuns != nil {
+			sess.ProjectID = r.WorkflowRuns.ProjectID
+			sess.WorkflowID = r.WorkflowRuns.WorkflowID
+		}
+		out = append(out, sess)
+	}
+	return out, nil
+}
+
 func (s *SupabaseWorkflowStore) UpsertQuestion(ctx context.Context, question ProviderQuestionState) error {
 	endpoint := s.restURL + "/workflow_provider_questions"
 	payload, err := json.Marshal(map[string]any{

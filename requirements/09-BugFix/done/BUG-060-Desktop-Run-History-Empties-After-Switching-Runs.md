@@ -26,7 +26,7 @@
 
 ### Current Ask
 
-- Fixed. F-1, F-3, and F-4 implemented. F-2/F-5 (Supabase production path) remain as follow-ups.
+- Fixed. All of F-1–F-5 implemented. F-2 (`SupabaseWorkflowStore.ListProviderSessionsByProject`) resolved by Task-056; F-5 migration is present in `20260615120000_add_workflow_provider_tables.sql` and must be confirmed applied in the production Supabase project before deploy.
 
 ### Key Decisions
 
@@ -36,12 +36,11 @@
 
 ### Constraints
 
-- `SessionHistoryReader` is an optional interface; `SupabaseWorkflowStore` does not yet implement it (F-2 pending). The fix covers the fake store used in dev/demo mode.
+- `SessionHistoryReader` is now implemented by both `fakeWorkflowStore` (dev/demo) and `SupabaseWorkflowStore` (production). The interface remains optional (type assertion at `interactive_handlers.go:612`).
 
 ### Open Questions
 
-- (F-2) `SupabaseWorkflowStore` should implement `SessionHistoryReader` to fix the production Supabase path.
-- (F-5) Confirm/repair the `workflow_provider_sessions` table migration for full production durability.
+- (F-5) Confirm `workflow_provider_sessions` migration (`20260615120000_add_workflow_provider_tables.sql`) is applied in the production Supabase project before deploying.
 
 ### Source Refs
 
@@ -95,15 +94,15 @@ On the desktop FlowPilot app, after starting two workflow runs and switching bac
 ## 7. Fix Strategy
 
 - `F-1` ✓ Added optional `SessionHistoryReader` interface; `fakeWorkflowStore` implements `ListProviderSessionsByProject`; `projectRunHistory` merges persisted sessions.
-- `F-2` ⏳ `SupabaseWorkflowStore` should implement `SessionHistoryReader` (production fix pending).
+- `F-2` ✓ `SupabaseWorkflowStore.ListProviderSessionsByProject` implemented via PostgREST inner join on `workflow_runs` (Task-056). Compile-time interface check in `supabase_workflow_store_test.go`.
 - `F-3` ✓ `_historyLoadSeq` stale-response guard added to desktop `loadRunHistory`.
 - `F-4` ✓ `historyLoadError` state; `RunStatus.tsx` shows distinct error state vs empty state.
-- `F-5` ⏳ Confirm/repair `workflow_provider_sessions` table migration for full production durability.
+- `F-5` ⏳ `workflow_provider_sessions` migration (`20260615120000_add_workflow_provider_tables.sql`) exists; must be confirmed applied in production Supabase before deploying.
 
 ## 8. Validation
 
 - `V-1` ✓ `TestRunHistoryEmptiesAfterServiceRecreation` — PASS after F-1.
-- `V-2` ⏳ Supabase store rehydration test (when F-2 is implemented).
+- `V-2` ✓ `TestSupabaseWorkflowStoreListProviderSessionsByProject` — PASS; verifies GET shape, inner join filter, and `ProviderSessionState` mapping. `var _ SessionHistoryReader = (*SupabaseWorkflowStore)(nil)` compile-time guard.
 - `V-3` ✓ Stale/error guard in place; error shows distinct state in History panel.
 - `V-4` Manual: switch between 2 runs repeatedly; History remains populated throughout (in dev/demo mode with fake store).
 

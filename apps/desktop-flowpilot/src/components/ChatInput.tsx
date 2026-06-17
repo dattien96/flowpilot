@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useStore } from "@/state/store";
-import type { ProviderKey } from "@/types/contract";
+import type { ProviderKey, TokenUsageSnapshot } from "@/types/contract";
 import {
   ACCEPT_ATTR,
   MAX_ATTACHMENTS,
@@ -10,10 +10,45 @@ import {
   type PendingAttachment,
 } from "@/lib/normalizeImage";
 
-const PROVIDER_OPTIONS: { value: ProviderKey; label: string }[] = [
-  { value: "codex", label: "Codex" },
-  { value: "claude", label: "Claude" },
-  { value: "gemini", label: "Gemini" },
+function CodexIcon(): React.ReactElement {
+  return (
+    <svg width="18" height="18" viewBox="-3 -3 30 30" fill="currentColor" aria-hidden="true">
+      <path d="M22.282 9.821a5.985 5.985 0 0 0-.516-4.911 6.046 6.046 0 0 0-6.51-2.9A6.065 6.065 0 0 0 4.981 4.18a5.985 5.985 0 0 0-3.998 2.9 6.046 6.046 0 0 0 .743 7.097 5.98 5.98 0 0 0 .51 4.911 6.051 6.051 0 0 0 6.514 2.9A5.985 5.985 0 0 0 13.26 24a6.056 6.056 0 0 0 5.772-4.206 5.99 5.99 0 0 0 3.997-2.9 6.056 6.056 0 0 0-.747-7.073zm-8.33 11.69a4.476 4.476 0 0 1-2.876-1.04l.141-.081 4.779-2.758a.796.796 0 0 0 .392-.68v-6.738l2.02 1.168a.07.07 0 0 1 .038.053v5.582a4.504 4.504 0 0 1-4.494 4.494zm-9.652-3.82a4.47 4.47 0 0 1-.535-3.014l.141.085 4.784 2.759a.77.77 0 0 0 .78 0l5.843-3.369v2.333a.08.08 0 0 1-.033.062L9.74 19.95a4.499 4.499 0 0 1-6.14-1.647zM2.34 7.896a4.485 4.485 0 0 1 2.366-1.973V11.6a.767.767 0 0 0 .388.677l5.815 3.354-2.02 1.168a.076.076 0 0 1-.071 0l-4.83-2.786A4.504 4.504 0 0 1 2.34 7.872zm16.597 3.855l-5.833-3.387L15.118 7.2a.076.076 0 0 1 .071 0l4.83 2.791a4.494 4.494 0 0 1-.677 8.105v-5.678a.79.79 0 0 0-.407-.667zm2.01-3.023l-.141-.085-4.774-2.782a.776.776 0 0 0-.784 0L9.41 9.23V6.898a.066.066 0 0 1 .028-.061l4.83-2.787a4.5 4.5 0 0 1 6.679 4.66zm-12.64 4.134l-2.02-1.164a.08.08 0 0 1-.038-.057V6.074a4.5 4.5 0 0 1 7.374-3.453l-.142.08-4.777 2.758a.795.795 0 0 0-.393.681zm1.097-2.365l2.602-1.5 2.607 1.5v2.999l-2.597 1.5-2.607-1.5Z" />
+    </svg>
+  );
+}
+
+function ClaudeIcon(): React.ReactElement {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <rect x="10.75" y="5.5" width="2.5" height="13" rx="1.25" />
+      <rect x="10.75" y="5.5" width="2.5" height="13" rx="1.25" transform="rotate(45 12 12)" />
+      <rect x="10.75" y="5.5" width="2.5" height="13" rx="1.25" transform="rotate(90 12 12)" />
+      <rect x="10.75" y="5.5" width="2.5" height="13" rx="1.25" transform="rotate(135 12 12)" />
+    </svg>
+  );
+}
+
+function GeminiIcon(): React.ReactElement {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M12 2c0 5.52-4.48 10-10 10 5.52 0 10 4.48 10 10 0-5.52 4.48-10 10-10-5.52 0-10-4.48-10-10z" />
+    </svg>
+  );
+}
+
+function StopIcon(): React.ReactElement {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" aria-hidden="true">
+      <rect x="2" y="2" width="10" height="10" rx="2" />
+    </svg>
+  );
+}
+
+const PROVIDER_CARDS: { value: ProviderKey; label: string; icon: React.ReactElement }[] = [
+  { value: "codex", label: "Codex", icon: <CodexIcon /> },
+  { value: "claude", label: "Claude", icon: <ClaudeIcon /> },
+  { value: "gemini", label: "Gemini", icon: <GeminiIcon /> },
 ];
 
 // Providers whose runner adapters advertise the Vision capability (Task-052). Mirrors
@@ -30,6 +65,78 @@ const REASONING_OPTIONS = [
 
 function skillSourceLabel(source: "provider" | "flowpilot" | "workspace"): string {
   return source === "provider" ? "Account" : "Project";
+}
+
+function formatTokenCount(value: number): string {
+  if (value >= 1_000_000) {
+    return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}M`;
+  }
+  if (value >= 1_000) {
+    return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}k`;
+  }
+  return String(value);
+}
+
+function usageNumber(value: number): React.ReactElement {
+  return <span className="chat-usage-number">{formatTokenCount(value)}</span>;
+}
+
+function usageSeparator(): React.ReactElement {
+  return <span className="chat-usage-separator"> · </span>;
+}
+
+function usageSummaryLine(provider: ProviderKey | undefined, usage: TokenUsageSnapshot | undefined): ReactNode | null {
+  if (!provider) return null;
+  if (!usage) return null;
+
+  const last = usage.last;
+  const total = usage.total;
+  const windowSize = usage.modelContextWindow ?? null;
+  const contextUsed = total?.totalTokens ?? last?.totalTokens ?? null;
+  const parts: ReactNode[] = [];
+
+  if (windowSize && contextUsed !== null) {
+    const remaining = Math.max(windowSize - contextUsed, 0);
+    parts.push(
+      <span key="context">
+        Context {usageNumber(contextUsed)} / {usageNumber(windowSize)} used
+      </span>,
+    );
+    parts.push(
+      <span key="remaining">
+        {usageNumber(remaining)} left
+      </span>,
+    );
+  }
+
+  if (last) {
+    parts.push(
+      <span key="last-turn">
+        Last turn {usageNumber(last.totalTokens)} tokens
+      </span>,
+    );
+    parts.push(
+      <span key="in-out">
+        in {usageNumber(last.inputTokens)} · out {usageNumber(last.outputTokens)}
+      </span>,
+    );
+  }
+
+  if (parts.length === 0 && total) {
+    parts.push(
+      <span key="total">
+        Total {usageNumber(total.totalTokens)} tokens
+      </span>,
+    );
+  }
+
+  if (parts.length === 0) return null;
+  return parts.map((part, index) => (
+    <span key={index}>
+      {index > 0 ? usageSeparator() : null}
+      {part}
+    </span>
+  ));
 }
 
 // Chat composer + bottom controller strip. The controller keeps the current
@@ -58,20 +165,28 @@ export function ChatInput(): React.ReactElement {
   const setYoloMode = useStore((s) => s.setYoloMode);
   const pendingApproval = useStore((s) => s.pendingApproval);
   const pendingQuestion = useStore((s) => s.pendingQuestion);
+  const latestTokenUsage = useStore((s) => s.latestTokenUsage);
+  const stop = useStore((s) => s.stop);
+  const timeline = useStore((s) => s.timeline);
 
   const [text, setText] = useState("");
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const [pickerSortSelection, setPickerSortSelection] = useState<string[]>([]);
+  const [pickerSearch, setPickerSearch] = useState("");
   const [skillPickerOpen, setSkillPickerOpen] = useState(false);
   const [controllerExpanded, setControllerExpanded] = useState(true);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
   const [previewAtt, setPreviewAtt] = useState<PendingAttachment | null>(null);
+  const [displayedTokenUsage, setDisplayedTokenUsage] = useState<TokenUsageSnapshot | undefined>(undefined);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const wasPickerVisibleRef = useRef(false);
 
   const isChatMode = chatMode === "normal_chat";
+  // Lock provider once any turn has been sent in the current chat session.
+  const providerLocked = isChatMode && timeline.length > 0;
   const supportsVision = !!selectedProvider && VISION_PROVIDERS.has(selectedProvider);
   const hasSelectedProject = !!selectedProjectId;
   const selectedProjectPath = useMemo(
@@ -91,7 +206,7 @@ export function ChatInput(): React.ReactElement {
   const filtered = useMemo(
     () => {
       if (!showPicker) return [];
-      const query = slashQuery?.trim() ?? "";
+      const query = pickerSearch.trim().toLowerCase();
       const matchingSkills = query.length === 0
         ? skills
         : skills.filter((s) => s.name.toLowerCase().includes(query));
@@ -100,7 +215,7 @@ export function ChatInput(): React.ReactElement {
       const remaining = sortedSkills.filter((skill) => !pickerSortSelection.includes(skill.name));
       return [...selected, ...remaining];
     },
-    [showPicker, slashQuery, skills, pickerSortSelection],
+    [showPicker, pickerSearch, skills, pickerSortSelection],
   );
 
   useEffect(() => {
@@ -159,9 +274,21 @@ export function ChatInput(): React.ReactElement {
   useEffect(() => {
     if (showPicker && !wasPickerVisibleRef.current) {
       setPickerSortSelection(selectedSkills);
+      searchInputRef.current?.focus();
     }
     wasPickerVisibleRef.current = showPicker;
   }, [showPicker, selectedSkills]);
+
+  // Keep pickerSearch in sync with the slash query so typing /foo in the textarea
+  // still drives the in-picker filter in real time.
+  useEffect(() => {
+    if (slashQuery !== null) setPickerSearch(slashQuery);
+  }, [slashQuery]);
+
+  // Clear the search box whenever the picker is dismissed.
+  useEffect(() => {
+    if (!showPicker) setPickerSearch("");
+  }, [showPicker]);
 
   useEffect(() => {
     if (!showPicker) return;
@@ -177,7 +304,21 @@ export function ChatInput(): React.ReactElement {
     return () => window.removeEventListener("pointerdown", onPointerDown);
   }, [showPicker, slashQuery]);
 
+  useEffect(() => {
+    if (latestTokenUsage) {
+      setDisplayedTokenUsage(latestTokenUsage);
+    }
+  }, [latestTokenUsage]);
+
+  useEffect(() => {
+    setDisplayedTokenUsage(undefined);
+  }, [selectedProvider]);
+
   const blocked = status === "running" || status === "waiting_approval" || status === "waiting_question";
+  const usageLine = useMemo(
+    () => usageSummaryLine(selectedProvider, displayedTokenUsage),
+    [displayedTokenUsage, selectedProvider],
+  );
 
   const canSend = isChatMode
     ? hasSelectedProject && !!selectedProvider && !blocked && text.trim().length > 0 && !showPicker
@@ -343,23 +484,26 @@ export function ChatInput(): React.ReactElement {
               </div>
 
               <div className="chat-controller-grid">
-                <label className="chat-controller-field muted">
-                  <span>Provider</span>
-                  <select
-                    value={selectedProvider ?? ""}
-                    onChange={(e) =>
-                      selectProvider(e.target.value ? (e.target.value as ProviderKey) : undefined)
-                    }
-                    disabled={blocked}
-                  >
-                    <option value="">Auto</option>
-                    {PROVIDER_OPTIONS.map((provider) => (
-                      <option key={provider.value} value={provider.value}>
-                        {provider.label}
-                      </option>
+                <div className={`provider-picker${providerLocked ? " provider-picker-locked" : ""}`}>
+                  <span className="chat-controller-label">Provider</span>
+                  <div className="provider-chips">
+                    {PROVIDER_CARDS.map((p) => (
+                      <button
+                        key={p.value}
+                        type="button"
+                        className={`provider-chip provider-chip-${p.value}${selectedProvider === p.value ? " provider-chip-selected" : ""}`}
+                        onClick={() => selectProvider(selectedProvider === p.value ? undefined : p.value)}
+                        disabled={blocked || providerLocked}
+                        aria-pressed={selectedProvider === p.value}
+                        aria-label={p.label}
+                        title={providerLocked ? "Start a new chat to change provider" : p.label}
+                      >
+                        <span className="provider-chip-icon">{p.icon}</span>
+                        <span className="provider-chip-name">{p.label}</span>
+                      </button>
                     ))}
-                  </select>
-                </label>
+                  </div>
+                </div>
 
                 <label className="chat-controller-field muted">
                   <span>Model</span>
@@ -409,7 +553,31 @@ export function ChatInput(): React.ReactElement {
 
       {showPicker && (
         <div className="skill-picker">
-          <div className="skill-picker-head">Skills · pick one or more</div>
+          <div className="skill-picker-head">
+            <div className="skill-picker-head-top">
+              <span>Skills · pick one or more</span>
+              <button
+                type="button"
+                className="skill-picker-close"
+                onClick={() => {
+                  setSkillPickerOpen(false);
+                  if (slashQuery !== null) setText("");
+                }}
+                aria-label="Close skills picker"
+              >
+                ×
+              </button>
+            </div>
+            <input
+              ref={searchInputRef}
+              type="text"
+              className="skill-picker-search"
+              placeholder="Search skills…"
+              value={pickerSearch}
+              onChange={(e) => setPickerSearch(e.target.value)}
+              aria-label="Search skills"
+            />
+          </div>
           {filtered.length === 0 && <div className="skill-empty">No matching skill</div>}
           {filtered.map((s) => {
             const active = selectedSkills.includes(s.name);
@@ -525,11 +693,29 @@ export function ChatInput(): React.ReactElement {
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKeyDown}
           onPaste={onPaste}
+          onPointerDown={() => {
+            if (showPicker) {
+              setSkillPickerOpen(false);
+              if (slashQuery !== null) setText("");
+            }
+          }}
         />
-        <button className="btn btn-primary send-btn" onClick={send} disabled={!canSend}>
-          Send
-        </button>
+        {blocked ? (
+          <button className="btn send-btn send-btn-stop" onClick={() => void stop()} aria-label="Stop AI">
+            <StopIcon />
+          </button>
+        ) : (
+          <button className="btn btn-primary send-btn" onClick={send} disabled={!canSend}>
+            Send
+          </button>
+        )}
       </div>
+
+      {isChatMode && usageLine && (
+        <div className="chat-usage-line" aria-live="polite">
+          {usageLine}
+        </div>
+      )}
 
       {(pendingApproval || pendingQuestion) && (
         <div className="input-note">Action required above before continuing.</div>
