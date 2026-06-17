@@ -1,5 +1,32 @@
 import { useEffect, useRef, useState } from "react";
 import { useStore, type TimelineItem } from "@/state/store";
+
+const TIMELINE_PAGE_SIZE = 6;
+
+function countPrompts(timeline: TimelineItem[]): number {
+  return timeline.filter((item) => item.kind === "prompt").length;
+}
+
+function sliceTimelineFromPrompt(timeline: TimelineItem[], visiblePromptCount: number): TimelineItem[] {
+  const totalPrompts = countPrompts(timeline);
+  if (visiblePromptCount >= totalPrompts) {
+    return timeline;
+  }
+
+  const promptsToSkip = totalPrompts - visiblePromptCount;
+  let promptsSeen = 0;
+
+  for (let i = 0; i < timeline.length; i++) {
+    if (timeline[i].kind === "prompt") {
+      promptsSeen++;
+      if (promptsSeen > promptsToSkip) {
+        return timeline.slice(i);
+      }
+    }
+  }
+
+  return timeline;
+}
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
 
@@ -267,10 +294,23 @@ function Item({ it }: { it: TimelineGroup }): React.ReactElement | null {
 
 export function Timeline(): React.ReactElement {
   const timeline = useStore((s) => s.timeline);
-  const recoverable = useStore((s) => s.recoverable);
-  const reconnect = useStore((s) => s.reconnect);
   const endRef = useRef<HTMLDivElement>(null);
-  const timelineGroups = buildTimelineGroups(timeline);
+
+  const totalPromptCount = countPrompts(timeline);
+  const [visiblePromptCount, setVisiblePromptCount] = useState(TIMELINE_PAGE_SIZE);
+
+  useEffect(() => {
+    setVisiblePromptCount((current) => {
+      if (totalPromptCount <= TIMELINE_PAGE_SIZE) {
+        return totalPromptCount;
+      }
+      return Math.min(Math.max(current, TIMELINE_PAGE_SIZE), totalPromptCount);
+    });
+  }, [totalPromptCount]);
+
+  const hiddenPromptCount = Math.max(totalPromptCount - visiblePromptCount, 0);
+  const visibleTimeline = sliceTimelineFromPrompt(timeline, visiblePromptCount);
+  const timelineGroups = buildTimelineGroups(visibleTimeline);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -279,17 +319,23 @@ export function Timeline(): React.ReactElement {
   return (
     <div className="timeline">
       {timeline.length === 0 && <div className="empty">Select a project, choose your chat controls, and send a prompt to begin.</div>}
+      {hiddenPromptCount > 0 && (
+        <button
+          type="button"
+          className="load-earlier-btn"
+          onClick={() =>
+            setVisiblePromptCount((current) =>
+              Math.min(totalPromptCount, current + TIMELINE_PAGE_SIZE),
+            )
+          }
+        >
+          ↑ Load earlier prompts ({hiddenPromptCount})
+        </button>
+      )}
       {timelineGroups.map((it) => (
         <Item key={it.id} it={it} />
       ))}
-      {recoverable && (
-        <div className="reconnect-bar">
-          <span>Stream interrupted.</span>
-          <button className="btn btn-primary" onClick={() => void reconnect()}>
-            Reconnect &amp; replay
-          </button>
-        </div>
-      )}
+
       <div ref={endRef} />
     </div>
   );

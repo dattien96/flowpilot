@@ -69,7 +69,8 @@ import {
 } from "@/features/workflow-engine/workflow-result-summary";
 import {
   getNextPromptGroupVisibleCount,
-  getVisiblePromptGroupSlice,
+  getTotalStepPromptGroupCount,
+  getVisibleStepSessionGroupSlice,
   SESSION_PROMPT_GROUP_PAGE_SIZE,
 } from "@/features/workflow-engine/workflow-run-session-windowing";
 import type { ApprovalDecision } from "@/domain/model/entity/workflow";
@@ -1001,38 +1002,8 @@ function SessionGroupSection({
 }) {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [isKilling, setIsKilling] = useState(false);
-  const [visiblePromptGroupCount, setVisiblePromptGroupCount] = useState(() =>
-    Math.min(group.promptGroups.length, SESSION_PROMPT_GROUP_PAGE_SIZE),
-  );
   const session = group.session;
   const sessionRecovery = session ? resolveSessionRecoveryDisplay(session) : null;
-  const visiblePromptGroups = useMemo(
-    () => getVisiblePromptGroupSlice(group.promptGroups, visiblePromptGroupCount),
-    [group.promptGroups, visiblePromptGroupCount],
-  );
-  const hiddenPromptGroupCount = Math.max(
-    group.promptGroups.length - visiblePromptGroups.length,
-    0,
-  );
-
-  useEffect(() => {
-    setVisiblePromptGroupCount(
-      Math.min(group.promptGroups.length, SESSION_PROMPT_GROUP_PAGE_SIZE),
-    );
-  }, [group.key]);
-
-  useEffect(() => {
-    setVisiblePromptGroupCount((currentCount) => {
-      if (group.promptGroups.length <= SESSION_PROMPT_GROUP_PAGE_SIZE) {
-        return group.promptGroups.length;
-      }
-
-      return Math.min(
-        Math.max(currentCount, SESSION_PROMPT_GROUP_PAGE_SIZE),
-        group.promptGroups.length,
-      );
-    });
-  }, [group.promptGroups.length]);
 
   return (
     <section className="space-y-4">
@@ -1133,27 +1104,7 @@ function SessionGroupSection({
 
       {!isCollapsed && (
         <div className="ml-4 space-y-6 border-l border-border/20 pl-5">
-          {hiddenPromptGroupCount > 0 ? (
-            <div className="flex justify-center">
-              <Button
-                type="button"
-                variant="secondary"
-                className="h-8 px-4 text-[10px] font-bold uppercase tracking-wider"
-                onClick={() =>
-                  setVisiblePromptGroupCount((currentCount) =>
-                    getNextPromptGroupVisibleCount({
-                      currentCount,
-                      totalCount: group.promptGroups.length,
-                    }),
-                  )
-                }
-              >
-                Load earlier prompts ({hiddenPromptGroupCount})
-              </Button>
-            </div>
-          ) : null}
-
-          {visiblePromptGroups.map((pg) => {
+          {group.promptGroups.map((pg) => {
             const promptIndex = group.promptGroups.findIndex(
               (promptGroup) => promptGroup.key === pg.key,
             );
@@ -1244,6 +1195,83 @@ function SessionGroupSection({
         </div>
       )}
     </section>
+  );
+}
+
+function StepSessionContent({
+  stepSessionGroups,
+  detail,
+  gatewayBundle,
+  stepOutputs,
+  stepCommandLogs,
+  stepLogs,
+  stepPromptCreatedAts,
+  stepStatus,
+  subagent,
+  onKillSession,
+}: {
+  stepSessionGroups: WorkflowStepSessionGroup[];
+  detail: any;
+  gatewayBundle: React.MutableRefObject<ReturnType<typeof createGatewayBundle>>;
+  stepOutputs: WorkflowOutputRecord[];
+  stepCommandLogs: Array<{ createdAt: string; message?: string | null }>;
+  stepLogs: Array<{ createdAt: string; message?: string | null }>;
+  stepPromptCreatedAts: string[];
+  stepStatus: string;
+  subagent: string | null;
+  onKillSession: (session: WorkflowRunSession) => Promise<void>;
+}) {
+  const totalCount = getTotalStepPromptGroupCount(stepSessionGroups);
+  const [visibleCount, setVisibleCount] = useState(() =>
+    Math.min(totalCount, SESSION_PROMPT_GROUP_PAGE_SIZE),
+  );
+
+  useEffect(() => {
+    setVisibleCount((current) => {
+      if (totalCount <= SESSION_PROMPT_GROUP_PAGE_SIZE) {
+        return totalCount;
+      }
+      return Math.min(Math.max(current, SESSION_PROMPT_GROUP_PAGE_SIZE), totalCount);
+    });
+  }, [totalCount]);
+
+  const visibleGroups = getVisibleStepSessionGroupSlice(stepSessionGroups, visibleCount);
+  const hiddenCount = Math.max(totalCount - visibleCount, 0);
+
+  return (
+    <div className="space-y-5">
+      {hiddenCount > 0 ? (
+        <div className="flex justify-center sticky top-4 z-10">
+          <Button
+            type="button"
+            variant="secondary"
+            className="h-8 px-4 text-[10px] font-bold uppercase tracking-wider shadow-md backdrop-blur-sm"
+            onClick={() =>
+              setVisibleCount((current) =>
+                getNextPromptGroupVisibleCount({ currentCount: current, totalCount }),
+              )
+            }
+          >
+            ↑ Load earlier prompts ({hiddenCount})
+          </Button>
+        </div>
+      ) : null}
+      {visibleGroups.map((group) => (
+        <SessionGroupSection
+          key={group.key}
+          detail={detail}
+          gatewayBundle={gatewayBundle}
+          group={group}
+          onKillSession={onKillSession}
+          stepOutputs={stepOutputs}
+          stepCommandLogs={stepCommandLogs}
+          stepLogs={stepLogs}
+          stepPromptCreatedAts={stepPromptCreatedAts}
+          stepStatus={stepStatus}
+          subagent={subagent}
+        />
+      ))}
+    </div>
   );
 }
 
@@ -2445,23 +2473,19 @@ function WorkflowRunDetailPage() {
                   ) : null}
                 </div>
               ) : (
-                <div className="space-y-5">
-                  {stepSessionGroups.map((group) => (
-                    <SessionGroupSection
-                      key={group.key}
-                      detail={detail}
-                      gatewayBundle={gatewayBundle}
-                      group={group}
-                      onKillSession={handleKillSession}
-                      stepOutputs={stepOutputs}
-                      stepCommandLogs={stepCommandLogs}
-                      stepLogs={stepThinkingLogs}
-                      stepPromptCreatedAts={stepPromptCreatedAts}
-                      stepStatus={selectedStep.status}
-                      subagent={subagent}
-                    />
-                  ))}
-                </div>
+                <StepSessionContent
+                  key={selectedStep.id}
+                  stepSessionGroups={stepSessionGroups}
+                  detail={detail}
+                  gatewayBundle={gatewayBundle}
+                  onKillSession={handleKillSession}
+                  stepOutputs={stepOutputs}
+                  stepCommandLogs={stepCommandLogs}
+                  stepLogs={stepThinkingLogs}
+                  stepPromptCreatedAts={stepPromptCreatedAts}
+                  stepStatus={selectedStep.status}
+                  subagent={subagent}
+                />
               )}
             </div>
 

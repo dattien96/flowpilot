@@ -1545,6 +1545,30 @@ input {
   flex-direction: column;
   gap: 8px;
 }
+.load-earlier-btn {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  align-self: center;
+  appearance: none;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 5px 14px;
+  text-transform: uppercase;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+  backdrop-filter: blur(4px);
+  transition: color 0.15s, border-color 0.15s;
+}
+.load-earlier-btn:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
 .empty {
   color: var(--text-dim);
   margin: auto;
@@ -2488,6 +2512,12 @@ input {
 }
 .send-btn {
   height: 36px;
+}
+.send-btn-stop {
+  color: var(--err);
+}
+.send-btn-stop:hover {
+  color: #d73a3a;
 }
 .skill-select-button {
   display: inline-flex;
