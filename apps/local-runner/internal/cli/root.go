@@ -96,13 +96,11 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 			// (04-08 A1).
 			// Build a local file session store so run history survives app
 			// restarts when Supabase is not configured (BUG-080). Fall back
-			// to the default in-memory store on any OS/filesystem error.
+			// to the default in-memory store on any filesystem error.
 			var sessionStore runner.WorkflowStore
-			if cacheDir, err := os.UserCacheDir(); err == nil {
-				storeDir := filepath.Join(cacheDir, "flowpilot")
-				if fs, err := runner.NewLocalFileSessionStore(storeDir); err == nil {
-					sessionStore = fs
-				}
+			storeDir := filepath.Join(instance.Health().Cwd, ".flowpilot", "chats")
+			if fs, err := runner.NewLocalFileSessionStore(storeDir); err == nil {
+				sessionStore = fs
 			}
 			interactive := runner.NewInteractiveServiceWithStore(
 				runner.ProviderRegistryFor(instance),

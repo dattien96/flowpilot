@@ -14,7 +14,7 @@ Fixes BUG-080: run history disappears on app restart when Supabase is not config
 
 ## Status
 
-Not yet implemented. This audit document was created to track the planned change.
+Implemented and committed.
 
 ## Planned Changes
 
@@ -54,7 +54,7 @@ Expand the `ProviderSessionState → runHistoryItem` mapping in `interactive_han
 
 ### F-5 — Wire at startup
 
-In `root.go`, construct `localFileSessionStore` (data dir from `--session-store` flag or `os.UserCacheDir()/flowpilot/`) and pass it to `newInteractiveService` when Supabase is not configured.
+In `root.go`, construct `localFileSessionStore` with data dir `<workspace>/.flowpilot/chats/` (co-located with `artifacts`, `settings`, etc.) and pass it to `newInteractiveService`.
 
 ## Verification Plan
 
