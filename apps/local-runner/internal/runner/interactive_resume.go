@@ -185,7 +185,16 @@ func (s *InteractiveService) resumeSessionID(rs *interactiveRun) string {
 // so the SSE snapshot path replays the prior conversation to the desktop.
 // Best-effort: any error is silently ignored to not block resume.
 func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
-	if !rs.resumedFromDisk || rs.providerKey != ProviderKeyClaude {
+	if !rs.resumedFromDisk {
+		return
+	}
+	var loader func(string) []ProviderEvent
+	switch rs.providerKey {
+	case ProviderKeyClaude:
+		loader = loadClaudeTranscriptEvents
+	case ProviderKeyCodex:
+		loader = loadCodexTranscriptEvents
+	default:
 		return
 	}
 	home, ok := s.resolveAccountHome(rs.providerKey, rs.providerAccountID)
@@ -197,7 +206,7 @@ func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 	if !found {
 		return
 	}
-	historical := loadClaudeTranscriptEvents(filePath)
+	historical := loader(filePath)
 	if len(historical) == 0 {
 		return
 	}
