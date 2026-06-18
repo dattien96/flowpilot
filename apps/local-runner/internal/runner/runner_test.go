@@ -296,10 +296,10 @@ func TestExecutePromptMarksResultFailedWhenProviderReportsMcpFailureCode(t *test
 	}
 
 	workspace := t.TempDir()
-	writeValidGoogleDriveWorkspaceConfig(t, workspace)
 
 	accountHomePath := t.TempDir()
-	instance := &Runner{workspace: workspace}
+	instance := &Runner{workspace: workspace, secretStore: newMemorySecretStore()}
+	writeValidGoogleDriveWorkspaceConfig(t, instance)
 	_, err := instance.EnsureGoogleDriveMcpProviderConfig(GoogleDriveMcpProviderConfigRequest{
 		ProviderKey:     "codex",
 		AccountHomePath: accountHomePath,

@@ -47,7 +47,7 @@ func captureClaudeSpawn(t *testing.T, script string) (*claudeSpawnCapture, func(
 		cap.args = append(cap.args, append([]string{}, arg...))
 		cap.mcpConfig = append(cap.mcpConfig, content)
 		cap.mu.Unlock()
-		return exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
+		return testShellCommand(ctx, script)
 	}
 	return cap, func() { commandContextFn = original }
 }
@@ -69,9 +69,10 @@ func wiredClaudeAdapter() *claudeAdapter {
 	return a
 }
 
-const claudeOkScript = `$null=[Console]::In.ReadLine(); ` +
-	`Write-Output '{"type":"system","subtype":"init","session_id":"s1"}'; ` +
-	`Write-Output '{"type":"result","subtype":"success","result":"ok"}'`
+var claudeOkScript = shellReadLine() + shellOutputLines(
+	`{"type":"system","subtype":"init","session_id":"s1"}`,
+	`{"type":"result","subtype":"success","result":"ok"}`,
+)
 
 func TestClaudeSendTurnMcpAvailabilityMatrix(t *testing.T) {
 	for _, yolo := range []bool{false, true} {

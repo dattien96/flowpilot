@@ -78,12 +78,12 @@ func hasEventType(types []ProviderEventType, want ProviderEventType) bool {
 	return false
 }
 
-// mockClaude swaps commandContextFn for a PowerShell script acting as a fake `claude`.
+// mockClaude swaps commandContextFn for a shell script acting as a fake `claude`.
 func mockClaude(t *testing.T, script string) func() {
 	t.Helper()
 	original := commandContextFn
 	commandContextFn = func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
-		return exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
+		return testShellCommand(ctx, script)
 	}
 	return func() { commandContextFn = original }
 }
@@ -95,11 +95,12 @@ func newTestClaudeAdapter() *claudeAdapter {
 // ---- CL-05/CL-07: stream → completion --------------------------------------
 
 func TestClaudeAdapterStreamsToCompletion(t *testing.T) {
-	script := `$null=[Console]::In.ReadLine(); ` +
-		`Write-Output '{"type":"system","subtype":"init","session_id":"s1"}'; ` +
-		`Write-Output '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hel"}}}'; ` +
-		`Write-Output '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hello"}]}}'; ` +
-		`Write-Output '{"type":"result","subtype":"success","result":"Hello"}'`
+	script := shellReadLine() + shellOutputLines(
+		`{"type":"system","subtype":"init","session_id":"s1"}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hel"}}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hello"}]}}`,
+		`{"type":"result","subtype":"success","result":"Hello"}`,
+	)
 	defer mockClaude(t, script)()
 
 	a := newTestClaudeAdapter()
@@ -127,10 +128,10 @@ func TestClaudeAdapterStreamsToCompletion(t *testing.T) {
 // ---- CL-20: YOLO=false approval round trip (deny path proves blocking) ------
 
 func TestClaudeAdapterApprovalRoundTrip(t *testing.T) {
-	script := `$null=[Console]::In.ReadLine(); ` +
-		`Write-Output '{"type":"control_request","subtype":"can_use_tool","request_id":"r1","request":{"command":"rm -rf x","cwd":"."}}'; ` +
-		`$null=[Console]::In.ReadLine(); ` +
-		`Write-Output '{"type":"result","subtype":"success","result":"done"}'`
+	script := shellReadLine() +
+		shellOutputLine(`{"type":"control_request","subtype":"can_use_tool","request_id":"r1","request":{"command":"rm -rf x","cwd":"."}}`) +
+		shellReadLine() +
+		shellOutputLine(`{"type":"result","subtype":"success","result":"done"}`)
 	defer mockClaude(t, script)()
 
 	a := newTestClaudeAdapter()
@@ -158,10 +159,10 @@ func TestClaudeAdapterApprovalRoundTrip(t *testing.T) {
 // ---- CL-25: ask_user round trip --------------------------------------------
 
 func TestClaudeAdapterAskUserRoundTrip(t *testing.T) {
-	script := `$null=[Console]::In.ReadLine(); ` +
-		`Write-Output '{"type":"control_request","subtype":"ask_user","request_id":"q1","request":{"prompt":"Pick one","options":["A","B"]}}'; ` +
-		`$null=[Console]::In.ReadLine(); ` +
-		`Write-Output '{"type":"result","subtype":"success","result":"done"}'`
+	script := shellReadLine() +
+		shellOutputLine(`{"type":"control_request","subtype":"ask_user","request_id":"q1","request":{"prompt":"Pick one","options":["A","B"]}}`) +
+		shellReadLine() +
+		shellOutputLine(`{"type":"result","subtype":"success","result":"done"}`)
 	defer mockClaude(t, script)()
 
 	a := newTestClaudeAdapter()
@@ -185,8 +186,7 @@ func TestClaudeAdapterAskUserRoundTrip(t *testing.T) {
 
 func TestClaudeAdapterProcessDeathRecoverable(t *testing.T) {
 	// Emits a delta then exits WITHOUT a result line → stream closes mid-turn.
-	script := `$null=[Console]::In.ReadLine(); ` +
-		`Write-Output '{"type":"system","subtype":"init","session_id":"s1"}'`
+	script := shellReadLine() + shellOutputLine(`{"type":"system","subtype":"init","session_id":"s1"}`)
 	defer mockClaude(t, script)()
 
 	a := newTestClaudeAdapter()
@@ -206,9 +206,10 @@ func TestClaudeAdapterProcessDeathRecoverable(t *testing.T) {
 // ---- CL-30: resume uses the REAL session id, never the synthetic one -------
 
 func TestClaudeAdapterResumeUsesRealSessionID(t *testing.T) {
-	script := `$null=[Console]::In.ReadLine(); ` +
-		`Write-Output '{"type":"system","subtype":"init","session_id":"real-abc"}'; ` +
-		`Write-Output '{"type":"result","subtype":"success","result":"ok"}'`
+	script := shellReadLine() + shellOutputLines(
+		`{"type":"system","subtype":"init","session_id":"real-abc"}`,
+		`{"type":"result","subtype":"success","result":"ok"}`,
+	)
 	var mu sync.Mutex
 	var argsByCall [][]string
 	original := commandContextFn
@@ -217,7 +218,7 @@ func TestClaudeAdapterResumeUsesRealSessionID(t *testing.T) {
 		mu.Lock()
 		argsByCall = append(argsByCall, append([]string{}, arg...))
 		mu.Unlock()
-		return exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
+		return testShellCommand(ctx, script)
 	}
 
 	pool := newClaudeProcessPool()
@@ -256,9 +257,10 @@ func TestClaudeAdapterResumeUsesRealSessionID(t *testing.T) {
 // ---- CL-21: YOLO=true → bypassPermissions, no permission_required ----------
 
 func TestClaudeAdapterYoloTrueNoPermission(t *testing.T) {
-	script := `$null=[Console]::In.ReadLine(); ` +
-		`Write-Output '{"type":"system","subtype":"init","session_id":"s1"}'; ` +
-		`Write-Output '{"type":"result","subtype":"success","result":"ok"}'`
+	script := shellReadLine() + shellOutputLines(
+		`{"type":"system","subtype":"init","session_id":"s1"}`,
+		`{"type":"result","subtype":"success","result":"ok"}`,
+	)
 	defer mockClaude(t, script)()
 
 	a := newTestClaudeAdapter()
@@ -280,9 +282,10 @@ func TestClaudeAdapterYoloTrueNoPermission(t *testing.T) {
 // ---- CL-35: two sessions run concurrently as separate processes ------------
 
 func TestClaudeAdapterConcurrentSessions(t *testing.T) {
-	script := `$null=[Console]::In.ReadLine(); ` +
-		`Write-Output '{"type":"system","subtype":"init","session_id":"s"}'; ` +
-		`Write-Output '{"type":"result","subtype":"success","result":"ok"}'`
+	script := shellReadLine() + shellOutputLines(
+		`{"type":"system","subtype":"init","session_id":"s"}`,
+		`{"type":"result","subtype":"success","result":"ok"}`,
+	)
 	defer mockClaude(t, script)()
 
 	pool := newClaudeProcessPool()
@@ -321,9 +324,10 @@ func (f *fakeProviderSessionStore) UpsertSession(_ context.Context, rec Provider
 }
 
 func TestClaudeAdapterPersistsSession(t *testing.T) {
-	script := `$null=[Console]::In.ReadLine(); ` +
-		`Write-Output '{"type":"system","subtype":"init","session_id":"real-xyz"}'; ` +
-		`Write-Output '{"type":"result","subtype":"success","result":"ok"}'`
+	script := shellReadLine() + shellOutputLines(
+		`{"type":"system","subtype":"init","session_id":"real-xyz"}`,
+		`{"type":"result","subtype":"success","result":"ok"}`,
+	)
 	defer mockClaude(t, script)()
 
 	store := &fakeProviderSessionStore{ch: make(chan ProviderSessionRecord, 4)}
