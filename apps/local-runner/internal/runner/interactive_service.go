@@ -39,6 +39,7 @@ type InteractiveService struct {
 	// boundary instead of remaining fully ad hoc/in-memory.
 	workflowStore WorkflowStore
 	orchestrator  *WorkflowOrchestrator
+	runner        *Runner
 
 	mu        sync.Mutex
 	runs      map[string]*interactiveRun
@@ -68,23 +69,35 @@ type interactiveRun struct {
 	workflowID        string
 	providerKey       ProviderKey
 	providerSessionID string
-	providerAccountID string
-	workspaceCwd      string
-	modelName         string
-	yolo              bool
+	// realProviderSessionID is the provider-owned durable resume handle when it differs
+	// from FlowPilot's synthetic per-run session id.
+	realProviderSessionID string
+	// lastCodexTurnSessionID tracks the newest rollout id discovered after a
+	// Codex turn so per-turn rollout ids can be logged without replacing the
+	// stable durable resume handle.
+	lastCodexTurnSessionID string
+	providerAccountID      string
+	workspaceCwd           string
+	modelName              string
+	yolo                   bool
 	// reasoningEffort is the desktop-selected effort level passed per-turn (T-4).
 	reasoningEffort string
 	// runKind is "chat" for normal-chat runs, "" / "workflow" for workflow runs (T-7).
 	runKind string
 
-	status        RunStatus
-	createdAt     string
-	updatedAt     string
-	lastPrompt    string
-	lastMessage   string
-	seq           int64
-	lastEventType ProviderEventType
-	events        []ProviderEvent
+	status          RunStatus
+	createdAt       string
+	updatedAt       string
+	lastPrompt      string
+	lastMessage     string
+	sourceMachineID string
+	sourceRunID     string
+	restoredFrom    string
+	syncStatus      string
+	syncUpdatedAt   string
+	seq             int64
+	lastEventType   ProviderEventType
+	events          []ProviderEvent
 
 	turnInFlight  bool
 	currentTurnID string
@@ -96,7 +109,8 @@ type interactiveRun struct {
 	subs    map[int64]chan ProviderEvent
 	nextSub int64
 
-	idempotency map[string]string // Idempotency-Key -> turnId
+	idempotency     map[string]string // Idempotency-Key -> turnId
+	resumedFromDisk bool
 }
 
 type approvalRecord struct {
@@ -186,6 +200,17 @@ func NewInteractiveServiceWith(registry *ProviderRegistry, catalog CatalogStore)
 	return newInteractiveService(registry, catalog, nil)
 }
 
+// NewInteractiveServiceWithStore builds the service with a caller-supplied
+// registry, catalog store, AND workflow store. Pass a non-nil store to override
+// the default fakeWorkflowStore — e.g. localFileSessionStore for history
+// persistence across restarts (BUG-080). A nil store falls back to the default.
+func NewInteractiveServiceWithStore(registry *ProviderRegistry, catalog CatalogStore, store WorkflowStore) *InteractiveService {
+	if catalog == nil {
+		catalog = newInteractiveCatalog()
+	}
+	return newInteractiveService(registry, catalog, store)
+}
+
 func newInteractiveService(registry *ProviderRegistry, catalog CatalogStore, workflowStore WorkflowStore) *InteractiveService {
 	if workflowStore == nil {
 		workflowStore = newFakeWorkflowStore()
@@ -224,12 +249,47 @@ func (s *InteractiveService) persistenceStore() InteractiveStateStore {
 	return store
 }
 
+func (s *InteractiveService) AttachRunner(r *Runner) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.runner = r
+}
+
 func (s *InteractiveService) persistProviderSession(session ProviderSessionState) error {
 	store := s.persistenceStore()
 	if store == nil {
 		return nil
 	}
 	return store.UpsertProviderSession(context.Background(), session)
+}
+
+// sessionStateOf snapshots the display fields of rs into a ProviderSessionState.
+// Caller must hold s.mu or guarantee rs is not concurrently modified.
+func sessionStateOf(rs *interactiveRun) ProviderSessionState {
+	providerSessionID := rs.providerSessionID
+	if rs.realProviderSessionID != "" {
+		providerSessionID = rs.realProviderSessionID
+	}
+	return ProviderSessionState{
+		RunID:             rs.id,
+		ProjectID:         rs.projectID,
+		WorkflowID:        rs.workflowID,
+		ProviderSessionID: providerSessionID,
+		ProviderKey:       rs.providerKey,
+		ProviderAccountID: rs.providerAccountID,
+		WorkingDirectory:  rs.workspaceCwd,
+		Status:            rs.status,
+		LastPrompt:        rs.lastPrompt,
+		LastMessage:       rs.lastMessage,
+		StartedAt:         rs.createdAt,
+		UpdatedAt:         rs.updatedAt,
+		RunKind:           rs.runKind,
+		SourceMachineID:   rs.sourceMachineID,
+		SourceRunID:       rs.sourceRunID,
+		RestoredFrom:      rs.restoredFrom,
+		SyncStatus:        rs.syncStatus,
+		SyncUpdatedAt:     rs.syncUpdatedAt,
+	}
 }
 
 func (s *InteractiveService) persistApproval(record ProviderApprovalState) error {
@@ -299,15 +359,15 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 	switch ev.Type {
 	case EventMessageCompleted:
 		if ev.Text != "" {
-			rs.lastMessage = ev.Text
+			rs.lastMessage = truncateDisplayField(ev.Text, 100)
 		}
 	case EventTurnCompleted:
 		if ev.FinalMessage != "" {
-			rs.lastMessage = ev.FinalMessage
+			rs.lastMessage = truncateDisplayField(ev.FinalMessage, 100)
 		}
 	case EventTurnFailed:
 		if ev.Error != "" {
-			rs.lastMessage = ev.Error
+			rs.lastMessage = truncateDisplayField(ev.Error, 100)
 		}
 	}
 	_ = s.persistEvent(ev)
@@ -599,10 +659,14 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	if in.YoloMode != nil {
 		yolo = *in.YoloMode
 	}
+	providerSessionID := rs.providerSessionID
+	if rs.providerKey == ProviderKeyCodex && rs.realProviderSessionID != "" {
+		providerSessionID = rs.realProviderSessionID
+	}
 	req := TurnRequest{
 		RunID:             rs.id,
 		StepID:            in.StepID,
-		ProviderSessionID: rs.providerSessionID,
+		ProviderSessionID: providerSessionID,
 		ProviderTurnID:    turnID,
 		Prompt:            in.Prompt,
 		ModelName:         model,
@@ -624,6 +688,24 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	}
 
 	completed, fin := s.finishTurn(rs, turnID, err)
+
+	// Persist settled state (status, lastMessage, updatedAt) for history survival
+	// across restarts (BUG-080 F-3). Take a snapshot under lock; persist outside.
+	s.mu.Lock()
+	newCodexSessionID := s.refreshResumeHandleLocked(rs, adapter)
+	snap := sessionStateOf(rs)
+	s.mu.Unlock()
+	_ = s.persistProviderSession(snap)
+	// Log the new Codex rollout session id so seedTranscriptFromDisk can load
+	// every per-turn rollout file on resume (BUG-083 F-3).
+	if newCodexSessionID != "" {
+		if logger, logOK := s.workflowStore.(TurnLogStore); logOK {
+			_ = logger.AppendTurnLog(context.Background(), rs.id, turnLogLine{Kind: turnLogKindCodexSession, SessionID: newCodexSessionID})
+		}
+	}
+	if err == nil {
+		_ = s.syncCodexStableSessionToKnownAccounts(rs)
+	}
 
 	// Finalizer hook runs OUTSIDE s.mu and only on a clean completion. A finalize
 	// failure is recorded as retryable and must not erase the completed turn (04-04).
@@ -765,9 +847,21 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		s.mu.Unlock()
 		return "", newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")
 	}
-	if rs.providerAccountID != s.activeAccountID {
+	if rs.providerAccountID != s.activeAccountForProvider(rs.providerKey) {
+		if rs.runKind != "chat" {
+			s.mu.Unlock()
+			return "", newAPIErr(http.StatusConflict, "provider_account_changed", "active provider account changed since the run started")
+		}
 		s.mu.Unlock()
-		return "", newAPIErr(http.StatusConflict, "provider_account_changed", "active provider account changed since the run started")
+		if err := s.ensureResumeReady(rs); err != nil {
+			return "", err
+		}
+		s.mu.Lock()
+		rs = s.runs[runID]
+		if rs == nil {
+			s.mu.Unlock()
+			return "", newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")
+		}
 	}
 	if idempotencyKey != "" {
 		if tid, ok := rs.idempotency[idempotencyKey]; ok {
@@ -789,11 +883,31 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		s.mu.Unlock()
 		return "", newAPIErr(http.StatusBadRequest, "provider_unavailable", aerr.Error())
 	}
+	if rs.providerKey == ProviderKeyCodex && rs.realProviderSessionID != "" && !strings.HasPrefix(rs.realProviderSessionID, "thread-") {
+		// The rollout file lives in the run's account home — which, after a
+		// cross-account resume, is the active account it was relocated into.
+		home, ok := s.resolveAccountHome(rs.providerKey, rs.providerAccountID)
+		if !ok {
+			s.mu.Unlock()
+			return "", newAPIErr(http.StatusConflict, "account_unavailable", "active account home not found")
+		}
+		var promptPrep func(TurnRequest) string
+		if live, ok := adapter.(*codexAdapter); ok {
+			promptPrep = live.promptPrep
+		}
+		adapter = newCodexResumeAdapter(home, promptPrep)
+	}
+	if rs.resumedFromDisk && rs.providerKey == ProviderKeyClaude {
+		if live, ok := adapter.(*claudeAdapter); ok && rs.realProviderSessionID != "" {
+			live.pool.setRealSession(rs.providerSessionID, rs.realProviderSessionID)
+			live.pool.setRealSession(rs.realProviderSessionID, rs.realProviderSessionID)
+		}
+	}
 
 	turnID := s.nextID("turn")
 	rs.turnInFlight = true
 	rs.currentTurnID = turnID
-	rs.lastPrompt = in.Prompt
+	rs.lastPrompt = truncateDisplayField(in.Prompt, 100)
 	rs.updatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	ctx, cancel := context.WithCancel(context.Background())
 	rs.turnCancel = cancel
@@ -812,10 +926,55 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		return "", newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
 	}
 	s.emitLocked(rs, ProviderEvent{Type: EventTurnStarted, ProviderTurnID: turnID, WorkflowStepRunID: in.StepID, Prompt: in.Prompt})
+	snap := sessionStateOf(rs) // capture under lock: lastPrompt + updatedAt now set
 	s.mu.Unlock()
+	_ = s.persistProviderSession(snap) // BUG-080 F-3: persist outside lock, best-effort
+	// Persist raw user prompt for transcript replay (BUG-083 F-1): the provider
+	// session file records the composed prompt (raw + reinforcement + skill preamble),
+	// so we keep the raw input separately and prefer it on resume.
+	if logger, logOK := s.workflowStore.(TurnLogStore); logOK {
+		_ = logger.AppendTurnLog(context.Background(), runID, turnLogLine{Kind: turnLogKindPrompt, Prompt: in.Prompt})
+	}
 
 	go s.runTurn(ctx, rs, adapter, in, scenario, turnID)
 	return turnID, nil
+}
+
+// refreshResumeHandleLocked updates the in-memory resume handle after a turn
+// completes.  For Codex it always re-discovers the newest rollout session id
+// (Codex writes one file per turn) and returns it if it changed — the caller
+// logs the new id outside the lock for multi-rollout replay (BUG-083 F-3).
+// Returns "" for Claude or when the Codex session id did not change.
+func (s *InteractiveService) refreshResumeHandleLocked(rs *interactiveRun, adapter ProviderRuntimeAdapter) string {
+	switch rs.providerKey {
+	case ProviderKeyClaude:
+		live, ok := adapter.(*claudeAdapter)
+		if !ok {
+			return ""
+		}
+		real := live.pool.realSession(rs.providerSessionID)
+		if real == "" {
+			real = live.pool.realSession(rs.realProviderSessionID)
+		}
+		if real != "" {
+			rs.realProviderSessionID = real
+		}
+	case ProviderKeyCodex:
+		home, ok := s.resolveAccountHome(rs.providerKey, rs.providerAccountID)
+		if !ok {
+			return ""
+		}
+		if rolloutID, found := DiscoverCodexRolloutSessionID(home, rs.workspaceCwd); found {
+			if rs.realProviderSessionID == "" {
+				rs.realProviderSessionID = rolloutID
+			}
+			if rolloutID != rs.lastCodexTurnSessionID {
+				rs.lastCodexTurnSessionID = rolloutID
+				return rolloutID
+			}
+		}
+	}
+	return ""
 }
 
 // SubmitApprovalDecision is idempotent + first-write-wins.
@@ -952,9 +1111,9 @@ func (s *InteractiveService) Interrupt(runID string) *apiErr {
 // shared app-server is bound to one account, switching:
 //   - interrupts every in-flight turn and marks it recoverable (re-sendable) — not a
 //     silent auto-replay, consistent with the resume model;
-//   - flips the active account, after which runs bound to the previous account fail
-//     turn/resume with `409 provider_account_changed` (their threads are hidden
-//     until that account is active again).
+//   - flips the active account. Workflow runs remain scoped to the account they
+//     started with, while chat runs prepare their provider session files on the
+//     newly active same-provider account before the next turn.
 //
 // This enforces the "one active account at a time / workspaces on different accounts
 // cannot run concurrently (serialized)" constraint. The actual app-server teardown +
@@ -983,4 +1142,15 @@ func (s *InteractiveService) ActiveAccount() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.activeAccountID
+}
+
+// truncateDisplayField caps a string to max runes for storage in sessions.ndjson
+// and the Drive sync index. The UI (runTitle) shows at most 68 chars; 100 gives
+// it room while preventing multi-KB responses from bloating the index file.
+func truncateDisplayField(s string, max int) string {
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max]) + "…"
 }

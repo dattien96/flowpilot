@@ -26,7 +26,7 @@
 
 ### Current Ask
 
-- Fixed. All of F-1–F-5 implemented. F-2 (`SupabaseWorkflowStore.ListProviderSessionsByProject`) resolved by Task-056; F-5 migration is present in `20260615120000_add_workflow_provider_tables.sql` and must be confirmed applied in the production Supabase project before deploy.
+- Fixed. All of F-1–F-5 implemented. F-2 (`SupabaseWorkflowStore.ListProviderSessionsByProject`) resolved by Task-070; F-5 migration is present in `20260615120000_add_workflow_provider_tables.sql` and must be confirmed applied in the production Supabase project before deploy.
 
 ### Key Decisions
 
@@ -94,7 +94,7 @@ On the desktop FlowPilot app, after starting two workflow runs and switching bac
 ## 7. Fix Strategy
 
 - `F-1` ✓ Added optional `SessionHistoryReader` interface; `fakeWorkflowStore` implements `ListProviderSessionsByProject`; `projectRunHistory` merges persisted sessions.
-- `F-2` ✓ `SupabaseWorkflowStore.ListProviderSessionsByProject` implemented via PostgREST inner join on `workflow_runs` (Task-056). Compile-time interface check in `supabase_workflow_store_test.go`.
+- `F-2` ✓ `SupabaseWorkflowStore.ListProviderSessionsByProject` implemented via PostgREST inner join on `workflow_runs` (Task-070). Compile-time interface check in `supabase_workflow_store_test.go`.
 - `F-3` ✓ `_historyLoadSeq` stale-response guard added to desktop `loadRunHistory`.
 - `F-4` ✓ `historyLoadError` state; `RunStatus.tsx` shows distinct error state vs empty state.
 - `F-5` ⏳ `workflow_provider_sessions` migration (`20260615120000_add_workflow_provider_tables.sql`) exists; must be confirmed applied in production Supabase before deploying.

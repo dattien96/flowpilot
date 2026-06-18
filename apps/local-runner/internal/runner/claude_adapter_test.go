@@ -78,12 +78,12 @@ func hasEventType(types []ProviderEventType, want ProviderEventType) bool {
 	return false
 }
 
-// mockClaude swaps commandContextFn for a PowerShell script acting as a fake `claude`.
+// mockClaude swaps commandContextFn for a shell script acting as a fake `claude`.
 func mockClaude(t *testing.T, script string) func() {
 	t.Helper()
 	original := commandContextFn
 	commandContextFn = func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
-		return exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
+		return testShellCommand(ctx, script)
 	}
 	return func() { commandContextFn = original }
 }
@@ -95,11 +95,12 @@ func newTestClaudeAdapter() *claudeAdapter {
 // ---- CL-05/CL-07: stream → completion --------------------------------------
 
 func TestClaudeAdapterStreamsToCompletion(t *testing.T) {
-	script := `$null=[Console]::In.ReadLine(); ` +
-		`Write-Output '{"type":"system","subtype":"init","session_id":"s1"}'; ` +
-		`Write-Output '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hel"}}}'; ` +
-		`Write-Output '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hello"}]}}'; ` +
-		`Write-Output '{"type":"result","subtype":"success","result":"Hello"}'`
+	script := shellReadLine() + shellOutputLines(
+		`{"type":"system","subtype":"init","session_id":"s1"}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hel"}}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hello"}]}}`,
+		`{"type":"result","subtype":"success","result":"Hello"}`,
+	)
 	defer mockClaude(t, script)()
 
 	a := newTestClaudeAdapter()
@@ -127,10 +128,10 @@ func TestClaudeAdapterStreamsToCompletion(t *testing.T) {
 // ---- CL-20: YOLO=false approval round trip (deny path proves blocking) ------
 
 func TestClaudeAdapterApprovalRoundTrip(t *testing.T) {
-	script := `$null=[Console]::In.ReadLine(); ` +
-		`Write-Output '{"type":"control_request","subtype":"can_use_tool","request_id":"r1","request":{"command":"rm -rf x","cwd":"."}}'; ` +
-		`$null=[Console]::In.ReadLine(); ` +
-		`Write-Output '{"type":"result","subtype":"success","result":"done"}'`
+	script := shellReadLine() +
+		shellOutputLine(`{"type":"control_request","subtype":"can_use_tool","request_id":"r1","request":{"command":"rm -rf x","cwd":"."}}`) +
+		shellReadLine() +
+		shellOutputLine(`{"type":"result","subtype":"success","result":"done"}`)
 	defer mockClaude(t, script)()
 
 	a := newTestClaudeAdapter()
@@ -158,10 +159,10 @@ func TestClaudeAdapterApprovalRoundTrip(t *testing.T) {
 // ---- CL-25: ask_user round trip --------------------------------------------
 
 func TestClaudeAdapterAskUserRoundTrip(t *testing.T) {
-	script := `$null=[Console]::In.ReadLine(); ` +
-		`Write-Output '{"type":"control_request","subtype":"ask_user","request_id":"q1","request":{"prompt":"Pick one","options":["A","B"]}}'; ` +
-		`$null=[Console]::In.ReadLine(); ` +
-		`Write-Output '{"type":"result","subtype":"success","result":"done"}'`
+	script := shellReadLine() +
+		shellOutputLine(`{"type":"control_request","subtype":"ask_user","request_id":"q1","request":{"prompt":"Pick one","options":["A","B"]}}`) +
+		shellReadLine() +
+		shellOutputLine(`{"type":"result","subtype":"success","result":"done"}`)
 	defer mockClaude(t, script)()
 
 	a := newTestClaudeAdapter()
@@ -185,8 +186,7 @@ func TestClaudeAdapterAskUserRoundTrip(t *testing.T) {
 
 func TestClaudeAdapterProcessDeathRecoverable(t *testing.T) {
 	// Emits a delta then exits WITHOUT a result line → stream closes mid-turn.
-	script := `$null=[Console]::In.ReadLine(); ` +
-		`Write-Output '{"type":"system","subtype":"init","session_id":"s1"}'`
+	script := shellReadLine() + shellOutputLine(`{"type":"system","subtype":"init","session_id":"s1"}`)
 	defer mockClaude(t, script)()
 
 	a := newTestClaudeAdapter()
@@ -206,9 +206,10 @@ func TestClaudeAdapterProcessDeathRecoverable(t *testing.T) {
 // ---- CL-30: resume uses the REAL session id, never the synthetic one -------
 
 func TestClaudeAdapterResumeUsesRealSessionID(t *testing.T) {
-	script := `$null=[Console]::In.ReadLine(); ` +
-		`Write-Output '{"type":"system","subtype":"init","session_id":"real-abc"}'; ` +
-		`Write-Output '{"type":"result","subtype":"success","result":"ok"}'`
+	script := shellReadLine() + shellOutputLines(
+		`{"type":"system","subtype":"init","session_id":"real-abc"}`,
+		`{"type":"result","subtype":"success","result":"ok"}`,
+	)
 	var mu sync.Mutex
 	var argsByCall [][]string
 	original := commandContextFn
@@ -217,7 +218,7 @@ func TestClaudeAdapterResumeUsesRealSessionID(t *testing.T) {
 		mu.Lock()
 		argsByCall = append(argsByCall, append([]string{}, arg...))
 		mu.Unlock()
-		return exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
+		return testShellCommand(ctx, script)
 	}
 
 	pool := newClaudeProcessPool()
@@ -256,9 +257,10 @@ func TestClaudeAdapterResumeUsesRealSessionID(t *testing.T) {
 // ---- CL-21: YOLO=true → bypassPermissions, no permission_required ----------
 
 func TestClaudeAdapterYoloTrueNoPermission(t *testing.T) {
-	script := `$null=[Console]::In.ReadLine(); ` +
-		`Write-Output '{"type":"system","subtype":"init","session_id":"s1"}'; ` +
-		`Write-Output '{"type":"result","subtype":"success","result":"ok"}'`
+	script := shellReadLine() + shellOutputLines(
+		`{"type":"system","subtype":"init","session_id":"s1"}`,
+		`{"type":"result","subtype":"success","result":"ok"}`,
+	)
 	defer mockClaude(t, script)()
 
 	a := newTestClaudeAdapter()
@@ -280,9 +282,10 @@ func TestClaudeAdapterYoloTrueNoPermission(t *testing.T) {
 // ---- CL-35: two sessions run concurrently as separate processes ------------
 
 func TestClaudeAdapterConcurrentSessions(t *testing.T) {
-	script := `$null=[Console]::In.ReadLine(); ` +
-		`Write-Output '{"type":"system","subtype":"init","session_id":"s"}'; ` +
-		`Write-Output '{"type":"result","subtype":"success","result":"ok"}'`
+	script := shellReadLine() + shellOutputLines(
+		`{"type":"system","subtype":"init","session_id":"s"}`,
+		`{"type":"result","subtype":"success","result":"ok"}`,
+	)
 	defer mockClaude(t, script)()
 
 	pool := newClaudeProcessPool()
@@ -321,9 +324,10 @@ func (f *fakeProviderSessionStore) UpsertSession(_ context.Context, rec Provider
 }
 
 func TestClaudeAdapterPersistsSession(t *testing.T) {
-	script := `$null=[Console]::In.ReadLine(); ` +
-		`Write-Output '{"type":"system","subtype":"init","session_id":"real-xyz"}'; ` +
-		`Write-Output '{"type":"result","subtype":"success","result":"ok"}'`
+	script := shellReadLine() + shellOutputLines(
+		`{"type":"system","subtype":"init","session_id":"real-xyz"}`,
+		`{"type":"result","subtype":"success","result":"ok"}`,
+	)
 	defer mockClaude(t, script)()
 
 	store := &fakeProviderSessionStore{ch: make(chan ProviderSessionRecord, 4)}
@@ -660,6 +664,102 @@ func TestClaudeArgsYoloPosture(t *testing.T) {
 	}
 	if argIndex(gatedNoCfg, "--permission-prompt-tool") >= 0 {
 		t.Fatalf("empty mcpConfig must not add --permission-prompt-tool: %v", gatedNoCfg)
+	}
+}
+
+// ---- TS-008: real session id persisted with correct run id + cwd (DOD-08, DOD-81) -------
+
+func TestClaudeAdapterPersistsRealSessionIDForResume(t *testing.T) {
+	script := shellReadLine() + shellOutputLines(
+		`{"type":"system","subtype":"init","session_id":"claude-real-1"}`,
+		`{"type":"result","subtype":"success","result":"ok"}`,
+	)
+	defer mockClaude(t, script)()
+
+	repoCwd := t.TempDir() // real dir so the spawned process can chdir to it
+	store := &fakeProviderSessionStore{ch: make(chan ProviderSessionRecord, 4)}
+	pool := newClaudeProcessPool()
+	a := newClaudeAdapter(pool, ".", "acct-a", nil, "")
+	a.sessionStore = store
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	req := TurnRequest{RunID: "run-1", StepID: "s", Prompt: "hi", ProviderSessionID: "thread-1", Cwd: repoCwd}
+	if err := a.SendTurn(ctx, req, &fakeClaudeBridge{}); err != nil {
+		t.Fatalf("SendTurn: %v", err)
+	}
+
+	// pool must map the synthetic session id to the captured real one
+	if got := pool.realSession("thread-1"); got != "claude-real-1" {
+		t.Fatalf("pool.realSession('thread-1') = %q, want claude-real-1", got)
+	}
+
+	// persisted record must carry the real session id, run id, and request cwd
+	select {
+	case rec := <-store.ch:
+		if rec.ProviderSessionID != "claude-real-1" {
+			t.Fatalf("persisted ProviderSessionID = %q, want claude-real-1", rec.ProviderSessionID)
+		}
+		if rec.WorkflowRunID != "run-1" {
+			t.Fatalf("persisted WorkflowRunID = %q, want run-1", rec.WorkflowRunID)
+		}
+		if rec.WorkingDirectory != repoCwd {
+			t.Fatalf("persisted WorkingDirectory = %q, want %q", rec.WorkingDirectory, repoCwd)
+		}
+		if rec.ProviderKey != string(ProviderKeyClaude) {
+			t.Fatalf("persisted ProviderKey = %q, want claude", rec.ProviderKey)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("expected a persisted session record within 5s")
+	}
+}
+
+// ---- TS-029: restored Claude run seeds pool before first turn (DOD-40, DOD-41) ----------
+//
+// Mirrors what interactive_service.startTurn does for resumedFromDisk Claude runs:
+// before spawning the process it calls pool.setRealSession so the adapter picks up the
+// stored real session id and emits --resume <realSessionId> on the very first turn.
+
+func TestRestoredClaudeRunSeedsPoolWithRealSessionBeforeTurn(t *testing.T) {
+	script := shellReadLine() + shellOutputLines(
+		`{"type":"system","subtype":"init","session_id":"claude-real-1"}`,
+		`{"type":"result","subtype":"success","result":"ok"}`,
+	)
+	var mu sync.Mutex
+	var capturedArgs []string
+	original := commandContextFn
+	defer func() { commandContextFn = original }()
+	commandContextFn = func(ctx context.Context, _ string, arg ...string) *exec.Cmd {
+		mu.Lock()
+		capturedArgs = append([]string{}, arg...)
+		mu.Unlock()
+		return testShellCommand(ctx, script)
+	}
+
+	repoCwd := t.TempDir() // real dir so the spawned process can chdir to it
+	pool := newClaudeProcessPool()
+	a := newClaudeAdapter(pool, repoCwd, "acct-a", nil, "")
+
+	// Simulate what interactive_service.startTurn does before the first turn of a
+	// restored Claude run (interactive_service.go lines 869-871):
+	pool.setRealSession("thread-1", "claude-real-1")
+	pool.setRealSession("claude-real-1", "claude-real-1")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	req := TurnRequest{RunID: "run-1", StepID: "s", Prompt: "continue", ProviderSessionID: "thread-1"}
+	if err := a.SendTurn(ctx, req, &fakeClaudeBridge{}); err != nil {
+		t.Fatalf("SendTurn: %v", err)
+	}
+
+	mu.Lock()
+	args := capturedArgs
+	mu.Unlock()
+
+	if !flagHasValue(args, "--resume", "claude-real-1") {
+		t.Fatalf("restored turn must --resume the real session id, got args: %v", args)
 	}
 }
 

@@ -9,10 +9,10 @@
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-16`
-- Last Updated: `2026-06-16`
+- Last Updated: `2026-06-17`
 - Parent Documents: [CP-18: Refactor Workflow With Session](../../07-Coding-Plan/done/CP-18-Refactor-Workflow-With_Session.md), [SD-12: Refactor Workflow With Session](../../06-System-Tech-Design/SD-12-Refactor-Workflow-With_Session.md), [SS-11: Workflow With Session](../../05-System-Specs/SS-11-Workflow-With_Session.md), [Task-023: Sync Artifact With Google Drive](../done/Task-023-Sync-Artifact-With-Google.md)
 - Child Documents: `none`
-- Related Documents: [Task-056: History Supabase Reader Production Fix](./Task-056-History-Supabase-Reader-Production-Fix.md), [BUG-060: Desktop Run History Empties After Switching Runs](../../09-BugFix/done/BUG-060-Desktop-Run-History-Empties-After-Switching-Runs.md), [Task-037: Desktop Project Run History Popover](../done/Task-037-Desktop-Project-Run-History-Popover.md)
+- Related Documents: [Task-070: History Supabase Reader Production Fix](../done/Task-070-History-Supabase-Reader-Production-Fix.md), [BUG-060: Desktop Run History Empties After Switching Runs](../../09-BugFix/done/BUG-060-Desktop-Run-History-Empties-After-Switching-Runs.md), [Task-037: Desktop Project Run History Popover](../done/Task-037-Desktop-Project-Run-History-Popover.md)
 - Replaces: `none`
 - Tags: `local-runner, history, sync, google-drive, cross-pc, claude, codex, session`
 
@@ -20,10 +20,11 @@
 
 ### Summary
 
+- **DEFERRED (user decision 2026-06-17):** the active cross-PC path is now Task-069 (Google Drive + local `sessions.ndjson`), which fits non-Supabase desktop installs. This Supabase-backed design is retained as the future option for Supabase users — do not implement before Task-069. The cross-cutting fallback is also updated: an unopenable synced run is shown greyed-out, not history-injected.
 - Provider CLIs (Claude, Codex) store their conversation session files locally on disk (`~/.claude/`, `~/.codex/`). FlowPilot already knows the session_id / thread_id that maps to those files (stored in `workflow_provider_sessions`).
 - Goal: one "Sync Chat" button uploads the relevant local provider session files to Google Drive (using existing GDrive infra from Task-023), tagged with the FlowPilot `run_id` as the portable identity. PC2 can download those files, restore them to the correct local directory, and resume the session.
 - The key open question that must be validated before implementation: are provider CLI session files fully portable (self-contained JSONL — no server-side validation on resume)? This must be verified manually before coding begins.
-- Task-056 (Phase 1) is a prerequisite — history must work on a single PC before cross-PC sync is meaningful.
+- Task-070 (Phase 1) is a prerequisite — history must work on a single PC before cross-PC sync is meaningful.
 
 ### Current Ask
 
@@ -44,12 +45,12 @@
 
 ### Constraints
 
-- Task-056 must be completed first — single-PC history must be stable before adding cross-PC.
+- Task-070 must be completed first — single-PC history must be stable before adding cross-PC.
 - Must not sync session files automatically — only on explicit user action per run.
 - Must reuse Task-023 Google Drive connection (same OAuth, same folder structure).
 - Session files may contain sensitive conversation content. Never log file contents. Treat as user data with same sensitivity as artifact content.
 - Do not break or conflict with existing artifact sync behavior in `artifacts.go`.
-- Portability test result (Step 0) gates the implementation design. If providers validate session IDs server-side and cross-machine resume fails, the fallback (history injection) becomes the primary path and `T-2` must be updated accordingly.
+- Portability test result (Step 0) gates the implementation design. If providers validate session IDs server-side and cross-machine resume fails, the fallback is to show the run greyed-out / disabled on PC2 with a reason (user decision 2026-06-17, supersedes the earlier history-injection idea); `T-2` / `T-5b` are updated accordingly.
 
 ### Open Questions
 
@@ -84,7 +85,7 @@ Allow a FlowPilot user to upload the local provider CLI session files for a give
 
 ## 3. Trigger
 
-After Phase 1 (Task-056) stabilises single-PC history, the next user need is: "I started a chat run on my work PC and want to continue it on my laptop." Provider CLIs store their sessions locally. FlowPilot already knows the session ID from Supabase. The existing Google Drive artifact-sync infrastructure provides the upload/download plumbing. This task wires them together.
+After Phase 1 (Task-070) stabilises single-PC history, the next user need is: "I started a chat run on my work PC and want to continue it on my laptop." Provider CLIs store their sessions locally. FlowPilot already knows the session ID from Supabase. The existing Google Drive artifact-sync infrastructure provides the upload/download plumbing. This task wires them together.
 
 ## 4. Exact Change
 

@@ -7,6 +7,15 @@
 
 input = artifact + mcp + history + Rag
 output = artifact + rag
+
+RAG nhu nao ? Nen luu 1 he thong file nhu kieu danh ba
+feature > layer (data-domain-ui)
+Tat ca tongr hop lai thanh 1 bo id -> convert thanh 1 VECTOR
+push len RAG supabase
+key: vector -> id -> id cua file
+get duoc file thi se biet ben trong summary change for feat nhu nao
+De lam dc cai nay thi can co flow va doc chuan format
+
 ---
 
 ## 1. Core Concept
@@ -18,6 +27,7 @@ This phase covers two closely related concerns that must ship together:
 **Part B — Artifact Memory & Context Intelligence:** Close the gap between "we saved the artifact" and "the next AI step knows the right context." Build the memory pipeline (working memory, embeddings, context slots, HyperRAG) that makes FlowPilot's context accumulation real.
 
 These two parts are merged here because:
+
 - Google Drive sync (Part A) feeds the `drive.file` context slot resolver (Part B).
 - Both share the same audit log table and RLS hardening pass.
 - Both are best shipped together as one coherent phase.
@@ -32,6 +42,7 @@ CP-10 must treat governed project documents that follow `SS-13` as structured co
 ### 2.1 Jira
 
 #### Database
+
 ```sql
 -- Cache Jira members for project syncing
 CREATE TABLE jira_members_cache (
@@ -92,6 +103,7 @@ CREATE POLICY "integrations_select_project_members"
 ```
 
 #### Edge Functions
+
 ```
 POST /functions/v1/jira-import-members
 Body: { projectId, integrationId }
@@ -109,6 +121,7 @@ Body: { projectId, integrationId }
 ```
 
 #### UI
+
 - `/projects/:projectId/members` → "Import from Jira" button (now enabled)
 - `/projects/:projectId/tasks` → "Create Jira Issue" on each task card
 - `/projects/:projectId/tasks` → Jira status badge sync indicator
@@ -117,6 +130,7 @@ Body: { projectId, integrationId }
 ---
 
 ### 2.2 Firebase
+
 - **Edge Function:** `firebase-fetch-crashes` — pulls crash logs for Issue Analysis step
 - **Edge Function:** `firebase-fetch-analytics` — pulls usage data for Analytics Review step
 - **Config:** Firebase project ID + service account key (stored encrypted in `integrations`)
@@ -124,6 +138,7 @@ Body: { projectId, integrationId }
 ---
 
 ### 2.3 Google Drive
+
 - **Edge Function:** `google-drive-sync-artifacts` — uploads artifact runs to a configured Drive folder after each step completes. Uses path: `{remote_sync_root_path}/{projectId}/{workflowRunId}/{stepType}/{file_name}`.
 - **Edge Function:** `google-drive-sync-skills` — syncs `.claude/`, `.codex/`, `.gemini/` skill folders to Drive.
 - **Context slot link:** Once a file is synced, its Drive file ID is stored on `artifact_runs.remote_url`. The `drive.file` context slot resolver uses this ID to fetch file content at runtime — no re-upload needed.
@@ -132,6 +147,7 @@ Body: { projectId, integrationId }
 ---
 
 ### 2.4 Telegram
+
 - **Edge Function:** `telegram-send-notification` — sends workflow status updates to a configured Telegram chat
 - **Config:** Bot token + chat ID (stored encrypted)
 - **Trigger:** Automatically called when a workflow step enters `WAITING_USER_APPROVAL` or `DONE`
@@ -289,6 +305,7 @@ $$;
 Create or reuse `generate-embedding`. Reference the known-working implementation in [CP-09 §3.5](./DONE-CP-09-AI-Orchestration.md).
 
 Requirements:
+
 - accepts `POST`
 - validates a string `text` field
 - uses `new Supabase.ai.Session("gte-small")`
@@ -298,6 +315,7 @@ Requirements:
 - JWT auth required
 
 Used for:
+
 - embedding working memory records after artifact save
 - embedding the HyperRAG search query before vector search
 
@@ -328,6 +346,7 @@ Structured phase-document fast path:
 - Use model-generated extraction only to fill gaps, normalize legacy non-compliant docs, or derive fields that are not explicitly present, such as `assumptions`.
 
 Failure behavior:
+
 - Raw artifact save must succeed even if memory generation fails.
 - Failed memory records must be visible in Admin Web with retry capability.
 
@@ -341,44 +360,44 @@ The Admin UI manages these rows through a form with dropdowns. The `resolver_con
 
 #### Supported resolver types
 
-| Resolver | Fetch Source | Behavior |
-|---|---|---|
-| `project.brief` | `projects.brief` column | Always available. Short project summary. |
-| `run.input` | Workflow run intake form | The user's original task/feature description. |
-| `step.previous.brief` | Previous step's `artifact_memories.summary` | Automatic continuity. |
-| `step.n.brief` | Step N's `artifact_memories.summary` | Non-adjacent step reference by index. |
-| `artifact.required` | `artifact_runs` lookup by definition key | Deterministic. Fails step if missing. |
-| `semantic.search` | pgvector search over `artifact_memories` | Dynamic. Uses HyperRAG query. |
-| `drive.file` | Drive file ID stored on `artifact_runs.remote_url` | Specific synced document. |
-| `mcp.context` | Live MCP call (Jira, Figma, Firebase, etc.) | Real-time external data. |
-| `static` | Hardcoded string in `resolver_config.content` | Shared prompt rules or fragments. |
+| Resolver              | Fetch Source                                       | Behavior                                      |
+| --------------------- | -------------------------------------------------- | --------------------------------------------- |
+| `project.brief`       | `projects.brief` column                            | Always available. Short project summary.      |
+| `run.input`           | Workflow run intake form                           | The user's original task/feature description. |
+| `step.previous.brief` | Previous step's `artifact_memories.summary`        | Automatic continuity.                         |
+| `step.n.brief`        | Step N's `artifact_memories.summary`               | Non-adjacent step reference by index.         |
+| `artifact.required`   | `artifact_runs` lookup by definition key           | Deterministic. Fails step if missing.         |
+| `semantic.search`     | pgvector search over `artifact_memories`           | Dynamic. Uses HyperRAG query.                 |
+| `drive.file`          | Drive file ID stored on `artifact_runs.remote_url` | Specific synced document.                     |
+| `mcp.context`         | Live MCP call (Jira, Figma, Firebase, etc.)        | Real-time external data.                      |
+| `static`              | Hardcoded string in `resolver_config.content`      | Shared prompt rules or fragments.             |
 
 #### resolver_config per resolver type
 
-| Resolver | resolver_config | UI controls |
-|---|---|---|
-| `project.brief` / `run.input` / `step.previous.brief` | `{}` | None |
-| `step.n.brief` | `{ "step_index": 2 }` | Step index number input |
-| `artifact.required` | `{ "artifact_key": "tech_spec_artifact" }` | Artifact definition dropdown |
-| `semantic.search` | `{ "query_template": "...", "top_k": 3, "use_hyperrag": false }` | Template input, top_k slider, HyperRAG toggle |
-| `drive.file` | `{ "file_path": "docs/arch.md" }` | File path input |
-| `mcp.context` | `{ "mcp_provider": "jira" }` | MCP provider dropdown |
-| `static` | `{ "content": "Always respond in English." }` | Multi-line text area |
+| Resolver                                              | resolver_config                                                  | UI controls                                   |
+| ----------------------------------------------------- | ---------------------------------------------------------------- | --------------------------------------------- |
+| `project.brief` / `run.input` / `step.previous.brief` | `{}`                                                             | None                                          |
+| `step.n.brief`                                        | `{ "step_index": 2 }`                                            | Step index number input                       |
+| `artifact.required`                                   | `{ "artifact_key": "tech_spec_artifact" }`                       | Artifact definition dropdown                  |
+| `semantic.search`                                     | `{ "query_template": "...", "top_k": 3, "use_hyperrag": false }` | Template input, top_k slider, HyperRAG toggle |
+| `drive.file`                                          | `{ "file_path": "docs/arch.md" }`                                | File path input                               |
+| `mcp.context`                                         | `{ "mcp_provider": "jira" }`                                     | MCP provider dropdown                         |
+| `static`                                              | `{ "content": "Always respond in English." }`                    | Multi-line text area                          |
 
 #### Default slots seeded for all MVP steps
 
-| name | resolver | priority | max_tokens | resolver_config |
-|---|---|---|---|---|
-| `project_brief` | `project.brief` | 1 | 500 | `{}` |
-| `run_input` | `run.input` | 1 | 1000 | `{}` |
-| `previous_step_brief` | `step.previous.brief` | 2 | 1500 | `{}` |
-| `relevant_past` | `semantic.search` | 3 | 3000 | `{ "query_template": "{{step.description}} {{run.feature_name}}", "top_k": 3 }` |
+| name                  | resolver              | priority | max_tokens | resolver_config                                                                 |
+| --------------------- | --------------------- | -------- | ---------- | ------------------------------------------------------------------------------- |
+| `project_brief`       | `project.brief`       | 1        | 500        | `{}`                                                                            |
+| `run_input`           | `run.input`           | 1        | 1000       | `{}`                                                                            |
+| `previous_step_brief` | `step.previous.brief` | 2        | 1500       | `{}`                                                                            |
+| `relevant_past`       | `semantic.search`     | 3        | 3000       | `{ "query_template": "{{step.description}} {{run.feature_name}}", "top_k": 3 }` |
 
 Steps with MCP requirements add one extra row:
 
-| name | resolver | priority | max_tokens | required | resolver_config |
-|---|---|---|---|---|---|
-| `jira_ticket` | `mcp.context` | 2 | 2000 | true | `{ "mcp_provider": "jira" }` |
+| name          | resolver      | priority | max_tokens | required | resolver_config              |
+| ------------- | ------------- | -------- | ---------- | -------- | ---------------------------- |
+| `jira_ticket` | `mcp.context` | 2        | 2000       | true     | `{ "mcp_provider": "jira" }` |
 
 ---
 
@@ -423,13 +442,13 @@ Resolved: "Design system architecture for Real-time notifications"
 
 Supported variables:
 
-| Variable | Source |
-|---|---|
-| `{{step.description}}` | Step definition description |
-| `{{run.feature_name}}` | Workflow run intake field |
-| `{{run.goal}}` | Workflow run intake field |
-| `{{project.name}}` | Project name |
-| `{{artifact.type}}` | Step's primary output artifact key |
+| Variable               | Source                             |
+| ---------------------- | ---------------------------------- |
+| `{{step.description}}` | Step definition description        |
+| `{{run.feature_name}}` | Workflow run intake field          |
+| `{{run.goal}}`         | Workflow run intake field          |
+| `{{project.name}}`     | Project name                       |
+| `{{artifact.type}}`    | Step's primary output artifact key |
 
 **Step 2 — AI-reformulated query (optional, `use_hyperrag: true`):**
 
@@ -452,15 +471,19 @@ The Prompt Assembler constructs the final prompt sections from resolved context:
 
 ```markdown
 # Workflow Context
+
 [step position, workflow name, run status]
 
 # Selected Working Memory
+
 [structured memories selected by Context Resolver]
 
 # Source Artifacts
+
 [links/references to raw artifact files]
 
 # Raw Artifact Excerpts
+
 [only when required by policy or token budget allows]
 ```
 
@@ -509,26 +532,34 @@ All forms must validate with Zod before submitting:
 export const createProjectSchema = z.object({
   name: z.string().min(3).max(100),
   description: z.string().min(10).max(500),
-  platform: z.enum(['android', 'ios', 'web', 'multi']),
+  platform: z.enum(["android", "ios", "web", "multi"]),
   repositoryUrl: z.string().url(),
   directoryPath: z.string().optional(),
-})
+});
 
 // src/lib/validators/context-slot.ts
 export const contextSlotSchema = z.object({
   name: z.string().min(1).max(100),
   resolver: z.enum([
-    'project.brief', 'run.input', 'step.previous.brief', 'step.n.brief',
-    'artifact.required', 'semantic.search', 'drive.file', 'mcp.context', 'static'
+    "project.brief",
+    "run.input",
+    "step.previous.brief",
+    "step.n.brief",
+    "artifact.required",
+    "semantic.search",
+    "drive.file",
+    "mcp.context",
+    "static",
   ]),
   priority: z.union([z.literal(1), z.literal(2), z.literal(3)]),
   max_tokens: z.number().min(100).max(8000),
   required: z.boolean().default(false),
   resolver_config: z.record(z.unknown()).default({}),
-})
+});
 ```
 
 ### 4.3 Security Checklist
+
 - [ ] No AI API keys in frontend code (all in Edge Function env vars)
 - [ ] No Supabase service role key in frontend
 - [ ] All forms validated with Zod before mutation
@@ -569,6 +600,7 @@ CREATE POLICY "audit_logs_insert_authenticated"
 ### 5.2 Auto-logging Events
 
 Write audit entries for:
+
 - Project create/update/delete
 - Workflow run start/complete/fail
 - Approval decisions (approve/reject with comments)
@@ -584,6 +616,7 @@ Write audit entries for:
 ## 6. Error Handling & UX Polish
 
 ### 6.1 Global Error Boundary
+
 ```typescript
 // src/components/common/error-boundary.tsx
 export function ErrorBoundary({ error }: { error: Error }) {
@@ -598,11 +631,13 @@ export function ErrorBoundary({ error }: { error: Error }) {
 ```
 
 ### 6.2 Loading & Empty States
+
 - Skeleton loaders for all DataTables and detail views
 - Empty state illustrations with call-to-action buttons
 - Toast notifications for mutations (success/error)
 
 ### 6.3 Responsive Layout
+
 - Sidebar collapses on smaller screens
 - DataTables switch to card layout on mobile if needed
 
@@ -611,6 +646,7 @@ export function ErrorBoundary({ error }: { error: Error }) {
 ## 7. Admin Web
 
 ### 7.1 Artifact Management screen
+
 - Artifact table with filters (project, workflow, run, step, type, status, version, embedding status)
 - Artifact run detail view with raw content viewer
 - Working memory detail view (summary, key decisions, constraints, assumptions)
@@ -619,6 +655,7 @@ export function ErrorBoundary({ error }: { error: Error }) {
 - Pin/unpin artifact or memory as required context
 
 ### 7.2 Step Context Slots panel (in step create/edit)
+
 - Lists existing slots as rows: name | resolver badge | priority badge | max_tokens | required indicator
 - **Add Slot** button opens a form:
   - Name (text input)
@@ -632,6 +669,7 @@ export function ErrorBoundary({ error }: { error: Error }) {
 - No raw JSON editing exposed to users
 
 ### 7.3 Prompt Context drawer (in Workflow Execution Dashboard)
+
 - Shows which memory records were sent to the model for each step
 - Shows token estimates per slot
 - Links memory records back to artifact runs and raw storage
@@ -642,6 +680,7 @@ export function ErrorBoundary({ error }: { error: Error }) {
 ## 8. Testing
 
 Unit tests:
+
 - Working memory extraction produces expected shape
 - Governed phase-document parser extracts metadata block and `AI Quick View` fields deterministically
 - Vector search RPC ranking inputs are correct
@@ -650,6 +689,7 @@ Unit tests:
 - Audit row creation per resolved slot
 
 Integration tests:
+
 - Raw artifact save → working memory generated → embedding stored
 - Failed memory generation: artifact save still succeeds, retry visible in Admin Web
 - Compliant `SS`/`SD`/`CP`/`Task`/`BugFix` docs use the structured extraction fast path before whole-file fallback
@@ -657,6 +697,7 @@ Integration tests:
 - Prompt context audit shows correct selected memory for each step
 
 Manual validation:
+
 - Create a workflow with multiple artifacts
 - Approve an upstream artifact
 - Run a later step
@@ -669,12 +710,14 @@ Manual validation:
 ## 9. Definition of Done
 
 ### Part A — Integration Hardening
+
 - [ ] Jira: import members, create issues, sync status via Edge Functions
 - [ ] Firebase: fetch crashes and analytics via Edge Functions
 - [ ] Google Drive: artifact sync uploads artifact runs; Drive file ID stored on `artifact_runs.remote_url`
 - [ ] Telegram: workflow notifications sent on step state change
 
 ### Part B — Artifact Memory & Context Intelligence
+
 - [ ] `artifact_memories` table with `artifact_run_id` FK and vector search support
 - [ ] `workflow_prompt_context_items` table with `workflow_run_step_id` FK
 - [ ] `step_context_slots` table with FK to `workflow_step_definitions`, RLS enabled
@@ -697,6 +740,7 @@ Manual validation:
 - [ ] Admin Web: Prompt Context drawer shows what was injected and why
 
 ### Shared
+
 - [ ] RLS policies hardened — no more `using (true)` on any table
 - [ ] All forms validated with Zod (including context slot form)
 - [ ] Audit log table with auto-logging for all key events

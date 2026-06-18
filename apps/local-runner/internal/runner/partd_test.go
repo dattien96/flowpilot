@@ -13,15 +13,15 @@ import (
 // ---- T-01: live shared app-server starts + initialize captures caps ---------
 
 // mockCodexInitProcess scripts a process that answers the initialize handshake and
-// stays alive (the same powershell-mock pattern the session tests use on Windows).
+// stays alive without depending on a platform-specific shell.
 func mockCodexInitProcess(t *testing.T) func() {
 	t.Helper()
 	orig := commandContextFn
 	commandContextFn = func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
-		script := "$null = [Console]::In.ReadLine(); " +
-			"Write-Output '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"capabilities\":{\"threads\":true}}}'; " +
-			"Start-Sleep -Seconds 3"
-		return exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
+		script := shellReadLine() +
+			shellOutputLine(`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"capabilities":{"threads":true}}}`) +
+			"sleep 3\n"
+		return testShellCommand(ctx, script)
 	}
 	return func() { commandContextFn = orig }
 }

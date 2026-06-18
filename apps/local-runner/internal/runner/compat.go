@@ -150,6 +150,11 @@ func (r *Runner) RunCompatCheck(ctx context.Context) CompatCheckResult {
 		items = append(items, CompatItem{Name: "codex app-server stdio://", Status: "warn", Detail: "not mentioned in --help, verify manually"})
 	}
 
+	// 5. Session portability contract used by cross-account / cross-PC resume.
+	items = append(items, compatProbeCodexResumeSurface(ctx))
+	items = append(items, compatProbeCodexRolloutMetadata())
+	items = append(items, compatProbeClaudeSessionStore())
+
 	result := CompatCheckResult{CompatVersionInfo: info, Items: items}
 	for _, it := range items {
 		switch it.Status {
@@ -379,6 +384,61 @@ func compatProbeCodexInitialize(ctx context.Context) CompatItem {
 	}
 }
 
+func compatProbeCodexResumeSurface(ctx context.Context) CompatItem {
+	help := compatRunHelp(ctx, codexBinaryName(), "exec", "resume")
+	if strings.Contains(help, "SESSION_ID") && strings.Contains(help, "PROMPT") {
+		return CompatItem{Name: "codex exec resume surface", Status: "pass", Detail: "resume CLI still accepts SESSION_ID and PROMPT"}
+	}
+	return CompatItem{Name: "codex exec resume surface", Status: "fail", Detail: "resume help shape changed; cross-account/cross-PC resume may break"}
+}
+
+func compatProbeCodexRolloutMetadata() CompatItem {
+	codexHome := strings.TrimSpace(os.Getenv("CODEX_HOME"))
+	if codexHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			home = os.Getenv("HOME")
+			if home == "" {
+				home = os.Getenv("USERPROFILE")
+			}
+		}
+		codexHome = filepath.Join(home, ".codex")
+	}
+	sessionsDir := filepath.Join(codexHome, "sessions")
+	newestRollout := compatNewestRolloutPath(sessionsDir)
+	if newestRollout == "" {
+		return CompatItem{Name: "codex rollout portability metadata", Status: "warn", Detail: fmt.Sprintf("no rollout files found under %s", sessionsDir)}
+	}
+
+	firstLine, err := compatReadFirstLine(newestRollout)
+	if err != nil {
+		return CompatItem{Name: "codex rollout portability metadata", Status: "warn", Detail: fmt.Sprintf("could not read rollout metadata: %v", err)}
+	}
+	payload, err := compatRolloutMetaPayload(firstLine)
+	if err != nil {
+		return CompatItem{Name: "codex rollout portability metadata", Status: "warn", Detail: fmt.Sprintf("could not parse rollout metadata: %v", err)}
+	}
+	if compatRolloutPayloadPortable(payload) {
+		return CompatItem{Name: "codex rollout portability metadata", Status: "pass", Detail: "rollout metadata is account-agnostic (id present, no account/auth fields)"}
+	}
+	return CompatItem{Name: "codex rollout portability metadata", Status: "fail", Detail: "rollout metadata now looks account-bound or is missing id; portability contract changed"}
+}
+
+func compatProbeClaudeSessionStore() CompatItem {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = os.Getenv("HOME")
+		if home == "" {
+			home = os.Getenv("USERPROFILE")
+		}
+	}
+	claudeProjects := filepath.Join(home, ".claude", "projects")
+	if info, err := os.Stat(claudeProjects); err == nil && info.IsDir() {
+		return CompatItem{Name: "claude session store layout", Status: "pass", Detail: "found ~/.claude/projects session store"}
+	}
+	return CompatItem{Name: "claude session store layout", Status: "warn", Detail: fmt.Sprintf("%s not found; verify Claude session layout manually", claudeProjects)}
+}
+
 func compatRunVersion(ctx context.Context, binary string) string {
 	c, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -404,6 +464,76 @@ func compatOutputSnippet(output string) string {
 		}
 	}
 	return ""
+}
+
+func compatNewestRolloutPath(sessionsDir string) string {
+	newestTime := time.Time{}
+	newestPath := ""
+	_ = filepath.WalkDir(sessionsDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d == nil || d.IsDir() || !strings.HasPrefix(d.Name(), "rollout-") || !strings.HasSuffix(d.Name(), ".jsonl") {
+			return nil
+		}
+		info, statErr := d.Info()
+		if statErr != nil {
+			return nil
+		}
+		if newestPath == "" || info.ModTime().After(newestTime) {
+			newestTime = info.ModTime()
+			newestPath = path
+		}
+		return nil
+	})
+	return newestPath
+}
+
+func compatReadFirstLine(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 16*1024), 1024*1024)
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return nil, err
+		}
+		return nil, errors.New("rollout file is empty")
+	}
+	return append([]byte(nil), scanner.Bytes()...), nil
+}
+
+func compatRolloutMetaPayload(line []byte) (map[string]any, error) {
+	var meta map[string]any
+	if err := json.Unmarshal(line, &meta); err != nil {
+		return nil, err
+	}
+	if payload, ok := meta["payload"].(map[string]any); ok && payload != nil {
+		return payload, nil
+	}
+	return meta, nil
+}
+
+func compatRolloutPayloadPortable(payload map[string]any) bool {
+	if payload == nil {
+		return false
+	}
+	if strings.TrimSpace(fmt.Sprint(payload["id"])) == "" {
+		return false
+	}
+	for key := range payload {
+		lower := strings.ToLower(strings.TrimSpace(key))
+		if strings.Contains(lower, "account") ||
+			strings.Contains(lower, "auth") ||
+			strings.Contains(lower, "user") ||
+			strings.Contains(lower, "token") ||
+			strings.Contains(lower, "email") ||
+			strings.Contains(lower, "org") {
+			return false
+		}
+	}
+	return true
 }
 
 // compatMajorMinor extracts "X.Y" from version strings like "2.1.179 (Claude Code)"

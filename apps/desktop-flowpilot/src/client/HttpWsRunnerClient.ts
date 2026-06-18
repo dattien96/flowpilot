@@ -1,9 +1,14 @@
 import type {
   Artifact,
+  ChatSessionRestoreRequest,
+  ChatSessionRestoreResult,
+  ChatSessionSyncRequest,
+  ChatSessionSyncResult,
   Project,
   ProviderAccountSummary,
   ProviderEventDTO,
   ProviderSkill,
+  RemoteChatSessionSummary,
   RunHandle,
   RunHistoryItem,
   RunnerClient,
@@ -91,6 +96,23 @@ export class HttpWsRunnerClient implements RunnerClient {
   private scenario?: string;
   /** Highest seq seen per run, so a follow-up turn/stream resumes after it. */
   private readonly lastSeq = new Map<string, number>();
+  /**
+   * The renderer views one run at a time, but an SSE stream for a completed run
+   * stays open server-side (it waits for the next live event that never comes).
+   * Without this, switching between history items leaks an open connection each
+   * time and exhausts Chromium's ~6-per-host connection pool, after which every
+   * runner request (history polling, resume, …) queues forever and the UI hangs.
+   * We keep at most one long-lived stream and abort the previous before opening
+   * a new one. (Task-067 4.3)
+   */
+  private activeStreamAbort?: AbortController;
+
+  private beginStream(): AbortController {
+    this.activeStreamAbort?.abort();
+    const ctrl = new AbortController();
+    this.activeStreamAbort = ctrl;
+    return ctrl;
+  }
 
   constructor(baseUrl: string) {
     this.base = baseUrl.replace(/\/+$/, "");
@@ -148,6 +170,9 @@ export class HttpWsRunnerClient implements RunnerClient {
   listRunHistory(projectId: string): Promise<RunHistoryItem[]> {
     return this.getJSON<RunHistoryItem[]>(`/client/projects/${encodeURIComponent(projectId)}/workflow-runs`);
   }
+  listRemoteChatSessions(projectId: string): Promise<RemoteChatSessionSummary[]> {
+    return this.getJSON<RemoteChatSessionSummary[]>(`/client/projects/${encodeURIComponent(projectId)}/chat-sessions/remote`);
+  }
   listSkills(provider: string, cwd?: string): Promise<ProviderSkill[]> {
     let url = `/client/provider-skills?provider=${encodeURIComponent(provider)}`;
     if (cwd) url += `&cwd=${encodeURIComponent(cwd)}`;
@@ -161,6 +186,19 @@ export class HttpWsRunnerClient implements RunnerClient {
   }
   resumeRun(runId: string): Promise<RunHandle> {
     return this.postJSON<RunHandle>(`/client/workflow-runs/${encodeURIComponent(runId)}/resume`);
+  }
+  syncChatRun(runId: string, input?: ChatSessionSyncRequest): Promise<ChatSessionSyncResult> {
+    return this.postJSON<ChatSessionSyncResult>(`/client/workflow-runs/${encodeURIComponent(runId)}/sync-chat`, input ?? {});
+  }
+  async deleteRun(runId: string): Promise<void> {
+    const resp = await fetch(this.base + `/client/workflow-runs/${encodeURIComponent(runId)}`, {
+      method: "DELETE",
+      headers: { Accept: "application/json" },
+    });
+    await this.parse<unknown>(resp);
+  }
+  restoreChatRun(input: ChatSessionRestoreRequest): Promise<ChatSessionRestoreResult> {
+    return this.postJSON<ChatSessionRestoreResult>("/client/chat-sessions/restore", input);
   }
   submitApproval(approvalId: string, decision: string): Promise<void> {
     return this.postJSON<void>(`/client/approvals/${encodeURIComponent(approvalId)}/decision`, { decision });
@@ -205,7 +243,7 @@ export class HttpWsRunnerClient implements RunnerClient {
       },
     );
 
-    for await (const ev of this.openStream(input.runId, after)) {
+    for await (const ev of this.openStream(input.runId, after, this.beginStream())) {
       this.lastSeq.set(input.runId, Math.max(this.lastSeq.get(input.runId) ?? 0, ev.seq));
       if (ev.providerTurnId && ev.providerTurnId !== turnId) continue; // filter to this turn
       yield ev;
@@ -216,7 +254,7 @@ export class HttpWsRunnerClient implements RunnerClient {
   }
 
   async *streamRun(runId: string, afterSeq = 0): AsyncIterable<ProviderEventDTO> {
-    for await (const ev of this.openStream(runId, afterSeq)) {
+    for await (const ev of this.openStream(runId, afterSeq, this.beginStream())) {
       this.lastSeq.set(runId, Math.max(this.lastSeq.get(runId) ?? 0, ev.seq));
       yield ev;
     }
@@ -224,12 +262,22 @@ export class HttpWsRunnerClient implements RunnerClient {
 
   // openStream parses the SSE body, yielding each event until the connection
   // closes or the consumer stops iterating (which aborts the fetch via finally).
-  private async *openStream(runId: string, afterSeq: number): AsyncIterable<ProviderEventDTO> {
-    const ctrl = new AbortController();
-    const resp = await fetch(
-      `${this.base}/client/workflow-runs/${encodeURIComponent(runId)}/events/stream?afterSeq=${afterSeq}`,
-      { headers: { Accept: "text/event-stream" }, signal: ctrl.signal },
-    );
+  private async *openStream(
+    runId: string,
+    afterSeq: number,
+    ctrl: AbortController = new AbortController(),
+  ): AsyncIterable<ProviderEventDTO> {
+    let resp: Response;
+    try {
+      resp = await fetch(
+        `${this.base}/client/workflow-runs/${encodeURIComponent(runId)}/events/stream?afterSeq=${afterSeq}`,
+        { headers: { Accept: "text/event-stream" }, signal: ctrl.signal },
+      );
+    } catch (err) {
+      // Aborted because a newer stream superseded this one — end quietly.
+      if (ctrl.signal.aborted) return;
+      throw err;
+    }
     if (!resp.ok || !resp.body) {
       ctrl.abort();
       throw new RunnerApiError(resp.status, "stream_failed", `event stream failed: ${resp.status}`);
@@ -239,7 +287,14 @@ export class HttpWsRunnerClient implements RunnerClient {
     let buf = "";
     try {
       for (;;) {
-        const { done, value } = await reader.read();
+        let chunk: ReadableStreamReadResult<Uint8Array>;
+        try {
+          chunk = await reader.read();
+        } catch (err) {
+          if (ctrl.signal.aborted) return; // superseded — stop without surfacing AbortError
+          throw err;
+        }
+        const { done, value } = chunk;
         if (done) return;
         buf += decoder.decode(value, { stream: true });
         let idx: number;

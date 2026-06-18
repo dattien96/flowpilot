@@ -214,6 +214,38 @@ func flattenClaudeStrings(v any) string {
 	}
 }
 
+// claudeUserPromptText extracts the typed user prompt text from a Claude user frame
+// for transcript replay. Returns "" when the content contains any tool_result block
+// (those frames are tool completions replayed as tool_completed events, not prompts).
+// Used only by the transcript loader — the live mapper (mapClaudeUser) is unchanged.
+func claudeUserPromptText(raw map[string]any) string {
+	msg, _ := raw["message"].(map[string]any)
+	if msg == nil {
+		return ""
+	}
+	// Plain string content (older Claude CLI versions).
+	if s, _ := msg["content"].(string); s != "" {
+		return s
+	}
+	content := claudeMessageContent(raw)
+	var textParts []string
+	for _, c := range content {
+		block, _ := c.(map[string]any)
+		if block == nil {
+			continue
+		}
+		switch bt, _ := block["type"].(string); bt {
+		case "tool_result":
+			return "" // frame is a tool completion, not a typed prompt
+		case "text":
+			if t, _ := block["text"].(string); t != "" {
+				textParts = append(textParts, t)
+			}
+		}
+	}
+	return strings.Join(textParts, "")
+}
+
 // claudeSessionIDFromLine returns the real Claude session_id carried on system/result
 // frames (used to --resume the real session on later turns, not the synthetic id).
 func claudeSessionIDFromLine(l claudeLine) string {

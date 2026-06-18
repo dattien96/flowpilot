@@ -19,9 +19,13 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /client/steps", s.handleListSteps)
 	mux.HandleFunc("GET /client/workflows/{workflowId}/steps", s.handleListSteps)
 	mux.HandleFunc("GET /client/projects/{projectId}/workflow-runs", s.handleListProjectRunHistory)
+	mux.HandleFunc("GET /client/projects/{projectId}/chat-sessions/remote", s.handleListRemoteChatSessions)
 	mux.HandleFunc("POST /client/workflow-runs", s.handleStartRun)
 	mux.HandleFunc("GET /client/workflow-runs/{runId}", s.handleGetRun)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/resume", s.handleResumeRun)
+	mux.HandleFunc("DELETE /client/workflow-runs/{runId}", s.handleDeleteRun)
+	mux.HandleFunc("POST /client/workflow-runs/{runId}/sync-chat", s.handleSyncChatRun)
+	mux.HandleFunc("POST /client/chat-sessions/restore", s.handleRestoreChatRun)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/turns", s.handleStartTurn)
 	mux.HandleFunc("GET /client/workflow-runs/{runId}/events/stream", s.handleEventStream)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/interrupt", s.handleInterrupt)
@@ -104,6 +108,15 @@ func (s *InteractiveService) handleListProjectRunHistory(w http.ResponseWriter, 
 	writeInteractiveJSON(w, http.StatusOK, s.projectRunHistory(r.PathValue("projectId")))
 }
 
+func (s *InteractiveService) handleListRemoteChatSessions(w http.ResponseWriter, r *http.Request) {
+	summaries, err := s.listRemoteChatSessions(r.Context(), r.PathValue("projectId"))
+	if err != nil {
+		writeInteractiveError(w, err)
+		return
+	}
+	writeInteractiveJSON(w, http.StatusOK, summaries)
+}
+
 // ---- run lifecycle handlers ------------------------------------------------
 
 func (s *InteractiveService) handleStartRun(w http.ResponseWriter, r *http.Request) {
@@ -136,6 +149,42 @@ func (s *InteractiveService) handleResumeRun(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeInteractiveJSON(w, http.StatusOK, handle)
+}
+
+func (s *InteractiveService) handleDeleteRun(w http.ResponseWriter, r *http.Request) {
+	if e := s.deleteChatSession(r.PathValue("runId")); e != nil {
+		writeInteractiveError(w, e)
+		return
+	}
+	writeInteractiveJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *InteractiveService) handleSyncChatRun(w http.ResponseWriter, r *http.Request) {
+	var body ChatSessionSyncRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err.Error() != "EOF" {
+		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_request", "invalid request body"))
+		return
+	}
+	result, apiErr := s.syncChatRunToDrive(r.Context(), r.PathValue("runId"), body)
+	if apiErr != nil {
+		writeInteractiveError(w, apiErr)
+		return
+	}
+	writeInteractiveJSON(w, http.StatusOK, result)
+}
+
+func (s *InteractiveService) handleRestoreChatRun(w http.ResponseWriter, r *http.Request) {
+	var body ChatSessionRestoreRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_request", "invalid request body"))
+		return
+	}
+	result, apiErr := s.restoreChatRunFromDrive(r.Context(), body)
+	if apiErr != nil {
+		writeInteractiveError(w, apiErr)
+		return
+	}
+	writeInteractiveJSON(w, http.StatusOK, result)
 }
 
 type turnBody struct {
@@ -470,6 +519,10 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 	if _, err := s.registry.Selectable(providerKey); err != nil {
 		return RunHandle{}, newAPIErr(http.StatusUnprocessableEntity, "provider_unavailable", err.Error())
 	}
+	// Stamp the run with the account that is active for THIS provider, not the
+	// single global activeAccountID (Task-067 issue 1). Resolved before the lock
+	// since it may read the provider-accounts store.
+	stampAccount := s.activeAccountForProvider(providerKey)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -494,7 +547,7 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		workflowID:        in.WorkflowID,
 		providerKey:       providerKey,
 		providerSessionID: sessionID,
-		providerAccountID: s.activeAccountID,
+		providerAccountID: stampAccount,
 		workspaceCwd:      in.Cwd,
 		modelName:         in.Model,
 		yolo:              in.YoloMode,
@@ -516,9 +569,12 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		WorkflowID:        in.WorkflowID,
 		ProviderSessionID: sessionID,
 		ProviderKey:       providerKey,
-		ProviderAccountID: s.activeAccountID,
+		ProviderAccountID: stampAccount,
 		WorkingDirectory:  in.Cwd,
 		Status:            rs.status,
+		StartedAt:         now,
+		UpdatedAt:         now,
+		RunKind:           runKind,
 	}); err != nil {
 		delete(s.runs, runID)
 		return RunHandle{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
@@ -528,15 +584,20 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 
 func (s *InteractiveService) resumeRun(runID string) (RunHandle, *apiErr) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	rs := s.runs[runID]
+	s.mu.Unlock()
 	if rs == nil {
-		return RunHandle{}, newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")
+		rebuilt, err := s.loadPersistedRun(runID)
+		if err != nil {
+			return RunHandle{}, err
+		}
+		rs = rebuilt
 	}
-	if rs.providerAccountID != s.activeAccountID {
-		return RunHandle{}, newAPIErr(http.StatusConflict, "provider_account_changed", "active provider account changed since the run started")
+	if err := s.ensureResumeReady(rs); err != nil {
+		return RunHandle{}, err
 	}
-	handle := RunHandle{RunID: rs.id, ProviderSessionID: rs.providerSessionID, ProviderKey: rs.providerKey, Status: rs.status}
+	s.seedTranscriptFromDisk(rs)
+	handle := RunHandle{RunID: rs.id, ProviderSessionID: s.resumeSessionID(rs), ProviderKey: rs.providerKey, Status: rs.status}
 	// Surface the synthetic chat step so the desktop can continue a resumed normal_chat
 	// run; its turns need a stepId and the chat step id is deterministic (T-7). Workflow
 	// runs resume as before (the desktop drives the step via the navigator selection).
@@ -579,7 +640,10 @@ type runHistoryItem struct {
 	LastMessage string      `json:"lastMessage,omitempty"`
 	// RunKind distinguishes normal chat runs from workflow runs so chat runs
 	// are excluded from workflow catalogs and labeled correctly in history (T-7).
-	RunKind string `json:"runKind,omitempty"`
+	RunKind         string `json:"runKind,omitempty"`
+	SourceMachineID string `json:"sourceMachineId,omitempty"`
+	SourceRunID     string `json:"sourceRunId,omitempty"`
+	SyncStatus      string `json:"syncStatus,omitempty"`
 }
 
 func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryItem {
@@ -621,7 +685,17 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 					ProjectID:   sess.ProjectID,
 					WorkflowID:  sess.WorkflowID,
 					ProviderKey: sess.ProviderKey,
-					Status:      sess.Status,
+					// Persisted-only runs are not in the in-memory map, so an
+					// in-flight status is stale after a restart (T-067 4.4).
+					Status:      normalizeResumedStatus(sess.Status),
+					StartedAt:   sess.StartedAt,
+					UpdatedAt:   sess.UpdatedAt,
+					LastPrompt:  sess.LastPrompt,
+					LastMessage: sess.LastMessage,
+					RunKind:     sess.RunKind,
+					SourceMachineID: sess.SourceMachineID,
+					SourceRunID:     sess.SourceRunID,
+					SyncStatus:      sess.SyncStatus,
 				})
 			}
 		}

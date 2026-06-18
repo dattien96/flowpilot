@@ -121,6 +121,9 @@ func (r *Runner) validateGoogleDriveProxyMcpPrerequisites() error {
 		if !status.BackendPackageAvailable {
 			return errors.New("Google Drive MCP launcher is not available; install FlowPilot or Go so the proxy launcher can start the Google Drive MCP package")
 		}
+		if status.ReconnectRequired || status.Status == "reconnect_required" {
+			return errors.New("Google Drive MCP requires reconnect; reconnect the selected Google account in Google Drive setup")
+		}
 		if status.AccountSelectionRequired && len(selection.Accounts) == 0 {
 			return errors.New("no connected Google Drive account is available; connect an account in Google Drive setup first")
 		}

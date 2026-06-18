@@ -1,5 +1,7 @@
 package runner
 
+import "strings"
+
 // Phase 3 (04-03): maps Codex app-server notifications → normalized ProviderEvent.
 // The runner core + clients only ever see ProviderEvent; Codex wire shapes stay
 // here. Correlation (run/step/session ids) and the monotonic per-run `seq` are
@@ -116,6 +118,91 @@ func mapCodexNotification(n codexNotification) (ProviderEvent, bool) {
 		return ProviderEvent{Type: EventTurnCompleted, ProviderTurnID: turnID, FinalMessage: final}, true
 	}
 	return ProviderEvent{}, false
+}
+
+// mapCodexRolloutLine converts one on-disk Codex rollout JSONL entry into zero or
+// more ProviderEvents for transcript replay (Task-067). The rollout file is the
+// durable session log written by the Codex CLI; its shape differs from the live
+// app-server protocol handled by mapCodexNotification. Each turn is recorded twice
+// — as canonical `response_item` entries and as a parallel `event_msg` UI stream —
+// so we read only the response_item entries to avoid double-rendering. As with the
+// Claude transcript replay, only assistant output is emitted (user prompts are
+// re-rendered client-side), plus tool/command activity.
+func mapCodexRolloutLine(raw map[string]any) []ProviderEvent {
+	if t, _ := raw["type"].(string); t != "response_item" {
+		return nil
+	}
+	p, _ := raw["payload"].(map[string]any)
+	if p == nil {
+		return nil
+	}
+	switch pt, _ := p["type"].(string); pt {
+	case "message":
+		role, _ := p["role"].(string)
+		text := codexRolloutMessageText(p["content"])
+		if text == "" {
+			return nil
+		}
+		switch role {
+		case "assistant":
+			return []ProviderEvent{{Type: EventMessageCompleted, Text: text}}
+		case "user":
+			// CLI-injected context frames (AGENTS.md, <INSTRUCTIONS>, <environment_context>)
+			// are stored as role:user in the rollout but must not render as prompt bubbles
+			// (BUG-083 F-2).  ProviderTurnID is stamped by loadCodexTranscriptEvents.
+			if isCodexInjectedContext(text) {
+				return nil
+			}
+			return []ProviderEvent{{Type: EventTurnStarted, Prompt: text}}
+		default:
+			return nil // developer/system are not client-facing
+		}
+	case "function_call", "custom_tool_call":
+		name := stringDefault(stringAny(p, "name"), "tool")
+		return []ProviderEvent{{Type: EventToolStarted, ToolName: name, Input: p["arguments"]}}
+	case "function_call_output", "custom_tool_call_output":
+		// Completed events carry no tool name (correlated by order, as in the Claude
+		// mapper); the structured exit code is not in the rollout, so assume success.
+		return []ProviderEvent{{Type: EventToolCompleted, Status: "success", Output: p["output"]}}
+	case "web_search_call":
+		return []ProviderEvent{
+			{Type: EventToolStarted, ToolName: "web_search"},
+			{Type: EventToolCompleted, ToolName: "web_search", Status: "success"},
+		}
+	}
+	return nil // reasoning and other items are not client-facing transcript events
+}
+
+// codexRolloutMessageText joins the text of a rollout message's content blocks
+// (output_text for assistant, input_text for user; input_image carries no text).
+func codexRolloutMessageText(v any) string {
+	blocks, _ := v.([]any)
+	var parts []string
+	for _, b := range blocks {
+		block, _ := b.(map[string]any)
+		if block == nil {
+			continue
+		}
+		switch bt, _ := block["type"].(string); bt {
+		case "output_text", "input_text", "text":
+			if t, _ := block["text"].(string); t != "" {
+				parts = append(parts, t)
+			}
+		}
+	}
+	return strings.Join(parts, "")
+}
+
+// isCodexInjectedContext reports whether a role:user rollout message is a
+// CLI-injected preamble rather than a user-typed prompt.  The Codex CLI
+// injects AGENTS.md / CLAUDE.md instructions and a per-session
+// <environment_context> block as a user-role message before every turn; these
+// must not be rendered as prompt bubbles (BUG-083 F-2).
+func isCodexInjectedContext(text string) bool {
+	return strings.Contains(text, "<INSTRUCTIONS>") ||
+		strings.Contains(text, "<environment_context>") ||
+		strings.HasPrefix(strings.TrimSpace(text), "# AGENTS.md instructions for") ||
+		strings.HasPrefix(strings.TrimSpace(text), "# CLAUDE.md instructions for")
 }
 
 func mapCodexCompletedItem(p map[string]any, turnID string) (ProviderEvent, bool) {

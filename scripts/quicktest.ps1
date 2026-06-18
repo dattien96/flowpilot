@@ -163,9 +163,50 @@ if ($codexHelp -match "stdio") {
     WARN "'stdio' not in app-server help -- verify --listen stdio:// still works"
 }
 
+# ---- 4. Session portability contract ----------------------------------------
+HDR "Session portability"
+
+$codexResumeHelp = (& codex exec resume --help 2>&1) -join "`n"
+if ($codexResumeHelp -match "SESSION_ID" -and $codexResumeHelp -match "PROMPT") {
+    OK "codex exec resume <SESSION_ID> [PROMPT] present"
+} else {
+    FAIL "codex exec resume surface changed -- cross-account/restart resume will break"
+}
+
+$codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME ".codex" }
+$codexSessionsDir = Join-Path $codexHome "sessions"
+$newestRollout = Get-ChildItem $codexSessionsDir -Recurse -File -Filter "rollout-*.jsonl" -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 1
+
+if ($newestRollout) {
+    try {
+        $firstLine = Get-Content $newestRollout.FullName -TotalCount 1
+        $meta = $firstLine | ConvertFrom-Json -ErrorAction Stop
+        $payload = if ($meta.payload) { $meta.payload } else { $meta }
+        $accountish = @($payload.PSObject.Properties.Name | Where-Object { $_ -match 'account|auth|user|token|email|org' })
+        if ($payload.id -and $accountish.Count -eq 0) {
+            OK "Codex rollout meta is account-agnostic (id present, no account fields)"
+        } else {
+            FAIL "Codex rollout meta changed -- account binding or missing id breaks portability"
+        }
+    } catch {
+        WARN "Could not parse newest Codex rollout meta: $($newestRollout.Name)"
+    }
+} else {
+    WARN "No Codex rollouts found under $codexSessionsDir -- skipping rollout-schema canary"
+}
+
+$claudeProjects = Join-Path $HOME ".claude/projects"
+if (Test-Path $claudeProjects) {
+    OK "Claude session store present (~/.claude/projects)"
+} else {
+    WARN "~/.claude/projects not found -- Claude session layout may have changed"
+}
+
 if (-not $SkipProbe) {
 
-# ---- 4. Claude stream-json smoke test ----------------------------------------
+# ---- 5. Claude stream-json smoke test ----------------------------------------
 HDR "Claude stream-json smoke test"
 
 # Use & operator so PowerShell resolves .cmd/.ps1 wrappers on Windows PATH.
@@ -217,7 +258,7 @@ if ($claudeErr -match "not logged in|authentication|api key|login") {
     }
 }
 
-# ---- 5. Codex app-server initialize handshake --------------------------------
+# ---- 6. Codex app-server initialize handshake --------------------------------
 HDR "Codex app-server initialize handshake"
 
 $initReq = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"flowpilot-quicktest","version":"1.0"},"capabilities":{"experimentalApi":true,"requestAttestation":false}}}'

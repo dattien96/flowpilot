@@ -87,8 +87,8 @@ func TestStartSessionResumesProviderSessionID(t *testing.T) {
 	defer func() { commandContextFn = originalCmdCtx }()
 	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
 		// Keep the mock process alive long enough for the Codex MCP handshake to finish.
-		script := "$null = [Console]::In.ReadLine(); Write-Output '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}'; $null = [Console]::In.ReadLine(); Start-Sleep -Seconds 2"
-		return exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
+		script := shellReadLine() + shellOutputLine(`{"jsonrpc":"2.0","id":1,"result":{}}`) + shellReadLine() + "sleep 2\n"
+		return testShellCommand(ctx, script)
 	}
 
 	r, _ := New(".")
@@ -126,12 +126,12 @@ func TestStartSessionGeminiACPUsesCurrentHandshake(t *testing.T) {
 	var startedArgs []string
 	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
 		startedArgs = append([]string{}, arg...)
-		return exec.CommandContext(
+		return testShellCommand(
 			ctx,
-			"powershell",
-			"-NoProfile",
-			"-Command",
-			"Write-Output '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1}}'; Write-Output '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"gemini-live-session\"}}'; Start-Sleep -Seconds 2",
+			shellOutputLines(
+				`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}`,
+				`{"jsonrpc":"2.0","id":2,"result":{"sessionId":"gemini-live-session"}}`,
+			)+"sleep 2\n",
 		)
 	}
 
@@ -167,13 +167,7 @@ func TestStartSessionCodexMcpUsesRequestedModelConfig(t *testing.T) {
 	var startedArgs []string
 	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
 		startedArgs = append([]string{}, arg...)
-		return exec.CommandContext(
-			ctx,
-			"powershell",
-			"-NoProfile",
-			"-Command",
-			"Write-Output '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}'; Start-Sleep -Seconds 2",
-		)
+		return testShellCommand(ctx, shellOutputLine(`{"jsonrpc":"2.0","id":1,"result":{}}`)+"sleep 2\n")
 	}
 
 	r, _ := New(".")
@@ -287,13 +281,7 @@ func TestStartSessionGeminiACPRejectsInitializeErrors(t *testing.T) {
 	originalCmdCtx := commandContextFn
 	defer func() { commandContextFn = originalCmdCtx }()
 	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
-		return exec.CommandContext(
-			ctx,
-			"powershell",
-			"-NoProfile",
-			"-Command",
-			"Write-Output '{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"message\":\"bad initialize\"}}'",
-		)
+		return testShellCommand(ctx, shellOutputLine(`{"jsonrpc":"2.0","id":1,"error":{"message":"bad initialize"}}`))
 	}
 
 	r, _ := New(".")
@@ -322,7 +310,7 @@ func TestStartSessionClaudeUsesVirtualSessionState(t *testing.T) {
 	commandStarted := false
 	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
 		commandStarted = true
-		return exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", "Write-Output unexpected")
+		return testShellCommand(ctx, shellOutputLine("unexpected"))
 	}
 	lookPathFn = func(file string) (string, error) {
 		return file, nil
@@ -404,10 +392,11 @@ func TestSendMessageGeminiACPUsesContentBlocksAndStreamsText(t *testing.T) {
 func TestSendMessageRequiredGoogleDriveMcpPreflightFailsBeforeProviderCall(t *testing.T) {
 	workspace := t.TempDir()
 	r := &Runner{
-		workspace: workspace,
-		sessions:  make(map[string]*LiveSession),
+		workspace:   workspace,
+		secretStore: newMemorySecretStore(),
+		sessions:    make(map[string]*LiveSession),
 	}
-	writeValidGoogleDriveWorkspaceConfig(t, workspace)
+	writeValidGoogleDriveWorkspaceConfig(t, r)
 
 	var stdin bytes.Buffer
 	processKey := "codex-proc"
@@ -451,10 +440,11 @@ func TestSendMessageRequiredGoogleDriveMcpPreflightFailsBeforeProviderCall(t *te
 func TestSendMessageInjectsRequiredGoogleDriveInstructionsIntoActualPrompt(t *testing.T) {
 	workspace := t.TempDir()
 	r := &Runner{
-		workspace: workspace,
-		sessions:  make(map[string]*LiveSession),
+		workspace:   workspace,
+		secretStore: newMemorySecretStore(),
+		sessions:    make(map[string]*LiveSession),
 	}
-	writeValidGoogleDriveWorkspaceConfig(t, workspace)
+	writeValidGoogleDriveWorkspaceConfig(t, r)
 
 	accountHomePath := t.TempDir()
 	_, err := r.EnsureGoogleDriveMcpProviderConfig(GoogleDriveMcpProviderConfigRequest{
@@ -521,10 +511,11 @@ func TestSendMessageInjectsRequiredGoogleDriveInstructionsIntoActualPrompt(t *te
 func TestSendMessageMarksResultFailedWhenProviderReportsMcpFailureCode(t *testing.T) {
 	workspace := t.TempDir()
 	r := &Runner{
-		workspace: workspace,
-		sessions:  make(map[string]*LiveSession),
+		workspace:   workspace,
+		secretStore: newMemorySecretStore(),
+		sessions:    make(map[string]*LiveSession),
 	}
-	writeValidGoogleDriveWorkspaceConfig(t, workspace)
+	writeValidGoogleDriveWorkspaceConfig(t, r)
 
 	accountHomePath := t.TempDir()
 	_, err := r.EnsureGoogleDriveMcpProviderConfig(GoogleDriveMcpProviderConfigRequest{
@@ -605,8 +596,10 @@ func TestSendMessageClaudeRespawnsPrintCommandPerTurnAndResumesSession(t *testin
 			}, "\n")
 		}
 		envCapturePath := filepath.Join(envCaptureDir, fmt.Sprintf("claude-env-%d.txt", len(startedArgs)))
-		script := "$env:FLOWPILOT_WORKFLOW_RUN_ID + '|' + $env:FLOWPILOT_WORKFLOW_STEP_RUN_ID + '|' + $env:FLOWPILOT_PROCESS_KEY | Set-Content -LiteralPath '" + strings.ReplaceAll(envCapturePath, "'", "''") + "'; $input | Out-Null; Write-Output '" + output + "'"
-		return exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
+		script := "printf '%s|%s|%s\\n' \"$FLOWPILOT_WORKFLOW_RUN_ID\" \"$FLOWPILOT_WORKFLOW_STEP_RUN_ID\" \"$FLOWPILOT_PROCESS_KEY\" > " + strconv.Quote(envCapturePath) + "\n" +
+			"cat >/dev/null\n" +
+			shellOutputLines(strings.Split(output, "\n")...)
+		return testShellCommand(ctx, script)
 	}
 
 	r, _ := New(".")
@@ -694,8 +687,8 @@ func TestSendMessageClaudeStaleUsageLimitMetadataStillRunsCommand(t *testing.T) 
 			`{"type":"system","subtype":"init","session_id":"claude-real-session"}`,
 			`{"type":"result","subtype":"success","is_error":false,"result":"ok after reset","session_id":"claude-real-session"}`,
 		}, "\n")
-		script := "$input | Out-Null; Write-Output '" + output + "'"
-		return exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
+		script := "cat >/dev/null\n" + shellOutputLines(strings.Split(output, "\n")...)
+		return testShellCommand(ctx, script)
 	}
 
 	accountHomePath := t.TempDir()
@@ -751,8 +744,8 @@ func TestSendMessageClaudeResultLimitDoesNotReportLogin(t *testing.T) {
 			`{"type":"system","subtype":"init","session_id":"claude-real-session"}`,
 			`{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Not logged in · Please run /login","rate_limit":{"cachedExtraUsageDisabledReason":"out_of_credits"}}`,
 		}, "\n")
-		script := "$input | Out-Null; Write-Output '" + output + "'"
-		return exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
+		script := "cat >/dev/null\n" + shellOutputLines(strings.Split(output, "\n")...)
+		return testShellCommand(ctx, script)
 	}
 
 	r, _ := New(".")
@@ -867,8 +860,7 @@ func TestCloseSessionKillsActiveClaudeCommand(t *testing.T) {
 	}
 
 	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
-		script := "Start-Sleep -Seconds 10"
-		return exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
+		return testShellCommand(ctx, "sleep 10\n")
 	}
 
 	r, _ := New(".")
@@ -928,8 +920,7 @@ func TestCleanupSessionsKillsActiveClaudeCommand(t *testing.T) {
 	}
 
 	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
-		script := "Start-Sleep -Seconds 10"
-		return exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
+		return testShellCommand(ctx, "sleep 10\n")
 	}
 
 	r, _ := New(".")
@@ -981,8 +972,8 @@ func TestCloseSessionMarksInFlightCodexBootstrapSessionTerminated(t *testing.T) 
 	}
 
 	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
-		script := "$null = [Console]::In.ReadLine(); Write-Output '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}'; $null = [Console]::In.ReadLine(); Start-Sleep -Seconds 10"
-		return exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
+		script := shellReadLine() + shellOutputLine(`{"jsonrpc":"2.0","id":1,"result":{}}`) + shellReadLine() + "sleep 10\n"
+		return testShellCommand(ctx, script)
 	}
 
 	r, _ := New(".")
@@ -1041,8 +1032,7 @@ func TestCloseSessionRacingWithClaudeStart(t *testing.T) {
 	}
 
 	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
-		script := "Start-Sleep -Seconds 10"
-		return exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
+		return testShellCommand(ctx, "sleep 10\n")
 	}
 
 	r, _ := New(".")

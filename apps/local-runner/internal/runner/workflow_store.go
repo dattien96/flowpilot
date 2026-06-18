@@ -32,6 +32,7 @@ type WorkflowStore interface {
 type InteractiveStateStore interface {
 	AppendEvent(ctx context.Context, event ProviderEvent) error
 	UpsertProviderSession(ctx context.Context, session ProviderSessionState) error
+	DeleteProviderSession(ctx context.Context, runID string) error
 	UpsertApproval(ctx context.Context, approval ProviderApprovalState) error
 	UpsertQuestion(ctx context.Context, question ProviderQuestionState) error
 }
@@ -42,6 +43,11 @@ type InteractiveStateStore interface {
 // process-scoped in-memory map being empty on a new service instance.
 type SessionHistoryReader interface {
 	ListProviderSessionsByProject(ctx context.Context, projectID string) ([]ProviderSessionState, error)
+	GetProviderSession(ctx context.Context, runID string) (ProviderSessionState, bool, error)
+}
+
+type SessionIndexReader interface {
+	ListAllProviderSessions(ctx context.Context) ([]ProviderSessionState, error)
 }
 
 type ProviderSessionState struct {
@@ -53,6 +59,16 @@ type ProviderSessionState struct {
 	ProviderAccountID string
 	WorkingDirectory  string
 	Status            RunStatus
+	LastPrompt        string
+	LastMessage       string
+	StartedAt         string
+	UpdatedAt         string
+	RunKind           string
+	SourceMachineID   string
+	SourceRunID       string
+	RestoredFrom      string
+	SyncStatus        string
+	SyncUpdatedAt     string
 }
 
 type ProviderApprovalState struct {
@@ -178,6 +194,13 @@ func (f *fakeWorkflowStore) UpsertProviderSession(_ context.Context, session Pro
 	return nil
 }
 
+func (f *fakeWorkflowStore) DeleteProviderSession(_ context.Context, runID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.sessions, runID)
+	return nil
+}
+
 func (f *fakeWorkflowStore) UpsertApproval(_ context.Context, approval ProviderApprovalState) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -200,6 +223,23 @@ func (f *fakeWorkflowStore) ListProviderSessionsByProject(_ context.Context, pro
 		if s.ProjectID == projectID {
 			out = append(out, s)
 		}
+	}
+	return out, nil
+}
+
+func (f *fakeWorkflowStore) GetProviderSession(_ context.Context, runID string) (ProviderSessionState, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	st, ok := f.sessions[runID]
+	return st, ok, nil
+}
+
+func (f *fakeWorkflowStore) ListAllProviderSessions(_ context.Context) ([]ProviderSessionState, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]ProviderSessionState, 0, len(f.sessions))
+	for _, session := range f.sessions {
+		out = append(out, session)
 	}
 	return out, nil
 }

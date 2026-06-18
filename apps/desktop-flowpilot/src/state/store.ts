@@ -1,12 +1,14 @@
 import { create } from "zustand";
 import type {
   Artifact,
+  ChatSessionRestoreRequest,
   Project,
   ProviderAccountSummary,
   ProviderEventDTO,
   ProviderKey,
   ProviderSkill,
   PromptAttachment,
+  RemoteChatSessionSummary,
   RunHistoryItem,
   RunStatus,
   Step,
@@ -76,9 +78,11 @@ interface AppState {
   timeline: TimelineItem[];
   artifacts: Artifact[];
   runHistory: RunHistoryItem[];
-  historyOpen: boolean;
+  remoteChatSessions: RemoteChatSessionSummary[];
   historyLoading: boolean;
   historyLoadError?: string;
+  remoteHistoryLoading: boolean;
+  remoteHistoryLoadError?: string;
   pendingApproval?: PendingApproval;
   pendingQuestion?: PendingQuestion;
   lastTurnInput?: TurnInput;
@@ -90,6 +94,11 @@ interface AppState {
   _streamingAssistantId?: string;
   // stale-response guard for loadRunHistory (BUG-060 F-3)
   _historyLoadSeq: number;
+  // stale-response guard for loadRemoteChatSessions (mirrors _historyLoadSeq)
+  _remoteHistoryLoadSeq: number;
+  // stream generation counter: incremented on every new consumeStream start so that
+  // a prior stream for the same runId exits immediately (BUG-079)
+  _streamRunSeq: number;
 
   // actions
   loadProjects(): Promise<void>;
@@ -111,7 +120,11 @@ interface AppState {
   stop(): Promise<void>;
   reconnect(): Promise<void>;
   loadRunHistory(): Promise<void>;
-  toggleRunHistory(): Promise<void>;
+  loadRemoteChatSessions(): Promise<void>;
+  syncHistoryRun(runId: string, projectId?: string): Promise<void>;
+  syncAllInProject(projectId: string): Promise<void>;
+  deleteHistoryRun(runId: string): Promise<void>;
+  restoreRemoteChatSession(summary: RemoteChatSessionSummary, cwd?: string): Promise<void>;
   openHistoryRun(runId: string): Promise<void>;
   resetRun(): void;
   openInIde(path: string, line?: number): void;
@@ -132,8 +145,9 @@ export const useStore = create<AppState>((set, get) => ({
   timeline: [],
   artifacts: [],
   runHistory: [],
-  historyOpen: false,
+  remoteChatSessions: [],
   historyLoading: false,
+  remoteHistoryLoading: false,
   latestTokenUsage: undefined,
   recoverable: false,
   scenario: "normal",
@@ -142,6 +156,8 @@ export const useStore = create<AppState>((set, get) => ({
   selectedProvider: "codex",
   yoloMode: false,
   _historyLoadSeq: 0,
+  _remoteHistoryLoadSeq: 0,
+  _streamRunSeq: 0,
 
   async loadProjects() {
     if (loadProjectsInFlight) return loadProjectsInFlight;
@@ -239,8 +255,9 @@ export const useStore = create<AppState>((set, get) => ({
       selectedWorkflowId: undefined,
       selectedStepId: undefined,
       runHistory: [],
-      historyOpen: false,
+      remoteChatSessions: [],
       historyLoadError: undefined,
+      remoteHistoryLoadError: undefined,
     });
     void get().loadSkills(get().selectedProvider ?? "codex");
   },
@@ -429,9 +446,7 @@ export const useStore = create<AppState>((set, get) => ({
         ],
       }));
     } finally {
-      if (get().historyOpen) {
-        void get().loadRunHistory();
-      }
+      void get().loadRunHistory();
     }
   },
 
@@ -473,7 +488,7 @@ export const useStore = create<AppState>((set, get) => ({
     await client.resumeRun(runId);
     // Clear the timeline so the replay visibly rebuilds it from persisted events
     // via the run's event stream (attach + replay from seq 0).
-    set({ timeline: [], recoverable: false, status: "running", _streamingAssistantId: undefined });
+    set({ timeline: [], recoverable: false, status: "running", _streamingAssistantId: undefined, _streamRunSeq: get()._streamRunSeq + 1 });
     await consumeStream(runId, client.streamRun(runId, 0), set, get);
   },
 
@@ -499,18 +514,201 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
-  async toggleRunHistory() {
-    const open = !get().historyOpen;
-    set({ historyOpen: open });
-    if (open) {
-      await get().loadRunHistory();
+  async loadRemoteChatSessions() {
+    const { client, selectedProjectId } = get();
+    if (!selectedProjectId) {
+      set({ remoteChatSessions: [], remoteHistoryLoading: false, remoteHistoryLoadError: undefined });
+      return;
+    }
+    const seq = get()._remoteHistoryLoadSeq + 1;
+    set({ remoteHistoryLoading: true, _remoteHistoryLoadSeq: seq });
+    try {
+      const remoteChatSessions = await client.listRemoteChatSessions(selectedProjectId);
+      if (get()._remoteHistoryLoadSeq !== seq) return;
+      set({ remoteChatSessions, remoteHistoryLoading: false, remoteHistoryLoadError: undefined });
+    } catch (err) {
+      if (get()._remoteHistoryLoadSeq !== seq) return;
+      set({ remoteHistoryLoading: false, remoteHistoryLoadError: String(err) });
+    }
+  },
+
+  async syncHistoryRun(runId, projectId) {
+    const { client, selectedProjectId } = get();
+    const driveProjectId = projectId ?? selectedProjectId;
+    set((s) => ({
+      runHistory: s.runHistory.map((item) =>
+        item.runId === runId
+          ? {
+              ...item,
+              syncStatus: "syncing",
+              unavailableReason: undefined,
+            }
+          : item,
+      ),
+    }));
+    try {
+      const result = await client.syncChatRun(runId, driveProjectId ? { googleDriveProjectId: driveProjectId } : undefined);
+      set((s) => ({
+        runHistory: s.runHistory.map((item) =>
+          item.runId === runId
+            ? {
+                ...item,
+                sourceMachineId: result.sourceMachineId,
+                sourceRunId: result.sourceRunId,
+                syncStatus: result.syncStatus,
+                unavailableReason: undefined,
+              }
+            : item,
+        ),
+      }));
+      void get().loadRemoteChatSessions();
+    } catch (err) {
+      if (
+        err instanceof RunnerApiError &&
+        (err.code === "session_unavailable" ||
+          err.code === "account_not_signed_in" ||
+          err.code === "resume_unsupported" ||
+          err.code === "account_unavailable" ||
+          err.code === "google_drive_not_connected")
+      ) {
+        set((s) => ({
+          runHistory: s.runHistory.map((item) =>
+            item.runId === runId ? { ...item, syncStatus: "failed", unavailableReason: err.message } : item,
+          ),
+        }));
+        return;
+      }
+      set((s) => ({
+        runHistory: s.runHistory.map((item) =>
+          item.runId === runId ? { ...item, syncStatus: "failed" } : item,
+        ),
+      }));
+      throw err;
+    }
+  },
+
+  async syncAllInProject(projectId) {
+    // Sync every not-yet-synced chat run in the project, one at a time so we do
+    // not hammer Drive. Per-item failures are swallowed (syncHistoryRun marks
+    // the row failed) so one broken session does not abort the whole batch.
+    const targets = get()
+      .runHistory.filter(
+        (item) =>
+          item.projectId === projectId &&
+          item.runKind === "chat" &&
+          item.syncStatus !== "synced" &&
+          !item.unavailableReason,
+      )
+      .map((item) => item.runId);
+    for (const runId of targets) {
+      try {
+        await get().syncHistoryRun(runId, projectId);
+      } catch {
+        // already reflected as syncStatus: "failed" on the row
+      }
+    }
+  },
+
+  async deleteHistoryRun(runId) {
+    const { client } = get();
+    const wasActive = get().runId === runId;
+    // Optimistically remove from local history so the UI responds immediately.
+    set((s) => ({ runHistory: s.runHistory.filter((item) => item.runId !== runId) }));
+    // If the deleted run was the active session, reset the main panel to idle.
+    if (wasActive) {
+      set({
+        runId: undefined,
+        activeStepId: undefined,
+        status: "idle",
+        timeline: [],
+        artifacts: [],
+        pendingApproval: undefined,
+        pendingQuestion: undefined,
+        latestTokenUsage: undefined,
+        lastTurnInput: undefined,
+        recoverable: false,
+        _streamingAssistantId: undefined,
+      });
+    }
+    try {
+      await client.deleteRun(runId);
+    } catch (err) {
+      // Restore the item on failure by refreshing history from the runner.
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] deleteRun failed:", err);
+      const { selectedProjectId } = get();
+      if (selectedProjectId) {
+        try {
+          const runHistory = await client.listRunHistory(selectedProjectId);
+          set({ runHistory });
+        } catch {
+          // best-effort refresh
+        }
+      }
+      throw err;
+    }
+  },
+
+  async restoreRemoteChatSession(summary, cwd) {
+    const { client, selectedProjectId } = get();
+    if (!selectedProjectId) return;
+    const request: ChatSessionRestoreRequest = {
+      projectId: selectedProjectId,
+      sourceMachineId: summary.sourceMachineId,
+      sourceRunId: summary.sourceRunId,
+      cwd,
+    };
+    try {
+      const result = await client.restoreChatRun(request);
+      await Promise.all([get().loadRunHistory(), get().loadRemoteChatSessions()]);
+      void get().openHistoryRun(result.runId);
+    } catch (err) {
+      if (err instanceof RunnerApiError && err.code === "cwd_remap_required" && !cwd) {
+        const retryCwd = selectedProjectPath(get());
+        if (retryCwd) {
+          await get().restoreRemoteChatSession(summary, retryCwd);
+          return;
+        }
+      }
+      if (
+        err instanceof RunnerApiError &&
+        (err.code === "sync_remote_not_found" ||
+          err.code === "sync_integrity_failed" ||
+          err.code === "account_not_signed_in" ||
+          err.code === "account_unavailable" ||
+          err.code === "cwd_remap_required" ||
+          err.code === "session_file_conflict")
+      ) {
+        set((s) => ({
+          remoteChatSessions: s.remoteChatSessions.map((item) =>
+            item.sourceMachineId === summary.sourceMachineId && item.sourceRunId === summary.sourceRunId
+              ? { ...item, unavailableReason: err.message }
+              : item,
+          ),
+        }));
+        return;
+      }
+      throw err;
     }
   },
 
   async openHistoryRun(runId) {
     const { client } = get();
     const historyItem = get().runHistory.find((item) => item.runId === runId);
-    const handle = await client.resumeRun(runId);
+    let handle;
+    try {
+      handle = await client.resumeRun(runId);
+    } catch (err) {
+      if (err instanceof RunnerApiError) {
+        set((s) => ({
+          runHistory: s.runHistory.map((item) =>
+            item.runId === runId ? { ...item, unavailableReason: err.message } : item
+          ),
+        }));
+        return;
+      }
+      throw err;
+    }
     set({
       runId: handle.runId,
       status: handle.status,
@@ -522,9 +720,12 @@ export const useStore = create<AppState>((set, get) => ({
       latestTokenUsage: undefined,
       lastTurnInput: undefined,
       recoverable: false,
-      historyOpen: false,
       _streamingAssistantId: undefined,
+      _streamRunSeq: get()._streamRunSeq + 1,
       ...(historyItem ? { selectedProvider: historyItem.providerKey } : {}),
+      runHistory: get().runHistory.map((item) =>
+        item.runId === runId ? { ...item, unavailableReason: undefined } : item
+      ),
     });
     if (historyItem?.providerKey) {
       void get().loadSkills(historyItem.providerKey);
@@ -539,6 +740,10 @@ export const useStore = create<AppState>((set, get) => ({
     // approval cards as resolved and clear the stale pending state.
     if (handle.status !== "waiting_approval" && handle.status !== "waiting_question") {
       set((s) => {
+        // The stream may have ended because the user switched to another run
+        // (its abort supersedes this one). Don't clobber the now-active run's
+        // pending state with this stale run's cleanup.
+        if (s.runId !== handle.runId) return {};
         if (!s.pendingApproval && !s.pendingQuestion) return {};
         return {
           pendingApproval: undefined,
@@ -569,7 +774,6 @@ export const useStore = create<AppState>((set, get) => ({
       latestTokenUsage: undefined,
       lastTurnInput: undefined,
       recoverable: false,
-      historyOpen: false,
       _streamingAssistantId: undefined,
     });
   },
@@ -592,19 +796,24 @@ export const useStore = create<AppState>((set, get) => ({
 }));
 
 // Consumes a turn stream and folds each event into the timeline + status.
+// mySeq captures _streamRunSeq at call time; if the counter advances (because
+// openHistoryRun or reconnect started a newer stream for the same runId) this
+// stream exits immediately rather than applying stale events. (BUG-079)
 async function consumeStream(
   runId: string,
   stream: AsyncIterable<ProviderEventDTO>,
   set: (fn: (s: AppState) => Partial<AppState>) => void,
   get: () => AppState,
 ): Promise<void> {
+  const mySeq = get()._streamRunSeq;
+  const isStale = () => !shouldApplyRunEvent(get().runId, runId) || get()._streamRunSeq !== mySeq;
   for await (const e of stream) {
-    if (!shouldApplyRunEvent(get().runId, runId)) {
+    if (isStale()) {
       return;
     }
     set((s) => applyEvent(s, e));
   }
-  if (!shouldApplyRunEvent(get().runId, runId)) {
+  if (isStale()) {
     return;
   }
   // settle recoverable flag for the Reconnect affordance

@@ -137,6 +137,56 @@ export interface RunHistoryItem {
   lastMessage?: string;
   /** "chat" for normal_chat runs; undefined for workflow/step runs. */
   runKind?: string;
+  sourceMachineId?: string;
+  sourceRunId?: string;
+  syncStatus?: string;
+  unavailableReason?: string;
+}
+
+export interface ChatSessionSyncRequest {
+  googleDriveProjectId?: string;
+  googleDriveFolderId?: string;
+}
+
+export interface ChatSessionSyncResult {
+  runId: string;
+  sourceMachineId: string;
+  sourceRunId: string;
+  syncStatus: string;
+  syncedAt: string;
+  remotePath: string;
+}
+
+export interface RemoteChatSessionSummary {
+  runId: string;
+  projectId: string;
+  workflowId?: string;
+  providerKey: ProviderKey;
+  status?: string;
+  runKind?: string;
+  sourceMachineId: string;
+  sourceRunId: string;
+  lastPrompt?: string;
+  lastMessage?: string;
+  startedAt?: string;
+  updatedAt?: string;
+  syncedAt?: string;
+  unavailableReason?: string;
+}
+
+export interface ChatSessionRestoreRequest {
+  projectId: string;
+  sourceMachineId: string;
+  sourceRunId: string;
+  cwd?: string;
+}
+
+export interface ChatSessionRestoreResult {
+  runId: string;
+  sourceMachineId: string;
+  sourceRunId: string;
+  providerKey: ProviderKey;
+  restoreStatus: string;
 }
 
 export interface SkillSelection {
@@ -275,8 +325,12 @@ export interface RunnerClient {
   listSteps(): Promise<Step[]>;
   listProviderAccounts(): Promise<ProviderAccountSummary[]>;
   listRunHistory(projectId: string): Promise<RunHistoryItem[]>;
+  listRemoteChatSessions(projectId: string): Promise<RemoteChatSessionSummary[]>;
   startRun(input: StartRunInput): Promise<RunHandle>;
   resumeRun(runId: string): Promise<RunHandle>;
+  syncChatRun(runId: string, input?: ChatSessionSyncRequest): Promise<ChatSessionSyncResult>;
+  deleteRun(runId: string): Promise<void>;
+  restoreChatRun(input: ChatSessionRestoreRequest): Promise<ChatSessionRestoreResult>;
   /** Streaming turn: yields normalized provider events until terminal. */
   sendTurn(input: TurnInput): AsyncIterable<ProviderEventDTO>;
   submitApproval(approvalId: string, decision: string): Promise<void>;
