@@ -37,11 +37,14 @@ func TestLoadCodexTranscriptEvents(t *testing.T) {
 	events := loadCodexTranscriptEvents(path)
 
 	type want struct {
-		typ  ProviderEventType
-		text string
-		tool string
+		typ    ProviderEventType
+		text   string
+		prompt string // Prompt field on turn_started events
+		tool   string
 	}
 	expected := []want{
+		// role=user line → turn_started{prompt} (new: replay user prompt bubble)
+		{typ: EventTurnStarted, prompt: "hello there"},
 		{typ: EventMessageCompleted, text: "Hi! How can I help?"},
 		{typ: EventToolStarted, tool: "shell"},
 		{typ: EventToolCompleted},
@@ -58,8 +61,16 @@ func TestLoadCodexTranscriptEvents(t *testing.T) {
 		if w.text != "" && events[i].Text != w.text {
 			t.Fatalf("event[%d].Text = %q, want %q", i, events[i].Text, w.text)
 		}
+		if w.prompt != "" && events[i].Prompt != w.prompt {
+			t.Fatalf("event[%d].Prompt = %q, want %q", i, events[i].Prompt, w.prompt)
+		}
 		if w.tool != "" && events[i].ToolName != w.tool {
 			t.Fatalf("event[%d].ToolName = %q, want %q", i, events[i].ToolName, w.tool)
+		}
+		// Every replayed prompt turn_started must carry a non-empty unique ProviderTurnID
+		// so the desktop derives distinct bubble ids.
+		if events[i].Type == EventTurnStarted && events[i].Prompt != "" && events[i].ProviderTurnID == "" {
+			t.Fatalf("event[%d] turn_started{prompt} has empty ProviderTurnID", i)
 		}
 	}
 }

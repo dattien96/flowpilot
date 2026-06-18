@@ -308,6 +308,75 @@ test("history replay: denied approval is stamped resolved not approved (BUG-074)
   assert.equal(next.pendingApproval, undefined, "pendingApproval should be cleared");
 });
 
+// Transcript replay tests
+
+test("history replay: turn_started{prompt} adds a prompt bubble before the assistant response", () => {
+  // Simulates the event sequence emitted by loadClaudeTranscriptEvents /
+  // loadCodexTranscriptEvents on resume: a user prompt event followed by
+  // the assistant message. Both must appear in the timeline in correct order.
+  const empty: TimelineState = { status: "idle", timeline: [], recoverable: false };
+
+  const afterPrompt = applyTimelineEvent(
+    empty,
+    baseEvent({ type: "turn_started", providerTurnId: "replay-prompt-1", prompt: "hello there" }),
+  );
+
+  const afterAssistant = applyTimelineEvent(
+    { ...empty, ...afterPrompt },
+    baseEvent({ type: "message_completed", text: "Hi! How can I help?" }),
+  );
+
+  const timeline = afterAssistant.timeline ?? [];
+  const promptItem = timeline.find((it) => it.kind === "prompt");
+  const assistantItem = timeline.find((it) => it.kind === "assistant");
+
+  assert.ok(promptItem, "prompt bubble should be present");
+  assert.ok(assistantItem, "assistant bubble should be present");
+  assert.equal((promptItem as Extract<typeof timeline[0], { kind: "prompt" }>).text, "hello there");
+  assert.equal((assistantItem as Extract<typeof timeline[0], { kind: "assistant" }>).text, "Hi! How can I help?");
+
+  const promptIdx = timeline.indexOf(promptItem!);
+  const assistantIdx = timeline.indexOf(assistantItem!);
+  assert.ok(promptIdx < assistantIdx, "prompt bubble must precede assistant bubble");
+});
+
+test("history replay: hasPendingPrompt prevents double-render when turn_started{prompt} fires on live turn", () => {
+  // During a live turn the desktop already pushed the prompt optimistically.
+  // If turn_started also carries prompt (it does not today, but guard must hold),
+  // the second push must be de-duped.
+  const stateWithPrompt: TimelineState = {
+    status: "running",
+    timeline: [{ kind: "prompt", id: "prompt-0", text: "hello there" }],
+    recoverable: false,
+  };
+
+  const after = applyTimelineEvent(
+    stateWithPrompt,
+    baseEvent({ type: "turn_started", providerTurnId: "replay-prompt-1", prompt: "hello there" }),
+  );
+
+  const prompts = (after.timeline ?? []).filter((it) => it.kind === "prompt");
+  assert.equal(prompts.length, 1, "must not double-render an already-present prompt");
+});
+
+test("history replay: turn_completed after replay removes thinking row", () => {
+  // seedTranscriptFromDisk appends a synthetic turn_completed to close the
+  // trailing Thinking... row that finalize() would inject after message_completed.
+  const empty: TimelineState = { status: "idle", timeline: [], recoverable: false };
+
+  let state = { ...empty };
+  for (const e of [
+    baseEvent({ type: "turn_started", providerTurnId: "replay-prompt-1", prompt: "hi" }),
+    baseEvent({ type: "message_completed", text: "hello" }),
+    baseEvent({ type: "turn_completed", finalMessage: "hello" }),
+  ] as ProviderEventDTO[]) {
+    state = { ...state, ...applyTimelineEvent(state, e) } as TimelineState;
+  }
+
+  assert.equal(state.timeline.some((it) => it.kind === "thinking"), false, "no Thinking... row after turn_completed");
+  assert.equal(state.status, "completed");
+});
+
 // UC5 complement: live deny — deny decision is preserved, stale detection does not fire
 // When the user clicks Deny in a live run, approve()/deny() stamps decision: "deny"
 // and clears pendingApproval synchronously. The next server event must NOT overwrite

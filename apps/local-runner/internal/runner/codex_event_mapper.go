@@ -138,14 +138,20 @@ func mapCodexRolloutLine(raw map[string]any) []ProviderEvent {
 	}
 	switch pt, _ := p["type"].(string); pt {
 	case "message":
-		if role, _ := p["role"].(string); role != "assistant" {
-			return nil // user/developer prompts are not replayed (parity with Claude)
-		}
+		role, _ := p["role"].(string)
 		text := codexRolloutMessageText(p["content"])
 		if text == "" {
 			return nil
 		}
-		return []ProviderEvent{{Type: EventMessageCompleted, Text: text}}
+		switch role {
+		case "assistant":
+			return []ProviderEvent{{Type: EventMessageCompleted, Text: text}}
+		case "user":
+			// ProviderTurnID is stamped by loadCodexTranscriptEvents; this mapper is stateless.
+			return []ProviderEvent{{Type: EventTurnStarted, Prompt: text}}
+		default:
+			return nil // developer/system are not client-facing
+		}
 	case "function_call", "custom_tool_call":
 		name := stringDefault(stringAny(p, "name"), "tool")
 		return []ProviderEvent{{Type: EventToolStarted, ToolName: name, Input: p["arguments"]}}

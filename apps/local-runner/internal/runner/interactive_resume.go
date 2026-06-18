@@ -227,6 +227,23 @@ func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 		historical[i].OccurredAt = rs.createdAt
 		rs.events = append(rs.events, historical[i])
 	}
+	// Append a synthetic turn_completed to close any trailing "Thinking..." row.
+	// timelineReducer.finalize injects a thinking row after every non-terminal event
+	// (message_completed / tool_completed etc.), so without this the resumed idle chat
+	// would render a perpetual spinner.
+	if last := rs.events[len(rs.events)-1]; last.Type != EventTurnCompleted && last.Type != EventTurnFailed {
+		rs.seq++
+		rs.events = append(rs.events, ProviderEvent{
+			Seq:               rs.seq,
+			Type:              EventTurnCompleted,
+			ID:                s.nextID("transcript"),
+			WorkflowRunID:     rs.id,
+			WorkflowStepRunID: stepID,
+			ProviderSessionID: sessionID,
+			ProviderKey:       rs.providerKey,
+			OccurredAt:        rs.createdAt,
+		})
+	}
 }
 
 func (s *InteractiveService) loadPersistedRun(runID string) (*interactiveRun, *apiErr) {
