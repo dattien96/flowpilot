@@ -1,0 +1,868 @@
+# Metadata
+
+- Document ID: `SD-14`
+- Title: `Codex Cross-Account Chat Resume And Home Sync`
+- Phase: `tech_design`
+- Status: `draft`
+- Owner: `DatNguyen`
+- Reviewers: `—`
+- Created: `2026-06-18`
+- Last Updated: `2026-06-18`
+- Parent Documents: [SS-11: Workflow With Session](../05-System-Specs/SS-11-Workflow-With_Session.md)
+- Child Documents: `—`
+- Related Documents: [SD-12: Refactor Workflow With Session](./SD-12-Refactor-Workflow-With_Session.md), [Task-069: Cross-PC Sync for Non-Supabase Users](../08-Task/todo/Task-069-Cross-PC-Sync-Non-Supabase-Sessions-Ndjson.md), [Task-070: History Supabase Reader Production Fix](../08-Task/done/Task-070-History-Supabase-Reader-Production-Fix.md), [Task-071: Cross-Account Chat Resume Definition of Done Checklist](../08-Task/todo/Task-071-Cross-Account-Chat-Resume-DOD-Checklist.md), [Task-072: Cross-Account Chat Resume Test Signatures](../08-Task/todo/Task-072-Cross-Account-Chat-Resume-Test-Signatures.md), [Task-073: Cross-PC Non-Supabase Chat Sync Definition of Done Checklist](../08-Task/todo/Task-073-Cross-PC-Non-Supabase-Chat-Sync-DOD-Checklist.md), [Task-074: Cross-PC Non-Supabase Chat Sync Test Signatures](../08-Task/todo/Task-074-Cross-PC-Non-Supabase-Chat-Sync-Test-Signatures.md), [Task-075: Cross-Account And Cross-PC Chat E2E Test Guide](../08-Task/todo/Task-075-Cross-Account-And-Cross-PC-Chat-E2E-Test-Guide.md), [Task-076: Replay User Prompts On Chat Transcript Resume](../08-Task/todo/Task-076-Replay-User-Prompts-On-Chat-Transcript-Resume.md), [BUG-082: Desktop History Chat Open Fails On Legacy Default Account](../09-BugFix/done/BUG-082-Desktop-History-Chat-Open-Fails-On-Legacy-Default-Account.md), [CA-099: Fix Desktop Legacy Default Account Chat Resume](../../change-audit/CA-099-fix-desktop-legacy-default-account-chat-resume.md), [CA-101: Fix Chat Resume Composed Prompt And Codex Multi-Rollout](../../change-audit/CA-101-fix-chat-resume-composed-prompt-and-codex-multi-rollout.md)
+- Replaces: `—`
+- Tags: `codex, provider-account, desktop-chat, resume, session, local-runner, google-drive`
+
+## AI Quick View
+
+### Summary
+
+- FlowPilot does not merge Codex chats through a remote conversation API; it keeps resume working by moving provider-owned rollout files between Codex home folders and rebinding the run to the active account.
+- For Codex, one visible chat can span multiple rollout files because Codex writes one rollout JSONL per turn; FlowPilot therefore stores both a stable resume handle and a turn-log sidecar listing later rollout ids.
+- Switching the active Codex account alone does not copy files. The copy happens lazily when the next turn starts or when a history run is reopened under the newly active account.
+- Optional cross-PC sharing uses Google Drive to upload the provider session file plus a manifest; local account switching remains a separate file-relocation flow.
+
+### Current Ask
+
+- Explain the exact runtime behavior for a single Codex chat that starts on account A, continues on account B, then returns to account A.
+- Show what changes under `/Users/tiendat/.codex` and `/Users/tiendat/.codexHome1` at each user step.
+
+### Key Decisions
+
+- `D-1` Use provider-owned Codex rollout files as the source of truth for continuation instead of trying to reconstruct a provider session from FlowPilot-only metadata.
+- `D-2` Trigger cross-account relocation lazily on resume/next-turn, not on account-switch UI action.
+- `D-3` Keep a stable persisted Codex resume handle while separately logging later per-turn rollout ids for transcript replay and future relocation.
+- `D-4` Treat same-home source and destination as a successful no-op relocation, then rebind the stored account id to the active account id.
+
+### Constraints
+
+- Codex session continuity is only valid within the Codex provider; this design must not imply cross-provider session reuse.
+- Provider files must not be overwritten when destination content belongs to a different session.
+- Desktop chat history must remain unified; the UI must not expose account-specific history lanes.
+- The design must support legacy rows whose `provider_account_id` was `default`.
+
+### Open Questions
+
+- None for the current local cross-account flow.
+
+### Source Refs
+
+- `apps/local-runner/internal/runner/interactive_service.go`
+- `apps/local-runner/internal/runner/interactive_resume.go`
+- `apps/local-runner/internal/runner/session_file_locator.go`
+- `apps/local-runner/internal/runner/chat_session_sync.go`
+- `apps/local-runner/internal/runner/turn_log.go`
+- `apps/local-runner/internal/runner/cross_account_resume_test.go`
+- [Task-069](../08-Task/todo/Task-069-Cross-PC-Sync-Non-Supabase-Sessions-Ndjson.md)
+- [Task-070](../08-Task/done/Task-070-History-Supabase-Reader-Production-Fix.md)
+- [Task-071](../08-Task/todo/Task-071-Cross-Account-Chat-Resume-DOD-Checklist.md)
+- [Task-072](../08-Task/todo/Task-072-Cross-Account-Chat-Resume-Test-Signatures.md)
+- [Task-073](../08-Task/todo/Task-073-Cross-PC-Non-Supabase-Chat-Sync-DOD-Checklist.md)
+- [Task-074](../08-Task/todo/Task-074-Cross-PC-Non-Supabase-Chat-Sync-Test-Signatures.md)
+- [Task-075](../08-Task/todo/Task-075-Cross-Account-And-Cross-PC-Chat-E2E-Test-Guide.md)
+- [Task-076](../08-Task/todo/Task-076-Replay-User-Prompts-On-Chat-Transcript-Resume.md)
+
+## 1. Goal
+
+Describe how FlowPilot keeps one desktop Codex chat usable while the user changes the active Codex account between:
+
+- account A: `/Users/tiendat/.codex`
+- account B: `/Users/tiendat/.codexHome1`
+
+This design focuses on:
+
+- local same-machine account switching
+- how FlowPilot prepares the next turn under the newly active account
+- how provider files and FlowPilot sidecar files evolve over time
+- how optional Google Drive sync differs from local account switching
+
+## 2. Input Documents
+
+- [SS-11: Workflow With Session](../05-System-Specs/SS-11-Workflow-With_Session.md)
+- `SS-11 §6 Follow-Up Prompt Behavior`
+- `SS-11 §7.1 Codex`
+- [SD-12: Refactor Workflow With Session](./SD-12-Refactor-Workflow-With_Session.md)
+- [Task-069: Cross-PC Sync for Non-Supabase Users](../08-Task/todo/Task-069-Cross-PC-Sync-Non-Supabase-Sessions-Ndjson.md)
+- [Task-070: History Supabase Reader Production Fix](../08-Task/done/Task-070-History-Supabase-Reader-Production-Fix.md)
+- [Task-071: Cross-Account Chat Resume Definition of Done Checklist](../08-Task/todo/Task-071-Cross-Account-Chat-Resume-DOD-Checklist.md)
+- [Task-072: Cross-Account Chat Resume Test Signatures](../08-Task/todo/Task-072-Cross-Account-Chat-Resume-Test-Signatures.md)
+- [Task-073: Cross-PC Non-Supabase Chat Sync Definition of Done Checklist](../08-Task/todo/Task-073-Cross-PC-Non-Supabase-Chat-Sync-DOD-Checklist.md)
+- [Task-074: Cross-PC Non-Supabase Chat Sync Test Signatures](../08-Task/todo/Task-074-Cross-PC-Non-Supabase-Chat-Sync-Test-Signatures.md)
+- [Task-075: Cross-Account And Cross-PC Chat E2E Test Guide](../08-Task/todo/Task-075-Cross-Account-And-Cross-PC-Chat-E2E-Test-Guide.md)
+- [Task-076: Replay User Prompts On Chat Transcript Resume](../08-Task/todo/Task-076-Replay-User-Prompts-On-Chat-Transcript-Resume.md)
+- [BUG-082: Desktop History Chat Open Fails On Legacy Default Account](../09-BugFix/done/BUG-082-Desktop-History-Chat-Open-Fails-On-Legacy-Default-Account.md)
+- [CA-101: Fix Chat Resume Composed Prompt And Codex Multi-Rollout](../../change-audit/CA-101-fix-chat-resume-composed-prompt-and-codex-multi-rollout.md)
+
+## 3. Architecture Decision
+
+- `D-1` Codex local continuity is implemented as file-backed resume.
+  - Alternatives considered:
+    - rebuild provider state from FlowPilot history only
+    - keep one long-lived Codex process independent of account home
+  - Why this option was chosen:
+    - the real resume primitive is `codex exec resume <SESSION_ID>`
+    - Codex stores session state under `CODEX_HOME`
+    - account switching therefore requires the target account home to contain the right rollout files
+
+- `D-2` Account-switch UI state is not enough to trigger relocation.
+  - Alternatives considered:
+    - copy files immediately when the user clicks another account
+  - Why this option was chosen:
+    - account switch alone does not identify which run needs relocation
+    - lazy relocation keeps file writes scoped to the run the user actually continues
+
+- `D-3` FlowPilot keeps two distinct Codex session concepts:
+  - stable resume handle:
+    - persisted as `provider_session_id`
+    - used for `codex exec resume`
+  - per-turn rollout ids:
+    - written to the turn-log sidecar
+    - used for transcript replay and later cross-account relocation
+
+- `D-4` Same-home rebinding is treated as success.
+  - Alternatives considered:
+    - reject when source path equals destination path
+  - Why this option was chosen:
+    - legacy account ids and durable account ids can point to the same physical home
+    - rejecting that case blocks valid chat reopen/resume flows
+
+## 4. Component Impact
+
+- Impacted modules:
+  - desktop chat store history-open flow
+  - local runner interactive service
+  - local runner resume preparation
+  - local file session store
+  - Codex transcript replay
+  - optional Google Drive chat-session sync
+
+- New modules:
+  - none required for the local-switch path
+
+- Unchanged modules:
+  - Claude and Gemini provider semantics
+  - workflow orchestration model
+  - artifact sync model outside optional chat-session Drive sync
+
+## 5. Data Model
+
+### 5.1 Entities
+
+- `ProviderSessionState`
+  - `run_id`
+  - `provider_key`
+  - `provider_session_id`
+  - `provider_account_id`
+  - `working_directory`
+  - `last_prompt`
+  - `last_message`
+  - `run_kind`
+
+- turn-log sidecar entry
+  - `kind:"prompt"` with raw user input
+  - `kind:"codex_session"` with later Codex rollout ids
+
+### 5.2 File Contracts
+
+- FlowPilot local session index:
+  - `<workspace>/.flowpilot/chats/sessions.ndjson`
+
+- FlowPilot per-run turn log:
+  - `<workspace>/.flowpilot/chats/<runId>-turns.ndjson`
+
+- Codex provider files for account A:
+  - `/Users/tiendat/.codex/sessions/rollout-<...>-<sessionId>.jsonl`
+
+- Codex provider files for account B:
+  - `/Users/tiendat/.codexHome1/sessions/rollout-<...>-<sessionId>.jsonl`
+
+- Codex provider files for another active home example:
+  - `/Users/tiendat/.codexHome2/sessions/2026/06/18/rollout-2026-06-18T22-04-15-019edb42-e728-71d3-891e-91729a640920.jsonl`
+  - folder meaning:
+    - `2026` = year
+    - `06` = month
+    - `18` = day
+
+### 5.3 State Transitions
+
+1. New run starts with the active provider account id stamped onto the run.
+2. First successful Codex turn discovers the newest rollout id and persists it as the stable resume handle.
+3. Each later successful Codex turn may create a new rollout file with a new rollout id.
+4. FlowPilot logs those later rollout ids in the per-run turn log.
+5. On cross-account continuation, FlowPilot copies the required rollout files into the newly active account home, then rewrites `provider_account_id` to that active account.
+
+## 6. Interfaces and Contracts
+
+### 6.1 Runtime Contracts
+
+- `startTurn(runId, TurnInput, ...)`
+  - detects whether `run.providerAccountID` still matches the active account for `codex`
+  - if not, calls `ensureResumeReady(...)` before launching the turn
+
+- `resumeRun(runId)`
+  - reconstructs a persisted run from `.flowpilot/chats/sessions.ndjson`
+  - calls `ensureResumeReady(...)`
+  - seeds transcript events from provider files plus the turn-log sidecar
+
+### 6.2 File or Artifact Contracts
+
+- `RelocateSessionFile(providerKey, srcPath, targetHome, sessionID, cwd)`
+  - computes the target provider path under the active account home
+  - no-op success when `srcPath == dstPath`
+  - refuses overwrite when destination content differs
+
+- `TurnLogStore`
+  - `AppendTurnLog`
+  - `ReadTurnLog`
+  - `DeleteTurnLog`
+
+### 6.3 Optional Cloud Sync Contracts
+
+- `syncChatRunToDrive(runId, ...)`
+  - uploads one provider session file
+  - uploads `manifest.json`
+  - updates `chat-sessions/_index/sessions.ndjson`
+
+- `restoreChatRunFromDrive(...)`
+  - downloads manifest and provider file
+  - validates size and SHA-256
+  - writes the file into the currently active account home
+
+## 7. Execution Flow
+
+### 7.1 High-Level Local Cross-Account Flow
+
+```mermaid
+sequenceDiagram
+    participant UI as Desktop UI
+    participant Store as Desktop Store
+    participant Runner as Local Runner
+    participant A as CODEX_HOME=.codex
+    participant B as CODEX_HOME=.codexHome1
+
+    UI->>Store: send prompt on run R
+    Store->>Runner: startTurn(R)
+    Runner->>Runner: compare run.providerAccountID vs activeAccountForProvider(codex)
+    alt same account
+        Runner->>A: codex exec / resume using current home
+    else account changed
+        Runner->>Runner: ensureResumeReady(R)
+        Runner->>A: locate stable rollout + turn-log rollouts
+        Runner->>B: relocate required rollout files
+        Runner->>Runner: persist run.providerAccountID = active account
+        Runner->>B: codex exec resume <stableSessionId>
+    end
+    Runner->>Runner: discover newest rollout id
+    Runner->>Runner: append turn-log codex_session entry
+```
+
+### 7.2 User Scenario: A -> B -> A
+
+Assumptions for illustration:
+
+- `runId = run-abc`
+- stable resume session id after turn 1 = `sid1`
+- Codex creates later rollout ids `sid2`, `sid3`
+- workspace chat files live under `<workspace>/.flowpilot/chats/`
+
+#### Step 1. Open new run, active Codex is account A
+
+- Active account resolver returns account A.
+- The new run is stamped with `providerAccountID = acctA`.
+- No provider file exists yet because no Codex turn has completed.
+- No relocation occurs.
+
+Path state:
+
+```text
+/Users/tiendat/.codex
+  sessions/
+    (no new files for this run yet)
+
+/Users/tiendat/.codexHome1
+  sessions/
+    (unchanged)
+```
+
+FlowPilot state:
+
+```text
+<workspace>/.flowpilot/chats/sessions.ndjson
+  run-abc -> provider_key=codex, provider_account_id=acctA, provider_session_id=(empty until first Codex rollout is discovered)
+```
+
+#### Step 2. Chat "hello im accA"
+
+- `startTurn(...)` runs under account A because the run and active account match.
+- FlowPilot emits `turn_started` and appends raw prompt `"hello im accA"` to `run-abc-turns.ndjson`.
+- Codex runs with `CODEX_HOME=/Users/tiendat/.codex`.
+- After the turn completes, FlowPilot discovers the newest Codex rollout id `sid1`.
+- FlowPilot persists `provider_session_id = sid1` and appends `kind:"codex_session", session_id:"sid1"` if it is the newest known turn rollout.
+
+Path state after Step 2:
+
+```text
+/Users/tiendat/.codex
+  sessions/
+    rollout-...-sid1.jsonl   <- new, created by Codex under account A
+
+/Users/tiendat/.codexHome1
+  sessions/
+    (unchanged)
+```
+
+FlowPilot state after Step 2:
+
+```text
+<workspace>/.flowpilot/chats/sessions.ndjson
+  run-abc -> provider_account_id=acctA, provider_session_id=sid1, last_prompt="hello im accA"
+
+<workspace>/.flowpilot/chats/run-abc-turns.ndjson
+  {"kind":"prompt","prompt":"hello im accA"}
+  {"kind":"codex_session","session_id":"sid1"}
+```
+
+#### Step 3. Switch to account B
+
+- Only the active-account selection changes.
+- No chat run is resumed yet.
+- No provider file is copied yet.
+
+Path state after Step 3:
+
+```text
+/Users/tiendat/.codex
+  sessions/
+    rollout-...-sid1.jsonl
+
+/Users/tiendat/.codexHome1
+  sessions/
+    (still unchanged)
+```
+
+#### Step 4. Chat "hello im accB"
+
+This is the first point where relocation is required.
+
+Before Codex receives the new prompt:
+
+1. `startTurn(...)` sees `run.providerAccountID = acctA` but active Codex account = `acctB`.
+2. `ensureResumeReady(...)` runs.
+3. `prepareCrossAccountResume(...)` locates `sid1` under `/Users/tiendat/.codex/sessions/...`.
+4. `RelocateSessionFile(...)` copies the `sid1` rollout file into `/Users/tiendat/.codexHome1/sessions/...`.
+5. `relocateCodexTurnLogSessions(...)` reads `run-abc-turns.ndjson` and copies any additional recorded rollout ids if needed.
+6. FlowPilot persists `provider_account_id = acctB`.
+
+Then the turn runs:
+
+7. Codex runs with `CODEX_HOME=/Users/tiendat/.codexHome1`.
+8. FlowPilot calls `codex exec resume sid1 "hello im accB"`.
+9. Codex writes a new rollout file for the new turn under account B, for example `sid2`.
+10. FlowPilot appends raw prompt `"hello im accB"` and then appends `codex_session sid2`.
+
+Path state after Step 4:
+
+```text
+/Users/tiendat/.codex
+  sessions/
+    rollout-...-sid1.jsonl
+
+/Users/tiendat/.codexHome1
+  sessions/
+    rollout-...-sid1.jsonl   <- copied from account A during prepareCrossAccountResume
+    rollout-...-sid2.jsonl   <- new, created by Codex under account B for turn 2
+```
+
+FlowPilot state after Step 4:
+
+```text
+<workspace>/.flowpilot/chats/sessions.ndjson
+  run-abc -> provider_account_id=acctB, provider_session_id=sid1, last_prompt="hello im accB"
+
+<workspace>/.flowpilot/chats/run-abc-turns.ndjson
+  {"kind":"prompt","prompt":"hello im accA"}
+  {"kind":"codex_session","session_id":"sid1"}
+  {"kind":"prompt","prompt":"hello im accB"}
+  {"kind":"codex_session","session_id":"sid2"}
+```
+
+Important note:
+
+- the stable persisted resume handle remains `sid1`
+- `sid2` is a newer rollout id used for replay/relocation, not the durable resume id stored in `sessions.ndjson`
+
+#### Step 5. Switch back to account A
+
+- Again, only active-account selection changes.
+- No provider file is copied at switch time.
+
+Path state after Step 5:
+
+```text
+/Users/tiendat/.codex
+  sessions/
+    rollout-...-sid1.jsonl
+
+/Users/tiendat/.codexHome1
+  sessions/
+    rollout-...-sid1.jsonl
+    rollout-...-sid2.jsonl
+```
+
+#### Step 6. Chat "see you again, im A"
+
+Before Codex receives the new prompt:
+
+1. `startTurn(...)` sees `run.providerAccountID = acctB` but active account = `acctA`.
+2. `ensureResumeReady(...)` runs again.
+3. `prepareCrossAccountResume(...)` ensures the stable rollout `sid1` exists in `/Users/tiendat/.codex`.
+4. `relocateCodexTurnLogSessions(...)` reads the turn log and notices `sid2`; it copies `sid2` from `/Users/tiendat/.codexHome1` back into `/Users/tiendat/.codex`.
+5. FlowPilot persists `provider_account_id = acctA`.
+
+Then the turn runs:
+
+6. Codex runs with `CODEX_HOME=/Users/tiendat/.codex`.
+7. FlowPilot calls `codex exec resume sid1 "see you again, im A"`.
+8. Codex writes another new rollout file under account A, for example `sid3`.
+9. FlowPilot appends raw prompt `"see you again, im A"` and then appends `codex_session sid3`.
+
+Path state after Step 6:
+
+```text
+/Users/tiendat/.codex
+  sessions/
+    rollout-...-sid1.jsonl
+    rollout-...-sid2.jsonl   <- copied back from account B during prepareCrossAccountResume
+    rollout-...-sid3.jsonl   <- new, created by Codex under account A for turn 3
+
+/Users/tiendat/.codexHome1
+  sessions/
+    rollout-...-sid1.jsonl
+    rollout-...-sid2.jsonl
+```
+
+FlowPilot state after Step 6:
+
+```text
+<workspace>/.flowpilot/chats/sessions.ndjson
+  run-abc -> provider_account_id=acctA, provider_session_id=sid1, last_prompt="see you again, im A"
+
+<workspace>/.flowpilot/chats/run-abc-turns.ndjson
+  {"kind":"prompt","prompt":"hello im accA"}
+  {"kind":"codex_session","session_id":"sid1"}
+  {"kind":"prompt","prompt":"hello im accB"}
+  {"kind":"codex_session","session_id":"sid2"}
+  {"kind":"prompt","prompt":"see you again, im A"}
+  {"kind":"codex_session","session_id":"sid3"}
+```
+
+### 7.3 State Summary Table
+
+| User step | Active Codex home | Run-stamped account id after step | New copy operation | New Codex rollout file |
+|---|---|---|---|---|
+| 1. Open new run on A | `.codex` | `acctA` | none | none |
+| 2. Chat on A | `.codex` | `acctA` | none | `.codex/...sid1.jsonl` |
+| 3. Switch to B | `.codexHome1` | still `acctA` | none | none |
+| 4. Chat on B | `.codexHome1` | `acctB` | copy `sid1` A -> B | `.codexHome1/...sid2.jsonl` |
+| 5. Switch to A | `.codex` | still `acctB` | none | none |
+| 6. Chat on A | `.codex` | `acctA` | copy `sid2` B -> A `*` | `.codex/...sid3.jsonl` |
+
+`*` The stable `sid1` file is also validated/prepared on A during Step 6. If the source and destination resolve to the same physical file, relocation becomes a no-op success.
+
+### 7.4 Optional Cross-PC Google Drive Flow
+
+This is separate from the local A -> B -> A account-switch behavior.
+
+```mermaid
+flowchart LR
+    L[Local account home session file] --> M[Build manifest + hash]
+    M --> D[Google Drive chat-sessions/runs/...]
+    D --> R[Restore on another machine or account]
+    R --> H[Write provider file into active account home]
+    H --> C[codex exec resume stableSessionId]
+```
+
+Key distinction:
+
+- local account switching:
+  - copies files directly between `/Users/tiendat/.codex` and `/Users/tiendat/.codexHome1`
+- Drive sync:
+  - uploads one provider file plus manifest to cloud storage
+  - restore writes the file into the currently active local account home later
+
+### 7.5 Concrete User Test Evidence
+
+The following real test observation should be used as the reference example for this design:
+
+- observed rollout path:
+  - `/Users/tiendat/.codexHome2/sessions/2026/06/18/rollout-2026-06-18T22-04-15-019edb42-e728-71d3-891e-91729a640920.jsonl`
+- observed path format:
+  - `/Users/tiendat/.codexHome2/sessions/YYYY/MM/DD/rollout-<timestamp>-<sessionId>.jsonl`
+  - concrete example:
+    - `YYYY=2026`
+    - `MM=06`
+    - `DD=18`
+- observed prompt chain inside that one rollout file:
+  - `hi im mealplaner`
+  - `im photohl96 now`
+  - `hi me again, mealplaner`
+
+Interpretation:
+
+- this is expected when one FlowPilot chat continues across multiple Codex accounts but keeps the same stable Codex resume session chain
+- the file is not evidence that multiple unrelated FlowPilot runs were merged into one rollout file
+- instead, one provider session file now contains prompts entered while different accounts were active at different moments
+
+What this proves:
+
+1. FlowPilot prepared the active account home so the stable rollout session was available there
+2. FlowPilot then launched `codex exec resume <stableSessionId>` with `CODEX_HOME=/Users/tiendat/.codexHome2`
+3. Codex itself appended the new conversation content into that rollout file
+4. FlowPilot may later mirror the newer extended file back to other known Codex homes that already contain the same session
+
+Important clarification:
+
+- FlowPilot does not compose and append new message JSON lines directly into the provider rollout file during a normal turn
+- FlowPilot copies or refreshes provider files between homes when needed
+- the Codex CLI is the component that extends the rollout file content after `exec resume`
+
+Concrete explanation for the user-observed file:
+
+- if `/Users/tiendat/.codexHome2/.../rollout-2026-06-18T22-04-15-019edb42-e728-71d3-891e-91729a640920.jsonl` contains all three prompts above, that means `.codexHome2` currently holds an extended copy of the stable Codex session chain for that chat
+- this is the correct outcome for the tested behavior
+- it means the account-home preparation plus Codex resume flow is working as intended for that scenario
+
+### 7.6 User Q And A: Cross-PC Resume Model
+
+This section records the explicit user questions raised during review and the design answer for each one.
+
+#### Q-1. How does cross-PC continuation work based on this solution?
+
+Short answer:
+
+- same-PC account switching works by local relocation between Codex homes
+- cross-PC continuation works only through the explicit sync and restore path
+
+Detailed flow:
+
+1. On PC A, FlowPilot has:
+   - one persisted `provider_session_id`
+   - one provider rollout file chain
+   - one local run record in `.flowpilot/chats/sessions.ndjson`
+2. PC A syncs the chat explicitly.
+3. FlowPilot uploads:
+   - metadata/index
+   - provider rollout file bytes
+   - manifest with size/hash/path/session information
+4. On PC B, the user restores that synced chat.
+5. FlowPilot writes the rollout file into the active Codex home on PC B.
+6. FlowPilot persists a local session row on PC B that points at that restored session id.
+7. PC B can then continue the chat with:
+
+```text
+codex exec resume <provider_session_id>
+```
+
+Code refs:
+
+- restore remote session metadata + file selection:
+  - `restoreChatRunFromDrive(...)` in `apps/local-runner/internal/runner/chat_session_sync.go:532`
+- resolve active target home on restore:
+  - `apps/local-runner/internal/runner/chat_session_sync.go:592`
+- validate file hash before local write:
+  - `apps/local-runner/internal/runner/chat_session_sync.go:612`
+- persist restored local run row:
+  - `apps/local-runner/internal/runner/chat_session_sync.go:629`
+
+Important boundary:
+
+- without sync/restore, cross-PC continuation does not work
+- local relocation alone is only for same-machine account switching
+
+#### Q-2. If one rollout file points to one thread/session id, and we save that id plus sync the file, can we resume on another PC?
+
+Short answer:
+
+- yes, that is the intended model
+
+Design explanation:
+
+- FlowPilot does not need the old live in-memory thread object from PC A
+- FlowPilot needs the durable resume handle and the matching provider file state
+
+The durable continuation bundle is:
+
+1. `provider_session_id`
+2. matching rollout file restored into the target `CODEX_HOME`
+3. a valid local Codex installation and signed-in account on the target PC
+
+Why this works:
+
+- the session id is the resume handle FlowPilot passes to Codex
+- the rollout file is the durable local state that Codex reads when reopening that session chain
+- after restore, FlowPilot invokes `codex exec resume <provider_session_id>` in the new `CODEX_HOME`
+
+Code refs:
+
+- Codex resume command construction:
+  - `codexResumeAdapter.SendTurn(...)` in `apps/local-runner/internal/runner/codex_resume_process.go:29`
+- exact `exec resume` argv:
+  - `apps/local-runner/internal/runner/codex_resume_process.go:50`
+- target `CODEX_HOME` environment assignment:
+  - `apps/local-runner/internal/runner/codex_resume_process.go:68`
+
+Operational interpretation:
+
+- id only: not enough
+- file only: not enough for FlowPilot's normal resume path
+- matching id + matching file: sufficient foundation for cross-PC continuation
+
+#### Q-3. What happens if PC B already has the same session id but it belongs to another local chat state?
+
+This is a conflict case and the current code handles it conservatively.
+
+There are two different collision types:
+
+1. FlowPilot `runId` collision
+2. provider session file collision
+
+##### Q-3a. FlowPilot `runId` collision
+
+If PC B already has a local run row with the same `runId`, current restore logic can remap the restored run id instead of overwriting the local row.
+
+Effect:
+
+- user-visible history identity can be renamed safely
+- provider session content is not merged at this layer
+
+Code refs:
+
+- restored run id collision handling:
+  - `resolveRestoredRunID(...)` in `apps/local-runner/internal/runner/chat_session_sync.go:500`
+- remapped persisted run id assignment during restore:
+  - `apps/local-runner/internal/runner/chat_session_sync.go:629`
+
+##### Q-3b. Provider session id / rollout file collision
+
+This is the more important case.
+
+If PC B already has a rollout file at the target path for the same `provider_session_id`, current restore logic checks the actual file bytes:
+
+1. if existing file hash == synced file hash:
+   - restore is accepted
+   - this means both sides point to the same session state
+2. if existing file hash != synced file hash:
+   - restore fails with a typed conflict
+   - current code uses `session_file_conflict`
+
+Why the code fails instead of merging:
+
+- same session id but different file contents means the local state is ambiguous or divergent
+- auto-merging could corrupt two unrelated or diverged session chains
+- safe behavior is to stop and ask the user to resolve the local conflict explicitly
+
+Code refs:
+
+- local target path resolution for restored provider file:
+  - `apps/local-runner/internal/runner/chat_session_sync.go:615`
+- existing-file hash comparison:
+  - `apps/local-runner/internal/runner/chat_session_sync.go:619`
+- typed conflict result:
+  - `apps/local-runner/internal/runner/chat_session_sync.go:621`
+
+Current-code summary:
+
+- same run id: can be remapped
+- same provider session id + same file bytes: accepted
+- same provider session id + different file bytes: rejected as conflict
+
+Design rule:
+
+- FlowPilot never silently merges two different local rollout states just because the visible session id string matches
+
+#### Q-4. In the A -> B -> A example, does Step 6 overwrite account A's old rollout file copy?
+
+Short answer:
+
+- yes, but only in the safe same-session extension case
+
+Detailed answer:
+
+- after Step 4, account B may hold a newer extended copy of the stable session chain
+- when the user switches back to account A and sends the next prompt, FlowPilot prepares account A again before running Codex
+- if account A already has an older copy of the same rollout file, FlowPilot may refresh that local file from the newer account B version
+
+The overwrite is not unconditional. Current code only updates the destination when all of these conditions hold:
+
+1. source and destination resolve to the same Codex session id
+2. both files point at the same workspace/cwd when that metadata is present
+3. one file is a byte-prefix extension of the other
+4. the copy is happening during relocation/sync preparation for the active account flow
+
+If those conditions do not hold:
+
+- identical files are accepted without rewrite
+- divergent files are rejected as conflict
+
+Important clarification:
+
+- the "new file has more bytes" condition is not enough by itself
+- it must also be the same session and the old file must be a strict prefix-compatible older copy
+
+Code refs:
+
+- safe relocation entry:
+  - `RelocateSessionFile(...)` in `apps/local-runner/internal/runner/session_file_locator.go:62`
+- extension-only update logic:
+  - `updateCodexDestinationIfSameSessionExtends(...)` in `apps/local-runner/internal/runner/session_file_locator.go:119`
+- live A -> B -> A coverage:
+  - `TestLiveCodexChatResumesAcrossProviderAccountSwitches` in `apps/local-runner/internal/runner/cross_account_resume_test.go:1127`
+- stale-destination overwrite safety coverage:
+  - `TestRelocateSessionFileUpdatesOlderCodexDestinationWhenSourceExtends` in `apps/local-runner/internal/runner/cross_account_resume_test.go:437`
+- divergent destination rejection coverage:
+  - `TestRelocateSessionFileDoesNotOverwriteExistingSessionFile` in `apps/local-runner/internal/runner/cross_account_resume_test.go:387`
+
+Test coverage status:
+
+- covered: yes
+- confirmed by tests:
+  - safe update of older same-session file
+  - refusal to overwrite divergent existing file
+  - full A -> B -> A live cross-account path
+
+#### Q-5. What happens if the user stays on one account and sends multiple prompts without switching?
+
+Short answer:
+
+- no cross-account copy happens
+
+Detailed answer:
+
+- when the active account still matches `run.providerAccountID`, `startTurn(...)` does not call the cross-account relocation path
+- FlowPilot stays in the same `CODEX_HOME`
+- it continues calling `codex exec resume <stableSessionId>` locally
+- Codex itself extends the same local session chain in that one account home
+- FlowPilot only records prompt history and later rollout ids for replay/audit
+
+This means:
+
+- no account rebinding
+- no relocation between homes
+- no "copy before turn" step
+- only local resume in the same home
+
+Code refs:
+
+- account-match guard in `startTurn(...)`:
+  - `apps/local-runner/internal/runner/interactive_service.go:850`
+- same-session local resume command path:
+  - `apps/local-runner/internal/runner/codex_resume_process.go:50`
+- stable id reused across multiple same-account turns:
+  - `TestRestoredCodexRunSecondTurnStillUsesResumeSessionID` in `apps/local-runner/internal/runner/cross_account_resume_test.go:980`
+
+Test coverage status:
+
+- covered: yes for the "same account, same stable resume id across multiple prompts" behavior
+- confirmed by test:
+  - every resume call still uses the same stable `rollout-abc` session id across multiple turns
+
+Practical clarification for the user's question:
+
+- "can only copy rollout file if conditions matched + new file has more bytes + account switch happened before" is almost correct but needs one refinement:
+  - account-switch-driven relocation is what makes FlowPilot consider cross-home copying in the normal live path
+  - but the file update is allowed only for same-session prefix-compatible extension, not just because the source is larger
+
+#### Decision Table: When FlowPilot Copies, Updates, Or Rejects A Rollout File
+
+| Scenario | Account switched before turn? | Same session id? | File relationship | Result |
+|---|---|---|---|---|
+| same account, next prompt | no | yes | any | no cross-home copy; local `codex exec resume` only |
+| switch account, target home missing file | yes | yes | n/a | copy source file into target home |
+| switch account, target home has identical file | yes | yes | identical bytes | accept as no-op |
+| switch account, target home has older file | yes | yes | source is valid prefix-extension of destination pair | update target with newer source |
+| switch account, target home has larger but compatible file | yes | yes | destination already extends source | keep destination; no downgrade |
+| switch account, target home has different file | yes | yes | divergent non-prefix content | reject as conflict |
+| switch account, target home file belongs to another session | yes | no | irrelevant | reject as conflict / do not merge |
+
+Reading rule:
+
+- "more bytes" alone does not authorize overwrite
+- the update path requires same-session identity plus prefix-compatible extension semantics
+
+## 8. Failure and Edge Handling
+
+- `F-1` Active account home missing
+  - result: `account_unavailable`
+
+- `F-2` Active account not signed in
+  - result: `account_not_signed_in`
+
+- `F-3` Stable rollout file missing in source home
+  - result: `session_unavailable`
+
+- `F-4` Destination session file already exists with different bytes
+  - result: relocation fails; FlowPilot refuses overwrite
+
+- `F-5` Source and destination are the same physical file
+  - result: relocation succeeds as a no-op; FlowPilot still rebinds `provider_account_id`
+
+- `F-6` Old runs without turn-log sidecar
+  - result: resume still works from the stable stored session file, but replay may only have single-file coverage
+
+## 9. Security and Operational Concerns
+
+- auth:
+  - every resume/continue uses the active account home and requires valid local auth at that home
+
+- secrets:
+  - this design does not copy auth secrets between homes; it copies provider session files only
+
+- audit:
+  - FlowPilot keeps `sessions.ndjson`, the per-run turn log, and optional Drive manifest/index rows
+
+- rollback:
+  - if relocation fails, FlowPilot leaves the source files unchanged and surfaces a typed error instead of partially mutating the chat state
+
+## 10. Risks and Trade-Offs
+
+- `R-1` Codex creates one rollout file per turn, which makes replay and relocation more complex than a single-thread-file provider.
+
+- `R-2` The stable resume handle and later replay rollout ids intentionally diverge.
+  - Benefit:
+    - keeps resume reliable
+  - Cost:
+    - file inspection looks non-obvious unless the turn-log sidecar is also inspected
+
+- `R-3` Lazy relocation means Step 3 and Step 5 account switches appear to do nothing immediately.
+  - Benefit:
+    - less unnecessary copying
+  - Cost:
+    - developers must understand that file changes happen on the next turn, not on the UI switch event
+
+## 11. Validation Strategy
+
+- unit:
+  - `TestResumeRunSameHomeAccountRebindsProviderAccountID`
+  - `TestRelocateSessionFileSameHomeCodexIsNoop`
+  - `TestSeedTranscriptLoadsAllCodexRolloutFiles`
+
+- integration:
+  - cross-account Codex resume tests in `cross_account_resume_test.go`
+  - chat-session sync tests in `chat_session_sync_test.go`
+
+- manual:
+  - reproduce A -> B -> A conversation and inspect both Codex home folders plus `.flowpilot/chats/`
+
+- observability:
+  - inspect:
+    - `<workspace>/.flowpilot/chats/sessions.ndjson`
+    - `<workspace>/.flowpilot/chats/<runId>-turns.ndjson`
+    - `/Users/tiendat/.codex/sessions/`
+    - `/Users/tiendat/.codexHome1/sessions/`
+
+## 12. Traceability to Spec
+
+- `SS-11 §6 follow-up must continue the same provider session when possible` -> `D-1`, `D-3`, Section 7
+- `SS-11 §7.1 Codex provider-native resume semantics` -> `D-1`, Section 6, Section 7
+- `SS-11 workflow remains auditable while session continuity is runtime detail` -> Section 5, Section 9
