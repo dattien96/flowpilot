@@ -37,6 +37,11 @@ COPY the history that to other pc/other acc
 Test with latest codex it worked -> so we need same test to make sure in other pc with other ver
 it can work too, or at least notify us to change code if the policy from codex/claude changed
 
+## 3.5 Task-075: Cross-Account And Cross-PC Chat E2E Test Guide
+
+This one is the manual + Computer Use checklist.
+Use it to test the full UI flow from selecting project/provider/model, creating chat, restart resume, cross-account resume, Check Version, sync, restore, and greyout fallback.
+
 # 4. Coding plan
 
 ## 4.1 Phase 1: Cross-Account
@@ -53,6 +58,10 @@ Task 071
 
 Task 072
 
+Manual/E2E checklist
+
+Task 075
+
 ## 4.2 Phase 2: Cross-PC
 
 ### 4.2.1 Coding plan
@@ -66,6 +75,10 @@ Task 073
 ### 4.2.3 Testcase - Automated done; manual/provider cases pending
 
 Task 074
+
+Manual/E2E checklist
+
+Task 075
 
 ## 4.3 Phase 3: Recheck architecture for adding sync flow/step in future
 
@@ -82,7 +95,7 @@ DOD-43-44: pending manual/provider validation for Claude
 DOD-52-53: pending manual/provider validation for Codex
 DOD-88->93: manually
 DOD-95: GitNexus detect unavailable in this session
-DOD-96: independent reviewer agent timed out
+DOD-96: DONE - independent reviewer confirmed implementation follows 09-IG (no deviations)
 
 ## Task 073
 
@@ -127,3 +140,6 @@ DOD-068-010 pending for claude
 
 DOD-069-009
 and DOD-069-010 pending for manually + claude
+
+# Task-075: Cross-Account And Cross-PC Chat E2E Test Guide
+Some cases not tested yet

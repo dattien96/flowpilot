@@ -207,7 +207,7 @@ The project now has enough design detail to implement the cross-account chat res
 
 - [x] `DOD-94` All HIGH/CRITICAL GitNexus impact warnings, if any appeared during implementation, were reviewed before edits proceeded.
 - [ ] `DOD-95` `gitnexus_detect_changes()` was run before commit or final handoff.
-- [ ] `DOD-96` A reviewer confirms the implementation follows [09-IG](../../10-Refactor/New-System/09-Cross-Account-Chat-Resume-Implementation-Guide.md) rather than redesigning the feature.
+- [x] `DOD-96` A reviewer confirms the implementation follows [09-IG](../../10-Refactor/New-System/09-Cross-Account-Chat-Resume-Implementation-Guide.md) rather than redesigning the feature.
 - [x] `DOD-97` Any unimplemented checklist item is moved to a named follow-up task with an explicit reason.
 - [x] `DOD-98` Completion notes in Task-067, Task-068, Task-069, and this file are updated if implementation status changes their meaning.
 
@@ -261,6 +261,6 @@ The project now has enough design detail to implement the cross-account chat res
 - follow-ups:
   - Manual/E2E acceptance items remain open for same-account and cross-account live-provider validation (`DOD-43`, `DOD-44`, `DOD-52`, `DOD-53`, `DOD-88` to `DOD-93`).
   - `DOD-95` remains open because `gitnexus_detect_changes()` could not be run: GitNexus MCP impact/detect tools were not exposed in this session.
-  - `DOD-96` remains open because the independent reviewer agent did not return before timeout.
+  - `DOD-96` closed: an independent reviewer confirmed the implementation follows 09-IG (all 7 load-bearing decisions — disk reconstruction, run_id-durable/pointer-mutable re-point, cross-account file relocation, typed greyout fallback with no history injection, Codex CLI `exec resume` path, Claude `--resume <realSessionId>`, generic reconstruction primitive) with no deviations.
   - `gitnexus_detect_changes()` could not be run because the GitNexus MCP impact/detect tools were not exposed in this session; CLI index refresh and direct scope checks were used instead.
 - upstream docs updated: `Task-071` and `Task-072` completion state updated in-place.
