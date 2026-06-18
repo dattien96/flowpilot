@@ -122,8 +122,9 @@ The current Check Version flow correctly identifies version drift, but the teste
 ## 8. Completion Notes
 
 - result: Implemented. The tested baseline is now workspace-configurable, persists to `.flowpilot/settings/compat-config.json`, and is editable from the Check Version page.
+- result: Implemented. The tested baseline is now workspace-configurable, persists to `.flowpilot/settings/compat-config.json`, and is editable from the Check Version page. The compatibility flow also covers session-portability canaries for the new cross-account/cross-PC resume path: Codex `exec resume` CLI surface, Codex rollout metadata remaining account-agnostic, and Claude session-store layout presence.
 - follow-ups:
   - optionally add a one-click `Use Installed Versions As Tested Baseline` action if the team wants faster baseline updates after successful deep checks
   - optionally show the exact saved config path in the UI
-  - planned: add **session-portability canaries** to `quicktest.ps1` (Codex `exec resume` CLI surface, rollout meta still account-agnostic, Claude session store) so a provider update that breaks chat copy/resume is caught by the same Check Version flow — spec in [09-IG §8](../../10-Refactor/New-System/09-Cross-Account-Chat-Resume-Implementation-Guide.md); proven by [CA-098](../../../change-audit/CA-098-spike-provider-session-portability.md)
+  - if needed later, extend the deep check UI copy to explain that these portability canaries protect cross-account and cross-PC chat copy/resume behavior
 - upstream docs updated: `Task-059`

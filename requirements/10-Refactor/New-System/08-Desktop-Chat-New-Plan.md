@@ -81,6 +81,17 @@ Via Bug 077 + Task 065
 
 Not implemented
 
+## 13. Sub-agent
+
+Not implemented
+
+- Show sub-agent in chat response
+- See sub-agent on the right side bar
+- Can touch to move to see sub-agent
+
+This is CHAT mode. agent in flow mode is more
+Not implemented
+
 # Flow mode - Pending
 
 model
