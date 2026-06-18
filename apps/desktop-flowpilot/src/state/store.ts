@@ -611,8 +611,25 @@ export const useStore = create<AppState>((set, get) => ({
 
   async deleteHistoryRun(runId) {
     const { client } = get();
+    const wasActive = get().runId === runId;
     // Optimistically remove from local history so the UI responds immediately.
     set((s) => ({ runHistory: s.runHistory.filter((item) => item.runId !== runId) }));
+    // If the deleted run was the active session, reset the main panel to idle.
+    if (wasActive) {
+      set({
+        runId: undefined,
+        activeStepId: undefined,
+        status: "idle",
+        timeline: [],
+        artifacts: [],
+        pendingApproval: undefined,
+        pendingQuestion: undefined,
+        latestTokenUsage: undefined,
+        lastTurnInput: undefined,
+        recoverable: false,
+        _streamingAssistantId: undefined,
+      });
+    }
     try {
       await client.deleteRun(runId);
     } catch (err) {
