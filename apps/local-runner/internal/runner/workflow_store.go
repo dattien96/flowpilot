@@ -42,6 +42,11 @@ type InteractiveStateStore interface {
 // process-scoped in-memory map being empty on a new service instance.
 type SessionHistoryReader interface {
 	ListProviderSessionsByProject(ctx context.Context, projectID string) ([]ProviderSessionState, error)
+	GetProviderSession(ctx context.Context, runID string) (ProviderSessionState, bool, error)
+}
+
+type SessionIndexReader interface {
+	ListAllProviderSessions(ctx context.Context) ([]ProviderSessionState, error)
 }
 
 type ProviderSessionState struct {
@@ -58,6 +63,11 @@ type ProviderSessionState struct {
 	StartedAt         string
 	UpdatedAt         string
 	RunKind           string
+	SourceMachineID   string
+	SourceRunID       string
+	RestoredFrom      string
+	SyncStatus        string
+	SyncUpdatedAt     string
 }
 
 type ProviderApprovalState struct {
@@ -205,6 +215,23 @@ func (f *fakeWorkflowStore) ListProviderSessionsByProject(_ context.Context, pro
 		if s.ProjectID == projectID {
 			out = append(out, s)
 		}
+	}
+	return out, nil
+}
+
+func (f *fakeWorkflowStore) GetProviderSession(_ context.Context, runID string) (ProviderSessionState, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	st, ok := f.sessions[runID]
+	return st, ok, nil
+}
+
+func (f *fakeWorkflowStore) ListAllProviderSessions(_ context.Context) ([]ProviderSessionState, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]ProviderSessionState, 0, len(f.sessions))
+	for _, session := range f.sessions {
+		out = append(out, session)
 	}
 	return out, nil
 }
