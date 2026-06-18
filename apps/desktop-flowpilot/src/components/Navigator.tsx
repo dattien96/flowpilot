@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useStore } from "@/state/store";
 import type { RunHistoryItem } from "@/types/contract";
 
@@ -105,6 +105,7 @@ export function Navigator(): React.ReactElement {
   const openHistoryRun = useStore((s) => s.openHistoryRun);
   const syncHistoryRun = useStore((s) => s.syncHistoryRun);
   const syncAllInProject = useStore((s) => s.syncAllInProject);
+  const deleteHistoryRun = useStore((s) => s.deleteHistoryRun);
   const restoreRemoteChatSession = useStore((s) => s.restoreRemoteChatSession);
 
   const runIdRef = useRef(runId);
@@ -117,6 +118,23 @@ export function Navigator(): React.ReactElement {
   const [projectHistoryById, setProjectHistoryById] = useState<Record<string, RunHistoryItem[]>>({});
   const [openProjectIds, setOpenProjectIds] = useState<Record<string, boolean>>({});
   const [visibleHistoryCounts, setVisibleHistoryCounts] = useState<Record<string, number>>({});
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
+
+  const handleDeleteClick = useCallback((runId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setPendingDeleteId(runId);
+  }, []);
+
+  const confirmDelete = useCallback(async (runId: string) => {
+    setPendingDeleteId(null);
+    setDeletingIds((prev) => new Set(prev).add(runId));
+    try {
+      await deleteHistoryRun(runId);
+    } finally {
+      setDeletingIds((prev) => { const next = new Set(prev); next.delete(runId); return next; });
+    }
+  }, [deleteHistoryRun]);
 
   useEffect(() => {
     void loadProjects();
@@ -344,6 +362,8 @@ export function Navigator(): React.ReactElement {
                         const showSync = item.runKind === "chat" && item.syncStatus !== "synced";
                         const isSyncing = item.syncStatus === "syncing";
                         const syncFailed = item.syncStatus === "failed";
+                        const isDeleting = deletingIds.has(item.runId);
+                        const isPendingDelete = pendingDeleteId === item.runId;
                         return (
                           <div
                             key={item.runId}
@@ -353,9 +373,10 @@ export function Navigator(): React.ReactElement {
                             <button
                               type="button"
                               className={`project-history-item${hasIcon ? " project-history-item--has-icon" : ""}${isUnavailable ? " project-history-item--disabled" : ""}${isActive ? " project-history-item--active" : ""}`}
-                              disabled={isUnavailable}
+                              disabled={isUnavailable || isDeleting}
                               aria-current={isActive ? "true" : undefined}
                               onClick={() => {
+                                if (isPendingDelete) { setPendingDeleteId(null); return; }
                                 if (isNew) setNewlyCompleted((c) => { const n = new Set(c); n.delete(item.runId); return n; });
                                 void openHistoryRun(item.runId);
                               }}
@@ -370,23 +391,58 @@ export function Navigator(): React.ReactElement {
                                 {RUN_LABEL[item.status]} · {RUN_TIME_FORMAT.format(new Date(item.updatedAt))}
                               </span>
                             </button>
-                            {showSync && (
-                              <button
-                                type="button"
-                                className={`project-history-sync-icon${syncFailed ? " project-history-sync-icon--failed" : ""}`}
-                                disabled={isSyncing}
-                                onClick={() => void syncHistoryRun(item.runId, projectId)}
-                                title={
-                                  syncFailed
-                                    ? item.unavailableReason || "Sync failed — click to retry"
-                                    : isSyncing
-                                      ? "Syncing…"
-                                      : "Sync this chat to Drive"
-                                }
-                                aria-label="Sync chat to Drive"
-                              >
-                                {isSyncing ? <span className="history-status-spinner" aria-hidden="true" /> : <SyncGlyph />}
-                              </button>
+                            {isPendingDelete ? (
+                              <>
+                                <button
+                                  type="button"
+                                  className="project-history-delete-confirm"
+                                  onClick={() => void confirmDelete(item.runId)}
+                                  title="Confirm delete — removes local data and provider session file"
+                                  aria-label="Confirm delete"
+                                >
+                                  ✓
+                                </button>
+                                <button
+                                  type="button"
+                                  className="project-history-delete-cancel"
+                                  onClick={() => setPendingDeleteId(null)}
+                                  title="Cancel"
+                                  aria-label="Cancel delete"
+                                >
+                                  ✕
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                {showSync && (
+                                  <button
+                                    type="button"
+                                    className={`project-history-sync-icon${syncFailed ? " project-history-sync-icon--failed" : ""}`}
+                                    disabled={isSyncing}
+                                    onClick={() => void syncHistoryRun(item.runId, projectId)}
+                                    title={
+                                      syncFailed
+                                        ? item.unavailableReason || "Sync failed — click to retry"
+                                        : isSyncing
+                                          ? "Syncing…"
+                                          : "Sync this chat to Drive"
+                                    }
+                                    aria-label="Sync chat to Drive"
+                                  >
+                                    {isSyncing ? <span className="history-status-spinner" aria-hidden="true" /> : <SyncGlyph />}
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  className="project-history-delete-icon"
+                                  disabled={isDeleting}
+                                  onClick={(e) => handleDeleteClick(item.runId, e)}
+                                  title="Delete this chat (removes local record and provider session file)"
+                                  aria-label="Delete chat"
+                                >
+                                  {isDeleting ? <span className="history-status-spinner" aria-hidden="true" /> : "×"}
+                                </button>
+                              </>
                             )}
                           </div>
                         );

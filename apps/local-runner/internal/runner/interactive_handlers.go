@@ -23,6 +23,7 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /client/workflow-runs", s.handleStartRun)
 	mux.HandleFunc("GET /client/workflow-runs/{runId}", s.handleGetRun)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/resume", s.handleResumeRun)
+	mux.HandleFunc("DELETE /client/workflow-runs/{runId}", s.handleDeleteRun)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/sync-chat", s.handleSyncChatRun)
 	mux.HandleFunc("POST /client/chat-sessions/restore", s.handleRestoreChatRun)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/turns", s.handleStartTurn)
@@ -148,6 +149,14 @@ func (s *InteractiveService) handleResumeRun(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeInteractiveJSON(w, http.StatusOK, handle)
+}
+
+func (s *InteractiveService) handleDeleteRun(w http.ResponseWriter, r *http.Request) {
+	if e := s.deleteChatSession(r.PathValue("runId")); e != nil {
+		writeInteractiveError(w, e)
+		return
+	}
+	writeInteractiveJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func (s *InteractiveService) handleSyncChatRun(w http.ResponseWriter, r *http.Request) {

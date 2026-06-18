@@ -190,6 +190,13 @@ export class HttpWsRunnerClient implements RunnerClient {
   syncChatRun(runId: string, input?: ChatSessionSyncRequest): Promise<ChatSessionSyncResult> {
     return this.postJSON<ChatSessionSyncResult>(`/client/workflow-runs/${encodeURIComponent(runId)}/sync-chat`, input ?? {});
   }
+  async deleteRun(runId: string): Promise<void> {
+    const resp = await fetch(this.base + `/client/workflow-runs/${encodeURIComponent(runId)}`, {
+      method: "DELETE",
+      headers: { Accept: "application/json" },
+    });
+    await this.parse<unknown>(resp);
+  }
   restoreChatRun(input: ChatSessionRestoreRequest): Promise<ChatSessionRestoreResult> {
     return this.postJSON<ChatSessionRestoreResult>("/client/chat-sessions/restore", input);
   }

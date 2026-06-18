@@ -123,6 +123,7 @@ interface AppState {
   loadRemoteChatSessions(): Promise<void>;
   syncHistoryRun(runId: string, projectId?: string): Promise<void>;
   syncAllInProject(projectId: string): Promise<void>;
+  deleteHistoryRun(runId: string): Promise<void>;
   restoreRemoteChatSession(summary: RemoteChatSessionSummary, cwd?: string): Promise<void>;
   openHistoryRun(runId: string): Promise<void>;
   resetRun(): void;
@@ -605,6 +606,29 @@ export const useStore = create<AppState>((set, get) => ({
       } catch {
         // already reflected as syncStatus: "failed" on the row
       }
+    }
+  },
+
+  async deleteHistoryRun(runId) {
+    const { client } = get();
+    // Optimistically remove from local history so the UI responds immediately.
+    set((s) => ({ runHistory: s.runHistory.filter((item) => item.runId !== runId) }));
+    try {
+      await client.deleteRun(runId);
+    } catch (err) {
+      // Restore the item on failure by refreshing history from the runner.
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] deleteRun failed:", err);
+      const { selectedProjectId } = get();
+      if (selectedProjectId) {
+        try {
+          const runHistory = await client.listRunHistory(selectedProjectId);
+          set({ runHistory });
+        } catch {
+          // best-effort refresh
+        }
+      }
+      throw err;
     }
   },
 

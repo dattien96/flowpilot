@@ -32,6 +32,7 @@ type WorkflowStore interface {
 type InteractiveStateStore interface {
 	AppendEvent(ctx context.Context, event ProviderEvent) error
 	UpsertProviderSession(ctx context.Context, session ProviderSessionState) error
+	DeleteProviderSession(ctx context.Context, runID string) error
 	UpsertApproval(ctx context.Context, approval ProviderApprovalState) error
 	UpsertQuestion(ctx context.Context, question ProviderQuestionState) error
 }
@@ -190,6 +191,13 @@ func (f *fakeWorkflowStore) UpsertProviderSession(_ context.Context, session Pro
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.sessions[session.RunID] = session
+	return nil
+}
+
+func (f *fakeWorkflowStore) DeleteProviderSession(_ context.Context, runID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.sessions, runID)
 	return nil
 }
 

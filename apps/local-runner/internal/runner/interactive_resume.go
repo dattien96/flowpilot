@@ -8,6 +8,73 @@ import (
 	"time"
 )
 
+// deleteChatSession removes a run from memory, persistent storage, and all
+// provider session files it can locate on disk. A single chat run belongs to
+// exactly one provider (never both Claude and Codex), but a session file may
+// have been copied into multiple account homes via the cross-account resume
+// feature, so we scan every registered account of the matching provider type.
+//
+// File deletion failures are swallowed (best-effort): we always complete the
+// memory + store cleanup so the history entry disappears for the user.
+func (s *InteractiveService) deleteChatSession(runID string) *apiErr {
+	// --- resolve session from persistent store or in-memory map ---
+	var session ProviderSessionState
+	found := false
+	if reader, ok := s.workflowStore.(SessionHistoryReader); ok {
+		var readErr error
+		session, found, readErr = reader.GetProviderSession(context.Background(), runID)
+		_ = readErr
+	}
+	if !found {
+		s.mu.Lock()
+		rs, inMem := s.runs[runID]
+		s.mu.Unlock()
+		if !inMem {
+			return newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")
+		}
+		session = sessionStateOf(rs)
+		found = true
+	}
+
+	// --- delete provider session files (all account homes of this provider) ---
+	if session.ProviderKey != "" && session.ProviderSessionID != "" {
+		r := s.runner
+		if r == nil {
+			r = &Runner{}
+		}
+		if accounts, err := r.ListProviderAccounts(); err == nil {
+			for _, account := range accounts {
+				if ProviderKey(account.ProviderKey) != session.ProviderKey {
+					continue
+				}
+				if strings.TrimSpace(account.HomePath) == "" {
+					continue
+				}
+				filePath, ok := LocateSessionFile(session.ProviderKey, account.HomePath, session.ProviderSessionID, session.WorkingDirectory)
+				if ok {
+					_ = os.Remove(filePath)
+				}
+			}
+		}
+	}
+
+	// --- remove from in-memory runs map ---
+	s.mu.Lock()
+	delete(s.runs, runID)
+	s.mu.Unlock()
+
+	// --- remove from persistent store ---
+	if deleter, ok := s.workflowStore.(interface {
+		DeleteProviderSession(ctx context.Context, runID string) error
+	}); ok {
+		if err := deleter.DeleteProviderSession(context.Background(), runID); err != nil {
+			return newAPIErr(http.StatusInternalServerError, "store_error", err.Error())
+		}
+	}
+
+	return nil
+}
+
 // normalizeResumedStatus maps an in-flight status read back from disk to a
 // terminal one. A run that was running / starting / waiting for approval or a
 // question cannot still be in flight after the owning process exited (server

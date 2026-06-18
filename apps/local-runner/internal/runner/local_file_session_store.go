@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -125,6 +126,60 @@ func (s *localFileSessionStore) UpsertProviderSession(_ context.Context, session
 	defer fh.Close()
 	_, err = fh.Write(append(line, '\n'))
 	return err
+}
+
+// DeleteProviderSession removes a run from the in-memory map and rewrites the
+// NDJSON file without that run_id. The rewrite is atomic (write to a temp file
+// then rename) so a crash mid-write does not corrupt the store.
+func (s *localFileSessionStore) DeleteProviderSession(_ context.Context, runID string) error {
+	s.fakeWorkflowStore.mu.Lock()
+	delete(s.fakeWorkflowStore.sessions, runID)
+	s.fakeWorkflowStore.mu.Unlock()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Read existing file, keep every line whose run_id differs from runID.
+	f, err := os.Open(s.filePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil // nothing to rewrite
+		}
+		return err
+	}
+	var kept [][]byte
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := sc.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var rec ndjsonSessionRecord
+		if jsonErr := json.Unmarshal(line, &rec); jsonErr != nil || rec.RunID == runID {
+			continue // drop malformed lines and the target run
+		}
+		kept = append(kept, append([]byte(nil), line...))
+	}
+	f.Close()
+
+	// Write to a sibling temp file then rename for atomicity.
+	tmpPath := s.filePath + ".tmp"
+	tmp, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	for _, line := range kept {
+		if _, err := tmp.Write(append(line, '\n')); err != nil {
+			tmp.Close()
+			_ = os.Remove(tmpPath)
+			return err
+		}
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return os.Rename(tmpPath, s.filePath)
 }
 
 // ListProviderSessionsByProject returns sessions for the given project from the

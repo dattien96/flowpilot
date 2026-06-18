@@ -329,6 +329,7 @@ export interface RunnerClient {
   startRun(input: StartRunInput): Promise<RunHandle>;
   resumeRun(runId: string): Promise<RunHandle>;
   syncChatRun(runId: string, input?: ChatSessionSyncRequest): Promise<ChatSessionSyncResult>;
+  deleteRun(runId: string): Promise<void>;
   restoreChatRun(input: ChatSessionRestoreRequest): Promise<ChatSessionRestoreResult>;
   /** Streaming turn: yields normalized provider events until terminal. */
   sendTurn(input: TurnInput): AsyncIterable<ProviderEventDTO>;

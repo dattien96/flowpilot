@@ -259,6 +259,10 @@ export class MockRunnerClient implements RunnerClient {
     };
   }
 
+  async deleteRun(_runId: string): Promise<void> {
+    await delay(40);
+  }
+
   async restoreChatRun(input: ChatSessionRestoreRequest): Promise<ChatSessionRestoreResult> {
     await delay(40);
     return {
