@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -253,6 +254,61 @@ func TestResumeRunUsesInMemoryRunBeforeDiskLookup(t *testing.T) {
 	}
 	if svc.runs["run-1"].providerSessionID != "in-memory-session" {
 		t.Fatalf("run providerSessionID = %q, want in-memory-session", svc.runs["run-1"].providerSessionID)
+	}
+}
+
+func TestDeleteChatSessionRemovesCodexStableAndTurnLogRolloutsAcrossAccounts(t *testing.T) {
+	store, err := NewLocalFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	root := t.TempDir()
+	acctAHome := filepath.Join(root, "acct-a")
+	acctBHome := filepath.Join(root, "acct-b")
+	writeProviderAccountsConfig(t, filepath.Join(root, "provider-accounts.json"), []ProviderAccount{
+		{ID: "acct-a", ProviderKey: "codex", HomePath: acctAHome, SlotIndex: 0, AuthStatus: "connected", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+		{ID: "acct-b", ProviderKey: "codex", HomePath: acctBHome, SlotIndex: 1, AuthStatus: "connected", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+	})
+	stableA := writeCodexRollout(t, acctAHome, "rollout-stable", "/repo", time.Now().UTC().Add(-2*time.Hour))
+	stableB := writeCodexRollout(t, acctBHome, "rollout-stable", "/repo", time.Now().UTC().Add(-90*time.Minute))
+	turnA := writeCodexRollout(t, acctAHome, "rollout-turn-2", "/repo", time.Now().UTC().Add(-time.Hour))
+	turnB := writeCodexRollout(t, acctBHome, "rollout-turn-2", "/repo", time.Now().UTC().Add(-30*time.Minute))
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             "run-delete",
+		ProjectID:         "project-1",
+		ProviderKey:       ProviderKeyCodex,
+		ProviderSessionID: "rollout-stable",
+		ProviderAccountID: "acct-a",
+		WorkingDirectory:  "/repo",
+		Status:            RunStatusCompleted,
+		RunKind:           "chat",
+	}); err != nil {
+		t.Fatalf("UpsertProviderSession: %v", err)
+	}
+	if err := store.AppendTurnLog(context.Background(), "run-delete", turnLogLine{Kind: turnLogKindPrompt, Prompt: "hello"}); err != nil {
+		t.Fatalf("AppendTurnLog prompt: %v", err)
+	}
+	if err := store.AppendTurnLog(context.Background(), "run-delete", turnLogLine{Kind: turnLogKindCodexSession, SessionID: "rollout-turn-2"}); err != nil {
+		t.Fatalf("AppendTurnLog codex_session: %v", err)
+	}
+
+	svc := NewInteractiveServiceWithStore(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+	if apiErr := svc.deleteChatSession("run-delete"); apiErr != nil {
+		t.Fatalf("deleteChatSession: %v", apiErr)
+	}
+
+	if _, found, err := store.GetProviderSession(context.Background(), "run-delete"); err != nil || found {
+		t.Fatalf("GetProviderSession after delete = found:%v err:%v", found, err)
+	}
+	if entries, err := store.ReadTurnLog(context.Background(), "run-delete"); err != nil {
+		t.Fatalf("ReadTurnLog after delete: %v", err)
+	} else if len(entries) != 0 {
+		t.Fatalf("expected empty turn log after delete, got %+v", entries)
+	}
+	for _, path := range []string{stableA, stableB, turnA, turnB} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("expected %q removed, stat err=%v", path, err)
+		}
 	}
 }
 

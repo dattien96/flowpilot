@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 )
@@ -37,7 +38,8 @@ func (s *InteractiveService) deleteChatSession(runID string) *apiErr {
 	}
 
 	// --- delete provider session files (all account homes of this provider) ---
-	if session.ProviderKey != "" && session.ProviderSessionID != "" {
+	sessionIDs := s.deleteSessionIDsForRun(runID, session)
+	if session.ProviderKey != "" && len(sessionIDs) > 0 {
 		r := s.runner
 		if r == nil {
 			r = &Runner{}
@@ -50,9 +52,11 @@ func (s *InteractiveService) deleteChatSession(runID string) *apiErr {
 				if strings.TrimSpace(account.HomePath) == "" {
 					continue
 				}
-				filePath, ok := LocateSessionFile(session.ProviderKey, account.HomePath, session.ProviderSessionID, session.WorkingDirectory)
-				if ok {
-					_ = os.Remove(filePath)
+				for _, sessionID := range sessionIDs {
+					filePath, ok := LocateSessionFile(session.ProviderKey, account.HomePath, sessionID, session.WorkingDirectory)
+					if ok {
+						_ = os.Remove(filePath)
+					}
 				}
 			}
 		}
@@ -78,6 +82,37 @@ func (s *InteractiveService) deleteChatSession(runID string) *apiErr {
 	}
 
 	return nil
+}
+
+func (s *InteractiveService) deleteSessionIDsForRun(runID string, session ProviderSessionState) []string {
+	seen := make(map[string]struct{})
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		seen[id] = struct{}{}
+	}
+
+	add(session.ProviderSessionID)
+	if session.ProviderKey == ProviderKeyCodex {
+		if logger, ok := s.workflowStore.(TurnLogStore); ok {
+			if entries, err := logger.ReadTurnLog(context.Background(), runID); err == nil {
+				for _, entry := range entries {
+					if entry.Kind == turnLogKindCodexSession {
+						add(entry.SessionID)
+					}
+				}
+			}
+		}
+	}
+
+	out := make([]string, 0, len(seen))
+	for id := range seen {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // normalizeResumedStatus maps an in-flight status read back from disk to a
