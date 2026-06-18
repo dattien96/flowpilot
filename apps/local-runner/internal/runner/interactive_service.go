@@ -355,15 +355,15 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 	switch ev.Type {
 	case EventMessageCompleted:
 		if ev.Text != "" {
-			rs.lastMessage = ev.Text
+			rs.lastMessage = truncateDisplayField(ev.Text, 100)
 		}
 	case EventTurnCompleted:
 		if ev.FinalMessage != "" {
-			rs.lastMessage = ev.FinalMessage
+			rs.lastMessage = truncateDisplayField(ev.FinalMessage, 100)
 		}
 	case EventTurnFailed:
 		if ev.Error != "" {
-			rs.lastMessage = ev.Error
+			rs.lastMessage = truncateDisplayField(ev.Error, 100)
 		}
 	}
 	_ = s.persistEvent(ev)
@@ -875,7 +875,7 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	turnID := s.nextID("turn")
 	rs.turnInFlight = true
 	rs.currentTurnID = turnID
-	rs.lastPrompt = in.Prompt
+	rs.lastPrompt = truncateDisplayField(in.Prompt, 100)
 	rs.updatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	ctx, cancel := context.WithCancel(context.Background())
 	rs.turnCancel = cancel
@@ -1095,4 +1095,15 @@ func (s *InteractiveService) ActiveAccount() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.activeAccountID
+}
+
+// truncateDisplayField caps a string to max runes for storage in sessions.ndjson
+// and the Drive sync index. The UI (runTitle) shows at most 68 chars; 100 gives
+// it room while preventing multi-KB responses from bloating the index file.
+func truncateDisplayField(s string, max int) string {
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max]) + "…"
 }
