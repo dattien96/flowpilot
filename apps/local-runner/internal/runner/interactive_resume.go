@@ -212,6 +212,7 @@ func (s *InteractiveService) ensureResumeReady(rs *interactiveRun) *apiErr {
 }
 
 func (s *InteractiveService) prepareCrossAccountResume(rs *interactiveRun, srcPath, activeAccountID string) *apiErr {
+	sourceHome, _ := s.resolveAccountHome(rs.providerKey, rs.providerAccountID)
 	targetHome, ok := s.resolveAccountHome(rs.providerKey, activeAccountID)
 	if !ok {
 		return newAPIErr(http.StatusConflict, "account_unavailable", "active account home not found")
@@ -222,9 +223,82 @@ func (s *InteractiveService) prepareCrossAccountResume(rs *interactiveRun, srcPa
 	if _, err := RelocateSessionFile(rs.providerKey, srcPath, targetHome, s.resumeSessionID(rs), rs.workspaceCwd); err != nil {
 		return newAPIErr(http.StatusConflict, "session_unavailable", "could not prepare the session on the active account")
 	}
+	if err := s.relocateCodexTurnLogSessions(rs, sourceHome, targetHome); err != nil {
+		return newAPIErr(http.StatusConflict, "session_unavailable", "could not prepare the session on the active account")
+	}
 	rs.providerAccountID = activeAccountID
 	if snapErr := s.persistProviderSession(sessionStateOf(rs)); snapErr != nil {
 		return newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", snapErr.Error())
+	}
+	return nil
+}
+
+func (s *InteractiveService) relocateCodexTurnLogSessions(rs *interactiveRun, sourceHome, targetHome string) error {
+	if rs.providerKey != ProviderKeyCodex || sourceHome == "" || targetHome == "" {
+		return nil
+	}
+	logger, ok := s.workflowStore.(TurnLogStore)
+	if !ok {
+		return nil
+	}
+	entries, err := logger.ReadTurnLog(context.Background(), rs.id)
+	if err != nil {
+		return err
+	}
+	seen := map[string]bool{}
+	if stableID := s.resumeSessionID(rs); stableID != "" {
+		seen[stableID] = true
+	}
+	for _, entry := range entries {
+		if entry.Kind != turnLogKindCodexSession || entry.SessionID == "" || seen[entry.SessionID] {
+			continue
+		}
+		seen[entry.SessionID] = true
+		srcPath, found := LocateSessionFile(rs.providerKey, sourceHome, entry.SessionID, rs.workspaceCwd)
+		if !found {
+			continue
+		}
+		if _, err := RelocateSessionFile(rs.providerKey, srcPath, targetHome, entry.SessionID, rs.workspaceCwd); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *InteractiveService) syncCodexStableSessionToKnownAccounts(rs *interactiveRun) error {
+	if rs.providerKey != ProviderKeyCodex {
+		return nil
+	}
+	sessionID := s.resumeSessionID(rs)
+	if sessionID == "" || strings.HasPrefix(sessionID, "thread-") {
+		return nil
+	}
+	sourceHome, ok := s.resolveAccountHome(rs.providerKey, rs.providerAccountID)
+	if !ok {
+		return nil
+	}
+	srcPath, found := LocateSessionFile(rs.providerKey, sourceHome, sessionID, rs.workspaceCwd)
+	if !found {
+		return nil
+	}
+	r := s.runner
+	if r == nil {
+		r = &Runner{}
+	}
+	accounts, err := r.ListProviderAccounts()
+	if err != nil {
+		return err
+	}
+	for _, account := range accounts {
+		if ProviderKey(account.ProviderKey) != rs.providerKey || account.ID == rs.providerAccountID || strings.TrimSpace(account.HomePath) == "" {
+			continue
+		}
+		if _, found := LocateSessionFile(rs.providerKey, account.HomePath, sessionID, rs.workspaceCwd); !found {
+			continue
+		}
+		if _, err := RelocateSessionFile(rs.providerKey, srcPath, account.HomePath, sessionID, rs.workspaceCwd); err != nil {
+			return err
+		}
 	}
 	return nil
 }

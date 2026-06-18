@@ -2,6 +2,7 @@ package runner
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -83,6 +84,15 @@ func RelocateSessionFile(providerKey ProviderKey, srcPath, targetHome, sessionID
 		if same {
 			return dstPath, nil
 		}
+		if providerKey == ProviderKeyCodex {
+			updated, updateErr := updateCodexDestinationIfSameSessionExtends(srcPath, dstPath)
+			if updateErr != nil {
+				return "", updateErr
+			}
+			if updated {
+				return dstPath, nil
+			}
+		}
 		return "", errors.New("destination session file already exists")
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", err
@@ -104,6 +114,38 @@ func RelocateSessionFile(providerKey ProviderKey, srcPath, targetHome, sessionID
 		return "", err
 	}
 	return dstPath, nil
+}
+
+func updateCodexDestinationIfSameSessionExtends(srcPath, dstPath string) (bool, error) {
+	srcMeta, srcOK := readCodexRolloutMeta(srcPath)
+	dstMeta, dstOK := readCodexRolloutMeta(dstPath)
+	if !srcOK || !dstOK || srcMeta.ID == "" || srcMeta.ID != dstMeta.ID {
+		return false, nil
+	}
+	if srcMeta.Cwd != "" && dstMeta.Cwd != "" && srcMeta.Cwd != dstMeta.Cwd {
+		return false, nil
+	}
+	src, err := os.ReadFile(srcPath)
+	if err != nil {
+		return false, err
+	}
+	dst, err := os.ReadFile(dstPath)
+	if err != nil {
+		return false, err
+	}
+	if bytes.Equal(src, dst) {
+		return true, nil
+	}
+	if bytes.HasPrefix(src, dst) {
+		if err := os.WriteFile(dstPath, src, 0o644); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	if bytes.HasPrefix(dst, src) {
+		return true, nil
+	}
+	return false, nil
 }
 
 func sameFileContents(pathA, pathB string) (bool, error) {

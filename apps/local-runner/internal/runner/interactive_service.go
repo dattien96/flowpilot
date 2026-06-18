@@ -659,10 +659,14 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	if in.YoloMode != nil {
 		yolo = *in.YoloMode
 	}
+	providerSessionID := rs.providerSessionID
+	if rs.providerKey == ProviderKeyCodex && rs.realProviderSessionID != "" {
+		providerSessionID = rs.realProviderSessionID
+	}
 	req := TurnRequest{
 		RunID:             rs.id,
 		StepID:            in.StepID,
-		ProviderSessionID: rs.providerSessionID,
+		ProviderSessionID: providerSessionID,
 		ProviderTurnID:    turnID,
 		Prompt:            in.Prompt,
 		ModelName:         model,
@@ -698,6 +702,9 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		if logger, logOK := s.workflowStore.(TurnLogStore); logOK {
 			_ = logger.AppendTurnLog(context.Background(), rs.id, turnLogLine{Kind: turnLogKindCodexSession, SessionID: newCodexSessionID})
 		}
+	}
+	if err == nil {
+		_ = s.syncCodexStableSessionToKnownAccounts(rs)
 	}
 
 	// Finalizer hook runs OUTSIDE s.mu and only on a clean completion. A finalize
@@ -841,8 +848,20 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		return "", newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")
 	}
 	if rs.providerAccountID != s.activeAccountForProvider(rs.providerKey) {
+		if rs.runKind != "chat" {
+			s.mu.Unlock()
+			return "", newAPIErr(http.StatusConflict, "provider_account_changed", "active provider account changed since the run started")
+		}
 		s.mu.Unlock()
-		return "", newAPIErr(http.StatusConflict, "provider_account_changed", "active provider account changed since the run started")
+		if err := s.ensureResumeReady(rs); err != nil {
+			return "", err
+		}
+		s.mu.Lock()
+		rs = s.runs[runID]
+		if rs == nil {
+			s.mu.Unlock()
+			return "", newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")
+		}
 	}
 	if idempotencyKey != "" {
 		if tid, ok := rs.idempotency[idempotencyKey]; ok {
@@ -864,7 +883,7 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		s.mu.Unlock()
 		return "", newAPIErr(http.StatusBadRequest, "provider_unavailable", aerr.Error())
 	}
-	if rs.resumedFromDisk && rs.providerKey == ProviderKeyCodex {
+	if rs.providerKey == ProviderKeyCodex && rs.realProviderSessionID != "" && !strings.HasPrefix(rs.realProviderSessionID, "thread-") {
 		// The rollout file lives in the run's account home — which, after a
 		// cross-account resume, is the active account it was relocated into.
 		home, ok := s.resolveAccountHome(rs.providerKey, rs.providerAccountID)
@@ -1092,9 +1111,9 @@ func (s *InteractiveService) Interrupt(runID string) *apiErr {
 // shared app-server is bound to one account, switching:
 //   - interrupts every in-flight turn and marks it recoverable (re-sendable) — not a
 //     silent auto-replay, consistent with the resume model;
-//   - flips the active account, after which runs bound to the previous account fail
-//     turn/resume with `409 provider_account_changed` (their threads are hidden
-//     until that account is active again).
+//   - flips the active account. Workflow runs remain scoped to the account they
+//     started with, while chat runs prepare their provider session files on the
+//     newly active same-provider account before the next turn.
 //
 // This enforces the "one active account at a time / workspaces on different accounts
 // cannot run concurrently (serialized)" constraint. The actual app-server teardown +

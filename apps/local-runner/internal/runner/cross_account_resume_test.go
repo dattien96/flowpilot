@@ -378,6 +378,45 @@ func TestRelocateSessionFileAcceptsExistingIdenticalSessionFile(t *testing.T) {
 	}
 }
 
+func TestRelocateSessionFileUpdatesOlderCodexDestinationWhenSourceExtends(t *testing.T) {
+	srcHome := t.TempDir()
+	targetHome := t.TempDir()
+	src := writeCodexRollout(t, srcHome, "rollout-abc", "/repo", time.Now().UTC())
+	dst, err := relocationTargetPath(ProviderKeyCodex, src, targetHome, "rollout-abc", "/repo")
+	if err != nil {
+		t.Fatalf("relocationTargetPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	raw, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatalf("ReadFile src: %v", err)
+	}
+	if err := os.WriteFile(dst, raw, 0o644); err != nil {
+		t.Fatalf("WriteFile dst: %v", err)
+	}
+	const appended = `{"timestamp":"2026-06-18T13:58:05.757Z","type":"event_msg","payload":{"type":"user_message","message":"second turn"}}`
+	if err := os.WriteFile(src, append(raw, []byte(appended+"\n")...), 0o644); err != nil {
+		t.Fatalf("WriteFile extended src: %v", err)
+	}
+
+	got, err := RelocateSessionFile(ProviderKeyCodex, src, targetHome, "rollout-abc", "/repo")
+	if err != nil {
+		t.Fatalf("RelocateSessionFile extended existing: %v", err)
+	}
+	if filepath.Clean(got) != filepath.Clean(dst) {
+		t.Fatalf("got = %q, want %q", got, dst)
+	}
+	updated, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("ReadFile dst updated: %v", err)
+	}
+	if !strings.Contains(string(updated), "second turn") {
+		t.Fatalf("destination was not updated with appended turn: %s", string(updated))
+	}
+}
+
 func TestRelocateSessionFileClaudePreservesProjectHashDirectory(t *testing.T) {
 	srcHome := t.TempDir()
 	targetHome := t.TempDir()
@@ -1026,6 +1065,255 @@ func TestRestoredCodexRunSecondTurnStillUsesResumeSessionID(t *testing.T) {
 		if id != "rollout-abc" {
 			t.Fatalf("call %d used session id %q, want rollout-abc (stable across turns)", i+1, id)
 		}
+	}
+}
+
+func TestLiveCodexChatResumesAcrossProviderAccountSwitches(t *testing.T) {
+	store, err := NewLocalFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	root := t.TempDir()
+	configPath := filepath.Join(root, "provider-accounts.json")
+	acctAHome := filepath.Join(root, "acct-a")
+	acctBHome := filepath.Join(root, "acct-b")
+	workspace := filepath.Join(root, "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("MkdirAll workspace: %v", err)
+	}
+	now := time.Now().UTC()
+	writeProviderAccountsConfig(t, configPath, []ProviderAccount{
+		{ID: "acct-a", ProviderKey: "codex", HomePath: acctAHome, SlotIndex: 1, AuthStatus: "connected", IsActive: true, CreatedAt: now.Format(time.RFC3339Nano)},
+		{ID: "acct-b", ProviderKey: "codex", HomePath: acctBHome, SlotIndex: 2, AuthStatus: "connected", CreatedAt: now.Format(time.RFC3339Nano)},
+	})
+	writeCodexAuth(t, acctAHome)
+	writeCodexAuth(t, acctBHome)
+	writeCodexRollout(t, acctAHome, "rollout-aaa", workspace, now.Add(-time.Hour))
+
+	runID := "run-live-cross-account"
+	stepID := "chat-" + runID
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             runID,
+		ProjectID:         "project-1",
+		ProviderKey:       ProviderKeyCodex,
+		ProviderSessionID: "rollout-aaa",
+		ProviderAccountID: "acct-a",
+		WorkingDirectory:  workspace,
+		Status:            RunStatusCompleted,
+		RunKind:           "chat",
+		StartedAt:         now.Format(time.RFC3339Nano),
+		UpdatedAt:         now.Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("UpsertProviderSession: %v", err)
+	}
+	store.seed(runID, []RuntimeWorkflowStep{{ID: stepID, StepType: "chat", Status: StepStatusPending}})
+
+	var fallbackCalls atomic.Int32
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key:          ProviderKeyCodex,
+		DisplayName:  "Codex",
+		Status:       ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true, Resume: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(context.Context, TurnRequest, TurnBridge) error {
+				fallbackCalls.Add(1)
+				return nil
+			})
+		},
+	})
+
+	writeRollout := func(home, sessionID string, ts time.Time) error {
+		dir := filepath.Join(home, "sessions", ts.Format("2006"), ts.Format("01"), ts.Format("02"))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+		line := map[string]any{
+			"payload": map[string]any{
+				"id":        sessionID,
+				"timestamp": ts.Format(time.RFC3339Nano),
+				"cwd":       workspace,
+			},
+		}
+		raw, err := json.Marshal(line)
+		if err != nil {
+			return err
+		}
+		path := filepath.Join(dir, "rollout-"+ts.Format("20060102T150405")+"-"+sessionID+".jsonl")
+		return os.WriteFile(path, append(raw, '\n'), 0o644)
+	}
+
+	var mu sync.Mutex
+	var capturedSessionIDs []string
+	var writeErr error
+	var execCalls atomic.Int32
+	originalCmd := commandContextFn
+	commandContextFn = func(ctx context.Context, _ string, args ...string) *exec.Cmd {
+		if len(args) >= 3 && args[0] == "exec" && args[1] == "resume" {
+			mu.Lock()
+			capturedSessionIDs = append(capturedSessionIDs, args[2])
+			mu.Unlock()
+		}
+		switch execCalls.Add(1) {
+		case 1:
+			if err := writeRollout(acctBHome, "rollout-bbb", now.Add(time.Hour)); err != nil {
+				mu.Lock()
+				writeErr = err
+				mu.Unlock()
+			}
+		case 2:
+			if err := writeRollout(acctAHome, "rollout-ccc", now.Add(2*time.Hour)); err != nil {
+				mu.Lock()
+				writeErr = err
+				mu.Unlock()
+			}
+		}
+		script := `out=""; prev=""; for a in "$@"; do if [ "$prev" = "-o" ]; then out="$a"; fi; prev="$a"; done; [ -n "$out" ] && printf "ok\n" > "$out"`
+		cmdArgs := append([]string{"-c", script, "sh"}, args...)
+		return exec.CommandContext(ctx, "sh", cmdArgs...)
+	}
+	defer func() { commandContextFn = originalCmd }()
+
+	runner := &Runner{}
+	svc := NewInteractiveServiceWithStore(reg, newInteractiveCatalog(), store)
+	svc.AttachRunner(runner)
+	svc.mu.Lock()
+	svc.runs[runID] = &interactiveRun{
+		id:                     runID,
+		projectID:              "project-1",
+		providerKey:            ProviderKeyCodex,
+		providerSessionID:      "thread-live",
+		realProviderSessionID:  "rollout-aaa",
+		lastCodexTurnSessionID: "rollout-aaa",
+		providerAccountID:      "acct-a",
+		workspaceCwd:           workspace,
+		status:                 RunStatusCompleted,
+		runKind:                "chat",
+		createdAt:              now.Format(time.RFC3339Nano),
+		updatedAt:              now.Format(time.RFC3339Nano),
+		idempotency:            map[string]string{},
+		subs:                   map[int64]chan ProviderEvent{},
+	}
+	svc.mu.Unlock()
+
+	if _, err := runner.ActivateProviderAccount("acct-b"); err != nil {
+		t.Fatalf("ActivateProviderAccount acct-b: %v", err)
+	}
+	if _, apiErr := svc.startTurn(runID, TurnInput{StepID: stepID, Prompt: "bbb"}, "", ""); apiErr != nil {
+		t.Fatalf("startTurn acct-b: %v", apiErr)
+	}
+	waitFor(t, func() bool {
+		svc.mu.Lock()
+		defer svc.mu.Unlock()
+		return !svc.runs[runID].turnInFlight
+	}, "acct-b turn to finish")
+	if _, found := LocateSessionFile(ProviderKeyCodex, acctBHome, "rollout-aaa", workspace); !found {
+		t.Fatal("expected stable rollout-aaa copied into account B before bbb")
+	}
+	if _, found := LocateSessionFile(ProviderKeyCodex, acctBHome, "rollout-bbb", workspace); !found {
+		t.Fatal("expected bbb rollout in account B")
+	}
+
+	if _, err := runner.ActivateProviderAccount("acct-a"); err != nil {
+		t.Fatalf("ActivateProviderAccount acct-a: %v", err)
+	}
+	if _, apiErr := svc.startTurn(runID, TurnInput{StepID: stepID, Prompt: "ccc"}, "", ""); apiErr != nil {
+		t.Fatalf("startTurn acct-a: %v", apiErr)
+	}
+	waitFor(t, func() bool {
+		svc.mu.Lock()
+		defer svc.mu.Unlock()
+		return !svc.runs[runID].turnInFlight
+	}, "acct-a turn to finish")
+	if _, found := LocateSessionFile(ProviderKeyCodex, acctAHome, "rollout-bbb", workspace); !found {
+		t.Fatal("expected account B rollout-bbb copied back into account A before ccc")
+	}
+	if _, found := LocateSessionFile(ProviderKeyCodex, acctAHome, "rollout-ccc", workspace); !found {
+		t.Fatal("expected ccc rollout in account A")
+	}
+
+	mu.Lock()
+	ids := append([]string{}, capturedSessionIDs...)
+	err = writeErr
+	mu.Unlock()
+	if err != nil {
+		t.Fatalf("write rollout from command mock: %v", err)
+	}
+	if fallbackCalls.Load() != 0 {
+		t.Fatalf("expected live follow-up turns to bypass registry adapter, got %d fallback calls", fallbackCalls.Load())
+	}
+	if len(ids) != 2 || ids[0] != "rollout-aaa" || ids[1] != "rollout-aaa" {
+		t.Fatalf("codex exec resume session ids = %v, want [rollout-aaa rollout-aaa]", ids)
+	}
+	entries, err := store.ReadTurnLog(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("ReadTurnLog: %v", err)
+	}
+	var sawBBB, sawCCC bool
+	for _, entry := range entries {
+		if entry.Kind == turnLogKindCodexSession && entry.SessionID == "rollout-bbb" {
+			sawBBB = true
+		}
+		if entry.Kind == turnLogKindCodexSession && entry.SessionID == "rollout-ccc" {
+			sawCCC = true
+		}
+	}
+	if !sawBBB || !sawCCC {
+		t.Fatalf("turn log missing rollout chain entries: %+v", entries)
+	}
+}
+
+func TestSyncCodexStableSessionToKnownAccountsUpdatesOlderHomes(t *testing.T) {
+	store, err := NewLocalFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	root := t.TempDir()
+	configPath := filepath.Join(root, "provider-accounts.json")
+	acctAHome := filepath.Join(root, "acct-a")
+	acctBHome := filepath.Join(root, "acct-b")
+	workspace := filepath.Join(root, "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("MkdirAll workspace: %v", err)
+	}
+	now := time.Now().UTC()
+	writeProviderAccountsConfig(t, configPath, []ProviderAccount{
+		{ID: "acct-a", ProviderKey: "codex", HomePath: acctAHome, SlotIndex: 1, AuthStatus: "connected", CreatedAt: now.Format(time.RFC3339Nano)},
+		{ID: "acct-b", ProviderKey: "codex", HomePath: acctBHome, SlotIndex: 2, AuthStatus: "connected", IsActive: true, CreatedAt: now.Format(time.RFC3339Nano)},
+	})
+	writeCodexAuth(t, acctAHome)
+	writeCodexAuth(t, acctBHome)
+	srcA := writeCodexRollout(t, acctAHome, "rollout-aaa", workspace, now)
+	srcB := writeCodexRollout(t, acctBHome, "rollout-aaa", workspace, now)
+	rawB, err := os.ReadFile(srcB)
+	if err != nil {
+		t.Fatalf("ReadFile srcB: %v", err)
+	}
+	const appended = `{"timestamp":"2026-06-18T13:58:05.757Z","type":"event_msg","payload":{"type":"user_message","message":"hi im mealplanner"}}`
+	if err := os.WriteFile(srcB, append(rawB, []byte(appended+"\n")...), 0o644); err != nil {
+		t.Fatalf("WriteFile extended srcB: %v", err)
+	}
+
+	svc := NewInteractiveServiceWithStore(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+	svc.AttachRunner(&Runner{})
+	rs := &interactiveRun{
+		id:                    "run-sync-stable",
+		providerKey:           ProviderKeyCodex,
+		providerSessionID:     "thread-live",
+		realProviderSessionID: "rollout-aaa",
+		providerAccountID:     "acct-b",
+		workspaceCwd:          workspace,
+		runKind:               "chat",
+	}
+	if err := svc.syncCodexStableSessionToKnownAccounts(rs); err != nil {
+		t.Fatalf("syncCodexStableSessionToKnownAccounts: %v", err)
+	}
+	updatedA, err := os.ReadFile(srcA)
+	if err != nil {
+		t.Fatalf("ReadFile srcA: %v", err)
+	}
+	if !strings.Contains(string(updatedA), "hi im mealplanner") {
+		t.Fatalf("account A stable rollout was not updated: %s", string(updatedA))
 	}
 }
 
