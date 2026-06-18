@@ -1,0 +1,35 @@
+package runner
+
+import "context"
+
+// turnLogKind distinguishes the two kinds of entry written to a run's turn log.
+type turnLogKind string
+
+const (
+	// turnLogKindPrompt records the raw user input typed at startTurn time —
+	// before FlowPilot appends the ask_user reinforcement or skill/MCP preamble.
+	turnLogKindPrompt turnLogKind = "prompt"
+	// turnLogKindCodexSession records the Codex rollout session id produced for
+	// each turn.  Codex writes one rollout file per turn with a distinct session
+	// id, so seedTranscriptFromDisk needs the full chain to replay every turn.
+	turnLogKindCodexSession turnLogKind = "codex_session"
+)
+
+// turnLogLine is one NDJSON line in the per-run turn log.
+type turnLogLine struct {
+	Kind      turnLogKind `json:"kind"`
+	Prompt    string      `json:"prompt,omitempty"`
+	SessionID string      `json:"session_id,omitempty"`
+}
+
+// TurnLogStore persists raw user prompts and per-turn Codex session IDs so
+// seedTranscriptFromDisk can replay the user's typed text (not the composed
+// CLI prompt) and load every Codex rollout file for a multi-turn chat.
+// Implemented by localFileSessionStore; absent on the fakeWorkflowStore used
+// in unit tests, so all callers use the ok-pattern and treat missing log as
+// a no-op (backward-compatible with runs created before BUG-083 was fixed).
+type TurnLogStore interface {
+	AppendTurnLog(ctx context.Context, runID string, line turnLogLine) error
+	ReadTurnLog(ctx context.Context, runID string) ([]turnLogLine, error)
+	DeleteTurnLog(ctx context.Context, runID string) error
+}

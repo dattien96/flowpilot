@@ -72,6 +72,11 @@ func (s *InteractiveService) deleteChatSession(runID string) *apiErr {
 		}
 	}
 
+	// --- remove per-run turn log (BUG-083) ---
+	if logger, ok := s.workflowStore.(TurnLogStore); ok {
+		_ = logger.DeleteTurnLog(context.Background(), runID)
+	}
+
 	return nil
 }
 
@@ -93,28 +98,29 @@ func normalizeResumedStatus(status RunStatus) RunStatus {
 func (s *InteractiveService) reconstructRun(st ProviderSessionState) (*interactiveRun, *apiErr) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	rs := &interactiveRun{
-		id:                    st.RunID,
-		projectID:             st.ProjectID,
-		workflowID:            st.WorkflowID,
-		providerKey:           st.ProviderKey,
-		providerSessionID:     st.ProviderSessionID,
-		realProviderSessionID: st.ProviderSessionID,
-		providerAccountID:     st.ProviderAccountID,
-		workspaceCwd:          st.WorkingDirectory,
-		runKind:               st.RunKind,
-		status:                normalizeResumedStatus(st.Status),
-		createdAt:             st.StartedAt,
-		updatedAt:             now,
-		lastPrompt:            st.LastPrompt,
-		lastMessage:           st.LastMessage,
-		sourceMachineID:       st.SourceMachineID,
-		sourceRunID:           st.SourceRunID,
-		restoredFrom:          st.RestoredFrom,
-		syncStatus:            st.SyncStatus,
-		syncUpdatedAt:         st.SyncUpdatedAt,
-		subs:                  map[int64]chan ProviderEvent{},
-		idempotency:           map[string]string{},
-		resumedFromDisk:       true,
+		id:                     st.RunID,
+		projectID:              st.ProjectID,
+		workflowID:             st.WorkflowID,
+		providerKey:            st.ProviderKey,
+		providerSessionID:      st.ProviderSessionID,
+		realProviderSessionID:  st.ProviderSessionID,
+		lastCodexTurnSessionID: st.ProviderSessionID,
+		providerAccountID:      st.ProviderAccountID,
+		workspaceCwd:           st.WorkingDirectory,
+		runKind:                st.RunKind,
+		status:                 normalizeResumedStatus(st.Status),
+		createdAt:              st.StartedAt,
+		updatedAt:              now,
+		lastPrompt:             st.LastPrompt,
+		lastMessage:            st.LastMessage,
+		sourceMachineID:        st.SourceMachineID,
+		sourceRunID:            st.SourceRunID,
+		restoredFrom:           st.RestoredFrom,
+		syncStatus:             st.SyncStatus,
+		syncUpdatedAt:          st.SyncUpdatedAt,
+		subs:                   map[int64]chan ProviderEvent{},
+		idempotency:            map[string]string{},
+		resumedFromDisk:        true,
 	}
 	s.mu.Lock()
 	s.runs[rs.id] = rs
@@ -248,9 +254,18 @@ func (s *InteractiveService) resumeSessionID(rs *interactiveRun) string {
 	return rs.providerSessionID
 }
 
-// seedTranscriptFromDisk loads the provider session file and populates rs.events
+// seedTranscriptFromDisk loads provider session file(s) and populates rs.events
 // so the SSE snapshot path replays the prior conversation to the desktop.
 // Best-effort: any error is silently ignored to not block resume.
+//
+// BUG-083 fixes applied here:
+//
+//	F-1 — raw user prompts from the turn log replace the composed prompt text
+//	       stored in the provider file (which includes the ask_user reinforcement
+//	       and any skill/MCP preamble the live path injected).
+//	F-3 — for Codex, all per-turn rollout files are loaded in order (Codex writes
+//	       one file per turn with a distinct session id; only the stored id's file
+//	       was previously loaded, dropping every turn after the first).
 func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 	if !rs.resumedFromDisk {
 		return
@@ -268,15 +283,81 @@ func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 	if !ok {
 		return
 	}
-	sessionID := s.resumeSessionID(rs)
-	filePath, found := LocateSessionFile(rs.providerKey, home, sessionID, rs.workspaceCwd)
-	if !found {
-		return
+
+	// Load turn log: raw prompts (F-1) and Codex per-turn session ids (F-3).
+	var rawPrompts []string
+	var codexSessionIDs []string
+	if logger, logOK := s.workflowStore.(TurnLogStore); logOK {
+		if entries, _ := logger.ReadTurnLog(context.Background(), rs.id); len(entries) > 0 {
+			for _, e := range entries {
+				switch e.Kind {
+				case turnLogKindPrompt:
+					if e.Prompt != "" {
+						rawPrompts = append(rawPrompts, e.Prompt)
+					}
+				case turnLogKindCodexSession:
+					if e.SessionID != "" {
+						codexSessionIDs = append(codexSessionIDs, e.SessionID)
+					}
+				}
+			}
+		}
 	}
-	historical := loader(filePath)
+
+	// Collect the session file path(s) to load.
+	sessionID := s.resumeSessionID(rs) // used for event correlation below
+	var filePaths []string
+	if rs.providerKey == ProviderKeyCodex {
+		// Load every per-turn rollout file in recorded order (F-3, BUG-083).
+		seen := map[string]bool{}
+		if sessionID != "" {
+			if path, found := LocateSessionFile(rs.providerKey, home, sessionID, rs.workspaceCwd); found {
+				filePaths = append(filePaths, path)
+			}
+			seen[sessionID] = true
+		}
+		for _, sid := range codexSessionIDs {
+			if seen[sid] {
+				continue
+			}
+			seen[sid] = true
+			if path, found := LocateSessionFile(rs.providerKey, home, sid, rs.workspaceCwd); found {
+				filePaths = append(filePaths, path)
+			}
+		}
+	}
+	// Fall back to the single stored session file: old Codex runs without a turn
+	// log, and all Claude runs (one JSONL holds the full conversation).
+	if len(filePaths) == 0 {
+		path, found := LocateSessionFile(rs.providerKey, home, sessionID, rs.workspaceCwd)
+		if !found {
+			return
+		}
+		filePaths = []string{path}
+	}
+
+	// Load events from all files.
+	var historical []ProviderEvent
+	for _, fp := range filePaths {
+		historical = append(historical, loader(fp)...)
+	}
 	if len(historical) == 0 {
 		return
 	}
+
+	// Override each replayed prompt with the stored raw input (F-1, BUG-083).
+	// rawPrompts[i] maps to the (i+1)th turn_started event that carries a prompt,
+	// which is exactly the order startTurn appended them to the turn log.
+	if len(rawPrompts) > 0 {
+		promptIdx := 0
+		for i := range historical {
+			if historical[i].Type == EventTurnStarted && historical[i].Prompt != "" && promptIdx < len(rawPrompts) {
+				historical[i].Prompt = rawPrompts[promptIdx]
+				promptIdx++
+			}
+		}
+	}
+
 	stepID := "chat-" + rs.id
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -876,6 +876,91 @@ func TestRestoredCodexRunSecondTurnStillUsesResumeSessionID(t *testing.T) {
 	}
 }
 
+func TestRestoredCodexRunKeepsStablePersistedResumeIDAndLogsNewRollout(t *testing.T) {
+	store, err := NewLocalFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	root := t.TempDir()
+	acctHome := filepath.Join(root, "acct-b")
+	workspace := filepath.Join(root, "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("MkdirAll workspace: %v", err)
+	}
+	writeProviderAccountsConfig(t, filepath.Join(root, "provider-accounts.json"), []ProviderAccount{
+		{ID: "acct-b", ProviderKey: "codex", HomePath: acctHome, SlotIndex: 2, AuthStatus: "connected", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+	})
+	writeCodexAuth(t, acctHome)
+	baseTime := time.Now().UTC().Add(-time.Hour)
+	writeCodexRollout(t, acctHome, "rollout-abc", workspace, baseTime)
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             "run-stable",
+		ProjectID:         "project-1",
+		ProviderKey:       ProviderKeyCodex,
+		ProviderSessionID: "rollout-abc",
+		ProviderAccountID: "acct-b",
+		WorkingDirectory:  workspace,
+		Status:            RunStatusCompleted,
+		RunKind:           "chat",
+		StartedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+		UpdatedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("UpsertProviderSession: %v", err)
+	}
+	svc := NewInteractiveServiceWithStore(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+	svc.activeAccountID = "acct-b"
+	rs := &interactiveRun{
+		id:                     "run-stable",
+		projectID:              "project-1",
+		providerKey:            ProviderKeyCodex,
+		providerSessionID:      "rollout-abc",
+		realProviderSessionID:  "rollout-abc",
+		lastCodexTurnSessionID: "rollout-abc",
+		providerAccountID:      "acct-b",
+		workspaceCwd:           workspace,
+		status:                 RunStatusCompleted,
+		runKind:                "chat",
+		createdAt:              baseTime.Format(time.RFC3339Nano),
+		updatedAt:              baseTime.Format(time.RFC3339Nano),
+	}
+	writeCodexRollout(t, acctHome, "rollout-new", workspace, baseTime.Add(2*time.Hour))
+
+	svc.mu.Lock()
+	newSessionID := svc.refreshResumeHandleLocked(rs, nil)
+	snap := sessionStateOf(rs)
+	svc.mu.Unlock()
+	if newSessionID != "rollout-new" {
+		t.Fatalf("refreshResumeHandleLocked returned %q, want rollout-new", newSessionID)
+	}
+	if err := store.UpsertProviderSession(context.Background(), snap); err != nil {
+		t.Fatalf("UpsertProviderSession: %v", err)
+	}
+	if err := store.AppendTurnLog(context.Background(), rs.id, turnLogLine{Kind: turnLogKindCodexSession, SessionID: newSessionID}); err != nil {
+		t.Fatalf("AppendTurnLog: %v", err)
+	}
+
+	state, found, err := store.GetProviderSession(context.Background(), "run-stable")
+	if err != nil || !found {
+		t.Fatalf("GetProviderSession = (%v, %v, %v)", state, found, err)
+	}
+	if state.ProviderSessionID != "rollout-abc" {
+		t.Fatalf("ProviderSessionID = %q, want stable rollout-abc", state.ProviderSessionID)
+	}
+	entries, err := store.ReadTurnLog(context.Background(), "run-stable")
+	if err != nil {
+		t.Fatalf("ReadTurnLog: %v", err)
+	}
+	foundNew := false
+	for _, entry := range entries {
+		if entry.Kind == turnLogKindCodexSession && entry.SessionID == "rollout-new" {
+			foundNew = true
+		}
+	}
+	if !foundNew {
+		t.Fatalf("expected turn log to include rollout-new, got %+v", entries)
+	}
+}
+
 // TestRestoreTargetPathRejectsTraversal verifies that restoreTargetPath refuses
 // relative paths that could escape the target home or point to the wrong provider
 // subtree. The security property is that every dangerous path returns an error
@@ -1081,8 +1166,10 @@ func TestLocateSessionFileClaudeFindsProjectSession(t *testing.T) {
 
 type fakeAdapterFunc func(context.Context, TurnRequest, TurnBridge) error
 
-func (f fakeAdapterFunc) Key() ProviderKey                   { return ProviderKeyCodex }
-func (f fakeAdapterFunc) Capabilities() ProviderCapabilities { return ProviderCapabilities{Streaming: true, Resume: true} }
+func (f fakeAdapterFunc) Key() ProviderKey { return ProviderKeyCodex }
+func (f fakeAdapterFunc) Capabilities() ProviderCapabilities {
+	return ProviderCapabilities{Streaming: true, Resume: true}
+}
 func (f fakeAdapterFunc) SendTurn(ctx context.Context, req TurnRequest, bridge TurnBridge) error {
 	return f(ctx, req, bridge)
 }

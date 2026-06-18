@@ -223,6 +223,58 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 	}
 }
 
+// turnLogPath returns the path of the per-run turn-log sidecar file.
+func (s *localFileSessionStore) turnLogPath(runID string) string {
+	return filepath.Join(filepath.Dir(s.filePath), runID+"-turns.ndjson")
+}
+
+// AppendTurnLog appends one entry to the run's turn-log sidecar (BUG-083).
+func (s *localFileSessionStore) AppendTurnLog(_ context.Context, runID string, line turnLogLine) error {
+	data, err := json.Marshal(line)
+	if err != nil {
+		return err
+	}
+	fh, err := os.OpenFile(s.turnLogPath(runID), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer fh.Close()
+	_, err = fh.Write(append(data, '\n'))
+	return err
+}
+
+// ReadTurnLog reads every entry from the run's turn-log sidecar (BUG-083).
+// Returns nil, nil when the sidecar does not exist (old run or no turns yet).
+func (s *localFileSessionStore) ReadTurnLog(_ context.Context, runID string) ([]turnLogLine, error) {
+	f, err := os.Open(s.turnLogPath(runID))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+	var lines []turnLogLine
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		var l turnLogLine
+		if json.Unmarshal(sc.Bytes(), &l) == nil && l.Kind != "" {
+			lines = append(lines, l)
+		}
+	}
+	return lines, sc.Err()
+}
+
+// DeleteTurnLog removes the run's turn-log sidecar (BUG-083).
+// No-op when the file does not exist.
+func (s *localFileSessionStore) DeleteTurnLog(_ context.Context, runID string) error {
+	err := os.Remove(s.turnLogPath(runID))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
 func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 	return ndjsonSessionRecord{
 		RunID:             s.RunID,

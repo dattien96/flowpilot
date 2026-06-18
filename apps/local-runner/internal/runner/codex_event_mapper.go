@@ -147,7 +147,12 @@ func mapCodexRolloutLine(raw map[string]any) []ProviderEvent {
 		case "assistant":
 			return []ProviderEvent{{Type: EventMessageCompleted, Text: text}}
 		case "user":
-			// ProviderTurnID is stamped by loadCodexTranscriptEvents; this mapper is stateless.
+			// CLI-injected context frames (AGENTS.md, <INSTRUCTIONS>, <environment_context>)
+			// are stored as role:user in the rollout but must not render as prompt bubbles
+			// (BUG-083 F-2).  ProviderTurnID is stamped by loadCodexTranscriptEvents.
+			if isCodexInjectedContext(text) {
+				return nil
+			}
 			return []ProviderEvent{{Type: EventTurnStarted, Prompt: text}}
 		default:
 			return nil // developer/system are not client-facing
@@ -186,6 +191,18 @@ func codexRolloutMessageText(v any) string {
 		}
 	}
 	return strings.Join(parts, "")
+}
+
+// isCodexInjectedContext reports whether a role:user rollout message is a
+// CLI-injected preamble rather than a user-typed prompt.  The Codex CLI
+// injects AGENTS.md / CLAUDE.md instructions and a per-session
+// <environment_context> block as a user-role message before every turn; these
+// must not be rendered as prompt bubbles (BUG-083 F-2).
+func isCodexInjectedContext(text string) bool {
+	return strings.Contains(text, "<INSTRUCTIONS>") ||
+		strings.Contains(text, "<environment_context>") ||
+		strings.HasPrefix(strings.TrimSpace(text), "# AGENTS.md instructions for") ||
+		strings.HasPrefix(strings.TrimSpace(text), "# CLAUDE.md instructions for")
 }
 
 func mapCodexCompletedItem(p map[string]any, turnID string) (ProviderEvent, bool) {

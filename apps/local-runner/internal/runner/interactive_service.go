@@ -72,28 +72,32 @@ type interactiveRun struct {
 	// realProviderSessionID is the provider-owned durable resume handle when it differs
 	// from FlowPilot's synthetic per-run session id.
 	realProviderSessionID string
-	providerAccountID string
-	workspaceCwd      string
-	modelName         string
-	yolo              bool
+	// lastCodexTurnSessionID tracks the newest rollout id discovered after a
+	// Codex turn so per-turn rollout ids can be logged without replacing the
+	// stable durable resume handle.
+	lastCodexTurnSessionID string
+	providerAccountID      string
+	workspaceCwd           string
+	modelName              string
+	yolo                   bool
 	// reasoningEffort is the desktop-selected effort level passed per-turn (T-4).
 	reasoningEffort string
 	// runKind is "chat" for normal-chat runs, "" / "workflow" for workflow runs (T-7).
 	runKind string
 
-	status        RunStatus
-	createdAt     string
-	updatedAt     string
-	lastPrompt    string
-	lastMessage   string
+	status          RunStatus
+	createdAt       string
+	updatedAt       string
+	lastPrompt      string
+	lastMessage     string
 	sourceMachineID string
 	sourceRunID     string
 	restoredFrom    string
 	syncStatus      string
 	syncUpdatedAt   string
-	seq           int64
-	lastEventType ProviderEventType
-	events        []ProviderEvent
+	seq             int64
+	lastEventType   ProviderEventType
+	events          []ProviderEvent
 
 	turnInFlight  bool
 	currentTurnID string
@@ -105,7 +109,7 @@ type interactiveRun struct {
 	subs    map[int64]chan ProviderEvent
 	nextSub int64
 
-	idempotency map[string]string // Idempotency-Key -> turnId
+	idempotency     map[string]string // Idempotency-Key -> turnId
 	resumedFromDisk bool
 }
 
@@ -684,10 +688,17 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// Persist settled state (status, lastMessage, updatedAt) for history survival
 	// across restarts (BUG-080 F-3). Take a snapshot under lock; persist outside.
 	s.mu.Lock()
-	s.refreshResumeHandleLocked(rs, adapter)
+	newCodexSessionID := s.refreshResumeHandleLocked(rs, adapter)
 	snap := sessionStateOf(rs)
 	s.mu.Unlock()
 	_ = s.persistProviderSession(snap)
+	// Log the new Codex rollout session id so seedTranscriptFromDisk can load
+	// every per-turn rollout file on resume (BUG-083 F-3).
+	if newCodexSessionID != "" {
+		if logger, logOK := s.workflowStore.(TurnLogStore); logOK {
+			_ = logger.AppendTurnLog(context.Background(), rs.id, turnLogLine{Kind: turnLogKindCodexSession, SessionID: newCodexSessionID})
+		}
+	}
 
 	// Finalizer hook runs OUTSIDE s.mu and only on a clean completion. A finalize
 	// failure is recorded as retryable and must not erase the completed turn (04-04).
@@ -899,17 +910,28 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	snap := sessionStateOf(rs) // capture under lock: lastPrompt + updatedAt now set
 	s.mu.Unlock()
 	_ = s.persistProviderSession(snap) // BUG-080 F-3: persist outside lock, best-effort
+	// Persist raw user prompt for transcript replay (BUG-083 F-1): the provider
+	// session file records the composed prompt (raw + reinforcement + skill preamble),
+	// so we keep the raw input separately and prefer it on resume.
+	if logger, logOK := s.workflowStore.(TurnLogStore); logOK {
+		_ = logger.AppendTurnLog(context.Background(), runID, turnLogLine{Kind: turnLogKindPrompt, Prompt: in.Prompt})
+	}
 
 	go s.runTurn(ctx, rs, adapter, in, scenario, turnID)
 	return turnID, nil
 }
 
-func (s *InteractiveService) refreshResumeHandleLocked(rs *interactiveRun, adapter ProviderRuntimeAdapter) {
+// refreshResumeHandleLocked updates the in-memory resume handle after a turn
+// completes.  For Codex it always re-discovers the newest rollout session id
+// (Codex writes one file per turn) and returns it if it changed — the caller
+// logs the new id outside the lock for multi-rollout replay (BUG-083 F-3).
+// Returns "" for Claude or when the Codex session id did not change.
+func (s *InteractiveService) refreshResumeHandleLocked(rs *interactiveRun, adapter ProviderRuntimeAdapter) string {
 	switch rs.providerKey {
 	case ProviderKeyClaude:
 		live, ok := adapter.(*claudeAdapter)
 		if !ok {
-			return
+			return ""
 		}
 		real := live.pool.realSession(rs.providerSessionID)
 		if real == "" {
@@ -919,17 +941,21 @@ func (s *InteractiveService) refreshResumeHandleLocked(rs *interactiveRun, adapt
 			rs.realProviderSessionID = real
 		}
 	case ProviderKeyCodex:
-		if rs.realProviderSessionID != "" {
-			return
-		}
 		home, ok := s.resolveAccountHome(rs.providerKey, rs.providerAccountID)
 		if !ok {
-			return
+			return ""
 		}
 		if rolloutID, found := DiscoverCodexRolloutSessionID(home, rs.workspaceCwd); found {
-			rs.realProviderSessionID = rolloutID
+			if rs.realProviderSessionID == "" {
+				rs.realProviderSessionID = rolloutID
+			}
+			if rolloutID != rs.lastCodexTurnSessionID {
+				rs.lastCodexTurnSessionID = rolloutID
+				return rolloutID
+			}
 		}
 	}
+	return ""
 }
 
 // SubmitApprovalDecision is idempotent + first-write-wins.
