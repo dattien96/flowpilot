@@ -1,0 +1,746 @@
+package runner
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+func TestLocalFileSessionStoreProviderAccountIDRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+
+	input := ProviderSessionState{
+		RunID:             "run-1",
+		ProjectID:         "project-1",
+		ProviderKey:       ProviderKeyCodex,
+		ProviderSessionID: "rollout-1",
+		ProviderAccountID: "acct-a",
+		WorkingDirectory:  "/repo",
+		Status:            RunStatusCompleted,
+		RunKind:           "chat",
+	}
+	if err := store.UpsertProviderSession(context.Background(), input); err != nil {
+		t.Fatalf("UpsertProviderSession: %v", err)
+	}
+
+	reloaded, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore reload: %v", err)
+	}
+	got, found, err := reloaded.GetProviderSession(context.Background(), "run-1")
+	if err != nil {
+		t.Fatalf("GetProviderSession: %v", err)
+	}
+	if !found {
+		t.Fatal("expected session to be found")
+	}
+	if got.ProviderAccountID != "acct-a" {
+		t.Fatalf("ProviderAccountID = %q, want acct-a", got.ProviderAccountID)
+	}
+	if got.ProviderSessionID != "rollout-1" {
+		t.Fatalf("ProviderSessionID = %q, want rollout-1", got.ProviderSessionID)
+	}
+}
+
+func TestLocalFileSessionStoreLoadsLegacyRecordWithoutProviderAccountID(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	line := `{"run_id":"run-legacy","project_id":"project-1","provider_key":"codex","provider_session_id":"rollout-1","status":"completed","updated_at":"` + now + `","run_kind":"chat"}`
+	if err := os.WriteFile(filepath.Join(dir, "sessions.ndjson"), []byte(line+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	got, found, err := store.GetProviderSession(context.Background(), "run-legacy")
+	if err != nil {
+		t.Fatalf("GetProviderSession: %v", err)
+	}
+	if !found {
+		t.Fatal("expected legacy session to be found")
+	}
+	if got.ProviderAccountID != "" {
+		t.Fatalf("ProviderAccountID = %q, want empty", got.ProviderAccountID)
+	}
+}
+
+func TestLocalFileSessionStoreLastWinsRepointsProviderSessionAndAccount(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	first := ProviderSessionState{
+		RunID:             "run-1",
+		ProjectID:         "project-1",
+		ProviderSessionID: "old-session",
+		ProviderAccountID: "acct-a",
+		Status:            RunStatusRunning,
+		UpdatedAt:         now,
+	}
+	second := first
+	second.ProviderSessionID = "new-session"
+	second.ProviderAccountID = "acct-b"
+	second.Status = RunStatusCompleted
+	if err := store.UpsertProviderSession(context.Background(), first); err != nil {
+		t.Fatalf("UpsertProviderSession first: %v", err)
+	}
+	if err := store.UpsertProviderSession(context.Background(), second); err != nil {
+		t.Fatalf("UpsertProviderSession second: %v", err)
+	}
+
+	reloaded, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore reload: %v", err)
+	}
+	got, found, err := reloaded.GetProviderSession(context.Background(), "run-1")
+	if err != nil || !found {
+		t.Fatalf("GetProviderSession = (%v, %v, %v)", got, found, err)
+	}
+	if got.ProviderSessionID != "new-session" || got.ProviderAccountID != "acct-b" {
+		t.Fatalf("unexpected last-wins session: %+v", got)
+	}
+}
+
+func TestLocalFileSessionStoreGetProviderSessionNotFound(t *testing.T) {
+	store, err := NewLocalFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	got, found, err := store.GetProviderSession(context.Background(), "missing")
+	if err != nil {
+		t.Fatalf("GetProviderSession: %v", err)
+	}
+	if found {
+		t.Fatalf("expected not found, got %+v", got)
+	}
+}
+
+func TestSessionStateOfUsesRealProviderSessionIDWhenKnown(t *testing.T) {
+	state := sessionStateOf(&interactiveRun{
+		id:                    "run-1",
+		projectID:             "project-1",
+		providerKey:           ProviderKeyClaude,
+		providerSessionID:     "thread-1",
+		realProviderSessionID: "claude-real-1",
+		providerAccountID:     "acct-a",
+		workspaceCwd:          "/repo",
+		runKind:               "chat",
+	})
+	if state.ProviderSessionID != "claude-real-1" {
+		t.Fatalf("ProviderSessionID = %q, want claude-real-1", state.ProviderSessionID)
+	}
+	if state.ProviderAccountID != "acct-a" {
+		t.Fatalf("ProviderAccountID = %q, want acct-a", state.ProviderAccountID)
+	}
+}
+
+func TestSessionStateOfFallsBackToSyntheticProviderSessionID(t *testing.T) {
+	state := sessionStateOf(&interactiveRun{
+		id:                "run-1",
+		projectID:         "project-1",
+		providerKey:       ProviderKeyClaude,
+		providerSessionID: "thread-1",
+		providerAccountID: "acct-a",
+		workspaceCwd:      "/repo",
+		runKind:           "chat",
+	})
+	if state.ProviderSessionID != "thread-1" {
+		t.Fatalf("ProviderSessionID = %q, want thread-1", state.ProviderSessionID)
+	}
+}
+
+func TestResumeRunReconstructsChatRunFromDisk(t *testing.T) {
+	store, err := NewLocalFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	root := t.TempDir()
+	acctHome := filepath.Join(root, "acct-a")
+	writeProviderAccountsConfig(t, filepath.Join(root, "provider-accounts.json"), []ProviderAccount{
+		{ID: "acct-a", ProviderKey: "codex", HomePath: acctHome, SlotIndex: 1, AuthStatus: "connected", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+	})
+	writeCodexAuth(t, acctHome)
+	writeCodexRollout(t, acctHome, "rollout-1", "/repo", time.Now().UTC())
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             "run-1",
+		ProjectID:         "project-1",
+		ProviderKey:       ProviderKeyCodex,
+		ProviderSessionID: "rollout-1",
+		ProviderAccountID: "acct-a",
+		WorkingDirectory:  "/repo",
+		Status:            RunStatusCompleted,
+		LastPrompt:        "hello",
+		LastMessage:       "done",
+		StartedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+		UpdatedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+		RunKind:           "chat",
+	}); err != nil {
+		t.Fatalf("UpsertProviderSession: %v", err)
+	}
+
+	svc := NewInteractiveServiceWithStore(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+	svc.activeAccountID = "acct-a"
+	if rs, err := svc.loadPersistedRun("run-1"); err != nil {
+		t.Fatalf("loadPersistedRun: %v", err)
+	} else if rs.realProviderSessionID != "rollout-1" {
+		t.Fatalf("realProviderSessionID = %q, want rollout-1", rs.realProviderSessionID)
+	}
+
+	handle, apiErr := svc.resumeRun("run-1")
+	if apiErr != nil {
+		t.Fatalf("resumeRun: %v", apiErr)
+	}
+	if handle.RunID != "run-1" || handle.StepID != "chat-run-1" {
+		t.Fatalf("unexpected handle: %+v", handle)
+	}
+}
+
+func TestResumeRunUsesInMemoryRunBeforeDiskLookup(t *testing.T) {
+	store := newFakeWorkflowStore()
+	root := t.TempDir()
+	acctHome := filepath.Join(root, "acct-a")
+	writeProviderAccountsConfig(t, filepath.Join(root, "provider-accounts.json"), []ProviderAccount{
+		{ID: "acct-a", ProviderKey: "codex", HomePath: acctHome, SlotIndex: 1, AuthStatus: "connected", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+	})
+	writeCodexAuth(t, acctHome)
+	writeCodexRollout(t, acctHome, "in-memory-session", "/repo", time.Now().UTC())
+	store.sessions["run-1"] = ProviderSessionState{
+		RunID:             "run-1",
+		ProjectID:         "project-1",
+		ProviderKey:       ProviderKeyCodex,
+		ProviderSessionID: "disk-session",
+		ProviderAccountID: "acct-a",
+		WorkingDirectory:  "/repo",
+		Status:            RunStatusCompleted,
+		RunKind:           "chat",
+	}
+	svc := NewInteractiveServiceWithStore(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+	svc.activeAccountID = "acct-a"
+	svc.runs["run-1"] = &interactiveRun{
+		id:                "run-1",
+		projectID:         "project-1",
+		providerKey:       ProviderKeyCodex,
+		providerSessionID: "in-memory-session",
+		providerAccountID: "acct-a",
+		workspaceCwd:      "/repo",
+		status:            RunStatusRunning,
+		runKind:           "chat",
+		subs:              map[int64]chan ProviderEvent{},
+		idempotency:       map[string]string{},
+	}
+
+	handle, apiErr := svc.resumeRun("run-1")
+	if apiErr != nil {
+		t.Fatalf("resumeRun: %v", apiErr)
+	}
+	if handle.ProviderSessionID != "in-memory-session" {
+		t.Fatalf("ProviderSessionID = %q, want in-memory-session", handle.ProviderSessionID)
+	}
+	if svc.runs["run-1"].providerSessionID != "in-memory-session" {
+		t.Fatalf("run providerSessionID = %q, want in-memory-session", svc.runs["run-1"].providerSessionID)
+	}
+}
+
+func TestResumeRunRestoredWorkflowRunUnsupportedForMVP(t *testing.T) {
+	store, err := NewLocalFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:     "run-workflow",
+		ProjectID: "project-1",
+		Status:    RunStatusCompleted,
+		RunKind:   "workflow",
+	}); err != nil {
+		t.Fatalf("UpsertProviderSession: %v", err)
+	}
+	svc := NewInteractiveServiceWithStore(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+	if _, apiErr := svc.resumeRun("run-workflow"); apiErr == nil || apiErr.code != "resume_unsupported" {
+		t.Fatalf("resumeRun error = %#v, want resume_unsupported", apiErr)
+	}
+}
+
+func TestLocateSessionFileCodexFindsRolloutBySessionID(t *testing.T) {
+	home := t.TempDir()
+	path := writeCodexRollout(t, home, "rollout-abc", "/repo", time.Now().UTC())
+	got, found := LocateSessionFile(ProviderKeyCodex, home, "rollout-abc", "/repo")
+	if !found {
+		t.Fatal("expected rollout to be found")
+	}
+	if got != path {
+		t.Fatalf("LocateSessionFile = %q, want %q", got, path)
+	}
+}
+
+func TestDiscoverCodexRolloutSessionIDChoosesNewestMatchingCWD(t *testing.T) {
+	home := t.TempDir()
+	old := time.Now().UTC().Add(-time.Hour)
+	newer := time.Now().UTC()
+	writeCodexRollout(t, home, "rollout-old", "/repo", old)
+	writeCodexRollout(t, home, "rollout-new", "/repo", newer)
+	writeCodexRollout(t, home, "rollout-other", "/other", newer.Add(time.Minute))
+	got, found := DiscoverCodexRolloutSessionID(home, "/repo")
+	if !found {
+		t.Fatal("expected rollout discovery to succeed")
+	}
+	if got != "rollout-new" {
+		t.Fatalf("DiscoverCodexRolloutSessionID = %q, want rollout-new", got)
+	}
+}
+
+func TestRelocateSessionFileCodexCopiesRolloutWithoutOverwrite(t *testing.T) {
+	srcHome := t.TempDir()
+	targetHome := t.TempDir()
+	src := writeCodexRollout(t, srcHome, "rollout-abc", "/repo", time.Now().UTC())
+	unrelated := filepath.Join(targetHome, "sessions", "keep.txt")
+	if err := os.MkdirAll(filepath.Dir(unrelated), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(unrelated, []byte("keep"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	dst, err := RelocateSessionFile(ProviderKeyCodex, src, targetHome, "rollout-abc", "/repo")
+	if err != nil {
+		t.Fatalf("RelocateSessionFile: %v", err)
+	}
+	srcBytes, _ := os.ReadFile(src)
+	dstBytes, _ := os.ReadFile(dst)
+	if string(srcBytes) != string(dstBytes) {
+		t.Fatalf("destination bytes differ from source")
+	}
+	if raw, _ := os.ReadFile(unrelated); string(raw) != "keep" {
+		t.Fatalf("unrelated target file changed: %q", raw)
+	}
+}
+
+func TestRelocateSessionFileDoesNotOverwriteExistingSessionFile(t *testing.T) {
+	srcHome := t.TempDir()
+	targetHome := t.TempDir()
+	src := writeCodexRollout(t, srcHome, "rollout-abc", "/repo", time.Now().UTC())
+	dst, err := relocationTargetPath(ProviderKeyCodex, src, targetHome, "rollout-abc", "/repo")
+	if err != nil {
+		t.Fatalf("relocationTargetPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(dst, []byte("target"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if _, err := RelocateSessionFile(ProviderKeyCodex, src, targetHome, "rollout-abc", "/repo"); err == nil {
+		t.Fatal("expected overwrite refusal")
+	}
+	raw, _ := os.ReadFile(dst)
+	if string(raw) != "target" {
+		t.Fatalf("target bytes changed: %q", raw)
+	}
+}
+
+func TestRelocateSessionFileClaudePreservesProjectHashDirectory(t *testing.T) {
+	srcHome := t.TempDir()
+	targetHome := t.TempDir()
+	src := filepath.Join(srcHome, ".claude", "projects", "source-hash", "claude-real-1.jsonl")
+	if err := os.MkdirAll(filepath.Dir(src), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(src, []byte("claude"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	dst, err := RelocateSessionFile(ProviderKeyClaude, src, targetHome, "claude-real-1", "/repo")
+	if err != nil {
+		t.Fatalf("RelocateSessionFile: %v", err)
+	}
+	want := filepath.Join(targetHome, ".claude", "projects", "source-hash", "claude-real-1.jsonl")
+	if dst != want {
+		t.Fatalf("dst = %q, want %q", dst, want)
+	}
+	raw, _ := os.ReadFile(dst)
+	if string(raw) != "claude" {
+		t.Fatalf("unexpected dst bytes: %q", raw)
+	}
+}
+
+func TestPrepareCrossAccountResumeActiveAccountNotSignedIn(t *testing.T) {
+	store, err := NewLocalFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	root := t.TempDir()
+	acctAHome := filepath.Join(root, "acct-a")
+	acctBHome := filepath.Join(root, "acct-b")
+	writeProviderAccountsConfig(t, filepath.Join(root, "provider-accounts.json"), []ProviderAccount{
+		{ID: "acct-a", ProviderKey: "codex", HomePath: acctAHome, SlotIndex: 1, AuthStatus: "connected", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+		{ID: "acct-b", ProviderKey: "codex", HomePath: acctBHome, SlotIndex: 2, AuthStatus: "failed", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+	})
+	writeCodexAuth(t, acctAHome)
+	writeCodexRollout(t, acctAHome, "rollout-abc", "/repo", time.Now().UTC())
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             "run-1",
+		ProjectID:         "project-1",
+		ProviderKey:       ProviderKeyCodex,
+		ProviderSessionID: "rollout-abc",
+		ProviderAccountID: "acct-a",
+		WorkingDirectory:  "/repo",
+		Status:            RunStatusCompleted,
+		RunKind:           "chat",
+		StartedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+		UpdatedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("UpsertProviderSession: %v", err)
+	}
+
+	svc := NewInteractiveServiceWithStore(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+	svc.activeAccountID = "acct-b"
+	if _, apiErr := svc.resumeRun("run-1"); apiErr == nil || apiErr.code != "account_not_signed_in" {
+		t.Fatalf("resumeRun error = %#v, want account_not_signed_in", apiErr)
+	}
+}
+
+func TestPrepareCrossAccountResumeMissingSourceFile(t *testing.T) {
+	store, err := NewLocalFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	root := t.TempDir()
+	acctAHome := filepath.Join(root, "acct-a")
+	acctBHome := filepath.Join(root, "acct-b")
+	writeProviderAccountsConfig(t, filepath.Join(root, "provider-accounts.json"), []ProviderAccount{
+		{ID: "acct-a", ProviderKey: "codex", HomePath: acctAHome, SlotIndex: 1, AuthStatus: "connected", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+		{ID: "acct-b", ProviderKey: "codex", HomePath: acctBHome, SlotIndex: 2, AuthStatus: "connected", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+	})
+	writeCodexAuth(t, acctAHome)
+	writeCodexAuth(t, acctBHome)
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             "run-1",
+		ProjectID:         "project-1",
+		ProviderKey:       ProviderKeyCodex,
+		ProviderSessionID: "rollout-missing",
+		ProviderAccountID: "acct-a",
+		WorkingDirectory:  "/repo",
+		Status:            RunStatusCompleted,
+		RunKind:           "chat",
+		StartedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+		UpdatedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("UpsertProviderSession: %v", err)
+	}
+
+	svc := NewInteractiveServiceWithStore(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+	svc.activeAccountID = "acct-b"
+	if _, apiErr := svc.resumeRun("run-1"); apiErr == nil || apiErr.code != "session_unavailable" {
+		t.Fatalf("resumeRun error = %#v, want session_unavailable", apiErr)
+	}
+}
+
+func TestPrepareCrossAccountResumeSkippedForSameAccount(t *testing.T) {
+	store, err := NewLocalFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	root := t.TempDir()
+	acctHome := filepath.Join(root, "acct-a")
+	writeProviderAccountsConfig(t, filepath.Join(root, "provider-accounts.json"), []ProviderAccount{
+		{ID: "acct-a", ProviderKey: "codex", HomePath: acctHome, SlotIndex: 1, AuthStatus: "connected", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+	})
+	writeCodexAuth(t, acctHome)
+	writeCodexRollout(t, acctHome, "rollout-abc", "/repo", time.Now().UTC())
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             "run-1",
+		ProjectID:         "project-1",
+		ProviderKey:       ProviderKeyCodex,
+		ProviderSessionID: "rollout-abc",
+		ProviderAccountID: "acct-a",
+		WorkingDirectory:  "/repo",
+		Status:            RunStatusCompleted,
+		RunKind:           "chat",
+		StartedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+		UpdatedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("UpsertProviderSession: %v", err)
+	}
+	svc := NewInteractiveServiceWithStore(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+	svc.activeAccountID = "acct-a"
+	handle, apiErr := svc.resumeRun("run-1")
+	if apiErr != nil {
+		t.Fatalf("resumeRun: %v", apiErr)
+	}
+	if handle.RunID != "run-1" {
+		t.Fatalf("unexpected handle: %+v", handle)
+	}
+	state, found, err := store.GetProviderSession(context.Background(), "run-1")
+	if err != nil || !found {
+		t.Fatalf("GetProviderSession = (%v, %v, %v)", state, found, err)
+	}
+	if state.ProviderAccountID != "acct-a" {
+		t.Fatalf("ProviderAccountID = %q, want acct-a", state.ProviderAccountID)
+	}
+}
+
+func TestPrepareCrossAccountResumeRelocatesAndRepointsRun(t *testing.T) {
+	store, err := NewLocalFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	root := t.TempDir()
+	acctAHome := filepath.Join(root, "acct-a")
+	acctBHome := filepath.Join(root, "acct-b")
+	writeProviderAccountsConfig(t, filepath.Join(root, "provider-accounts.json"), []ProviderAccount{
+		{ID: "acct-a", ProviderKey: "codex", HomePath: acctAHome, SlotIndex: 1, AuthStatus: "connected", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+		{ID: "acct-b", ProviderKey: "codex", HomePath: acctBHome, SlotIndex: 2, AuthStatus: "connected", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+	})
+	writeCodexAuth(t, acctAHome)
+	writeCodexAuth(t, acctBHome)
+	src := writeCodexRollout(t, acctAHome, "rollout-xyz", "/repo", time.Now().UTC())
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             "run-1",
+		ProjectID:         "project-1",
+		ProviderKey:       ProviderKeyCodex,
+		ProviderSessionID: "rollout-xyz",
+		ProviderAccountID: "acct-a",
+		WorkingDirectory:  "/repo",
+		Status:            RunStatusCompleted,
+		RunKind:           "chat",
+		StartedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+		UpdatedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("UpsertProviderSession: %v", err)
+	}
+
+	svc := NewInteractiveServiceWithStore(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+	svc.activeAccountID = "acct-b"
+	handle, apiErr := svc.resumeRun("run-1")
+	if apiErr != nil {
+		t.Fatalf("resumeRun: %v", apiErr)
+	}
+	if handle.RunID != "run-1" {
+		t.Fatalf("unexpected handle: %+v", handle)
+	}
+
+	dst, found := LocateSessionFile(ProviderKeyCodex, acctBHome, "rollout-xyz", "/repo")
+	if !found {
+		t.Fatal("expected relocated rollout in target home")
+	}
+	if dst == src {
+		t.Fatal("expected relocation into target home")
+	}
+	state, found, err := store.GetProviderSession(context.Background(), "run-1")
+	if err != nil || !found {
+		t.Fatalf("GetProviderSession = (%v, %v, %v)", state, found, err)
+	}
+	if state.ProviderAccountID != "acct-b" {
+		t.Fatalf("ProviderAccountID = %q, want acct-b", state.ProviderAccountID)
+	}
+}
+
+func TestPrepareCrossAccountResumeRelocationFailureKeepsHistoryVisible(t *testing.T) {
+	store, err := NewLocalFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	root := t.TempDir()
+	acctAHome := filepath.Join(root, "acct-a")
+	acctBHome := filepath.Join(root, "acct-b")
+	writeProviderAccountsConfig(t, filepath.Join(root, "provider-accounts.json"), []ProviderAccount{
+		{ID: "acct-a", ProviderKey: "codex", HomePath: acctAHome, SlotIndex: 1, AuthStatus: "connected", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+		{ID: "acct-b", ProviderKey: "codex", HomePath: acctBHome, SlotIndex: 2, AuthStatus: "connected", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+	})
+	writeCodexAuth(t, acctAHome)
+	writeCodexAuth(t, acctBHome)
+	src := writeCodexRollout(t, acctAHome, "rollout-dup", "/repo", time.Now().UTC())
+	dst, err := relocationTargetPath(ProviderKeyCodex, src, acctBHome, "rollout-dup", "/repo")
+	if err != nil {
+		t.Fatalf("relocationTargetPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(dst, []byte("existing"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             "run-1",
+		ProjectID:         "project-1",
+		ProviderKey:       ProviderKeyCodex,
+		ProviderSessionID: "rollout-dup",
+		ProviderAccountID: "acct-a",
+		WorkingDirectory:  "/repo",
+		Status:            RunStatusCompleted,
+		RunKind:           "chat",
+		StartedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+		UpdatedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("UpsertProviderSession: %v", err)
+	}
+	svc := NewInteractiveServiceWithStore(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+	svc.activeAccountID = "acct-b"
+	if _, apiErr := svc.resumeRun("run-1"); apiErr == nil || apiErr.code != "session_unavailable" {
+		t.Fatalf("resumeRun error = %#v, want session_unavailable", apiErr)
+	}
+	history := svc.projectRunHistory("project-1")
+	if len(history) != 1 || history[0].RunID != "run-1" {
+		t.Fatalf("history = %+v, want run-1 visible", history)
+	}
+}
+
+func TestRestoredCodexRunUsesCLIResumePath(t *testing.T) {
+	store, err := NewLocalFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	root := t.TempDir()
+	acctHome := filepath.Join(root, "acct-b")
+	workspace := filepath.Join(root, "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("MkdirAll workspace: %v", err)
+	}
+	writeProviderAccountsConfig(t, filepath.Join(root, "provider-accounts.json"), []ProviderAccount{
+		{ID: "acct-b", ProviderKey: "codex", HomePath: acctHome, SlotIndex: 2, AuthStatus: "connected", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+	})
+	writeCodexAuth(t, acctHome)
+	writeCodexRollout(t, acctHome, "rollout-abc", workspace, time.Now().UTC())
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             "run-1",
+		ProjectID:         "project-1",
+		ProviderKey:       ProviderKeyCodex,
+		ProviderSessionID: "rollout-abc",
+		ProviderAccountID: "acct-b",
+		WorkingDirectory:  workspace,
+		Status:            RunStatusCompleted,
+		RunKind:           "chat",
+		StartedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+		UpdatedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("UpsertProviderSession: %v", err)
+	}
+
+	var fallbackCalls atomic.Int32
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key:          ProviderKeyCodex,
+		DisplayName:  "Codex",
+		Status:       ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true, Resume: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(context.Context, TurnRequest, TurnBridge) error {
+				fallbackCalls.Add(1)
+				return nil
+			})
+		},
+	})
+
+	envCapture := filepath.Join(root, "codex-home.txt")
+	var gotArgs []string
+	originalCmd := commandContextFn
+	commandContextFn = func(ctx context.Context, _ string, args ...string) *exec.Cmd {
+		gotArgs = append([]string{}, args...)
+		script := `out=""; prev=""; for a in "$@"; do if [ "$prev" = "-o" ]; then out="$a"; fi; prev="$a"; done; printf "%s" "$CODEX_HOME" > ` + strconv.Quote(envCapture) + `; [ -n "$out" ] && printf "cli final\n" > "$out"`
+		cmdArgs := append([]string{"-c", script, "sh"}, args...)
+		cmd := exec.CommandContext(ctx, "sh", cmdArgs...)
+		return cmd
+	}
+	defer func() { commandContextFn = originalCmd }()
+
+	svc := NewInteractiveServiceWithStore(reg, newInteractiveCatalog(), store)
+	svc.activeAccountID = "acct-b"
+	handle, apiErr := svc.resumeRun("run-1")
+	if apiErr != nil {
+		t.Fatalf("resumeRun: %v", apiErr)
+	}
+	if _, apiErr := svc.startTurn(handle.RunID, TurnInput{StepID: handle.StepID, Prompt: "continue"}, "", ""); apiErr != nil {
+		t.Fatalf("startTurn: %v", apiErr)
+	}
+	waitFor(t, func() bool {
+		svc.mu.Lock()
+		defer svc.mu.Unlock()
+		return !svc.runs[handle.RunID].turnInFlight
+	}, "restored codex turn to finish")
+
+	if fallbackCalls.Load() != 0 {
+		t.Fatalf("expected restored run to bypass registry adapter SendTurn, got %d calls", fallbackCalls.Load())
+	}
+	if strings.Join(gotArgs[:3], " ") != "exec resume rollout-abc" {
+		t.Fatalf("unexpected codex resume args: %v", gotArgs)
+	}
+	if !strings.Contains(strings.Join(gotArgs, " "), "continue") {
+		t.Fatalf("expected prompt in args, got %v", gotArgs)
+	}
+	raw, err := os.ReadFile(envCapture)
+	if err != nil {
+		t.Fatalf("ReadFile env capture: %v", err)
+	}
+	if strings.TrimSpace(string(raw)) != acctHome {
+		t.Fatalf("CODEX_HOME = %q, want %q", strings.TrimSpace(string(raw)), acctHome)
+	}
+}
+
+type fakeAdapterFunc func(context.Context, TurnRequest, TurnBridge) error
+
+func (f fakeAdapterFunc) Key() ProviderKey                   { return ProviderKeyCodex }
+func (f fakeAdapterFunc) Capabilities() ProviderCapabilities { return ProviderCapabilities{Streaming: true, Resume: true} }
+func (f fakeAdapterFunc) SendTurn(ctx context.Context, req TurnRequest, bridge TurnBridge) error {
+	return f(ctx, req, bridge)
+}
+
+func writeProviderAccountsConfig(t *testing.T, path string, accounts []ProviderAccount) {
+	t.Helper()
+	t.Setenv("FLOWPILOT_PROVIDER_ACCOUNTS_CONFIG_PATH", path)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	payload, err := json.Marshal(providerAccountState{Accounts: accounts})
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if err := os.WriteFile(path, payload, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+}
+
+func writeCodexAuth(t *testing.T, home string) {
+	t.Helper()
+	path := filepath.Join(home, ".codex", "auth.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(`{"id_token":"token"}`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+}
+
+func writeCodexRollout(t *testing.T, home, sessionID, cwd string, ts time.Time) string {
+	t.Helper()
+	dir := filepath.Join(home, "sessions", ts.Format("2006"), ts.Format("01"), ts.Format("02"))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	path := filepath.Join(dir, "rollout-"+ts.Format("20060102T150405")+"-"+sessionID+".jsonl")
+	line := map[string]any{
+		"payload": map[string]any{
+			"id":        sessionID,
+			"timestamp": ts.Format(time.RFC3339Nano),
+			"cwd":       cwd,
+		},
+	}
+	raw, err := json.Marshal(line)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if err := os.WriteFile(path, append(raw, '\n'), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	return path
+}
