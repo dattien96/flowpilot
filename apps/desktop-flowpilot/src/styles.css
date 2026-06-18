@@ -1283,6 +1283,15 @@ input {
   gap: 5px;
   padding-left: 8px;
 }
+.project-history-item-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: stretch;
+}
+.project-history-item-row--disabled {
+  opacity: 0.7;
+}
 .project-history-item {
   padding: 7px 9px;
   text-align: left;
@@ -1290,8 +1299,30 @@ input {
   gap: 4px;
   background: var(--bg-3);
 }
+.project-history-sync {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 0 10px;
+  font-size: 11px;
+}
+.project-history-sync:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
 .project-history-item:hover {
   background: var(--bg-2);
+}
+.project-history-item:disabled,
+.project-history-item--disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.project-history-item:disabled:hover,
+.project-history-item--disabled:hover {
+  background: var(--bg-3);
 }
 .project-history-item-top {
   display: flex;
