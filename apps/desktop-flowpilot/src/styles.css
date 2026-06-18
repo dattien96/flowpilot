@@ -1294,6 +1294,12 @@ input {
   color: var(--accent);
   background: rgba(76, 141, 255, 0.08);
 }
+.project-history-sync-all:disabled {
+  cursor: default;
+  opacity: 0.8;
+  color: var(--text-dim);
+  background: transparent;
+}
 .project-history-group-title {
   display: grid;
   gap: 2px;

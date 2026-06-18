@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useStore } from "@/state/store";
 import type { RunHistoryItem } from "@/types/contract";
+import { isProjectSyncing } from "@/components/navigatorHistory";
 
 const PROJECT_LIMIT = 3;
 const HISTORY_LIMIT = 10;
@@ -367,6 +368,7 @@ export function Navigator(): React.ReactElement {
               const visibleHistory = expanded ? visibleHistoryFor(projectId, history) : [];
               const hiddenCount = history.length - visibleHistory.length;
               const unsyncedCount = history.filter(isUnsyncedChat).length;
+              const projectSyncing = isProjectSyncing(history, projectId);
               return (
                 <section key={projectId} className="project-history-group">
                   <div className={`project-history-group-head ${expanded ? "active" : ""}${selectionModeProjectId === projectId ? " project-history-group-head--selecting" : ""}`}>
@@ -399,11 +401,20 @@ export function Navigator(): React.ReactElement {
                           type="button"
                           className="project-history-sync-all"
                           onClick={() => void syncAllInProject(projectId)}
-                          title={`Sync ${unsyncedCount} chat${unsyncedCount > 1 ? "s" : ""} to Drive`}
-                          aria-label={`Sync all ${unsyncedCount} unsynced chats to Drive`}
+                          disabled={projectSyncing}
+                          title={
+                            projectSyncing
+                              ? `Syncing ${unsyncedCount} chat${unsyncedCount > 1 ? "s" : ""} to Drive`
+                              : `Sync ${unsyncedCount} chat${unsyncedCount > 1 ? "s" : ""} to Drive`
+                          }
+                          aria-label={
+                            projectSyncing
+                              ? `Syncing all ${unsyncedCount} unsynced chats to Drive`
+                              : `Sync all ${unsyncedCount} unsynced chats to Drive`
+                          }
                         >
-                          <SyncGlyph />
-                          <span>{unsyncedCount}</span>
+                          {projectSyncing ? <span className="history-status-spinner" aria-hidden="true" /> : <SyncGlyph />}
+                          <span>{projectSyncing ? "Syncing…" : unsyncedCount}</span>
                         </button>
                       )
                     )}
@@ -453,6 +464,7 @@ export function Navigator(): React.ReactElement {
                         const isSyncing = item.syncStatus === "syncing";
                         const syncFailed = item.syncStatus === "failed";
                         const inSelectionMode = selectionModeProjectId === projectId;
+                        const showRowSpinner = isSyncing && !inSelectionMode;
                         const isSelected = selectedRunIds.has(item.runId);
 
                         if (inSelectionMode) {
@@ -528,13 +540,13 @@ export function Navigator(): React.ReactElement {
                               }}
                             >
                               <span className="project-history-item-top">
-                                <HistoryStatusIcon status={item.status} isNew={isNew} />
+                                {showRowSpinner ? <span className="history-status-spinner" aria-hidden="true" /> : <HistoryStatusIcon status={item.status} isNew={isNew} />}
                                 <span className="project-history-item-title">
                                   {runTitle(item.lastPrompt || item.lastMessage)}
                                 </span>
                               </span>
                               <span className="project-history-item-meta">
-                                {RUN_LABEL[item.status]} · {RUN_TIME_FORMAT.format(new Date(item.updatedAt))}
+                                {isSyncing ? "Syncing to Drive…" : RUN_LABEL[item.status]} · {RUN_TIME_FORMAT.format(new Date(item.updatedAt))}
                               </span>
                             </button>
                           </div>
