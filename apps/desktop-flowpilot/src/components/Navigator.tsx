@@ -32,12 +32,15 @@ function isUnsyncedChat(item: RunHistoryItem): boolean {
   return item.runKind === "chat" && item.syncStatus !== "synced" && !item.unavailableReason;
 }
 
-// Small circular-arrow sync glyph used by the per-chat and per-project sync buttons.
+// Two-arrow sync glyph used by the per-chat and per-project sync buttons.
+// Upper arc + arrowhead goes left-to-right (via top); lower arc + arrowhead goes right-to-left (via bottom).
 function SyncGlyph(): React.ReactElement {
   return (
     <svg width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-      <path d="M10.2 5.2A4.2 4.2 0 1 0 10.4 7.4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
-      <polyline points="10.2,1.6 10.2,5.2 6.7,5.2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M2.2 7.5A4.5 4.5 0 0 1 9.5 3.8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+      <polyline points="8.0,2.5 9.5,3.8 8.2,5.1" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M9.8 4.5A4.5 4.5 0 0 1 2.5 8.2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+      <polyline points="3.8,9.5 2.5,8.2 3.8,6.9" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
