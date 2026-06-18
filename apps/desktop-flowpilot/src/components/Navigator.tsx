@@ -77,11 +77,17 @@ export function Navigator(): React.ReactElement {
   const runHistory = useStore((s) => s.runHistory);
   const historyLoading = useStore((s) => s.historyLoading);
   const historyLoadError = useStore((s) => s.historyLoadError);
+  const remoteChatSessions = useStore((s) => s.remoteChatSessions);
+  const remoteHistoryLoading = useStore((s) => s.remoteHistoryLoading);
+  const remoteHistoryLoadError = useStore((s) => s.remoteHistoryLoadError);
   const loadProjects = useStore((s) => s.loadProjects);
   const selectProject = useStore((s) => s.selectProject);
   const runId = useStore((s) => s.runId);
   const loadRunHistory = useStore((s) => s.loadRunHistory);
+  const loadRemoteChatSessions = useStore((s) => s.loadRemoteChatSessions);
   const openHistoryRun = useStore((s) => s.openHistoryRun);
+  const syncHistoryRun = useStore((s) => s.syncHistoryRun);
+  const restoreRemoteChatSession = useStore((s) => s.restoreRemoteChatSession);
 
   const runIdRef = useRef(runId);
   runIdRef.current = runId;
@@ -101,7 +107,8 @@ export function Navigator(): React.ReactElement {
   useEffect(() => {
     if (!selectedProjectId) return;
     void loadRunHistory();
-  }, [loadRunHistory, selectedProjectId]);
+    void loadRemoteChatSessions();
+  }, [loadRemoteChatSessions, loadRunHistory, selectedProjectId]);
 
   useEffect(() => {
     if (!selectedProjectId) return;
@@ -299,27 +306,43 @@ export function Navigator(): React.ReactElement {
                         const isNew = newlyCompleted.has(item.runId);
                         const hasIcon = isNew || item.status === "running" || item.status === "starting" ||
                           item.status === "waiting_approval" || item.status === "waiting_question";
+                        const isUnavailable = Boolean(item.unavailableReason);
                         return (
-                          <button
+                          <div
                             key={item.runId}
-                            type="button"
-                            className={`project-history-item${hasIcon ? " project-history-item--has-icon" : ""}`}
-                            onClick={() => {
-                              if (isNew) setNewlyCompleted((c) => { const n = new Set(c); n.delete(item.runId); return n; });
-                              void openHistoryRun(item.runId);
-                            }}
-                            title={item.runId}
+                            className={`project-history-item-row${isUnavailable ? " project-history-item-row--disabled" : ""}`}
+                            title={item.unavailableReason || item.runId}
                           >
-                            <span className="project-history-item-top">
-                              <HistoryStatusIcon status={item.status} isNew={isNew} />
-                              <span className="project-history-item-title">
-                                {runTitle(item.lastPrompt || item.lastMessage)}
+                            <button
+                              type="button"
+                              className={`project-history-item${hasIcon ? " project-history-item--has-icon" : ""}${isUnavailable ? " project-history-item--disabled" : ""}`}
+                              disabled={isUnavailable}
+                              onClick={() => {
+                                if (isNew) setNewlyCompleted((c) => { const n = new Set(c); n.delete(item.runId); return n; });
+                                void openHistoryRun(item.runId);
+                              }}
+                            >
+                              <span className="project-history-item-top">
+                                <HistoryStatusIcon status={item.status} isNew={isNew} />
+                                <span className="project-history-item-title">
+                                  {runTitle(item.lastPrompt || item.lastMessage)}
+                                </span>
                               </span>
-                            </span>
-                            <span className="project-history-item-meta">
-                              {RUN_LABEL[item.status]} · {RUN_TIME_FORMAT.format(new Date(item.updatedAt))}
-                            </span>
-                          </button>
+                              <span className="project-history-item-meta">
+                                {RUN_LABEL[item.status]} · {RUN_TIME_FORMAT.format(new Date(item.updatedAt))}
+                              </span>
+                            </button>
+                            {item.runKind === "chat" && (
+                              <button
+                                type="button"
+                                className="project-history-sync"
+                                onClick={() => void syncHistoryRun(item.runId)}
+                                title="Sync this chat to Drive"
+                              >
+                                Sync
+                              </button>
+                            )}
+                          </div>
                         );
                       })}
 
@@ -337,6 +360,59 @@ export function Navigator(): React.ReactElement {
                 </section>
               );
             })}
+          </div>
+        )}
+      </section>
+
+      <section className="project-history-section">
+        <div className="project-rail-head">
+          <div>
+            <label>Remote Chats</label>
+            <p>Drive-backed chat sessions available to restore into this project.</p>
+          </div>
+          {remoteHistoryLoading && <span className="project-rail-state">Loading</span>}
+        </div>
+
+        {remoteHistoryLoadError && (
+          <div className="project-history-error">
+            <strong>Remote history failed to load</strong>
+            <span>{remoteHistoryLoadError}</span>
+          </div>
+        )}
+
+        {remoteChatSessions.length === 0 ? (
+          <div className="project-rail-empty">
+            {selectedProjectId ? "No remote chats have been synced for this project yet." : "Select a project to load remote chats."}
+          </div>
+        ) : (
+          <div className="project-history-list">
+            {remoteChatSessions.map((item) => (
+              <div key={`${item.sourceMachineId}:${item.sourceRunId}`} className="project-history-item-row">
+                <button
+                  type="button"
+                  className={`project-history-item${item.unavailableReason ? " project-history-item--disabled" : ""}`}
+                  disabled={Boolean(item.unavailableReason)}
+                  onClick={() => void restoreRemoteChatSession(item)}
+                  title={item.unavailableReason || `${item.sourceMachineId}/${item.sourceRunId}`}
+                >
+                  <span className="project-history-item-top">
+                    <span className="project-history-item-title">
+                      {runTitle(item.lastPrompt || item.lastMessage)}
+                    </span>
+                  </span>
+                  <span className="project-history-item-meta">
+                    {item.providerKey} · {item.updatedAt ? RUN_TIME_FORMAT.format(new Date(item.updatedAt)) : "Remote"}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className="project-history-sync"
+                  onClick={() => void restoreRemoteChatSession(item)}
+                >
+                  Restore
+                </button>
+              </div>
+            ))}
           </div>
         )}
       </section>
