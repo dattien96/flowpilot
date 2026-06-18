@@ -1,9 +1,14 @@
 import type {
   Artifact,
+  ChatSessionRestoreRequest,
+  ChatSessionRestoreResult,
+  ChatSessionSyncRequest,
+  ChatSessionSyncResult,
   Project,
   ProviderAccountSummary,
   ProviderEventDTO,
   ProviderSkill,
+  RemoteChatSessionSummary,
   RunHandle,
   RunHistoryItem,
   RunnerClient,
@@ -148,6 +153,9 @@ export class HttpWsRunnerClient implements RunnerClient {
   listRunHistory(projectId: string): Promise<RunHistoryItem[]> {
     return this.getJSON<RunHistoryItem[]>(`/client/projects/${encodeURIComponent(projectId)}/workflow-runs`);
   }
+  listRemoteChatSessions(projectId: string): Promise<RemoteChatSessionSummary[]> {
+    return this.getJSON<RemoteChatSessionSummary[]>(`/client/projects/${encodeURIComponent(projectId)}/chat-sessions/remote`);
+  }
   listSkills(provider: string, cwd?: string): Promise<ProviderSkill[]> {
     let url = `/client/provider-skills?provider=${encodeURIComponent(provider)}`;
     if (cwd) url += `&cwd=${encodeURIComponent(cwd)}`;
@@ -161,6 +169,12 @@ export class HttpWsRunnerClient implements RunnerClient {
   }
   resumeRun(runId: string): Promise<RunHandle> {
     return this.postJSON<RunHandle>(`/client/workflow-runs/${encodeURIComponent(runId)}/resume`);
+  }
+  syncChatRun(runId: string, input?: ChatSessionSyncRequest): Promise<ChatSessionSyncResult> {
+    return this.postJSON<ChatSessionSyncResult>(`/client/workflow-runs/${encodeURIComponent(runId)}/sync-chat`, input ?? {});
+  }
+  restoreChatRun(input: ChatSessionRestoreRequest): Promise<ChatSessionRestoreResult> {
+    return this.postJSON<ChatSessionRestoreResult>("/client/chat-sessions/restore", input);
   }
   submitApproval(approvalId: string, decision: string): Promise<void> {
     return this.postJSON<void>(`/client/approvals/${encodeURIComponent(approvalId)}/decision`, { decision });

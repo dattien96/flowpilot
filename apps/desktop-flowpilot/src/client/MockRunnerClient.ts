@@ -1,10 +1,15 @@
 import type {
   Artifact,
+  ChatSessionRestoreRequest,
+  ChatSessionRestoreResult,
+  ChatSessionSyncRequest,
+  ChatSessionSyncResult,
   Project,
   ProviderAccountSummary,
   ProviderEventBaseDTO,
   ProviderEventDTO,
   ProviderSkill,
+  RemoteChatSessionSummary,
   RunHandle,
   RunHistoryItem,
   RunnerClient,
@@ -235,6 +240,34 @@ export class MockRunnerClient implements RunnerClient {
   async listProviderAccounts(): Promise<ProviderAccountSummary[]> {
     await delay(80);
     return MOCK_PROVIDER_ACCOUNTS;
+  }
+
+  async listRemoteChatSessions(projectId: string): Promise<RemoteChatSessionSummary[]> {
+    await delay(40);
+    return [];
+  }
+
+  async syncChatRun(runId: string, _input?: ChatSessionSyncRequest): Promise<ChatSessionSyncResult> {
+    await delay(40);
+    return {
+      runId,
+      sourceMachineId: "mch_mock",
+      sourceRunId: runId,
+      syncStatus: "synced",
+      syncedAt: new Date().toISOString(),
+      remotePath: `chat-sessions/runs/mch_mock/${runId}/manifest.json`,
+    };
+  }
+
+  async restoreChatRun(input: ChatSessionRestoreRequest): Promise<ChatSessionRestoreResult> {
+    await delay(40);
+    return {
+      runId: input.sourceRunId,
+      sourceMachineId: input.sourceMachineId,
+      sourceRunId: input.sourceRunId,
+      providerKey: "codex",
+      restoreStatus: "restored",
+    };
   }
 
   async connectProviderAccount(providerKey: "codex" | "claude" | "gemini"): Promise<void> {
