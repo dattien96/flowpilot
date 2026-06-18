@@ -672,7 +672,9 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 					ProjectID:   sess.ProjectID,
 					WorkflowID:  sess.WorkflowID,
 					ProviderKey: sess.ProviderKey,
-					Status:      sess.Status,
+					// Persisted-only runs are not in the in-memory map, so an
+					// in-flight status is stale after a restart (T-067 4.4).
+					Status:      normalizeResumedStatus(sess.Status),
 					StartedAt:   sess.StartedAt,
 					UpdatedAt:   sess.UpdatedAt,
 					LastPrompt:  sess.LastPrompt,

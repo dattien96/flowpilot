@@ -7,6 +7,21 @@ import (
 	"time"
 )
 
+// normalizeResumedStatus maps an in-flight status read back from disk to a
+// terminal one. A run that was running / starting / waiting for approval or a
+// question cannot still be in flight after the owning process exited (server
+// restart): the turn goroutine and any pending approval/question records are
+// gone. Reading it back verbatim would leave the UI showing a spinner or a
+// resolved-but-unanswerable prompt forever, so we surface it as cancelled.
+func normalizeResumedStatus(status RunStatus) RunStatus {
+	switch status {
+	case RunStatusRunning, RunStatusStarting, RunStatusWaitingApproval, RunStatusWaitingQuestion:
+		return RunStatusCancelled
+	default:
+		return status
+	}
+}
+
 func (s *InteractiveService) reconstructRun(st ProviderSessionState) (*interactiveRun, *apiErr) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	rs := &interactiveRun{
@@ -19,7 +34,7 @@ func (s *InteractiveService) reconstructRun(st ProviderSessionState) (*interacti
 		providerAccountID:     st.ProviderAccountID,
 		workspaceCwd:          st.WorkingDirectory,
 		runKind:               st.RunKind,
-		status:                st.Status,
+		status:                normalizeResumedStatus(st.Status),
 		createdAt:             st.StartedAt,
 		updatedAt:             now,
 		lastPrompt:            st.LastPrompt,
