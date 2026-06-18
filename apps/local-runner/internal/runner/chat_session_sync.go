@@ -318,7 +318,7 @@ func (s *InteractiveService) ensureChatSessionDriveRoot(projectID string) (strin
 	if s.runner == nil {
 		return "", "", newAPIErr(http.StatusConflict, "google_drive_not_connected", "google drive is not connected for this project")
 	}
-	status, err := s.runner.GetGoogleDriveArtifactConnectionStatus(projectID, "")
+	status, err := s.runner.GetGoogleDriveChatSyncConnectionStatus(projectID, "")
 	if err != nil {
 		return "", "", newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
 	}
@@ -326,7 +326,16 @@ func (s *InteractiveService) ensureChatSessionDriveRoot(projectID string) (strin
 	if rootFolderID == "" || status.Connection.Status != "connected" {
 		return "", "", newAPIErr(http.StatusConflict, "google_drive_not_connected", "google drive is not connected for this project")
 	}
-	creds, err := s.runner.loadGoogleDriveCredentialByProject(projectID)
+	accountID := strings.TrimSpace(status.Connection.AccountID)
+	if accountID == "" {
+		accountID = normalizeGoogleDriveStoredAccountID(status.Connection.AccountEmail)
+	}
+	var creds googleDriveCredential
+	if accountID != "" {
+		creds, err = s.runner.loadGoogleDriveCredentialByAccount(accountID)
+	} else {
+		creds, err = s.runner.loadGoogleDriveCredentialByProject(projectID)
+	}
 	if err != nil {
 		return "", "", newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
 	}
@@ -380,6 +389,9 @@ func (s *InteractiveService) syncChatRunToDrive(ctx context.Context, runID strin
 	projectID := strings.TrimSpace(req.GoogleDriveProjectID)
 	if projectID == "" {
 		projectID = manifest.ProjectID
+	}
+	if strings.TrimSpace(req.GoogleDriveFolderID) != "" {
+		return ChatSessionSyncResult{}, newAPIErr(http.StatusBadRequest, "invalid_request", "googleDriveFolderId override is not supported for chat sync; select the project chat sync folder instead")
 	}
 	rootFolderID, accessToken, driveErr := s.ensureChatSessionDriveRoot(projectID)
 	if driveErr != nil {

@@ -26,13 +26,15 @@ const (
 	googleDriveArtifactSessionSecretPrefix = "artifact-storage:google-drive:session"
 	googleDriveSessionFlowAccount          = "account"
 	googleDriveSessionFlowArtifactBinding  = "artifact_binding"
+	googleDriveSessionFlowChatSyncBinding  = "chat_sync_binding"
 )
 
 type artifactStorageGoogleDriveState struct {
-	Sessions           map[string]artifactStorageGoogleDriveSessionRecord    `json:"sessions"`
-	Connections        map[string]artifactStorageGoogleDriveConnectionRecord `json:"connections"`
-	Accounts           map[string]artifactStorageGoogleDriveAccountRecord    `json:"accounts"`
-	SuppressedAccounts map[string]bool                                       `json:"suppressedAccounts,omitempty"`
+	Sessions            map[string]artifactStorageGoogleDriveSessionRecord    `json:"sessions"`
+	Connections         map[string]artifactStorageGoogleDriveConnectionRecord `json:"connections"`
+	ChatSyncConnections map[string]artifactStorageGoogleDriveConnectionRecord `json:"chatSyncConnections,omitempty"`
+	Accounts            map[string]artifactStorageGoogleDriveAccountRecord    `json:"accounts"`
+	SuppressedAccounts  map[string]bool                                       `json:"suppressedAccounts,omitempty"`
 }
 
 type artifactStorageGoogleDriveAccountRecord struct {
@@ -582,6 +584,301 @@ func (r *Runner) GetGoogleDriveArtifactConnectionStatus(projectID, sessionID str
 	}, nil
 }
 
+func (r *Runner) GetGoogleDriveSessionFlowKind(sessionID string) (string, error) {
+	session, err := r.getArtifactStorageGoogleDriveSession(sessionID)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(session.FlowKind), nil
+}
+
+func (r *Runner) CreateGoogleDriveChatSyncConnectSession(projectID string, request ChatSyncGoogleDriveConnectRequest) (ArtifactStorageGoogleDriveSession, error) {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return ArtifactStorageGoogleDriveSession{}, errors.New("projectId is required")
+	}
+	baseURL := strings.TrimRight(strings.TrimSpace(request.BaseURL), "/")
+	if baseURL == "" {
+		return ArtifactStorageGoogleDriveSession{}, errors.New("baseUrl is required")
+	}
+	if _, err := r.resolveGoogleDriveArtifactRuntimeConfig(); err != nil {
+		return ArtifactStorageGoogleDriveSession{}, err
+	}
+
+	selectedAccountID := normalizeGoogleDriveStoredAccountID(strings.TrimSpace(request.AccountID))
+	if selectedAccountID == "" {
+		status, err := r.GetGoogleDriveChatSyncConnectionStatus(projectID, "")
+		if err == nil && strings.EqualFold(strings.TrimSpace(status.Connection.Status), "connected") {
+			selectedAccountID = normalizeGoogleDriveStoredAccountID(strings.TrimSpace(status.Connection.AccountID))
+		}
+	}
+	if selectedAccountID == "" {
+		accounts, err := r.ListGoogleDriveAccounts()
+		if err != nil {
+			return ArtifactStorageGoogleDriveSession{}, err
+		}
+		for _, account := range accounts {
+			if account.AccountReady && account.McpWriteReady {
+				selectedAccountID = normalizeGoogleDriveStoredAccountID(account.AccountID)
+				break
+			}
+		}
+	}
+
+	state := artifactStorageGoogleDriveSessionRecord{
+		SessionID:       newArtifactStorageGoogleDriveSessionID(),
+		ProjectID:       projectID,
+		FlowKind:        googleDriveSessionFlowChatSyncBinding,
+		Status:          string(ArtifactStorageGoogleDriveSessionPending),
+		CreatedAt:       time.Now().UTC().Format(time.RFC3339Nano),
+		ExpiresAt:       time.Now().UTC().Add(time.Duration(artifactStorageGoogleDriveDefaultSessionTTL) * time.Second).Format(time.RFC3339Nano),
+		RequestedScopes: googleDriveArtifactRequestedScopes(),
+	}
+	if selectedAccountID != "" {
+		accountStatus, err := r.googleDriveAccountStatusByID(selectedAccountID)
+		if err != nil {
+			return ArtifactStorageGoogleDriveSession{}, err
+		}
+		if !accountStatus.AccountReady {
+			if accountStatus.ReconnectRequired {
+				return ArtifactStorageGoogleDriveSession{}, errors.New("selected Google Drive account needs reconnect before chat sync folder binding")
+			}
+			return ArtifactStorageGoogleDriveSession{}, errors.New("selected Google Drive account is not ready for chat sync folder binding")
+		}
+		if !accountStatus.McpWriteReady {
+			return ArtifactStorageGoogleDriveSession{}, errors.New("selected Google Drive account is missing the drive.file scope required for chat sync")
+		}
+		state.Status = string(ArtifactStorageGoogleDriveSessionAwaitingFolderPicker)
+		state.AccountID = accountStatus.AccountID
+		state.AccountEmail = accountStatus.AccountEmail
+		if err := r.saveArtifactStorageGoogleDriveState(func(current *artifactStorageGoogleDriveState) {
+			if current.Sessions == nil {
+				current.Sessions = map[string]artifactStorageGoogleDriveSessionRecord{}
+			}
+			current.Sessions[state.SessionID] = state
+		}); err != nil {
+			return ArtifactStorageGoogleDriveSession{}, err
+		}
+		return mapArtifactStorageGoogleDriveSession(
+			state,
+			fmt.Sprintf("%s%s?sessionId=%s", baseURL, googleDriveArtifactPickerPath, url.QueryEscape(state.SessionID)),
+		), nil
+	}
+
+	if err := r.saveArtifactStorageGoogleDriveState(func(current *artifactStorageGoogleDriveState) {
+		if current.Sessions == nil {
+			current.Sessions = map[string]artifactStorageGoogleDriveSessionRecord{}
+		}
+		current.Sessions[state.SessionID] = state
+	}); err != nil {
+		return ArtifactStorageGoogleDriveSession{}, err
+	}
+
+	connectToken := newArtifactStorageGoogleDriveToken()
+	if err := r.saveArtifactStorageGoogleDriveSessionToken(state.SessionID, "connect", connectToken); err != nil {
+		return ArtifactStorageGoogleDriveSession{}, err
+	}
+	connectURL := fmt.Sprintf(
+		"%s%s?sessionId=%s&token=%s",
+		baseURL,
+		googleDriveArtifactConnectPath,
+		url.QueryEscape(state.SessionID),
+		url.QueryEscape(connectToken),
+	)
+	return mapArtifactStorageGoogleDriveSession(state, connectURL), nil
+}
+
+func (r *Runner) resolveEffectiveGoogleDriveChatSyncConnection(projectID string) (artifactStorageGoogleDriveConnectionRecord, string, bool, error) {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return artifactStorageGoogleDriveConnectionRecord{}, "", false, errors.New("projectId is required")
+	}
+	state, err := r.loadArtifactStorageGoogleDriveState()
+	if err != nil {
+		return artifactStorageGoogleDriveConnectionRecord{}, "", false, err
+	}
+	if record, ok := state.ChatSyncConnections[projectID]; ok {
+		return record, "chat_sync", true, nil
+	}
+	if record, ok := state.Connections[projectID]; ok {
+		return record, "artifact_legacy", true, nil
+	}
+	return artifactStorageGoogleDriveConnectionRecord{ProjectID: projectID, Status: "disconnected"}, "none", false, nil
+}
+
+func (r *Runner) GetGoogleDriveChatSyncConnectionStatus(projectID, sessionID string) (ChatSyncGoogleDriveConnectionStatus, error) {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return ChatSyncGoogleDriveConnectionStatus{}, errors.New("projectId is required")
+	}
+	record, source, found, err := r.resolveEffectiveGoogleDriveChatSyncConnection(projectID)
+	if err != nil {
+		return ChatSyncGoogleDriveConnectionStatus{}, err
+	}
+	connection := ArtifactStorageGoogleDriveConnection{
+		ProjectID: projectID,
+		Status:    "disconnected",
+	}
+	if found {
+		connection = mapArtifactStorageGoogleDriveConnection(record)
+	}
+	if accountID := normalizeGoogleDriveStoredAccountID(firstNonEmptyGoogleDriveValue(connection.AccountID, connection.AccountEmail)); accountID != "" &&
+		!strings.EqualFold(strings.TrimSpace(connection.Status), "reconnect_required") &&
+		!strings.EqualFold(strings.TrimSpace(connection.Status), "failed") {
+		accountStatus, statusErr := r.googleDriveAccountStatusByID(accountID)
+		switch {
+		case statusErr != nil:
+			connection.Status = "reconnect_required"
+			if strings.TrimSpace(connection.LastError) == "" {
+				connection.LastError = statusErr.Error()
+			}
+		case accountStatus.ReconnectRequired:
+			connection.Status = "reconnect_required"
+			connection.LastError = firstNonEmptyGoogleDriveValue(accountStatus.LastError, connection.LastError)
+		case !accountStatus.AccountReady:
+			connection.Status = "failed"
+			connection.LastError = firstNonEmptyGoogleDriveValue(accountStatus.LastError, connection.LastError)
+		case !accountStatus.McpWriteReady:
+			connection.Status = "reconnect_required"
+			connection.LastError = "Connected Google Drive account is missing the drive.file scope required for chat sync. Reconnect the account and grant chat sync access."
+		}
+	}
+
+	accounts, err := r.ListGoogleDriveAccounts()
+	if err != nil {
+		return ChatSyncGoogleDriveConnectionStatus{}, err
+	}
+
+	var session *ArtifactStorageGoogleDriveSession
+	if trimmedSessionID := strings.TrimSpace(sessionID); trimmedSessionID != "" {
+		state, loadErr := r.loadArtifactStorageGoogleDriveState()
+		if loadErr != nil {
+			return ChatSyncGoogleDriveConnectionStatus{}, loadErr
+		}
+		if record, ok := state.Sessions[trimmedSessionID]; ok && record.ProjectID == projectID {
+			mapped := mapArtifactStorageGoogleDriveSession(record, "")
+			session = &mapped
+		}
+	}
+
+	return ChatSyncGoogleDriveConnectionStatus{
+		Connection:        connection,
+		Session:           session,
+		EffectiveSource:   source,
+		Ready:             strings.EqualFold(connection.Status, "connected") && strings.TrimSpace(connection.FolderID) != "",
+		AvailableAccounts: accounts,
+	}, nil
+}
+
+func (r *Runner) SaveGoogleDriveChatSyncFolderSelection(request ArtifactStorageGoogleDriveFolderSelectionRequest) (ChatSyncGoogleDriveConnectionStatus, error) {
+	sessionID := strings.TrimSpace(request.SessionID)
+	if sessionID == "" {
+		return ChatSyncGoogleDriveConnectionStatus{}, errors.New("sessionId is required")
+	}
+	session, err := r.getArtifactStorageGoogleDriveSession(sessionID)
+	if err != nil {
+		return ChatSyncGoogleDriveConnectionStatus{}, err
+	}
+	if strings.TrimSpace(session.FlowKind) != googleDriveSessionFlowChatSyncBinding {
+		return ChatSyncGoogleDriveConnectionStatus{}, errors.New("google drive folder binding session does not belong to chat sync")
+	}
+	if strings.TrimSpace(session.ProjectID) == "" {
+		return ChatSyncGoogleDriveConnectionStatus{}, errors.New("google drive folder binding session is missing projectId")
+	}
+
+	folderID := strings.TrimSpace(request.FolderID)
+	if folderID == "" {
+		return ChatSyncGoogleDriveConnectionStatus{}, errors.New("folderId is required")
+	}
+	creds, err := r.loadGoogleDriveCredentialBySession(session.SessionID)
+	if err != nil {
+		return ChatSyncGoogleDriveConnectionStatus{}, err
+	}
+	accessToken, err := r.refreshGoogleDriveAccessToken(creds.RefreshToken)
+	if err != nil {
+		r.markGoogleDriveArtifactReconnectRequired(session.ProjectID, sessionID, err)
+		return ChatSyncGoogleDriveConnectionStatus{}, err
+	}
+	folderInfo, err := fetchGoogleDriveFileByID(accessToken, folderID)
+	if err != nil {
+		if !shouldFallbackToPickedGoogleDriveFolder(err) {
+			return ChatSyncGoogleDriveConnectionStatus{}, err
+		}
+		folderInfo = googleDriveFile{
+			ID:       folderID,
+			Name:     firstNonEmptyGoogleDriveValue(request.FolderName, folderID),
+			MimeType: googleDriveFolderMimeType,
+		}
+	}
+	if folderInfo.MimeType != googleDriveFolderMimeType {
+		return ChatSyncGoogleDriveConnectionStatus{}, errors.New("selected Google Drive item is not a folder")
+	}
+
+	accountEmail := strings.TrimSpace(request.AccountEmail)
+	if accountEmail == "" {
+		accountEmail = creds.AccountEmail
+	}
+	accountID := firstNonEmptyGoogleDriveValue(session.AccountID, normalizeGoogleDriveAccountID(accountEmail))
+	if strings.TrimSpace(accountID) == "" {
+		accountID = normalizeGoogleDriveAccountID(session.ProjectID)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if err := r.saveArtifactStorageGoogleDriveState(func(current *artifactStorageGoogleDriveState) {
+		if current.ChatSyncConnections == nil {
+			current.ChatSyncConnections = map[string]artifactStorageGoogleDriveConnectionRecord{}
+		}
+		connectedAt := now
+		if existing, ok := current.ChatSyncConnections[session.ProjectID]; ok && strings.TrimSpace(existing.ConnectedAt) != "" {
+			connectedAt = existing.ConnectedAt
+		}
+		current.ChatSyncConnections[session.ProjectID] = artifactStorageGoogleDriveConnectionRecord{
+			ProjectID:       session.ProjectID,
+			Status:          string(ArtifactStorageGoogleDriveSessionConnected),
+			FolderID:        folderInfo.ID,
+			FolderName:      folderInfo.Name,
+			AccountID:       accountID,
+			AccountEmail:    accountEmail,
+			LastError:       "",
+			LastValidatedAt: now,
+			ConnectedAt:     connectedAt,
+			UpdatedAt:       now,
+		}
+		if current.Accounts == nil {
+			current.Accounts = map[string]artifactStorageGoogleDriveAccountRecord{}
+		}
+		if strings.TrimSpace(accountID) != "" {
+			delete(current.SuppressedAccounts, accountID)
+			accountRecord := current.Accounts[accountID]
+			accountRecord.AccountID = accountID
+			accountRecord.AccountEmail = accountEmail
+			accountRecord.Status = "connected"
+			accountRecord.LastError = ""
+			accountRecord.LastValidatedAt = now
+			if strings.TrimSpace(accountRecord.ConnectedAt) == "" {
+				accountRecord.ConnectedAt = now
+			}
+			accountRecord.UpdatedAt = now
+			current.Accounts[accountID] = accountRecord
+		}
+		if current.Sessions == nil {
+			current.Sessions = map[string]artifactStorageGoogleDriveSessionRecord{}
+		}
+		record := current.Sessions[sessionID]
+		record.Status = string(ArtifactStorageGoogleDriveSessionConnected)
+		record.FolderID = folderInfo.ID
+		record.FolderName = folderInfo.Name
+		record.AccountID = accountID
+		record.AccountEmail = accountEmail
+		record.ConnectedAt = now
+		record.LastError = ""
+		current.Sessions[sessionID] = record
+	}); err != nil {
+		return ChatSyncGoogleDriveConnectionStatus{}, err
+	}
+
+	return r.GetGoogleDriveChatSyncConnectionStatus(session.ProjectID, sessionID)
+}
+
 func (r *Runner) ListGoogleDriveAccounts() ([]GoogleDriveAccountStatus, error) {
 	return r.resolveGoogleDriveAccountStatuses()
 }
@@ -618,9 +915,10 @@ func (r *Runner) loadArtifactStorageGoogleDriveState() (artifactStorageGoogleDri
 				return artifactStorageGoogleDriveState{}, legacyErr
 			} else {
 				return artifactStorageGoogleDriveState{
-					Sessions:           map[string]artifactStorageGoogleDriveSessionRecord{},
-					Connections:        map[string]artifactStorageGoogleDriveConnectionRecord{},
-					SuppressedAccounts: map[string]bool{},
+					Sessions:            map[string]artifactStorageGoogleDriveSessionRecord{},
+					Connections:         map[string]artifactStorageGoogleDriveConnectionRecord{},
+					ChatSyncConnections: map[string]artifactStorageGoogleDriveConnectionRecord{},
+					SuppressedAccounts:  map[string]bool{},
 				}, nil
 			}
 		} else {
@@ -637,6 +935,9 @@ func (r *Runner) loadArtifactStorageGoogleDriveState() (artifactStorageGoogleDri
 	}
 	if state.Connections == nil {
 		state.Connections = map[string]artifactStorageGoogleDriveConnectionRecord{}
+	}
+	if state.ChatSyncConnections == nil {
+		state.ChatSyncConnections = map[string]artifactStorageGoogleDriveConnectionRecord{}
 	}
 	if state.Accounts == nil {
 		state.Accounts = map[string]artifactStorageGoogleDriveAccountRecord{}
@@ -655,7 +956,8 @@ func (r *Runner) resolveGoogleDriveAccountStatuses() ([]GoogleDriveAccountStatus
 	}
 
 	projectCounts := map[string]int{}
-	for _, connection := range state.Connections {
+	seenAccountProjects := map[string]bool{}
+	recordProjectCount := func(connection artifactStorageGoogleDriveConnectionRecord) {
 		accountID := normalizeGoogleDriveAccountID(connection.AccountID)
 		if accountID == "" {
 			accountID = normalizeGoogleDriveAccountID(connection.AccountEmail)
@@ -663,9 +965,22 @@ func (r *Runner) resolveGoogleDriveAccountStatuses() ([]GoogleDriveAccountStatus
 		if accountID == "" {
 			accountID = normalizeGoogleDriveAccountID(connection.ProjectID)
 		}
-		if accountID != "" {
-			projectCounts[accountID]++
+		projectID := strings.TrimSpace(connection.ProjectID)
+		if accountID == "" || projectID == "" {
+			return
 		}
+		key := accountID + "::" + projectID
+		if seenAccountProjects[key] {
+			return
+		}
+		seenAccountProjects[key] = true
+		projectCounts[accountID]++
+	}
+	for _, connection := range state.Connections {
+		recordProjectCount(connection)
+	}
+	for _, connection := range state.ChatSyncConnections {
+		recordProjectCount(connection)
 	}
 
 	accounts := make([]GoogleDriveAccountStatus, 0, len(state.Accounts))
@@ -780,6 +1095,16 @@ func (r *Runner) DisconnectGoogleDriveAccount(accountID string) error {
 			connection.LastValidatedAt = now
 			connection.UpdatedAt = now
 			current.Connections[projectID] = connection
+		}
+		for projectID, connection := range current.ChatSyncConnections {
+			if !strings.EqualFold(normalizeGoogleDriveStoredAccountID(connection.AccountID), trimmedAccountID) {
+				continue
+			}
+			connection.Status = "reconnect_required"
+			connection.LastError = "Google Drive account was disconnected on this runner."
+			connection.LastValidatedAt = now
+			connection.UpdatedAt = now
+			current.ChatSyncConnections[projectID] = connection
 		}
 		for sessionID, session := range current.Sessions {
 			if !strings.EqualFold(normalizeGoogleDriveStoredAccountID(session.AccountID), trimmedAccountID) {
@@ -964,6 +1289,9 @@ func normalizeGoogleDriveArtifactState(state *artifactStorageGoogleDriveState) {
 	if state.Connections == nil {
 		state.Connections = map[string]artifactStorageGoogleDriveConnectionRecord{}
 	}
+	if state.ChatSyncConnections == nil {
+		state.ChatSyncConnections = map[string]artifactStorageGoogleDriveConnectionRecord{}
+	}
 	if state.Accounts == nil {
 		state.Accounts = map[string]artifactStorageGoogleDriveAccountRecord{}
 	}
@@ -994,6 +1322,38 @@ func normalizeGoogleDriveArtifactState(state *artifactStorageGoogleDriveState) {
 		accountRecord.LastValidatedAt = firstNonEmptyGoogleDriveValue(normalizedRecord.LastValidatedAt, accountRecord.LastValidatedAt)
 		accountRecord.ConnectedAt = firstNonEmptyGoogleDriveValue(normalizedRecord.ConnectedAt, accountRecord.ConnectedAt)
 		accountRecord.UpdatedAt = firstNonEmptyGoogleDriveValue(normalizedRecord.UpdatedAt, accountRecord.UpdatedAt)
+		accountRecord.GrantedScopes = normalizeGoogleDriveScopes(
+			firstNonEmptyGoogleDriveScopes(accountRecord.GrantedScopes, googleDriveArtifactRequestedScopes()),
+		)
+		if strings.TrimSpace(accountRecord.Status) == "" {
+			accountRecord.Status = "connected"
+		}
+		state.Accounts[accountID] = accountRecord
+	}
+
+	for projectID, record := range state.ChatSyncConnections {
+		normalizedRecord := record
+		accountID := firstNonEmptyGoogleDriveValue(
+			normalizedRecord.AccountID,
+			normalizeGoogleDriveAccountID(normalizedRecord.AccountEmail),
+			normalizeGoogleDriveAccountID(projectID),
+		)
+		normalizedRecord.AccountID = accountID
+		if strings.TrimSpace(normalizedRecord.ProjectID) == "" {
+			normalizedRecord.ProjectID = projectID
+		}
+		state.ChatSyncConnections[projectID] = normalizedRecord
+		if accountID == "" || state.SuppressedAccounts[accountID] {
+			continue
+		}
+		accountRecord := state.Accounts[accountID]
+		accountRecord.AccountID = accountID
+		accountRecord.AccountEmail = firstNonEmptyGoogleDriveValue(accountRecord.AccountEmail, normalizedRecord.AccountEmail)
+		accountRecord.Status = firstNonEmptyGoogleDriveValue(normalizedRecord.Status, accountRecord.Status)
+		accountRecord.LastError = firstNonEmptyGoogleDriveValue(normalizedRecord.LastError, accountRecord.LastError)
+		accountRecord.LastValidatedAt = firstNonEmptyGoogleDriveValue(normalizedRecord.LastValidatedAt, accountRecord.LastValidatedAt)
+		accountRecord.ConnectedAt = firstNonEmptyGoogleDriveValue(normalizedRecord.ConnectedAt, accountRecord.ConnectedAt)
+		accountRecord.UpdatedAt = firstNonEmptyGoogleDriveValue(accountRecord.UpdatedAt, normalizedRecord.UpdatedAt)
 		accountRecord.GrantedScopes = normalizeGoogleDriveScopes(
 			firstNonEmptyGoogleDriveScopes(accountRecord.GrantedScopes, googleDriveArtifactRequestedScopes()),
 		)
@@ -1402,6 +1762,173 @@ func RenderGoogleDriveArtifactPickerHTML(sessionID string) string {
                 }
                 picker.setVisible(false);
                 setStatus("Google Drive is connected. You can close this tab.", false);
+                if (window.opener) {
+                  window.opener.postMessage({ type: "flowpilot-google-drive-connected", projectId: savePayload.connection?.projectId || "" }, "*");
+                }
+                window.setTimeout(() => window.close(), 350);
+              } catch (error) {
+                setStatus(error instanceof Error ? error.message : "Unable to save the selected folder.", true);
+              }
+            } else if (action === google.picker.Action.CANCEL) {
+              setStatus("Folder selection was cancelled. You can retry below.", true);
+              retryButton.style.display = "inline-flex";
+            } else {
+              setStatus("Picker returned " + String(action || "an unknown action") + ".", true);
+            }
+          })
+          .build();
+        picker.setVisible(true);
+      }
+
+      retryButton.addEventListener("click", () => {
+        if (pickerReady) {
+          openPicker();
+        } else {
+          void loadPicker();
+        }
+      });
+
+      void loadPicker();
+    </script>
+  </body>
+</html>`, sessionID, googleDriveArtifactPickerRelayPath)
+}
+
+func RenderGoogleDriveChatSyncPickerHTML(sessionID string) string {
+	return fmt.Sprintf(`<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FlowPilot Google Drive Chat Sync Folder Picker</title>
+    <script src="https://apis.google.com/js/api.js"></script>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <style>
+      body { font-family: sans-serif; padding: 24px; background: #f6f7f9; color: #111827; }
+      .card { max-width: 640px; margin: 32px auto; background: white; border-radius: 16px; padding: 24px; box-shadow: 0 12px 32px rgba(0,0,0,.08); }
+      .muted { color: #6b7280; }
+      .error { color: #b91c1c; }
+      .debug { display: none; margin-top: 16px; padding: 12px; border-radius: 12px; background: #f3f4f6; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+      button { border: none; border-radius: 999px; padding: 12px 18px; font-weight: 600; cursor: pointer; background: #111827; color: white; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Select a Google Drive folder</h1>
+      <p class="muted">FlowPilot will store synced chat sessions below the folder you choose for this project on this runner host.</p>
+      <p id="status">Preparing Google Picker…</p>
+      <button id="retry" style="display:none">Retry picker</button>
+      <pre id="debug" class="debug"></pre>
+    </div>
+    <script>
+      const sessionId = %q;
+      const pickerOrigin = window.location.protocol + "//" + window.location.host;
+      const pickerRelayUrl = pickerOrigin + %q;
+      const statusEl = document.getElementById("status");
+      const retryButton = document.getElementById("retry");
+      const debugEl = document.getElementById("debug");
+      let pickerReady = false;
+      let oauthPayload = null;
+
+      function setStatus(message, isError) {
+        statusEl.textContent = message;
+        statusEl.className = isError ? "error" : "";
+      }
+
+      function setDebug(value) {
+        if (!debugEl) {
+          return;
+        }
+        if (!value) {
+          debugEl.style.display = "none";
+          debugEl.textContent = "";
+          return;
+        }
+        debugEl.style.display = "block";
+        debugEl.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+      }
+
+      async function loadPicker() {
+        try {
+          const response = await fetch("/client/chat-sync/google-drive/picker-token?sessionId=" + encodeURIComponent(sessionId), { cache: "no-store" });
+          const payload = await response.json();
+          if (!response.ok) {
+            throw new Error(payload.error || "Unable to prepare the Google Picker token.");
+          }
+          oauthPayload = payload;
+          await new Promise((resolve) => window.gapi.load("picker", resolve));
+          pickerReady = true;
+          openPicker();
+        } catch (error) {
+          setStatus(error instanceof Error ? error.message : "Unable to prepare Google Picker.", true);
+          retryButton.style.display = "inline-flex";
+        }
+      }
+
+      function openPicker() {
+        if (!pickerReady || !oauthPayload) {
+          return;
+        }
+        retryButton.style.display = "none";
+        setStatus("Waiting for folder selection…", false);
+        const folderMimeType = "application/vnd.google-apps.folder";
+        const view = new google.picker.DocsView()
+          .setIncludeFolders(true)
+          .setMimeTypes(folderMimeType)
+          .setSelectFolderEnabled(true);
+        const picker = new google.picker.PickerBuilder()
+          .setDeveloperKey(oauthPayload.apiKey)
+          .setOAuthToken(oauthPayload.accessToken)
+          .setOrigin(pickerOrigin)
+          .setRelayUrl(pickerRelayUrl)
+          .addView(view)
+          .setSelectableMimeTypes(folderMimeType)
+          .setTitle("Select a FlowPilot chat sync folder")
+          .setCallback(async (data) => {
+            const action = data[google.picker.Response.ACTION] || data.action;
+            const docs = data[google.picker.Response.DOCUMENTS] || data.docs || [];
+            setDebug({
+              action,
+              docs: docs.map((doc) => ({
+                id: doc[google.picker.Document.ID] || doc.id || "",
+                name: doc[google.picker.Document.NAME] || doc.name || "",
+                mimeType: doc[google.picker.Document.MIME_TYPE] || doc.mimeType || "",
+              })),
+            });
+            if (action === google.picker.Action.PICKED && docs.length > 0) {
+              const folder = docs[0];
+              const folderId = folder[google.picker.Document.ID] || folder.id || "";
+              const folderName = folder[google.picker.Document.NAME] || folder.name || "";
+              try {
+                setStatus("Saving the selected folder…", false);
+                const saveResponse = await fetch("/client/chat-sync/google-drive/folder-selection", {
+                  method: "POST",
+                  headers: { "content-type": "application/json" },
+                  body: JSON.stringify({
+                    sessionId,
+                    folderId,
+                    folderName,
+                  }),
+                });
+                const saveBody = await saveResponse.text();
+                let savePayload = {};
+                try {
+                  savePayload = saveBody ? JSON.parse(saveBody) : {};
+                } catch (parseError) {
+                  savePayload = { raw: saveBody, parseError: parseError instanceof Error ? parseError.message : "Unable to parse response." };
+                }
+                setDebug({
+                  action,
+                  folderId,
+                  folderName,
+                  saveStatus: saveResponse.status,
+                  savePayload,
+                });
+                if (!saveResponse.ok) {
+                  throw new Error(savePayload.error || "Unable to save the selected folder.");
+                }
+                picker.setVisible(false);
+                setStatus("Chat sync folder saved. You can close this tab.", false);
                 if (window.opener) {
                   window.opener.postMessage({ type: "flowpilot-google-drive-connected", projectId: savePayload.connection?.projectId || "" }, "*");
                 }

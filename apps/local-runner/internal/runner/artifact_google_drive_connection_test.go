@@ -261,6 +261,14 @@ func TestDisconnectGoogleDriveAccountClearsSelectionAndMarksBindingsReconnectReq
 			FolderID:   "folder-1",
 			FolderName: "Artifacts",
 		}
+		current.ChatSyncConnections["project-1"] = artifactStorageGoogleDriveConnectionRecord{
+			ProjectID:    "project-1",
+			AccountID:    "account-1",
+			AccountEmail: "owner@example.com",
+			FolderID:     "chat-folder-1",
+			FolderName:   "Chat Sync",
+			Status:       "connected",
+		}
 	}); err != nil {
 		t.Fatalf("saveArtifactStorageGoogleDriveState() failed: %v", err)
 	}
@@ -295,6 +303,9 @@ func TestDisconnectGoogleDriveAccountClearsSelectionAndMarksBindingsReconnectReq
 	if state.Sessions["session-1"].Status != "reconnect_required" {
 		t.Fatalf("expected active session to become reconnect_required, got %#v", state.Sessions["session-1"])
 	}
+	if state.ChatSyncConnections["project-1"].Status != "reconnect_required" {
+		t.Fatalf("expected chat sync binding to become reconnect_required, got %#v", state.ChatSyncConnections["project-1"])
+	}
 
 	workspaceStatus, err := instance.LoadGoogleDriveWorkspaceConfig()
 	if err != nil {
@@ -302,6 +313,198 @@ func TestDisconnectGoogleDriveAccountClearsSelectionAndMarksBindingsReconnectReq
 	}
 	if workspaceStatus.MCP.AccountID != "" {
 		t.Fatalf("expected MCP account selection to be cleared, got %#v", workspaceStatus.MCP)
+	}
+}
+
+func TestGetGoogleDriveChatSyncConnectionStatusFallsBackToArtifactBinding(t *testing.T) {
+	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
+	t.Setenv("GOOGLE_DRIVE_CLIENT_ID", "client-id")
+	t.Setenv("GOOGLE_DRIVE_CLIENT_SECRET", "client-secret")
+	stubGoogleDriveOAuthTokenRefresh(t)
+
+	if err := instance.saveGoogleDriveCredentialByAccount("account-1", googleDriveCredential{
+		RefreshToken: "refresh-token-1",
+		AccountEmail: "owner@example.com",
+	}); err != nil {
+		t.Fatalf("saveGoogleDriveCredentialByAccount() failed: %v", err)
+	}
+	if err := instance.saveArtifactStorageGoogleDriveState(func(current *artifactStorageGoogleDriveState) {
+		current.Accounts["account-1"] = artifactStorageGoogleDriveAccountRecord{
+			AccountID:     "account-1",
+			AccountEmail:  "owner@example.com",
+			GrantedScopes: googleDriveArtifactRequestedScopes(),
+			Status:        "connected",
+		}
+		current.Connections["project-1"] = artifactStorageGoogleDriveConnectionRecord{
+			ProjectID:    "project-1",
+			AccountID:    "account-1",
+			AccountEmail: "owner@example.com",
+			FolderID:     "artifact-folder-1",
+			FolderName:   "Artifacts",
+			Status:       "connected",
+		}
+	}); err != nil {
+		t.Fatalf("saveArtifactStorageGoogleDriveState() failed: %v", err)
+	}
+
+	status, err := instance.GetGoogleDriveChatSyncConnectionStatus("project-1", "")
+	if err != nil {
+		t.Fatalf("GetGoogleDriveChatSyncConnectionStatus() failed: %v", err)
+	}
+	if status.EffectiveSource != "artifact_legacy" {
+		t.Fatalf("expected artifact legacy fallback, got %#v", status)
+	}
+	if status.Connection.FolderID != "artifact-folder-1" || !status.Ready {
+		t.Fatalf("expected artifact legacy folder to stay readable, got %#v", status)
+	}
+}
+
+func TestCreateGoogleDriveChatSyncConnectSessionUsesSelectedAccountPickerFlow(t *testing.T) {
+	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
+	t.Setenv("GOOGLE_DRIVE_CLIENT_ID", "client-id")
+	t.Setenv("GOOGLE_DRIVE_CLIENT_SECRET", "client-secret")
+	t.Setenv("GOOGLE_DRIVE_REDIRECT_URI", "http://127.0.0.1:4317/artifact-storage/google-drive/oauth/callback")
+	t.Setenv("GOOGLE_PICKER_API_KEY", "picker-key")
+	stubGoogleDriveOAuthTokenRefresh(t)
+
+	if err := instance.saveGoogleDriveCredentialByAccount("account-1", googleDriveCredential{
+		RefreshToken: "refresh-token-1",
+		AccountEmail: "owner@example.com",
+	}); err != nil {
+		t.Fatalf("saveGoogleDriveCredentialByAccount() failed: %v", err)
+	}
+	if err := instance.saveArtifactStorageGoogleDriveState(func(current *artifactStorageGoogleDriveState) {
+		current.Accounts["account-1"] = artifactStorageGoogleDriveAccountRecord{
+			AccountID:     "account-1",
+			AccountEmail:  "owner@example.com",
+			GrantedScopes: googleDriveArtifactRequestedScopes(),
+			Status:        "connected",
+		}
+	}); err != nil {
+		t.Fatalf("saveArtifactStorageGoogleDriveState() failed: %v", err)
+	}
+
+	session, err := instance.CreateGoogleDriveChatSyncConnectSession("project-1", ChatSyncGoogleDriveConnectRequest{
+		BaseURL:   "http://127.0.0.1:4317",
+		AccountID: "account-1",
+	})
+	if err != nil {
+		t.Fatalf("CreateGoogleDriveChatSyncConnectSession() failed: %v", err)
+	}
+	if session.Status != ArtifactStorageGoogleDriveSessionAwaitingFolderPicker {
+		t.Fatalf("expected awaiting folder picker status, got %#v", session)
+	}
+	if !strings.Contains(session.ConnectURL, "/artifact-storage/google-drive/picker?sessionId=") {
+		t.Fatalf("expected direct picker URL, got %q", session.ConnectURL)
+	}
+
+	state, err := instance.loadArtifactStorageGoogleDriveState()
+	if err != nil {
+		t.Fatalf("loadArtifactStorageGoogleDriveState() failed: %v", err)
+	}
+	if got := state.Sessions[session.SessionID].FlowKind; got != googleDriveSessionFlowChatSyncBinding {
+		t.Fatalf("expected chat sync flow kind, got %q", got)
+	}
+}
+
+func TestSaveGoogleDriveChatSyncFolderSelectionDoesNotMutateArtifactBinding(t *testing.T) {
+	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
+	t.Setenv("GOOGLE_DRIVE_CLIENT_ID", "client-id")
+	t.Setenv("GOOGLE_DRIVE_CLIENT_SECRET", "client-secret")
+	t.Setenv("GOOGLE_DRIVE_REDIRECT_URI", "http://127.0.0.1:4317/artifact-storage/google-drive/oauth/callback")
+	t.Setenv("GOOGLE_PICKER_API_KEY", "picker-key")
+
+	originalHTTPRequest := httpRequestFn
+	t.Cleanup(func() {
+		httpRequestFn = originalHTTPRequest
+	})
+	httpRequestFn = func(
+		_ context.Context,
+		method string,
+		endpoint string,
+		_ map[string]string,
+		body []byte,
+	) (int, []byte, error) {
+		switch {
+		case endpoint == "https://oauth2.googleapis.com/token":
+			values, _ := url.ParseQuery(string(body))
+			switch values.Get("grant_type") {
+			case "authorization_code":
+				return 200, []byte(`{"refresh_token":"refresh-token-1","id_token":"` + fakeGoogleIDToken("owner@example.com") + `"}`), nil
+			case "refresh_token":
+				return 200, []byte(`{"access_token":"access-token-1"}`), nil
+			default:
+				t.Fatalf("unexpected google token grant type: %q", values.Get("grant_type"))
+			}
+		case method == http.MethodGet && strings.HasPrefix(endpoint, "https://www.googleapis.com/drive/v3/files/chat-folder-1"):
+			return 200, []byte(`{"id":"chat-folder-1","name":"Chat Sync Folder","mimeType":"application/vnd.google-apps.folder"}`), nil
+		default:
+			t.Fatalf("unexpected request: %s %s", method, endpoint)
+		}
+		return 0, nil, nil
+	}
+
+	if err := instance.saveArtifactStorageGoogleDriveState(func(current *artifactStorageGoogleDriveState) {
+		current.Connections["project-1"] = artifactStorageGoogleDriveConnectionRecord{
+			ProjectID:    "project-1",
+			AccountID:    "account-1",
+			AccountEmail: "owner@example.com",
+			FolderID:     "artifact-folder-1",
+			FolderName:   "Artifacts",
+			Status:       "connected",
+		}
+	}); err != nil {
+		t.Fatalf("saveArtifactStorageGoogleDriveState() failed: %v", err)
+	}
+
+	session, err := instance.CreateGoogleDriveChatSyncConnectSession("project-1", ChatSyncGoogleDriveConnectRequest{
+		BaseURL: "http://127.0.0.1:4317",
+	})
+	if err != nil {
+		t.Fatalf("CreateGoogleDriveChatSyncConnectSession() failed: %v", err)
+	}
+	connectToken := queryValue(session.ConnectURL, "token")
+	redirectURL, err := instance.BuildGoogleDriveArtifactConnectRedirect(session.SessionID, connectToken)
+	if err != nil {
+		t.Fatalf("BuildGoogleDriveArtifactConnectRedirect() failed: %v", err)
+	}
+	rawState := queryValue(redirectURL, "state")
+	if _, err := instance.HandleGoogleDriveArtifactOAuthCallback(rawState, "oauth-code-1", ""); err != nil {
+		t.Fatalf("HandleGoogleDriveArtifactOAuthCallback() failed: %v", err)
+	}
+
+	status, err := instance.SaveGoogleDriveChatSyncFolderSelection(ArtifactStorageGoogleDriveFolderSelectionRequest{
+		SessionID:    session.SessionID,
+		FolderID:     "chat-folder-1",
+		FolderName:   "Chat Sync Folder",
+		AccountEmail: "owner@example.com",
+	})
+	if err != nil {
+		t.Fatalf("SaveGoogleDriveChatSyncFolderSelection() failed: %v", err)
+	}
+	if status.EffectiveSource != "chat_sync" || status.Connection.FolderID != "chat-folder-1" {
+		t.Fatalf("expected dedicated chat sync binding, got %#v", status)
+	}
+
+	artifactStatus, err := instance.GetGoogleDriveArtifactConnectionStatus("project-1", "")
+	if err != nil {
+		t.Fatalf("GetGoogleDriveArtifactConnectionStatus() failed: %v", err)
+	}
+	if artifactStatus.Connection.FolderID != "artifact-folder-1" {
+		t.Fatalf("expected artifact binding to stay unchanged, got %#v", artifactStatus.Connection)
+	}
+}
+
+func TestRenderGoogleDriveChatSyncPickerHTMLUsesChatSyncEndpoints(t *testing.T) {
+	html := RenderGoogleDriveChatSyncPickerHTML("session-1")
+	for _, expected := range []string{
+		`/client/chat-sync/google-drive/picker-token`,
+		`/client/chat-sync/google-drive/folder-selection`,
+		`Select a FlowPilot chat sync folder`,
+	} {
+		if !strings.Contains(html, expected) {
+			t.Fatalf("expected picker HTML to contain %q", expected)
+		}
 	}
 }
 

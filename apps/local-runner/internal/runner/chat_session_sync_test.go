@@ -264,6 +264,20 @@ func remoteManifestFileID(api *fakeChatDriveAPI) string {
 	return ""
 }
 
+func rootAncestorID(api *fakeChatDriveAPI, fileID string) string {
+	currentID := fileID
+	visited := map[string]bool{}
+	for currentID != "" && !visited[currentID] {
+		visited[currentID] = true
+		file, ok := api.files[currentID]
+		if !ok || file.ParentID == "" {
+			return currentID
+		}
+		currentID = file.ParentID
+	}
+	return currentID
+}
+
 func seedLocalChatRun(t *testing.T, store *localFileSessionStore, accountHome, workspace, runID string, fileBody []byte) ProviderSessionState {
 	t.Helper()
 	sessionID := "session-" + runID
@@ -462,6 +476,61 @@ func TestSyncChatRunToDriveRequiresGoogleDriveConnection(t *testing.T) {
 	}
 	if _, apiErr := svc.syncChatRunToDrive(context.Background(), "run-no-drive", ChatSessionSyncRequest{}); apiErr == nil || apiErr.code != "google_drive_not_connected" {
 		t.Fatalf("expected google_drive_not_connected, got %#v", apiErr)
+	}
+}
+
+func TestSyncChatRunToDriveRejectsFolderOverride(t *testing.T) {
+	svc, _, store, _, workspace, accountHome := newChatSyncService(t)
+	seedLocalChatRun(t, store, accountHome, workspace, "run-folder-override", []byte("session-body"))
+
+	if _, apiErr := svc.syncChatRunToDrive(context.Background(), "run-folder-override", ChatSessionSyncRequest{
+		GoogleDriveFolderID: "folder-override",
+	}); apiErr == nil || apiErr.code != "invalid_request" {
+		t.Fatalf("expected invalid_request for folder override, got %#v", apiErr)
+	}
+}
+
+func TestChatSessionSyncPrefersDedicatedChatFolderOverArtifactLegacyBinding(t *testing.T) {
+	svc, instance, store, api, workspace, accountHome := newChatSyncService(t)
+	if err := instance.saveGoogleDriveCredentialByAccount("drive-account-1", googleDriveCredential{
+		RefreshToken: "refresh-token-1",
+		AccountEmail: "owner@example.com",
+	}); err != nil {
+		t.Fatalf("saveGoogleDriveCredentialByAccount: %v", err)
+	}
+	if err := instance.saveArtifactStorageGoogleDriveState(func(current *artifactStorageGoogleDriveState) {
+		current.ChatSyncConnections["project-1"] = artifactStorageGoogleDriveConnectionRecord{
+			ProjectID:    "project-1",
+			AccountID:    "drive-account-1",
+			AccountEmail: "owner@example.com",
+			FolderID:     "chat-root",
+			FolderName:   "Chat Sync",
+			Status:       "connected",
+		}
+	}); err != nil {
+		t.Fatalf("saveArtifactStorageGoogleDriveState: %v", err)
+	}
+	api.files["chat-root"] = fakeChatDriveFile{ID: "chat-root", Name: "chat-root", MimeType: googleDriveFolderMimeType}
+
+	seedLocalChatRun(t, store, accountHome, workspace, "run-chat-root", []byte("session-body"))
+	if _, apiErr := svc.syncChatRunToDrive(context.Background(), "run-chat-root", ChatSessionSyncRequest{}); apiErr != nil {
+		t.Fatalf("syncChatRunToDrive() failed: %v", apiErr)
+	}
+
+	summaries, apiErr := svc.listRemoteChatSessions(context.Background(), "project-1")
+	if apiErr != nil {
+		t.Fatalf("listRemoteChatSessions() failed: %v", apiErr)
+	}
+	if len(summaries) != 1 || summaries[0].SourceRunID != "run-chat-root" {
+		t.Fatalf("expected chat-root remote summary, got %#v", summaries)
+	}
+
+	manifestID := remoteManifestFileID(api)
+	if manifestID == "" {
+		t.Fatal("expected manifest upload")
+	}
+	if got := rootAncestorID(api, manifestID); got != "chat-root" {
+		t.Fatalf("expected manifest to upload under chat sync root, got root %q", got)
 	}
 }
 
