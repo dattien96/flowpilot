@@ -1253,14 +1253,45 @@ input {
 }
 .project-history-group-head {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  align-items: stretch;
+  gap: 0;
   text-align: left;
-  padding: 7px 9px;
+  padding: 0;
+  overflow: hidden;
 }
 .project-history-group-head.active {
   border-color: rgba(76, 141, 255, 0.32);
+  background: rgba(76, 141, 255, 0.08);
+}
+.project-history-group-toggle {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  padding: 7px 9px;
+}
+.project-history-sync-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  border: none;
+  border-left: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 0 10px;
+  font-size: 11px;
+}
+.project-history-sync-all:hover {
+  color: var(--accent);
   background: rgba(76, 141, 255, 0.08);
 }
 .project-history-group-title {
@@ -1312,8 +1343,39 @@ input {
   border-color: var(--accent);
   color: var(--text);
 }
+.project-history-sync-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 0;
+}
+.project-history-sync-icon:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.project-history-sync-icon:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+.project-history-sync-icon--failed {
+  color: var(--warn);
+  border-color: var(--warn);
+}
 .project-history-item:hover {
   background: var(--bg-2);
+}
+.project-history-item--active {
+  border-color: rgba(76, 141, 255, 0.5);
+  background: rgba(76, 141, 255, 0.16);
+}
+.project-history-item--active:hover {
+  background: rgba(76, 141, 255, 0.2);
 }
 .project-history-item:disabled,
 .project-history-item--disabled {

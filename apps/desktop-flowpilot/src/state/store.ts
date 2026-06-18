@@ -121,7 +121,8 @@ interface AppState {
   reconnect(): Promise<void>;
   loadRunHistory(): Promise<void>;
   loadRemoteChatSessions(): Promise<void>;
-  syncHistoryRun(runId: string): Promise<void>;
+  syncHistoryRun(runId: string, projectId?: string): Promise<void>;
+  syncAllInProject(projectId: string): Promise<void>;
   restoreRemoteChatSession(summary: RemoteChatSessionSummary, cwd?: string): Promise<void>;
   openHistoryRun(runId: string): Promise<void>;
   resetRun(): void;
@@ -530,8 +531,9 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
-  async syncHistoryRun(runId) {
+  async syncHistoryRun(runId, projectId) {
     const { client, selectedProjectId } = get();
+    const driveProjectId = projectId ?? selectedProjectId;
     set((s) => ({
       runHistory: s.runHistory.map((item) =>
         item.runId === runId
@@ -544,7 +546,7 @@ export const useStore = create<AppState>((set, get) => ({
       ),
     }));
     try {
-      const result = await client.syncChatRun(runId, selectedProjectId ? { googleDriveProjectId: selectedProjectId } : undefined);
+      const result = await client.syncChatRun(runId, driveProjectId ? { googleDriveProjectId: driveProjectId } : undefined);
       set((s) => ({
         runHistory: s.runHistory.map((item) =>
           item.runId === runId
@@ -581,6 +583,28 @@ export const useStore = create<AppState>((set, get) => ({
         ),
       }));
       throw err;
+    }
+  },
+
+  async syncAllInProject(projectId) {
+    // Sync every not-yet-synced chat run in the project, one at a time so we do
+    // not hammer Drive. Per-item failures are swallowed (syncHistoryRun marks
+    // the row failed) so one broken session does not abort the whole batch.
+    const targets = get()
+      .runHistory.filter(
+        (item) =>
+          item.projectId === projectId &&
+          item.runKind === "chat" &&
+          item.syncStatus !== "synced" &&
+          !item.unavailableReason,
+      )
+      .map((item) => item.runId);
+    for (const runId of targets) {
+      try {
+        await get().syncHistoryRun(runId, projectId);
+      } catch {
+        // already reflected as syncStatus: "failed" on the row
+      }
     }
   },
 
@@ -675,6 +699,10 @@ export const useStore = create<AppState>((set, get) => ({
     // approval cards as resolved and clear the stale pending state.
     if (handle.status !== "waiting_approval" && handle.status !== "waiting_question") {
       set((s) => {
+        // The stream may have ended because the user switched to another run
+        // (its abort supersedes this one). Don't clobber the now-active run's
+        // pending state with this stale run's cleanup.
+        if (s.runId !== handle.runId) return {};
         if (!s.pendingApproval && !s.pendingQuestion) return {};
         return {
           pendingApproval: undefined,

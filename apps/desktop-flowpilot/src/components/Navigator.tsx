@@ -28,6 +28,20 @@ function runTitle(text?: string): string {
   return text.length > 68 ? `${text.slice(0, 65)}...` : text;
 }
 
+function isUnsyncedChat(item: RunHistoryItem): boolean {
+  return item.runKind === "chat" && item.syncStatus !== "synced" && !item.unavailableReason;
+}
+
+// Small circular-arrow sync glyph used by the per-chat and per-project sync buttons.
+function SyncGlyph(): React.ReactElement {
+  return (
+    <svg width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+      <path d="M10.2 5.2A4.2 4.2 0 1 0 10.4 7.4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+      <polyline points="10.2,1.6 10.2,5.2 6.7,5.2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 function HistoryStatusIcon({ status, isNew }: { status: RunHistoryItem["status"]; isNew?: boolean }): React.ReactElement | null {
   if (isNew) {
     return (
@@ -87,6 +101,7 @@ export function Navigator(): React.ReactElement {
   const loadRemoteChatSessions = useStore((s) => s.loadRemoteChatSessions);
   const openHistoryRun = useStore((s) => s.openHistoryRun);
   const syncHistoryRun = useStore((s) => s.syncHistoryRun);
+  const syncAllInProject = useStore((s) => s.syncAllInProject);
   const restoreRemoteChatSession = useStore((s) => s.restoreRemoteChatSession);
 
   const runIdRef = useRef(runId);
@@ -286,19 +301,34 @@ export function Navigator(): React.ReactElement {
               const expanded = openProjectIds[projectId] ?? projectId === selectedProjectId;
               const visibleHistory = expanded ? visibleHistoryFor(projectId, history) : [];
               const hiddenCount = history.length - visibleHistory.length;
+              const unsyncedCount = history.filter(isUnsyncedChat).length;
               return (
                 <section key={projectId} className="project-history-group">
-                  <button
-                    type="button"
-                    className={`project-history-group-head ${expanded ? "active" : ""}`}
-                    onClick={() => toggleProjectHistory(projectId)}
-                  >
-                    <span className="project-history-group-title">
-                      <strong>{projectName}</strong>
-                      <small>{history.length} chats</small>
-                    </span>
-                    <span className="project-history-group-chevron">{expanded ? "▾" : "▸"}</span>
-                  </button>
+                  <div className={`project-history-group-head ${expanded ? "active" : ""}`}>
+                    <button
+                      type="button"
+                      className="project-history-group-toggle"
+                      onClick={() => toggleProjectHistory(projectId)}
+                    >
+                      <span className="project-history-group-title">
+                        <strong>{projectName}</strong>
+                        <small>{history.length} chats</small>
+                      </span>
+                      <span className="project-history-group-chevron">{expanded ? "▾" : "▸"}</span>
+                    </button>
+                    {unsyncedCount > 0 && (
+                      <button
+                        type="button"
+                        className="project-history-sync-all"
+                        onClick={() => void syncAllInProject(projectId)}
+                        title={`Sync ${unsyncedCount} chat${unsyncedCount > 1 ? "s" : ""} to Drive`}
+                        aria-label={`Sync all ${unsyncedCount} unsynced chats to Drive`}
+                      >
+                        <SyncGlyph />
+                        <span>{unsyncedCount}</span>
+                      </button>
+                    )}
+                  </div>
 
                   {expanded && (
                     <div className="project-history-list">
@@ -307,6 +337,10 @@ export function Navigator(): React.ReactElement {
                         const hasIcon = isNew || item.status === "running" || item.status === "starting" ||
                           item.status === "waiting_approval" || item.status === "waiting_question";
                         const isUnavailable = Boolean(item.unavailableReason);
+                        const isActive = item.runId === runId;
+                        const showSync = item.runKind === "chat" && item.syncStatus !== "synced";
+                        const isSyncing = item.syncStatus === "syncing";
+                        const syncFailed = item.syncStatus === "failed";
                         return (
                           <div
                             key={item.runId}
@@ -315,8 +349,9 @@ export function Navigator(): React.ReactElement {
                           >
                             <button
                               type="button"
-                              className={`project-history-item${hasIcon ? " project-history-item--has-icon" : ""}${isUnavailable ? " project-history-item--disabled" : ""}`}
+                              className={`project-history-item${hasIcon ? " project-history-item--has-icon" : ""}${isUnavailable ? " project-history-item--disabled" : ""}${isActive ? " project-history-item--active" : ""}`}
                               disabled={isUnavailable}
+                              aria-current={isActive ? "true" : undefined}
                               onClick={() => {
                                 if (isNew) setNewlyCompleted((c) => { const n = new Set(c); n.delete(item.runId); return n; });
                                 void openHistoryRun(item.runId);
@@ -332,14 +367,22 @@ export function Navigator(): React.ReactElement {
                                 {RUN_LABEL[item.status]} · {RUN_TIME_FORMAT.format(new Date(item.updatedAt))}
                               </span>
                             </button>
-                            {item.runKind === "chat" && (
+                            {showSync && (
                               <button
                                 type="button"
-                                className="project-history-sync"
-                                onClick={() => void syncHistoryRun(item.runId)}
-                                title="Sync this chat to Drive"
+                                className={`project-history-sync-icon${syncFailed ? " project-history-sync-icon--failed" : ""}`}
+                                disabled={isSyncing}
+                                onClick={() => void syncHistoryRun(item.runId, projectId)}
+                                title={
+                                  syncFailed
+                                    ? item.unavailableReason || "Sync failed — click to retry"
+                                    : isSyncing
+                                      ? "Syncing…"
+                                      : "Sync this chat to Drive"
+                                }
+                                aria-label="Sync chat to Drive"
                               >
-                                Sync
+                                {isSyncing ? <span className="history-status-spinner" aria-hidden="true" /> : <SyncGlyph />}
                               </button>
                             )}
                           </div>
