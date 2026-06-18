@@ -56,6 +56,8 @@ func LocateSessionFile(providerKey ProviderKey, accountHome, sessionID, cwd stri
 }
 
 // RelocateSessionFile copies a provider session file into the target account home.
+// If srcPath and the computed destination are the same file (both accounts share
+// the same home directory), it returns srcPath immediately without copying.
 func RelocateSessionFile(providerKey ProviderKey, srcPath, targetHome, sessionID, cwd string) (string, error) {
 	if strings.TrimSpace(srcPath) == "" || strings.TrimSpace(targetHome) == "" {
 		return "", errors.New("source path and target home are required")
@@ -63,6 +65,12 @@ func RelocateSessionFile(providerKey ProviderKey, srcPath, targetHome, sessionID
 	dstPath, err := relocationTargetPath(providerKey, srcPath, targetHome, sessionID, cwd)
 	if err != nil {
 		return "", err
+	}
+	// Same-home accounts (e.g. default account re-registered under a new ID on a
+	// single-account machine) map src and dst to the same physical file.  Nothing to
+	// copy; return success so the caller can rebind providerAccountID and persist.
+	if filepath.Clean(dstPath) == filepath.Clean(srcPath) {
+		return srcPath, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
 		return "", err

@@ -375,6 +375,85 @@ func TestRelocateSessionFileClaudePreservesProjectHashDirectory(t *testing.T) {
 	}
 }
 
+// TestRelocateSessionFileSameHomeCodexIsNoop verifies that when srcPath and the
+// computed dstPath are the same file (both accounts share the same home directory),
+// RelocateSessionFile returns srcPath without error — no copy is attempted.
+func TestRelocateSessionFileSameHomeCodexIsNoop(t *testing.T) {
+	sharedHome := t.TempDir()
+	src := writeCodexRollout(t, sharedHome, "rollout-abc", "/repo", time.Now().UTC())
+	got, err := RelocateSessionFile(ProviderKeyCodex, src, sharedHome, "rollout-abc", "/repo")
+	if err != nil {
+		t.Fatalf("RelocateSessionFile same-home: unexpected error: %v", err)
+	}
+	if filepath.Clean(got) != filepath.Clean(src) {
+		t.Fatalf("got = %q, want %q (same file)", got, src)
+	}
+}
+
+// TestRelocateSessionFileSameHomeClaudeIsNoop verifies same no-op for Claude sessions.
+func TestRelocateSessionFileSameHomeClaudeIsNoop(t *testing.T) {
+	sharedHome := t.TempDir()
+	src := filepath.Join(sharedHome, ".claude", "projects", "hash1", "session-1.jsonl")
+	if err := os.MkdirAll(filepath.Dir(src), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(src, []byte("content"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	got, err := RelocateSessionFile(ProviderKeyClaude, src, sharedHome, "session-1", "/repo")
+	if err != nil {
+		t.Fatalf("RelocateSessionFile same-home: unexpected error: %v", err)
+	}
+	if filepath.Clean(got) != filepath.Clean(src) {
+		t.Fatalf("got = %q, want %q (same file)", got, src)
+	}
+}
+
+// TestResumeRunSameHomeAccountRebindsProviderAccountID verifies that when a run was
+// stamped with account "acct-old" but the active account "acct-new" resolves to the
+// same home directory, resumeRun succeeds and rebinds the stored providerAccountID
+// to "acct-new" so future resumes go through the same-account fast path.
+func TestResumeRunSameHomeAccountRebindsProviderAccountID(t *testing.T) {
+	store, err := NewLocalFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	root := t.TempDir()
+	sharedHome := filepath.Join(root, "shared-home")
+	writeProviderAccountsConfig(t, filepath.Join(root, "provider-accounts.json"), []ProviderAccount{
+		{ID: "acct-old", ProviderKey: "codex", HomePath: sharedHome, SlotIndex: 0, AuthStatus: "connected", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+		{ID: "acct-new", ProviderKey: "codex", HomePath: sharedHome, SlotIndex: 1, AuthStatus: "connected", IsActive: true, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+	})
+	writeCodexAuth(t, sharedHome)
+	writeCodexRollout(t, sharedHome, "rollout-xyz", "/repo", time.Now().UTC())
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             "run-1",
+		ProjectID:         "project-1",
+		ProviderKey:       ProviderKeyCodex,
+		ProviderSessionID: "rollout-xyz",
+		ProviderAccountID: "acct-old",
+		WorkingDirectory:  "/repo",
+		Status:            RunStatusCompleted,
+		RunKind:           "chat",
+		StartedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+		UpdatedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("UpsertProviderSession: %v", err)
+	}
+	svc := NewInteractiveServiceWithStore(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+	if _, apiErr := svc.resumeRun("run-1"); apiErr != nil {
+		t.Fatalf("resumeRun: unexpected error: %v", apiErr)
+	}
+	// After success the store must have reboundProviderAccountID to "acct-new".
+	st, found, err := store.GetProviderSession(context.Background(), "run-1")
+	if err != nil || !found {
+		t.Fatalf("GetProviderSession = (%v, %v, %v)", st, found, err)
+	}
+	if st.ProviderAccountID != "acct-new" {
+		t.Fatalf("ProviderAccountID = %q, want acct-new", st.ProviderAccountID)
+	}
+}
+
 func TestPrepareCrossAccountResumeActiveAccountNotSignedIn(t *testing.T) {
 	store, err := NewLocalFileSessionStore(t.TempDir())
 	if err != nil {
