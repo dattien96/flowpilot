@@ -222,7 +222,7 @@ Task-071 defines what done means. This task turns that checklist into concrete t
   - reconstructed run has prompt/message/cwd/account fields from store
 - covers: `DOD-15`, `DOD-18`, `DOD-19`, `DOD-21`, `DOD-76`
 
-#### `TS-011` resumeRun reseeds chat step after reconstruction
+#### `[done] TS-011` resumeRun reseeds chat step after reconstruction
 
 - target file: `apps/local-runner/internal/runner/interactive_handlers_test.go`
 - signature: `func TestResumeRunReconstructsChatRunSeedsChatStep(t *testing.T)`
@@ -250,7 +250,7 @@ Task-071 defines what done means. This task turns that checklist into concrete t
   - no disk value overrides current live run
 - covers: `DOD-14`, `DOD-62`
 
-#### `TS-013` resumeRun missing persisted session returns run_not_found
+#### `[done] TS-013` resumeRun missing persisted session returns run_not_found
 
 - target file: `apps/local-runner/internal/runner/interactive_handlers_test.go`
 - signature: `func TestResumeRunMissingPersistedSessionReturnsRunNotFound(t *testing.T)`
@@ -281,7 +281,7 @@ Task-071 defines what done means. This task turns that checklist into concrete t
 
 ### Account Home And Session File Locator Tests
 
-#### `TS-015` resolveAccountHome explicit account
+#### `[done] TS-015` resolveAccountHome explicit account
 
 - target file: `apps/local-runner/internal/runner/provider_accounts_test.go`
 - signature: `func TestResolveAccountHomeExplicitAccount(t *testing.T)`
@@ -292,7 +292,7 @@ Task-071 defines what done means. This task turns that checklist into concrete t
   - returns `"/tmp/codex-a", true`
 - covers: `DOD-22`
 
-#### `TS-016` resolveAccountHome default account fallback
+#### `[done] TS-016` resolveAccountHome default account fallback
 
 - target file: `apps/local-runner/internal/runner/provider_accounts_test.go`
 - signature: `func TestResolveAccountHomeDefaultAccountFallback(t *testing.T)`
@@ -304,7 +304,7 @@ Task-071 defines what done means. This task turns that checklist into concrete t
   - both calls return `/tmp/codex-default, true`
 - covers: `DOD-23`
 
-#### `TS-017` resolveAccountHome missing account
+#### `[done] TS-017` resolveAccountHome missing account
 
 - target file: `apps/local-runner/internal/runner/provider_accounts_test.go`
 - signature: `func TestResolveAccountHomeMissingAccount(t *testing.T)`
@@ -328,7 +328,7 @@ Task-071 defines what done means. This task turns that checklist into concrete t
   - returned absolute path is the rollout file
 - covers: `DOD-27`
 
-#### `TS-019` LocateSessionFile returns false for missing Codex rollout
+#### `[done] TS-019` LocateSessionFile returns false for missing Codex rollout
 
 - target file: `apps/local-runner/internal/runner/session_file_locator_test.go`
 - signature: `func TestLocateSessionFileCodexMissing(t *testing.T)`
@@ -340,7 +340,7 @@ Task-071 defines what done means. This task turns that checklist into concrete t
   - `found == false`
 - covers: `DOD-32`
 
-#### `TS-020` LocateSessionFile finds Claude session
+#### `[done] TS-020` LocateSessionFile finds Claude session
 
 - target file: `apps/local-runner/internal/runner/session_file_locator_test.go`
 - signature: `func TestLocateSessionFileClaudeFindsProjectSession(t *testing.T)`
@@ -845,29 +845,25 @@ Task-071 defines what done means. This task turns that checklist into concrete t
 
 - result:
   - Implemented and verified in focused automated suites:
-    - `TS-001` to `TS-007`
-    - `TS-009` to `TS-010`
-    - `TS-012`
-    - `TS-014`
-    - `TS-018`
-    - `TS-021` to `TS-028`
+    - `TS-001` to `TS-021` (all non-deferred, non-blocked runner-level signatures)
+    - `TS-022` to `TS-029`
     - `TS-032` to `TS-036`
     - `TS-039` to `TS-041`
   - Supporting test files now present:
-    - `apps/local-runner/internal/runner/cross_account_resume_test.go`
+    - `apps/local-runner/internal/runner/cross_account_resume_test.go` (TS-011/013/015-017/019/020 added 2026-06-18)
     - `apps/local-runner/internal/runner/codex_resume_process_test.go`
     - `apps/local-runner/internal/runner/supabase_workflow_store_test.go`
+    - `apps/local-runner/internal/runner/claude_adapter_test.go` (TS-008, TS-029 added)
     - `apps/desktop-flowpilot/src/state/store.test.ts`
   - Verified commands:
-    - `go test ./internal/runner -run 'Test(...cross-account/codex/supabase focused set...)'`
+    - `go test ./internal/runner/... -run 'TestResumeRunReconstructsChatRunSeedsChatStep|TestResumeRunMissingPersistedSessionReturnsRunNotFound|TestResolveAccountHomeExplicitAccount|TestResolveAccountHomeDefaultAccountFallback|TestResolveAccountHomeMissingAccount|TestLocateSessionFileCodexMissing|TestLocateSessionFileClaudeFindsProjectSession'` — 7 passed
+    - `go test ./internal/runner/... -run 'TestClaudeAdapterPersistsRealSessionIDForResume|TestRestoredClaudeRunSeedsPoolWithRealSessionBeforeTurn'` — 2 passed
     - `npx tsx --test src/state/store.test.ts src/state/timelineReducer.test.ts src/lib/normalizeImage.test.ts`
     - `npm run typecheck`
 - follow-ups:
   - Explicitly deferred signatures:
-    - `TS-008`, `TS-029`, `TS-030`, `TS-031`
-      - reason: Claude post-restart/cross-account behavior is outside `09-IG` MVP scope, which is same-machine resume with Codex portability handling rather than full Claude cross-account parity or opt-in Claude e2e.
-    - `TS-011`, `TS-013`, `TS-015`, `TS-016`, `TS-017`, `TS-019`, `TS-020`
-      - reason: lower-level helper coverage is partially subsumed by the implemented reconstruction and relocation tests; remaining signatures can be added later if this area regresses.
+    - `TS-030`, `TS-031`
+      - reason: Claude cross-account env / opt-in e2e requires real Claude auth or 2nd account; outside 09-IG MVP scope.
     - `TS-037`, `TS-038`
       - reason: real-provider opt-in e2e harness was not added in this task; normal `go test` remains token-free by design.
     - `TS-042`, `TS-043`

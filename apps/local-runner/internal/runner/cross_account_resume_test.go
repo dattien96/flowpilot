@@ -842,6 +842,164 @@ func TestRestoreTargetPathRejectsTraversal(t *testing.T) {
 	}
 }
 
+// TS-011: resumeRun seeds a chat step into the workflow store after reconstructing from disk.
+func TestResumeRunReconstructsChatRunSeedsChatStep(t *testing.T) {
+	store, err := NewLocalFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	root := t.TempDir()
+	acctHome := filepath.Join(root, "acct-a")
+	writeProviderAccountsConfig(t, filepath.Join(root, "provider-accounts.json"), []ProviderAccount{
+		{ID: "acct-a", ProviderKey: "codex", HomePath: acctHome, SlotIndex: 1, AuthStatus: "connected", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+	})
+	writeCodexAuth(t, acctHome)
+	writeCodexRollout(t, acctHome, "rollout-1", "/repo", time.Now().UTC())
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             "run-1",
+		ProjectID:         "project-1",
+		ProviderKey:       ProviderKeyCodex,
+		ProviderSessionID: "rollout-1",
+		ProviderAccountID: "acct-a",
+		WorkingDirectory:  "/repo",
+		Status:            RunStatusCompleted,
+		RunKind:           "chat",
+		StartedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+		UpdatedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("UpsertProviderSession: %v", err)
+	}
+
+	svc := NewInteractiveServiceWithStore(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+	svc.activeAccountID = "acct-a"
+	if _, apiErr := svc.resumeRun("run-1"); apiErr != nil {
+		t.Fatalf("resumeRun: %v", apiErr)
+	}
+
+	steps, err := store.LoadRunSteps(context.Background(), "run-1")
+	if err != nil {
+		t.Fatalf("LoadRunSteps: %v", err)
+	}
+	if len(steps) != 1 {
+		t.Fatalf("LoadRunSteps = %d steps, want 1", len(steps))
+	}
+	if steps[0].ID != "chat-run-1" {
+		t.Fatalf("step.ID = %q, want chat-run-1", steps[0].ID)
+	}
+	if steps[0].StepType != "chat" {
+		t.Fatalf("step.StepType = %q, want chat", steps[0].StepType)
+	}
+}
+
+// TS-013: resumeRun returns run_not_found when no persisted session exists.
+func TestResumeRunMissingPersistedSessionReturnsRunNotFound(t *testing.T) {
+	store, err := NewLocalFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	svc := NewInteractiveServiceWithStore(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+
+	_, apiErr := svc.resumeRun("missing-run")
+	if apiErr == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if apiErr.code != "run_not_found" {
+		t.Fatalf("apiErr.code = %q, want run_not_found", apiErr.code)
+	}
+
+	svc.mu.Lock()
+	_, exists := svc.runs["missing-run"]
+	svc.mu.Unlock()
+	if exists {
+		t.Fatal("expected no run inserted into s.runs")
+	}
+}
+
+// TS-015: resolveAccountHome returns the configured home path for an explicit account ID.
+func TestResolveAccountHomeExplicitAccount(t *testing.T) {
+	root := t.TempDir()
+	acctHome := filepath.Join(root, "codex-a")
+	writeProviderAccountsConfig(t, filepath.Join(root, "provider-accounts.json"), []ProviderAccount{
+		{ID: "acct-a", ProviderKey: "codex", HomePath: acctHome, SlotIndex: 1, AuthStatus: "connected", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+	})
+	svc := NewInteractiveServiceWithStore(DefaultProviderRegistry(), newInteractiveCatalog(), newFakeWorkflowStore())
+
+	home, ok := svc.resolveAccountHome(ProviderKeyCodex, "acct-a")
+	if !ok {
+		t.Fatal("resolveAccountHome('acct-a'): expected ok=true")
+	}
+	if home != acctHome {
+		t.Fatalf("home = %q, want %q", home, acctHome)
+	}
+}
+
+// TS-016: resolveAccountHome falls back to DetectDefaultAccountHomePath when accountID is "" or "default".
+func TestResolveAccountHomeDefaultAccountFallback(t *testing.T) {
+	root := t.TempDir()
+	// getPossibleHomeDirs() reads HOME/USERPROFILE; defaultAuthCandidates("codex", dir) checks
+	// dir/.codex/auth.json. Writing auth into root/.codex/auth.json ensures the fallback finds it.
+	writeCodexAuth(t, root)
+	t.Setenv("HOME", root)
+	t.Setenv("USERPROFILE", root)
+	// No accounts in registry for codex — forces the "" / "default" fallback path.
+	writeProviderAccountsConfig(t, filepath.Join(root, "provider-accounts.json"), []ProviderAccount{})
+	svc := NewInteractiveServiceWithStore(DefaultProviderRegistry(), newInteractiveCatalog(), newFakeWorkflowStore())
+
+	home, ok := svc.resolveAccountHome(ProviderKeyCodex, "")
+	if !ok || home == "" {
+		t.Fatalf("resolveAccountHome(''): expected default codex home via DetectDefaultAccountHomePath, got (%q, %v)", home, ok)
+	}
+	home2, ok2 := svc.resolveAccountHome(ProviderKeyCodex, "default")
+	if !ok2 || home2 == "" {
+		t.Fatalf("resolveAccountHome('default'): expected default codex home via DetectDefaultAccountHomePath, got (%q, %v)", home2, ok2)
+	}
+}
+
+// TS-017: resolveAccountHome returns ("", false) for an account ID that is neither in the registry
+// nor the "" / "default" fallback sentinel.
+func TestResolveAccountHomeMissingAccount(t *testing.T) {
+	root := t.TempDir()
+	writeProviderAccountsConfig(t, filepath.Join(root, "provider-accounts.json"), []ProviderAccount{
+		{ID: "acct-a", ProviderKey: "codex", HomePath: filepath.Join(root, "acct-a"), SlotIndex: 1, AuthStatus: "connected", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+	})
+	svc := NewInteractiveServiceWithStore(DefaultProviderRegistry(), newInteractiveCatalog(), newFakeWorkflowStore())
+
+	home, ok := svc.resolveAccountHome(ProviderKeyClaude, "acct-missing")
+	if ok || home != "" {
+		t.Fatalf("resolveAccountHome('acct-missing') = (%q, %v), want ('', false)", home, ok)
+	}
+}
+
+// TS-019: LocateSessionFile returns ("", false) when no matching Codex rollout exists.
+func TestLocateSessionFileCodexMissing(t *testing.T) {
+	home := t.TempDir()
+	path, found := LocateSessionFile(ProviderKeyCodex, home, "missing-id", "/repo")
+	if found || path != "" {
+		t.Fatalf("LocateSessionFile = (%q, %v), want ('', false)", path, found)
+	}
+}
+
+// TS-020: LocateSessionFile finds a Claude project session file by session ID.
+func TestLocateSessionFileClaudeFindsProjectSession(t *testing.T) {
+	home := t.TempDir()
+	target := filepath.Join(home, ".claude", "projects", "project-hash", "claude-real-1.jsonl")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(target, []byte("{}"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	path, found := LocateSessionFile(ProviderKeyClaude, home, "claude-real-1", "/repo")
+	if !found {
+		t.Fatal("expected session file to be found")
+	}
+	want := filepath.Join(".claude", "projects", "project-hash", "claude-real-1.jsonl")
+	if !strings.HasSuffix(path, want) {
+		t.Fatalf("path = %q, want suffix %q", path, want)
+	}
+}
+
 type fakeAdapterFunc func(context.Context, TurnRequest, TurnBridge) error
 
 func (f fakeAdapterFunc) Key() ProviderKey                   { return ProviderKeyCodex }
