@@ -118,23 +118,60 @@ export function Navigator(): React.ReactElement {
   const [projectHistoryById, setProjectHistoryById] = useState<Record<string, RunHistoryItem[]>>({});
   const [openProjectIds, setOpenProjectIds] = useState<Record<string, boolean>>({});
   const [visibleHistoryCounts, setVisibleHistoryCounts] = useState<Record<string, number>>({});
-  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
-  const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
+  const [selectionModeProjectId, setSelectionModeProjectId] = useState<string | null>(null);
+  const [selectedRunIds, setSelectedRunIds] = useState<Set<string>>(new Set());
+  const [confirmAction, setConfirmAction] = useState<{ type: "delete" | "sync"; runIds: string[]; projectId: string } | null>(null);
+  const longPressRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const handleDeleteClick = useCallback((runId: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    setPendingDeleteId(runId);
+  const exitSelectionMode = useCallback(() => {
+    setSelectionModeProjectId(null);
+    setSelectedRunIds(new Set());
   }, []);
 
-  const confirmDelete = useCallback(async (runId: string) => {
-    setPendingDeleteId(null);
-    setDeletingIds((prev) => new Set(prev).add(runId));
-    try {
-      await deleteHistoryRun(runId);
-    } finally {
-      setDeletingIds((prev) => { const next = new Set(prev); next.delete(runId); return next; });
+  const toggleItemSelection = useCallback((runId: string) => {
+    setSelectedRunIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(runId)) next.delete(runId);
+      else next.add(runId);
+      return next;
+    });
+  }, []);
+
+  const startLongPress = useCallback((item: RunHistoryItem, projectId: string) => {
+    longPressRef.current = setTimeout(() => {
+      longPressRef.current = null;
+      setSelectionModeProjectId(projectId);
+      setSelectedRunIds(new Set([item.runId]));
+    }, 500);
+  }, []);
+
+  const cancelLongPress = useCallback(() => {
+    if (longPressRef.current) {
+      clearTimeout(longPressRef.current);
+      longPressRef.current = null;
     }
-  }, [deleteHistoryRun]);
+  }, []);
+
+  const requestConfirm = useCallback((type: "delete" | "sync", runIds: string[], projectId: string) => {
+    if (runIds.length === 0) return;
+    setConfirmAction({ type, runIds, projectId });
+  }, []);
+
+  const executeConfirm = useCallback(async () => {
+    if (!confirmAction) return;
+    const { type, runIds, projectId } = confirmAction;
+    setConfirmAction(null);
+    exitSelectionMode();
+    if (type === "delete") {
+      for (const runId of runIds) {
+        try { await deleteHistoryRun(runId); } catch { /* best effort */ }
+      }
+    } else {
+      for (const runId of runIds) {
+        try { await syncHistoryRun(runId, projectId); } catch { /* best effort */ }
+      }
+    }
+  }, [confirmAction, deleteHistoryRun, exitSelectionMode, syncHistoryRun]);
 
   useEffect(() => {
     void loadProjects();
@@ -185,14 +222,21 @@ export function Navigator(): React.ReactElement {
   }, [selectedProjectId, historyLoading, runHistory]);
 
   useEffect(() => {
-    if (!selectedProjectId || historyLoading || runHistory.length === 0) return;
+    if (!selectedProjectId || historyLoading) return;
     setProjectHistoryById((current) => ({
       ...current,
       [selectedProjectId]: sortByRecent(runHistory),
     }));
-    setOpenProjectIds((current) => (current[selectedProjectId] ? current : { ...current, [selectedProjectId]: true }));
-    setVisibleHistoryCounts((current) => (current[selectedProjectId] ? current : { ...current, [selectedProjectId]: HISTORY_LIMIT }));
+    if (runHistory.length > 0) {
+      setOpenProjectIds((current) => (current[selectedProjectId] ? current : { ...current, [selectedProjectId]: true }));
+      setVisibleHistoryCounts((current) => (current[selectedProjectId] ? current : { ...current, [selectedProjectId]: HISTORY_LIMIT }));
+    }
   }, [historyLoading, runHistory, selectedProjectId]);
+
+  useEffect(() => {
+    setSelectionModeProjectId(null);
+    setSelectedRunIds(new Set());
+  }, [selectedProjectId]);
 
   useEffect(() => {
     if (!selectedProjectId) return;
@@ -325,34 +369,80 @@ export function Navigator(): React.ReactElement {
               const unsyncedCount = history.filter(isUnsyncedChat).length;
               return (
                 <section key={projectId} className="project-history-group">
-                  <div className={`project-history-group-head ${expanded ? "active" : ""}`}>
+                  <div className={`project-history-group-head ${expanded ? "active" : ""}${selectionModeProjectId === projectId ? " project-history-group-head--selecting" : ""}`}>
                     <button
                       type="button"
                       className="project-history-group-toggle"
-                      onClick={() => toggleProjectHistory(projectId)}
+                      onClick={() => { if (selectionModeProjectId !== projectId) toggleProjectHistory(projectId); }}
                     >
                       <span className="project-history-group-title">
                         <strong>{projectName}</strong>
                         <small>{history.length} chats</small>
                       </span>
-                      <span className="project-history-group-chevron">{expanded ? "▾" : "▸"}</span>
+                      {selectionModeProjectId !== projectId && (
+                        <span className="project-history-group-chevron">{expanded ? "▾" : "▸"}</span>
+                      )}
                     </button>
-                    {unsyncedCount > 0 && (
+                    {selectionModeProjectId === projectId ? (
                       <button
                         type="button"
-                        className="project-history-sync-all"
-                        onClick={() => void syncAllInProject(projectId)}
-                        title={`Sync ${unsyncedCount} chat${unsyncedCount > 1 ? "s" : ""} to Drive`}
-                        aria-label={`Sync all ${unsyncedCount} unsynced chats to Drive`}
+                        className="project-history-selection-exit"
+                        onClick={exitSelectionMode}
+                        title="Exit selection mode"
+                        aria-label="Exit selection mode"
                       >
-                        <SyncGlyph />
-                        <span>{unsyncedCount}</span>
+                        ←
                       </button>
+                    ) : (
+                      unsyncedCount > 0 && (
+                        <button
+                          type="button"
+                          className="project-history-sync-all"
+                          onClick={() => void syncAllInProject(projectId)}
+                          title={`Sync ${unsyncedCount} chat${unsyncedCount > 1 ? "s" : ""} to Drive`}
+                          aria-label={`Sync all ${unsyncedCount} unsynced chats to Drive`}
+                        >
+                          <SyncGlyph />
+                          <span>{unsyncedCount}</span>
+                        </button>
+                      )
                     )}
                   </div>
 
                   {expanded && (
                     <div className="project-history-list">
+                      {selectionModeProjectId === projectId && (
+                        <div className="project-history-selection-toolbar">
+                          <span className="project-history-selection-count">
+                            {selectedRunIds.size} selected
+                          </span>
+                          <button
+                            type="button"
+                            className="project-history-selection-action"
+                            disabled={selectedRunIds.size === 0}
+                            onClick={() => {
+                              const syncable = [...selectedRunIds].filter((id) => {
+                                const it = history.find((h) => h.runId === id);
+                                return it && isUnsyncedChat(it);
+                              });
+                              requestConfirm("sync", syncable, projectId);
+                            }}
+                            title="Sync selected chats to Drive"
+                          >
+                            <SyncGlyph /> Sync
+                          </button>
+                          <button
+                            type="button"
+                            className="project-history-selection-action project-history-selection-action--delete"
+                            disabled={selectedRunIds.size === 0}
+                            onClick={() => requestConfirm("delete", [...selectedRunIds], projectId)}
+                            title="Delete selected chats"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      )}
+
                       {visibleHistory.map((item) => {
                         const isNew = newlyCompleted.has(item.runId);
                         const hasIcon = isNew || item.status === "running" || item.status === "starting" ||
@@ -362,8 +452,62 @@ export function Navigator(): React.ReactElement {
                         const showSync = item.runKind === "chat" && item.syncStatus !== "synced";
                         const isSyncing = item.syncStatus === "syncing";
                         const syncFailed = item.syncStatus === "failed";
-                        const isDeleting = deletingIds.has(item.runId);
-                        const isPendingDelete = pendingDeleteId === item.runId;
+                        const inSelectionMode = selectionModeProjectId === projectId;
+                        const isSelected = selectedRunIds.has(item.runId);
+
+                        if (inSelectionMode) {
+                          return (
+                            <div
+                              key={item.runId}
+                              className={`project-history-item-row project-history-item-row--selectable${isSelected ? " project-history-item-row--selected" : ""}`}
+                              onClick={() => toggleItemSelection(item.runId)}
+                            >
+                              <input
+                                type="checkbox"
+                                className="project-history-item-checkbox"
+                                checked={isSelected}
+                                onChange={() => toggleItemSelection(item.runId)}
+                                onClick={(e) => e.stopPropagation()}
+                                aria-label={`Select ${runTitle(item.lastPrompt || item.lastMessage)}`}
+                              />
+                              <div className="project-history-item project-history-item--selectable">
+                                <span className="project-history-item-top">
+                                  <HistoryStatusIcon status={item.status} isNew={isNew} />
+                                  <span className="project-history-item-title">
+                                    {runTitle(item.lastPrompt || item.lastMessage)}
+                                  </span>
+                                </span>
+                                <span className="project-history-item-meta">
+                                  {RUN_LABEL[item.status]} · {RUN_TIME_FORMAT.format(new Date(item.updatedAt))}
+                                </span>
+                              </div>
+                              <div className="project-history-item-actions">
+                                {showSync && (
+                                  <button
+                                    type="button"
+                                    className={`project-history-sync-icon${syncFailed ? " project-history-sync-icon--failed" : ""}`}
+                                    disabled={isSyncing}
+                                    onClick={(e) => { e.stopPropagation(); requestConfirm("sync", [item.runId], projectId); }}
+                                    title={syncFailed ? "Sync failed — click to retry" : "Sync this chat to Drive"}
+                                    aria-label="Sync chat to Drive"
+                                  >
+                                    {isSyncing ? <span className="history-status-spinner" aria-hidden="true" /> : <SyncGlyph />}
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  className="project-history-delete-icon"
+                                  onClick={(e) => { e.stopPropagation(); requestConfirm("delete", [item.runId], projectId); }}
+                                  title="Delete this chat"
+                                  aria-label="Delete chat"
+                                >
+                                  ×
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        }
+
                         return (
                           <div
                             key={item.runId}
@@ -373,10 +517,12 @@ export function Navigator(): React.ReactElement {
                             <button
                               type="button"
                               className={`project-history-item${hasIcon ? " project-history-item--has-icon" : ""}${isUnavailable ? " project-history-item--disabled" : ""}${isActive ? " project-history-item--active" : ""}`}
-                              disabled={isUnavailable || isDeleting}
+                              disabled={isUnavailable}
                               aria-current={isActive ? "true" : undefined}
+                              onPointerDown={() => startLongPress(item, projectId)}
+                              onPointerUp={cancelLongPress}
+                              onPointerLeave={cancelLongPress}
                               onClick={() => {
-                                if (isPendingDelete) { setPendingDeleteId(null); return; }
                                 if (isNew) setNewlyCompleted((c) => { const n = new Set(c); n.delete(item.runId); return n; });
                                 void openHistoryRun(item.runId);
                               }}
@@ -391,59 +537,6 @@ export function Navigator(): React.ReactElement {
                                 {RUN_LABEL[item.status]} · {RUN_TIME_FORMAT.format(new Date(item.updatedAt))}
                               </span>
                             </button>
-                            {isPendingDelete ? (
-                              <>
-                                <button
-                                  type="button"
-                                  className="project-history-delete-confirm"
-                                  onClick={() => void confirmDelete(item.runId)}
-                                  title="Confirm delete — removes local data and provider session file"
-                                  aria-label="Confirm delete"
-                                >
-                                  ✓
-                                </button>
-                                <button
-                                  type="button"
-                                  className="project-history-delete-cancel"
-                                  onClick={() => setPendingDeleteId(null)}
-                                  title="Cancel"
-                                  aria-label="Cancel delete"
-                                >
-                                  ✕
-                                </button>
-                              </>
-                            ) : (
-                              <>
-                                {showSync && (
-                                  <button
-                                    type="button"
-                                    className={`project-history-sync-icon${syncFailed ? " project-history-sync-icon--failed" : ""}`}
-                                    disabled={isSyncing}
-                                    onClick={() => void syncHistoryRun(item.runId, projectId)}
-                                    title={
-                                      syncFailed
-                                        ? item.unavailableReason || "Sync failed — click to retry"
-                                        : isSyncing
-                                          ? "Syncing…"
-                                          : "Sync this chat to Drive"
-                                    }
-                                    aria-label="Sync chat to Drive"
-                                  >
-                                    {isSyncing ? <span className="history-status-spinner" aria-hidden="true" /> : <SyncGlyph />}
-                                  </button>
-                                )}
-                                <button
-                                  type="button"
-                                  className="project-history-delete-icon"
-                                  disabled={isDeleting}
-                                  onClick={(e) => handleDeleteClick(item.runId, e)}
-                                  title="Delete this chat (removes local record and provider session file)"
-                                  aria-label="Delete chat"
-                                >
-                                  {isDeleting ? <span className="history-status-spinner" aria-hidden="true" /> : "×"}
-                                </button>
-                              </>
-                            )}
                           </div>
                         );
                       })}
@@ -518,6 +611,41 @@ export function Navigator(): React.ReactElement {
           </div>
         )}
       </section>
+
+      {confirmAction && (
+        <div
+          className="project-history-confirm-overlay"
+          onClick={() => setConfirmAction(null)}
+          role="dialog"
+          aria-modal="true"
+          aria-label={confirmAction.type === "delete" ? "Confirm delete" : "Confirm sync"}
+        >
+          <div className="project-history-confirm-modal" onClick={(e) => e.stopPropagation()}>
+            <p className="project-history-confirm-message">
+              {confirmAction.type === "delete"
+                ? `Delete ${confirmAction.runIds.length} chat${confirmAction.runIds.length > 1 ? "s" : ""}? This also removes the provider session file.`
+                : confirmAction.runIds.length === 0
+                  ? "No syncable chats selected (all may already be synced or unavailable)."
+                  : `Sync ${confirmAction.runIds.length} chat${confirmAction.runIds.length > 1 ? "s" : ""} to Drive?`
+              }
+            </p>
+            <div className="project-history-confirm-actions">
+              <button type="button" className="project-history-confirm-cancel" onClick={() => setConfirmAction(null)}>
+                Cancel
+              </button>
+              {(confirmAction.type === "delete" || confirmAction.runIds.length > 0) && (
+                <button
+                  type="button"
+                  className={`project-history-confirm-ok${confirmAction.type === "delete" ? " project-history-confirm-ok--delete" : ""}`}
+                  onClick={() => void executeConfirm()}
+                >
+                  {confirmAction.type === "delete" ? "Delete" : "Sync"}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
