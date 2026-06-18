@@ -829,7 +829,7 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		s.mu.Unlock()
 		return "", newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")
 	}
-	if rs.providerAccountID != s.activeAccountID {
+	if rs.providerAccountID != s.activeAccountForProvider(rs.providerKey) {
 		s.mu.Unlock()
 		return "", newAPIErr(http.StatusConflict, "provider_account_changed", "active provider account changed since the run started")
 	}
@@ -854,7 +854,9 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		return "", newAPIErr(http.StatusBadRequest, "provider_unavailable", aerr.Error())
 	}
 	if rs.resumedFromDisk && rs.providerKey == ProviderKeyCodex {
-		home, ok := s.resolveAccountHome(rs.providerKey, s.activeAccountID)
+		// The rollout file lives in the run's account home — which, after a
+		// cross-account resume, is the active account it was relocated into.
+		home, ok := s.resolveAccountHome(rs.providerKey, rs.providerAccountID)
 		if !ok {
 			s.mu.Unlock()
 			return "", newAPIErr(http.StatusConflict, "account_unavailable", "active account home not found")

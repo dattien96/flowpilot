@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -81,10 +82,40 @@ func (s *InteractiveService) resolveAccountHome(providerKey ProviderKey, account
 	return "", false
 }
 
+// activeAccountForProvider returns the account id that is active for the given
+// provider. Active accounts are tracked per provider — a Claude, Codex and Gemini
+// account can each be active at the same time (see ActivateProviderAccount, which
+// only deactivates same-provider accounts) — so resume, turn-gating and new-run
+// stamping must resolve "the active account" scoped to the run's provider rather
+// than the single legacy activeAccountID, which only ever holds one provider's
+// selection (Task-067 issue 1).
+//
+// The per-provider active account is the durable truth in the provider-accounts
+// store. We only consult it when a runner is attached (production) or an explicit
+// test config path is set; otherwise we fall back to activeAccountID. This keeps
+// the many unit tests that build a bare service (no runner, no config) hermetic —
+// they never read or mutate the user's real provider-accounts.json.
+func (s *InteractiveService) activeAccountForProvider(providerKey ProviderKey) string {
+	if s.runner != nil || strings.TrimSpace(os.Getenv("FLOWPILOT_PROVIDER_ACCOUNTS_CONFIG_PATH")) != "" {
+		r := s.runner
+		if r == nil {
+			r = &Runner{}
+		}
+		if acct, err := r.ResolveProviderAccount(string(providerKey), ""); err == nil && strings.TrimSpace(acct.ID) != "" {
+			return acct.ID
+		}
+	}
+	return s.activeAccountID
+}
+
 func (s *InteractiveService) ensureResumeReady(rs *interactiveRun) *apiErr {
+	// "The active account" must be scoped to this run's provider, not the single
+	// global activeAccountID: a Codex chat is resumed against the active Codex
+	// account regardless of which Claude/Gemini account is active (Task-067 issue 1).
+	activeAccountID := s.activeAccountForProvider(rs.providerKey)
 	srcHome, ok := s.resolveAccountHome(rs.providerKey, rs.providerAccountID)
 	if !ok {
-		if rs.providerAccountID == s.activeAccountID {
+		if rs.providerAccountID == activeAccountID {
 			return newAPIErr(http.StatusConflict, "account_not_signed_in", "can't open — the active account isn't signed in")
 		}
 		return newAPIErr(http.StatusConflict, "session_unavailable", "session data not found on this machine")
@@ -98,17 +129,17 @@ func (s *InteractiveService) ensureResumeReady(rs *interactiveRun) *apiErr {
 		return newAPIErr(http.StatusConflict, "session_unavailable", "session data not found on this machine")
 	}
 
-	if rs.providerAccountID == s.activeAccountID {
+	if rs.providerAccountID == activeAccountID {
 		if !HasLocalAuthAtPath(string(rs.providerKey), srcHome) {
 			return newAPIErr(http.StatusConflict, "account_not_signed_in", "can't open — the active account isn't signed in")
 		}
 		return nil
 	}
-	return s.prepareCrossAccountResume(rs, srcHome, srcPath)
+	return s.prepareCrossAccountResume(rs, srcPath, activeAccountID)
 }
 
-func (s *InteractiveService) prepareCrossAccountResume(rs *interactiveRun, srcHome, srcPath string) *apiErr {
-	targetHome, ok := s.resolveAccountHome(rs.providerKey, s.activeAccountID)
+func (s *InteractiveService) prepareCrossAccountResume(rs *interactiveRun, srcPath, activeAccountID string) *apiErr {
+	targetHome, ok := s.resolveAccountHome(rs.providerKey, activeAccountID)
 	if !ok {
 		return newAPIErr(http.StatusConflict, "account_unavailable", "active account home not found")
 	}
@@ -118,11 +149,10 @@ func (s *InteractiveService) prepareCrossAccountResume(rs *interactiveRun, srcHo
 	if _, err := RelocateSessionFile(rs.providerKey, srcPath, targetHome, s.resumeSessionID(rs), rs.workspaceCwd); err != nil {
 		return newAPIErr(http.StatusConflict, "session_unavailable", "could not prepare the session on the active account")
 	}
-	rs.providerAccountID = s.activeAccountID
+	rs.providerAccountID = activeAccountID
 	if snapErr := s.persistProviderSession(sessionStateOf(rs)); snapErr != nil {
 		return newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", snapErr.Error())
 	}
-	_ = srcHome
 	return nil
 }
 

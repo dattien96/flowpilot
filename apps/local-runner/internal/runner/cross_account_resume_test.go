@@ -381,20 +381,20 @@ func TestPrepareCrossAccountResumeActiveAccountNotSignedIn(t *testing.T) {
 		t.Fatalf("NewLocalFileSessionStore: %v", err)
 	}
 	root := t.TempDir()
-	acctAHome := filepath.Join(root, "acct-a")
-	acctBHome := filepath.Join(root, "acct-b")
+	acctHome := filepath.Join(root, "acct-b")
+	// acct-b is the active Codex account for this run, but its local auth is
+	// missing on disk — so resume must refuse with account_not_signed_in even
+	// though the run's session (rollout) file is present.
 	writeProviderAccountsConfig(t, filepath.Join(root, "provider-accounts.json"), []ProviderAccount{
-		{ID: "acct-a", ProviderKey: "codex", HomePath: acctAHome, SlotIndex: 1, AuthStatus: "connected", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
-		{ID: "acct-b", ProviderKey: "codex", HomePath: acctBHome, SlotIndex: 2, AuthStatus: "failed", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+		{ID: "acct-b", ProviderKey: "codex", HomePath: acctHome, SlotIndex: 1, AuthStatus: "connected", IsActive: true, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
 	})
-	writeCodexAuth(t, acctAHome)
-	writeCodexRollout(t, acctAHome, "rollout-abc", "/repo", time.Now().UTC())
+	writeCodexRollout(t, acctHome, "rollout-abc", "/repo", time.Now().UTC())
 	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
 		RunID:             "run-1",
 		ProjectID:         "project-1",
 		ProviderKey:       ProviderKeyCodex,
 		ProviderSessionID: "rollout-abc",
-		ProviderAccountID: "acct-a",
+		ProviderAccountID: "acct-b",
 		WorkingDirectory:  "/repo",
 		Status:            RunStatusCompleted,
 		RunKind:           "chat",
@@ -501,7 +501,7 @@ func TestPrepareCrossAccountResumeRelocatesAndRepointsRun(t *testing.T) {
 	acctBHome := filepath.Join(root, "acct-b")
 	writeProviderAccountsConfig(t, filepath.Join(root, "provider-accounts.json"), []ProviderAccount{
 		{ID: "acct-a", ProviderKey: "codex", HomePath: acctAHome, SlotIndex: 1, AuthStatus: "connected", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
-		{ID: "acct-b", ProviderKey: "codex", HomePath: acctBHome, SlotIndex: 2, AuthStatus: "connected", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+		{ID: "acct-b", ProviderKey: "codex", HomePath: acctBHome, SlotIndex: 2, AuthStatus: "connected", IsActive: true, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
 	})
 	writeCodexAuth(t, acctAHome)
 	writeCodexAuth(t, acctBHome)
@@ -557,7 +557,7 @@ func TestPrepareCrossAccountResumeRelocationFailureKeepsHistoryVisible(t *testin
 	acctBHome := filepath.Join(root, "acct-b")
 	writeProviderAccountsConfig(t, filepath.Join(root, "provider-accounts.json"), []ProviderAccount{
 		{ID: "acct-a", ProviderKey: "codex", HomePath: acctAHome, SlotIndex: 1, AuthStatus: "connected", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
-		{ID: "acct-b", ProviderKey: "codex", HomePath: acctBHome, SlotIndex: 2, AuthStatus: "connected", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+		{ID: "acct-b", ProviderKey: "codex", HomePath: acctBHome, SlotIndex: 2, AuthStatus: "connected", IsActive: true, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
 	})
 	writeCodexAuth(t, acctAHome)
 	writeCodexAuth(t, acctBHome)
@@ -1011,6 +1011,12 @@ func (f fakeAdapterFunc) SendTurn(ctx context.Context, req TurnRequest, bridge T
 func writeProviderAccountsConfig(t *testing.T, path string, accounts []ProviderAccount) {
 	t.Helper()
 	t.Setenv("FLOWPILOT_PROVIDER_ACCOUNTS_CONFIG_PATH", path)
+	// Isolate HOME so syncProviderAccounts does not inject the developer's real
+	// ~/.codex (or ~/.claude) default account into the resolved list — without
+	// this, ResolveProviderAccount("",provider) can return a real account and a
+	// cross-account resume would relocate session files into the real home.
+	t.Setenv("HOME", filepath.Dir(path))
+	t.Setenv("USERPROFILE", filepath.Dir(path))
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}

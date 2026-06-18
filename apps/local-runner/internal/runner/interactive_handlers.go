@@ -510,6 +510,10 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 	if _, err := s.registry.Selectable(providerKey); err != nil {
 		return RunHandle{}, newAPIErr(http.StatusUnprocessableEntity, "provider_unavailable", err.Error())
 	}
+	// Stamp the run with the account that is active for THIS provider, not the
+	// single global activeAccountID (Task-067 issue 1). Resolved before the lock
+	// since it may read the provider-accounts store.
+	stampAccount := s.activeAccountForProvider(providerKey)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -534,7 +538,7 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		workflowID:        in.WorkflowID,
 		providerKey:       providerKey,
 		providerSessionID: sessionID,
-		providerAccountID: s.activeAccountID,
+		providerAccountID: stampAccount,
 		workspaceCwd:      in.Cwd,
 		modelName:         in.Model,
 		yolo:              in.YoloMode,
@@ -556,7 +560,7 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		WorkflowID:        in.WorkflowID,
 		ProviderSessionID: sessionID,
 		ProviderKey:       providerKey,
-		ProviderAccountID: s.activeAccountID,
+		ProviderAccountID: stampAccount,
 		WorkingDirectory:  in.Cwd,
 		Status:            rs.status,
 		StartedAt:         now,
