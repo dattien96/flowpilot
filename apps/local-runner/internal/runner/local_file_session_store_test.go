@@ -58,6 +58,48 @@ func TestLocalFileSessionStoreUpsertAndList(t *testing.T) {
 	}
 }
 
+func TestLocalFileSessionStoreRestoredMetadataRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+
+	sess := ProviderSessionState{
+		RunID:           "run-restore",
+		ProjectID:       "proj-1",
+		ProviderKey:     "codex",
+		Status:          "completed",
+		RunKind:         "chat",
+		SourceMachineID: "mch-source",
+		SourceRunID:     "run-source",
+		RestoredFrom:    "google_drive",
+		SyncStatus:      "restored",
+		SyncUpdatedAt:   "2026-06-17T10:10:00Z",
+	}
+	if err := store.UpsertProviderSession(context.Background(), sess); err != nil {
+		t.Fatalf("UpsertProviderSession: %v", err)
+	}
+
+	reloaded, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore reload: %v", err)
+	}
+	got, found, err := reloaded.GetProviderSession(context.Background(), "run-restore")
+	if err != nil {
+		t.Fatalf("GetProviderSession: %v", err)
+	}
+	if !found {
+		t.Fatal("expected restored session to be found")
+	}
+	if got.SourceMachineID != sess.SourceMachineID || got.SourceRunID != sess.SourceRunID {
+		t.Fatalf("unexpected source metadata: %+v", got)
+	}
+	if got.RestoredFrom != sess.RestoredFrom || got.SyncStatus != sess.SyncStatus || got.SyncUpdatedAt != sess.SyncUpdatedAt {
+		t.Fatalf("unexpected sync metadata: %+v", got)
+	}
+}
+
 func TestLocalFileSessionStoreRestart(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -322,4 +364,67 @@ func TestLocalFileSessionStoreSessionHistoryReaderInterface(t *testing.T) {
 	var _ WorkflowStore = store
 	var _ InteractiveStateStore = store
 	var _ SessionHistoryReader = store
+}
+
+func TestLocalFileSessionStoreSyncMetadataRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	session := ProviderSessionState{
+		RunID:           "run-sync",
+		ProjectID:       "proj-sync",
+		ProviderKey:     "codex",
+		Status:          "completed",
+		RunKind:         "chat",
+		SourceMachineID: "mch_source",
+		SourceRunID:     "run-source",
+		RestoredFrom:    "google_drive",
+		SyncStatus:      "restored",
+		SyncUpdatedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.UpsertProviderSession(context.Background(), session); err != nil {
+		t.Fatalf("UpsertProviderSession: %v", err)
+	}
+	reloaded, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore reload: %v", err)
+	}
+	got, found, err := reloaded.GetProviderSession(context.Background(), "run-sync")
+	if err != nil {
+		t.Fatalf("GetProviderSession: %v", err)
+	}
+	if !found {
+		t.Fatal("expected reloaded session to exist")
+	}
+	if got.SourceMachineID != session.SourceMachineID || got.SourceRunID != session.SourceRunID {
+		t.Fatalf("source metadata mismatch: got %#v want %#v", got, session)
+	}
+	if got.SyncStatus != "restored" || got.RestoredFrom != "google_drive" || got.SyncUpdatedAt == "" {
+		t.Fatalf("sync metadata not preserved: %#v", got)
+	}
+}
+
+func TestLocalFileSessionStoreLoadsLegacyRecordWithoutSyncMetadata(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	line := `{"run_id":"legacy-run","project_id":"legacy-project","provider_key":"codex","status":"completed","updated_at":"` + now + `","run_kind":"chat"}`
+	if err := os.WriteFile(filepath.Join(dir, "sessions.ndjson"), []byte(line+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	got, found, err := store.GetProviderSession(context.Background(), "legacy-run")
+	if err != nil {
+		t.Fatalf("GetProviderSession: %v", err)
+	}
+	if !found {
+		t.Fatal("expected legacy record to load")
+	}
+	if got.SourceMachineID != "" || got.SourceRunID != "" || got.SyncStatus != "" || got.RestoredFrom != "" {
+		t.Fatalf("legacy record unexpectedly populated sync metadata: %#v", got)
+	}
 }

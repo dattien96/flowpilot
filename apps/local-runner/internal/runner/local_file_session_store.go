@@ -47,6 +47,7 @@ type ndjsonSessionRecord struct {
 	WorkflowID        string `json:"workflow_id,omitempty"`
 	ProviderKey       string `json:"provider_key"`
 	ProviderSessionID string `json:"provider_session_id,omitempty"`
+	ProviderAccountID string `json:"provider_account_id,omitempty"`
 	WorkingDirectory  string `json:"working_directory,omitempty"`
 	Status            string `json:"status"`
 	LastPrompt        string `json:"last_prompt,omitempty"`
@@ -54,6 +55,11 @@ type ndjsonSessionRecord struct {
 	StartedAt         string `json:"started_at,omitempty"`
 	UpdatedAt         string `json:"updated_at,omitempty"`
 	RunKind           string `json:"run_kind,omitempty"`
+	SourceMachineID   string `json:"source_machine_id,omitempty"`
+	SourceRunID       string `json:"source_run_id,omitempty"`
+	RestoredFrom      string `json:"restored_from,omitempty"`
+	SyncStatus        string `json:"sync_status,omitempty"`
+	SyncUpdatedAt     string `json:"sync_updated_at,omitempty"`
 }
 
 // loadFromDisk reads the NDJSON file, applies last-wins dedup per run_id, and
@@ -128,6 +134,17 @@ func (s *localFileSessionStore) ListProviderSessionsByProject(ctx context.Contex
 	return s.fakeWorkflowStore.ListProviderSessionsByProject(ctx, projectID)
 }
 
+func (s *localFileSessionStore) GetProviderSession(_ context.Context, runID string) (ProviderSessionState, bool, error) {
+	s.fakeWorkflowStore.mu.Lock()
+	defer s.fakeWorkflowStore.mu.Unlock()
+	st, ok := s.fakeWorkflowStore.sessions[runID]
+	return st, ok, nil
+}
+
+func (s *localFileSessionStore) ListAllProviderSessions(ctx context.Context) ([]ProviderSessionState, error) {
+	return s.fakeWorkflowStore.ListAllProviderSessions(ctx)
+}
+
 func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 	return ProviderSessionState{
 		RunID:             r.RunID,
@@ -135,6 +152,7 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		WorkflowID:        r.WorkflowID,
 		ProviderKey:       ProviderKey(r.ProviderKey),
 		ProviderSessionID: r.ProviderSessionID,
+		ProviderAccountID: r.ProviderAccountID,
 		WorkingDirectory:  r.WorkingDirectory,
 		Status:            RunStatus(r.Status),
 		LastPrompt:        r.LastPrompt,
@@ -142,6 +160,11 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		StartedAt:         r.StartedAt,
 		UpdatedAt:         r.UpdatedAt,
 		RunKind:           r.RunKind,
+		SourceMachineID:   r.SourceMachineID,
+		SourceRunID:       r.SourceRunID,
+		RestoredFrom:      r.RestoredFrom,
+		SyncStatus:        r.SyncStatus,
+		SyncUpdatedAt:     r.SyncUpdatedAt,
 	}
 }
 
@@ -152,6 +175,7 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		WorkflowID:        s.WorkflowID,
 		ProviderKey:       string(s.ProviderKey),
 		ProviderSessionID: s.ProviderSessionID,
+		ProviderAccountID: s.ProviderAccountID,
 		WorkingDirectory:  s.WorkingDirectory,
 		Status:            string(s.Status),
 		LastPrompt:        s.LastPrompt,
@@ -159,5 +183,10 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		StartedAt:         s.StartedAt,
 		UpdatedAt:         s.UpdatedAt,
 		RunKind:           s.RunKind,
+		SourceMachineID:   s.SourceMachineID,
+		SourceRunID:       s.SourceRunID,
+		RestoredFrom:      s.RestoredFrom,
+		SyncStatus:        s.SyncStatus,
+		SyncUpdatedAt:     s.SyncUpdatedAt,
 	}
 }
