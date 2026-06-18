@@ -76,6 +76,13 @@ func RelocateSessionFile(providerKey ProviderKey, srcPath, targetHome, sessionID
 		return "", err
 	}
 	if _, err := os.Stat(dstPath); err == nil {
+		same, cmpErr := sameFileContents(srcPath, dstPath)
+		if cmpErr != nil {
+			return "", cmpErr
+		}
+		if same {
+			return dstPath, nil
+		}
 		return "", errors.New("destination session file already exists")
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", err
@@ -97,6 +104,29 @@ func RelocateSessionFile(providerKey ProviderKey, srcPath, targetHome, sessionID
 		return "", err
 	}
 	return dstPath, nil
+}
+
+func sameFileContents(pathA, pathB string) (bool, error) {
+	infoA, err := os.Stat(pathA)
+	if err != nil {
+		return false, err
+	}
+	infoB, err := os.Stat(pathB)
+	if err != nil {
+		return false, err
+	}
+	if infoA.Size() != infoB.Size() {
+		return false, nil
+	}
+	a, err := os.ReadFile(pathA)
+	if err != nil {
+		return false, err
+	}
+	b, err := os.ReadFile(pathB)
+	if err != nil {
+		return false, err
+	}
+	return string(a) == string(b), nil
 }
 
 func RestoreSessionFile(providerKey ProviderKey, targetHome, relativePath, sessionID, cwd string, body []byte) (string, error) {

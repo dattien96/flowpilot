@@ -351,6 +351,33 @@ func TestRelocateSessionFileDoesNotOverwriteExistingSessionFile(t *testing.T) {
 	}
 }
 
+func TestRelocateSessionFileAcceptsExistingIdenticalSessionFile(t *testing.T) {
+	srcHome := t.TempDir()
+	targetHome := t.TempDir()
+	src := writeCodexRollout(t, srcHome, "rollout-abc", "/repo", time.Now().UTC())
+	dst, err := relocationTargetPath(ProviderKeyCodex, src, targetHome, "rollout-abc", "/repo")
+	if err != nil {
+		t.Fatalf("relocationTargetPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	raw, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatalf("ReadFile src: %v", err)
+	}
+	if err := os.WriteFile(dst, raw, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	got, err := RelocateSessionFile(ProviderKeyCodex, src, targetHome, "rollout-abc", "/repo")
+	if err != nil {
+		t.Fatalf("RelocateSessionFile identical existing: %v", err)
+	}
+	if filepath.Clean(got) != filepath.Clean(dst) {
+		t.Fatalf("got = %q, want %q", got, dst)
+	}
+}
+
 func TestRelocateSessionFileClaudePreservesProjectHashDirectory(t *testing.T) {
 	srcHome := t.TempDir()
 	targetHome := t.TempDir()
@@ -673,6 +700,132 @@ func TestPrepareCrossAccountResumeRelocationFailureKeepsHistoryVisible(t *testin
 	history := svc.projectRunHistory("project-1")
 	if len(history) != 1 || history[0].RunID != "run-1" {
 		t.Fatalf("history = %+v, want run-1 visible", history)
+	}
+}
+
+func TestPrepareCrossAccountResumeAcceptsExistingIdenticalTargetFile(t *testing.T) {
+	store, err := NewLocalFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	root := t.TempDir()
+	acctAHome := filepath.Join(root, "acct-a")
+	acctBHome := filepath.Join(root, "acct-b")
+	writeProviderAccountsConfig(t, filepath.Join(root, "provider-accounts.json"), []ProviderAccount{
+		{ID: "acct-a", ProviderKey: "codex", HomePath: acctAHome, SlotIndex: 1, AuthStatus: "connected", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+		{ID: "acct-b", ProviderKey: "codex", HomePath: acctBHome, SlotIndex: 2, AuthStatus: "connected", IsActive: true, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+	})
+	writeCodexAuth(t, acctAHome)
+	writeCodexAuth(t, acctBHome)
+	src := writeCodexRollout(t, acctAHome, "rollout-dup", "/repo", time.Now().UTC())
+	dst, err := relocationTargetPath(ProviderKeyCodex, src, acctBHome, "rollout-dup", "/repo")
+	if err != nil {
+		t.Fatalf("relocationTargetPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	raw, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatalf("ReadFile src: %v", err)
+	}
+	if err := os.WriteFile(dst, raw, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             "run-1",
+		ProjectID:         "project-1",
+		ProviderKey:       ProviderKeyCodex,
+		ProviderSessionID: "rollout-dup",
+		ProviderAccountID: "acct-a",
+		WorkingDirectory:  "/repo",
+		Status:            RunStatusCompleted,
+		RunKind:           "chat",
+		StartedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+		UpdatedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("UpsertProviderSession: %v", err)
+	}
+
+	svc := NewInteractiveServiceWithStore(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+	svc.activeAccountID = "acct-b"
+	handle, apiErr := svc.resumeRun("run-1")
+	if apiErr != nil {
+		t.Fatalf("resumeRun: %v", apiErr)
+	}
+	if handle.RunID != "run-1" {
+		t.Fatalf("unexpected handle: %+v", handle)
+	}
+	state, found, err := store.GetProviderSession(context.Background(), "run-1")
+	if err != nil || !found {
+		t.Fatalf("GetProviderSession = (%v, %v, %v)", state, found, err)
+	}
+	if state.ProviderAccountID != "acct-b" {
+		t.Fatalf("ProviderAccountID = %q, want acct-b", state.ProviderAccountID)
+	}
+}
+
+func TestPrepareCrossAccountResumeSupportsSwitchingBackAndForth(t *testing.T) {
+	store, err := NewLocalFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	root := t.TempDir()
+	configPath := filepath.Join(root, "provider-accounts.json")
+	acctAHome := filepath.Join(root, "acct-a")
+	acctBHome := filepath.Join(root, "acct-b")
+	writeProviderAccountsConfig(t, configPath, []ProviderAccount{
+		{ID: "acct-a", ProviderKey: "codex", HomePath: acctAHome, SlotIndex: 1, AuthStatus: "connected", IsActive: true, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+		{ID: "acct-b", ProviderKey: "codex", HomePath: acctBHome, SlotIndex: 2, AuthStatus: "connected", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+	})
+	writeCodexAuth(t, acctAHome)
+	writeCodexAuth(t, acctBHome)
+	_ = writeCodexRollout(t, acctAHome, "rollout-xyz", "/repo", time.Now().UTC())
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             "run-1",
+		ProjectID:         "project-1",
+		ProviderKey:       ProviderKeyCodex,
+		ProviderSessionID: "rollout-xyz",
+		ProviderAccountID: "acct-a",
+		WorkingDirectory:  "/repo",
+		Status:            RunStatusCompleted,
+		RunKind:           "chat",
+		StartedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+		UpdatedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("UpsertProviderSession: %v", err)
+	}
+
+	runner := &Runner{}
+	svc := NewInteractiveServiceWithStore(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+	svc.AttachRunner(runner)
+
+	if _, err := runner.ActivateProviderAccount("acct-b"); err != nil {
+		t.Fatalf("ActivateProviderAccount acct-b: %v", err)
+	}
+	if _, apiErr := svc.resumeRun("run-1"); apiErr != nil {
+		t.Fatalf("resumeRun on acct-b: %v", apiErr)
+	}
+	state, found, err := store.GetProviderSession(context.Background(), "run-1")
+	if err != nil || !found {
+		t.Fatalf("GetProviderSession after acct-b = (%v, %v, %v)", state, found, err)
+	}
+	if state.ProviderAccountID != "acct-b" {
+		t.Fatalf("ProviderAccountID after acct-b = %q, want acct-b", state.ProviderAccountID)
+	}
+
+	if _, err := runner.ActivateProviderAccount("acct-a"); err != nil {
+		t.Fatalf("ActivateProviderAccount acct-a: %v", err)
+	}
+	if _, apiErr := svc.resumeRun("run-1"); apiErr != nil {
+		t.Fatalf("resumeRun back on acct-a: %v", apiErr)
+	}
+	state, found, err = store.GetProviderSession(context.Background(), "run-1")
+	if err != nil || !found {
+		t.Fatalf("GetProviderSession after acct-a = (%v, %v, %v)", state, found, err)
+	}
+	if state.ProviderAccountID != "acct-a" {
+		t.Fatalf("ProviderAccountID after acct-a = %q, want acct-a", state.ProviderAccountID)
 	}
 }
 
