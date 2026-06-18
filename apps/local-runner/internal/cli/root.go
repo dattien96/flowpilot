@@ -107,6 +107,7 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				runner.CatalogStoreFor(instance),
 				sessionStore,
 			)
+			interactive.AttachRunner(instance)
 			interactive.RegisterInteractiveRoutes(mux)
 			// Runner-hosted MCP server for the Claude permission/ask_user tools (07):
 			// the per-turn --mcp-config URL points claude back at this route.
