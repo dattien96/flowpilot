@@ -221,6 +221,11 @@ func (s *SupabaseWorkflowStore) UpsertProviderSession(ctx context.Context, sessi
 		"provider_account_id": nilIfEmpty(session.ProviderAccountID),
 		"working_directory":   nilIfEmpty(session.WorkingDirectory),
 		"status":              string(session.Status),
+		"last_prompt":         nilIfEmpty(session.LastPrompt),
+		"last_message":        nilIfEmpty(session.LastMessage),
+		"started_at":          nilIfEmpty(session.StartedAt),
+		"updated_at":          nilIfEmpty(session.UpdatedAt),
+		"run_kind":            nilIfEmpty(session.RunKind),
 	})
 	if err != nil {
 		return err
@@ -269,8 +274,14 @@ type dbProviderSessionRow struct {
 	WorkflowRunID     string  `json:"workflow_run_id"`
 	ProviderKey       string  `json:"provider_key"`
 	ProviderSessionID *string `json:"provider_session_id"`
+	ProviderAccountID *string `json:"provider_account_id"`
 	WorkingDirectory  string  `json:"working_directory"`
 	Status            string  `json:"status"`
+	LastPrompt        string  `json:"last_prompt"`
+	LastMessage       string  `json:"last_message"`
+	StartedAt         string  `json:"started_at"`
+	UpdatedAt         string  `json:"updated_at"`
+	RunKind           string  `json:"run_kind"`
 	WorkflowRuns      *struct {
 		ProjectID  string `json:"project_id"`
 		WorkflowID string `json:"workflow_id"`
@@ -282,7 +293,7 @@ type dbProviderSessionRow struct {
 // project_id, sorted newest-first. Satisfies the BUG-060 F-2 production gap.
 func (s *SupabaseWorkflowStore) ListProviderSessionsByProject(ctx context.Context, projectID string) ([]ProviderSessionState, error) {
 	endpoint := fmt.Sprintf(
-		"%s/workflow_provider_sessions?select=workflow_run_id,provider_key,provider_session_id,working_directory,status,workflow_runs!inner(project_id,workflow_id)&workflow_runs.project_id=eq.%s&order=updated_at.desc",
+		"%s/workflow_provider_sessions?select=workflow_run_id,provider_key,provider_session_id,provider_account_id,working_directory,status,last_prompt,last_message,started_at,updated_at,run_kind,workflow_runs!inner(project_id,workflow_id)&workflow_runs.project_id=eq.%s&order=updated_at.desc",
 		s.restURL, projectID,
 	)
 	code, body, err := httpRequestFn(ctx, http.MethodGet, endpoint, s.headers(""), nil)
@@ -307,6 +318,14 @@ func (s *SupabaseWorkflowStore) ListProviderSessionsByProject(ctx context.Contex
 		if r.ProviderSessionID != nil {
 			sess.ProviderSessionID = *r.ProviderSessionID
 		}
+		if r.ProviderAccountID != nil {
+			sess.ProviderAccountID = *r.ProviderAccountID
+		}
+		sess.LastPrompt = r.LastPrompt
+		sess.LastMessage = r.LastMessage
+		sess.StartedAt = r.StartedAt
+		sess.UpdatedAt = r.UpdatedAt
+		sess.RunKind = r.RunKind
 		if r.WorkflowRuns != nil {
 			sess.ProjectID = r.WorkflowRuns.ProjectID
 			sess.WorkflowID = r.WorkflowRuns.WorkflowID
@@ -314,6 +333,50 @@ func (s *SupabaseWorkflowStore) ListProviderSessionsByProject(ctx context.Contex
 		out = append(out, sess)
 	}
 	return out, nil
+}
+
+func (s *SupabaseWorkflowStore) GetProviderSession(ctx context.Context, runID string) (ProviderSessionState, bool, error) {
+	endpoint := fmt.Sprintf(
+		"%s/workflow_provider_sessions?workflow_run_id=eq.%s&select=workflow_run_id,provider_key,provider_session_id,provider_account_id,working_directory,status,last_prompt,last_message,started_at,updated_at,run_kind,workflow_runs(project_id,workflow_id)&limit=1",
+		s.restURL, runID,
+	)
+	code, body, err := httpRequestFn(ctx, http.MethodGet, endpoint, s.headers(""), nil)
+	if err != nil {
+		return ProviderSessionState{}, false, err
+	}
+	if code < 200 || code >= 300 {
+		return ProviderSessionState{}, false, fmt.Errorf("supabase get provider session failed: status %d: %s", code, string(body))
+	}
+	var rows []dbProviderSessionRow
+	if err := json.Unmarshal(body, &rows); err != nil {
+		return ProviderSessionState{}, false, fmt.Errorf("supabase get provider session decode: %w", err)
+	}
+	if len(rows) == 0 {
+		return ProviderSessionState{}, false, nil
+	}
+	row := rows[0]
+	sess := ProviderSessionState{
+		RunID:            row.WorkflowRunID,
+		ProviderKey:      ProviderKey(row.ProviderKey),
+		WorkingDirectory: row.WorkingDirectory,
+		Status:           RunStatus(row.Status),
+		LastPrompt:       row.LastPrompt,
+		LastMessage:      row.LastMessage,
+		StartedAt:        row.StartedAt,
+		UpdatedAt:        row.UpdatedAt,
+		RunKind:          row.RunKind,
+	}
+	if row.ProviderSessionID != nil {
+		sess.ProviderSessionID = *row.ProviderSessionID
+	}
+	if row.ProviderAccountID != nil {
+		sess.ProviderAccountID = *row.ProviderAccountID
+	}
+	if row.WorkflowRuns != nil {
+		sess.ProjectID = row.WorkflowRuns.ProjectID
+		sess.WorkflowID = row.WorkflowRuns.WorkflowID
+	}
+	return sess, true, nil
 }
 
 func (s *SupabaseWorkflowStore) UpsertQuestion(ctx context.Context, question ProviderQuestionState) error {
