@@ -39,6 +39,7 @@ type InteractiveService struct {
 	// boundary instead of remaining fully ad hoc/in-memory.
 	workflowStore WorkflowStore
 	orchestrator  *WorkflowOrchestrator
+	runner        *Runner
 
 	mu        sync.Mutex
 	runs      map[string]*interactiveRun
@@ -68,6 +69,9 @@ type interactiveRun struct {
 	workflowID        string
 	providerKey       ProviderKey
 	providerSessionID string
+	// realProviderSessionID is the provider-owned durable resume handle when it differs
+	// from FlowPilot's synthetic per-run session id.
+	realProviderSessionID string
 	providerAccountID string
 	workspaceCwd      string
 	modelName         string
@@ -82,6 +86,11 @@ type interactiveRun struct {
 	updatedAt     string
 	lastPrompt    string
 	lastMessage   string
+	sourceMachineID string
+	sourceRunID     string
+	restoredFrom    string
+	syncStatus      string
+	syncUpdatedAt   string
 	seq           int64
 	lastEventType ProviderEventType
 	events        []ProviderEvent
@@ -97,6 +106,7 @@ type interactiveRun struct {
 	nextSub int64
 
 	idempotency map[string]string // Idempotency-Key -> turnId
+	resumedFromDisk bool
 }
 
 type approvalRecord struct {
@@ -235,6 +245,12 @@ func (s *InteractiveService) persistenceStore() InteractiveStateStore {
 	return store
 }
 
+func (s *InteractiveService) AttachRunner(r *Runner) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.runner = r
+}
+
 func (s *InteractiveService) persistProviderSession(session ProviderSessionState) error {
 	store := s.persistenceStore()
 	if store == nil {
@@ -246,11 +262,15 @@ func (s *InteractiveService) persistProviderSession(session ProviderSessionState
 // sessionStateOf snapshots the display fields of rs into a ProviderSessionState.
 // Caller must hold s.mu or guarantee rs is not concurrently modified.
 func sessionStateOf(rs *interactiveRun) ProviderSessionState {
+	providerSessionID := rs.providerSessionID
+	if rs.realProviderSessionID != "" {
+		providerSessionID = rs.realProviderSessionID
+	}
 	return ProviderSessionState{
 		RunID:             rs.id,
 		ProjectID:         rs.projectID,
 		WorkflowID:        rs.workflowID,
-		ProviderSessionID: rs.providerSessionID,
+		ProviderSessionID: providerSessionID,
 		ProviderKey:       rs.providerKey,
 		ProviderAccountID: rs.providerAccountID,
 		WorkingDirectory:  rs.workspaceCwd,
@@ -260,6 +280,11 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		StartedAt:         rs.createdAt,
 		UpdatedAt:         rs.updatedAt,
 		RunKind:           rs.runKind,
+		SourceMachineID:   rs.sourceMachineID,
+		SourceRunID:       rs.sourceRunID,
+		RestoredFrom:      rs.restoredFrom,
+		SyncStatus:        rs.syncStatus,
+		SyncUpdatedAt:     rs.syncUpdatedAt,
 	}
 }
 
@@ -659,6 +684,7 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// Persist settled state (status, lastMessage, updatedAt) for history survival
 	// across restarts (BUG-080 F-3). Take a snapshot under lock; persist outside.
 	s.mu.Lock()
+	s.refreshResumeHandleLocked(rs, adapter)
 	snap := sessionStateOf(rs)
 	s.mu.Unlock()
 	_ = s.persistProviderSession(snap)
@@ -827,6 +853,24 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		s.mu.Unlock()
 		return "", newAPIErr(http.StatusBadRequest, "provider_unavailable", aerr.Error())
 	}
+	if rs.resumedFromDisk && rs.providerKey == ProviderKeyCodex {
+		home, ok := s.resolveAccountHome(rs.providerKey, s.activeAccountID)
+		if !ok {
+			s.mu.Unlock()
+			return "", newAPIErr(http.StatusConflict, "account_unavailable", "active account home not found")
+		}
+		var promptPrep func(TurnRequest) string
+		if live, ok := adapter.(*codexAdapter); ok {
+			promptPrep = live.promptPrep
+		}
+		adapter = newCodexResumeAdapter(home, promptPrep)
+	}
+	if rs.resumedFromDisk && rs.providerKey == ProviderKeyClaude {
+		if live, ok := adapter.(*claudeAdapter); ok && rs.realProviderSessionID != "" {
+			live.pool.setRealSession(rs.providerSessionID, rs.realProviderSessionID)
+			live.pool.setRealSession(rs.realProviderSessionID, rs.realProviderSessionID)
+		}
+	}
 
 	turnID := s.nextID("turn")
 	rs.turnInFlight = true
@@ -856,6 +900,34 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 
 	go s.runTurn(ctx, rs, adapter, in, scenario, turnID)
 	return turnID, nil
+}
+
+func (s *InteractiveService) refreshResumeHandleLocked(rs *interactiveRun, adapter ProviderRuntimeAdapter) {
+	switch rs.providerKey {
+	case ProviderKeyClaude:
+		live, ok := adapter.(*claudeAdapter)
+		if !ok {
+			return
+		}
+		real := live.pool.realSession(rs.providerSessionID)
+		if real == "" {
+			real = live.pool.realSession(rs.realProviderSessionID)
+		}
+		if real != "" {
+			rs.realProviderSessionID = real
+		}
+	case ProviderKeyCodex:
+		if rs.realProviderSessionID != "" {
+			return
+		}
+		home, ok := s.resolveAccountHome(rs.providerKey, rs.providerAccountID)
+		if !ok {
+			return
+		}
+		if rolloutID, found := DiscoverCodexRolloutSessionID(home, rs.workspaceCwd); found {
+			rs.realProviderSessionID = rolloutID
+		}
+	}
 }
 
 // SubmitApprovalDecision is idempotent + first-write-wins.
