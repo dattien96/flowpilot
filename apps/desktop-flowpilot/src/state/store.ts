@@ -94,6 +94,8 @@ interface AppState {
   _streamingAssistantId?: string;
   // stale-response guard for loadRunHistory (BUG-060 F-3)
   _historyLoadSeq: number;
+  // stale-response guard for loadRemoteChatSessions (mirrors _historyLoadSeq)
+  _remoteHistoryLoadSeq: number;
   // stream generation counter: incremented on every new consumeStream start so that
   // a prior stream for the same runId exits immediately (BUG-079)
   _streamRunSeq: number;
@@ -152,6 +154,7 @@ export const useStore = create<AppState>((set, get) => ({
   selectedProvider: "codex",
   yoloMode: false,
   _historyLoadSeq: 0,
+  _remoteHistoryLoadSeq: 0,
   _streamRunSeq: 0,
 
   async loadProjects() {
@@ -515,11 +518,14 @@ export const useStore = create<AppState>((set, get) => ({
       set({ remoteChatSessions: [], remoteHistoryLoading: false, remoteHistoryLoadError: undefined });
       return;
     }
-    set({ remoteHistoryLoading: true });
+    const seq = get()._remoteHistoryLoadSeq + 1;
+    set({ remoteHistoryLoading: true, _remoteHistoryLoadSeq: seq });
     try {
       const remoteChatSessions = await client.listRemoteChatSessions(selectedProjectId);
+      if (get()._remoteHistoryLoadSeq !== seq) return;
       set({ remoteChatSessions, remoteHistoryLoading: false, remoteHistoryLoadError: undefined });
     } catch (err) {
+      if (get()._remoteHistoryLoadSeq !== seq) return;
       set({ remoteHistoryLoading: false, remoteHistoryLoadError: String(err) });
     }
   },
@@ -588,7 +594,9 @@ export const useStore = create<AppState>((set, get) => ({
       cwd,
     };
     try {
-      await client.restoreChatRun(request);
+      const result = await client.restoreChatRun(request);
+      await Promise.all([get().loadRunHistory(), get().loadRemoteChatSessions()]);
+      void get().openHistoryRun(result.runId);
     } catch (err) {
       if (err instanceof RunnerApiError && err.code === "cwd_remap_required" && !cwd) {
         const retryCwd = selectedProjectPath(get());
@@ -617,7 +625,6 @@ export const useStore = create<AppState>((set, get) => ({
       }
       throw err;
     }
-    await Promise.all([get().loadRunHistory(), get().loadRemoteChatSessions()]);
   },
 
   async openHistoryRun(runId) {
@@ -627,13 +634,7 @@ export const useStore = create<AppState>((set, get) => ({
     try {
       handle = await client.resumeRun(runId);
     } catch (err) {
-      if (
-        err instanceof RunnerApiError &&
-        (err.code === "session_unavailable" ||
-          err.code === "account_not_signed_in" ||
-          err.code === "resume_unsupported" ||
-          err.code === "account_unavailable")
-      ) {
+      if (err instanceof RunnerApiError) {
         set((s) => ({
           runHistory: s.runHistory.map((item) =>
             item.runId === runId ? { ...item, unavailableReason: err.message } : item

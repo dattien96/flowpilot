@@ -196,7 +196,7 @@ func relocationTargetPath(providerKey ProviderKey, srcPath, targetHome, sessionI
 }
 
 func restoreTargetPath(providerKey ProviderKey, targetHome, relativePath, sessionID, cwd string) (string, error) {
-	clean := filepath.Clean(strings.ReplaceAll(strings.TrimSpace(relativePath), "\\", "/"))
+	clean := filepath.ToSlash(filepath.Clean(strings.ReplaceAll(strings.TrimSpace(relativePath), "\\", "/")))
 	clean = strings.TrimPrefix(clean, "./")
 	if clean == "." || clean == "" {
 		return "", errors.New("relative session path is required")

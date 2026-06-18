@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -684,6 +685,160 @@ func TestRestoredCodexRunUsesCLIResumePath(t *testing.T) {
 	}
 	if strings.TrimSpace(string(raw)) != acctHome {
 		t.Fatalf("CODEX_HOME = %q, want %q", strings.TrimSpace(string(raw)), acctHome)
+	}
+}
+
+// TestRestoredCodexRunSecondTurnStillUsesResumeSessionID verifies that the session id
+// passed to `codex exec resume` remains stable across multiple turns of a resumed run —
+// i.e. the second turn reuses the same rollout id, not a freshly-discovered one.
+func TestRestoredCodexRunSecondTurnStillUsesResumeSessionID(t *testing.T) {
+	store, err := NewLocalFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	root := t.TempDir()
+	acctHome := filepath.Join(root, "acct-b")
+	workspace := filepath.Join(root, "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("MkdirAll workspace: %v", err)
+	}
+	writeProviderAccountsConfig(t, filepath.Join(root, "provider-accounts.json"), []ProviderAccount{
+		{ID: "acct-b", ProviderKey: "codex", HomePath: acctHome, SlotIndex: 2, AuthStatus: "connected", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+	})
+	writeCodexAuth(t, acctHome)
+	writeCodexRollout(t, acctHome, "rollout-abc", workspace, time.Now().UTC())
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             "run-multiturn",
+		ProjectID:         "project-1",
+		ProviderKey:       ProviderKeyCodex,
+		ProviderSessionID: "rollout-abc",
+		ProviderAccountID: "acct-b",
+		WorkingDirectory:  workspace,
+		Status:            RunStatusCompleted,
+		RunKind:           "chat",
+		StartedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+		UpdatedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("UpsertProviderSession: %v", err)
+	}
+
+	// Capture the session id arg from each turn invocation.
+	var mu sync.Mutex
+	var capturedSessionIDs []string
+
+	originalCmd := commandContextFn
+	commandContextFn = func(ctx context.Context, _ string, args ...string) *exec.Cmd {
+		// args[0]="exec" args[1]="resume" args[2]=<sessionID>
+		if len(args) >= 3 && args[0] == "exec" && args[1] == "resume" {
+			mu.Lock()
+			capturedSessionIDs = append(capturedSessionIDs, args[2])
+			mu.Unlock()
+		}
+		// Write a non-empty output so the adapter emits EventMessageCompleted.
+		script := `out=""; prev=""; for a in "$@"; do if [ "$prev" = "-o" ]; then out="$a"; fi; prev="$a"; done; [ -n "$out" ] && printf "ok\n" > "$out"`
+		cmdArgs := append([]string{"-c", script, "sh"}, args...)
+		return exec.CommandContext(ctx, "sh", cmdArgs...)
+	}
+	defer func() { commandContextFn = originalCmd }()
+
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key:          ProviderKeyCodex,
+		DisplayName:  "Codex",
+		Status:       ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true, Resume: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(context.Context, TurnRequest, TurnBridge) error { return nil })
+		},
+	})
+
+	svc := NewInteractiveServiceWithStore(reg, newInteractiveCatalog(), store)
+	svc.activeAccountID = "acct-b"
+
+	handle, apiErr := svc.resumeRun("run-multiturn")
+	if apiErr != nil {
+		t.Fatalf("resumeRun: %v", apiErr)
+	}
+
+	// Turn 1.
+	if _, apiErr := svc.startTurn(handle.RunID, TurnInput{StepID: handle.StepID, Prompt: "first turn"}, "", ""); apiErr != nil {
+		t.Fatalf("startTurn (turn 1): %v", apiErr)
+	}
+	waitFor(t, func() bool {
+		svc.mu.Lock()
+		defer svc.mu.Unlock()
+		return !svc.runs[handle.RunID].turnInFlight
+	}, "turn 1 to finish")
+
+	// Turn 2 — must still resume the same rollout id.
+	if _, apiErr := svc.startTurn(handle.RunID, TurnInput{StepID: handle.StepID, Prompt: "second turn"}, "", ""); apiErr != nil {
+		t.Fatalf("startTurn (turn 2): %v", apiErr)
+	}
+	waitFor(t, func() bool {
+		svc.mu.Lock()
+		defer svc.mu.Unlock()
+		return !svc.runs[handle.RunID].turnInFlight
+	}, "turn 2 to finish")
+
+	mu.Lock()
+	ids := append([]string{}, capturedSessionIDs...)
+	mu.Unlock()
+
+	// The retry budget (maxTurnAttempts=3) may produce >1 exec call per turn when the
+	// shell mock exits non-zero; the important invariant is that every call uses the
+	// same session id and both turns fired at least once.
+	if len(ids) < 2 {
+		t.Fatalf("expected at least 2 codex exec resume calls (one per turn), got %d", len(ids))
+	}
+	for i, id := range ids {
+		if id != "rollout-abc" {
+			t.Fatalf("call %d used session id %q, want rollout-abc (stable across turns)", i+1, id)
+		}
+	}
+}
+
+// TestRestoreTargetPathRejectsTraversal verifies that restoreTargetPath refuses
+// relative paths that could escape the target home or point to the wrong provider
+// subtree. The security property is that every dangerous path returns an error
+// (regardless of the specific message, which varies by platform path separator).
+func TestRestoreTargetPathRejectsTraversal(t *testing.T) {
+	home := t.TempDir()
+	reject := []struct {
+		provider ProviderKey
+		relPath  string
+	}{
+		// traversal — caught by the explicit "../" guard on POSIX, or by the provider
+		// prefix check on Windows (where filepath.Clean converts "/" → "\").
+		{ProviderKeyCodex, "../evil"},
+		{ProviderKeyClaude, "../../etc/passwd"},
+		{ProviderKeyCodex, ".."},
+		// wrong subtree for provider
+		{ProviderKeyCodex, ".claude/projects/abc/session.jsonl"},
+		{ProviderKeyClaude, "sessions/2024/01/01/rollout-xyz.jsonl"},
+		// empty / dot
+		{ProviderKeyCodex, ""},
+		{ProviderKeyCodex, "."},
+	}
+	for _, tc := range reject {
+		_, err := restoreTargetPath(tc.provider, home, tc.relPath, "session-id", "/cwd")
+		if err == nil {
+			t.Errorf("restoreTargetPath(%q, %q): expected error, got nil", tc.provider, tc.relPath)
+		}
+	}
+
+	// Positive cases — valid paths must succeed.
+	accept := []struct {
+		provider ProviderKey
+		relPath  string
+	}{
+		{ProviderKeyCodex, "sessions/2024/01/01/rollout-abc.jsonl"},
+		{ProviderKeyClaude, ".claude/projects/abc123/session.jsonl"},
+	}
+	for _, tc := range accept {
+		_, err := restoreTargetPath(tc.provider, home, tc.relPath, "session-id", "/cwd")
+		if err != nil {
+			t.Errorf("restoreTargetPath(%q, %q): unexpected error: %v", tc.provider, tc.relPath, err)
+		}
 	}
 }
 
