@@ -5,7 +5,7 @@
 - Document ID: `Task-067`
 - Title: `Desktop Post-Restart Run Resume Via Provider Session ID`
 - Phase: `task`
-- Status: `todo`
+- Status: `in_progress`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-17`
@@ -86,6 +86,19 @@ BUG-080 (CA-097) fixed the sidebar population gap but explicitly noted that post
 - `T-4` If the session file is missing or unopenable, return a typed error `ErrSessionFileMissing` so the desktop renders that history item greyed-out / disabled with a reason (canonical greyout fallback, Key Decisions T-4).
 - `T-5` Re-point support: a resumed run must be able to update its `provider_session_id` / `provider_account_id` while keeping `run_id` (reuse `UpsertProviderSession`, last-wins). Shared by Task-068 (cross-account) and Task-069 (cross-PC).
 
+### Definition Of Done
+
+- [x] `DOD-067-001` `resumeRun` falls back to persisted session lookup when the in-memory run map is empty.
+- [x] `DOD-067-002` `SessionHistoryReader` supports direct `GetProviderSession(runID)` lookup.
+- [x] `DOD-067-003` Persisted chat runs reconstruct into an `interactiveRun` and re-register in `s.runs`.
+- [x] `DOD-067-004` Restored workflow runs are rejected with `resume_unsupported` for MVP.
+- [x] `DOD-067-005` Missing session files return a typed unavailable error instead of `run_not_found`.
+- [x] `DOD-067-006` Missing active account auth returns `account_not_signed_in`.
+- [x] `DOD-067-007` Existing in-memory resume behavior remains unchanged.
+- [x] `DOD-067-008` Desktop history entries stay visible and receive an unavailable reason on typed resume failures.
+- [x] `DOD-067-009` Focused restart/cross-account resume tests exist and pass in `cross_account_resume_test.go`.
+- [ ] `DOD-067-010` Transcript view for historic runs is implemented.
+
 ## 5. Touched Areas
 
 - files:
@@ -114,7 +127,10 @@ BUG-080 (CA-097) fixed the sidebar population gap but explicitly noted that post
 ## 8. Completion Notes
 
 - result:
+  - Post-restart chat resume is implemented through persisted session reconstruction plus provider-session validation.
+  - Cross-account preparation and run re-pointing are exercised in `cross_account_resume_test.go`, including greyout-safe failure modes and Codex CLI resume execution.
 - follow-ups:
   - Transcript view (stream prior conversation back to desktop as synthetic events)
   - Cross-PC resume (Task-057)
 - upstream docs updated:
+  - Added inline DoD checklist with current implementation state.

@@ -5,7 +5,7 @@
 - Document ID: `Task-068`
 - Title: `Desktop History Unified View; Account ID As Local-File Pointer`
 - Phase: `task`
-- Status: `todo`
+- Status: `in_progress`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-17`
@@ -94,6 +94,19 @@ BUG-080 created `sessions.ndjson` as the local session index but did not persist
 - `T-7` (only if T-6 passes) Add a runner path that, on resume of a run whose `provider_account_id` differs from the active account, relocates the session file into the active account's folder (Q-4 copy vs point) and resumes, then re-points `provider_account_id` (and `provider_session_id` if re-minted) for that `run_id`.
 - `T-8` If relocation/resume fails (provider rejects the foreign-account file), the desktop shows that history item greyed-out / disabled with a description ("can't open — created by a different account"). The chat stays visible; only continue is disabled. (Shared greyout fallback — Task-067 T-4.)
 
+### Definition Of Done
+
+- [x] `DOD-068-001` `provider_account_id` is persisted in local `sessions.ndjson` with backward-compatible `omitempty`.
+- [x] `DOD-068-002` Legacy NDJSON records without `provider_account_id` still load cleanly.
+- [x] `DOD-068-003` Last-wins upsert re-points `provider_session_id` and `provider_account_id` for an existing `run_id`.
+- [x] `DOD-068-004` Project history remains a unified list and is not filtered by account.
+- [x] `DOD-068-005` Cross-account resume relocates provider session files into the active account home when feasible.
+- [x] `DOD-068-006` Cross-account resume re-points persisted `provider_account_id` after successful relocation.
+- [x] `DOD-068-007` Cross-account failure leaves the history item visible and returns a typed unavailable error.
+- [x] `DOD-068-008` Same-account resume does not mutate the stored provider-account pointer.
+- [x] `DOD-068-009` Codex feasibility is recorded as confirmed in CA-098 and reflected in implementation/tests.
+- [ ] `DOD-068-010` Claude cross-account feasibility is validated end-to-end.
+
 ## 5. Touched Areas
 
 - files:
@@ -123,7 +136,10 @@ BUG-080 created `sessions.ndjson` as the local session index but did not persist
 ## 8. Completion Notes
 
 - result:
+  - The local-file provider-account pointer is persisted and round-trips through restart.
+  - Unified history behavior is preserved while the runner uses `provider_account_id` internally for cross-account session relocation and re-pointing.
 - follow-ups:
   - If T-6 confirms feasibility, T-7 (cross-account continuation) may be promoted to its own task.
   - Re-pointing `run_id → provider_session_id` is shared with Task-067 (post-restart resume) and Task-069 (cross-PC); keep the mutation logic in one place.
 - upstream docs updated:
+  - Added inline DoD checklist with current implementation state.
