@@ -1,12 +1,14 @@
 import { create } from "zustand";
 import type {
   Artifact,
+  ChatSessionRestoreRequest,
   Project,
   ProviderAccountSummary,
   ProviderEventDTO,
   ProviderKey,
   ProviderSkill,
   PromptAttachment,
+  RemoteChatSessionSummary,
   RunHistoryItem,
   RunStatus,
   Step,
@@ -76,8 +78,11 @@ interface AppState {
   timeline: TimelineItem[];
   artifacts: Artifact[];
   runHistory: RunHistoryItem[];
+  remoteChatSessions: RemoteChatSessionSummary[];
   historyLoading: boolean;
   historyLoadError?: string;
+  remoteHistoryLoading: boolean;
+  remoteHistoryLoadError?: string;
   pendingApproval?: PendingApproval;
   pendingQuestion?: PendingQuestion;
   lastTurnInput?: TurnInput;
@@ -113,6 +118,9 @@ interface AppState {
   stop(): Promise<void>;
   reconnect(): Promise<void>;
   loadRunHistory(): Promise<void>;
+  loadRemoteChatSessions(): Promise<void>;
+  syncHistoryRun(runId: string): Promise<void>;
+  restoreRemoteChatSession(summary: RemoteChatSessionSummary, cwd?: string): Promise<void>;
   openHistoryRun(runId: string): Promise<void>;
   resetRun(): void;
   openInIde(path: string, line?: number): void;
@@ -133,7 +141,9 @@ export const useStore = create<AppState>((set, get) => ({
   timeline: [],
   artifacts: [],
   runHistory: [],
+  remoteChatSessions: [],
   historyLoading: false,
+  remoteHistoryLoading: false,
   latestTokenUsage: undefined,
   recoverable: false,
   scenario: "normal",
@@ -240,7 +250,9 @@ export const useStore = create<AppState>((set, get) => ({
       selectedWorkflowId: undefined,
       selectedStepId: undefined,
       runHistory: [],
+      remoteChatSessions: [],
       historyLoadError: undefined,
+      remoteHistoryLoadError: undefined,
     });
     void get().loadSkills(get().selectedProvider ?? "codex");
   },
@@ -497,10 +509,140 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
+  async loadRemoteChatSessions() {
+    const { client, selectedProjectId } = get();
+    if (!selectedProjectId) {
+      set({ remoteChatSessions: [], remoteHistoryLoading: false, remoteHistoryLoadError: undefined });
+      return;
+    }
+    set({ remoteHistoryLoading: true });
+    try {
+      const remoteChatSessions = await client.listRemoteChatSessions(selectedProjectId);
+      set({ remoteChatSessions, remoteHistoryLoading: false, remoteHistoryLoadError: undefined });
+    } catch (err) {
+      set({ remoteHistoryLoading: false, remoteHistoryLoadError: String(err) });
+    }
+  },
+
+  async syncHistoryRun(runId) {
+    const { client, selectedProjectId } = get();
+    set((s) => ({
+      runHistory: s.runHistory.map((item) =>
+        item.runId === runId
+          ? {
+              ...item,
+              syncStatus: "syncing",
+              unavailableReason: undefined,
+            }
+          : item,
+      ),
+    }));
+    try {
+      const result = await client.syncChatRun(runId, selectedProjectId ? { googleDriveProjectId: selectedProjectId } : undefined);
+      set((s) => ({
+        runHistory: s.runHistory.map((item) =>
+          item.runId === runId
+            ? {
+                ...item,
+                sourceMachineId: result.sourceMachineId,
+                sourceRunId: result.sourceRunId,
+                syncStatus: result.syncStatus,
+                unavailableReason: undefined,
+              }
+            : item,
+        ),
+      }));
+      void get().loadRemoteChatSessions();
+    } catch (err) {
+      if (
+        err instanceof RunnerApiError &&
+        (err.code === "session_unavailable" ||
+          err.code === "account_not_signed_in" ||
+          err.code === "resume_unsupported" ||
+          err.code === "account_unavailable" ||
+          err.code === "google_drive_not_connected")
+      ) {
+        set((s) => ({
+          runHistory: s.runHistory.map((item) =>
+            item.runId === runId ? { ...item, syncStatus: "failed", unavailableReason: err.message } : item,
+          ),
+        }));
+        return;
+      }
+      set((s) => ({
+        runHistory: s.runHistory.map((item) =>
+          item.runId === runId ? { ...item, syncStatus: "failed" } : item,
+        ),
+      }));
+      throw err;
+    }
+  },
+
+  async restoreRemoteChatSession(summary, cwd) {
+    const { client, selectedProjectId } = get();
+    if (!selectedProjectId) return;
+    const request: ChatSessionRestoreRequest = {
+      projectId: selectedProjectId,
+      sourceMachineId: summary.sourceMachineId,
+      sourceRunId: summary.sourceRunId,
+      cwd,
+    };
+    try {
+      await client.restoreChatRun(request);
+    } catch (err) {
+      if (err instanceof RunnerApiError && err.code === "cwd_remap_required" && !cwd) {
+        const retryCwd = selectedProjectPath(get());
+        if (retryCwd) {
+          await get().restoreRemoteChatSession(summary, retryCwd);
+          return;
+        }
+      }
+      if (
+        err instanceof RunnerApiError &&
+        (err.code === "sync_remote_not_found" ||
+          err.code === "sync_integrity_failed" ||
+          err.code === "account_not_signed_in" ||
+          err.code === "account_unavailable" ||
+          err.code === "cwd_remap_required" ||
+          err.code === "session_file_conflict")
+      ) {
+        set((s) => ({
+          remoteChatSessions: s.remoteChatSessions.map((item) =>
+            item.sourceMachineId === summary.sourceMachineId && item.sourceRunId === summary.sourceRunId
+              ? { ...item, unavailableReason: err.message }
+              : item,
+          ),
+        }));
+        return;
+      }
+      throw err;
+    }
+    await Promise.all([get().loadRunHistory(), get().loadRemoteChatSessions()]);
+  },
+
   async openHistoryRun(runId) {
     const { client } = get();
     const historyItem = get().runHistory.find((item) => item.runId === runId);
-    const handle = await client.resumeRun(runId);
+    let handle;
+    try {
+      handle = await client.resumeRun(runId);
+    } catch (err) {
+      if (
+        err instanceof RunnerApiError &&
+        (err.code === "session_unavailable" ||
+          err.code === "account_not_signed_in" ||
+          err.code === "resume_unsupported" ||
+          err.code === "account_unavailable")
+      ) {
+        set((s) => ({
+          runHistory: s.runHistory.map((item) =>
+            item.runId === runId ? { ...item, unavailableReason: err.message } : item
+          ),
+        }));
+        return;
+      }
+      throw err;
+    }
     set({
       runId: handle.runId,
       status: handle.status,
@@ -515,6 +657,9 @@ export const useStore = create<AppState>((set, get) => ({
       _streamingAssistantId: undefined,
       _streamRunSeq: get()._streamRunSeq + 1,
       ...(historyItem ? { selectedProvider: historyItem.providerKey } : {}),
+      runHistory: get().runHistory.map((item) =>
+        item.runId === runId ? { ...item, unavailableReason: undefined } : item
+      ),
     });
     if (historyItem?.providerKey) {
       void get().loadSkills(historyItem.providerKey);
