@@ -97,7 +97,7 @@ BUG-080 (CA-097) fixed the sidebar population gap but explicitly noted that post
 - [x] `DOD-067-007` Existing in-memory resume behavior remains unchanged.
 - [x] `DOD-067-008` Desktop history entries stay visible and receive an unavailable reason on typed resume failures.
 - [x] `DOD-067-009` Focused restart/cross-account resume tests exist and pass in `cross_account_resume_test.go`.
-- [ ] `DOD-067-010` Transcript view for historic runs is implemented.
+- [x] `DOD-067-010` Transcript view for historic runs is implemented. (Claude provider; Codex deferred)
 
 ## 5. Touched Areas
 

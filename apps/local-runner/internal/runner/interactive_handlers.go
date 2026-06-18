@@ -583,6 +583,7 @@ func (s *InteractiveService) resumeRun(runID string) (RunHandle, *apiErr) {
 	if err := s.ensureResumeReady(rs); err != nil {
 		return RunHandle{}, err
 	}
+	s.seedTranscriptFromDisk(rs)
 	handle := RunHandle{RunID: rs.id, ProviderSessionID: s.resumeSessionID(rs), ProviderKey: rs.providerKey, Status: rs.status}
 	// Surface the synthetic chat step so the desktop can continue a resumed normal_chat
 	// run; its turns need a stepId and the chat step id is deterministic (T-7). Workflow

@@ -111,9 +111,12 @@ Handled now:
 
 ## Task 067
 
-NOT BUILT: DOD-067-010 - Transcript view (stream prior messages to desktop)
-Effect: after sync/restore, resume (new messages) works but prior conversation is NOT visible in the UI.
-See §10 for transcript view scope note.
+DOD-067-010 - Transcript view (stream prior messages to desktop): DONE (implemented 2026-06-18)
+- transcript_loader.go: loadClaudeTranscriptEvents(filePath) reads Claude JSONL, calls mapClaudeLine per line
+- interactive_resume.go: seedTranscriptFromDisk(rs) loads+stamps correlation fields, populates rs.events under s.mu
+- interactive_handlers.go: resumeRun calls seedTranscriptFromDisk after ensureResumeReady
+- SSE snapshot path replays rs.events to desktop (already in place — no SSE changes needed)
+- Codex support deferred (rollout JSONL replay format unconfirmed)
 
 
 ## Task-075: Cross-Account And Cross-PC Chat E2E Test Guide
@@ -131,7 +134,7 @@ The remaining not-done items fall into 4 buckets:
 2. GitNexus MCP gate - WAIVED (MCP tools not exposed, no CLI `detect-changes` equivalent)
    - 071: DOD-95 ; 073: DOD-095, 096   [marked done/waived 2026-06-18]
 3. Feature not built - transcript view (see §10)
-   - 067: DOD-067-010
+   - 067: DOD-067-010 DONE (2026-06-18)
 4. Remaining deferred test signatures - see §5 Task 072 for per-item reasons
    - 072: TS-030-031,037,038,042,043,044-048  (TS-008/011/013/015-017/019-020/029 now DONE)
 
@@ -196,21 +199,18 @@ Note: DOD-069-010 BLOCKED - Claude cross-PC needs 2nd machine + 2nd Claude accou
 
 # 10. Transcript view scope (DOD-067-010)
 
-**Status: NOT BUILT. This is a known UX gap.**
+**Status: BUILT (2026-06-18) — Claude provider.**
 
-What works today:
+What works:
 - Resume (sending new messages after restart/cross-account/cross-PC restore) WORKS
-- The runner reconstructs the run, Codex/Claude receive the resume handle, new turns complete normally
+- Prior conversation messages ARE streamed back to the desktop when opening a resumed Claude run
+- resumeRun calls seedTranscriptFromDisk after ensureResumeReady; rs.events populated before any SSE subscriber connects
+- SSE snapshot path (afterSeq=0) replays all rs.events to the desktop — no SSE layer changes needed
 
-What does NOT work:
-- Prior conversation messages are NOT streamed back to the desktop UI
-- When you open a restored run, the chat timeline is BLANK until you send a new message
-- The provider's session file contains the full history, but FlowPilot does not read and replay it
+What does NOT work yet:
+- Codex transcript replay: rollout JSONL format not confirmed for conversation replay; deferred
 
-To implement transcript view (future work):
-- Read the provider session file (Codex JSONL / Claude JSONL) from disk
-- Parse the conversation turns from the provider format
-- Emit them as synthetic FlowPilot events (assistant-message-complete, turn-complete etc.) over the SSE stream
-- Desktop renders them the same way as live turns
-
-This is captured as DOD-067-010 in Task-067 §4 and noted as a follow-up in Task-067 §8.
+Implementation:
+- transcript_loader.go: loadClaudeTranscriptEvents — reads Claude JSONL, maps each line via mapClaudeLine
+- interactive_resume.go: seedTranscriptFromDisk — resolves account home, locates session file, stamps correlation fields (Seq, ID, WorkflowRunID, StepRunID, ProviderSessionID, ProviderKey, OccurredAt), appends to rs.events under s.mu
+- interactive_handlers.go: resumeRun — one line added after ensureResumeReady

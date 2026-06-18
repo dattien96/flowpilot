@@ -136,6 +136,45 @@ func (s *InteractiveService) resumeSessionID(rs *interactiveRun) string {
 	return rs.providerSessionID
 }
 
+// seedTranscriptFromDisk loads the provider session file and populates rs.events
+// so the SSE snapshot path replays the prior conversation to the desktop.
+// Best-effort: any error is silently ignored to not block resume.
+func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
+	if !rs.resumedFromDisk || rs.providerKey != ProviderKeyClaude {
+		return
+	}
+	home, ok := s.resolveAccountHome(rs.providerKey, rs.providerAccountID)
+	if !ok {
+		return
+	}
+	sessionID := s.resumeSessionID(rs)
+	filePath, found := LocateSessionFile(rs.providerKey, home, sessionID, rs.workspaceCwd)
+	if !found {
+		return
+	}
+	historical := loadClaudeTranscriptEvents(filePath)
+	if len(historical) == 0 {
+		return
+	}
+	stepID := "chat-" + rs.id
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(rs.events) > 0 {
+		return // concurrent call guard
+	}
+	for i := range historical {
+		rs.seq++
+		historical[i].Seq = rs.seq
+		historical[i].ID = s.nextID("transcript")
+		historical[i].WorkflowRunID = rs.id
+		historical[i].WorkflowStepRunID = stepID
+		historical[i].ProviderSessionID = sessionID
+		historical[i].ProviderKey = rs.providerKey
+		historical[i].OccurredAt = rs.createdAt
+		rs.events = append(rs.events, historical[i])
+	}
+}
+
 func (s *InteractiveService) loadPersistedRun(runID string) (*interactiveRun, *apiErr) {
 	reader, ok := s.workflowStore.(SessionHistoryReader)
 	if !ok {
