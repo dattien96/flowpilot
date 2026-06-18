@@ -12,7 +12,7 @@
 - Last Updated: `2026-06-17`
 - Parent Documents: [CP-18: Refactor Workflow With Session](../../07-Coding-Plan/done/CP-18-Refactor-Workflow-With_Session.md), [SD-12: Refactor Workflow With Session](../../06-System-Tech-Design/SD-12-Refactor-Workflow-With_Session.md), [SS-11: Workflow With Session](../../05-System-Specs/SS-11-Workflow-With_Session.md)
 - Child Documents: `none`
-- Related Documents: [BUG-060: Desktop Run History Empties After Switching Runs](../../09-BugFix/done/BUG-060-Desktop-Run-History-Empties-After-Switching-Runs.md), [Task-037: Desktop Project Run History Popover](./Task-037-Desktop-Project-Run-History-Popover.md), [CA-075: Desktop Chat Mode Split And BUG-060 History Fix](../../change-audit/CA-075-desktop-chat-mode-split-and-bug060-history-fix.md), [Task-057: Cross-PC Provider Chat Sync](../todo/Task-057-Cross-PC-Provider-Chat-Sync.md)
+- Related Documents: [SD-14: Codex Cross-Account Chat Resume And Home Sync](../../06-System-Tech-Design/SD-14-Codex-Cross-Account-Chat-Resume-And-Home-Sync.md), [BUG-060: Desktop Run History Empties After Switching Runs](../../09-BugFix/done/BUG-060-Desktop-Run-History-Empties-After-Switching-Runs.md), [Task-037: Desktop Project Run History Popover](./Task-037-Desktop-Project-Run-History-Popover.md), [CA-075: Desktop Chat Mode Split And BUG-060 History Fix](../../change-audit/CA-075-desktop-chat-mode-split-and-bug060-history-fix.md), [Task-057: Cross-PC Provider Chat Sync](../todo/Task-057-Cross-PC-Provider-Chat-Sync.md)
 - Replaces: `none`
 - Tags: `local-runner, history, supabase, session, production, bug-060`
 
