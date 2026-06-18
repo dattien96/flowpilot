@@ -667,6 +667,102 @@ func TestClaudeArgsYoloPosture(t *testing.T) {
 	}
 }
 
+// ---- TS-008: real session id persisted with correct run id + cwd (DOD-08, DOD-81) -------
+
+func TestClaudeAdapterPersistsRealSessionIDForResume(t *testing.T) {
+	script := shellReadLine() + shellOutputLines(
+		`{"type":"system","subtype":"init","session_id":"claude-real-1"}`,
+		`{"type":"result","subtype":"success","result":"ok"}`,
+	)
+	defer mockClaude(t, script)()
+
+	repoCwd := t.TempDir() // real dir so the spawned process can chdir to it
+	store := &fakeProviderSessionStore{ch: make(chan ProviderSessionRecord, 4)}
+	pool := newClaudeProcessPool()
+	a := newClaudeAdapter(pool, ".", "acct-a", nil, "")
+	a.sessionStore = store
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	req := TurnRequest{RunID: "run-1", StepID: "s", Prompt: "hi", ProviderSessionID: "thread-1", Cwd: repoCwd}
+	if err := a.SendTurn(ctx, req, &fakeClaudeBridge{}); err != nil {
+		t.Fatalf("SendTurn: %v", err)
+	}
+
+	// pool must map the synthetic session id to the captured real one
+	if got := pool.realSession("thread-1"); got != "claude-real-1" {
+		t.Fatalf("pool.realSession('thread-1') = %q, want claude-real-1", got)
+	}
+
+	// persisted record must carry the real session id, run id, and request cwd
+	select {
+	case rec := <-store.ch:
+		if rec.ProviderSessionID != "claude-real-1" {
+			t.Fatalf("persisted ProviderSessionID = %q, want claude-real-1", rec.ProviderSessionID)
+		}
+		if rec.WorkflowRunID != "run-1" {
+			t.Fatalf("persisted WorkflowRunID = %q, want run-1", rec.WorkflowRunID)
+		}
+		if rec.WorkingDirectory != repoCwd {
+			t.Fatalf("persisted WorkingDirectory = %q, want %q", rec.WorkingDirectory, repoCwd)
+		}
+		if rec.ProviderKey != string(ProviderKeyClaude) {
+			t.Fatalf("persisted ProviderKey = %q, want claude", rec.ProviderKey)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("expected a persisted session record within 5s")
+	}
+}
+
+// ---- TS-029: restored Claude run seeds pool before first turn (DOD-40, DOD-41) ----------
+//
+// Mirrors what interactive_service.startTurn does for resumedFromDisk Claude runs:
+// before spawning the process it calls pool.setRealSession so the adapter picks up the
+// stored real session id and emits --resume <realSessionId> on the very first turn.
+
+func TestRestoredClaudeRunSeedsPoolWithRealSessionBeforeTurn(t *testing.T) {
+	script := shellReadLine() + shellOutputLines(
+		`{"type":"system","subtype":"init","session_id":"claude-real-1"}`,
+		`{"type":"result","subtype":"success","result":"ok"}`,
+	)
+	var mu sync.Mutex
+	var capturedArgs []string
+	original := commandContextFn
+	defer func() { commandContextFn = original }()
+	commandContextFn = func(ctx context.Context, _ string, arg ...string) *exec.Cmd {
+		mu.Lock()
+		capturedArgs = append([]string{}, arg...)
+		mu.Unlock()
+		return testShellCommand(ctx, script)
+	}
+
+	repoCwd := t.TempDir() // real dir so the spawned process can chdir to it
+	pool := newClaudeProcessPool()
+	a := newClaudeAdapter(pool, repoCwd, "acct-a", nil, "")
+
+	// Simulate what interactive_service.startTurn does before the first turn of a
+	// restored Claude run (interactive_service.go lines 869-871):
+	pool.setRealSession("thread-1", "claude-real-1")
+	pool.setRealSession("claude-real-1", "claude-real-1")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	req := TurnRequest{RunID: "run-1", StepID: "s", Prompt: "continue", ProviderSessionID: "thread-1"}
+	if err := a.SendTurn(ctx, req, &fakeClaudeBridge{}); err != nil {
+		t.Fatalf("SendTurn: %v", err)
+	}
+
+	mu.Lock()
+	args := capturedArgs
+	mu.Unlock()
+
+	if !flagHasValue(args, "--resume", "claude-real-1") {
+		t.Fatalf("restored turn must --resume the real session id, got args: %v", args)
+	}
+}
+
 func argIndex(args []string, flag string) int {
 	for i, a := range args {
 		if a == flag {

@@ -395,7 +395,14 @@ func compatProbeCodexResumeSurface(ctx context.Context) CompatItem {
 func compatProbeCodexRolloutMetadata() CompatItem {
 	codexHome := strings.TrimSpace(os.Getenv("CODEX_HOME"))
 	if codexHome == "" {
-		codexHome = filepath.Join(os.Getenv("HOME"), ".codex")
+		home, err := os.UserHomeDir()
+		if err != nil {
+			home = os.Getenv("HOME")
+			if home == "" {
+				home = os.Getenv("USERPROFILE")
+			}
+		}
+		codexHome = filepath.Join(home, ".codex")
 	}
 	sessionsDir := filepath.Join(codexHome, "sessions")
 	newestRollout := compatNewestRolloutPath(sessionsDir)
@@ -418,7 +425,14 @@ func compatProbeCodexRolloutMetadata() CompatItem {
 }
 
 func compatProbeClaudeSessionStore() CompatItem {
-	claudeProjects := filepath.Join(os.Getenv("HOME"), ".claude", "projects")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = os.Getenv("HOME")
+		if home == "" {
+			home = os.Getenv("USERPROFILE")
+		}
+	}
+	claudeProjects := filepath.Join(home, ".claude", "projects")
 	if info, err := os.Stat(claudeProjects); err == nil && info.IsDir() {
 		return CompatItem{Name: "claude session store layout", Status: "pass", Detail: "found ~/.claude/projects session store"}
 	}
