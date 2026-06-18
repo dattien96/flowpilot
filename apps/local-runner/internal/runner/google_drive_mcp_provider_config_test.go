@@ -21,6 +21,7 @@ func TestEnsureCodexGoogleDriveMcpConfig(t *testing.T) {
 
 	// Setup runner with valid Google Drive MCP
 	runner := &Runner{workspace: tmpDir, secretStore: newMemorySecretStore()}
+	seedGoogleDriveProxyReady(t, runner)
 
 	// Create valid MCP credential and token files
 	mcpConfigDir := filepath.Join(tmpDir, ".config", "google-drive-mcp")
@@ -48,11 +49,15 @@ func TestEnsureCodexGoogleDriveMcpConfig(t *testing.T) {
 
 	// Build workspace config using JSON marshaling for proper escaping (handles Windows paths)
 	wsConfig := map[string]interface{}{
-		"version":      1,
-		"artifactSync": map[string]interface{}{},
+		"version": 1,
+		"artifactSync": map[string]interface{}{
+			"clientId":    "artifact-client-id",
+			"redirectUri": googleDriveDefaultRedirectURI,
+		},
 		"mcp": map[string]interface{}{
 			"credentialPath": credPath,
 			"tokenPath":      tokenPath,
+			"accountId":      "project-1@example.com",
 		},
 	}
 
@@ -113,28 +118,25 @@ func TestEnsureCodexGoogleDriveMcpConfig(t *testing.T) {
 		t.Fatal("google-drive server not found in config")
 	}
 
-	if server.Command != "npx" {
-		t.Errorf("Expected command 'npx', got '%s'", server.Command)
+	if server.Command != "flowpilot" {
+		t.Errorf("Expected command 'flowpilot', got '%s'", server.Command)
 	}
 
-	if len(server.Args) != 2 || server.Args[0] != "-y" || server.Args[1] != "@piotr-agier/google-drive-mcp" {
-		t.Errorf("Unexpected args: %v", server.Args)
+	workspace, configuredAccountHome, mode, yoloMode, ok := parseGoogleDriveProxyMcpInvocation(server.Command, server.Args)
+	if !ok || workspace != filepath.Clean(tmpDir) || configuredAccountHome != accountHome || mode != "read_only" || yoloMode {
+		t.Errorf("Unexpected proxy invocation: command=%s args=%v", server.Command, server.Args)
 	}
 
-	if server.Env["GOOGLE_DRIVE_OAUTH_CREDENTIALS"] != credPath {
-		t.Errorf("Wrong credential path in env")
-	}
-
-	if server.Env["GOOGLE_DRIVE_MCP_TOKEN_PATH"] != tokenPath {
-		t.Errorf("Wrong token path in env")
+	if server.Env[googleDriveProxyAccountIDEnv] != "project-1@example.com" {
+		t.Errorf("Wrong proxy account id in env: %v", server.Env)
 	}
 
 	// Verify read-only tools are configured
 	if len(server.EnabledTools) == 0 {
 		t.Error("No enabled tools configured for read_only mode")
 	}
-	if server.ApprovalMode != "approve" {
-		t.Errorf("Expected read_only approval mode 'approve', got '%s'", server.ApprovalMode)
+	if server.ApprovalMode != "prompt" {
+		t.Errorf("Expected proxy read_only approval mode 'prompt', got '%s'", server.ApprovalMode)
 	}
 
 	// Run again to verify idempotency
@@ -158,6 +160,7 @@ func TestEnsureGeminiGoogleDriveMcpConfig(t *testing.T) {
 
 	// Setup runner with valid Google Drive MCP
 	runner := &Runner{workspace: tmpDir, secretStore: newMemorySecretStore()}
+	seedGoogleDriveProxyReady(t, runner)
 
 	// Create valid MCP credential and token files
 	mcpConfigDir := filepath.Join(tmpDir, ".config", "google-drive-mcp")
@@ -185,11 +188,15 @@ func TestEnsureGeminiGoogleDriveMcpConfig(t *testing.T) {
 
 	// Build workspace config using JSON marshaling for proper escaping (handles Windows paths)
 	wsConfig := map[string]interface{}{
-		"version":      1,
-		"artifactSync": map[string]interface{}{},
+		"version": 1,
+		"artifactSync": map[string]interface{}{
+			"clientId":    "artifact-client-id",
+			"redirectUri": googleDriveDefaultRedirectURI,
+		},
 		"mcp": map[string]interface{}{
 			"credentialPath": credPath,
 			"tokenPath":      tokenPath,
+			"accountId":      "project-1@example.com",
 		},
 	}
 
@@ -242,8 +249,11 @@ func TestEnsureGeminiGoogleDriveMcpConfig(t *testing.T) {
 		t.Fatal("google-drive server not found in config")
 	}
 
-	if server.Command != "npx" {
-		t.Errorf("Expected command 'npx', got '%s'", server.Command)
+	if server.Command != "flowpilot" {
+		t.Errorf("Expected command 'flowpilot', got '%s'", server.Command)
+	}
+	if workspace, configuredAccountHome, mode, yoloMode, ok := parseGoogleDriveProxyMcpInvocation(server.Command, server.Args); !ok || workspace != filepath.Clean(tmpDir) || configuredAccountHome != accountHome || mode != "read_only" || yoloMode {
+		t.Errorf("Unexpected proxy invocation: command=%s args=%v", server.Command, server.Args)
 	}
 
 	// Verify includeTools for read-only mode
@@ -262,6 +272,7 @@ func TestEnsureClaudeGoogleDriveMcpConfig(t *testing.T) {
 
 	// Setup runner with valid Google Drive MCP
 	runner := &Runner{workspace: tmpDir, secretStore: newMemorySecretStore()}
+	seedGoogleDriveProxyReady(t, runner)
 
 	// Create valid MCP credential and token files
 	mcpConfigDir := filepath.Join(tmpDir, ".config", "google-drive-mcp")
@@ -289,11 +300,15 @@ func TestEnsureClaudeGoogleDriveMcpConfig(t *testing.T) {
 
 	// Build workspace config using JSON marshaling for proper escaping (handles Windows paths)
 	wsConfig := map[string]interface{}{
-		"version":      1,
-		"artifactSync": map[string]interface{}{},
+		"version": 1,
+		"artifactSync": map[string]interface{}{
+			"clientId":    "artifact-client-id",
+			"redirectUri": googleDriveDefaultRedirectURI,
+		},
 		"mcp": map[string]interface{}{
 			"credentialPath": credPath,
 			"tokenPath":      tokenPath,
+			"accountId":      "project-1@example.com",
 		},
 	}
 
@@ -348,6 +363,12 @@ func TestEnsureClaudeGoogleDriveMcpConfig(t *testing.T) {
 
 	if server.Type != "stdio" {
 		t.Errorf("Expected type 'stdio', got '%s'", server.Type)
+	}
+	if server.Command != "flowpilot" {
+		t.Errorf("Expected command 'flowpilot', got '%s'", server.Command)
+	}
+	if workspace, configuredAccountHome, mode, yoloMode, ok := parseGoogleDriveProxyMcpInvocation(server.Command, server.Args); !ok || workspace != filepath.Clean(tmpDir) || configuredAccountHome != accountHome || mode != "read_only" || yoloMode {
+		t.Errorf("Unexpected proxy invocation: command=%s args=%v", server.Command, server.Args)
 	}
 }
 
@@ -1290,24 +1311,18 @@ version = "1.0"`)
 		t.Fatalf("EnsureGoogleDriveMcpProviderConfig() failed: %v", err)
 	}
 
-	newMcpDir := filepath.Join(tmpDir, ".config2", "google-drive-mcp")
-	if err := os.MkdirAll(newMcpDir, 0o755); err != nil {
-		t.Fatalf("Failed to create alternate MCP config dir: %v", err)
+	configPath := filepath.Join(accountHome, "config.toml")
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read codex config: %v", err)
 	}
-
-	newCredPath := filepath.Join(newMcpDir, "gcp-oauth.keys.json")
-	validCred := `{"installed":{"client_id":"test-id","client_secret":"test-secret","auth_uri":"https://accounts.google.com/o/oauth2/auth","token_uri":"https://oauth2.googleapis.com/token"}}`
-	if err := os.WriteFile(newCredPath, []byte(validCred), 0o600); err != nil {
-		t.Fatalf("Failed to write alternate credential: %v", err)
+	drifted := strings.Replace(string(raw), accountHome, accountHome+"-stale", 1)
+	if drifted == string(raw) {
+		t.Fatal("expected generated config to contain account home path")
 	}
-
-	newTokenPath := filepath.Join(newMcpDir, "tokens.json")
-	validToken := `{"access_token":"test-access","refresh_token":"test-refresh"}`
-	if err := os.WriteFile(newTokenPath, []byte(validToken), 0o600); err != nil {
-		t.Fatalf("Failed to write alternate token: %v", err)
+	if err := os.WriteFile(configPath, []byte(drifted), 0o644); err != nil {
+		t.Fatalf("write drifted codex config: %v", err)
 	}
-
-	writeTestGoogleDriveWorkspaceConfig(t, runner, tmpDir, newCredPath, newTokenPath)
 
 	statuses, err := runner.resolveGoogleDriveMcpProviderStatuses()
 	if err != nil {
@@ -1639,7 +1654,7 @@ func writeTestGoogleDriveMcpRuntime(t *testing.T, runner *Runner, workspace stri
 
 func writeTestGoogleDriveWorkspaceConfig(t *testing.T, runner *Runner, workspace string, credPath string, tokenPath string) {
 	t.Helper()
-	stubGoogleDriveProxyLauncherAvailable(t)
+	seedGoogleDriveProxyReady(t, runner)
 
 	flowpilotDir := filepath.Join(workspace, ".flowpilot", "settings")
 	if err := os.MkdirAll(flowpilotDir, 0o755); err != nil {
@@ -1655,6 +1670,7 @@ func writeTestGoogleDriveWorkspaceConfig(t *testing.T, runner *Runner, workspace
 		MCP: googleDriveWorkspaceMcpConfig{
 			CredentialPath: credPath,
 			TokenPath:      tokenPath,
+			AccountID:      "project-1@example.com",
 		},
 	}
 
@@ -1666,15 +1682,11 @@ func writeTestGoogleDriveWorkspaceConfig(t *testing.T, runner *Runner, workspace
 		t.Fatalf("Failed to write workspace config: %v", err)
 	}
 
-	if err := runner.ensureSecretStore().Set(googleDriveArtifactSyncClientSecretKey, "artifact-client-secret"); err != nil {
-		t.Fatalf("Failed to save artifact sync client secret: %v", err)
-	}
-	writeSingleProxyArtifactConnection(t, runner, "project-1")
 }
 
 func writeArtifactSyncOnlyGoogleDriveWorkspaceConfig(t *testing.T, runner *Runner, workspace string) {
 	t.Helper()
-	stubGoogleDriveProxyLauncherAvailable(t)
+	seedGoogleDriveProxyReady(t, runner)
 
 	flowpilotDir := filepath.Join(workspace, ".flowpilot", "settings")
 	if err := os.MkdirAll(flowpilotDir, 0o755); err != nil {
@@ -1687,7 +1699,7 @@ func writeArtifactSyncOnlyGoogleDriveWorkspaceConfig(t *testing.T, runner *Runne
 			ClientID:    "artifact-client-id",
 			RedirectURI: googleDriveDefaultRedirectURI,
 		},
-		MCP: googleDriveWorkspaceMcpConfig{},
+		MCP: googleDriveWorkspaceMcpConfig{AccountID: "project-1@example.com"},
 	}
 
 	wsConfigBytes, err := json.MarshalIndent(wsConfig, "", "  ")
@@ -1698,10 +1710,6 @@ func writeArtifactSyncOnlyGoogleDriveWorkspaceConfig(t *testing.T, runner *Runne
 		t.Fatalf("Failed to write workspace config: %v", err)
 	}
 
-	if err := runner.ensureSecretStore().Set(googleDriveArtifactSyncClientSecretKey, "artifact-client-secret"); err != nil {
-		t.Fatalf("Failed to save artifact sync client secret: %v", err)
-	}
-	writeSingleProxyArtifactConnection(t, runner, "project-1")
 }
 
 func stubGoogleDriveOAuthTokenRefresh(t *testing.T) {

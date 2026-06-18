@@ -78,11 +78,8 @@ func TestUploadGoogleDriveMcpOAuthCredentialsWritesCredentialFile(t *testing.T) 
 	if !strings.Contains(string(raw), `"client_id":"client-id"`) {
 		t.Fatalf("unexpected credential file content: %s", string(raw))
 	}
-	if !status.MCP.CredentialFileExists || !status.MCP.CredentialFileValid {
-		t.Fatalf("expected credential file status to be valid, got %#v", status.MCP)
-	}
-	if status.MCP.CredentialPath != credentialPath {
-		t.Fatalf("unexpected credential path: %#v", status.MCP.CredentialPath)
+	if !status.MCP.ProxyMcpEnabled {
+		t.Fatalf("expected proxy MCP status, got %#v", status.MCP)
 	}
 }
 
@@ -107,8 +104,8 @@ func TestUploadGoogleDriveMcpOAuthCredentialsPrefersXdgConfigHome(t *testing.T) 
 	if _, err := os.Stat(credentialPath); err != nil {
 		t.Fatalf("expected credential file in XDG_CONFIG_HOME, got %v", err)
 	}
-	if status.MCP.CredentialPath != credentialPath {
-		t.Fatalf("unexpected credential path with XDG_CONFIG_HOME: %#v", status.MCP.CredentialPath)
+	if !status.MCP.ProxyMcpEnabled {
+		t.Fatalf("expected proxy MCP status, got %#v", status.MCP)
 	}
 }
 
@@ -509,43 +506,16 @@ func TestLoadGoogleDriveWorkspaceConfigDoesNotTreatInvalidMcpCredentialFileAsRea
 	if err != nil {
 		t.Fatalf("load google drive config: %v", err)
 	}
-	if !status.MCP.CredentialFileExists {
-		t.Fatalf("expected MCP credential file to exist, got %#v", status.MCP)
-	}
-	if status.MCP.CredentialFileValid {
-		t.Fatalf("expected Web OAuth JSON to be invalid for MCP, got %#v", status.MCP)
-	}
 	if status.MCP.Configured {
-		t.Fatalf("expected MCP to stay unconfigured when the credential JSON is invalid, got %#v", status.MCP)
-	}
-	if status.MCP.Status != "failed" {
-		t.Fatalf("expected MCP status failed for invalid credential JSON, got %#v", status.MCP.Status)
-	}
-	if status.MCP.NeedsAuth {
-		t.Fatalf("expected invalid credential JSON to fail before auth-needed state, got %#v", status.MCP)
+		t.Fatalf("expected proxy MCP to stay unconfigured without proxy account setup, got %#v", status.MCP)
 	}
 }
 
 func TestValidateGoogleDriveWorkspaceConfigSkipsMcpTokenChecksUntilAuthFlowRuns(t *testing.T) {
 	workspace := t.TempDir()
-	homeDir := t.TempDir()
-	setGoogleDriveMcpHomeEnv(t, homeDir)
 
 	instance := &Runner{workspace: workspace, secretStore: newMemorySecretStore()}
-	if _, err := instance.SaveGoogleDriveWorkspaceConfig(GoogleDriveWorkspaceConfigRequest{
-		ClientID:     "client-id-1",
-		ClientSecret: "client-secret-1",
-		RedirectURI:  googleDriveDefaultRedirectURI,
-		PickerAPIKey: "picker-api-key-1",
-	}); err != nil {
-		t.Fatalf("save google drive config: %v", err)
-	}
-	if _, err := instance.UploadGoogleDriveMcpOAuthCredentials(GoogleDriveMcpOAuthUploadRequest{
-		FileName: "gcp-oauth.keys.json",
-		Content:  `{"installed":{"client_id":"client-id","client_secret":"client-secret","auth_uri":"https://accounts.google.com/o/oauth2/auth","token_uri":"https://oauth2.googleapis.com/token"}}`,
-	}); err != nil {
-		t.Fatalf("upload google drive oauth credentials: %v", err)
-	}
+	writeValidGoogleDriveWorkspaceConfig(t, instance)
 
 	result, err := instance.ValidateGoogleDriveWorkspaceConfig(GoogleDriveWorkspaceConfigRequest{})
 	if err != nil {
@@ -555,14 +525,14 @@ func TestValidateGoogleDriveWorkspaceConfigSkipsMcpTokenChecksUntilAuthFlowRuns(
 		t.Fatalf("expected validation to pass before token auth, got %#v", result.Checks)
 	}
 
-	tokenFileCheck := findGoogleDriveValidationCheck(result.Checks, "mcp_token_file_exists")
-	if tokenFileCheck.Status != "skipped" {
-		t.Fatalf("expected token file check to be skipped before auth flow, got %#v", tokenFileCheck)
+	accountReadyCheck := findGoogleDriveValidationCheck(result.Checks, "mcp_account_ready")
+	if accountReadyCheck.Status != "passed" {
+		t.Fatalf("expected proxy account readiness to pass, got %#v", accountReadyCheck)
 	}
 
-	tokenRefreshCheck := findGoogleDriveValidationCheck(result.Checks, "mcp_token_refresh_valid")
-	if tokenRefreshCheck.Status != "skipped" {
-		t.Fatalf("expected token refresh check to be skipped before auth flow, got %#v", tokenRefreshCheck)
+	tokenFileCheck := findGoogleDriveValidationCheck(result.Checks, "mcp_token_file_exists")
+	if tokenFileCheck.Key != "" {
+		t.Fatalf("did not expect standalone token-file checks in proxy mode, got %#v", tokenFileCheck)
 	}
 }
 
@@ -595,32 +565,9 @@ func TestValidateGoogleDriveWorkspaceConfigFailsWhenClientIDChangesWithoutClient
 
 func TestValidateGoogleDriveWorkspaceConfigFailsWhenTokenFileExistsWithoutRefreshToken(t *testing.T) {
 	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
-	homeDir := t.TempDir()
-	setGoogleDriveMcpHomeEnv(t, homeDir)
-
-	if _, err := instance.SaveGoogleDriveWorkspaceConfig(GoogleDriveWorkspaceConfigRequest{
-		ClientID:     "client-id-1",
-		ClientSecret: "client-secret-1",
-		RedirectURI:  googleDriveDefaultRedirectURI,
-		PickerAPIKey: "picker-api-key-1",
-	}); err != nil {
-		t.Fatalf("save google drive config: %v", err)
-	}
-
-	configDir := filepath.Join(homeDir, ".config", "google-drive-mcp")
-	if err := os.MkdirAll(configDir, 0o755); err != nil {
-		t.Fatalf("mkdir google drive mcp config dir: %v", err)
-	}
-	if err := os.WriteFile(
-		filepath.Join(configDir, "gcp-oauth.keys.json"),
-		[]byte(`{"installed":{"client_id":"client-id","client_secret":"client-secret","auth_uri":"https://accounts.google.com/o/oauth2/auth","token_uri":"https://oauth2.googleapis.com/token"}}`),
-		0o600,
-	); err != nil {
-		t.Fatalf("write desktop oauth credential file: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(configDir, "tokens.json"), []byte(`{"access_token":"token-without-refresh"}`), 0o600); err != nil {
-		t.Fatalf("write token file without refresh token: %v", err)
-	}
+	writeValidGoogleDriveWorkspaceConfig(t, instance)
+	_ = instance.ensureSecretStore().Delete(googleDriveAccountCredentialKey("project-1@example.com"))
+	_ = instance.ensureSecretStore().Delete(googleDriveProjectCredentialKey("project-1"))
 
 	result, err := instance.ValidateGoogleDriveWorkspaceConfig(GoogleDriveWorkspaceConfigRequest{})
 	if err != nil {
@@ -630,14 +577,9 @@ func TestValidateGoogleDriveWorkspaceConfigFailsWhenTokenFileExistsWithoutRefres
 		t.Fatalf("expected validation to fail when stored token is unusable, got %#v", result.Checks)
 	}
 
-	tokenFileCheck := findGoogleDriveValidationCheck(result.Checks, "mcp_token_file_exists")
-	if tokenFileCheck.Status != "passed" {
-		t.Fatalf("expected token file check to pass when tokens.json exists, got %#v", tokenFileCheck)
-	}
-
-	tokenRefreshCheck := findGoogleDriveValidationCheck(result.Checks, "mcp_token_refresh_valid")
-	if tokenRefreshCheck.Status != "failed" {
-		t.Fatalf("expected token refresh check to fail when refresh token is missing, got %#v", tokenRefreshCheck)
+	accountReadyCheck := findGoogleDriveValidationCheck(result.Checks, "mcp_account_ready")
+	if accountReadyCheck.Status != "failed" {
+		t.Fatalf("expected proxy account readiness check to fail when refresh token is missing, got %#v", accountReadyCheck)
 	}
 }
 
@@ -926,27 +868,7 @@ func TestResetGoogleDriveWorkspaceConfigRemovesArtifactStorageState(t *testing.T
 
 func TestLoadGoogleDriveWorkspaceConfigDetectsMcpReconnectRequiredOnInvalidGrant(t *testing.T) {
 	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
-	homeDir := t.TempDir()
-	setGoogleDriveMcpHomeEnv(t, homeDir)
-
-	configDir := filepath.Join(homeDir, ".config", "google-drive-mcp")
-	if err := os.MkdirAll(configDir, 0o755); err != nil {
-		t.Fatalf("mkdir google drive mcp config dir: %v", err)
-	}
-	if err := os.WriteFile(
-		filepath.Join(configDir, "gcp-oauth.keys.json"),
-		[]byte(`{"installed":{"client_id":"client-id","client_secret":"client-secret","auth_uri":"https://accounts.google.com/o/oauth2/auth","token_uri":"https://oauth2.googleapis.com/token"}}`),
-		0o600,
-	); err != nil {
-		t.Fatalf("write desktop oauth credential file: %v", err)
-	}
-	if err := os.WriteFile(
-		filepath.Join(configDir, "tokens.json"),
-		[]byte(`{"refresh_token":"refresh-token-1"}`),
-		0o600,
-	); err != nil {
-		t.Fatalf("write token file: %v", err)
-	}
+	writeValidGoogleDriveWorkspaceConfig(t, instance)
 
 	originalHTTPRequest := httpRequestFn
 	t.Cleanup(func() {
@@ -962,7 +884,7 @@ func TestLoadGoogleDriveWorkspaceConfigDetectsMcpReconnectRequiredOnInvalidGrant
 		if headers["content-type"] != "application/x-www-form-urlencoded" {
 			t.Fatalf("unexpected token refresh content type: %s", headers["content-type"])
 		}
-		if !strings.Contains(string(body), "refresh_token=refresh-token-1") {
+		if !strings.Contains(string(body), "refresh_token=artifact-refresh-token") {
 			t.Fatalf("unexpected token refresh body: %s", string(body))
 		}
 		return 400, []byte(`{"error":"invalid_grant","error_description":"Token has been expired or revoked."}`), nil
