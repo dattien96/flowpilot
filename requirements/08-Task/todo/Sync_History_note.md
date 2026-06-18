@@ -197,7 +197,7 @@ Note: DOD-44 (Claude cross-account) and DOD-068-010 BLOCKED - need 2nd Claude ac
 
 Note: DOD-069-010 BLOCKED - Claude cross-PC needs 2nd machine + 2nd Claude account.
 
-# 10. Transcript view scope (DOD-067-010)
+# 10. Transcript view scope (DOD-067-010) - DONE NOW
 
 **Status: BUILT (2026-06-18) — Claude provider.**
 
