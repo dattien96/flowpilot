@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -276,6 +277,7 @@ func (r *Runner) loadProviderAccountState() (providerAccountState, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			log.Printf("[provider-accounts] config not found path=%q — accounts auto-discovered, stored session IDs may be stale", path)
 			return providerAccountState{Accounts: []ProviderAccount{}}, nil
 		}
 		return providerAccountState{}, err
@@ -302,7 +304,11 @@ func (r *Runner) saveProviderAccountState(state providerAccountState) error {
 		return err
 	}
 
-	return os.WriteFile(path, payload, 0o644)
+	if err := os.WriteFile(path, payload, 0o644); err != nil {
+		return err
+	}
+	log.Printf("[provider-accounts] config saved path=%q accounts=%d", path, len(state.Accounts))
+	return nil
 }
 
 func (r *Runner) syncProviderAccounts(accounts []ProviderAccount) ([]ProviderAccount, bool) {
