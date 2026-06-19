@@ -40,6 +40,10 @@ type ChatSessionSyncManifest struct {
 	UpdatedAt         string            `json:"updatedAt,omitempty"`
 	SyncedAt          string            `json:"syncedAt"`
 	ProviderFile      ChatSessionFile   `json:"providerFile"`
+	// ChildAgents records the agent tree at sync time so it survives a restore
+	// round-trip (CP-19 / Task-082 acceptance check T-4). Omitted for runs with
+	// no children.
+	ChildAgents       []AgentRunSummary `json:"childAgents,omitempty"`
 	Extra             map[string]string `json:"extra,omitempty"`
 }
 
@@ -331,6 +335,9 @@ func (s *InteractiveService) BuildChatSessionSyncManifest(ctx context.Context, r
 			SizeBytes:    int64(len(body)),
 			SHA256:       hashBytesSHA256(body),
 		},
+	}
+	if children := s.listAgentRunSummaries(runID); len(children) > 0 {
+		manifest.ChildAgents = children
 	}
 	return manifest, body, nil
 }
@@ -718,6 +725,11 @@ func (s *InteractiveService) restoreChatRunFromDrive(ctx context.Context, req Ch
 	}
 	if err := s.persistProviderSession(session); err != nil {
 		return ChatSessionRestoreResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
+	}
+	// Restore the agent tree from the manifest so GET /agents returns the same
+	// children that existed at sync time (CP-19 / Task-082 acceptance check T-4).
+	if len(manifest.ChildAgents) > 0 {
+		s.agentOrchestrator.setHistoricalChildren(localRunID, manifest.ChildAgents)
 	}
 	return ChatSessionRestoreResult{
 		RunID:           localRunID,

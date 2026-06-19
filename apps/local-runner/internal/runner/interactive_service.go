@@ -581,14 +581,18 @@ func (b *turnBridge) SpawnAgent(in SpawnAgentInput) (SpawnAgentResult, error) {
 // It creates a child interactiveRun, tags it with agent identity, fires its first turn
 // asynchronously, and (when in.Wait==true) blocks until that turn completes.
 func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID string, in SpawnAgentInput) (SpawnAgentResult, error) {
-	// Resolve the agent definition from the catalog to inherit provider / model.
+	// Validate that the parent run exists before creating any child resource.
 	var agentDef *AgentDefinition
 	s.mu.Lock()
+	parentRun := s.runs[parentRunID]
 	cwd := ""
-	if parent := s.runs[parentRunID]; parent != nil {
-		cwd = parent.workspaceCwd
+	if parentRun != nil {
+		cwd = parentRun.workspaceCwd
 	}
 	s.mu.Unlock()
+	if parentRun == nil {
+		return SpawnAgentResult{}, fmt.Errorf("parent run %q not found", parentRunID)
+	}
 	if defs := s.agentCatalog.listAgents(cwd); len(defs) > 0 {
 		for i := range defs {
 			if strings.EqualFold(defs[i].Name, in.Agent) {
@@ -631,6 +635,7 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 	}
 
 	// Stamp agent identity on the newly created child run.
+	// Apply model from the agent definition so the child turn uses the correct model.
 	s.mu.Lock()
 	if rs := s.runs[handle.RunID]; rs != nil {
 		rs.parentRunID = parentRunID
@@ -639,12 +644,23 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		if agentDef != nil {
 			rs.agentName = agentDef.Name
 			rs.role = agentDef.Role
+			if agentDef.Model != "" {
+				rs.modelName = agentDef.Model
+			}
 		} else {
 			rs.agentName = in.Agent
 			rs.role = strings.ToLower(in.Agent)
 		}
 	}
 	s.mu.Unlock()
+
+	// Prepend the agent definition's system prompt to the first user turn so that
+	// built-in/project agents (coder, reviewer, …) behave as defined, even on
+	// providers that don't support a separate system_prompt channel.
+	firstPrompt := in.Prompt
+	if agentDef != nil && strings.TrimSpace(agentDef.SystemPrompt) != "" {
+		firstPrompt = agentDef.SystemPrompt + "\n\n" + in.Prompt
+	}
 
 	// Record the tree edge.
 	s.agentOrchestrator.registerChild(parentRunID, handle.RunID)
@@ -653,7 +669,7 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 	go func() {
 		_, turnErr := s.startTurn(handle.RunID, TurnInput{
 			StepID: handle.StepID,
-			Prompt: in.Prompt,
+			Prompt: firstPrompt,
 		}, "", "")
 		if turnErr != nil {
 			// startTurn failed before the adapter ran — signal the waiter explicitly.
@@ -685,16 +701,19 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 }
 
 // listAgentRunSummaries returns the child run summaries for a given parent run.
+// It includes live children (in-memory runs) and historical children persisted
+// from a previous sync/restore round-trip (CP-19 / Task-082).
 func (s *InteractiveService) listAgentRunSummaries(parentRunID string) []AgentRunSummary {
 	childIDs := s.agentOrchestrator.listChildren(parentRunID)
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	liveIDs := make(map[string]struct{}, len(childIDs))
 	out := make([]AgentRunSummary, 0, len(childIDs))
 	for _, id := range childIDs {
 		rs := s.runs[id]
 		if rs == nil {
 			continue
 		}
+		liveIDs[id] = struct{}{}
 		out = append(out, AgentRunSummary{
 			RunID:       rs.id,
 			AgentName:   rs.agentName,
@@ -703,6 +722,13 @@ func (s *InteractiveService) listAgentRunSummaries(parentRunID string) []AgentRu
 			ParentRunID: rs.parentRunID,
 			CreatedAt:   rs.createdAt,
 		})
+	}
+	s.mu.Unlock()
+	// Append historical summaries from a prior sync/restore that are not in the live map.
+	for _, h := range s.agentOrchestrator.historicalChildren(parentRunID) {
+		if _, live := liveIDs[h.RunID]; !live {
+			out = append(out, h)
+		}
 	}
 	return out
 }

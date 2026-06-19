@@ -300,6 +300,91 @@ func TestSpawnAgentHTTPEndpointUnknownParent(t *testing.T) {
 	}
 }
 
+// TestSpawnAgentRejectsOrphanWithAvailableProvider ensures that the parent-run existence
+// check fires BEFORE createRun, so an unknown parent is rejected even when the requested
+// provider is fully available in the test registry.
+func TestSpawnAgentRejectsOrphanWithAvailableProvider(t *testing.T) {
+	svc, srv := newTestServer(t)
+	_ = svc // ensure service is initialised
+
+	// Use codex provider (registered and available in newTestServer).
+	status, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs/ghost-parent/spawn-agent",
+		SpawnAgentInput{Agent: "researcher", Prompt: "hi", Provider: "codex"}, nil)
+	if status == http.StatusOK {
+		t.Errorf("expected error for unknown parent (available provider), got 200: %s", body)
+	}
+}
+
+// TestAgentOrchestratorHistoricalChildren verifies that setHistoricalChildren stores
+// summaries and historicalChildren returns them correctly.
+func TestAgentOrchestratorHistoricalChildren(t *testing.T) {
+	o := newAgentOrchestrator()
+
+	summaries := []AgentRunSummary{
+		{RunID: "child-1", AgentName: "coder", Role: "coder", Status: RunStatusCompleted, ParentRunID: "parent-1"},
+		{RunID: "child-2", AgentName: "reviewer", Role: "reviewer", Status: RunStatusCompleted, ParentRunID: "parent-1"},
+	}
+	o.setHistoricalChildren("parent-1", summaries)
+
+	got := o.historicalChildren("parent-1")
+	if len(got) != 2 {
+		t.Fatalf("historicalChildren = %d, want 2", len(got))
+	}
+	if got[0].RunID != "child-1" || got[1].RunID != "child-2" {
+		t.Errorf("unexpected order: %+v", got)
+	}
+	// Empty parent returns nil.
+	if h := o.historicalChildren("no-such-parent"); h != nil {
+		t.Errorf("historicalChildren(unknown) = %v, want nil", h)
+	}
+}
+
+// TestAgentTreeSurvivesChatSyncManifest verifies the chat-sync round-trip:
+// spawned children are captured by listAgentRunSummaries (which BuildChatSessionSyncManifest
+// calls) and are returned again after setHistoricalChildren is called on a fresh service
+// (simulating restoreChatRunFromDrive).
+func TestAgentTreeSurvivesChatSyncManifest(t *testing.T) {
+	svc, _ := newTestServer(t)
+
+	parent, apiErr := svc.createRun(StartRunInput{
+		ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex,
+	})
+	if apiErr != nil {
+		t.Fatalf("createRun: %v", apiErr)
+	}
+	_, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{
+		Agent: "coder", Prompt: "implement", Provider: "codex", Wait: false,
+	})
+	if spawnErr != nil {
+		t.Fatalf("spawnChildRun: %v", spawnErr)
+	}
+
+	// Capture the summaries as BuildChatSessionSyncManifest would.
+	captured := svc.listAgentRunSummaries(parent.RunID)
+	if len(captured) != 1 {
+		t.Fatalf("listAgentRunSummaries = %d, want 1", len(captured))
+	}
+	if captured[0].AgentName == "" {
+		t.Errorf("captured[0].AgentName is empty")
+	}
+
+	// Simulate restore: fresh service, load historical summaries as restoreChatRunFromDrive does.
+	svc2, _ := newTestServer(t)
+	restoredRunID := "restored-run-1"
+	svc2.agentOrchestrator.setHistoricalChildren(restoredRunID, captured)
+
+	summaries := svc2.listAgentRunSummaries(restoredRunID)
+	if len(summaries) != 1 {
+		t.Fatalf("listAgentRunSummaries after restore = %d, want 1", len(summaries))
+	}
+	if summaries[0].AgentName != captured[0].AgentName {
+		t.Errorf("agentName mismatch: got %q want %q", summaries[0].AgentName, captured[0].AgentName)
+	}
+	if summaries[0].RunID != captured[0].RunID {
+		t.Errorf("runId mismatch: got %q want %q", summaries[0].RunID, captured[0].RunID)
+	}
+}
+
 func TestListAgentRunSummariesEmptyHTTP(t *testing.T) {
 	_, srv := newTestServer(t)
 

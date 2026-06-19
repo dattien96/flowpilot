@@ -55,7 +55,7 @@ func TestClaudeMCPInitializeAndList(t *testing.T) {
 	_, list := postMCP(t, srv, "", map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
 	lr, _ := list["result"].(map[string]any)
 	tools, _ := lr["tools"].([]any)
-	if len(tools) != 2 {
+	if len(tools) != 3 {
 		t.Fatalf("tools/list = %+v", list)
 	}
 }

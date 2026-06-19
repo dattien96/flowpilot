@@ -10,9 +10,10 @@ import (
 // spawn_agent tool calls. There is no dependency graph or feedback loop yet (Task-084)
 // and no Supabase persistence (Task-085).
 type AgentOrchestrator struct {
-	mu       sync.Mutex
-	children map[string][]string            // parentRunID → ordered []childRunIDs
-	waiters  map[string]chan agentCompletion // childRunID → completion channel (wait:true only)
+	mu         sync.Mutex
+	children   map[string][]string            // parentRunID → ordered []childRunIDs
+	waiters    map[string]chan agentCompletion // childRunID → completion channel (wait:true only)
+	historical map[string][]AgentRunSummary   // parentRunID → summaries restored from manifest
 }
 
 type agentCompletion struct {
@@ -23,8 +24,9 @@ type agentCompletion struct {
 
 func newAgentOrchestrator() *AgentOrchestrator {
 	return &AgentOrchestrator{
-		children: make(map[string][]string),
-		waiters:  make(map[string]chan agentCompletion),
+		children:   make(map[string][]string),
+		waiters:    make(map[string]chan agentCompletion),
+		historical: make(map[string][]AgentRunSummary),
 	}
 }
 
@@ -101,6 +103,30 @@ type AgentRunSummary struct {
 	Status      RunStatus `json:"status"`
 	ParentRunID string    `json:"parentRunId,omitempty"`
 	CreatedAt   string    `json:"createdAt"`
+}
+
+// setHistoricalChildren stores agent summaries from a restored sync manifest so that
+// listAgentRunSummaries can return them even when the live runs are no longer in memory.
+func (o *AgentOrchestrator) setHistoricalChildren(parentRunID string, summaries []AgentRunSummary) {
+	if len(summaries) == 0 {
+		return
+	}
+	o.mu.Lock()
+	o.historical[parentRunID] = summaries
+	o.mu.Unlock()
+}
+
+// historicalChildren returns the agent summaries previously stored by setHistoricalChildren.
+func (o *AgentOrchestrator) historicalChildren(parentRunID string) []AgentRunSummary {
+	o.mu.Lock()
+	src := o.historical[parentRunID]
+	o.mu.Unlock()
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]AgentRunSummary, len(src))
+	copy(out, src)
+	return out
 }
 
 // parseSpawnAgentInput extracts SpawnAgentInput from a tool call arguments map.
