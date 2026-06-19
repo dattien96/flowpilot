@@ -48,11 +48,11 @@ func TestAgentOrchestratorOpenWaiterAndSignalCompletion(t *testing.T) {
 		done <- <-ch
 	}()
 
-	o.signalChild("run-x", "hello world", false, "")
+	o.signalChild("run-x", "hello world", false, "", RunStatusCompleted)
 
 	select {
 	case c := <-done:
-		if c.finalMessage != "hello world" || c.failed {
+		if c.finalMessage != "hello world" || c.failed || c.status != RunStatusCompleted {
 			t.Errorf("got completion %+v, want finalMessage=hello world failed=false", c)
 		}
 	case <-time.After(time.Second):
@@ -63,7 +63,7 @@ func TestAgentOrchestratorOpenWaiterAndSignalCompletion(t *testing.T) {
 func TestAgentOrchestratorOpenWaiterAndSignalFailure(t *testing.T) {
 	o := newAgentOrchestrator()
 	ch := o.openWaiter("run-fail")
-	o.signalChild("run-fail", "", true, "adapter error")
+	o.signalChild("run-fail", "", true, "adapter error", RunStatusFailed)
 
 	select {
 	case c := <-ch:
@@ -81,7 +81,7 @@ func TestAgentOrchestratorSignalBeforeReceive(t *testing.T) {
 	o := newAgentOrchestrator()
 	ch := o.openWaiter("run-early")
 	// Signal first, then read.
-	o.signalChild("run-early", "done", false, "")
+	o.signalChild("run-early", "done", false, "", RunStatusCompleted)
 
 	select {
 	case c := <-ch:
@@ -96,15 +96,51 @@ func TestAgentOrchestratorSignalBeforeReceive(t *testing.T) {
 func TestAgentOrchestratorSignalIdempotent(t *testing.T) {
 	o := newAgentOrchestrator()
 	o.openWaiter("run-idem")
-	o.signalChild("run-idem", "first", false, "")
+	o.signalChild("run-idem", "first", false, "", RunStatusCompleted)
 	// Second call must not panic (waiter was deleted after first signal).
-	o.signalChild("run-idem", "second", false, "")
+	o.signalChild("run-idem", "second", false, "", RunStatusCompleted)
 }
 
 func TestAgentOrchestratorSignalNoWaiter(t *testing.T) {
 	o := newAgentOrchestrator()
 	// No openWaiter — signalChild must not panic.
-	o.signalChild("no-such-run", "ignored", false, "")
+	o.signalChild("no-such-run", "ignored", false, "", RunStatusCompleted)
+}
+
+type childWaitApprovalAdapter struct{}
+
+func (a *childWaitApprovalAdapter) Key() ProviderKey { return ProviderKeyClaude }
+func (a *childWaitApprovalAdapter) Capabilities() ProviderCapabilities {
+	return ProviderCapabilities{Streaming: true, ApprovalEvents: true}
+}
+func (a *childWaitApprovalAdapter) SendTurn(_ context.Context, _ TurnRequest, bridge TurnBridge) error {
+	_, err := bridge.RequestApproval(ApprovalDetails{
+		Command: "npm test",
+		Reason:  "needs approval",
+	})
+	return err
+}
+
+type childWaitQuestionAdapter struct{}
+
+func (a *childWaitQuestionAdapter) Key() ProviderKey { return ProviderKeyClaude }
+func (a *childWaitQuestionAdapter) Capabilities() ProviderCapabilities {
+	return ProviderCapabilities{Streaming: true}
+}
+func (a *childWaitQuestionAdapter) SendTurn(_ context.Context, _ TurnRequest, bridge TurnBridge) error {
+	_, err := bridge.AskQuestion("Pick one", []QuestionOption{{Label: "A", Value: "a"}}, false)
+	return err
+}
+
+type childCompleteAdapter struct{}
+
+func (a *childCompleteAdapter) Key() ProviderKey { return ProviderKeyClaude }
+func (a *childCompleteAdapter) Capabilities() ProviderCapabilities {
+	return ProviderCapabilities{Streaming: true}
+}
+func (a *childCompleteAdapter) SendTurn(_ context.Context, _ TurnRequest, bridge TurnBridge) error {
+	bridge.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "done"})
+	return nil
 }
 
 // ---- parseSpawnAgentInput --------------------------------------------------
@@ -219,6 +255,72 @@ func TestSpawnChildRunRegistersTreeEdge(t *testing.T) {
 	children := svc.agentOrchestrator.listChildren(parent.RunID)
 	if len(children) != 2 || children[0] != r1.RunID || children[1] != r2.RunID {
 		t.Errorf("children = %v, want [%s %s]", children, r1.RunID, r2.RunID)
+	}
+}
+
+func TestSpawnChildRunWaitTrueReturnsWhenChildNeedsApproval(t *testing.T) {
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key:          ProviderKeyClaude,
+		DisplayName:  "Claude",
+		Status:       ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true, ApprovalEvents: true},
+		newAdapter:   func() ProviderRuntimeAdapter { return &childWaitApprovalAdapter{} },
+	})
+	svc := NewInteractiveServiceWithRegistry(reg)
+	svc.approvalTTL = time.Second
+
+	parent, err := svc.createRun(StartRunInput{
+		ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyClaude,
+	})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+
+	result, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{
+		Agent: "reviewer", Prompt: "review", Provider: "claude", Wait: true,
+	})
+	if spawnErr != nil {
+		t.Fatalf("spawnChildRun(wait approval): %v", spawnErr)
+	}
+	if result.Status != string(RunStatusWaitingApproval) {
+		t.Fatalf("status = %q, want %q", result.Status, RunStatusWaitingApproval)
+	}
+	if result.FinalMessage != "" {
+		t.Fatalf("finalMessage = %q, want empty while waiting", result.FinalMessage)
+	}
+}
+
+func TestSpawnChildRunWaitTrueReturnsWhenChildNeedsQuestion(t *testing.T) {
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key:          ProviderKeyClaude,
+		DisplayName:  "Claude",
+		Status:       ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter:   func() ProviderRuntimeAdapter { return &childWaitQuestionAdapter{} },
+	})
+	svc := NewInteractiveServiceWithRegistry(reg)
+	svc.questionTTL = time.Second
+
+	parent, err := svc.createRun(StartRunInput{
+		ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyClaude,
+	})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+
+	result, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{
+		Agent: "reviewer", Prompt: "review", Provider: "claude", Wait: true,
+	})
+	if spawnErr != nil {
+		t.Fatalf("spawnChildRun(wait question): %v", spawnErr)
+	}
+	if result.Status != string(RunStatusWaitingQuestion) {
+		t.Fatalf("status = %q, want %q", result.Status, RunStatusWaitingQuestion)
+	}
+	if result.FinalMessage != "" {
+		t.Fatalf("finalMessage = %q, want empty while waiting", result.FinalMessage)
 	}
 }
 
@@ -382,6 +484,56 @@ func TestAgentTreeSurvivesChatSyncManifest(t *testing.T) {
 	}
 	if summaries[0].RunID != captured[0].RunID {
 		t.Errorf("runId mismatch: got %q want %q", summaries[0].RunID, captured[0].RunID)
+	}
+}
+
+func TestAgentTreeSurvivesRunnerRestartBeforeSync(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key:          ProviderKeyClaude,
+		DisplayName:  "Claude",
+		Status:       ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter:   func() ProviderRuntimeAdapter { return &childCompleteAdapter{} },
+	})
+	svc := NewInteractiveServiceWithStore(reg, nil, store)
+	parent, apiErr := svc.createRun(StartRunInput{
+		ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyClaude,
+	})
+	if apiErr != nil {
+		t.Fatalf("createRun: %v", apiErr)
+	}
+	_, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{
+		Agent: "coder", Prompt: "implement", Provider: "claude", Wait: true, DependsOn: []string{"run-abc"},
+	})
+	if spawnErr != nil {
+		t.Fatalf("spawnChildRun: %v", spawnErr)
+	}
+
+	reloadedStore, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore reload: %v", err)
+	}
+	restarted := NewInteractiveServiceWithStore(reg, nil, reloadedStore)
+
+	summaries := restarted.listAgentRunSummaries(parent.RunID)
+	if len(summaries) != 1 {
+		t.Fatalf("listAgentRunSummaries after restart = %d, want 1", len(summaries))
+	}
+	if summaries[0].ParentRunID != parent.RunID {
+		t.Fatalf("parentRunId = %q, want %q", summaries[0].ParentRunID, parent.RunID)
+	}
+	if summaries[0].AgentName != "coder" {
+		t.Fatalf("agentName = %q, want coder", summaries[0].AgentName)
+	}
+	if len(summaries[0].DependsOn) != 1 || summaries[0].DependsOn[0] != "run-abc" {
+		t.Fatalf("dependsOn = %v, want [run-abc]", summaries[0].DependsOn)
 	}
 }
 

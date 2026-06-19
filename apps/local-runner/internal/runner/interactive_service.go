@@ -243,17 +243,17 @@ func newInteractiveService(registry *ProviderRegistry, catalog CatalogStore, wor
 		agentCatalog:      newAgentCatalog(),
 		agentOrchestrator: newAgentOrchestrator(),
 		registry:          registry,
-		policy:          DefaultApprovalPolicyEngine(),
-		finalizer:       newFinalizer(),
-		workflowStore:   workflowStore,
-		orchestrator:    NewWorkflowOrchestrator(workflowStore),
-		runs:            map[string]*interactiveRun{},
-		approvals:       map[string]*approvalRecord{},
-		questions:       map[string]*questionRecord{},
-		activeAccountID: "default",
-		approvalTTL:     10 * time.Minute,
-		questionTTL:     10 * time.Minute,
-		maxTurnAttempts: 3,
+		policy:            DefaultApprovalPolicyEngine(),
+		finalizer:         newFinalizer(),
+		workflowStore:     workflowStore,
+		orchestrator:      NewWorkflowOrchestrator(workflowStore),
+		runs:              map[string]*interactiveRun{},
+		approvals:         map[string]*approvalRecord{},
+		questions:         map[string]*questionRecord{},
+		activeAccountID:   "default",
+		approvalTTL:       10 * time.Minute,
+		questionTTL:       10 * time.Minute,
+		maxTurnAttempts:   3,
 	}
 }
 
@@ -311,6 +311,10 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		SyncStatus:        rs.syncStatus,
 		SyncUpdatedAt:     rs.syncUpdatedAt,
 		ParentRunID:       rs.parentRunID,
+		AgentName:         rs.agentName,
+		Role:              rs.role,
+		DependsOn:         append([]string(nil), rs.dependsOn...),
+		AgentStatus:       rs.agentStatus,
 	}
 }
 
@@ -397,18 +401,27 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 	switch ev.Type {
 	case EventPermissionRequired:
 		rs.status = RunStatusWaitingApproval
+		rs.agentStatus = string(RunStatusWaitingApproval)
+		s.agentOrchestrator.signalChild(rs.id, "", false, "", RunStatusWaitingApproval)
 	case EventUserQuestionRequired:
 		rs.status = RunStatusWaitingQuestion
+		rs.agentStatus = string(RunStatusWaitingQuestion)
+		s.agentOrchestrator.signalChild(rs.id, "", false, "", RunStatusWaitingQuestion)
 	case EventTurnCompleted:
 		rs.status = RunStatusCompleted
+		rs.agentStatus = string(RunStatusCompleted)
 		// Signal any wait:true spawn_agent waiter — non-blocking (buffered channel).
 		// Must be called under s.mu so signalChild races after status is set.
-		s.agentOrchestrator.signalChild(rs.id, ev.FinalMessage, false, "")
+		s.agentOrchestrator.signalChild(rs.id, ev.FinalMessage, false, "", RunStatusCompleted)
 	case EventTurnFailed:
 		rs.status = RunStatusFailed
-		s.agentOrchestrator.signalChild(rs.id, "", true, ev.Error)
+		rs.agentStatus = string(RunStatusFailed)
+		s.agentOrchestrator.signalChild(rs.id, "", true, ev.Error, RunStatusFailed)
 	default:
 		rs.status = RunStatusRunning
+		if rs.parentRunID != "" {
+			rs.agentStatus = string(RunStatusRunning)
+		}
 	}
 
 	for _, ch := range rs.subs {
@@ -586,8 +599,12 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 	s.mu.Lock()
 	parentRun := s.runs[parentRunID]
 	cwd := ""
+	projectID := ""
+	workflowID := ""
 	if parentRun != nil {
 		cwd = parentRun.workspaceCwd
+		projectID = parentRun.projectID
+		workflowID = parentRun.workflowID
 	}
 	s.mu.Unlock()
 	if parentRun == nil {
@@ -618,6 +635,8 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 
 	// Create the child run. createRun acquires s.mu internally; call it unlocked.
 	startIn := StartRunInput{
+		ProjectID:   projectID,
+		WorkflowID:  workflowID,
 		ChatMode:    "normal_chat",
 		Cwd:         cwd,
 		ProviderKey: providerKey,
@@ -637,6 +656,7 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 	// Stamp agent identity on the newly created child run.
 	// Apply model from the agent definition so the child turn uses the correct model.
 	s.mu.Lock()
+	var childSnap ProviderSessionState
 	if rs := s.runs[handle.RunID]; rs != nil {
 		rs.parentRunID = parentRunID
 		rs.dependsOn = in.DependsOn
@@ -651,8 +671,14 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 			rs.agentName = in.Agent
 			rs.role = strings.ToLower(in.Agent)
 		}
+		childSnap = sessionStateOf(rs)
 	}
 	s.mu.Unlock()
+	if childSnap.RunID != "" {
+		if err := s.persistProviderSession(childSnap); err != nil {
+			return SpawnAgentResult{}, err
+		}
+	}
 
 	// Prepend the agent definition's system prompt to the first user turn so that
 	// built-in/project agents (coder, reviewer, …) behave as defined, even on
@@ -673,7 +699,7 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		}, "", "")
 		if turnErr != nil {
 			// startTurn failed before the adapter ran — signal the waiter explicitly.
-			s.agentOrchestrator.signalChild(handle.RunID, "", true, turnErr.msg)
+			s.agentOrchestrator.signalChild(handle.RunID, "", true, turnErr.msg, RunStatusFailed)
 		}
 	}()
 
@@ -690,8 +716,10 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 			if completion.failed {
 				return SpawnAgentResult{}, fmt.Errorf("child agent failed: %s", completion.errMsg)
 			}
-			result.FinalMessage = completion.finalMessage
-			result.Status = "completed"
+			result.Status = string(completion.status)
+			if completion.status == RunStatusCompleted {
+				result.FinalMessage = completion.finalMessage
+			}
 		case <-ctx.Done():
 			return SpawnAgentResult{}, ctx.Err()
 		}
@@ -721,13 +749,44 @@ func (s *InteractiveService) listAgentRunSummaries(parentRunID string) []AgentRu
 			Status:      rs.status,
 			ParentRunID: rs.parentRunID,
 			CreatedAt:   rs.createdAt,
+			DependsOn:   append([]string(nil), rs.dependsOn...),
+			AgentStatus: rs.agentStatus,
 		})
 	}
 	s.mu.Unlock()
 	// Append historical summaries from a prior sync/restore that are not in the live map.
+	seenIDs := make(map[string]struct{}, len(out))
+	for _, summary := range out {
+		seenIDs[summary.RunID] = struct{}{}
+	}
 	for _, h := range s.agentOrchestrator.historicalChildren(parentRunID) {
 		if _, live := liveIDs[h.RunID]; !live {
 			out = append(out, h)
+			seenIDs[h.RunID] = struct{}{}
+		}
+	}
+	if indexReader, ok := s.workflowStore.(SessionIndexReader); ok {
+		sessions, err := indexReader.ListAllProviderSessions(context.Background())
+		if err == nil {
+			for _, session := range sessions {
+				if session.ParentRunID != parentRunID {
+					continue
+				}
+				if _, seen := seenIDs[session.RunID]; seen {
+					continue
+				}
+				out = append(out, AgentRunSummary{
+					RunID:       session.RunID,
+					AgentName:   session.AgentName,
+					Role:        session.Role,
+					Status:      session.Status,
+					ParentRunID: session.ParentRunID,
+					CreatedAt:   session.StartedAt,
+					DependsOn:   append([]string(nil), session.DependsOn...),
+					AgentStatus: session.AgentStatus,
+				})
+				seenIDs[session.RunID] = struct{}{}
+			}
 		}
 	}
 	return out

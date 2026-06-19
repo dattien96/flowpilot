@@ -202,11 +202,12 @@ export class HttpWsRunnerClient implements RunnerClient {
     );
   }
 
-  focusAgentRun(_runId: string): void {
+  focusAgentRun(runId: string): AsyncIterable<ProviderEventDTO> {
     // Abort the current active stream so the caller can immediately subscribe to
     // the child run's SSE via streamRun(runId) without hitting the per-host
     // connection limit (Task-067 4.3).
     this.activeStreamAbort?.abort();
+    return this.streamRun(runId);
   }
 
   // ---- run lifecycle -------------------------------------------------------

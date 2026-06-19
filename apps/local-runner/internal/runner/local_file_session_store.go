@@ -43,24 +43,29 @@ func NewLocalFileSessionStore(dataDir string) (*localFileSessionStore, error) {
 
 // ndjsonSessionRecord is the on-disk JSON shape for a ProviderSessionState.
 type ndjsonSessionRecord struct {
-	RunID             string `json:"run_id"`
-	ProjectID         string `json:"project_id"`
-	WorkflowID        string `json:"workflow_id,omitempty"`
-	ProviderKey       string `json:"provider_key"`
-	ProviderSessionID string `json:"provider_session_id,omitempty"`
-	ProviderAccountID string `json:"provider_account_id,omitempty"`
-	WorkingDirectory  string `json:"working_directory,omitempty"`
-	Status            string `json:"status"`
-	LastPrompt        string `json:"last_prompt,omitempty"`
-	LastMessage       string `json:"last_message,omitempty"`
-	StartedAt         string `json:"started_at,omitempty"`
-	UpdatedAt         string `json:"updated_at,omitempty"`
-	RunKind           string `json:"run_kind,omitempty"`
-	SourceMachineID   string `json:"source_machine_id,omitempty"`
-	SourceRunID       string `json:"source_run_id,omitempty"`
-	RestoredFrom      string `json:"restored_from,omitempty"`
-	SyncStatus        string `json:"sync_status,omitempty"`
-	SyncUpdatedAt     string `json:"sync_updated_at,omitempty"`
+	RunID             string   `json:"run_id"`
+	ProjectID         string   `json:"project_id"`
+	WorkflowID        string   `json:"workflow_id,omitempty"`
+	ProviderKey       string   `json:"provider_key"`
+	ProviderSessionID string   `json:"provider_session_id,omitempty"`
+	ProviderAccountID string   `json:"provider_account_id,omitempty"`
+	WorkingDirectory  string   `json:"working_directory,omitempty"`
+	Status            string   `json:"status"`
+	LastPrompt        string   `json:"last_prompt,omitempty"`
+	LastMessage       string   `json:"last_message,omitempty"`
+	StartedAt         string   `json:"started_at,omitempty"`
+	UpdatedAt         string   `json:"updated_at,omitempty"`
+	RunKind           string   `json:"run_kind,omitempty"`
+	SourceMachineID   string   `json:"source_machine_id,omitempty"`
+	SourceRunID       string   `json:"source_run_id,omitempty"`
+	RestoredFrom      string   `json:"restored_from,omitempty"`
+	SyncStatus        string   `json:"sync_status,omitempty"`
+	SyncUpdatedAt     string   `json:"sync_updated_at,omitempty"`
+	ParentRunID       string   `json:"parent_run_id,omitempty"`
+	AgentName         string   `json:"agent_name,omitempty"`
+	Role              string   `json:"role,omitempty"`
+	DependsOn         []string `json:"depends_on,omitempty"`
+	AgentStatus       string   `json:"agent_status,omitempty"`
 }
 
 // loadFromDisk reads the NDJSON file, applies last-wins dedup per run_id, and
@@ -220,6 +225,11 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		RestoredFrom:      r.RestoredFrom,
 		SyncStatus:        r.SyncStatus,
 		SyncUpdatedAt:     r.SyncUpdatedAt,
+		ParentRunID:       r.ParentRunID,
+		AgentName:         r.AgentName,
+		Role:              r.Role,
+		DependsOn:         append([]string(nil), r.DependsOn...),
+		AgentStatus:       r.AgentStatus,
 	}
 }
 
@@ -295,5 +305,10 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		RestoredFrom:      s.RestoredFrom,
 		SyncStatus:        s.SyncStatus,
 		SyncUpdatedAt:     s.SyncUpdatedAt,
+		ParentRunID:       s.ParentRunID,
+		AgentName:         s.AgentName,
+		Role:              s.Role,
+		DependsOn:         append([]string(nil), s.DependsOn...),
+		AgentStatus:       s.AgentStatus,
 	}
 }

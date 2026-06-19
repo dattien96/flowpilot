@@ -959,6 +959,73 @@ func TestRestoreChatRunFromDriveResolvesRunIDCollision(t *testing.T) {
 	}
 }
 
+func TestRestoreChatRunFromDriveRemapsChildParentRunIDOnCollision(t *testing.T) {
+	svc, _, store, drive, workspace, accountHome := newChatSyncService(t)
+	seedLocalChatRun(t, store, accountHome, workspace, "run-collision", []byte("session-body"))
+	result, apiErr := svc.syncChatRunToDrive(context.Background(), "run-collision", ChatSessionSyncRequest{})
+	if apiErr != nil {
+		t.Fatalf("syncChatRunToDrive() failed: %v", apiErr)
+	}
+	manifestID := remoteManifestFileID(drive)
+	if manifestID == "" {
+		t.Fatal("remote manifest id not found")
+	}
+	manifestFile, ok := drive.files[manifestID]
+	if !ok {
+		t.Fatalf("manifest not found for id %s", manifestID)
+	}
+	var manifest ChatSessionSyncManifest
+	if err := json.Unmarshal(manifestFile.Content, &manifest); err != nil {
+		t.Fatalf("unmarshal manifest: %v", err)
+	}
+	manifest.ChildAgents = []AgentRunSummary{
+		{
+			RunID:       "child-1",
+			AgentName:   "coder",
+			Role:        "coder",
+			Status:      RunStatusCompleted,
+			ParentRunID: manifest.SourceRunID,
+			CreatedAt:   "2026-06-19T10:00:00Z",
+		},
+	}
+	updatedManifest, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	manifestFile.Content = updatedManifest
+	drive.files[manifestID] = manifestFile
+
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:     "run-collision",
+		ProjectID: "project-1",
+		Status:    RunStatusCompleted,
+		RunKind:   "chat",
+	}); err != nil {
+		t.Fatalf("UpsertProviderSession collision: %v", err)
+	}
+
+	restored, apiErr := svc.restoreChatRunFromDrive(context.Background(), ChatSessionRestoreRequest{
+		ProjectID:       "project-1",
+		SourceMachineID: result.SourceMachineID,
+		SourceRunID:     result.SourceRunID,
+		Cwd:             filepath.Join(workspace, "other"),
+	})
+	if apiErr != nil {
+		t.Fatalf("restoreChatRunFromDrive() failed: %v", apiErr)
+	}
+	if restored.RunID == "run-collision" || !strings.HasPrefix(restored.RunID, "sync-") {
+		t.Fatalf("expected collision-safe run id, got %q", restored.RunID)
+	}
+
+	summaries := svc.listAgentRunSummaries(restored.RunID)
+	if len(summaries) != 1 {
+		t.Fatalf("listAgentRunSummaries() = %d, want 1", len(summaries))
+	}
+	if summaries[0].ParentRunID != restored.RunID {
+		t.Fatalf("child ParentRunID = %q, want %q", summaries[0].ParentRunID, restored.RunID)
+	}
+}
+
 func TestRestoreChatRunFromDriveUpsertsOneLocalSession(t *testing.T) {
 	svc, _, store, _, workspace, accountHome := newChatSyncService(t)
 	seedLocalChatRun(t, store, accountHome, workspace, "run-upsert", []byte("session-body"))

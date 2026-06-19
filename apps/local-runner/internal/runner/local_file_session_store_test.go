@@ -100,6 +100,49 @@ func TestLocalFileSessionStoreRestoredMetadataRoundTrip(t *testing.T) {
 	}
 }
 
+func TestLocalFileSessionStoreAgentMetadataRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+
+	sess := ProviderSessionState{
+		RunID:       "run-child",
+		ProjectID:   "proj-1",
+		ProviderKey: "codex",
+		Status:      "running",
+		StartedAt:   "2026-06-19T10:00:00Z",
+		UpdatedAt:   "2026-06-19T10:01:00Z",
+		ParentRunID: "run-parent",
+		AgentName:   "coder",
+		Role:        "coder",
+		DependsOn:   []string{"run-abc"},
+		AgentStatus: "spawned",
+	}
+	if err := store.UpsertProviderSession(context.Background(), sess); err != nil {
+		t.Fatalf("UpsertProviderSession: %v", err)
+	}
+
+	reloaded, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore reload: %v", err)
+	}
+	got, found, err := reloaded.GetProviderSession(context.Background(), "run-child")
+	if err != nil {
+		t.Fatalf("GetProviderSession: %v", err)
+	}
+	if !found {
+		t.Fatal("expected child session to be found")
+	}
+	if got.ParentRunID != "run-parent" || got.AgentName != "coder" || got.Role != "coder" || got.AgentStatus != "spawned" {
+		t.Fatalf("unexpected agent metadata: %+v", got)
+	}
+	if len(got.DependsOn) != 1 || got.DependsOn[0] != "run-abc" {
+		t.Fatalf("dependsOn = %v, want [run-abc]", got.DependsOn)
+	}
+}
+
 func TestLocalFileSessionStoreRestart(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -109,14 +152,14 @@ func TestLocalFileSessionStoreRestart(t *testing.T) {
 		t.Fatalf("NewLocalFileSessionStore: %v", err)
 	}
 	if err := store1.UpsertProviderSession(context.Background(), ProviderSessionState{
-		RunID:      "run-A",
-		ProjectID:  "proj-X",
-		Status:     "completed",
-		LastPrompt: "my question",
+		RunID:       "run-A",
+		ProjectID:   "proj-X",
+		Status:      "completed",
+		LastPrompt:  "my question",
 		LastMessage: "my answer",
-		StartedAt:  now,
-		UpdatedAt:  now,
-		RunKind:    "chat",
+		StartedAt:   now,
+		UpdatedAt:   now,
+		RunKind:     "chat",
 	}); err != nil {
 		t.Fatalf("UpsertProviderSession: %v", err)
 	}

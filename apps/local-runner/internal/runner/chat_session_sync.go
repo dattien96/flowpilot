@@ -23,28 +23,28 @@ const chatSessionManifestSchemaVersion = 1
 var chatSessionSafeSegmentPattern = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
 type ChatSessionSyncManifest struct {
-	SchemaVersion     int               `json:"schemaVersion"`
-	SourceMachineID   string            `json:"sourceMachineId"`
-	SourceRunID       string            `json:"sourceRunId"`
-	ProjectID         string            `json:"projectId"`
-	WorkflowID        string            `json:"workflowId,omitempty"`
-	ProviderKey       ProviderKey       `json:"providerKey"`
-	ProviderSessionID string            `json:"providerSessionId"`
-	ProviderAccountID string            `json:"providerAccountId,omitempty"`
-	RunKind           string            `json:"runKind"`
-	Status            string            `json:"status,omitempty"`
-	OriginalCwd       string            `json:"originalCwd,omitempty"`
-	LastPrompt        string            `json:"lastPrompt,omitempty"`
-	LastMessage       string            `json:"lastMessage,omitempty"`
-	StartedAt         string            `json:"startedAt,omitempty"`
-	UpdatedAt         string            `json:"updatedAt,omitempty"`
-	SyncedAt          string            `json:"syncedAt"`
-	ProviderFile      ChatSessionFile   `json:"providerFile"`
+	SchemaVersion     int             `json:"schemaVersion"`
+	SourceMachineID   string          `json:"sourceMachineId"`
+	SourceRunID       string          `json:"sourceRunId"`
+	ProjectID         string          `json:"projectId"`
+	WorkflowID        string          `json:"workflowId,omitempty"`
+	ProviderKey       ProviderKey     `json:"providerKey"`
+	ProviderSessionID string          `json:"providerSessionId"`
+	ProviderAccountID string          `json:"providerAccountId,omitempty"`
+	RunKind           string          `json:"runKind"`
+	Status            string          `json:"status,omitempty"`
+	OriginalCwd       string          `json:"originalCwd,omitempty"`
+	LastPrompt        string          `json:"lastPrompt,omitempty"`
+	LastMessage       string          `json:"lastMessage,omitempty"`
+	StartedAt         string          `json:"startedAt,omitempty"`
+	UpdatedAt         string          `json:"updatedAt,omitempty"`
+	SyncedAt          string          `json:"syncedAt"`
+	ProviderFile      ChatSessionFile `json:"providerFile"`
 	// ChildAgents records the agent tree at sync time so it survives a restore
 	// round-trip (CP-19 / Task-082 acceptance check T-4). Omitted for runs with
 	// no children.
-	ChildAgents       []AgentRunSummary `json:"childAgents,omitempty"`
-	Extra             map[string]string `json:"extra,omitempty"`
+	ChildAgents []AgentRunSummary `json:"childAgents,omitempty"`
+	Extra       map[string]string `json:"extra,omitempty"`
 }
 
 type ChatSessionFile struct {
@@ -729,7 +729,14 @@ func (s *InteractiveService) restoreChatRunFromDrive(ctx context.Context, req Ch
 	// Restore the agent tree from the manifest so GET /agents returns the same
 	// children that existed at sync time (CP-19 / Task-082 acceptance check T-4).
 	if len(manifest.ChildAgents) > 0 {
-		s.agentOrchestrator.setHistoricalChildren(localRunID, manifest.ChildAgents)
+		remapped := make([]AgentRunSummary, len(manifest.ChildAgents))
+		for i, child := range manifest.ChildAgents {
+			remapped[i] = child
+			if child.ParentRunID == manifest.SourceRunID {
+				remapped[i].ParentRunID = localRunID
+			}
+		}
+		s.agentOrchestrator.setHistoricalChildren(localRunID, remapped)
 	}
 	return ChatSessionRestoreResult{
 		RunID:           localRunID,

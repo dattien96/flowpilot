@@ -11,15 +11,16 @@ import (
 // and no Supabase persistence (Task-085).
 type AgentOrchestrator struct {
 	mu         sync.Mutex
-	children   map[string][]string            // parentRunID → ordered []childRunIDs
+	children   map[string][]string             // parentRunID → ordered []childRunIDs
 	waiters    map[string]chan agentCompletion // childRunID → completion channel (wait:true only)
-	historical map[string][]AgentRunSummary   // parentRunID → summaries restored from manifest
+	historical map[string][]AgentRunSummary    // parentRunID → summaries restored from manifest
 }
 
 type agentCompletion struct {
 	finalMessage string
 	failed       bool
 	errMsg       string
+	status       RunStatus
 }
 
 func newAgentOrchestrator() *AgentOrchestrator {
@@ -60,7 +61,7 @@ func (o *AgentOrchestrator) openWaiter(childRunID string) <-chan agentCompletion
 // signalChild fires any registered wait:true channel for childRunID. Called by
 // InteractiveService.emitLocked when EventTurnCompleted or EventTurnFailed fires.
 // Idempotent: a second call after the channel is consumed is a no-op.
-func (o *AgentOrchestrator) signalChild(childRunID, finalMessage string, failed bool, errMsg string) {
+func (o *AgentOrchestrator) signalChild(childRunID, finalMessage string, failed bool, errMsg string, status RunStatus) {
 	o.mu.Lock()
 	ch, ok := o.waiters[childRunID]
 	if ok {
@@ -68,7 +69,7 @@ func (o *AgentOrchestrator) signalChild(childRunID, finalMessage string, failed 
 	}
 	o.mu.Unlock()
 	if ok {
-		ch <- agentCompletion{finalMessage: finalMessage, failed: failed, errMsg: errMsg}
+		ch <- agentCompletion{finalMessage: finalMessage, failed: failed, errMsg: errMsg, status: status}
 		close(ch)
 	}
 }
@@ -103,6 +104,8 @@ type AgentRunSummary struct {
 	Status      RunStatus `json:"status"`
 	ParentRunID string    `json:"parentRunId,omitempty"`
 	CreatedAt   string    `json:"createdAt"`
+	DependsOn   []string  `json:"dependsOn,omitempty"`
+	AgentStatus string    `json:"agentStatus,omitempty"`
 }
 
 // setHistoricalChildren stores agent summaries from a restored sync manifest so that

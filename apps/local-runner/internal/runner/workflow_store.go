@@ -71,6 +71,10 @@ type ProviderSessionState struct {
 	SyncUpdatedAt     string
 	// ParentRunID is set for child agent runs (CP-19 / Task-082); empty for root runs.
 	ParentRunID string
+	AgentName   string
+	Role        string
+	DependsOn   []string
+	AgentStatus string
 }
 
 type ProviderApprovalState struct {

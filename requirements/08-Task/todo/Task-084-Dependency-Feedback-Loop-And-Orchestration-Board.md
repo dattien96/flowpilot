@@ -12,7 +12,7 @@
 - Last Updated: `2026-06-19`
 - Parent Documents: [CP-19: Multiple Agents](../../07-Coding-Plan/inprogress/CP-19-Multiple-Agents.md)
 - Child Documents: `None`
-- Related Documents: [Task-082: Spawn-Agent Tool And Orchestrator Core](./Task-082-Spawn-Agent-Tool-And-Orchestrator-Core.md), [Task-083: Desktop Agents Panel And Focus Navigation](./Task-083-Desktop-Agents-Panel-And-Focus-Navigation.md)
+- Related Documents: [Task-082: Spawn-Agent Tool And Orchestrator Core](../done/Task-082-Spawn-Agent-Tool-And-Orchestrator-Core.md), [Task-083: Desktop Agents Panel And Focus Navigation](./Task-083-Desktop-Agents-Panel-And-Focus-Navigation.md)
 - Replaces: `None`
 - Tags: `multi-agent, orchestrator, feedback-loop, dag-board, desktop, go, react`
 

@@ -5,7 +5,7 @@
 - Document ID: `Task-081`
 - Title: `Agent Abstraction And Catalog Loader`
 - Phase: `task`
-- Status: `in_progress`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-19`

@@ -94,6 +94,8 @@ export interface AgentRunSummary {
   status: RunStatus;
   parentRunId?: string;
   createdAt: string;
+  dependsOn?: string[];
+  agentStatus?: string;
 }
 
 export interface ProviderAccountUsageLine {
@@ -412,10 +414,10 @@ export interface RunnerClient {
    */
   spawnAgent?(input: SpawnAgentInput & { parentRunId: string }): Promise<SpawnAgentResult>;
   /**
-   * Ask the desktop shell to focus/navigate to a specific agent run (CP-19 / Task-083).
-   * Optional — implemented by the desktop shell only (not HTTP transport).
+   * Attach to a child run by switching the active stream to that run and returning
+   * its SSE iterator. Implemented client-side on top of `streamRun` in Phase 1.
    */
-  focusAgentRun?(runId: string): void;
+  focusAgentRun?(runId: string): AsyncIterable<ProviderEventDTO>;
   connectProviderAccount(providerKey: ProviderKey): Promise<void>;
   activateProviderAccount(accountId: string): Promise<void>;
   openProviderAccountTerminal(accountId: string): Promise<void>;
