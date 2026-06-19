@@ -186,7 +186,7 @@ function findActiveSlash(text: string, cursor: number): { index: number; query: 
 
 export type MentionRoutingDecision =
   | { kind: "focus"; agentName: string; runId: string; prompt: string }
-  | { kind: "busy"; agentName: string }
+  | { kind: "busy"; agentName: string; runId: string; prompt: string }
   | { kind: "missing"; agentName: string };
 
 export function parseMentionRouting(
@@ -201,7 +201,7 @@ export function parseMentionRouting(
   const target = agentRuns.find((run) => run.agentName.toLowerCase() === agentName.toLowerCase());
   if (!target) return { kind: "missing", agentName };
   if (target.status === "running" || target.status === "waiting_approval" || target.status === "waiting_question") {
-    return { kind: "busy", agentName };
+    return { kind: "busy", agentName, runId: target.runId, prompt };
   }
   return { kind: "focus", agentName, runId: target.runId, prompt };
 }
@@ -512,7 +512,8 @@ export function ChatInput(): React.ReactElement {
         return;
       }
       if (routed.kind === "busy") {
-        appendSystemMessage(`@${routed.agentName} is busy right now. It cannot be interrupted or queued.`);
+        await useStore.getState().injectAgentFeedback(routed.runId, routed.prompt || trimmed);
+        appendSystemMessage(`Queued feedback for @${routed.agentName}. It will be picked up when the child is safe to continue.`);
         return;
       }
       await focusAgentRun(routed.runId);

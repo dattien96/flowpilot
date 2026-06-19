@@ -4242,3 +4242,89 @@ body.is-resizing-sidebar {
   right: 10px;
 }
 .run-toast-close:hover { color: var(--text); background: rgba(255,255,255,0.06); }
+/* orchestration board */
+.orchestration-board {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  background: linear-gradient(180deg, rgba(76, 141, 255, 0.08), rgba(22, 27, 34, 0.9));
+}
+.board-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: flex-start;
+}
+.board-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.board-kicker,
+.board-gate,
+.board-foot,
+.board-node-meta,
+.board-node-role {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.board-compose {
+  display: flex;
+  gap: 8px;
+  margin: 12px 0;
+}
+.board-compose input {
+  flex: 1;
+  min-width: 0;
+}
+.board-graph {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+.board-node {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.board-node.active {
+  border-color: rgba(76, 141, 255, 0.5);
+}
+.board-node-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+}
+.board-node-actions {
+  margin-top: 8px;
+}
+.board-edges,
+.board-bus {
+  margin-top: 12px;
+  display: grid;
+  gap: 6px;
+}
+.bus-pill {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.bus-pill.queued {
+  border-style: dashed;
+  color: var(--warn);
+  background: rgba(240, 180, 41, 0.08);
+}
+.board-empty {
+  color: var(--text-dim);
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.board-foot {
+  margin-top: 12px;
+  display: flex;
+  justify-content: space-between;
+}

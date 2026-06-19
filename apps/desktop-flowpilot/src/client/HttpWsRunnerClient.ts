@@ -1,6 +1,7 @@
 import type {
   AgentDefinition,
   AgentRunSummary,
+  AgentGraphSnapshot,
   Artifact,
   ChatSessionRestoreRequest,
   ChatSessionRestoreResult,
@@ -100,23 +101,6 @@ export class HttpWsRunnerClient implements RunnerClient {
   private scenario?: string;
   /** Highest seq seen per run, so a follow-up turn/stream resumes after it. */
   private readonly lastSeq = new Map<string, number>();
-  /**
-   * The renderer views one run at a time, but an SSE stream for a completed run
-   * stays open server-side (it waits for the next live event that never comes).
-   * Without this, switching between history items leaks an open connection each
-   * time and exhausts Chromium's ~6-per-host connection pool, after which every
-   * runner request (history polling, resume, …) queues forever and the UI hangs.
-   * We keep at most one long-lived stream and abort the previous before opening
-   * a new one. (Task-067 4.3)
-   */
-  private activeStreamAbort?: AbortController;
-
-  private beginStream(): AbortController {
-    this.activeStreamAbort?.abort();
-    const ctrl = new AbortController();
-    this.activeStreamAbort = ctrl;
-    return ctrl;
-  }
 
   constructor(baseUrl: string) {
     this.base = baseUrl.replace(/\/+$/, "");
@@ -193,6 +177,13 @@ export class HttpWsRunnerClient implements RunnerClient {
       `/client/workflow-runs/${encodeURIComponent(parentRunId)}/agents`,
     );
   }
+  refreshAgentGraph(parentRunId: string): Promise<AgentGraphSnapshot> {
+    return this.getJSON<AgentGraphSnapshot>(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/agent-graph`);
+  }
+  pauseAgentLoop(parentRunId: string): Promise<AgentGraphSnapshot> { return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/agent-loop/pause`); }
+  resumeAgentLoop(parentRunId: string): Promise<AgentGraphSnapshot> { return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/agent-loop/resume`); }
+  injectAgentFeedback(parentRunId: string, toRunId: string, message: string): Promise<AgentGraphSnapshot> { return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/agent-loop/feedback`, { toRunId, message }); }
+  stopAgentLoop(parentRunId: string): Promise<AgentGraphSnapshot> { return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/agent-loop/stop`); }
 
   spawnAgent(input: SpawnAgentInput & { parentRunId: string }): Promise<SpawnAgentResult> {
     const { parentRunId, ...body } = input;
@@ -203,10 +194,6 @@ export class HttpWsRunnerClient implements RunnerClient {
   }
 
   focusAgentRun(runId: string): AsyncIterable<ProviderEventDTO> {
-    // Abort the current active stream so the caller can immediately subscribe to
-    // the child run's SSE via streamRun(runId) without hitting the per-host
-    // connection limit (Task-067 4.3).
-    this.activeStreamAbort?.abort();
     return this.streamRun(runId);
   }
 
@@ -274,7 +261,7 @@ export class HttpWsRunnerClient implements RunnerClient {
       },
     );
 
-    for await (const ev of this.openStream(input.runId, after, this.beginStream())) {
+    for await (const ev of this.openStream(input.runId, after)) {
       this.lastSeq.set(input.runId, Math.max(this.lastSeq.get(input.runId) ?? 0, ev.seq));
       if (ev.providerTurnId && ev.providerTurnId !== turnId) continue; // filter to this turn
       yield ev;
@@ -285,7 +272,7 @@ export class HttpWsRunnerClient implements RunnerClient {
   }
 
   async *streamRun(runId: string, afterSeq = 0): AsyncIterable<ProviderEventDTO> {
-    for await (const ev of this.openStream(runId, afterSeq, this.beginStream())) {
+    for await (const ev of this.openStream(runId, afterSeq)) {
       this.lastSeq.set(runId, Math.max(this.lastSeq.get(runId) ?? 0, ev.seq));
       yield ev;
     }
@@ -293,11 +280,7 @@ export class HttpWsRunnerClient implements RunnerClient {
 
   // openStream parses the SSE body, yielding each event until the connection
   // closes or the consumer stops iterating (which aborts the fetch via finally).
-  private async *openStream(
-    runId: string,
-    afterSeq: number,
-    ctrl: AbortController = new AbortController(),
-  ): AsyncIterable<ProviderEventDTO> {
+  private async *openStream(runId: string, afterSeq: number, ctrl: AbortController = new AbortController()): AsyncIterable<ProviderEventDTO> {
     let resp: Response;
     try {
       resp = await fetch(

@@ -45,6 +45,8 @@ const (
 	EventUserQuestionRequired ProviderEventType = "user_question_required"
 	EventTurnFailed           ProviderEventType = "turn_failed"
 	EventTurnCompleted        ProviderEventType = "turn_completed"
+	EventAgentGraphUpdated    ProviderEventType = "agent_graph_updated"
+	EventAgentBusMessage      ProviderEventType = "agent_bus_message"
 )
 
 // ApprovalDecisionOption is one decision the runtime offers for an approval.
@@ -123,6 +125,41 @@ type ProviderEvent struct {
 	// turn_failed
 	Error       string `json:"error,omitempty"`
 	Recoverable bool   `json:"recoverable,omitempty"`
+	// agent_graph_updated / agent_bus_message
+	AgentGraphSnapshot *AgentGraphSnapshot `json:"agentGraphSnapshot,omitempty"`
+	AgentBusMessage    *AgentBusMessage    `json:"agentBusMessage,omitempty"`
+}
+
+type AgentDependencyEdge struct {
+	FromRunID string `json:"fromRunId"`
+	ToRunID   string `json:"toRunId"`
+	Kind      string `json:"kind"`
+}
+
+type AgentBusMessage struct {
+	ID            string `json:"id"`
+	ParentRunID   string `json:"parentRunId"`
+	FromRunID     string `json:"fromRunId,omitempty"`
+	ToRunID       string `json:"toRunId,omitempty"`
+	Kind          string `json:"kind"`
+	Message       string `json:"message"`
+	Queued        bool   `json:"queued"`
+	OccurredAt    string `json:"occurredAt"`
+}
+
+type AgentLoopState struct {
+	Status     string `json:"status"`
+	Round      int    `json:"round"`
+	RoundCap   int    `json:"roundCap"`
+	GateReason string `json:"gateReason,omitempty"`
+}
+
+type AgentGraphSnapshot struct {
+	ParentRunID string               `json:"parentRunId"`
+	Runs        []AgentRunSummary    `json:"runs"`
+	Edges       []AgentDependencyEdge `json:"edges"`
+	BusMessages []AgentBusMessage    `json:"busMessages"`
+	LoopState   AgentLoopState       `json:"loopState"`
 }
 
 // ProviderCapabilities advertises what a provider supports (03/04-07).

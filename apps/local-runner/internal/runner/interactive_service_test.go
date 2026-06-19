@@ -262,6 +262,236 @@ func TestChatModeTurnLevelControlsOverrideRunDefaults(t *testing.T) {
 	}
 }
 
+func TestAgentGraphRoutesExposeSnapshotAndControls(t *testing.T) {
+	svc, srv := newTestServer(t)
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	spawned, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{Agent: "coder", Prompt: "do it", Provider: "codex", Wait: false})
+	if spawnErr != nil {
+		t.Fatalf("spawnChildRun: %v", spawnErr)
+	}
+	status, body := doJSON(t, "GET", srv.URL+"/client/workflow-runs/"+parent.RunID+"/agent-graph", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("graph status=%d body=%s", status, body)
+	}
+	var graph AgentGraphSnapshot
+	if err := json.Unmarshal(body, &graph); err != nil {
+		t.Fatalf("decode graph: %v", err)
+	}
+	if graph.LoopState.RoundCap != 3 {
+		t.Fatalf("round cap = %d, want 3", graph.LoopState.RoundCap)
+	}
+	status, body = doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+parent.RunID+"/agent-loop/pause", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("pause status=%d body=%s", status, body)
+	}
+	if err := json.Unmarshal(body, &graph); err != nil {
+		t.Fatalf("decode paused graph: %v", err)
+	}
+	if len(graph.Runs) == 0 || graph.Runs[0].RunID != spawned.RunID || graph.Runs[0].AgentName == "" || graph.Runs[0].Status == "" {
+		t.Fatalf("pause graph lost run metadata: %+v", graph.Runs)
+	}
+	status, body = doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+parent.RunID+"/agent-loop/feedback", map[string]any{"message": "revise", "toRunId": "child-1"}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("feedback status=%d body=%s", status, body)
+	}
+	status, body = doJSON(t, "GET", srv.URL+"/client/workflow-runs/"+parent.RunID+"/agent-bus", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("bus status=%d body=%s", status, body)
+	}
+	var bus []AgentBusMessage
+	if err := json.Unmarshal(body, &bus); err != nil {
+		t.Fatalf("decode bus: %v", err)
+	}
+	foundFeedback := false
+	for _, msg := range bus {
+		if msg.Kind == "user-feedback" && msg.Message == "revise" {
+			foundFeedback = true
+			break
+		}
+	}
+	if !foundFeedback {
+		t.Fatalf("bus = %+v", bus)
+	}
+}
+
+func TestSpawnChildEmitsGraphAndBusEvents(t *testing.T) {
+	svc, srv := newTestServer(t)
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	if _, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{Agent: "coder", Prompt: "do it", Provider: "codex", Wait: false}); spawnErr != nil {
+		t.Fatalf("spawnChildRun: %v", spawnErr)
+	}
+	status, body := doJSON(t, "GET", srv.URL+"/admin/workflow-runs/"+parent.RunID+"/events", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("admin events status=%d body=%s", status, body)
+	}
+	var evs []ProviderEvent
+	if err := json.Unmarshal(body, &evs); err != nil {
+		t.Fatalf("decode events: %v", err)
+	}
+	hasGraph := false
+	hasBus := false
+	for _, ev := range evs {
+		if ev.Type == EventAgentGraphUpdated {
+			hasGraph = true
+		}
+		if ev.Type == EventAgentBusMessage {
+			hasBus = true
+		}
+	}
+	if !hasGraph || !hasBus {
+		t.Fatalf("events missing graph/bus updates: %+v", evs)
+	}
+}
+
+type loopRestartAdapter struct {
+	turns chan string
+}
+
+func (a *loopRestartAdapter) Key() ProviderKey { return ProviderKeyCodex }
+func (a *loopRestartAdapter) Capabilities() ProviderCapabilities {
+	return ProviderCapabilities{Streaming: true}
+}
+func (a *loopRestartAdapter) SendTurn(_ context.Context, req TurnRequest, bridge TurnBridge) error {
+	a.turns <- req.Prompt
+	switch {
+	case strings.Contains(strings.ToLower(req.Prompt), "review"):
+		bridge.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "changes requested"})
+	default:
+		bridge.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "coder complete"})
+	}
+	return nil
+}
+
+type gatedLoopAdapter struct {
+	turns        chan string
+	releaseCoder chan struct{}
+}
+
+func (a *gatedLoopAdapter) Key() ProviderKey { return ProviderKeyCodex }
+func (a *gatedLoopAdapter) Capabilities() ProviderCapabilities {
+	return ProviderCapabilities{Streaming: true}
+}
+func (a *gatedLoopAdapter) SendTurn(_ context.Context, req TurnRequest, bridge TurnBridge) error {
+	a.turns <- req.Prompt
+	switch {
+	case strings.Contains(strings.ToLower(req.Prompt), "implement"):
+		<-a.releaseCoder
+		bridge.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "coder complete"})
+	case strings.Contains(strings.ToLower(req.Prompt), "review"):
+		bridge.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "changes requested"})
+	default:
+		bridge.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "ok"})
+	}
+	return nil
+}
+
+func TestChangesRequestedRestartsCoderTurn(t *testing.T) {
+	svc := NewInteractiveService()
+	adapter := &loopRestartAdapter{turns: make(chan string, 4)}
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key:          ProviderKeyCodex,
+		DisplayName:  "Codex",
+		Status:       ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter:   func() ProviderRuntimeAdapter { return adapter },
+	})
+	svc.registry = reg
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	coder, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{Agent: "coder", Prompt: "implement", Provider: "codex", Wait: false})
+	if spawnErr != nil {
+		t.Fatalf("spawn coder: %v", spawnErr)
+	}
+	if _, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{Agent: "reviewer", Prompt: "review", Provider: "codex", DependsOn: []string{coder.RunID}, Wait: false}); spawnErr != nil {
+		t.Fatalf("spawn reviewer: %v", spawnErr)
+	}
+	seen := []string{}
+	deadline := time.After(3 * time.Second)
+	for len(seen) < 3 {
+		select {
+		case prompt := <-adapter.turns:
+			seen = append(seen, prompt)
+		case <-deadline:
+			t.Fatalf("timed out waiting for turns, saw %v", seen)
+		}
+	}
+	if !strings.Contains(strings.ToLower(seen[2]), "changes requested") {
+		t.Fatalf("third turn prompt = %q, want restarted coder with review feedback", seen[2])
+	}
+	graph := svc.agentGraphSnapshot(parent.RunID)
+	if graph.LoopState.Round != 1 {
+		t.Fatalf("loop round = %d, want 1 after changes-requested retry", graph.LoopState.Round)
+	}
+}
+
+func TestReviewerWaitsForDependencyAndResumeReleasesPendingTurn(t *testing.T) {
+	svc := NewInteractiveService()
+	adapter := &gatedLoopAdapter{turns: make(chan string, 4), releaseCoder: make(chan struct{})}
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key:          ProviderKeyCodex,
+		DisplayName:  "Codex",
+		Status:       ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter:   func() ProviderRuntimeAdapter { return adapter },
+	})
+	svc.registry = reg
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	svc.pauseAgentLoop(parent.RunID, "paused for test")
+	coder, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{Agent: "coder", Prompt: "implement", Provider: "codex", Wait: false})
+	if spawnErr != nil {
+		t.Fatalf("spawn coder: %v", spawnErr)
+	}
+	if _, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{Agent: "reviewer", Prompt: "review", Provider: "codex", DependsOn: []string{coder.RunID}, Wait: false}); spawnErr != nil {
+		t.Fatalf("spawn reviewer: %v", spawnErr)
+	}
+	select {
+	case prompt := <-adapter.turns:
+		if !strings.Contains(strings.ToLower(prompt), "implement") {
+			t.Fatalf("first prompt = %q, want coder turn", prompt)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for coder turn")
+	}
+	select {
+	case prompt := <-adapter.turns:
+		t.Fatalf("unexpected reviewer turn while paused: %q", prompt)
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(adapter.releaseCoder)
+	time.Sleep(50 * time.Millisecond)
+	select {
+	case prompt := <-adapter.turns:
+		t.Fatalf("unexpected reviewer turn after coder completion while paused: %q", prompt)
+	case <-time.After(200 * time.Millisecond):
+	}
+	graph := svc.agentGraphSnapshot(parent.RunID)
+	if got := graph.LoopState.Status; got != "paused" {
+		t.Fatalf("loop status = %q, want paused", got)
+	}
+	svc.resumeAgentLoop(parent.RunID)
+	select {
+	case prompt := <-adapter.turns:
+		if !strings.Contains(strings.ToLower(prompt), "review") || !strings.Contains(strings.ToLower(prompt), "coder complete") {
+			t.Fatalf("reviewer prompt = %q, want resumed handoff", prompt)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for reviewer turn after resume")
+	}
+}
+
 func waitFor(t *testing.T, cond func() bool, what string) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)

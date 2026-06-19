@@ -1,0 +1,942 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+const node_test_1 = __importDefault(require("node:test"));
+const strict_1 = __importDefault(require("node:assert/strict"));
+const store_1 = require("./store");
+const OrchestrationBoard_1 = require("@/components/OrchestrationBoard");
+const Timeline_1 = require("@/components/Timeline");
+const ChatInput_1 = require("@/components/ChatInput");
+const MockRunnerClient_1 = require("../client/MockRunnerClient");
+const HttpWsRunnerClient_1 = require("../client/HttpWsRunnerClient");
+async function* emptyStream() { }
+function makeClient(overrides = {}) {
+    const base = {
+        listProjects: async () => [],
+        listWorkflows: async () => [],
+        listSteps: async () => [],
+        listProviderAccounts: async () => [],
+        listRunHistory: async () => [],
+        listRemoteChatSessions: async () => [],
+        listAgents: async () => [],
+        listAgentRuns: async () => [],
+        refreshAgentGraph: async () => ({ parentRunId: "current-run", runs: [], edges: [], busMessages: [], loopState: { status: "running", round: 0, roundCap: 3 } }),
+        pauseAgentLoop: async () => ({ parentRunId: "current-run", runs: [], edges: [], busMessages: [], loopState: { status: "paused", round: 0, roundCap: 3 } }),
+        resumeAgentLoop: async () => ({ parentRunId: "current-run", runs: [], edges: [], busMessages: [], loopState: { status: "running", round: 0, roundCap: 3 } }),
+        injectAgentFeedback: async (_parentRunId, _toRunId, message) => ({ parentRunId: "current-run", runs: [], edges: [], busMessages: [{ id: "bus-1", parentRunId: "current-run", kind: "user-feedback", message, queued: true, occurredAt: "2026-01-01T00:00:00Z" }], loopState: { status: "running", round: 0, roundCap: 3 } }),
+        stopAgentLoop: async () => ({ parentRunId: "current-run", runs: [], edges: [], busMessages: [], loopState: { status: "stopped", round: 0, roundCap: 3 } }),
+        spawnAgent: async () => ({ runId: "agent-1", providerSessionId: "session-agent", providerKey: "codex", status: "completed" }),
+        startRun: async () => ({ runId: "new-run", providerSessionId: "session-1", providerKey: "codex", status: "running" }),
+        resumeRun: async () => ({ runId: "run-1", providerSessionId: "session-1", providerKey: "codex", status: "completed" }),
+        syncChatRun: async (runId) => ({ runId, sourceMachineId: "mch_sync", sourceRunId: runId, syncStatus: "synced", syncedAt: "2026-06-17T10:10:00Z", remotePath: "chat-sessions/runs/mch_sync/" + runId + "/manifest.json" }),
+        deleteRun: async () => { },
+        restoreChatRun: async (input) => ({ runId: input.sourceRunId, sourceMachineId: input.sourceMachineId, sourceRunId: input.sourceRunId, providerKey: "codex", restoreStatus: "restored" }),
+        sendTurn: () => emptyStream(),
+        submitApproval: async () => { },
+        answerQuestion: async () => { },
+        interrupt: async () => { },
+        streamRun: () => emptyStream(),
+        focusAgentRun: () => emptyStream(),
+        listArtifacts: async () => [],
+        listSkills: async () => [],
+        connectProviderAccount: async () => { },
+        activateProviderAccount: async () => { },
+        openProviderAccountTerminal: async () => { },
+        restartStack: async () => { },
+        shutdownStack: async () => { },
+    };
+    return { ...base, ...overrides };
+}
+function deferred() {
+    let resolve;
+    let reject;
+    const promise = new Promise((res, rej) => {
+        resolve = res;
+        reject = rej;
+    });
+    return { promise, resolve, reject };
+}
+function seedStore(client, runHistory) {
+    store_1.useStore.setState({
+        client,
+        projects: [],
+        workflows: [],
+        steps: [],
+        skills: [],
+        providerAccounts: [],
+        supportedModels: [],
+        selectedProjectId: "project-1",
+        selectedWorkflowId: undefined,
+        selectedStepId: undefined,
+        launchMode: "workflow",
+        chatMode: "normal_chat",
+        selectedProvider: "claude",
+        selectedModel: undefined,
+        reasoningEffort: undefined,
+        yoloMode: false,
+        runId: "current-run",
+        mainRunId: "current-run",
+        activeAgentRunId: undefined,
+        agentRuns: [],
+        agentBusMessages: [],
+        activeStepId: "chat-current-run",
+        status: "running",
+        timeline: [{ kind: "prompt", id: "prompt-1", text: "keep current timeline" }],
+        artifacts: [],
+        runHistory,
+        historyLoading: false,
+        historyLoadError: undefined,
+        pendingApproval: undefined,
+        pendingQuestion: undefined,
+        lastTurnInput: undefined,
+        latestTokenUsage: undefined,
+        recoverable: false,
+        scenario: "normal",
+        pendingAccountSwitch: undefined,
+        accountSwitchLoading: false,
+        _accountSwitchTriedIds: [],
+        _streamingAssistantId: undefined,
+        _historyLoadSeq: 0,
+        _streamRunSeq: 0,
+        _runSnapshots: {},
+    });
+}
+function makeAccount(id, providerKey, overrides = {}) {
+    return {
+        id,
+        providerKey,
+        displayName: `Account ${id}`,
+        displayLabel: `account-${id}`,
+        homePath: `/home/${id}`,
+        authStorePath: null,
+        slotIndex: 0,
+        authStatus: "connected",
+        isActive: false,
+        createdAt: "2026-01-01T00:00:00Z",
+        lastAuthenticatedAt: null,
+        accountEmail: `${id}@example.com`,
+        accountName: null,
+        usageSummary: null,
+        remaining5hPercent: 80,
+        remaining7dPercent: 80,
+        remaining5hResetAt: null,
+        remaining7dResetAt: null,
+        usageSource: "provider_api",
+        accessTokenExpiresAt: null,
+        refreshTokenExpiresAt: null,
+        refreshTokenExpiryNote: null,
+        usageDetailLines: [],
+        ...overrides,
+    };
+}
+const BASE_EVENT = {
+    id: "ev-1",
+    workflowRunId: "run-1",
+    providerSessionId: "session-1",
+    providerKey: "codex",
+    seq: 1,
+    occurredAt: "2026-01-01T00:00:00Z",
+};
+async function* turnFailedStream(error, recoverable) {
+    yield { ...BASE_EVENT, type: "turn_failed", error, recoverable };
+}
+async function* childFocusStream() {
+    yield { ...BASE_EVENT, workflowRunId: "child-run", type: "turn_started", providerTurnId: "child-turn", prompt: "child prompt" };
+    yield { ...BASE_EVENT, workflowRunId: "child-run", type: "message_delta", text: "child response" };
+    yield { ...BASE_EVENT, workflowRunId: "child-run", type: "turn_completed", finalMessage: "child response" };
+}
+async function* pendingChildStream(gate) {
+    yield { ...BASE_EVENT, workflowRunId: "child-run", type: "turn_started", providerTurnId: "child-turn", prompt: "child prompt" };
+    await gate;
+    yield { ...BASE_EVENT, workflowRunId: "child-run", type: "turn_completed", finalMessage: "done" };
+}
+async function* cursorChildStream() {
+    yield { ...BASE_EVENT, workflowRunId: "child-run", seq: 1, type: "turn_started", providerTurnId: "child-turn", prompt: "child prompt" };
+    yield { ...BASE_EVENT, workflowRunId: "child-run", seq: 2, type: "message_delta", text: "old child chunk" };
+    yield { ...BASE_EVENT, workflowRunId: "child-run", seq: 3, type: "message_delta", text: "new child chunk" };
+}
+(0, node_test_1.default)("openHistoryRun marks unavailable history entries on typed resume errors", async () => {
+    seedStore(makeClient({
+        resumeRun: async () => {
+            throw new HttpWsRunnerClient_1.RunnerApiError(409, "session_unavailable", "session data not found on this machine");
+        },
+    }), [
+        {
+            runId: "run-1",
+            projectId: "project-1",
+            providerKey: "codex",
+            status: "completed",
+            startedAt: "2026-06-17T10:00:00Z",
+            updatedAt: "2026-06-17T10:05:00Z",
+        },
+    ]);
+    await store_1.useStore.getState().openHistoryRun("run-1");
+    const state = store_1.useStore.getState();
+    strict_1.default.equal(state.runId, "current-run");
+    strict_1.default.deepEqual(state.timeline, [{ kind: "prompt", id: "prompt-1", text: "keep current timeline" }]);
+    strict_1.default.equal(state.runHistory[0]?.unavailableReason, "session data not found on this machine");
+});
+(0, node_test_1.default)("openHistoryRun treats active-account-not-signed-in as unavailable instead of replacing the current run", async () => {
+    seedStore(makeClient({
+        resumeRun: async () => {
+            throw new HttpWsRunnerClient_1.RunnerApiError(409, "account_not_signed_in", "can't open — the active account isn't signed in");
+        },
+    }), [
+        {
+            runId: "run-1",
+            projectId: "project-1",
+            providerKey: "codex",
+            status: "completed",
+            startedAt: "2026-06-17T10:00:00Z",
+            updatedAt: "2026-06-17T10:05:00Z",
+        },
+    ]);
+    await store_1.useStore.getState().openHistoryRun("run-1");
+    const state = store_1.useStore.getState();
+    strict_1.default.equal(state.runId, "current-run");
+    strict_1.default.equal(state.runHistory[0]?.unavailableReason, "can't open — the active account isn't signed in");
+});
+(0, node_test_1.default)("openHistoryRun clears unavailableReason after a successful open", async () => {
+    const handle = {
+        runId: "run-1",
+        providerSessionId: "session-1",
+        providerKey: "codex",
+        status: "completed",
+        stepId: "chat-run-1",
+    };
+    seedStore(makeClient({
+        resumeRun: async () => handle,
+        streamRun: () => emptyStream(),
+        listSkills: async () => [],
+    }), [
+        {
+            runId: "run-1",
+            projectId: "project-1",
+            providerKey: "codex",
+            status: "completed",
+            startedAt: "2026-06-17T10:00:00Z",
+            updatedAt: "2026-06-17T10:05:00Z",
+            unavailableReason: "old reason",
+        },
+    ]);
+    await store_1.useStore.getState().openHistoryRun("run-1");
+    const state = store_1.useStore.getState();
+    strict_1.default.equal(state.runId, "run-1");
+    strict_1.default.equal(state.activeStepId, "chat-run-1");
+    strict_1.default.equal(state.selectedProvider, "codex");
+    strict_1.default.equal(state.runHistory[0]?.unavailableReason, undefined);
+});
+(0, node_test_1.default)("openHistoryRun selects the resumed provider default model", async () => {
+    const handle = {
+        runId: "run-claude",
+        providerSessionId: "session-claude",
+        providerKey: "claude",
+        status: "completed",
+        stepId: "chat-run-claude",
+    };
+    seedStore(makeClient({
+        resumeRun: async () => handle,
+        streamRun: () => emptyStream(),
+        listSkills: async () => [],
+    }), [
+        {
+            runId: "run-claude",
+            projectId: "project-1",
+            providerKey: "claude",
+            status: "completed",
+            startedAt: "2026-06-17T10:00:00Z",
+            updatedAt: "2026-06-17T10:05:00Z",
+        },
+    ]);
+    store_1.useStore.setState({
+        selectedProvider: "codex",
+        selectedModel: "o4-mini",
+        supportedModels: [
+            {
+                id: "model-codex",
+                providerKey: "codex",
+                modelId: "o4-mini",
+                displayName: "o4-mini",
+                isEnabled: true,
+                sortOrder: 0,
+                source: "test",
+                detectionMethod: null,
+                detectedCliVersion: null,
+                lastDetectedAt: null,
+                createdAt: "2026-06-19T00:00:00Z",
+                updatedAt: "2026-06-19T00:00:00Z",
+            },
+            {
+                id: "model-claude",
+                providerKey: "claude",
+                modelId: "claude-sonnet-4",
+                displayName: "Claude Sonnet 4",
+                isEnabled: true,
+                sortOrder: 0,
+                source: "test",
+                detectionMethod: null,
+                detectedCliVersion: null,
+                lastDetectedAt: null,
+                createdAt: "2026-06-19T00:00:00Z",
+                updatedAt: "2026-06-19T00:00:00Z",
+            },
+        ],
+    });
+    await store_1.useStore.getState().openHistoryRun("run-claude");
+    const state = store_1.useStore.getState();
+    strict_1.default.equal(state.selectedProvider, "claude");
+    strict_1.default.equal(state.selectedModel, "claude-sonnet-4");
+});
+(0, node_test_1.default)("refreshAgentGraph stores orchestration snapshot from the client", async () => {
+    seedStore(makeClient(), []);
+    await store_1.useStore.getState().refreshAgentGraph();
+    strict_1.default.equal(store_1.useStore.getState().agentGraphSnapshot?.loopState.roundCap, 3);
+});
+(0, node_test_1.default)("refreshAgentGraph keeps agent bus messages aligned with the refreshed snapshot", async () => {
+    const busMessage = {
+        id: "bus-graph",
+        parentRunId: "current-run",
+        kind: "handoff",
+        message: "ready-for-review",
+        queued: true,
+        occurredAt: "2026-01-01T00:00:00Z",
+    };
+    seedStore(makeClient({
+        refreshAgentGraph: async () => ({
+            parentRunId: "current-run",
+            runs: [],
+            edges: [],
+            busMessages: [busMessage],
+            loopState: { status: "paused", round: 2, roundCap: 3, gateReason: "waiting on child" },
+        }),
+    }), []);
+    await store_1.useStore.getState().refreshAgentGraph();
+    strict_1.default.deepEqual(store_1.useStore.getState().agentBusMessages, [busMessage]);
+    strict_1.default.equal(store_1.useStore.getState().agentGraphSnapshot?.loopState.gateReason, "waiting on child");
+});
+(0, node_test_1.default)("sendPrompt applies live agent graph and bus SSE updates", async () => {
+    const stream = async function* () {
+        yield {
+            ...BASE_EVENT,
+            type: "agent_graph_updated",
+            agentGraphSnapshot: {
+                parentRunId: "current-run",
+                runs: [],
+                edges: [],
+                busMessages: [],
+                loopState: { status: "running", round: 1, roundCap: 3 },
+            },
+        };
+        yield {
+            ...BASE_EVENT,
+            type: "agent_bus_message",
+            agentBusMessage: {
+                id: "bus-1",
+                parentRunId: "current-run",
+                kind: "handoff",
+                message: "ready-for-review",
+                queued: false,
+                occurredAt: "2026-01-01T00:00:00Z",
+            },
+        };
+        yield { ...BASE_EVENT, type: "turn_completed", finalMessage: "ok" };
+    };
+    seedStore(makeClient({
+        sendTurn: () => stream(),
+        startRun: async () => ({ runId: "current-run", providerSessionId: "session-1", providerKey: "codex", status: "running", stepId: "chat-current-run" }),
+    }), []);
+    await store_1.useStore.getState().sendPrompt("hello");
+    strict_1.default.equal(store_1.useStore.getState().agentGraphSnapshot?.loopState.round, 1);
+    strict_1.default.equal(store_1.useStore.getState().agentBusMessages.at(-1)?.message, "ready-for-review");
+});
+(0, node_test_1.default)("refreshAgentRuns loads child summaries for the active main run", async () => {
+    const agentRuns = [
+        {
+            runId: "agent-1",
+            agentName: "architect",
+            role: "architecture",
+            status: "running",
+            parentRunId: "current-run",
+            createdAt: "2026-06-17T10:01:00Z",
+            agentStatus: "running",
+        },
+    ];
+    seedStore(makeClient({
+        listAgentRuns: async () => agentRuns,
+    }), []);
+    await store_1.useStore.getState().refreshAgentRuns();
+    strict_1.default.deepEqual(store_1.useStore.getState().agentRuns, agentRuns);
+});
+(0, node_test_1.default)("focusAgentRun caches the main timeline and backToMainRun restores it", async () => {
+    seedStore(makeClient({
+        focusAgentRun: () => childFocusStream(),
+    }), []);
+    store_1.useStore.setState({
+        runId: "current-run",
+        mainRunId: "current-run",
+        activeAgentRunId: undefined,
+        timeline: [{ kind: "prompt", id: "prompt-main", text: "main timeline" }],
+        status: "running",
+        artifacts: [],
+    });
+    await store_1.useStore.getState().focusAgentRun("child-run");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    strict_1.default.equal(store_1.useStore.getState().runId, "child-run");
+    strict_1.default.equal(store_1.useStore.getState().activeAgentRunId, "child-run");
+    strict_1.default.ok(store_1.useStore.getState().timeline.some((item) => item.kind === "assistant"));
+    store_1.useStore.getState().backToMainRun();
+    strict_1.default.equal(store_1.useStore.getState().runId, "current-run");
+    strict_1.default.equal(store_1.useStore.getState().activeAgentRunId, undefined);
+    strict_1.default.deepEqual(store_1.useStore.getState().timeline, [{ kind: "prompt", id: "prompt-main", text: "main timeline" }]);
+});
+(0, node_test_1.default)("focusAgentRun resumes from the last replay cursor without duplicating prior child events", async () => {
+    seedStore(makeClient({
+        focusAgentRun: () => cursorChildStream(),
+    }), []);
+    store_1.useStore.setState({
+        runId: "current-run",
+        mainRunId: "current-run",
+        activeAgentRunId: undefined,
+        timeline: [{ kind: "prompt", id: "prompt-main", text: "main timeline" }],
+        status: "running",
+        artifacts: [],
+        _runReplaySeq: { "child-run": 2 },
+    });
+    await store_1.useStore.getState().focusAgentRun("child-run");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const assistantTexts = store_1.useStore.getState().timeline
+        .filter((item) => item.kind === "assistant")
+        .map((item) => (item.kind === "assistant" ? item.text : ""));
+    strict_1.default.deepEqual(assistantTexts, ["new child chunk"]);
+});
+(0, node_test_1.default)("focusAgentRun returns before a child stream finishes", async () => {
+    const gate = deferred();
+    seedStore(makeClient({
+        focusAgentRun: () => pendingChildStream(gate.promise),
+    }), []);
+    store_1.useStore.setState({
+        runId: "current-run",
+        mainRunId: "current-run",
+        activeAgentRunId: undefined,
+        timeline: [{ kind: "prompt", id: "prompt-main", text: "main timeline" }],
+        status: "running",
+        artifacts: [],
+    });
+    const focusPromise = store_1.useStore.getState().focusAgentRun("child-run");
+    await Promise.race([focusPromise, Promise.resolve()]);
+    strict_1.default.equal(store_1.useStore.getState().runId, "child-run");
+    strict_1.default.equal(store_1.useStore.getState().activeAgentRunId, "child-run");
+    gate.resolve();
+    await focusPromise;
+});
+(0, node_test_1.default)("injectAgentFeedback queues busy mention feedback on the board state", async () => {
+    seedStore(makeClient({
+        injectAgentFeedback: async (_parentRunId, _toRunId, message) => ({
+            parentRunId: "current-run",
+            runs: [],
+            edges: [],
+            busMessages: [{ id: "bus-1", parentRunId: "current-run", kind: "user-feedback", message, queued: true, occurredAt: "2026-01-01T00:00:00Z" }],
+            loopState: { status: "paused", round: 0, roundCap: 3, gateReason: "queued user-feedback" },
+        }),
+    }), []);
+    await store_1.useStore.getState().injectAgentFeedback("agent-2", "please revise");
+    strict_1.default.equal(store_1.useStore.getState().agentGraphSnapshot?.loopState.gateReason, "queued user-feedback");
+    strict_1.default.equal(store_1.useStore.getState().agentBusMessages.at(-1)?.kind, "user-feedback");
+});
+(0, node_test_1.default)("orchestration board helpers surface empty and queued states", () => {
+    strict_1.default.equal((0, OrchestrationBoard_1.getOrchestrationBoardEmptyCopy)(undefined, []), "No graph snapshot loaded. Refresh to inspect the loop.");
+    strict_1.default.equal((0, OrchestrationBoard_1.getOrchestrationBoardEmptyCopy)({
+        parentRunId: "current-run",
+        runs: [],
+        edges: [],
+        busMessages: [],
+        loopState: { status: "running", round: 0, roundCap: 3 },
+    }, []), "No child agents yet.");
+    strict_1.default.equal((0, OrchestrationBoard_1.getBusMessageLabel)({
+        id: "bus-1",
+        parentRunId: "current-run",
+        kind: "user-feedback",
+        message: "please revise",
+        queued: true,
+        occurredAt: "2026-01-01T00:00:00Z",
+    }), "user-feedback: please revise (queued)");
+});
+(0, node_test_1.default)("openAgentSpawnGuide overwrites the preselected agent and clearAgentSpawnGuide resets it", async () => {
+    seedStore(makeClient(), []);
+    store_1.useStore.getState().openAgentSpawnGuide("architect");
+    strict_1.default.equal(store_1.useStore.getState().agentSpawnGuideOpen, true);
+    strict_1.default.equal(store_1.useStore.getState().agentSpawnGuideAgentName, "architect");
+    store_1.useStore.getState().openAgentSpawnGuide("reviewer");
+    strict_1.default.equal(store_1.useStore.getState().agentSpawnGuideOpen, true);
+    strict_1.default.equal(store_1.useStore.getState().agentSpawnGuideAgentName, "reviewer");
+    store_1.useStore.getState().clearAgentSpawnGuide();
+    strict_1.default.equal(store_1.useStore.getState().agentSpawnGuideOpen, false);
+    strict_1.default.equal(store_1.useStore.getState().agentSpawnGuideAgentName, undefined);
+});
+(0, node_test_1.default)("parseMentionRouting resolves missing, busy, and idle child targets", () => {
+    const runs = [
+        { agentName: "architect", runId: "agent-1", status: "completed" },
+        { agentName: "builder", runId: "agent-2", status: "running" },
+    ];
+    strict_1.default.deepEqual((0, ChatInput_1.parseMentionRouting)("@architect do work", runs), {
+        kind: "focus",
+        agentName: "architect",
+        runId: "agent-1",
+        prompt: "do work",
+    });
+    strict_1.default.deepEqual((0, ChatInput_1.parseMentionRouting)("@builder do work", runs), {
+        kind: "busy",
+        agentName: "builder",
+        runId: "agent-2",
+        prompt: "do work",
+    });
+    strict_1.default.deepEqual((0, ChatInput_1.parseMentionRouting)("@reviewer do work", runs), {
+        kind: "missing",
+        agentName: "reviewer",
+    });
+});
+(0, node_test_1.default)("shouldShowAgentTimelineHeader stays hidden for single-agent runs", async () => {
+    strict_1.default.equal((0, Timeline_1.shouldShowAgentTimelineHeader)(undefined, undefined, 0), false);
+    strict_1.default.equal((0, Timeline_1.shouldShowAgentTimelineHeader)("current-run", "current-run", 0), false);
+    strict_1.default.equal((0, Timeline_1.shouldShowAgentTimelineHeader)(undefined, "current-run", 0), false);
+    strict_1.default.equal((0, Timeline_1.shouldShowAgentTimelineHeader)("child-run", "current-run", 1), true);
+});
+(0, node_test_1.default)("syncHistoryRun updates local run sync metadata", async () => {
+    seedStore(makeClient(), [
+        {
+            runId: "run-sync",
+            projectId: "project-1",
+            providerKey: "codex",
+            status: "completed",
+            startedAt: "2026-06-17T10:00:00Z",
+            updatedAt: "2026-06-17T10:05:00Z",
+            runKind: "chat",
+        },
+    ]);
+    await store_1.useStore.getState().syncHistoryRun("run-sync");
+    const state = store_1.useStore.getState();
+    strict_1.default.equal(state.runHistory[0]?.syncStatus, "synced");
+    strict_1.default.equal(state.runHistory[0]?.sourceMachineId, "mch_sync");
+    strict_1.default.equal(state.runHistory[0]?.sourceRunId, "run-sync");
+});
+(0, node_test_1.default)("syncHistoryRun marks syncing state while the request is in flight", async () => {
+    const gate = deferred();
+    seedStore(makeClient({
+        syncChatRun: async () => gate.promise,
+    }), [
+        {
+            runId: "run-sync",
+            projectId: "project-1",
+            providerKey: "codex",
+            status: "completed",
+            startedAt: "2026-06-17T10:00:00Z",
+            updatedAt: "2026-06-17T10:05:00Z",
+            runKind: "chat",
+        },
+    ]);
+    const pending = store_1.useStore.getState().syncHistoryRun("run-sync");
+    strict_1.default.equal(store_1.useStore.getState().runHistory[0]?.syncStatus, "syncing");
+    gate.resolve({
+        runId: "run-sync",
+        sourceMachineId: "mch_sync",
+        sourceRunId: "run-sync",
+        syncStatus: "synced",
+        syncedAt: "2026-06-17T10:10:00Z",
+        remotePath: "chat-sessions/runs/mch_sync/run-sync/manifest.json",
+    });
+    await pending;
+});
+(0, node_test_1.default)("syncHistoryRun typed error preserves current timeline", async () => {
+    seedStore(makeClient({
+        syncChatRun: async () => {
+            throw new HttpWsRunnerClient_1.RunnerApiError(409, "session_unavailable", "session data not found on this machine");
+        },
+    }), [
+        {
+            runId: "run-sync",
+            projectId: "project-1",
+            providerKey: "codex",
+            status: "completed",
+            startedAt: "2026-06-17T10:00:00Z",
+            updatedAt: "2026-06-17T10:05:00Z",
+            runKind: "chat",
+        },
+    ]);
+    await store_1.useStore.getState().syncHistoryRun("run-sync");
+    const state = store_1.useStore.getState();
+    strict_1.default.equal(state.runId, "current-run");
+    strict_1.default.deepEqual(state.timeline, [{ kind: "prompt", id: "prompt-1", text: "keep current timeline" }]);
+    strict_1.default.equal(state.runHistory[0]?.syncStatus, "failed");
+    strict_1.default.equal(state.runHistory[0]?.unavailableReason, "session data not found on this machine");
+});
+(0, node_test_1.default)("loadRemoteChatSessions stores remote summaries", async () => {
+    const summary = {
+        runId: "run-remote",
+        projectId: "project-1",
+        providerKey: "codex",
+        sourceMachineId: "mch_remote",
+        sourceRunId: "run-remote",
+    };
+    seedStore(makeClient({
+        listRemoteChatSessions: async () => [summary],
+    }), []);
+    await store_1.useStore.getState().loadRemoteChatSessions();
+    const state = store_1.useStore.getState();
+    strict_1.default.deepEqual(state.remoteChatSessions, [summary]);
+    strict_1.default.equal(state.remoteHistoryLoading, false);
+    strict_1.default.equal(state.remoteHistoryLoadError, undefined);
+});
+(0, node_test_1.default)("restoreRemoteChatSession retries cwd_remap_required with the selected project path", async () => {
+    const calls = [];
+    const summary = {
+        runId: "run-remote",
+        projectId: "project-1",
+        providerKey: "codex",
+        sourceMachineId: "mch_remote",
+        sourceRunId: "run-remote",
+    };
+    seedStore(makeClient({
+        listRunHistory: async () => [],
+        listRemoteChatSessions: async () => [summary],
+        restoreChatRun: async (input) => {
+            calls.push(input.cwd ?? "");
+            if (!input.cwd) {
+                throw new HttpWsRunnerClient_1.RunnerApiError(409, "cwd_remap_required", "select a local project path before restoring this chat");
+            }
+            return {
+                runId: input.sourceRunId,
+                sourceMachineId: input.sourceMachineId,
+                sourceRunId: input.sourceRunId,
+                providerKey: "codex",
+                restoreStatus: "restored",
+            };
+        },
+    }), []);
+    store_1.useStore.setState({
+        projects: [{ id: "project-1", name: "Project 1", path: "/tmp/project-1" }],
+        remoteChatSessions: [summary],
+    });
+    await store_1.useStore.getState().restoreRemoteChatSession(summary);
+    strict_1.default.deepEqual(calls, ["", "/tmp/project-1"]);
+});
+(0, node_test_1.default)("restoreRemoteChatSession adds restored run to history", async () => {
+    const summary = {
+        runId: "run-remote",
+        projectId: "project-1",
+        providerKey: "codex",
+        sourceMachineId: "mch_remote",
+        sourceRunId: "run-remote",
+    };
+    const restoredHistory = {
+        runId: "run-remote",
+        projectId: "project-1",
+        providerKey: "codex",
+        status: "completed",
+        startedAt: "2026-06-17T10:00:00Z",
+        updatedAt: "2026-06-17T10:05:00Z",
+        sourceMachineId: "mch_remote",
+        sourceRunId: "run-remote",
+        syncStatus: "restored",
+    };
+    seedStore(makeClient({
+        restoreChatRun: async () => ({
+            runId: "run-remote",
+            sourceMachineId: "mch_remote",
+            sourceRunId: "run-remote",
+            providerKey: "codex",
+            restoreStatus: "restored",
+        }),
+        listRunHistory: async () => [restoredHistory],
+        listRemoteChatSessions: async () => [summary],
+    }), []);
+    store_1.useStore.setState({ remoteChatSessions: [summary] });
+    await store_1.useStore.getState().restoreRemoteChatSession(summary);
+    const state = store_1.useStore.getState();
+    strict_1.default.equal(state.runHistory[0]?.runId, "run-remote");
+    strict_1.default.equal(state.runHistory[0]?.providerKey, "codex");
+});
+(0, node_test_1.default)("restoreRemoteChatSession marks remote entries unavailable on typed restore errors", async () => {
+    const summary = {
+        runId: "run-remote",
+        projectId: "project-1",
+        providerKey: "codex",
+        sourceMachineId: "mch_remote",
+        sourceRunId: "run-remote",
+    };
+    seedStore(makeClient({
+        restoreChatRun: async () => {
+            throw new HttpWsRunnerClient_1.RunnerApiError(409, "sync_integrity_failed", "remote provider session file failed integrity validation");
+        },
+    }), []);
+    store_1.useStore.setState({ remoteChatSessions: [summary] });
+    await store_1.useStore.getState().restoreRemoteChatSession(summary);
+    strict_1.default.equal(store_1.useStore.getState().remoteChatSessions[0]?.unavailableReason, "remote provider session file failed integrity validation");
+});
+// ── Account-switch tests ───────────────────────────────────────────────────
+(0, node_test_1.default)("usage-limit turn_failed with valid Codex candidate sets pendingAccountSwitch", async () => {
+    const acc1 = makeAccount("acc-1", "codex", { isActive: true, remaining5hPercent: 0, remaining7dPercent: 90, slotIndex: 0 });
+    const acc2 = makeAccount("acc-2", "codex", { isActive: false, remaining5hPercent: 50, remaining7dPercent: 60, slotIndex: 1 });
+    seedStore(makeClient({
+        startRun: async () => ({ runId: "run-1", providerSessionId: "s1", providerKey: "codex", status: "running", stepId: "chat-run-1" }),
+        sendTurn: () => turnFailedStream("usage limit reached", false),
+        listRunHistory: async () => [],
+    }), []);
+    store_1.useStore.setState({ providerAccounts: [acc1, acc2], selectedProvider: "codex", runId: undefined, activeStepId: undefined, status: "idle", timeline: [] });
+    await store_1.useStore.getState().sendPrompt("hello");
+    const state = store_1.useStore.getState();
+    strict_1.default.ok(state.pendingAccountSwitch !== undefined, "pendingAccountSwitch should be set");
+    strict_1.default.equal(state.pendingAccountSwitch?.failedAccountId, "acc-1");
+    strict_1.default.equal(state.pendingAccountSwitch?.candidateAccount.id, "acc-2");
+    strict_1.default.deepEqual(state._accountSwitchTriedIds, ["acc-1"]);
+});
+(0, node_test_1.default)("candidate ranking: higher remaining5hPercent wins over higher remaining7dPercent", async () => {
+    const active = makeAccount("active", "codex", { isActive: true, remaining5hPercent: 0, remaining7dPercent: 0, slotIndex: 0 });
+    const accA = makeAccount("acc-A", "codex", { isActive: false, remaining5hPercent: 80, remaining7dPercent: 20, slotIndex: 1 });
+    const accB = makeAccount("acc-B", "codex", { isActive: false, remaining5hPercent: 60, remaining7dPercent: 90, slotIndex: 2 });
+    seedStore(makeClient({
+        startRun: async () => ({ runId: "run-1", providerSessionId: "s1", providerKey: "codex", status: "running", stepId: "chat-run-1" }),
+        sendTurn: () => turnFailedStream("usage limit reached", false),
+        listRunHistory: async () => [],
+    }), []);
+    store_1.useStore.setState({ providerAccounts: [active, accA, accB], selectedProvider: "codex", runId: undefined, activeStepId: undefined, status: "idle", timeline: [] });
+    await store_1.useStore.getState().sendPrompt("hello");
+    strict_1.default.equal(store_1.useStore.getState().pendingAccountSwitch?.candidateAccount.id, "acc-A");
+});
+(0, node_test_1.default)("account with remaining5hPercent=0 is excluded from ranked path; no switch offered when no fallback exists", async () => {
+    const active = makeAccount("active", "codex", { isActive: true, remaining5hPercent: 0, slotIndex: 0 });
+    const zeroH = makeAccount("zero-5h", "codex", { isActive: false, remaining5hPercent: 0, remaining7dPercent: 80, slotIndex: 1 });
+    seedStore(makeClient({
+        startRun: async () => ({ runId: "run-1", providerSessionId: "s1", providerKey: "codex", status: "running", stepId: "chat-run-1" }),
+        sendTurn: () => turnFailedStream("usage limit reached", false),
+        listRunHistory: async () => [],
+    }), []);
+    // zeroH has 5h=0 → excluded from ranked path; no null-quota fallback either
+    store_1.useStore.setState({ providerAccounts: [active, zeroH], selectedProvider: "codex", runId: undefined, activeStepId: undefined, status: "idle", timeline: [] });
+    await store_1.useStore.getState().sendPrompt("hello");
+    strict_1.default.equal(store_1.useStore.getState().pendingAccountSwitch, undefined, "no valid candidate → no switch offered");
+});
+(0, node_test_1.default)("cancelAccountSwitch clears pendingAccountSwitch without activating", () => {
+    const candidate = makeAccount("acc-2", "codex");
+    seedStore(makeClient(), []);
+    store_1.useStore.setState({
+        pendingAccountSwitch: {
+            providerKey: "codex",
+            failedAccountId: "acc-1",
+            failedAccountLabel: "acc-1@example.com",
+            candidateAccount: candidate,
+            reason: "usage_limit",
+        },
+    });
+    store_1.useStore.getState().cancelAccountSwitch();
+    strict_1.default.equal(store_1.useStore.getState().pendingAccountSwitch, undefined);
+    strict_1.default.equal(store_1.useStore.getState().status, "running");
+});
+(0, node_test_1.default)("confirmAccountSwitch activates account and retries with original lastTurnInput", async () => {
+    const sentTurns = [];
+    const activatedIds = [];
+    const candidate = makeAccount("acc-2", "codex");
+    const savedTurnInput = {
+        runId: "run-1",
+        stepId: "chat-run-1",
+        prompt: "original prompt",
+    };
+    seedStore(makeClient({
+        activateProviderAccount: async (id) => { activatedIds.push(id); },
+        sendTurn: (input) => { sentTurns.push(input); return emptyStream(); },
+        listRunHistory: async () => [],
+        listProviderAccounts: async () => [],
+    }), []);
+    store_1.useStore.setState({
+        pendingAccountSwitch: {
+            providerKey: "codex",
+            failedAccountId: "acc-1",
+            failedAccountLabel: "acc-1@example.com",
+            candidateAccount: candidate,
+            reason: "usage_limit",
+        },
+        lastTurnInput: savedTurnInput,
+        status: "failed",
+    });
+    await store_1.useStore.getState().confirmAccountSwitch();
+    strict_1.default.deepEqual(activatedIds, ["acc-2"], "should activate candidate account");
+    strict_1.default.equal(sentTurns.length, 1, "should resend exactly one turn");
+    strict_1.default.equal(sentTurns[0]?.prompt, "original prompt", "should resend original prompt");
+    strict_1.default.equal(sentTurns[0]?.runId, "run-1", "should reuse original runId");
+    strict_1.default.equal(store_1.useStore.getState().pendingAccountSwitch, undefined);
+    strict_1.default.equal(store_1.useStore.getState().accountSwitchLoading, false);
+});
+(0, node_test_1.default)("confirmAccountSwitch with reason=manual switches account but does NOT auto-retry", async () => {
+    const sentTurns = [];
+    const activatedIds = [];
+    const candidate = makeAccount("acc-2", "codex");
+    const savedTurnInput = {
+        runId: "run-1",
+        stepId: "chat-run-1",
+        prompt: "original prompt",
+    };
+    seedStore(makeClient({
+        activateProviderAccount: async (id) => { activatedIds.push(id); },
+        sendTurn: (input) => { sentTurns.push(input); return emptyStream(); },
+        listRunHistory: async () => [],
+        listProviderAccounts: async () => [],
+    }), []);
+    store_1.useStore.setState({
+        pendingAccountSwitch: {
+            providerKey: "codex",
+            failedAccountId: "acc-1",
+            failedAccountLabel: "acc-1@example.com",
+            candidateAccount: candidate,
+            reason: "manual",
+        },
+        lastTurnInput: savedTurnInput,
+        status: "idle",
+    });
+    await store_1.useStore.getState().confirmAccountSwitch();
+    strict_1.default.deepEqual(activatedIds, ["acc-2"], "should activate candidate account");
+    strict_1.default.equal(sentTurns.length, 0, "manual switch must NOT auto-retry");
+    strict_1.default.equal(store_1.useStore.getState().pendingAccountSwitch, undefined);
+    strict_1.default.equal(store_1.useStore.getState().accountSwitchLoading, false);
+});
+(0, node_test_1.default)("already-tried account is not offered as switch candidate again", async () => {
+    const active = makeAccount("acc-1", "codex", { isActive: true, remaining5hPercent: 0, remaining7dPercent: 0, slotIndex: 0 });
+    const tried = makeAccount("acc-2", "codex", { isActive: false, remaining5hPercent: 80, remaining7dPercent: 80, slotIndex: 1 });
+    const fresh = makeAccount("acc-3", "codex", { isActive: false, remaining5hPercent: 40, remaining7dPercent: 40, slotIndex: 2 });
+    seedStore(makeClient({
+        startRun: async () => ({ runId: "run-1", providerSessionId: "s1", providerKey: "codex", status: "running", stepId: "chat-run-1" }),
+        sendTurn: () => turnFailedStream("usage limit reached", false),
+        listRunHistory: async () => [],
+    }), []);
+    store_1.useStore.setState({
+        providerAccounts: [active, tried, fresh],
+        selectedProvider: "codex",
+        runId: undefined,
+        activeStepId: undefined,
+        status: "idle",
+        timeline: [],
+        _accountSwitchTriedIds: ["acc-2"], // acc-2 already tried
+    });
+    await store_1.useStore.getState().sendPrompt("hello");
+    strict_1.default.equal(store_1.useStore.getState().pendingAccountSwitch?.candidateAccount.id, "acc-3", "should skip already-tried acc-2");
+});
+(0, node_test_1.default)("requestManualAccountSwitch sets pendingAccountSwitch with reason=manual without updating triedIds", () => {
+    const active = makeAccount("acc-1", "codex", { isActive: true, remaining5hPercent: 80, remaining7dPercent: 80, slotIndex: 0 });
+    const backup = makeAccount("acc-2", "codex", { isActive: false, remaining5hPercent: 60, remaining7dPercent: 60, slotIndex: 1 });
+    seedStore(makeClient(), []);
+    store_1.useStore.setState({ providerAccounts: [active, backup], selectedProvider: "codex" });
+    store_1.useStore.getState().requestManualAccountSwitch();
+    const state = store_1.useStore.getState();
+    strict_1.default.ok(state.pendingAccountSwitch !== undefined);
+    strict_1.default.equal(state.pendingAccountSwitch?.reason, "manual");
+    strict_1.default.equal(state.pendingAccountSwitch?.candidateAccount.id, "acc-2");
+    strict_1.default.deepEqual(state._accountSwitchTriedIds, [], "_accountSwitchTriedIds must not be touched by manual switch");
+});
+(0, node_test_1.default)("Claude usage-limit failure with null quota offers fallback switch candidate", async () => {
+    const active = makeAccount("cl-1", "claude", { isActive: true, remaining5hPercent: null, remaining7dPercent: null, slotIndex: 0 });
+    const backup = makeAccount("cl-2", "claude", { isActive: false, remaining5hPercent: null, remaining7dPercent: null, slotIndex: 1 });
+    seedStore(makeClient({
+        startRun: async () => ({ runId: "run-c", providerSessionId: "sc", providerKey: "claude", status: "running", stepId: "chat-run-c" }),
+        sendTurn: () => turnFailedStream("usage limit reached", false),
+        listRunHistory: async () => [],
+    }), []);
+    store_1.useStore.setState({ providerAccounts: [active, backup], selectedProvider: "claude", runId: undefined, activeStepId: undefined, status: "idle", timeline: [] });
+    await store_1.useStore.getState().sendPrompt("hello");
+    const state = store_1.useStore.getState();
+    strict_1.default.ok(state.pendingAccountSwitch !== undefined, "should offer switch even without quota telemetry");
+    strict_1.default.equal(state.pendingAccountSwitch?.candidateAccount.id, "cl-2");
+});
+(0, node_test_1.default)("Claude account switch retries the original failed turn", async () => {
+    const sentTurns = [];
+    const activatedIds = [];
+    const candidate = makeAccount("cl-2", "claude", {
+        remaining5hPercent: null,
+        remaining7dPercent: null,
+    });
+    const savedTurnInput = {
+        runId: "run-claude",
+        stepId: "chat-run-claude",
+        prompt: "continue the Claude task",
+        model: "claude-sonnet-4",
+    };
+    seedStore(makeClient({
+        activateProviderAccount: async (id) => { activatedIds.push(id); },
+        sendTurn: (input) => { sentTurns.push(input); return emptyStream(); },
+        listRunHistory: async () => [],
+        listProviderAccounts: async () => [],
+    }), []);
+    store_1.useStore.setState({
+        selectedProvider: "claude",
+        pendingAccountSwitch: {
+            providerKey: "claude",
+            failedAccountId: "cl-1",
+            failedAccountLabel: "cl-1@example.com",
+            candidateAccount: candidate,
+            reason: "usage_limit",
+        },
+        lastTurnInput: savedTurnInput,
+        status: "failed",
+    });
+    await store_1.useStore.getState().confirmAccountSwitch();
+    strict_1.default.deepEqual(activatedIds, ["cl-2"]);
+    strict_1.default.deepEqual(sentTurns, [savedTurnInput]);
+    strict_1.default.equal(store_1.useStore.getState().selectedProvider, "claude");
+});
+(0, node_test_1.default)("MockRunnerClient preserves parent orchestration state across refresh pause resume feedback and stop", async () => {
+    const client = new MockRunnerClient_1.MockRunnerClient();
+    const spawn = await client.spawnAgent({ parentRunId: "parent-1", agent: "architect", prompt: "draft the design" });
+    const initial = await client.refreshAgentGraph("parent-1");
+    const paused = await client.pauseAgentLoop("parent-1");
+    const feedback = await client.injectAgentFeedback("parent-1", spawn.runId, "revise the draft");
+    const resumed = await client.resumeAgentLoop("parent-1");
+    const stopped = await client.stopAgentLoop("parent-1");
+    strict_1.default.equal(initial.runs[0]?.runId, spawn.runId);
+    strict_1.default.equal(paused.loopState.status, "paused");
+    strict_1.default.equal(feedback.busMessages.at(-1)?.message, "revise the draft");
+    strict_1.default.equal(resumed.busMessages.at(-1)?.message, "revise the draft");
+    strict_1.default.equal(stopped.loopState.status, "stopped");
+});
+(0, node_test_1.default)("sendPrompt keeps the parent orchestration stream alive after the turn completes", async () => {
+    const parentGraph = {
+        parentRunId: "current-run",
+        runs: [],
+        edges: [],
+        busMessages: [],
+        loopState: { status: "running", round: 0, roundCap: 3 },
+    };
+    const graphEvent = {
+        ...BASE_EVENT,
+        seq: 2,
+        type: "agent_graph_updated",
+        agentGraphSnapshot: {
+            ...parentGraph,
+            busMessages: [
+                {
+                    id: "bus-live",
+                    parentRunId: "current-run",
+                    kind: "handoff",
+                    message: "ready-for-review",
+                    queued: false,
+                    occurredAt: "2026-01-01T00:00:01Z",
+                },
+            ],
+        },
+    };
+    const gate = deferred();
+    seedStore(makeClient({
+        sendTurn: async function* () {
+            yield { ...BASE_EVENT, type: "turn_completed", finalMessage: "done" };
+        },
+        streamRun: async function* () {
+            await gate.promise;
+            yield graphEvent;
+        },
+        startRun: async () => ({ runId: "current-run", providerSessionId: "session-1", providerKey: "codex", status: "running", stepId: "chat-current-run" }),
+        listRunHistory: async () => [],
+    }), []);
+    await store_1.useStore.getState().sendPrompt("hello");
+    gate.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    strict_1.default.equal(store_1.useStore.getState().agentGraphSnapshot?.loopState.roundCap, 3);
+    strict_1.default.equal(store_1.useStore.getState().agentBusMessages.at(-1)?.message, "ready-for-review");
+});

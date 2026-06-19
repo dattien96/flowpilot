@@ -7,8 +7,9 @@ import type { IdeBridge } from "@/types/contract";
 // swapped from a stub to real invocation.
 export const ideBridge: IdeBridge = {
   async openInIde(file: string, line?: number): Promise<void> {
-    if (window.flowpilot?.openInIde) {
-      await window.flowpilot.openInIde(file, line);
+    const bridge = window as Window & { flowpilot?: { openInIde?: (file: string, line?: number) => Promise<void>; openExternal?: (url: string) => Promise<void> } };
+    if (bridge.flowpilot?.openInIde) {
+      await bridge.flowpilot.openInIde(file, line);
       return;
     }
     // eslint-disable-next-line no-console
@@ -16,8 +17,9 @@ export const ideBridge: IdeBridge = {
   },
 
   async openExternal(url: string): Promise<void> {
-    if (window.flowpilot?.openExternal) {
-      await window.flowpilot.openExternal(url);
+    const bridge = window as Window & { flowpilot?: { openInIde?: (file: string, line?: number) => Promise<void>; openExternal?: (url: string) => Promise<void> } };
+    if (bridge.flowpilot?.openExternal) {
+      await bridge.flowpilot.openExternal(url);
       return;
     }
     // Browser fallback (renderer running in a plain tab during dev).

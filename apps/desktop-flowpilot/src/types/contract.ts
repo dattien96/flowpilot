@@ -98,6 +98,38 @@ export interface AgentRunSummary {
   agentStatus?: string;
 }
 
+export interface AgentDependencyEdge {
+  fromRunId: string;
+  toRunId: string;
+  kind: string;
+}
+
+export interface AgentBusMessage {
+  id: string;
+  parentRunId: string;
+  fromRunId?: string;
+  toRunId?: string;
+  kind: string;
+  message: string;
+  queued: boolean;
+  occurredAt: string;
+}
+
+export interface AgentLoopState {
+  status: string;
+  round: number;
+  roundCap: number;
+  gateReason?: string;
+}
+
+export interface AgentGraphSnapshot {
+  parentRunId: string;
+  runs: AgentRunSummary[];
+  edges: AgentDependencyEdge[];
+  busMessages: AgentBusMessage[];
+  loopState: AgentLoopState;
+}
+
 export interface ProviderAccountUsageLine {
   label: string;
   remainingPercent: number;
@@ -353,7 +385,9 @@ export type ProviderEventDTO =
       multiSelect?: boolean;
     })
   | (ProviderEventBaseDTO & { type: "turn_failed"; error: string; recoverable: boolean })
-  | (ProviderEventBaseDTO & { type: "turn_completed"; finalMessage: string });
+  | (ProviderEventBaseDTO & { type: "turn_completed"; finalMessage: string })
+  | (ProviderEventBaseDTO & { type: "agent_graph_updated"; agentGraphSnapshot: AgentGraphSnapshot })
+  | (ProviderEventBaseDTO & { type: "agent_bus_message"; agentBusMessage: AgentBusMessage });
 
 export type ProviderEventType = ProviderEventDTO["type"];
 
@@ -408,6 +442,11 @@ export interface RunnerClient {
    * Optional until the Agents panel lands (Task-083).
    */
   listAgentRuns?(parentRunId: string): Promise<AgentRunSummary[]>;
+  refreshAgentGraph?(parentRunId: string): Promise<AgentGraphSnapshot>;
+  pauseAgentLoop?(parentRunId: string): Promise<AgentGraphSnapshot>;
+  resumeAgentLoop?(parentRunId: string): Promise<AgentGraphSnapshot>;
+  injectAgentFeedback?(parentRunId: string, toRunId: string, message: string): Promise<AgentGraphSnapshot>;
+  stopAgentLoop?(parentRunId: string): Promise<AgentGraphSnapshot>;
   /**
    * Programmatically spawn a child agent run (CP-19 / Task-082).
    * Optional until the Agents panel lands (Task-083).

@@ -21,33 +21,37 @@
 ### Summary
 
 - Add dependency edges + a message bus to the `AgentOrchestrator` so a reviewer waits for a coder's diff, returns feedback, and the coder iterates to a round cap.
-- Define bus message kinds (`ready-for-review`, `changes-requested`, `approved`, `rejected`, handoff) and the gate transitions that drive the loop.
+- Define graph/bus DTOs and message kinds (`ready-for-review`, `changes-requested`, `approved`, `rejected`, `handoff`, `user-feedback`) plus the gate transitions that drive the loop.
 - Build the Graph/DAG orchestration board in the desktop app: agents as nodes, dependencies/feedback as edges, round counter, run controls, and a live agent-bus log.
 
 ### Current Ask
 
-- Implement the coder↔reviewer coordination logic + the Graph/DAG management view (mock frame 04), with pure-logic orchestrator tests and frontend tests.
+- Implement the coder↔reviewer coordination logic + the Graph/DAG management view (redesign Frame 04), with pure-logic orchestrator tests, HTTP/contract tests, and frontend tests.
 
 ### Key Decisions
 
 - `T-1` The reviewer-gate is the agent-driven analogue of the human approval gate; `changes-requested` re-opens the coder's turn with the feedback as input.
-- `T-2` The loop has a mandatory round cap and an explicit Stop control; on `approved`, hand off to the parent/main agent.
+- `T-2` The loop has a mandatory round cap of 3 by default and an explicit Stop control; on `approved`, hand off to the parent/main agent.
 - `T-3` The management view is a Graph/DAG board (user-selected), not lanes.
 - `T-4` Orchestrator transition logic is pure (no I/O), mirroring `workflow_state_machine.go`, for testability.
+- `T-5` Phase 1 bus/graph state is in-memory but replayable to the board through the existing parent-run SSE stream using additive event variants; durable `agent_messages` persistence is deferred to Task-085.
+- `T-6` Busy-child `@mention` / injected feedback is queued as an agent-bus message for the next idle or blocked transition. It must not interrupt an active provider turn unless the user explicitly presses Stop.
 
 ### Constraints
 
 - Run GitNexus impact analysis before editing `agent_orchestrator.go` or the desktop store/board; warn on HIGH/CRITICAL.
 - Reuse `artifact`/diff payloads for handoff; do not invent a new artifact channel.
 - The loop must always terminate (round cap or stop).
+- Do not bypass existing child approval/question gates. Approval/question UI remains owned by the child run's normal stream and must stay interactive with YOLO=false.
+- Do not add Supabase tables or cross-PC durable bus persistence in this task.
 
 ### Open Questions
 
-- Default round cap value and whether it is per-agent-definition configurable.
+- Whether the round cap should become per-agent-definition configurable after Phase 1. Phase 1 uses a default cap of 3 with an optional per-run override from the board.
 
 ### Source Refs
 
-- `CP-19` P-4, P-5; mock `output/cp19-multi-agent-mockup.html` frame 04; `workflow_orchestrator.go`, `workflow_state_machine.go`.
+- `CP-19` P-4, P-5; Task-082 `AgentOrchestrator`, `AgentRunSummary`, `SpawnAgentInput`; Task-083 panel/focus store shape; mock `output/cp19-frames-02-04-redesign.html` (Frame 04 Graph/DAG orchestration board); `workflow_orchestrator.go`, `workflow_state_machine.go`.
 
 ## 1. Goal
 
@@ -66,27 +70,34 @@ CP-19's core ask — a reviewer waiting on a coder, sending feedback, and the co
 
 ## 4. Exact Change
 
-- `T-1` Extend `AgentOrchestrator` with `dependsOn` edges, a message bus, and gate transitions for `ready-for-review` / `changes-requested` / `approved` / `rejected`.
-- `T-2` Implement the bounded coder↔reviewer feedback loop with a round cap and stop.
-- `T-3` New `OrchestrationBoard.tsx` (Graph/DAG): nodes, dependency/feedback edges, round counter, controls (resume, pause, inject feedback, add agent, stop all), live bus log.
-- `T-4` Stream bus events to the board (reuse SSE).
+- `T-1` Extend `AgentOrchestrator` with dependency/feedback edges, an in-memory bus, and pure transition functions for `ready-for-review` / `changes-requested` / `approved` / `rejected` / `handoff` / `user-feedback`.
+- `T-2` Add contract DTOs in Go + TypeScript: `AgentDependencyEdge`, `AgentBusMessage`, `AgentLoopState`, and `AgentGraphSnapshot`. The snapshot includes `parentRunId`, current `AgentRunSummary[]`, edges, bus messages, current round, round cap, loop status, and active gate reason.
+- `T-3` Implement the bounded coder↔reviewer feedback loop with default round cap 3, optional per-run override, queued feedback for busy children, and stop. `changes-requested` starts the coder's next normal child turn with the review text; it must not mutate provider transcripts directly.
+- `T-4` Surface graph and bus updates through the existing parent-run SSE stream with additive event variants (for example `agent_graph_updated` and `agent_bus_message`) plus snapshot/history HTTP reads for first render and reconnect. Keep `streamRun(runId, afterSeq)` semantics intact.
+- `T-5` New `OrchestrationBoard.tsx` (Graph/DAG): nodes, dependency/feedback edges, round counter, loop status, controls (resume loop, pause loop, inject feedback, add agent, stop all), live bus log, and affordances to focus an agent via Task-083.
+- `T-6` Wire board controls to explicit runner methods. Pause/resume are loop-level soft gates only; they prevent or allow the next orchestrated turn and do not attempt to suspend an already-running provider stream. Stop uses existing child interrupt semantics where possible and marks the loop stopped.
+- `T-7` Extend Task-083 store/client contract and mock client to hold `agentGraphSnapshot`, bus messages, `refreshAgentGraph()`, `pauseAgentLoop()`, `resumeAgentLoop()`, `injectAgentFeedback()`, and `stopAgentLoop()`.
 
 ## 5. Touched Areas
 
-- files: `apps/local-runner/internal/runner/agent_orchestrator.go`, `interactive_handlers.go`, `apps/desktop-flowpilot/src/components/OrchestrationBoard.tsx`, `state/store.ts`, `client/HttpWsRunnerClient.ts`, `styles.css`
+- files: `apps/local-runner/internal/runner/agent_orchestrator.go`, `provider_event.go`, `interactive_service.go`, `interactive_handlers.go`, `agent_orchestrator_test.go`, `apps/desktop-flowpilot/src/components/OrchestrationBoard.tsx`, `state/store.ts`, `client/HttpWsRunnerClient.ts`, `client/MockRunnerClient.ts`, `types/contract.ts`, `styles.css`
 - modules: local-runner orchestration; desktop board + state
-- routes: `GET /client/workflow-runs/{runId}/agent-bus` (or extend the events stream)
+- routes: `GET /client/workflow-runs/{runId}/agent-graph`, `GET /client/workflow-runs/{runId}/agent-bus`, `POST /client/workflow-runs/{runId}/agent-loop/pause`, `POST /client/workflow-runs/{runId}/agent-loop/resume`, `POST /client/workflow-runs/{runId}/agent-loop/feedback`, `POST /client/workflow-runs/{runId}/agent-loop/stop`; live updates reuse the existing `GET /client/workflow-runs/{runId}/events/stream`
 - tables: none (Phase 1)
 
 ## 6. Acceptance Check
 
 - A coder + reviewer run in parallel; the reviewer stays blocked until `ready-for-review`, then reviews; `changes-requested` re-opens the coder with feedback; loop ends at `approved` or the round cap.
-- The Graph/DAG board shows nodes, dependency/feedback edges, the current round, and a live bus log; controls (resume/pause/inject/stop) work.
-- Orchestrator transition unit tests cover approve, changes-requested loop, and round-cap termination.
+- The Graph/DAG board shows nodes, dependency/feedback edges, the current round/cap, loop status, active gate reason, and a live bus log; controls (resume/pause/inject/add agent/stop) work against the runner contract and mock client.
+- Existing approval/question cards still appear for child runs with YOLO=false; the board may link to/focus the gated child but must not auto-approve, auto-answer, or hide the gate.
+- `@coder ...` or board-injected feedback targeting a busy child queues a `user-feedback` bus message; it is consumed on the next safe turn and does not interrupt the provider unless Stop is pressed.
+- Initial board render works from `AgentGraphSnapshot`; reconnect/replay works from the parent run's existing SSE `afterSeq` cursor.
+- Orchestrator transition unit tests cover approve, rejected, changes-requested loop, queued feedback, pause/resume gate, explicit stop, child approval/question waiting state, and round-cap termination.
+- HTTP/contract tests cover graph snapshot, bus history, loop control routes, and additive event DTO serialization. Frontend tests cover board rendering, live bus updates, control actions, focus affordance, and no-child/single-agent fallback.
 
 ## 7. Out of Scope
 
-- Supabase persistence and workflow-engine integration (Task-085); the lanes layout.
+- Supabase persistence and workflow-engine integration (Task-085); the lanes layout; durable `agent_messages`; suspending an already-running provider stream; automatic approval/question decisions.
 
 ## 8. Completion Notes
 

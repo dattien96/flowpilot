@@ -39,6 +39,12 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /client/active-account", s.handleSetActiveAccount)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/spawn-agent", s.handleSpawnAgent)
 	mux.HandleFunc("GET /client/workflow-runs/{runId}/agents", s.handleListAgentRuns)
+	mux.HandleFunc("GET /client/workflow-runs/{runId}/agent-graph", s.handleGetAgentGraph)
+	mux.HandleFunc("GET /client/workflow-runs/{runId}/agent-bus", s.handleGetAgentBus)
+	mux.HandleFunc("POST /client/workflow-runs/{runId}/agent-loop/pause", s.handlePauseAgentLoop)
+	mux.HandleFunc("POST /client/workflow-runs/{runId}/agent-loop/resume", s.handleResumeAgentLoop)
+	mux.HandleFunc("POST /client/workflow-runs/{runId}/agent-loop/feedback", s.handleInjectAgentFeedback)
+	mux.HandleFunc("POST /client/workflow-runs/{runId}/agent-loop/stop", s.handleStopAgentLoop)
 
 	// admin
 	mux.HandleFunc("GET /admin/providers", s.handleAdminProviders)
@@ -775,6 +781,35 @@ func (s *InteractiveService) handleSpawnAgent(w http.ResponseWriter, r *http.Req
 // handleListAgentRuns returns the agent run summaries that are children of the given run.
 func (s *InteractiveService) handleListAgentRuns(w http.ResponseWriter, r *http.Request) {
 	writeInteractiveJSON(w, http.StatusOK, s.listAgentRunSummaries(r.PathValue("runId")))
+}
+
+func (s *InteractiveService) handleGetAgentGraph(w http.ResponseWriter, r *http.Request) {
+	writeInteractiveJSON(w, http.StatusOK, s.agentGraphSnapshot(r.PathValue("runId")))
+}
+
+func (s *InteractiveService) handleGetAgentBus(w http.ResponseWriter, r *http.Request) {
+	writeInteractiveJSON(w, http.StatusOK, s.agentBusHistory(r.PathValue("runId")))
+}
+
+func (s *InteractiveService) handlePauseAgentLoop(w http.ResponseWriter, r *http.Request) {
+	writeInteractiveJSON(w, http.StatusOK, s.pauseAgentLoop(r.PathValue("runId"), "paused by user"))
+}
+
+func (s *InteractiveService) handleResumeAgentLoop(w http.ResponseWriter, r *http.Request) {
+	writeInteractiveJSON(w, http.StatusOK, s.resumeAgentLoop(r.PathValue("runId")))
+}
+
+func (s *InteractiveService) handleInjectAgentFeedback(w http.ResponseWriter, r *http.Request) {
+	var body struct{ Message, ToRunID string }
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_request", "invalid request body"))
+		return
+	}
+	writeInteractiveJSON(w, http.StatusOK, s.injectAgentFeedback(r.PathValue("runId"), body.ToRunID, body.Message))
+}
+
+func (s *InteractiveService) handleStopAgentLoop(w http.ResponseWriter, r *http.Request) {
+	writeInteractiveJSON(w, http.StatusOK, s.stopAgentLoop(r.PathValue("runId")))
 }
 
 func fakeArtifacts(runID string) []Artifact {

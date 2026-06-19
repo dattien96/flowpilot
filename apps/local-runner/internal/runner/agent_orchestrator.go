@@ -14,6 +14,11 @@ type AgentOrchestrator struct {
 	children   map[string][]string             // parentRunID → ordered []childRunIDs
 	waiters    map[string]chan agentCompletion // childRunID → completion channel (wait:true only)
 	historical map[string][]AgentRunSummary    // parentRunID → summaries restored from manifest
+	summaries  map[string]map[string]AgentRunSummary
+	edges      map[string][]AgentDependencyEdge // parentRunID → DAG edges
+	bus        map[string][]AgentBusMessage     // parentRunID → message log
+	loop       map[string]AgentLoopState        // parentRunID → loop state
+	queued     map[string][]AgentBusMessage     // parentRunID → queued feedback
 }
 
 type agentCompletion struct {
@@ -28,6 +33,11 @@ func newAgentOrchestrator() *AgentOrchestrator {
 		children:   make(map[string][]string),
 		waiters:    make(map[string]chan agentCompletion),
 		historical: make(map[string][]AgentRunSummary),
+		summaries:  make(map[string]map[string]AgentRunSummary),
+		edges:      make(map[string][]AgentDependencyEdge),
+		bus:        make(map[string][]AgentBusMessage),
+		loop:       make(map[string]AgentLoopState),
+		queued:     make(map[string][]AgentBusMessage),
 	}
 }
 
@@ -130,6 +140,177 @@ func (o *AgentOrchestrator) historicalChildren(parentRunID string) []AgentRunSum
 	out := make([]AgentRunSummary, len(src))
 	copy(out, src)
 	return out
+}
+
+func (o *AgentOrchestrator) upsertSummary(parentRunID string, summary AgentRunSummary) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.summaries[parentRunID] == nil {
+		o.summaries[parentRunID] = make(map[string]AgentRunSummary)
+	}
+	o.summaries[parentRunID][summary.RunID] = summary
+}
+
+func (o *AgentOrchestrator) graphSnapshot(parentRunID string) AgentGraphSnapshot {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	runs := append([]AgentRunSummary(nil), o.historical[parentRunID]...)
+	runs = append(runs, o.runsForParentLocked(parentRunID)...)
+	edges := append([]AgentDependencyEdge(nil), o.edges[parentRunID]...)
+	bus := append([]AgentBusMessage(nil), o.bus[parentRunID]...)
+	loop := o.loop[parentRunID]
+	if loop.RoundCap == 0 {
+		loop.RoundCap = 3
+	}
+	return AgentGraphSnapshot{ParentRunID: parentRunID, Runs: runs, Edges: edges, BusMessages: bus, LoopState: loop}
+}
+
+func (o *AgentOrchestrator) runsForParentLocked(parentRunID string) []AgentRunSummary {
+	children := o.children[parentRunID]
+	out := make([]AgentRunSummary, 0, len(children))
+	for _, childID := range children {
+		if summary, ok := o.summaries[parentRunID][childID]; ok {
+			out = append(out, summary)
+			continue
+		}
+		out = append(out, AgentRunSummary{RunID: childID, ParentRunID: parentRunID})
+	}
+	return out
+}
+
+func (o *AgentOrchestrator) ensureLoopLocked(parentRunID string) AgentLoopState {
+	st := o.loop[parentRunID]
+	if st.RoundCap == 0 {
+		st.RoundCap = 3
+	}
+	return st
+}
+
+func (o *AgentOrchestrator) setLoop(parentRunID string, state AgentLoopState) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if state.RoundCap == 0 {
+		state.RoundCap = 3
+	}
+	o.loop[parentRunID] = state
+}
+
+func (o *AgentOrchestrator) pause(parentRunID, reason string) AgentGraphSnapshot {
+	return o.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState { st.Status = "paused"; st.GateReason = reason; return st })
+}
+func (o *AgentOrchestrator) resume(parentRunID string) AgentGraphSnapshot {
+	return o.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState { st.Status = "running"; st.GateReason = ""; return st })
+}
+func (o *AgentOrchestrator) stop(parentRunID string) AgentGraphSnapshot {
+	return o.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState { st.Status = "stopped"; st.GateReason = "stopped"; return st })
+}
+
+func (o *AgentOrchestrator) mutateLoop(parentRunID string, f func(AgentLoopState) AgentLoopState) AgentGraphSnapshot {
+	o.mu.Lock()
+	st := o.ensureLoopLocked(parentRunID)
+	st = f(st)
+	o.loop[parentRunID] = st
+	o.mu.Unlock()
+	return o.graphSnapshot(parentRunID)
+}
+
+func (o *AgentOrchestrator) currentSummary(parentRunID, childRunID string) (AgentRunSummary, bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if byParent := o.summaries[parentRunID]; byParent != nil {
+		summary, ok := byParent[childRunID]
+		return summary, ok
+	}
+	return AgentRunSummary{}, false
+}
+
+func (o *AgentOrchestrator) addBus(parentRunID string, msg AgentBusMessage) AgentGraphSnapshot {
+	o.mu.Lock()
+	o.bus[parentRunID] = append(o.bus[parentRunID], msg)
+	st := o.ensureLoopLocked(parentRunID)
+	o.loop[parentRunID] = st
+	o.mu.Unlock()
+	return o.graphSnapshot(parentRunID)
+}
+
+func (o *AgentOrchestrator) queueFeedback(parentRunID string, msg AgentBusMessage) AgentGraphSnapshot {
+	o.mu.Lock()
+	o.queued[parentRunID] = append(o.queued[parentRunID], msg)
+	o.bus[parentRunID] = append(o.bus[parentRunID], msg)
+	st := o.ensureLoopLocked(parentRunID)
+	o.loop[parentRunID] = st
+	o.mu.Unlock()
+	return o.graphSnapshot(parentRunID)
+}
+
+func (o *AgentOrchestrator) nextQueuedFeedback(parentRunID string) *AgentBusMessage {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	q := o.queued[parentRunID]
+	if len(q) == 0 {
+		return nil
+	}
+	msg := q[0]
+	o.queued[parentRunID] = q[1:]
+	return &msg
+}
+
+func (o *AgentOrchestrator) nextQueuedFeedbackFor(parentRunID, toRunID string) *AgentBusMessage {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	q := o.queued[parentRunID]
+	for i, msg := range q {
+		if toRunID != "" && msg.ToRunID != "" && msg.ToRunID != toRunID {
+			continue
+		}
+		o.queued[parentRunID] = append(q[:i], q[i+1:]...)
+		return &msg
+	}
+	return nil
+}
+
+func (o *AgentOrchestrator) advanceRound(parentRunID string) AgentGraphSnapshot {
+	return o.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
+		if st.Status == "" {
+			st.Status = "running"
+		}
+		st.Round++
+		if st.Round >= st.RoundCap && st.RoundCap > 0 {
+			st.Status = "stopped"
+			st.GateReason = "round cap reached"
+		}
+		return st
+	})
+}
+
+func (o *AgentOrchestrator) transition(parentRunID, kind string) AgentGraphSnapshot {
+	return o.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
+		paused := st.Status == "paused"
+		switch kind {
+		case "ready-for-review":
+			if !paused {
+				st.Status = "waiting_review"
+			}
+			st.GateReason = "ready for review"
+		case "changes-requested":
+			if !paused {
+				st.Status = "running"
+			}
+			st.GateReason = "changes requested"
+		case "approved":
+			st.Status = "approved"
+			st.GateReason = "approved"
+		case "rejected":
+			st.Status = "rejected"
+			st.GateReason = "rejected"
+		case "handoff":
+			if !paused {
+				st.Status = "running"
+			}
+			st.GateReason = "handoff to parent"
+		}
+		return st
+	})
 }
 
 // parseSpawnAgentInput extracts SpawnAgentInput from a tool call arguments map.

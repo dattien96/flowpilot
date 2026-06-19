@@ -84,6 +84,7 @@ type interactiveRun struct {
 	lastCodexTurnSessionID string
 	providerAccountID      string
 	workspaceCwd           string
+	stepID                 string
 	modelName              string
 	yolo                   bool
 	// reasoningEffort is the desktop-selected effort level passed per-turn (T-4).
@@ -98,11 +99,17 @@ type interactiveRun struct {
 	// "coder", "reviewer"); dependsOn lists run ids this agent waits on before it
 	// may consume work; agentStatus is the orchestration status ("" treated as the
 	// normal run lifecycle until the orchestrator sets it).
-	parentRunID string
-	agentName   string
-	role        string
-	dependsOn   []string
-	agentStatus string
+	parentRunID          string
+	agentName            string
+	role                 string
+	dependsOn            []string
+	agentStatus          string
+	agentRound           int
+	agentCap             int
+	gateReason           string
+	pendingTurnPrompt    string
+	pendingRestartRunID  string
+	pendingRestartPrompt string
 
 	status          RunStatus
 	createdAt       string
@@ -254,6 +261,266 @@ func newInteractiveService(registry *ProviderRegistry, catalog CatalogStore, wor
 		approvalTTL:       10 * time.Minute,
 		questionTTL:       10 * time.Minute,
 		maxTurnAttempts:   3,
+	}
+}
+
+func (s *InteractiveService) agentGraphSnapshot(parentRunID string) AgentGraphSnapshot {
+	return s.agentOrchestrator.graphSnapshot(parentRunID)
+}
+
+func (s *InteractiveService) agentBusHistory(parentRunID string) []AgentBusMessage {
+	return s.agentOrchestrator.graphSnapshot(parentRunID).BusMessages
+}
+
+func (s *InteractiveService) pauseAgentLoop(parentRunID, reason string) AgentGraphSnapshot {
+	s.agentOrchestrator.pause(parentRunID, reason)
+	snap := s.agentGraphSnapshot(parentRunID)
+	s.emitAgentGraph(parentRunID, snap)
+	return snap
+}
+func (s *InteractiveService) resumeAgentLoop(parentRunID string) AgentGraphSnapshot {
+	s.agentOrchestrator.resume(parentRunID)
+	s.resumePendingLoopWork(parentRunID)
+	snap := s.agentGraphSnapshot(parentRunID)
+	s.emitAgentGraph(parentRunID, snap)
+	return snap
+}
+func (s *InteractiveService) stopAgentLoop(parentRunID string) AgentGraphSnapshot {
+	s.agentOrchestrator.stop(parentRunID)
+	s.mu.Lock()
+	if parent := s.runs[parentRunID]; parent != nil {
+		parent.pendingRestartRunID = ""
+		parent.pendingRestartPrompt = ""
+	}
+	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
+		if child := s.runs[childID]; child != nil {
+			child.pendingTurnPrompt = ""
+			if child.turnInFlight && child.turnCancel != nil {
+				child.turnCancel()
+			}
+		}
+	}
+	s.mu.Unlock()
+	snap := s.agentGraphSnapshot(parentRunID)
+	s.emitAgentGraph(parentRunID, snap)
+	return snap
+}
+func (s *InteractiveService) injectAgentFeedback(parentRunID, toRunID, message string) AgentGraphSnapshot {
+	snap := s.agentOrchestrator.queueFeedback(parentRunID, AgentBusMessage{ID: s.nextID("bus"), ParentRunID: parentRunID, ToRunID: toRunID, Kind: "user-feedback", Message: message, Queued: true, OccurredAt: time.Now().UTC().Format(time.RFC3339Nano)})
+	if len(snap.BusMessages) > 0 {
+		s.emitAgentBus(parentRunID, snap.BusMessages[len(snap.BusMessages)-1])
+	}
+	snap = s.agentGraphSnapshot(parentRunID)
+	s.emitAgentGraph(parentRunID, snap)
+	return snap
+}
+
+func isAgentRole(rs *interactiveRun, role string) bool {
+	if rs == nil {
+		return false
+	}
+	role = strings.ToLower(role)
+	return strings.Contains(strings.ToLower(rs.agentName), role) || strings.Contains(strings.ToLower(rs.role), role)
+}
+
+func (s *InteractiveService) dependenciesSatisfiedLocked(rs *interactiveRun) bool {
+	if rs == nil || len(rs.dependsOn) == 0 {
+		return true
+	}
+	for _, depID := range rs.dependsOn {
+		dep := s.runs[depID]
+		if dep == nil {
+			return false
+		}
+		if dep.status != RunStatusCompleted {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *InteractiveService) loopAllowsNextTurnLocked(parentRunID string) bool {
+	state := s.agentOrchestrator.loop[parentRunID]
+	return state.Status != "paused" && state.Status != "stopped"
+}
+
+func (s *InteractiveService) queueChildTurnLocked(rs *interactiveRun, prompt, status string) {
+	if rs == nil {
+		return
+	}
+	rs.pendingTurnPrompt = prompt
+	if status != "" {
+		rs.agentStatus = status
+	}
+}
+
+func (s *InteractiveService) recordAgentBus(parentRunID string, msg AgentBusMessage) {
+	_ = s.agentOrchestrator.addBus(parentRunID, msg)
+	s.emitAgentBus(parentRunID, msg)
+}
+
+func (s *InteractiveService) takeQueuedFeedbackPrompt(parentRunID, runID, prompt string) (string, *AgentBusMessage) {
+	queued := s.agentOrchestrator.nextQueuedFeedbackFor(parentRunID, runID)
+	if queued == nil || queued.Message == "" {
+		return prompt, nil
+	}
+	queued.Queued = false
+	return strings.TrimSpace(prompt + "\n\n" + queued.Message), queued
+}
+
+func (s *InteractiveService) scheduleChildTurn(runID, stepID, prompt string) {
+	if runID == "" || stepID == "" || prompt == "" {
+		return
+	}
+	go func(runID, stepID, prompt string) {
+		_, _ = s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt}, "", "")
+	}(runID, stepID, prompt)
+}
+
+func (s *InteractiveService) releaseDependentAgents(parentRunID, completedRunID, handoffText string, occurredAt string) {
+	type queuedTurn struct {
+		runID   string
+		stepID  string
+		prompt  string
+		busMsg  AgentBusMessage
+		summary AgentRunSummary
+	}
+	queued := []queuedTurn{}
+	s.mu.Lock()
+	if !s.loopAllowsNextTurnLocked(parentRunID) {
+		for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
+			child := s.runs[childID]
+			if child == nil || child.pendingTurnPrompt == "" || !s.dependenciesSatisfiedLocked(child) {
+				continue
+			}
+			if handoffText != "" && !strings.Contains(child.pendingTurnPrompt, handoffText) {
+				child.pendingTurnPrompt = strings.TrimSpace(child.pendingTurnPrompt + "\n\n" + handoffText)
+			}
+		}
+		s.mu.Unlock()
+		return
+	}
+	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
+		child := s.runs[childID]
+		if child == nil || child.pendingTurnPrompt == "" || !s.dependenciesSatisfiedLocked(child) {
+			continue
+		}
+		prompt := child.pendingTurnPrompt
+		child.pendingTurnPrompt = ""
+		child.agentStatus = string(RunStatusRunning)
+		if handoffText != "" {
+			prompt = strings.TrimSpace(prompt + "\n\n" + handoffText)
+		}
+		queued = append(queued, queuedTurn{
+			runID:  child.id,
+			stepID: child.stepID,
+			prompt: prompt,
+			busMsg: AgentBusMessage{
+				ID:          s.nextID("bus"),
+				ParentRunID: parentRunID,
+				FromRunID:   completedRunID,
+				ToRunID:     child.id,
+				Kind:        "handoff",
+				Message:     handoffText,
+				Queued:      false,
+				OccurredAt:  occurredAt,
+			},
+			summary: AgentRunSummary{
+				RunID:       child.id,
+				AgentName:   child.agentName,
+				Role:        child.role,
+				Status:      child.status,
+				ParentRunID: child.parentRunID,
+				CreatedAt:   child.createdAt,
+				DependsOn:   append([]string(nil), child.dependsOn...),
+				AgentStatus: child.agentStatus,
+			},
+		})
+	}
+	s.mu.Unlock()
+	for _, item := range queued {
+		if item.busMsg.Message != "" {
+			s.recordAgentBus(parentRunID, item.busMsg)
+		}
+		s.agentOrchestrator.upsertSummary(parentRunID, item.summary)
+		prompt, queued := s.takeQueuedFeedbackPrompt(parentRunID, item.runID, item.prompt)
+		if queued != nil {
+			s.recordAgentBus(parentRunID, *queued)
+		}
+		s.scheduleChildTurn(item.runID, item.stepID, prompt)
+	}
+	if len(queued) > 0 {
+		s.emitAgentGraph(parentRunID, s.agentGraphSnapshot(parentRunID))
+	}
+}
+
+func (s *InteractiveService) resumePendingLoopWork(parentRunID string) {
+	type pendingTurn struct {
+		runID  string
+		stepID string
+		prompt string
+	}
+	var next *pendingTurn
+	s.mu.Lock()
+	if !s.loopAllowsNextTurnLocked(parentRunID) {
+		s.mu.Unlock()
+		return
+	}
+	if parent := s.runs[parentRunID]; parent != nil && parent.pendingRestartRunID != "" && parent.pendingRestartPrompt != "" {
+		for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
+			child := s.runs[childID]
+			if child == nil || child.id != parent.pendingRestartRunID || child.turnInFlight {
+				continue
+			}
+			next = &pendingTurn{runID: child.id, stepID: child.stepID, prompt: parent.pendingRestartPrompt}
+			parent.pendingRestartRunID = ""
+			parent.pendingRestartPrompt = ""
+			break
+		}
+	}
+	if next == nil {
+		for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
+			child := s.runs[childID]
+			if child == nil || child.pendingTurnPrompt == "" || child.turnInFlight || !s.dependenciesSatisfiedLocked(child) {
+				continue
+			}
+			next = &pendingTurn{runID: child.id, stepID: child.stepID, prompt: child.pendingTurnPrompt}
+			child.pendingTurnPrompt = ""
+			child.agentStatus = string(RunStatusRunning)
+			break
+		}
+	}
+	s.mu.Unlock()
+	if next != nil {
+		prompt, queued := s.takeQueuedFeedbackPrompt(parentRunID, next.runID, next.prompt)
+		if queued != nil {
+			s.recordAgentBus(parentRunID, *queued)
+		}
+		s.scheduleChildTurn(next.runID, next.stepID, prompt)
+	}
+}
+
+func (s *InteractiveService) emitAgentGraph(parentRunID string, snap AgentGraphSnapshot) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.emitAgentGraphLocked(parentRunID, snap)
+}
+
+func (s *InteractiveService) emitAgentGraphLocked(parentRunID string, snap AgentGraphSnapshot) {
+	if rs := s.runs[parentRunID]; rs != nil {
+		_ = s.emitLocked(rs, ProviderEvent{Type: EventAgentGraphUpdated, AgentGraphSnapshot: &snap})
+	}
+}
+
+func (s *InteractiveService) emitAgentBus(parentRunID string, msg AgentBusMessage) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.emitAgentBusLocked(parentRunID, msg)
+}
+
+func (s *InteractiveService) emitAgentBusLocked(parentRunID string, msg AgentBusMessage) {
+	if rs := s.runs[parentRunID]; rs != nil {
+		_ = s.emitLocked(rs, ProviderEvent{Type: EventAgentBusMessage, AgentBusMessage: &msg})
 	}
 }
 
@@ -413,15 +680,92 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 		// Signal any wait:true spawn_agent waiter — non-blocking (buffered channel).
 		// Must be called under s.mu so signalChild races after status is set.
 		s.agentOrchestrator.signalChild(rs.id, ev.FinalMessage, false, "", RunStatusCompleted)
+		if rs.parentRunID != "" {
+			switch {
+			case isAgentRole(rs, "coder"):
+				s.emitAgentGraphLocked(rs.parentRunID, s.agentOrchestrator.transition(rs.parentRunID, "ready-for-review"))
+				go s.recordAgentBus(rs.parentRunID, AgentBusMessage{ID: s.nextID("bus"), ParentRunID: rs.parentRunID, FromRunID: rs.id, Kind: "ready-for-review", Message: ev.FinalMessage, Queued: false, OccurredAt: ev.OccurredAt})
+			case isAgentRole(rs, "review"):
+				msg := strings.ToLower(ev.FinalMessage)
+				switch {
+				case strings.Contains(msg, "changes requested"):
+					go s.recordAgentBus(rs.parentRunID, AgentBusMessage{ID: s.nextID("bus"), ParentRunID: rs.parentRunID, FromRunID: rs.id, Kind: "changes-requested", Message: ev.FinalMessage, Queued: false, OccurredAt: ev.OccurredAt})
+					s.emitAgentGraphLocked(rs.parentRunID, s.agentOrchestrator.transition(rs.parentRunID, "changes-requested"))
+					roundSnap := s.agentOrchestrator.advanceRound(rs.parentRunID)
+					s.emitAgentGraphLocked(rs.parentRunID, roundSnap)
+					coderID := ""
+					for _, childID := range s.agentOrchestrator.listChildren(rs.parentRunID) {
+						if child := s.runs[childID]; isAgentRole(child, "coder") {
+							coderID = childID
+							break
+						}
+					}
+					if coderID != "" {
+						reviewText := ev.FinalMessage
+						if roundSnap.LoopState.Status != "stopped" {
+							runID := ""
+							prompt := ""
+							if parent := s.runs[rs.parentRunID]; parent != nil {
+								if child := s.runs[coderID]; child != nil {
+									if !s.loopAllowsNextTurnLocked(rs.parentRunID) || child.turnInFlight {
+										parent.pendingRestartRunID = child.id
+										parent.pendingRestartPrompt = reviewText
+									} else {
+										runID = child.id
+										prompt = reviewText
+									}
+								}
+							}
+							if runID != "" && prompt != "" {
+								if child := s.runs[runID]; child != nil {
+									stepID := child.stepID
+									go func(runID, stepID, prompt string) {
+										prompt, queued := s.takeQueuedFeedbackPrompt(rs.parentRunID, runID, prompt)
+										if queued != nil {
+											s.recordAgentBus(rs.parentRunID, *queued)
+										}
+										_, _ = s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt}, "", "")
+									}(runID, stepID, prompt)
+								}
+							}
+						}
+					}
+				case strings.Contains(msg, "rejected"):
+					go s.recordAgentBus(rs.parentRunID, AgentBusMessage{ID: s.nextID("bus"), ParentRunID: rs.parentRunID, FromRunID: rs.id, Kind: "rejected", Message: ev.FinalMessage, Queued: false, OccurredAt: ev.OccurredAt})
+					s.emitAgentGraphLocked(rs.parentRunID, s.agentOrchestrator.transition(rs.parentRunID, "rejected"))
+				default:
+					go s.recordAgentBus(rs.parentRunID, AgentBusMessage{ID: s.nextID("bus"), ParentRunID: rs.parentRunID, FromRunID: rs.id, Kind: "approved", Message: ev.FinalMessage, Queued: false, OccurredAt: ev.OccurredAt})
+					s.emitAgentGraphLocked(rs.parentRunID, s.agentOrchestrator.transition(rs.parentRunID, "approved"))
+				}
+			}
+		}
 	case EventTurnFailed:
 		rs.status = RunStatusFailed
 		rs.agentStatus = string(RunStatusFailed)
 		s.agentOrchestrator.signalChild(rs.id, "", true, ev.Error, RunStatusFailed)
+		if rs.parentRunID != "" {
+			s.emitAgentGraphLocked(rs.parentRunID, s.agentOrchestrator.transition(rs.parentRunID, "rejected"))
+		}
 	default:
 		rs.status = RunStatusRunning
 		if rs.parentRunID != "" {
 			rs.agentStatus = string(RunStatusRunning)
 		}
+	}
+	if rs.parentRunID != "" {
+		s.agentOrchestrator.upsertSummary(rs.parentRunID, AgentRunSummary{
+			RunID:       rs.id,
+			AgentName:   rs.agentName,
+			Role:        rs.role,
+			Status:      rs.status,
+			ParentRunID: rs.parentRunID,
+			CreatedAt:   rs.createdAt,
+			DependsOn:   append([]string(nil), rs.dependsOn...),
+			AgentStatus: rs.agentStatus,
+		})
+	}
+	if rs.parentRunID != "" && ev.Type == EventTurnCompleted && isAgentRole(rs, "coder") {
+		go s.releaseDependentAgents(rs.parentRunID, rs.id, ev.FinalMessage, ev.OccurredAt)
 	}
 
 	for _, ch := range rs.subs {
@@ -653,14 +997,25 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		waiterCh = s.agentOrchestrator.openWaiter(handle.RunID)
 	}
 
+	// Prepend the agent definition's system prompt to the first user turn so that
+	// built-in/project agents (coder, reviewer, …) behave as defined, even on
+	// providers that don't support a separate system_prompt channel.
+	firstPrompt := in.Prompt
+	if agentDef != nil && strings.TrimSpace(agentDef.SystemPrompt) != "" {
+		firstPrompt = agentDef.SystemPrompt + "\n\n" + in.Prompt
+	}
+
 	// Stamp agent identity on the newly created child run.
 	// Apply model from the agent definition so the child turn uses the correct model.
 	s.mu.Lock()
 	var childSnap ProviderSessionState
+	agentStatus := "spawned"
+	blockedStart := false
 	if rs := s.runs[handle.RunID]; rs != nil {
 		rs.parentRunID = parentRunID
 		rs.dependsOn = in.DependsOn
 		rs.agentStatus = "spawned"
+		rs.stepID = handle.StepID
 		if agentDef != nil {
 			rs.agentName = agentDef.Name
 			rs.role = agentDef.Role
@@ -671,6 +1026,12 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 			rs.agentName = in.Agent
 			rs.role = strings.ToLower(in.Agent)
 		}
+		if len(rs.dependsOn) > 0 && (!s.dependenciesSatisfiedLocked(rs) || !s.loopAllowsNextTurnLocked(parentRunID)) {
+			rs.agentStatus = "waiting_dependency"
+			rs.pendingTurnPrompt = firstPrompt
+			agentStatus = rs.agentStatus
+			blockedStart = true
+		}
 		childSnap = sessionStateOf(rs)
 	}
 	s.mu.Unlock()
@@ -680,28 +1041,45 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		}
 	}
 
-	// Prepend the agent definition's system prompt to the first user turn so that
-	// built-in/project agents (coder, reviewer, …) behave as defined, even on
-	// providers that don't support a separate system_prompt channel.
-	firstPrompt := in.Prompt
-	if agentDef != nil && strings.TrimSpace(agentDef.SystemPrompt) != "" {
-		firstPrompt = agentDef.SystemPrompt + "\n\n" + in.Prompt
-	}
-
 	// Record the tree edge.
 	s.agentOrchestrator.registerChild(parentRunID, handle.RunID)
+	s.agentOrchestrator.mu.Lock()
+	s.agentOrchestrator.edges[parentRunID] = append(s.agentOrchestrator.edges[parentRunID], AgentDependencyEdge{FromRunID: parentRunID, ToRunID: handle.RunID, Kind: "spawn"})
+	for _, depID := range in.DependsOn {
+		s.agentOrchestrator.edges[parentRunID] = append(s.agentOrchestrator.edges[parentRunID], AgentDependencyEdge{FromRunID: depID, ToRunID: handle.RunID, Kind: "depends-on"})
+	}
+	st := s.agentOrchestrator.ensureLoopLocked(parentRunID)
+	if st.Status == "" {
+		st.Status = "running"
+	}
+	s.agentOrchestrator.loop[parentRunID] = st
+	s.agentOrchestrator.mu.Unlock()
+	s.agentOrchestrator.upsertSummary(parentRunID, AgentRunSummary{
+		RunID:       handle.RunID,
+		AgentName:   childSnap.AgentName,
+		Role:        childSnap.Role,
+		Status:      RunStatus(childSnap.Status),
+		ParentRunID: parentRunID,
+		CreatedAt:   childSnap.StartedAt,
+		DependsOn:   append([]string(nil), in.DependsOn...),
+		AgentStatus: agentStatus,
+	})
+	_ = s.agentOrchestrator.addBus(parentRunID, AgentBusMessage{ID: s.nextID("bus"), ParentRunID: parentRunID, FromRunID: parentRunID, ToRunID: handle.RunID, Kind: "handoff", Message: in.Prompt, Queued: false, OccurredAt: time.Now().UTC().Format(time.RFC3339Nano)})
+	s.emitAgentGraph(parentRunID, s.agentOrchestrator.graphSnapshot(parentRunID))
 
 	// Fire the first turn asynchronously; the child streams via its own SSE.
-	go func() {
-		_, turnErr := s.startTurn(handle.RunID, TurnInput{
-			StepID: handle.StepID,
-			Prompt: firstPrompt,
-		}, "", "")
-		if turnErr != nil {
-			// startTurn failed before the adapter ran — signal the waiter explicitly.
-			s.agentOrchestrator.signalChild(handle.RunID, "", true, turnErr.msg, RunStatusFailed)
-		}
-	}()
+	if !blockedStart {
+		go func() {
+			_, turnErr := s.startTurn(handle.RunID, TurnInput{
+				StepID: handle.StepID,
+				Prompt: firstPrompt,
+			}, "", "")
+			if turnErr != nil {
+				// startTurn failed before the adapter ran — signal the waiter explicitly.
+				s.agentOrchestrator.signalChild(handle.RunID, "", true, turnErr.msg, RunStatusFailed)
+			}
+		}()
+	}
 
 	result := SpawnAgentResult{
 		RunID:             handle.RunID,
@@ -709,8 +1087,11 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		ProviderKey:       string(handle.ProviderKey),
 		Status:            "spawned",
 	}
+	if blockedStart {
+		result.Status = agentStatus
+	}
 
-	if in.Wait {
+	if in.Wait && !blockedStart {
 		select {
 		case completion := <-waiterCh:
 			if completion.failed {
@@ -956,12 +1337,31 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	}
 	s.mu.Lock()
 	rs.turnInFlight = false
+	pendingRestartRunID := ""
+	pendingRestartPrompt := ""
+	if rs.parentRunID != "" {
+		if parent := s.runs[rs.parentRunID]; parent != nil {
+			pendingRestartRunID = parent.pendingRestartRunID
+			pendingRestartPrompt = parent.pendingRestartPrompt
+			parent.pendingRestartRunID = ""
+			parent.pendingRestartPrompt = ""
+		}
+	}
 	s.mu.Unlock()
 
 	// Finalizer hook runs OUTSIDE s.mu and only on a clean completion. A finalize
 	// failure is recorded as retryable and must not erase the completed turn (04-04).
 	if completed {
 		_ = s.finalizer.Finalize(fin)
+	}
+	if completed && pendingRestartRunID == rs.id && pendingRestartPrompt != "" {
+		prompt, queued := s.takeQueuedFeedbackPrompt(rs.parentRunID, rs.id, pendingRestartPrompt)
+		if queued != nil {
+			s.recordAgentBus(rs.parentRunID, *queued)
+		}
+		go func(runID, stepID, prompt string) {
+			_, _ = s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt}, "", "")
+		}(rs.id, rs.stepID, prompt)
 	}
 }
 

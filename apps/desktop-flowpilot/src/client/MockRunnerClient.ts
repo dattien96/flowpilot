@@ -2,6 +2,7 @@ import type {
   Artifact,
   AgentDefinition,
   AgentRunSummary,
+  AgentGraphSnapshot,
   ChatSessionRestoreRequest,
   ChatSessionRestoreResult,
   ChatSessionSyncRequest,
@@ -163,6 +164,10 @@ interface RunState {
   role?: string;
 }
 
+interface ParentGraphState {
+  snapshot: AgentGraphSnapshot;
+}
+
 const MOCK_AGENTS: AgentDefinition[] = [
   { name: "architect", description: "Designs the approach", role: "architecture", source: "flowpilot" },
   { name: "builder", description: "Implements the plan", role: "implementation", source: "flowpilot" },
@@ -171,6 +176,9 @@ const MOCK_AGENTS: AgentDefinition[] = [
 
 /**
  * Phase 1 mock implementation of the RunnerClient contract (04-01 Part A).
+ *
+ * [coding-skill]: keeps the desktop-only orchestration contract mutable in-memory.
+ * [testing-skill]: preserves replayable parent graph state for targeted store tests.
  *
  * Streams scripted ProviderEventDTOs on a timer. Approval/question scenarios
  * block the stream on a gate that submitApproval/answerQuestion resolve — the
@@ -187,6 +195,8 @@ export class MockRunnerClient implements RunnerClient {
   private readonly replayRuns = new Set<string>();
   /** Persisted per-run event log so streamRun can replay on reconnect. */
   private readonly eventLog = new Map<string, ProviderEventDTO[]>();
+  /** Mutable orchestration snapshots keyed by parent run. */
+  private readonly parentGraphs = new Map<string, ParentGraphState>();
   /** Runs an interrupt has been requested for. */
   private readonly aborted = new Set<string>();
   /** Cancels the pending approval/question gate for a run (used by interrupt). */
@@ -350,6 +360,74 @@ export class MockRunnerClient implements RunnerClient {
         createdAt: run.startedAt,
         agentStatus: run.status,
       }));
+  }
+
+  private async syncParentGraph(parentRunId: string): Promise<ParentGraphState> {
+    const current = this.parentGraphs.get(parentRunId);
+    const snapshot: AgentGraphSnapshot = {
+      parentRunId,
+      runs: await this.listAgentRuns(parentRunId),
+      edges: current?.snapshot.edges ?? [],
+      busMessages: current?.snapshot.busMessages ?? [],
+      loopState: current?.snapshot.loopState ?? { status: "running", round: 0, roundCap: 3 },
+    };
+    const next = { snapshot };
+    this.parentGraphs.set(parentRunId, next);
+    return next;
+  }
+
+  async refreshAgentGraph(parentRunId: string): Promise<AgentGraphSnapshot> {
+    return (await this.syncParentGraph(parentRunId)).snapshot;
+  }
+
+  async pauseAgentLoop(parentRunId: string): Promise<AgentGraphSnapshot> {
+    const graph = await this.syncParentGraph(parentRunId);
+    graph.snapshot = {
+      ...graph.snapshot,
+      loopState: { ...graph.snapshot.loopState, status: "paused" },
+    };
+    this.parentGraphs.set(parentRunId, graph);
+    return graph.snapshot;
+  }
+
+  async resumeAgentLoop(parentRunId: string): Promise<AgentGraphSnapshot> {
+    const graph = await this.syncParentGraph(parentRunId);
+    graph.snapshot = {
+      ...graph.snapshot,
+      loopState: { ...graph.snapshot.loopState, status: "running" },
+    };
+    this.parentGraphs.set(parentRunId, graph);
+    return graph.snapshot;
+  }
+
+  async injectAgentFeedback(parentRunId: string, _toRunId: string, message: string): Promise<AgentGraphSnapshot> {
+    const graph = await this.syncParentGraph(parentRunId);
+    graph.snapshot = {
+      ...graph.snapshot,
+      busMessages: [
+        ...graph.snapshot.busMessages,
+        {
+          id: nextId("bus"),
+          parentRunId,
+          kind: "user-feedback",
+          message,
+          queued: true,
+          occurredAt: new Date().toISOString(),
+        },
+      ],
+    };
+    this.parentGraphs.set(parentRunId, graph);
+    return graph.snapshot;
+  }
+
+  async stopAgentLoop(parentRunId: string): Promise<AgentGraphSnapshot> {
+    const graph = await this.syncParentGraph(parentRunId);
+    graph.snapshot = {
+      ...graph.snapshot,
+      loopState: { ...graph.snapshot.loopState, status: "stopped" },
+    };
+    this.parentGraphs.set(parentRunId, graph);
+    return graph.snapshot;
   }
 
   async spawnAgent(input: SpawnAgentInput & { parentRunId: string }): Promise<SpawnAgentResult> {

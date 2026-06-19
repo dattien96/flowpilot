@@ -9,7 +9,7 @@ import { RUNNER_URL } from "@/config";
 //   - otherwise            -> MockRunnerClient (offline / UI dev)
 // The renderer never references a concrete client — only this factory does.
 function resolvedRunnerUrl(): string | null {
-  const env = ((import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env ?? {});
+  const env = (typeof process !== "undefined" ? process.env : {}) as Record<string, string | undefined>;
   if (env.VITE_RUNNER_URL) return env.VITE_RUNNER_URL;
   if (env.VITE_USE_RUNNER === "1" || env.VITE_USE_RUNNER === "true") return RUNNER_URL;
   return null;

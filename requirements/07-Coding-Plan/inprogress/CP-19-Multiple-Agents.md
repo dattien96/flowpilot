@@ -41,6 +41,8 @@
 - `P-6` Phase 1 ships entirely in chat mode with no Supabase migration (agent tree in the chat run manifest / NDJSON). Phase 2 adds `agent_runs` + `agent_messages` and reuses `workflow_provider_sessions`/`workflow_provider_events` per agent run for streaming and cross-PC resume.
 - `P-7` Different agents may use different providers (e.g. `coder` = Claude, `reviewer` = Codex); each child run owns its own provider session and SSE stream.
 - `P-8` The desktop **Agents panel is a persistent, mode-agnostic right-rail component**, not a tab that replaces existing panels. It stacks between the existing **MODE** panel and the **ACCOUNTS** panel and stays visible in both Chat and Workflow modes. The header gains a `N agents running` status pill; the composer gains an `@` agent-mention affordance alongside the existing `/` skill picker; the timeline keeps inline `spawn_agent` rows and per-agent running/waiting banners. All existing chrome (title bar, `Chat | Settings`, PROJECTS/HISTORY/REMOTE CHATS, the SKILLS/PROVIDER/MODEL composer, MODE, ACCOUNTS) is preserved unchanged.
+- `P-9` Child approval/question gates remain owned by the child's own stream; the Agents panel/Graph board surface waiting state and focus links without auto-approving or auto-answering.
+- `P-10` Task-083 handles only conservative `@mention` routing to idle/completed children; Task-084 queues busy-child mentions/feedback on the agent bus and does not interrupt active provider turns unless Stop is pressed.
 
 ### Constraints
 
@@ -53,10 +55,8 @@
 ### Open Questions
 
 - Should multi-agent get its own upstream `SS`/`SD` pair, or is extending SS-11 (Workflow With Session) sufficient? This CP currently links SS-11 / SD-14 as the closest upstream and may need a dedicated SD before Phase 2 migrations.
-- What is the default round cap for the reviewer↔coder loop, and should it be per-agent-definition configurable?
-- When a child agent triggers an approval/question gate, does it surface in the child's own timeline only, or also bubble to the main timeline?
+- Should the reviewer↔coder round cap become per-agent-definition configurable after Phase 1? Task-084 uses a default cap of 3 with an optional per-run override from the board.
 - For background (`wait:false`) children, what is the idle/cleanup policy relative to the existing session idle sweeper?
-- Task-083 handles only conservative `@mention` routing to idle/completed children; Task-084 decides whether busy-child mentions queue or interrupt.
 
 ### Source Refs
 
@@ -91,7 +91,7 @@ Let the FlowPilot main agent and the user run multiple AI agents in parallel wit
 - `P-1` [Task-081](../../08-Task/done/Task-081-Agent-Abstraction-And-Catalog-Loader.md) — Extend `interactiveRun` with agent identity (`parentRunId`, `agentName`, `role`, `dependsOn[]`, `agentStatus`); add `AgentDefinition` + `AgentCatalog` disk loader (`.claude/agents`, `.codex/agents`, built-ins); expose `listAgents` in the runner contract.
 - `P-2` [Task-082](../../08-Task/done/Task-082-Spawn-Agent-Tool-And-Orchestrator-Core.md) — Add the `spawn_agent` provider tool + a minimal `AgentOrchestrator` (spawn / wait / list); child runs stream over their own SSE; new runner endpoints for spawning/listing child runs plus client-side focus attach via `streamRun(runId)`.
 - `P-3` [Task-083](../../08-Task/todo/Task-083-Desktop-Agents-Panel-And-Focus-Navigation.md) — Desktop Agents panel as a persistent, mode-agnostic right-rail component (between MODE and ACCOUNTS; visible in Chat and Workflow), agent run cards (running/waiting/completed/failed), header `N agents running` pill, inline "agent running/waiting" highlight in the Timeline, focus-into-child + back-to-main breadcrumb with stream replay, `+ Spawn agent` dialog + conservative `@mention` routing.
-- `P-4` [Task-084](../../08-Task/todo/Task-084-Dependency-Feedback-Loop-And-Orchestration-Board.md) — Dependency edges + message bus (`ready-for-review`, `changes-requested`, `approved`) driving the coder↔reviewer loop with a round cap; the Graph/DAG orchestration board with controls and a live bus log.
+- `P-4` [Task-084](../../08-Task/todo/Task-084-Dependency-Feedback-Loop-And-Orchestration-Board.md) — Dependency edges + message bus (`ready-for-review`, `changes-requested`, `approved`, `user-feedback`) driving the coder↔reviewer loop with a default round cap of 3; graph snapshot + additive parent-run SSE updates; the Graph/DAG orchestration board with controls and a live bus log.
 - `P-5` [Task-085](../../08-Task/todo/Task-085-Flow-Mode-Supabase-Agent-Runs-And-Message-Bus.md) — Phase 2: Supabase `agent_runs` + `agent_messages` (additive migration), `workflow_runs.parent_run_id`, reuse `workflow_provider_sessions`/`events` per agent run, and workflow-engine integration so a workflow step can be an agent with a reviewer gate.
 
 ## 5. Touched Areas
@@ -111,7 +111,7 @@ Let the FlowPilot main agent and the user run multiple AI agents in parallel wit
 
 ## 7. Validation Plan
 
-- **tests to add:** Go unit tests for `AgentCatalog` discovery/precedence, child `interactiveRun` lifecycle, `spawn_agent` wait/no-wait semantics, and `AgentOrchestrator` dependency + feedback-loop transitions (pure-logic state, mirroring `workflow_state_machine` tests). Frontend tests for store agent state, panel rendering, focus/back-to-main, and `@mention` routing.
+- **tests to add:** Go unit tests for `AgentCatalog` discovery/precedence, child `interactiveRun` lifecycle, `spawn_agent` wait/no-wait semantics, and `AgentOrchestrator` dependency + feedback-loop transitions (pure-logic state, mirroring `workflow_state_machine` tests). HTTP/contract tests cover graph snapshot, bus history, additive SSE event DTOs, and loop controls. Frontend tests cover store agent state, panel rendering, focus/back-to-main, Graph/DAG board rendering, live bus updates, controls, and `@mention` routing.
 - **manual checks:** spawn coder + reviewer from a chat; confirm inline highlight, panel states, focus + back-to-main, the reviewer→coder feedback loop on the Graph/DAG board, and that normal single-agent chat is unchanged.
 - **failure cases:** child provider session dies mid-turn; reviewer never approves (round cap reached); parent turn interrupted while a `wait:true` child is running; spawning an unknown agent name; background child idle-cleanup.
 

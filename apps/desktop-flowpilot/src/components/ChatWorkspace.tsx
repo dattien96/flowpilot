@@ -8,6 +8,7 @@ import { ScenarioSwitcher } from "@/components/ScenarioSwitcher";
 import { SystemControls } from "@/components/SystemControls";
 import { ProviderAccountsPanel } from "@/components/ProviderAccountsPanel";
 import { AgentsPanel } from "@/components/AgentsPanel";
+import { OrchestrationBoard } from "@/components/OrchestrationBoard";
 import { useStore, accountLabel, providerLabel } from "@/state/store";
 
 function WorkflowControlPanel(): React.ReactElement | null {
@@ -314,6 +315,7 @@ export function ChatWorkspace({
           />
           <aside className="sidebar sidebar-right">
             <div className="right-sidebar-stack">
+              <OrchestrationBoard />
               <WorkflowControlPanel />
               <AgentsPanel />
               <ProviderAccountsPanel />

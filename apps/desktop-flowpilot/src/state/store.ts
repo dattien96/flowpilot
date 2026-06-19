@@ -2,11 +2,13 @@ import { create } from "zustand";
 import type {
   Artifact,
   AgentDefinition,
+  AgentGraphSnapshot,
   AgentRunSummary,
   ChatSessionRestoreRequest,
   Project,
   ProviderAccountSummary,
   ProviderEventDTO,
+  AgentBusMessage,
   ProviderKey,
   ProviderSkill,
   PromptAttachment,
@@ -59,6 +61,13 @@ interface RunSnapshot {
   lastEventSeq?: number;
 }
 
+function applyAgentGraphSnapshot(snapshot: AgentGraphSnapshot): Partial<AppState> {
+  return {
+    agentGraphSnapshot: snapshot,
+    agentBusMessages: snapshot.busMessages,
+  };
+}
+
 function pickDefaultModel(provider: ProviderKey | undefined, models: SupportedModel[]): string | undefined {
   if (!provider) return undefined;
   const enabled = models.filter((m) => m.providerKey === provider && m.isEnabled);
@@ -103,6 +112,8 @@ interface AppState {
   mainRunId?: string;
   activeAgentRunId?: string;
   agentRuns: AgentRunSummary[];
+  agentGraphSnapshot?: AgentGraphSnapshot;
+  agentBusMessages: AgentBusMessage[];
   /** Step id for the active run's turns; the synthetic chat step in normal_chat. */
   activeStepId?: string;
   status: RunStatus;
@@ -143,6 +154,8 @@ interface AppState {
   // stream generation counter: incremented on every new consumeStream start so that
   // a prior stream for the same runId exits immediately (BUG-079)
   _streamRunSeq: number;
+  // separate generation for the live parent orchestration stream
+  _orchestrationStreamSeq: number;
 
   // actions
   loadProjects(): Promise<void>;
@@ -166,6 +179,11 @@ interface AppState {
   loadRunHistory(): Promise<void>;
   loadRemoteChatSessions(): Promise<void>;
   refreshAgentRuns(): Promise<void>;
+  refreshAgentGraph(): Promise<void>;
+  pauseAgentLoop(): Promise<void>;
+  resumeAgentLoop(): Promise<void>;
+  injectAgentFeedback(toRunId: string, message: string): Promise<void>;
+  stopAgentLoop(): Promise<void>;
   listAgents(cwd?: string): Promise<AgentDefinition[]>;
   focusAgentRun(runId: string): Promise<void>;
   backToMainRun(): void;
@@ -201,6 +219,8 @@ export const useStore = create<AppState>((set, get) => ({
   runHistory: [],
   remoteChatSessions: [],
   agentRuns: [],
+  agentGraphSnapshot: undefined,
+  agentBusMessages: [],
   historyLoading: false,
   remoteHistoryLoading: false,
   latestTokenUsage: undefined,
@@ -217,6 +237,7 @@ export const useStore = create<AppState>((set, get) => ({
   _runSnapshots: {},
   _runReplaySeq: {},
   _streamRunSeq: 0,
+  _orchestrationStreamSeq: 0,
   agentSpawnGuideAgentName: undefined,
   agentSpawnGuideOpen: false,
 
@@ -329,6 +350,16 @@ export const useStore = create<AppState>((set, get) => ({
       console.error("[FlowPilot] listAgentRuns failed:", err);
     }
   },
+  async refreshAgentGraph() {
+    const { client, mainRunId, runId } = get();
+    const parentRunId = mainRunId ?? runId;
+    if (!parentRunId || !client.refreshAgentGraph) return;
+    set(applyAgentGraphSnapshot(await client.refreshAgentGraph(parentRunId)));
+  },
+  async pauseAgentLoop() { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.pauseAgentLoop) set(applyAgentGraphSnapshot(await client.pauseAgentLoop(parentRunId))); },
+  async resumeAgentLoop() { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.resumeAgentLoop) set(applyAgentGraphSnapshot(await client.resumeAgentLoop(parentRunId))); },
+  async injectAgentFeedback(toRunId, message) { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.injectAgentFeedback) set(applyAgentGraphSnapshot(await client.injectAgentFeedback(parentRunId, toRunId, message))); },
+  async stopAgentLoop() { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.stopAgentLoop) set(applyAgentGraphSnapshot(await client.stopAgentLoop(parentRunId))); },
 
   async listAgents(cwd) {
     const { client } = get();
@@ -387,6 +418,7 @@ export const useStore = create<AppState>((set, get) => ({
       _streamRunSeq: streamRunSeq,
     });
     void consumeAgentStream(mainRunId, get().client.streamRun(mainRunId, afterSeq), streamRunSeq, afterSeq, set, get);
+    startOrchestrationStream(mainRunId, get().client, set, get);
   },
 
   appendSystemMessage(text, tone = "info") {
@@ -588,6 +620,10 @@ export const useStore = create<AppState>((set, get) => ({
       set({ runId, lastTurnInput: turnInput, activeStepId: turnStepId, _streamRunSeq: get()._streamRunSeq + 1 });
 
       await consumeStream(runId, client.sendTurn(turnInput), set, get);
+      const orchestrationRunId = get().mainRunId ?? runId;
+      if (orchestrationRunId) {
+        startOrchestrationStream(orchestrationRunId, client, set, get);
+      }
       void get().refreshAgentRuns();
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -649,6 +685,7 @@ export const useStore = create<AppState>((set, get) => ({
     // via the run's event stream (attach + replay from seq 0).
     set({ timeline: [], recoverable: false, status: "running", _streamingAssistantId: undefined, _streamRunSeq: get()._streamRunSeq + 1 });
     await consumeStream(runId, client.streamRun(runId, 0), set, get);
+    startOrchestrationStream(runId, client, set, get);
   },
 
   async loadRunHistory() {
@@ -913,6 +950,8 @@ export const useStore = create<AppState>((set, get) => ({
       _accountSwitchTriedIds: [],
       _streamingAssistantId: undefined,
       agentRuns: [],
+      agentGraphSnapshot: undefined,
+      agentBusMessages: [],
       agentSpawnGuideOpen: false,
       agentSpawnGuideAgentName: undefined,
       _runReplaySeq: {},
@@ -937,6 +976,7 @@ export const useStore = create<AppState>((set, get) => ({
         runId: handle.runId,
         timelineItems: get().timeline.length,
       });
+      startOrchestrationStream(handle.runId, client, set, get);
     } catch (err) {
       console.error("[FlowPilot][history-open] stream replay failed", { runId: handle.runId, error: err });
       throw err;
@@ -984,6 +1024,8 @@ export const useStore = create<AppState>((set, get) => ({
       timeline: [],
       artifacts: [],
       agentRuns: [],
+      agentGraphSnapshot: undefined,
+      agentBusMessages: [],
       agentSpawnGuideOpen: false,
       agentSpawnGuideAgentName: undefined,
       pendingApproval: undefined,
@@ -1264,12 +1306,59 @@ async function consumeAgentStream(
   }
 }
 
+async function consumeOrchestrationStream(
+  runId: string,
+  stream: AsyncIterable<ProviderEventDTO>,
+  orchestrationSeq: number,
+  afterSeq: number,
+  set: (fn: (s: AppState) => Partial<AppState>) => void,
+  get: () => AppState,
+): Promise<void> {
+  const isStale = () => !shouldApplyRunEvent(get().mainRunId ?? get().runId, runId) || get()._orchestrationStreamSeq !== orchestrationSeq;
+  for await (const e of stream) {
+    if (isStale()) return;
+    if (e.seq <= afterSeq) continue;
+    if (e.type !== "agent_graph_updated" && e.type !== "agent_bus_message") continue;
+    set((s) => applyEvent(s, e));
+  }
+}
+
+/**
+ * [coding-skill]: keeps the parent orchestration SSE independent from the turn stream.
+ * [testing-skill]: isolates the live graph/bus path so store tests can assert late updates.
+ */
+function startOrchestrationStream(
+  runId: string | undefined,
+  client: RunnerClient,
+  set: (fn: (s: AppState) => Partial<AppState>) => void,
+  get: () => AppState,
+): void {
+  if (!runId) return;
+  const orchestrationSeq = get()._orchestrationStreamSeq + 1;
+  const afterSeq = get()._runReplaySeq[runId] ?? 0;
+  set((_s) => ({ _orchestrationStreamSeq: orchestrationSeq }));
+  void consumeOrchestrationStream(runId, client.streamRun(runId, afterSeq), orchestrationSeq, afterSeq, set, get);
+}
+
 function applyEvent(s: AppState, e: ProviderEventDTO): Partial<AppState> {
   const next = applyTimelineEvent(s, e);
   const nextReplaySeq = {
     ...s._runReplaySeq,
     [e.workflowRunId]: e.seq,
   };
+  if (e.type === "agent_graph_updated") {
+    return { ...next, agentGraphSnapshot: e.agentGraphSnapshot, agentBusMessages: e.agentGraphSnapshot.busMessages, _runReplaySeq: nextReplaySeq };
+  }
+  if (e.type === "agent_bus_message") {
+    return {
+      ...next,
+      agentBusMessages: [...s.agentBusMessages, e.agentBusMessage],
+      agentGraphSnapshot: s.agentGraphSnapshot
+        ? { ...s.agentGraphSnapshot, busMessages: [...s.agentGraphSnapshot.busMessages, e.agentBusMessage] }
+        : s.agentGraphSnapshot,
+      _runReplaySeq: nextReplaySeq,
+    };
+  }
   if (e.type === "turn_started") {
     return { ...next, latestTokenUsage: undefined, _runReplaySeq: nextReplaySeq };
   }

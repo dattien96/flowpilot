@@ -107,6 +107,51 @@ func TestAgentOrchestratorSignalNoWaiter(t *testing.T) {
 	o.signalChild("no-such-run", "ignored", false, "", RunStatusCompleted)
 }
 
+func TestAgentOrchestratorLoopTransitionsAndBus(t *testing.T) {
+	o := newAgentOrchestrator()
+	snap := o.pause("parent", "gate")
+	if snap.LoopState.Status != "paused" || snap.LoopState.RoundCap != 3 || snap.LoopState.GateReason != "gate" {
+		t.Fatalf("pause snapshot = %+v", snap.LoopState)
+	}
+	snap = o.resume("parent")
+	if snap.LoopState.Status != "running" || snap.LoopState.GateReason != "" {
+		t.Fatalf("resume snapshot = %+v", snap.LoopState)
+	}
+	snap = o.addBus("parent", AgentBusMessage{ID: "b1", ParentRunID: "parent", Kind: "user-feedback", Message: "please revise", Queued: true})
+	if len(snap.BusMessages) != 1 || snap.BusMessages[0].Message != "please revise" {
+		t.Fatalf("bus snapshot = %+v", snap.BusMessages)
+	}
+	snap = o.stop("parent")
+	if snap.LoopState.Status != "stopped" {
+		t.Fatalf("stop snapshot = %+v", snap.LoopState)
+	}
+}
+
+func TestAgentOrchestratorRoundCapTerminates(t *testing.T) {
+	o := newAgentOrchestrator()
+	snap := o.advanceRound("parent")
+	if snap.LoopState.Round != 1 || snap.LoopState.Status != "running" {
+		t.Fatalf("round 1 = %+v", snap.LoopState)
+	}
+	o.setLoop("parent", AgentLoopState{RoundCap: 1, Status: "running"})
+	snap = o.advanceRound("parent")
+	if snap.LoopState.Status != "stopped" || snap.LoopState.GateReason != "round cap reached" {
+		t.Fatalf("cap snapshot = %+v", snap.LoopState)
+	}
+}
+
+func TestAgentOrchestratorQueuesFeedback(t *testing.T) {
+	o := newAgentOrchestrator()
+	snap := o.queueFeedback("parent", AgentBusMessage{ID: "b1", ParentRunID: "parent", Kind: "user-feedback", Message: "revise", Queued: true})
+	if snap.LoopState.Status != "" || snap.LoopState.GateReason != "" {
+		t.Fatalf("queue snapshot = %+v", snap.LoopState)
+	}
+	msg := o.nextQueuedFeedback("parent")
+	if msg == nil || msg.Message != "revise" {
+		t.Fatalf("nextQueuedFeedback = %+v", msg)
+	}
+}
+
 type childWaitApprovalAdapter struct{}
 
 func (a *childWaitApprovalAdapter) Key() ProviderKey { return ProviderKeyClaude }

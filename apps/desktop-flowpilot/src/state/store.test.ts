@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { useStore } from "./store";
+import { getBusMessageLabel, getOrchestrationBoardEmptyCopy } from "@/components/OrchestrationBoard";
 import { shouldShowAgentTimelineHeader } from "@/components/Timeline";
 import { parseMentionRouting } from "@/components/ChatInput";
+import { MockRunnerClient } from "../client/MockRunnerClient";
 import { RunnerApiError } from "../client/HttpWsRunnerClient";
 import type { AgentRunSummary, ProviderAccountSummary, ProviderEventDTO, RemoteChatSessionSummary, RunHandle, RunHistoryItem, RunnerClient, TurnInput } from "../types/contract";
 
@@ -18,6 +20,11 @@ function makeClient(overrides: Partial<RunnerClient> = {}): RunnerClient {
     listRemoteChatSessions: async () => [],
     listAgents: async () => [],
     listAgentRuns: async () => [],
+    refreshAgentGraph: async () => ({ parentRunId: "current-run", runs: [], edges: [], busMessages: [], loopState: { status: "running", round: 0, roundCap: 3 } }),
+    pauseAgentLoop: async () => ({ parentRunId: "current-run", runs: [], edges: [], busMessages: [], loopState: { status: "paused", round: 0, roundCap: 3 } }),
+    resumeAgentLoop: async () => ({ parentRunId: "current-run", runs: [], edges: [], busMessages: [], loopState: { status: "running", round: 0, roundCap: 3 } }),
+    injectAgentFeedback: async (_parentRunId, _toRunId, message) => ({ parentRunId: "current-run", runs: [], edges: [], busMessages: [{ id: "bus-1", parentRunId: "current-run", kind: "user-feedback", message, queued: true, occurredAt: "2026-01-01T00:00:00Z" }], loopState: { status: "running", round: 0, roundCap: 3 } }),
+    stopAgentLoop: async () => ({ parentRunId: "current-run", runs: [], edges: [], busMessages: [], loopState: { status: "stopped", round: 0, roundCap: 3 } }),
     spawnAgent: async () => ({ runId: "agent-1", providerSessionId: "session-agent", providerKey: "codex", status: "completed" }),
     startRun: async () => ({ runId: "new-run", providerSessionId: "session-1", providerKey: "codex", status: "running" }),
     resumeRun: async () => ({ runId: "run-1", providerSessionId: "session-1", providerKey: "codex", status: "completed" }),
@@ -73,6 +80,7 @@ function seedStore(client: RunnerClient, runHistory: RunHistoryItem[]): void {
     mainRunId: "current-run",
     activeAgentRunId: undefined,
     agentRuns: [],
+    agentBusMessages: [],
     activeStepId: "chat-current-run",
     status: "running",
     timeline: [{ kind: "prompt", id: "prompt-1", text: "keep current timeline" }],
@@ -316,6 +324,81 @@ test("openHistoryRun selects the resumed provider default model", async () => {
   assert.equal(state.selectedModel, "claude-sonnet-4");
 });
 
+test("refreshAgentGraph stores orchestration snapshot from the client", async () => {
+	seedStore(makeClient(), []);
+	await useStore.getState().refreshAgentGraph();
+	assert.equal(useStore.getState().agentGraphSnapshot?.loopState.roundCap, 3);
+});
+
+test("refreshAgentGraph keeps agent bus messages aligned with the refreshed snapshot", async () => {
+  const busMessage = {
+    id: "bus-graph",
+    parentRunId: "current-run",
+    kind: "handoff",
+    message: "ready-for-review",
+    queued: true,
+    occurredAt: "2026-01-01T00:00:00Z",
+  };
+  seedStore(
+    makeClient({
+      refreshAgentGraph: async () => ({
+        parentRunId: "current-run",
+        runs: [],
+        edges: [],
+        busMessages: [busMessage],
+        loopState: { status: "paused", round: 2, roundCap: 3, gateReason: "waiting on child" },
+      }),
+    }),
+    [],
+  );
+
+  await useStore.getState().refreshAgentGraph();
+
+  assert.deepEqual(useStore.getState().agentBusMessages, [busMessage]);
+  assert.equal(useStore.getState().agentGraphSnapshot?.loopState.gateReason, "waiting on child");
+});
+
+test("sendPrompt applies live agent graph and bus SSE updates", async () => {
+  const stream = async function* (): AsyncIterable<ProviderEventDTO> {
+    yield {
+      ...BASE_EVENT,
+      type: "agent_graph_updated",
+      agentGraphSnapshot: {
+        parentRunId: "current-run",
+        runs: [],
+        edges: [],
+        busMessages: [],
+        loopState: { status: "running", round: 1, roundCap: 3 },
+      },
+    };
+    yield {
+      ...BASE_EVENT,
+      type: "agent_bus_message",
+      agentBusMessage: {
+        id: "bus-1",
+        parentRunId: "current-run",
+        kind: "handoff",
+        message: "ready-for-review",
+        queued: false,
+        occurredAt: "2026-01-01T00:00:00Z",
+      },
+    };
+    yield { ...BASE_EVENT, type: "turn_completed", finalMessage: "ok" };
+  };
+  seedStore(
+    makeClient({
+      sendTurn: () => stream(),
+      startRun: async () => ({ runId: "current-run", providerSessionId: "session-1", providerKey: "codex", status: "running", stepId: "chat-current-run" }),
+    }),
+    [],
+  );
+
+  await useStore.getState().sendPrompt("hello");
+
+  assert.equal(useStore.getState().agentGraphSnapshot?.loopState.round, 1);
+  assert.equal(useStore.getState().agentBusMessages.at(-1)?.message, "ready-for-review");
+});
+
 test("refreshAgentRuns loads child summaries for the active main run", async () => {
   const agentRuns: AgentRunSummary[] = [
     {
@@ -357,6 +440,7 @@ test("focusAgentRun caches the main timeline and backToMainRun restores it", asy
   });
 
   await useStore.getState().focusAgentRun("child-run");
+  await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(useStore.getState().runId, "child-run");
   assert.equal(useStore.getState().activeAgentRunId, "child-run");
   assert.ok(useStore.getState().timeline.some((item) => item.kind === "assistant"));
@@ -386,6 +470,7 @@ test("focusAgentRun resumes from the last replay cursor without duplicating prio
   });
 
   await useStore.getState().focusAgentRun("child-run");
+  await new Promise((resolve) => setTimeout(resolve, 0));
 
   const assistantTexts = useStore.getState().timeline
     .filter((item) => item.kind === "assistant")
@@ -418,15 +503,41 @@ test("focusAgentRun returns before a child stream finishes", async () => {
   await focusPromise;
 });
 
-test("appendSystemMessage records blocked mention feedback for busy routing", async () => {
-  seedStore(makeClient(), []);
-  useStore.getState().appendSystemMessage("@builder is busy right now. It cannot be interrupted or queued.", "error");
+test("injectAgentFeedback queues busy mention feedback on the board state", async () => {
+  seedStore(
+    makeClient({
+      injectAgentFeedback: async (_parentRunId, _toRunId, message) => ({
+        parentRunId: "current-run",
+        runs: [],
+        edges: [],
+        busMessages: [{ id: "bus-1", parentRunId: "current-run", kind: "user-feedback", message, queued: true, occurredAt: "2026-01-01T00:00:00Z" }],
+        loopState: { status: "paused", round: 0, roundCap: 3, gateReason: "queued user-feedback" },
+      }),
+    }),
+    [],
+  );
+  await useStore.getState().injectAgentFeedback("agent-2", "please revise");
+  assert.equal(useStore.getState().agentGraphSnapshot?.loopState.gateReason, "queued user-feedback");
+  assert.equal(useStore.getState().agentBusMessages.at(-1)?.kind, "user-feedback");
+});
 
-  const last = useStore.getState().timeline.at(-1);
-  assert.equal(last?.kind, "system");
-  if (last?.kind === "system") {
-    assert.equal(last.text, "@builder is busy right now. It cannot be interrupted or queued.");
-  }
+test("orchestration board helpers surface empty and queued states", () => {
+  assert.equal(getOrchestrationBoardEmptyCopy(undefined, []), "No graph snapshot loaded. Refresh to inspect the loop.");
+  assert.equal(getOrchestrationBoardEmptyCopy({
+    parentRunId: "current-run",
+    runs: [],
+    edges: [],
+    busMessages: [],
+    loopState: { status: "running", round: 0, roundCap: 3 },
+  }, []), "No child agents yet.");
+  assert.equal(getBusMessageLabel({
+    id: "bus-1",
+    parentRunId: "current-run",
+    kind: "user-feedback",
+    message: "please revise",
+    queued: true,
+    occurredAt: "2026-01-01T00:00:00Z",
+  }), "user-feedback: please revise (queued)");
 });
 
 test("openAgentSpawnGuide overwrites the preselected agent and clearAgentSpawnGuide resets it", async () => {
@@ -459,6 +570,8 @@ test("parseMentionRouting resolves missing, busy, and idle child targets", () =>
   assert.deepEqual(parseMentionRouting("@builder do work", runs), {
     kind: "busy",
     agentName: "builder",
+    runId: "agent-2",
+    prompt: "do work",
   });
   assert.deepEqual(parseMentionRouting("@reviewer do work", runs), {
     kind: "missing",
@@ -955,4 +1068,71 @@ test("Claude account switch retries the original failed turn", async () => {
   assert.deepEqual(activatedIds, ["cl-2"]);
   assert.deepEqual(sentTurns, [savedTurnInput]);
   assert.equal(useStore.getState().selectedProvider, "claude");
+});
+
+test("MockRunnerClient preserves parent orchestration state across refresh pause resume feedback and stop", async () => {
+  const client = new MockRunnerClient();
+  const spawn = await client.spawnAgent({ parentRunId: "parent-1", agent: "architect", prompt: "draft the design" });
+
+  const initial = await client.refreshAgentGraph("parent-1");
+  const paused = await client.pauseAgentLoop("parent-1");
+  const feedback = await client.injectAgentFeedback("parent-1", spawn.runId, "revise the draft");
+  const resumed = await client.resumeAgentLoop("parent-1");
+  const stopped = await client.stopAgentLoop("parent-1");
+
+  assert.equal(initial.runs[0]?.runId, spawn.runId);
+  assert.equal(paused.loopState.status, "paused");
+  assert.equal(feedback.busMessages.at(-1)?.message, "revise the draft");
+  assert.equal(resumed.busMessages.at(-1)?.message, "revise the draft");
+  assert.equal(stopped.loopState.status, "stopped");
+});
+
+test("sendPrompt keeps the parent orchestration stream alive after the turn completes", async () => {
+  const parentGraph = {
+    parentRunId: "current-run",
+    runs: [],
+    edges: [],
+    busMessages: [],
+    loopState: { status: "running", round: 0, roundCap: 3 },
+  };
+  const graphEvent = {
+    ...BASE_EVENT,
+    seq: 2,
+    type: "agent_graph_updated" as const,
+    agentGraphSnapshot: {
+      ...parentGraph,
+      busMessages: [
+        {
+          id: "bus-live",
+          parentRunId: "current-run",
+          kind: "handoff",
+          message: "ready-for-review",
+          queued: false,
+          occurredAt: "2026-01-01T00:00:01Z",
+        },
+      ],
+    },
+  };
+  const gate = deferred<void>();
+  seedStore(
+    makeClient({
+      sendTurn: async function* (): AsyncIterable<ProviderEventDTO> {
+        yield { ...BASE_EVENT, type: "turn_completed", finalMessage: "done" };
+      },
+      streamRun: async function* () {
+        await gate.promise;
+        yield graphEvent;
+      },
+      startRun: async () => ({ runId: "current-run", providerSessionId: "session-1", providerKey: "codex", status: "running", stepId: "chat-current-run" }),
+      listRunHistory: async () => [],
+    }),
+    [],
+  );
+
+  await useStore.getState().sendPrompt("hello");
+  gate.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(useStore.getState().agentGraphSnapshot?.loopState.roundCap, 3);
+  assert.equal(useStore.getState().agentBusMessages.at(-1)?.message, "ready-for-review");
 });
