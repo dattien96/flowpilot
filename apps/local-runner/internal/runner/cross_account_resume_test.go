@@ -1015,6 +1015,134 @@ func TestRestoredCodexRunUsesCLIResumePath(t *testing.T) {
 	}
 }
 
+func TestRestoredCodexRunUsesAppServerResumePathWhenAvailable(t *testing.T) {
+	store, err := NewLocalFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	root := t.TempDir()
+	acctHome := filepath.Join(root, "acct-b")
+	workspace := filepath.Join(root, "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("MkdirAll workspace: %v", err)
+	}
+	writeProviderAccountsConfig(t, filepath.Join(root, "provider-accounts.json"), []ProviderAccount{
+		{ID: "acct-b", ProviderKey: "codex", HomePath: acctHome, SlotIndex: 2, AuthStatus: "connected", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+	})
+	writeCodexAuth(t, acctHome)
+	writeCodexRollout(t, acctHome, "rollout-abc", workspace, time.Now().UTC())
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             "run-1",
+		ProjectID:         "project-1",
+		ProviderKey:       ProviderKeyCodex,
+		ProviderSessionID: "rollout-abc",
+		ProviderAccountID: "acct-b",
+		WorkingDirectory:  workspace,
+		Status:            RunStatusCompleted,
+		RunKind:           "chat",
+		StartedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+		UpdatedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("UpsertProviderSession: %v", err)
+	}
+
+	d, fc := startFakeCodex(t, nil)
+	adapter := newCodexAdapter(d, workspace)
+	d.setInbound(adapter.handleInbound)
+	resumeParams := make(chan map[string]any, 1)
+	fc.serve(func(fc *fakeCodex, m map[string]any) {
+		method, _ := m["method"].(string)
+		switch method {
+		case "thread/resume":
+			params, _ := m["params"].(map[string]any)
+			resumeParams <- params
+			fc.reply(m["id"], map[string]any{"thread": map[string]any{"id": "th-resumed"}})
+		case "turn/start":
+			fc.reply(m["id"], map[string]any{"turnId": "ct1"})
+			fc.send(map[string]any{"jsonrpc": "2.0", "id": 500, "method": "item/commandExecution/requestApproval",
+				"params": map[string]any{"threadId": "th-resumed", "turnId": "ct1", "itemId": "item1", "command": "echo hi"}})
+		default:
+			if res, ok := m["result"].(map[string]any); ok {
+				if _, ok := res["decision"].(string); ok {
+					fc.notify("turn.completed", map[string]any{"threadId": "th-resumed", "finalMessage": "ok"})
+				}
+			}
+		}
+	})
+
+	var cliCalls atomic.Int32
+	originalCmd := commandContextFn
+	commandContextFn = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		cliCalls.Add(1)
+		return exec.CommandContext(ctx, name, args...)
+	}
+	defer func() { commandContextFn = originalCmd }()
+
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key:          ProviderKeyCodex,
+		DisplayName:  "Codex",
+		Status:       ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true, Resume: true, ApprovalEvents: true, Mcp: true, Interrupt: true},
+		newAdapter:   func() ProviderRuntimeAdapter { return adapter },
+	})
+
+	svc := NewInteractiveServiceWithStore(reg, newInteractiveCatalog(), store)
+	svc.activeAccountID = "acct-b"
+	handle, apiErr := svc.resumeRun("run-1")
+	if apiErr != nil {
+		t.Fatalf("resumeRun: %v", apiErr)
+	}
+	if _, apiErr := svc.startTurn(handle.RunID, TurnInput{StepID: handle.StepID, Prompt: "continue"}, "", ""); apiErr != nil {
+		t.Fatalf("startTurn: %v", apiErr)
+	}
+	var approvalID string
+	waitFor(t, func() bool {
+		svc.mu.Lock()
+		defer svc.mu.Unlock()
+		approvalID = svc.runs[handle.RunID].pendingApprovalID
+		return approvalID != ""
+	}, "approval gate on resumed codex turn")
+	if apiErr := svc.SubmitApprovalDecision(approvalID, "approve"); apiErr != nil {
+		t.Fatalf("SubmitApprovalDecision: %v", apiErr)
+	}
+	waitFor(t, func() bool {
+		svc.mu.Lock()
+		defer svc.mu.Unlock()
+		return !svc.runs[handle.RunID].turnInFlight
+	}, "resumed codex app-server turn to finish")
+
+	select {
+	case params := <-resumeParams:
+		if params["threadId"] != "rollout-abc" {
+			t.Fatalf("thread/resume threadId = %v, want rollout-abc", params["threadId"])
+		}
+		if params["cwd"] != workspace {
+			t.Fatalf("thread/resume cwd = %v, want %s", params["cwd"], workspace)
+		}
+		if params["approvalPolicy"] != "untrusted" || params["sandbox"] != "workspace-write" {
+			t.Fatalf("thread/resume policy = %v/%v, want untrusted/workspace-write", params["approvalPolicy"], params["sandbox"])
+		}
+	default:
+		t.Fatal("did not observe thread/resume")
+	}
+	if cliCalls.Load() != 0 {
+		t.Fatalf("expected no CLI resume fallback when app-server adapter is available, got %d calls", cliCalls.Load())
+	}
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	var sawApproval bool
+	for _, ev := range svc.runs[handle.RunID].events {
+		if ev.Type == EventPermissionRequired {
+			sawApproval = true
+			break
+		}
+	}
+	if !sawApproval {
+		t.Fatal("expected permission_required event on resumed codex turn")
+	}
+}
+
 // TestRestoredCodexRunSecondTurnStillUsesResumeSessionID verifies that the session id
 // passed to `codex exec resume` remains stable across multiple turns of a resumed run —
 // i.e. the second turn reuses the same rollout id, not a freshly-discovered one.
@@ -1316,6 +1444,230 @@ func TestLiveCodexChatResumesAcrossProviderAccountSwitches(t *testing.T) {
 	}
 	if !sawBBB || !sawCCC {
 		t.Fatalf("turn log missing rollout chain entries: %+v", entries)
+	}
+}
+
+func TestLiveCodexCrossAccountResumedTurnsKeepApprovalBridge(t *testing.T) {
+	store, err := NewLocalFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	root := t.TempDir()
+	configPath := filepath.Join(root, "provider-accounts.json")
+	acctAHome := filepath.Join(root, "acct-a")
+	acctBHome := filepath.Join(root, "acct-b")
+	workspace := filepath.Join(root, "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("MkdirAll workspace: %v", err)
+	}
+	now := time.Now().UTC()
+	writeProviderAccountsConfig(t, configPath, []ProviderAccount{
+		{ID: "acct-a", ProviderKey: "codex", HomePath: acctAHome, SlotIndex: 1, AuthStatus: "connected", IsActive: true, CreatedAt: now.Format(time.RFC3339Nano)},
+		{ID: "acct-b", ProviderKey: "codex", HomePath: acctBHome, SlotIndex: 2, AuthStatus: "connected", CreatedAt: now.Format(time.RFC3339Nano)},
+	})
+	writeCodexAuth(t, acctAHome)
+	writeCodexAuth(t, acctBHome)
+	writeCodexRollout(t, acctAHome, "rollout-aaa", workspace, now.Add(-time.Hour))
+
+	runID := "run-live-cross-account-approval"
+	stepID := "chat-" + runID
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             runID,
+		ProjectID:         "project-1",
+		ProviderKey:       ProviderKeyCodex,
+		ProviderSessionID: "rollout-aaa",
+		ProviderAccountID: "acct-a",
+		WorkingDirectory:  workspace,
+		Status:            RunStatusCompleted,
+		RunKind:           "chat",
+		StartedAt:         now.Format(time.RFC3339Nano),
+		UpdatedAt:         now.Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("UpsertProviderSession: %v", err)
+	}
+	store.seed(runID, []RuntimeWorkflowStep{{ID: stepID, StepType: "chat", Status: StepStatusPending}})
+
+	d, fc := startFakeCodex(t, nil)
+	adapter := newCodexAdapter(d, workspace)
+	d.setInbound(adapter.handleInbound)
+
+	writeRollout := func(home, sessionID string, ts time.Time) error {
+		dir := filepath.Join(home, "sessions", ts.Format("2006"), ts.Format("01"), ts.Format("02"))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+		line := map[string]any{
+			"payload": map[string]any{
+				"id":        sessionID,
+				"timestamp": ts.Format(time.RFC3339Nano),
+				"cwd":       workspace,
+			},
+		}
+		raw, err := json.Marshal(line)
+		if err != nil {
+			return err
+		}
+		path := filepath.Join(dir, "rollout-"+ts.Format("20060102T150405")+"-"+sessionID+".jsonl")
+		return os.WriteFile(path, append(raw, '\n'), 0o644)
+	}
+
+	var mu sync.Mutex
+	var resumeIDs []string
+	var turnSeq int
+	var writeErr error
+	fc.serve(func(fc *fakeCodex, m map[string]any) {
+		method, _ := m["method"].(string)
+		switch method {
+		case "thread/resume":
+			params, _ := m["params"].(map[string]any)
+			mu.Lock()
+			resumeIDs = append(resumeIDs, stringAny(params, "threadId"))
+			turnSeq++
+			turn := turnSeq
+			mu.Unlock()
+			threadID := "th-b"
+			if turn == 2 {
+				threadID = "th-a"
+			}
+			fc.reply(m["id"], map[string]any{"thread": map[string]any{"id": threadID}})
+		case "turn/start":
+			params, _ := m["params"].(map[string]any)
+			threadID := stringAny(params, "threadId")
+			mu.Lock()
+			turn := turnSeq
+			mu.Unlock()
+			fc.reply(m["id"], map[string]any{"turnId": "ct" + strconv.Itoa(turn)})
+			fc.send(map[string]any{"jsonrpc": "2.0", "id": 500 + turn, "method": "item/commandExecution/requestApproval",
+				"params": map[string]any{"threadId": threadID, "turnId": "ct" + strconv.Itoa(turn), "itemId": "item1", "command": "echo hi"}})
+		default:
+			if res, ok := m["result"].(map[string]any); ok {
+				if _, ok := res["decision"].(string); ok {
+					mu.Lock()
+					turn := turnSeq
+					mu.Unlock()
+					switch turn {
+					case 1:
+						if err := writeRollout(acctBHome, "rollout-bbb", now.Add(time.Hour)); err != nil {
+							mu.Lock()
+							writeErr = err
+							mu.Unlock()
+						}
+						fc.notify("turn.completed", map[string]any{"threadId": "th-b", "finalMessage": "ok"})
+					case 2:
+						if err := writeRollout(acctAHome, "rollout-ccc", now.Add(2*time.Hour)); err != nil {
+							mu.Lock()
+							writeErr = err
+							mu.Unlock()
+						}
+						fc.notify("turn.completed", map[string]any{"threadId": "th-a", "finalMessage": "ok"})
+					}
+				}
+			}
+		}
+	})
+
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key:          ProviderKeyCodex,
+		DisplayName:  "Codex",
+		Status:       ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true, Resume: true, ApprovalEvents: true, Mcp: true, Interrupt: true},
+		newAdapter:   func() ProviderRuntimeAdapter { return adapter },
+	})
+
+	runner := &Runner{}
+	svc := NewInteractiveServiceWithStore(reg, newInteractiveCatalog(), store)
+	svc.AttachRunner(runner)
+	svc.mu.Lock()
+	svc.runs[runID] = &interactiveRun{
+		id:                     runID,
+		projectID:              "project-1",
+		providerKey:            ProviderKeyCodex,
+		providerSessionID:      "thread-live",
+		realProviderSessionID:  "rollout-aaa",
+		lastCodexTurnSessionID: "rollout-aaa",
+		providerAccountID:      "acct-a",
+		workspaceCwd:           workspace,
+		status:                 RunStatusCompleted,
+		runKind:                "chat",
+		createdAt:              now.Format(time.RFC3339Nano),
+		updatedAt:              now.Format(time.RFC3339Nano),
+		idempotency:            map[string]string{},
+		subs:                   map[int64]chan ProviderEvent{},
+	}
+	svc.mu.Unlock()
+
+	resolveApproval := func(runID string) {
+		var approvalID string
+		waitFor(t, func() bool {
+			svc.mu.Lock()
+			defer svc.mu.Unlock()
+			approvalID = svc.runs[runID].pendingApprovalID
+			return approvalID != ""
+		}, "approval gate to appear")
+		if apiErr := svc.SubmitApprovalDecision(approvalID, "approve"); apiErr != nil {
+			t.Fatalf("SubmitApprovalDecision: %v", apiErr)
+		}
+	}
+
+	if _, err := runner.ActivateProviderAccount("acct-b"); err != nil {
+		t.Fatalf("ActivateProviderAccount acct-b: %v", err)
+	}
+	if _, apiErr := svc.startTurn(runID, TurnInput{StepID: stepID, Prompt: "bbb"}, "", ""); apiErr != nil {
+		t.Fatalf("startTurn acct-b: %v", apiErr)
+	}
+	resolveApproval(runID)
+	waitFor(t, func() bool {
+		svc.mu.Lock()
+		defer svc.mu.Unlock()
+		return !svc.runs[runID].turnInFlight
+	}, "acct-b turn to finish")
+	if _, found := LocateSessionFile(ProviderKeyCodex, acctBHome, "rollout-aaa", workspace); !found {
+		t.Fatal("expected stable rollout-aaa copied into account B before bbb")
+	}
+	if _, found := LocateSessionFile(ProviderKeyCodex, acctBHome, "rollout-bbb", workspace); !found {
+		t.Fatal("expected bbb rollout in account B")
+	}
+
+	if _, err := runner.ActivateProviderAccount("acct-a"); err != nil {
+		t.Fatalf("ActivateProviderAccount acct-a: %v", err)
+	}
+	if _, apiErr := svc.startTurn(runID, TurnInput{StepID: stepID, Prompt: "ccc"}, "", ""); apiErr != nil {
+		t.Fatalf("startTurn acct-a: %v", apiErr)
+	}
+	resolveApproval(runID)
+	waitFor(t, func() bool {
+		svc.mu.Lock()
+		defer svc.mu.Unlock()
+		return !svc.runs[runID].turnInFlight
+	}, "acct-a turn to finish")
+	if _, found := LocateSessionFile(ProviderKeyCodex, acctAHome, "rollout-bbb", workspace); !found {
+		t.Fatal("expected account B rollout-bbb copied back into account A before ccc")
+	}
+	if _, found := LocateSessionFile(ProviderKeyCodex, acctAHome, "rollout-ccc", workspace); !found {
+		t.Fatal("expected ccc rollout in account A")
+	}
+
+	mu.Lock()
+	ids := append([]string{}, resumeIDs...)
+	err = writeErr
+	mu.Unlock()
+	if err != nil {
+		t.Fatalf("write rollout from fake app-server: %v", err)
+	}
+	if len(ids) != 2 || ids[0] != "rollout-aaa" || ids[1] != "rollout-aaa" {
+		t.Fatalf("thread/resume ids = %v, want [rollout-aaa rollout-aaa]", ids)
+	}
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	var approvalEvents int
+	for _, ev := range svc.runs[runID].events {
+		if ev.Type == EventPermissionRequired {
+			approvalEvents++
+		}
+	}
+	if approvalEvents != 2 {
+		t.Fatalf("permission_required events = %d, want 2", approvalEvents)
 	}
 }
 

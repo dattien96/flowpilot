@@ -490,6 +490,227 @@ func TestCodexAdapterAskUserDynamicToolRoundTrip(t *testing.T) {
 	}
 }
 
+func TestCodexAdapterResumedTurnUsesThreadResumeForCommandApproval(t *testing.T) {
+	d, fc := startFakeCodex(t, nil)
+	adapter := newCodexAdapter(d, "/workspace")
+	d.setInbound(adapter.handleInbound)
+
+	resumeParams := make(chan map[string]any, 1)
+	decisionReplies := make(chan string, 1)
+	fc.serve(func(fc *fakeCodex, m map[string]any) {
+		method, _ := m["method"].(string)
+		switch method {
+		case "thread/resume":
+			params, _ := m["params"].(map[string]any)
+			resumeParams <- params
+			fc.reply(m["id"], map[string]any{"thread": map[string]any{"id": "th-resumed"}})
+		case "turn/start":
+			fc.reply(m["id"], map[string]any{"turnId": "ct1"})
+			fc.send(map[string]any{"jsonrpc": "2.0", "id": 500, "method": "item/commandExecution/requestApproval",
+				"params": map[string]any{"threadId": "th-resumed", "turnId": "ct1", "itemId": "item1", "command": "echo hi"}})
+		default:
+			if res, ok := m["result"].(map[string]any); ok {
+				if dec, ok := res["decision"].(string); ok {
+					decisionReplies <- dec
+					fc.notify("turn.completed", map[string]any{"threadId": "th-resumed", "finalMessage": "ok"})
+				}
+			}
+		}
+	})
+
+	bridge := &captureBridge{approveWith: "approve"}
+	if err := adapter.SendTurn(context.Background(), TurnRequest{
+		RunID:             "r1",
+		ProviderSessionID: "rollout-abc",
+		Prompt:            "continue",
+		YoloMode:          false,
+		Cwd:               "/workspace",
+	}, bridge); err != nil {
+		t.Fatalf("SendTurn: %v", err)
+	}
+
+	select {
+	case params := <-resumeParams:
+		if params["threadId"] != "rollout-abc" {
+			t.Fatalf("thread/resume threadId = %v, want rollout-abc", params["threadId"])
+		}
+		if params["cwd"] != "/workspace" {
+			t.Fatalf("thread/resume cwd = %v, want /workspace", params["cwd"])
+		}
+		if params["approvalPolicy"] != "untrusted" || params["sandbox"] != "workspace-write" {
+			t.Fatalf("thread/resume policy = %v/%v, want untrusted/workspace-write", params["approvalPolicy"], params["sandbox"])
+		}
+	default:
+		t.Fatal("did not observe thread/resume")
+	}
+	if got := bridge.approvalRequestCount(); got != 1 {
+		t.Fatalf("approval requests = %d, want 1", got)
+	}
+	select {
+	case dec := <-decisionReplies:
+		if dec != "accept" {
+			t.Fatalf("decision = %q, want accept", dec)
+		}
+	default:
+		t.Fatal("approval decision was not replied to Codex")
+	}
+}
+
+func TestCodexAdapterResumedTurnRoutesAskUserDynamicTool(t *testing.T) {
+	d, fc := startFakeCodex(t, nil)
+	adapter := newCodexAdapter(d, "/workspace")
+	d.setInbound(adapter.handleInbound)
+
+	resumeSeen := make(chan struct{}, 1)
+	toolReplies := make(chan map[string]any, 1)
+	fc.serve(func(fc *fakeCodex, m map[string]any) {
+		method, _ := m["method"].(string)
+		switch method {
+		case "thread/resume":
+			resumeSeen <- struct{}{}
+			fc.reply(m["id"], map[string]any{"thread": map[string]any{"id": "th-resumed"}})
+		case "turn/start":
+			fc.reply(m["id"], map[string]any{"turnId": "ct1"})
+			fc.send(map[string]any{"jsonrpc": "2.0", "id": 600, "method": "item/tool/call",
+				"params": map[string]any{
+					"threadId": "th-resumed", "turnId": "ct1", "callId": "call_1", "namespace": nil,
+					"tool":      "ask_user",
+					"arguments": map[string]any{"prompt": "Pick one", "options": []any{"Python", "Go"}, "multiSelect": false},
+				}})
+		default:
+			if res, ok := m["result"].(map[string]any); ok {
+				if _, ok := res["contentItems"]; ok {
+					toolReplies <- res
+					fc.notify("turn.completed", map[string]any{"threadId": "th-resumed", "finalMessage": "Go"})
+				}
+			}
+		}
+	})
+
+	bridge := &captureBridge{askAnswer: []string{"Go"}}
+	if err := adapter.SendTurn(context.Background(), TurnRequest{
+		RunID:             "r1",
+		ProviderSessionID: "rollout-abc",
+		Prompt:            "continue",
+	}, bridge); err != nil {
+		t.Fatalf("SendTurn: %v", err)
+	}
+	select {
+	case <-resumeSeen:
+	default:
+		t.Fatal("did not observe thread/resume")
+	}
+	bridge.mu.Lock()
+	seen, prompt, opts := bridge.askCallSeen, bridge.askPrompt, bridge.askOptions
+	bridge.mu.Unlock()
+	if !seen || prompt != "Pick one" || len(opts) != 2 {
+		t.Fatalf("ask_user not routed to bridge on resumed turn: seen=%v prompt=%q opts=%d", seen, prompt, len(opts))
+	}
+	select {
+	case res := <-toolReplies:
+		if res["success"] != true {
+			t.Fatalf("dynamic tool result success = %v, want true", res["success"])
+		}
+	default:
+		t.Fatal("ask_user answer was not replied to Codex on resumed turn")
+	}
+}
+
+func TestCodexAdapterResumedTurnRoutesMcpApprovals(t *testing.T) {
+	cases := []struct {
+		name           string
+		method         string
+		params         map[string]any
+		wantScope      string
+		wantAction     string
+		wantNoDecision bool
+	}{
+		{
+			name:   "permissions",
+			method: "item/permissions/requestApproval",
+			params: map[string]any{
+				"threadId": "th-resumed",
+				"turnId":   "ct1",
+				"itemId":   "item1",
+				"cwd":      "/workspace",
+				"reason":   "Allow google-drive MCP access",
+				"permissions": map[string]any{
+					"network": map[string]any{"enabled": true},
+				},
+			},
+			wantScope:      "turn",
+			wantNoDecision: true,
+		},
+		{
+			name:   "elicitation",
+			method: "mcpServer/elicitation/request",
+			params: map[string]any{
+				"threadId":   "th-resumed",
+				"turnId":     "ct1",
+				"serverName": "google-drive",
+				"message":    "Allow Google Drive MCP access",
+				"mode":       "url",
+				"url":        "https://example.test/approve",
+			},
+			wantAction:     "accept",
+			wantNoDecision: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d, fc := startFakeCodex(t, nil)
+			adapter := newCodexAdapter(d, "/workspace")
+			d.setInbound(adapter.handleInbound)
+
+			approvalReplies := make(chan map[string]any, 1)
+			fc.serve(func(fc *fakeCodex, m map[string]any) {
+				method, _ := m["method"].(string)
+				switch method {
+				case "thread/resume":
+					fc.reply(m["id"], map[string]any{"thread": map[string]any{"id": "th-resumed"}})
+				case "turn/start":
+					fc.reply(m["id"], map[string]any{"turnId": "ct1"})
+					fc.send(map[string]any{"jsonrpc": "2.0", "id": 500, "method": tc.method, "params": tc.params})
+				default:
+					if res, ok := m["result"].(map[string]any); ok {
+						approvalReplies <- res
+						fc.notify("turn.completed", map[string]any{"threadId": "th-resumed", "finalMessage": "ok"})
+					}
+				}
+			})
+
+			bridge := &captureBridge{approveWith: "approve"}
+			if err := adapter.SendTurn(context.Background(), TurnRequest{
+				RunID:             "r1",
+				ProviderSessionID: "rollout-abc",
+				Prompt:            "continue",
+			}, bridge); err != nil {
+				t.Fatalf("SendTurn: %v", err)
+			}
+			if got := bridge.approvalRequestCount(); got != 1 {
+				t.Fatalf("approval requests = %d, want 1", got)
+			}
+			select {
+			case res := <-approvalReplies:
+				if tc.wantScope != "" && res["scope"] != tc.wantScope {
+					t.Fatalf("scope = %v, want %s", res["scope"], tc.wantScope)
+				}
+				if tc.wantAction != "" && res["action"] != tc.wantAction {
+					t.Fatalf("action = %v, want %s", res["action"], tc.wantAction)
+				}
+				if tc.wantNoDecision {
+					if _, hasDecision := res["decision"]; hasDecision {
+						t.Fatalf("approval reply must not include decision: %+v", res)
+					}
+				}
+			default:
+				t.Fatal("approval reply was not sent")
+			}
+		})
+	}
+}
+
 func TestCodexAdapterV2ApprovalRoundTrip(t *testing.T) {
 	d, fc := startFakeCodex(t, nil)
 	adapter := newCodexAdapter(d, "/workspace")
