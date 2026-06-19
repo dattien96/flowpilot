@@ -727,11 +727,25 @@ export const useStore = create<AppState>((set, get) => ({
     const { client } = get();
     const historyItem = get().runHistory.find((item) => item.runId === runId);
     const historyProvider = historyItem?.providerKey;
+    console.info("[FlowPilot][history-open] start", {
+      runId,
+      providerKey: historyProvider,
+      status: historyItem?.status,
+      syncStatus: historyItem?.syncStatus,
+      sourceMachineId: historyItem?.sourceMachineId,
+      sourceRunId: historyItem?.sourceRunId,
+    });
     let handle;
     try {
       handle = await client.resumeRun(runId);
     } catch (err) {
       if (err instanceof RunnerApiError) {
+        console.error("[FlowPilot][history-open] resume failed", {
+          runId,
+          status: err.status,
+          code: err.code,
+          message: err.message,
+        });
         set((s) => ({
           runHistory: s.runHistory.map((item) =>
             item.runId === runId ? { ...item, unavailableReason: err.message } : item
@@ -739,8 +753,17 @@ export const useStore = create<AppState>((set, get) => ({
         }));
         return;
       }
+      console.error("[FlowPilot][history-open] unexpected resume failure", { runId, error: err });
       throw err;
     }
+    console.info("[FlowPilot][history-open] resume succeeded", {
+      requestedRunId: runId,
+      runId: handle.runId,
+      providerKey: handle.providerKey,
+      providerSessionId: handle.providerSessionId,
+      status: handle.status,
+      stepId: handle.stepId,
+    });
     set({
       runId: handle.runId,
       status: handle.status,
@@ -770,7 +793,17 @@ export const useStore = create<AppState>((set, get) => ({
     if (historyProvider) {
       void get().loadSkills(historyProvider);
     }
-    await consumeStream(handle.runId, client.streamRun(handle.runId, 0), set, get);
+    try {
+      console.info("[FlowPilot][history-open] stream replay start", { runId: handle.runId });
+      await consumeStream(handle.runId, client.streamRun(handle.runId, 0), set, get);
+      console.info("[FlowPilot][history-open] stream replay complete", {
+        runId: handle.runId,
+        timelineItems: get().timeline.length,
+      });
+    } catch (err) {
+      console.error("[FlowPilot][history-open] stream replay failed", { runId: handle.runId, error: err });
+      throw err;
+    }
 
     // Post-stream stale cleanup (BUG-074): permission_required events are persisted
     // in the event log but their resolution (approve() action) only clears

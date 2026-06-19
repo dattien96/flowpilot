@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"os"
 	"sort"
@@ -216,33 +217,94 @@ func (s *InteractiveService) activeAccountForProvider(providerKey ProviderKey) s
 	return s.activeAccountID
 }
 
+func (s *InteractiveService) locateSessionAcrossProviderAccounts(providerKey ProviderKey, activeAccountID, sessionID, cwd string) (ProviderAccount, string, bool) {
+	r := s.runner
+	if r == nil {
+		r = &Runner{}
+	}
+	accounts, err := r.ListProviderAccounts()
+	if err != nil {
+		return ProviderAccount{}, "", false
+	}
+	sort.SliceStable(accounts, func(i, j int) bool {
+		return accounts[i].ID == activeAccountID && accounts[j].ID != activeAccountID
+	})
+	for _, account := range accounts {
+		if ProviderKey(account.ProviderKey) != providerKey || strings.TrimSpace(account.HomePath) == "" {
+			continue
+		}
+		if path, found := LocateSessionFile(providerKey, account.HomePath, sessionID, cwd); found {
+			return account, path, true
+		}
+	}
+	return ProviderAccount{}, "", false
+}
+
 func (s *InteractiveService) ensureResumeReady(rs *interactiveRun) *apiErr {
 	// "The active account" must be scoped to this run's provider, not the single
 	// global activeAccountID: a Codex chat is resumed against the active Codex
 	// account regardless of which Claude/Gemini account is active (Task-067 issue 1).
 	activeAccountID := s.activeAccountForProvider(rs.providerKey)
+	log.Printf(
+		"[chat-history-open] resume check run_id=%q provider=%q stored_account_id=%q active_account_id=%q provider_session_id=%q cwd=%q resumed_from_disk=%t",
+		rs.id, rs.providerKey, rs.providerAccountID, activeAccountID, s.resumeSessionID(rs), rs.workspaceCwd, rs.resumedFromDisk,
+	)
 	srcHome, ok := s.resolveAccountHome(rs.providerKey, rs.providerAccountID)
+	recoveredAccount := false
 	if !ok {
-		if rs.providerAccountID == activeAccountID {
-			return newAPIErr(http.StatusConflict, "account_not_signed_in", "can't open — the active account isn't signed in")
+		account, recoveredPath, found := s.locateSessionAcrossProviderAccounts(
+			rs.providerKey,
+			activeAccountID,
+			s.resumeSessionID(rs),
+			rs.workspaceCwd,
+		)
+		if found {
+			log.Printf(
+				"[chat-history-open] stale account recovered run_id=%q stale_account_id=%q recovered_account_id=%q recovered_home=%q session_path=%q",
+				rs.id, rs.providerAccountID, account.ID, account.HomePath, recoveredPath,
+			)
+			rs.providerAccountID = account.ID
+			srcHome = account.HomePath
+			ok = true
+			recoveredAccount = true
 		}
-		return newAPIErr(http.StatusConflict, "session_unavailable", "session data not found on this machine")
+		if !ok {
+			if rs.providerAccountID == activeAccountID {
+				log.Printf("[chat-history-open] source home unresolved run_id=%q account_id=%q result=account_not_signed_in", rs.id, rs.providerAccountID)
+				return newAPIErr(http.StatusConflict, "account_not_signed_in", "can't open — the active account isn't signed in")
+			}
+			log.Printf("[chat-history-open] source home unresolved run_id=%q stored_account_id=%q active_account_id=%q result=session_unavailable", rs.id, rs.providerAccountID, activeAccountID)
+			return newAPIErr(http.StatusConflict, "session_unavailable", "session data not found on this machine")
+		}
 	}
+	log.Printf("[chat-history-open] source home resolved run_id=%q account_id=%q home=%q", rs.id, rs.providerAccountID, srcHome)
 	if !s.ensureProviderResumeHandle(rs, srcHome) {
+		log.Printf("[chat-history-open] provider resume handle unavailable run_id=%q provider=%q source_home=%q", rs.id, rs.providerKey, srcHome)
 		return newAPIErr(http.StatusConflict, "session_unavailable", "session data not found on this machine")
 	}
 	sessionID := s.resumeSessionID(rs)
 	srcPath, found := LocateSessionFile(rs.providerKey, srcHome, sessionID, rs.workspaceCwd)
 	if !found {
+		log.Printf("[chat-history-open] session file not found run_id=%q provider=%q session_id=%q source_home=%q cwd=%q", rs.id, rs.providerKey, sessionID, srcHome, rs.workspaceCwd)
 		return newAPIErr(http.StatusConflict, "session_unavailable", "session data not found on this machine")
 	}
+	log.Printf("[chat-history-open] session file found run_id=%q provider=%q session_id=%q path=%q", rs.id, rs.providerKey, sessionID, srcPath)
 
 	if rs.providerAccountID == activeAccountID {
 		if !HasLocalAuthAtPath(string(rs.providerKey), srcHome) {
+			log.Printf("[chat-history-open] auth missing run_id=%q provider=%q account_id=%q home=%q", rs.id, rs.providerKey, activeAccountID, srcHome)
 			return newAPIErr(http.StatusConflict, "account_not_signed_in", "can't open — the active account isn't signed in")
 		}
+		if recoveredAccount {
+			if err := s.persistProviderSession(sessionStateOf(rs)); err != nil {
+				log.Printf("[chat-history-open] recovered account persistence failed run_id=%q active_account_id=%q error=%q", rs.id, activeAccountID, err)
+				return newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
+			}
+		}
+		log.Printf("[chat-history-open] resume ready run_id=%q mode=same_account account_id=%q", rs.id, activeAccountID)
 		return nil
 	}
+	log.Printf("[chat-history-open] cross-account preparation start run_id=%q stored_account_id=%q active_account_id=%q", rs.id, rs.providerAccountID, activeAccountID)
 	return s.prepareCrossAccountResume(rs, srcPath, activeAccountID)
 }
 
@@ -250,21 +312,27 @@ func (s *InteractiveService) prepareCrossAccountResume(rs *interactiveRun, srcPa
 	sourceHome, _ := s.resolveAccountHome(rs.providerKey, rs.providerAccountID)
 	targetHome, ok := s.resolveAccountHome(rs.providerKey, activeAccountID)
 	if !ok {
+		log.Printf("[chat-history-open] target home unresolved run_id=%q provider=%q active_account_id=%q", rs.id, rs.providerKey, activeAccountID)
 		return newAPIErr(http.StatusConflict, "account_unavailable", "active account home not found")
 	}
 	if !HasLocalAuthAtPath(string(rs.providerKey), targetHome) {
+		log.Printf("[chat-history-open] target auth missing run_id=%q provider=%q active_account_id=%q target_home=%q", rs.id, rs.providerKey, activeAccountID, targetHome)
 		return newAPIErr(http.StatusConflict, "account_not_signed_in", "can't open — the active account isn't signed in")
 	}
 	if _, err := RelocateSessionFile(rs.providerKey, srcPath, targetHome, s.resumeSessionID(rs), rs.workspaceCwd); err != nil {
+		log.Printf("[chat-history-open] session relocation failed run_id=%q provider=%q active_account_id=%q error=%q", rs.id, rs.providerKey, activeAccountID, err)
 		return newAPIErr(http.StatusConflict, "session_unavailable", "could not prepare the session on the active account")
 	}
 	if err := s.relocateCodexTurnLogSessions(rs, sourceHome, targetHome); err != nil {
+		log.Printf("[chat-history-open] turn-log relocation failed run_id=%q provider=%q active_account_id=%q error=%q", rs.id, rs.providerKey, activeAccountID, err)
 		return newAPIErr(http.StatusConflict, "session_unavailable", "could not prepare the session on the active account")
 	}
 	rs.providerAccountID = activeAccountID
 	if snapErr := s.persistProviderSession(sessionStateOf(rs)); snapErr != nil {
+		log.Printf("[chat-history-open] account rebind persistence failed run_id=%q active_account_id=%q error=%q", rs.id, activeAccountID, snapErr)
 		return newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", snapErr.Error())
 	}
+	log.Printf("[chat-history-open] resume ready run_id=%q mode=cross_account active_account_id=%q target_home=%q", rs.id, activeAccountID, targetHome)
 	return nil
 }
 
@@ -506,17 +574,25 @@ func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 func (s *InteractiveService) loadPersistedRun(runID string) (*interactiveRun, *apiErr) {
 	reader, ok := s.workflowStore.(SessionHistoryReader)
 	if !ok {
+		log.Printf("[chat-history-open] persisted store unavailable run_id=%q", runID)
 		return nil, newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")
 	}
 	st, found, err := reader.GetProviderSession(context.Background(), runID)
 	if err != nil {
+		log.Printf("[chat-history-open] persisted run read failed run_id=%q error=%q", runID, err)
 		return nil, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
 	}
 	if !found {
+		log.Printf("[chat-history-open] persisted run not found run_id=%q", runID)
 		return nil, newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")
 	}
 	if st.RunKind != "chat" {
+		log.Printf("[chat-history-open] persisted run unsupported run_id=%q run_kind=%q", runID, st.RunKind)
 		return nil, newAPIErr(http.StatusConflict, "resume_unsupported", "only chat runs can be resumed in this version")
 	}
+	log.Printf(
+		"[chat-history-open] persisted run loaded run_id=%q provider=%q provider_session_id=%q provider_account_id=%q status=%q sync_status=%q cwd=%q",
+		st.RunID, st.ProviderKey, st.ProviderSessionID, st.ProviderAccountID, st.Status, st.SyncStatus, st.WorkingDirectory,
+	)
 	return s.reconstructRun(st)
 }

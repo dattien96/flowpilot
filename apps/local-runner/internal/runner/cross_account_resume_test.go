@@ -576,6 +576,93 @@ func TestResumeRunSameHomeAccountRebindsProviderAccountID(t *testing.T) {
 	}
 }
 
+func TestResumeRunRecoversStaleCodexAccountIDFromActiveProviderHome(t *testing.T) {
+	store, err := NewLocalFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	root := t.TempDir()
+	activeHome := filepath.Join(root, "codex-active")
+	writeProviderAccountsConfig(t, filepath.Join(root, "provider-accounts.json"), []ProviderAccount{
+		{ID: "codex-current", ProviderKey: "codex", HomePath: activeHome, SlotIndex: 1, AuthStatus: "connected", IsActive: true, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+	})
+	writeCodexAuth(t, activeHome)
+	writeCodexRollout(t, activeHome, "rollout-stale-account", "/repo", time.Now().UTC())
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             "run-stale-codex",
+		ProjectID:         "project-1",
+		ProviderKey:       ProviderKeyCodex,
+		ProviderSessionID: "rollout-stale-account",
+		ProviderAccountID: "codex-deleted",
+		WorkingDirectory:  "/repo",
+		Status:            RunStatusCompleted,
+		RunKind:           "chat",
+		StartedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+		UpdatedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("UpsertProviderSession: %v", err)
+	}
+
+	svc := NewInteractiveServiceWithStore(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+	if _, apiErr := svc.resumeRun("run-stale-codex"); apiErr != nil {
+		t.Fatalf("resumeRun: %v", apiErr)
+	}
+	state, found, err := store.GetProviderSession(context.Background(), "run-stale-codex")
+	if err != nil || !found {
+		t.Fatalf("GetProviderSession = (%v, %v, %v)", state, found, err)
+	}
+	if state.ProviderAccountID != "codex-current" {
+		t.Fatalf("ProviderAccountID = %q, want codex-current", state.ProviderAccountID)
+	}
+}
+
+func TestResumeRunRecoversStaleClaudeAccountIDFromActiveProviderHome(t *testing.T) {
+	store, err := NewLocalFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	root := t.TempDir()
+	activeHome := filepath.Join(root, "claude-active")
+	writeProviderAccountsConfig(t, filepath.Join(root, "provider-accounts.json"), []ProviderAccount{
+		{ID: "claude-current", ProviderKey: "claude", HomePath: activeHome, SlotIndex: 1, AuthStatus: "connected", IsActive: true, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+	})
+	writeProviderAuth(t, "claude", activeHome)
+	sessionID := "bb8f6aa4-e41e-4331-ad4a-7cb55be836da"
+	sessionPath := filepath.Join(activeHome, ".claude", "projects", "project-hash", sessionID+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(sessionPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll session: %v", err)
+	}
+	if err := os.WriteFile(sessionPath, []byte(`{"type":"result","session_id":"`+sessionID+`"}`+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile session: %v", err)
+	}
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             "run-stale-claude",
+		ProjectID:         "project-1",
+		ProviderKey:       ProviderKeyClaude,
+		ProviderSessionID: sessionID,
+		ProviderAccountID: "claude-deleted",
+		WorkingDirectory:  "/repo",
+		Status:            RunStatusCompleted,
+		RunKind:           "chat",
+		StartedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+		UpdatedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("UpsertProviderSession: %v", err)
+	}
+
+	svc := NewInteractiveServiceWithStore(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+	if _, apiErr := svc.resumeRun("run-stale-claude"); apiErr != nil {
+		t.Fatalf("resumeRun: %v", apiErr)
+	}
+	state, found, err := store.GetProviderSession(context.Background(), "run-stale-claude")
+	if err != nil || !found {
+		t.Fatalf("GetProviderSession = (%v, %v, %v)", state, found, err)
+	}
+	if state.ProviderAccountID != "claude-current" {
+		t.Fatalf("ProviderAccountID = %q, want claude-current", state.ProviderAccountID)
+	}
+}
+
 func TestPrepareCrossAccountResumeActiveAccountNotSignedIn(t *testing.T) {
 	store, err := NewLocalFileSessionStore(t.TempDir())
 	if err != nil {
@@ -2051,6 +2138,21 @@ func writeCodexAuth(t *testing.T, home string) {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 	if err := os.WriteFile(path, []byte(`{"id_token":"token"}`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+}
+
+func writeProviderAuth(t *testing.T, providerKey, home string) {
+	t.Helper()
+	paths := accountAuthPaths(providerKey, home)
+	if len(paths) == 0 {
+		t.Fatalf("no auth path for provider %q", providerKey)
+	}
+	path := paths[0]
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(`{"oauthAccount":{"emailAddress":"test@example.com"},"accessToken":"token"}`), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 }
