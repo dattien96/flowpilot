@@ -10,7 +10,7 @@
 - Last Updated: `2026-06-19`
 - Parent Documents: [SS-11: Workflow With Session](../05-System-Specs/SS-11-Workflow-With_Session.md)
 - Child Documents: `—`
-- Related Documents: [SD-12: Refactor Workflow With Session](./SD-12-Refactor-Workflow-With_Session.md), [Task-069: Cross-PC Sync for Non-Supabase Users](../08-Task/todo/Task-069-Cross-PC-Sync-Non-Supabase-Sessions-Ndjson.md), [Task-070: History Supabase Reader Production Fix](../08-Task/done/Task-070-History-Supabase-Reader-Production-Fix.md), [Task-071: Cross-Account Chat Resume Definition of Done Checklist](../08-Task/todo/Task-071-Cross-Account-Chat-Resume-DOD-Checklist.md), [Task-072: Cross-Account Chat Resume Test Signatures](../08-Task/todo/Task-072-Cross-Account-Chat-Resume-Test-Signatures.md), [Task-073: Cross-PC Non-Supabase Chat Sync Definition of Done Checklist](../08-Task/todo/Task-073-Cross-PC-Non-Supabase-Chat-Sync-DOD-Checklist.md), [Task-074: Cross-PC Non-Supabase Chat Sync Test Signatures](../08-Task/todo/Task-074-Cross-PC-Non-Supabase-Chat-Sync-Test-Signatures.md), [Task-075: Cross-Account And Cross-PC Chat E2E Test Guide](../08-Task/todo/Task-075-Cross-Account-And-Cross-PC-Chat-E2E-Test-Guide.md), [Task-076: Replay User Prompts On Chat Transcript Resume](../08-Task/todo/Task-076-Replay-User-Prompts-On-Chat-Transcript-Resume.md), [BUG-082: Desktop History Chat Open Fails On Legacy Default Account](../09-BugFix/done/BUG-082-Desktop-History-Chat-Open-Fails-On-Legacy-Default-Account.md), [CA-099: Fix Desktop Legacy Default Account Chat Resume](../../change-audit/CA-099-fix-desktop-legacy-default-account-chat-resume.md), [CA-101: Fix Chat Resume Composed Prompt And Codex Multi-Rollout](../../change-audit/CA-101-fix-chat-resume-composed-prompt-and-codex-multi-rollout.md)
+- Related Documents: [SD-12: Refactor Workflow With Session](./SD-12-Refactor-Workflow-With_Session.md), [Task-069: Cross-PC Sync for Non-Supabase Users](../08-Task/todo/Task-069-Cross-PC-Sync-Non-Supabase-Sessions-Ndjson.md), [Task-070: History Supabase Reader Production Fix](../08-Task/done/Task-070-History-Supabase-Reader-Production-Fix.md), [Task-071: Cross-Account Chat Resume Definition of Done Checklist](../08-Task/todo/Task-071-Cross-Account-Chat-Resume-DOD-Checklist.md), [Task-072: Cross-Account Chat Resume Test Signatures](../08-Task/todo/Task-072-Cross-Account-Chat-Resume-Test-Signatures.md), [Task-073: Cross-PC Non-Supabase Chat Sync Definition of Done Checklist](../08-Task/todo/Task-073-Cross-PC-Non-Supabase-Chat-Sync-DOD-Checklist.md), [Task-074: Cross-PC Non-Supabase Chat Sync Test Signatures](../08-Task/todo/Task-074-Cross-PC-Non-Supabase-Chat-Sync-Test-Signatures.md), [Task-075: Cross-Account And Cross-PC Chat E2E Test Guide](../08-Task/todo/Task-075-Cross-Account-And-Cross-PC-Chat-E2E-Test-Guide.md), [Task-076: Replay User Prompts On Chat Transcript Resume](../08-Task/todo/Task-076-Replay-User-Prompts-On-Chat-Transcript-Resume.md), [BUG-082: Desktop History Chat Open Fails On Legacy Default Account](../09-BugFix/done/BUG-082-Desktop-History-Chat-Open-Fails-On-Legacy-Default-Account.md), [BUG-091: Drive Restore Rejects Same-Session Prefix Extension As Conflict](../09-BugFix/done/BUG-091-Drive-Restore-Rejects-Same-Session-Prefix-Extension-As-Conflict.md), [CA-099: Fix Desktop Legacy Default Account Chat Resume](../../change-audit/CA-099-fix-desktop-legacy-default-account-chat-resume.md), [CA-101: Fix Chat Resume Composed Prompt And Codex Multi-Rollout](../../change-audit/CA-101-fix-chat-resume-composed-prompt-and-codex-multi-rollout.md)
 - Replaces: `—`
 - Tags: `codex, provider-account, desktop-chat, resume, session, local-runner, google-drive`
 
@@ -514,7 +514,7 @@ Design explanation:
 The durable continuation bundle is:
 
 1. `provider_session_id`
-2. matching rollout file restored into the target `CODEX_HOME`
+2. matching rollout file restored into the target `CODEX_HOME`. For exampl we have rollout-2026-06-19T06-54-16-019edd28-13e2-7270-9cf0-46e85f07e36b.json file -> we just know provider_session_id= 019edd28-13e2-7270-9cf0-46e85f07e36b
 3. a valid local Codex installation and signed-in account on the target PC
 
 Why this works:
@@ -576,30 +576,61 @@ If PC B already has a rollout file at the target path for the same `provider_ses
    - restore fails with a typed conflict
    - current code uses `session_file_conflict`
 
-Why the code fails instead of merging:
-
-- same session id but different file contents means the local state is ambiguous or divergent
-- auto-merging could corrupt two unrelated or diverged session chains
-- safe behavior is to stop and ask the user to resolve the local conflict explicitly
-
 Code refs:
 
 - local target path resolution for restored provider file:
-  - `apps/local-runner/internal/runner/chat_session_sync.go:615`
+  - `apps/local-runner/internal/runner/chat_session_sync.go:624`
 - existing-file hash comparison:
-  - `apps/local-runner/internal/runner/chat_session_sync.go:619`
+  - `apps/local-runner/internal/runner/chat_session_sync.go:629`
 - typed conflict result:
-  - `apps/local-runner/internal/runner/chat_session_sync.go:621`
+  - `apps/local-runner/internal/runner/chat_session_sync.go:630`
 
 Current-code summary:
 
 - same run id: can be remapped
 - same provider session id + same file bytes: accepted
-- same provider session id + different file bytes: rejected as conflict
+- same provider session id + different file bytes: rejected as conflict (includes same-session prefix-extension cases — see known gap below)
+
+##### Known gap in Q-3b: same-session prefix extension is treated as conflict
+
+The Codex rollout file grows by appending JSONL lines. A hash mismatch does not always mean divergence — it can mean one copy is a newer extension of the other.
+
+There are two cases the current restore code incorrectly rejects:
+
+1. Remote is newer than local:
+   - PC B previously restored a 3-turn file from Drive.
+   - PC A continued the chat and re-synced a 5-turn file to Drive.
+   - PC B tries to restore again: local has 3 turns, Drive has 5 turns.
+   - Hash differs → `session_file_conflict`, but the correct behavior is to overwrite local with the newer remote.
+
+2. Local is newer than remote:
+   - PC B restored and then continued the chat locally (now 5 turns).
+   - Drive still holds the older 3-turn snapshot (not yet re-synced).
+   - PC B tries to restore again: local is already ahead.
+   - Hash differs → `session_file_conflict`, but the correct behavior is to keep local unchanged.
+
+The **local relocation path** already handles both cases correctly via `updateCodexDestinationIfSameSessionExtends` (`apps/local-runner/internal/runner/session_file_locator.go:119`):
+
+```go
+if bytes.HasPrefix(src, dst) { overwrite dst with src }  // src is newer extension of dst
+if bytes.HasPrefix(dst, src) { return true, nil }         // dst already extends src, keep it
+// otherwise: genuinely divergent content → caller rejects as conflict
+```
+
+The **Drive restore path** (`restoreChatRunFromDrive`, `chat_session_sync.go:628`) does not apply this logic. It only does a hash equality check and fails on any mismatch.
+
+Intended fix: before returning `session_file_conflict` in the restore path, apply the same prefix-extension check using the already-downloaded `providerBytes` against the existing local file bytes:
+
+- if `bytes.HasPrefix(providerBytes, existing)` → overwrite local with remote (remote is newer extension)
+- if `bytes.HasPrefix(existing, providerBytes)` → skip write, keep local (local is already ahead)
+- otherwise → genuinely divergent content → return `session_file_conflict`
+
+This was tracked and fixed as [BUG-091: Drive Restore Rejects Same-Session Prefix Extension As Conflict](../09-BugFix/done/BUG-091-Drive-Restore-Rejects-Same-Session-Prefix-Extension-As-Conflict.md). The fix is in `chat_session_sync.go` and mirrors the `bytes.HasPrefix` logic from `updateCodexDestinationIfSameSessionExtends`.
 
 Design rule:
 
-- FlowPilot never silently merges two different local rollout states just because the visible session id string matches
+- FlowPilot never silently merges two genuinely divergent rollout states just because the visible session id string matches
+- prefix-compatible extension — same session with more turns appended on one side — is not a conflict and must be accepted
 
 #### Q-4. In the A -> B -> A example, does Step 6 overwrite account A's old rollout file copy?
 
