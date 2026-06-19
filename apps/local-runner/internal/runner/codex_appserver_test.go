@@ -242,6 +242,9 @@ func (b *captureBridge) AskQuestion(prompt string, options []QuestionOption, mul
 	b.mu.Unlock()
 	return b.askAnswer, b.askErr
 }
+func (b *captureBridge) SpawnAgent(_ SpawnAgentInput) (SpawnAgentResult, error) {
+	return SpawnAgentResult{}, nil
+}
 func (b *captureBridge) types() []ProviderEventType {
 	b.mu.Lock()
 	defer b.mu.Unlock()

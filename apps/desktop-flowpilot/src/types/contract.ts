@@ -61,6 +61,41 @@ export interface AgentDefinition {
   path?: string;
 }
 
+/**
+ * Input for spawning a child agent run (CP-19 / Task-082).
+ */
+export interface SpawnAgentInput {
+  agent: string;
+  prompt: string;
+  provider?: string;
+  dependsOn?: string[];
+  wait?: boolean;
+}
+
+/**
+ * Result returned after spawning a child agent run.
+ * When `wait` was true, `finalMessage` holds the child's completed turn text.
+ */
+export interface SpawnAgentResult {
+  runId: string;
+  providerSessionId: string;
+  providerKey: string;
+  status: string;
+  finalMessage?: string;
+}
+
+/**
+ * Summary of one agent run in the tree (CP-19 / Task-082).
+ */
+export interface AgentRunSummary {
+  runId: string;
+  agentName: string;
+  role: string;
+  status: RunStatus;
+  parentRunId?: string;
+  createdAt: string;
+}
+
 export interface ProviderAccountUsageLine {
   label: string;
   remainingPercent: number;
@@ -366,6 +401,21 @@ export interface RunnerClient {
    * UI lands (Task-083); the real HTTP client implements it now.
    */
   listAgents?(cwd?: string): Promise<AgentDefinition[]>;
+  /**
+   * List child agent run summaries for a parent run (CP-19 / Task-082).
+   * Optional until the Agents panel lands (Task-083).
+   */
+  listAgentRuns?(parentRunId: string): Promise<AgentRunSummary[]>;
+  /**
+   * Programmatically spawn a child agent run (CP-19 / Task-082).
+   * Optional until the Agents panel lands (Task-083).
+   */
+  spawnAgent?(input: SpawnAgentInput & { parentRunId: string }): Promise<SpawnAgentResult>;
+  /**
+   * Ask the desktop shell to focus/navigate to a specific agent run (CP-19 / Task-083).
+   * Optional — implemented by the desktop shell only (not HTTP transport).
+   */
+  focusAgentRun?(runId: string): void;
   connectProviderAccount(providerKey: ProviderKey): Promise<void>;
   activateProviderAccount(accountId: string): Promise<void>;
   openProviderAccountTerminal(accountId: string): Promise<void>;

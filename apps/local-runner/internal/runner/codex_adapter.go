@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -77,6 +78,26 @@ func codexAskUserDynamicTool() any {
 	}
 }
 
+// codexSpawnAgentDynamicTool registers spawn_agent as a Codex DynamicToolSpec alongside
+// ask_user so the model can create sub-agent runs (CP-19 / Task-082).
+func codexSpawnAgentDynamicTool() any {
+	return map[string]any{
+		"name":        "spawn_agent",
+		"description": "Spawn a sub-agent run for a focused task. The sub-agent runs with its own provider session and SSE stream. Use wait=true to block until the sub-agent's turn completes and receive its final message; use wait=false to fire-and-forget.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"agent":     map[string]any{"type": "string", "description": "Agent name from the catalog (e.g. 'coder', 'reviewer', 'tester')."},
+				"prompt":    map[string]any{"type": "string", "description": "Initial prompt for the sub-agent."},
+				"provider":  map[string]any{"type": "string", "description": "Override provider (optional, defaults to parent run's provider)."},
+				"dependsOn": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Run IDs this agent depends on."},
+				"wait":      map[string]any{"type": "boolean", "description": "If true, block until the sub-agent's turn completes and return its final message."},
+			},
+			"required": []any{"agent", "prompt", "wait"},
+		},
+	}
+}
+
 func (a *codexAdapter) Key() ProviderKey { return ProviderKeyCodex }
 
 func (a *codexAdapter) Capabilities() ProviderCapabilities {
@@ -101,7 +122,7 @@ func (a *codexAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tur
 	//
 	// Once a real rollout id exists, follow-up turns must rejoin that thread via app-server
 	// `thread/resume` so approval/MCP/ask_user bridging stays available on resumed turns.
-	dynamicTools := []any{codexAskUserDynamicTool()}
+	dynamicTools := []any{codexAskUserDynamicTool(), codexSpawnAgentDynamicTool()}
 	threadMethod := "thread/start"
 	threadParams := codexThreadStartParams(cwd, sandbox, approvalMode, req.ModelName, req.ReasoningEffort, dynamicTools)
 	if resumeID := strings.TrimSpace(req.ProviderSessionID); resumeID != "" && !strings.HasPrefix(resumeID, "thread-") {
@@ -248,19 +269,40 @@ func (a *codexAdapter) handleDynamicToolCall(req codexInboundRequest) {
 	a.mu.Unlock()
 
 	tool, _ := req.Params["tool"].(string)
-	if bridge == nil || tool != "ask_user" {
+	if bridge == nil {
 		_ = a.dispatcher.reply(req.ID, codexDynamicToolResult("Tool is not available.", false))
 		return
 	}
-
-	prompt, options, multi := codexAskUserArgs(req.Params)
-	choice, err := bridge.AskQuestion(prompt, options, multi)
-	if err != nil || len(choice) == 0 {
-		// expiry/interrupt or no answer → return a result (not hang) so the model continues.
-		_ = a.dispatcher.reply(req.ID, codexDynamicToolResult("No answer was provided.", false))
-		return
+	switch tool {
+	case "ask_user":
+		prompt, options, multi := codexAskUserArgs(req.Params)
+		choice, err := bridge.AskQuestion(prompt, options, multi)
+		if err != nil || len(choice) == 0 {
+			// expiry/interrupt or no answer → return a result so the model continues.
+			_ = a.dispatcher.reply(req.ID, codexDynamicToolResult("No answer was provided.", false))
+			return
+		}
+		_ = a.dispatcher.reply(req.ID, codexDynamicToolResult(strings.Join(choice, ", "), true))
+	case "spawn_agent":
+		args, _ := req.Params["arguments"].(map[string]any)
+		if args == nil {
+			args = map[string]any{}
+		}
+		in, parseErr := parseSpawnAgentInput(args)
+		if parseErr != nil {
+			_ = a.dispatcher.reply(req.ID, codexDynamicToolResult(parseErr.Error(), false))
+			return
+		}
+		result, spawnErr := bridge.SpawnAgent(in)
+		if spawnErr != nil {
+			_ = a.dispatcher.reply(req.ID, codexDynamicToolResult("spawn_agent failed: "+spawnErr.Error(), false))
+			return
+		}
+		resultJSON, _ := json.Marshal(result)
+		_ = a.dispatcher.reply(req.ID, codexDynamicToolResult(string(resultJSON), true))
+	default:
+		_ = a.dispatcher.reply(req.ID, codexDynamicToolResult("Tool is not available.", false))
 	}
-	_ = a.dispatcher.reply(req.ID, codexDynamicToolResult(strings.Join(choice, ", "), true))
 }
 
 // codexAskUserArgs parses DynamicToolCallParams.arguments into AskQuestion inputs. Options

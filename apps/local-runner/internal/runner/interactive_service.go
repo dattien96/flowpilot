@@ -30,7 +30,10 @@ type InteractiveService struct {
 	// agentCatalog serves the loadable sub-agent definitions (CP-19 / Task-081):
 	// .claude/agents + .codex/agents + provider homes, with built-in fallbacks.
 	agentCatalog *AgentCatalog
-	registry     *ProviderRegistry
+	// agentOrchestrator tracks the in-memory agent run tree and provides wait:true
+	// completion signaling for spawn_agent tool calls (CP-19 / Task-082).
+	agentOrchestrator *AgentOrchestrator
+	registry          *ProviderRegistry
 
 	// policy decides auto-approve/auto-deny/ask for YOLO=false approvals (04-04).
 	// Default is ask-everything; Admin Web (03) configures the lists.
@@ -235,10 +238,11 @@ func newInteractiveService(registry *ProviderRegistry, catalog CatalogStore, wor
 	// (Task-052); the per-turn deferred cleanup cannot run in that case. Best-effort.
 	sweepCodexImageAttachments(time.Hour, time.Now())
 	return &InteractiveService{
-		catalog:         catalog,
-		skillsCatalog:   newInteractiveCatalog(),
-		agentCatalog:    newAgentCatalog(),
-		registry:        registry,
+		catalog:           catalog,
+		skillsCatalog:     newInteractiveCatalog(),
+		agentCatalog:      newAgentCatalog(),
+		agentOrchestrator: newAgentOrchestrator(),
+		registry:          registry,
 		policy:          DefaultApprovalPolicyEngine(),
 		finalizer:       newFinalizer(),
 		workflowStore:   workflowStore,
@@ -306,6 +310,7 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		RestoredFrom:      rs.restoredFrom,
 		SyncStatus:        rs.syncStatus,
 		SyncUpdatedAt:     rs.syncUpdatedAt,
+		ParentRunID:       rs.parentRunID,
 	}
 }
 
@@ -396,8 +401,12 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 		rs.status = RunStatusWaitingQuestion
 	case EventTurnCompleted:
 		rs.status = RunStatusCompleted
+		// Signal any wait:true spawn_agent waiter — non-blocking (buffered channel).
+		// Must be called under s.mu so signalChild races after status is set.
+		s.agentOrchestrator.signalChild(rs.id, ev.FinalMessage, false, "")
 	case EventTurnFailed:
 		rs.status = RunStatusFailed
+		s.agentOrchestrator.signalChild(rs.id, "", true, ev.Error)
 	default:
 		rs.status = RunStatusRunning
 	}
@@ -559,6 +568,143 @@ func (b *turnBridge) AskQuestion(prompt string, options []QuestionOption, multiS
 		s.clearPendingQuestion(rec.id)
 		return nil, b.ctx.Err()
 	}
+}
+
+// SpawnAgent creates a child agent run from the current turn (CP-19 / Task-082).
+// When in.Wait==true it blocks until the child run's first turn completes, returning
+// its final message. Cancellation follows b.ctx (parent turn interrupt).
+func (b *turnBridge) SpawnAgent(in SpawnAgentInput) (SpawnAgentResult, error) {
+	return b.svc.spawnChildRun(b.ctx, b.rs.id, in)
+}
+
+// spawnChildRun is the shared spawn path for the spawn_agent tool and the HTTP handler.
+// It creates a child interactiveRun, tags it with agent identity, fires its first turn
+// asynchronously, and (when in.Wait==true) blocks until that turn completes.
+func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID string, in SpawnAgentInput) (SpawnAgentResult, error) {
+	// Resolve the agent definition from the catalog to inherit provider / model.
+	var agentDef *AgentDefinition
+	s.mu.Lock()
+	cwd := ""
+	if parent := s.runs[parentRunID]; parent != nil {
+		cwd = parent.workspaceCwd
+	}
+	s.mu.Unlock()
+	if defs := s.agentCatalog.listAgents(cwd); len(defs) > 0 {
+		for i := range defs {
+			if strings.EqualFold(defs[i].Name, in.Agent) {
+				def := defs[i]
+				agentDef = &def
+				break
+			}
+		}
+	}
+
+	// Determine provider: explicit input > agent definition > parent run's provider.
+	providerKey := ProviderKey(in.Provider)
+	if providerKey == "" && agentDef != nil && agentDef.Provider != "" {
+		providerKey = ProviderKey(agentDef.Provider)
+	}
+	if providerKey == "" {
+		s.mu.Lock()
+		if parent := s.runs[parentRunID]; parent != nil {
+			providerKey = parent.providerKey
+		}
+		s.mu.Unlock()
+	}
+
+	// Create the child run. createRun acquires s.mu internally; call it unlocked.
+	startIn := StartRunInput{
+		ChatMode:    "normal_chat",
+		Cwd:         cwd,
+		ProviderKey: providerKey,
+	}
+	handle, apiErr := s.createRun(startIn)
+	if apiErr != nil {
+		return SpawnAgentResult{}, fmt.Errorf("%s: %s", apiErr.code, apiErr.msg)
+	}
+
+	// Register the wait:true completion channel BEFORE starting the child turn to
+	// eliminate the race between turn completion and the caller's select.
+	var waiterCh <-chan agentCompletion
+	if in.Wait {
+		waiterCh = s.agentOrchestrator.openWaiter(handle.RunID)
+	}
+
+	// Stamp agent identity on the newly created child run.
+	s.mu.Lock()
+	if rs := s.runs[handle.RunID]; rs != nil {
+		rs.parentRunID = parentRunID
+		rs.dependsOn = in.DependsOn
+		rs.agentStatus = "spawned"
+		if agentDef != nil {
+			rs.agentName = agentDef.Name
+			rs.role = agentDef.Role
+		} else {
+			rs.agentName = in.Agent
+			rs.role = strings.ToLower(in.Agent)
+		}
+	}
+	s.mu.Unlock()
+
+	// Record the tree edge.
+	s.agentOrchestrator.registerChild(parentRunID, handle.RunID)
+
+	// Fire the first turn asynchronously; the child streams via its own SSE.
+	go func() {
+		_, turnErr := s.startTurn(handle.RunID, TurnInput{
+			StepID: handle.StepID,
+			Prompt: in.Prompt,
+		}, "", "")
+		if turnErr != nil {
+			// startTurn failed before the adapter ran — signal the waiter explicitly.
+			s.agentOrchestrator.signalChild(handle.RunID, "", true, turnErr.msg)
+		}
+	}()
+
+	result := SpawnAgentResult{
+		RunID:             handle.RunID,
+		ProviderSessionID: handle.ProviderSessionID,
+		ProviderKey:       string(handle.ProviderKey),
+		Status:            "spawned",
+	}
+
+	if in.Wait {
+		select {
+		case completion := <-waiterCh:
+			if completion.failed {
+				return SpawnAgentResult{}, fmt.Errorf("child agent failed: %s", completion.errMsg)
+			}
+			result.FinalMessage = completion.finalMessage
+			result.Status = "completed"
+		case <-ctx.Done():
+			return SpawnAgentResult{}, ctx.Err()
+		}
+	}
+
+	return result, nil
+}
+
+// listAgentRunSummaries returns the child run summaries for a given parent run.
+func (s *InteractiveService) listAgentRunSummaries(parentRunID string) []AgentRunSummary {
+	childIDs := s.agentOrchestrator.listChildren(parentRunID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]AgentRunSummary, 0, len(childIDs))
+	for _, id := range childIDs {
+		rs := s.runs[id]
+		if rs == nil {
+			continue
+		}
+		out = append(out, AgentRunSummary{
+			RunID:       rs.id,
+			AgentName:   rs.agentName,
+			Role:        rs.role,
+			Status:      rs.status,
+			ParentRunID: rs.parentRunID,
+			CreatedAt:   rs.createdAt,
+		})
+	}
+	return out
 }
 
 func (s *InteractiveService) expireApproval(id string) {

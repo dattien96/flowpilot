@@ -20,6 +20,9 @@ func (b *captureResumeBridge) RequestApproval(ApprovalDetails) (string, error) {
 func (b *captureResumeBridge) AskQuestion(string, []QuestionOption, bool) ([]string, error) {
 	return nil, nil
 }
+func (b *captureResumeBridge) SpawnAgent(_ SpawnAgentInput) (SpawnAgentResult, error) {
+	return SpawnAgentResult{}, nil
+}
 
 func TestCodexFreshRunUsesAppServerPath(t *testing.T) {
 	var adapterCalls atomic.Int32

@@ -1,5 +1,6 @@
 import type {
   AgentDefinition,
+  AgentRunSummary,
   Artifact,
   ChatSessionRestoreRequest,
   ChatSessionRestoreResult,
@@ -13,6 +14,8 @@ import type {
   RunHandle,
   RunHistoryItem,
   RunnerClient,
+  SpawnAgentInput,
+  SpawnAgentResult,
   StartRunInput,
   Step,
   TurnInput,
@@ -183,6 +186,20 @@ export class HttpWsRunnerClient implements RunnerClient {
   listAgents(cwd?: string): Promise<AgentDefinition[]> {
     const url = cwd ? `/client/agents?cwd=${encodeURIComponent(cwd)}` : "/client/agents";
     return this.getJSON<AgentDefinition[]>(url);
+  }
+
+  listAgentRuns(parentRunId: string): Promise<AgentRunSummary[]> {
+    return this.getJSON<AgentRunSummary[]>(
+      `/client/workflow-runs/${encodeURIComponent(parentRunId)}/agents`,
+    );
+  }
+
+  spawnAgent(input: SpawnAgentInput & { parentRunId: string }): Promise<SpawnAgentResult> {
+    const { parentRunId, ...body } = input;
+    return this.postJSON<SpawnAgentResult>(
+      `/client/workflow-runs/${encodeURIComponent(parentRunId)}/spawn-agent`,
+      body,
+    );
   }
 
   // ---- run lifecycle -------------------------------------------------------

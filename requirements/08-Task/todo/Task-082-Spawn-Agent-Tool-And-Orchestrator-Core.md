@@ -5,7 +5,7 @@
 - Document ID: `Task-082`
 - Title: `Spawn-Agent Tool And Orchestrator Core`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-19`
@@ -90,6 +90,6 @@ CP-19 requires a mechanism for the AI to request new agents; the spawn path and 
 
 ## 8. Completion Notes
 
-- result:
-- follow-ups:
-- upstream docs updated:
+- result: Implemented `agent_orchestrator.go` (AgentOrchestrator, SpawnAgentInput/Result/AgentRunSummary, parseSpawnAgentInput); `spawn_agent` tool registered in both Codex (`codex_adapter.go`) and Claude (`claude_mcp_server.go`, `claude_permission_mcp.go`) adapters; `TurnBridge.SpawnAgent` + `spawnChildRun` + `listAgentRunSummaries` on `InteractiveService`; `POST /spawn-agent` + `GET /agents` HTTP endpoints; `SpawnAgentInput`, `SpawnAgentResult`, `AgentRunSummary` types + `listAgentRuns`, `spawnAgent`, `focusAgentRun` added to TypeScript `RunnerClient` contract and `HttpWsRunnerClient`. 16 unit + integration tests (all pass). No dependency graph, UI, or Supabase persistence (as scoped).
+- follow-ups: Task-083 (desktop Agents panel), Task-084 (dependency feedback loop), Task-085 (Supabase persistence + message bus).
+- upstream docs updated: Task-082 status → done.

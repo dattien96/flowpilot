@@ -245,6 +245,8 @@ func (s *claudeMCPServer) dispatch(method string, msg map[string]any, token stri
 			return handleClaudeApprove(args, bridge), nil
 		case "ask_user":
 			return handleClaudeAskUser(args, bridge), nil
+		case "spawn_agent":
+			return handleClaudeSpawnAgent(args, bridge), nil
 		default:
 			return nil, map[string]any{"code": -32601, "message": "unknown tool: " + name}
 		}
@@ -269,6 +271,21 @@ func claudeMCPToolDefs() []any {
 					"multiSelect": map[string]any{"type": "boolean", "description": "Allow selecting more than one option."},
 				},
 				"required": []any{"prompt"},
+			},
+		},
+		map[string]any{
+			"name":        "spawn_agent",
+			"description": "Spawn a child agent run. Use when a sub-task is best delegated to a specialised agent. If wait=true the call blocks until the child's first turn completes and returns its final message.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"agent":     map[string]any{"type": "string", "description": "Agent name from the catalog (e.g. \"researcher\", \"coder\")."},
+					"prompt":    map[string]any{"type": "string", "description": "Initial prompt for the child agent."},
+					"provider":  map[string]any{"type": "string", "description": "Override provider key (codex, claude). Omit to inherit parent."},
+					"dependsOn": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Run IDs this child must wait for before starting."},
+					"wait":      map[string]any{"type": "boolean", "description": "Block until the child's first turn completes (default false)."},
+				},
+				"required": []any{"agent", "prompt"},
 			},
 		},
 	}

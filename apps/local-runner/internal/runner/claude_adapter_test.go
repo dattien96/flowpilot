@@ -48,6 +48,10 @@ func (b *fakeClaudeBridge) AskQuestion(prompt string, options []QuestionOption, 
 	return b.answer, nil
 }
 
+func (b *fakeClaudeBridge) SpawnAgent(_ SpawnAgentInput) (SpawnAgentResult, error) {
+	return SpawnAgentResult{}, nil
+}
+
 func (b *fakeClaudeBridge) types() []ProviderEventType {
 	b.mu.Lock()
 	defer b.mu.Unlock()

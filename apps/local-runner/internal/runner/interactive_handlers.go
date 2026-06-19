@@ -37,6 +37,8 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /client/agents", s.handleListAgents)
 	mux.HandleFunc("GET /client/active-account", s.handleGetActiveAccount)
 	mux.HandleFunc("POST /client/active-account", s.handleSetActiveAccount)
+	mux.HandleFunc("POST /client/workflow-runs/{runId}/spawn-agent", s.handleSpawnAgent)
+	mux.HandleFunc("GET /client/workflow-runs/{runId}/agents", s.handleListAgentRuns)
 
 	// admin
 	mux.HandleFunc("GET /admin/providers", s.handleAdminProviders)
@@ -752,6 +754,27 @@ func (s *InteractiveService) runSnapshot(runID string) (runSnapshotView, *apiErr
 		}
 	}
 	return view, nil
+}
+
+// handleSpawnAgent allows a desktop client to programmatically spawn a child agent run for
+// a given parent run. Equivalent to the spawn_agent provider tool but HTTP-initiated.
+func (s *InteractiveService) handleSpawnAgent(w http.ResponseWriter, r *http.Request) {
+	var in SpawnAgentInput
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_request", "invalid request body"))
+		return
+	}
+	result, err := s.spawnChildRun(r.Context(), r.PathValue("runId"), in)
+	if err != nil {
+		writeInteractiveError(w, newAPIErr(http.StatusUnprocessableEntity, "spawn_failed", err.Error()))
+		return
+	}
+	writeInteractiveJSON(w, http.StatusOK, result)
+}
+
+// handleListAgentRuns returns the agent run summaries that are children of the given run.
+func (s *InteractiveService) handleListAgentRuns(w http.ResponseWriter, r *http.Request) {
+	writeInteractiveJSON(w, http.StatusOK, s.listAgentRunSummaries(r.PathValue("runId")))
 }
 
 func fakeArtifacts(runID string) []Artifact {
