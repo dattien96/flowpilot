@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"sort"
 	"strconv"
@@ -143,11 +144,15 @@ func (s *InteractiveService) handleGetRun(w http.ResponseWriter, r *http.Request
 }
 
 func (s *InteractiveService) handleResumeRun(w http.ResponseWriter, r *http.Request) {
-	handle, e := s.resumeRun(r.PathValue("runId"))
+	runID := r.PathValue("runId")
+	log.Printf("[chat-history-open] request run_id=%q remote_addr=%q", runID, r.RemoteAddr)
+	handle, e := s.resumeRun(runID)
 	if e != nil {
+		log.Printf("[chat-history-open] response failed run_id=%q status=%d code=%q message=%q", runID, e.status, e.code, e.msg)
 		writeInteractiveError(w, e)
 		return
 	}
+	log.Printf("[chat-history-open] response ok run_id=%q provider=%q provider_session_id=%q status=%q step_id=%q", handle.RunID, handle.ProviderKey, handle.ProviderSessionID, handle.Status, handle.StepID)
 	writeInteractiveJSON(w, http.StatusOK, handle)
 }
 
@@ -586,14 +591,17 @@ func (s *InteractiveService) resumeRun(runID string) (RunHandle, *apiErr) {
 	s.mu.Lock()
 	rs := s.runs[runID]
 	s.mu.Unlock()
+	log.Printf("[chat-history-open] resume start run_id=%q in_memory=%t", runID, rs != nil)
 	if rs == nil {
 		rebuilt, err := s.loadPersistedRun(runID)
 		if err != nil {
+			log.Printf("[chat-history-open] resume reconstruction failed run_id=%q code=%q message=%q", runID, err.code, err.msg)
 			return RunHandle{}, err
 		}
 		rs = rebuilt
 	}
 	if err := s.ensureResumeReady(rs); err != nil {
+		log.Printf("[chat-history-open] resume readiness failed run_id=%q provider=%q code=%q message=%q", runID, rs.providerKey, err.code, err.msg)
 		return RunHandle{}, err
 	}
 	s.seedTranscriptFromDisk(rs)
@@ -604,6 +612,10 @@ func (s *InteractiveService) resumeRun(runID string) (RunHandle, *apiErr) {
 	if rs.runKind == "chat" {
 		handle.StepID = "chat-" + rs.id
 	}
+	s.mu.Lock()
+	eventCount := len(rs.events)
+	s.mu.Unlock()
+	log.Printf("[chat-history-open] resume complete run_id=%q provider=%q provider_session_id=%q status=%q events=%d", rs.id, rs.providerKey, handle.ProviderSessionID, rs.status, eventCount)
 	return handle, nil
 }
 

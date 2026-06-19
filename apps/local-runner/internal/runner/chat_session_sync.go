@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -243,6 +244,25 @@ func (s *InteractiveService) BuildChatSessionSyncManifest(ctx context.Context, r
 		return ChatSessionSyncManifest{}, nil, newAPIErr(http.StatusConflict, "resume_unsupported", "only chat runs can be resumed in this version")
 	}
 	accountHome, ok := s.resolveAccountHome(session.ProviderKey, session.ProviderAccountID)
+	if !ok {
+		// Stale account ID recovery: scan same-provider registered homes for the exact
+		// session file (mirrors the BUG-092 fallback in ensureResumeReady). This allows
+		// sync to succeed even when provider-accounts.json was regenerated since the run
+		// was created — without requiring the user to open the chat first.
+		if recovered, _, found := s.locateSessionAcrossProviderAccounts(
+			session.ProviderKey, "", session.ProviderSessionID, session.WorkingDirectory,
+		); found {
+			log.Printf("[chat-sync] stale account recovered run_id=%q stale_account_id=%q recovered_account_id=%q recovered_home=%q",
+				runID, session.ProviderAccountID, recovered.ID, recovered.HomePath)
+			session.ProviderAccountID = recovered.ID
+			accountHome = recovered.HomePath
+			ok = true
+			// Repair the persisted stale account ID so future syncs avoid the scan.
+			_ = s.updateLocalSessionSyncStatus(ctx, runID, func(st *ProviderSessionState) {
+				st.ProviderAccountID = recovered.ID
+			})
+		}
+	}
 	if !ok {
 		return ChatSessionSyncManifest{}, nil, newAPIErr(http.StatusConflict, "account_unavailable", "provider account home not found")
 	}

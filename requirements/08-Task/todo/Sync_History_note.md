@@ -82,26 +82,6 @@ Task 075
 
 ## 4.3 Phase 3: Recheck architecture for adding sync flow/step in future
 
-Pending
-
-# 5. DOD remaining
-
-## Task 072
-
-Automated runner-level signatures: all done (2026-06-18).
-TS-008: DONE - TestClaudeAdapterPersistsRealSessionIDForResume (claude_adapter_test.go)
-TS-011: DONE - TestResumeRunReconstructsChatRunSeedsChatStep (cross_account_resume_test.go)
-TS-013: DONE - TestResumeRunMissingPersistedSessionReturnsRunNotFound (cross_account_resume_test.go)
-TS-015: DONE - TestResolveAccountHomeExplicitAccount (cross_account_resume_test.go)
-TS-016: DONE - TestResolveAccountHomeDefaultAccountFallback (cross_account_resume_test.go)
-TS-017: DONE - TestResolveAccountHomeMissingAccount (cross_account_resume_test.go)
-TS-019: DONE - TestLocateSessionFileCodexMissing (cross_account_resume_test.go)
-TS-020: DONE - TestLocateSessionFileClaudeFindsProjectSession (cross_account_resume_test.go)
-TS-029: DONE - TestRestoredClaudeRunSeedsPoolWithRealSessionBeforeTurn (claude_adapter_test.go)
-TS-030-031: Claude cross-account env / opt-in e2e - blocked (need real Claude auth or 2nd account)
-TS-037-038: opt-in real-provider Codex e2e - intentionally excluded from automated suite (keep go test token-free)
-TS-042-043: Navigator component-level test harness not present in repo; state-level coverage via store.test.ts accepted
-TS-044-048: covered as `scripts/quicktest.ps1` canaries + Settings Check Version UI; no Pester quicktest.tests.ps1 harness
 
 ## Task 059
 
@@ -118,99 +98,43 @@ DOD-067-010 - Transcript view (stream prior messages to desktop): DONE (implemen
 - SSE snapshot path replays rs.events to desktop (already in place — no SSE changes needed)
 - Codex support deferred (rollout JSONL replay format unconfirmed)
 
+# 5. Blocked / not-resolvable categories (audited 2026-06-18)
+Codex
+- Cross Acc: **Passed**
+- Cross re-start: **Passed**
+- Cross PC: waiting
 
-## Task-075: Cross-Account And Cross-PC Chat E2E Test Guide
-Some cases not tested yet
+Claude
+- Cross Acc: CAN NOT TEST cause only 1 acc
+- Cross re-start: **Passed**
+- Cross PC: waiting
 
-# 6. Blocked / not-resolvable categories (audited 2026-06-18)
+PENDING ITEM:
+   - 071: 44, 89, 91
+   - 073: DOD-091->093
+   - 069: DOD-069-010
+   - 074: TS-044->046
+   - 072: TS-029-030-031,043,044-048
 
-The remaining not-done items fall into 4 buckets:
+Case mem local + sync ok
+Nhuwng test lai case may khac restore + open
 
-1. Manual provider / E2E - will test manually (see §9 checklist)
-   - 071: DOD-43, 52, 53, 88->93
-   - 073: DOD-087->093
-   - 069: DOD-069-009
-   - 074: TS-040->046
-2. GitNexus MCP gate - WAIVED (MCP tools not exposed, no CLI `detect-changes` equivalent)
-   - 071: DOD-95 ; 073: DOD-095, 096   [marked done/waived 2026-06-18]
-3. Feature not built - transcript view (see §10)
-   - 067: DOD-067-010 DONE (2026-06-18)
-4. Remaining deferred test signatures - see §5 Task 072 for per-item reasons
-   - 072: TS-030-031,037,038,042,043,044-048  (TS-008/011/013/015-017/019-020/029 now DONE)
+Edge case not test: 
+F-1 Active account home missing
 
-# 7. Claude provider DOD status (only 1 Claude account available)
+result: account_unavailable
+F-2 Active account not signed in
 
-What "we have not done DOD for Claude" actually means, grouped by the real blocker:
+result: account_not_signed_in
+F-3 Stable rollout file missing in source home
 
-A. Blocked by "only 1 Claude account" - cross-account needs 2 accounts - CANNOT test now
-   - 071: DOD-44 (Claude cross-account behavior)
-   - 068: DOD-068-010 (Claude cross-account feasibility validated e2e)
-   - 072: TS-030 (Claude resume env uses active account home - cross-account)
-B. Testable NOW with 1 account - same-account post-restart resume (no 2nd account needed)
-   - 071: DOD-43 (Claude same-account post-restart resume follow-up)
-   - 072: TS-031 (Claude same-account post-restart e2e, opt-in env flag)
-C. Mock-based, NO real account needed - DONE (implemented 2026-06-18)
-   - 072: TS-008 DONE (Claude real session id persisted, fake stream)
-   - 072: TS-029 DONE (restored Claude run seeds real session before turn, fake)
-D. "Record as provider-untested" - satisfiable by documentation (kept pending per user 2026-06-18)
-   - 069: DOD-069-010 ; 073: DOD-093 ; 074: TS-046
+result: session_unavailable
+F-4 Destination session file already exists with different bytes
 
-Note: Codex cross-account IS confirmed (CA-098, two codex homes on one machine). Claude
-cross-account is the only true account-blocked gap because we have one Claude account.
+result: relocation fails; FlowPilot refuses overwrite
+F-5 Source and destination are the same physical file
 
-# 8. Windows go-test note
+result: relocation succeeds as a no-op; FlowPilot still rebinds provider_account_id
+F-6 Old runs without turn-log sidecar
 
-DOD-85 ("go test ./internal/runner/... passes") is true on macOS/Linux (dev/CI). On Windows
-several PRE-EXISTING tests fail due to Unix-only assumptions - not regressions, not from 99cac10:
-- google_drive_mcp_provider_config_test.go (introduced 99ba48b): `/tmp/...` path; Windows filepath rewrites to `\tmp\...`
-- phase8_a1_test.go skills merge: sets HOME but blanks USERPROFILE; Windows resolves home from USERPROFILE
-- codex_resume_process_test.go (99cac10): `sh -c` shell mocks fail under Git Bash on Windows
-Fix if Windows CI is desired = make these platform-portable (t.TempDir() paths, set USERPROFILE alongside HOME, cross-platform command mock).
-
-# 9. Manual testing queue (2026-06-18)
-
-Items the user will test manually. Mark each [ ] -> [x] when verified, note pass/fail/provider-untested.
-
-## 9.1 Cross-account resume (Task-071)
-
-- [ ] DOD-43: Claude same-account post-restart resume - start chat, restart app, click history, send follow-up
-- [ ] DOD-52: Codex same-account post-restart resume - same flow as DOD-43 but with Codex
-- [ ] DOD-53: Codex cross-account resume - copy rollout file under second Codex account home, open history
-- [ ] DOD-88: Start chat → restart runner/app → click history item → send follow-up successfully
-- [ ] DOD-89: Delete/move provider session file → restart → click history → verify greyout (not crash)
-- [ ] DOD-90: Two accounts on one PC → start chat under A → switch to B → click A history item → continue (if portable)
-- [ ] DOD-91: Active account not signed in → click history item → verify signed-out reason shown
-- [ ] DOD-92: History list order + display fields match BUG-080 behavior after restart
-- [ ] DOD-93: No provider session file contents appear in runner logs during above flows
-
-Note: DOD-44 (Claude cross-account) and DOD-068-010 BLOCKED - need 2nd Claude account.
-
-## 9.2 Cross-PC Codex sync/restore (Task-069 + Task-073 + Task-074)
-
-- [ ] DOD-069-009 / DOD-087 / TS-040: PC1 Codex chat - sync to Drive - verify Drive has index + manifest + provider file
-- [ ] DOD-088 / TS-041: PC2 (or isolated home) - restore from Drive - verify one local history item created
-- [ ] DOD-089 / TS-042: Open restored run on PC2 + send follow-up - verify completes
-- [ ] DOD-090 / TS-043: Restore when PC2 cwd differs - verify cwd remap flow
-- [ ] DOD-091 / TS-044: Delete remote provider file or local restored file - attempt open - verify greyout with reason
-- [ ] DOD-092 / TS-045: Restore into provider home without auth - verify account_not_signed_in reason shown
-- [ ] DOD-093 / TS-046: Claude provider status - record as pass / fail / provider-untested
-
-Note: DOD-069-010 BLOCKED - Claude cross-PC needs 2nd machine + 2nd Claude account.
-
-# 10. Transcript view scope (DOD-067-010) - DONE NOW
-
-**Status: BUILT (2026-06-18) — Claude provider.**
-
-What works:
-- Resume (sending new messages after restart/cross-account/cross-PC restore) WORKS
-- Prior conversation messages ARE streamed back to the desktop when opening a resumed Claude run
-- resumeRun calls seedTranscriptFromDisk after ensureResumeReady; rs.events populated before any SSE subscriber connects
-- SSE snapshot path (afterSeq=0) replays all rs.events to the desktop — no SSE layer changes needed
-
-What does NOT work yet:
-- Codex transcript replay: rollout JSONL format not confirmed for conversation replay; deferred
-
-Implementation:
-- transcript_loader.go: loadClaudeTranscriptEvents — reads Claude JSONL, maps each line via mapClaudeLine
-- interactive_resume.go: seedTranscriptFromDisk — resolves account home, locates session file, stamps correlation fields (Seq, ID, WorkflowRunID, StepRunID, ProviderSessionID, ProviderKey, OccurredAt), appends to rs.events under s.mu
-- interactive_handlers.go: resumeRun — one line added after ensureResumeReady
+result: resume still works from the stable stored session file, but replay may only have single-file coverage

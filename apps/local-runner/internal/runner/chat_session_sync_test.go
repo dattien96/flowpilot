@@ -1107,3 +1107,118 @@ func TestListRemoteChatSessionsHandlerReturnsSummaries(t *testing.T) {
 		t.Fatalf("unexpected response body: %s", body)
 	}
 }
+
+// TestSyncChatRunWithStaleAccountIDBeforeOpening verifies that Drive sync succeeds
+// even when the session's stored ProviderAccountID no longer exists in
+// provider-accounts.json (e.g. after a missing-config restart regenerated IDs).
+// This is the BUG-093 scenario: the session file is under "acct-current"'s home but
+// the stored account ID is the stale "acct-stale". Sync must NOT require opening the
+// chat first, and the repaired account ID must be persisted in the session store.
+func TestSyncChatRunWithStaleAccountIDBeforeOpening(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("GOOGLE_DRIVE_CLIENT_ID", "client-id")
+	t.Setenv("GOOGLE_DRIVE_CLIENT_SECRET", "client-secret")
+	t.Setenv("GOOGLE_DRIVE_REDIRECT_URI", "http://localhost/callback")
+	t.Setenv("GOOGLE_PICKER_API_KEY", "picker-key")
+
+	workspace := t.TempDir()
+	instance, err := New(workspace)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+	instance.secretStore = newMemorySecretStore()
+
+	// provider-accounts.json contains "acct-current", not the stale "acct-stale".
+	accountHome := filepath.Join(home, "codex-home")
+	if err := os.MkdirAll(filepath.Join(accountHome, ".codex"), 0o755); err != nil {
+		t.Fatalf("mkdir auth dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(accountHome, ".codex", "auth.json"), []byte(`{"id_token":"token"}`), 0o644); err != nil {
+		t.Fatalf("write auth: %v", err)
+	}
+	if err := instance.saveProviderAccountState(providerAccountState{
+		Accounts: []ProviderAccount{{
+			ID:          "acct-current",
+			ProviderKey: "codex",
+			DisplayName: "Account 1",
+			HomePath:    accountHome,
+			SlotIndex:   1,
+			IsActive:    true,
+			AuthStatus:  "connected",
+			CreatedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+		}},
+	}); err != nil {
+		t.Fatalf("saveProviderAccountState: %v", err)
+	}
+	if err := instance.saveGoogleDriveCredentialByProject("project-1", googleDriveCredential{RefreshToken: "refresh-token-1"}); err != nil {
+		t.Fatalf("saveGoogleDriveCredentialByProject: %v", err)
+	}
+	if err := instance.saveArtifactStorageGoogleDriveState(func(current *artifactStorageGoogleDriveState) {
+		current.Connections["project-1"] = artifactStorageGoogleDriveConnectionRecord{
+			ProjectID:   "project-1",
+			Status:      "connected",
+			FolderID:    "drive-root",
+			ConnectedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		}
+	}); err != nil {
+		t.Fatalf("saveArtifactStorageGoogleDriveState: %v", err)
+	}
+
+	store, err := NewLocalFileSessionStore(filepath.Join(workspace, ".flowpilot", "chats"))
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+
+	// Session file lives under "acct-current"'s home.
+	sessionID := "session-stale-sync"
+	sessionPath := filepath.Join(accountHome, "sessions", "2026", "06", "19", "rollout-local-"+sessionID+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(sessionPath), 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	if err := os.WriteFile(sessionPath, []byte("{\"type\":\"session_meta\"}\n"), 0o644); err != nil {
+		t.Fatalf("write session file: %v", err)
+	}
+
+	// Session store has the stale account ID.
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             "run-stale-sync",
+		ProjectID:         "project-1",
+		ProviderKey:       ProviderKeyCodex,
+		ProviderSessionID: sessionID,
+		ProviderAccountID: "acct-stale", // stale — not in provider-accounts.json
+		WorkingDirectory:  workspace,
+		Status:            RunStatusCompleted,
+		RunKind:           "chat",
+		StartedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+		UpdatedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("UpsertProviderSession: %v", err)
+	}
+
+	svc := NewInteractiveServiceWithStore(DefaultProviderRegistry(), nil, store)
+	svc.AttachRunner(instance)
+
+	api := newFakeChatDriveAPI("drive-root")
+	originalHTTPRequest := httpRequestFn
+	httpRequestFn = api.handle
+	t.Cleanup(func() { httpRequestFn = originalHTTPRequest })
+
+	// Sync WITHOUT opening first — this is the BUG-093 scenario.
+	result, apiErr := svc.syncChatRunToDrive(context.Background(), "run-stale-sync", ChatSessionSyncRequest{})
+	if apiErr != nil {
+		t.Fatalf("syncChatRunToDrive with stale account ID: code=%s message=%s", apiErr.code, apiErr.msg)
+	}
+	if result.RunID != "run-stale-sync" {
+		t.Fatalf("syncChatRunToDrive RunID = %q, want run-stale-sync", result.RunID)
+	}
+
+	// Account ID must be repaired in the store after recovery.
+	session, found, err := store.GetProviderSession(context.Background(), "run-stale-sync")
+	if err != nil || !found {
+		t.Fatalf("GetProviderSession = (%v, %v, %v)", session, found, err)
+	}
+	if session.ProviderAccountID != "acct-current" {
+		t.Fatalf("repaired ProviderAccountID = %q, want acct-current", session.ProviderAccountID)
+	}
+}

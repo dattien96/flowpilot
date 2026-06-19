@@ -2,10 +2,12 @@ package runner
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -275,6 +277,7 @@ func (r *Runner) loadProviderAccountState() (providerAccountState, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			log.Printf("[provider-accounts] config not found path=%q — accounts auto-discovered, stored session IDs may be stale", path)
 			return providerAccountState{Accounts: []ProviderAccount{}}, nil
 		}
 		return providerAccountState{}, err
@@ -301,7 +304,11 @@ func (r *Runner) saveProviderAccountState(state providerAccountState) error {
 		return err
 	}
 
-	return os.WriteFile(path, payload, 0o644)
+	if err := os.WriteFile(path, payload, 0o644); err != nil {
+		return err
+	}
+	log.Printf("[provider-accounts] config saved path=%q accounts=%d", path, len(state.Accounts))
+	return nil
 }
 
 func (r *Runner) syncProviderAccounts(accounts []ProviderAccount) ([]ProviderAccount, bool) {
@@ -320,7 +327,7 @@ func (r *Runner) syncProviderAccounts(accounts []ProviderAccount) ([]ProviderAcc
 		if hasDefault {
 			if defaultIndex < 0 {
 				account := ProviderAccount{
-					ID:          newProviderAccountID(),
+					ID:          deterministicProviderAccountID(providerKey, defaultPath),
 					ProviderKey: providerKey,
 					DisplayName: "Default Account",
 					HomePath:    defaultPath,
@@ -540,7 +547,7 @@ func syncManagedProviderAccounts(accounts []ProviderAccount, providerKey string)
 		}
 
 		accounts = append(accounts, ProviderAccount{
-			ID:                  newProviderAccountID(),
+			ID:                  deterministicProviderAccountID(providerKey, homePath),
 			ProviderKey:         providerKey,
 			DisplayName:         fmt.Sprintf("Account %d", slotIndex),
 			HomePath:            homePath,
@@ -636,6 +643,18 @@ func newProviderAccountID() string {
 		return fmt.Sprintf("acct-%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(buffer)
+}
+
+// deterministicProviderAccountID returns a stable 32-hex-char account ID derived
+// from the provider key and home path. Auto-discovered default and managed accounts
+// use this so that regenerating provider-accounts.json (e.g. after a missing file)
+// produces the same ID for the same physical installation, keeping stored session
+// account references valid without requiring the BUG-092 recovery scan.
+func deterministicProviderAccountID(providerKey, homePath string) string {
+	normalized := filepath.ToSlash(filepath.Clean(strings.TrimSpace(homePath)))
+	input := strings.ToLower(strings.TrimSpace(providerKey)) + ":" + strings.ToLower(normalized)
+	sum := sha256.Sum256([]byte(input))
+	return hex.EncodeToString(sum[:16]) // 32 hex chars, same length as newProviderAccountID
 }
 
 // DiscoverProviderAccountHomes discovers provider account home paths by checking default locations.

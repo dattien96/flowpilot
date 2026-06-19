@@ -10,6 +10,9 @@ Correct Drive-backed Remote Chats restore after a runner restart when the provid
 - Persisted the same resolved account id on the restored session record.
 - Added restart regression coverage proving local History resume and Remote Chats restore both work after reloading `sessions.ndjson`.
 - Updated the missing-account test to model a genuine absence of durable connected provider accounts.
+- Added structured desktop and runner logs for history-open resume, account/session lookup, typed failures, and transcript stream replay after the user reported the symptom still occurs.
+- Added stale-account recovery for Claude and Codex: when the stored account ID is gone, resume searches same-provider registered homes for the exact provider session ID, verifies auth, and persists the repaired account binding.
+- Added provider-specific regression tests matching the real `source home unresolved` traces.
 
 ## Verification
 
@@ -23,3 +26,4 @@ Correct Drive-backed Remote Chats restore after a runner restart when the provid
 
 - GitNexus MCP tools were unavailable in this session, so impact analysis was performed manually.
 - Existing uncommitted BUG-091 restore conflict changes were preserved and validated by the targeted restore suite.
+- Recovery is intentionally exact-ID based; it does not choose the newest unrelated provider session.

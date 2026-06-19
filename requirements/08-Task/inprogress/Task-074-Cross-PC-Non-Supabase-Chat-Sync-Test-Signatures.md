@@ -524,7 +524,7 @@ Task-073 defines the DoD for Task-069. This document turns that checklist into t
 
 ### Manual And Opt-In E2E
 
-#### [ ] `TS-040` Manual Codex PC1 sync to Drive
+#### [x] `TS-040` Manual Codex PC1 sync to Drive
 
 - target file: `requirements/08-Task/todo/Task-073-Cross-PC-Non-Supabase-Chat-Sync-DOD-Checklist.md`
 - signature: `Manual: Codex PC1 sync to Drive`
@@ -535,7 +535,7 @@ Task-073 defines the DoD for Task-069. This document turns that checklist into t
   - Drive contains index, manifest, and provider file
 - covers: `DOD-087`
 
-#### [ ] `TS-041` Manual Codex PC2 restore from Drive
+#### [x] `TS-041` Manual Codex PC2 restore from Drive
 
 - target file: `requirements/08-Task/todo/Task-073-Cross-PC-Non-Supabase-Chat-Sync-DOD-Checklist.md`
 - signature: `Manual: Codex PC2 restore from Drive`
@@ -547,7 +547,7 @@ Task-073 defines the DoD for Task-069. This document turns that checklist into t
   - restored provider file exists under active account home
 - covers: `DOD-088`
 
-#### [ ] `TS-042` Manual restored Codex follow-up
+#### [x] `TS-042` Manual restored Codex follow-up
 
 - target file: `requirements/08-Task/todo/Task-073-Cross-PC-Non-Supabase-Chat-Sync-DOD-Checklist.md`
 - signature: `Manual: Restored Codex run sends follow-up`
@@ -558,7 +558,7 @@ Task-073 defines the DoD for Task-069. This document turns that checklist into t
   - opening restored run and sending a prompt completes
 - covers: `DOD-089`
 
-#### [ ] `TS-043` Manual different cwd restore
+#### [x] `TS-043` Manual different cwd restore
 
 - target file: `requirements/08-Task/todo/Task-073-Cross-PC-Non-Supabase-Chat-Sync-DOD-Checklist.md`
 - signature: `Manual: Different cwd restore`
