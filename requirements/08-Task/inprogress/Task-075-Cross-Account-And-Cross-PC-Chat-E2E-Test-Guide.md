@@ -89,7 +89,7 @@ Phase 1 and Phase 2 automated coverage is in place, but the remaining acceptance
 - [x] `E2E-002` Prepare one signed-in Codex account A and one signed-in Codex account B on the same machine if cross-account Codex testing is required.
 - [ ] `E2E-003` Prepare one signed-in Claude account A and one signed-in Claude account B on the same machine if Claude cross-account testing is required.
 - [x] `E2E-004` Prepare Google Drive connection for the selected project if cross-PC sync tests are required.
-- [ ] `E2E-005` For cross-PC validation, prepare PC1 and PC2 or two isolated environments that do not share the same provider-home directories.
+- [x] `E2E-005` For cross-PC validation, prepare PC1 and PC2 or two isolated environments that do not share the same provider-home directories.
 - [x] `E2E-006` Record the exact provider/model/acc pairs used:
   - Codex: `gpt-5.4-mini` Account Active: `claudesub9596@gmail.com` and `photohl96@gmail.com`
   - Claude: `Haiku`
@@ -266,7 +266,7 @@ Phase 1 and Phase 2 automated coverage is in place, but the remaining acceptance
 
 ### Case Group G - Cross-PC Restore From Drive
 
-- [ ] `E2E-080` PC2 restore a synced Codex run.
+- [x] `E2E-080` PC2 restore a synced Codex run.
   - steps:
     - on PC2, connect the same project to the same Drive source
     - open the desktop app
@@ -282,7 +282,7 @@ Phase 1 and Phase 2 automated coverage is in place, but the remaining acceptance
     - the restored run opens
     - the follow-up succeeds if Codex portability works on PC2
 
-- [ ] `E2E-081` PC2 restore with cwd remap when the original path does not exist.
+- [x] `E2E-081` PC2 restore with cwd remap when the original path does not exist.
   - steps:
     - ensure PC1 and PC2 project paths differ
     - sync from PC1
@@ -322,7 +322,7 @@ Phase 1 and Phase 2 automated coverage is in place, but the remaining acceptance
 
 ### Case Group H - History And Regression Safety
 
-- [ ] `E2E-090` Unified history remains one list with no account grouping.
+- [x] `E2E-090` Unified history remains one list with no account grouping.
   - expected:
     - history is still under the single `History` section
     - no new account badge/group/filter appears
@@ -333,7 +333,7 @@ Phase 1 and Phase 2 automated coverage is in place, but the remaining acceptance
 
 - [ ] `E2E-092` New and restored runs sort by recent activity without breaking older history visibility.
 
-- [ ] `E2E-093` No provider session content appears in logs, UI toasts, tooltips, or error details during any case in this guide.
+- [x] `E2E-093` No provider session content appears in logs, UI toasts, tooltips, or error details during any case in this guide.
 
 ## 5. Touched Areas
 

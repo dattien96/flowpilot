@@ -104,7 +104,7 @@ Non-Supabase path extends Task-057 Steps 1–4. Only the index source differs:
 - [x] `DOD-069-006` Restore resolves run-id collisions deterministically and preserves source identity metadata.
 - [x] `DOD-069-007` Desktop exposes sync and restore actions with typed-error greyout behavior.
 - [x] `DOD-069-008` Automated signatures `TS-001` through `TS-039` from Task-074 are implemented.
-- [ ] `DOD-069-009` Manual cross-PC verification is completed for Codex sync/restore/open-follow-up.
+- [x] `DOD-069-009` Manual cross-PC verification is completed for Codex sync/restore/open-follow-up.
 - [ ] `DOD-069-010` Claude provider portability is recorded as pass/fail/provider-untested.
 
 ## 5. Touched Areas

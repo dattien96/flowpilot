@@ -576,7 +576,7 @@ Task-071 defines what done means. This task turns that checklist into concrete t
   - error text does not include session file contents
 - covers: `DOD-31`, `DOD-38`, `DOD-50`
 
-#### `TS-037` Codex same-account post-restart e2e is opt-in
+#### `[done] TS-037` Codex same-account post-restart e2e is opt-in
 
 - target file: `apps/local-runner/internal/runner/codex_resume_e2e_test.go`
 - signature: `func TestCodexPostRestartResumeEndToEnd(t *testing.T)`
@@ -589,7 +589,7 @@ Task-071 defines what done means. This task turns that checklist into concrete t
   - when enabled, `codex exec resume` completes and emits assistant output
 - covers: `DOD-52`, `DOD-87`, `DOD-88`
 
-#### `TS-038` Codex cross-account portability e2e is opt-in
+#### `[done] TS-038` Codex cross-account portability e2e is opt-in
 
 - target file: `apps/local-runner/internal/runner/codex_resume_e2e_test.go`
 - signature: `func TestCodexCrossAccountResumeEndToEnd(t *testing.T)`
@@ -645,7 +645,7 @@ Task-071 defines what done means. This task turns that checklist into concrete t
   - no navigation happens
 - covers: `DOD-26`, `DOD-58`, `DOD-59`, `DOD-91`
 
-#### `TS-042` Navigator renders unified history without account UI
+#### `[done] TS-042` Navigator renders unified history without account UI
 
 - target file: `apps/desktop-flowpilot/src/components/Navigator.test.tsx`
 - signature: `it("renders unified history without account labels or grouping", () => { ... })`
@@ -723,7 +723,7 @@ Task-071 defines what done means. This task turns that checklist into concrete t
 
 ### Manual And Opt-In E2E Test Signatures
 
-#### `TS-049` Manual same-account post-restart resume
+#### `[done] TS-049` Manual same-account post-restart resume
 
 - target file: `requirements/08-Task/todo/Task-071-Cross-Account-Chat-Resume-DOD-Checklist.md`
 - signature: `Manual: Same-account post-restart resume`
@@ -763,7 +763,7 @@ Task-071 defines what done means. This task turns that checklist into concrete t
   - no relocation occurs
 - covers: `DOD-91`
 
-#### `TS-052` Manual history display after restart
+#### `[done] TS-052` Manual history display after restart
 
 - target file: `requirements/08-Task/todo/Task-071-Cross-Account-Chat-Resume-DOD-Checklist.md`
 - signature: `Manual: History display survives restart`
@@ -777,7 +777,7 @@ Task-071 defines what done means. This task turns that checklist into concrete t
   - no account grouping or filtering
 - covers: `DOD-54`, `DOD-55`, `DOD-92`
 
-#### `TS-053` Manual no provider file content in logs
+#### `[done] TS-053` Manual no provider file content in logs
 
 - target file: `requirements/08-Task/todo/Task-071-Cross-Account-Chat-Resume-DOD-Checklist.md`
 - signature: `Manual: Provider session contents are not logged`

@@ -194,10 +194,10 @@ Task-069 chose Google Drive plus local `sessions.ndjson` as the primary cross-PC
 
 ### Manual End-To-End
 
-- [ ] `DOD-087` Manual Codex PC1 sync to Drive succeeds.
-- [ ] `DOD-088` Manual Codex PC2 restore from Drive succeeds.
-- [ ] `DOD-089` Manual restored Codex run opens and can send a follow-up.
-- [ ] `DOD-090` Manual different-cwd restore path is verified.
+- [x] `DOD-087` Manual Codex PC1 sync to Drive succeeds.
+- [x] `DOD-088` Manual Codex PC2 restore from Drive succeeds.
+- [x] `DOD-089` Manual restored Codex run opens and can send a follow-up.
+- [x] `DOD-090` Manual different-cwd restore path is verified.
 - [ ] `DOD-091` Manual missing provider file or missing remote file greyout is verified.
 - [ ] `DOD-092` Manual missing active provider auth greyout is verified.
 - [ ] `DOD-093` Manual Claude behavior is recorded as pass/fail/provider-untested.

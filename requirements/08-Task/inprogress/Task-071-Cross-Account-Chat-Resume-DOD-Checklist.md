@@ -133,7 +133,7 @@ The project now has enough design detail to implement the cross-account chat res
 - [x] `DOD-40` Restored Claude runs seed the process pool with the real session id before the next turn.
 - [x] `DOD-41` Claude next turn uses `--resume <realSessionId>` and never resumes with the synthetic FlowPilot id.
 - [x] `DOD-42` Claude turn environment points to the active account home after cross-account relocation.
-- [ ] `DOD-43` Claude same-account post-restart resume sends a follow-up message successfully in manual or integration validation.
+- [x] `DOD-43` Claude same-account post-restart resume sends a follow-up message successfully in manual or integration validation.
 - [ ] `DOD-44` Claude cross-account behavior is either manually verified or explicitly documented as provider-untested with greyout fallback preserved.
 
 ### Codex Resume Path
@@ -145,8 +145,8 @@ The project now has enough design detail to implement the cross-account chat res
 - [x] `DOD-49` Codex sandbox and approval posture are derived from the existing yolo policy helper.
 - [x] `DOD-50` Codex resume output is mapped into provider events that the desktop can render.
 - [x] `DOD-51` If structured Codex JSON streaming is unavailable, final stdout is emitted as one completed assistant message plus turn-completed event.
-- [ ] `DOD-52` Codex same-account post-restart resume sends a follow-up message successfully in manual or integration validation.
-- [ ] `DOD-53` Codex cross-account resume under another signed-in account is manually validated using copied rollout file behavior from CA-098.
+- [x] `DOD-52` Codex same-account post-restart resume sends a follow-up message successfully in manual or integration validation.
+- [x] `DOD-53` Codex cross-account resume under another signed-in account is manually validated using copied rollout file behavior from CA-098.
 
 ### Desktop History Behavior
 
@@ -196,12 +196,12 @@ The project now has enough design detail to implement the cross-account chat res
 
 ### Manual End-To-End Checks
 
-- [ ] `DOD-88` Start a chat, complete a turn, restart runner/app, click history item, and send a follow-up successfully.
+- [x] `DOD-88` Start a chat, complete a turn, restart runner/app, click history item, and send a follow-up successfully.
 - [ ] `DOD-89` Delete or move the provider session file, restart runner/app, click history item, and verify greyout/error reason instead of crash.
-- [ ] `DOD-90` With two signed-in accounts on one PC, start chat under account A, switch to account B, click the account A history item, and continue under account B when provider portability allows it.
+- [x] `DOD-90` With two signed-in accounts on one PC, start chat under account A, switch to account B, click the account A history item, and continue under account B when provider portability allows it.
 - [ ] `DOD-91` With active account not signed in, click a history item that requires that account and verify the signed-out reason is shown.
-- [ ] `DOD-92` Verify the history list order and display fields still match BUG-080 behavior after restart.
-- [ ] `DOD-93` Verify no provider session file contents appear in logs during the manual flow.
+- [x] `DOD-92` Verify the history list order and display fields still match BUG-080 behavior after restart.
+- [x] `DOD-93` Verify no provider session file contents appear in logs during the manual flow.
 
 ### Final Review Gate
 
