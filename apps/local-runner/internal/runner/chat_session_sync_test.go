@@ -549,6 +549,48 @@ func TestListRemoteChatSessionsReadsDriveIndex(t *testing.T) {
 	}
 }
 
+func TestListRemoteChatSessionsIncludesRecordsFromSameDriveRootWithDifferentProjectIDs(t *testing.T) {
+	svc, _, store, api, workspace, accountHome := newChatSyncService(t)
+	seedLocalChatRun(t, store, accountHome, workspace, "run-codex", []byte("codex-session"))
+	if _, apiErr := svc.syncChatRunToDrive(context.Background(), "run-codex", ChatSessionSyncRequest{}); apiErr != nil {
+		t.Fatalf("syncChatRunToDrive() failed: %v", apiErr)
+	}
+
+	indexFileID := ""
+	for id, file := range api.files {
+		if file.Name == "sessions.ndjson" {
+			indexFileID = id
+			break
+		}
+	}
+	if indexFileID == "" {
+		t.Fatal("expected Drive index")
+	}
+	indexFile := api.files[indexFileID]
+	indexFile.Content = mergeChatSessionDriveIndex(indexFile.Content, chatSessionDriveIndexRecord{
+		RunID:           "run-claude",
+		ProjectID:       "project-id-from-another-pc",
+		ProviderKey:     string(ProviderKeyClaude),
+		RunKind:         "chat",
+		SourceMachineID: "mch_remote",
+		SourceRunID:     "run-claude",
+		UpdatedAt:       "2026-06-19T10:00:00Z",
+		ManifestPath:    "chat-sessions/runs/mch_remote/run-claude/manifest.json",
+	})
+	api.files[indexFileID] = indexFile
+
+	summaries, apiErr := svc.listRemoteChatSessions(context.Background(), "project-1")
+	if apiErr != nil {
+		t.Fatalf("listRemoteChatSessions() failed: %v", apiErr)
+	}
+	if len(summaries) != 2 {
+		t.Fatalf("expected both provider records from the selected Drive root, got %#v", summaries)
+	}
+	if summaries[0].ProviderKey != ProviderKeyClaude || summaries[1].ProviderKey != ProviderKeyCodex {
+		t.Fatalf("expected Claude and Codex summaries, got %#v", summaries)
+	}
+}
+
 func TestListRemoteChatSessionsMissingIndexIsEmpty(t *testing.T) {
 	svc, _, _, _, _, _ := newChatSyncService(t)
 	summaries, apiErr := svc.listRemoteChatSessions(context.Background(), "project-1")

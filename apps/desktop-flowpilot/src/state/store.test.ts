@@ -221,6 +221,73 @@ test("openHistoryRun clears unavailableReason after a successful open", async ()
   assert.equal(state.runHistory[0]?.unavailableReason, undefined);
 });
 
+test("openHistoryRun selects the resumed provider default model", async () => {
+  const handle: RunHandle = {
+    runId: "run-claude",
+    providerSessionId: "session-claude",
+    providerKey: "claude",
+    status: "completed",
+    stepId: "chat-run-claude",
+  };
+  seedStore(
+    makeClient({
+      resumeRun: async () => handle,
+      streamRun: () => emptyStream(),
+      listSkills: async () => [],
+    }),
+    [
+      {
+        runId: "run-claude",
+        projectId: "project-1",
+        providerKey: "claude",
+        status: "completed",
+        startedAt: "2026-06-17T10:00:00Z",
+        updatedAt: "2026-06-17T10:05:00Z",
+      },
+    ],
+  );
+  useStore.setState({
+    selectedProvider: "codex",
+    selectedModel: "o4-mini",
+    supportedModels: [
+      {
+        id: "model-codex",
+        providerKey: "codex",
+        modelId: "o4-mini",
+        displayName: "o4-mini",
+        isEnabled: true,
+        sortOrder: 0,
+        source: "test",
+        detectionMethod: null,
+        detectedCliVersion: null,
+        lastDetectedAt: null,
+        createdAt: "2026-06-19T00:00:00Z",
+        updatedAt: "2026-06-19T00:00:00Z",
+      },
+      {
+        id: "model-claude",
+        providerKey: "claude",
+        modelId: "claude-sonnet-4",
+        displayName: "Claude Sonnet 4",
+        isEnabled: true,
+        sortOrder: 0,
+        source: "test",
+        detectionMethod: null,
+        detectedCliVersion: null,
+        lastDetectedAt: null,
+        createdAt: "2026-06-19T00:00:00Z",
+        updatedAt: "2026-06-19T00:00:00Z",
+      },
+    ],
+  });
+
+  await useStore.getState().openHistoryRun("run-claude");
+
+  const state = useStore.getState();
+  assert.equal(state.selectedProvider, "claude");
+  assert.equal(state.selectedModel, "claude-sonnet-4");
+});
+
 test("syncHistoryRun updates local run sync metadata", async () => {
   seedStore(makeClient(), [
     {
@@ -661,4 +728,46 @@ test("Claude usage-limit failure with null quota offers fallback switch candidat
   const state = useStore.getState();
   assert.ok(state.pendingAccountSwitch !== undefined, "should offer switch even without quota telemetry");
   assert.equal(state.pendingAccountSwitch?.candidateAccount.id, "cl-2");
+});
+
+test("Claude account switch retries the original failed turn", async () => {
+  const sentTurns: TurnInput[] = [];
+  const activatedIds: string[] = [];
+  const candidate = makeAccount("cl-2", "claude", {
+    remaining5hPercent: null,
+    remaining7dPercent: null,
+  });
+  const savedTurnInput: TurnInput = {
+    runId: "run-claude",
+    stepId: "chat-run-claude",
+    prompt: "continue the Claude task",
+    model: "claude-sonnet-4",
+  };
+  seedStore(
+    makeClient({
+      activateProviderAccount: async (id) => { activatedIds.push(id); },
+      sendTurn: (input) => { sentTurns.push(input); return emptyStream(); },
+      listRunHistory: async () => [],
+      listProviderAccounts: async () => [],
+    }),
+    [],
+  );
+  useStore.setState({
+    selectedProvider: "claude",
+    pendingAccountSwitch: {
+      providerKey: "claude",
+      failedAccountId: "cl-1",
+      failedAccountLabel: "cl-1@example.com",
+      candidateAccount: candidate,
+      reason: "usage_limit",
+    },
+    lastTurnInput: savedTurnInput,
+    status: "failed",
+  });
+
+  await useStore.getState().confirmAccountSwitch();
+
+  assert.deepEqual(activatedIds, ["cl-2"]);
+  assert.deepEqual(sentTurns, [savedTurnInput]);
+  assert.equal(useStore.getState().selectedProvider, "claude");
 });

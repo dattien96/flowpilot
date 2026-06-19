@@ -726,6 +726,7 @@ export const useStore = create<AppState>((set, get) => ({
   async openHistoryRun(runId) {
     const { client } = get();
     const historyItem = get().runHistory.find((item) => item.runId === runId);
+    const historyProvider = historyItem?.providerKey;
     let handle;
     try {
       handle = await client.resumeRun(runId);
@@ -756,13 +757,18 @@ export const useStore = create<AppState>((set, get) => ({
       _accountSwitchTriedIds: [],
       _streamingAssistantId: undefined,
       _streamRunSeq: get()._streamRunSeq + 1,
-      ...(historyItem ? { selectedProvider: historyItem.providerKey } : {}),
+      ...(historyProvider
+        ? {
+            selectedProvider: historyProvider,
+            selectedModel: pickDefaultModel(historyProvider, get().supportedModels),
+          }
+        : {}),
       runHistory: get().runHistory.map((item) =>
         item.runId === runId ? { ...item, unavailableReason: undefined } : item
       ),
     });
-    if (historyItem?.providerKey) {
-      void get().loadSkills(historyItem.providerKey);
+    if (historyProvider) {
+      void get().loadSkills(historyProvider);
     }
     await consumeStream(handle.runId, client.streamRun(handle.runId, 0), set, get);
 

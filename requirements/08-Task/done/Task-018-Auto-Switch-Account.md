@@ -5,14 +5,14 @@
 - Document ID: `Task-018`
 - Title: `Auto Switch Account On Provider Usage Limit`
 - Phase: `task`
-- Status: `in_progress`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-19`
 - Last Updated: `2026-06-19`
 - Parent Documents: [SS-05: Workflow AI Provider](../../05-System-Specs/SS-05-Workflow-Ai-Provider.md), [SD-06: AI Provider Integration](../../06-System-Tech-Design/SD-06-AI-Provider-Integration.md), [SD-14: Codex Cross-Account Chat Resume And Home Sync](../../06-System-Tech-Design/SD-14-Codex-Cross-Account-Chat-Resume-And-Home-Sync.md)
-- Child Documents: `—`
-- Related Documents: [Task-036: Desktop Provider Accounts Sidebar](../done/Task-036-Desktop-Provider-Accounts-Sidebar.md), [Task-071: Cross-Account Chat Resume Definition of Done Checklist](./Task-071-Cross-Account-Chat-Resume-DOD-Checklist.md), [BUG-056: Claude Usage Limit Retried As Recoverable](../../09-BugFix/done/BUG-056-Claude-Usage-Limit-Retried-As-Recoverable.md), [BUG-085: Codex Live Chat Splits Provider Session On Account Switch](../../09-BugFix/done/BUG-085-Codex-Live-Chat-Splits-Provider-Session-On-Account-Switch.md)
+- Child Documents: [BUG-090: Cross-Provider Chat Parity Gaps](../../09-BugFix/done/BUG-090-Cross-Provider-Chat-Parity-Gaps.md)
+- Related Documents: [Task-036: Desktop Provider Accounts Sidebar](../done/Task-036-Desktop-Provider-Accounts-Sidebar.md), [Task-071: Cross-Account Chat Resume Definition of Done Checklist](./Task-071-Cross-Account-Chat-Resume-DOD-Checklist.md), [BUG-056: Claude Usage Limit Retried As Recoverable](../../09-BugFix/done/BUG-056-Claude-Usage-Limit-Retried-As-Recoverable.md), [BUG-085: Codex Live Chat Splits Provider Session On Account Switch](../../09-BugFix/done/BUG-085-Codex-Live-Chat-Splits-Provider-Session-On-Account-Switch.md), [BUG-090: Cross-Provider Chat Parity Gaps](../../09-BugFix/done/BUG-090-Cross-Provider-Chat-Parity-Gaps.md)
 - Replaces: `—`
 - Tags: `desktop, local-runner, provider-accounts, codex, claude, quota, retry, chat`
 
@@ -22,7 +22,7 @@
 
 - Add a desktop-led recovery flow that reacts to provider usage-limit failures by finding another valid account for the same provider, asking the user for confirmation, switching accounts, and retrying the pending chat turn.
 - Codex gets full auto-pick support in this task because the current account summary API already exposes numeric `remaining_5h_percent` and `remaining_7d_percent`.
-- Claude stays intentionally limited in this task because current local metadata does not expose reliable numeric 5h/7d quota windows; the desktop may still surface a manual switch suggestion, but must not pretend it can rank Claude accounts with Codex-style precision.
+- Claude uses a deterministic connected-account fallback when numeric quota windows are unavailable; it must not pretend to rank Claude accounts with Codex-style precision.
 - Retry after switch must reuse the original pending prompt payload, not a synthetic `"Try again"` message.
 
 ### Current Ask
@@ -35,7 +35,7 @@
 - `T-2` Run the orchestration in the desktop app by reusing the existing provider-account list and activate-account APIs; do not move this decision into the runner for MVP.
 - `T-3` Candidate ranking for Codex is `remaining5h` first, then `remaining7d`, because the 5-hour window is the nearer blocking constraint.
 - `T-4` Post-switch retry must resend the original prompt, model, reasoning, attachments, and skills payload already captured for the failed turn.
-- `T-5` Claude automatic best-account selection is out of scope until trustworthy numeric quota telemetry exists.
+- `T-5` Claude may automatically suggest the first connected, untried account by slot order when both quota windows are unavailable; numeric best-account ranking remains out of scope until trustworthy telemetry exists.
 
 ### Constraints
 
@@ -131,10 +131,10 @@ What is still missing is the operator workflow on top of those pieces. Today, wh
   - Skip accounts whose auth status is no longer connected after refresh.
   - Skip accounts from another provider even if they have better quota.
 
-- `T-6` Add a Claude-specific scope gate.
-  - Claude usage-limit detection remains valid and should still inform the user that switching account may help.
-  - Automatic "best account" selection must not run for Claude until the runner exposes trustworthy numeric quota windows equivalent to Codex.
-  - The desktop may show a manual fallback notice such as "another Claude account may help; open account switcher", but that fallback is secondary and must not block the Codex MVP.
+- `T-6` Add a Claude-specific fallback rule.
+  - Claude usage-limit detection uses the same confirmation and original-turn retry flow as Codex.
+  - When both numeric quota windows are unavailable, choose the first connected, inactive, untried Claude account by `slotIndex`.
+  - Do not label that fallback as the "best quota" account because Claude telemetry does not support that claim.
 
 - `T-7` Add a confirmation popup before any switch.
   - Popup content should include:
@@ -213,7 +213,7 @@ What is still missing is the operator workflow on top of those pieces. Today, wh
 - Canceling the popup leaves the failed turn visible and does not switch accounts.
 - The chat UI shows a clear loading and post-switch recovery notice.
 - Existing Codex same-provider resume behavior still works after the automatic switch flow.
-- Claude usage-limit failures do not enter a fake Codex-style ranking path without numeric telemetry.
+- Claude usage-limit failures can offer a deterministic connected-account fallback without entering a fake Codex-style quota-ranking path.
 - Focused desktop/store tests pass for ranking, cancel, confirm, and payload-preservation behavior.
 
 ## 7. Out of Scope
@@ -227,9 +227,9 @@ What is still missing is the operator workflow on top of those pieces. Today, wh
 
 ## 8. Completion Notes
 
-- result: planned only; implementation not started in this document.
+- result: implemented for desktop normal-chat runs.
 - follow-ups:
-  - Claude auto-pick support should be a separate follow-up once runner telemetry exposes reliable numeric quota windows.
+  - Claude numeric best-account ranking remains a follow-up once runner telemetry exposes reliable quota windows.
   - If the desktop implementation becomes too stateful, consider a follow-up to move candidate evaluation into a dedicated runner endpoint.
 - upstream docs updated:
   - `Task-018`

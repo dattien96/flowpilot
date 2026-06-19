@@ -2,6 +2,7 @@ package runner
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -486,9 +487,6 @@ func (s *InteractiveService) listRemoteChatSessions(ctx context.Context, project
 	records := parseChatSessionDriveIndex(raw)
 	out := make([]RemoteChatSessionSummary, 0, len(records))
 	for _, record := range records {
-		if record.ProjectID != projectID {
-			continue
-		}
 		out = append(out, RemoteChatSessionSummary{
 			RunID:           record.RunID,
 			ProjectID:       record.ProjectID,
@@ -629,7 +627,16 @@ func (s *InteractiveService) restoreChatRunFromDrive(ctx context.Context, req Ch
 		return ChatSessionRestoreResult{}, newAPIErr(http.StatusConflict, "sync_integrity_failed", "remote provider session file path is invalid")
 	}
 	if existing, readErr := os.ReadFile(targetPath); readErr == nil {
-		if hashBytesSHA256(existing) != manifest.ProviderFile.SHA256 {
+		if hashBytesSHA256(existing) == manifest.ProviderFile.SHA256 {
+			// identical — nothing to write
+		} else if bytes.HasPrefix(providerBytes, existing) {
+			// remote is a newer prefix-compatible extension of local — overwrite
+			if err := os.WriteFile(targetPath, providerBytes, 0o644); err != nil {
+				return ChatSessionRestoreResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
+			}
+		} else if bytes.HasPrefix(existing, providerBytes) {
+			// local already extends remote — keep local, nothing to write
+		} else {
 			return ChatSessionRestoreResult{}, newAPIErr(http.StatusConflict, "session_file_conflict", "a different local session file already exists for this chat")
 		}
 	} else if !errors.Is(readErr, os.ErrNotExist) {
