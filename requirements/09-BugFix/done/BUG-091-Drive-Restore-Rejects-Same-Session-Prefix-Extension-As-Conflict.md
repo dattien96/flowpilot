@@ -103,6 +103,41 @@ Second case:
   - else → genuinely divergent (or non-Codex mismatch), return `session_file_conflict`
 - `F-3` When `localAhead` is set, before persisting the session row, read the existing local session via `SessionHistoryReader.GetProviderSession` and preserve its non-empty `LastPrompt`, `LastMessage`, `Status`, and `UpdatedAt` so the older remote manifest does not downgrade local history.
 
+### Decision flow (what the code does at runtime)
+
+```
+Does a local file exist at targetPath?
+│
+├─ NO (ErrNotExist)
+│   → write from Drive via RestoreSessionFile   (normal first restore)
+│
+├─ YES, read OK
+│     codexExtend = (manifest.ProviderKey == ProviderKeyCodex)
+│
+│     ┌─ hash(local) == remote SHA256
+│     │   → identical — skip write entirely
+│     │
+│     ├─ codexExtend && bytes.HasPrefix(remote, local)
+│     │   → remote has MORE turns than local
+│     │   → overwrite local with newer remote bytes
+│     │
+│     ├─ codexExtend && bytes.HasPrefix(local, remote)
+│     │   → local has MORE turns than remote
+│     │   → keep local file untouched; set localAhead = true
+│     │
+│     └─ anything else
+│         → session_file_conflict  ← only true conflict
+│
+└─ YES, read failed (not ErrNotExist)
+    → workflow_state_unavailable
+```
+
+**Why `bytes.HasPrefix` works:** Codex rollout files are JSONL — each turn appends a new line. If the remote file is ahead, it starts with every byte the local file has and then has extra lines after. `HasPrefix(remote, local)` captures exactly that. The reverse (`HasPrefix(local, remote)`) means the local machine continued the chat after the Drive snapshot was taken.
+
+**What `codexExtend` is:** a local boolean (`codexExtend := manifest.ProviderKey == ProviderKeyCodex`) that gates the two `HasPrefix` branches. Its only job is to ensure prefix-extension logic activates for Codex only — nothing more.
+
+**Why Claude was unaffected by the bug:** The old strict hash-equality check applied to all providers. In theory a Claude session hitting a hash mismatch would also fail with `session_file_conflict`. In practice Claude never reaches that condition: Claude does not use an append-only rollout file that grows turn-by-turn the way Codex does, so the "local file exists with different bytes from remote" scenario does not arise during Claude restores. The fix does not change Claude's path — non-Codex sessions still fall through to `default` → `session_file_conflict` on any mismatch, same as before.
+
 ## 8. Validation
 
 - `V-1` Full sync/restore/relocate suite passes: `go test ./internal/runner/... -run "TestRestore|TestChatSession|TestSync|TestRelocate|TestResolveRestored"` — 48 tests pass; `go vet ./internal/runner/` clean.

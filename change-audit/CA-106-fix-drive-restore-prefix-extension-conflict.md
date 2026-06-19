@@ -29,6 +29,41 @@ Fix `restoreChatRunFromDrive` so a Codex chat restore accepts a same-session pre
 - `go vet ./internal/runner/` -> no issues found.
 - Existing `TestRestoreChatRunFromDriveRejectsOverwriteConflict` still returns `session_file_conflict` for genuinely divergent content.
 
+## Decision Flow
+
+```
+Does a local file exist at targetPath?
+│
+├─ NO (ErrNotExist)
+│   → write from Drive via RestoreSessionFile   (normal first restore)
+│
+├─ YES, read OK
+│     codexExtend = (manifest.ProviderKey == ProviderKeyCodex)
+│
+│     ┌─ hash(local) == remote SHA256
+│     │   → identical — skip write entirely
+│     │
+│     ├─ codexExtend && bytes.HasPrefix(remote, local)
+│     │   → remote has MORE turns than local
+│     │   → overwrite local with newer remote bytes
+│     │
+│     ├─ codexExtend && bytes.HasPrefix(local, remote)
+│     │   → local has MORE turns than remote
+│     │   → keep local file untouched; set localAhead = true
+│     │
+│     └─ anything else
+│         → session_file_conflict  ← only true conflict
+│
+└─ YES, read failed (not ErrNotExist)
+    → workflow_state_unavailable
+```
+
+**Why `bytes.HasPrefix` works:** Codex rollout files are JSONL — each turn appends a new line. If the remote file is ahead, it starts with every byte the local file has and then has extra lines after. `HasPrefix(remote, local)` captures exactly that. The reverse means the local machine continued the chat after the Drive snapshot.
+
+**What `codexExtend` is:** a local boolean (`codexExtend := manifest.ProviderKey == ProviderKeyCodex`) that gates the two `HasPrefix` branches. Only Codex gets prefix-extension logic; other providers fall through to `default`.
+
+**Why Claude was unaffected by the original bug:** The old strict hash-equality check applied to all providers. In theory a Claude hash mismatch would also fail with `session_file_conflict`. In practice Claude never reaches that condition: Claude does not use an append-only rollout file that grows turn-by-turn the way Codex does, so the "local file exists with different bytes" scenario does not arise during Claude restores. The fix does not change Claude's path at all.
+
 ## Residual Notes
 
 - Prefix-extension acceptance is intentionally Codex-only. If Claude session-file append semantics are later confirmed, the gate can be widened with dedicated tests.
