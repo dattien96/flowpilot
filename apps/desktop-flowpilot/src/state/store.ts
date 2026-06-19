@@ -101,6 +101,15 @@ interface AppState {
   latestTokenUsage?: TokenUsageSnapshot;
   recoverable: boolean;
   scenario: ScenarioName;
+  pendingAccountSwitch?: {
+    providerKey: ProviderKey;
+    failedAccountId: string;
+    failedAccountLabel: string;
+    candidateAccount: ProviderAccountSummary;
+    reason: "usage_limit" | "manual";
+  };
+  accountSwitchLoading: boolean;
+  _accountSwitchTriedIds: string[];
 
   // internal: id of the assistant bubble currently accumulating deltas
   _streamingAssistantId?: string;
@@ -143,6 +152,9 @@ interface AppState {
   openAdminWeb(): void;
   restartSystem(): Promise<void>;
   shutdownSystem(): Promise<void>;
+  confirmAccountSwitch(): Promise<void>;
+  cancelAccountSwitch(): void;
+  requestManualAccountSwitch(): void;
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -163,6 +175,8 @@ export const useStore = create<AppState>((set, get) => ({
   latestTokenUsage: undefined,
   recoverable: false,
   scenario: "normal",
+  accountSwitchLoading: false,
+  _accountSwitchTriedIds: [],
   launchMode: "workflow",
   chatMode: "normal_chat",
   selectedProvider: "codex",
@@ -641,6 +655,9 @@ export const useStore = create<AppState>((set, get) => ({
         latestTokenUsage: undefined,
         lastTurnInput: undefined,
         recoverable: false,
+        pendingAccountSwitch: undefined,
+        accountSwitchLoading: false,
+        _accountSwitchTriedIds: [],
         _streamingAssistantId: undefined,
       });
     }
@@ -734,6 +751,9 @@ export const useStore = create<AppState>((set, get) => ({
       latestTokenUsage: undefined,
       lastTurnInput: undefined,
       recoverable: false,
+      pendingAccountSwitch: undefined,
+      accountSwitchLoading: false,
+      _accountSwitchTriedIds: [],
       _streamingAssistantId: undefined,
       _streamRunSeq: get()._streamRunSeq + 1,
       ...(historyItem ? { selectedProvider: historyItem.providerKey } : {}),
@@ -789,6 +809,9 @@ export const useStore = create<AppState>((set, get) => ({
       latestTokenUsage: undefined,
       lastTurnInput: undefined,
       recoverable: false,
+      pendingAccountSwitch: undefined,
+      accountSwitchLoading: false,
+      _accountSwitchTriedIds: [],
       _streamingAssistantId: undefined,
       selectedModel: pickDefaultModel(selectedProvider, supportedModels),
     });
@@ -809,7 +832,178 @@ export const useStore = create<AppState>((set, get) => ({
   async shutdownSystem() {
     await get().client.shutdownStack();
   },
+
+  cancelAccountSwitch() {
+    set({ pendingAccountSwitch: undefined });
+  },
+
+  requestManualAccountSwitch() {
+    const { selectedProvider, providerAccounts } = get();
+    if (!selectedProvider) return;
+    const activeAccount = providerAccounts.find((a) => a.providerKey === selectedProvider && a.isActive);
+    // For manual pick, ignore _accountSwitchTriedIds — user is proactively choosing.
+    const skipIds = activeAccount ? [activeAccount.id] : [];
+    const candidate = findBestCandidate(providerAccounts, selectedProvider, skipIds);
+    if (!candidate) return;
+    set({
+      pendingAccountSwitch: {
+        providerKey: selectedProvider,
+        failedAccountId: activeAccount?.id ?? "",
+        failedAccountLabel: activeAccount ? accountLabel(activeAccount) : "current account",
+        candidateAccount: candidate,
+        reason: "manual",
+      },
+    });
+  },
+
+  async confirmAccountSwitch() {
+    const { client, pendingAccountSwitch, lastTurnInput } = get();
+    if (!pendingAccountSwitch) return;
+
+    const { providerKey, candidateAccount, reason } = pendingAccountSwitch;
+    const newLabel = accountLabel(candidateAccount);
+    const shouldRetry = reason === "usage_limit" && !!lastTurnInput;
+
+    set({ accountSwitchLoading: true, pendingAccountSwitch: undefined });
+
+    try {
+      await client.activateProviderAccount(candidateAccount.id);
+      await get().loadProviderAccounts();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] activateProviderAccount failed:", err);
+      set((s) => ({
+        accountSwitchLoading: false,
+        timeline: [
+          ...s.timeline,
+          {
+            kind: "system",
+            id: `switch-err-${s.timeline.length}`,
+            text: `Failed to switch to ${providerLabel(providerKey)} account "${newLabel}": ${String(err)}`,
+            tone: "error",
+          },
+        ],
+      }));
+      return;
+    }
+
+    const noticeText = shouldRetry
+      ? `Switched to ${providerLabel(providerKey)} account "${newLabel}". Retrying your request...`
+      : `Switched to ${providerLabel(providerKey)} account "${newLabel}".`;
+
+    set((s) => ({
+      accountSwitchLoading: false,
+      selectedProvider: providerKey,
+      timeline: s.timeline.length > 0
+        ? [...s.timeline, { kind: "system", id: `switch-notice-${s.timeline.length}`, text: noticeText, tone: "info" }]
+        : s.timeline,
+    }));
+
+    if (shouldRetry) {
+      await retryWithTurnInput(client, lastTurnInput!, set, get);
+    }
+  },
 }));
+
+// ── Account-switch helpers ─────────────────────────────────────────────────
+
+function isUsageLimitMessage(msg: string): boolean {
+  const lower = msg.toLowerCase();
+  return (
+    lower.includes("usage limit reached") ||
+    lower.includes("extra usage unavailable") ||
+    lower.includes("out of credits") ||
+    lower.includes("out_of_credits") ||
+    lower.includes("quota reset") ||
+    lower.includes("rate limit")
+  );
+}
+
+export function accountLabel(account: ProviderAccountSummary): string {
+  return account.accountEmail ?? account.accountName ?? account.displayLabel ?? account.displayName;
+}
+
+export function providerLabel(providerKey: string): string {
+  if (providerKey === "claude") return "Claude";
+  if (providerKey === "codex") return "Codex";
+  return providerKey;
+}
+
+function findBestCandidate(
+  accounts: ProviderAccountSummary[],
+  providerKey: string,
+  triedAccountIds: string[],
+): ProviderAccountSummary | undefined {
+  const candidates = accounts.filter(
+    (a) =>
+      a.providerKey === providerKey &&
+      a.authStatus === "connected" &&
+      !a.isActive &&
+      !triedAccountIds.includes(a.id),
+  );
+
+  // Prefer candidates with valid numeric quota data (both windows > 0)
+  const withQuota = candidates.filter(
+    (a) =>
+      a.remaining5hPercent !== null &&
+      a.remaining7dPercent !== null &&
+      a.remaining5hPercent > 0 &&
+      a.remaining7dPercent > 0,
+  );
+
+  if (withQuota.length > 0) {
+    return [...withQuota].sort((a, b) => {
+      const d5h = (b.remaining5hPercent ?? 0) - (a.remaining5hPercent ?? 0);
+      if (d5h !== 0) return d5h;
+      const d7d = (b.remaining7dPercent ?? 0) - (a.remaining7dPercent ?? 0);
+      if (d7d !== 0) return d7d;
+      return a.slotIndex - b.slotIndex;
+    })[0];
+  }
+
+  // Fall back to candidates where quota telemetry is genuinely unavailable (both null).
+  // Accounts with known-zero quota (0) are excluded — they're confirmed exhausted.
+  const withUnknownQuota = candidates.filter(
+    (a) => a.remaining5hPercent === null && a.remaining7dPercent === null,
+  );
+  return [...withUnknownQuota].sort((a, b) => a.slotIndex - b.slotIndex)[0];
+}
+
+async function retryWithTurnInput(
+  client: RunnerClient,
+  turnInput: TurnInput,
+  set: (fn: (s: AppState) => Partial<AppState>) => void,
+  get: () => AppState,
+): Promise<void> {
+  set((s) => ({
+    status: "running",
+    recoverable: false,
+    latestTokenUsage: undefined,
+    _streamingAssistantId: undefined,
+    timeline: [
+      ...s.timeline,
+      { kind: "thinking", id: `thinking-retry-${s.timeline.length}`, text: "Thinking..." },
+    ],
+  }));
+  try {
+    await consumeStream(turnInput.runId, client.sendTurn(turnInput), set, get);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("[FlowPilot] retryWithTurnInput failed:", err);
+    set((s) => ({
+      status: "failed",
+      recoverable: Boolean(turnInput.runId),
+      timeline: [
+        ...s.timeline.filter((it) => it.kind !== "thinking"),
+        { kind: "system", id: `err-retry-${s.timeline.length}`, text: runErrorMessage(err), tone: "error" },
+      ],
+    }));
+  } finally {
+    void get().loadRunHistory();
+  }
+}
+
+// ── Stream consumer ────────────────────────────────────────────────────────
 
 // Consumes a turn stream and folds each event into the timeline + status.
 // mySeq captures _streamRunSeq at call time; if the counter advances (because
@@ -828,6 +1022,31 @@ async function consumeStream(
       return;
     }
     set((s) => applyEvent(s, e));
+    if (e.type === "turn_failed" && !e.recoverable && isUsageLimitMessage(e.error)) {
+      const s = get();
+      if (s.chatMode === "normal_chat" && s.selectedProvider && !s.pendingAccountSwitch && !s.accountSwitchLoading) {
+        const failedAccount = s.providerAccounts.find((a) => a.providerKey === s.selectedProvider && a.isActive);
+        if (failedAccount) {
+          const tried = [...s._accountSwitchTriedIds, failedAccount.id];
+          const candidate = findBestCandidate(s.providerAccounts, s.selectedProvider, tried);
+          if (candidate) {
+            const providerKey = s.selectedProvider;
+            const failedId = failedAccount.id;
+            const failedLbl = accountLabel(failedAccount);
+            set((_) => ({
+              pendingAccountSwitch: {
+                providerKey,
+                failedAccountId: failedId,
+                failedAccountLabel: failedLbl,
+                candidateAccount: candidate,
+                reason: "usage_limit" as const,
+              },
+              _accountSwitchTriedIds: tried,
+            }));
+          }
+        }
+      }
+    }
   }
   if (isStale()) {
     return;

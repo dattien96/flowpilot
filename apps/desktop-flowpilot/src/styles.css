@@ -1545,6 +1545,58 @@ input {
 .project-history-confirm-ok--delete:hover {
   background: rgba(224, 82, 82, 0.12);
 }
+/* ── Account switch modal ── */
+.account-switch-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.account-switch-modal {
+  background: var(--bg-1, #1e1e1e);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px 24px;
+  max-width: 360px;
+  width: 90%;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+.account-switch-reason {
+  margin: 0 0 14px;
+  font-size: 12px;
+  color: var(--text-2, rgba(255, 255, 255, 0.5));
+}
+.account-switch-details {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 18px;
+  font-size: 13px;
+}
+.account-switch-row {
+  display: flex;
+  gap: 10px;
+}
+.account-switch-row-label {
+  color: var(--text-2, rgba(255, 255, 255, 0.5));
+  min-width: 72px;
+  flex-shrink: 0;
+}
+.account-switch-loading {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text);
+  text-align: center;
+  padding: 8px 0;
+}
+.account-switch-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
 .project-history-item:hover {
   background: var(--bg-2);
 }
@@ -2559,6 +2611,28 @@ input {
   align-items: center;
   justify-content: flex-end;
   gap: 10px;
+}
+.acc-switch-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-2, rgba(255, 255, 255, 0.55));
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.acc-switch-btn:hover:not(:disabled) {
+  background: var(--bg-2, rgba(255, 255, 255, 0.06));
+  color: var(--text);
+  border-color: var(--accent, #4c8dff);
+}
+.acc-switch-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 .chat-controller-mode,
 .chat-controller-skill-strip {

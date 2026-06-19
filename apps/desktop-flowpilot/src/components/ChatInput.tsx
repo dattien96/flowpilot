@@ -45,6 +45,15 @@ function StopIcon(): React.ReactElement {
   );
 }
 
+function SwitchAccountIcon(): React.ReactElement {
+  return (
+    <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <polyline points="2,4 12,4 9,1" />
+      <polyline points="12,10 2,10 5,13" />
+    </svg>
+  );
+}
+
 const PROVIDER_CARDS: { value: ProviderKey; label: string; icon: React.ReactElement }[] = [
   { value: "codex", label: "Codex", icon: <CodexIcon /> },
   { value: "claude", label: "Claude", icon: <ClaudeIcon /> },
@@ -168,6 +177,10 @@ export function ChatInput(): React.ReactElement {
   const latestTokenUsage = useStore((s) => s.latestTokenUsage);
   const stop = useStore((s) => s.stop);
   const timeline = useStore((s) => s.timeline);
+  const providerAccounts = useStore((s) => s.providerAccounts);
+  const pendingAccountSwitch = useStore((s) => s.pendingAccountSwitch);
+  const accountSwitchLoading = useStore((s) => s.accountSwitchLoading);
+  const requestManualAccountSwitch = useStore((s) => s.requestManualAccountSwitch);
 
   const [text, setText] = useState("");
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
@@ -314,6 +327,13 @@ export function ChatInput(): React.ReactElement {
     setDisplayedTokenUsage(undefined);
   }, [selectedProvider]);
 
+  const hasBetterAccount = useMemo(
+    () =>
+      !!selectedProvider &&
+      providerAccounts.some((a) => a.providerKey === selectedProvider && a.authStatus === "connected" && !a.isActive),
+    [providerAccounts, selectedProvider],
+  );
+
   const blocked = status === "running" || status === "waiting_approval" || status === "waiting_question";
   const usageLine = useMemo(
     () => usageSummaryLine(selectedProvider, displayedTokenUsage),
@@ -456,6 +476,19 @@ export function ChatInput(): React.ReactElement {
                   </button>
                 </div>
                 <div className="chat-controller-head">
+                  {isChatMode && hasBetterAccount && (
+                    <button
+                      type="button"
+                      className="acc-switch-btn"
+                      onClick={requestManualAccountSwitch}
+                      disabled={blocked || !!pendingAccountSwitch || accountSwitchLoading}
+                      title="Switch to a better account for this provider"
+                      aria-label="Switch to a better account"
+                    >
+                      <SwitchAccountIcon />
+                      <span>Switch acc</span>
+                    </button>
+                  )}
                   <div className="chat-controller-switch chat-controller-switch-top">
                     <span className="chat-controller-label">YOLO</span>
                     <button
