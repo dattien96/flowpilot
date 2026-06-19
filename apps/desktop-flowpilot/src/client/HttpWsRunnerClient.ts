@@ -1,4 +1,5 @@
 import type {
+  AgentDefinition,
   Artifact,
   ChatSessionRestoreRequest,
   ChatSessionRestoreResult,
@@ -177,6 +178,11 @@ export class HttpWsRunnerClient implements RunnerClient {
     let url = `/client/provider-skills?provider=${encodeURIComponent(provider)}`;
     if (cwd) url += `&cwd=${encodeURIComponent(cwd)}`;
     return this.getJSON<ProviderSkill[]>(url);
+  }
+
+  listAgents(cwd?: string): Promise<AgentDefinition[]> {
+    const url = cwd ? `/client/agents?cwd=${encodeURIComponent(cwd)}` : "/client/agents";
+    return this.getJSON<AgentDefinition[]>(url);
   }
 
   // ---- run lifecycle -------------------------------------------------------

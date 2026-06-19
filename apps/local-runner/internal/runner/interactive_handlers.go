@@ -34,6 +34,7 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /client/questions/{questionId}/answer", s.handleAnswerQuestion)
 	mux.HandleFunc("GET /client/workflow-runs/{runId}/artifacts", s.handleListArtifacts)
 	mux.HandleFunc("GET /client/provider-skills", s.handleListSkills)
+	mux.HandleFunc("GET /client/agents", s.handleListAgents)
 	mux.HandleFunc("GET /client/active-account", s.handleGetActiveAccount)
 	mux.HandleFunc("POST /client/active-account", s.handleSetActiveAccount)
 
@@ -92,6 +93,14 @@ func (s *InteractiveService) handleListSkills(w http.ResponseWriter, r *http.Req
 	provider := r.URL.Query().Get("provider")
 	cwd := r.URL.Query().Get("cwd")
 	writeInteractiveJSON(w, http.StatusOK, s.skillsCatalog.listSkills(provider, cwd))
+}
+
+// handleListAgents serves the loadable sub-agent catalog (CP-19 / Task-081):
+// project-local .claude/agents + .codex/agents, provider homes, and built-ins,
+// merged by name precedence. `cwd` is the active project workspace.
+func (s *InteractiveService) handleListAgents(w http.ResponseWriter, r *http.Request) {
+	cwd := r.URL.Query().Get("cwd")
+	writeInteractiveJSON(w, http.StatusOK, s.agentCatalog.listAgents(cwd))
 }
 
 func (s *InteractiveService) handleListArtifacts(w http.ResponseWriter, r *http.Request) {

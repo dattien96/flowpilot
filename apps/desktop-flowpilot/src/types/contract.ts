@@ -42,6 +42,25 @@ export interface ProviderSkill {
   source: "provider" | "flowpilot" | "workspace";
 }
 
+/**
+ * A loadable sub-agent definition (CP-19 / Task-081). Served by the runner's
+ * AgentCatalog: project-local `.claude/agents` + `.codex/agents`, provider homes,
+ * and FlowPilot built-ins, merged by name precedence. `provider`/`model` are
+ * optional preferences (empty = inherit the spawning run's provider).
+ */
+export interface AgentDefinition {
+  name: string;
+  description: string;
+  role: string;
+  provider?: string;
+  model?: string;
+  tools?: string[];
+  systemPrompt?: string;
+  /** Where the definition came from: "claude" | "codex" | "provider" | "flowpilot". */
+  source: string;
+  path?: string;
+}
+
 export interface ProviderAccountUsageLine {
   label: string;
   remainingPercent: number;
@@ -341,6 +360,12 @@ export interface RunnerClient {
   streamRun(runId: string, afterSeq?: number): AsyncIterable<ProviderEventDTO>;
   listArtifacts(runId: string): Promise<Artifact[]>;
   listSkills(provider: string, cwd?: string): Promise<ProviderSkill[]>;
+  /**
+   * List loadable sub-agent definitions for the spawn picker (CP-19 / Task-081).
+   * Optional so existing clients (mock) need not implement it until the Agents
+   * UI lands (Task-083); the real HTTP client implements it now.
+   */
+  listAgents?(cwd?: string): Promise<AgentDefinition[]>;
   connectProviderAccount(providerKey: ProviderKey): Promise<void>;
   activateProviderAccount(accountId: string): Promise<void>;
   openProviderAccountTerminal(accountId: string): Promise<void>;

@@ -27,7 +27,10 @@ type InteractiveService struct {
 	catalog CatalogStore
 	// skillsCatalog serves the local provider-skill list (not from Supabase).
 	skillsCatalog *interactiveCatalog
-	registry      *ProviderRegistry
+	// agentCatalog serves the loadable sub-agent definitions (CP-19 / Task-081):
+	// .claude/agents + .codex/agents + provider homes, with built-in fallbacks.
+	agentCatalog *AgentCatalog
+	registry     *ProviderRegistry
 
 	// policy decides auto-approve/auto-deny/ask for YOLO=false approvals (04-04).
 	// Default is ask-everything; Admin Web (03) configures the lists.
@@ -84,6 +87,19 @@ type interactiveRun struct {
 	reasoningEffort string
 	// runKind is "chat" for normal-chat runs, "" / "workflow" for workflow runs (T-7).
 	runKind string
+
+	// Agent identity (CP-19 / Task-081). All fields are additive and zero-valued
+	// for an ordinary parentless "main" run, so existing behavior is unchanged.
+	// parentRunID is the spawning run's id ("" for the main/root run); agentName
+	// is the AgentDefinition this run embodies; role is the agent's role (e.g.
+	// "coder", "reviewer"); dependsOn lists run ids this agent waits on before it
+	// may consume work; agentStatus is the orchestration status ("" treated as the
+	// normal run lifecycle until the orchestrator sets it).
+	parentRunID string
+	agentName   string
+	role        string
+	dependsOn   []string
+	agentStatus string
 
 	status          RunStatus
 	createdAt       string
@@ -221,6 +237,7 @@ func newInteractiveService(registry *ProviderRegistry, catalog CatalogStore, wor
 	return &InteractiveService{
 		catalog:         catalog,
 		skillsCatalog:   newInteractiveCatalog(),
+		agentCatalog:    newAgentCatalog(),
 		registry:        registry,
 		policy:          DefaultApprovalPolicyEngine(),
 		finalizer:       newFinalizer(),

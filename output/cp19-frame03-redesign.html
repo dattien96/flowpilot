@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>CP-19 · Frame 03 redesign (native spawn dialog)</title>
+<style>
+  :root{
+    --bg:#0e1117; --bg-2:#161b22; --bg-3:#1c2230; --border:#2a3242;
+    --text:#d7dde6; --text-dim:#8b95a5; --accent:#4c8dff; --accent-2:#2f6bdb;
+    --warn:#f0b429; --ask:#b07cff; --ok:#3fb950; --err:#f85149;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    --codex:#e0e0e0; --claude:#e17554; --gemini:#7c6ff0;
+    --role-main:#4c8dff; --role-coder:#3fb950; --role-reviewer:#b07cff; --role-tester:#f0b429;
+    --new:#3fb950;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:#070a0e;color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:13px;line-height:1.45}
+  .page{max-width:1320px;margin:0 auto;padding:22px 18px 70px}
+  h1{font-size:20px;margin:0 0 4px}
+  .lede{color:var(--text-dim);max-width:920px;margin:0 0 14px;font-size:13px}
+  .tag{display:inline-block;font:600 11px var(--mono);letter-spacing:.4px;text-transform:uppercase;
+    color:var(--new);background:rgba(63,185,80,.12);border:1px solid rgba(63,185,80,.35);padding:2px 9px;border-radius:20px;margin-bottom:10px}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;margin:0 0 16px;font-size:12px;color:var(--text-dim)}
+  .dot-new{display:inline-block;width:10px;height:10px;border-radius:3px;background:rgba(63,185,80,.18);border:1px dashed var(--new);vertical-align:middle;margin-right:5px}
+  .dot-kept{display:inline-block;width:10px;height:10px;border-radius:3px;background:var(--bg-3);border:1px solid var(--border);vertical-align:middle;margin-right:5px}
+
+  /* window chrome */
+  .win{position:relative;border:1px solid #000;border-radius:9px;overflow:hidden;box-shadow:0 26px 70px rgba(0,0,0,.6);background:var(--bg)}
+  .titlebar{display:flex;align-items:center;justify-content:space-between;background:#0b0e13;border-bottom:1px solid var(--border);padding:6px 10px;font-size:12px;color:var(--text-dim)}
+  .titlebar .wc{display:inline-flex;gap:14px;color:#6b7686;font-size:13px}
+  .menubar{display:flex;gap:16px;padding:4px 12px;background:#0b0e13;border-bottom:1px solid var(--border);font-size:12px;color:var(--text-dim)}
+  .app-header{display:flex;align-items:center;gap:12px;padding:8px 12px;border-bottom:1px solid var(--border);background:var(--bg-2)}
+  .icbtn{width:26px;height:24px;border:1px solid var(--border);border-radius:6px;background:var(--bg-3);display:inline-flex;align-items:center;justify-content:center;color:var(--text-dim)}
+  .brand{font-size:13px}.brand b{color:var(--text)}.brand span{color:var(--text-dim)}
+  .seg{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+  .seg button{border:0;background:transparent;color:var(--text-dim);padding:5px 14px;font-weight:600;font-size:12.5px;cursor:pointer}
+  .seg button.on{background:var(--accent);color:#fff}
+  .hgrow{flex:1}
+  .status{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text-dim);padding:4px 10px;border:1px solid var(--border);border-radius:20px;background:var(--bg-3)}
+  .status .d{width:8px;height:8px;border-radius:50%}.d.ok{background:var(--ok)}
+  .status.agents{border-color:rgba(63,185,80,.55)}
+  .pulse{width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 0 rgba(63,185,80,.6);animation:p 1.6s infinite}
+  @keyframes p{0%{box-shadow:0 0 0 0 rgba(63,185,80,.55)}70%{box-shadow:0 0 0 7px rgba(63,185,80,0)}100%{box-shadow:0 0 0 0 rgba(63,185,80,0)}}
+  .hbtn{border:1px solid var(--border);background:var(--bg-3);color:var(--text);border-radius:7px;padding:5px 12px;font-size:12.5px}
+  .hlink{color:var(--text-dim);font-size:12.5px}
+  .NEW{font:700 8.5px var(--mono);letter-spacing:.5px;color:var(--new);background:rgba(63,185,80,.14);border:1px solid var(--new);border-radius:4px;padding:0 4px;vertical-align:middle;margin-left:6px}
+
+  /* dimmed shell behind modal */
+  .shell{display:grid;grid-template-columns:248px 1fr 296px;height:600px;position:relative}
+  .col{min-width:0;border-right:1px solid var(--border);padding:12px;overflow:hidden}
+  .col.right{border-right:0;border-left:1px solid var(--border);background:var(--bg-2)}
+  .col.left{background:var(--bg-2)}
+  .ghost{height:11px;border-radius:5px;background:var(--bg-3);margin:9px 0}
+  .ghost.w70{width:70%}.ghost.w50{width:50%}.ghost.w90{width:90%}.ghost.w40{width:40%}
+  .ghost-card{border:1px solid var(--border);border-radius:9px;background:var(--bg-3);height:46px;margin:8px 0}
+  .lbl-dim{font-size:11px;letter-spacing:.5px;text-transform:uppercase;color:#5f6b7d;margin-top:6px}
+  .scrim{position:absolute;inset:0;background:rgba(4,7,11,.62);display:flex;align-items:center;justify-content:center;z-index:10}
+
+  /* spawn dialog */
+  .dlg{width:460px;max-width:92%;background:var(--bg-2);border:1px solid var(--border);border-radius:13px;box-shadow:0 30px 70px rgba(0,0,0,.6);overflow:hidden;outline:1.5px dashed var(--new);outline-offset:3px}
+  .dlg-h{padding:13px 16px;border-bottom:1px solid var(--border);font-weight:600;display:flex;align-items:center;gap:9px}
+  .dlg-h .x{margin-left:auto;color:var(--text-dim);cursor:pointer}
+  .dlg-b{padding:15px 16px;display:flex;flex-direction:column;gap:14px;max-height:62vh;overflow:auto}
+  .fld>label{font-size:10.5px;letter-spacing:.4px;text-transform:uppercase;color:var(--text-dim);display:block;margin-bottom:6px}
+  .src-hint{font-size:10.5px;color:#5f6b7d;font-family:var(--mono);text-transform:none;letter-spacing:0}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);border-radius:10px;padding:9px 11px;cursor:pointer;background:var(--bg-3)}
+  .opt+.opt{margin-top:8px}
+  .opt.sel{border-color:var(--accent);background:#16203a}
+  .opt .bar{width:3px;align-self:stretch;border-radius:3px}
+  .opt.coder .bar{background:var(--role-coder)}.opt.reviewer .bar{background:var(--role-reviewer)}.opt.tester .bar{background:var(--role-tester)}
+  .opt .nm{font-weight:600;font-size:13px;display:flex;align-items:center;gap:7px}
+  .opt .ds{font-size:11.5px;color:var(--text-dim);margin-top:2px}
+  .pill-prov{font:700 9px var(--mono);padding:1px 6px;border-radius:5px;border:1px solid var(--border)}
+  .prov-codex{color:var(--codex);border-color:#444}.prov-claude{color:var(--claude);border-color:#5a3a30}.prov-gemini{color:var(--gemini);border-color:#403a66}
+  .src{font-size:9.5px;color:#5f6b7d;font-family:var(--mono);margin-left:auto}
+  .chips{display:flex;gap:7px;flex-wrap:wrap}
+  .chip{font-size:11.5px;color:var(--text-dim);background:var(--bg-3);border:1px solid var(--border);border-radius:7px;padding:4px 10px;cursor:pointer;display:inline-flex;gap:6px;align-items:center}
+  .chip.sel{color:var(--text);border-color:var(--accent);background:#16203a}
+  .promptbox{border:1px solid var(--border);background:var(--bg);border-radius:9px;padding:9px 11px;color:var(--text-dim);font-size:12.5px;min-height:54px}
+  .toggle-row{display:flex;align-items:flex-start;gap:10px;font-size:12.5px;border:1px solid var(--border);border-radius:9px;padding:10px 11px;background:var(--bg-3)}
+  .toggle-row b{color:var(--text)}
+  .toggle-row .sub{color:var(--text-dim);font-size:11.5px;margin-top:2px}
+  .sw{flex:0 0 auto;width:36px;height:20px;border-radius:20px;background:var(--accent);position:relative;margin-top:1px}
+  .sw i{position:absolute;width:16px;height:16px;border-radius:50%;background:#fff;top:2px;right:2px}
+  .sw.off{background:#333c4c}.sw.off i{left:2px;right:auto;background:#8b95a5}
+  .dlg-f{padding:12px 16px;border-top:1px solid var(--border);display:flex;align-items:center;gap:8px}
+  .dlg-f .hintleft{font-size:11px;color:#5f6b7d;margin-right:auto}
+  .bc{font-size:12.5px;border:1px solid var(--border);background:var(--bg-3);color:var(--text);border-radius:8px;padding:7px 15px;cursor:pointer}
+  .bc.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+
+  @media(max-width:900px){.shell{grid-template-columns:1fr;height:auto}.col{border:0;border-bottom:1px solid var(--border)}}
+</style>
+</head>
+<body>
+<div class="page">
+  <span class="tag">CP-19 · Frame 03 — native spawn dialog</span>
+  <h1>Spawn-agent dialog over the live chrome</h1>
+  <p class="lede">Triggered by the AGENTS panel's <b>＋ Spawn agent</b> button (or an <code>@agent</code> mention). A centered modal over the dimmed app. The agent list is filled by the <b>AgentCatalog</b> from <code>.claude/agents</code> · <code>.codex/agents</code> · FlowPilot built-ins. <code>wait</code> decides whether the parent turn blocks on the result (Task-style) or runs in the background.</p>
+  <div class="legend">
+    <span><span class="dot-new"></span><b>New for CP-19</b></span>
+    <span><span class="dot-kept"></span>Kept from current app (dimmed behind)</span>
+  </div>
+
+  <div class="win">
+    <div class="titlebar"><span>FlowPilot Desktop (runner http://127.0.0.1:4317)</span><span class="wc">&#9472;&nbsp;&nbsp;&#9633;&nbsp;&nbsp;&#10005;</span></div>
+    <div class="menubar"><span>File</span><span>Edit</span><span>View</span><span>Window</span><span>Help</span></div>
+    <div class="app-header">
+      <span class="icbtn">◧</span><span class="icbtn">◨</span>
+      <span class="brand"><b>FlowPilot</b> <span>desktop · runner http://127.0.0.1:4317</span></span>
+      <span class="seg" style="margin-left:8px"><button class="on">Chat</button><button>Settings</button></span>
+      <span class="hgrow"></span>
+      <span class="status"><span class="d ok"></span> Runner Online</span>
+      <span class="status agents"><span class="pulse"></span> 1 agent running</span>
+      <button class="hbtn">New run</button><span class="hlink">Sign out</span>
+    </div>
+
+    <div class="shell">
+      <!-- dimmed placeholder content -->
+      <div class="col left">
+        <div class="lbl-dim">Projects</div>
+        <div class="ghost-card"></div><div class="ghost-card"></div>
+        <div class="lbl-dim">History</div>
+        <div class="ghost w90"></div><div class="ghost w70"></div><div class="ghost w50"></div>
+      </div>
+      <div class="col">
+        <div class="ghost w50"></div><div class="ghost w90"></div><div class="ghost w70"></div>
+        <div class="ghost-card" style="height:70px"></div>
+        <div class="ghost w40" style="margin-left:auto"></div>
+      </div>
+      <div class="col right">
+        <div class="lbl-dim">Mode</div><div class="ghost-card"></div>
+        <div class="lbl-dim">Agents</div><div class="ghost-card"></div>
+        <div class="lbl-dim">Accounts</div><div class="ghost w90"></div>
+      </div>
+
+      <!-- modal -->
+      <div class="scrim">
+        <div class="dlg">
+          <div class="dlg-h">🤖 Spawn sub-agent <span class="NEW">NEW</span><span class="x">✕</span></div>
+          <div class="dlg-b">
+            <div class="fld">
+              <label>Agent <span class="src-hint">— from .claude/agents · .codex/agents · built-ins</span></label>
+              <div class="opt coder sel">
+                <span class="bar"></span>
+                <div style="flex:1">
+                  <div class="nm">coder <span class="pill-prov prov-claude">CLAUDE</span><span class="src">.claude/agents/coder.md</span></div>
+                  <div class="ds">Implements a scoped change end-to-end. Defaults to Claude.</div>
+                </div>
+              </div>
+              <div class="opt reviewer">
+                <span class="bar"></span>
+                <div style="flex:1">
+                  <div class="nm">reviewer <span class="pill-prov prov-codex">CODEX</span><span class="src">.codex/agents/reviewer.md</span></div>
+                  <div class="ds">Adversarial code review; can request changes and gate the loop.</div>
+                </div>
+              </div>
+              <div class="opt tester">
+                <span class="bar"></span>
+                <div style="flex:1">
+                  <div class="nm">tester <span class="pill-prov prov-codex">CODEX</span><span class="src">built-in</span></div>
+                  <div class="ds">Writes &amp; runs tests, reports coverage gaps.</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="fld">
+              <label>Provider override <span class="src-hint">(optional — defaults to the agent's preference)</span></label>
+              <div class="chips">
+                <span class="chip">inherit from main</span>
+                <span class="chip sel">✳ Claude</span>
+                <span class="chip">◎ Codex</span>
+                <span class="chip">◆ Gemini</span>
+              </div>
+            </div>
+
+            <div class="fld">
+              <label>Task prompt</label>
+              <div class="promptbox">Implement the BUG-094 fix: make provider account IDs deterministic via SHA256(provider + home path); add a stability regression test.</div>
+            </div>
+
+            <div class="fld">
+              <label>Dependencies <span class="src-hint">(this agent waits until they signal ready)</span></label>
+              <div class="chips">
+                <span class="chip sel">none</span>
+                <span class="chip">⟂ wait for: coder</span>
+                <span class="chip">⟂ wait for: tester</span>
+              </div>
+            </div>
+
+            <div class="toggle-row">
+              <span class="sw off"><i></i></span>
+              <div>
+                <b>Wait for result</b>
+                <div class="sub">Off → run in the background; the agent streams in the AGENTS panel and the main turn continues. On → block this turn until the agent finishes and return its final message inline.</div>
+              </div>
+            </div>
+          </div>
+          <div class="dlg-f">
+            <span class="hintleft">Spawns a child run under <b style="color:var(--text)">main</b> · streams over its own SSE</span>
+            <button class="bc">Cancel</button>
+            <button class="bc primary">Spawn ▸</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>
