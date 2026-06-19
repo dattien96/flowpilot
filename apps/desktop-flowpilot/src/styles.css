@@ -2559,6 +2559,56 @@ input {
   resize: none;
 }
 
+/* Skill-name highlight backdrop */
+.text-area-wrapper {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+.text-area-wrapper .text-area {
+  flex: none;
+  width: 100%;
+  box-sizing: border-box;
+}
+.text-area-wrapper.has-highlights {
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+.text-area-wrapper.has-highlights .text-area {
+  background: transparent !important;
+  border-color: transparent !important;
+}
+.text-area-wrapper.has-highlights:focus-within {
+  border-color: var(--accent);
+}
+.text-area-wrapper.has-highlights .text-area:focus {
+  outline: none;
+}
+.text-area-backdrop {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 7px 9px;
+  font-size: 13px;
+  font-family: inherit;
+  line-height: inherit;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow: hidden;
+  pointer-events: none;
+  color: transparent;
+}
+.skill-token-highlight {
+  background: rgba(76, 141, 255, 0.18);
+  border-radius: 3px;
+  color: transparent;
+}
+
 /* chat input */
 .chat-input {
   border-top: 1px solid var(--border);
@@ -3124,6 +3174,11 @@ input {
 }
 .skill-item-active {
   background: #1d2738;
+}
+.skill-item-highlighted {
+  background: var(--bg-2);
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
 }
 .skill-mark {
   color: var(--accent);

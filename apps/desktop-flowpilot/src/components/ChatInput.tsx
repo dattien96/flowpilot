@@ -148,6 +148,42 @@ function usageSummaryLine(provider: ProviderKey | undefined, usage: TokenUsageSn
   ));
 }
 
+type SkillToken = { name: string; start: number; end: number };
+
+// Build the backdrop children: plain strings interleaved with highlighted <mark> spans.
+function buildBackdrop(text: string, tokens: SkillToken[]): React.ReactNode[] {
+  const sorted = [...tokens].sort((a, b) => a.start - b.start);
+  const parts: React.ReactNode[] = [];
+  let pos = 0;
+  for (const token of sorted) {
+    if (token.start > pos) parts.push(text.slice(pos, token.start));
+    parts.push(
+      <mark key={`${token.name}-${token.start}`} className="skill-token-highlight">
+        {text.slice(token.start, token.end)}
+      </mark>,
+    );
+    pos = token.end;
+  }
+  if (pos < text.length) parts.push(text.slice(pos));
+  return parts;
+}
+
+// Scan backwards from `cursor` to find an active slash command fragment.
+// Returns the index of '/' and the query text, or null if none found.
+// Valid triggers: '/' at position 0, or preceded by a space.
+function findActiveSlash(text: string, cursor: number): { index: number; query: string } | null {
+  for (let i = cursor - 1; i >= 0; i--) {
+    if (text[i] === "/") {
+      if (i === 0 || text[i - 1] === " ") {
+        return { index: i, query: text.slice(i + 1, cursor).toLowerCase() };
+      }
+      return null;
+    }
+    if (text[i] === " ") return null;
+  }
+  return null;
+}
+
 // Chat composer + bottom controller strip. The controller keeps the current
 // skill picker active while visually de-emphasizing the other workspace
 // controls so the desktop layout reads like the mockup.
@@ -187,6 +223,10 @@ export function ChatInput(): React.ReactElement {
   const [pickerSortSelection, setPickerSortSelection] = useState<string[]>([]);
   const [pickerSearch, setPickerSearch] = useState("");
   const [skillPickerOpen, setSkillPickerOpen] = useState(false);
+  const [cursorPos, setCursorPos] = useState(0);
+  const [slashDismissedIndex, setSlashDismissedIndex] = useState<number | null>(null);
+  const [skillTokens, setSkillTokens] = useState<SkillToken[]>([]);
+  const [pickerHighlightIndex, setPickerHighlightIndex] = useState(-1);
   const [controllerExpanded, setControllerExpanded] = useState(true);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
@@ -194,6 +234,7 @@ export function ChatInput(): React.ReactElement {
   const [displayedTokenUsage, setDisplayedTokenUsage] = useState<TokenUsageSnapshot | undefined>(undefined);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const textAreaRef = useRef<HTMLTextAreaElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const wasPickerVisibleRef = useRef(false);
 
@@ -213,8 +254,14 @@ export function ChatInput(): React.ReactElement {
         .sort((a, b) => a.sortOrder - b.sortOrder),
     [selectedProvider, supportedModels],
   );
-  const slashQuery = isChatMode && text.startsWith("/") ? text.slice(1).toLowerCase() : null;
-  const showPicker = isChatMode && !!selectedProvider && (skillPickerOpen || slashQuery !== null);
+  const slashFragment = useMemo(() => {
+    if (!isChatMode) return null;
+    const frag = findActiveSlash(text, cursorPos);
+    if (frag !== null && frag.index === slashDismissedIndex) return null;
+    return frag;
+  }, [isChatMode, text, cursorPos, slashDismissedIndex]);
+  const slashQuery = slashFragment?.query ?? null;
+  const showPicker = isChatMode && !!selectedProvider && (skillPickerOpen || slashFragment !== null);
   const totalSkills = skills.length;
   const filtered = useMemo(
     () => {
@@ -303,19 +350,22 @@ export function ChatInput(): React.ReactElement {
     if (!showPicker) setPickerSearch("");
   }, [showPicker]);
 
+  // Reset keyboard highlight whenever the filtered list changes.
+  useEffect(() => {
+    setPickerHighlightIndex(-1);
+  }, [pickerSearch]);
+
   useEffect(() => {
     if (!showPicker) return;
     const onPointerDown = (event: PointerEvent) => {
       const root = rootRef.current;
       if (!root || root.contains(event.target as Node)) return;
       setSkillPickerOpen(false);
-      if (slashQuery !== null) {
-        setText("");
-      }
+      setCursorPos(0);
     };
     window.addEventListener("pointerdown", onPointerDown);
     return () => window.removeEventListener("pointerdown", onPointerDown);
-  }, [showPicker, slashQuery]);
+  }, [showPicker]);
 
   useEffect(() => {
     if (latestTokenUsage) {
@@ -351,10 +401,28 @@ export function ChatInput(): React.ReactElement {
   // downplays the other options but still reflects the current runtime state.
   const pickSkill = (name: string) => {
     setSelectedSkills((prev) => (prev.includes(name) ? prev : [...prev, name]));
-    if (slashQuery !== null) {
-      setText("");
-      setSkillPickerOpen(false);
+    if (slashFragment !== null) {
+      // Replace the /query fragment with the skill name in the prompt text.
+      const before = text.slice(0, slashFragment.index);
+      const after = text.slice(cursorPos);
+      const newText = before + name + after;
+      const newCursor = slashFragment.index + name.length;
+      setText(newText);
+      setCursorPos(newCursor);
+      // Record token position so the backdrop can highlight it.
+      const tokenStart = slashFragment.index;
+      setSkillTokens((prev) => [...prev, { name, start: tokenStart, end: tokenStart + name.length }]);
+      setTimeout(() => {
+        if (textAreaRef.current) {
+          textAreaRef.current.selectionStart = newCursor;
+          textAreaRef.current.selectionEnd = newCursor;
+          textAreaRef.current.focus();
+        }
+      }, 0);
     }
+    setSkillPickerOpen(false);
+    setPickerHighlightIndex(-1);
+    setSlashDismissedIndex(null);
   };
 
   const removeSkill = (name: string) => {
@@ -411,12 +479,41 @@ export function ChatInput(): React.ReactElement {
     void sendPrompt(text.trim(), isChatMode ? selectedSkills : undefined, wireAttachments);
     setText("");
     setSelectedSkills([]);
+    setSkillTokens([]);
     setAttachments([]);
     setAttachError(null);
     setSkillPickerOpen(false);
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (showPicker && slashFragment !== null) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setPickerHighlightIndex((prev) => Math.min(prev + 1, filtered.length - 1));
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setPickerHighlightIndex((prev) => Math.max(prev - 1, 0));
+        return;
+      }
+      if (e.key === "Enter" && pickerHighlightIndex >= 0) {
+        e.preventDefault();
+        const highlighted = filtered[pickerHighlightIndex];
+        if (highlighted) {
+          if (selectedSkills.includes(highlighted.name)) removeSkill(highlighted.name);
+          else pickSkill(highlighted.name);
+        }
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        if (slashFragment !== null) setSlashDismissedIndex(slashFragment.index);
+        setSkillPickerOpen(false);
+        setPickerHighlightIndex(-1);
+        return;
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey && !showPicker) {
       e.preventDefault();
       send();
@@ -429,7 +526,7 @@ export function ChatInput(): React.ReactElement {
       ? "Select a project first."
     : isChatMode
       ? selectedProvider
-        ? "Type a message, or / to pick a skill. Enter to send."
+        ? "Type a message. Use / anywhere to pick a skill."
         : "Select a provider first."
       : launchMode === "workflow"
         ? selectedWorkflowId
@@ -593,8 +690,9 @@ export function ChatInput(): React.ReactElement {
                 type="button"
                 className="skill-picker-close"
                 onClick={() => {
+                  if (slashFragment !== null) setSlashDismissedIndex(slashFragment.index);
                   setSkillPickerOpen(false);
-                  if (slashQuery !== null) setText("");
+                  setPickerHighlightIndex(-1);
                 }}
                 aria-label="Close skills picker"
               >
@@ -608,17 +706,47 @@ export function ChatInput(): React.ReactElement {
               placeholder="Search skills…"
               value={pickerSearch}
               onChange={(e) => setPickerSearch(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setPickerHighlightIndex((prev) => Math.min(prev + 1, filtered.length - 1));
+                } else if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setPickerHighlightIndex((prev) => Math.max(prev - 1, 0));
+                } else if (e.key === "Enter" && pickerHighlightIndex >= 0) {
+                  e.preventDefault();
+                  const highlighted = filtered[pickerHighlightIndex];
+                  if (highlighted) {
+                    if (selectedSkills.includes(highlighted.name)) removeSkill(highlighted.name);
+                    else pickSkill(highlighted.name);
+                  }
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  if (slashFragment !== null) setSlashDismissedIndex(slashFragment.index);
+                  setSkillPickerOpen(false);
+                  setPickerHighlightIndex(-1);
+                  const restoreTo = cursorPos;
+                  setTimeout(() => {
+                    if (textAreaRef.current) {
+                      textAreaRef.current.focus();
+                      textAreaRef.current.selectionStart = restoreTo;
+                      textAreaRef.current.selectionEnd = restoreTo;
+                    }
+                  }, 0);
+                }
+              }}
               aria-label="Search skills"
             />
           </div>
           {filtered.length === 0 && <div className="skill-empty">No matching skill</div>}
-          {filtered.map((s) => {
+          {filtered.map((s, idx) => {
             const active = selectedSkills.includes(s.name);
+            const highlighted = idx === pickerHighlightIndex;
             return (
               <button
                 key={s.name}
                 type="button"
-                className={`skill-item ${active ? "skill-item-active" : ""}`}
+                className={`skill-item ${active ? "skill-item-active" : ""} ${highlighted ? "skill-item-highlighted" : ""}`}
                 onClick={() => (active ? removeSkill(s.name) : pickSkill(s.name))}
               >
                 <span className="skill-mark">{active ? "☑" : "☐"}</span>
@@ -718,21 +846,38 @@ export function ChatInput(): React.ReactElement {
             </button>
           </>
         )}
-        <textarea
-          className="text-area"
-          rows={2}
-          placeholder={placeholder}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={onKeyDown}
-          onPaste={onPaste}
-          onPointerDown={() => {
-            if (showPicker) {
-              setSkillPickerOpen(false);
-              if (slashQuery !== null) setText("");
-            }
-          }}
-        />
+        <div className={`text-area-wrapper${isChatMode && skillTokens.length > 0 ? " has-highlights" : ""}`}>
+          {isChatMode && skillTokens.length > 0 && (
+            <div className="text-area-backdrop" aria-hidden="true">
+              {buildBackdrop(text, skillTokens)}
+            </div>
+          )}
+          <textarea
+            ref={textAreaRef}
+            className="text-area"
+            rows={2}
+            placeholder={placeholder}
+            value={text}
+            onChange={(e) => {
+              const newText = e.target.value;
+              const newCursor = e.target.selectionStart ?? 0;
+              setText(newText);
+              setCursorPos(newCursor);
+              if (slashDismissedIndex !== null && newText[slashDismissedIndex] !== "/") {
+                setSlashDismissedIndex(null);
+              }
+              setSkillTokens((prev) =>
+                prev.filter((t) => newText.slice(t.start, t.end) === t.name),
+              );
+            }}
+            onKeyDown={onKeyDown}
+            onPaste={onPaste}
+            onSelect={(e) => setCursorPos((e.target as HTMLTextAreaElement).selectionStart ?? 0)}
+            onPointerDown={() => {
+              if (skillPickerOpen) setSkillPickerOpen(false);
+            }}
+          />
+        </div>
         {blocked ? (
           <button className="btn send-btn send-btn-stop" onClick={() => void stop()} aria-label="Stop AI">
             <StopIcon />
