@@ -402,7 +402,8 @@ export function ChatInput(): React.ReactElement {
   const pickSkill = (name: string) => {
     setSelectedSkills((prev) => (prev.includes(name) ? prev : [...prev, name]));
     if (slashFragment !== null) {
-      // Replace the /query fragment with the skill name in the prompt text.
+      // Slash/command mode: replace the /query fragment in the prompt text and
+      // close the picker (single-select per slash token).
       const before = text.slice(0, slashFragment.index);
       const after = text.slice(cursorPos);
       const newText = before + name + after;
@@ -419,10 +420,12 @@ export function ChatInput(): React.ReactElement {
           textAreaRef.current.focus();
         }
       }, 0);
+      setSkillPickerOpen(false);
+      setPickerHighlightIndex(-1);
+      setSlashDismissedIndex(null);
     }
-    setSkillPickerOpen(false);
-    setPickerHighlightIndex(-1);
-    setSlashDismissedIndex(null);
+    // Touch/button mode (slashFragment === null): keep picker open so the user
+    // can select multiple skills before dismissing manually.
   };
 
   const removeSkill = (name: string) => {
