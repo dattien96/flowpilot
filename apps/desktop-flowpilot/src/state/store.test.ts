@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { useStore } from "./store";
+import { shouldShowAgentTimelineHeader } from "@/components/Timeline";
+import { parseMentionRouting } from "@/components/ChatInput";
 import { RunnerApiError } from "../client/HttpWsRunnerClient";
-import type { ProviderAccountSummary, ProviderEventDTO, RemoteChatSessionSummary, RunHandle, RunHistoryItem, RunnerClient, TurnInput } from "../types/contract";
+import type { AgentRunSummary, ProviderAccountSummary, ProviderEventDTO, RemoteChatSessionSummary, RunHandle, RunHistoryItem, RunnerClient, TurnInput } from "../types/contract";
 
 async function* emptyStream(): AsyncIterable<ProviderEventDTO> {}
 
@@ -14,6 +16,9 @@ function makeClient(overrides: Partial<RunnerClient> = {}): RunnerClient {
     listProviderAccounts: async () => [],
     listRunHistory: async () => [],
     listRemoteChatSessions: async () => [],
+    listAgents: async () => [],
+    listAgentRuns: async () => [],
+    spawnAgent: async () => ({ runId: "agent-1", providerSessionId: "session-agent", providerKey: "codex", status: "completed" }),
     startRun: async () => ({ runId: "new-run", providerSessionId: "session-1", providerKey: "codex", status: "running" }),
     resumeRun: async () => ({ runId: "run-1", providerSessionId: "session-1", providerKey: "codex", status: "completed" }),
     syncChatRun: async (runId) => ({ runId, sourceMachineId: "mch_sync", sourceRunId: runId, syncStatus: "synced", syncedAt: "2026-06-17T10:10:00Z", remotePath: "chat-sessions/runs/mch_sync/" + runId + "/manifest.json" }),
@@ -24,6 +29,7 @@ function makeClient(overrides: Partial<RunnerClient> = {}): RunnerClient {
     answerQuestion: async () => {},
     interrupt: async () => {},
     streamRun: () => emptyStream(),
+    focusAgentRun: () => emptyStream(),
     listArtifacts: async () => [],
     listSkills: async () => [],
     connectProviderAccount: async () => {},
@@ -64,6 +70,9 @@ function seedStore(client: RunnerClient, runHistory: RunHistoryItem[]): void {
     reasoningEffort: undefined,
     yoloMode: false,
     runId: "current-run",
+    mainRunId: "current-run",
+    activeAgentRunId: undefined,
+    agentRuns: [],
     activeStepId: "chat-current-run",
     status: "running",
     timeline: [{ kind: "prompt", id: "prompt-1", text: "keep current timeline" }],
@@ -83,6 +92,7 @@ function seedStore(client: RunnerClient, runHistory: RunHistoryItem[]): void {
     _streamingAssistantId: undefined,
     _historyLoadSeq: 0,
     _streamRunSeq: 0,
+    _runSnapshots: {},
   });
 }
 
@@ -130,6 +140,24 @@ const BASE_EVENT = {
 
 async function* turnFailedStream(error: string, recoverable: boolean): AsyncIterable<ProviderEventDTO> {
   yield { ...BASE_EVENT, type: "turn_failed", error, recoverable };
+}
+
+async function* childFocusStream(): AsyncIterable<ProviderEventDTO> {
+  yield { ...BASE_EVENT, workflowRunId: "child-run", type: "turn_started", providerTurnId: "child-turn", prompt: "child prompt" };
+  yield { ...BASE_EVENT, workflowRunId: "child-run", type: "message_delta", text: "child response" };
+  yield { ...BASE_EVENT, workflowRunId: "child-run", type: "turn_completed", finalMessage: "child response" };
+}
+
+async function* pendingChildStream(gate: Promise<void>): AsyncIterable<ProviderEventDTO> {
+  yield { ...BASE_EVENT, workflowRunId: "child-run", type: "turn_started", providerTurnId: "child-turn", prompt: "child prompt" };
+  await gate;
+  yield { ...BASE_EVENT, workflowRunId: "child-run", type: "turn_completed", finalMessage: "done" };
+}
+
+async function* cursorChildStream(): AsyncIterable<ProviderEventDTO> {
+  yield { ...BASE_EVENT, workflowRunId: "child-run", seq: 1, type: "turn_started", providerTurnId: "child-turn", prompt: "child prompt" };
+  yield { ...BASE_EVENT, workflowRunId: "child-run", seq: 2, type: "message_delta", text: "old child chunk" };
+  yield { ...BASE_EVENT, workflowRunId: "child-run", seq: 3, type: "message_delta", text: "new child chunk" };
 }
 
 test("openHistoryRun marks unavailable history entries on typed resume errors", async () => {
@@ -286,6 +314,163 @@ test("openHistoryRun selects the resumed provider default model", async () => {
   const state = useStore.getState();
   assert.equal(state.selectedProvider, "claude");
   assert.equal(state.selectedModel, "claude-sonnet-4");
+});
+
+test("refreshAgentRuns loads child summaries for the active main run", async () => {
+  const agentRuns: AgentRunSummary[] = [
+    {
+      runId: "agent-1",
+      agentName: "architect",
+      role: "architecture",
+      status: "running",
+      parentRunId: "current-run",
+      createdAt: "2026-06-17T10:01:00Z",
+      agentStatus: "running",
+    },
+  ];
+  seedStore(
+    makeClient({
+      listAgentRuns: async () => agentRuns,
+    }),
+    [],
+  );
+
+  await useStore.getState().refreshAgentRuns();
+
+  assert.deepEqual(useStore.getState().agentRuns, agentRuns);
+});
+
+test("focusAgentRun caches the main timeline and backToMainRun restores it", async () => {
+  seedStore(
+    makeClient({
+      focusAgentRun: () => childFocusStream(),
+    }),
+    [],
+  );
+  useStore.setState({
+    runId: "current-run",
+    mainRunId: "current-run",
+    activeAgentRunId: undefined,
+    timeline: [{ kind: "prompt", id: "prompt-main", text: "main timeline" }],
+    status: "running",
+    artifacts: [],
+  });
+
+  await useStore.getState().focusAgentRun("child-run");
+  assert.equal(useStore.getState().runId, "child-run");
+  assert.equal(useStore.getState().activeAgentRunId, "child-run");
+  assert.ok(useStore.getState().timeline.some((item) => item.kind === "assistant"));
+
+  useStore.getState().backToMainRun();
+
+  assert.equal(useStore.getState().runId, "current-run");
+  assert.equal(useStore.getState().activeAgentRunId, undefined);
+  assert.deepEqual(useStore.getState().timeline, [{ kind: "prompt", id: "prompt-main", text: "main timeline" }]);
+});
+
+test("focusAgentRun resumes from the last replay cursor without duplicating prior child events", async () => {
+  seedStore(
+    makeClient({
+      focusAgentRun: () => cursorChildStream(),
+    }),
+    [],
+  );
+  useStore.setState({
+    runId: "current-run",
+    mainRunId: "current-run",
+    activeAgentRunId: undefined,
+    timeline: [{ kind: "prompt", id: "prompt-main", text: "main timeline" }],
+    status: "running",
+    artifacts: [],
+    _runReplaySeq: { "child-run": 2 },
+  });
+
+  await useStore.getState().focusAgentRun("child-run");
+
+  const assistantTexts = useStore.getState().timeline
+    .filter((item) => item.kind === "assistant")
+    .map((item) => (item.kind === "assistant" ? item.text : ""));
+  assert.deepEqual(assistantTexts, ["new child chunk"]);
+});
+
+test("focusAgentRun returns before a child stream finishes", async () => {
+  const gate = deferred<void>();
+  seedStore(
+    makeClient({
+      focusAgentRun: () => pendingChildStream(gate.promise),
+    }),
+    [],
+  );
+  useStore.setState({
+    runId: "current-run",
+    mainRunId: "current-run",
+    activeAgentRunId: undefined,
+    timeline: [{ kind: "prompt", id: "prompt-main", text: "main timeline" }],
+    status: "running",
+    artifacts: [],
+  });
+
+  const focusPromise = useStore.getState().focusAgentRun("child-run");
+  await Promise.race([focusPromise, Promise.resolve()]);
+  assert.equal(useStore.getState().runId, "child-run");
+  assert.equal(useStore.getState().activeAgentRunId, "child-run");
+  gate.resolve();
+  await focusPromise;
+});
+
+test("appendSystemMessage records blocked mention feedback for busy routing", async () => {
+  seedStore(makeClient(), []);
+  useStore.getState().appendSystemMessage("@builder is busy right now. It cannot be interrupted or queued.", "error");
+
+  const last = useStore.getState().timeline.at(-1);
+  assert.equal(last?.kind, "system");
+  if (last?.kind === "system") {
+    assert.equal(last.text, "@builder is busy right now. It cannot be interrupted or queued.");
+  }
+});
+
+test("openAgentSpawnGuide overwrites the preselected agent and clearAgentSpawnGuide resets it", async () => {
+  seedStore(makeClient(), []);
+  useStore.getState().openAgentSpawnGuide("architect");
+  assert.equal(useStore.getState().agentSpawnGuideOpen, true);
+  assert.equal(useStore.getState().agentSpawnGuideAgentName, "architect");
+
+  useStore.getState().openAgentSpawnGuide("reviewer");
+  assert.equal(useStore.getState().agentSpawnGuideOpen, true);
+  assert.equal(useStore.getState().agentSpawnGuideAgentName, "reviewer");
+
+  useStore.getState().clearAgentSpawnGuide();
+  assert.equal(useStore.getState().agentSpawnGuideOpen, false);
+  assert.equal(useStore.getState().agentSpawnGuideAgentName, undefined);
+});
+
+test("parseMentionRouting resolves missing, busy, and idle child targets", () => {
+  const runs = [
+    { agentName: "architect", runId: "agent-1", status: "completed" },
+    { agentName: "builder", runId: "agent-2", status: "running" },
+  ];
+
+  assert.deepEqual(parseMentionRouting("@architect do work", runs), {
+    kind: "focus",
+    agentName: "architect",
+    runId: "agent-1",
+    prompt: "do work",
+  });
+  assert.deepEqual(parseMentionRouting("@builder do work", runs), {
+    kind: "busy",
+    agentName: "builder",
+  });
+  assert.deepEqual(parseMentionRouting("@reviewer do work", runs), {
+    kind: "missing",
+    agentName: "reviewer",
+  });
+});
+
+test("shouldShowAgentTimelineHeader stays hidden for single-agent runs", async () => {
+  assert.equal(shouldShowAgentTimelineHeader(undefined, undefined, 0), false);
+  assert.equal(shouldShowAgentTimelineHeader("current-run", "current-run", 0), false);
+  assert.equal(shouldShowAgentTimelineHeader(undefined, "current-run", 0), false);
+  assert.equal(shouldShowAgentTimelineHeader("child-run", "current-run", 1), true);
 });
 
 test("syncHistoryRun updates local run sync metadata", async () => {

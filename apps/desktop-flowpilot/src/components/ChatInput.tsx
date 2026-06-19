@@ -184,6 +184,28 @@ function findActiveSlash(text: string, cursor: number): { index: number; query: 
   return null;
 }
 
+export type MentionRoutingDecision =
+  | { kind: "focus"; agentName: string; runId: string; prompt: string }
+  | { kind: "busy"; agentName: string }
+  | { kind: "missing"; agentName: string };
+
+export function parseMentionRouting(
+  text: string,
+  agentRuns: Array<{ agentName: string; runId: string; status: string }>,
+): MentionRoutingDecision | null {
+  const trimmed = text.trim();
+  const match = trimmed.match(/^@([A-Za-z0-9_-]+)\s*(.*)$/s);
+  if (!match) return null;
+  const agentName = match[1];
+  const prompt = match[2].trim();
+  const target = agentRuns.find((run) => run.agentName.toLowerCase() === agentName.toLowerCase());
+  if (!target) return { kind: "missing", agentName };
+  if (target.status === "running" || target.status === "waiting_approval" || target.status === "waiting_question") {
+    return { kind: "busy", agentName };
+  }
+  return { kind: "focus", agentName, runId: target.runId, prompt };
+}
+
 // Chat composer + bottom controller strip. The controller keeps the current
 // skill picker active while visually de-emphasizing the other workspace
 // controls so the desktop layout reads like the mockup.
@@ -214,6 +236,10 @@ export function ChatInput(): React.ReactElement {
   const stop = useStore((s) => s.stop);
   const timeline = useStore((s) => s.timeline);
   const providerAccounts = useStore((s) => s.providerAccounts);
+  const agentRuns = useStore((s) => s.agentRuns);
+  const focusAgentRun = useStore((s) => s.focusAgentRun);
+  const appendSystemMessage = useStore((s) => s.appendSystemMessage);
+  const openAgentSpawnGuide = useStore((s) => s.openAgentSpawnGuide);
   const pendingAccountSwitch = useStore((s) => s.pendingAccountSwitch);
   const accountSwitchLoading = useStore((s) => s.accountSwitchLoading);
   const requestManualAccountSwitch = useStore((s) => s.requestManualAccountSwitch);
@@ -475,11 +501,37 @@ export function ChatInput(): React.ReactElement {
     setAttachments((prev) => prev.filter((a) => a.id !== id));
   };
 
-  const send = () => {
+  const send = async () => {
     if (!canSend) return;
+    const trimmed = text.trim();
+    const routed = parseMentionRouting(trimmed, agentRuns);
+    if (routed) {
+      if (routed.kind === "missing") {
+        appendSystemMessage(`No child run named @${routed.agentName}. Open Agents and spawn it first.`);
+        openAgentSpawnGuide(routed.agentName);
+        return;
+      }
+      if (routed.kind === "busy") {
+        appendSystemMessage(`@${routed.agentName} is busy right now. It cannot be interrupted or queued.`);
+        return;
+      }
+      await focusAgentRun(routed.runId);
+      if (routed.prompt.length === 0) {
+        appendSystemMessage(`Focused @${routed.agentName}. Add a prompt to send work to this child run.`);
+        return;
+      }
+      await sendPrompt(routed.prompt, isChatMode ? selectedSkills : undefined, isChatMode && attachments.length > 0 ? attachments.map(toWire) : undefined);
+      setText("");
+      setSelectedSkills([]);
+      setSkillTokens([]);
+      setAttachments([]);
+      setAttachError(null);
+      setSkillPickerOpen(false);
+      return;
+    }
     const wireAttachments =
       isChatMode && attachments.length > 0 ? attachments.map(toWire) : undefined;
-    void sendPrompt(text.trim(), isChatMode ? selectedSkills : undefined, wireAttachments);
+    await sendPrompt(trimmed, isChatMode ? selectedSkills : undefined, wireAttachments);
     setText("");
     setSelectedSkills([]);
     setSkillTokens([]);
@@ -519,7 +571,7 @@ export function ChatInput(): React.ReactElement {
     }
     if (e.key === "Enter" && !e.shiftKey && !showPicker) {
       e.preventDefault();
-      send();
+      void send();
     }
   };
 

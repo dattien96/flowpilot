@@ -1,5 +1,7 @@
 import type {
   Artifact,
+  AgentDefinition,
+  AgentRunSummary,
   ChatSessionRestoreRequest,
   ChatSessionRestoreResult,
   ChatSessionSyncRequest,
@@ -10,6 +12,8 @@ import type {
   ProviderEventDTO,
   ProviderSkill,
   RemoteChatSessionSummary,
+  SpawnAgentInput,
+  SpawnAgentResult,
   RunHandle,
   RunHistoryItem,
   RunnerClient,
@@ -154,7 +158,16 @@ interface RunState {
   /** Monotonic per-run event sequence (reconnect cursor, 04-02). */
   seq: number;
   lastTurnInput?: TurnInput;
+  parentRunId?: string;
+  agentName?: string;
+  role?: string;
 }
+
+const MOCK_AGENTS: AgentDefinition[] = [
+  { name: "architect", description: "Designs the approach", role: "architecture", source: "flowpilot" },
+  { name: "builder", description: "Implements the plan", role: "implementation", source: "flowpilot" },
+  { name: "reviewer", description: "Checks the result", role: "review", source: "flowpilot" },
+];
 
 /**
  * Phase 1 mock implementation of the RunnerClient contract (04-01 Part A).
@@ -317,6 +330,52 @@ export class MockRunnerClient implements RunnerClient {
       return MOCK_SKILLS.filter((skill) => skill.name === "architect" || skill.name === "reviewer");
     }
     return MOCK_SKILLS;
+  }
+
+  async listAgents(_cwd?: string): Promise<AgentDefinition[]> {
+    await delay(40);
+    return MOCK_AGENTS;
+  }
+
+  async listAgentRuns(parentRunId: string): Promise<AgentRunSummary[]> {
+    await delay(40);
+    return Array.from(this.runs.values())
+      .filter((run) => run.parentRunId === parentRunId)
+      .map((run) => ({
+        runId: run.runId,
+        agentName: run.agentName ?? "agent",
+        role: run.role ?? "assistant",
+        status: run.status,
+        parentRunId: run.parentRunId,
+        createdAt: run.startedAt,
+        agentStatus: run.status,
+      }));
+  }
+
+  async spawnAgent(input: SpawnAgentInput & { parentRunId: string }): Promise<SpawnAgentResult> {
+    await delay(50);
+    const runId = nextId("agent");
+    const providerSessionId = nextId("thread");
+    const now = new Date().toISOString();
+    this.runs.set(runId, {
+      runId,
+      projectId: "",
+      providerSessionId,
+      providerTurnId: "",
+      status: "completed",
+      startedAt: now,
+      updatedAt: now,
+      seq: 0,
+      parentRunId: input.parentRunId,
+      agentName: input.agent,
+      role: input.agent,
+      lastMessage: input.prompt,
+    });
+    return { runId, providerSessionId, providerKey: "codex", status: "completed", finalMessage: input.prompt };
+  }
+
+  async *focusAgentRun(runId: string): AsyncIterable<ProviderEventDTO> {
+    yield* this.streamRun(runId, 0);
   }
 
   async listArtifacts(runId: string): Promise<Artifact[]> {

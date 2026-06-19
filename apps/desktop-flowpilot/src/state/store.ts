@@ -1,6 +1,8 @@
 import { create } from "zustand";
 import type {
   Artifact,
+  AgentDefinition,
+  AgentRunSummary,
   ChatSessionRestoreRequest,
   Project,
   ProviderAccountSummary,
@@ -43,6 +45,20 @@ let loadProjectsInFlight: Promise<void> | null = null;
 export type LaunchMode = "workflow" | "step";
 export type ChatMode = "normal_chat" | "workflow_step_auto";
 
+interface RunSnapshot {
+  timeline: TimelineItem[];
+  artifacts: Artifact[];
+  status: RunStatus;
+  pendingApproval?: PendingApproval;
+  pendingQuestion?: PendingQuestion;
+  latestTokenUsage?: TokenUsageSnapshot;
+  lastTurnInput?: TurnInput;
+  recoverable: boolean;
+  _streamingAssistantId?: string;
+  activeStepId?: string;
+  lastEventSeq?: number;
+}
+
 function pickDefaultModel(provider: ProviderKey | undefined, models: SupportedModel[]): string | undefined {
   if (!provider) return undefined;
   const enabled = models.filter((m) => m.providerKey === provider && m.isEnabled);
@@ -84,6 +100,9 @@ interface AppState {
 
   // run
   runId?: string;
+  mainRunId?: string;
+  activeAgentRunId?: string;
+  agentRuns: AgentRunSummary[];
   /** Step id for the active run's turns; the synthetic chat step in normal_chat. */
   activeStepId?: string;
   status: RunStatus;
@@ -117,6 +136,10 @@ interface AppState {
   _historyLoadSeq: number;
   // stale-response guard for loadRemoteChatSessions (mirrors _historyLoadSeq)
   _remoteHistoryLoadSeq: number;
+  _runSnapshots: Record<string, RunSnapshot>;
+  _runReplaySeq: Record<string, number>;
+  agentSpawnGuideOpen: boolean;
+  agentSpawnGuideAgentName?: string;
   // stream generation counter: incremented on every new consumeStream start so that
   // a prior stream for the same runId exits immediately (BUG-079)
   _streamRunSeq: number;
@@ -142,6 +165,13 @@ interface AppState {
   reconnect(): Promise<void>;
   loadRunHistory(): Promise<void>;
   loadRemoteChatSessions(): Promise<void>;
+  refreshAgentRuns(): Promise<void>;
+  listAgents(cwd?: string): Promise<AgentDefinition[]>;
+  focusAgentRun(runId: string): Promise<void>;
+  backToMainRun(): void;
+  appendSystemMessage(text: string, tone?: "info" | "error"): void;
+  openAgentSpawnGuide(agentName?: string): void;
+  clearAgentSpawnGuide(): void;
   syncHistoryRun(runId: string, projectId?: string): Promise<void>;
   syncAllInProject(projectId: string): Promise<void>;
   deleteHistoryRun(runId: string): Promise<void>;
@@ -170,6 +200,7 @@ export const useStore = create<AppState>((set, get) => ({
   artifacts: [],
   runHistory: [],
   remoteChatSessions: [],
+  agentRuns: [],
   historyLoading: false,
   remoteHistoryLoading: false,
   latestTokenUsage: undefined,
@@ -183,7 +214,11 @@ export const useStore = create<AppState>((set, get) => ({
   yoloMode: false,
   _historyLoadSeq: 0,
   _remoteHistoryLoadSeq: 0,
+  _runSnapshots: {},
+  _runReplaySeq: {},
   _streamRunSeq: 0,
+  agentSpawnGuideAgentName: undefined,
+  agentSpawnGuideOpen: false,
 
   async loadProjects() {
     if (loadProjectsInFlight) return loadProjectsInFlight;
@@ -275,6 +310,97 @@ export const useStore = create<AppState>((set, get) => ({
       // eslint-disable-next-line no-console
       console.error("[FlowPilot] listProviderAccounts refresh failed:", err);
     }
+  },
+
+  async refreshAgentRuns() {
+    const { client, mainRunId, runId } = get();
+    const parentRunId = mainRunId ?? runId;
+    if (!parentRunId || !client.listAgentRuns) {
+      set({ agentRuns: [] });
+      return;
+    }
+    try {
+      const agentRuns = await client.listAgentRuns(parentRunId);
+      if (get().mainRunId === parentRunId || get().runId === parentRunId) {
+        set({ agentRuns });
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] listAgentRuns failed:", err);
+    }
+  },
+
+  async listAgents(cwd) {
+    const { client } = get();
+    if (!client.listAgents) return [];
+    try {
+      return await client.listAgents(cwd ?? selectedProjectPath(get()));
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] listAgents failed:", err);
+      return [];
+    }
+  },
+
+  async focusAgentRun(runId) {
+    const { client } = get();
+    const currentRunId = get().runId;
+    const mainRunId = get().mainRunId ?? currentRunId;
+    if (!mainRunId) return;
+    cacheRunSnapshot(get(), currentRunId);
+    const restore = get()._runSnapshots[runId];
+    const streamRunSeq = get()._streamRunSeq + 1;
+    const afterSeq = get()._runReplaySeq[runId] ?? restore?.lastEventSeq ?? 0;
+    set({
+      mainRunId,
+      activeAgentRunId: runId,
+      runId,
+      ...(restore ?? {
+        timeline: [],
+        artifacts: [],
+        status: "running",
+        recoverable: false,
+      }),
+      agentSpawnGuideOpen: false,
+      agentSpawnGuideAgentName: undefined,
+      _streamRunSeq: streamRunSeq,
+    });
+    const stream = client.focusAgentRun ? client.focusAgentRun(runId) : client.streamRun(runId, 0);
+    void consumeAgentStream(runId, stream, streamRunSeq, afterSeq, set, get);
+    void get().refreshAgentRuns();
+  },
+
+  backToMainRun() {
+    const currentRunId = get().runId;
+    const { mainRunId, _runSnapshots } = get();
+    if (!mainRunId) return;
+    cacheRunSnapshot(get(), currentRunId);
+    const restore = _runSnapshots[mainRunId];
+    if (!restore) return;
+    const streamRunSeq = get()._streamRunSeq + 1;
+    const afterSeq = get()._runReplaySeq[mainRunId] ?? restore.lastEventSeq ?? 0;
+    set({
+      runId: mainRunId,
+      mainRunId,
+      activeAgentRunId: undefined,
+      ...restore,
+      _streamRunSeq: streamRunSeq,
+    });
+    void consumeAgentStream(mainRunId, get().client.streamRun(mainRunId, afterSeq), streamRunSeq, afterSeq, set, get);
+  },
+
+  appendSystemMessage(text, tone = "info") {
+    set((s) => ({
+      timeline: [...s.timeline, { kind: "system", id: `sys-${s.timeline.length}`, text, tone }],
+    }));
+  },
+
+  openAgentSpawnGuide(agentName) {
+    set({ agentSpawnGuideOpen: true, agentSpawnGuideAgentName: agentName });
+  },
+
+  clearAgentSpawnGuide() {
+    set({ agentSpawnGuideOpen: false, agentSpawnGuideAgentName: undefined });
   },
 
   async selectProject(projectId) {
@@ -426,6 +552,10 @@ export const useStore = create<AppState>((set, get) => ({
         if (handle.stepId) {
           turnStepId = handle.stepId;
         }
+        set({
+          mainRunId: handle.runId,
+          activeAgentRunId: undefined,
+        });
       }
 
       const turnInput: TurnInput = {
@@ -455,9 +585,10 @@ export const useStore = create<AppState>((set, get) => ({
             ? attachments
             : undefined,
       };
-      set({ runId, lastTurnInput: turnInput, activeStepId: turnStepId });
+      set({ runId, lastTurnInput: turnInput, activeStepId: turnStepId, _streamRunSeq: get()._streamRunSeq + 1 });
 
       await consumeStream(runId, client.sendTurn(turnInput), set, get);
+      void get().refreshAgentRuns();
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("[FlowPilot] sendPrompt failed:", err);
@@ -766,6 +897,8 @@ export const useStore = create<AppState>((set, get) => ({
     });
     set({
       runId: handle.runId,
+      mainRunId: handle.runId,
+      activeAgentRunId: undefined,
       status: handle.status,
       activeStepId: handle.stepId,
       timeline: [],
@@ -779,6 +912,10 @@ export const useStore = create<AppState>((set, get) => ({
       accountSwitchLoading: false,
       _accountSwitchTriedIds: [],
       _streamingAssistantId: undefined,
+      agentRuns: [],
+      agentSpawnGuideOpen: false,
+      agentSpawnGuideAgentName: undefined,
+      _runReplaySeq: {},
       _streamRunSeq: get()._streamRunSeq + 1,
       ...(historyProvider
         ? {
@@ -833,16 +970,22 @@ export const useStore = create<AppState>((set, get) => ({
         };
       });
     }
+    void get().refreshAgentRuns();
   },
 
   resetRun() {
     const { selectedProvider, supportedModels } = get();
     set({
       runId: undefined,
+      mainRunId: undefined,
+      activeAgentRunId: undefined,
       activeStepId: undefined,
       status: "idle",
       timeline: [],
       artifacts: [],
+      agentRuns: [],
+      agentSpawnGuideOpen: false,
+      agentSpawnGuideAgentName: undefined,
       pendingApproval: undefined,
       pendingQuestion: undefined,
       latestTokenUsage: undefined,
@@ -852,6 +995,8 @@ export const useStore = create<AppState>((set, get) => ({
       accountSwitchLoading: false,
       _accountSwitchTriedIds: [],
       _streamingAssistantId: undefined,
+      _runSnapshots: {},
+      _runReplaySeq: {},
       selectedModel: pickDefaultModel(selectedProvider, supportedModels),
     });
   },
@@ -1097,15 +1242,41 @@ async function consumeStream(
   }
 }
 
+async function consumeAgentStream(
+  runId: string,
+  stream: AsyncIterable<ProviderEventDTO>,
+  streamRunSeq: number,
+  afterSeq: number,
+  set: (fn: (s: AppState) => Partial<AppState>) => void,
+  get: () => AppState,
+): Promise<void> {
+  const isStale = () => !shouldApplyRunEvent(get().runId, runId) || get()._streamRunSeq !== streamRunSeq;
+  for await (const e of stream) {
+    if (isStale()) return;
+    if (e.seq <= afterSeq) continue;
+    set((s) => applyEvent(s, e));
+    set((s) => ({
+      _runReplaySeq: {
+        ...s._runReplaySeq,
+        [runId]: e.seq,
+      },
+    }));
+  }
+}
+
 function applyEvent(s: AppState, e: ProviderEventDTO): Partial<AppState> {
   const next = applyTimelineEvent(s, e);
+  const nextReplaySeq = {
+    ...s._runReplaySeq,
+    [e.workflowRunId]: e.seq,
+  };
   if (e.type === "turn_started") {
-    return { ...next, latestTokenUsage: undefined };
+    return { ...next, latestTokenUsage: undefined, _runReplaySeq: nextReplaySeq };
   }
   if (e.type === "token_usage_updated") {
-    return { ...next, latestTokenUsage: e.tokenUsage };
+    return { ...next, latestTokenUsage: e.tokenUsage, _runReplaySeq: nextReplaySeq };
   }
-  return next;
+  return { ...next, _runReplaySeq: nextReplaySeq };
 }
 
 function runErrorMessage(err: unknown): string {
@@ -1117,4 +1288,40 @@ function runErrorMessage(err: unknown): string {
     return err.message;
   }
   return String(err);
+}
+
+function snapshotRunState(state: AppState): RunSnapshot {
+  return {
+    timeline: state.timeline,
+    artifacts: state.artifacts,
+    status: state.status,
+    pendingApproval: state.pendingApproval,
+    pendingQuestion: state.pendingQuestion,
+    latestTokenUsage: state.latestTokenUsage,
+    lastTurnInput: state.lastTurnInput,
+    recoverable: state.recoverable,
+    _streamingAssistantId: state._streamingAssistantId,
+    activeStepId: state.activeStepId,
+    lastEventSeq: state._runReplaySeq[state.runId ?? ""] ?? state._runReplaySeq[state.mainRunId ?? ""] ?? undefined,
+  };
+}
+
+function restoreRunSnapshot(snapshot: RunSnapshot): Partial<AppState> {
+  return {
+    timeline: snapshot.timeline,
+    artifacts: snapshot.artifacts,
+    status: snapshot.status,
+    pendingApproval: snapshot.pendingApproval,
+    pendingQuestion: snapshot.pendingQuestion,
+    latestTokenUsage: snapshot.latestTokenUsage,
+    lastTurnInput: snapshot.lastTurnInput,
+    recoverable: snapshot.recoverable,
+    _streamingAssistantId: snapshot._streamingAssistantId,
+    activeStepId: snapshot.activeStepId,
+  };
+}
+
+function cacheRunSnapshot(state: AppState, runId?: string): void {
+  if (!runId) return;
+  state._runSnapshots[runId] = snapshotRunState(state);
 }

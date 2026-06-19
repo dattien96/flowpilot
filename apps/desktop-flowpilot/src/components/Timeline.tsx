@@ -38,6 +38,10 @@ const FILE_ICON: Record<string, string> = { created: "＋", modified: "✎", del
 type ToolItem = Extract<TimelineItem, { kind: "tool" }>;
 type TimelineGroup = TimelineItem | { kind: "tool-group"; id: string; tools: ToolItem[] };
 
+export function shouldShowAgentTimelineHeader(activeAgentRunId: string | undefined, mainRunId: string | undefined, agentRunCount: number): boolean {
+  return Boolean(activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId) || agentRunCount > 0;
+}
+
 function previewValue(value: unknown): string | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value === "string") return value;
@@ -294,6 +298,10 @@ function Item({ it }: { it: TimelineGroup }): React.ReactElement | null {
 
 export function Timeline(): React.ReactElement {
   const timeline = useStore((s) => s.timeline);
+  const mainRunId = useStore((s) => s.mainRunId ?? s.runId);
+  const activeAgentRunId = useStore((s) => s.activeAgentRunId);
+  const agentRuns = useStore((s) => s.agentRuns);
+  const backToMainRun = useStore((s) => s.backToMainRun);
   const endRef = useRef<HTMLDivElement>(null);
 
   const totalPromptCount = countPrompts(timeline);
@@ -311,13 +319,39 @@ export function Timeline(): React.ReactElement {
   const hiddenPromptCount = Math.max(totalPromptCount - visiblePromptCount, 0);
   const visibleTimeline = sliceTimelineFromPrompt(timeline, visiblePromptCount);
   const timelineGroups = buildTimelineGroups(visibleTimeline);
+  const runningAgentCount = agentRuns.filter(
+    (run) => run.status === "running" || run.status === "waiting_approval" || run.status === "waiting_question",
+  ).length;
+  const showAgentHeader = shouldShowAgentTimelineHeader(activeAgentRunId, mainRunId, agentRuns.length);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [timeline]);
 
   return (
-    <div className="timeline">
+    <div className={`timeline ${activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId ? "timeline-agent-focused" : ""}`}>
+      {showAgentHeader && (
+        <div className="timeline-head">
+          {activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId ? (
+            <div className="timeline-breadcrumb">
+              <button type="button" className="timeline-back-btn" onClick={backToMainRun}>
+                ← Back to main
+              </button>
+              <span className="timeline-breadcrumb-sep">/</span>
+              <span className="timeline-breadcrumb-current">{activeAgentRunId}</span>
+            </div>
+          ) : (
+            <div className="timeline-breadcrumb">
+              <span className="timeline-breadcrumb-current">{runningAgentCount > 0 ? `${runningAgentCount} agents running` : "Main run"}</span>
+            </div>
+          )}
+          {runningAgentCount > 0 && (
+            <div className="timeline-agent-summary">
+              <span>{runningAgentCount} agents running</span>
+            </div>
+          )}
+        </div>
+      )}
       {timeline.length === 0 && <div className="empty">Select a project, choose your chat controls, and send a prompt to begin.</div>}
       {hiddenPromptCount > 0 && (
         <button

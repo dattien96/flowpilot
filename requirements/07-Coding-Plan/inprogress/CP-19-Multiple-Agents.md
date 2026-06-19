@@ -34,7 +34,7 @@
 ### Key Decisions
 
 - `P-1` A sub-agent is an `interactiveRun` extended with `parentRunId`, `agentName`, `role`, `dependsOn[]`, and `agentStatus`. Do **not** build a parallel session/transport/event system; reuse the adapter + SSE + persistence that normal chat already uses.
-- `P-2` Spawning is triggered two ways through one backend path: an AI-callable `spawn_agent` tool (modeled on `ask_user` in `codex_adapter.go`) and a UI spawn action (`+ Spawn agent` / `@agent` mention). `wait:true` blocks the parent turn and returns the child's final message as the tool result; `wait:false` runs in the background.
+- `P-2` Spawning is triggered two ways through one backend path: an AI-callable `spawn_agent` tool (modeled on `ask_user` in `codex_adapter.go`) and a UI spawn action (`+ Spawn agent` / `@agent` mention). `wait:true` blocks the parent turn until the child completes or enters an approval/question gate, returning either the child's final message or a waiting status; `wait:false` runs in the background.
 - `P-3` Agent definitions load from disk via a new `AgentCatalog` (`.claude/agents/`, `.codex/agents/`, FlowPilot built-ins) using `project > provider-home` precedence, in the standard agent frontmatter format (`name`, `description`, `tools`, `model`, system-prompt body).
 - `P-4` Inter-agent coordination is owned by an `AgentOrchestrator` (dependency graph + message bus) analogous to `WorkflowOrchestrator`. The reviewer-gate is the agent-driven analogue of the existing human approval gate.
 - `P-5` The multi-agent management view is a **Graph/DAG board**: agents are nodes, dependencies and feedback are edges, with a live agent-bus log and run controls (resume, pause, inject feedback, add agent, stop all).
@@ -56,7 +56,7 @@
 - What is the default round cap for the reviewer↔coder loop, and should it be per-agent-definition configurable?
 - When a child agent triggers an approval/question gate, does it surface in the child's own timeline only, or also bubble to the main timeline?
 - For background (`wait:false`) children, what is the idle/cleanup policy relative to the existing session idle sweeper?
-- Should `@mention` routing to a child interrupt that child's in-flight turn or queue after it?
+- Task-083 handles only conservative `@mention` routing to idle/completed children; Task-084 decides whether busy-child mentions queue or interrupt.
 
 ### Source Refs
 
@@ -84,19 +84,19 @@ Let the FlowPilot main agent and the user run multiple AI agents in parallel wit
 
 - **Overall approach:** Add identity + a coordinator on top of existing primitives. (1) Extend `interactiveRun` with agent identity. (2) Build an `AgentCatalog` disk loader. (3) Add a `spawn_agent` tool + UI through one backend spawn path. (4) Add an `AgentOrchestrator` (graph + bus) for dependencies and feedback loops. (5) Surface everything in the desktop UI (Agents panel, inline highlight, focus/back-to-main, Graph/DAG board). (6) In Phase 2, persist the graph + bus to Supabase and wire the workflow engine.
 - **Sequencing logic:** Phase 1 (chat) = Tasks 081→082→083→084, each independently demoable. Phase 2 (flow) = Task 085, which depends on the Phase 1 orchestrator contract being stable.
-- **Dependencies:** Task-082 depends on Task-081 (identity + catalog). Task-083 depends on Task-082 (child runs + list/focus endpoints). Task-084 depends on Task-082/083 (orchestrator + panel). Task-085 depends on Task-084 (stable graph/bus contract).
+- **Dependencies:** Task-082 depends on Task-081 (identity + catalog). Task-083 depends on Task-082 (child runs + list/spawn endpoints and client-side focus attach). Task-084 depends on Task-082/083 (orchestrator + panel). Task-085 depends on Task-084 (stable graph/bus contract).
 
 ## 4. Work Breakdown
 
 - `P-1` [Task-081](../../08-Task/done/Task-081-Agent-Abstraction-And-Catalog-Loader.md) — Extend `interactiveRun` with agent identity (`parentRunId`, `agentName`, `role`, `dependsOn[]`, `agentStatus`); add `AgentDefinition` + `AgentCatalog` disk loader (`.claude/agents`, `.codex/agents`, built-ins); expose `listAgents` in the runner contract.
-- `P-2` [Task-082](../../08-Task/done/Task-082-Spawn-Agent-Tool-And-Orchestrator-Core.md) — Add the `spawn_agent` provider tool + a minimal `AgentOrchestrator` (spawn / wait / list / focus); child runs stream over their own SSE; new client/runner endpoints for listing and focusing child runs.
-- `P-3` [Task-083](../../08-Task/todo/Task-083-Desktop-Agents-Panel-And-Focus-Navigation.md) — Desktop Agents panel as a persistent, mode-agnostic right-rail component (between MODE and ACCOUNTS; visible in Chat and Workflow), agent run cards (running/waiting/blocked/closed), header `N agents running` pill, inline "agent running" highlight in the Timeline, focus-into-child + back-to-main breadcrumb, `+ Spawn agent` dialog + `@mention` routing.
+- `P-2` [Task-082](../../08-Task/done/Task-082-Spawn-Agent-Tool-And-Orchestrator-Core.md) — Add the `spawn_agent` provider tool + a minimal `AgentOrchestrator` (spawn / wait / list); child runs stream over their own SSE; new runner endpoints for spawning/listing child runs plus client-side focus attach via `streamRun(runId)`.
+- `P-3` [Task-083](../../08-Task/todo/Task-083-Desktop-Agents-Panel-And-Focus-Navigation.md) — Desktop Agents panel as a persistent, mode-agnostic right-rail component (between MODE and ACCOUNTS; visible in Chat and Workflow), agent run cards (running/waiting/completed/failed), header `N agents running` pill, inline "agent running/waiting" highlight in the Timeline, focus-into-child + back-to-main breadcrumb with stream replay, `+ Spawn agent` dialog + conservative `@mention` routing.
 - `P-4` [Task-084](../../08-Task/todo/Task-084-Dependency-Feedback-Loop-And-Orchestration-Board.md) — Dependency edges + message bus (`ready-for-review`, `changes-requested`, `approved`) driving the coder↔reviewer loop with a round cap; the Graph/DAG orchestration board with controls and a live bus log.
 - `P-5` [Task-085](../../08-Task/todo/Task-085-Flow-Mode-Supabase-Agent-Runs-And-Message-Bus.md) — Phase 2: Supabase `agent_runs` + `agent_messages` (additive migration), `workflow_runs.parent_run_id`, reuse `workflow_provider_sessions`/`events` per agent run, and workflow-engine integration so a workflow step can be an agent with a reviewer gate.
 
 ## 5. Touched Areas
 
-- **files (backend):** `apps/local-runner/internal/runner/provider_registry.go` (interactiveRun fields, TurnBridge), `codex_adapter.go` + `claude_adapter.go` (spawn_agent tool), `interactive_service.go` + `interactive_handlers.go` (child run creation, list/focus endpoints, SSE), new `agent_catalog.go`, new `agent_orchestrator.go`.
+- **files (backend):** `apps/local-runner/internal/runner/provider_registry.go` (interactiveRun fields, TurnBridge), `codex_adapter.go` + `claude_adapter.go` (spawn_agent tool), `interactive_service.go` + `interactive_handlers.go` (child run creation, spawn/list endpoints, SSE), new `agent_catalog.go`, new `agent_orchestrator.go`.
 - **files (frontend):** `apps/desktop-flowpilot/src/components/ChatWorkspace.tsx`, `Timeline.tsx`, `ChatInput.tsx`, new `AgentsPanel.tsx`, new `OrchestrationBoard.tsx`, `state/store.ts`, `client/HttpWsRunnerClient.ts`, `types/contract.ts`, `styles.css`.
 - **modules:** local-runner interactive + orchestration; desktop chat workspace + state.
 - **database:** none in Phase 1; Phase 2 adds `agent_runs`, `agent_messages`, and `workflow_runs.parent_run_id` via additive migrations under `supabase/migrations/`.
@@ -131,8 +131,8 @@ Let the FlowPilot main agent and the user run multiple AI agents in parallel wit
 
 ## 10. Definition of Done
 
-- A user can spawn one or more sub-agents from the desktop chat (UI + AI-driven), see them listed in the Agents panel with correct running/waiting/blocked/closed states and role colors.
-- Inline "agent running" highlighting appears in the Timeline; clicking an agent focuses its live stream; back-to-main returns in one click without losing the main stream.
+- A user can spawn one or more sub-agents from the desktop chat (UI + AI-driven), see them listed in the Agents panel with correct running/waiting/completed/failed states and role colors.
+- Inline "agent running" highlighting appears in the Timeline; clicking an agent focuses its live stream; back-to-main returns in one click without losing cached main run state.
 - A coder and a reviewer can run in parallel where the reviewer waits for the coder's diff, returns feedback, and the coder iterates to a round cap, all observable on the Graph/DAG orchestration board with a live bus log.
 - Agent definitions load from `.claude/agents` / `.codex/agents` / built-ins with correct precedence.
 - Normal single-agent chat, workflow runs, session resume, and Drive sync are unchanged (regression tests green).
