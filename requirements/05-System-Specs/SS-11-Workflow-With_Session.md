@@ -134,6 +134,23 @@ Important behavior:
 - session continuity only applies within the same session boundary
 - cross-provider continuity happens through artifacts and workflow context, not by sharing one provider session across different providers
 
+Scope note: this subsection governs the **workflow-step** case only. Interactive desktop chat has a separate, user-initiated cross-provider mechanism defined in section 5.2. Both obey the same hard rule: a live provider session is never migrated across providers.
+
+### 5.2 Interactive Chat Cross-Provider Handoff
+
+A user who is already inside a completed or idle interactive chat may continue the same topic with a different AI provider. This is a distinct, user-initiated operation, not workflow-step progression.
+
+Rules:
+
+- the switch is explicit: the user picks a different provider, FlowPilot shows a confirmation modal, and the user confirms
+- confirming never migrates or resumes the source provider session; it always creates a new chat run owned by the target provider with its own new provider session id
+- FlowPilot reconstructs the source chat's visible question/answer history and sends it to the target run as one bounded handoff prompt, so context transfer is auditable and visible to the user
+- the source run is preserved unchanged and remains reopenable/resumable under its original provider
+- only visible user/assistant chat content transfers; hidden system/developer frames, FlowPilot prompt reinforcement, reasoning, tool payloads, credentials, and attachment bytes never transfer
+- an empty chat (no turns yet) switches provider directly with no confirmation and no handoff
+
+This preserves the section 5.1 rule (no live session crosses providers) while allowing deliberate, bounded context transfer between two separate runs. The detailed runtime contract is specified in `Task-078: Cross-Provider Chat Handoff`.
+
 ---
 
 ## 6. Follow-Up Prompt Behavior
@@ -327,3 +344,4 @@ Final rules for FlowPilot:
 5. If a provider supports long-lived sessions, FlowPilot should prefer them over one-shot command spawning.
 6. If a provider session is lost, FlowPilot may create a new provider session and continue the same workflow run from persisted workflow context.
 7. Provider session ids are not the durable workflow identity.
+8. Changing provider inside an existing interactive chat creates a new chat run via user-confirmed transcript context transfer (section 5.2). It never migrates the source provider session across providers, and the source run is preserved.
