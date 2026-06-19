@@ -43,6 +43,18 @@ let loadProjectsInFlight: Promise<void> | null = null;
 export type LaunchMode = "workflow" | "step";
 export type ChatMode = "normal_chat" | "workflow_step_auto";
 
+function pickDefaultModel(provider: ProviderKey | undefined, models: SupportedModel[]): string | undefined {
+  if (!provider) return undefined;
+  const enabled = models.filter((m) => m.providerKey === provider && m.isEnabled);
+  if (provider === "codex") {
+    return enabled.find((m) => m.modelId.toLowerCase().includes("4-mini"))?.modelId;
+  }
+  if (provider === "claude") {
+    return enabled.find((m) => m.modelId.toLowerCase().includes("sonnet"))?.modelId;
+  }
+  return undefined;
+}
+
 function selectedProjectPath(state: Pick<AppState, "projects" | "selectedProjectId">): string | undefined {
   return state.projects.find((project) => project.id === state.selectedProjectId)?.path;
 }
@@ -211,6 +223,8 @@ export const useStore = create<AppState>((set, get) => ({
           workflows: workflowDefinitions.map(mapNavigatorWorkflow),
           steps: stepDefinitions.map(mapNavigatorStep),
           supportedModels,
+          // Apply default model for the current provider if none is selected yet
+          ...(!get().selectedModel ? { selectedModel: pickDefaultModel(get().selectedProvider, supportedModels) } : {}),
         });
       } catch (err) {
         // eslint-disable-next-line no-console
@@ -285,7 +299,7 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   selectProvider(provider) {
-    set({ selectedProvider: provider });
+    set({ selectedProvider: provider, selectedModel: pickDefaultModel(provider, get().supportedModels) });
     if (provider) {
       void get().loadSkills(provider);
     }
@@ -763,6 +777,7 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   resetRun() {
+    const { selectedProvider, supportedModels } = get();
     set({
       runId: undefined,
       activeStepId: undefined,
@@ -775,6 +790,7 @@ export const useStore = create<AppState>((set, get) => ({
       lastTurnInput: undefined,
       recoverable: false,
       _streamingAssistantId: undefined,
+      selectedModel: pickDefaultModel(selectedProvider, supportedModels),
     });
   },
 
