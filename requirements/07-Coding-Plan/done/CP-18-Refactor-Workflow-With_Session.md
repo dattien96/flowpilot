@@ -258,6 +258,12 @@ Rule:
 - session reuse never crosses providers directly
 - artifact output is the handoff mechanism between provider sessions
 
+> Scope note: the cross-provider handoff implemented and signed off in this CP is the **workflow-step** case above (continuity via artifacts within one run). It is complete as documented; the checklist in section 10 is not reopened by the note below.
+
+### 5.7 Successor Work — Interactive Chat Cross-Provider Handoff
+
+A separate, user-initiated cross-provider path for **interactive chat** (switch provider inside an idle chat -> create a new run -> transfer a bounded transcript as the first prompt) is specified by `SS-11` section 5.2 and `SD-12` section 3.4, and planned in `Task-078: Cross-Provider Chat Handoff`. It is implemented and tracked there, not in this completed CP. The hard rule above still holds for that path: no live provider session is migrated across providers; the handoff is run-to-run context transfer only.
+
 ---
 
 ## 6. Fallback Rules

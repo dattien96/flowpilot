@@ -2,6 +2,7 @@ package runner
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -318,7 +319,7 @@ func (s *InteractiveService) ensureChatSessionDriveRoot(projectID string) (strin
 	if s.runner == nil {
 		return "", "", newAPIErr(http.StatusConflict, "google_drive_not_connected", "google drive is not connected for this project")
 	}
-	status, err := s.runner.GetGoogleDriveArtifactConnectionStatus(projectID, "")
+	status, err := s.runner.GetGoogleDriveChatSyncConnectionStatus(projectID, "")
 	if err != nil {
 		return "", "", newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
 	}
@@ -326,7 +327,16 @@ func (s *InteractiveService) ensureChatSessionDriveRoot(projectID string) (strin
 	if rootFolderID == "" || status.Connection.Status != "connected" {
 		return "", "", newAPIErr(http.StatusConflict, "google_drive_not_connected", "google drive is not connected for this project")
 	}
-	creds, err := s.runner.loadGoogleDriveCredentialByProject(projectID)
+	accountID := strings.TrimSpace(status.Connection.AccountID)
+	if accountID == "" {
+		accountID = normalizeGoogleDriveStoredAccountID(status.Connection.AccountEmail)
+	}
+	var creds googleDriveCredential
+	if accountID != "" {
+		creds, err = s.runner.loadGoogleDriveCredentialByAccount(accountID)
+	} else {
+		creds, err = s.runner.loadGoogleDriveCredentialByProject(projectID)
+	}
 	if err != nil {
 		return "", "", newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
 	}
@@ -380,6 +390,9 @@ func (s *InteractiveService) syncChatRunToDrive(ctx context.Context, runID strin
 	projectID := strings.TrimSpace(req.GoogleDriveProjectID)
 	if projectID == "" {
 		projectID = manifest.ProjectID
+	}
+	if strings.TrimSpace(req.GoogleDriveFolderID) != "" {
+		return ChatSessionSyncResult{}, newAPIErr(http.StatusBadRequest, "invalid_request", "googleDriveFolderId override is not supported for chat sync; select the project chat sync folder instead")
 	}
 	rootFolderID, accessToken, driveErr := s.ensureChatSessionDriveRoot(projectID)
 	if driveErr != nil {
@@ -474,9 +487,6 @@ func (s *InteractiveService) listRemoteChatSessions(ctx context.Context, project
 	records := parseChatSessionDriveIndex(raw)
 	out := make([]RemoteChatSessionSummary, 0, len(records))
 	for _, record := range records {
-		if record.ProjectID != projectID {
-			continue
-		}
 		out = append(out, RemoteChatSessionSummary{
 			RunID:           record.RunID,
 			ProjectID:       record.ProjectID,
@@ -589,7 +599,8 @@ func (s *InteractiveService) restoreChatRunFromDrive(ctx context.Context, req Ch
 	if cwd == "" {
 		return ChatSessionRestoreResult{}, newAPIErr(http.StatusConflict, "cwd_remap_required", "select a local project path before restoring this chat")
 	}
-	targetHome, ok := s.resolveAccountHome(manifest.ProviderKey, s.ActiveAccount())
+	activeAccountID := s.activeAccountForProvider(manifest.ProviderKey)
+	targetHome, ok := s.resolveAccountHome(manifest.ProviderKey, activeAccountID)
 	if !ok {
 		return ChatSessionRestoreResult{}, newAPIErr(http.StatusConflict, "account_unavailable", "active account home not found")
 	}
@@ -616,8 +627,26 @@ func (s *InteractiveService) restoreChatRunFromDrive(ctx context.Context, req Ch
 	if err != nil {
 		return ChatSessionRestoreResult{}, newAPIErr(http.StatusConflict, "sync_integrity_failed", "remote provider session file path is invalid")
 	}
+	// Codex rollout files are append-only JSONL, so a hash mismatch can simply mean
+	// one side has more turns than the other. Accept prefix-compatible extensions of
+	// the same session (mirrors updateCodexDestinationIfSameSessionExtends); only
+	// reject genuinely divergent content. Other providers keep strict equality —
+	// their append semantics are not confirmed, so any mismatch stays a conflict. (BUG-091)
+	localAhead := false
 	if existing, readErr := os.ReadFile(targetPath); readErr == nil {
-		if hashBytesSHA256(existing) != manifest.ProviderFile.SHA256 {
+		codexExtend := manifest.ProviderKey == ProviderKeyCodex
+		switch {
+		case hashBytesSHA256(existing) == manifest.ProviderFile.SHA256:
+			// identical — nothing to write
+		case codexExtend && bytes.HasPrefix(providerBytes, existing):
+			// remote is a newer prefix-compatible extension of local — overwrite
+			if err := os.WriteFile(targetPath, providerBytes, 0o644); err != nil {
+				return ChatSessionRestoreResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
+			}
+		case codexExtend && bytes.HasPrefix(existing, providerBytes):
+			// local already extends remote — keep the newer local file untouched
+			localAhead = true
+		default:
 			return ChatSessionRestoreResult{}, newAPIErr(http.StatusConflict, "session_file_conflict", "a different local session file already exists for this chat")
 		}
 	} else if !errors.Is(readErr, os.ErrNotExist) {
@@ -633,7 +662,7 @@ func (s *InteractiveService) restoreChatRunFromDrive(ctx context.Context, req Ch
 		WorkflowID:        manifest.WorkflowID,
 		ProviderSessionID: manifest.ProviderSessionID,
 		ProviderKey:       manifest.ProviderKey,
-		ProviderAccountID: s.ActiveAccount(),
+		ProviderAccountID: activeAccountID,
 		WorkingDirectory:  cwd,
 		Status:            RunStatus(firstNonEmpty(manifest.Status, string(RunStatusCompleted))),
 		LastPrompt:        manifest.LastPrompt,
@@ -646,6 +675,26 @@ func (s *InteractiveService) restoreChatRunFromDrive(ctx context.Context, req Ch
 		RestoredFrom:      "google_drive",
 		SyncStatus:        "restored",
 		SyncUpdatedAt:     time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if localAhead {
+		// The local rollout file is ahead of the restored snapshot, so the older
+		// remote manifest must not downgrade the local conversation metadata. (BUG-091)
+		if reader, ok := s.workflowStore.(SessionHistoryReader); ok {
+			if local, found, _ := reader.GetProviderSession(ctx, localRunID); found {
+				if strings.TrimSpace(local.LastPrompt) != "" {
+					session.LastPrompt = local.LastPrompt
+				}
+				if strings.TrimSpace(local.LastMessage) != "" {
+					session.LastMessage = local.LastMessage
+				}
+				if strings.TrimSpace(string(local.Status)) != "" {
+					session.Status = local.Status
+				}
+				if strings.TrimSpace(local.UpdatedAt) != "" {
+					session.UpdatedAt = local.UpdatedAt
+				}
+			}
+		}
 	}
 	if err := s.persistProviderSession(session); err != nil {
 		return ChatSessionRestoreResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())

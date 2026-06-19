@@ -14,11 +14,61 @@ import {
   type WorkflowRun,
 } from "@flowpilot/client-core";
 import { getAdminUseCases } from "@/clientCore";
+import { RUNNER_URL } from "@/config";
 import { formatTimestamp, integrationTypes, toErrorMessage, validateDirectoryBindingsInOrder } from "@/components/settings/settingsHelpers";
 
 type BindingDraft = Pick<ProjectWorkspaceBinding, "id" | "localPath" | "label"> & { persisted: boolean };
 type ProjectTargetSection = "teams" | "workflows" | "artifacts" | "google-drive" | "jira-mcp";
-type ProjectPanelKey = "overview" | "bindings" | "teams" | "mcp" | "runs" | "artifacts";
+type ProjectPanelKey = "overview" | "bindings" | "teams" | "mcp" | "runs" | "artifacts" | "chatSync";
+
+interface ChatSyncGoogleDriveAccountStatus {
+  accountId: string;
+  accountEmail?: string;
+  status: string;
+  accountReady: boolean;
+  mcpWriteReady: boolean;
+}
+
+interface ChatSyncGoogleDriveConnection {
+  projectId: string;
+  status: string;
+  folderId?: string;
+  folderName?: string;
+  accountId?: string;
+  accountEmail?: string;
+  lastError?: string;
+  lastValidatedAt?: string;
+  connectedAt?: string;
+  updatedAt?: string;
+}
+
+interface ChatSyncGoogleDriveSession {
+  sessionId: string;
+  projectId: string;
+  status: string;
+  connectUrl?: string;
+  expiresAt: string;
+  connectedAt?: string;
+  accountId?: string;
+  accountEmail?: string;
+  folderId?: string;
+  folderName?: string;
+  lastError?: string;
+}
+
+interface ChatSyncGoogleDriveStatus {
+  connection: ChatSyncGoogleDriveConnection;
+  session?: ChatSyncGoogleDriveSession;
+  effectiveSource: "chat_sync" | "artifact_legacy" | "none";
+  ready: boolean;
+  availableAccounts: ChatSyncGoogleDriveAccountStatus[];
+}
+
+interface ChatSyncGoogleDriveConnectSession {
+  sessionId: string;
+  connectUrl?: string;
+  status: string;
+}
 
 interface ProjectsSettingsProps {
   onNavigateSection?: (section: ProjectTargetSection) => void;
@@ -52,7 +102,24 @@ function defaultExpandedPanels(): Record<ProjectPanelKey, boolean> {
     mcp: false,
     runs: false,
     artifacts: false,
+    chatSync: false,
   };
+}
+
+function runnerFetch(path: string, init?: RequestInit): Promise<Response> {
+  return fetch(new URL(path, RUNNER_URL).toString(), { cache: "no-store", ...init });
+}
+
+async function readRunnerError(response: Response): Promise<string> {
+  const text = await response.text().catch(() => "");
+  if (!text) return `Request failed with status ${response.status}.`;
+  try {
+    const payload = JSON.parse(text) as { error?: { message?: string } | string };
+    if (typeof payload.error === "string") return payload.error;
+    return payload.error?.message || text;
+  } catch {
+    return text;
+  }
 }
 
 function chooseMcpTarget(linkedIntegrationIds: Record<string, string>, integrations: Integration[]): ProjectTargetSection {
@@ -90,6 +157,10 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
   const [expandedPanels, setExpandedPanels] = useState<Record<ProjectPanelKey, boolean>>(defaultExpandedPanels);
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [deleteConfirmationText, setDeleteConfirmationText] = useState("");
+  const [chatSyncStatus, setChatSyncStatus] = useState<ChatSyncGoogleDriveStatus | null>(null);
+  const [chatSyncLoading, setChatSyncLoading] = useState(false);
+  const [chatSyncBusyAction, setChatSyncBusyAction] = useState<string | null>(null);
+  const [chatSyncSelectedAccountId, setChatSyncSelectedAccountId] = useState("");
 
   const selectedProject = useMemo(
     () => projects.find((project) => project.id === selectedProjectId) ?? null,
@@ -184,6 +255,94 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
       }
     })();
   }, [models, selectedProject]);
+
+  const loadChatSyncStatus = async (projectId: string, sessionId?: string) => {
+    setChatSyncLoading(true);
+    try {
+      const suffix = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
+      const response = await runnerFetch(`/client/projects/${encodeURIComponent(projectId)}/chat-sync/google-drive/status${suffix}`);
+      if (!response.ok) {
+        throw new Error(await readRunnerError(response));
+      }
+      const payload = (await response.json()) as ChatSyncGoogleDriveStatus;
+      setChatSyncStatus(payload);
+      const selectedAccountId = payload.connection.accountId?.trim() ?? "";
+      if (selectedAccountId) {
+        setChatSyncSelectedAccountId(selectedAccountId);
+      } else if (payload.availableAccounts.length === 1) {
+        setChatSyncSelectedAccountId(payload.availableAccounts[0]?.accountId ?? "");
+      }
+      return payload;
+    } catch (error) {
+      setChatSyncStatus(null);
+      setMessage(toErrorMessage(error, "Unable to load chat sync folder status."));
+      return null;
+    } finally {
+      setChatSyncLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!selectedProjectId) {
+      setChatSyncStatus(null);
+      setChatSyncLoading(false);
+      setChatSyncSelectedAccountId("");
+      return;
+    }
+    void loadChatSyncStatus(selectedProjectId);
+  }, [selectedProjectId]);
+
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type === "flowpilot-google-drive-connected" || event.data?.type === "flowpilot-google-drive-account-connected") {
+        if (!selectedProjectId) return;
+        void loadChatSyncStatus(selectedProjectId).then(() => {
+          setChatSyncBusyAction(null);
+        });
+      }
+    };
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
+  }, [selectedProjectId]);
+
+  const pollChatSyncStatusUntilSettled = async (projectId: string, sessionId: string) => {
+    const maxAttempts = 80;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 1500));
+      const status = await loadChatSyncStatus(projectId, sessionId);
+      const sessionStatus = status?.session?.status ?? "";
+      if (status?.ready || sessionStatus === "connected" || sessionStatus === "failed" || sessionStatus === "expired") {
+        setChatSyncBusyAction(null);
+        return;
+      }
+    }
+    setChatSyncBusyAction(null);
+  };
+
+  const startChatSyncFolderSelection = async () => {
+    if (!selectedProjectId) return;
+    setChatSyncBusyAction("connect");
+    setMessage(null);
+    try {
+      const response = await runnerFetch(`/client/projects/${encodeURIComponent(selectedProjectId)}/chat-sync/google-drive/connect-session`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(chatSyncSelectedAccountId ? { accountId: chatSyncSelectedAccountId } : {}),
+      });
+      if (!response.ok) {
+        throw new Error(await readRunnerError(response));
+      }
+      const session = (await response.json()) as ChatSyncGoogleDriveConnectSession;
+      if (typeof session.connectUrl === "string" && session.connectUrl.trim()) {
+        window.open(session.connectUrl, "_blank", "width=980,height=820");
+      }
+      void pollChatSyncStatusUntilSettled(selectedProjectId, session.sessionId);
+      setMessage("Chat sync folder selection started. Complete the popup to save the folder.");
+    } catch (error) {
+      setChatSyncBusyAction(null);
+      setMessage(toErrorMessage(error, "Unable to start chat sync folder selection."));
+    }
+  };
 
   const createProject = async () => {
     setBusy(true);
@@ -520,6 +679,69 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
                     <div className="project-inline-card">
                       <strong>Artifact Runs</strong>
                       {visibleArtifactRuns.length === 0 ? <div className="settings-empty">No artifact runs yet.</div> : visibleArtifactRuns.map((artifact) => <div className="project-inline-row" key={artifact.id}><span>{artifact.title}</span><span>{artifact.storageProvider ?? "local"} / {artifact.syncStatus}</span></div>)}
+                    </div>
+                  </div>,
+                )}
+
+                {renderCollapsibleSection(
+                  "chatSync",
+                  "Chat Sync",
+                  "Project-level Google Drive folder used for remote chat sync and restore.",
+                  <div className="settings-inline-actions">
+                    <button className="secondary-btn" disabled={chatSyncLoading || chatSyncBusyAction !== null} onClick={() => void loadChatSyncStatus(selectedProject.id)} type="button">
+                      {chatSyncLoading ? "Refreshing..." : "Refresh Status"}
+                    </button>
+                    <button className="secondary-btn" disabled={chatSyncBusyAction !== null} onClick={() => void startChatSyncFolderSelection()} type="button">
+                      {chatSyncBusyAction === "connect" ? "Opening..." : "Select Drive Folder"}
+                    </button>
+                    {(chatSyncStatus?.availableAccounts.filter((account) => account.accountReady && account.mcpWriteReady).length ?? 0) === 0 ? (
+                      <button className="secondary-btn" onClick={() => openSection("google-drive")} type="button">Open Google Drive Setup</button>
+                    ) : null}
+                  </div>,
+                  <div className="project-inline-list">
+                    <div className="project-inline-card">
+                      <strong>Current Binding</strong>
+                      {chatSyncStatus ? (
+                        <>
+                          <label className="settings-field">
+                            <span>Selected Google Account</span>
+                            <select
+                              disabled={chatSyncBusyAction !== null || chatSyncLoading || chatSyncStatus.availableAccounts.length === 0}
+                              value={chatSyncSelectedAccountId}
+                              onChange={(event) => setChatSyncSelectedAccountId(event.target.value)}
+                            >
+                              <option value="">Auto pick connected account</option>
+                              {chatSyncStatus.availableAccounts.map((account) => (
+                                <option key={account.accountId} value={account.accountId}>
+                                  {account.accountEmail || account.accountId} {account.mcpWriteReady ? "" : "(missing drive.file)"}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <div className="project-inline-row"><span>Effective source</span><span>{chatSyncStatus.effectiveSource}</span></div>
+                          <div className="project-inline-row"><span>Status</span><span>{chatSyncStatus.connection.status}</span></div>
+                          <div className="project-inline-row"><span>Account</span><span>{chatSyncStatus.connection.accountEmail || "—"}</span></div>
+                          <div className="project-inline-row"><span>Folder</span><span>{chatSyncStatus.connection.folderName || "—"}</span></div>
+                          <div className="project-inline-row"><span>Folder ID</span><span>{chatSyncStatus.connection.folderId || "—"}</span></div>
+                          <div className="project-inline-row"><span>Last validated</span><span>{formatTimestamp(chatSyncStatus.connection.lastValidatedAt)}</span></div>
+                          {chatSyncStatus.connection.lastError ? <div className="settings-feedback error">{chatSyncStatus.connection.lastError}</div> : null}
+                        </>
+                      ) : (
+                        <div className="settings-empty">{chatSyncLoading ? "Loading chat sync folder status..." : "No chat sync folder selected yet."}</div>
+                      )}
+                    </div>
+                    <div className="project-inline-card">
+                      <strong>Connected Google Accounts</strong>
+                      {chatSyncStatus?.availableAccounts.length ? (
+                        chatSyncStatus.availableAccounts.map((account) => (
+                          <div className="project-inline-row" key={account.accountId}>
+                            <span>{account.accountEmail || account.accountId}</span>
+                            <span>{account.mcpWriteReady ? account.status : "missing drive.file"}</span>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="settings-empty">No Google Drive account is connected on this runner.</div>
+                      )}
                     </div>
                   </div>,
                 )}

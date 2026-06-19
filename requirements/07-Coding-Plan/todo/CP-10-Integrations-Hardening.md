@@ -739,6 +739,10 @@ Manual validation:
 - [ ] Admin Web: Context Slots panel with Add/Edit/Delete/Reorder — no raw JSON exposed
 - [ ] Admin Web: Prompt Context drawer shows what was injected and why
 
+### Follow-ups from earlier MVP stopgaps
+
+- [ ] Revisit Task-078 (Cross-Provider Chat Handoff): replace its raw 64 KiB transcript transfer with the AI-summary / structured working-memory context pipeline built here, so cross-provider handoff sends a summarized context instead of raw turns. Reuse the working-memory extraction (§3.3) and context packing (§3.5) rather than the runner's raw turn-log concatenation.
+
 ### Shared
 
 - [ ] RLS policies hardened — no more `using (true)` on any table

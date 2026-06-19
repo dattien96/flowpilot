@@ -1294,6 +1294,12 @@ input {
   color: var(--accent);
   background: rgba(76, 141, 255, 0.08);
 }
+.project-history-sync-all:disabled {
+  cursor: default;
+  opacity: 0.8;
+  color: var(--text-dim);
+  background: transparent;
+}
 .project-history-group-title {
   display: grid;
   gap: 2px;
@@ -1538,6 +1544,58 @@ input {
 }
 .project-history-confirm-ok--delete:hover {
   background: rgba(224, 82, 82, 0.12);
+}
+/* ── Account switch modal ── */
+.account-switch-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.account-switch-modal {
+  background: var(--bg-1, #1e1e1e);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px 24px;
+  max-width: 360px;
+  width: 90%;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+.account-switch-reason {
+  margin: 0 0 14px;
+  font-size: 12px;
+  color: var(--text-2, rgba(255, 255, 255, 0.5));
+}
+.account-switch-details {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 18px;
+  font-size: 13px;
+}
+.account-switch-row {
+  display: flex;
+  gap: 10px;
+}
+.account-switch-row-label {
+  color: var(--text-2, rgba(255, 255, 255, 0.5));
+  min-width: 72px;
+  flex-shrink: 0;
+}
+.account-switch-loading {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text);
+  text-align: center;
+  padding: 8px 0;
+}
+.account-switch-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 .project-history-item:hover {
   background: var(--bg-2);
@@ -2501,6 +2559,56 @@ input {
   resize: none;
 }
 
+/* Skill-name highlight backdrop */
+.text-area-wrapper {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+.text-area-wrapper .text-area {
+  flex: none;
+  width: 100%;
+  box-sizing: border-box;
+}
+.text-area-wrapper.has-highlights {
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+.text-area-wrapper.has-highlights .text-area {
+  background: transparent !important;
+  border-color: transparent !important;
+}
+.text-area-wrapper.has-highlights:focus-within {
+  border-color: var(--accent);
+}
+.text-area-wrapper.has-highlights .text-area:focus {
+  outline: none;
+}
+.text-area-backdrop {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 7px 9px;
+  font-size: 13px;
+  font-family: inherit;
+  line-height: inherit;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow: hidden;
+  pointer-events: none;
+  color: transparent;
+}
+.skill-token-highlight {
+  background: rgba(76, 141, 255, 0.18);
+  border-radius: 3px;
+  color: transparent;
+}
+
 /* chat input */
 .chat-input {
   border-top: 1px solid var(--border);
@@ -2553,6 +2661,28 @@ input {
   align-items: center;
   justify-content: flex-end;
   gap: 10px;
+}
+.acc-switch-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-2, rgba(255, 255, 255, 0.55));
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.acc-switch-btn:hover:not(:disabled) {
+  background: var(--bg-2, rgba(255, 255, 255, 0.06));
+  color: var(--text);
+  border-color: var(--accent, #4c8dff);
+}
+.acc-switch-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 .chat-controller-mode,
 .chat-controller-skill-strip {
@@ -3044,6 +3174,11 @@ input {
 }
 .skill-item-active {
   background: #1d2738;
+}
+.skill-item-highlighted {
+  background: var(--bg-2);
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
 }
 .skill-mark {
   color: var(--accent);

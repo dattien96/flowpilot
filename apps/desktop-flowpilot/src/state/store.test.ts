@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { useStore } from "./store";
 import { RunnerApiError } from "../client/HttpWsRunnerClient";
-import type { ProviderEventDTO, RemoteChatSessionSummary, RunHandle, RunHistoryItem, RunnerClient } from "../types/contract";
+import type { ProviderAccountSummary, ProviderEventDTO, RemoteChatSessionSummary, RunHandle, RunHistoryItem, RunnerClient, TurnInput } from "../types/contract";
 
 async function* emptyStream(): AsyncIterable<ProviderEventDTO> {}
 
@@ -77,10 +77,59 @@ function seedStore(client: RunnerClient, runHistory: RunHistoryItem[]): void {
     latestTokenUsage: undefined,
     recoverable: false,
     scenario: "normal",
+    pendingAccountSwitch: undefined,
+    accountSwitchLoading: false,
+    _accountSwitchTriedIds: [],
     _streamingAssistantId: undefined,
     _historyLoadSeq: 0,
     _streamRunSeq: 0,
   });
+}
+
+function makeAccount(
+  id: string,
+  providerKey: "codex" | "claude",
+  overrides: Partial<ProviderAccountSummary> = {},
+): ProviderAccountSummary {
+  return {
+    id,
+    providerKey,
+    displayName: `Account ${id}`,
+    displayLabel: `account-${id}`,
+    homePath: `/home/${id}`,
+    authStorePath: null,
+    slotIndex: 0,
+    authStatus: "connected",
+    isActive: false,
+    createdAt: "2026-01-01T00:00:00Z",
+    lastAuthenticatedAt: null,
+    accountEmail: `${id}@example.com`,
+    accountName: null,
+    usageSummary: null,
+    remaining5hPercent: 80,
+    remaining7dPercent: 80,
+    remaining5hResetAt: null,
+    remaining7dResetAt: null,
+    usageSource: "provider_api",
+    accessTokenExpiresAt: null,
+    refreshTokenExpiresAt: null,
+    refreshTokenExpiryNote: null,
+    usageDetailLines: [],
+    ...overrides,
+  };
+}
+
+const BASE_EVENT = {
+  id: "ev-1",
+  workflowRunId: "run-1",
+  providerSessionId: "session-1",
+  providerKey: "codex" as const,
+  seq: 1,
+  occurredAt: "2026-01-01T00:00:00Z",
+};
+
+async function* turnFailedStream(error: string, recoverable: boolean): AsyncIterable<ProviderEventDTO> {
+  yield { ...BASE_EVENT, type: "turn_failed", error, recoverable };
 }
 
 test("openHistoryRun marks unavailable history entries on typed resume errors", async () => {
@@ -170,6 +219,73 @@ test("openHistoryRun clears unavailableReason after a successful open", async ()
   assert.equal(state.activeStepId, "chat-run-1");
   assert.equal(state.selectedProvider, "codex");
   assert.equal(state.runHistory[0]?.unavailableReason, undefined);
+});
+
+test("openHistoryRun selects the resumed provider default model", async () => {
+  const handle: RunHandle = {
+    runId: "run-claude",
+    providerSessionId: "session-claude",
+    providerKey: "claude",
+    status: "completed",
+    stepId: "chat-run-claude",
+  };
+  seedStore(
+    makeClient({
+      resumeRun: async () => handle,
+      streamRun: () => emptyStream(),
+      listSkills: async () => [],
+    }),
+    [
+      {
+        runId: "run-claude",
+        projectId: "project-1",
+        providerKey: "claude",
+        status: "completed",
+        startedAt: "2026-06-17T10:00:00Z",
+        updatedAt: "2026-06-17T10:05:00Z",
+      },
+    ],
+  );
+  useStore.setState({
+    selectedProvider: "codex",
+    selectedModel: "o4-mini",
+    supportedModels: [
+      {
+        id: "model-codex",
+        providerKey: "codex",
+        modelId: "o4-mini",
+        displayName: "o4-mini",
+        isEnabled: true,
+        sortOrder: 0,
+        source: "test",
+        detectionMethod: null,
+        detectedCliVersion: null,
+        lastDetectedAt: null,
+        createdAt: "2026-06-19T00:00:00Z",
+        updatedAt: "2026-06-19T00:00:00Z",
+      },
+      {
+        id: "model-claude",
+        providerKey: "claude",
+        modelId: "claude-sonnet-4",
+        displayName: "Claude Sonnet 4",
+        isEnabled: true,
+        sortOrder: 0,
+        source: "test",
+        detectionMethod: null,
+        detectedCliVersion: null,
+        lastDetectedAt: null,
+        createdAt: "2026-06-19T00:00:00Z",
+        updatedAt: "2026-06-19T00:00:00Z",
+      },
+    ],
+  });
+
+  await useStore.getState().openHistoryRun("run-claude");
+
+  const state = useStore.getState();
+  assert.equal(state.selectedProvider, "claude");
+  assert.equal(state.selectedModel, "claude-sonnet-4");
 });
 
 test("syncHistoryRun updates local run sync metadata", async () => {
@@ -387,4 +503,271 @@ test("restoreRemoteChatSession marks remote entries unavailable on typed restore
   await useStore.getState().restoreRemoteChatSession(summary);
 
   assert.equal(useStore.getState().remoteChatSessions[0]?.unavailableReason, "remote provider session file failed integrity validation");
+});
+
+// ── Account-switch tests ───────────────────────────────────────────────────
+
+test("usage-limit turn_failed with valid Codex candidate sets pendingAccountSwitch", async () => {
+  const acc1 = makeAccount("acc-1", "codex", { isActive: true, remaining5hPercent: 0, remaining7dPercent: 90, slotIndex: 0 });
+  const acc2 = makeAccount("acc-2", "codex", { isActive: false, remaining5hPercent: 50, remaining7dPercent: 60, slotIndex: 1 });
+  seedStore(
+    makeClient({
+      startRun: async () => ({ runId: "run-1", providerSessionId: "s1", providerKey: "codex", status: "running", stepId: "chat-run-1" }),
+      sendTurn: () => turnFailedStream("usage limit reached", false),
+      listRunHistory: async () => [],
+    }),
+    [],
+  );
+  useStore.setState({ providerAccounts: [acc1, acc2], selectedProvider: "codex", runId: undefined, activeStepId: undefined, status: "idle", timeline: [] });
+
+  await useStore.getState().sendPrompt("hello");
+
+  const state = useStore.getState();
+  assert.ok(state.pendingAccountSwitch !== undefined, "pendingAccountSwitch should be set");
+  assert.equal(state.pendingAccountSwitch?.failedAccountId, "acc-1");
+  assert.equal(state.pendingAccountSwitch?.candidateAccount.id, "acc-2");
+  assert.deepEqual(state._accountSwitchTriedIds, ["acc-1"]);
+});
+
+test("candidate ranking: higher remaining5hPercent wins over higher remaining7dPercent", async () => {
+  const active = makeAccount("active", "codex", { isActive: true, remaining5hPercent: 0, remaining7dPercent: 0, slotIndex: 0 });
+  const accA  = makeAccount("acc-A",  "codex", { isActive: false, remaining5hPercent: 80, remaining7dPercent: 20, slotIndex: 1 });
+  const accB  = makeAccount("acc-B",  "codex", { isActive: false, remaining5hPercent: 60, remaining7dPercent: 90, slotIndex: 2 });
+  seedStore(
+    makeClient({
+      startRun: async () => ({ runId: "run-1", providerSessionId: "s1", providerKey: "codex", status: "running", stepId: "chat-run-1" }),
+      sendTurn: () => turnFailedStream("usage limit reached", false),
+      listRunHistory: async () => [],
+    }),
+    [],
+  );
+  useStore.setState({ providerAccounts: [active, accA, accB], selectedProvider: "codex", runId: undefined, activeStepId: undefined, status: "idle", timeline: [] });
+
+  await useStore.getState().sendPrompt("hello");
+
+  assert.equal(useStore.getState().pendingAccountSwitch?.candidateAccount.id, "acc-A");
+});
+
+test("account with remaining5hPercent=0 is excluded from ranked path; no switch offered when no fallback exists", async () => {
+  const active = makeAccount("active", "codex", { isActive: true, remaining5hPercent: 0, slotIndex: 0 });
+  const zeroH  = makeAccount("zero-5h", "codex", { isActive: false, remaining5hPercent: 0, remaining7dPercent: 80, slotIndex: 1 });
+  seedStore(
+    makeClient({
+      startRun: async () => ({ runId: "run-1", providerSessionId: "s1", providerKey: "codex", status: "running", stepId: "chat-run-1" }),
+      sendTurn: () => turnFailedStream("usage limit reached", false),
+      listRunHistory: async () => [],
+    }),
+    [],
+  );
+  // zeroH has 5h=0 → excluded from ranked path; no null-quota fallback either
+  useStore.setState({ providerAccounts: [active, zeroH], selectedProvider: "codex", runId: undefined, activeStepId: undefined, status: "idle", timeline: [] });
+
+  await useStore.getState().sendPrompt("hello");
+
+  assert.equal(useStore.getState().pendingAccountSwitch, undefined, "no valid candidate → no switch offered");
+});
+
+test("cancelAccountSwitch clears pendingAccountSwitch without activating", () => {
+  const candidate = makeAccount("acc-2", "codex");
+  seedStore(makeClient(), []);
+  useStore.setState({
+    pendingAccountSwitch: {
+      providerKey: "codex",
+      failedAccountId: "acc-1",
+      failedAccountLabel: "acc-1@example.com",
+      candidateAccount: candidate,
+      reason: "usage_limit",
+    },
+  });
+
+  useStore.getState().cancelAccountSwitch();
+
+  assert.equal(useStore.getState().pendingAccountSwitch, undefined);
+  assert.equal(useStore.getState().status, "running");
+});
+
+test("confirmAccountSwitch activates account and retries with original lastTurnInput", async () => {
+  const sentTurns: TurnInput[] = [];
+  const activatedIds: string[] = [];
+  const candidate = makeAccount("acc-2", "codex");
+
+  const savedTurnInput: TurnInput = {
+    runId: "run-1",
+    stepId: "chat-run-1",
+    prompt: "original prompt",
+  };
+
+  seedStore(
+    makeClient({
+      activateProviderAccount: async (id) => { activatedIds.push(id); },
+      sendTurn: (input) => { sentTurns.push(input); return emptyStream(); },
+      listRunHistory: async () => [],
+      listProviderAccounts: async () => [],
+    }),
+    [],
+  );
+  useStore.setState({
+    pendingAccountSwitch: {
+      providerKey: "codex",
+      failedAccountId: "acc-1",
+      failedAccountLabel: "acc-1@example.com",
+      candidateAccount: candidate,
+      reason: "usage_limit",
+    },
+    lastTurnInput: savedTurnInput,
+    status: "failed",
+  });
+
+  await useStore.getState().confirmAccountSwitch();
+
+  assert.deepEqual(activatedIds, ["acc-2"], "should activate candidate account");
+  assert.equal(sentTurns.length, 1, "should resend exactly one turn");
+  assert.equal(sentTurns[0]?.prompt, "original prompt", "should resend original prompt");
+  assert.equal(sentTurns[0]?.runId, "run-1", "should reuse original runId");
+  assert.equal(useStore.getState().pendingAccountSwitch, undefined);
+  assert.equal(useStore.getState().accountSwitchLoading, false);
+});
+
+test("confirmAccountSwitch with reason=manual switches account but does NOT auto-retry", async () => {
+  const sentTurns: TurnInput[] = [];
+  const activatedIds: string[] = [];
+  const candidate = makeAccount("acc-2", "codex");
+
+  const savedTurnInput: TurnInput = {
+    runId: "run-1",
+    stepId: "chat-run-1",
+    prompt: "original prompt",
+  };
+
+  seedStore(
+    makeClient({
+      activateProviderAccount: async (id) => { activatedIds.push(id); },
+      sendTurn: (input) => { sentTurns.push(input); return emptyStream(); },
+      listRunHistory: async () => [],
+      listProviderAccounts: async () => [],
+    }),
+    [],
+  );
+  useStore.setState({
+    pendingAccountSwitch: {
+      providerKey: "codex",
+      failedAccountId: "acc-1",
+      failedAccountLabel: "acc-1@example.com",
+      candidateAccount: candidate,
+      reason: "manual",
+    },
+    lastTurnInput: savedTurnInput,
+    status: "idle",
+  });
+
+  await useStore.getState().confirmAccountSwitch();
+
+  assert.deepEqual(activatedIds, ["acc-2"], "should activate candidate account");
+  assert.equal(sentTurns.length, 0, "manual switch must NOT auto-retry");
+  assert.equal(useStore.getState().pendingAccountSwitch, undefined);
+  assert.equal(useStore.getState().accountSwitchLoading, false);
+});
+
+test("already-tried account is not offered as switch candidate again", async () => {
+  const active  = makeAccount("acc-1", "codex", { isActive: true, remaining5hPercent: 0, remaining7dPercent: 0, slotIndex: 0 });
+  const tried   = makeAccount("acc-2", "codex", { isActive: false, remaining5hPercent: 80, remaining7dPercent: 80, slotIndex: 1 });
+  const fresh   = makeAccount("acc-3", "codex", { isActive: false, remaining5hPercent: 40, remaining7dPercent: 40, slotIndex: 2 });
+  seedStore(
+    makeClient({
+      startRun: async () => ({ runId: "run-1", providerSessionId: "s1", providerKey: "codex", status: "running", stepId: "chat-run-1" }),
+      sendTurn: () => turnFailedStream("usage limit reached", false),
+      listRunHistory: async () => [],
+    }),
+    [],
+  );
+  useStore.setState({
+    providerAccounts: [active, tried, fresh],
+    selectedProvider: "codex",
+    runId: undefined,
+    activeStepId: undefined,
+    status: "idle",
+    timeline: [],
+    _accountSwitchTriedIds: ["acc-2"],  // acc-2 already tried
+  });
+
+  await useStore.getState().sendPrompt("hello");
+
+  assert.equal(useStore.getState().pendingAccountSwitch?.candidateAccount.id, "acc-3", "should skip already-tried acc-2");
+});
+
+test("requestManualAccountSwitch sets pendingAccountSwitch with reason=manual without updating triedIds", () => {
+  const active  = makeAccount("acc-1", "codex", { isActive: true,  remaining5hPercent: 80, remaining7dPercent: 80, slotIndex: 0 });
+  const backup  = makeAccount("acc-2", "codex", { isActive: false, remaining5hPercent: 60, remaining7dPercent: 60, slotIndex: 1 });
+  seedStore(makeClient(), []);
+  useStore.setState({ providerAccounts: [active, backup], selectedProvider: "codex" });
+
+  useStore.getState().requestManualAccountSwitch();
+
+  const state = useStore.getState();
+  assert.ok(state.pendingAccountSwitch !== undefined);
+  assert.equal(state.pendingAccountSwitch?.reason, "manual");
+  assert.equal(state.pendingAccountSwitch?.candidateAccount.id, "acc-2");
+  assert.deepEqual(state._accountSwitchTriedIds, [], "_accountSwitchTriedIds must not be touched by manual switch");
+});
+
+test("Claude usage-limit failure with null quota offers fallback switch candidate", async () => {
+  const active  = makeAccount("cl-1", "claude", { isActive: true,  remaining5hPercent: null, remaining7dPercent: null, slotIndex: 0 });
+  const backup  = makeAccount("cl-2", "claude", { isActive: false, remaining5hPercent: null, remaining7dPercent: null, slotIndex: 1 });
+  seedStore(
+    makeClient({
+      startRun: async () => ({ runId: "run-c", providerSessionId: "sc", providerKey: "claude", status: "running", stepId: "chat-run-c" }),
+      sendTurn: () => turnFailedStream("usage limit reached", false),
+      listRunHistory: async () => [],
+    }),
+    [],
+  );
+  useStore.setState({ providerAccounts: [active, backup], selectedProvider: "claude", runId: undefined, activeStepId: undefined, status: "idle", timeline: [] });
+
+  await useStore.getState().sendPrompt("hello");
+
+  const state = useStore.getState();
+  assert.ok(state.pendingAccountSwitch !== undefined, "should offer switch even without quota telemetry");
+  assert.equal(state.pendingAccountSwitch?.candidateAccount.id, "cl-2");
+});
+
+test("Claude account switch retries the original failed turn", async () => {
+  const sentTurns: TurnInput[] = [];
+  const activatedIds: string[] = [];
+  const candidate = makeAccount("cl-2", "claude", {
+    remaining5hPercent: null,
+    remaining7dPercent: null,
+  });
+  const savedTurnInput: TurnInput = {
+    runId: "run-claude",
+    stepId: "chat-run-claude",
+    prompt: "continue the Claude task",
+    model: "claude-sonnet-4",
+  };
+  seedStore(
+    makeClient({
+      activateProviderAccount: async (id) => { activatedIds.push(id); },
+      sendTurn: (input) => { sentTurns.push(input); return emptyStream(); },
+      listRunHistory: async () => [],
+      listProviderAccounts: async () => [],
+    }),
+    [],
+  );
+  useStore.setState({
+    selectedProvider: "claude",
+    pendingAccountSwitch: {
+      providerKey: "claude",
+      failedAccountId: "cl-1",
+      failedAccountLabel: "cl-1@example.com",
+      candidateAccount: candidate,
+      reason: "usage_limit",
+    },
+    lastTurnInput: savedTurnInput,
+    status: "failed",
+  });
+
+  await useStore.getState().confirmAccountSwitch();
+
+  assert.deepEqual(activatedIds, ["cl-2"]);
+  assert.deepEqual(sentTurns, [savedTurnInput]);
+  assert.equal(useStore.getState().selectedProvider, "claude");
 });

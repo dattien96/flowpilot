@@ -7,7 +7,7 @@ import { Timeline } from "@/components/Timeline";
 import { ScenarioSwitcher } from "@/components/ScenarioSwitcher";
 import { SystemControls } from "@/components/SystemControls";
 import { ProviderAccountsPanel } from "@/components/ProviderAccountsPanel";
-import { useStore } from "@/state/store";
+import { useStore, accountLabel, providerLabel } from "@/state/store";
 
 function WorkflowControlPanel(): React.ReactElement | null {
   const selectedProjectId = useStore((s) => s.selectedProjectId);
@@ -139,6 +139,61 @@ interface ChatWorkspaceProps {
   rightSidebarVisible: boolean;
 }
 
+function AccountSwitchModal(): React.ReactElement | null {
+  const pendingAccountSwitch = useStore((s) => s.pendingAccountSwitch);
+  const accountSwitchLoading = useStore((s) => s.accountSwitchLoading);
+  const confirmAccountSwitch = useStore((s) => s.confirmAccountSwitch);
+  const cancelAccountSwitch = useStore((s) => s.cancelAccountSwitch);
+
+  if (!pendingAccountSwitch && !accountSwitchLoading) return null;
+
+  return (
+    <div
+      className="account-switch-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Switch account"
+      onClick={!accountSwitchLoading ? cancelAccountSwitch : undefined}
+    >
+      <div className="account-switch-modal" onClick={(e) => e.stopPropagation()}>
+        {accountSwitchLoading ? (
+          <p className="account-switch-loading">Switching account...</p>
+        ) : pendingAccountSwitch ? (
+          <>
+            <p className="account-switch-reason">
+              {pendingAccountSwitch.reason === "manual"
+                ? "Switch to a better account"
+                : "Current account hit usage limit"}
+            </p>
+            <div className="account-switch-details">
+              <div className="account-switch-row">
+                <span className="account-switch-row-label">Provider</span>
+                <span>{providerLabel(pendingAccountSwitch.providerKey)}</span>
+              </div>
+              <div className="account-switch-row">
+                <span className="account-switch-row-label">Current</span>
+                <span>{pendingAccountSwitch.failedAccountLabel}</span>
+              </div>
+              <div className="account-switch-row">
+                <span className="account-switch-row-label">Switch to</span>
+                <span>{accountLabel(pendingAccountSwitch.candidateAccount)}</span>
+              </div>
+            </div>
+            <div className="account-switch-actions">
+              <button type="button" className="project-history-confirm-cancel" onClick={cancelAccountSwitch}>
+                Cancel
+              </button>
+              <button type="button" className="project-history-confirm-ok" onClick={() => void confirmAccountSwitch()}>
+                {pendingAccountSwitch.reason === "manual" ? "Switch" : "Switch and retry"}
+              </button>
+            </div>
+          </>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 export function ChatWorkspace({
   leftSidebarVisible,
   rightSidebarVisible,
@@ -224,6 +279,7 @@ export function ChatWorkspace({
 
   return (
     <div ref={shellRef} className={`app-body workspace-shell ${leftSidebarVisible ? "left-visible" : "left-hidden"} ${rightSidebarVisible ? "right-visible" : "right-hidden"}`} style={workspaceStyle}>
+      <AccountSwitchModal />
       {leftSidebarVisible && (
         <>
           <aside className="sidebar sidebar-left">

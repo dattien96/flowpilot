@@ -279,7 +279,10 @@ export function ProviderAccountsPanel(): React.ReactElement | null {
                         <div key={`${pinned.id}-${line.label}`} className="account-bar-row">
                           <div className="account-bar-meta">
                             <span>{line.label}</span>
-                            <span>{line.remainingPercent}%</span>
+                            <span>
+                              {line.remainingPercent}%
+                              {formatDateTime(line.resetAt) ? ` · resets ${formatDateTime(line.resetAt)}` : ""}
+                            </span>
                           </div>
                           <div className="meter">
                             <div className={`meter-fill ${usageTone(line.remainingPercent)}`} style={{ width: `${line.remainingPercent}%` }} />

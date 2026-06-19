@@ -98,9 +98,18 @@ func (a *codexAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tur
 
 	// Register the FlowPilot-owned ask_user tool as a thread dynamicTool (04-04): the model
 	// discovers it at session start and a call returns as an item/tool/call request.
+	//
+	// Once a real rollout id exists, follow-up turns must rejoin that thread via app-server
+	// `thread/resume` so approval/MCP/ask_user bridging stays available on resumed turns.
 	dynamicTools := []any{codexAskUserDynamicTool()}
+	threadMethod := "thread/start"
+	threadParams := codexThreadStartParams(cwd, sandbox, approvalMode, req.ModelName, req.ReasoningEffort, dynamicTools)
+	if resumeID := strings.TrimSpace(req.ProviderSessionID); resumeID != "" && !strings.HasPrefix(resumeID, "thread-") {
+		threadMethod = "thread/resume"
+		threadParams = codexThreadResumeParams(resumeID, cwd, sandbox, approvalMode, req.ModelName, req.ReasoningEffort)
+	}
 
-	startRes, err := a.dispatcher.call(ctx, "thread/start", codexThreadStartParams(cwd, sandbox, approvalMode, req.ModelName, req.ReasoningEffort, dynamicTools))
+	startRes, err := a.dispatcher.call(ctx, threadMethod, threadParams)
 	if err != nil {
 		return err
 	}

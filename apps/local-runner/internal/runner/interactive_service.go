@@ -706,6 +706,9 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	if err == nil {
 		_ = s.syncCodexStableSessionToKnownAccounts(rs)
 	}
+	s.mu.Lock()
+	rs.turnInFlight = false
+	s.mu.Unlock()
 
 	// Finalizer hook runs OUTSIDE s.mu and only on a clean completion. A finalize
 	// failure is recorded as retryable and must not erase the completed turn (04-04).
@@ -791,7 +794,6 @@ func isProviderUsageLimitError(err error) bool {
 func (s *InteractiveService) finishTurn(rs *interactiveRun, turnID string, err error) (bool, finalizeInput) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rs.turnInFlight = false
 	rs.turnCancel = nil
 	rs.currentTurnID = ""
 
@@ -884,18 +886,21 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		return "", newAPIErr(http.StatusBadRequest, "provider_unavailable", aerr.Error())
 	}
 	if rs.providerKey == ProviderKeyCodex && rs.realProviderSessionID != "" && !strings.HasPrefix(rs.realProviderSessionID, "thread-") {
-		// The rollout file lives in the run's account home — which, after a
-		// cross-account resume, is the active account it was relocated into.
-		home, ok := s.resolveAccountHome(rs.providerKey, rs.providerAccountID)
-		if !ok {
-			s.mu.Unlock()
-			return "", newAPIErr(http.StatusConflict, "account_unavailable", "active account home not found")
+		// Live Codex app-server adapters resume provider-owned rollout threads in-process so
+		// approvals, MCP confirmations, and ask_user still bridge through FlowPilot on follow-up
+		// turns. The CLI resume adapter remains as a non-app-server fallback only.
+		if _, ok := adapter.(*codexAdapter); !ok && !codexAppServerEnabled() {
+			home, ok := s.resolveAccountHome(rs.providerKey, rs.providerAccountID)
+			if !ok {
+				s.mu.Unlock()
+				return "", newAPIErr(http.StatusConflict, "account_unavailable", "active account home not found")
+			}
+			var promptPrep func(TurnRequest) string
+			if live, ok := adapter.(*codexAdapter); ok {
+				promptPrep = live.promptPrep
+			}
+			adapter = newCodexResumeAdapter(home, promptPrep)
 		}
-		var promptPrep func(TurnRequest) string
-		if live, ok := adapter.(*codexAdapter); ok {
-			promptPrep = live.promptPrep
-		}
-		adapter = newCodexResumeAdapter(home, promptPrep)
 	}
 	if rs.resumedFromDisk && rs.providerKey == ProviderKeyClaude {
 		if live, ok := adapter.(*claudeAdapter); ok && rs.realProviderSessionID != "" {

@@ -69,6 +69,13 @@ type claudeAuthFile struct {
 	CachedExtraUsageDisabledReason string `json:"cachedExtraUsageDisabledReason"`
 }
 
+type claudeCredentialsFile struct {
+	ClaudeAiOauth struct {
+		AccessToken string `json:"accessToken"`
+		ExpiresAt   int64  `json:"expiresAt"`
+	} `json:"claudeAiOauth"`
+}
+
 type claudeAuthStatus struct {
 	LoggedIn         bool   `json:"loggedIn"`
 	Email            string `json:"email"`
@@ -488,6 +495,72 @@ func loadCodexAccountMetadata(homePath string) (accountLaunchMetadata, error) {
 	return metadata, nil
 }
 
+func loadClaudeQuota(homePath string) (remaining5h *int, reset5h string, remaining7d *int, reset7d string) {
+	credPath := filepath.Join(homePath, ".claude", ".credentials.json")
+	var creds claudeCredentialsFile
+	if err := readJSONFile(credPath, &creds); err != nil {
+		return
+	}
+	token := strings.TrimSpace(creds.ClaudeAiOauth.AccessToken)
+	if token == "" {
+		return
+	}
+	// Skip if token is already expired (expiresAt is milliseconds since epoch).
+	if creds.ClaudeAiOauth.ExpiresAt > 0 && time.Now().UnixMilli() >= creds.ClaudeAiOauth.ExpiresAt {
+		return
+	}
+
+	body := []byte(`{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"x"}]}`)
+	req, err := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("anthropic-client-type", "claude_code_desktop")
+
+	resp, err := httpClient().Do(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		return
+	}
+	defer resp.Body.Close()
+	io.ReadAll(resp.Body) // drain body
+
+	parseUtilization := func(header string) *int {
+		v := strings.TrimSpace(resp.Header.Get(header))
+		if v == "" {
+			return nil
+		}
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return nil
+		}
+		pct := clampInt(100 - int(f*100))
+		return intPtr(pct)
+	}
+	parseReset := func(header string) string {
+		v := strings.TrimSpace(resp.Header.Get(header))
+		if v == "" {
+			return ""
+		}
+		secs, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return ""
+		}
+		return time.Unix(secs, 0).UTC().Format(time.RFC3339)
+	}
+
+	remaining5h = parseUtilization("anthropic-ratelimit-unified-5h-utilization")
+	reset5h = parseReset("anthropic-ratelimit-unified-5h-reset")
+	remaining7d = parseUtilization("anthropic-ratelimit-unified-7d-utilization")
+	reset7d = parseReset("anthropic-ratelimit-unified-7d-reset")
+	return
+}
+
 func loadClaudeAccountMetadata(homePath string) accountLaunchMetadata {
 	authPath := firstExistingPath(
 		filepath.Join(homePath, ".claude.json"),
@@ -527,6 +600,28 @@ func loadClaudeAccountMetadata(homePath string) accountLaunchMetadata {
 			auth.CachedExtraUsageDisabledReason,
 			status,
 		)
+	}
+
+	r5h, reset5h, r7d, reset7d := loadClaudeQuota(homePath)
+	if r5h != nil || r7d != nil {
+		metadata.remaining5hPercent = r5h
+		metadata.remaining5hResetAt = reset5h
+		metadata.remaining7dPercent = r7d
+		metadata.remaining7dResetAt = reset7d
+		if r5h != nil {
+			metadata.usageDetailLines = append(metadata.usageDetailLines, usageDetailLine{
+				label:            "Remaining 5h",
+				remainingPercent: *r5h,
+				resetAt:          reset5h,
+			})
+		}
+		if r7d != nil {
+			metadata.usageDetailLines = append(metadata.usageDetailLines, usageDetailLine{
+				label:            "Remaining 7d",
+				remainingPercent: *r7d,
+				resetAt:          reset7d,
+			})
+		}
 	}
 
 	return metadata

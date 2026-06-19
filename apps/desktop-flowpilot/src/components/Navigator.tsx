@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useStore } from "@/state/store";
 import type { RunHistoryItem } from "@/types/contract";
+import { isProjectSyncing } from "@/components/navigatorHistory";
 
 const PROJECT_LIMIT = 3;
 const HISTORY_LIMIT = 10;
+const REMOTE_CHATS_LIMIT = 4;
 
 const RUN_TIME_FORMAT = new Intl.DateTimeFormat(undefined, {
   month: "short",
@@ -32,15 +34,24 @@ function isUnsyncedChat(item: RunHistoryItem): boolean {
   return item.runKind === "chat" && item.syncStatus !== "synced" && !item.unavailableReason;
 }
 
-// Two-arrow sync glyph used by the per-chat and per-project sync buttons.
-// Upper arc + arrowhead goes left-to-right (via top); lower arc + arrowhead goes right-to-left (via bottom).
+// Upload-arrow glyph for per-chat and per-project sync buttons (sync = upload to Drive).
 function SyncGlyph(): React.ReactElement {
   return (
     <svg width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-      <path d="M2.2 7.5A4.5 4.5 0 0 1 9.5 3.8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
-      <polyline points="8.0,2.5 9.5,3.8 8.2,5.1" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M9.8 4.5A4.5 4.5 0 0 1 2.5 8.2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
-      <polyline points="3.8,9.5 2.5,8.2 3.8,6.9" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+      <polyline points="4,5.5 6,3 8,5.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+      <line x1="6" y1="3" x2="6" y2="9" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+      <line x1="2.5" y1="10.5" x2="9.5" y2="10.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+// Download-arrow glyph for individual restore buttons.
+function RestoreGlyph(): React.ReactElement {
+  return (
+    <svg width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+      <polyline points="4,6.5 6,9 8,6.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+      <line x1="6" y1="9" x2="6" y2="3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+      <line x1="2.5" y1="10.5" x2="9.5" y2="10.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
     </svg>
   );
 }
@@ -122,6 +133,9 @@ export function Navigator(): React.ReactElement {
   const [selectedRunIds, setSelectedRunIds] = useState<Set<string>>(new Set());
   const [confirmAction, setConfirmAction] = useState<{ type: "delete" | "sync"; runIds: string[]; projectId: string } | null>(null);
   const longPressRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [restoringIds, setRestoringIds] = useState<Set<string>>(new Set());
+  const [restoringAll, setRestoringAll] = useState(false);
+  const [showAllRemoteChats, setShowAllRemoteChats] = useState(false);
 
   const exitSelectionMode = useCallback(() => {
     setSelectionModeProjectId(null);
@@ -156,6 +170,35 @@ export function Navigator(): React.ReactElement {
     if (runIds.length === 0) return;
     setConfirmAction({ type, runIds, projectId });
   }, []);
+
+  const restoreItem = useCallback(async (item: Parameters<typeof restoreRemoteChatSession>[0]) => {
+    const key = `${item.sourceMachineId}:${item.sourceRunId}`;
+    setRestoringIds((prev) => new Set(prev).add(key));
+    try {
+      await restoreRemoteChatSession(item);
+    } finally {
+      setRestoringIds((prev) => { const next = new Set(prev); next.delete(key); return next; });
+    }
+  }, [restoreRemoteChatSession]);
+
+  const restoreAll = useCallback(async () => {
+    setRestoringAll(true);
+    try {
+      for (const item of remoteChatSessions) {
+        if (!item.unavailableReason) {
+          const key = `${item.sourceMachineId}:${item.sourceRunId}`;
+          setRestoringIds((prev) => new Set(prev).add(key));
+          try {
+            await restoreRemoteChatSession(item);
+          } finally {
+            setRestoringIds((prev) => { const next = new Set(prev); next.delete(key); return next; });
+          }
+        }
+      }
+    } finally {
+      setRestoringAll(false);
+    }
+  }, [remoteChatSessions, restoreRemoteChatSession]);
 
   const executeConfirm = useCallback(async () => {
     if (!confirmAction) return;
@@ -367,6 +410,7 @@ export function Navigator(): React.ReactElement {
               const visibleHistory = expanded ? visibleHistoryFor(projectId, history) : [];
               const hiddenCount = history.length - visibleHistory.length;
               const unsyncedCount = history.filter(isUnsyncedChat).length;
+              const projectSyncing = isProjectSyncing(history, projectId);
               return (
                 <section key={projectId} className="project-history-group">
                   <div className={`project-history-group-head ${expanded ? "active" : ""}${selectionModeProjectId === projectId ? " project-history-group-head--selecting" : ""}`}>
@@ -399,11 +443,20 @@ export function Navigator(): React.ReactElement {
                           type="button"
                           className="project-history-sync-all"
                           onClick={() => void syncAllInProject(projectId)}
-                          title={`Sync ${unsyncedCount} chat${unsyncedCount > 1 ? "s" : ""} to Drive`}
-                          aria-label={`Sync all ${unsyncedCount} unsynced chats to Drive`}
+                          disabled={projectSyncing}
+                          title={
+                            projectSyncing
+                              ? `Syncing ${unsyncedCount} chat${unsyncedCount > 1 ? "s" : ""} to Drive`
+                              : `Sync ${unsyncedCount} chat${unsyncedCount > 1 ? "s" : ""} to Drive`
+                          }
+                          aria-label={
+                            projectSyncing
+                              ? `Syncing all ${unsyncedCount} unsynced chats to Drive`
+                              : `Sync all ${unsyncedCount} unsynced chats to Drive`
+                          }
                         >
-                          <SyncGlyph />
-                          <span>{unsyncedCount}</span>
+                          {projectSyncing ? <span className="history-status-spinner" aria-hidden="true" /> : <SyncGlyph />}
+                          <span>{projectSyncing ? "Syncing…" : unsyncedCount}</span>
                         </button>
                       )
                     )}
@@ -453,6 +506,7 @@ export function Navigator(): React.ReactElement {
                         const isSyncing = item.syncStatus === "syncing";
                         const syncFailed = item.syncStatus === "failed";
                         const inSelectionMode = selectionModeProjectId === projectId;
+                        const showRowSpinner = isSyncing && !inSelectionMode;
                         const isSelected = selectedRunIds.has(item.runId);
 
                         if (inSelectionMode) {
@@ -528,13 +582,13 @@ export function Navigator(): React.ReactElement {
                               }}
                             >
                               <span className="project-history-item-top">
-                                <HistoryStatusIcon status={item.status} isNew={isNew} />
+                                {showRowSpinner ? <span className="history-status-spinner" aria-hidden="true" /> : <HistoryStatusIcon status={item.status} isNew={isNew} />}
                                 <span className="project-history-item-title">
                                   {runTitle(item.lastPrompt || item.lastMessage)}
                                 </span>
                               </span>
                               <span className="project-history-item-meta">
-                                {RUN_LABEL[item.status]} · {RUN_TIME_FORMAT.format(new Date(item.updatedAt))}
+                                {isSyncing ? "Syncing to Drive…" : RUN_LABEL[item.status]} · {RUN_TIME_FORMAT.format(new Date(item.updatedAt))}
                               </span>
                             </button>
                           </div>
@@ -565,7 +619,22 @@ export function Navigator(): React.ReactElement {
             <label>Remote Chats</label>
             <p>Drive-backed chat sessions available to restore into this project.</p>
           </div>
-          {remoteHistoryLoading && <span className="project-rail-state">Loading</span>}
+          <div className="project-rail-head-actions">
+            {remoteHistoryLoading && <span className="project-rail-state">Loading</span>}
+            {remoteChatSessions.filter((item) => !item.unavailableReason).length > 0 && (
+              <button
+                type="button"
+                className="project-history-sync-all"
+                onClick={() => void restoreAll()}
+                disabled={restoringAll || restoringIds.size > 0}
+                title="Restore all remote chats into this project"
+                aria-label="Restore all remote chats"
+              >
+                {restoringAll ? <span className="history-status-spinner" aria-hidden="true" /> : <RestoreGlyph />}
+                <span>{restoringAll ? "Restoring…" : "Restore All"}</span>
+              </button>
+            )}
+          </div>
         </div>
 
         {remoteHistoryLoadError && (
@@ -581,33 +650,53 @@ export function Navigator(): React.ReactElement {
           </div>
         ) : (
           <div className="project-history-list">
-            {remoteChatSessions.map((item) => (
-              <div key={`${item.sourceMachineId}:${item.sourceRunId}`} className="project-history-item-row">
-                <button
-                  type="button"
-                  className={`project-history-item${item.unavailableReason ? " project-history-item--disabled" : ""}`}
-                  disabled={Boolean(item.unavailableReason)}
-                  onClick={() => void restoreRemoteChatSession(item)}
-                  title={item.unavailableReason || `${item.sourceMachineId}/${item.sourceRunId}`}
-                >
-                  <span className="project-history-item-top">
-                    <span className="project-history-item-title">
-                      {runTitle(item.lastPrompt || item.lastMessage)}
+            {(showAllRemoteChats ? remoteChatSessions : remoteChatSessions.slice(0, REMOTE_CHATS_LIMIT)).map((item) => {
+              const key = `${item.sourceMachineId}:${item.sourceRunId}`;
+              const isRestoring = restoringIds.has(key);
+              return (
+                <div key={key} className="project-history-item-row">
+                  <button
+                    type="button"
+                    className={`project-history-item${item.unavailableReason ? " project-history-item--disabled" : ""}`}
+                    disabled={Boolean(item.unavailableReason) || isRestoring}
+                    onClick={() => void restoreItem(item)}
+                    title={item.unavailableReason || `${item.sourceMachineId}/${item.sourceRunId}`}
+                  >
+                    <span className="project-history-item-top">
+                      <span className="project-history-item-title">
+                        {runTitle(item.lastPrompt || item.lastMessage)}
+                      </span>
                     </span>
-                  </span>
-                  <span className="project-history-item-meta">
-                    {item.providerKey} · {item.updatedAt ? RUN_TIME_FORMAT.format(new Date(item.updatedAt)) : "Remote"}
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  className="project-history-sync"
-                  onClick={() => void restoreRemoteChatSession(item)}
-                >
-                  Restore
-                </button>
-              </div>
-            ))}
+                    <span className="project-history-item-meta">
+                      {item.providerKey} · {item.updatedAt ? RUN_TIME_FORMAT.format(new Date(item.updatedAt)) : "Remote"}
+                    </span>
+                  </button>
+                  {!item.unavailableReason && (
+                    <button
+                      type="button"
+                      className="project-history-sync"
+                      disabled={isRestoring || restoringAll}
+                      onClick={() => void restoreItem(item)}
+                      title="Restore this chat"
+                      aria-label="Restore chat"
+                    >
+                      {isRestoring ? <span className="history-status-spinner" aria-hidden="true" /> : <RestoreGlyph />}
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+            {remoteChatSessions.length > REMOTE_CHATS_LIMIT && (
+              <button
+                type="button"
+                className="project-history-more"
+                onClick={() => setShowAllRemoteChats((v) => !v)}
+              >
+                {showAllRemoteChats
+                  ? "Show less"
+                  : `Show all (${remoteChatSessions.length - REMOTE_CHATS_LIMIT} more)`}
+              </button>
+            )}
           </div>
         )}
       </section>

@@ -202,6 +202,14 @@ type ArtifactStorageGoogleDriveConnectionStatus struct {
 	Session    *ArtifactStorageGoogleDriveSession   `json:"session,omitempty"`
 }
 
+type ChatSyncGoogleDriveConnectionStatus struct {
+	Connection        ArtifactStorageGoogleDriveConnection `json:"connection"`
+	Session           *ArtifactStorageGoogleDriveSession   `json:"session,omitempty"`
+	EffectiveSource   string                               `json:"effectiveSource"`
+	Ready             bool                                 `json:"ready"`
+	AvailableAccounts []GoogleDriveAccountStatus          `json:"availableAccounts,omitempty"`
+}
+
 type ArtifactStorageGoogleDrivePickerToken struct {
 	AccessToken string `json:"accessToken"`
 	ApiKey      string `json:"apiKey"`
@@ -212,6 +220,11 @@ type ArtifactStorageGoogleDriveFolderSelectionRequest struct {
 	FolderID     string `json:"folderId"`
 	FolderName   string `json:"folderName"`
 	AccountEmail string `json:"accountEmail,omitempty"`
+}
+
+type ChatSyncGoogleDriveConnectRequest struct {
+	BaseURL   string `json:"baseUrl,omitempty"`
+	AccountID string `json:"accountId,omitempty"`
 }
 
 type StorageDriverConfig struct {

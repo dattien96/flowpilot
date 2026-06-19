@@ -66,8 +66,27 @@ func codexThreadStartParams(cwd, sandbox, approvalMode, modelName, reasoningEffo
 	return p
 }
 
-func codexThreadResumeParams(threadID string) map[string]any {
-	return map[string]any{"threadId": threadID}
+func codexThreadResumeParams(threadID, cwd, sandbox, approvalMode, modelName, reasoningEffort string) map[string]any {
+	p := map[string]any{"threadId": threadID}
+	if model := strings.TrimSpace(modelName); model != "" {
+		p["model"] = model
+	}
+	if cwd != "" {
+		p["cwd"] = cwd
+	}
+	if approvalMode != "" {
+		p["approvalPolicy"] = approvalMode
+	}
+	if sandbox != "" {
+		p["sandbox"] = sandbox
+	}
+	if effort := strings.ToLower(strings.TrimSpace(reasoningEffort)); effort != "" {
+		p["config"] = map[string]any{
+			"reasoningEffort":      effort,
+			"modelReasoningEffort": effort,
+		}
+	}
+	return p
 }
 
 func codexThreadListParams(cwd string) map[string]any {

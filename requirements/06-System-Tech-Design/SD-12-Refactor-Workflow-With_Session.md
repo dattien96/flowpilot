@@ -122,6 +122,24 @@ Design rule:
 - never try to migrate one live provider session across providers
 - cross-provider handoff happens through persisted artifacts and prompt/context assembly
 
+Scope: this subsection covers the **workflow-step** cross-provider case. Interactive desktop chat has a separate user-initiated handoff defined in section 3.4.
+
+### 3.4 Interactive Chat Cross-Provider Handoff
+
+This is the design contract for `SS-11` section 5.2: a user-initiated provider switch inside an idle interactive chat.
+
+Design rules:
+
+- a provider switch never migrates or resumes the source provider session; it creates a distinct target chat run with its own new provider session id
+- the handoff source is the runner's persisted transcript data (per-run raw turn log plus the Claude/Codex transcript loaders), never the truncated `last_prompt`/`last_message` display fields
+- the runner exposes a provider-neutral transcript extractor that normalizes the source run into ordered `user`/`assistant` records and serializes them into one bounded handoff prompt
+- the prompt is budgeted deterministically (fixed UTF-8 byte limit, newest turns retained first); no LLM summary in this design — raw transfer is an MVP stopgap that `CP-10` is expected to replace with summarized context
+- only Claude and Codex are valid handoff source providers, because only they have a transcript extractor; Gemini is a future source
+- the source run is never modified or closed because the handoff succeeded
+- handoff provenance (source run id, source/target provider keys, included/omitted turn counts) is persisted on the target run without storing the source provider session id as the target's resume id
+
+This keeps the section 3.3 rule intact — no live session crosses providers — while sanctioning deliberate, bounded run-to-run context transfer. The runtime contract, endpoint shape, failure handling, and desktop orchestration are specified in `Task-078: Cross-Provider Chat Handoff`. Same-provider account switching and resume remain governed separately by `SD-14`.
+
 ---
 
 ## 4. Adapter Contract

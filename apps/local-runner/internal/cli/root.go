@@ -109,6 +109,62 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 			)
 			interactive.AttachRunner(instance)
 			interactive.RegisterInteractiveRoutes(mux)
+			mux.HandleFunc("GET /client/projects/{projectId}/chat-sync/google-drive/status", func(w http.ResponseWriter, r *http.Request) {
+				status, err := instance.GetGoogleDriveChatSyncConnectionStatus(r.PathValue("projectId"), r.URL.Query().Get("sessionId"))
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+				writeHTTPJSON(w, status)
+			})
+			mux.HandleFunc("POST /client/projects/{projectId}/chat-sync/google-drive/connect-session", func(w http.ResponseWriter, r *http.Request) {
+				var payload runner.ChatSyncGoogleDriveConnectRequest
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil && err.Error() != "EOF" {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+				if strings.TrimSpace(payload.BaseURL) == "" {
+					payload.BaseURL = requestBaseURL(r)
+				}
+				session, err := instance.CreateGoogleDriveChatSyncConnectSession(r.PathValue("projectId"), payload)
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+				writeHTTPJSON(w, session)
+			})
+			mux.HandleFunc("GET /client/chat-sync/google-drive/picker", func(w http.ResponseWriter, r *http.Request) {
+				sessionID := strings.TrimSpace(r.URL.Query().Get("sessionId"))
+				if sessionID == "" {
+					writeHTTPError(w, http.StatusBadRequest, errors.New("sessionId is required"))
+					return
+				}
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				if _, err := w.Write([]byte(runner.RenderGoogleDriveChatSyncPickerHTML(sessionID))); err != nil {
+					writeHTTPError(w, http.StatusInternalServerError, err)
+				}
+			})
+			mux.HandleFunc("GET /client/chat-sync/google-drive/picker-token", func(w http.ResponseWriter, r *http.Request) {
+				token, err := instance.GetGoogleDriveArtifactPickerToken(r.URL.Query().Get("sessionId"))
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+				writeHTTPJSON(w, token)
+			})
+			mux.HandleFunc("POST /client/chat-sync/google-drive/folder-selection", func(w http.ResponseWriter, r *http.Request) {
+				var payload runner.ArtifactStorageGoogleDriveFolderSelectionRequest
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+				status, err := instance.SaveGoogleDriveChatSyncFolderSelection(payload)
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+				writeHTTPJSON(w, status)
+			})
 			// Runner-hosted MCP server for the Claude permission/ask_user tools (07):
 			// the per-turn --mcp-config URL points claude back at this route.
 			mux.Handle(runner.ClaudeMCPPath, instance.ClaudeMCPHandler())
@@ -1211,7 +1267,11 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 					return
 				}
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
-				if _, err := w.Write([]byte(runner.RenderGoogleDriveArtifactPickerHTML(sessionID))); err != nil {
+				renderHTML := runner.RenderGoogleDriveArtifactPickerHTML(sessionID)
+				if flowKind, err := instance.GetGoogleDriveSessionFlowKind(sessionID); err == nil && flowKind == "chat_sync_binding" {
+					renderHTML = runner.RenderGoogleDriveChatSyncPickerHTML(sessionID)
+				}
+				if _, err := w.Write([]byte(renderHTML)); err != nil {
 					writeHTTPError(w, http.StatusInternalServerError, err)
 				}
 			})
