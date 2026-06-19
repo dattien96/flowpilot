@@ -5,6 +5,7 @@ import { isProjectSyncing } from "@/components/navigatorHistory";
 
 const PROJECT_LIMIT = 3;
 const HISTORY_LIMIT = 10;
+const REMOTE_CHATS_LIMIT = 4;
 
 const RUN_TIME_FORMAT = new Intl.DateTimeFormat(undefined, {
   month: "short",
@@ -134,6 +135,7 @@ export function Navigator(): React.ReactElement {
   const longPressRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [restoringIds, setRestoringIds] = useState<Set<string>>(new Set());
   const [restoringAll, setRestoringAll] = useState(false);
+  const [showAllRemoteChats, setShowAllRemoteChats] = useState(false);
 
   const exitSelectionMode = useCallback(() => {
     setSelectionModeProjectId(null);
@@ -648,7 +650,7 @@ export function Navigator(): React.ReactElement {
           </div>
         ) : (
           <div className="project-history-list">
-            {remoteChatSessions.map((item) => {
+            {(showAllRemoteChats ? remoteChatSessions : remoteChatSessions.slice(0, REMOTE_CHATS_LIMIT)).map((item) => {
               const key = `${item.sourceMachineId}:${item.sourceRunId}`;
               const isRestoring = restoringIds.has(key);
               return (
@@ -684,6 +686,17 @@ export function Navigator(): React.ReactElement {
                 </div>
               );
             })}
+            {remoteChatSessions.length > REMOTE_CHATS_LIMIT && (
+              <button
+                type="button"
+                className="project-history-more"
+                onClick={() => setShowAllRemoteChats((v) => !v)}
+              >
+                {showAllRemoteChats
+                  ? "Show less"
+                  : `Show all (${remoteChatSessions.length - REMOTE_CHATS_LIMIT} more)`}
+              </button>
+            )}
           </div>
         )}
       </section>
