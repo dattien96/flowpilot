@@ -700,11 +700,14 @@ func TestRestoreChatRunFromDriveUsesRequestCwd(t *testing.T) {
 }
 
 func TestRestoreChatRunFromDriveMissingActiveAccountHome(t *testing.T) {
-	svc, _, store, _, workspace, accountHome := newChatSyncService(t)
+	svc, instance, store, _, workspace, accountHome := newChatSyncService(t)
 	seedLocalChatRun(t, store, accountHome, workspace, "run-no-home", []byte("session-body"))
 	result, apiErr := svc.syncChatRunToDrive(context.Background(), "run-no-home", ChatSessionSyncRequest{})
 	if apiErr != nil {
 		t.Fatalf("syncChatRunToDrive() failed: %v", apiErr)
+	}
+	if err := instance.saveProviderAccountState(providerAccountState{}); err != nil {
+		t.Fatalf("clear provider accounts: %v", err)
 	}
 	svc.SetActiveAccount("missing-account")
 	_, apiErr = svc.restoreChatRunFromDrive(context.Background(), ChatSessionRestoreRequest{

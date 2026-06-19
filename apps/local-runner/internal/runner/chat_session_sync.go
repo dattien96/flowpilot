@@ -599,7 +599,8 @@ func (s *InteractiveService) restoreChatRunFromDrive(ctx context.Context, req Ch
 	if cwd == "" {
 		return ChatSessionRestoreResult{}, newAPIErr(http.StatusConflict, "cwd_remap_required", "select a local project path before restoring this chat")
 	}
-	targetHome, ok := s.resolveAccountHome(manifest.ProviderKey, s.ActiveAccount())
+	activeAccountID := s.activeAccountForProvider(manifest.ProviderKey)
+	targetHome, ok := s.resolveAccountHome(manifest.ProviderKey, activeAccountID)
 	if !ok {
 		return ChatSessionRestoreResult{}, newAPIErr(http.StatusConflict, "account_unavailable", "active account home not found")
 	}
@@ -661,7 +662,7 @@ func (s *InteractiveService) restoreChatRunFromDrive(ctx context.Context, req Ch
 		WorkflowID:        manifest.WorkflowID,
 		ProviderSessionID: manifest.ProviderSessionID,
 		ProviderKey:       manifest.ProviderKey,
-		ProviderAccountID: s.ActiveAccount(),
+		ProviderAccountID: activeAccountID,
 		WorkingDirectory:  cwd,
 		Status:            RunStatus(firstNonEmpty(manifest.Status, string(RunStatusCompleted))),
 		LastPrompt:        manifest.LastPrompt,
