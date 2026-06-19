@@ -619,11 +619,13 @@ if bytes.HasPrefix(dst, src) { return true, nil }         // dst already extends
 
 The **Drive restore path** (`restoreChatRunFromDrive`, `chat_session_sync.go:628`) does not apply this logic. It only does a hash equality check and fails on any mismatch.
 
-Intended fix: before returning `session_file_conflict` in the restore path, apply the same prefix-extension check using the already-downloaded `providerBytes` against the existing local file bytes:
+Fix applied: before returning `session_file_conflict` in the restore path, apply a prefix-extension check (Codex only) using the already-downloaded `providerBytes` against the existing local file bytes:
 
 - if `bytes.HasPrefix(providerBytes, existing)` → overwrite local with remote (remote is newer extension)
-- if `bytes.HasPrefix(existing, providerBytes)` → skip write, keep local (local is already ahead)
-- otherwise → genuinely divergent content → return `session_file_conflict`
+- if `bytes.HasPrefix(existing, providerBytes)` → skip write, keep local (local is already ahead), and preserve the existing local session metadata so the older remote manifest does not downgrade local history
+- otherwise (or any non-Codex mismatch) → genuinely divergent content → return `session_file_conflict`
+
+Prefix-extension acceptance is gated to Codex because the restore branch is provider-generic and Claude's session-file append semantics are not confirmed; non-Codex providers keep strict hash equality.
 
 This was tracked and fixed as [BUG-091: Drive Restore Rejects Same-Session Prefix Extension As Conflict](../09-BugFix/done/BUG-091-Drive-Restore-Rejects-Same-Session-Prefix-Extension-As-Conflict.md). The fix is in `chat_session_sync.go` and mirrors the `bytes.HasPrefix` logic from `updateCodexDestinationIfSameSessionExtends`.
 

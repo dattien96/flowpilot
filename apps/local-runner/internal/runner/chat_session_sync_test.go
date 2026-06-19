@@ -786,6 +786,118 @@ func TestRestoreChatRunFromDriveAcceptsExistingIdenticalFile(t *testing.T) {
 	}
 }
 
+func TestRestoreChatRunFromDriveOverwritesWhenRemoteExtendsLocal(t *testing.T) {
+	svc, _, store, _, workspace, accountHome := newChatSyncService(t)
+	extended := "line1\nline2\nline3\n"
+	seedLocalChatRun(t, store, accountHome, workspace, "run-remote-ext", []byte(extended))
+	result, apiErr := svc.syncChatRunToDrive(context.Background(), "run-remote-ext", ChatSessionSyncRequest{})
+	if apiErr != nil {
+		t.Fatalf("syncChatRunToDrive() failed: %v", apiErr)
+	}
+	targetPath := filepath.Join(accountHome, "sessions", "2026", "06", "17", "rollout-local-session-run-remote-ext.jsonl")
+	// Local holds an older prefix of the synced (remote) content.
+	if err := os.WriteFile(targetPath, []byte("line1\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile shorter local: %v", err)
+	}
+	restored, apiErr := svc.restoreChatRunFromDrive(context.Background(), ChatSessionRestoreRequest{
+		ProjectID:       "project-1",
+		SourceMachineID: result.SourceMachineID,
+		SourceRunID:     result.SourceRunID,
+		Cwd:             workspace,
+	})
+	if apiErr != nil {
+		t.Fatalf("restoreChatRunFromDrive() failed: %v", apiErr)
+	}
+	if restored.RunID != "run-remote-ext" {
+		t.Fatalf("unexpected restored run id: %q", restored.RunID)
+	}
+	got, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("ReadFile target: %v", err)
+	}
+	if string(got) != extended {
+		t.Fatalf("local file not overwritten with newer remote extension: got %q", got)
+	}
+}
+
+func TestRestoreChatRunFromDriveKeepsLocalWhenLocalExtendsRemote(t *testing.T) {
+	svc, _, store, _, workspace, accountHome := newChatSyncService(t)
+	seedLocalChatRun(t, store, accountHome, workspace, "run-local-ext", []byte("line1\n"))
+	result, apiErr := svc.syncChatRunToDrive(context.Background(), "run-local-ext", ChatSessionSyncRequest{})
+	if apiErr != nil {
+		t.Fatalf("syncChatRunToDrive() failed: %v", apiErr)
+	}
+	targetPath := filepath.Join(accountHome, "sessions", "2026", "06", "17", "rollout-local-session-run-local-ext.jsonl")
+	localExtended := "line1\nline2\n"
+	// Local is ahead of the synced snapshot (more turns appended locally).
+	if err := os.WriteFile(targetPath, []byte(localExtended), 0o644); err != nil {
+		t.Fatalf("WriteFile longer local: %v", err)
+	}
+	restored, apiErr := svc.restoreChatRunFromDrive(context.Background(), ChatSessionRestoreRequest{
+		ProjectID:       "project-1",
+		SourceMachineID: result.SourceMachineID,
+		SourceRunID:     result.SourceRunID,
+		Cwd:             workspace,
+	})
+	if apiErr != nil {
+		t.Fatalf("restoreChatRunFromDrive() failed: %v", apiErr)
+	}
+	if restored.RunID != "run-local-ext" {
+		t.Fatalf("unexpected restored run id: %q", restored.RunID)
+	}
+	got, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("ReadFile target: %v", err)
+	}
+	if string(got) != localExtended {
+		t.Fatalf("local file should be untouched when local is ahead: got %q", got)
+	}
+}
+
+func TestRestoreChatRunFromDrivePreservesLocalMetadataWhenLocalAhead(t *testing.T) {
+	svc, _, store, _, workspace, accountHome := newChatSyncService(t)
+	seedLocalChatRun(t, store, accountHome, workspace, "run-meta", []byte("line1\n"))
+	result, apiErr := svc.syncChatRunToDrive(context.Background(), "run-meta", ChatSessionSyncRequest{})
+	if apiErr != nil {
+		t.Fatalf("syncChatRunToDrive() failed: %v", apiErr)
+	}
+	targetPath := filepath.Join(accountHome, "sessions", "2026", "06", "17", "rollout-local-session-run-meta.jsonl")
+	if err := os.WriteFile(targetPath, []byte("line1\nline2\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile longer local: %v", err)
+	}
+	// Local conversation has advanced past the synced snapshot; the restore must
+	// not downgrade these fields to the older remote manifest. (BUG-091)
+	row, found, err := store.GetProviderSession(context.Background(), "run-meta")
+	if err != nil || !found {
+		t.Fatalf("GetProviderSession(run-meta) found=%v err=%v", found, err)
+	}
+	row.LastPrompt = "newer local prompt"
+	row.LastMessage = "newer local reply"
+	row.UpdatedAt = "2026-06-18T12:00:00Z"
+	if err := store.UpsertProviderSession(context.Background(), row); err != nil {
+		t.Fatalf("UpsertProviderSession newer local: %v", err)
+	}
+	restored, apiErr := svc.restoreChatRunFromDrive(context.Background(), ChatSessionRestoreRequest{
+		ProjectID:       "project-1",
+		SourceMachineID: result.SourceMachineID,
+		SourceRunID:     result.SourceRunID,
+		Cwd:             workspace,
+	})
+	if apiErr != nil {
+		t.Fatalf("restoreChatRunFromDrive() failed: %v", apiErr)
+	}
+	persisted, found, err := store.GetProviderSession(context.Background(), restored.RunID)
+	if err != nil || !found {
+		t.Fatalf("GetProviderSession(%q) found=%v err=%v", restored.RunID, found, err)
+	}
+	if persisted.LastPrompt != "newer local prompt" {
+		t.Fatalf("local LastPrompt was downgraded to remote manifest: got %q", persisted.LastPrompt)
+	}
+	if persisted.LastMessage != "newer local reply" {
+		t.Fatalf("local LastMessage was downgraded to remote manifest: got %q", persisted.LastMessage)
+	}
+}
+
 func TestResolveRestoredRunIDUsesSourceWhenUnused(t *testing.T) {
 	svc, _, _, _, _, _ := newChatSyncService(t)
 	if got := svc.resolveRestoredRunID(context.Background(), "mch-source", "run-1"); got != "run-1" {

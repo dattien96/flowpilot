@@ -10,7 +10,7 @@
 - Last Updated: `2026-06-19`
 - Parent Documents: [SD-14: Codex Cross-Account Chat Resume And Home Sync](../06-System-Tech-Design/SD-14-Codex-Cross-Account-Chat-Resume-And-Home-Sync.md)
 - Child Documents: `—`
-- Related Documents: [CA-091-fix-drive-restore-prefix-extension-conflict](../../../change-audit/CA-091-fix-drive-restore-prefix-extension-conflict.md)
+- Related Documents: [CA-106-fix-drive-restore-prefix-extension-conflict](../../../change-audit/CA-106-fix-drive-restore-prefix-extension-conflict.md)
 - Replaces: `—`
 - Tags: `codex, google-drive, chat-session-sync, restore, conflict, cross-pc`
 
@@ -22,6 +22,8 @@
 - A Codex rollout file grows by appending JSONL lines, so a mismatch is not always divergence — it can mean one side has more turns than the other.
 - The local relocation path already handles this correctly via `updateCodexDestinationIfSameSessionExtends` (`bytes.HasPrefix` check), but the Drive restore path did not apply the same logic.
 - Two legitimate cases were incorrectly blocked: remote is newer than local (should overwrite local), and local is ahead of remote (should keep local unchanged).
+- Prefix-extension acceptance is gated to Codex only; other providers keep strict hash equality because their session-file append semantics are not confirmed.
+- When local is ahead, the restore must keep the newer local conversation metadata rather than downgrading it to the older remote manifest.
 
 ### Current Ask
 
@@ -31,11 +33,13 @@
 
 - `D-1` Mirror the `bytes.HasPrefix` logic from `updateCodexDestinationIfSameSessionExtends` into the restore path so prefix-compatible extension is accepted, not rejected.
 - `D-2` Only return `session_file_conflict` when the bytes are genuinely divergent (neither side is a prefix of the other).
+- `D-3` Gate prefix-extension acceptance to `ProviderKeyCodex`. The restore branch is generic and also serves Claude (`restoreTargetPath`/`RestoreSessionFile`), but Claude session-file append semantics are not confirmed, so non-Codex providers keep strict hash equality.
+- `D-4` In the local-ahead case, preserve the existing local session metadata (`LastPrompt`, `LastMessage`, `Status`, `UpdatedAt`) instead of overwriting it with the older remote manifest.
 
 ### Constraints
 
 - The fix must not weaken protection against genuinely divergent files — two different session chains that happen to share the same id string must still be rejected.
-- The fix applies to the Codex rollout file restore path; Claude and Gemini providers are not affected by this code path.
+- The restore branch (`restoreChatRunFromDrive`) is provider-generic; the prefix-extension behavior is intentionally scoped to Codex only.
 
 ### Open Questions
 
@@ -92,24 +96,29 @@ Second case:
 ## 7. Fix Strategy
 
 - `F-1` Add `"bytes"` to the import block in `chat_session_sync.go`.
-- `F-2` Replace the single hash-equality conflict guard with a three-branch check:
+- `F-2` Replace the single hash-equality conflict guard with a four-branch check, with prefix-extension gated to Codex:
   - if `hashBytesSHA256(existing) == manifest.ProviderFile.SHA256` → identical, no write
-  - else if `bytes.HasPrefix(providerBytes, existing)` → remote extends local, overwrite local
-  - else if `bytes.HasPrefix(existing, providerBytes)` → local already extends remote, keep local
-  - else → genuinely divergent, return `session_file_conflict`
+  - else if Codex and `bytes.HasPrefix(providerBytes, existing)` → remote extends local, overwrite local
+  - else if Codex and `bytes.HasPrefix(existing, providerBytes)` → local already extends remote, keep local (set `localAhead`)
+  - else → genuinely divergent (or non-Codex mismatch), return `session_file_conflict`
+- `F-3` When `localAhead` is set, before persisting the session row, read the existing local session via `SessionHistoryReader.GetProviderSession` and preserve its non-empty `LastPrompt`, `LastMessage`, `Status`, and `UpdatedAt` so the older remote manifest does not downgrade local history.
 
 ## 8. Validation
 
-- `V-1` Existing restore and sync tests pass: `go test ./internal/runner/... -run "TestRestore|TestChatSession|TestSync"` — 36 tests pass.
-- `V-2` Code review: genuinely divergent files (different first JSONL line) still return `session_file_conflict`; only prefix-compatible pairs are accepted.
+- `V-1` Full sync/restore/relocate suite passes: `go test ./internal/runner/... -run "TestRestore|TestChatSession|TestSync|TestRelocate|TestResolveRestored"` — 48 tests pass; `go vet ./internal/runner/` clean.
+- `V-2` New direct Drive-restore tests added in `chat_session_sync_test.go`:
+  - `TestRestoreChatRunFromDriveOverwritesWhenRemoteExtendsLocal` — remote-extends-local overwrites local file
+  - `TestRestoreChatRunFromDriveKeepsLocalWhenLocalExtendsRemote` — local-ahead keeps local file untouched
+  - `TestRestoreChatRunFromDrivePreservesLocalMetadataWhenLocalAhead` — local-ahead keeps newer local metadata
+- `V-3` Existing `TestRestoreChatRunFromDriveRejectsOverwriteConflict` still returns `session_file_conflict` for genuinely divergent content.
 
 ## 9. Regression Guard
 
-- tests: existing 36 restore/sync tests cover the identical-hash path and the not-found path; new prefix-extension paths are covered by the symmetry with `updateCodexDestinationIfSameSessionExtends` tests in `cross_account_resume_test.go`
+- tests: three new direct restore tests cover both prefix-extension directions and the metadata-preservation path; the existing conflict and identical-file tests guard the divergent and equal paths
 - alerts: `session_file_conflict` errors in Drive restore logs should decrease after this fix
-- audit checks: verify that a re-restore of a continued chat no longer returns `session_file_conflict`
+- audit checks: verify that a re-restore of a continued chat no longer returns `session_file_conflict` and does not downgrade history metadata
 
 ## 10. Follow-Up Document Updates
 
-- upstream docs that must change: SD-14 §Q-3b updated in this session to document the gap and the intended fix — now resolved
-- notes left unchanged on purpose: the design rule "never silently merge genuinely divergent rollout states" is preserved; only the definition of "conflict" is narrowed to exclude prefix-compatible extensions
+- upstream docs that must change: SD-14 §Q-3b updated in this session to document the gap and the fix — now resolved
+- notes left unchanged on purpose: the design rule "never silently merge genuinely divergent rollout states" is preserved; only the definition of "conflict" is narrowed to exclude same-session prefix-compatible extensions, and only for Codex
