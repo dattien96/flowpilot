@@ -200,6 +200,7 @@ export function ChatWorkspace({
   leftSidebarVisible,
   rightSidebarVisible,
 }: ChatWorkspaceProps): React.ReactElement {
+  const workspaceMainView = useStore((s) => s.workspaceMainView);
   const defaultWidthsAppliedRef = useRef(false);
   const shellRef = useRef<HTMLDivElement>(null);
   const dragStateRef = useRef<{
@@ -301,8 +302,14 @@ export function ChatWorkspace({
       )}
 
       <main className="main workspace-main">
-        <Timeline />
-        <ChatInput />
+        {workspaceMainView === "board" ? (
+          <OrchestrationBoard />
+        ) : (
+          <>
+            <Timeline />
+            <ChatInput />
+          </>
+        )}
       </main>
 
       {rightSidebarVisible && (
@@ -315,7 +322,6 @@ export function ChatWorkspace({
           />
           <aside className="sidebar sidebar-right">
             <div className="right-sidebar-stack">
-              <OrchestrationBoard />
               <WorkflowControlPanel />
               <AgentsPanel />
               <ProviderAccountsPanel />

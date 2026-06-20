@@ -669,11 +669,9 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 	case EventPermissionRequired:
 		rs.status = RunStatusWaitingApproval
 		rs.agentStatus = string(RunStatusWaitingApproval)
-		s.agentOrchestrator.signalChild(rs.id, "", false, "", RunStatusWaitingApproval)
 	case EventUserQuestionRequired:
 		rs.status = RunStatusWaitingQuestion
 		rs.agentStatus = string(RunStatusWaitingQuestion)
-		s.agentOrchestrator.signalChild(rs.id, "", false, "", RunStatusWaitingQuestion)
 	case EventTurnCompleted:
 		rs.status = RunStatusCompleted
 		rs.agentStatus = string(RunStatusCompleted)
@@ -752,6 +750,7 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 			rs.agentStatus = string(RunStatusRunning)
 		}
 	}
+	shouldEmitParentGraph := false
 	if rs.parentRunID != "" {
 		s.agentOrchestrator.upsertSummary(rs.parentRunID, AgentRunSummary{
 			RunID:       rs.id,
@@ -763,9 +762,13 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 			DependsOn:   append([]string(nil), rs.dependsOn...),
 			AgentStatus: rs.agentStatus,
 		})
+		shouldEmitParentGraph = shouldEmitAgentGraphForChildEvent(ev.Type)
 	}
-	if rs.parentRunID != "" && ev.Type == EventTurnCompleted && isAgentRole(rs, "coder") {
+	if rs.parentRunID != "" && ev.Type == EventTurnCompleted {
 		go s.releaseDependentAgents(rs.parentRunID, rs.id, ev.FinalMessage, ev.OccurredAt)
+	}
+	if rs.parentRunID != "" && shouldEmitParentGraph {
+		s.emitAgentGraphLocked(rs.parentRunID, s.agentOrchestrator.graphSnapshot(rs.parentRunID))
 	}
 
 	for _, ch := range rs.subs {
@@ -775,6 +778,15 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 		}
 	}
 	return ev
+}
+
+func shouldEmitAgentGraphForChildEvent(eventType ProviderEventType) bool {
+	switch eventType {
+	case EventTurnStarted, EventPermissionRequired, EventUserQuestionRequired, EventTurnCompleted, EventTurnFailed:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *InteractiveService) subscribe(runID string, after int64) (int64, chan ProviderEvent, []ProviderEvent, bool) {

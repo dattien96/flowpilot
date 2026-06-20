@@ -492,6 +492,77 @@ func TestReviewerWaitsForDependencyAndResumeReleasesPendingTurn(t *testing.T) {
 	}
 }
 
+type dependencyReleaseAdapter struct {
+	turns           chan string
+	releaseReviewer chan struct{}
+}
+
+func (a *dependencyReleaseAdapter) Key() ProviderKey { return ProviderKeyCodex }
+func (a *dependencyReleaseAdapter) Capabilities() ProviderCapabilities {
+	return ProviderCapabilities{Streaming: true}
+}
+func (a *dependencyReleaseAdapter) SendTurn(_ context.Context, req TurnRequest, bridge TurnBridge) error {
+	a.turns <- req.Prompt
+	if strings.Contains(strings.ToLower(req.Prompt), "review this change") {
+		<-a.releaseReviewer
+	}
+	bridge.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: req.Prompt + " complete"})
+	return nil
+}
+
+func TestCompletedReviewerReleasesDependentTester(t *testing.T) {
+	svc := NewInteractiveService()
+	adapter := &dependencyReleaseAdapter{turns: make(chan string, 4), releaseReviewer: make(chan struct{})}
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key:          ProviderKeyCodex,
+		DisplayName:  "Codex",
+		Status:       ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter:   func() ProviderRuntimeAdapter { return adapter },
+	})
+	svc.registry = reg
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	reviewer, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{Agent: "reviewer", Prompt: "review this change", Provider: "codex", Wait: false})
+	if spawnErr != nil {
+		t.Fatalf("spawn reviewer: %v", spawnErr)
+	}
+	select {
+	case prompt := <-adapter.turns:
+		if !strings.Contains(strings.ToLower(prompt), "review this change") {
+			t.Fatalf("first prompt = %q, want reviewer turn", prompt)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for reviewer turn")
+	}
+	if _, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{
+		Agent:     "tester",
+		Prompt:    "run the regression checks",
+		Provider:  "codex",
+		DependsOn: []string{reviewer.RunID},
+		Wait:      false,
+	}); spawnErr != nil {
+		t.Fatalf("spawn tester: %v", spawnErr)
+	}
+	select {
+	case prompt := <-adapter.turns:
+		t.Fatalf("unexpected tester turn before reviewer completion: %q", prompt)
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(adapter.releaseReviewer)
+	select {
+	case prompt := <-adapter.turns:
+		if !strings.Contains(strings.ToLower(prompt), "run the regression checks") || !strings.Contains(strings.ToLower(prompt), "review this change complete") {
+			t.Fatalf("second prompt = %q, want dependent tester turn with reviewer handoff", prompt)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for dependent tester turn")
+	}
+}
+
 func waitFor(t *testing.T, cond func() bool, what string) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -667,6 +738,132 @@ func TestProjectRunHistoryFiltersRunsByProject(t *testing.T) {
 	}
 	if history[0].LastPrompt != "hi" || history[0].LastMessage == "" || history[0].Status != RunStatusCompleted {
 		t.Fatalf("updated history item missing summary: %+v", history[0])
+	}
+}
+
+func TestProjectRunHistoryIncludesLiveChildAgentRuns(t *testing.T) {
+	_, srv := newTestServer(t)
+
+	status, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs", StartRunInput{
+		ProjectID: "proj-web", WorkflowID: "wf-feature", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex,
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("start run status=%d body=%s", status, body)
+	}
+	var handle RunHandle
+	if err := json.Unmarshal(body, &handle); err != nil {
+		t.Fatalf("decode handle: %v", err)
+	}
+	parent := handle.RunID
+
+	status, body = doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+parent+"/spawn-agent", SpawnAgentInput{
+		Agent:    "coder",
+		Prompt:   "implement the small change",
+		Provider: "codex",
+		Wait:     false,
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("spawn-agent status=%d body=%s", status, body)
+	}
+	var spawned SpawnAgentResult
+	if err := json.Unmarshal(body, &spawned); err != nil {
+		t.Fatalf("decode spawn result: %v", err)
+	}
+	if spawned.RunID == "" {
+		t.Fatalf("spawn result missing run id: %+v", spawned)
+	}
+
+	status, body = doJSON(t, "GET", srv.URL+"/client/projects/proj-web/workflow-runs", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("history status=%d body=%s", status, body)
+	}
+	var history []runHistoryItem
+	if err := json.Unmarshal(body, &history); err != nil {
+		t.Fatalf("decode history: %v", err)
+	}
+	var childItem *runHistoryItem
+	for i := range history {
+		if history[i].RunID == spawned.RunID {
+			childItem = &history[i]
+			break
+		}
+	}
+	if len(history) != 2 || childItem == nil {
+		t.Fatalf("history = %+v, want parent %s and child %s", history, parent, spawned.RunID)
+	}
+	if childItem.ParentRunID != parent || childItem.AgentName != "coder" || childItem.Role == "" {
+		t.Fatalf("child history metadata = %+v, want parent/agent fields", childItem)
+	}
+
+	status, body = doJSON(t, "GET", srv.URL+"/client/workflow-runs/"+parent+"/agents", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("agents status=%d body=%s", status, body)
+	}
+	var agents []AgentRunSummary
+	if err := json.Unmarshal(body, &agents); err != nil {
+		t.Fatalf("decode agents: %v", err)
+	}
+	if len(agents) != 1 || agents[0].RunID != spawned.RunID || agents[0].ParentRunID != parent {
+		t.Fatalf("agents = %+v, want child %s under parent %s", agents, spawned.RunID, parent)
+	}
+}
+
+func TestProjectRunHistoryIncludesPersistedChildAgentRuns(t *testing.T) {
+	registry := DefaultProviderRegistry()
+	catalog := newInteractiveCatalog()
+	store := newFakeWorkflowStore()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             "parent-run",
+		ProjectID:         "proj-web",
+		WorkflowID:        "wf-feature",
+		ProviderSessionID: "session-parent",
+		ProviderKey:       ProviderKeyCodex,
+		Status:            RunStatusCompleted,
+		StartedAt:         now,
+		UpdatedAt:         now,
+		LastPrompt:        "parent prompt",
+	}); err != nil {
+		t.Fatalf("seed parent session: %v", err)
+	}
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             "child-run",
+		ProjectID:         "proj-web",
+		WorkflowID:        "wf-feature",
+		ProviderSessionID: "session-child",
+		ProviderKey:       ProviderKeyCodex,
+		Status:            RunStatusCompleted,
+		StartedAt:         now,
+		UpdatedAt:         now,
+		LastPrompt:        "child prompt",
+		ParentRunID:       "parent-run",
+		AgentName:         "coder",
+		Role:              "coder",
+	}); err != nil {
+		t.Fatalf("seed child session: %v", err)
+	}
+
+	_, srv := newTestServerWith(t, registry, catalog, store)
+	status, body := doJSON(t, "GET", srv.URL+"/client/projects/proj-web/workflow-runs", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("history status=%d body=%s", status, body)
+	}
+	var history []runHistoryItem
+	if err := json.Unmarshal(body, &history); err != nil {
+		t.Fatalf("decode history: %v", err)
+	}
+	var childItem *runHistoryItem
+	for i := range history {
+		if history[i].RunID == "child-run" {
+			childItem = &history[i]
+			break
+		}
+	}
+	if len(history) != 2 || childItem == nil {
+		t.Fatalf("history = %+v, want persisted parent and child", history)
+	}
+	if childItem.ParentRunID != "parent-run" || childItem.AgentName != "coder" || childItem.Role != "coder" {
+		t.Fatalf("child history metadata = %+v, want persisted parent/agent fields", childItem)
 	}
 }
 

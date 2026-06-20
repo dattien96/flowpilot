@@ -235,11 +235,13 @@ export class MockRunnerClient implements RunnerClient {
     if (cancel) cancel();
   }
 
-  async *streamRun(runId: string, afterSeq = 0): AsyncIterable<ProviderEventDTO> {
+  async *streamRun(runId: string, afterSeq = 0, signal?: AbortSignal): AsyncIterable<ProviderEventDTO> {
     const log = this.eventLog.get(runId) ?? [];
     for (const ev of log) {
+      if (signal?.aborted) return;
       if (ev.seq > afterSeq) {
         await delay(40); // small pause so the rebuilt timeline is visible
+        if (signal?.aborted) return;
         yield ev;
       }
     }
@@ -452,8 +454,8 @@ export class MockRunnerClient implements RunnerClient {
     return { runId, providerSessionId, providerKey: "codex", status: "completed", finalMessage: input.prompt };
   }
 
-  async *focusAgentRun(runId: string): AsyncIterable<ProviderEventDTO> {
-    yield* this.streamRun(runId, 0);
+  async *focusAgentRun(runId: string, signal?: AbortSignal): AsyncIterable<ProviderEventDTO> {
+    yield* this.streamRun(runId, 0, signal);
   }
 
   async listArtifacts(runId: string): Promise<Artifact[]> {

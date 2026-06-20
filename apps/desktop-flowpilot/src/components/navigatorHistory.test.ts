@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isProjectSyncing } from "./navigatorHistory";
+import { filterVisibleHistory, isProjectSyncing } from "./navigatorHistory";
 import type { RunHistoryItem } from "@/types/contract";
 
 function makeItem(overrides: Partial<RunHistoryItem> = {}): RunHistoryItem {
@@ -32,4 +32,13 @@ test("isProjectSyncing ignores rows from other projects and non-syncing states",
   ];
 
   assert.equal(isProjectSyncing(history, "project-1"), false);
+});
+
+test("filterVisibleHistory removes child agent runs from navigator history", () => {
+  const history = [
+    makeItem({ runId: "main-run" }),
+    makeItem({ runId: "child-run", parentRunId: "main-run", agentName: "coder" }),
+  ];
+
+  assert.deepEqual(filterVisibleHistory(history).map((item) => item.runId), ["main-run"]);
 });

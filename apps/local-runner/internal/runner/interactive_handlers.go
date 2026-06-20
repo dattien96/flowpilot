@@ -673,6 +673,10 @@ type runHistoryItem struct {
 	SourceMachineID string `json:"sourceMachineId,omitempty"`
 	SourceRunID     string `json:"sourceRunId,omitempty"`
 	SyncStatus      string `json:"syncStatus,omitempty"`
+	ParentRunID     string `json:"parentRunId,omitempty"`
+	AgentName       string `json:"agentName,omitempty"`
+	Role            string `json:"role,omitempty"`
+	AgentStatus     string `json:"agentStatus,omitempty"`
 }
 
 func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryItem {
@@ -694,6 +698,10 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 			LastPrompt:  rs.lastPrompt,
 			LastMessage: rs.lastMessage,
 			RunKind:     rs.runKind,
+			ParentRunID: rs.parentRunID,
+			AgentName:   rs.agentName,
+			Role:        rs.role,
+			AgentStatus: rs.agentStatus,
 		})
 		seen[rs.id] = true
 	}
@@ -716,15 +724,19 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 					ProviderKey: sess.ProviderKey,
 					// Persisted-only runs are not in the in-memory map, so an
 					// in-flight status is stale after a restart (T-067 4.4).
-					Status:      normalizeResumedStatus(sess.Status),
-					StartedAt:   sess.StartedAt,
-					UpdatedAt:   sess.UpdatedAt,
-					LastPrompt:  sess.LastPrompt,
-					LastMessage: sess.LastMessage,
-					RunKind:     sess.RunKind,
+					Status:          normalizeResumedStatus(sess.Status),
+					StartedAt:       sess.StartedAt,
+					UpdatedAt:       sess.UpdatedAt,
+					LastPrompt:      sess.LastPrompt,
+					LastMessage:     sess.LastMessage,
+					RunKind:         sess.RunKind,
 					SourceMachineID: sess.SourceMachineID,
 					SourceRunID:     sess.SourceRunID,
 					SyncStatus:      sess.SyncStatus,
+					ParentRunID:     sess.ParentRunID,
+					AgentName:       sess.AgentName,
+					Role:            sess.Role,
+					AgentStatus:     sess.AgentStatus,
 				})
 			}
 		}

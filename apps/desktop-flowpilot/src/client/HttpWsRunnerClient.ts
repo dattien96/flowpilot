@@ -193,8 +193,8 @@ export class HttpWsRunnerClient implements RunnerClient {
     );
   }
 
-  focusAgentRun(runId: string): AsyncIterable<ProviderEventDTO> {
-    return this.streamRun(runId);
+  focusAgentRun(runId: string, signal?: AbortSignal): AsyncIterable<ProviderEventDTO> {
+    return this.streamRun(runId, 0, signal);
   }
 
   // ---- run lifecycle -------------------------------------------------------
@@ -271,8 +271,8 @@ export class HttpWsRunnerClient implements RunnerClient {
     }
   }
 
-  async *streamRun(runId: string, afterSeq = 0): AsyncIterable<ProviderEventDTO> {
-    for await (const ev of this.openStream(runId, afterSeq)) {
+  async *streamRun(runId: string, afterSeq = 0, signal?: AbortSignal): AsyncIterable<ProviderEventDTO> {
+    for await (const ev of this.openStream(runId, afterSeq, signal)) {
       this.lastSeq.set(runId, Math.max(this.lastSeq.get(runId) ?? 0, ev.seq));
       yield ev;
     }
@@ -280,7 +280,11 @@ export class HttpWsRunnerClient implements RunnerClient {
 
   // openStream parses the SSE body, yielding each event until the connection
   // closes or the consumer stops iterating (which aborts the fetch via finally).
-  private async *openStream(runId: string, afterSeq: number, ctrl: AbortController = new AbortController()): AsyncIterable<ProviderEventDTO> {
+  private async *openStream(runId: string, afterSeq: number, signal?: AbortSignal): AsyncIterable<ProviderEventDTO> {
+    const ctrl = new AbortController();
+    if (signal?.aborted) return;
+    const abort = () => ctrl.abort();
+    signal?.addEventListener("abort", abort, { once: true });
     let resp: Response;
     try {
       resp = await fetch(
@@ -326,6 +330,7 @@ export class HttpWsRunnerClient implements RunnerClient {
         }
       }
     } finally {
+      signal?.removeEventListener("abort", abort);
       ctrl.abort();
     }
   }

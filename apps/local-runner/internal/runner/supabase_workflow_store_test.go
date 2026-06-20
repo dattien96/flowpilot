@@ -22,6 +22,10 @@ func TestSupabaseWorkflowStoreListProviderSessionsByProject(t *testing.T) {
 				"provider_session_id": "sess-1",
 				"working_directory":   "/workspace",
 				"status":              "active",
+				"parent_run_id":       "00000000-0000-0000-0000-000000000001",
+				"agent_name":          "coder",
+				"agent_role":          "implementation",
+				"agent_status":        "completed",
 				"workflow_runs": map[string]any{
 					"project_id":  "proj-uuid",
 					"workflow_id": "wf-uuid",
@@ -68,6 +72,9 @@ func TestSupabaseWorkflowStoreListProviderSessionsByProject(t *testing.T) {
 	if string(s.Status) != "active" {
 		t.Errorf("Status = %q, want active", s.Status)
 	}
+	if s.ParentRunID != "00000000-0000-0000-0000-000000000001" || s.AgentName != "coder" || s.Role != "implementation" || s.AgentStatus != "completed" {
+		t.Errorf("agent metadata = %+v, want child fields", s)
+	}
 }
 
 func TestSupabaseWorkflowStoreListProviderSessionsByProjectEmpty(t *testing.T) {
@@ -111,6 +118,10 @@ func TestSupabaseWorkflowStoreGetProviderSession(t *testing.T) {
 					"started_at":          "2026-06-17T10:00:00Z",
 					"updated_at":          "2026-06-17T10:05:00Z",
 					"run_kind":            "chat",
+					"parent_run_id":       "00000000-0000-0000-0000-000000000001",
+					"agent_name":          "reviewer",
+					"agent_role":          "review",
+					"agent_status":        "completed",
 					"workflow_runs": map[string]any{
 						"project_id":  "proj-uuid",
 						"workflow_id": "wf-uuid",
@@ -145,6 +156,9 @@ func TestSupabaseWorkflowStoreGetProviderSession(t *testing.T) {
 	}
 	if state.ProjectID != "proj-uuid" || state.WorkflowID != "wf-uuid" {
 		t.Fatalf("unexpected workflow join fields: %+v", state)
+	}
+	if state.ParentRunID != "00000000-0000-0000-0000-000000000001" || state.AgentName != "reviewer" || state.Role != "review" || state.AgentStatus != "completed" {
+		t.Fatalf("unexpected agent metadata: %+v", state)
 	}
 
 	state, found, err = store.GetProviderSession(context.Background(), "missing-run")

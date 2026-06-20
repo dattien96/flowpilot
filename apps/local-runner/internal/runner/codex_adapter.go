@@ -127,7 +127,7 @@ func (a *codexAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tur
 	threadParams := codexThreadStartParams(cwd, sandbox, approvalMode, req.ModelName, req.ReasoningEffort, dynamicTools)
 	if resumeID := strings.TrimSpace(req.ProviderSessionID); resumeID != "" && !strings.HasPrefix(resumeID, "thread-") {
 		threadMethod = "thread/resume"
-		threadParams = codexThreadResumeParams(resumeID, cwd, sandbox, approvalMode, req.ModelName, req.ReasoningEffort)
+		threadParams = codexThreadResumeParams(resumeID, cwd, sandbox, approvalMode, req.ModelName, req.ReasoningEffort, dynamicTools)
 	}
 
 	startRes, err := a.dispatcher.call(ctx, threadMethod, threadParams)

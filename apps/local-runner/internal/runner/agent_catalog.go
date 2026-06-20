@@ -309,7 +309,7 @@ func builtinAgentDefinitions() []AgentDefinition {
 			Name:        "coder",
 			Role:        "coder",
 			Description: "Implements a scoped change end-to-end, then signals ready-for-review.",
-			Provider:    "claude",
+			Provider:    "codex",
 			Tools:       []string{"Read", "Edit", "Write", "Bash", "Grep", "Glob"},
 			SystemPrompt: "You are the coder sub-agent. Implement the requested change end-to-end: " +
 				"read the relevant code, make focused edits, keep tests green, and emit a ready-for-review " +

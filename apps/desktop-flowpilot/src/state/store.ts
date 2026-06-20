@@ -43,9 +43,13 @@ import {
 export type { TimelineItem } from "./timelineReducer";
 
 let loadProjectsInFlight: Promise<void> | null = null;
+let activeHistoryReplayController: AbortController | undefined;
+let activeOrchestrationStreamController: AbortController | undefined;
+let activeAgentFocusStreamController: AbortController | undefined;
 
 export type LaunchMode = "workflow" | "step";
 export type ChatMode = "normal_chat" | "workflow_step_auto";
+export type WorkspaceMainView = "chat" | "board";
 
 interface RunSnapshot {
   timeline: TimelineItem[];
@@ -84,6 +88,21 @@ function selectedProjectPath(state: Pick<AppState, "projects" | "selectedProject
   return state.projects.find((project) => project.id === state.selectedProjectId)?.path;
 }
 
+function cancelHistoryReplayStream(): void {
+  activeHistoryReplayController?.abort();
+  activeHistoryReplayController = undefined;
+}
+
+function cancelOrchestrationStream(): void {
+  activeOrchestrationStreamController?.abort();
+  activeOrchestrationStreamController = undefined;
+}
+
+function cancelAgentFocusStream(): void {
+  activeAgentFocusStreamController?.abort();
+  activeAgentFocusStreamController = undefined;
+}
+
 interface AppState {
   client: RunnerClient;
 
@@ -111,6 +130,7 @@ interface AppState {
   runId?: string;
   mainRunId?: string;
   activeAgentRunId?: string;
+  workspaceMainView: WorkspaceMainView;
   agentRuns: AgentRunSummary[];
   agentGraphSnapshot?: AgentGraphSnapshot;
   agentBusMessages: AgentBusMessage[];
@@ -187,6 +207,8 @@ interface AppState {
   listAgents(cwd?: string): Promise<AgentDefinition[]>;
   focusAgentRun(runId: string): Promise<void>;
   backToMainRun(): void;
+  openOrchestrationBoard(): void;
+  closeOrchestrationBoard(): void;
   appendSystemMessage(text: string, tone?: "info" | "error"): void;
   openAgentSpawnGuide(agentName?: string): void;
   clearAgentSpawnGuide(): void;
@@ -232,6 +254,7 @@ export const useStore = create<AppState>((set, get) => ({
   chatMode: "normal_chat",
   selectedProvider: "codex",
   yoloMode: false,
+  workspaceMainView: "chat",
   _historyLoadSeq: 0,
   _remoteHistoryLoadSeq: 0,
   _runSnapshots: {},
@@ -381,10 +404,15 @@ export const useStore = create<AppState>((set, get) => ({
     cacheRunSnapshot(get(), currentRunId);
     const restore = get()._runSnapshots[runId];
     const streamRunSeq = get()._streamRunSeq + 1;
-    const afterSeq = get()._runReplaySeq[runId] ?? restore?.lastEventSeq ?? 0;
+    const afterSeq = restore ? get()._runReplaySeq[runId] ?? restore.lastEventSeq ?? 0 : 0;
+    cancelHistoryReplayStream();
+    cancelAgentFocusStream();
+    const agentFocusController = new AbortController();
+    activeAgentFocusStreamController = agentFocusController;
     set({
       mainRunId,
       activeAgentRunId: runId,
+      workspaceMainView: "chat",
       runId,
       ...(restore ?? {
         timeline: [],
@@ -396,8 +424,45 @@ export const useStore = create<AppState>((set, get) => ({
       agentSpawnGuideAgentName: undefined,
       _streamRunSeq: streamRunSeq,
     });
-    const stream = client.focusAgentRun ? client.focusAgentRun(runId) : client.streamRun(runId, 0);
-    void consumeAgentStream(runId, stream, streamRunSeq, afterSeq, set, get);
+    try {
+      await client.resumeRun(runId);
+    } catch (err) {
+      if (activeAgentFocusStreamController === agentFocusController) {
+        activeAgentFocusStreamController = undefined;
+      }
+      if (!shouldApplyRunEvent(get().runId, runId) || get()._streamRunSeq !== streamRunSeq) return;
+      set((s) => ({
+        status: "failed",
+        timeline: [
+          ...s.timeline,
+          { kind: "system", id: `agent-focus-error-${s.timeline.length}`, text: runErrorMessage(err), tone: "error" },
+        ],
+      }));
+      return;
+    }
+    if (!shouldApplyRunEvent(get().runId, runId) || get()._streamRunSeq !== streamRunSeq) {
+      if (activeAgentFocusStreamController === agentFocusController) {
+        activeAgentFocusStreamController = undefined;
+      }
+      return;
+    }
+    const stream = client.focusAgentRun
+      ? client.focusAgentRun(runId, agentFocusController.signal)
+      : client.streamRun(runId, 0, agentFocusController.signal);
+    void consumeAgentStream(runId, stream, streamRunSeq, afterSeq, set, get).catch((err) => {
+      if (!shouldApplyRunEvent(get().runId, runId) || get()._streamRunSeq !== streamRunSeq) return;
+      set((s) => ({
+        status: "failed",
+        timeline: [
+          ...s.timeline,
+          { kind: "system", id: `agent-focus-error-${s.timeline.length}`, text: runErrorMessage(err), tone: "error" },
+        ],
+      }));
+    }).finally(() => {
+      if (activeAgentFocusStreamController === agentFocusController) {
+        activeAgentFocusStreamController = undefined;
+      }
+    });
     void get().refreshAgentRuns();
   },
 
@@ -408,17 +473,27 @@ export const useStore = create<AppState>((set, get) => ({
     cacheRunSnapshot(get(), currentRunId);
     const restore = _runSnapshots[mainRunId];
     if (!restore) return;
+    cancelAgentFocusStream();
     const streamRunSeq = get()._streamRunSeq + 1;
     const afterSeq = get()._runReplaySeq[mainRunId] ?? restore.lastEventSeq ?? 0;
     set({
       runId: mainRunId,
       mainRunId,
       activeAgentRunId: undefined,
+      workspaceMainView: "chat",
       ...restore,
       _streamRunSeq: streamRunSeq,
     });
     void consumeAgentStream(mainRunId, get().client.streamRun(mainRunId, afterSeq), streamRunSeq, afterSeq, set, get);
     startOrchestrationStream(mainRunId, get().client, set, get);
+  },
+
+  openOrchestrationBoard() {
+    set({ workspaceMainView: "board" });
+  },
+
+  closeOrchestrationBoard() {
+    set({ workspaceMainView: "chat" });
   },
 
   appendSystemMessage(text, tone = "info") {
@@ -506,6 +581,12 @@ export const useStore = create<AppState>((set, get) => ({
       selectedProjectId, selectedWorkflowId, selectedStepId,
       selectedProvider, selectedModel, reasoningEffort, yoloMode,
     } = get();
+    const focusedRunId = get().activeAgentRunId;
+    const mainRunId = get().mainRunId ?? get().runId;
+    if (chatMode === "normal_chat" && focusedRunId && mainRunId && focusedRunId !== mainRunId) {
+      get().appendSystemMessage("Child transcript is read-only. Return to the main chat to send prompts.");
+      return;
+    }
     const cwd = selectedProjectPath(get());
 
     if (chatMode === "normal_chat") {
@@ -618,6 +699,9 @@ export const useStore = create<AppState>((set, get) => ({
             : undefined,
       };
       set({ runId, lastTurnInput: turnInput, activeStepId: turnStepId, _streamRunSeq: get()._streamRunSeq + 1 });
+      cancelHistoryReplayStream();
+      cancelOrchestrationStream();
+      cancelAgentFocusStream();
 
       await consumeStream(runId, client.sendTurn(turnInput), set, get);
       const orchestrationRunId = get().mainRunId ?? runId;
@@ -969,52 +1053,42 @@ export const useStore = create<AppState>((set, get) => ({
     if (historyProvider) {
       void get().loadSkills(historyProvider);
     }
-    try {
-      console.info("[FlowPilot][history-open] stream replay start", { runId: handle.runId });
-      await consumeStream(handle.runId, client.streamRun(handle.runId, 0), set, get);
-      console.info("[FlowPilot][history-open] stream replay complete", {
-        runId: handle.runId,
-        timelineItems: get().timeline.length,
+    cancelHistoryReplayStream();
+    cancelOrchestrationStream();
+    cancelAgentFocusStream();
+    const historyReplayController = new AbortController();
+    activeHistoryReplayController = historyReplayController;
+    console.info("[FlowPilot][history-open] stream replay start", { runId: handle.runId });
+    void consumeHistoryReplayStream(
+      handle.runId,
+      handle.status,
+      client.streamRun(handle.runId, 0, historyReplayController.signal),
+      set,
+      get,
+    )
+      .then(() => {
+        console.info("[FlowPilot][history-open] stream replay complete", {
+          runId: handle.runId,
+          timelineItems: get().timeline.length,
+        });
+      })
+      .catch((err) => {
+        console.error("[FlowPilot][history-open] stream replay failed", { runId: handle.runId, error: err });
+      })
+      .finally(() => {
+        if (activeHistoryReplayController === historyReplayController) {
+          activeHistoryReplayController = undefined;
+        }
       });
-      startOrchestrationStream(handle.runId, client, set, get);
-    } catch (err) {
-      console.error("[FlowPilot][history-open] stream replay failed", { runId: handle.runId, error: err });
-      throw err;
-    }
-
-    // Post-stream stale cleanup (BUG-074): permission_required events are persisted
-    // in the event log but their resolution (approve() action) only clears
-    // pendingApproval on the client — no resolution event is emitted. If the stream
-    // ends and pendingApproval is still set, and the run is not genuinely waiting for
-    // approval (handle.status is the server's source of truth), stamp all unresolved
-    // approval cards as resolved and clear the stale pending state.
-    if (handle.status !== "waiting_approval" && handle.status !== "waiting_question") {
-      set((s) => {
-        // The stream may have ended because the user switched to another run
-        // (its abort supersedes this one). Don't clobber the now-active run's
-        // pending state with this stale run's cleanup.
-        if (s.runId !== handle.runId) return {};
-        if (!s.pendingApproval && !s.pendingQuestion) return {};
-        return {
-          pendingApproval: undefined,
-          pendingQuestion: undefined,
-          timeline: s.timeline.map((it) => {
-            if (it.kind === "approval" && it.decision === undefined) {
-              return { ...it, decision: "resolved" };
-            }
-            if (it.kind === "question" && it.answer === undefined) {
-              return { ...it, answer: "answered" };
-            }
-            return it;
-          }),
-        };
-      });
-    }
+    startOrchestrationStream(handle.runId, client, set, get);
     void get().refreshAgentRuns();
   },
 
   resetRun() {
     const { selectedProvider, supportedModels } = get();
+    cancelHistoryReplayStream();
+    cancelOrchestrationStream();
+    cancelAgentFocusStream();
     set({
       runId: undefined,
       mainRunId: undefined,
@@ -1284,6 +1358,71 @@ async function consumeStream(
   }
 }
 
+async function consumeHistoryReplayStream(
+  runId: string,
+  resumedStatus: RunStatus,
+  stream: AsyncIterable<ProviderEventDTO>,
+  set: (fn: (s: AppState) => Partial<AppState>) => void,
+  get: () => AppState,
+): Promise<void> {
+  const mySeq = get()._streamRunSeq;
+  const isStale = () => !shouldApplyRunEvent(get().runId, runId) || get()._streamRunSeq !== mySeq;
+  for await (const e of stream) {
+    if (isStale()) return;
+    if (e.type !== "agent_graph_updated" && e.type !== "agent_bus_message") {
+      set((s) => applyEvent(s, e));
+    }
+    if (shouldStopHistoryReplay(resumedStatus, e)) break;
+  }
+  if (!isStale()) {
+    settleHistoryReplayPendingState(runId, resumedStatus, set);
+  }
+}
+
+function shouldStopHistoryReplay(resumedStatus: RunStatus, e: ProviderEventDTO): boolean {
+  if (resumedStatus === "waiting_approval") return e.type === "permission_required";
+  if (resumedStatus === "waiting_question") return e.type === "user_question_required";
+  if (resumedStatus === "completed") return e.type === "turn_completed";
+  if (resumedStatus === "failed" || resumedStatus === "cancelled") return e.type === "turn_failed";
+  return false;
+}
+
+function settleHistoryReplayPendingState(
+  runId: string,
+  resumedStatus: RunStatus,
+  set: (fn: (s: AppState) => Partial<AppState>) => void,
+): void {
+  if (resumedStatus === "waiting_approval" || resumedStatus === "waiting_question") return;
+  set((s) => {
+    if (s.runId !== runId || (!s.pendingApproval && !s.pendingQuestion)) return {};
+    const pendingApproval = s.pendingApproval;
+    const pendingQuestion = s.pendingQuestion;
+    return {
+      pendingApproval: undefined,
+      pendingQuestion: undefined,
+      timeline: s.timeline.map((it) => {
+        if (
+          pendingApproval &&
+          it.kind === "approval" &&
+          it.approvalId === pendingApproval.approvalId &&
+          it.decision === undefined
+        ) {
+          return { ...it, decision: "resolved" };
+        }
+        if (
+          pendingQuestion &&
+          it.kind === "question" &&
+          it.questionId === pendingQuestion.questionId &&
+          it.answer === undefined
+        ) {
+          return { ...it, answer: "answered" };
+        }
+        return it;
+      }),
+    };
+  });
+}
+
 async function consumeAgentStream(
   runId: string,
   stream: AsyncIterable<ProviderEventDTO>,
@@ -1334,10 +1473,24 @@ function startOrchestrationStream(
   get: () => AppState,
 ): void {
   if (!runId) return;
+  cancelOrchestrationStream();
+  const orchestrationController = new AbortController();
+  activeOrchestrationStreamController = orchestrationController;
   const orchestrationSeq = get()._orchestrationStreamSeq + 1;
   const afterSeq = get()._runReplaySeq[runId] ?? 0;
   set((_s) => ({ _orchestrationStreamSeq: orchestrationSeq }));
-  void consumeOrchestrationStream(runId, client.streamRun(runId, afterSeq), orchestrationSeq, afterSeq, set, get);
+  void consumeOrchestrationStream(
+    runId,
+    client.streamRun(runId, afterSeq, orchestrationController.signal),
+    orchestrationSeq,
+    afterSeq,
+    set,
+    get,
+  ).finally(() => {
+    if (activeOrchestrationStreamController === orchestrationController) {
+      activeOrchestrationStreamController = undefined;
+    }
+  });
 }
 
 function applyEvent(s: AppState, e: ProviderEventDTO): Partial<AppState> {
@@ -1347,7 +1500,13 @@ function applyEvent(s: AppState, e: ProviderEventDTO): Partial<AppState> {
     [e.workflowRunId]: e.seq,
   };
   if (e.type === "agent_graph_updated") {
-    return { ...next, agentGraphSnapshot: e.agentGraphSnapshot, agentBusMessages: e.agentGraphSnapshot.busMessages, _runReplaySeq: nextReplaySeq };
+    return {
+      ...next,
+      agentRuns: e.agentGraphSnapshot.runs,
+      agentGraphSnapshot: e.agentGraphSnapshot,
+      agentBusMessages: e.agentGraphSnapshot.busMessages,
+      _runReplaySeq: nextReplaySeq,
+    };
   }
   if (e.type === "agent_bus_message") {
     return {

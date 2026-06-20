@@ -162,6 +162,10 @@ func (a *childWaitApprovalAdapter) SendTurn(_ context.Context, _ TurnRequest, br
 	_, err := bridge.RequestApproval(ApprovalDetails{
 		Command: "npm test",
 		Reason:  "needs approval",
+		Decisions: []ApprovalDecisionOption{
+			{Value: "approve", Label: "Approve"},
+			{Value: "deny", Label: "Deny"},
+		},
 	})
 	return err
 }
@@ -303,7 +307,7 @@ func TestSpawnChildRunRegistersTreeEdge(t *testing.T) {
 	}
 }
 
-func TestSpawnChildRunWaitTrueReturnsWhenChildNeedsApproval(t *testing.T) {
+func TestSpawnChildRunWaitTrueWaitsThroughApprovalGate(t *testing.T) {
 	reg := newProviderRegistry()
 	reg.register(ProviderRegistration{
 		Key:          ProviderKeyClaude,
@@ -322,21 +326,104 @@ func TestSpawnChildRunWaitTrueReturnsWhenChildNeedsApproval(t *testing.T) {
 		t.Fatalf("createRun: %v", err)
 	}
 
-	result, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{
-		Agent: "reviewer", Prompt: "review", Provider: "claude", Wait: true,
-	})
-	if spawnErr != nil {
-		t.Fatalf("spawnChildRun(wait approval): %v", spawnErr)
+	done := make(chan SpawnAgentResult, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		result, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{
+			Agent: "reviewer", Prompt: "review", Provider: "claude", Wait: true,
+		})
+		if spawnErr != nil {
+			errCh <- spawnErr
+			return
+		}
+		done <- result
+	}()
+
+	var approvalID string
+	waitFor(t, func() bool {
+		svc.mu.Lock()
+		defer svc.mu.Unlock()
+		for _, rs := range svc.runs {
+			if rs.parentRunID == parent.RunID && rs.pendingApprovalID != "" {
+				approvalID = rs.pendingApprovalID
+				return true
+			}
+		}
+		return false
+	}, "child approval")
+
+	select {
+	case result := <-done:
+		t.Fatalf("spawnChildRun returned before approval resolved: %+v", result)
+	case err := <-errCh:
+		t.Fatalf("spawnChildRun failed before approval resolved: %v", err)
+	default:
 	}
-	if result.Status != string(RunStatusWaitingApproval) {
-		t.Fatalf("status = %q, want %q", result.Status, RunStatusWaitingApproval)
+
+	if apiErr := svc.SubmitApprovalDecision(approvalID, "approve"); apiErr != nil {
+		t.Fatalf("SubmitApprovalDecision: %v", apiErr)
 	}
-	if result.FinalMessage != "" {
-		t.Fatalf("finalMessage = %q, want empty while waiting", result.FinalMessage)
+
+	select {
+	case result := <-done:
+		if result.Status != string(RunStatusCompleted) {
+			t.Fatalf("status = %q, want %q", result.Status, RunStatusCompleted)
+		}
+	case err := <-errCh:
+		t.Fatalf("spawnChildRun(wait approval): %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for child completion after approval")
 	}
 }
 
-func TestSpawnChildRunWaitTrueReturnsWhenChildNeedsQuestion(t *testing.T) {
+func TestSpawnChildRunEmitsParentGraphWhenChildWaitsApproval(t *testing.T) {
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key:          ProviderKeyClaude,
+		DisplayName:  "Claude",
+		Status:       ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true, ApprovalEvents: true},
+		newAdapter:   func() ProviderRuntimeAdapter { return &childWaitApprovalAdapter{} },
+	})
+	svc := NewInteractiveServiceWithRegistry(reg)
+	svc.approvalTTL = time.Second
+
+	parent, err := svc.createRun(StartRunInput{
+		ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyClaude,
+	})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+
+	if _, err := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{
+		Agent: "reviewer", Prompt: "review", Provider: "claude", Wait: false,
+	}); err != nil {
+		t.Fatalf("spawnChildRun: %v", err)
+	}
+
+	waitFor(t, func() bool {
+		svc.mu.Lock()
+		defer svc.mu.Unlock()
+		parentRun := svc.runs[parent.RunID]
+		if parentRun == nil {
+			return false
+		}
+		for i := len(parentRun.events) - 1; i >= 0; i-- {
+			ev := parentRun.events[i]
+			if ev.Type != EventAgentGraphUpdated || ev.AgentGraphSnapshot == nil {
+				continue
+			}
+			for _, child := range ev.AgentGraphSnapshot.Runs {
+				if child.ParentRunID == parent.RunID && child.Status == RunStatusWaitingApproval && child.AgentStatus == string(RunStatusWaitingApproval) {
+					return true
+				}
+			}
+		}
+		return false
+	}, "parent graph waiting_approval update")
+}
+
+func TestSpawnChildRunWaitTrueWaitsThroughQuestionGate(t *testing.T) {
 	reg := newProviderRegistry()
 	reg.register(ProviderRegistration{
 		Key:          ProviderKeyClaude,
@@ -355,17 +442,53 @@ func TestSpawnChildRunWaitTrueReturnsWhenChildNeedsQuestion(t *testing.T) {
 		t.Fatalf("createRun: %v", err)
 	}
 
-	result, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{
-		Agent: "reviewer", Prompt: "review", Provider: "claude", Wait: true,
-	})
-	if spawnErr != nil {
-		t.Fatalf("spawnChildRun(wait question): %v", spawnErr)
+	done := make(chan SpawnAgentResult, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		result, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{
+			Agent: "reviewer", Prompt: "review", Provider: "claude", Wait: true,
+		})
+		if spawnErr != nil {
+			errCh <- spawnErr
+			return
+		}
+		done <- result
+	}()
+
+	var questionID string
+	waitFor(t, func() bool {
+		svc.mu.Lock()
+		defer svc.mu.Unlock()
+		for _, rs := range svc.runs {
+			if rs.parentRunID == parent.RunID && rs.pendingQuestionID != "" {
+				questionID = rs.pendingQuestionID
+				return true
+			}
+		}
+		return false
+	}, "child question")
+
+	select {
+	case result := <-done:
+		t.Fatalf("spawnChildRun returned before question resolved: %+v", result)
+	case err := <-errCh:
+		t.Fatalf("spawnChildRun failed before question resolved: %v", err)
+	default:
 	}
-	if result.Status != string(RunStatusWaitingQuestion) {
-		t.Fatalf("status = %q, want %q", result.Status, RunStatusWaitingQuestion)
+
+	if apiErr := svc.AnswerQuestion(questionID, []string{"a"}); apiErr != nil {
+		t.Fatalf("AnswerQuestion: %v", apiErr)
 	}
-	if result.FinalMessage != "" {
-		t.Fatalf("finalMessage = %q, want empty while waiting", result.FinalMessage)
+
+	select {
+	case result := <-done:
+		if result.Status != string(RunStatusCompleted) {
+			t.Fatalf("status = %q, want %q", result.Status, RunStatusCompleted)
+		}
+	case err := <-errCh:
+		t.Fatalf("spawnChildRun(wait question): %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for child completion after question answer")
 	}
 }
 

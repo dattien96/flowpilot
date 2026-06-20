@@ -144,6 +144,14 @@ function ToolRow({ it }: { it: Extract<TimelineItem, { kind: "tool" }> }): React
   const label = toolLabel(it);
   const output = previewValue(it.output);
   const status = it.status || "success";
+  const isSpawn = it.toolName === "spawn_agent";
+  if (isSpawn) {
+    return (
+      <div className="toolrow spawn">
+        ⚙ <b>spawn_agent</b>({label})
+      </div>
+    );
+  }
   return (
     <div className={`row tool-row tool-${status}`}>
       <span className="row-icon">{TOOL_ICON[status] ?? "•"}</span>
@@ -302,6 +310,7 @@ export function Timeline(): React.ReactElement {
   const activeAgentRunId = useStore((s) => s.activeAgentRunId);
   const agentRuns = useStore((s) => s.agentRuns);
   const backToMainRun = useStore((s) => s.backToMainRun);
+  const focusAgentRun = useStore((s) => s.focusAgentRun);
   const endRef = useRef<HTMLDivElement>(null);
 
   const totalPromptCount = countPrompts(timeline);
@@ -330,28 +339,19 @@ export function Timeline(): React.ReactElement {
 
   return (
     <div className={`timeline ${activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId ? "timeline-agent-focused" : ""}`}>
-      {showAgentHeader && (
-        <div className="timeline-head">
-          {activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId ? (
-            <div className="timeline-breadcrumb">
-              <button type="button" className="timeline-back-btn" onClick={backToMainRun}>
-                ← Back to main
-              </button>
-              <span className="timeline-breadcrumb-sep">/</span>
-              <span className="timeline-breadcrumb-current">{activeAgentRunId}</span>
-            </div>
-          ) : (
-            <div className="timeline-breadcrumb">
-              <span className="timeline-breadcrumb-current">{runningAgentCount > 0 ? `${runningAgentCount} agents running` : "Main run"}</span>
-            </div>
-          )}
-          {runningAgentCount > 0 && (
-            <div className="timeline-agent-summary">
-              <span>{runningAgentCount} agents running</span>
-            </div>
-          )}
+      {activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId ? (
+        <div className="crumb ring">
+          <button type="button" className="crumb-backbtn" onClick={backToMainRun}>
+            ← Back to main agent
+          </button>
+          <span className="crumb-path">
+            <b>main</b> <span style={{ opacity: 0.5 }}>›</span> <span className="here">{agentRuns.find(r => r.runId === activeAgentRunId)?.agentName ?? activeAgentRunId}</span>
+          </span>
+          <span className="crumb-path" style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: "6px" }}>
+            <span className="pulse" /> live child run
+          </span>
         </div>
-      )}
+      ) : null}
       {timeline.length === 0 && <div className="empty">Select a project, choose your chat controls, and send a prompt to begin.</div>}
       {hiddenPromptCount > 0 && (
         <button
@@ -369,6 +369,29 @@ export function Timeline(): React.ReactElement {
       {timelineGroups.map((it) => (
         <Item key={it.id} it={it} />
       ))}
+
+      {(!activeAgentRunId || activeAgentRunId === mainRunId) &&
+        agentRuns
+          .filter((run) => run.status === "running" || run.status === "waiting_approval" || run.status === "waiting_question")
+          .map((run) => {
+            const lowerName = run.agentName.toLowerCase();
+            const roleClass = lowerName.includes("coder") ? "coder" : lowerName.includes("review") ? "reviewer" : lowerName.includes("test") ? "tester" : "";
+            const roleColor = roleClass === "coder" ? "var(--role-coder)" : roleClass === "reviewer" ? "var(--role-reviewer)" : roleClass === "tester" ? "var(--role-tester)" : "var(--text)";
+            const isWaiting = run.status === "waiting_approval" || run.status === "waiting_question";
+            const providerName = lowerName.includes("coder") ? "Claude" : "Codex";
+            return (
+              <div key={run.runId} className={`abanner ${roleClass}`}>
+                <span className={`pulse ${isWaiting ? "amber" : ""}`} />
+                <span>
+                  <b style={{ color: roleColor }}>{run.agentName}</b> · {providerName} · {run.status}
+                  {run.agentStatus && <span style={{ color: "var(--text-dim)" }}> — {run.agentStatus}</span>}
+                </span>
+                <button type="button" className="abanner-open-btn" onClick={() => void focusAgentRun(run.runId)}>
+                  Open ↗
+                </button>
+              </div>
+            );
+          })}
 
       <div ref={endRef} />
     </div>

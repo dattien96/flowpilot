@@ -565,11 +565,15 @@ func TestCodexAdapterResumedTurnRoutesAskUserDynamicTool(t *testing.T) {
 	d.setInbound(adapter.handleInbound)
 
 	resumeSeen := make(chan struct{}, 1)
+	resumeParams := make(chan map[string]any, 1)
 	toolReplies := make(chan map[string]any, 1)
 	fc.serve(func(fc *fakeCodex, m map[string]any) {
 		method, _ := m["method"].(string)
 		switch method {
 		case "thread/resume":
+			if params, _ := m["params"].(map[string]any); params != nil {
+				resumeParams <- params
+			}
 			resumeSeen <- struct{}{}
 			fc.reply(m["id"], map[string]any{"thread": map[string]any{"id": "th-resumed"}})
 		case "turn/start":
@@ -602,6 +606,15 @@ func TestCodexAdapterResumedTurnRoutesAskUserDynamicTool(t *testing.T) {
 	case <-resumeSeen:
 	default:
 		t.Fatal("did not observe thread/resume")
+	}
+	select {
+	case params := <-resumeParams:
+		raw, _ := json.Marshal(params["dynamicTools"])
+		if !strings.Contains(string(raw), "ask_user") || !strings.Contains(string(raw), "spawn_agent") {
+			t.Fatalf("thread/resume dynamicTools should register ask_user and spawn_agent: %s", raw)
+		}
+	default:
+		t.Fatal("did not capture thread/resume params")
 	}
 	bridge.mu.Lock()
 	seen, prompt, opts := bridge.askCallSeen, bridge.askPrompt, bridge.askOptions

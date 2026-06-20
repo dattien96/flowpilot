@@ -229,6 +229,10 @@ export interface RunHistoryItem {
   sourceRunId?: string;
   syncStatus?: string;
   unavailableReason?: string;
+  parentRunId?: string;
+  agentName?: string;
+  role?: string;
+  agentStatus?: string;
 }
 
 export interface ChatSessionSyncRequest {
@@ -428,7 +432,7 @@ export interface RunnerClient {
   /** Stop the in-flight turn (POST /client/workflow-runs/{runId}/interrupt). */
   interrupt(runId: string): Promise<void>;
   /** Attach to a run's event stream and replay from afterSeq — used on reconnect. */
-  streamRun(runId: string, afterSeq?: number): AsyncIterable<ProviderEventDTO>;
+  streamRun(runId: string, afterSeq?: number, signal?: AbortSignal): AsyncIterable<ProviderEventDTO>;
   listArtifacts(runId: string): Promise<Artifact[]>;
   listSkills(provider: string, cwd?: string): Promise<ProviderSkill[]>;
   /**
@@ -456,7 +460,7 @@ export interface RunnerClient {
    * Attach to a child run by switching the active stream to that run and returning
    * its SSE iterator. Implemented client-side on top of `streamRun` in Phase 1.
    */
-  focusAgentRun?(runId: string): AsyncIterable<ProviderEventDTO>;
+  focusAgentRun?(runId: string, signal?: AbortSignal): AsyncIterable<ProviderEventDTO>;
   connectProviderAccount(providerKey: ProviderKey): Promise<void>;
   activateProviderAccount(accountId: string): Promise<void>;
   openProviderAccountTerminal(accountId: string): Promise<void>;
