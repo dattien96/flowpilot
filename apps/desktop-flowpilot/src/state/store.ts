@@ -1418,6 +1418,26 @@ function settleHistoryReplayPendingState(
     if (s.runId !== runId || (!s.pendingApproval && !s.pendingQuestion)) return {};
     const pendingApproval = s.pendingApproval;
     const pendingQuestion = s.pendingQuestion;
+    const lastMeaningfulItem = [...s.timeline].reverse().find((it) => it.kind !== "thinking");
+    const approvalStillOpen =
+      pendingApproval !== undefined &&
+      lastMeaningfulItem?.kind === "approval" &&
+      lastMeaningfulItem.approvalId === pendingApproval.approvalId &&
+      lastMeaningfulItem.decision === undefined;
+    const questionStillOpen =
+      pendingQuestion !== undefined &&
+      lastMeaningfulItem?.kind === "question" &&
+      lastMeaningfulItem.questionId === pendingQuestion.questionId &&
+      lastMeaningfulItem.answer === undefined;
+
+    if (approvalStillOpen || questionStillOpen) {
+      return {
+        ...(approvalStillOpen ? { pendingApproval } : { pendingApproval: undefined }),
+        ...(questionStillOpen ? { pendingQuestion } : { pendingQuestion: undefined }),
+        status: approvalStillOpen ? "waiting_approval" : "waiting_question",
+      };
+    }
+
     return {
       pendingApproval: undefined,
       pendingQuestion: undefined,

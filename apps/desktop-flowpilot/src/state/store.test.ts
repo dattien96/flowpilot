@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { useStore } from "./store";
-import { applyTimelineEvent, type TimelineState } from "./timelineReducer";
+import { applyTimelineEvent, type TimelineItem, type TimelineState } from "./timelineReducer";
 import { getBusMessageLabel, getOrchestrationBoardEmptyCopy } from "@/components/OrchestrationBoard";
 import { shouldShowAgentTimelineHeader } from "@/components/Timeline";
 import { parseMentionRouting } from "@/components/ChatInput";
@@ -346,6 +346,57 @@ test("openHistoryRun does not leave Thinking visible for a completed history rep
   const state = useStore.getState();
   assert.equal(state.status, "completed");
   assert.equal(state.timeline.some((item) => item.kind === "thinking"), false);
+});
+
+test("openHistoryRun keeps an approval gate open when the replay ends on permission_required", async () => {
+  const streamStarted = deferred<void>();
+  const approvalDetails = { decisions: [{ value: "approve", label: "Approve" }, { value: "deny", label: "Deny" }] };
+  const handle: RunHandle = {
+    runId: "run-1",
+    providerSessionId: "session-1",
+    providerKey: "codex",
+    status: "cancelled",
+    stepId: "chat-run-1",
+  };
+  async function* approvalHistoryStream(): AsyncIterable<ProviderEventDTO> {
+    streamStarted.resolve();
+    yield {
+      ...BASE_EVENT,
+      type: "permission_required",
+      approvalId: "appr-1",
+      provider: "codex",
+      details: approvalDetails,
+    };
+  }
+  seedStore(
+    makeClient({
+      resumeRun: async () => handle,
+      streamRun: () => approvalHistoryStream(),
+      listSkills: async () => [],
+    }),
+    [
+      {
+        runId: "run-1",
+        projectId: "project-1",
+        providerKey: "codex",
+        status: "cancelled",
+        startedAt: "2026-06-17T10:00:00Z",
+        updatedAt: "2026-06-17T10:05:00Z",
+      },
+    ],
+  );
+
+  await useStore.getState().openHistoryRun("run-1");
+  await Promise.race([
+    streamStarted.promise,
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("history stream did not start")), 100)),
+  ]);
+
+  const state = useStore.getState();
+  assert.equal(state.status, "waiting_approval");
+  assert.deepEqual(state.pendingApproval, { approvalId: "appr-1", details: approvalDetails });
+  const card = state.timeline.find((item) => item.kind === "approval") as Extract<TimelineItem, { kind: "approval" }> | undefined;
+  assert.equal(card?.decision, undefined, "approval card should remain actionable");
 });
 
 test("sendPrompt aborts an open-ended history replay stream before sending", async () => {
