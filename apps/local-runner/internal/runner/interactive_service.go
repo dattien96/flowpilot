@@ -957,10 +957,14 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 	cwd := ""
 	projectID := ""
 	workflowID := ""
+	parentModel := ""
+	parentReasoningEffort := ""
 	if parentRun != nil {
 		cwd = parentRun.workspaceCwd
 		projectID = parentRun.projectID
 		workflowID = parentRun.workflowID
+		parentModel = parentRun.modelName
+		parentReasoningEffort = parentRun.reasoningEffort
 	}
 	s.mu.Unlock()
 	if parentRun == nil {
@@ -991,11 +995,13 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 
 	// Create the child run. createRun acquires s.mu internally; call it unlocked.
 	startIn := StartRunInput{
-		ProjectID:   projectID,
-		WorkflowID:  workflowID,
-		ChatMode:    "normal_chat",
-		Cwd:         cwd,
-		ProviderKey: providerKey,
+		ProjectID:       projectID,
+		WorkflowID:      workflowID,
+		ChatMode:        "normal_chat",
+		Cwd:             cwd,
+		ProviderKey:     providerKey,
+		Model:           parentModel,
+		ReasoningEffort: parentReasoningEffort,
 	}
 	handle, apiErr := s.createRun(startIn)
 	if apiErr != nil {

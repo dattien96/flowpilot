@@ -285,6 +285,43 @@ func TestSpawnChildRunCreatesRunWithAgentIdentity(t *testing.T) {
 	}
 }
 
+func TestSpawnChildRunInheritsParentModelDefaults(t *testing.T) {
+	svc, _ := newTestServer(t)
+
+	parent, err := svc.createRun(StartRunInput{
+		ProjectID:       "proj",
+		ChatMode:        "normal_chat",
+		ProviderKey:     ProviderKeyCodex,
+		Model:           "gpt-5.5",
+		ReasoningEffort: "medium",
+	})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+
+	result, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{
+		Agent:  "researcher",
+		Prompt: "summarise the repo",
+		Wait:   false,
+	})
+	if spawnErr != nil {
+		t.Fatalf("spawnChildRun: %v", spawnErr)
+	}
+
+	svc.mu.Lock()
+	child := svc.runs[result.RunID]
+	svc.mu.Unlock()
+	if child == nil {
+		t.Fatal("child run not found in service map")
+	}
+	if child.modelName != "gpt-5.5" {
+		t.Fatalf("child modelName = %q, want parent model gpt-5.5", child.modelName)
+	}
+	if child.reasoningEffort != "medium" {
+		t.Fatalf("child reasoningEffort = %q, want medium", child.reasoningEffort)
+	}
+}
+
 func TestSpawnChildRunRegistersTreeEdge(t *testing.T) {
 	svc, _ := newTestServer(t)
 

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { useStore } from "./store";
+import { applyTimelineEvent, type TimelineState } from "./timelineReducer";
 import { getBusMessageLabel, getOrchestrationBoardEmptyCopy } from "@/components/OrchestrationBoard";
 import { shouldShowAgentTimelineHeader } from "@/components/Timeline";
 import { parseMentionRouting } from "@/components/ChatInput";
@@ -101,6 +102,7 @@ function seedStore(client: RunnerClient, runHistory: RunHistoryItem[]): void {
     _historyLoadSeq: 0,
     _streamRunSeq: 0,
     _runSnapshots: {},
+    _runReplaySeq: {},
   });
 }
 
@@ -146,8 +148,8 @@ const BASE_EVENT = {
   occurredAt: "2026-01-01T00:00:00Z",
 };
 
-async function* turnFailedStream(error: string, recoverable: boolean): AsyncIterable<ProviderEventDTO> {
-  yield { ...BASE_EVENT, type: "turn_failed", error, recoverable };
+async function* turnFailedStream(error: string, recoverable: boolean, workflowRunId = "run-1"): AsyncIterable<ProviderEventDTO> {
+  yield { ...BASE_EVENT, workflowRunId, type: "turn_failed", error, recoverable };
 }
 
 async function* childFocusStream(): AsyncIterable<ProviderEventDTO> {
@@ -301,6 +303,49 @@ test("openHistoryRun returns after attaching an open-ended history stream", asyn
   const state = useStore.getState();
   assert.equal(state.runId, "run-1");
   assert.equal(state.status, "running");
+});
+
+test("openHistoryRun does not leave Thinking visible for a completed history replay without a terminal event", async () => {
+  const streamStarted = deferred<void>();
+  const handle: RunHandle = {
+    runId: "run-1",
+    providerSessionId: "session-1",
+    providerKey: "codex",
+    status: "completed",
+    stepId: "chat-run-1",
+  };
+  async function* incompleteCompletedHistoryStream(): AsyncIterable<ProviderEventDTO> {
+    streamStarted.resolve();
+    yield { ...BASE_EVENT, type: "turn_started", providerTurnId: "turn-1", prompt: "old prompt" };
+    await new Promise<never>(() => {});
+  }
+  seedStore(
+    makeClient({
+      resumeRun: async () => handle,
+      streamRun: () => incompleteCompletedHistoryStream(),
+      listSkills: async () => [],
+    }),
+    [
+      {
+        runId: "run-1",
+        projectId: "project-1",
+        providerKey: "codex",
+        status: "completed",
+        startedAt: "2026-06-17T10:00:00Z",
+        updatedAt: "2026-06-17T10:05:00Z",
+      },
+    ],
+  );
+
+  await useStore.getState().openHistoryRun("run-1");
+  await Promise.race([
+    streamStarted.promise,
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("history stream did not start")), 100)),
+  ]);
+
+  const state = useStore.getState();
+  assert.equal(state.status, "completed");
+  assert.equal(state.timeline.some((item) => item.kind === "thinking"), false);
 });
 
 test("sendPrompt aborts an open-ended history replay stream before sending", async () => {
@@ -468,6 +513,48 @@ test("openHistoryRun selects the resumed provider default model", async () => {
   const state = useStore.getState();
   assert.equal(state.selectedProvider, "claude");
   assert.equal(state.selectedModel, "claude-sonnet-4");
+});
+
+test("selectProvider defaults Codex to a full model before mini", () => {
+  seedStore(makeClient(), []);
+  useStore.setState({
+    selectedProvider: "claude",
+    selectedModel: undefined,
+    supportedModels: [
+      {
+        id: "model-mini",
+        providerKey: "codex",
+        modelId: "gpt-5.4-mini",
+        displayName: "gpt-5.4-mini",
+        isEnabled: true,
+        sortOrder: 0,
+        source: "test",
+        detectionMethod: null,
+        detectedCliVersion: null,
+        lastDetectedAt: null,
+        createdAt: "2026-06-19T00:00:00Z",
+        updatedAt: "2026-06-19T00:00:00Z",
+      },
+      {
+        id: "model-full",
+        providerKey: "codex",
+        modelId: "gpt-5.5",
+        displayName: "gpt-5.5",
+        isEnabled: true,
+        sortOrder: 1,
+        source: "test",
+        detectionMethod: null,
+        detectedCliVersion: null,
+        lastDetectedAt: null,
+        createdAt: "2026-06-19T00:00:00Z",
+        updatedAt: "2026-06-19T00:00:00Z",
+      },
+    ],
+  });
+
+  useStore.getState().selectProvider("codex");
+
+  assert.equal(useStore.getState().selectedModel, "gpt-5.5");
 });
 
 test("refreshAgentGraph stores orchestration snapshot from the client", async () => {
@@ -715,6 +802,160 @@ test("focusAgentRun returns before a child stream finishes", async () => {
   assert.equal(useStore.getState().activeAgentRunId, "child-run");
   gate.resolve();
   await focusPromise;
+});
+
+test("focusAgentRun ignores replay events that belong to the main run", async () => {
+  seedStore(
+    makeClient({
+      resumeRun: async (runId) => ({ runId, providerSessionId: "session-child", providerKey: "codex", status: "completed" }),
+      focusAgentRun: async function* (): AsyncIterable<ProviderEventDTO> {
+        yield { ...BASE_EVENT, workflowRunId: "current-run", seq: 1, type: "message_delta", text: "wrong main replay" };
+        yield { ...BASE_EVENT, workflowRunId: "child-run", seq: 2, type: "message_delta", text: "child replay" };
+      },
+    }),
+    [],
+  );
+  useStore.setState({
+    runId: "current-run",
+    mainRunId: "current-run",
+    activeAgentRunId: undefined,
+    timeline: [{ kind: "prompt", id: "prompt-main", text: "main timeline" }],
+    status: "completed",
+    artifacts: [],
+  });
+
+  await useStore.getState().focusAgentRun("child-run");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const assistantTexts = useStore.getState().timeline
+    .filter((item) => item.kind === "assistant")
+    .map((item) => (item.kind === "assistant" ? item.text : ""));
+  assert.deepEqual(assistantTexts, ["child replay"]);
+  assert.equal(useStore.getState().timeline.some((item) => item.kind === "thinking"), false);
+});
+
+test("focusAgentRun clears stale parent assistant accumulator before child replay", async () => {
+  seedStore(
+    makeClient({
+      resumeRun: async (runId) => ({ runId, providerSessionId: "session-child", providerKey: "codex", status: "completed" }),
+      focusAgentRun: async function* (): AsyncIterable<ProviderEventDTO> {
+        yield { ...BASE_EVENT, workflowRunId: "child-run", seq: 1, type: "turn_started", providerTurnId: "child-turn", prompt: "child prompt" };
+        yield { ...BASE_EVENT, workflowRunId: "child-run", seq: 2, type: "message_delta", text: "CHILD_AGENT_DONE" };
+        yield { ...BASE_EVENT, workflowRunId: "child-run", seq: 3, type: "turn_completed", finalMessage: "CHILD_AGENT_DONE" };
+      },
+    }),
+    [],
+  );
+  useStore.setState({
+    runId: "current-run",
+    mainRunId: "current-run",
+    activeAgentRunId: undefined,
+    timeline: [{ kind: "assistant", id: "main-assistant", text: "parent response", finalized: false }],
+    status: "running",
+    artifacts: [],
+    _streamingAssistantId: "main-assistant",
+  });
+
+  await useStore.getState().focusAgentRun("child-run");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const state = useStore.getState();
+  assert.equal(state._streamingAssistantId, undefined);
+  assert.equal(state.timeline.some((item) => item.kind === "assistant" && item.text.includes("parent response")), false);
+  assert.deepEqual(
+    state.timeline.filter((item) => item.kind === "assistant").map((item) => item.text),
+    ["CHILD_AGENT_DONE"],
+  );
+});
+
+test("applyTimelineEvent starts a new assistant bubble for a new turn", () => {
+  const base: TimelineState = {
+    status: "running",
+    recoverable: false,
+    _streamingAssistantId: "assistant-main",
+    timeline: [{ kind: "assistant", id: "assistant-main", text: "parent response", finalized: false }],
+  };
+
+  const started = applyTimelineEvent(base, {
+    ...BASE_EVENT,
+    workflowRunId: "current-run",
+    providerTurnId: "turn-2",
+    type: "turn_started",
+    prompt: "second prompt",
+  });
+  const next = applyTimelineEvent({ ...base, ...started }, {
+    ...BASE_EVENT,
+    workflowRunId: "current-run",
+    providerTurnId: "turn-2",
+    id: "assistant-child",
+    type: "message_delta",
+    text: "new response",
+  });
+
+  const assistantTexts = next.timeline
+    ?.filter((item) => item.kind === "assistant")
+    .map((item) => (item.kind === "assistant" ? item.text : ""));
+  assert.deepEqual(assistantTexts, ["parent response", "new response"]);
+});
+
+test("backToMainRun aborts its replay stream before focusing a child again", async () => {
+  const mainStreamStarted = deferred<void>();
+  const mainStreamAborted = deferred<void>();
+  async function* mainReplayStream(_runId: string, _afterSeq = 0, signal?: AbortSignal): AsyncIterable<ProviderEventDTO> {
+    mainStreamStarted.resolve();
+    await new Promise<void>((resolve) => {
+      if (signal?.aborted) {
+        mainStreamAborted.resolve();
+        resolve();
+        return;
+      }
+      signal?.addEventListener(
+        "abort",
+        () => {
+          mainStreamAborted.resolve();
+          resolve();
+        },
+        { once: true },
+      );
+    });
+  }
+  seedStore(
+    makeClient({
+      streamRun: mainReplayStream,
+      focusAgentRun: () => emptyStream(),
+      resumeRun: async (runId) => ({ runId, providerSessionId: "session-child", providerKey: "codex", status: "completed" }),
+    }),
+    [],
+  );
+  useStore.setState({
+    runId: "child-run",
+    mainRunId: "current-run",
+    activeAgentRunId: "child-run",
+    timeline: [{ kind: "assistant", id: "child-message", text: "child", finalized: true }],
+    status: "completed",
+    artifacts: [],
+    _runSnapshots: {
+      "current-run": {
+        timeline: [{ kind: "assistant", id: "main-message", text: "main", finalized: true }],
+        artifacts: [],
+        status: "completed",
+        recoverable: false,
+      },
+    },
+  });
+
+  useStore.getState().backToMainRun();
+  await Promise.race([
+    mainStreamStarted.promise,
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("main replay stream did not start")), 100)),
+  ]);
+
+  await useStore.getState().focusAgentRun("child-run");
+
+  await Promise.race([
+    mainStreamAborted.promise,
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("main replay stream was not aborted")), 100)),
+  ]);
 });
 
 test("injectAgentFeedback queues busy mention feedback on the board state", async () => {
@@ -1228,7 +1469,7 @@ test("Claude usage-limit failure with null quota offers fallback switch candidat
   seedStore(
     makeClient({
       startRun: async () => ({ runId: "run-c", providerSessionId: "sc", providerKey: "claude", status: "running", stepId: "chat-run-c" }),
-      sendTurn: () => turnFailedStream("usage limit reached", false),
+      sendTurn: () => turnFailedStream("usage limit reached", false, "run-c"),
       listRunHistory: async () => [],
     }),
     [],
@@ -1299,6 +1540,26 @@ test("MockRunnerClient preserves parent orchestration state across refresh pause
   assert.equal(feedback.busMessages.at(-1)?.message, "revise the draft");
   assert.equal(resumed.busMessages.at(-1)?.message, "revise the draft");
   assert.equal(stopped.loopState.status, "stopped");
+});
+
+test("MockRunnerClient keeps child agent runs out of main history", async () => {
+  const client = new MockRunnerClient();
+  const parent = await client.startRun({
+    projectId: "proj-web",
+    workflowId: "wf-feature",
+    providerKey: "codex",
+    chatMode: "normal_chat",
+  });
+  const child = await client.spawnAgent({
+    parentRunId: parent.runId,
+    agent: "reviewer",
+    prompt: "review the main run",
+  });
+
+  const history = await client.listRunHistory("proj-web");
+
+  assert.deepEqual(history.map((item) => item.runId), [parent.runId]);
+  assert.equal(history.some((item) => item.runId === child.runId), false);
 });
 
 test("sendPrompt keeps the parent orchestration stream alive after the turn completes", async () => {

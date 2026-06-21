@@ -76,7 +76,12 @@ function pickDefaultModel(provider: ProviderKey | undefined, models: SupportedMo
   if (!provider) return undefined;
   const enabled = models.filter((m) => m.providerKey === provider && m.isEnabled);
   if (provider === "codex") {
-    return enabled.find((m) => m.modelId.toLowerCase().includes("4-mini"))?.modelId;
+    return (
+      enabled.find((m) => m.modelId.toLowerCase().includes("5.5"))?.modelId ??
+      enabled.find((m) => m.modelId.toLowerCase().includes("5.4") && !m.modelId.toLowerCase().includes("mini"))?.modelId ??
+      enabled.find((m) => !m.modelId.toLowerCase().includes("mini"))?.modelId ??
+      enabled[0]?.modelId
+    );
   }
   if (provider === "claude") {
     return enabled.find((m) => m.modelId.toLowerCase().includes("sonnet"))?.modelId;
@@ -414,18 +419,14 @@ export const useStore = create<AppState>((set, get) => ({
       activeAgentRunId: runId,
       workspaceMainView: "chat",
       runId,
-      ...(restore ?? {
-        timeline: [],
-        artifacts: [],
-        status: "running",
-        recoverable: false,
-      }),
+      ...(restore ? restoreRunSnapshot(restore) : emptyRunSnapshot("running")),
       agentSpawnGuideOpen: false,
       agentSpawnGuideAgentName: undefined,
       _streamRunSeq: streamRunSeq,
     });
+    let handle;
     try {
-      await client.resumeRun(runId);
+      handle = await client.resumeRun(runId);
     } catch (err) {
       if (activeAgentFocusStreamController === agentFocusController) {
         activeAgentFocusStreamController = undefined;
@@ -446,10 +447,13 @@ export const useStore = create<AppState>((set, get) => ({
       }
       return;
     }
+    if (!restore) {
+      set({ status: handle.status, activeStepId: handle.stepId });
+    }
     const stream = client.focusAgentRun
       ? client.focusAgentRun(runId, agentFocusController.signal)
       : client.streamRun(runId, 0, agentFocusController.signal);
-    void consumeAgentStream(runId, stream, streamRunSeq, afterSeq, set, get).catch((err) => {
+    void consumeAgentStream(runId, stream, streamRunSeq, afterSeq, handle.status, set, get).catch((err) => {
       if (!shouldApplyRunEvent(get().runId, runId) || get()._streamRunSeq !== streamRunSeq) return;
       set((s) => ({
         status: "failed",
@@ -474,6 +478,8 @@ export const useStore = create<AppState>((set, get) => ({
     const restore = _runSnapshots[mainRunId];
     if (!restore) return;
     cancelAgentFocusStream();
+    const agentFocusController = new AbortController();
+    activeAgentFocusStreamController = agentFocusController;
     const streamRunSeq = get()._streamRunSeq + 1;
     const afterSeq = get()._runReplaySeq[mainRunId] ?? restore.lastEventSeq ?? 0;
     set({
@@ -484,7 +490,19 @@ export const useStore = create<AppState>((set, get) => ({
       ...restore,
       _streamRunSeq: streamRunSeq,
     });
-    void consumeAgentStream(mainRunId, get().client.streamRun(mainRunId, afterSeq), streamRunSeq, afterSeq, set, get);
+    void consumeAgentStream(
+      mainRunId,
+      get().client.streamRun(mainRunId, afterSeq, agentFocusController.signal),
+      streamRunSeq,
+      afterSeq,
+      restore.status,
+      set,
+      get,
+    ).finally(() => {
+      if (activeAgentFocusStreamController === agentFocusController) {
+        activeAgentFocusStreamController = undefined;
+      }
+    });
     startOrchestrationStream(mainRunId, get().client, set, get);
   },
 
@@ -1321,6 +1339,7 @@ async function consumeStream(
     if (isStale()) {
       return;
     }
+    if (!isEventForRun(e, runId)) continue;
     set((s) => applyEvent(s, e));
     if (e.type === "turn_failed" && !e.recoverable && isUsageLimitMessage(e.error)) {
       const s = get();
@@ -1369,8 +1388,10 @@ async function consumeHistoryReplayStream(
   const isStale = () => !shouldApplyRunEvent(get().runId, runId) || get()._streamRunSeq !== mySeq;
   for await (const e of stream) {
     if (isStale()) return;
+    if (!isEventForRun(e, runId)) continue;
     if (e.type !== "agent_graph_updated" && e.type !== "agent_bus_message") {
       set((s) => applyEvent(s, e));
+      settleTerminalReplayVisuals(runId, resumedStatus, set);
     }
     if (shouldStopHistoryReplay(resumedStatus, e)) break;
   }
@@ -1428,14 +1449,17 @@ async function consumeAgentStream(
   stream: AsyncIterable<ProviderEventDTO>,
   streamRunSeq: number,
   afterSeq: number,
+  replayStatus: RunStatus,
   set: (fn: (s: AppState) => Partial<AppState>) => void,
   get: () => AppState,
 ): Promise<void> {
   const isStale = () => !shouldApplyRunEvent(get().runId, runId) || get()._streamRunSeq !== streamRunSeq;
   for await (const e of stream) {
     if (isStale()) return;
+    if (!isEventForRun(e, runId)) continue;
     if (e.seq <= afterSeq) continue;
     set((s) => applyEvent(s, e));
+    settleTerminalReplayVisuals(runId, replayStatus, set);
     set((s) => ({
       _runReplaySeq: {
         ...s._runReplaySeq,
@@ -1456,6 +1480,7 @@ async function consumeOrchestrationStream(
   const isStale = () => !shouldApplyRunEvent(get().mainRunId ?? get().runId, runId) || get()._orchestrationStreamSeq !== orchestrationSeq;
   for await (const e of stream) {
     if (isStale()) return;
+    if (!isEventForRun(e, runId)) continue;
     if (e.seq <= afterSeq) continue;
     if (e.type !== "agent_graph_updated" && e.type !== "agent_bus_message") continue;
     set((s) => applyEvent(s, e));
@@ -1490,6 +1515,35 @@ function startOrchestrationStream(
     if (activeOrchestrationStreamController === orchestrationController) {
       activeOrchestrationStreamController = undefined;
     }
+  });
+}
+
+function isEventForRun(e: ProviderEventDTO, runId: string): boolean {
+  if (e.type === "agent_graph_updated") {
+    return e.agentGraphSnapshot.parentRunId === runId;
+  }
+  if (e.type === "agent_bus_message") {
+    return e.agentBusMessage.parentRunId === runId;
+  }
+  return e.workflowRunId === runId;
+}
+
+function isTerminalRunStatus(status: RunStatus): boolean {
+  return status === "completed" || status === "failed" || status === "cancelled";
+}
+
+function settleTerminalReplayVisuals(
+  runId: string,
+  replayStatus: RunStatus,
+  set: (fn: (s: AppState) => Partial<AppState>) => void,
+): void {
+  if (!isTerminalRunStatus(replayStatus)) return;
+  set((s) => {
+    if (s.runId !== runId) return {};
+    return {
+      status: replayStatus,
+      timeline: s.timeline.filter((it) => it.kind !== "thinking"),
+    };
   });
 }
 
@@ -1566,6 +1620,21 @@ function restoreRunSnapshot(snapshot: RunSnapshot): Partial<AppState> {
     recoverable: snapshot.recoverable,
     _streamingAssistantId: snapshot._streamingAssistantId,
     activeStepId: snapshot.activeStepId,
+  };
+}
+
+function emptyRunSnapshot(status: RunStatus): Partial<AppState> {
+  return {
+    timeline: [],
+    artifacts: [],
+    status,
+    pendingApproval: undefined,
+    pendingQuestion: undefined,
+    latestTokenUsage: undefined,
+    lastTurnInput: undefined,
+    recoverable: false,
+    _streamingAssistantId: undefined,
+    activeStepId: undefined,
   };
 }
 
