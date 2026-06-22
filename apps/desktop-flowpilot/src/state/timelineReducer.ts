@@ -194,7 +194,18 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
         if (existingIdx >= 0) {
           timeline[existingIdx] = { kind: "assistant", id: e.id, text: e.text, finalized: true };
         } else {
-          timeline.push({ kind: "assistant", id: e.id, text: e.text, finalized: true });
+          // Duplicate-emission guard (BUG-116): a single logical assistant message can reach
+          // us as several message_completed events (the Codex mapper derives one from
+          // agent_message AND from item/completed). They carry distinct ids, so the id guard
+          // above misses them. If the last finalized assistant bubble already has this exact
+          // text and nothing was streamed since, treat this as a re-emission and skip it
+          // instead of stacking identical bubbles (the "CHILD_AGENT_DONE ×3" symptom).
+          const lastMeaningful = timeline[timeline.length - 1];
+          const isDuplicate =
+            lastMeaningful?.kind === "assistant" && lastMeaningful.finalized && lastMeaningful.text === e.text;
+          if (!isDuplicate) {
+            timeline.push({ kind: "assistant", id: e.id, text: e.text, finalized: true });
+          }
         }
       }
       closeAssistant();

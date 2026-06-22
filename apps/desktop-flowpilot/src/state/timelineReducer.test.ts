@@ -475,3 +475,31 @@ test("legitimate repeated tool of the same name still records both calls (BUG-11
   const tools = state.timeline.filter((it) => it.kind === "tool");
   assert.equal(tools.length, 2, "two distinct tool calls of the same name must both render");
 });
+
+test("duplicate message_completed emissions for one message collapse to one bubble (BUG-116)", () => {
+  // The Codex mapper can derive several message_completed events (distinct ids) from one
+  // logical assistant message (agent_message + item/completed). They must not stack into
+  // multiple identical bubbles — the "CHILD_AGENT_DONE ×3" symptom.
+  const state = foldEvents([
+    baseEvent({ id: "evt-ts", seq: 1, type: "turn_started", providerTurnId: "t1", prompt: "review" }),
+    baseEvent({ id: "evt-mc1", seq: 2, type: "message_completed", text: "CHILD_AGENT_DONE" }),
+    baseEvent({ id: "evt-mc2", seq: 3, type: "message_completed", text: "CHILD_AGENT_DONE" }),
+    baseEvent({ id: "evt-mc3", seq: 4, type: "message_completed", text: "CHILD_AGENT_DONE" }),
+    baseEvent({ id: "evt-tc", seq: 5, type: "turn_completed", finalMessage: "CHILD_AGENT_DONE" }),
+  ]);
+  const assistants = state.timeline.filter((it) => it.kind === "assistant");
+  assert.equal(assistants.length, 1, "repeated identical completions must collapse to one bubble");
+  assert.equal((assistants[0] as Extract<TimelineItem, { kind: "assistant" }>).text, "CHILD_AGENT_DONE");
+});
+
+test("two genuinely different consecutive messages both render (BUG-116 guard is text-scoped)", () => {
+  const state = foldEvents([
+    baseEvent({ id: "evt-ts", seq: 1, type: "turn_started", providerTurnId: "t1", prompt: "go" }),
+    baseEvent({ id: "evt-mc1", seq: 2, type: "message_completed", text: "first point" }),
+    baseEvent({ id: "evt-mc2", seq: 3, type: "message_completed", text: "second point" }),
+  ]);
+  const texts = state.timeline
+    .filter((it) => it.kind === "assistant")
+    .map((it) => (it.kind === "assistant" ? it.text : ""));
+  assert.deepEqual(texts, ["first point", "second point"], "distinct messages must not be collapsed");
+});

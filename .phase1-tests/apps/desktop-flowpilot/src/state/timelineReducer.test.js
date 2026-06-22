@@ -358,3 +358,29 @@ const SPAWN_TURN = [
     const tools = state.timeline.filter((it) => it.kind === "tool");
     strict_1.default.equal(tools.length, 2, "two distinct tool calls of the same name must both render");
 });
+(0, node_test_1.default)("duplicate message_completed emissions for one message collapse to one bubble (BUG-116)", () => {
+    // The Codex mapper can derive several message_completed events (distinct ids) from one
+    // logical assistant message (agent_message + item/completed). They must not stack into
+    // multiple identical bubbles — the "CHILD_AGENT_DONE ×3" symptom.
+    const state = foldEvents([
+        baseEvent({ id: "evt-ts", seq: 1, type: "turn_started", providerTurnId: "t1", prompt: "review" }),
+        baseEvent({ id: "evt-mc1", seq: 2, type: "message_completed", text: "CHILD_AGENT_DONE" }),
+        baseEvent({ id: "evt-mc2", seq: 3, type: "message_completed", text: "CHILD_AGENT_DONE" }),
+        baseEvent({ id: "evt-mc3", seq: 4, type: "message_completed", text: "CHILD_AGENT_DONE" }),
+        baseEvent({ id: "evt-tc", seq: 5, type: "turn_completed", finalMessage: "CHILD_AGENT_DONE" }),
+    ]);
+    const assistants = state.timeline.filter((it) => it.kind === "assistant");
+    strict_1.default.equal(assistants.length, 1, "repeated identical completions must collapse to one bubble");
+    strict_1.default.equal(assistants[0].text, "CHILD_AGENT_DONE");
+});
+(0, node_test_1.default)("two genuinely different consecutive messages both render (BUG-116 guard is text-scoped)", () => {
+    const state = foldEvents([
+        baseEvent({ id: "evt-ts", seq: 1, type: "turn_started", providerTurnId: "t1", prompt: "go" }),
+        baseEvent({ id: "evt-mc1", seq: 2, type: "message_completed", text: "first point" }),
+        baseEvent({ id: "evt-mc2", seq: 3, type: "message_completed", text: "second point" }),
+    ]);
+    const texts = state.timeline
+        .filter((it) => it.kind === "assistant")
+        .map((it) => (it.kind === "assistant" ? it.text : ""));
+    strict_1.default.deepEqual(texts, ["first point", "second point"], "distinct messages must not be collapsed");
+});

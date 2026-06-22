@@ -155,8 +155,26 @@ func (o *AgentOrchestrator) upsertSummary(parentRunID string, summary AgentRunSu
 func (o *AgentOrchestrator) graphSnapshot(parentRunID string) AgentGraphSnapshot {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	runs := append([]AgentRunSummary(nil), o.historical[parentRunID]...)
-	runs = append(runs, o.runsForParentLocked(parentRunID)...)
+	// Dedup by runId, preferring the live summary (current status) over a historical one.
+	// graphSnapshot previously concatenated historical+live unconditionally, so a child
+	// present in both (e.g. after a sync/restore round-trip) appeared twice in the Agents
+	// panel. Mirrors the dedup listAgentRunSummaries already does. (BUG-116)
+	seen := make(map[string]struct{})
+	runs := make([]AgentRunSummary, 0)
+	for _, r := range o.runsForParentLocked(parentRunID) {
+		if _, dup := seen[r.RunID]; dup {
+			continue
+		}
+		seen[r.RunID] = struct{}{}
+		runs = append(runs, r)
+	}
+	for _, h := range o.historical[parentRunID] {
+		if _, dup := seen[h.RunID]; dup {
+			continue
+		}
+		seen[h.RunID] = struct{}{}
+		runs = append(runs, h)
+	}
 	edges := append([]AgentDependencyEdge(nil), o.edges[parentRunID]...)
 	bus := append([]AgentBusMessage(nil), o.bus[parentRunID]...)
 	loop := o.loop[parentRunID]
