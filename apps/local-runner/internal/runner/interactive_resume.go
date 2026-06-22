@@ -19,70 +19,263 @@ import (
 // File deletion failures are swallowed (best-effort): we always complete the
 // memory + store cleanup so the history entry disappears for the user.
 func (s *InteractiveService) deleteChatSession(runID string) *apiErr {
-	// --- resolve session from persistent store or in-memory map ---
-	var session ProviderSessionState
-	found := false
-	if reader, ok := s.workflowStore.(SessionHistoryReader); ok {
-		var readErr error
-		session, found, readErr = reader.GetProviderSession(context.Background(), runID)
-		_ = readErr
-	}
+	session, found := s.sessionForDelete(runID)
 	if !found {
-		s.mu.Lock()
-		rs, inMem := s.runs[runID]
-		s.mu.Unlock()
-		if !inMem {
-			return newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")
-		}
-		session = sessionStateOf(rs)
-		found = true
+		return newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")
 	}
 
-	// --- delete provider session files (all account homes of this provider) ---
-	sessionIDs := s.deleteSessionIDsForRun(runID, session)
-	if session.ProviderKey != "" && len(sessionIDs) > 0 {
-		r := s.runner
-		if r == nil {
-			r = &Runner{}
+	deleteOrder, sessionsByRun := s.collectDeleteRunTree(runID, session)
+	for _, id := range deleteOrder {
+		session, ok := sessionsByRun[id]
+		if !ok {
+			continue
 		}
-		if accounts, err := r.ListProviderAccounts(); err == nil {
-			for _, account := range accounts {
-				if ProviderKey(account.ProviderKey) != session.ProviderKey {
-					continue
-				}
-				if strings.TrimSpace(account.HomePath) == "" {
-					continue
-				}
-				for _, sessionID := range sessionIDs {
-					filePath, ok := LocateSessionFile(session.ProviderKey, account.HomePath, sessionID, session.WorkingDirectory)
-					if ok {
-						_ = os.Remove(filePath)
-					}
-				}
-			}
-		}
+		s.deleteProviderFilesForSession(id, session)
 	}
 
-	// --- remove from in-memory runs map ---
-	s.mu.Lock()
-	delete(s.runs, runID)
-	s.mu.Unlock()
+	s.pruneDeletedRunState(deleteOrder)
 
 	// --- remove from persistent store ---
 	if deleter, ok := s.workflowStore.(interface {
 		DeleteProviderSession(ctx context.Context, runID string) error
 	}); ok {
-		if err := deleter.DeleteProviderSession(context.Background(), runID); err != nil {
-			return newAPIErr(http.StatusInternalServerError, "store_error", err.Error())
+		for _, id := range deleteOrder {
+			if err := deleter.DeleteProviderSession(context.Background(), id); err != nil {
+				return newAPIErr(http.StatusInternalServerError, "store_error", err.Error())
+			}
 		}
 	}
 
 	// --- remove per-run turn log (BUG-083) ---
 	if logger, ok := s.workflowStore.(TurnLogStore); ok {
-		_ = logger.DeleteTurnLog(context.Background(), runID)
+		for _, id := range deleteOrder {
+			_ = logger.DeleteTurnLog(context.Background(), id)
+		}
 	}
 
 	return nil
+}
+
+func (s *InteractiveService) sessionForDelete(runID string) (ProviderSessionState, bool) {
+	if reader, ok := s.workflowStore.(SessionHistoryReader); ok {
+		session, found, err := reader.GetProviderSession(context.Background(), runID)
+		if err == nil && found {
+			return session, true
+		}
+	}
+	s.mu.Lock()
+	rs, inMem := s.runs[runID]
+	s.mu.Unlock()
+	if !inMem {
+		return ProviderSessionState{}, false
+	}
+	return sessionStateOf(rs), true
+}
+
+func (s *InteractiveService) collectDeleteRunTree(runID string, root ProviderSessionState) ([]string, map[string]ProviderSessionState) {
+	sessionsByRun := map[string]ProviderSessionState{root.RunID: root}
+	childrenByParent := make(map[string][]string)
+	addChild := func(parentRunID, childRunID string) {
+		parentRunID = strings.TrimSpace(parentRunID)
+		childRunID = strings.TrimSpace(childRunID)
+		if parentRunID == "" || childRunID == "" || parentRunID == childRunID {
+			return
+		}
+		childrenByParent[parentRunID] = append(childrenByParent[parentRunID], childRunID)
+	}
+
+	if indexReader, ok := s.workflowStore.(SessionIndexReader); ok {
+		if sessions, err := indexReader.ListAllProviderSessions(context.Background()); err == nil {
+			for _, session := range sessions {
+				if _, exists := sessionsByRun[session.RunID]; !exists {
+					sessionsByRun[session.RunID] = session
+				}
+				addChild(session.ParentRunID, session.RunID)
+			}
+		}
+	}
+
+	s.mu.Lock()
+	for _, rs := range s.runs {
+		session := sessionStateOf(rs)
+		if _, exists := sessionsByRun[session.RunID]; !exists {
+			sessionsByRun[session.RunID] = session
+		}
+		addChild(session.ParentRunID, session.RunID)
+	}
+	s.mu.Unlock()
+
+	seen := make(map[string]struct{})
+	order := make([]string, 0, len(sessionsByRun))
+	var walk func(string)
+	walk = func(id string) {
+		if _, visited := seen[id]; visited {
+			return
+		}
+		seen[id] = struct{}{}
+		childSeen := make(map[string]struct{})
+		for _, childID := range childrenByParent[id] {
+			if _, duplicate := childSeen[childID]; duplicate {
+				continue
+			}
+			childSeen[childID] = struct{}{}
+			walk(childID)
+		}
+		order = append(order, id)
+	}
+	walk(runID)
+	return order, sessionsByRun
+}
+
+func (s *InteractiveService) deleteProviderFilesForSession(runID string, session ProviderSessionState) {
+	sessionIDs := s.deleteSessionIDsForRun(runID, session)
+	if session.ProviderKey == "" || len(sessionIDs) == 0 {
+		return
+	}
+	r := s.runner
+	if r == nil {
+		r = &Runner{}
+	}
+	accounts, err := r.ListProviderAccounts()
+	if err != nil {
+		return
+	}
+	for _, account := range accounts {
+		if ProviderKey(account.ProviderKey) != session.ProviderKey {
+			continue
+		}
+		if strings.TrimSpace(account.HomePath) == "" {
+			continue
+		}
+		for _, sessionID := range sessionIDs {
+			filePath, ok := LocateSessionFile(session.ProviderKey, account.HomePath, sessionID, session.WorkingDirectory)
+			if ok {
+				_ = os.Remove(filePath)
+			}
+		}
+	}
+}
+
+func (s *InteractiveService) pruneDeletedRunState(runIDs []string) {
+	if len(runIDs) == 0 {
+		return
+	}
+	deleted := make(map[string]struct{}, len(runIDs))
+	for _, id := range runIDs {
+		deleted[id] = struct{}{}
+	}
+
+	s.mu.Lock()
+	for _, id := range runIDs {
+		delete(s.runs, id)
+	}
+	s.mu.Unlock()
+
+	o := s.agentOrchestrator
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	for _, id := range runIDs {
+		delete(o.children, id)
+		delete(o.waiters, id)
+		delete(o.historical, id)
+		delete(o.summaries, id)
+		delete(o.edges, id)
+		delete(o.bus, id)
+		delete(o.loop, id)
+		delete(o.queued, id)
+	}
+
+	for parentRunID, childIDs := range o.children {
+		kept := childIDs[:0]
+		for _, childID := range childIDs {
+			if _, remove := deleted[childID]; remove {
+				continue
+			}
+			kept = append(kept, childID)
+		}
+		if len(kept) == 0 {
+			delete(o.children, parentRunID)
+			continue
+		}
+		o.children[parentRunID] = kept
+	}
+
+	for parentRunID, summaries := range o.summaries {
+		for id := range summaries {
+			if _, remove := deleted[id]; remove {
+				delete(summaries, id)
+			}
+		}
+		if len(summaries) == 0 {
+			delete(o.summaries, parentRunID)
+		}
+	}
+
+	for parentRunID, historical := range o.historical {
+		kept := historical[:0]
+		for _, summary := range historical {
+			if _, remove := deleted[summary.RunID]; remove {
+				continue
+			}
+			kept = append(kept, summary)
+		}
+		if len(kept) == 0 {
+			delete(o.historical, parentRunID)
+			continue
+		}
+		o.historical[parentRunID] = kept
+	}
+
+	for parentRunID, edges := range o.edges {
+		kept := edges[:0]
+		for _, edge := range edges {
+			if _, remove := deleted[edge.FromRunID]; remove {
+				continue
+			}
+			if _, remove := deleted[edge.ToRunID]; remove {
+				continue
+			}
+			kept = append(kept, edge)
+		}
+		if len(kept) == 0 {
+			delete(o.edges, parentRunID)
+			continue
+		}
+		o.edges[parentRunID] = kept
+	}
+
+	filterBus := func(src []AgentBusMessage) []AgentBusMessage {
+		kept := src[:0]
+		for _, msg := range src {
+			if _, remove := deleted[msg.FromRunID]; remove {
+				continue
+			}
+			if _, remove := deleted[msg.ToRunID]; remove {
+				continue
+			}
+			kept = append(kept, msg)
+		}
+		return kept
+	}
+
+	for parentRunID, bus := range o.bus {
+		kept := filterBus(bus)
+		if len(kept) == 0 {
+			delete(o.bus, parentRunID)
+			continue
+		}
+		o.bus[parentRunID] = kept
+	}
+
+	for parentRunID, queued := range o.queued {
+		kept := filterBus(queued)
+		if len(kept) == 0 {
+			delete(o.queued, parentRunID)
+			continue
+		}
+		o.queued[parentRunID] = kept
+	}
 }
 
 func (s *InteractiveService) deleteSessionIDsForRun(runID string, session ProviderSessionState) []string {
