@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -684,7 +685,7 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 	seen := map[string]bool{}
 	out := make([]runHistoryItem, 0, len(s.runs))
 	for _, rs := range s.runs {
-		if rs.projectID != projectID {
+		if rs.projectID != projectID || isLiveAgentHistoryRun(rs.parentRunID, rs.lastPrompt) {
 			continue
 		}
 		out = append(out, runHistoryItem{
@@ -714,7 +715,7 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 		sessions, err := reader.ListProviderSessionsByProject(context.Background(), projectID)
 		if err == nil {
 			for _, sess := range sessions {
-				if seen[sess.RunID] {
+				if seen[sess.RunID] || isAgentHistoryRun(sess.ParentRunID, sess.AgentName, sess.Role, sess.AgentStatus, sess.LastPrompt) {
 					continue
 				}
 				out = append(out, runHistoryItem{
@@ -746,6 +747,31 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 		return out[i].UpdatedAt > out[j].UpdatedAt
 	})
 	return out
+}
+
+func isAgentHistoryRun(parentRunID, agentName, role, agentStatus, lastPrompt string) bool {
+	if strings.TrimSpace(parentRunID) != "" {
+		return true
+	}
+	return hasBuiltInAgentPromptPrefix(lastPrompt)
+}
+
+func isLiveAgentHistoryRun(parentRunID, lastPrompt string) bool {
+	return isAgentHistoryRun(parentRunID, "", "", "", lastPrompt)
+}
+
+func hasBuiltInAgentPromptPrefix(prompt string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(prompt))
+	for _, marker := range []string{
+		"you are the coder sub-agent.",
+		"you are the reviewer sub-agent.",
+		"you are the tester sub-agent.",
+	} {
+		if strings.HasPrefix(normalized, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *InteractiveService) runSnapshot(runID string) (runSnapshotView, *apiErr) {
