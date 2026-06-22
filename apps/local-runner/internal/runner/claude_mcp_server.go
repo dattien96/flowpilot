@@ -20,7 +20,14 @@ import (
 // tool set is otherwise snapshotted before mcp__flowpilot__ask_user is registered, so the
 // model never sees ask_user (validated against claude 2.1.179). A normal local connect is
 // ~0.1-1.2s; on a slow/failed connect we degrade to sending anyway rather than hang.
-const claudeMCPReadyDefaultTimeout = 10 * time.Second
+//
+// waitReady returns the instant FlowPilot's tools/list arrives, so a larger ceiling adds NO
+// latency to a healthy turn — it only grants more grace when a slow co-resident MCP server
+// in the same --mcp-config (e.g. a google-drive stdio sidecar that has to warm up npx/OAuth)
+// delays claude's overall MCP init and would otherwise drop spawn_agent/ask_user from the
+// turn. Raised from 10s to 30s after spawn_agent went missing on turns that also load the
+// google-drive MCP. (BUG-114)
+const claudeMCPReadyDefaultTimeout = 30 * time.Second
 
 // Phase 4 / 07: the runner-hosted MCP server that lets the real `claude` CLI reach
 // FlowPilot's approve + ask_user tools (the spike-validated permission path). It speaks
