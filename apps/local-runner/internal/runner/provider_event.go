@@ -199,6 +199,10 @@ type RunHandle struct {
 	ProviderKey       ProviderKey `json:"providerKey"`
 	Status            RunStatus   `json:"status"`
 	StepID            string      `json:"stepId,omitempty"`
+	// LastEventSeq is the seq of the last persisted event at resume time. The desktop
+	// replays the run from seq 0 and uses this as the stop cursor so a multi-turn run
+	// is replayed in full (not truncated at the first turn_completed). 0 when unknown.
+	LastEventSeq int64 `json:"lastEventSeq,omitempty"`
 }
 
 type StartRunInput struct {

@@ -862,7 +862,7 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
         const historyReplayController = new AbortController();
         activeHistoryReplayController = historyReplayController;
         console.info("[FlowPilot][history-open] stream replay start", { runId: handle.runId });
-        void consumeHistoryReplayStream(handle.runId, handle.status, client.streamRun(handle.runId, 0, historyReplayController.signal), set, get)
+        void consumeHistoryReplayStream(handle.runId, handle.status, client.streamRun(handle.runId, 0, historyReplayController.signal), set, get, handle.lastEventSeq)
             .then(() => {
             console.info("[FlowPilot][history-open] stream replay complete", {
                 runId: handle.runId,
@@ -1117,7 +1117,7 @@ async function consumeStream(runId, stream, set, get) {
         // handled in applyEvent
     }
 }
-async function consumeHistoryReplayStream(runId, resumedStatus, stream, set, get) {
+async function consumeHistoryReplayStream(runId, resumedStatus, stream, set, get, lastEventSeq) {
     const mySeq = get()._streamRunSeq;
     const isStale = () => !(0, timelineReducer_1.shouldApplyRunEvent)(get().runId, runId) || get()._streamRunSeq !== mySeq;
     for await (const e of stream) {
@@ -1129,14 +1129,24 @@ async function consumeHistoryReplayStream(runId, resumedStatus, stream, set, get
             set((s) => applyEvent(s, e));
             settleTerminalReplayVisuals(runId, resumedStatus, set);
         }
-        if (shouldStopHistoryReplay(resumedStatus, e))
+        if (shouldStopHistoryReplay(resumedStatus, e, lastEventSeq))
             break;
     }
     if (!isStale()) {
         settleHistoryReplayPendingState(runId, resumedStatus, set);
     }
 }
-function shouldStopHistoryReplay(resumedStatus, e) {
+function shouldStopHistoryReplay(resumedStatus, e, lastEventSeq) {
+    // Preferred path (BUG-112): the runner reports the seq of the last persisted event.
+    // Stop only once we've replayed up to it, so a multi-turn transcript is replayed in
+    // full instead of being truncated at the first turn_completed. A "running" run keeps
+    // live-tailing (more events will arrive), so never stop it on the seq cursor.
+    if (typeof lastEventSeq === "number" && lastEventSeq > 0) {
+        if (resumedStatus === "running" || resumedStatus === "starting")
+            return false;
+        return e.seq >= lastEventSeq;
+    }
+    // Fallback for runners that predate lastEventSeq: stop at the first terminal event.
     if (resumedStatus === "waiting_approval")
         return e.type === "permission_required";
     if (resumedStatus === "waiting_question")

@@ -1090,6 +1090,7 @@ export const useStore = create<AppState>((set, get) => ({
       client.streamRun(handle.runId, 0, historyReplayController.signal),
       set,
       get,
+      handle.lastEventSeq,
     )
       .then(() => {
         console.info("[FlowPilot][history-open] stream replay complete", {
@@ -1390,6 +1391,7 @@ async function consumeHistoryReplayStream(
   stream: AsyncIterable<ProviderEventDTO>,
   set: (fn: (s: AppState) => Partial<AppState>) => void,
   get: () => AppState,
+  lastEventSeq?: number,
 ): Promise<void> {
   const mySeq = get()._streamRunSeq;
   const isStale = () => !shouldApplyRunEvent(get().runId, runId) || get()._streamRunSeq !== mySeq;
@@ -1400,14 +1402,23 @@ async function consumeHistoryReplayStream(
       set((s) => applyEvent(s, e));
       settleTerminalReplayVisuals(runId, resumedStatus, set);
     }
-    if (shouldStopHistoryReplay(resumedStatus, e)) break;
+    if (shouldStopHistoryReplay(resumedStatus, e, lastEventSeq)) break;
   }
   if (!isStale()) {
     settleHistoryReplayPendingState(runId, resumedStatus, set);
   }
 }
 
-function shouldStopHistoryReplay(resumedStatus: RunStatus, e: ProviderEventDTO): boolean {
+function shouldStopHistoryReplay(resumedStatus: RunStatus, e: ProviderEventDTO, lastEventSeq?: number): boolean {
+  // Preferred path (BUG-112): the runner reports the seq of the last persisted event.
+  // Stop only once we've replayed up to it, so a multi-turn transcript is replayed in
+  // full instead of being truncated at the first turn_completed. A "running" run keeps
+  // live-tailing (more events will arrive), so never stop it on the seq cursor.
+  if (typeof lastEventSeq === "number" && lastEventSeq > 0) {
+    if (resumedStatus === "running" || resumedStatus === "starting") return false;
+    return e.seq >= lastEventSeq;
+  }
+  // Fallback for runners that predate lastEventSeq: stop at the first terminal event.
   if (resumedStatus === "waiting_approval") return e.type === "permission_required";
   if (resumedStatus === "waiting_question") return e.type === "user_question_required";
   if (resumedStatus === "completed") return e.type === "turn_completed";

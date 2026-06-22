@@ -213,6 +213,12 @@ export interface RunHandle {
   providerKey: ProviderKey;
   status: RunStatus;
   stepId?: string;
+  /**
+   * Seq of the last persisted event at resume time. History replay starts at seq 0 and
+   * stops here so a multi-turn run is replayed in full instead of truncating at the first
+   * turn_completed. Undefined when the runner predates this field. (BUG-112)
+   */
+  lastEventSeq?: number;
 }
 
 export interface RunHistoryItem {

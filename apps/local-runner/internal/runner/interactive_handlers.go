@@ -632,8 +632,14 @@ func (s *InteractiveService) resumeRun(runID string) (RunHandle, *apiErr) {
 	}
 	s.mu.Lock()
 	eventCount := len(rs.events)
+	if eventCount > 0 {
+		// Seq of the last persisted event — the desktop replays from 0 and stops here so
+		// a multi-turn transcript is replayed in full instead of being truncated at the
+		// first turn_completed. (BUG-112)
+		handle.LastEventSeq = rs.events[eventCount-1].Seq
+	}
 	s.mu.Unlock()
-	log.Printf("[chat-history-open] resume complete run_id=%q provider=%q provider_session_id=%q status=%q events=%d", rs.id, rs.providerKey, handle.ProviderSessionID, rs.status, eventCount)
+	log.Printf("[chat-history-open] resume complete run_id=%q provider=%q provider_session_id=%q status=%q events=%d last_seq=%d", rs.id, rs.providerKey, handle.ProviderSessionID, rs.status, eventCount, handle.LastEventSeq)
 	return handle, nil
 }
 

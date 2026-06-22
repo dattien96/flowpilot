@@ -1586,3 +1586,56 @@ async function* cursorChildStream() {
     strict_1.default.equal(state.agentGraphSnapshot?.loopState.roundCap, 5);
     strict_1.default.equal(state.agentBusMessages[0]?.message, "done");
 });
+// BUG-112: re-opening a multi-turn completed run from the history panel must replay the
+// WHOLE transcript. Previously the replay stopped at the first turn_completed, so the
+// latest response was missing and the prior turn appeared as the latest.
+(0, node_test_1.default)("openHistoryRun replays all turns of a completed multi-turn run (BUG-112)", async () => {
+    const streamStarted = deferred();
+    const handle = {
+        runId: "run-1",
+        providerSessionId: "session-1",
+        providerKey: "codex",
+        status: "completed",
+        stepId: "chat-run-1",
+        lastEventSeq: 6, // last persisted event (turn 2's turn_completed)
+    };
+    async function* multiTurnStream() {
+        streamStarted.resolve();
+        // Turn 1
+        yield { ...BASE_EVENT, workflowRunId: "run-1", seq: 1, type: "turn_started", providerTurnId: "t1", prompt: "first" };
+        yield { ...BASE_EVENT, workflowRunId: "run-1", seq: 2, type: "message_completed", id: "m1", text: "first response" };
+        yield { ...BASE_EVENT, workflowRunId: "run-1", seq: 3, type: "turn_completed", finalMessage: "first response" };
+        // Turn 2 — must NOT be skipped by an early stop at turn 1's turn_completed
+        yield { ...BASE_EVENT, workflowRunId: "run-1", seq: 4, type: "turn_started", providerTurnId: "t2", prompt: "second" };
+        yield { ...BASE_EVENT, workflowRunId: "run-1", seq: 5, type: "message_completed", id: "m2", text: "latest response" };
+        yield { ...BASE_EVENT, workflowRunId: "run-1", seq: 6, type: "turn_completed", finalMessage: "latest response" };
+        // Open-ended (completed runs keep the SSE open); replay must stop on its own at seq 6.
+        await new Promise(() => { });
+    }
+    seedStore(makeClient({
+        resumeRun: async () => handle,
+        streamRun: () => multiTurnStream(),
+        listSkills: async () => [],
+    }), [
+        {
+            runId: "run-1",
+            projectId: "project-1",
+            providerKey: "codex",
+            status: "completed",
+            startedAt: "2026-06-17T10:00:00Z",
+            updatedAt: "2026-06-17T10:05:00Z",
+        },
+    ]);
+    await store_1.useStore.getState().openHistoryRun("run-1");
+    await Promise.race([
+        streamStarted.promise,
+        new Promise((_, reject) => setTimeout(() => reject(new Error("history stream did not start")), 100)),
+    ]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const assistantTexts = store_1.useStore.getState().timeline
+        .filter((item) => item.kind === "assistant")
+        .map((item) => (item.kind === "assistant" ? item.text : ""));
+    strict_1.default.deepEqual(assistantTexts, ["first response", "latest response"], "both turns must be replayed");
+    strict_1.default.equal(store_1.useStore.getState().status, "completed");
+    strict_1.default.equal(store_1.useStore.getState().timeline.some((item) => item.kind === "thinking"), false);
+});
