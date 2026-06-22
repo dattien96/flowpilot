@@ -131,6 +131,32 @@ func TestClaudeAskUserToolAdvertisesSchema(t *testing.T) {
 	}
 }
 
+// TestClaudeSpawnAgentToolAdvertisesSchema guards that spawn_agent is present in
+// claudeMCPToolDefs with the required agent/prompt fields — an omitted or mis-named entry
+// would mean Claude never sees spawn_agent in tools/list and replies "tool not found".
+func TestClaudeSpawnAgentToolAdvertisesSchema(t *testing.T) {
+	var spawnAgent map[string]any
+	for _, def := range claudeMCPToolDefs() {
+		if m, ok := def.(map[string]any); ok && m["name"] == "spawn_agent" {
+			spawnAgent = m
+		}
+	}
+	if spawnAgent == nil {
+		t.Fatalf("claudeMCPToolDefs must include a spawn_agent tool")
+	}
+	schema, _ := spawnAgent["inputSchema"].(map[string]any)
+	props, _ := schema["properties"].(map[string]any)
+	for _, key := range []string{"agent", "prompt", "provider", "wait"} {
+		if _, ok := props[key]; !ok {
+			t.Fatalf("spawn_agent inputSchema must advertise %q: %+v", key, schema)
+		}
+	}
+	req, _ := schema["required"].([]any)
+	if len(req) < 2 {
+		t.Fatalf("spawn_agent inputSchema must require at least agent and prompt, got %+v", req)
+	}
+}
+
 // TestClaudeMCPServerPromptGate guards the core live-flow fix: claude connects --mcp-config
 // servers asynchronously, so SendTurn must withhold the prompt until tools/list arrives or
 // ask_user is never in the first turn's tool set. waitReady must block until the connection
