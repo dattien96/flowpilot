@@ -9,7 +9,7 @@
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-18`
-- Last Updated: `2026-06-18`
+- Last Updated: `2026-06-22`
 - Parent Documents: [Task-071: Cross-Account Chat Resume Definition of Done Checklist](./Task-071-Cross-Account-Chat-Resume-DOD-Checklist.md), [Task-073: Cross-PC Non-Supabase Chat Sync Definition of Done Checklist](./Task-073-Cross-PC-Non-Supabase-Chat-Sync-DOD-Checklist.md), [09-IG: Cross-Account Chat Resume Implementation Guide](../../10-Refactor/New-System/09-Cross-Account-Chat-Resume-Implementation-Guide.md), [10-IG: Cross-PC Non-Supabase Chat Sync Implementation Guide](../../10-Refactor/New-System/10-Cross-PC-Non-Supabase-Chat-Sync-Implementation-Guide.md)
 - Child Documents: `none`
 - Related Documents: [SD-14: Codex Cross-Account Chat Resume And Home Sync](../../06-System-Tech-Design/SD-14-Codex-Cross-Account-Chat-Resume-And-Home-Sync.md), [Task-072: Cross-Account Chat Resume Test Signatures](./Task-072-Cross-Account-Chat-Resume-Test-Signatures.md), [Task-074: Cross-PC Non-Supabase Chat Sync Test Signatures](./Task-074-Cross-PC-Non-Supabase-Chat-Sync-Test-Signatures.md), [Task-059: Desktop Check Version Tested Baseline Config](../done/Task-059-Desktop-Check-Version-Tested-Baseline-Config.md), [Task-067: Desktop Post-Restart Run Resume Via Provider Session ID](./Task-067-Desktop-Post-Restart-Run-Resume-Via-Provider-Session-Id.md), [Task-068: Desktop History Unified View; Account ID As Local-File Pointer](./Task-068-Desktop-History-Unified-View-Account-As-Local-File-Pointer.md), [Task-069: Cross-PC Sync for Non-Supabase Users](./Task-069-Cross-PC-Sync-Non-Supabase-Sessions-Ndjson.md), [Sync_History_note](./Sync_History_note.md)
@@ -210,7 +210,7 @@ Phase 1 and Phase 2 automated coverage is in place, but the remaining acceptance
     - the tooltip or title shows a reason such as `session data not found on this machine`
     - clicking does not clear the current timeline and does not crash
 
-- [ ] `E2E-051` Missing active-account auth produces disabled history item.
+- [ ] `E2E-051` Missing active-account auth opens chat history read-only.
   - steps:
     - create one cross-account-resumable run
     - sign out or invalidate the target active account
@@ -218,7 +218,8 @@ Phase 1 and Phase 2 automated coverage is in place, but the remaining acceptance
     - click the history item that requires the inactive account
   - expected:
     - the item remains visible
-    - the item is disabled with a signed-out/account-unavailable reason
+    - the transcript opens and remains readable
+    - provider continuation controls are disabled with no connected account
     - no new run is silently created
 
 ### Case Group E - Check Version And Portability Canaries
@@ -304,13 +305,14 @@ Phase 1 and Phase 2 automated coverage is in place, but the remaining acceptance
     - restore does not replace unrelated history
     - the restored run can still be opened from its own row
 
-- [ ] `E2E-083` PC2 restore without active provider auth stays greyout-safe.
+- [ ] `E2E-083` PC2 restore without active provider auth opens read-only.
   - steps:
     - restore a remote run while the target provider account on PC2 is not signed in
-    - try to open the restored item
+    - open the restored item
+    - inspect the provider control and send action
   - expected:
-    - the run stays visible
-    - the item is disabled with a clear reason
+    - restore succeeds and the transcript remains readable
+    - the provider control and send action are disabled until a connected account exists
     - no crash and no forced transcript injection occurs
 
 - [ ] `E2E-084` Claude restore result is explicitly classified.

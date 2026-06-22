@@ -259,6 +259,9 @@ func (s *InteractiveService) ensureResumeReady(rs *interactiveRun) *apiErr {
 		rs.id, rs.providerKey, rs.providerAccountID, activeAccountID, s.resumeSessionID(rs), rs.workspaceCwd, rs.resumedFromDisk,
 	)
 	srcHome, ok := s.resolveAccountHome(rs.providerKey, rs.providerAccountID)
+	if !ok && (strings.TrimSpace(rs.providerAccountID) == "" || rs.providerAccountID == "default") {
+		srcHome, ok = defaultProviderSessionHome(rs.providerKey)
+	}
 	recoveredAccount := false
 	if !ok {
 		account, recoveredPath, found := s.locateSessionAcrossProviderAccounts(
@@ -466,6 +469,9 @@ func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 		return
 	}
 	home, ok := s.resolveAccountHome(rs.providerKey, rs.providerAccountID)
+	if !ok && (strings.TrimSpace(rs.providerAccountID) == "" || rs.providerAccountID == "default") {
+		home, ok = defaultProviderSessionHome(rs.providerKey)
+	}
 	if !ok {
 		return
 	}

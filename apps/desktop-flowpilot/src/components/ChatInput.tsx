@@ -420,6 +420,11 @@ export function ChatInput(): React.ReactElement {
   const focusedAgentName = childRunFocused
     ? agentRuns.find((run) => run.runId === activeAgentRunId)?.agentName ?? activeAgentRunId
     : undefined;
+  const connectedProviders = useMemo(
+    () => new Set(providerAccounts.filter((account) => account.authStatus === "connected").map((account) => account.providerKey)),
+    [providerAccounts],
+  );
+  const selectedProviderConnected = !!selectedProvider && connectedProviders.has(selectedProvider);
 
   const blocked = status === "running" || status === "waiting_approval" || status === "waiting_question";
   const usageLine = useMemo(
@@ -428,7 +433,7 @@ export function ChatInput(): React.ReactElement {
   );
 
   const canSend = isChatMode
-    ? hasSelectedProject && !!selectedProvider && !blocked && !childRunFocused && text.trim().length > 0 && !showPicker
+    ? hasSelectedProject && selectedProviderConnected && !blocked && !childRunFocused && text.trim().length > 0 && !showPicker
     : hasSelectedProject &&
       (launchMode === "workflow" ? !!selectedWorkflowId : !!selectedStepId) &&
       !blocked &&
@@ -694,12 +699,18 @@ export function ChatInput(): React.ReactElement {
                       <button
                         key={p.value}
                         type="button"
-                        className={`provider-chip provider-chip-${p.value}${selectedProvider === p.value ? " provider-chip-selected" : ""}`}
+                        className={`provider-chip provider-chip-${p.value}${selectedProvider === p.value ? " provider-chip-selected" : ""}${connectedProviders.has(p.value) ? "" : " provider-chip-unavailable"}`}
                         onClick={() => selectProvider(selectedProvider === p.value ? undefined : p.value)}
-                        disabled={blocked || providerLocked}
+                        disabled={blocked || providerLocked || !connectedProviders.has(p.value)}
                         aria-pressed={selectedProvider === p.value}
                         aria-label={p.label}
-                        title={providerLocked ? "Start a new chat to change provider" : p.label}
+                        title={
+                          !connectedProviders.has(p.value)
+                            ? `${p.label} is unavailable until an account is connected`
+                            : providerLocked
+                              ? "Start a new chat to change provider"
+                              : p.label
+                        }
                       >
                         <span className="provider-chip-icon">{p.icon}</span>
                         <span className="provider-chip-name">{p.label}</span>

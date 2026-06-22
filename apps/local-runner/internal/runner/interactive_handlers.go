@@ -625,8 +625,12 @@ func (s *InteractiveService) resumeRun(runID string) (RunHandle, *apiErr) {
 	isActiveInMemory := inMemory && rs.status != RunStatusCompleted && rs.status != RunStatusFailed && rs.status != RunStatusCancelled
 	if !isActiveInMemory {
 		if err := s.ensureResumeReady(rs); err != nil {
-			log.Printf("[chat-history-open] resume readiness failed run_id=%q provider=%q code=%q message=%q", runID, rs.providerKey, err.code, err.msg)
-			return RunHandle{}, err
+			readOnlyChat := rs.runKind == "chat" && (err.code == "account_not_signed_in" || err.code == "account_unavailable")
+			if !readOnlyChat {
+				log.Printf("[chat-history-open] resume readiness failed run_id=%q provider=%q code=%q message=%q", runID, rs.providerKey, err.code, err.msg)
+				return RunHandle{}, err
+			}
+			log.Printf("[chat-history-open] resume continuing read-only run_id=%q provider=%q code=%q message=%q", runID, rs.providerKey, err.code, err.msg)
 		}
 	}
 	s.seedTranscriptFromDisk(rs)

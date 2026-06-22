@@ -677,10 +677,11 @@ func (s *InteractiveService) restoreChatRunFromDrive(ctx context.Context, req Ch
 	activeAccountID := s.activeAccountForProvider(manifest.ProviderKey)
 	targetHome, ok := s.resolveAccountHome(manifest.ProviderKey, activeAccountID)
 	if !ok {
-		return ChatSessionRestoreResult{}, newAPIErr(http.StatusConflict, "account_unavailable", "active account home not found")
-	}
-	if !HasLocalAuthAtPath(string(manifest.ProviderKey), targetHome) {
-		return ChatSessionRestoreResult{}, newAPIErr(http.StatusConflict, "account_not_signed_in", "can't open — the active account isn't signed in")
+		targetHome, ok = defaultProviderSessionHome(manifest.ProviderKey)
+		if !ok {
+			return ChatSessionRestoreResult{}, newAPIErr(http.StatusConflict, "account_unavailable", "provider session storage home not found")
+		}
+		activeAccountID = "default"
 	}
 
 	objectID := strings.TrimSpace(manifest.ProviderFile.DriveObjectID)

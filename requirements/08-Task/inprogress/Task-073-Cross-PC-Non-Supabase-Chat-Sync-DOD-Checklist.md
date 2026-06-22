@@ -9,7 +9,7 @@
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-17`
-- Last Updated: `2026-06-17`
+- Last Updated: `2026-06-22`
 - Parent Documents: [Task-069: Cross-PC Sync for Non-Supabase Users](./Task-069-Cross-PC-Sync-Non-Supabase-Sessions-Ndjson.md), [10-IG: Cross-PC Non-Supabase Chat Sync Implementation Guide](../../10-Refactor/New-System/10-Cross-PC-Non-Supabase-Chat-Sync-Implementation-Guide.md)
 - Child Documents: [Task-074: Cross-PC Non-Supabase Chat Sync Test Signatures](./Task-074-Cross-PC-Non-Supabase-Chat-Sync-Test-Signatures.md)
 - Related Documents: [SD-14: Codex Cross-Account Chat Resume And Home Sync](../../06-System-Tech-Design/SD-14-Codex-Cross-Account-Chat-Resume-And-Home-Sync.md), [Task-071: Cross-Account Chat Resume Definition of Done Checklist](./Task-071-Cross-Account-Chat-Resume-DOD-Checklist.md), [Task-072: Cross-Account Chat Resume Test Signatures](./Task-072-Cross-Account-Chat-Resume-Test-Signatures.md), [Task-023: Sync Artifact With Google Drive](../done/Task-023-Sync-Artifact-With-Google.md), [CA-098: Provider Session Portability Spike](../../../change-audit/CA-098-spike-provider-session-portability.md)
@@ -35,7 +35,7 @@
 - `T-2` Sync uploads both index metadata and provider session file bytes.
 - `T-3` Restore merges into local `sessions.ndjson`; it never replaces the whole file.
 - `T-4` Run id collisions are resolved deterministically during restore.
-- `T-5` Unopenable restored runs remain visible and disabled with a typed reason.
+- `T-5` Missing provider data remains visible and disabled; missing provider auth opens read-only with continuation controls disabled.
 
 ### Constraints
 
@@ -128,9 +128,9 @@ Task-069 chose Google Drive plus local `sessions.ndjson` as the primary cross-PC
 - [x] `DOD-036` Restore maps missing remote index/manifest/file to `sync_remote_not_found`.
 - [x] `DOD-037` Restore verifies provider file SHA-256 before writing.
 - [x] `DOD-038` Restore maps hash mismatch to `sync_integrity_failed`.
-- [x] `DOD-039` Restore requires an active provider account for the provider key.
-- [x] `DOD-040` Restore maps missing active provider account home to `account_unavailable`.
-- [x] `DOD-041` Restore maps missing active provider auth to `account_not_signed_in`.
+- [x] `DOD-039` Restore does not require an active provider account for the provider key.
+- [x] `DOD-040` Restore uses the active account home when available and otherwise uses the provider's default local data home.
+- [x] `DOD-041` Missing provider auth still permits restore and read-only transcript opening; turn execution remains disabled until a connected account exists.
 - [x] `DOD-042` Restore requires a valid PC2 cwd.
 - [x] `DOD-043` Restore maps missing cwd/remap requirement to `cwd_remap_required`.
 - [x] `DOD-044` Restore writes provider file into the active account home.
@@ -199,7 +199,7 @@ Task-069 chose Google Drive plus local `sessions.ndjson` as the primary cross-PC
 - [x] `DOD-089` Manual restored Codex run opens and can send a follow-up.
 - [x] `DOD-090` Manual different-cwd restore path is verified.
 - [ ] `DOD-091` Manual missing provider file or missing remote file greyout is verified.
-- [ ] `DOD-092` Manual missing active provider auth greyout is verified.
+- [ ] `DOD-092` Manual missing provider auth read-only restore is verified, including disabled continuation controls.
 - [ ] `DOD-093` Manual Claude behavior is recorded as pass/fail/provider-untested.
 
 ### Final Review Gate
@@ -239,6 +239,7 @@ Task-069 chose Google Drive plus local `sessions.ndjson` as the primary cross-PC
 - PC1 sync uploads both manifest/index metadata and provider session file bytes.
 - PC2 restore merges one local session record without corrupting existing history.
 - Restored run can resume when the provider accepts the copied file.
+- Missing provider auth still permits read-only history viewing.
 - Unsupported or missing data cases stay visible and disabled with typed reasons.
 
 ## 7. Out of Scope

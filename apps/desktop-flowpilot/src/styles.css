@@ -2897,6 +2897,10 @@ input {
 .provider-chip:disabled {
   cursor: not-allowed;
 }
+.provider-chip-unavailable {
+  opacity: 0.45 !important;
+  filter: grayscale(0.7);
+}
 .provider-picker:not(.provider-picker-locked) .provider-chip:disabled {
   opacity: 0.45;
 }

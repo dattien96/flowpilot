@@ -185,6 +185,24 @@ func RestoreSessionFile(providerKey ProviderKey, targetHome, relativePath, sessi
 	return dstPath, nil
 }
 
+// defaultProviderSessionHome returns the provider-owned data home even when the
+// provider is not installed or authenticated yet. This lets Drive restore keep
+// chat history readable while turn execution remains gated by provider auth.
+func defaultProviderSessionHome(providerKey ProviderKey) (string, bool) {
+	userHome := preferredUserHomeDir()
+	if strings.TrimSpace(userHome) == "" {
+		return "", false
+	}
+	switch providerKey {
+	case ProviderKeyCodex:
+		return filepath.Join(userHome, ".codex"), true
+	case ProviderKeyClaude:
+		return userHome, true
+	default:
+		return "", false
+	}
+}
+
 func DiscoverCodexRolloutSessionID(accountHome, cwd string) (string, bool) {
 	root := filepath.Join(accountHome, "sessions")
 	bestID := ""

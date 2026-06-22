@@ -671,8 +671,8 @@ func TestPrepareCrossAccountResumeActiveAccountNotSignedIn(t *testing.T) {
 	root := t.TempDir()
 	acctHome := filepath.Join(root, "acct-b")
 	// acct-b is the active Codex account for this run, but its local auth is
-	// missing on disk — so resume must refuse with account_not_signed_in even
-	// though the run's session (rollout) file is present.
+	// missing on disk. History remains readable; sending another turn is still
+	// gated by ensureResumeReady in startTurn.
 	writeProviderAccountsConfig(t, filepath.Join(root, "provider-accounts.json"), []ProviderAccount{
 		{ID: "acct-b", ProviderKey: "codex", HomePath: acctHome, SlotIndex: 1, AuthStatus: "connected", IsActive: true, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
 	})
@@ -694,8 +694,8 @@ func TestPrepareCrossAccountResumeActiveAccountNotSignedIn(t *testing.T) {
 
 	svc := NewInteractiveServiceWithStore(DefaultProviderRegistry(), newInteractiveCatalog(), store)
 	svc.activeAccountID = "acct-b"
-	if _, apiErr := svc.resumeRun("run-1"); apiErr == nil || apiErr.code != "account_not_signed_in" {
-		t.Fatalf("resumeRun error = %#v, want account_not_signed_in", apiErr)
+	if _, apiErr := svc.resumeRun("run-1"); apiErr != nil {
+		t.Fatalf("resumeRun() should open read-only without provider auth: %v", apiErr)
 	}
 }
 

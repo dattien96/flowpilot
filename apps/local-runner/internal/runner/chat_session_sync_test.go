@@ -710,14 +710,28 @@ func TestRestoreChatRunFromDriveMissingActiveAccountHome(t *testing.T) {
 		t.Fatalf("clear provider accounts: %v", err)
 	}
 	svc.SetActiveAccount("missing-account")
-	_, apiErr = svc.restoreChatRunFromDrive(context.Background(), ChatSessionRestoreRequest{
+	restored, apiErr := svc.restoreChatRunFromDrive(context.Background(), ChatSessionRestoreRequest{
 		ProjectID:       "project-1",
 		SourceMachineID: result.SourceMachineID,
 		SourceRunID:     result.SourceRunID,
 		Cwd:             workspace,
 	})
-	if apiErr == nil || apiErr.code != "account_unavailable" {
-		t.Fatalf("expected account_unavailable, got %#v", apiErr)
+	if apiErr != nil {
+		t.Fatalf("restoreChatRunFromDrive() failed without provider account: %v", apiErr)
+	}
+	session, found, err := store.GetProviderSession(context.Background(), restored.RunID)
+	if err != nil || !found {
+		t.Fatalf("GetProviderSession() failed: found=%v err=%v", found, err)
+	}
+	if session.ProviderAccountID != "default" {
+		t.Fatalf("ProviderAccountID = %q, want default", session.ProviderAccountID)
+	}
+	defaultHome, ok := defaultProviderSessionHome(ProviderKeyCodex)
+	if !ok {
+		t.Fatal("expected default Codex session home")
+	}
+	if _, found := LocateSessionFile(ProviderKeyCodex, defaultHome, session.ProviderSessionID, workspace); !found {
+		t.Fatal("expected restored session in the default Codex data home")
 	}
 }
 
@@ -731,14 +745,41 @@ func TestRestoreChatRunFromDriveMissingActiveAccountAuth(t *testing.T) {
 	if err := os.Remove(filepath.Join(accountHome, ".codex", "auth.json")); err != nil {
 		t.Fatalf("Remove auth.json: %v", err)
 	}
-	_, apiErr = svc.restoreChatRunFromDrive(context.Background(), ChatSessionRestoreRequest{
+	restored, apiErr := svc.restoreChatRunFromDrive(context.Background(), ChatSessionRestoreRequest{
 		ProjectID:       "project-1",
 		SourceMachineID: result.SourceMachineID,
 		SourceRunID:     result.SourceRunID,
 		Cwd:             workspace,
 	})
-	if apiErr == nil || apiErr.code != "account_not_signed_in" {
-		t.Fatalf("expected account_not_signed_in, got %#v", apiErr)
+	if apiErr != nil {
+		t.Fatalf("restoreChatRunFromDrive() failed without provider auth: %v", apiErr)
+	}
+	if _, apiErr := svc.resumeRun(restored.RunID); apiErr != nil {
+		t.Fatalf("resumeRun() should open restored chat read-only without provider auth: %v", apiErr)
+	}
+}
+
+func TestDefaultProviderSessionHomeSupportsClaudeWithoutInstallation(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	targetHome, ok := defaultProviderSessionHome(ProviderKeyClaude)
+	if !ok {
+		t.Fatal("expected default Claude session home")
+	}
+	if targetHome != home {
+		t.Fatalf("default Claude session home = %q, want %q", targetHome, home)
+	}
+
+	sessionID := "claude-restored-session"
+	relativePath := filepath.ToSlash(filepath.Join(".claude", "projects", "restored-project", sessionID+".jsonl"))
+	body := []byte(`{"type":"user","message":{"role":"user","content":"restored prompt"}}` + "\n")
+	restoredPath, err := RestoreSessionFile(ProviderKeyClaude, targetHome, relativePath, sessionID, t.TempDir(), body)
+	if err != nil {
+		t.Fatalf("RestoreSessionFile() failed without Claude installation: %v", err)
+	}
+	if got, err := os.ReadFile(restoredPath); err != nil || !bytes.Equal(got, body) {
+		t.Fatalf("restored Claude session = %q, err=%v", got, err)
 	}
 }
 

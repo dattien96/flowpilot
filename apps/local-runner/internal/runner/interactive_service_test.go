@@ -1348,7 +1348,7 @@ func TestAccountMismatch(t *testing.T) {
 	if st, _ := sendTurn(t, srv.URL, runID, "normal", nil); st != http.StatusConflict {
 		t.Fatalf("turn after account switch status=%d, want 409", st)
 	}
-	if st, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+runID+"/resume", nil, nil); st != http.StatusConflict || (!strings.Contains(string(body), "session_unavailable") && !strings.Contains(string(body), "account_unavailable") && !strings.Contains(string(body), "account_not_signed_in")) {
+	if st, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+runID+"/resume", nil, nil); st != http.StatusOK || !strings.Contains(string(body), "\"runId\":\"run-1\"") {
 		t.Fatalf("resume after switch status=%d body=%s", st, body)
 	}
 }
