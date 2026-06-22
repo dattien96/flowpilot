@@ -358,7 +358,14 @@ class SupabaseAdminRepository {
         assertNoError(deleteError, "Unable to update project team links.");
         if (teamIds.length === 0)
             return;
-        const { error } = await this.supabase.from("project_teams").insert(teamIds.map((teamId) => ({ project_id: projectId, team_id: teamId })));
+        const { data: projectRow, error: projectError } = await this.supabase
+            .from("projects")
+            .select("legacy_id")
+            .eq("id", projectId)
+            .single();
+        assertNoError(projectError, "Unable to load project for team link.");
+        const legacyProjectId = projectRow?.legacy_id ?? "";
+        const { error } = await this.supabase.from("project_teams").insert(teamIds.map((teamId) => ({ project_id: projectId, legacy_project_id: legacyProjectId, team_id: teamId })));
         assertNoError(error, "Unable to update project team links.");
     }
     async listIntegrations() {
