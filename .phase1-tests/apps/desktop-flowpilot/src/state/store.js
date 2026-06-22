@@ -1224,7 +1224,7 @@ async function consumeOrchestrationStream(runId, stream, orchestrationSeq, after
             continue;
         if (e.type !== "agent_graph_updated" && e.type !== "agent_bus_message")
             continue;
-        set((s) => applyEvent(s, e));
+        set((s) => applyOrchestrationEvent(s, e));
     }
 }
 /**
@@ -1302,6 +1302,31 @@ function applyEvent(s, e) {
         return { ...next, latestTokenUsage: e.tokenUsage, _runReplaySeq: nextReplaySeq };
     }
     return { ...next, _runReplaySeq: nextReplaySeq };
+}
+// Used exclusively by consumeOrchestrationStream. Unlike applyEvent, this does NOT call
+// applyTimelineEvent — so the timeline and thinking row are never touched. The orchestration
+// stream only needs to update agent graph data; letting it touch the timeline causes a thinking
+// row to re-appear after history replay has already settled to a completed state. (BUG-110)
+function applyOrchestrationEvent(s, e) {
+    const nextReplaySeq = { ...s._runReplaySeq, [e.workflowRunId]: e.seq };
+    if (e.type === "agent_graph_updated") {
+        return {
+            agentRuns: e.agentGraphSnapshot.runs,
+            agentGraphSnapshot: e.agentGraphSnapshot,
+            agentBusMessages: e.agentGraphSnapshot.busMessages,
+            _runReplaySeq: nextReplaySeq,
+        };
+    }
+    if (e.type === "agent_bus_message") {
+        return {
+            agentBusMessages: [...s.agentBusMessages, e.agentBusMessage],
+            agentGraphSnapshot: s.agentGraphSnapshot
+                ? { ...s.agentGraphSnapshot, busMessages: [...s.agentGraphSnapshot.busMessages, e.agentBusMessage] }
+                : s.agentGraphSnapshot,
+            _runReplaySeq: nextReplaySeq,
+        };
+    }
+    return {};
 }
 function runErrorMessage(err) {
     if (err instanceof HttpWsRunnerClient_1.RunnerApiError) {

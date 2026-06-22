@@ -1478,3 +1478,105 @@ async function* cursorChildStream() {
     strict_1.default.equal(store_1.useStore.getState().agentGraphSnapshot?.loopState.roundCap, 3);
     strict_1.default.equal(store_1.useStore.getState().agentBusMessages.at(-1)?.message, "ready-for-review");
 });
+// BUG-110: consumeOrchestrationStream called applyEvent which called applyTimelineEvent,
+// which unconditionally adds a thinking row for agent_graph_updated events. After history
+// replay settled (no thinking row), the orchestration stream re-added the thinking row.
+(0, node_test_1.default)("openHistoryRun orchestration stream does not add thinking row after history replay completes", async () => {
+    const graphSnapshot = {
+        parentRunId: "run-1",
+        runs: [{ runId: "child-run", agentName: "child", role: "worker", status: "completed", createdAt: "2026-01-01T00:00:00Z" }],
+        edges: [],
+        busMessages: [],
+        loopState: { status: "running", round: 1, roundCap: 3 },
+    };
+    const graphEvent = {
+        ...BASE_EVENT,
+        workflowRunId: "run-1",
+        seq: 5,
+        type: "agent_graph_updated",
+        agentGraphSnapshot: graphSnapshot,
+    };
+    // streamRun is called twice: first for history replay, second for orchestration stream.
+    // Call 1: emit turn_started + turn_completed so history replay finishes cleanly.
+    // Call 2: emit agent_graph_updated (which must NOT add a thinking row).
+    let streamCallCount = 0;
+    const orchestrationGate = deferred();
+    seedStore(makeClient({
+        resumeRun: async () => ({
+            runId: "run-1",
+            providerSessionId: "session-1",
+            providerKey: "codex",
+            status: "completed",
+            stepId: "chat-run-1",
+        }),
+        streamRun: async function* () {
+            streamCallCount++;
+            if (streamCallCount === 1) {
+                // History replay stream: complete the run
+                yield { ...BASE_EVENT, workflowRunId: "run-1", seq: 1, type: "turn_started", providerTurnId: "t1", prompt: "hello" };
+                yield { ...BASE_EVENT, workflowRunId: "run-1", seq: 2, type: "message_completed", id: "msg-1", text: "hi" };
+                yield { ...BASE_EVENT, workflowRunId: "run-1", seq: 3, type: "turn_completed", finalMessage: "hi" };
+            }
+            else {
+                // Orchestration stream: deliver agent_graph_updated then stop
+                await orchestrationGate.promise;
+                yield graphEvent;
+            }
+        },
+        listSkills: async () => [],
+    }), []);
+    await store_1.useStore.getState().openHistoryRun("run-1");
+    // Allow history replay to process
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // History replay is now done (turn_completed processed, no thinking row)
+    strict_1.default.equal(store_1.useStore.getState().timeline.some((it) => it.kind === "thinking"), false, "no thinking after history replay");
+    // Now let the orchestration stream emit its agent_graph_updated event
+    orchestrationGate.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    strict_1.default.equal(store_1.useStore.getState().timeline.some((it) => it.kind === "thinking"), false, "no thinking after orchestration stream processes agent_graph_updated");
+    strict_1.default.deepEqual(store_1.useStore.getState().agentRuns, graphSnapshot.runs, "agentRuns updated correctly");
+});
+(0, node_test_1.default)("openHistoryRun orchestration stream updates agent graph without touching timeline content", async () => {
+    const graphSnapshot = {
+        parentRunId: "run-1",
+        runs: [{ runId: "child-run", agentName: "child", role: "worker", status: "running", createdAt: "2026-01-01T00:00:00Z" }],
+        edges: [],
+        busMessages: [{ id: "bus-1", parentRunId: "run-1", kind: "handoff", message: "done", queued: false, occurredAt: "2026-01-01T00:00:00Z" }],
+        loopState: { status: "running", round: 1, roundCap: 5 },
+    };
+    let streamCallCount = 0;
+    const orchestrationGate = deferred();
+    seedStore(makeClient({
+        resumeRun: async () => ({
+            runId: "run-1",
+            providerSessionId: "session-1",
+            providerKey: "codex",
+            status: "completed",
+            stepId: "chat-run-1",
+        }),
+        streamRun: async function* () {
+            streamCallCount++;
+            if (streamCallCount === 1) {
+                yield { ...BASE_EVENT, workflowRunId: "run-1", seq: 1, type: "turn_started", providerTurnId: "t1", prompt: "hi" };
+                yield { ...BASE_EVENT, workflowRunId: "run-1", seq: 2, type: "message_completed", id: "msg-1", text: "response text" };
+                yield { ...BASE_EVENT, workflowRunId: "run-1", seq: 3, type: "turn_completed", finalMessage: "response text" };
+            }
+            else {
+                await orchestrationGate.promise;
+                yield { ...BASE_EVENT, workflowRunId: "run-1", seq: 10, type: "agent_graph_updated", agentGraphSnapshot: graphSnapshot };
+            }
+        },
+        listSkills: async () => [],
+    }), []);
+    await store_1.useStore.getState().openHistoryRun("run-1");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const timelineBeforeOrchestration = store_1.useStore.getState().timeline.filter((it) => it.kind !== "thinking");
+    orchestrationGate.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const state = store_1.useStore.getState();
+    // Timeline content must be identical (no items added or removed by orchestration stream)
+    strict_1.default.deepEqual(state.timeline.filter((it) => it.kind !== "thinking"), timelineBeforeOrchestration, "timeline content unchanged by orchestration stream");
+    // Agent graph data must be updated
+    strict_1.default.equal(state.agentGraphSnapshot?.loopState.roundCap, 5);
+    strict_1.default.equal(state.agentBusMessages[0]?.message, "done");
+});
