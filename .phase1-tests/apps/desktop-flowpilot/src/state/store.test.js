@@ -903,6 +903,99 @@ async function* cursorChildStream() {
     strict_1.default.equal(store_1.useStore.getState().agentSpawnGuideOpen, false);
     strict_1.default.equal(store_1.useStore.getState().agentSpawnGuideAgentName, undefined);
 });
+// BUG-109: orchestration stream advances _runReplaySeq[mainRunId] via agent_graph_updated
+// events while viewing a child. backToMainRun must use restore.lastEventSeq (not the
+// inflated _runReplaySeq) so it doesn't skip real timeline events in the gap.
+(0, node_test_1.default)("backToMainRun replays from snapshot lastEventSeq, not from orchestration-inflated _runReplaySeq", async () => {
+    const mainStreamSeqs = [];
+    async function* mainStream(_runId, afterSeq = 0) {
+        mainStreamSeqs.push(afterSeq);
+        // No events — just record what afterSeq was used
+    }
+    seedStore(makeClient({
+        streamRun: mainStream,
+        focusAgentRun: () => emptyStream(),
+        resumeRun: async (runId) => ({ runId, providerSessionId: "session-child", providerKey: "codex", status: "completed" }),
+    }), []);
+    store_1.useStore.setState({
+        runId: "current-run",
+        mainRunId: "current-run",
+        activeAgentRunId: undefined,
+        timeline: [{ kind: "prompt", id: "main-prompt", text: "main prompt" }],
+        status: "running",
+        artifacts: [],
+        _runSnapshots: {
+            "current-run": {
+                timeline: [{ kind: "prompt", id: "main-prompt", text: "main prompt" }],
+                artifacts: [],
+                status: "running",
+                recoverable: false,
+                lastEventSeq: 10,
+            },
+        },
+        // _runReplaySeq[mainRunId] inflated to 50 by orchestration stream processing
+        // agent_graph_updated events (seq 11..50) while the user was viewing the child.
+        _runReplaySeq: { "current-run": 50 },
+    });
+    store_1.useStore.getState().backToMainRun();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Must replay from lastEventSeq (10), not from orchestration-inflated _runReplaySeq (50).
+    // Starting at 50 would skip real timeline events with seqs 11..50 (e.g. message_completed).
+    strict_1.default.deepEqual(mainStreamSeqs, [10]);
+});
+// BUG-109: consumeAgentStream must not re-process agent_graph_updated / agent_bus_message
+// events when replaying the gap between restore.lastEventSeq and the orchestration-advanced
+// _runReplaySeq. Doing so would append duplicate entries to agentBusMessages.
+(0, node_test_1.default)("backToMainRun replaying the gap does not duplicate agentBusMessages", async () => {
+    const busMessage = {
+        id: "bus-1",
+        parentRunId: "current-run",
+        kind: "handoff",
+        message: "work done",
+        queued: false,
+        occurredAt: "2026-01-01T00:00:00Z",
+    };
+    async function* mainStream(_runId, _afterSeq = 0) {
+        // This event was already processed by the orchestration stream while in child view.
+        // consumeAgentStream must skip it to avoid duplicating the bus message.
+        yield {
+            ...BASE_EVENT,
+            seq: 15,
+            workflowRunId: "current-run",
+            type: "agent_bus_message",
+            agentBusMessage: busMessage,
+        };
+    }
+    seedStore(makeClient({
+        streamRun: mainStream,
+        focusAgentRun: () => emptyStream(),
+        resumeRun: async (runId) => ({ runId, providerSessionId: "session-child", providerKey: "codex", status: "completed" }),
+    }), []);
+    store_1.useStore.setState({
+        runId: "current-run",
+        mainRunId: "current-run",
+        activeAgentRunId: undefined,
+        timeline: [{ kind: "prompt", id: "main-prompt", text: "main prompt" }],
+        status: "running",
+        artifacts: [],
+        // agentBusMessages already has the bus message from the orchestration stream
+        agentBusMessages: [busMessage],
+        _runSnapshots: {
+            "current-run": {
+                timeline: [{ kind: "prompt", id: "main-prompt", text: "main prompt" }],
+                artifacts: [],
+                status: "running",
+                recoverable: false,
+                lastEventSeq: 10,
+            },
+        },
+        _runReplaySeq: { "current-run": 50 },
+    });
+    store_1.useStore.getState().backToMainRun();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // agentBusMessages must stay at 1 entry — consumeAgentStream skips orchestration events.
+    strict_1.default.equal(store_1.useStore.getState().agentBusMessages.length, 1);
+});
 (0, node_test_1.default)("parseMentionRouting resolves missing, busy, and idle child targets", () => {
     const runs = [
         { agentName: "architect", runId: "agent-1", status: "completed" },

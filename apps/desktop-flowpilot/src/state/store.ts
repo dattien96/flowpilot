@@ -481,7 +481,11 @@ export const useStore = create<AppState>((set, get) => ({
     const agentFocusController = new AbortController();
     activeAgentFocusStreamController = agentFocusController;
     const streamRunSeq = get()._streamRunSeq + 1;
-    const afterSeq = get()._runReplaySeq[mainRunId] ?? restore.lastEventSeq ?? 0;
+    // Use the snapshot's lastEventSeq (captured before child focus) as the stream
+    // start point. _runReplaySeq[mainRunId] can be inflated by consumeOrchestrationStream
+    // processing agent_graph_updated events while viewing the child — using it would
+    // skip real timeline events interleaved with those orchestration events. (BUG-109)
+    const afterSeq = restore.lastEventSeq ?? 0;
     set({
       runId: mainRunId,
       mainRunId,
@@ -1478,6 +1482,10 @@ async function consumeAgentStream(
     if (isStale()) return;
     if (!isEventForRun(e, runId)) continue;
     if (e.seq <= afterSeq) continue;
+    // Skip orchestration events — consumeOrchestrationStream owns agent_graph_updated
+    // and agent_bus_message. Processing them here would duplicate agentBusMessages
+    // entries when the gap between restore.lastEventSeq and afterSeq is replayed. (BUG-109)
+    if (e.type === "agent_graph_updated" || e.type === "agent_bus_message") continue;
     set((s) => applyEvent(s, e));
     settleTerminalReplayVisuals(runId, replayStatus, set);
     set((s) => ({
