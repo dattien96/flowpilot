@@ -1253,3 +1253,35 @@ func streamEvents(t *testing.T, base, runID string, afterSeq int64, wantCount in
 	}
 	return out
 }
+
+func TestSeedIDCounterAvoidsRunIDReuseAfterRestart(t *testing.T) {
+	store := newFakeWorkflowStore()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	// Persisted runs from a previous runner session; run-17 is a child of run-9.
+	for _, sess := range []ProviderSessionState{
+		{RunID: "run-9", ProviderKey: ProviderKeyCodex, Status: RunStatusCompleted, StartedAt: now, UpdatedAt: now, RunKind: "chat"},
+		{RunID: "run-17", ParentRunID: "run-9", ProviderKey: ProviderKeyCodex, Status: RunStatusCompleted, StartedAt: now, UpdatedAt: now, RunKind: "chat", AgentName: "reviewer"},
+	} {
+		if err := store.UpsertProviderSession(context.Background(), sess); err != nil {
+			t.Fatalf("seed session: %v", err)
+		}
+	}
+
+	svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+
+	// The next minted run id must be numerically above every persisted run id so a new
+	// chat cannot collide with a previous run and inherit its child agents. (BUG-117)
+	id := svc.nextID("run")
+	if n := numericIDSuffix(id); n <= 17 {
+		t.Fatalf("nextID after seeding = %q (suffix %d), want suffix > 17", id, n)
+	}
+}
+
+func TestNumericIDSuffix(t *testing.T) {
+	cases := map[string]int64{"run-14": 14, "evt-1": 1, "run-": 0, "main-run": 0, "": 0, "bus-007": 7}
+	for in, want := range cases {
+		if got := numericIDSuffix(in); got != want {
+			t.Errorf("numericIDSuffix(%q) = %d, want %d", in, got, want)
+		}
+	}
+}

@@ -245,7 +245,7 @@ func newInteractiveService(registry *ProviderRegistry, catalog CatalogStore, wor
 	// Reclaim Codex image-attachment temp dirs orphaned by a prior hard crash/kill
 	// (Task-052); the per-turn deferred cleanup cannot run in that case. Best-effort.
 	sweepCodexImageAttachments(time.Hour, time.Now())
-	return &InteractiveService{
+	svc := &InteractiveService{
 		catalog:           catalog,
 		skillsCatalog:     newInteractiveCatalog(),
 		agentCatalog:      newAgentCatalog(),
@@ -263,6 +263,59 @@ func newInteractiveService(registry *ProviderRegistry, catalog CatalogStore, wor
 		questionTTL:       10 * time.Minute,
 		maxTurnAttempts:   3,
 	}
+	// Seed the id counter above the highest persisted run id so a runner restart does NOT
+	// reuse ids (run-1, run-2, …). Reuse made a fresh chat collide with a previous run of
+	// the same id and inherit its persisted child agents — old sub-agents appeared in a
+	// brand-new session's Agents panel. (BUG-117)
+	svc.seedIDCounter()
+	return svc
+}
+
+// seedIDCounter advances idCounter past the largest numeric suffix among persisted run ids
+// (and their parent ids) so freshly minted ids never collide with runs from before a
+// restart. Best-effort: no store / read error simply leaves the counter at zero.
+func (s *InteractiveService) seedIDCounter() {
+	indexReader, ok := s.workflowStore.(SessionIndexReader)
+	if !ok {
+		return
+	}
+	sessions, err := indexReader.ListAllProviderSessions(context.Background())
+	if err != nil {
+		return
+	}
+	var max int64
+	for _, sess := range sessions {
+		if n := numericIDSuffix(sess.RunID); n > max {
+			max = n
+		}
+		if n := numericIDSuffix(sess.ParentRunID); n > max {
+			max = n
+		}
+	}
+	for {
+		cur := s.idCounter.Load()
+		if cur >= max {
+			return
+		}
+		if s.idCounter.CompareAndSwap(cur, max) {
+			log.Printf("[runner] id counter seeded to %d from %d persisted runs", max, len(sessions))
+			return
+		}
+	}
+}
+
+// numericIDSuffix returns the trailing integer of an id like "run-14" (→ 14), or 0 when
+// the id has no numeric suffix.
+func numericIDSuffix(id string) int64 {
+	idx := strings.LastIndex(id, "-")
+	if idx < 0 || idx == len(id)-1 {
+		return 0
+	}
+	n, err := strconv.ParseInt(id[idx+1:], 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 func (s *InteractiveService) agentGraphSnapshot(parentRunID string) AgentGraphSnapshot {
