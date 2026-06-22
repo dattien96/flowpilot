@@ -812,9 +812,17 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 			s.emitAgentGraphLocked(rs.parentRunID, s.agentOrchestrator.transition(rs.parentRunID, "rejected"))
 		}
 	default:
-		rs.status = RunStatusRunning
-		if rs.parentRunID != "" {
-			rs.agentStatus = string(RunStatusRunning)
+		// agent_graph_updated / agent_bus_message are orchestration/panel relays emitted on
+		// the PARENT run to refresh the Agents panel; they are NOT the parent's own turn
+		// progress. Flipping the parent's run status to running here left an idle/completed
+		// parent showing a perpetual "running" spinner (and "no result") whenever a child
+		// agent emitted graph activity — including after the parent's own turn had completed.
+		// Only genuine turn-progress events advance status. (BUG-120)
+		if ev.Type != EventAgentGraphUpdated && ev.Type != EventAgentBusMessage {
+			rs.status = RunStatusRunning
+			if rs.parentRunID != "" {
+				rs.agentStatus = string(RunStatusRunning)
+			}
 		}
 	}
 	shouldEmitParentGraph := false

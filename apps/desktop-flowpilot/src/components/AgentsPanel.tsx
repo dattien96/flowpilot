@@ -27,6 +27,7 @@ export function AgentsPanel(): React.ReactElement {
   const backToMainRun = useStore((s) => s.backToMainRun);
   const listAgents = useStore((s) => s.listAgents);
   const clearAgentSpawnGuide = useStore((s) => s.clearAgentSpawnGuide);
+  const appendSystemMessage = useStore((s) => s.appendSystemMessage);
 
   const workspaceMainView = useStore((s) => s.workspaceMainView);
   const openOrchestrationBoard = useStore((s) => s.openOrchestrationBoard);
@@ -67,19 +68,26 @@ export function AgentsPanel(): React.ReactElement {
 
   const spawn = async (): Promise<void> => {
     if (!dialog || !mainRunId || !client.spawnAgent) return;
+    const request = {
+      parentRunId: mainRunId,
+      agent: dialog.agentName,
+      prompt: dialog.prompt,
+      provider: dialog.providerOverride,
+      dependsOn: dialog.dependsOn,
+      wait: dialog.wait,
+    };
     setSpawning(true);
+    // Close the dialog as soon as the spawn is dispatched: the child streams into the
+    // Agents panel regardless of the wait toggle, and a wait:true request blocks the HTTP
+    // call until the child finishes — previously that froze the dialog open the whole time
+    // (and a spawn error left it open silently). (BUG-120)
+    setDialog(null);
+    setOpen(false);
     try {
-      await client.spawnAgent({
-        parentRunId: mainRunId,
-        agent: dialog.agentName,
-        prompt: dialog.prompt,
-        provider: dialog.providerOverride,
-        dependsOn: dialog.dependsOn,
-        wait: dialog.wait,
-      });
+      await client.spawnAgent(request);
       await refreshAgentRuns();
-      setDialog(null);
-      setOpen(false);
+    } catch (err) {
+      appendSystemMessage(`Spawn agent failed: ${err instanceof Error ? err.message : String(err)}`, "error");
     } finally {
       setSpawning(false);
     }

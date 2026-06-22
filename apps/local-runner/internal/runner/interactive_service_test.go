@@ -1312,3 +1312,29 @@ func TestReconstructRunPreservesUpdatedAt(t *testing.T) {
 		t.Fatalf("reconstructRun updatedAt = %q, want preserved %q", rs.updatedAt, persisted)
 	}
 }
+
+// TestAgentGraphUpdateDoesNotResetParentRunStatus guards BUG-120: agent_graph_updated and
+// agent_bus_message are orchestration relays emitted on the PARENT run to refresh the Agents
+// panel. They must NOT flip the parent's run status to running — otherwise an idle/completed
+// parent shows a perpetual "running" spinner whenever a child agent emits graph activity.
+func TestAgentGraphUpdateDoesNotResetParentRunStatus(t *testing.T) {
+	svc, _ := newTestServer(t)
+	parent, apiErr := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if apiErr != nil {
+		t.Fatalf("createRun: %v", apiErr)
+	}
+	svc.mu.Lock()
+	svc.runs[parent.RunID].status = RunStatusCompleted
+	svc.mu.Unlock()
+
+	// Child activity relays these on the parent run.
+	svc.emitAgentGraph(parent.RunID, svc.agentGraphSnapshot(parent.RunID))
+	svc.emitAgentBus(parent.RunID, AgentBusMessage{ID: "bus-1", ParentRunID: parent.RunID, Kind: "handoff", Message: "x"})
+
+	svc.mu.Lock()
+	got := svc.runs[parent.RunID].status
+	svc.mu.Unlock()
+	if got != RunStatusCompleted {
+		t.Fatalf("parent status after orchestration relays = %q, want %q (must not flip to running)", got, RunStatusCompleted)
+	}
+}
