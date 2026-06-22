@@ -84,11 +84,8 @@ export function AgentsPanel(): React.ReactElement {
     setDialog(null);
     setOpen(false);
     try {
-      const result = await client.spawnAgent(request);
+      await client.spawnAgent(request);
       await refreshAgentRuns();
-      if (request.wait && result.finalMessage) {
-        appendSystemMessage(`**[${dialog.agentName}]** ${result.finalMessage}`, "info");
-      }
     } catch (err) {
       appendSystemMessage(`Spawn agent failed: ${err instanceof Error ? err.message : String(err)}`, "error");
     } finally {

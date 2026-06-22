@@ -77,7 +77,8 @@ function hasPendingPrompt(timeline: TimelineItem[], prompt: string): boolean {
 export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Partial<TimelineState> {
   const status = statusFromEvent(e, s.status);
   const thinkingItem = s.timeline.find((it) => it.kind === "thinking") as Extract<TimelineItem, { kind: "thinking" }> | undefined;
-  const shouldKeepThinking =
+  // Annotation events (BUG-121): only preserve an existing thinking row — never create one.
+  let shouldKeepThinking =
     e.type !== "turn_completed" &&
     e.type !== "turn_failed" &&
     e.type !== "permission_required" &&
@@ -275,6 +276,23 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
         timeline.push({ kind: "system", id: e.id, text: e.error, tone: "error" });
       }
       return finalize(timeline, { recoverable: e.recoverable });
+
+    case "agent_spawned_by_user":
+      // Idempotent — replay from seq 0 must not duplicate the row. (BUG-121)
+      if (!timeline.some((it) => it.kind === "system" && it.id === e.id)) {
+        timeline.push({ kind: "system", id: e.id, text: `Spawned agent **${e.agentName}**`, tone: "info" });
+      }
+      // Only keep an existing thinking row — never create a new one for annotation events.
+      shouldKeepThinking = thinkingItem !== undefined;
+      break;
+
+    case "agent_result_injected":
+      // Idempotent — replay from seq 0 must not duplicate the row. (BUG-121)
+      if (!timeline.some((it) => it.kind === "system" && it.id === e.id)) {
+        timeline.push({ kind: "system", id: e.id, text: `**[${e.agentName}]** ${e.finalMessage}`, tone: "info" });
+      }
+      shouldKeepThinking = thinkingItem !== undefined;
+      break;
   }
 
   return finalize(timeline);

@@ -47,6 +47,10 @@ const (
 	EventTurnCompleted        ProviderEventType = "turn_completed"
 	EventAgentGraphUpdated    ProviderEventType = "agent_graph_updated"
 	EventAgentBusMessage      ProviderEventType = "agent_bus_message"
+	// Emitted on the parent run when a user triggers a spawn from the UI (BUG-121).
+	// Persisted to the parent event log so the annotation survives server restarts.
+	EventAgentSpawnedByUser  ProviderEventType = "agent_spawned_by_user"
+	EventAgentResultInjected ProviderEventType = "agent_result_injected"
 )
 
 // ApprovalDecisionOption is one decision the runtime offers for an approval.
@@ -128,6 +132,9 @@ type ProviderEvent struct {
 	// agent_graph_updated / agent_bus_message
 	AgentGraphSnapshot *AgentGraphSnapshot `json:"agentGraphSnapshot,omitempty"`
 	AgentBusMessage    *AgentBusMessage    `json:"agentBusMessage,omitempty"`
+	// agent_spawned_by_user / agent_result_injected (BUG-121)
+	AgentName  string `json:"agentName,omitempty"`
+	ChildRunID string `json:"childRunId,omitempty"`
 }
 
 type AgentDependencyEdge struct {

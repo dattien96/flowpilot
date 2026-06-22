@@ -580,6 +580,16 @@ func (s *InteractiveService) emitAgentBusLocked(parentRunID string, msg AgentBus
 	}
 }
 
+// emitOnParentRun persists and broadcasts ev on the parent run's event stream (BUG-121).
+// Safe to call without s.mu held; acquires it internally.
+func (s *InteractiveService) emitOnParentRun(parentRunID string, ev ProviderEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if rs := s.runs[parentRunID]; rs != nil {
+		_ = s.emitLocked(rs, ev)
+	}
+}
+
 type workflowRunSeeder interface {
 	seed(runID string, steps []RuntimeWorkflowStep)
 }
@@ -816,11 +826,11 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 	default:
 		// agent_graph_updated / agent_bus_message are orchestration/panel relays emitted on
 		// the PARENT run to refresh the Agents panel; they are NOT the parent's own turn
-		// progress. Flipping the parent's run status to running here left an idle/completed
-		// parent showing a perpetual "running" spinner (and "no result") whenever a child
-		// agent emitted graph activity — including after the parent's own turn had completed.
-		// Only genuine turn-progress events advance status. (BUG-120)
-		if ev.Type != EventAgentGraphUpdated && ev.Type != EventAgentBusMessage {
+		// progress. agent_spawned_by_user / agent_result_injected are timeline annotations
+		// written when the user triggers a UI spawn (BUG-121). None of these should flip
+		// the parent's run status to running. Only genuine turn-progress events advance status.
+		if ev.Type != EventAgentGraphUpdated && ev.Type != EventAgentBusMessage &&
+			ev.Type != EventAgentSpawnedByUser && ev.Type != EventAgentResultInjected {
 			rs.status = RunStatusRunning
 			if rs.parentRunID != "" {
 				rs.agentStatus = string(RunStatusRunning)
@@ -1207,6 +1217,14 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 	})
 	_ = s.agentOrchestrator.addBus(parentRunID, AgentBusMessage{ID: s.nextID("bus"), ParentRunID: parentRunID, FromRunID: parentRunID, ToRunID: handle.RunID, Kind: "handoff", Message: in.Prompt, Queued: false, OccurredAt: time.Now().UTC().Format(time.RFC3339Nano)})
 	s.emitAgentGraph(parentRunID, s.agentOrchestrator.graphSnapshot(parentRunID))
+	// Persist a spawn annotation on the parent run (BUG-121). This writes a permanent
+	// event to the parent's event log so the spawn is visible in the parent timeline
+	// after a server restart, regardless of whether the spawn came from the UI or a tool.
+	s.emitOnParentRun(parentRunID, ProviderEvent{
+		Type:       EventAgentSpawnedByUser,
+		AgentName:  childSnap.AgentName,
+		ChildRunID: handle.RunID,
+	})
 
 	// Fire the first turn asynchronously; the child streams via its own SSE.
 	if !blockedStart {
@@ -1241,6 +1259,14 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 			result.Status = string(completion.status)
 			if completion.status == RunStatusCompleted {
 				result.FinalMessage = completion.finalMessage
+				// Persist the child's result as an annotation on the parent run (BUG-121).
+				if result.FinalMessage != "" {
+					s.emitOnParentRun(parentRunID, ProviderEvent{
+						Type:         EventAgentResultInjected,
+						AgentName:    childSnap.AgentName,
+						FinalMessage: result.FinalMessage,
+					})
+				}
 			}
 		case <-ctx.Done():
 			return SpawnAgentResult{}, ctx.Err()

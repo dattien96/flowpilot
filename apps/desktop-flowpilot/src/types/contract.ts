@@ -400,7 +400,9 @@ export type ProviderEventDTO =
   | (ProviderEventBaseDTO & { type: "turn_failed"; error: string; recoverable: boolean })
   | (ProviderEventBaseDTO & { type: "turn_completed"; finalMessage: string })
   | (ProviderEventBaseDTO & { type: "agent_graph_updated"; agentGraphSnapshot: AgentGraphSnapshot })
-  | (ProviderEventBaseDTO & { type: "agent_bus_message"; agentBusMessage: AgentBusMessage });
+  | (ProviderEventBaseDTO & { type: "agent_bus_message"; agentBusMessage: AgentBusMessage })
+  | (ProviderEventBaseDTO & { type: "agent_spawned_by_user"; agentName: string; childRunId: string })
+  | (ProviderEventBaseDTO & { type: "agent_result_injected"; agentName: string; finalMessage: string });
 
 export type ProviderEventType = ProviderEventDTO["type"];
 
