@@ -409,6 +409,47 @@ func manifestToDriveIndexRecord(manifest ChatSessionSyncManifest) chatSessionDri
 	}
 }
 
+// uploadChatSessionRunFiles uploads one run's provider transcript file and its manifest.json
+// to the run's own Drive folder, stamping the resulting Drive object id back onto the
+// manifest. Shared by the parent run and each child agent run so child sub-chats survive a
+// cross-machine restore. (BUG-119)
+func (s *InteractiveService) uploadChatSessionRunFiles(accessToken, rootFolderID string, manifest *ChatSessionSyncManifest, providerBytes []byte) *apiErr {
+	runFolderID, err := ensureGoogleDriveFolderPath(accessToken, rootFolderID, []string{
+		"chat-sessions", "runs", safeChatSessionSegment(manifest.SourceMachineID), safeChatSessionSegment(manifest.SourceRunID), chatSessionProviderFolder(manifest.ProviderKey),
+	})
+	if err != nil {
+		return newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
+	}
+	providerFileName := filepath.Base(manifest.ProviderFile.RelativePath)
+	uploadedFile, err := upsertGoogleDriveFile(
+		accessToken,
+		runFolderID,
+		providerFileName,
+		providerBytes,
+		"application/octet-stream",
+		googleDriveAppProperties(map[string]string{"relativePath": manifest.ProviderFile.RelativePath}),
+	)
+	if err != nil {
+		return newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
+	}
+	manifest.ProviderFile.DriveObjectID = uploadedFile.ID
+
+	manifestDirID, err := ensureGoogleDriveFolderPath(accessToken, rootFolderID, []string{
+		"chat-sessions", "runs", safeChatSessionSegment(manifest.SourceMachineID), safeChatSessionSegment(manifest.SourceRunID),
+	})
+	if err != nil {
+		return newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
+	}
+	manifestBytes, err := json.Marshal(manifest)
+	if err != nil {
+		return newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
+	}
+	if _, err := upsertGoogleDriveFile(accessToken, manifestDirID, "manifest.json", manifestBytes, "application/json", nil); err != nil {
+		return newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
+	}
+	return nil
+}
+
 func (s *InteractiveService) syncChatRunToDrive(ctx context.Context, runID string, req ChatSessionSyncRequest) (ChatSessionSyncResult, *apiErr) {
 	manifest, providerBytes, apiErr := s.BuildChatSessionSyncManifest(ctx, runID)
 	if apiErr != nil {
@@ -426,38 +467,32 @@ func (s *InteractiveService) syncChatRunToDrive(ctx context.Context, runID strin
 		return ChatSessionSyncResult{}, driveErr
 	}
 
-	runFolderID, err := ensureGoogleDriveFolderPath(accessToken, rootFolderID, []string{
-		"chat-sessions", "runs", safeChatSessionSegment(manifest.SourceMachineID), safeChatSessionSegment(manifest.SourceRunID), chatSessionProviderFolder(manifest.ProviderKey),
-	})
-	if err != nil {
-		return ChatSessionSyncResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
+	// Upload the parent run, then each child agent run, so child sub-chats are openable on
+	// another machine. Previously only the parent provider file was uploaded; a restore
+	// elsewhere then found the agent tree (manifest.ChildAgents) but no child transcripts. (BUG-119)
+	manifests := []ChatSessionSyncManifest{manifest}
+	if upErr := s.uploadChatSessionRunFiles(accessToken, rootFolderID, &manifests[0], providerBytes); upErr != nil {
+		return ChatSessionSyncResult{}, upErr
 	}
-	providerFileName := filepath.Base(manifest.ProviderFile.RelativePath)
-	uploadedFile, err := upsertGoogleDriveFile(
-		accessToken,
-		runFolderID,
-		providerFileName,
-		providerBytes,
-		"application/octet-stream",
-		googleDriveAppProperties(map[string]string{"relativePath": manifest.ProviderFile.RelativePath}),
-	)
-	if err != nil {
-		return ChatSessionSyncResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
-	}
-	manifest.ProviderFile.DriveObjectID = uploadedFile.ID
-
-	manifestDirID, err := ensureGoogleDriveFolderPath(accessToken, rootFolderID, []string{
-		"chat-sessions", "runs", safeChatSessionSegment(manifest.SourceMachineID), safeChatSessionSegment(manifest.SourceRunID),
-	})
-	if err != nil {
-		return ChatSessionSyncResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
-	}
-	manifestBytes, err := json.Marshal(manifest)
-	if err != nil {
-		return ChatSessionSyncResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
-	}
-	if _, err := upsertGoogleDriveFile(accessToken, manifestDirID, "manifest.json", manifestBytes, "application/json", nil); err != nil {
-		return ChatSessionSyncResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
+	syncedChildRunIDs := []string{}
+	for _, child := range manifest.ChildAgents {
+		childRunID := strings.TrimSpace(child.RunID)
+		if childRunID == "" || childRunID == runID {
+			continue
+		}
+		childManifest, childBytes, childErr := s.BuildChatSessionSyncManifest(ctx, childRunID)
+		if childErr != nil {
+			// Best-effort: a child whose transcript is missing locally shouldn't fail the
+			// whole sync — log and continue so the rest still upload.
+			log.Printf("[chat-sync] skip child run_id=%q parent=%q code=%q msg=%q", childRunID, runID, childErr.code, childErr.msg)
+			continue
+		}
+		if upErr := s.uploadChatSessionRunFiles(accessToken, rootFolderID, &childManifest, childBytes); upErr != nil {
+			log.Printf("[chat-sync] child upload failed run_id=%q parent=%q code=%q msg=%q", childRunID, runID, upErr.code, upErr.msg)
+			continue
+		}
+		manifests = append(manifests, childManifest)
+		syncedChildRunIDs = append(syncedChildRunIDs, childRunID)
 	}
 
 	indexFolderID, err := ensureGoogleDriveFolderPath(accessToken, rootFolderID, []string{"chat-sessions", "_index"})
@@ -468,7 +503,10 @@ func (s *InteractiveService) syncChatRunToDrive(ctx context.Context, runID strin
 	if existing, findErr := findGoogleDriveFile(accessToken, indexFolderID, "sessions.ndjson"); findErr == nil && strings.TrimSpace(existing.ID) != "" {
 		existingIndex, _ = downloadGoogleDriveFileByID(ctx, accessToken, existing.ID)
 	}
-	merged := mergeChatSessionDriveIndex(existingIndex, manifestToDriveIndexRecord(manifest))
+	merged := existingIndex
+	for i := range manifests {
+		merged = mergeChatSessionDriveIndex(merged, manifestToDriveIndexRecord(manifests[i]))
+	}
 	if _, err := upsertGoogleDriveFile(accessToken, indexFolderID, "sessions.ndjson", merged, "application/x-ndjson", nil); err != nil {
 		return ChatSessionSyncResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
 	}
@@ -480,6 +518,16 @@ func (s *InteractiveService) syncChatRunToDrive(ctx context.Context, runID strin
 		state.SyncUpdatedAt = manifest.SyncedAt
 	}); syncErr != nil {
 		return ChatSessionSyncResult{}, syncErr
+	}
+	// Mark each synced child as synced too (best-effort — index/parent already uploaded).
+	for i, childRunID := range syncedChildRunIDs {
+		childManifest := manifests[i+1]
+		_ = s.updateLocalSessionSyncStatus(ctx, childRunID, func(state *ProviderSessionState) {
+			state.SourceMachineID = childManifest.SourceMachineID
+			state.SourceRunID = childManifest.SourceRunID
+			state.SyncStatus = "synced"
+			state.SyncUpdatedAt = childManifest.SyncedAt
+		})
 	}
 
 	return ChatSessionSyncResult{
