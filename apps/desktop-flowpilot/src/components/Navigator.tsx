@@ -133,7 +133,7 @@ export function Navigator(): React.ReactElement {
   const [recentProjectIds, setRecentProjectIds] = useState<string[]>([]);
   const [projectHistoryById, setProjectHistoryById] = useState<Record<string, RunHistoryItem[]>>({});
   const [openProjectIds, setOpenProjectIds] = useState<Record<string, boolean>>({});
-  const [visibleHistoryCounts, setVisibleHistoryCounts] = useState<Record<string, number>>({});
+  const [expandedHistoryIds, setExpandedHistoryIds] = useState<Set<string>>(new Set());
   const [selectionModeProjectId, setSelectionModeProjectId] = useState<string | null>(null);
   const [selectedRunIds, setSelectedRunIds] = useState<Set<string>>(new Set());
   const [confirmAction, setConfirmAction] = useState<{ type: "delete" | "sync"; runIds: string[]; projectId: string } | null>(null);
@@ -277,7 +277,6 @@ export function Navigator(): React.ReactElement {
     }));
     if (visibleRunHistory.length > 0) {
       setOpenProjectIds((current) => (current[selectedProjectId] ? current : { ...current, [selectedProjectId]: true }));
-      setVisibleHistoryCounts((current) => (current[selectedProjectId] ? current : { ...current, [selectedProjectId]: HISTORY_LIMIT }));
     }
   }, [historyLoading, selectedProjectId, visibleRunHistory]);
 
@@ -318,21 +317,16 @@ export function Navigator(): React.ReactElement {
       });
   }, [projectHistoryById]);
 
-  const visibleHistoryFor = (projectId: string, history: RunHistoryItem[]): RunHistoryItem[] => {
-    const count = visibleHistoryCounts[projectId] ?? HISTORY_LIMIT;
-    return history.slice(0, count);
-  };
-
   const toggleProjectHistory = (projectId: string) => {
     setOpenProjectIds((current) => ({ ...current, [projectId]: !current[projectId] }));
   };
 
-  const showMoreHistory = (projectId: string, total: number) => {
-    setVisibleHistoryCounts((current) => ({ ...current, [projectId]: total }));
-  };
-
-  const showLessHistory = (projectId: string) => {
-    setVisibleHistoryCounts((current) => ({ ...current, [projectId]: HISTORY_LIMIT }));
+  const toggleShowAllHistory = (projectId: string) => {
+    setExpandedHistoryIds((current) => {
+      const next = new Set(current);
+      next.has(projectId) ? next.delete(projectId) : next.add(projectId);
+      return next;
+    });
   };
 
   const selectProjectAndTrack = (projectId: string) => {
@@ -416,9 +410,8 @@ export function Navigator(): React.ReactElement {
             {historyGroups.map(({ projectId, history }) => {
               const projectName = projectLabel(projectId, projects);
               const expanded = openProjectIds[projectId] ?? projectId === selectedProjectId;
-              const visibleHistory = expanded ? visibleHistoryFor(projectId, history) : [];
-              const hiddenCount = history.length - visibleHistory.length;
-              const showAllHistory = (visibleHistoryCounts[projectId] ?? HISTORY_LIMIT) >= history.length;
+              const showAllHistory = expandedHistoryIds.has(projectId);
+              const visibleHistory = expanded ? (showAllHistory ? history : history.slice(0, HISTORY_LIMIT)) : [];
               const unsyncedCount = history.filter(isUnsyncedChat).length;
               const projectSyncing = isProjectSyncing(history, projectId);
               return (
@@ -609,12 +602,9 @@ export function Navigator(): React.ReactElement {
                         <button
                           type="button"
                           className="project-history-more"
-                          onClick={() => {
-                            if (showAllHistory) showLessHistory(projectId);
-                            else showMoreHistory(projectId, history.length);
-                          }}
+                          onClick={() => toggleShowAllHistory(projectId)}
                         >
-                          {showAllHistory ? "Show less" : `Show all (${hiddenCount} more)`}
+                          {showAllHistory ? "Show less" : `Show all (${history.length - HISTORY_LIMIT} more)`}
                         </button>
                       )}
                     </div>

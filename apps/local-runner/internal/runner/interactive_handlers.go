@@ -610,6 +610,7 @@ func (s *InteractiveService) resumeRun(runID string) (RunHandle, *apiErr) {
 	rs := s.runs[runID]
 	s.mu.Unlock()
 	log.Printf("[chat-history-open] resume start run_id=%q in_memory=%t", runID, rs != nil)
+	inMemory := rs != nil
 	if rs == nil {
 		rebuilt, err := s.loadPersistedRun(runID)
 		if err != nil {
@@ -618,9 +619,15 @@ func (s *InteractiveService) resumeRun(runID string) (RunHandle, *apiErr) {
 		}
 		rs = rebuilt
 	}
-	if err := s.ensureResumeReady(rs); err != nil {
-		log.Printf("[chat-history-open] resume readiness failed run_id=%q provider=%q code=%q message=%q", runID, rs.providerKey, err.code, err.msg)
-		return RunHandle{}, err
+	// Skip session-file validation for live active runs: refreshResumeHandleLocked
+	// only runs post-turn, so realProviderSessionID is "" while a turn is in-flight
+	// and LocateSessionFile would fail with the synthetic "thread-*" placeholder.
+	isActiveInMemory := inMemory && rs.status != RunStatusCompleted && rs.status != RunStatusFailed && rs.status != RunStatusCancelled
+	if !isActiveInMemory {
+		if err := s.ensureResumeReady(rs); err != nil {
+			log.Printf("[chat-history-open] resume readiness failed run_id=%q provider=%q code=%q message=%q", runID, rs.providerKey, err.code, err.msg)
+			return RunHandle{}, err
+		}
 	}
 	s.seedTranscriptFromDisk(rs)
 	handle := RunHandle{RunID: rs.id, ProviderSessionID: s.resumeSessionID(rs), ProviderKey: rs.providerKey, Status: rs.status}

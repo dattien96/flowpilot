@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useStore, type TimelineItem } from "@/state/store";
+import { providerLabel, useStore, type TimelineItem } from "@/state/store";
 
 const TIMELINE_PAGE_SIZE = 6;
 
@@ -378,7 +378,7 @@ export function Timeline(): React.ReactElement {
             const roleClass = lowerName.includes("coder") ? "coder" : lowerName.includes("review") ? "reviewer" : lowerName.includes("test") ? "tester" : "";
             const roleColor = roleClass === "coder" ? "var(--role-coder)" : roleClass === "reviewer" ? "var(--role-reviewer)" : roleClass === "tester" ? "var(--role-tester)" : "var(--text)";
             const isWaiting = run.status === "waiting_approval" || run.status === "waiting_question";
-            const providerName = lowerName.includes("coder") ? "Claude" : "Codex";
+            const providerName = providerLabel(run.providerKey ?? "");
             return (
               <div key={run.runId} className={`abanner ${roleClass}`}>
                 <span className={`pulse ${isWaiting ? "amber" : ""}`} />
