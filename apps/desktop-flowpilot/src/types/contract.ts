@@ -54,6 +54,7 @@ export interface AgentDefinition {
   role: string;
   provider?: string;
   model?: string;
+  modelReasoningEffort?: string;
   tools?: string[];
   systemPrompt?: string;
   /** Where the definition came from: "claude" | "codex" | "provider" | "flowpilot". */
@@ -96,6 +97,7 @@ export interface AgentRunSummary {
   createdAt: string;
   dependsOn?: string[];
   agentStatus?: string;
+  providerKey?: string;
 }
 
 export interface AgentDependencyEdge {

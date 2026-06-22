@@ -14,13 +14,14 @@ import (
 // declare a preferred provider, otherwise it inherits the spawning run's
 // provider.
 type AgentDefinition struct {
-	Name         string   `json:"name"`
-	Description  string   `json:"description"`
-	Role         string   `json:"role"`
-	Provider     string   `json:"provider,omitempty"`
-	Model        string   `json:"model,omitempty"`
-	Tools        []string `json:"tools,omitempty"`
-	SystemPrompt string   `json:"systemPrompt,omitempty"`
+	Name                string   `json:"name"`
+	Description         string   `json:"description"`
+	Role                string   `json:"role"`
+	Provider            string   `json:"provider,omitempty"`
+	Model               string   `json:"model,omitempty"`
+	ModelReasoningEffort string  `json:"modelReasoningEffort,omitempty"`
+	Tools               []string `json:"tools,omitempty"`
+	SystemPrompt        string   `json:"systemPrompt,omitempty"`
 	// Source is where the definition came from: project-local "claude" /
 	// "codex", a provider home "provider", or a FlowPilot "flowpilot" built-in.
 	Source string `json:"source"`
@@ -212,6 +213,8 @@ func parseAgentDefinition(path, contents, source string) AgentDefinition {
 				def.Provider = strings.ToLower(frontMatterValue(trimmed, "provider:"))
 			case def.Model == "" && hasKey(trimmed, "model:"):
 				def.Model = frontMatterValue(trimmed, "model:")
+			case def.ModelReasoningEffort == "" && hasKey(trimmed, "model_reasoning_effort:"):
+				def.ModelReasoningEffort = strings.ToLower(frontMatterValue(trimmed, "model_reasoning_effort:"))
 			case def.Role == "" && hasKey(trimmed, "role:"):
 				def.Role = strings.ToLower(frontMatterValue(trimmed, "role:"))
 			case def.Tools == nil && hasKey(trimmed, "tools:"):
@@ -309,7 +312,6 @@ func builtinAgentDefinitions() []AgentDefinition {
 			Name:        "coder",
 			Role:        "coder",
 			Description: "Implements a scoped change end-to-end, then signals ready-for-review.",
-			Provider:    "codex",
 			Tools:       []string{"Read", "Edit", "Write", "Bash", "Grep", "Glob"},
 			SystemPrompt: "You are the coder sub-agent. Implement the requested change end-to-end: " +
 				"read the relevant code, make focused edits, keep tests green, and emit a ready-for-review " +
@@ -320,7 +322,6 @@ func builtinAgentDefinitions() []AgentDefinition {
 			Name:        "reviewer",
 			Role:        "reviewer",
 			Description: "Adversarial code review; approves or requests changes to gate the loop.",
-			Provider:    "codex",
 			Tools:       []string{"Read", "Grep", "Glob", "Bash"},
 			SystemPrompt: "You are the reviewer sub-agent. Review the coder's diff adversarially for " +
 				"correctness, regressions, and missed edge cases. Return either APPROVED or " +
@@ -331,7 +332,6 @@ func builtinAgentDefinitions() []AgentDefinition {
 			Name:        "tester",
 			Role:        "tester",
 			Description: "Writes and runs tests, reports coverage gaps.",
-			Provider:    "codex",
 			Tools:       []string{"Read", "Edit", "Write", "Bash", "Grep", "Glob"},
 			SystemPrompt: "You are the tester sub-agent. Write and run tests for the change under review, " +
 				"then report pass/fail results and any coverage gaps you could not close.",

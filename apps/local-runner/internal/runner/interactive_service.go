@@ -434,6 +434,7 @@ func (s *InteractiveService) releaseDependentAgents(parentRunID, completedRunID,
 				CreatedAt:   child.createdAt,
 				DependsOn:   append([]string(nil), child.dependsOn...),
 				AgentStatus: child.agentStatus,
+				ProviderKey: string(child.providerKey),
 			},
 		})
 	}
@@ -773,6 +774,7 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 			CreatedAt:   rs.createdAt,
 			DependsOn:   append([]string(nil), rs.dependsOn...),
 			AgentStatus: rs.agentStatus,
+			ProviderKey: string(rs.providerKey),
 		})
 		shouldEmitParentGraph = shouldEmitAgentGraphForChildEvent(ev.Type)
 	}
@@ -971,12 +973,14 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 	workflowID := ""
 	parentModel := ""
 	parentReasoningEffort := ""
+	parentProviderKey := ProviderKey("")
 	if parentRun != nil {
 		cwd = parentRun.workspaceCwd
 		projectID = parentRun.projectID
 		workflowID = parentRun.workflowID
 		parentModel = parentRun.modelName
 		parentReasoningEffort = parentRun.reasoningEffort
+		parentProviderKey = parentRun.providerKey
 	}
 	s.mu.Unlock()
 	if parentRun == nil {
@@ -1005,6 +1009,20 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		s.mu.Unlock()
 	}
 
+	// Resolve the child model and reasoning effort.
+	// Priority: agent definition > same-provider inheritance > per-provider default.
+	// When the child runs on a different provider than the parent, the parent's model
+	// name is invalid for the child (e.g. "claude-sonnet-4-6" sent to Codex → 400).
+	childModel := parentModel
+	childReasoningEffort := parentReasoningEffort
+	if agentDef != nil && agentDef.Model != "" {
+		childModel = agentDef.Model
+		childReasoningEffort = agentDef.ModelReasoningEffort
+	} else if providerKey != parentProviderKey {
+		childModel = defaultModelForProvider(providerKey)
+		childReasoningEffort = ""
+	}
+
 	// Create the child run. createRun acquires s.mu internally; call it unlocked.
 	startIn := StartRunInput{
 		ProjectID:       projectID,
@@ -1012,8 +1030,8 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		ChatMode:        "normal_chat",
 		Cwd:             cwd,
 		ProviderKey:     providerKey,
-		Model:           parentModel,
-		ReasoningEffort: parentReasoningEffort,
+		Model:           childModel,
+		ReasoningEffort: childReasoningEffort,
 	}
 	handle, apiErr := s.createRun(startIn)
 	if apiErr != nil {
@@ -1036,7 +1054,6 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 	}
 
 	// Stamp agent identity on the newly created child run.
-	// Apply model from the agent definition so the child turn uses the correct model.
 	s.mu.Lock()
 	var childSnap ProviderSessionState
 	agentStatus := "spawned"
@@ -1049,9 +1066,6 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		if agentDef != nil {
 			rs.agentName = agentDef.Name
 			rs.role = agentDef.Role
-			if agentDef.Model != "" {
-				rs.modelName = agentDef.Model
-			}
 		} else {
 			rs.agentName = in.Agent
 			rs.role = strings.ToLower(in.Agent)
@@ -1093,6 +1107,7 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		CreatedAt:   childSnap.StartedAt,
 		DependsOn:   append([]string(nil), in.DependsOn...),
 		AgentStatus: agentStatus,
+		ProviderKey: string(childSnap.ProviderKey),
 	})
 	_ = s.agentOrchestrator.addBus(parentRunID, AgentBusMessage{ID: s.nextID("bus"), ParentRunID: parentRunID, FromRunID: parentRunID, ToRunID: handle.RunID, Kind: "handoff", Message: in.Prompt, Queued: false, OccurredAt: time.Now().UTC().Format(time.RFC3339Nano)})
 	s.emitAgentGraph(parentRunID, s.agentOrchestrator.graphSnapshot(parentRunID))
@@ -1162,6 +1177,7 @@ func (s *InteractiveService) listAgentRunSummaries(parentRunID string) []AgentRu
 			CreatedAt:   rs.createdAt,
 			DependsOn:   append([]string(nil), rs.dependsOn...),
 			AgentStatus: rs.agentStatus,
+			ProviderKey: string(rs.providerKey),
 		})
 	}
 	s.mu.Unlock()
@@ -1836,4 +1852,19 @@ func truncateDisplayField(s string, max int) string {
 		return s
 	}
 	return string(runes[:max]) + "…"
+}
+
+// defaultModelForProvider returns the baseline model name to use when spawning a
+// child run on a different provider than the parent and the agent definition does
+// not declare an explicit model. Using the parent's model name cross-provider
+// causes a 400 from the target provider (e.g. "claude-sonnet-4-6" sent to Codex).
+func defaultModelForProvider(key ProviderKey) string {
+	switch key {
+	case ProviderKeyCodex:
+		return "gpt-5.4-mini"
+	case ProviderKeyClaude:
+		return "claude-sonnet-4-6"
+	default:
+		return ""
+	}
 }
