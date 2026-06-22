@@ -358,6 +358,8 @@ class SupabaseAdminRepository {
         assertNoError(deleteError, "Unable to update project team links.");
         if (teamIds.length === 0)
             return;
+        // legacy_project_id is NOT NULL after the UUID baseline migration (20260519070000).
+        // Fetch it from projects before inserting so the constraint is satisfied.
         const { data: projectRow, error: projectError } = await this.supabase
             .from("projects")
             .select("legacy_id")
