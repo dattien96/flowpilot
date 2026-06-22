@@ -94,8 +94,16 @@ function applyTimelineEvent(s, e) {
     switch (e.type) {
         case "turn_started":
             closeAssistant();
-            if (e.prompt && !hasPendingPrompt(timeline, e.prompt)) {
-                timeline.push({ kind: "prompt", id: `prompt-${e.providerTurnId}`, text: e.prompt });
+            if (e.prompt) {
+                // Idempotent guard (BUG-111): the prompt id is stable across replays
+                // (derived from providerTurnId), so a re-delivered turn_started — e.g. when
+                // switching chats in the history panel re-streams the run from seq 0 — must
+                // not push a second copy of a prompt already in the timeline.
+                const promptId = `prompt-${e.providerTurnId}`;
+                const alreadyPresent = timeline.some((it) => it.kind === "prompt" && it.id === promptId);
+                if (!alreadyPresent && !hasPendingPrompt(timeline, e.prompt)) {
+                    timeline.push({ kind: "prompt", id: promptId, text: e.prompt });
+                }
             }
             break;
         case "message_delta": {
@@ -107,9 +115,19 @@ function applyTimelineEvent(s, e) {
                 }
             }
             else {
+                // Idempotent re-stream guard (BUG-111): if a bubble with this event id already
+                // exists, the message is being re-delivered (chat switch / replay from seq 0).
+                // Resume that bubble and reset its text so the re-stream rebuilds it in place
+                // instead of pushing a duplicate assistant bubble.
                 const id = e.id;
                 streamingAssistantId = id;
-                timeline.push({ kind: "assistant", id, text: e.text, finalized: false });
+                const existingIdx = timeline.findIndex((it) => it.kind === "assistant" && it.id === id);
+                if (existingIdx >= 0) {
+                    timeline[existingIdx] = { kind: "assistant", id, text: e.text, finalized: false };
+                }
+                else {
+                    timeline.push({ kind: "assistant", id, text: e.text, finalized: false });
+                }
             }
             break;
         }
@@ -125,14 +143,25 @@ function applyTimelineEvent(s, e) {
                 }
             }
             else {
-                timeline.push({ kind: "assistant", id: e.id, text: e.text, finalized: true });
+                // Idempotent guard (BUG-111): update an existing bubble with this id in place
+                // rather than pushing a duplicate on re-delivery.
+                const existingIdx = timeline.findIndex((it) => it.kind === "assistant" && it.id === e.id);
+                if (existingIdx >= 0) {
+                    timeline[existingIdx] = { kind: "assistant", id: e.id, text: e.text, finalized: true };
+                }
+                else {
+                    timeline.push({ kind: "assistant", id: e.id, text: e.text, finalized: true });
+                }
             }
             closeAssistant();
             break;
         }
         case "tool_started":
             closeAssistant();
-            timeline.push({ kind: "tool", id: e.id, toolName: e.toolName, status: "running", input: e.input });
+            // Idempotent guard (BUG-111): skip a re-delivered tool_started whose row already exists.
+            if (!timeline.some((it) => it.kind === "tool" && it.id === e.id)) {
+                timeline.push({ kind: "tool", id: e.id, toolName: e.toolName, status: "running", input: e.input });
+            }
             break;
         case "tool_completed": {
             closeAssistant();
@@ -142,6 +171,14 @@ function applyTimelineEvent(s, e) {
                     timeline[i] = { ...it, status: e.status, output: e.output };
                     return finalize(timeline);
                 }
+            }
+            // No running tool of this name to close. In a normal forward stream every
+            // tool_completed has a matching running tool, so reaching here means either a
+            // re-delivery (chat switch / replay) of an already-completed tool or an orphan
+            // completion. Skip if a tool of this name already exists (re-delivery); otherwise
+            // record it. (BUG-111)
+            if (timeline.some((it) => it.kind === "tool" && it.toolName === e.toolName)) {
+                return finalize(timeline);
             }
             timeline.push({ kind: "tool", id: e.id, toolName: e.toolName, status: e.status, output: e.output });
             break;

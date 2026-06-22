@@ -1061,6 +1061,9 @@ export const useStore = create<AppState>((set, get) => ({
       agentSpawnGuideOpen: false,
       agentSpawnGuideAgentName: undefined,
       _runReplaySeq: {},
+      // Drop snapshots from the previously-open run so a later focus/back round-trip
+      // can't restore a stale timeline from an unrelated chat. (BUG-111)
+      _runSnapshots: {},
       _streamRunSeq: get()._streamRunSeq + 1,
       ...(historyProvider
         ? {

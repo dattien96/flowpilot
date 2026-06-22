@@ -917,12 +917,15 @@ async function* cursorChildStream() {
         focusAgentRun: () => emptyStream(),
         resumeRun: async (runId) => ({ runId, providerSessionId: "session-child", providerKey: "codex", status: "completed" }),
     }), []);
+    // Real flow: the user is VIEWING the child (runId === child-run) when they click
+    // "back to main agent". backToMainRun snapshots the child and restores the main
+    // snapshot captured earlier during focusAgentRun.
     store_1.useStore.setState({
-        runId: "current-run",
+        runId: "child-run",
         mainRunId: "current-run",
-        activeAgentRunId: undefined,
-        timeline: [{ kind: "prompt", id: "main-prompt", text: "main prompt" }],
-        status: "running",
+        activeAgentRunId: "child-run",
+        timeline: [{ kind: "assistant", id: "child-a", text: "child output", finalized: true }],
+        status: "completed",
         artifacts: [],
         _runSnapshots: {
             "current-run": {
@@ -935,13 +938,16 @@ async function* cursorChildStream() {
         },
         // _runReplaySeq[mainRunId] inflated to 50 by orchestration stream processing
         // agent_graph_updated events (seq 11..50) while the user was viewing the child.
-        _runReplaySeq: { "current-run": 50 },
+        _runReplaySeq: { "current-run": 50, "child-run": 3 },
     });
     store_1.useStore.getState().backToMainRun();
     await new Promise((resolve) => setTimeout(resolve, 0));
-    // Must replay from lastEventSeq (10), not from orchestration-inflated _runReplaySeq (50).
+    // The timeline replay (consumeAgentStream, the FIRST streamRun call) must start from
+    // the snapshot's lastEventSeq (10), NOT the orchestration-inflated _runReplaySeq (50).
     // Starting at 50 would skip real timeline events with seqs 11..50 (e.g. message_completed).
-    strict_1.default.deepEqual(mainStreamSeqs, [10]);
+    // The orchestration stream legitimately resumes from 50 (the second call). (BUG-109)
+    strict_1.default.equal(mainStreamSeqs[0], 10, "timeline replay must use snapshot lastEventSeq");
+    strict_1.default.equal(mainStreamSeqs.includes(50), true, "orchestration stream resumes from its cursor");
 });
 // BUG-109: consumeAgentStream must not re-process agent_graph_updated / agent_bus_message
 // events when replaying the gap between restore.lastEventSeq and the orchestration-advanced

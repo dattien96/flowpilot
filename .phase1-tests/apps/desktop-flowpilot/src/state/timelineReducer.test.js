@@ -295,3 +295,66 @@ const questionOptions = [
     strict_1.default.equal(card?.decision, "deny", "live deny decision must not be overwritten by stale detection");
     strict_1.default.equal(next.pendingApproval, undefined);
 });
+// ── Idempotent re-delivery (BUG-111) ────────────────────────────────────────
+// Switching chats in the history panel re-streams a run from seq 0. Because the
+// persisted events keep their original ids on replay, applying the same recorded
+// sequence twice must rebuild the SAME timeline, not duplicate bubbles/tools.
+// Helper: fold a sequence of events into a fresh timeline.
+function foldEvents(events) {
+    let state = { status: "idle", timeline: [], recoverable: false };
+    for (const e of events) {
+        state = { ...state, ...(0, timelineReducer_1.applyTimelineEvent)(state, e) };
+    }
+    return state;
+}
+const SPAWN_TURN = [
+    baseEvent({ id: "evt-ts", seq: 1, type: "turn_started", providerTurnId: "turn-1", prompt: "spawn the reviewer" }),
+    baseEvent({ id: "evt-tool-start", seq: 2, type: "tool_started", toolName: "mcp__flowpilot__spawn_agent", input: {} }),
+    baseEvent({ id: "evt-tool-done", seq: 3, type: "tool_completed", toolName: "mcp__flowpilot__spawn_agent", status: "success", output: "ok" }),
+    baseEvent({ id: "evt-d1", seq: 4, type: "message_delta", text: "The child agent " }),
+    baseEvent({ id: "evt-d2", seq: 5, type: "message_delta", text: "returned exactly: CHILD_AGENT_DONE" }),
+    baseEvent({ id: "evt-mc", seq: 6, type: "message_completed", text: "The child agent returned exactly: CHILD_AGENT_DONE" }),
+    baseEvent({ id: "evt-tc", seq: 7, type: "turn_completed", finalMessage: "The child agent returned exactly: CHILD_AGENT_DONE" }),
+];
+(0, node_test_1.default)("applying a recorded turn twice is idempotent — no duplicate bubbles or tools (BUG-111)", () => {
+    const once = foldEvents(SPAWN_TURN);
+    // Replay the SAME recorded events again into the already-built timeline (chat switch).
+    let twice = once;
+    for (const e of SPAWN_TURN) {
+        twice = { ...twice, ...(0, timelineReducer_1.applyTimelineEvent)(twice, e) };
+    }
+    const assistants = twice.timeline.filter((it) => it.kind === "assistant");
+    const tools = twice.timeline.filter((it) => it.kind === "tool");
+    const prompts = twice.timeline.filter((it) => it.kind === "prompt");
+    strict_1.default.equal(prompts.length, 1, "prompt must not duplicate on re-delivery");
+    strict_1.default.equal(tools.length, 1, "tool row must not duplicate on re-delivery");
+    strict_1.default.equal(assistants.length, 1, "assistant bubble must not duplicate on re-delivery");
+    strict_1.default.equal(assistants[0].text, "The child agent returned exactly: CHILD_AGENT_DONE", "re-streamed text must rebuild in place, not double");
+    strict_1.default.equal(assistants[0].finalized, true);
+});
+(0, node_test_1.default)("re-streaming a finalized bubble (deltas restart) rebuilds it in place (BUG-111)", () => {
+    // Build a completed bubble, then re-deliver only its deltas (streamingAssistantId is
+    // cleared after completion) — the second stream must resume the same bubble.
+    const state = foldEvents([
+        baseEvent({ id: "evt-d1", seq: 1, type: "message_delta", text: "The " }),
+        baseEvent({ id: "evt-d2", seq: 2, type: "message_delta", text: "answer" }),
+        baseEvent({ id: "evt-mc", seq: 3, type: "message_completed", text: "The answer" }),
+    ]);
+    strict_1.default.equal(state.timeline.filter((it) => it.kind === "assistant").length, 1);
+    // Re-deliver the first delta (same id) after completion: must NOT create a 2nd bubble.
+    const next = (0, timelineReducer_1.applyTimelineEvent)(state, baseEvent({ id: "evt-d1", seq: 1, type: "message_delta", text: "The " }));
+    const assistants = (next.timeline ?? []).filter((it) => it.kind === "assistant");
+    strict_1.default.equal(assistants.length, 1, "re-delivered delta must resume existing bubble, not duplicate");
+});
+(0, node_test_1.default)("legitimate repeated tool of the same name still records both calls (BUG-111)", () => {
+    // Two distinct read calls: each tool_completed has a matching running tool, so the
+    // re-delivery guard must NOT collapse them.
+    const state = foldEvents([
+        baseEvent({ id: "evt-t1s", seq: 1, type: "tool_started", toolName: "read", input: { path: "a" } }),
+        baseEvent({ id: "evt-t1c", seq: 2, type: "tool_completed", toolName: "read", status: "success", output: "A" }),
+        baseEvent({ id: "evt-t2s", seq: 3, type: "tool_started", toolName: "read", input: { path: "b" } }),
+        baseEvent({ id: "evt-t2c", seq: 4, type: "tool_completed", toolName: "read", status: "success", output: "B" }),
+    ]);
+    const tools = state.timeline.filter((it) => it.kind === "tool");
+    strict_1.default.equal(tools.length, 2, "two distinct tool calls of the same name must both render");
+});
