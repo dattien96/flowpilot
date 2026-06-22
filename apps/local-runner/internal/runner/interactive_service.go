@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -778,6 +779,13 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 		})
 		shouldEmitParentGraph = shouldEmitAgentGraphForChildEvent(ev.Type)
 	}
+	if rs.parentRunID != "" && (ev.Type == EventTurnCompleted || ev.Type == EventTurnFailed) {
+		// [BUG-113 diag] A child run reaching a terminal state. finalMsgLen=0 with a low
+		// event count flags a child that completed without producing any assistant output
+		// (the "empty transcript" sub-agents seen in the Agents panel).
+		log.Printf("[agent-spawn] child terminal parent=%q child=%q agent=%q type=%q status=%q finalMsgLen=%d events=%d",
+			rs.parentRunID, rs.id, rs.agentName, ev.Type, rs.status, len(ev.FinalMessage), len(rs.events))
+	}
 	if rs.parentRunID != "" && ev.Type == EventTurnCompleted {
 		go s.releaseDependentAgents(rs.parentRunID, rs.id, ev.FinalMessage, ev.OccurredAt)
 	}
@@ -964,6 +972,11 @@ func (b *turnBridge) SpawnAgent(in SpawnAgentInput) (SpawnAgentResult, error) {
 // It creates a child interactiveRun, tags it with agent identity, fires its first turn
 // asynchronously, and (when in.Wait==true) blocks until that turn completes.
 func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID string, in SpawnAgentInput) (SpawnAgentResult, error) {
+	// [BUG-113 diag] One line per spawn_agent invocation. If the agents list shows more
+	// children than expected, this reveals whether the orchestrator called spawn_agent
+	// multiple times (and with what params) vs. a single intended spawn.
+	log.Printf("[agent-spawn] request parent=%q agent=%q provider=%q wait=%t dependsOn=%v promptLen=%d",
+		parentRunID, in.Agent, in.Provider, in.Wait, in.DependsOn, len(in.Prompt))
 	// Validate that the parent run exists before creating any child resource.
 	var agentDef *AgentDefinition
 	s.mu.Lock()
@@ -1084,6 +1097,11 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 			return SpawnAgentResult{}, err
 		}
 	}
+
+	// [BUG-113 diag] The minted child run + resolved identity. Pair this with the
+	// "[agent-spawn] request" line above to map each spawn call to its child run id.
+	log.Printf("[agent-spawn] child created parent=%q child=%q agent=%q role=%q provider=%q model=%q blockedStart=%t",
+		parentRunID, handle.RunID, childSnap.AgentName, childSnap.Role, childSnap.ProviderKey, childModel, blockedStart)
 
 	// Record the tree edge.
 	s.agentOrchestrator.registerChild(parentRunID, handle.RunID)
