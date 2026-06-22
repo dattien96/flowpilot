@@ -32,3 +32,29 @@ function makeItem(overrides = {}) {
     ];
     strict_1.default.equal((0, navigatorHistory_1.isProjectSyncing)(history, "project-1"), false);
 });
+(0, node_test_1.default)("filterVisibleHistory removes child agent runs from navigator history", () => {
+    const history = [
+        makeItem({ runId: "main-run" }),
+        makeItem({ runId: "child-run", parentRunId: "main-run", agentName: "coder" }),
+    ];
+    strict_1.default.deepEqual((0, navigatorHistory_1.filterVisibleHistory)(history).map((item) => item.runId), ["main-run"]);
+});
+(0, node_test_1.default)("filterVisibleHistory removes orphan agent rows with built-in child prompts", () => {
+    const history = [
+        makeItem({ runId: "main-run" }),
+        makeItem({
+            runId: "orphan-agent",
+            agentName: "reviewer",
+            role: "review",
+            agentStatus: "completed",
+            lastPrompt: "You are the reviewer sub-agent. Review the coder's diff.",
+        }),
+    ];
+    strict_1.default.deepEqual((0, navigatorHistory_1.filterVisibleHistory)(history).map((item) => item.runId), ["main-run"]);
+});
+(0, node_test_1.default)("filterVisibleHistory keeps main rows with agent-like metadata", () => {
+    const history = [
+        makeItem({ runId: "main-run", agentName: "main", agentStatus: "completed", lastPrompt: "Main agent prompt" }),
+    ];
+    strict_1.default.deepEqual((0, navigatorHistory_1.filterVisibleHistory)(history).map((item) => item.runId), ["main-run"]);
+});

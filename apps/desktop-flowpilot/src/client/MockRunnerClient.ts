@@ -437,9 +437,11 @@ export class MockRunnerClient implements RunnerClient {
     const runId = nextId("agent");
     const providerSessionId = nextId("thread");
     const now = new Date().toISOString();
+    const parent = this.runs.get(input.parentRunId);
     this.runs.set(runId, {
       runId,
-      projectId: "",
+      projectId: parent?.projectId ?? "",
+      workflowId: parent?.workflowId,
       providerSessionId,
       providerTurnId: "",
       status: "completed",
@@ -466,7 +468,7 @@ export class MockRunnerClient implements RunnerClient {
   async listRunHistory(projectId: string): Promise<RunHistoryItem[]> {
     await delay(60);
     return Array.from(this.runs.values())
-      .filter((run) => run.projectId === projectId)
+      .filter((run) => run.projectId === projectId && !run.parentRunId)
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
       .map((run) => ({
         runId: run.runId,
@@ -478,6 +480,10 @@ export class MockRunnerClient implements RunnerClient {
         updatedAt: run.updatedAt,
         lastPrompt: run.lastPrompt,
         lastMessage: run.lastMessage,
+        parentRunId: run.parentRunId,
+        agentName: run.agentName,
+        role: run.role,
+        agentStatus: run.agentName ? run.status : undefined,
       }));
   }
 

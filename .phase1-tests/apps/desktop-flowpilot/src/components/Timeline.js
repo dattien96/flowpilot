@@ -89,6 +89,10 @@ function ToolRow({ it }) {
     const label = toolLabel(it);
     const output = previewValue(it.output);
     const status = it.status || "success";
+    const isSpawn = it.toolName === "spawn_agent";
+    if (isSpawn) {
+        return ((0, jsx_runtime_1.jsxs)("div", { className: "toolrow spawn", children: ["\u2699 ", (0, jsx_runtime_1.jsx)("b", { children: "spawn_agent" }), "(", label, ")"] }));
+    }
     return ((0, jsx_runtime_1.jsxs)("div", { className: `row tool-row tool-${status}`, children: [(0, jsx_runtime_1.jsx)("span", { className: "row-icon", children: TOOL_ICON[status] ?? "•" }), (0, jsx_runtime_1.jsxs)("span", { className: "row-main", children: [(0, jsx_runtime_1.jsx)("code", { className: "tool-label", children: label }), status !== "running" && (0, jsx_runtime_1.jsx)("span", { className: "row-status", children: status }), output && output !== label && (0, jsx_runtime_1.jsx)("span", { className: "row-output", children: output })] })] }));
 }
 function toolGroupLabel(tools) {
@@ -161,6 +165,7 @@ function Timeline() {
     const activeAgentRunId = (0, store_1.useStore)((s) => s.activeAgentRunId);
     const agentRuns = (0, store_1.useStore)((s) => s.agentRuns);
     const backToMainRun = (0, store_1.useStore)((s) => s.backToMainRun);
+    const focusAgentRun = (0, store_1.useStore)((s) => s.focusAgentRun);
     const endRef = (0, react_1.useRef)(null);
     const totalPromptCount = countPrompts(timeline);
     const [visiblePromptCount, setVisiblePromptCount] = (0, react_1.useState)(TIMELINE_PAGE_SIZE);
@@ -180,5 +185,15 @@ function Timeline() {
     (0, react_1.useEffect)(() => {
         endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
     }, [timeline]);
-    return ((0, jsx_runtime_1.jsxs)("div", { className: `timeline ${activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId ? "timeline-agent-focused" : ""}`, children: [showAgentHeader && ((0, jsx_runtime_1.jsxs)("div", { className: "timeline-head", children: [activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId ? ((0, jsx_runtime_1.jsxs)("div", { className: "timeline-breadcrumb", children: [(0, jsx_runtime_1.jsx)("button", { type: "button", className: "timeline-back-btn", onClick: backToMainRun, children: "\u2190 Back to main" }), (0, jsx_runtime_1.jsx)("span", { className: "timeline-breadcrumb-sep", children: "/" }), (0, jsx_runtime_1.jsx)("span", { className: "timeline-breadcrumb-current", children: activeAgentRunId })] })) : ((0, jsx_runtime_1.jsx)("div", { className: "timeline-breadcrumb", children: (0, jsx_runtime_1.jsx)("span", { className: "timeline-breadcrumb-current", children: runningAgentCount > 0 ? `${runningAgentCount} agents running` : "Main run" }) })), runningAgentCount > 0 && ((0, jsx_runtime_1.jsx)("div", { className: "timeline-agent-summary", children: (0, jsx_runtime_1.jsxs)("span", { children: [runningAgentCount, " agents running"] }) }))] })), timeline.length === 0 && (0, jsx_runtime_1.jsx)("div", { className: "empty", children: "Select a project, choose your chat controls, and send a prompt to begin." }), hiddenPromptCount > 0 && ((0, jsx_runtime_1.jsxs)("button", { type: "button", className: "load-earlier-btn", onClick: () => setVisiblePromptCount((current) => Math.min(totalPromptCount, current + TIMELINE_PAGE_SIZE)), children: ["\u2191 Load earlier prompts (", hiddenPromptCount, ")"] })), timelineGroups.map((it) => ((0, jsx_runtime_1.jsx)(Item, { it: it }, it.id))), (0, jsx_runtime_1.jsx)("div", { ref: endRef })] }));
+    return ((0, jsx_runtime_1.jsxs)("div", { className: `timeline ${activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId ? "timeline-agent-focused" : ""}`, children: [activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId ? ((0, jsx_runtime_1.jsxs)("div", { className: "crumb ring", children: [(0, jsx_runtime_1.jsx)("button", { type: "button", className: "crumb-backbtn", onClick: backToMainRun, children: "\u2190 Back to main agent" }), (0, jsx_runtime_1.jsxs)("span", { className: "crumb-path", children: [(0, jsx_runtime_1.jsx)("b", { children: "main" }), " ", (0, jsx_runtime_1.jsx)("span", { style: { opacity: 0.5 }, children: "\u203A" }), " ", (0, jsx_runtime_1.jsx)("span", { className: "here", children: agentRuns.find(r => r.runId === activeAgentRunId)?.agentName ?? activeAgentRunId })] }), (0, jsx_runtime_1.jsxs)("span", { className: "crumb-path", style: { marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: "6px" }, children: [(0, jsx_runtime_1.jsx)("span", { className: "pulse" }), " live child run"] })] })) : null, timeline.length === 0 && (0, jsx_runtime_1.jsx)("div", { className: "empty", children: "Select a project, choose your chat controls, and send a prompt to begin." }), hiddenPromptCount > 0 && ((0, jsx_runtime_1.jsxs)("button", { type: "button", className: "load-earlier-btn", onClick: () => setVisiblePromptCount((current) => Math.min(totalPromptCount, current + TIMELINE_PAGE_SIZE)), children: ["\u2191 Load earlier prompts (", hiddenPromptCount, ")"] })), timelineGroups.map((it) => ((0, jsx_runtime_1.jsx)(Item, { it: it }, it.id))), (!activeAgentRunId || activeAgentRunId === mainRunId) &&
+                agentRuns
+                    .filter((run) => run.status === "running" || run.status === "waiting_approval" || run.status === "waiting_question")
+                    .map((run) => {
+                    const lowerName = run.agentName.toLowerCase();
+                    const roleClass = lowerName.includes("coder") ? "coder" : lowerName.includes("review") ? "reviewer" : lowerName.includes("test") ? "tester" : "";
+                    const roleColor = roleClass === "coder" ? "var(--role-coder)" : roleClass === "reviewer" ? "var(--role-reviewer)" : roleClass === "tester" ? "var(--role-tester)" : "var(--text)";
+                    const isWaiting = run.status === "waiting_approval" || run.status === "waiting_question";
+                    const providerName = lowerName.includes("coder") ? "Claude" : "Codex";
+                    return ((0, jsx_runtime_1.jsxs)("div", { className: `abanner ${roleClass}`, children: [(0, jsx_runtime_1.jsx)("span", { className: `pulse ${isWaiting ? "amber" : ""}` }), (0, jsx_runtime_1.jsxs)("span", { children: [(0, jsx_runtime_1.jsx)("b", { style: { color: roleColor }, children: run.agentName }), " \u00B7 ", providerName, " \u00B7 ", run.status, run.agentStatus && (0, jsx_runtime_1.jsxs)("span", { style: { color: "var(--text-dim)" }, children: [" \u2014 ", run.agentStatus] })] }), (0, jsx_runtime_1.jsx)("button", { type: "button", className: "abanner-open-btn", onClick: () => void focusAgentRun(run.runId), children: "Open \u2197" })] }, run.runId));
+                }), (0, jsx_runtime_1.jsx)("div", { ref: endRef })] }));
 }

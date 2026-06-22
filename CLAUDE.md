@@ -1,7 +1,11 @@
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **flowpilot** (13889 symbols, 31114 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+<<<<<<< Updated upstream
+This project is indexed by GitNexus as **flowpilot** (14203 symbols, 31757 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+=======
+This project is indexed by GitNexus as **flowpilot** (15750 symbols, 31971 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+>>>>>>> Stashed changes
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

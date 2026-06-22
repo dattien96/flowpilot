@@ -42,3 +42,26 @@ test("filterVisibleHistory removes child agent runs from navigator history", () 
 
   assert.deepEqual(filterVisibleHistory(history).map((item) => item.runId), ["main-run"]);
 });
+
+test("filterVisibleHistory removes orphan agent rows with built-in child prompts", () => {
+  const history = [
+    makeItem({ runId: "main-run" }),
+    makeItem({
+      runId: "orphan-agent",
+      agentName: "reviewer",
+      role: "review",
+      agentStatus: "completed",
+      lastPrompt: "You are the reviewer sub-agent. Review the coder's diff.",
+    }),
+  ];
+
+  assert.deepEqual(filterVisibleHistory(history).map((item) => item.runId), ["main-run"]);
+});
+
+test("filterVisibleHistory keeps main rows with agent-like metadata", () => {
+  const history = [
+    makeItem({ runId: "main-run", agentName: "main", agentStatus: "completed", lastPrompt: "Main agent prompt" }),
+  ];
+
+  assert.deepEqual(filterVisibleHistory(history).map((item) => item.runId), ["main-run"]);
+});

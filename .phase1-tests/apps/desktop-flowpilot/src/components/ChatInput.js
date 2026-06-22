@@ -1,5 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.isChildRunFocused = isChildRunFocused;
 exports.parseMentionRouting = parseMentionRouting;
 exports.ChatInput = ChatInput;
 const jsx_runtime_1 = require("react/jsx-runtime");
@@ -111,6 +112,9 @@ function findActiveSlash(text, cursor) {
     }
     return null;
 }
+function isChildRunFocused(activeAgentRunId, mainRunId) {
+    return Boolean(activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId);
+}
 function parseMentionRouting(text, agentRuns) {
     const trimmed = text.trim();
     const match = trimmed.match(/^@([A-Za-z0-9_-]+)\s*(.*)$/s);
@@ -157,12 +161,15 @@ function ChatInput() {
     const timeline = (0, store_1.useStore)((s) => s.timeline);
     const providerAccounts = (0, store_1.useStore)((s) => s.providerAccounts);
     const agentRuns = (0, store_1.useStore)((s) => s.agentRuns);
+    const activeAgentRunId = (0, store_1.useStore)((s) => s.activeAgentRunId);
+    const mainRunId = (0, store_1.useStore)((s) => s.mainRunId ?? s.runId);
     const focusAgentRun = (0, store_1.useStore)((s) => s.focusAgentRun);
     const appendSystemMessage = (0, store_1.useStore)((s) => s.appendSystemMessage);
     const openAgentSpawnGuide = (0, store_1.useStore)((s) => s.openAgentSpawnGuide);
     const pendingAccountSwitch = (0, store_1.useStore)((s) => s.pendingAccountSwitch);
     const accountSwitchLoading = (0, store_1.useStore)((s) => s.accountSwitchLoading);
     const requestManualAccountSwitch = (0, store_1.useStore)((s) => s.requestManualAccountSwitch);
+    const backToMainRun = (0, store_1.useStore)((s) => s.backToMainRun);
     const [text, setText] = (0, react_1.useState)("");
     const [selectedSkills, setSelectedSkills] = (0, react_1.useState)([]);
     const [pickerSortSelection, setPickerSortSelection] = (0, react_1.useState)([]);
@@ -309,10 +316,14 @@ function ChatInput() {
     }, [selectedProvider]);
     const hasBetterAccount = (0, react_1.useMemo)(() => !!selectedProvider &&
         providerAccounts.some((a) => a.providerKey === selectedProvider && a.authStatus === "connected" && !a.isActive), [providerAccounts, selectedProvider]);
+    const childRunFocused = isChildRunFocused(activeAgentRunId, mainRunId);
+    const focusedAgentName = childRunFocused
+        ? agentRuns.find((run) => run.runId === activeAgentRunId)?.agentName ?? activeAgentRunId
+        : undefined;
     const blocked = status === "running" || status === "waiting_approval" || status === "waiting_question";
     const usageLine = (0, react_1.useMemo)(() => usageSummaryLine(selectedProvider, displayedTokenUsage), [displayedTokenUsage, selectedProvider]);
     const canSend = isChatMode
-        ? hasSelectedProject && !!selectedProvider && !blocked && text.trim().length > 0 && !showPicker
+        ? hasSelectedProject && !!selectedProvider && !blocked && !childRunFocused && text.trim().length > 0 && !showPicker
         : hasSelectedProject &&
             (launchMode === "workflow" ? !!selectedWorkflowId : !!selectedStepId) &&
             !blocked &&
@@ -394,9 +405,21 @@ function ChatInput() {
     const removeAttachment = (id) => {
         setAttachments((prev) => prev.filter((a) => a.id !== id));
     };
+    const clearComposer = () => {
+        setText("");
+        setSelectedSkills([]);
+        setSkillTokens([]);
+        setAttachments([]);
+        setAttachError(null);
+        setSkillPickerOpen(false);
+    };
     const send = async () => {
         if (!canSend)
             return;
+        if (childRunFocused) {
+            appendSystemMessage("Child transcript is read-only. Return to the main chat to send prompts.");
+            return;
+        }
         const trimmed = text.trim();
         const routed = parseMentionRouting(trimmed, agentRuns);
         if (routed) {
@@ -415,23 +438,14 @@ function ChatInput() {
                 appendSystemMessage(`Focused @${routed.agentName}. Add a prompt to send work to this child run.`);
                 return;
             }
-            await sendPrompt(routed.prompt, isChatMode ? selectedSkills : undefined, isChatMode && attachments.length > 0 ? attachments.map(normalizeImage_1.toWire) : undefined);
-            setText("");
-            setSelectedSkills([]);
-            setSkillTokens([]);
-            setAttachments([]);
-            setAttachError(null);
-            setSkillPickerOpen(false);
+            const routedAttachments = isChatMode && attachments.length > 0 ? attachments.map(normalizeImage_1.toWire) : undefined;
+            clearComposer();
+            await sendPrompt(routed.prompt, isChatMode ? selectedSkills : undefined, routedAttachments);
             return;
         }
         const wireAttachments = isChatMode && attachments.length > 0 ? attachments.map(normalizeImage_1.toWire) : undefined;
+        clearComposer();
         await sendPrompt(trimmed, isChatMode ? selectedSkills : undefined, wireAttachments);
-        setText("");
-        setSelectedSkills([]);
-        setSkillTokens([]);
-        setAttachments([]);
-        setAttachError(null);
-        setSkillPickerOpen(false);
     };
     const onKeyDown = (e) => {
         if (showPicker && slashFragment !== null) {
@@ -475,9 +489,11 @@ function ChatInput() {
         : !hasSelectedProject
             ? "Select a project first."
             : isChatMode
-                ? selectedProvider
-                    ? "Type a message. Use / anywhere to pick a skill."
-                    : "Select a provider first."
+                ? childRunFocused
+                    ? "Child transcript is read-only."
+                    : selectedProvider
+                        ? "Type a message. Use / to pick a skill, @ to message an agent."
+                        : "Select a provider first."
                 : launchMode === "workflow"
                     ? selectedWorkflowId
                         ? "Type a message. Enter to send."
@@ -533,24 +549,24 @@ function ChatInput() {
                         const highlighted = idx === pickerHighlightIndex;
                         return ((0, jsx_runtime_1.jsxs)("button", { type: "button", className: `skill-item ${active ? "skill-item-active" : ""} ${highlighted ? "skill-item-highlighted" : ""}`, onClick: () => (active ? removeSkill(s.name) : pickSkill(s.name)), children: [(0, jsx_runtime_1.jsx)("span", { className: "skill-mark", children: active ? "☑" : "☐" }), (0, jsx_runtime_1.jsxs)("span", { className: "skill-copy", children: [(0, jsx_runtime_1.jsxs)("span", { className: `skill-name ${active ? "skill-name-active" : "skill-name-idle"}`, children: ["/", s.name] }), s.description && (0, jsx_runtime_1.jsx)("span", { className: "skill-desc", title: s.description, children: s.description })] }), (0, jsx_runtime_1.jsx)("span", { className: `skill-src src-${s.source}`, children: skillSourceLabel(s.source) })] }, s.name));
                     })] })), isChatMode && supportsVision && attachments.length > 0 && ((0, jsx_runtime_1.jsx)("div", { className: "chat-attachments", "aria-label": "Pending image attachments", children: attachments.map((att) => ((0, jsx_runtime_1.jsxs)("div", { className: "chat-attachment-chip", role: "button", tabIndex: 0, onClick: () => setPreviewAtt(att), onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ")
-                        setPreviewAtt(att); }, "aria-label": `Preview ${att.originalName}`, title: "Click to preview", children: [(0, jsx_runtime_1.jsx)("img", { className: "chat-attachment-thumb", src: att.previewUrl, alt: att.originalName }), (0, jsx_runtime_1.jsx)("span", { className: "chat-attachment-name", title: att.originalName, children: att.originalName }), (0, jsx_runtime_1.jsx)("button", { type: "button", className: "chat-attachment-remove", onClick: (e) => { e.stopPropagation(); removeAttachment(att.id); }, disabled: blocked, "aria-label": `Remove ${att.originalName}`, children: "\u00D7" })] }, att.id))) })), isChatMode && attachError && ((0, jsx_runtime_1.jsx)("div", { className: "chat-attachment-error", role: "alert", children: attachError })), (0, jsx_runtime_1.jsxs)("div", { className: "input-bar", children: [isChatMode && !controllerExpanded && ((0, jsx_runtime_1.jsx)("button", { type: "button", className: "chat-controller-toggle chat-controller-toggle-inline", onClick: () => setControllerExpanded(true), "aria-label": "Expand chat controls", children: (0, jsx_runtime_1.jsxs)("span", { className: "chat-controller-menu-icon", "aria-hidden": "true", children: [(0, jsx_runtime_1.jsx)("span", {}), (0, jsx_runtime_1.jsx)("span", {}), (0, jsx_runtime_1.jsx)("span", {})] }) })), isChatMode && ((0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsx)("input", { ref: fileInputRef, type: "file", accept: normalizeImage_1.ACCEPT_ATTR, multiple: true, hidden: true, onChange: (e) => {
+                        setPreviewAtt(att); }, "aria-label": `Preview ${att.originalName}`, title: "Click to preview", children: [(0, jsx_runtime_1.jsx)("img", { className: "chat-attachment-thumb", src: att.previewUrl, alt: att.originalName }), (0, jsx_runtime_1.jsx)("span", { className: "chat-attachment-name", title: att.originalName, children: att.originalName }), (0, jsx_runtime_1.jsx)("button", { type: "button", className: "chat-attachment-remove", onClick: (e) => { e.stopPropagation(); removeAttachment(att.id); }, disabled: blocked, "aria-label": `Remove ${att.originalName}`, children: "\u00D7" })] }, att.id))) })), isChatMode && attachError && ((0, jsx_runtime_1.jsx)("div", { className: "chat-attachment-error", role: "alert", children: attachError })), isChatMode && childRunFocused && ((0, jsx_runtime_1.jsxs)("div", { className: "ctxbar ring", children: ["\u21B3 Viewing child agent ", (0, jsx_runtime_1.jsx)("b", { children: focusedAgentName }), " \u00B7 transcript only"] })), (0, jsx_runtime_1.jsxs)("div", { className: "input-bar", children: [isChatMode && !controllerExpanded && !childRunFocused && ((0, jsx_runtime_1.jsx)("button", { type: "button", className: "chat-controller-toggle chat-controller-toggle-inline", onClick: () => setControllerExpanded(true), "aria-label": "Expand chat controls", children: (0, jsx_runtime_1.jsxs)("span", { className: "chat-controller-menu-icon", "aria-hidden": "true", children: [(0, jsx_runtime_1.jsx)("span", {}), (0, jsx_runtime_1.jsx)("span", {}), (0, jsx_runtime_1.jsx)("span", {})] }) })), isChatMode && !childRunFocused && ((0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsx)("input", { ref: fileInputRef, type: "file", accept: normalizeImage_1.ACCEPT_ATTR, multiple: true, hidden: true, onChange: (e) => {
                                     void onPickFiles(e.target.files);
                                     e.target.value = ""; // allow re-picking the same file
                                 } }), (0, jsx_runtime_1.jsxs)("button", { type: "button", className: "attach-btn", onClick: () => fileInputRef.current?.click(), disabled: !supportsVision || blocked || attachments.length >= normalizeImage_1.MAX_ATTACHMENTS, "aria-label": supportsVision
                                     ? "Attach image"
-                                    : "Image attachments are not supported by the selected provider", title: supportsVision ? "Attach image (or paste with Ctrl+V)" : "Selected provider does not support images", children: [(0, jsx_runtime_1.jsx)("span", { "aria-hidden": "true", children: "\uD83D\uDCCE" }), attachments.length > 0 && ((0, jsx_runtime_1.jsx)("span", { className: "attach-badge", "aria-label": `${attachments.length} image${attachments.length > 1 ? "s" : ""} attached`, children: attachments.length }))] })] })), (0, jsx_runtime_1.jsxs)("div", { className: `text-area-wrapper${isChatMode && skillTokens.length > 0 ? " has-highlights" : ""}`, children: [isChatMode && skillTokens.length > 0 && ((0, jsx_runtime_1.jsx)("div", { className: "text-area-backdrop", "aria-hidden": "true", children: buildBackdrop(text, skillTokens) })), (0, jsx_runtime_1.jsx)("textarea", { ref: textAreaRef, className: "text-area", rows: 2, placeholder: placeholder, value: text, onChange: (e) => {
-                                    const newText = e.target.value;
-                                    const newCursor = e.target.selectionStart ?? 0;
-                                    setText(newText);
-                                    setCursorPos(newCursor);
-                                    if (slashDismissedIndex !== null && newText[slashDismissedIndex] !== "/") {
-                                        setSlashDismissedIndex(null);
-                                    }
-                                    setSkillTokens((prev) => prev.filter((t) => newText.slice(t.start, t.end) === t.name));
-                                }, onKeyDown: onKeyDown, onPaste: onPaste, onSelect: (e) => setCursorPos(e.target.selectionStart ?? 0), onPointerDown: () => {
-                                    if (skillPickerOpen)
-                                        setSkillPickerOpen(false);
-                                } })] }), blocked ? ((0, jsx_runtime_1.jsx)("button", { className: "btn send-btn send-btn-stop", onClick: () => void stop(), "aria-label": "Stop AI", children: (0, jsx_runtime_1.jsx)(StopIcon, {}) })) : ((0, jsx_runtime_1.jsx)("button", { className: "btn btn-primary send-btn", onClick: send, disabled: !canSend, children: "Send" }))] }), isChatMode && usageLine && ((0, jsx_runtime_1.jsx)("div", { className: "chat-usage-line", "aria-live": "polite", children: usageLine })), (pendingApproval || pendingQuestion) && ((0, jsx_runtime_1.jsx)("div", { className: "input-note", children: "Action required above before continuing." })), previewAtt && ((0, jsx_runtime_1.jsx)("div", { className: "attach-preview-overlay", role: "dialog", "aria-modal": "true", "aria-label": `Preview: ${previewAtt.originalName}`, onClick: () => setPreviewAtt(null), children: (0, jsx_runtime_1.jsxs)("div", { className: "attach-preview-box", onClick: (e) => e.stopPropagation(), children: [(0, jsx_runtime_1.jsxs)("div", { className: "attach-preview-header", children: [(0, jsx_runtime_1.jsx)("span", { className: "attach-preview-name", children: previewAtt.originalName }), (0, jsx_runtime_1.jsxs)("span", { className: "attach-preview-meta", children: [previewAtt.width && previewAtt.height ? `${previewAtt.width}×${previewAtt.height} · ` : "", (previewAtt.sizeBytes / 1024).toFixed(0), " KB"] }), (0, jsx_runtime_1.jsx)("button", { type: "button", className: "attach-preview-close", onClick: () => setPreviewAtt(null), "aria-label": "Close preview", children: "\u00D7" })] }), (0, jsx_runtime_1.jsx)("img", { className: "attach-preview-img", src: previewAtt.previewUrl, alt: previewAtt.originalName })] }) })), !hasSelectedProject && ((0, jsx_runtime_1.jsx)("div", { className: `chat-input-guard ${isChatMode ? "" : "chat-input-guard-compact"}`.trim(), "aria-live": "polite", children: (0, jsx_runtime_1.jsxs)("div", { className: `chat-input-guard-card ${isChatMode ? "" : "chat-input-guard-card-compact"}`.trim(), children: [(0, jsx_runtime_1.jsx)("div", { className: "chat-input-guard-title", children: "Select a project first" }), (0, jsx_runtime_1.jsx)("div", { className: "chat-input-guard-copy", children: isChatMode
+                                    : "Image attachments are not supported by the selected provider", title: supportsVision ? "Attach image (or paste with Ctrl+V)" : "Selected provider does not support images", children: [(0, jsx_runtime_1.jsx)("span", { "aria-hidden": "true", children: "\uD83D\uDCCE" }), attachments.length > 0 && ((0, jsx_runtime_1.jsx)("span", { className: "attach-badge", "aria-label": `${attachments.length} image${attachments.length > 1 ? "s" : ""} attached`, children: attachments.length }))] })] })), childRunFocused ? ((0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsx)("div", { className: "text-area-wrapper", children: (0, jsx_runtime_1.jsx)("div", { className: "input-note", children: "Return to the main chat to send prompts or use @agent routing." }) }), (0, jsx_runtime_1.jsx)("button", { className: "btn send-btn", onClick: backToMainRun, children: "Main" })] })) : ((0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsxs)("div", { className: `text-area-wrapper${isChatMode && skillTokens.length > 0 ? " has-highlights" : ""}`, children: [isChatMode && skillTokens.length > 0 && ((0, jsx_runtime_1.jsx)("div", { className: "text-area-backdrop", "aria-hidden": "true", children: buildBackdrop(text, skillTokens) })), (0, jsx_runtime_1.jsx)("textarea", { ref: textAreaRef, className: "text-area", rows: 2, placeholder: placeholder, value: text, onChange: (e) => {
+                                            const newText = e.target.value;
+                                            const newCursor = e.target.selectionStart ?? 0;
+                                            setText(newText);
+                                            setCursorPos(newCursor);
+                                            if (slashDismissedIndex !== null && newText[slashDismissedIndex] !== "/") {
+                                                setSlashDismissedIndex(null);
+                                            }
+                                            setSkillTokens((prev) => prev.filter((t) => newText.slice(t.start, t.end) === t.name));
+                                        }, onKeyDown: onKeyDown, onPaste: onPaste, onSelect: (e) => setCursorPos(e.target.selectionStart ?? 0), onPointerDown: () => {
+                                            if (skillPickerOpen)
+                                                setSkillPickerOpen(false);
+                                        } })] }), blocked ? ((0, jsx_runtime_1.jsx)("button", { className: "btn send-btn send-btn-stop", onClick: () => void stop(), "aria-label": "Stop AI", children: (0, jsx_runtime_1.jsx)(StopIcon, {}) })) : ((0, jsx_runtime_1.jsx)("button", { className: "btn btn-primary send-btn", onClick: send, disabled: !canSend, children: "Send" }))] }))] }), isChatMode && usageLine && ((0, jsx_runtime_1.jsx)("div", { className: "chat-usage-line", "aria-live": "polite", children: usageLine })), (pendingApproval || pendingQuestion) && ((0, jsx_runtime_1.jsx)("div", { className: "input-note", children: "Action required above before continuing." })), previewAtt && ((0, jsx_runtime_1.jsx)("div", { className: "attach-preview-overlay", role: "dialog", "aria-modal": "true", "aria-label": `Preview: ${previewAtt.originalName}`, onClick: () => setPreviewAtt(null), children: (0, jsx_runtime_1.jsxs)("div", { className: "attach-preview-box", onClick: (e) => e.stopPropagation(), children: [(0, jsx_runtime_1.jsxs)("div", { className: "attach-preview-header", children: [(0, jsx_runtime_1.jsx)("span", { className: "attach-preview-name", children: previewAtt.originalName }), (0, jsx_runtime_1.jsxs)("span", { className: "attach-preview-meta", children: [previewAtt.width && previewAtt.height ? `${previewAtt.width}×${previewAtt.height} · ` : "", (previewAtt.sizeBytes / 1024).toFixed(0), " KB"] }), (0, jsx_runtime_1.jsx)("button", { type: "button", className: "attach-preview-close", onClick: () => setPreviewAtt(null), "aria-label": "Close preview", children: "\u00D7" })] }), (0, jsx_runtime_1.jsx)("img", { className: "attach-preview-img", src: previewAtt.previewUrl, alt: previewAtt.originalName })] }) })), !hasSelectedProject && ((0, jsx_runtime_1.jsx)("div", { className: `chat-input-guard ${isChatMode ? "" : "chat-input-guard-compact"}`.trim(), "aria-live": "polite", children: (0, jsx_runtime_1.jsxs)("div", { className: `chat-input-guard-card ${isChatMode ? "" : "chat-input-guard-card-compact"}`.trim(), children: [(0, jsx_runtime_1.jsx)("div", { className: "chat-input-guard-title", children: "Select a project first" }), (0, jsx_runtime_1.jsx)("div", { className: "chat-input-guard-copy", children: isChatMode
                                 ? "Choose a project before using chat, skills, or send."
                                 : "Choose a project before continuing in workflow mode." })] }) }))] }));
 }

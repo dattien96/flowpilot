@@ -5,9 +5,18 @@ export function isProjectSyncing(history: RunHistoryItem[], projectId: string): 
 }
 
 export function isAgentHistoryItem(item: RunHistoryItem): boolean {
-  return Boolean(item.parentRunId);
+  return Boolean(item.parentRunId || hasBuiltInAgentPromptPrefix(item.lastPrompt));
 }
 
 export function filterVisibleHistory(history: RunHistoryItem[]): RunHistoryItem[] {
   return history.filter((item) => !isAgentHistoryItem(item));
+}
+
+function hasBuiltInAgentPromptPrefix(prompt?: string): boolean {
+  const normalized = prompt?.trim().toLowerCase() ?? "";
+  return (
+    normalized.startsWith("you are the coder sub-agent.") ||
+    normalized.startsWith("you are the reviewer sub-agent.") ||
+    normalized.startsWith("you are the tester sub-agent.")
+  );
 }

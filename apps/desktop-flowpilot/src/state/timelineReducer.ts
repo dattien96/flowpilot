@@ -139,6 +139,7 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
 
   switch (e.type) {
     case "turn_started":
+      closeAssistant();
       if (e.prompt && !hasPendingPrompt(timeline, e.prompt)) {
         timeline.push({ kind: "prompt", id: `prompt-${e.providerTurnId}`, text: e.prompt });
       }

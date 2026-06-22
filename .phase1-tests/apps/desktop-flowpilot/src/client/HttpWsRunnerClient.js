@@ -120,8 +120,8 @@ class HttpWsRunnerClient {
         const { parentRunId, ...body } = input;
         return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/spawn-agent`, body);
     }
-    focusAgentRun(runId) {
-        return this.streamRun(runId);
+    focusAgentRun(runId, signal) {
+        return this.streamRun(runId, 0, signal);
     }
     // ---- run lifecycle -------------------------------------------------------
     startRun(input) {
@@ -190,15 +190,20 @@ class HttpWsRunnerClient {
             }
         }
     }
-    async *streamRun(runId, afterSeq = 0) {
-        for await (const ev of this.openStream(runId, afterSeq)) {
+    async *streamRun(runId, afterSeq = 0, signal) {
+        for await (const ev of this.openStream(runId, afterSeq, signal)) {
             this.lastSeq.set(runId, Math.max(this.lastSeq.get(runId) ?? 0, ev.seq));
             yield ev;
         }
     }
     // openStream parses the SSE body, yielding each event until the connection
     // closes or the consumer stops iterating (which aborts the fetch via finally).
-    async *openStream(runId, afterSeq, ctrl = new AbortController()) {
+    async *openStream(runId, afterSeq, signal) {
+        const ctrl = new AbortController();
+        if (signal?.aborted)
+            return;
+        const abort = () => ctrl.abort();
+        signal?.addEventListener("abort", abort, { once: true });
         let resp;
         try {
             resp = await fetch(`${this.base}/client/workflow-runs/${encodeURIComponent(runId)}/events/stream?afterSeq=${afterSeq}`, { headers: { Accept: "text/event-stream" }, signal: ctrl.signal });
@@ -249,6 +254,7 @@ class HttpWsRunnerClient {
             }
         }
         finally {
+            signal?.removeEventListener("abort", abort);
             ctrl.abort();
         }
     }

@@ -179,11 +179,15 @@ class MockRunnerClient {
         if (cancel)
             cancel();
     }
-    async *streamRun(runId, afterSeq = 0) {
+    async *streamRun(runId, afterSeq = 0, signal) {
         const log = this.eventLog.get(runId) ?? [];
         for (const ev of log) {
+            if (signal?.aborted)
+                return;
             if (ev.seq > afterSeq) {
                 await delay(40); // small pause so the rebuilt timeline is visible
+                if (signal?.aborted)
+                    return;
                 yield ev;
             }
         }
@@ -356,9 +360,11 @@ class MockRunnerClient {
         const runId = nextId("agent");
         const providerSessionId = nextId("thread");
         const now = new Date().toISOString();
+        const parent = this.runs.get(input.parentRunId);
         this.runs.set(runId, {
             runId,
-            projectId: "",
+            projectId: parent?.projectId ?? "",
+            workflowId: parent?.workflowId,
             providerSessionId,
             providerTurnId: "",
             status: "completed",
@@ -372,8 +378,8 @@ class MockRunnerClient {
         });
         return { runId, providerSessionId, providerKey: "codex", status: "completed", finalMessage: input.prompt };
     }
-    async *focusAgentRun(runId) {
-        yield* this.streamRun(runId, 0);
+    async *focusAgentRun(runId, signal) {
+        yield* this.streamRun(runId, 0, signal);
     }
     async listArtifacts(runId) {
         await delay(60);
@@ -382,7 +388,7 @@ class MockRunnerClient {
     async listRunHistory(projectId) {
         await delay(60);
         return Array.from(this.runs.values())
-            .filter((run) => run.projectId === projectId)
+            .filter((run) => run.projectId === projectId && !run.parentRunId)
             .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
             .map((run) => ({
             runId: run.runId,
@@ -394,6 +400,10 @@ class MockRunnerClient {
             updatedAt: run.updatedAt,
             lastPrompt: run.lastPrompt,
             lastMessage: run.lastMessage,
+            parentRunId: run.parentRunId,
+            agentName: run.agentName,
+            role: run.role,
+            agentStatus: run.agentName ? run.status : undefined,
         }));
     }
     async restartStack() {
