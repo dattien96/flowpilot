@@ -150,8 +150,8 @@ export function AgentsPanel(): React.ReactElement {
           const lowerName = run.agentName.toLowerCase();
           const roleClass = lowerName.includes("coder") ? "coder" : lowerName.includes("review") ? "reviewer" : lowerName.includes("test") ? "tester" : "";
           const statusClass = run.status === "running" ? "run" : (run.status === "waiting_approval" || run.status === "waiting_question") ? "wait" : "done";
-          const providerBadge = "CODEX";
-          const provClass = "codex";
+          const provClass = run.providerKey ?? "codex";
+          const providerBadge = (run.providerKey ?? "codex").toUpperCase();
 
           return (
             <div
@@ -197,9 +197,8 @@ export function AgentsPanel(): React.ReactElement {
           <div className="agent-run-list" style={{ display: "flex", flexDirection: "column", gap: "6px", padding: 0 }}>
             {closedRuns.map((run) => {
               const isSelected = run.runId === activeAgentRunId && workspaceMainView !== "board";
-              const lowerName = run.agentName.toLowerCase();
-              const providerBadge = "CODEX";
-              const provClass = "codex";
+              const provClass = run.providerKey ?? "codex";
+              const providerBadge = (run.providerKey ?? "codex").toUpperCase();
 
               return (
                 <div
@@ -247,7 +246,8 @@ export function AgentsPanel(): React.ReactElement {
                     const lowerPath = (agent.path ?? "").toLowerCase().replace(/\\/g, "/");
                     const isClaudeSource = agent.source === "claude" ||
                       (agent.source === "provider" && lowerPath.includes(".claude"));
-                    const cardProvBadge = isClaudeSource ? "CLAUDE" : "CODEX";
+                    const isProviderAgnostic = agent.source === "flowpilot" && !agent.provider;
+                    const cardProvBadge = isProviderAgnostic ? null : (isClaudeSource ? "CLAUDE" : "CODEX");
                     const cardProvClass = isClaudeSource ? "claude" : "codex";
 
                     return (
@@ -260,9 +260,14 @@ export function AgentsPanel(): React.ReactElement {
                         <div style={{ flex: 1 }}>
                           <div className="nm">
                             {agent.name}{" "}
-                            <span className={`pill-prov prov-${cardProvClass}`}>
-                              {cardProvBadge}
-                            </span>
+                            {isProviderAgnostic ? (
+                              <>
+                                <span className="pill-prov prov-codex">CODEX</span>{" "}
+                                <span className="pill-prov prov-claude">CLAUDE</span>
+                              </>
+                            ) : (
+                              <span className={`pill-prov prov-${cardProvClass}`}>{cardProvBadge}</span>
+                            )}
                             {agent.path && <span className="src">{agent.path.split("/").pop()}</span>}
                           </div>
                           <div className="ds">{agent.description || agent.role}</div>
