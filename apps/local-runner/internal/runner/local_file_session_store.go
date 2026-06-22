@@ -43,30 +43,31 @@ func NewLocalFileSessionStore(dataDir string) (*localFileSessionStore, error) {
 
 // ndjsonSessionRecord is the on-disk JSON shape for a ProviderSessionState.
 type ndjsonSessionRecord struct {
-	RunID             string   `json:"run_id"`
-	ProjectID         string   `json:"project_id"`
-	WorkflowID        string   `json:"workflow_id,omitempty"`
-	ProviderKey       string   `json:"provider_key"`
-	ProviderSessionID string   `json:"provider_session_id,omitempty"`
-	ProviderAccountID string   `json:"provider_account_id,omitempty"`
-	WorkingDirectory  string   `json:"working_directory,omitempty"`
-	Status            string   `json:"status"`
-	LastPrompt        string   `json:"last_prompt,omitempty"`
-	LastMessage       string   `json:"last_message,omitempty"`
-	StartedAt         string   `json:"started_at,omitempty"`
-	UpdatedAt         string   `json:"updated_at,omitempty"`
-	RunKind           string   `json:"run_kind,omitempty"`
-	SourceMachineID   string   `json:"source_machine_id,omitempty"`
-	SourceRunID       string   `json:"source_run_id,omitempty"`
-	RestoredFrom      string   `json:"restored_from,omitempty"`
-	SyncStatus        string   `json:"sync_status,omitempty"`
-	SyncUpdatedAt     string   `json:"sync_updated_at,omitempty"`
-	ParentRunID       string   `json:"parent_run_id,omitempty"`
-	AgentName         string   `json:"agent_name,omitempty"`
-	Role              string   `json:"role,omitempty"`
-	DependsOn         []string `json:"depends_on,omitempty"`
-	AgentStatus       string   `json:"agent_status,omitempty"`
-	ModelName         string   `json:"model_name,omitempty"`
+	RunID               string   `json:"run_id"`
+	ProjectID           string   `json:"project_id"`
+	WorkflowID          string   `json:"workflow_id,omitempty"`
+	ProviderKey         string   `json:"provider_key"`
+	ProviderSessionID   string   `json:"provider_session_id,omitempty"`
+	ProviderAccountID   string   `json:"provider_account_id,omitempty"`
+	WorkingDirectory    string   `json:"working_directory,omitempty"`
+	Status              string   `json:"status"`
+	LastPrompt          string   `json:"last_prompt,omitempty"`
+	LastMessage         string   `json:"last_message,omitempty"`
+	StartedAt           string   `json:"started_at,omitempty"`
+	UpdatedAt           string   `json:"updated_at,omitempty"`
+	RunKind             string   `json:"run_kind,omitempty"`
+	SourceMachineID     string   `json:"source_machine_id,omitempty"`
+	SourceRunID         string   `json:"source_run_id,omitempty"`
+	RestoredFrom        string   `json:"restored_from,omitempty"`
+	SyncStatus          string   `json:"sync_status,omitempty"`
+	SyncUpdatedAt       string   `json:"sync_updated_at,omitempty"`
+	ParentRunID         string   `json:"parent_run_id,omitempty"`
+	AgentName           string   `json:"agent_name,omitempty"`
+	Role                string   `json:"role,omitempty"`
+	DependsOn           []string `json:"depends_on,omitempty"`
+	AgentStatus         string   `json:"agent_status,omitempty"`
+	ModelName           string   `json:"model_name,omitempty"`
+	PendingAgentContext []string `json:"pending_agent_context,omitempty"`
 }
 
 // loadFromDisk reads the NDJSON file, applies last-wins dedup per run_id, and
@@ -208,30 +209,31 @@ func (s *localFileSessionStore) ListAllProviderSessions(ctx context.Context) ([]
 
 func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 	return ProviderSessionState{
-		RunID:             r.RunID,
-		ProjectID:         r.ProjectID,
-		WorkflowID:        r.WorkflowID,
-		ProviderKey:       ProviderKey(r.ProviderKey),
-		ProviderSessionID: r.ProviderSessionID,
-		ProviderAccountID: r.ProviderAccountID,
-		WorkingDirectory:  r.WorkingDirectory,
-		Status:            RunStatus(r.Status),
-		LastPrompt:        r.LastPrompt,
-		LastMessage:       r.LastMessage,
-		StartedAt:         r.StartedAt,
-		UpdatedAt:         r.UpdatedAt,
-		RunKind:           r.RunKind,
-		SourceMachineID:   r.SourceMachineID,
-		SourceRunID:       r.SourceRunID,
-		RestoredFrom:      r.RestoredFrom,
-		SyncStatus:        r.SyncStatus,
-		SyncUpdatedAt:     r.SyncUpdatedAt,
-		ParentRunID:       r.ParentRunID,
-		AgentName:         r.AgentName,
-		Role:              r.Role,
-		DependsOn:         append([]string(nil), r.DependsOn...),
-		AgentStatus:       r.AgentStatus,
-		ModelName:         r.ModelName,
+		RunID:               r.RunID,
+		ProjectID:           r.ProjectID,
+		WorkflowID:          r.WorkflowID,
+		ProviderKey:         ProviderKey(r.ProviderKey),
+		ProviderSessionID:   r.ProviderSessionID,
+		ProviderAccountID:   r.ProviderAccountID,
+		WorkingDirectory:    r.WorkingDirectory,
+		Status:              RunStatus(r.Status),
+		LastPrompt:          r.LastPrompt,
+		LastMessage:         r.LastMessage,
+		StartedAt:           r.StartedAt,
+		UpdatedAt:           r.UpdatedAt,
+		RunKind:             r.RunKind,
+		SourceMachineID:     r.SourceMachineID,
+		SourceRunID:         r.SourceRunID,
+		RestoredFrom:        r.RestoredFrom,
+		SyncStatus:          r.SyncStatus,
+		SyncUpdatedAt:       r.SyncUpdatedAt,
+		ParentRunID:         r.ParentRunID,
+		AgentName:           r.AgentName,
+		Role:                r.Role,
+		DependsOn:           append([]string(nil), r.DependsOn...),
+		AgentStatus:         r.AgentStatus,
+		ModelName:           r.ModelName,
+		PendingAgentContext: append([]string(nil), r.PendingAgentContext...),
 	}
 }
 
@@ -289,29 +291,30 @@ func (s *localFileSessionStore) DeleteTurnLog(_ context.Context, runID string) e
 
 func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 	return ndjsonSessionRecord{
-		RunID:             s.RunID,
-		ProjectID:         s.ProjectID,
-		WorkflowID:        s.WorkflowID,
-		ProviderKey:       string(s.ProviderKey),
-		ProviderSessionID: s.ProviderSessionID,
-		ProviderAccountID: s.ProviderAccountID,
-		WorkingDirectory:  s.WorkingDirectory,
-		Status:            string(s.Status),
-		LastPrompt:        s.LastPrompt,
-		LastMessage:       s.LastMessage,
-		StartedAt:         s.StartedAt,
-		UpdatedAt:         s.UpdatedAt,
-		RunKind:           s.RunKind,
-		SourceMachineID:   s.SourceMachineID,
-		SourceRunID:       s.SourceRunID,
-		RestoredFrom:      s.RestoredFrom,
-		SyncStatus:        s.SyncStatus,
-		SyncUpdatedAt:     s.SyncUpdatedAt,
-		ParentRunID:       s.ParentRunID,
-		AgentName:         s.AgentName,
-		Role:              s.Role,
-		DependsOn:         append([]string(nil), s.DependsOn...),
-		AgentStatus:       s.AgentStatus,
-		ModelName:         s.ModelName,
+		RunID:               s.RunID,
+		ProjectID:           s.ProjectID,
+		WorkflowID:          s.WorkflowID,
+		ProviderKey:         string(s.ProviderKey),
+		ProviderSessionID:   s.ProviderSessionID,
+		ProviderAccountID:   s.ProviderAccountID,
+		WorkingDirectory:    s.WorkingDirectory,
+		Status:              string(s.Status),
+		LastPrompt:          s.LastPrompt,
+		LastMessage:         s.LastMessage,
+		StartedAt:           s.StartedAt,
+		UpdatedAt:           s.UpdatedAt,
+		RunKind:             s.RunKind,
+		SourceMachineID:     s.SourceMachineID,
+		SourceRunID:         s.SourceRunID,
+		RestoredFrom:        s.RestoredFrom,
+		SyncStatus:          s.SyncStatus,
+		SyncUpdatedAt:       s.SyncUpdatedAt,
+		ParentRunID:         s.ParentRunID,
+		AgentName:           s.AgentName,
+		Role:                s.Role,
+		DependsOn:           append([]string(nil), s.DependsOn...),
+		AgentStatus:         s.AgentStatus,
+		ModelName:           s.ModelName,
+		PendingAgentContext: append([]string(nil), s.PendingAgentContext...),
 	}
 }

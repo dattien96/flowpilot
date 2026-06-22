@@ -111,6 +111,15 @@ type interactiveRun struct {
 	pendingTurnPrompt    string
 	pendingRestartRunID  string
 	pendingRestartPrompt string
+	// uiInitiated marks a child run spawned from the desktop UI (not the AI spawn_agent
+	// tool). UI spawns are invisible to the parent's provider conversation, so the parent
+	// must be told about them out-of-band; tool spawns are already in provider history. (BUG-122)
+	uiInitiated bool
+	// pendingAgentContext holds notes about UI-spawned children (and their results) that
+	// have not yet been folded into this (parent) run's provider conversation. They are
+	// prepended to the next provider turn's prompt and then cleared. Persisted to
+	// sessions.ndjson so the parent still learns about them after a server restart. (BUG-122)
+	pendingAgentContext []string
 
 	status          RunStatus
 	createdAt       string
@@ -590,6 +599,49 @@ func (s *InteractiveService) emitOnParentRun(parentRunID string, ev ProviderEven
 	}
 }
 
+// maxPendingAgentNotes caps the parent's UI-spawn context buffer so a user who spawns
+// many children without chatting cannot grow the next prompt without bound (BUG-122).
+const maxPendingAgentNotes = 50
+
+// composeAgentContextBlock renders the parent's pending UI-spawn notes as a single
+// system-note prefix folded into the next provider turn's prompt (BUG-122).
+func composeAgentContextBlock(notes []string) string {
+	var b strings.Builder
+	b.WriteString("[FlowPilot system note — sub-agents started in this session via the UI (not by you):\n")
+	for _, n := range notes {
+		b.WriteString("- ")
+		b.WriteString(n)
+		b.WriteString("\n")
+	}
+	b.WriteString("Use this when the user asks which sub-agents were started, their providers/models, or their results.]")
+	return b.String()
+}
+
+// appendPendingAgentContextLocked appends a note to the parent's UI-spawn context buffer
+// and schedules a best-effort persist so it survives a restart. Caller holds s.mu (BUG-122).
+func (s *InteractiveService) appendPendingAgentContextLocked(parentRunID, note string) {
+	if note == "" {
+		return
+	}
+	parent := s.runs[parentRunID]
+	if parent == nil {
+		return
+	}
+	parent.pendingAgentContext = append(parent.pendingAgentContext, note)
+	if len(parent.pendingAgentContext) > maxPendingAgentNotes {
+		parent.pendingAgentContext = parent.pendingAgentContext[len(parent.pendingAgentContext)-maxPendingAgentNotes:]
+	}
+	snap := sessionStateOf(parent)
+	go func() { _ = s.persistProviderSession(snap) }()
+}
+
+// appendPendingAgentContext is the lock-acquiring variant of appendPendingAgentContextLocked.
+func (s *InteractiveService) appendPendingAgentContext(parentRunID, note string) {
+	s.mu.Lock()
+	s.appendPendingAgentContextLocked(parentRunID, note)
+	s.mu.Unlock()
+}
+
 type workflowRunSeeder interface {
 	seed(runID string, steps []RuntimeWorkflowStep)
 }
@@ -625,30 +677,31 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		providerSessionID = rs.realProviderSessionID
 	}
 	return ProviderSessionState{
-		RunID:             rs.id,
-		ProjectID:         rs.projectID,
-		WorkflowID:        rs.workflowID,
-		ProviderSessionID: providerSessionID,
-		ProviderKey:       rs.providerKey,
-		ProviderAccountID: rs.providerAccountID,
-		WorkingDirectory:  rs.workspaceCwd,
-		Status:            rs.status,
-		LastPrompt:        rs.lastPrompt,
-		LastMessage:       rs.lastMessage,
-		StartedAt:         rs.createdAt,
-		UpdatedAt:         rs.updatedAt,
-		RunKind:           rs.runKind,
-		SourceMachineID:   rs.sourceMachineID,
-		SourceRunID:       rs.sourceRunID,
-		RestoredFrom:      rs.restoredFrom,
-		SyncStatus:        rs.syncStatus,
-		SyncUpdatedAt:     rs.syncUpdatedAt,
-		ParentRunID:       rs.parentRunID,
-		AgentName:         rs.agentName,
-		Role:              rs.role,
-		DependsOn:         append([]string(nil), rs.dependsOn...),
-		AgentStatus:       rs.agentStatus,
-		ModelName:         rs.modelName,
+		RunID:               rs.id,
+		ProjectID:           rs.projectID,
+		WorkflowID:          rs.workflowID,
+		ProviderSessionID:   providerSessionID,
+		ProviderKey:         rs.providerKey,
+		ProviderAccountID:   rs.providerAccountID,
+		WorkingDirectory:    rs.workspaceCwd,
+		Status:              rs.status,
+		LastPrompt:          rs.lastPrompt,
+		LastMessage:         rs.lastMessage,
+		StartedAt:           rs.createdAt,
+		UpdatedAt:           rs.updatedAt,
+		RunKind:             rs.runKind,
+		SourceMachineID:     rs.sourceMachineID,
+		SourceRunID:         rs.sourceRunID,
+		RestoredFrom:        rs.restoredFrom,
+		SyncStatus:          rs.syncStatus,
+		SyncUpdatedAt:       rs.syncUpdatedAt,
+		ParentRunID:         rs.parentRunID,
+		AgentName:           rs.agentName,
+		Role:                rs.role,
+		DependsOn:           append([]string(nil), rs.dependsOn...),
+		AgentStatus:         rs.agentStatus,
+		ModelName:           rs.modelName,
+		PendingAgentContext: append([]string(nil), rs.pendingAgentContext...),
 	}
 }
 
@@ -758,6 +811,13 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 		}
 		s.agentOrchestrator.signalChild(rs.id, finalMsg, false, "", RunStatusCompleted)
 		if rs.parentRunID != "" {
+			// Tell the parent's provider conversation that a UI-spawned child finished, so
+			// the parent agent can report its result on the next turn (BUG-122).
+			if rs.uiInitiated {
+				s.appendPendingAgentContextLocked(rs.parentRunID, fmt.Sprintf(
+					"Sub-agent %q (provider: %s) completed. Result: %s",
+					rs.agentName, rs.providerKey, truncateDisplayField(finalMsg, 2000)))
+			}
 			switch {
 			case isAgentRole(rs, "coder"):
 				s.emitAgentGraphLocked(rs.parentRunID, s.agentOrchestrator.transition(rs.parentRunID, "ready-for-review"))
@@ -821,6 +881,11 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 		rs.agentStatus = string(RunStatusFailed)
 		s.agentOrchestrator.signalChild(rs.id, "", true, ev.Error, RunStatusFailed)
 		if rs.parentRunID != "" {
+			if rs.uiInitiated {
+				s.appendPendingAgentContextLocked(rs.parentRunID, fmt.Sprintf(
+					"Sub-agent %q (provider: %s) failed: %s",
+					rs.agentName, rs.providerKey, truncateDisplayField(ev.Error, 500)))
+			}
 			s.emitAgentGraphLocked(rs.parentRunID, s.agentOrchestrator.transition(rs.parentRunID, "rejected"))
 		}
 	default:
@@ -1163,6 +1228,7 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		rs.dependsOn = in.DependsOn
 		rs.agentStatus = "spawned"
 		rs.stepID = handle.StepID
+		rs.uiInitiated = in.UIInitiated
 		if agentDef != nil {
 			rs.agentName = agentDef.Name
 			rs.role = agentDef.Role
@@ -1225,6 +1291,13 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		AgentName:  childSnap.AgentName,
 		ChildRunID: handle.RunID,
 	})
+	// Queue a context note for the parent's next provider turn so the parent agent learns
+	// about a child the UI started (the AI tool path is already in provider history). (BUG-122)
+	if in.UIInitiated {
+		s.appendPendingAgentContext(parentRunID, fmt.Sprintf(
+			"Sub-agent %q (provider: %s, model: %s) was started from the FlowPilot UI.",
+			childSnap.AgentName, childSnap.ProviderKey, childModel))
+	}
 
 	// Fire the first turn asynchronously; the child streams via its own SSE.
 	if !blockedStart {
@@ -1463,12 +1536,23 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	if rs.providerKey == ProviderKeyCodex && rs.realProviderSessionID != "" {
 		providerSessionID = rs.realProviderSessionID
 	}
+	// Fold any pending UI-spawn context into the provider prompt (NOT the displayed prompt,
+	// which was already emitted via turn_started with in.Prompt). This is how the parent
+	// agent learns about children started from the UI. Cleared once consumed; the cleared
+	// state is persisted by the post-turn sessionStateOf snapshot below. (BUG-122)
+	providerPrompt := in.Prompt
+	s.mu.Lock()
+	if len(rs.pendingAgentContext) > 0 {
+		providerPrompt = composeAgentContextBlock(rs.pendingAgentContext) + "\n\n" + in.Prompt
+		rs.pendingAgentContext = nil
+	}
+	s.mu.Unlock()
 	req := TurnRequest{
 		RunID:             rs.id,
 		StepID:            in.StepID,
 		ProviderSessionID: providerSessionID,
 		ProviderTurnID:    turnID,
-		Prompt:            in.Prompt,
+		Prompt:            providerPrompt,
 		ModelName:         model,
 		SelectedSkills:    in.SelectedSkills,
 		YoloMode:          yolo,

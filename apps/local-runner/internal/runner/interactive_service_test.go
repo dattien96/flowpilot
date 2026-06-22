@@ -615,6 +615,152 @@ func (a *msgOnlyTurnAdapter) SendTurn(_ context.Context, _ TurnRequest, bridge T
 	return nil
 }
 
+// readTurnReqFor drains the shared capture channel until it sees the turn request for runID,
+// skipping unrelated runs' turns (e.g. the spawned child's own first turn).
+func readTurnReqFor(t *testing.T, ch chan TurnRequest, runID string) TurnRequest {
+	t.Helper()
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case req := <-ch:
+			if req.RunID == runID {
+				return req
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for turn request for run %s", runID)
+		}
+	}
+}
+
+// TestUISpawnInjectsContextIntoParentProviderTurn guards BUG-122: a child agent spawned from
+// the desktop UI is invisible to the parent's provider conversation. The next parent turn's
+// provider prompt must carry a system note naming the child so the parent agent can answer
+// "which sub-agents did we start?", while the displayed prompt stays clean.
+func TestUISpawnInjectsContextIntoParentProviderTurn(t *testing.T) {
+	svc := NewInteractiveService()
+	capture := &captureTurnAdapter{ch: make(chan TurnRequest, 8)}
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key:          ProviderKeyClaude,
+		DisplayName:  "Claude",
+		Status:       ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true, SkillSelection: true, ApprovalEvents: true},
+		newAdapter:   func() ProviderRuntimeAdapter { return capture },
+	})
+	svc.registry = reg
+
+	mux := http.NewServeMux()
+	svc.RegisterInteractiveRoutes(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyClaude, Model: "claude-sonnet-4-6"})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+
+	// Spawn from the desktop UI (the HTTP handler sets UIInitiated=true). wait=false so the
+	// child runs in the background; its first turn flows through the same capture adapter.
+	status, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+parent.RunID+"/spawn-agent", map[string]any{
+		"agent": "coder", "prompt": "do work", "provider": "claude", "wait": false,
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("spawn status=%d body=%s", status, body)
+	}
+	var spawn SpawnAgentResult
+	if err := json.Unmarshal(body, &spawn); err != nil {
+		t.Fatalf("decode spawn: %v", err)
+	}
+	// Let the child turn complete so both the spawn note and the result note are queued.
+	waitTerminal(t, srv.URL, spawn.RunID)
+
+	// Parent turn: its provider prompt must carry the injected sub-agent context.
+	status, body = doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+parent.RunID+"/turns", map[string]any{
+		"stepId": "chat-" + parent.RunID, "prompt": "which sub-agents did we start?",
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("parent turn status=%d body=%s", status, body)
+	}
+
+	parentReq := readTurnReqFor(t, capture.ch, parent.RunID)
+	if !strings.Contains(parentReq.Prompt, "FlowPilot system note") || !strings.Contains(parentReq.Prompt, "coder") {
+		t.Fatalf("parent provider prompt missing UI-spawn context: %q", parentReq.Prompt)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(parentReq.Prompt), "which sub-agents did we start?") {
+		t.Fatalf("user prompt should be appended after the context block: %q", parentReq.Prompt)
+	}
+
+	// The displayed prompt (turn_started event) stays clean — the note is provider-only.
+	var displayed string
+	for _, e := range adminEvents(t, srv.URL, parent.RunID) {
+		if e.Type == EventTurnStarted && e.Prompt != "" {
+			displayed = e.Prompt
+		}
+	}
+	if displayed != "which sub-agents did we start?" {
+		t.Fatalf("displayed prompt should be clean, got %q", displayed)
+	}
+
+	// A second parent turn must NOT re-inject (the buffer was cleared after consumption).
+	status, body = doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+parent.RunID+"/turns", map[string]any{
+		"stepId": "chat-" + parent.RunID, "prompt": "thanks",
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("second parent turn status=%d body=%s", status, body)
+	}
+	secondReq := readTurnReqFor(t, capture.ch, parent.RunID)
+	if strings.Contains(secondReq.Prompt, "FlowPilot system note") {
+		t.Fatalf("context must be injected once, not re-sent: %q", secondReq.Prompt)
+	}
+}
+
+// TestToolSpawnDoesNotInjectParentContext guards BUG-122: the AI spawn_agent tool path
+// (UIInitiated=false) must NOT inject a context note — those spawns are already part of the
+// parent's provider conversation as a tool call/result.
+func TestToolSpawnDoesNotInjectParentContext(t *testing.T) {
+	svc := NewInteractiveService()
+	capture := &captureTurnAdapter{ch: make(chan TurnRequest, 8)}
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key:          ProviderKeyClaude,
+		DisplayName:  "Claude",
+		Status:       ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true, SkillSelection: true, ApprovalEvents: true},
+		newAdapter:   func() ProviderRuntimeAdapter { return capture },
+	})
+	svc.registry = reg
+
+	mux := http.NewServeMux()
+	svc.RegisterInteractiveRoutes(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyClaude, Model: "claude-sonnet-4-6"})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+
+	// Direct service call mirrors the AI tool path: UIInitiated stays false.
+	spawn, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{
+		Agent: "coder", Prompt: "do work", Provider: "claude", Wait: false,
+	})
+	if spawnErr != nil {
+		t.Fatalf("spawnChildRun: %v", spawnErr)
+	}
+	waitTerminal(t, srv.URL, spawn.RunID)
+
+	status, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+parent.RunID+"/turns", map[string]any{
+		"stepId": "chat-" + parent.RunID, "prompt": "hello",
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("parent turn status=%d body=%s", status, body)
+	}
+	parentReq := readTurnReqFor(t, capture.ch, parent.RunID)
+	if strings.Contains(parentReq.Prompt, "FlowPilot system note") {
+		t.Fatalf("tool-path spawn must not inject context, got prompt: %q", parentReq.Prompt)
+	}
+}
+
 func waitFor(t *testing.T, cond func() bool, what string) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)

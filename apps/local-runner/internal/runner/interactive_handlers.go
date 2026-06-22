@@ -821,6 +821,9 @@ func (s *InteractiveService) handleSpawnAgent(w http.ResponseWriter, r *http.Req
 		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_request", "invalid request body"))
 		return
 	}
+	// This is a desktop UI spawn: tell spawnChildRun to surface the child to the parent's
+	// provider conversation (the AI tool path constructs SpawnAgentInput directly). (BUG-122)
+	in.UIInitiated = true
 	result, err := s.spawnChildRun(r.Context(), r.PathValue("runId"), in)
 	if err != nil {
 		writeInteractiveError(w, newAPIErr(http.StatusUnprocessableEntity, "spawn_failed", err.Error()))

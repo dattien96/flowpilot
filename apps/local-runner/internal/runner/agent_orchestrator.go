@@ -94,6 +94,11 @@ type SpawnAgentInput struct {
 	Provider  string   `json:"provider,omitempty"`
 	DependsOn []string `json:"dependsOn,omitempty"`
 	Wait      bool     `json:"wait"`
+	// UIInitiated is set by the desktop HTTP spawn handler (not decoded from the wire).
+	// It tells spawnChildRun to inject a context note into the parent's next provider
+	// turn so the parent agent learns about a child it did not spawn itself. The AI
+	// spawn_agent tool leaves this false — its spawns are already in provider history. (BUG-122)
+	UIInitiated bool `json:"-"`
 }
 
 // SpawnAgentResult is the tool call result and HTTP response body.

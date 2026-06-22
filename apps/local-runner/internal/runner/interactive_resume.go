@@ -165,6 +165,7 @@ func (s *InteractiveService) reconstructRun(st ProviderSessionState) (*interacti
 		subs:                   map[int64]chan ProviderEvent{},
 		idempotency:            map[string]string{},
 		resumedFromDisk:        true,
+		pendingAgentContext:    append([]string(nil), st.PendingAgentContext...),
 	}
 	s.mu.Lock()
 	s.runs[rs.id] = rs
