@@ -1639,3 +1639,31 @@ async function* cursorChildStream() {
     strict_1.default.equal(store_1.useStore.getState().status, "completed");
     strict_1.default.equal(store_1.useStore.getState().timeline.some((item) => item.kind === "thinking"), false);
 });
+// BUG-118: opening a chat replays its transcript, driving status running→completed just like
+// a live turn. _historyReplaying must be true for the duration so RunToast suppresses the
+// spurious "AI response complete" notification, and cleared once the replay finishes.
+(0, node_test_1.default)("openHistoryRun sets _historyReplaying during replay and clears it after (BUG-118)", async () => {
+    const gate = deferred();
+    async function* slowReplay() {
+        await gate.promise; // keep the replay in-flight until released
+    }
+    seedStore(makeClient({
+        resumeRun: async () => ({ runId: "run-1", providerSessionId: "s", providerKey: "codex", status: "completed", stepId: "chat-run-1" }),
+        streamRun: () => slowReplay(),
+        listSkills: async () => [],
+    }), [
+        {
+            runId: "run-1",
+            projectId: "project-1",
+            providerKey: "codex",
+            status: "completed",
+            startedAt: "2026-06-17T10:00:00Z",
+            updatedAt: "2026-06-17T10:05:00Z",
+        },
+    ]);
+    await store_1.useStore.getState().openHistoryRun("run-1");
+    strict_1.default.equal(store_1.useStore.getState()._historyReplaying, true, "flag must be set while the replay is in flight");
+    gate.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    strict_1.default.equal(store_1.useStore.getState()._historyReplaying, false, "flag must clear once the replay completes");
+});

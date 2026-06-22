@@ -1285,3 +1285,30 @@ func TestNumericIDSuffix(t *testing.T) {
 		}
 	}
 }
+
+// TestReconstructRunPreservesUpdatedAt guards BUG-118: opening (reconstructing) a persisted
+// chat must keep its stored updatedAt — the in-memory history list reports rs.updatedAt, so
+// seeding it with `now` made every opened chat jump to the top with the current date.
+func TestReconstructRunPreservesUpdatedAt(t *testing.T) {
+	store := newFakeWorkflowStore()
+	persisted := "2026-06-19T10:00:00.000000000Z"
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:       "run-1",
+		ProviderKey: ProviderKeyClaude,
+		Status:      RunStatusCompleted,
+		RunKind:     "chat",
+		StartedAt:   "2026-06-19T09:00:00.000000000Z",
+		UpdatedAt:   persisted,
+	}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+
+	rs, apiErr := svc.loadPersistedRun("run-1")
+	if apiErr != nil {
+		t.Fatalf("loadPersistedRun: %v", apiErr)
+	}
+	if rs.updatedAt != persisted {
+		t.Fatalf("reconstructRun updatedAt = %q, want preserved %q", rs.updatedAt, persisted)
+	}
+}

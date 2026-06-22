@@ -766,3 +766,26 @@ func TestListAgentRunSummariesEmptyHTTP(t *testing.T) {
 		t.Errorf("expected empty list, got %d items", len(summaries))
 	}
 }
+
+// TestGraphSnapshotDedupsHistoricalAndLiveChildren guards BUG-116: graphSnapshot must not
+// list a child twice when it appears in BOTH the historical set (from a sync/restore) and
+// the live children set. The live summary (current status) must win.
+func TestGraphSnapshotDedupsHistoricalAndLiveChildren(t *testing.T) {
+	o := newAgentOrchestrator()
+	// Same child present as historical (Completed) and live (Running).
+	o.setHistoricalChildren("parent-1", []AgentRunSummary{
+		{RunID: "child-1", AgentName: "reviewer", Role: "reviewer", Status: RunStatusCompleted, ParentRunID: "parent-1"},
+	})
+	o.registerChild("parent-1", "child-1")
+	o.upsertSummary("parent-1", AgentRunSummary{
+		RunID: "child-1", AgentName: "reviewer", Role: "reviewer", Status: RunStatusRunning, ParentRunID: "parent-1",
+	})
+
+	snap := o.graphSnapshot("parent-1")
+	if len(snap.Runs) != 1 {
+		t.Fatalf("graphSnapshot.Runs = %d, want 1 (deduped): %+v", len(snap.Runs), snap.Runs)
+	}
+	if snap.Runs[0].Status != RunStatusRunning {
+		t.Errorf("deduped child status = %q, want live %q", snap.Runs[0].Status, RunStatusRunning)
+	}
+}
