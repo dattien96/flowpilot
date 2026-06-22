@@ -184,7 +184,7 @@ export function AgentsPanel(): React.ReactElement {
           );
         })}
 
-        <button type="button" className="spawn" onClick={() => setOpen(true)} disabled={!mainRunId}>
+        <button type="button" className="spawn" onClick={() => setOpen(true)} disabled={!mainRunId || !client.spawnAgent}>
           ＋ Spawn agent
         </button>
       </div>
@@ -244,8 +244,11 @@ export function AgentsPanel(): React.ReactElement {
                     const isAgentSelected = dialog?.agentName === agent.name;
                     const lowerAgentName = agent.name.toLowerCase();
                     const cardRoleClass = lowerAgentName.includes("coder") ? "coder" : lowerAgentName.includes("review") ? "reviewer" : "tester";
-                    const cardProvBadge = "CODEX";
-                    const cardProvClass = "codex";
+                    const lowerPath = (agent.path ?? "").toLowerCase().replace(/\\/g, "/");
+                    const isClaudeSource = agent.source === "claude" ||
+                      (agent.source === "provider" && lowerPath.includes(".claude"));
+                    const cardProvBadge = isClaudeSource ? "CLAUDE" : "CODEX";
+                    const cardProvClass = isClaudeSource ? "claude" : "codex";
 
                     return (
                       <div
