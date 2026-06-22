@@ -677,7 +677,19 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 		rs.agentStatus = string(RunStatusCompleted)
 		// Signal any wait:true spawn_agent waiter — non-blocking (buffered channel).
 		// Must be called under s.mu so signalChild races after status is set.
-		s.agentOrchestrator.signalChild(rs.id, ev.FinalMessage, false, "", RunStatusCompleted)
+		// Fall back to the last EventMessageCompleted text when FinalMessage is empty:
+		// Codex new-protocol (turn/completed) may not carry finalMessage directly; the
+		// actual content arrives via streaming EventMessageCompleted events first.
+		finalMsg := ev.FinalMessage
+		if finalMsg == "" {
+			for i := len(rs.events) - 1; i >= 0; i-- {
+				if rs.events[i].Type == EventMessageCompleted && rs.events[i].Text != "" {
+					finalMsg = rs.events[i].Text
+					break
+				}
+			}
+		}
+		s.agentOrchestrator.signalChild(rs.id, finalMsg, false, "", RunStatusCompleted)
 		if rs.parentRunID != "" {
 			switch {
 			case isAgentRole(rs, "coder"):

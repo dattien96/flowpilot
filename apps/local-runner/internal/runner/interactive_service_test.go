@@ -563,6 +563,58 @@ func TestCompletedReviewerReleasesDependentTester(t *testing.T) {
 	}
 }
 
+// TestSpawnChildWaitReturnsFinalMessageViaMessageCompleted guards BUG-106: when a child
+// provider's turn/completed notification carries an empty FinalMessage but the actual text
+// arrived via EventMessageCompleted streaming events, spawnChildRun(wait=true) must still
+// return the child's text in SpawnAgentResult.FinalMessage (not an empty string).
+func TestSpawnChildWaitReturnsFinalMessageViaMessageCompleted(t *testing.T) {
+	svc := NewInteractiveService()
+	// Adapter emits the child text ONLY via EventMessageCompleted (no FinalMessage on
+	// EventTurnCompleted) — reproducing Codex new-protocol turn/completed behaviour.
+	reg := newProviderRegistry()
+	msgOnlyAdapter := &msgOnlyTurnAdapter{reply: "CHILD_AGENT_DONE"}
+	reg.register(ProviderRegistration{
+		Key:          ProviderKeyCodex,
+		DisplayName:  "Codex",
+		Status:       ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter:   func() ProviderRuntimeAdapter { return msgOnlyAdapter },
+	})
+	svc.registry = reg
+
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+
+	result, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{
+		Agent:    "reviewer",
+		Prompt:   "check it",
+		Provider: "codex",
+		Wait:     true,
+	})
+	if spawnErr != nil {
+		t.Fatalf("spawnChildRun: %v", spawnErr)
+	}
+	if result.FinalMessage != "CHILD_AGENT_DONE" {
+		t.Fatalf("FinalMessage = %q, want %q", result.FinalMessage, "CHILD_AGENT_DONE")
+	}
+}
+
+// msgOnlyTurnAdapter emits the child reply via EventMessageCompleted with an empty
+// FinalMessage on EventTurnCompleted (reproduces Codex new-protocol turn/completed).
+type msgOnlyTurnAdapter struct{ reply string }
+
+func (a *msgOnlyTurnAdapter) Key() ProviderKey { return ProviderKeyCodex }
+func (a *msgOnlyTurnAdapter) Capabilities() ProviderCapabilities {
+	return ProviderCapabilities{Streaming: true}
+}
+func (a *msgOnlyTurnAdapter) SendTurn(_ context.Context, _ TurnRequest, bridge TurnBridge) error {
+	bridge.Emit(ProviderEvent{Type: EventMessageCompleted, Text: a.reply})
+	bridge.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: ""}) // empty — the bug case
+	return nil
+}
+
 func waitFor(t *testing.T, cond func() bool, what string) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -741,7 +793,7 @@ func TestProjectRunHistoryFiltersRunsByProject(t *testing.T) {
 	}
 }
 
-func TestProjectRunHistoryIncludesLiveChildAgentRuns(t *testing.T) {
+func TestProjectRunHistoryExcludesLiveChildAgentRuns(t *testing.T) {
 	_, srv := newTestServer(t)
 
 	status, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs", StartRunInput{
@@ -781,18 +833,8 @@ func TestProjectRunHistoryIncludesLiveChildAgentRuns(t *testing.T) {
 	if err := json.Unmarshal(body, &history); err != nil {
 		t.Fatalf("decode history: %v", err)
 	}
-	var childItem *runHistoryItem
-	for i := range history {
-		if history[i].RunID == spawned.RunID {
-			childItem = &history[i]
-			break
-		}
-	}
-	if len(history) != 2 || childItem == nil {
-		t.Fatalf("history = %+v, want parent %s and child %s", history, parent, spawned.RunID)
-	}
-	if childItem.ParentRunID != parent || childItem.AgentName != "coder" || childItem.Role == "" {
-		t.Fatalf("child history metadata = %+v, want parent/agent fields", childItem)
+	if len(history) != 1 || history[0].RunID != parent {
+		t.Fatalf("history = %+v, want only parent %s; child %s must stay out of main history", history, parent, spawned.RunID)
 	}
 
 	status, body = doJSON(t, "GET", srv.URL+"/client/workflow-runs/"+parent+"/agents", nil, nil)
@@ -808,7 +850,113 @@ func TestProjectRunHistoryIncludesLiveChildAgentRuns(t *testing.T) {
 	}
 }
 
-func TestProjectRunHistoryIncludesPersistedChildAgentRuns(t *testing.T) {
+func TestProjectRunHistoryExcludesLiveOrphanAgentMetadataRuns(t *testing.T) {
+	svc, _ := newTestServer(t)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	svc.mu.Lock()
+	svc.runs["parent-run"] = &interactiveRun{
+		id:                "parent-run",
+		projectID:         "proj-web",
+		workflowID:        "wf-feature",
+		providerKey:       ProviderKeyCodex,
+		providerSessionID: "session-parent",
+		status:            RunStatusCompleted,
+		createdAt:         now,
+		updatedAt:         now,
+		lastPrompt:        "Use spawn_agent exactly once with agent=\"reviewer\".",
+		runKind:           "chat",
+	}
+	svc.runs["orphan-agent-run"] = &interactiveRun{
+		id:                "orphan-agent-run",
+		projectID:         "proj-web",
+		workflowID:        "wf-feature",
+		providerKey:       ProviderKeyCodex,
+		providerSessionID: "session-child",
+		status:            RunStatusCompleted,
+		createdAt:         now,
+		updatedAt:         now,
+		lastPrompt:        "You are the reviewer sub-agent. Review the coder's diff.\n\nDo not use tools. Reply exactly: CHILD_AGENT_DONE.",
+		lastMessage:       "CHILD_AGENT_DONE",
+		runKind:           "chat",
+		agentName:         "reviewer",
+		role:              "reviewer",
+		agentStatus:       string(RunStatusCompleted),
+	}
+	svc.mu.Unlock()
+
+	history := svc.projectRunHistory("proj-web")
+
+	if len(history) != 1 || history[0].RunID != "parent-run" {
+		t.Fatalf("history = %+v, want only parent; live orphan agent metadata run must stay out of main history", history)
+	}
+}
+
+func TestProjectRunHistoryKeepsLiveRootRowsWithAgentMetadata(t *testing.T) {
+	svc, _ := newTestServer(t)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	svc.mu.Lock()
+	svc.runs["main-run"] = &interactiveRun{
+		id:                "main-run",
+		projectID:         "proj-web",
+		workflowID:        "wf-feature",
+		providerKey:       ProviderKeyCodex,
+		providerSessionID: "session-main",
+		status:            RunStatusCompleted,
+		createdAt:         now,
+		updatedAt:         now,
+		lastPrompt:        "Main agent prompt",
+		lastMessage:       "Main agent response",
+		runKind:           "chat",
+		agentName:         "main",
+		agentStatus:       string(RunStatusCompleted),
+	}
+	svc.mu.Unlock()
+
+	history := svc.projectRunHistory("proj-web")
+
+	if len(history) != 1 || history[0].RunID != "main-run" {
+		t.Fatalf("history = %+v, want main root row even when live metadata contains agent-like fields", history)
+	}
+}
+
+func TestProjectRunHistoryKeepsPersistedRootRowsWithAgentMetadataAfterRestart(t *testing.T) {
+	registry := DefaultProviderRegistry()
+	catalog := newInteractiveCatalog()
+	store := newFakeWorkflowStore()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             "main-run",
+		ProjectID:         "proj-web",
+		WorkflowID:        "wf-feature",
+		ProviderSessionID: "session-main",
+		ProviderKey:       ProviderKeyCodex,
+		Status:            RunStatusCompleted,
+		StartedAt:         now,
+		UpdatedAt:         now,
+		LastPrompt:        "Main agent prompt",
+		LastMessage:       "Main agent response",
+		RunKind:           "chat",
+		AgentName:         "main",
+		AgentStatus:       string(RunStatusCompleted),
+	}); err != nil {
+		t.Fatalf("seed main session: %v", err)
+	}
+
+	_, srv := newTestServerWith(t, registry, catalog, store)
+	status, body := doJSON(t, "GET", srv.URL+"/client/projects/proj-web/workflow-runs", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("history status=%d body=%s", status, body)
+	}
+	var history []runHistoryItem
+	if err := json.Unmarshal(body, &history); err != nil {
+		t.Fatalf("decode history: %v", err)
+	}
+	if len(history) != 1 || history[0].RunID != "main-run" {
+		t.Fatalf("history = %+v, want persisted main root row after restart", history)
+	}
+}
+
+func TestProjectRunHistoryExcludesPersistedChildAgentRuns(t *testing.T) {
 	registry := DefaultProviderRegistry()
 	catalog := newInteractiveCatalog()
 	store := newFakeWorkflowStore()
@@ -852,18 +1000,56 @@ func TestProjectRunHistoryIncludesPersistedChildAgentRuns(t *testing.T) {
 	if err := json.Unmarshal(body, &history); err != nil {
 		t.Fatalf("decode history: %v", err)
 	}
-	var childItem *runHistoryItem
-	for i := range history {
-		if history[i].RunID == "child-run" {
-			childItem = &history[i]
-			break
-		}
+	if len(history) != 1 || history[0].RunID != "parent-run" {
+		t.Fatalf("history = %+v, want only persisted parent; child-run must stay out of main history", history)
 	}
-	if len(history) != 2 || childItem == nil {
-		t.Fatalf("history = %+v, want persisted parent and child", history)
+}
+
+func TestProjectRunHistoryExcludesLegacyOrphanAgentPromptRuns(t *testing.T) {
+	registry := DefaultProviderRegistry()
+	catalog := newInteractiveCatalog()
+	store := newFakeWorkflowStore()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             "parent-run",
+		ProjectID:         "proj-web",
+		WorkflowID:        "wf-feature",
+		ProviderSessionID: "session-parent",
+		ProviderKey:       ProviderKeyCodex,
+		Status:            RunStatusCompleted,
+		StartedAt:         now,
+		UpdatedAt:         now,
+		LastPrompt:        "Use spawn_agent exactly once with agent=\"reviewer\".",
+	}); err != nil {
+		t.Fatalf("seed parent session: %v", err)
 	}
-	if childItem.ParentRunID != "parent-run" || childItem.AgentName != "coder" || childItem.Role != "coder" {
-		t.Fatalf("child history metadata = %+v, want persisted parent/agent fields", childItem)
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             "orphan-child-run",
+		ProjectID:         "proj-web",
+		WorkflowID:        "wf-feature",
+		ProviderSessionID: "session-child",
+		ProviderKey:       ProviderKeyCodex,
+		Status:            RunStatusCompleted,
+		StartedAt:         now,
+		UpdatedAt:         now,
+		LastPrompt:        "You are the reviewer sub-agent. Review the coder's diff adversarially for correctness, regressions, and missed edge cases. Return either APPROVED or CHANGES-REQUESTED with specific, actionable feedback.\n\nDo not use tools. Reply exactly: CHILD_AGENT_DONE.",
+		LastMessage:       "CHILD_AGENT_DONE",
+		RunKind:           "chat",
+	}); err != nil {
+		t.Fatalf("seed orphan child session: %v", err)
+	}
+
+	_, srv := newTestServerWith(t, registry, catalog, store)
+	status, body := doJSON(t, "GET", srv.URL+"/client/projects/proj-web/workflow-runs", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("history status=%d body=%s", status, body)
+	}
+	var history []runHistoryItem
+	if err := json.Unmarshal(body, &history); err != nil {
+		t.Fatalf("decode history: %v", err)
+	}
+	if len(history) != 1 || history[0].RunID != "parent-run" {
+		t.Fatalf("history = %+v, want only parent; legacy orphan child must stay out of main history", history)
 	}
 }
 
