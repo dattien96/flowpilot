@@ -40,6 +40,12 @@ type ChatSessionSyncManifest struct {
 	UpdatedAt         string          `json:"updatedAt,omitempty"`
 	SyncedAt          string          `json:"syncedAt"`
 	ProviderFile      ChatSessionFile `json:"providerFile"`
+	ParentRunID       string          `json:"parentRunId,omitempty"`
+	AgentName         string          `json:"agentName,omitempty"`
+	Role              string          `json:"role,omitempty"`
+	DependsOn         []string        `json:"dependsOn,omitempty"`
+	AgentStatus       string          `json:"agentStatus,omitempty"`
+	ModelName         string          `json:"modelName,omitempty"`
 	// ChildAgents records the agent tree at sync time so it survives a restore
 	// round-trip (CP-19 / Task-082 acceptance check T-4). Omitted for runs with
 	// no children.
@@ -114,6 +120,7 @@ type chatSessionDriveIndexRecord struct {
 	UpdatedAt       string `json:"updated_at,omitempty"`
 	SyncedAt        string `json:"synced_at"`
 	ManifestPath    string `json:"manifest_path"`
+	ParentRunID     string `json:"parent_run_id,omitempty"`
 }
 
 func (s *InteractiveService) chatSessionStoreDir() string {
@@ -330,6 +337,12 @@ func (s *InteractiveService) BuildChatSessionSyncManifest(ctx context.Context, r
 		StartedAt:         session.StartedAt,
 		UpdatedAt:         session.UpdatedAt,
 		SyncedAt:          syncedAt,
+		ParentRunID:       session.ParentRunID,
+		AgentName:         session.AgentName,
+		Role:              session.Role,
+		DependsOn:         append([]string(nil), session.DependsOn...),
+		AgentStatus:       session.AgentStatus,
+		ModelName:         session.ModelName,
 		ProviderFile: ChatSessionFile{
 			RelativePath: relativePath,
 			SizeBytes:    int64(len(body)),
@@ -406,6 +419,7 @@ func manifestToDriveIndexRecord(manifest ChatSessionSyncManifest) chatSessionDri
 		UpdatedAt:       manifest.UpdatedAt,
 		SyncedAt:        manifest.SyncedAt,
 		ManifestPath:    chatSessionManifestPath(manifest.SourceMachineID, manifest.SourceRunID),
+		ParentRunID:     manifest.ParentRunID,
 	}
 }
 
@@ -560,8 +574,40 @@ func (s *InteractiveService) listRemoteChatSessions(ctx context.Context, project
 		return nil, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
 	}
 	records := parseChatSessionDriveIndex(raw)
+	childKeys := make(map[string]struct{})
+	for _, record := range records {
+		if strings.TrimSpace(record.ParentRunID) != "" {
+			childKeys[record.SourceMachineID+"\x00"+record.SourceRunID] = struct{}{}
+		}
+	}
+	// BUG-123 backward compatibility: BUG-119 uploaded child manifests and index rows
+	// before parent_run_id was added to the index. Read the manifests once to discover
+	// those legacy child identities, then keep them out of the top-level remote list.
+	for _, record := range records {
+		manifestFile, findErr := findGoogleDriveFileByLogicalPath(accessToken, rootFolderID, record.ManifestPath)
+		if findErr != nil {
+			continue
+		}
+		manifestBytes, downloadErr := downloadGoogleDriveFileByID(ctx, accessToken, manifestFile.ID)
+		if downloadErr != nil {
+			continue
+		}
+		var manifest ChatSessionSyncManifest
+		if json.Unmarshal(manifestBytes, &manifest) != nil {
+			continue
+		}
+		for _, child := range manifest.ChildAgents {
+			childRunID := strings.TrimSpace(child.RunID)
+			if childRunID != "" {
+				childKeys[manifest.SourceMachineID+"\x00"+childRunID] = struct{}{}
+			}
+		}
+	}
 	out := make([]RemoteChatSessionSummary, 0, len(records))
 	for _, record := range records {
+		if _, isChild := childKeys[record.SourceMachineID+"\x00"+record.SourceRunID]; isChild {
+			continue
+		}
 		out = append(out, RemoteChatSessionSummary{
 			RunID:           record.RunID,
 			ProjectID:       record.ProjectID,
@@ -615,6 +661,17 @@ func (s *InteractiveService) resolveRestoredRunID(ctx context.Context, sourceMac
 }
 
 func (s *InteractiveService) restoreChatRunFromDrive(ctx context.Context, req ChatSessionRestoreRequest) (ChatSessionRestoreResult, *apiErr) {
+	return s.restoreChatRunTreeFromDrive(ctx, req, make(map[string]struct{}))
+}
+
+func (s *InteractiveService) restoreChatRunTreeFromDrive(ctx context.Context, req ChatSessionRestoreRequest, restoring map[string]struct{}) (ChatSessionRestoreResult, *apiErr) {
+	restoreKey := strings.TrimSpace(req.SourceMachineID) + "\x00" + strings.TrimSpace(req.SourceRunID)
+	if _, duplicate := restoring[restoreKey]; duplicate {
+		return ChatSessionRestoreResult{}, newAPIErr(http.StatusConflict, "sync_integrity_failed", "remote chat session child graph contains a cycle")
+	}
+	restoring[restoreKey] = struct{}{}
+	defer delete(restoring, restoreKey)
+
 	projectID := strings.TrimSpace(req.ProjectID)
 	if projectID == "" {
 		return ChatSessionRestoreResult{}, newAPIErr(http.StatusBadRequest, "invalid_request", "projectId is required")
@@ -751,6 +808,12 @@ func (s *InteractiveService) restoreChatRunFromDrive(ctx context.Context, req Ch
 		RestoredFrom:      "google_drive",
 		SyncStatus:        "restored",
 		SyncUpdatedAt:     time.Now().UTC().Format(time.RFC3339Nano),
+		ParentRunID:       manifest.ParentRunID,
+		AgentName:         manifest.AgentName,
+		Role:              manifest.Role,
+		DependsOn:         append([]string(nil), manifest.DependsOn...),
+		AgentStatus:       manifest.AgentStatus,
+		ModelName:         manifest.ModelName,
 	}
 	if localAhead {
 		// The local rollout file is ahead of the restored snapshot, so the older
@@ -772,19 +835,63 @@ func (s *InteractiveService) restoreChatRunFromDrive(ctx context.Context, req Ch
 			}
 		}
 	}
+	// Restore every child transcript referenced by the parent manifest and persist its
+	// relationship metadata. Loading summaries alone made the panel look correct only
+	// until restart and left child chats unopened on the restored machine. (BUG-123)
+	var remapped []AgentRunSummary
+	if len(manifest.ChildAgents) > 0 {
+		remapped = make([]AgentRunSummary, len(manifest.ChildAgents))
+		runIDMap := map[string]string{manifest.SourceRunID: localRunID}
+		for i, child := range manifest.ChildAgents {
+			remapped[i] = child
+			remapped[i].DependsOn = append([]string(nil), child.DependsOn...)
+			childRunID := strings.TrimSpace(child.RunID)
+			if childRunID == "" {
+				continue
+			}
+			childResult, childErr := s.restoreChatRunTreeFromDrive(ctx, ChatSessionRestoreRequest{
+				ProjectID:       projectID,
+				SourceMachineID: manifest.SourceMachineID,
+				SourceRunID:     childRunID,
+				Cwd:             cwd,
+			}, restoring)
+			if childErr != nil {
+				log.Printf("[chat-sync] child restore failed run_id=%q parent=%q code=%q msg=%q", childRunID, manifest.SourceRunID, childErr.code, childErr.msg)
+				return ChatSessionRestoreResult{}, childErr
+			}
+			runIDMap[childRunID] = childResult.RunID
+			remapped[i].RunID = childResult.RunID
+		}
+		for i := range remapped {
+			remapped[i].ParentRunID = localRunID
+			for j, dependency := range remapped[i].DependsOn {
+				if localDependency, ok := runIDMap[dependency]; ok {
+					remapped[i].DependsOn[j] = localDependency
+				}
+			}
+			childLocalRunID := runIDMap[manifest.ChildAgents[i].RunID]
+			if childLocalRunID == "" {
+				continue
+			}
+			if metadataErr := s.updateLocalSessionSyncStatus(ctx, childLocalRunID, func(childSession *ProviderSessionState) {
+				childSession.ParentRunID = localRunID
+				childSession.AgentName = remapped[i].AgentName
+				childSession.Role = remapped[i].Role
+				childSession.DependsOn = append([]string(nil), remapped[i].DependsOn...)
+				childSession.AgentStatus = remapped[i].AgentStatus
+				childSession.ModelName = remapped[i].ModelName
+			}); metadataErr != nil {
+				return ChatSessionRestoreResult{}, metadataErr
+			}
+		}
+	}
+	// Publish the parent to main history only after all child files and relationship
+	// metadata are durable. History polling can run while restore is in progress, so
+	// persisting the parent earlier exposed an incomplete tree in the UI. (BUG-123)
 	if err := s.persistProviderSession(session); err != nil {
 		return ChatSessionRestoreResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
 	}
-	// Restore the agent tree from the manifest so GET /agents returns the same
-	// children that existed at sync time (CP-19 / Task-082 acceptance check T-4).
-	if len(manifest.ChildAgents) > 0 {
-		remapped := make([]AgentRunSummary, len(manifest.ChildAgents))
-		for i, child := range manifest.ChildAgents {
-			remapped[i] = child
-			if child.ParentRunID == manifest.SourceRunID {
-				remapped[i].ParentRunID = localRunID
-			}
-		}
+	if len(remapped) > 0 {
 		s.agentOrchestrator.setHistoricalChildren(localRunID, remapped)
 	}
 	return ChatSessionRestoreResult{
