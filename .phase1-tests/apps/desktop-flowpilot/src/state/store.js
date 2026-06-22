@@ -79,6 +79,7 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
     selectedProvider: "codex",
     yoloMode: false,
     workspaceMainView: "chat",
+    _historyReplaying: false,
     _historyLoadSeq: 0,
     _remoteHistoryLoadSeq: 0,
     _runSnapshots: {},
@@ -844,6 +845,8 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
             // Drop snapshots from the previously-open run so a later focus/back round-trip
             // can't restore a stale timeline from an unrelated chat. (BUG-111)
             _runSnapshots: {},
+            // Suppress the "AI response complete" toast while the transcript replays. (BUG-118)
+            _historyReplaying: true,
             _streamRunSeq: get()._streamRunSeq + 1,
             ...(historyProvider
                 ? {
@@ -873,6 +876,7 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
             console.error("[FlowPilot][history-open] stream replay failed", { runId: handle.runId, error: err });
         })
             .finally(() => {
+            set(() => ({ _historyReplaying: false }));
             if (activeHistoryReplayController === historyReplayController) {
                 activeHistoryReplayController = undefined;
             }

@@ -34,6 +34,12 @@ export function RunToast(): React.ReactElement | null {
     const prev = prevRef.current;
     prevRef.current = status;
 
+    // Suppress the completion toast while a history replay drives status running→completed:
+    // opening an old chat is not a fresh AI response. (BUG-118)
+    if (useStore.getState()._historyReplaying) {
+      return;
+    }
+
     if (status === "completed" && ACTIVE_STATUSES.includes(prev) && prev !== "completed") {
       const toast: Toast = { id: ++seq, message: "AI response complete", kind: "done" };
       setToasts((ts) => [...ts, toast]);

@@ -176,6 +176,10 @@ interface AppState {
   _runReplaySeq: Record<string, number>;
   agentSpawnGuideOpen: boolean;
   agentSpawnGuideAgentName?: string;
+  // True while openHistoryRun is replaying a persisted transcript. The replay drives the
+  // global status through running→completed just like a live turn, which would otherwise
+  // fire the "AI response complete" toast/notification on every chat open. (BUG-118)
+  _historyReplaying: boolean;
   // stream generation counter: incremented on every new consumeStream start so that
   // a prior stream for the same runId exits immediately (BUG-079)
   _streamRunSeq: number;
@@ -260,6 +264,7 @@ export const useStore = create<AppState>((set, get) => ({
   selectedProvider: "codex",
   yoloMode: false,
   workspaceMainView: "chat",
+  _historyReplaying: false,
   _historyLoadSeq: 0,
   _remoteHistoryLoadSeq: 0,
   _runSnapshots: {},
@@ -1064,6 +1069,8 @@ export const useStore = create<AppState>((set, get) => ({
       // Drop snapshots from the previously-open run so a later focus/back round-trip
       // can't restore a stale timeline from an unrelated chat. (BUG-111)
       _runSnapshots: {},
+      // Suppress the "AI response complete" toast while the transcript replays. (BUG-118)
+      _historyReplaying: true,
       _streamRunSeq: get()._streamRunSeq + 1,
       ...(historyProvider
         ? {
@@ -1102,6 +1109,7 @@ export const useStore = create<AppState>((set, get) => ({
         console.error("[FlowPilot][history-open] stream replay failed", { runId: handle.runId, error: err });
       })
       .finally(() => {
+        set(() => ({ _historyReplaying: false }));
         if (activeHistoryReplayController === historyReplayController) {
           activeHistoryReplayController = undefined;
         }

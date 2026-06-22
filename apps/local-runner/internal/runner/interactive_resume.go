@@ -133,6 +133,14 @@ func normalizeResumedStatus(status RunStatus) RunStatus {
 
 func (s *InteractiveService) reconstructRun(st ProviderSessionState) (*interactiveRun, *apiErr) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
+	// Preserve the persisted updatedAt — merely opening/viewing a chat must not bump its
+	// timestamp. The in-memory rs.updatedAt is what the history list reports, so seeding it
+	// with `now` made every opened chat jump to the top with the current date. Only a real
+	// turn (emitLocked) should advance updatedAt. Fall back to now if none was stored. (BUG-118)
+	updatedAt := strings.TrimSpace(st.UpdatedAt)
+	if updatedAt == "" {
+		updatedAt = now
+	}
 	rs := &interactiveRun{
 		id:                     st.RunID,
 		projectID:              st.ProjectID,
@@ -146,7 +154,7 @@ func (s *InteractiveService) reconstructRun(st ProviderSessionState) (*interacti
 		runKind:                st.RunKind,
 		status:                 normalizeResumedStatus(st.Status),
 		createdAt:              st.StartedAt,
-		updatedAt:              now,
+		updatedAt:              updatedAt,
 		lastPrompt:             st.LastPrompt,
 		lastMessage:            st.LastMessage,
 		sourceMachineID:        st.SourceMachineID,
