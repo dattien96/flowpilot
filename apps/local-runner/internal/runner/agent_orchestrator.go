@@ -117,6 +117,7 @@ type AgentRunSummary struct {
 	DependsOn   []string  `json:"dependsOn,omitempty"`
 	AgentStatus string    `json:"agentStatus,omitempty"`
 	ProviderKey string    `json:"providerKey,omitempty"`
+	ModelName   string    `json:"modelName,omitempty"`
 }
 
 // setHistoricalChildren stores agent summaries from a restored sync manifest so that

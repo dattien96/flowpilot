@@ -4821,7 +4821,7 @@ body.is-resizing-sidebar {
   padding: 9px 11px;
   color: var(--text);
   font-size: 12.5px;
-  min-height: 54px;
+  min-height: 96px;
 }
 .toggle-row {
   display: flex;
@@ -4994,6 +4994,12 @@ body.is-resizing-sidebar {
   gap: 7px;
   flex-wrap: wrap;
   align-items: center;
+}
+.ac-model {
+  font-size: 10px;
+  color: var(--text-dim);
+  opacity: 0.7;
+  font-style: italic;
 }
 .ac-bar {
   margin-top: 6px;

@@ -75,6 +75,7 @@ type ProviderSessionState struct {
 	Role        string
 	DependsOn   []string
 	AgentStatus string
+	ModelName   string
 }
 
 type ProviderApprovalState struct {

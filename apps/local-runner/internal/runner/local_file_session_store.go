@@ -66,6 +66,7 @@ type ndjsonSessionRecord struct {
 	Role              string   `json:"role,omitempty"`
 	DependsOn         []string `json:"depends_on,omitempty"`
 	AgentStatus       string   `json:"agent_status,omitempty"`
+	ModelName         string   `json:"model_name,omitempty"`
 }
 
 // loadFromDisk reads the NDJSON file, applies last-wins dedup per run_id, and
@@ -230,6 +231,7 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		Role:              r.Role,
 		DependsOn:         append([]string(nil), r.DependsOn...),
 		AgentStatus:       r.AgentStatus,
+		ModelName:         r.ModelName,
 	}
 }
 
@@ -310,5 +312,6 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		Role:              s.Role,
 		DependsOn:         append([]string(nil), s.DependsOn...),
 		AgentStatus:       s.AgentStatus,
+		ModelName:         s.ModelName,
 	}
 }

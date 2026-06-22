@@ -98,6 +98,7 @@ export interface AgentRunSummary {
   dependsOn?: string[];
   agentStatus?: string;
   providerKey?: string;
+  modelName?: string;
 }
 
 export interface AgentDependencyEdge {

@@ -489,6 +489,7 @@ func (s *InteractiveService) releaseDependentAgents(parentRunID, completedRunID,
 				DependsOn:   append([]string(nil), child.dependsOn...),
 				AgentStatus: child.agentStatus,
 				ProviderKey: string(child.providerKey),
+				ModelName:   child.modelName,
 			},
 		})
 	}
@@ -637,6 +638,7 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		Role:              rs.role,
 		DependsOn:         append([]string(nil), rs.dependsOn...),
 		AgentStatus:       rs.agentStatus,
+		ModelName:         rs.modelName,
 	}
 }
 
@@ -827,6 +829,14 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 	}
 	shouldEmitParentGraph := false
 	if rs.parentRunID != "" {
+		modelName := rs.modelName
+		if modelName == "" {
+			// Preserve a model name set at spawn time; rs.modelName may be empty
+			// when the child inherits an unresolved parent model.
+			if prev, ok := s.agentOrchestrator.currentSummary(rs.parentRunID, rs.id); ok {
+				modelName = prev.ModelName
+			}
+		}
 		s.agentOrchestrator.upsertSummary(rs.parentRunID, AgentRunSummary{
 			RunID:       rs.id,
 			AgentName:   rs.agentName,
@@ -837,6 +847,7 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 			DependsOn:   append([]string(nil), rs.dependsOn...),
 			AgentStatus: rs.agentStatus,
 			ProviderKey: string(rs.providerKey),
+			ModelName:   modelName,
 		})
 		shouldEmitParentGraph = shouldEmitAgentGraphForChildEvent(ev.Type)
 	}
@@ -1096,6 +1107,11 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		childModel = defaultModelForProvider(providerKey)
 		childReasoningEffort = ""
 	}
+	// If model is still unresolved (parent was started without an explicit model),
+	// fall back to the provider default so the UI always shows a model name.
+	if childModel == "" {
+		childModel = defaultModelForProvider(providerKey)
+	}
 
 	// Create the child run. createRun acquires s.mu internally; call it unlocked.
 	startIn := StartRunInput{
@@ -1187,6 +1203,7 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		DependsOn:   append([]string(nil), in.DependsOn...),
 		AgentStatus: agentStatus,
 		ProviderKey: string(childSnap.ProviderKey),
+		ModelName:   childModel,
 	})
 	_ = s.agentOrchestrator.addBus(parentRunID, AgentBusMessage{ID: s.nextID("bus"), ParentRunID: parentRunID, FromRunID: parentRunID, ToRunID: handle.RunID, Kind: "handoff", Message: in.Prompt, Queued: false, OccurredAt: time.Now().UTC().Format(time.RFC3339Nano)})
 	s.emitAgentGraph(parentRunID, s.agentOrchestrator.graphSnapshot(parentRunID))
@@ -1257,6 +1274,7 @@ func (s *InteractiveService) listAgentRunSummaries(parentRunID string) []AgentRu
 			DependsOn:   append([]string(nil), rs.dependsOn...),
 			AgentStatus: rs.agentStatus,
 			ProviderKey: string(rs.providerKey),
+			ModelName:   rs.modelName,
 		})
 	}
 	s.mu.Unlock()
@@ -1290,6 +1308,8 @@ func (s *InteractiveService) listAgentRunSummaries(parentRunID string) []AgentRu
 					CreatedAt:   session.StartedAt,
 					DependsOn:   append([]string(nil), session.DependsOn...),
 					AgentStatus: session.AgentStatus,
+					ProviderKey: string(session.ProviderKey),
+					ModelName:   session.ModelName,
 				})
 				seenIDs[session.RunID] = struct{}{}
 			}

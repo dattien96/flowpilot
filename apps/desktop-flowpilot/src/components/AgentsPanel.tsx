@@ -84,8 +84,11 @@ export function AgentsPanel(): React.ReactElement {
     setDialog(null);
     setOpen(false);
     try {
-      await client.spawnAgent(request);
+      const result = await client.spawnAgent(request);
       await refreshAgentRuns();
+      if (request.wait && result.finalMessage) {
+        appendSystemMessage(`**[${dialog.agentName}]** ${result.finalMessage}`, "info");
+      }
     } catch (err) {
       appendSystemMessage(`Spawn agent failed: ${err instanceof Error ? err.message : String(err)}`, "error");
     } finally {
@@ -177,6 +180,7 @@ export function AgentsPanel(): React.ReactElement {
               <div className="ac-meta">
                 <span className={`pill-prov prov-${provClass}`}>{providerBadge}</span>
                 <span>{run.role}</span>
+                {run.modelName && <span className="ac-model">{run.modelName}</span>}
               </div>
               {run.dependsOn && run.dependsOn.length > 0 && (
                 <div className="ac-meta" style={{ marginTop: "3px" }}>
@@ -224,6 +228,7 @@ export function AgentsPanel(): React.ReactElement {
                   <div className="ac-meta">
                     <span className={`pill-prov prov-${provClass}`}>{providerBadge}</span>
                     <span>{run.role}</span>
+                    {run.modelName && <span className="ac-model">{run.modelName}</span>}
                   </div>
                 </div>
               );
