@@ -714,10 +714,10 @@ func TestUISpawnInjectsContextIntoParentProviderTurn(t *testing.T) {
 	}
 }
 
-// TestToolSpawnDoesNotInjectParentContext guards BUG-122: the AI spawn_agent tool path
-// (UIInitiated=false) must NOT inject a context note — those spawns are already part of the
-// parent's provider conversation as a tool call/result.
-func TestToolSpawnDoesNotInjectParentContext(t *testing.T) {
+// TestToolSpawnWaitTrueDoesNotInjectParentContext guards BUG-122/BUG-126: an AI spawn_agent
+// tool call with wait=true returns the child result synchronously as the tool result (already
+// in the provider conversation), so it must NOT also be injected as a context note.
+func TestToolSpawnWaitTrueDoesNotInjectParentContext(t *testing.T) {
 	svc := NewInteractiveService()
 	capture := &captureTurnAdapter{ch: make(chan TurnRequest, 8)}
 	reg := newProviderRegistry()
@@ -740,14 +740,17 @@ func TestToolSpawnDoesNotInjectParentContext(t *testing.T) {
 		t.Fatalf("createRun: %v", err)
 	}
 
-	// Direct service call mirrors the AI tool path: UIInitiated stays false.
+	// Direct service call mirrors the AI tool path with wait=true: the result is returned
+	// synchronously (UIInitiated stays false), so no injection should happen.
 	spawn, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{
-		Agent: "coder", Prompt: "do work", Provider: "claude", Wait: false,
+		Agent: "coder", Prompt: "do work", Provider: "claude", Wait: true,
 	})
 	if spawnErr != nil {
 		t.Fatalf("spawnChildRun: %v", spawnErr)
 	}
-	waitTerminal(t, srv.URL, spawn.RunID)
+	if spawn.FinalMessage == "" {
+		t.Fatalf("wait=true should return the child result synchronously, got empty")
+	}
 
 	status, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+parent.RunID+"/turns", map[string]any{
 		"stepId": "chat-" + parent.RunID, "prompt": "hello",
@@ -757,7 +760,55 @@ func TestToolSpawnDoesNotInjectParentContext(t *testing.T) {
 	}
 	parentReq := readTurnReqFor(t, capture.ch, parent.RunID)
 	if strings.Contains(parentReq.Prompt, "FlowPilot system note") {
-		t.Fatalf("tool-path spawn must not inject context, got prompt: %q", parentReq.Prompt)
+		t.Fatalf("wait=true tool spawn must not inject context, got prompt: %q", parentReq.Prompt)
+	}
+}
+
+// TestToolSpawnWaitFalseInjectsResult guards BUG-126: an AI spawn_agent tool call with
+// wait=false only acks "spawned" — its eventual result is never returned to the model, so
+// the child's completion result must be injected into the parent's next provider turn, the
+// same way UI spawns are, keeping tool and UI spawn symmetric.
+func TestToolSpawnWaitFalseInjectsResult(t *testing.T) {
+	svc := NewInteractiveService()
+	capture := &captureTurnAdapter{ch: make(chan TurnRequest, 8)}
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key:          ProviderKeyClaude,
+		DisplayName:  "Claude",
+		Status:       ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true, SkillSelection: true, ApprovalEvents: true},
+		newAdapter:   func() ProviderRuntimeAdapter { return capture },
+	})
+	svc.registry = reg
+
+	mux := http.NewServeMux()
+	svc.RegisterInteractiveRoutes(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyClaude, Model: "claude-sonnet-4-6"})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+
+	// Tool path, background: UIInitiated=false, wait=false.
+	spawn, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{
+		Agent: "coder", Prompt: "do work", Provider: "claude", Wait: false,
+	})
+	if spawnErr != nil {
+		t.Fatalf("spawnChildRun: %v", spawnErr)
+	}
+	waitTerminal(t, srv.URL, spawn.RunID)
+
+	status, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+parent.RunID+"/turns", map[string]any{
+		"stepId": "chat-" + parent.RunID, "prompt": "what did the background agent return?",
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("parent turn status=%d body=%s", status, body)
+	}
+	parentReq := readTurnReqFor(t, capture.ch, parent.RunID)
+	if !strings.Contains(parentReq.Prompt, "FlowPilot system note") || !strings.Contains(parentReq.Prompt, "completed") {
+		t.Fatalf("wait=false tool spawn must inject the child result, got prompt: %q", parentReq.Prompt)
 	}
 }
 

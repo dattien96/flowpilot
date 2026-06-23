@@ -115,6 +115,11 @@ type interactiveRun struct {
 	// tool). UI spawns are invisible to the parent's provider conversation, so the parent
 	// must be told about them out-of-band; tool spawns are already in provider history. (BUG-122)
 	uiInitiated bool
+	// waitForResult records the spawn's wait flag. A tool spawn with wait=true returns the
+	// child result synchronously to the model (already in provider history). A tool spawn
+	// with wait=false only acks "spawned" — its eventual result must be injected like a UI
+	// spawn so the parent still learns the outcome (BUG-126).
+	waitForResult bool
 	// pendingAgentContext holds notes about UI-spawned children (and their results) that
 	// have not yet been folded into this (parent) run's provider conversation. They are
 	// prepended to the next provider turn's prompt and then cleared. Persisted to
@@ -814,9 +819,11 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 		}
 		s.agentOrchestrator.signalChild(rs.id, finalMsg, false, "", RunStatusCompleted)
 		if rs.parentRunID != "" {
-			// Tell the parent's provider conversation that a UI-spawned child finished, so
-			// the parent agent can report its result on the next turn (BUG-122).
-			if rs.uiInitiated {
+			// Tell the parent's provider conversation that a child finished, so the parent
+			// agent can report its result on the next turn. UI spawns (BUG-122) and tool
+			// spawns with wait=false (BUG-126) both need this; a tool spawn with wait=true
+			// already returned the result synchronously as the tool result, so skip it.
+			if rs.uiInitiated || !rs.waitForResult {
 				s.appendPendingAgentContextLocked(rs.parentRunID, fmt.Sprintf(
 					"Sub-agent %q (provider: %s) completed. Result: %s",
 					rs.agentName, rs.providerKey, truncateDisplayField(finalMsg, 2000)))
@@ -884,7 +891,7 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 		rs.agentStatus = string(RunStatusFailed)
 		s.agentOrchestrator.signalChild(rs.id, "", true, ev.Error, RunStatusFailed)
 		if rs.parentRunID != "" {
-			if rs.uiInitiated {
+			if rs.uiInitiated || !rs.waitForResult {
 				s.appendPendingAgentContextLocked(rs.parentRunID, fmt.Sprintf(
 					"Sub-agent %q (provider: %s) failed: %s",
 					rs.agentName, rs.providerKey, truncateDisplayField(ev.Error, 500)))
@@ -1232,6 +1239,7 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		rs.agentStatus = "spawned"
 		rs.stepID = handle.StepID
 		rs.uiInitiated = in.UIInitiated
+		rs.waitForResult = in.Wait
 		if agentDef != nil {
 			rs.agentName = agentDef.Name
 			rs.role = agentDef.Role
