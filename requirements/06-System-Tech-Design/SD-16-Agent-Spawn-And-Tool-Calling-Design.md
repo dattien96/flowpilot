@@ -92,6 +92,7 @@ This document is intentionally explanatory because the feature crosses three men
 - `D-3` **Shared spawn path:** The desktop `+ Spawn agent` action calls the same backend spawn path through HTTP. This bypasses "AI decides to call a tool" but not runner validation, child metadata, approvals, or persistence.
 - `D-4` **Child as normal run:** A child agent is represented as a normal provider-backed run/thread with additional agent metadata. This avoids a separate agent transport and reuses SSE, approval gates, session persistence, transcript replay, and provider account handling.
 - `D-5` **Markdown definitions are catalog input:** `.claude/agents/*.md` and `.codex/agents/*.md` files define the agent identity, preferred provider/model, tools metadata, and system prompt. FlowPilot reads these files and applies the definition while starting the child run.
+- `D-13` **Codex tool-name alias:** `spawn_agent` collides with a reserved name in the Codex app-server, so on Codex the tool is registered as `flowpilot_spawn_agent` and normalized back to `spawn_agent` at the runner/UI boundary; the model sees one consistent contract while Codex gets a non-reserved name. Legacy Codex rollouts that recorded the reserved name are migrated on resume. (BUG-124, BUG-127)
 
 Alternatives considered:
 
@@ -240,6 +241,9 @@ Why this option was chosen:
 - `CP-19 P-9` child gates remain owned by child stream -> Sections 7.3, 8, and 9.
 - `CP-19 P-9` YOLO inheritance + main-run gating -> `D-9`, `D-10`, Section 15 (BUG-129, BUG-131, BUG-133).
 - `CP-19 P-7` desktop agent-list rendering + slash commands -> `D-11`, `D-12`, Section 15 (BUG-130, BUG-132, BUG-134, Task-087).
+- `CP-19 P-2` Codex spawn-tool name parity -> `D-13` (BUG-124, BUG-127).
+- `CP-19 P-7` child model resolution -> `D-14`, Section 15.5.
+- `CP-19 P-1` child lifecycle delete cascade -> `D-15`, Section 15.6 (Task-086).
 
 ## 13. QA: Agent Spawn Mental Model
 
@@ -335,9 +339,9 @@ A child result reaches the parent through exactly one of two channels, chosen by
 - The parent accumulates child results between its turns and can summarize or react to them on its next turn. This is the building block for a future auto mode where the orchestrator launches background agents and consumes their results without a human prompt in between.
 - Future inter-agent messaging (one child addressing another) is expected to reuse the same buffer plus the existing agent bus, keeping a single result-routing path rather than a second mechanism.
 
-## 15. Desktop Runtime Behavior (YOLO, Gating, Agent List, Slash)
+## 15. Runtime Behavior (Spawn, YOLO, Gating, Agent List, Slash, Lifecycle)
 
-This section records the desktop/runner rules added while hardening the agent feature (BUG-129 … BUG-134, Task-087) so the design stays in sync with the implementation.
+This section records the desktop/runner rules added while hardening the agent feature (BUG-124 … BUG-134, Task-086, Task-087) so the design stays in sync with the implementation.
 
 ### 15.1 YOLO inheritance (BUG-129)
 
@@ -355,6 +359,14 @@ This section records the desktop/runner rules added while hardening the agent fe
 ### 15.4 Chat slash commands (Task-087, BUG-134)
 
 - `D-12` The chat composer routes slash input by the command after `/`: `/s` (or `/skill…`) opens the skill picker UI; `/a` (or `/agent`) opens the spawn-agent panel (the same `openAgentSpawnGuide` UI as the right sidebar). A bare `/` does **not** open any picker — a command letter is required so the two namespaces (`/s` skills, `/a` agent) are explicit. `@name` mention routing is unchanged.
+
+### 15.5 Child model resolution (spawn)
+
+- `D-14` `spawnChildRun` resolves the child's model by priority: (1) the agent definition's `model` (with its `model_reasoning_effort`); else (2) if the child runs on the **same** provider as the parent, inherit the parent's current model/effort; else (3) the per-provider default (`defaultModelForProvider`). A still-empty model also falls back to the provider default so the UI always shows a concrete model. The same agent name therefore shows exactly the model used to start it.
+
+### 15.6 Child lifecycle: delete cascades (Task-086)
+
+- `D-15` Deleting a parent chat (`DELETE /client/workflow-runs/{runId}`) cascades to its child agent runs, so a deleted conversation does not leave orphaned children in history/sync. Child identity is additive, so deleting a parentless (normal) run behaves exactly as before.
 
 ## 16. Test
 

@@ -9,9 +9,9 @@
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-19`
-- Last Updated: `2026-06-19`
+- Last Updated: `2026-06-23`
 - Parent Documents: [SS-11: Workflow With Session](../../05-System-Specs/SS-11-Workflow-With_Session.md), [SD-14: Codex Cross-Account Chat Resume And Home Sync](../../06-System-Tech-Design/SD-14-Codex-Cross-Account-Chat-Resume-And-Home-Sync.md)
-- Child Documents: [Task-081: Agent Abstraction And Catalog Loader](../../08-Task/done/Task-081-Agent-Abstraction-And-Catalog-Loader.md), [Task-082: Spawn-Agent Tool And Orchestrator Core](../../08-Task/done/Task-082-Spawn-Agent-Tool-And-Orchestrator-Core.md), [Task-083: Desktop Agents Panel And Focus Navigation](../../08-Task/todo/Task-083-Desktop-Agents-Panel-And-Focus-Navigation.md), [Task-084: Dependency Feedback Loop And Orchestration Board](../../08-Task/todo/Task-084-Dependency-Feedback-Loop-And-Orchestration-Board.md), [Task-085: Flow-Mode Supabase Agent Runs And Message Bus](../../08-Task/todo/Task-085-Flow-Mode-Supabase-Agent-Runs-And-Message-Bus.md)
+- Child Documents: [Task-081: Agent Abstraction And Catalog Loader](../../08-Task/done/Task-081-Agent-Abstraction-And-Catalog-Loader.md), [Task-082: Spawn-Agent Tool And Orchestrator Core](../../08-Task/done/Task-082-Spawn-Agent-Tool-And-Orchestrator-Core.md), [Task-083: Desktop Agents Panel And Focus Navigation](../../08-Task/todo/Task-083-Desktop-Agents-Panel-And-Focus-Navigation.md), [Task-084: Dependency Feedback Loop And Orchestration Board](../../08-Task/todo/Task-084-Dependency-Feedback-Loop-And-Orchestration-Board.md), [Task-085: Flow-Mode Supabase Agent Runs And Message Bus](../../08-Task/todo/Task-085-Flow-Mode-Supabase-Agent-Runs-And-Message-Bus.md), [Task-086: Delete Chat Cascades To Child Agents](../../08-Task/done/Task-086-Delete-Chat-Cascades-To-Child-Agents.md), [Task-087: Chat Slash Commands For Skill And Agent UI](../../08-Task/done/Task-087-Chat-Slash-Commands-For-Skill-And-Agent-UI.md)
 - Related Documents: [CP-09: AI Orchestration](../done/CP-09-AI-Orchestration.md), [CP-17: Workflow Chat And Session](../done/CP-17-Workflow-Chat-And_Session.md), [CP-18: Refactor Workflow With Session](../done/CP-18-Refactor-Workflow-With_Session.md)
 - Replaces: `None`
 - Tags: `multi-agent, sub-agent, orchestration, chat, workflow, local-runner, desktop, provider-adapter`
@@ -93,6 +93,21 @@ Let the FlowPilot main agent and the user run multiple AI agents in parallel wit
 - `P-3` [Task-083](../../08-Task/todo/Task-083-Desktop-Agents-Panel-And-Focus-Navigation.md) — Desktop Agents panel as a persistent, mode-agnostic right-rail component (between MODE and ACCOUNTS; visible in Chat and Workflow), agent run cards (running/waiting/completed/failed), header `N agents running` pill, inline "agent running/waiting" highlight in the Timeline, focus-into-child + back-to-main breadcrumb with stream replay, `+ Spawn agent` dialog + conservative `@mention` routing.
 - `P-4` [Task-084](../../08-Task/todo/Task-084-Dependency-Feedback-Loop-And-Orchestration-Board.md) — Dependency edges + message bus (`ready-for-review`, `changes-requested`, `approved`, `user-feedback`) driving the coder↔reviewer loop with a default round cap of 3; graph snapshot + additive parent-run SSE updates; the Graph/DAG orchestration board with controls and a live bus log.
 - `P-5` [Task-085](../../08-Task/todo/Task-085-Flow-Mode-Supabase-Agent-Runs-And-Message-Bus.md) — Phase 2: Supabase `agent_runs` + `agent_messages` (additive migration), `workflow_runs.parent_run_id`, reuse existing `workflow_provider_sessions`/`events` by writing each durable child agent against its own `workflow_run_id`, and workflow-engine integration so a workflow step can be an agent with a reviewer gate.
+
+### 4.1 Phase 1 Hardening Deltas (implemented after the original breakdown)
+
+These were not in the initial P-1…P-5 plan but are now implemented and verified; their design rules live in SD-16 (§7.3, §14, §15) and are listed here so CP-19 stays in sync with the code. Each links its BugFix/Task.
+
+- `P-11` **Result sharing back to the parent** — beyond `wait=true` returning the child's final message, UI spawns and `wait=false` tool spawns deliver the child's result asynchronously by folding a bounded `pendingAgentContext` note into the parent's next provider turn (persisted, survives restart). Each agent stays isolated — only the final result is shared, never the child's transcript. (BUG-121, BUG-122, BUG-126; SD-16 §14)
+- `P-12` **Provider-consistent spawn prompt** — one helper composes the first child turn identically for every provider (system prompt first, then an identity line linking the agent definition file, then the user prompt). (BUG-128; SD-16 §7.3)
+- `P-13` **Codex `spawn_agent` name parity** — the tool is registered as `flowpilot_spawn_agent` on Codex (the public name is reserved) and normalized back at the boundary; legacy rollouts migrate on resume. (BUG-124, BUG-127; SD-16 `D-13`)
+- `P-14` **Child YOLO inheritance** — a child inherits the parent's YOLO posture; an explicit per-turn YOLO override is sticky on the run. (BUG-129; SD-16 §15.1)
+- `P-15` **Main-run gating on a running `wait=true` child** — the desktop blocks the send button and spawn controls while a `wait=true` child runs (via the `waitForResult` summary flag), independent of the parent's turn status; `wait=false` children allow concurrent spawns. (BUG-131, BUG-133; SD-16 §15.2)
+- `P-16` **Agents panel list correctness** — merge SSE + HTTP by runId so disk-persisted closed children stay visible, dedup, sort newest-first, collapse past 5. (BUG-130, BUG-132; SD-16 §15.3)
+- `P-17` **Composer slash namespaces** — `/s` opens skills, `/a` opens the spawn-agent panel, bare `/` opens nothing. (Task-087, BUG-134; SD-16 §15.4)
+- `P-18` **Child model resolution** — agent-definition model → same-provider inheritance → per-provider default; the UI shows the exact model used. (SD-16 §15.5)
+- `P-19` **Delete-chat cascade** — deleting a parent chat removes its child agent runs. (Task-086; SD-16 §15.6)
+- `P-20` **Sync/restore preserves the agent tree** — remote restore keeps parent/child agent chats nested instead of flattening and losing children (the Phase-1 chat-sync analogue of R-4). (BUG-123)
 
 ## 5. Touched Areas
 
