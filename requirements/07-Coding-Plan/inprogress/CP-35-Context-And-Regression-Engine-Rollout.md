@@ -248,36 +248,8 @@ type Violation struct { Rule Rule; Detail string }
 
 ## 6. Data or Migration Steps
 
-**Supabase mirror (one migration; local NDJSON is primary, mirror optional, RLS mirrors CP-10 §3.1):**
-```sql
-create table feature_history (
-  id uuid primary key default gen_random_uuid(),
-  project_id uuid not null references projects(id) on delete cascade,
-  commit_hash text not null, feature_key text not null, source_doc_id text,
-  change_type text not null, summary text not null,
-  committed_at timestamptz not null, order_index int not null,
-  unique(project_id, commit_hash)
-);
-create table feature_catalog (
-  id uuid primary key default gen_random_uuid(),
-  project_id uuid not null references projects(id) on delete cascade,
-  feature_key text not null, title text, summary text,
-  keywords jsonb not null default '[]', file_globs jsonb not null default '[]', doc_refs jsonb not null default '[]',
-  unique(project_id, feature_key)
-);
-create table flow_rules (
-  id uuid primary key default gen_random_uuid(),
-  project_id uuid not null references projects(id) on delete cascade,
-  scope text not null default 'project', trigger text not null,
-  required_output text not null, action text not null default 'warn',
-  enabled boolean not null default true
-);
-alter table feature_history enable row level security;
-alter table feature_catalog enable row level security;
-alter table flow_rules enable row level security;
--- SELECT/ALL policies: project_id in (project_teams ∩ team_members for auth.uid()) — copy CP-10 §3.1.
--- tooling_status / capability_profile are machine-local; NOT mirrored.
-```
+**No Supabase migration needed.** All engine data is local-first under `<target>/.flowpilot/` (one directory per bound project, isolated by design). Shared files sync cross-machine via Google Drive (`context-engine/` prefix) — no DB tables required.
+
 **New `step_context_slots.resolver` enum values:** `feature.resolve`, `feature.history`, `code.dependents`.
 
 **Config (`settings/flow-rules.json`, per project):** `gate_mode: warn|enforce` (default warn), `test_command: string` (auto-detected), `structure_provider: gitnexus|fallback`, `resolver_embeddings: off`, `max_reprompt_attempts: 2`. `gate_mode` governs only the documentation rules (`r-ca`, `r-bug`); the regression rule (`r-reg`) and failing task-tests (`r-tests`) are **always enforced** regardless of `gate_mode` (`SS-14 Q-1`).
@@ -318,7 +290,7 @@ alter table flow_rules enable row level security;
 
 ### Shared
 
-- [ ] All mirror tables RLS-scoped per `project_id`; FlowPilot's own repo never used as context (AC-1). — **Supabase migration (§6 DDL) not yet run**
+- [x] FlowPilot's own repo never used as context; each project isolated in its own `<target>/.flowpilot/` dir (AC-1). — **structural isolation by design ✓**
 - [x] All build/index/check steps non-fatal and retryable; raw artifact save always succeeds (AC-9). — **all packages non-fatal by design ✓**
 
 ### What remains before full P-4/P-5/P-6/P-8 DoD
@@ -330,13 +302,12 @@ Three wiring items are out of scope for Tasks 096–103 and blocked on upcoming 
 | Hook `flowgate.Enforce` after `finishTurn` in `interactive_service.go` | CP-10 / runner | P-4, P-5 |
 | Call `skillpack.Install()` on project bind | CP-34 | P-6 |
 | Wire `contextsync.SyncSharedFiles` with Drive helpers from runner | CP-10 / CP-34 | P-8 |
-| Run Supabase migration (§6 DDL) | infra / deploy | Shared mirror tables |
 
 ### AC coverage matrix (`SS-14` → slice / DoD)
 
 | AC | Covered by | AC | Covered by |
 |----|-----------|----|-----------|
-| AC-1 target-only/isolated | Shared DoD, §6 RLS | AC-9 non-fatal | Shared DoD |
+| AC-1 target-only/isolated | per-project `<target>/.flowpilot/` dir (structural isolation) | AC-9 non-fatal | Shared DoD |
 | AC-2 works without docs | `P-1` | AC-10 NL resolution | `P-2` |
 | AC-3 history awareness | `P-2` §4.2.1 packing | AC-11 force outputs | `P-4` |
 | AC-4 removal surfaced (when avail.) | `P-3` + `r-dep` rule | AC-12 skills auto-installed | `P-6` |
