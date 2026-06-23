@@ -5,7 +5,7 @@
 - Document ID: `Task-100`
 - Title: `Regression Suite And Oracle Rule`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-23`

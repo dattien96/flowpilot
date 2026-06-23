@@ -1,0 +1,239 @@
+package flowgate
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestIsTestFile(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"internal/foo/foo_test.go", true},
+		{"internal/foo/foo.go", false},
+		{"src/util.test.ts", true},
+		{"src/util.spec.tsx", true},
+		{"src/util.test.js", true},
+		{"src/util.spec.jsx", true},
+		{"src/main.ts", false},
+		{"tests/test_utils.py", true},
+		{"lib/test_helper.py", true},
+		{"app/utils.py", false},
+		{"pkg/test_something/test_it.py", true},
+	}
+	for _, c := range cases {
+		if got := IsTestFile(c.path); got != c.want {
+			t.Errorf("IsTestFile(%q) = %v, want %v", c.path, got, c.want)
+		}
+	}
+}
+
+func TestDetectTestCommandGoMod(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example\n\ngo 1.21\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := DetectTestCommand(dir)
+	if cmd != "go test ./..." {
+		t.Errorf("expected 'go test ./...', got %q", cmd)
+	}
+}
+
+func TestDetectTestCommandPackageJSON(t *testing.T) {
+	dir := t.TempDir()
+	content := `{"name":"app","scripts":{"test":"jest"}}`
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := DetectTestCommand(dir)
+	if cmd != "npm test" {
+		t.Errorf("expected 'npm test', got %q", cmd)
+	}
+}
+
+func TestDetectTestCommandPackageJSONNoTestScript(t *testing.T) {
+	dir := t.TempDir()
+	content := `{"name":"app","scripts":{"build":"tsc"}}`
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := DetectTestCommand(dir)
+	if cmd != "" {
+		t.Errorf("expected empty string, got %q", cmd)
+	}
+}
+
+func TestDetectTestCommandPytestIni(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "pytest.ini"), []byte("[pytest]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := DetectTestCommand(dir)
+	if cmd != "pytest -q" {
+		t.Errorf("expected 'pytest -q', got %q", cmd)
+	}
+}
+
+func TestDetectTestCommandPyproject(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "pyproject.toml"), []byte("[tool.pytest]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := DetectTestCommand(dir)
+	if cmd != "pytest -q" {
+		t.Errorf("expected 'pytest -q', got %q", cmd)
+	}
+}
+
+func TestDetectTestCommandEmpty(t *testing.T) {
+	dir := t.TempDir()
+	cmd := DetectTestCommand(dir)
+	if cmd != "" {
+		t.Errorf("expected empty string for unknown project, got %q", cmd)
+	}
+}
+
+func TestRunOracleNilBaseline(t *testing.T) {
+	result := RunOracle("/some/dir", nil, nil)
+	if result.HasRegression {
+		t.Error("nil baseline should produce no regression")
+	}
+	if result.HasTampering {
+		t.Error("nil baseline should produce no tampering")
+	}
+	if len(result.Regressed) != 0 {
+		t.Error("nil baseline should produce empty Regressed")
+	}
+}
+
+func TestRunOracleEmptyTestCmd(t *testing.T) {
+	bl := &Baseline{CapturedAt: "2024-01-01T00:00:00Z", GreenTests: []string{"TestFoo"}, TestCmd: ""}
+	result := RunOracle("/some/dir", bl, nil)
+	if result.HasRegression {
+		t.Error("empty TestCmd should produce no regression")
+	}
+}
+
+func TestOracleResultHasRegressionOnlyWhenNonEmpty(t *testing.T) {
+	r1 := OracleResult{Regressed: []string{}, HasRegression: len([]string{}) > 0}
+	if r1.HasRegression {
+		t.Error("empty Regressed should mean HasRegression=false")
+	}
+
+	r2 := OracleResult{Regressed: []string{"TestFoo"}, HasRegression: len([]string{"TestFoo"}) > 0}
+	if !r2.HasRegression {
+		t.Error("non-empty Regressed should mean HasRegression=true")
+	}
+}
+
+func TestIsInBaseline(t *testing.T) {
+	baseline := []string{"TestFoo", "TestBar/subtest"}
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{"TestFoo", true},
+		{"TestBar/subtest", true},
+		{"subtest", true},
+		{"TestBaz", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := isInBaseline(c.name, baseline); got != c.want {
+			t.Errorf("isInBaseline(%q, baseline) = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestLoadBaselineMissingFile(t *testing.T) {
+	dir := t.TempDir()
+	bl, err := LoadBaseline(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if bl != nil {
+		t.Error("expected nil baseline for missing file")
+	}
+}
+
+func TestCaptureAndLoadBaseline(t *testing.T) {
+	repoDir := t.TempDir()
+	dotDir := t.TempDir()
+
+	// No go.mod, package.json, or pytest config → empty baseline
+	bl, err := CaptureBaseline(repoDir, dotDir)
+	if err != nil {
+		t.Fatalf("CaptureBaseline: %v", err)
+	}
+	if bl == nil {
+		t.Fatal("expected non-nil baseline even for empty project")
+	}
+	if bl.TestCmd != "" {
+		t.Errorf("expected empty TestCmd for unknown project, got %q", bl.TestCmd)
+	}
+
+	// Create go.mod so DetectTestCommand returns "go test ./..."
+	if err := os.WriteFile(filepath.Join(repoDir, "go.mod"), []byte("module example\n\ngo 1.21\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bl2, err := CaptureBaseline(repoDir, dotDir)
+	if err != nil {
+		t.Fatalf("CaptureBaseline with go.mod: %v", err)
+	}
+	if bl2.TestCmd != "go test ./..." {
+		t.Errorf("expected 'go test ./...', got %q", bl2.TestCmd)
+	}
+	if bl2.CapturedAt == "" {
+		t.Error("CapturedAt should be set")
+	}
+
+	// LoadBaseline should round-trip
+	loaded, err := LoadBaseline(dotDir)
+	if err != nil {
+		t.Fatalf("LoadBaseline: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("expected loaded baseline")
+	}
+	if loaded.TestCmd != bl2.TestCmd {
+		t.Errorf("loaded TestCmd = %q, want %q", loaded.TestCmd, bl2.TestCmd)
+	}
+}
+
+func TestRunOracleTampering(t *testing.T) {
+	repoDir := t.TempDir() // empty dir: runTests returns [] quickly (no .go files)
+	bl := &Baseline{
+		CapturedAt: "2024-01-01T00:00:00Z",
+		GreenTests: []string{},
+		TestCmd:    "go test ./...",
+	}
+	diff := []ChangedFile{
+		{Path: "internal/foo/foo_test.go", Status: "M"},
+		{Path: "internal/foo/foo.go", Status: "M"},
+	}
+	result := RunOracle(repoDir, bl, diff)
+	if !result.HasTampering {
+		t.Error("expected HasTampering=true when a test file is Modified in diff")
+	}
+	if len(result.Tampered) != 1 || result.Tampered[0] != "internal/foo/foo_test.go" {
+		t.Errorf("Tampered = %v, want [internal/foo/foo_test.go]", result.Tampered)
+	}
+}
+
+func TestRunOracleNewTestFileNotTampered(t *testing.T) {
+	repoDir := t.TempDir()
+	bl := &Baseline{
+		CapturedAt: "2024-01-01T00:00:00Z",
+		GreenTests: []string{},
+		TestCmd:    "go test ./...",
+	}
+	diff := []ChangedFile{
+		{Path: "internal/foo/foo_test.go", Status: "A"}, // Added, not Modified
+	}
+	result := RunOracle(repoDir, bl, diff)
+	if result.HasTampering {
+		t.Error("newly added test file should not be considered tampered")
+	}
+}
