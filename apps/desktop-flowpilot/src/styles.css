@@ -5043,6 +5043,21 @@ body.is-resizing-sidebar {
   opacity: 0.5;
   cursor: default;
 }
+.ag-more {
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  padding: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  border-radius: 6px;
+}
+.ag-more:hover {
+  color: var(--accent);
+  background: var(--surface-2, rgba(127, 127, 127, 0.08));
+}
 .modal-backdrop {
   position: fixed;
   inset: 0;

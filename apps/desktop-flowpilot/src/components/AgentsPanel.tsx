@@ -38,6 +38,8 @@ export function AgentsPanel(): React.ReactElement {
   const [loadingAgents, setLoadingAgents] = useState(false);
   const [dialog, setDialog] = useState<SpawnDialogState | null>(null);
   const [spawning, setSpawning] = useState(false);
+  const [showAllActive, setShowAllActive] = useState(false);
+  const [showAllClosed, setShowAllClosed] = useState(false);
 
   useEffect(() => {
     if (!agentSpawnGuideOpen) return;
@@ -97,12 +99,27 @@ export function AgentsPanel(): React.ReactElement {
   const mainRunStatus = activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId ? mainSnapshotStatus ?? activeStatus : activeStatus;
   const mainCardBusy = mainRunStatus === "running" || mainRunStatus === "waiting_approval" || mainRunStatus === "waiting_question";
 
-  const runningAgentCount = agentRuns.filter(
+  // Dedup by runId and sort newest-first. The list is fed by both the orchestration
+  // SSE stream and a fire-and-forget HTTP refresh, which can race and momentarily
+  // double-count or reorder agents; deduping by id keeps the count stable and sorting
+  // by createdAt keeps the latest agent on top (BUG-130).
+  const orderedRuns = useMemo(() => {
+    const byId = new Map<string, (typeof agentRuns)[number]>();
+    for (const run of agentRuns) byId.set(run.runId, run);
+    return [...byId.values()].sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
+  }, [agentRuns]);
+
+  const runningAgentCount = orderedRuns.filter(
     (run) => run.status === "running" || run.status === "waiting_approval" || run.status === "waiting_question",
   ).length;
 
-  const activeRuns = agentRuns.filter((r) => r.status !== "completed" && r.status !== "failed" && r.status !== "cancelled");
-  const closedRuns = agentRuns.filter((r) => r.status === "completed" || r.status === "failed" || r.status === "cancelled");
+  const activeRuns = orderedRuns.filter((r) => r.status !== "completed" && r.status !== "failed" && r.status !== "cancelled");
+  const closedRuns = orderedRuns.filter((r) => r.status === "completed" || r.status === "failed" || r.status === "cancelled");
+
+  // Collapse long lists to the latest few; the rest expand on demand (BUG-130).
+  const AGENT_COLLAPSE_LIMIT = 5;
+  const visibleActiveRuns = showAllActive ? activeRuns : activeRuns.slice(0, AGENT_COLLAPSE_LIMIT);
+  const visibleClosedRuns = showAllClosed ? closedRuns : closedRuns.slice(0, AGENT_COLLAPSE_LIMIT);
 
   const dependencyCandidates = activeRuns;
 
@@ -153,7 +170,7 @@ export function AgentsPanel(): React.ReactElement {
           </div>
         </div>
 
-        {activeRuns.map((run) => {
+        {visibleActiveRuns.map((run) => {
           const isSelected = run.runId === activeAgentRunId && workspaceMainView !== "board";
           const lowerName = run.agentName.toLowerCase();
           const roleClass = lowerName.includes("coder") ? "coder" : lowerName.includes("review") ? "reviewer" : lowerName.includes("test") ? "tester" : "";
@@ -193,7 +210,19 @@ export function AgentsPanel(): React.ReactElement {
           );
         })}
 
-        <button type="button" className="spawn" onClick={() => setOpen(true)} disabled={!mainRunId || !client.spawnAgent}>
+        {activeRuns.length > AGENT_COLLAPSE_LIMIT && (
+          <button type="button" className="ag-more" onClick={() => setShowAllActive((v) => !v)}>
+            {showAllActive ? "▴ Show fewer" : `▾ Show ${activeRuns.length - AGENT_COLLAPSE_LIMIT} more`}
+          </button>
+        )}
+
+        <button
+          type="button"
+          className="spawn"
+          onClick={() => setOpen(true)}
+          disabled={!mainRunId || !client.spawnAgent || mainCardBusy}
+          title={mainCardBusy ? "Main agent is busy — wait for the current turn/agent to finish before spawning another." : undefined}
+        >
           ＋ Spawn agent
         </button>
       </div>
@@ -204,7 +233,7 @@ export function AgentsPanel(): React.ReactElement {
             ◌ Recently closed
           </div>
           <div className="agent-run-list" style={{ display: "flex", flexDirection: "column", gap: "6px", padding: 0 }}>
-            {closedRuns.map((run) => {
+            {visibleClosedRuns.map((run) => {
               const isSelected = run.runId === activeAgentRunId && workspaceMainView !== "board";
               const provClass = run.providerKey ?? "codex";
               const providerBadge = (run.providerKey ?? "codex").toUpperCase();
@@ -230,6 +259,11 @@ export function AgentsPanel(): React.ReactElement {
                 </div>
               );
             })}
+            {closedRuns.length > AGENT_COLLAPSE_LIMIT && (
+              <button type="button" className="ag-more" onClick={() => setShowAllClosed((v) => !v)}>
+                {showAllClosed ? "▴ Show fewer" : `▾ Show ${closedRuns.length - AGENT_COLLAPSE_LIMIT} more`}
+              </button>
+            )}
           </div>
         </>
       )}
@@ -356,7 +390,8 @@ export function AgentsPanel(): React.ReactElement {
                 type="button"
                 className="bc primary"
                 onClick={() => void spawn()}
-                disabled={spawning || !dialog?.agentName || dialog.prompt.trim().length === 0}
+                disabled={spawning || mainCardBusy || !dialog?.agentName || dialog.prompt.trim().length === 0}
+                title={mainCardBusy ? "Main agent is busy — wait for the current turn/agent to finish." : undefined}
               >
                 Spawn ▸
               </button>

@@ -172,6 +172,9 @@ interface AppState {
   _historyLoadSeq: number;
   // stale-response guard for loadRemoteChatSessions (mirrors _historyLoadSeq)
   _remoteHistoryLoadSeq: number;
+  // stale-response guard for refreshAgentRuns; a fire-and-forget fetch must not
+  // overwrite a newer SSE-delivered agent list and flicker the count (BUG-130)
+  _agentRunsLoadSeq: number;
   _runSnapshots: Record<string, RunSnapshot>;
   _runReplaySeq: Record<string, number>;
   agentSpawnGuideOpen: boolean;
@@ -267,6 +270,7 @@ export const useStore = create<AppState>((set, get) => ({
   _historyReplaying: false,
   _historyLoadSeq: 0,
   _remoteHistoryLoadSeq: 0,
+  _agentRunsLoadSeq: 0,
   _runSnapshots: {},
   _runReplaySeq: {},
   _streamRunSeq: 0,
@@ -373,9 +377,13 @@ export const useStore = create<AppState>((set, get) => ({
       set({ agentRuns: [] });
       return;
     }
+    // Stale-response guard (BUG-130): this fetch is fire-and-forget and can land after a
+    // newer SSE agent-graph update. Only apply the result if no later refresh started.
+    const seq = get()._agentRunsLoadSeq + 1;
+    set({ _agentRunsLoadSeq: seq });
     try {
       const agentRuns = await client.listAgentRuns(parentRunId);
-      if (get().mainRunId === parentRunId || get().runId === parentRunId) {
+      if (get()._agentRunsLoadSeq === seq && (get().mainRunId === parentRunId || get().runId === parentRunId)) {
         set({ agentRuns });
       }
     } catch (err) {
@@ -1610,6 +1618,9 @@ function applyEvent(s: AppState, e: ProviderEventDTO): Partial<AppState> {
       agentGraphSnapshot: e.agentGraphSnapshot,
       agentBusMessages: e.agentGraphSnapshot.busMessages,
       _runReplaySeq: nextReplaySeq,
+      // Invalidate any in-flight refreshAgentRuns fetch so it can't overwrite this
+      // fresher SSE snapshot with a stale list and flicker the count (BUG-130).
+      _agentRunsLoadSeq: s._agentRunsLoadSeq + 1,
     };
   }
   if (e.type === "agent_bus_message") {
@@ -1643,6 +1654,8 @@ function applyOrchestrationEvent(s: AppState, e: ProviderEventDTO): Partial<AppS
       agentGraphSnapshot: e.agentGraphSnapshot,
       agentBusMessages: e.agentGraphSnapshot.busMessages,
       _runReplaySeq: nextReplaySeq,
+      // Invalidate any in-flight refreshAgentRuns fetch (BUG-130).
+      _agentRunsLoadSeq: s._agentRunsLoadSeq + 1,
     };
   }
   if (e.type === "agent_bus_message") {
