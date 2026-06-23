@@ -5,7 +5,7 @@
 - Document ID: `Task-102`
 - Title: `Tooling Check And Capability Profile`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-23`
