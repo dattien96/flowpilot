@@ -238,6 +238,8 @@ Why this option was chosen:
 - `CP-19 P-2` result parity across entry points -> `D-6`, `D-7`, `D-8`, Section 14 (BUG-121, BUG-122, BUG-126).
 - `CP-19 P-3` agent definitions from `.claude/agents` and `.codex/agents` -> Sections 5, 6, and 13.
 - `CP-19 P-9` child gates remain owned by child stream -> Sections 7.3, 8, and 9.
+- `CP-19 P-9` YOLO inheritance + main-run gating -> `D-9`, `D-10`, Section 15 (BUG-129, BUG-131, BUG-133).
+- `CP-19 P-7` desktop agent-list rendering + slash commands -> `D-11`, `D-12`, Section 15 (BUG-130, BUG-132, BUG-134, Task-087).
 
 ## 13. QA: Agent Spawn Mental Model
 
@@ -333,7 +335,28 @@ A child result reaches the parent through exactly one of two channels, chosen by
 - The parent accumulates child results between its turns and can summarize or react to them on its next turn. This is the building block for a future auto mode where the orchestrator launches background agents and consumes their results without a human prompt in between.
 - Future inter-agent messaging (one child addressing another) is expected to reuse the same buffer plus the existing agent bus, keeping a single result-routing path rather than a second mechanism.
 
-## 15. Test
+## 15. Desktop Runtime Behavior (YOLO, Gating, Agent List, Slash)
+
+This section records the desktop/runner rules added while hardening the agent feature (BUG-129 … BUG-134, Task-087) so the design stays in sync with the implementation.
+
+### 15.1 YOLO inheritance (BUG-129)
+
+- `D-9` A spawned child inherits the parent run's YOLO posture at creation: `spawnChildRun` copies `parentRun.yolo` into the child's `StartRunInput.YoloMode`. With YOLO on, the child's gated actions auto-approve instead of stalling the (often `wait=true`) parent on a child approval prompt.
+- A per-turn YOLO override is sticky: `runTurn` writes an explicit `YoloMode` back to the run, so a spawn during that turn reads the live posture and later turns default to it. YOLO off still yields a YOLO-off child that requests approval.
+
+### 15.2 Main-run gating on wait=true children (BUG-131, BUG-133)
+
+- `D-10` A running child spawned with `wait=true` blocks the main run's chat send button and the spawn controls — even when the main has no turn of its own in flight (a UI `wait=true` spawn). The blocking signal is the agent summary's `waitForResult` flag (`hasBlockingChild` on the client), not the parent's turn status. `wait=false` children never block, so background concurrent spawns are allowed.
+
+### 15.3 Agents panel list rendering (BUG-130, BUG-132)
+
+- `D-11` The desktop agent list is fed by two sources: the live SSE `agent_graph_updated` snapshot (in-memory only) and the HTTP `listAgentRunSummaries` superset (live + historical + disk-persisted closed children). The client **merges** SSE updates into the list by `runId` (incoming wins) rather than replacing, so disk-only closed children stay visible while a new agent runs; the HTTP refresh remains the authoritative replace for the active parent. The list is de-duplicated by `runId`, sorted newest-first, and collapsed to the latest 5 per section with a show-more toggle.
+
+### 15.4 Chat slash commands (Task-087, BUG-134)
+
+- `D-12` The chat composer routes slash input by the command after `/`: `/s` (or `/skill…`) opens the skill picker UI; `/a` (or `/agent`) opens the spawn-agent panel (the same `openAgentSpawnGuide` UI as the right sidebar). A bare `/` does **not** open any picker — a command letter is required so the two namespaces (`/s` skills, `/a` agent) are explicit. `@name` mention routing is unchanged.
+
+## 16. Test
 
 
 ### Test 1: full - cases 18 & 20 FIXED by BUG-129 (child inherits parent YOLO)
@@ -369,12 +392,12 @@ After the child returns, tell me the exact child result.
 17. Back to claude chat - KEEP yolo off -> prompt (Use spawn_agent exactly once with agent="coder", provider="codex", wait=true.
 Child prompt: "Create a file called child-agent-yolo-off.txt in the current directory with the text 'child approval works'. Then reply exactly: CHILD_APPROVAL_DONE."
 Do not create the file yourself. Only the child agent should do it.) -> check APPROVE
-18. YOLO = true and send again -> check APPROVE   ----- **FIXED (BUG-129): with YOLO on, the child now auto-approves; no confirm.**
+18. YOLO = true and send again with file name = child-agent-yolo-on.txt -> check APPROVE   ----- **FIXED (BUG-129): with YOLO on, the child now auto-approves; no confirm.**
 19. Switch to codex chat  - KEEP yolo off -> prompt (Use spawn_agent exactly once with agent="coder", provider="claude", wait=true.
 Child prompt: "Create a file called child-agent-yolo-off.txt in the current directory with the text 'child approval works'. Then reply
 exactly: CHILD_APPROVAL_DONE."
 Do not create the file yourself. Only the child agent should do it.) -> check APPROVE
-20. YOLO = true and send again -> check APPROVE ----- **FIXED (BUG-129): with YOLO on, the child now auto-approves; no confirm.**
+20. YOLO = true and send again with file name = child-agent-yolo-on.txt -> check APPROVE ----- **FIXED (BUG-129): with YOLO on, the child now auto-approves; no confirm.**
 21. Re-start sever and continue with Test 2
 
 ### Test 2: regression test for YOLO - PASSED
@@ -405,40 +428,12 @@ Use the ask_user tool to ask me which programming language I prefer: Python, Typ
 - 3 prompt continue
 
 
+### Test 3: Wait semantics — blocking vs concurrent spawns (BUG-131, fixed in BUG-133) - PASSED
 
-### Test 3: Result sharing — tool spawn parity for both wait modes
-
-Validates Section 14 delivery rule (`D-8`) for the AI tool entry point (BUG-126).
-
-1. In a fresh main chat, send:
-
-Use spawn_agent exactly once with agent="reviewer", provider="codex", wait=false.
-Child prompt: "Do not use tools. Reply exactly: SHARE_BG_DONE." Do not wait for it; just continue.
-
-2. Let the background child complete (watch the Agents panel).
-3. Now ask the main chat: `What did the background sub-agent return?`
-4. Expected (wait=false):
-   - The main chat reports `SHARE_BG_DONE` — the background result was delivered even though the tool call only acked "spawned".
-5. In another fresh chat, send a `wait=true` spawn (as in Test 2) and after it completes ask the same question.
-6. Expected (wait=true):
-   - The main chat still reports the result, and it is reported once (no duplicated "completed" note), because `wait=true` results arrive only as the synchronous tool result.
-
-### Test 4: Spawn disabled while the main run is busy (BUG-131)
-
-Validates that the desktop cannot fan out unbounded concurrent spawns while the main run is blocked — the `+ Spawn agent` control mirrors the send button's busy gating.
-
-1. In a chat, spawn an agent from the UI with **Wait for result = ON** so the main run blocks on the child.
-2. While the child is running, observe the chat send button is disabled (existing, correct behavior).
-3. Expected: the `+ Spawn agent` button in the Agents panel is **also disabled** (greyed, with a "main is busy" tooltip), and the spawn modal's `Spawn ▸` button is disabled too — so a second agent cannot be started until the main run is idle.
-4. Trigger a normal main turn (no child) and confirm the same: while the main turn is `running`/`waiting_approval`/`waiting_question`, the spawn control is disabled; when it returns to idle, the control re-enables.
-5. Regression: with the main run idle, the spawn button works exactly as before.
-
-### Test 5: Wait semantics — blocking vs concurrent spawns (BUG-131)
-
-Validates the `wait` toggle's effect on the main run and on the ability to spawn more agents. This is the user-facing contract behind Test 4's gate.
+Validates the `wait` toggle's effect on the main run and on the ability to spawn more agents. NOTE: BUG-131's first attempt gated on the main *turn* status, which a UI `wait=true` spawn does not set, so this test originally FAILED (the main could still send/spawn). BUG-133 fixes it by exposing the spawn's `wait` flag on the agent summary (`waitForResult`) and blocking on a running `wait=true` child directly.
 
 **wait=true → main blocks → no concurrent spawn**
-1. In a chat, spawn agent 1 from the UI with **Wait for result = ON**.
+1. In a chat, spawn agent 1 from the UI with **Wait for result = ON**. The prompt is (Do nothing, just see what did project do?)
 2. Expected: the main run goes busy and stays blocked until agent 1 finishes — the chat send button AND the `+ Spawn agent` / `Spawn ▸` controls are disabled.
 3. While agent 1 is still running, confirm you **cannot** start a second agent (the spawn control is disabled).
 4. When agent 1 completes, the main run returns to idle and spawning is enabled again.
