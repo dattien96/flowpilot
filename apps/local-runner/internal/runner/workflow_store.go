@@ -69,6 +69,17 @@ type ProviderSessionState struct {
 	RestoredFrom      string
 	SyncStatus        string
 	SyncUpdatedAt     string
+	// ParentRunID is set for child agent runs (CP-19 / Task-082); empty for root runs.
+	ParentRunID string
+	AgentName   string
+	Role        string
+	DependsOn   []string
+	AgentStatus string
+	ModelName   string
+	// PendingAgentContext carries notes about UI-spawned children not yet folded into this
+	// run's provider conversation, persisted so the parent still learns about them after a
+	// restart (BUG-122).
+	PendingAgentContext []string
 }
 
 type ProviderApprovalState struct {

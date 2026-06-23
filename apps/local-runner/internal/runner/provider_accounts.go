@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -302,6 +303,15 @@ func (r *Runner) saveProviderAccountState(state providerAccountState) error {
 	payload, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
+	}
+
+	// Skip the write (and its log line) when the on-disk content is byte-identical.
+	// Callers re-save on every ListProviderAccounts / resume even when the sync produced
+	// no material change, which otherwise spammed the log and the disk during chat
+	// navigation. This never skips a real change — the payload differs the moment any
+	// account field does. (BUG-115)
+	if existing, readErr := os.ReadFile(path); readErr == nil && bytes.Equal(existing, payload) {
+		return nil
 	}
 
 	if err := os.WriteFile(path, payload, 0o644); err != nil {

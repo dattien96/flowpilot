@@ -50,6 +50,8 @@ func TestMapCodexNotification(t *testing.T) {
 			func(e ProviderEvent) bool { return e.ProviderTurnID == "t1" && e.Text == "final" }},
 		{"tool started", "tool.started", map[string]any{"name": "grep"}, EventToolStarted, true,
 			func(e ProviderEvent) bool { return e.ToolName == "grep" }},
+		{"spawn alias normalized", "tool.started", map[string]any{"name": codexSpawnAgentToolName}, EventToolStarted, true,
+			func(e ProviderEvent) bool { return e.ToolName == "spawn_agent" }},
 		{"tool completed", "tool.completed", map[string]any{"name": "grep", "status": "success"}, EventToolCompleted, true,
 			func(e ProviderEvent) bool { return e.ToolName == "grep" && e.Status == "success" }},
 		{"command failed", "command.completed", map[string]any{"command": "build", "exitCode": float64(1)}, EventToolCompleted, true,

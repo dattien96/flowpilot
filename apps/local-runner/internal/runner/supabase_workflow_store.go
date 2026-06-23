@@ -186,16 +186,16 @@ func (s *SupabaseWorkflowStore) AppendLog(ctx context.Context, stepID string, lo
 func (s *SupabaseWorkflowStore) AppendEvent(ctx context.Context, event ProviderEvent) error {
 	endpoint := s.restURL + "/workflow_provider_events"
 	payload, err := json.Marshal(map[string]any{
-		"id":                  event.ID,
-		"seq":                 event.Seq,
-		"workflow_run_id":     event.WorkflowRunID,
+		"id":                   event.ID,
+		"seq":                  event.Seq,
+		"workflow_run_id":      event.WorkflowRunID,
 		"workflow_step_run_id": nilIfEmpty(event.WorkflowStepRunID),
-		"provider_session_id": event.ProviderSessionID,
-		"provider_key":        string(event.ProviderKey),
-		"provider_turn_id":    nilIfEmpty(event.ProviderTurnID),
-		"event_type":          string(event.Type),
-		"payload_json":        event,
-		"occurred_at":         event.OccurredAt,
+		"provider_session_id":  event.ProviderSessionID,
+		"provider_key":         string(event.ProviderKey),
+		"provider_turn_id":     nilIfEmpty(event.ProviderTurnID),
+		"event_type":           string(event.Type),
+		"payload_json":         event,
+		"occurred_at":          event.OccurredAt,
 	})
 	if err != nil {
 		return err
@@ -226,6 +226,10 @@ func (s *SupabaseWorkflowStore) UpsertProviderSession(ctx context.Context, sessi
 		"started_at":          nilIfEmpty(session.StartedAt),
 		"updated_at":          nilIfEmpty(session.UpdatedAt),
 		"run_kind":            nilIfEmpty(session.RunKind),
+		"parent_run_id":       nilIfEmpty(session.ParentRunID),
+		"agent_name":          nilIfEmpty(session.AgentName),
+		"agent_role":          nilIfEmpty(session.Role),
+		"agent_status":        nilIfEmpty(session.AgentStatus),
 	})
 	if err != nil {
 		return err
@@ -282,6 +286,10 @@ type dbProviderSessionRow struct {
 	StartedAt         string  `json:"started_at"`
 	UpdatedAt         string  `json:"updated_at"`
 	RunKind           string  `json:"run_kind"`
+	ParentRunID       string  `json:"parent_run_id"`
+	AgentName         string  `json:"agent_name"`
+	AgentRole         string  `json:"agent_role"`
+	AgentStatus       string  `json:"agent_status"`
 	WorkflowRuns      *struct {
 		ProjectID  string `json:"project_id"`
 		WorkflowID string `json:"workflow_id"`
@@ -293,7 +301,7 @@ type dbProviderSessionRow struct {
 // project_id, sorted newest-first. Satisfies the BUG-060 F-2 production gap.
 func (s *SupabaseWorkflowStore) ListProviderSessionsByProject(ctx context.Context, projectID string) ([]ProviderSessionState, error) {
 	endpoint := fmt.Sprintf(
-		"%s/workflow_provider_sessions?select=workflow_run_id,provider_key,provider_session_id,provider_account_id,working_directory,status,last_prompt,last_message,started_at,updated_at,run_kind,workflow_runs!inner(project_id,workflow_id)&workflow_runs.project_id=eq.%s&order=updated_at.desc",
+		"%s/workflow_provider_sessions?select=workflow_run_id,provider_key,provider_session_id,provider_account_id,working_directory,status,last_prompt,last_message,started_at,updated_at,run_kind,parent_run_id,agent_name,agent_role,agent_status,workflow_runs!inner(project_id,workflow_id)&workflow_runs.project_id=eq.%s&order=updated_at.desc",
 		s.restURL, projectID,
 	)
 	code, body, err := httpRequestFn(ctx, http.MethodGet, endpoint, s.headers(""), nil)
@@ -326,6 +334,10 @@ func (s *SupabaseWorkflowStore) ListProviderSessionsByProject(ctx context.Contex
 		sess.StartedAt = r.StartedAt
 		sess.UpdatedAt = r.UpdatedAt
 		sess.RunKind = r.RunKind
+		sess.ParentRunID = r.ParentRunID
+		sess.AgentName = r.AgentName
+		sess.Role = r.AgentRole
+		sess.AgentStatus = r.AgentStatus
 		if r.WorkflowRuns != nil {
 			sess.ProjectID = r.WorkflowRuns.ProjectID
 			sess.WorkflowID = r.WorkflowRuns.WorkflowID
@@ -337,7 +349,7 @@ func (s *SupabaseWorkflowStore) ListProviderSessionsByProject(ctx context.Contex
 
 func (s *SupabaseWorkflowStore) GetProviderSession(ctx context.Context, runID string) (ProviderSessionState, bool, error) {
 	endpoint := fmt.Sprintf(
-		"%s/workflow_provider_sessions?workflow_run_id=eq.%s&select=workflow_run_id,provider_key,provider_session_id,provider_account_id,working_directory,status,last_prompt,last_message,started_at,updated_at,run_kind,workflow_runs(project_id,workflow_id)&limit=1",
+		"%s/workflow_provider_sessions?workflow_run_id=eq.%s&select=workflow_run_id,provider_key,provider_session_id,provider_account_id,working_directory,status,last_prompt,last_message,started_at,updated_at,run_kind,parent_run_id,agent_name,agent_role,agent_status,workflow_runs(project_id,workflow_id)&limit=1",
 		s.restURL, runID,
 	)
 	code, body, err := httpRequestFn(ctx, http.MethodGet, endpoint, s.headers(""), nil)
@@ -365,6 +377,10 @@ func (s *SupabaseWorkflowStore) GetProviderSession(ctx context.Context, runID st
 		StartedAt:        row.StartedAt,
 		UpdatedAt:        row.UpdatedAt,
 		RunKind:          row.RunKind,
+		ParentRunID:      row.ParentRunID,
+		AgentName:        row.AgentName,
+		Role:             row.AgentRole,
+		AgentStatus:      row.AgentStatus,
 	}
 	if row.ProviderSessionID != nil {
 		sess.ProviderSessionID = *row.ProviderSessionID

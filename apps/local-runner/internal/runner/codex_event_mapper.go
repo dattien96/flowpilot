@@ -64,12 +64,12 @@ func mapCodexNotification(n codexNotification) (ProviderEvent, bool) {
 		return mapCodexCompletedItem(p, turnID)
 
 	case "tool.started", "mcp.tool.started":
-		return ProviderEvent{Type: EventToolStarted, ProviderTurnID: turnID, ToolName: str("name"), Input: paramAny(p, "input")}, true
+		return ProviderEvent{Type: EventToolStarted, ProviderTurnID: turnID, ToolName: normalizeCodexToolName(str("name")), Input: paramAny(p, "input")}, true
 
 	case "tool.completed", "mcp.tool.completed":
 		return ProviderEvent{
 			Type: EventToolCompleted, ProviderTurnID: turnID,
-			ToolName: str("name"), Status: defaultStatus(str("status")), Output: paramAny(p, "output"),
+			ToolName: normalizeCodexToolName(str("name")), Status: defaultStatus(str("status")), Output: paramAny(p, "output"),
 		}, true
 
 	// Command execution maps to DISTINCT command events (04-03 / PP-29) with exit status.
@@ -235,12 +235,21 @@ func mapCodexCompletedItem(p map[string]any, turnID string) (ProviderEvent, bool
 	case "mcpToolCall":
 		return ProviderEvent{
 			Type: EventToolCompleted, ProviderTurnID: turnID,
-			ToolName: stringDefault(stringAny(item, "tool"), stringAny(item, "server")),
+			ToolName: normalizeCodexToolName(stringDefault(stringAny(item, "tool"), stringAny(item, "server"))),
 			Status:   defaultStatus(stringAny(item, "status")),
 			Output:   item["result"],
 		}, true
 	}
 	return ProviderEvent{}, false
+}
+
+func normalizeCodexToolName(name string) string {
+	switch strings.TrimSpace(name) {
+	case codexSpawnAgentToolName:
+		return "spawn_agent"
+	default:
+		return name
+	}
 }
 
 func paramAny(p map[string]any, key string) any {

@@ -312,6 +312,84 @@ func TestDeleteChatSessionRemovesCodexStableAndTurnLogRolloutsAcrossAccounts(t *
 	}
 }
 
+func TestDeleteChatSessionCascadesToStoredChildAgentRuns(t *testing.T) {
+	store, err := NewLocalFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	root := t.TempDir()
+	acctHome := filepath.Join(root, "acct-a")
+	writeProviderAccountsConfig(t, filepath.Join(root, "provider-accounts.json"), []ProviderAccount{
+		{ID: "acct-a", ProviderKey: "codex", HomePath: acctHome, SlotIndex: 0, AuthStatus: "connected", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+	})
+
+	parentStable := writeCodexRollout(t, acctHome, "parent-rollout", "/repo", time.Now().UTC().Add(-2*time.Hour))
+	childStable := writeCodexRollout(t, acctHome, "child-rollout", "/repo", time.Now().UTC().Add(-90*time.Minute))
+	childTurn := writeCodexRollout(t, acctHome, "child-turn-2", "/repo", time.Now().UTC().Add(-time.Hour))
+
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             "run-parent",
+		ProjectID:         "project-1",
+		ProviderKey:       ProviderKeyCodex,
+		ProviderSessionID: "parent-rollout",
+		ProviderAccountID: "acct-a",
+		WorkingDirectory:  "/repo",
+		Status:            RunStatusCompleted,
+		RunKind:           "chat",
+	}); err != nil {
+		t.Fatalf("UpsertProviderSession parent: %v", err)
+	}
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             "run-child",
+		ProjectID:         "project-1",
+		ProviderKey:       ProviderKeyCodex,
+		ProviderSessionID: "child-rollout",
+		ProviderAccountID: "acct-a",
+		WorkingDirectory:  "/repo",
+		Status:            RunStatusCompleted,
+		RunKind:           "chat",
+		ParentRunID:       "run-parent",
+		AgentName:         "reviewer",
+		Role:              "review",
+		AgentStatus:       "completed",
+	}); err != nil {
+		t.Fatalf("UpsertProviderSession child: %v", err)
+	}
+	if err := store.AppendTurnLog(context.Background(), "run-parent", turnLogLine{Kind: turnLogKindPrompt, Prompt: "parent"}); err != nil {
+		t.Fatalf("AppendTurnLog parent: %v", err)
+	}
+	if err := store.AppendTurnLog(context.Background(), "run-child", turnLogLine{Kind: turnLogKindPrompt, Prompt: "child"}); err != nil {
+		t.Fatalf("AppendTurnLog child prompt: %v", err)
+	}
+	if err := store.AppendTurnLog(context.Background(), "run-child", turnLogLine{Kind: turnLogKindCodexSession, SessionID: "child-turn-2"}); err != nil {
+		t.Fatalf("AppendTurnLog child codex_session: %v", err)
+	}
+
+	svc := NewInteractiveServiceWithStore(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+	if apiErr := svc.deleteChatSession("run-parent"); apiErr != nil {
+		t.Fatalf("deleteChatSession: %v", apiErr)
+	}
+
+	for _, runID := range []string{"run-parent", "run-child"} {
+		if _, found, err := store.GetProviderSession(context.Background(), runID); err != nil || found {
+			t.Fatalf("GetProviderSession(%q) after delete = found:%v err:%v", runID, found, err)
+		}
+		if entries, err := store.ReadTurnLog(context.Background(), runID); err != nil {
+			t.Fatalf("ReadTurnLog(%q) after delete: %v", runID, err)
+		} else if len(entries) != 0 {
+			t.Fatalf("expected empty turn log for %q after delete, got %+v", runID, entries)
+		}
+	}
+	for _, path := range []string{parentStable, childStable, childTurn} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("expected %q removed, stat err=%v", path, err)
+		}
+	}
+	if history := svc.projectRunHistory("project-1"); len(history) != 0 {
+		t.Fatalf("expected empty history after cascade delete, got %+v", history)
+	}
+}
+
 func TestResumeRunRestoredWorkflowRunUnsupportedForMVP(t *testing.T) {
 	store, err := NewLocalFileSessionStore(t.TempDir())
 	if err != nil {
@@ -671,8 +749,8 @@ func TestPrepareCrossAccountResumeActiveAccountNotSignedIn(t *testing.T) {
 	root := t.TempDir()
 	acctHome := filepath.Join(root, "acct-b")
 	// acct-b is the active Codex account for this run, but its local auth is
-	// missing on disk — so resume must refuse with account_not_signed_in even
-	// though the run's session (rollout) file is present.
+	// missing on disk. History remains readable; sending another turn is still
+	// gated by ensureResumeReady in startTurn.
 	writeProviderAccountsConfig(t, filepath.Join(root, "provider-accounts.json"), []ProviderAccount{
 		{ID: "acct-b", ProviderKey: "codex", HomePath: acctHome, SlotIndex: 1, AuthStatus: "connected", IsActive: true, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
 	})
@@ -694,8 +772,8 @@ func TestPrepareCrossAccountResumeActiveAccountNotSignedIn(t *testing.T) {
 
 	svc := NewInteractiveServiceWithStore(DefaultProviderRegistry(), newInteractiveCatalog(), store)
 	svc.activeAccountID = "acct-b"
-	if _, apiErr := svc.resumeRun("run-1"); apiErr == nil || apiErr.code != "account_not_signed_in" {
-		t.Fatalf("resumeRun error = %#v, want account_not_signed_in", apiErr)
+	if _, apiErr := svc.resumeRun("run-1"); apiErr != nil {
+		t.Fatalf("resumeRun() should open read-only without provider auth: %v", apiErr)
 	}
 }
 

@@ -1,5 +1,8 @@
 import type {
   Artifact,
+  AgentDefinition,
+  AgentRunSummary,
+  AgentGraphSnapshot,
   ChatSessionRestoreRequest,
   ChatSessionRestoreResult,
   ChatSessionSyncRequest,
@@ -10,6 +13,8 @@ import type {
   ProviderEventDTO,
   ProviderSkill,
   RemoteChatSessionSummary,
+  SpawnAgentInput,
+  SpawnAgentResult,
   RunHandle,
   RunHistoryItem,
   RunnerClient,
@@ -154,10 +159,26 @@ interface RunState {
   /** Monotonic per-run event sequence (reconnect cursor, 04-02). */
   seq: number;
   lastTurnInput?: TurnInput;
+  parentRunId?: string;
+  agentName?: string;
+  role?: string;
 }
+
+interface ParentGraphState {
+  snapshot: AgentGraphSnapshot;
+}
+
+const MOCK_AGENTS: AgentDefinition[] = [
+  { name: "architect", description: "Designs the approach", role: "architecture", source: "flowpilot" },
+  { name: "builder", description: "Implements the plan", role: "implementation", source: "flowpilot" },
+  { name: "reviewer", description: "Checks the result", role: "review", source: "flowpilot" },
+];
 
 /**
  * Phase 1 mock implementation of the RunnerClient contract (04-01 Part A).
+ *
+ * [coding-skill]: keeps the desktop-only orchestration contract mutable in-memory.
+ * [testing-skill]: preserves replayable parent graph state for targeted store tests.
  *
  * Streams scripted ProviderEventDTOs on a timer. Approval/question scenarios
  * block the stream on a gate that submitApproval/answerQuestion resolve — the
@@ -174,6 +195,8 @@ export class MockRunnerClient implements RunnerClient {
   private readonly replayRuns = new Set<string>();
   /** Persisted per-run event log so streamRun can replay on reconnect. */
   private readonly eventLog = new Map<string, ProviderEventDTO[]>();
+  /** Mutable orchestration snapshots keyed by parent run. */
+  private readonly parentGraphs = new Map<string, ParentGraphState>();
   /** Runs an interrupt has been requested for. */
   private readonly aborted = new Set<string>();
   /** Cancels the pending approval/question gate for a run (used by interrupt). */
@@ -212,11 +235,13 @@ export class MockRunnerClient implements RunnerClient {
     if (cancel) cancel();
   }
 
-  async *streamRun(runId: string, afterSeq = 0): AsyncIterable<ProviderEventDTO> {
+  async *streamRun(runId: string, afterSeq = 0, signal?: AbortSignal): AsyncIterable<ProviderEventDTO> {
     const log = this.eventLog.get(runId) ?? [];
     for (const ev of log) {
+      if (signal?.aborted) return;
       if (ev.seq > afterSeq) {
         await delay(40); // small pause so the rebuilt timeline is visible
+        if (signal?.aborted) return;
         yield ev;
       }
     }
@@ -319,6 +344,122 @@ export class MockRunnerClient implements RunnerClient {
     return MOCK_SKILLS;
   }
 
+  async listAgents(_cwd?: string): Promise<AgentDefinition[]> {
+    await delay(40);
+    return MOCK_AGENTS;
+  }
+
+  async listAgentRuns(parentRunId: string): Promise<AgentRunSummary[]> {
+    await delay(40);
+    return Array.from(this.runs.values())
+      .filter((run) => run.parentRunId === parentRunId)
+      .map((run) => ({
+        runId: run.runId,
+        agentName: run.agentName ?? "agent",
+        role: run.role ?? "assistant",
+        status: run.status,
+        parentRunId: run.parentRunId,
+        createdAt: run.startedAt,
+        agentStatus: run.status,
+      }));
+  }
+
+  private async syncParentGraph(parentRunId: string): Promise<ParentGraphState> {
+    const current = this.parentGraphs.get(parentRunId);
+    const snapshot: AgentGraphSnapshot = {
+      parentRunId,
+      runs: await this.listAgentRuns(parentRunId),
+      edges: current?.snapshot.edges ?? [],
+      busMessages: current?.snapshot.busMessages ?? [],
+      loopState: current?.snapshot.loopState ?? { status: "running", round: 0, roundCap: 3 },
+    };
+    const next = { snapshot };
+    this.parentGraphs.set(parentRunId, next);
+    return next;
+  }
+
+  async refreshAgentGraph(parentRunId: string): Promise<AgentGraphSnapshot> {
+    return (await this.syncParentGraph(parentRunId)).snapshot;
+  }
+
+  async pauseAgentLoop(parentRunId: string): Promise<AgentGraphSnapshot> {
+    const graph = await this.syncParentGraph(parentRunId);
+    graph.snapshot = {
+      ...graph.snapshot,
+      loopState: { ...graph.snapshot.loopState, status: "paused" },
+    };
+    this.parentGraphs.set(parentRunId, graph);
+    return graph.snapshot;
+  }
+
+  async resumeAgentLoop(parentRunId: string): Promise<AgentGraphSnapshot> {
+    const graph = await this.syncParentGraph(parentRunId);
+    graph.snapshot = {
+      ...graph.snapshot,
+      loopState: { ...graph.snapshot.loopState, status: "running" },
+    };
+    this.parentGraphs.set(parentRunId, graph);
+    return graph.snapshot;
+  }
+
+  async injectAgentFeedback(parentRunId: string, _toRunId: string, message: string): Promise<AgentGraphSnapshot> {
+    const graph = await this.syncParentGraph(parentRunId);
+    graph.snapshot = {
+      ...graph.snapshot,
+      busMessages: [
+        ...graph.snapshot.busMessages,
+        {
+          id: nextId("bus"),
+          parentRunId,
+          kind: "user-feedback",
+          message,
+          queued: true,
+          occurredAt: new Date().toISOString(),
+        },
+      ],
+    };
+    this.parentGraphs.set(parentRunId, graph);
+    return graph.snapshot;
+  }
+
+  async stopAgentLoop(parentRunId: string): Promise<AgentGraphSnapshot> {
+    const graph = await this.syncParentGraph(parentRunId);
+    graph.snapshot = {
+      ...graph.snapshot,
+      loopState: { ...graph.snapshot.loopState, status: "stopped" },
+    };
+    this.parentGraphs.set(parentRunId, graph);
+    return graph.snapshot;
+  }
+
+  async spawnAgent(input: SpawnAgentInput & { parentRunId: string }): Promise<SpawnAgentResult> {
+    await delay(50);
+    const runId = nextId("agent");
+    const providerSessionId = nextId("thread");
+    const now = new Date().toISOString();
+    const parent = this.runs.get(input.parentRunId);
+    this.runs.set(runId, {
+      runId,
+      projectId: parent?.projectId ?? "",
+      workflowId: parent?.workflowId,
+      providerSessionId,
+      providerTurnId: "",
+      status: "completed",
+      startedAt: now,
+      updatedAt: now,
+      seq: 0,
+      parentRunId: input.parentRunId,
+      agentName: input.agent,
+      role: input.agent,
+      lastMessage: input.prompt,
+    });
+    return { runId, providerSessionId, providerKey: "codex", status: "completed", finalMessage: input.prompt };
+  }
+
+  async *focusAgentRun(runId: string, signal?: AbortSignal): AsyncIterable<ProviderEventDTO> {
+    yield* this.streamRun(runId, 0, signal);
+  }
+
   async listArtifacts(runId: string): Promise<Artifact[]> {
     await delay(60);
     return mockArtifacts(runId);
@@ -327,7 +468,7 @@ export class MockRunnerClient implements RunnerClient {
   async listRunHistory(projectId: string): Promise<RunHistoryItem[]> {
     await delay(60);
     return Array.from(this.runs.values())
-      .filter((run) => run.projectId === projectId)
+      .filter((run) => run.projectId === projectId && !run.parentRunId)
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
       .map((run) => ({
         runId: run.runId,
@@ -339,6 +480,10 @@ export class MockRunnerClient implements RunnerClient {
         updatedAt: run.updatedAt,
         lastPrompt: run.lastPrompt,
         lastMessage: run.lastMessage,
+        parentRunId: run.parentRunId,
+        agentName: run.agentName,
+        role: run.role,
+        agentStatus: run.agentName ? run.status : undefined,
       }));
   }
 

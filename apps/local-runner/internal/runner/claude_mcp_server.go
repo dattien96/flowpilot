@@ -20,7 +20,14 @@ import (
 // tool set is otherwise snapshotted before mcp__flowpilot__ask_user is registered, so the
 // model never sees ask_user (validated against claude 2.1.179). A normal local connect is
 // ~0.1-1.2s; on a slow/failed connect we degrade to sending anyway rather than hang.
-const claudeMCPReadyDefaultTimeout = 10 * time.Second
+//
+// waitReady returns the instant FlowPilot's tools/list arrives, so a larger ceiling adds NO
+// latency to a healthy turn — it only grants more grace when a slow co-resident MCP server
+// in the same --mcp-config (e.g. a google-drive stdio sidecar that has to warm up npx/OAuth)
+// delays claude's overall MCP init and would otherwise drop spawn_agent/ask_user from the
+// turn. Raised from 10s to 30s after spawn_agent went missing on turns that also load the
+// google-drive MCP. (BUG-114)
+const claudeMCPReadyDefaultTimeout = 30 * time.Second
 
 // Phase 4 / 07: the runner-hosted MCP server that lets the real `claude` CLI reach
 // FlowPilot's approve + ask_user tools (the spike-validated permission path). It speaks
@@ -245,6 +252,8 @@ func (s *claudeMCPServer) dispatch(method string, msg map[string]any, token stri
 			return handleClaudeApprove(args, bridge), nil
 		case "ask_user":
 			return handleClaudeAskUser(args, bridge), nil
+		case "spawn_agent":
+			return handleClaudeSpawnAgent(args, bridge), nil
 		default:
 			return nil, map[string]any{"code": -32601, "message": "unknown tool: " + name}
 		}
@@ -269,6 +278,21 @@ func claudeMCPToolDefs() []any {
 					"multiSelect": map[string]any{"type": "boolean", "description": "Allow selecting more than one option."},
 				},
 				"required": []any{"prompt"},
+			},
+		},
+		map[string]any{
+			"name":        "spawn_agent",
+			"description": "Spawn a child agent run. Use when a sub-task is best delegated to a specialised agent. If wait=true the call blocks until the child's first turn completes and returns its final message.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"agent":     map[string]any{"type": "string", "description": "Agent name from the catalog (e.g. \"researcher\", \"coder\")."},
+					"prompt":    map[string]any{"type": "string", "description": "Initial prompt for the child agent."},
+					"provider":  map[string]any{"type": "string", "description": "Override provider key (codex, claude). Omit to inherit parent."},
+					"dependsOn": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Run IDs this child must wait for before starting."},
+					"wait":      map[string]any{"type": "boolean", "description": "Block until the child's first turn completes (default false)."},
+				},
+				"required": []any{"agent", "prompt"},
 			},
 		},
 	}

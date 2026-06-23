@@ -77,7 +77,8 @@ function hasPendingPrompt(timeline: TimelineItem[], prompt: string): boolean {
 export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Partial<TimelineState> {
   const status = statusFromEvent(e, s.status);
   const thinkingItem = s.timeline.find((it) => it.kind === "thinking") as Extract<TimelineItem, { kind: "thinking" }> | undefined;
-  const shouldKeepThinking =
+  // Annotation events (BUG-121): only preserve an existing thinking row — never create one.
+  let shouldKeepThinking =
     e.type !== "turn_completed" &&
     e.type !== "turn_failed" &&
     e.type !== "permission_required" &&
@@ -139,8 +140,17 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
 
   switch (e.type) {
     case "turn_started":
-      if (e.prompt && !hasPendingPrompt(timeline, e.prompt)) {
-        timeline.push({ kind: "prompt", id: `prompt-${e.providerTurnId}`, text: e.prompt });
+      closeAssistant();
+      if (e.prompt) {
+        // Idempotent guard (BUG-111): the prompt id is stable across replays
+        // (derived from providerTurnId), so a re-delivered turn_started — e.g. when
+        // switching chats in the history panel re-streams the run from seq 0 — must
+        // not push a second copy of a prompt already in the timeline.
+        const promptId = `prompt-${e.providerTurnId}`;
+        const alreadyPresent = timeline.some((it) => it.kind === "prompt" && it.id === promptId);
+        if (!alreadyPresent && !hasPendingPrompt(timeline, e.prompt)) {
+          timeline.push({ kind: "prompt", id: promptId, text: e.prompt });
+        }
       }
       break;
 
@@ -152,9 +162,18 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
           timeline[idx] = { ...cur, text: cur.text + e.text };
         }
       } else {
+        // Idempotent re-stream guard (BUG-111): if a bubble with this event id already
+        // exists, the message is being re-delivered (chat switch / replay from seq 0).
+        // Resume that bubble and reset its text so the re-stream rebuilds it in place
+        // instead of pushing a duplicate assistant bubble.
         const id = e.id;
         streamingAssistantId = id;
-        timeline.push({ kind: "assistant", id, text: e.text, finalized: false });
+        const existingIdx = timeline.findIndex((it) => it.kind === "assistant" && it.id === id);
+        if (existingIdx >= 0) {
+          timeline[existingIdx] = { kind: "assistant", id, text: e.text, finalized: false };
+        } else {
+          timeline.push({ kind: "assistant", id, text: e.text, finalized: false });
+        }
       }
       break;
     }
@@ -170,7 +189,25 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
           timeline[idx] = { kind: "assistant", id: streamingAssistantId, text: e.text, finalized: true };
         }
       } else {
-        timeline.push({ kind: "assistant", id: e.id, text: e.text, finalized: true });
+        // Idempotent guard (BUG-111): update an existing bubble with this id in place
+        // rather than pushing a duplicate on re-delivery.
+        const existingIdx = timeline.findIndex((it) => it.kind === "assistant" && it.id === e.id);
+        if (existingIdx >= 0) {
+          timeline[existingIdx] = { kind: "assistant", id: e.id, text: e.text, finalized: true };
+        } else {
+          // Duplicate-emission guard (BUG-116): a single logical assistant message can reach
+          // us as several message_completed events (the Codex mapper derives one from
+          // agent_message AND from item/completed). They carry distinct ids, so the id guard
+          // above misses them. If the last finalized assistant bubble already has this exact
+          // text and nothing was streamed since, treat this as a re-emission and skip it
+          // instead of stacking identical bubbles (the "CHILD_AGENT_DONE ×3" symptom).
+          const lastMeaningful = timeline[timeline.length - 1];
+          const isDuplicate =
+            lastMeaningful?.kind === "assistant" && lastMeaningful.finalized && lastMeaningful.text === e.text;
+          if (!isDuplicate) {
+            timeline.push({ kind: "assistant", id: e.id, text: e.text, finalized: true });
+          }
+        }
       }
       closeAssistant();
       break;
@@ -178,7 +215,10 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
 
     case "tool_started":
       closeAssistant();
-      timeline.push({ kind: "tool", id: e.id, toolName: e.toolName, status: "running", input: e.input });
+      // Idempotent guard (BUG-111): skip a re-delivered tool_started whose row already exists.
+      if (!timeline.some((it) => it.kind === "tool" && it.id === e.id)) {
+        timeline.push({ kind: "tool", id: e.id, toolName: e.toolName, status: "running", input: e.input });
+      }
       break;
 
     case "tool_completed": {
@@ -189,6 +229,14 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
           timeline[i] = { ...it, status: e.status, output: e.output };
           return finalize(timeline);
         }
+      }
+      // No running tool of this name to close. In a normal forward stream every
+      // tool_completed has a matching running tool, so reaching here means either a
+      // re-delivery (chat switch / replay) of an already-completed tool or an orphan
+      // completion. Skip if a tool of this name already exists (re-delivery); otherwise
+      // record it. (BUG-111)
+      if (timeline.some((it) => it.kind === "tool" && it.toolName === e.toolName)) {
+        return finalize(timeline);
       }
       timeline.push({ kind: "tool", id: e.id, toolName: e.toolName, status: e.status, output: e.output });
       break;
@@ -228,6 +276,23 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
         timeline.push({ kind: "system", id: e.id, text: e.error, tone: "error" });
       }
       return finalize(timeline, { recoverable: e.recoverable });
+
+    case "agent_spawned_by_user":
+      // Idempotent — replay from seq 0 must not duplicate the row. (BUG-121)
+      if (!timeline.some((it) => it.kind === "system" && it.id === e.id)) {
+        timeline.push({ kind: "system", id: e.id, text: `Spawned agent **${e.agentName}**`, tone: "info" });
+      }
+      // Only keep an existing thinking row — never create a new one for annotation events.
+      shouldKeepThinking = thinkingItem !== undefined;
+      break;
+
+    case "agent_result_injected":
+      // Idempotent — replay from seq 0 must not duplicate the row. (BUG-121)
+      if (!timeline.some((it) => it.kind === "system" && it.id === e.id)) {
+        timeline.push({ kind: "system", id: e.id, text: `**[${e.agentName}]** ${e.finalMessage}`, tone: "info" });
+      }
+      shouldKeepThinking = thinkingItem !== undefined;
+      break;
   }
 
   return finalize(timeline);

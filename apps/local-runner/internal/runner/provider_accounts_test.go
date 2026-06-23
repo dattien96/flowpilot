@@ -1479,3 +1479,52 @@ version = "1.0"`)
 		}
 	}
 }
+
+// TestSaveProviderAccountStateSkipsRedundantWrite guards BUG-115: an identical save must NOT
+// rewrite provider-accounts.json (which spammed the log/disk on every resume). We prove the
+// skip by making the file read-only — without the byte-equality guard os.WriteFile would
+// fail on the read-only file; with it, the identical save returns nil. A changed state still
+// writes (after restoring writability).
+func TestSaveProviderAccountStateSkipsRedundantWrite(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", homeDir)
+	t.Setenv("APPDATA", filepath.Join(homeDir, "AppData", "Roaming"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(homeDir, ".config"))
+
+	r, err := New(".")
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+	state := providerAccountState{Accounts: []ProviderAccount{{
+		ID: "acc-1", ProviderKey: "codex", DisplayName: "Account 1",
+		HomePath: filepath.Join(homeDir, ".codex"), SlotIndex: 0, IsActive: true,
+		AuthStatus: "connected", CreatedAt: "2026-05-30T00:00:00Z", ExtraEnv: map[string]string{},
+	}}}
+	if err := r.saveProviderAccountState(state); err != nil {
+		t.Fatalf("first save failed: %v", err)
+	}
+	path := providerAccountsConfigPath()
+
+	if err := os.Chmod(path, 0o444); err != nil {
+		t.Fatalf("chmod read-only: %v", err)
+	}
+	if err := r.saveProviderAccountState(state); err != nil {
+		t.Fatalf("identical save should skip the write and return nil, got: %v", err)
+	}
+
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatalf("chmod writable: %v", err)
+	}
+	state.Accounts[0].DisplayName = "Renamed Account"
+	if err := r.saveProviderAccountState(state); err != nil {
+		t.Fatalf("changed save failed: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if !strings.Contains(string(data), "Renamed Account") {
+		t.Fatalf("changed state was not persisted: %s", data)
+	}
+}

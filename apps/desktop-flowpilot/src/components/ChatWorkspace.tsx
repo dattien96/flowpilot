@@ -7,6 +7,8 @@ import { Timeline } from "@/components/Timeline";
 import { ScenarioSwitcher } from "@/components/ScenarioSwitcher";
 import { SystemControls } from "@/components/SystemControls";
 import { ProviderAccountsPanel } from "@/components/ProviderAccountsPanel";
+import { AgentsPanel } from "@/components/AgentsPanel";
+import { OrchestrationBoard } from "@/components/OrchestrationBoard";
 import { useStore, accountLabel, providerLabel } from "@/state/store";
 
 function WorkflowControlPanel(): React.ReactElement | null {
@@ -198,6 +200,7 @@ export function ChatWorkspace({
   leftSidebarVisible,
   rightSidebarVisible,
 }: ChatWorkspaceProps): React.ReactElement {
+  const workspaceMainView = useStore((s) => s.workspaceMainView);
   const defaultWidthsAppliedRef = useRef(false);
   const shellRef = useRef<HTMLDivElement>(null);
   const dragStateRef = useRef<{
@@ -299,8 +302,14 @@ export function ChatWorkspace({
       )}
 
       <main className="main workspace-main">
-        <Timeline />
-        <ChatInput />
+        {workspaceMainView === "board" ? (
+          <OrchestrationBoard />
+        ) : (
+          <>
+            <Timeline />
+            <ChatInput />
+          </>
+        )}
       </main>
 
       {rightSidebarVisible && (
@@ -314,6 +323,7 @@ export function ChatWorkspace({
           <aside className="sidebar sidebar-right">
             <div className="right-sidebar-stack">
               <WorkflowControlPanel />
+              <AgentsPanel />
               <ProviderAccountsPanel />
             </div>
           </aside>

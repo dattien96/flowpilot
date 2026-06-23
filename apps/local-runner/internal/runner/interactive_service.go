@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -27,7 +28,13 @@ type InteractiveService struct {
 	catalog CatalogStore
 	// skillsCatalog serves the local provider-skill list (not from Supabase).
 	skillsCatalog *interactiveCatalog
-	registry      *ProviderRegistry
+	// agentCatalog serves the loadable sub-agent definitions (CP-19 / Task-081):
+	// .claude/agents + .codex/agents + provider homes, with built-in fallbacks.
+	agentCatalog *AgentCatalog
+	// agentOrchestrator tracks the in-memory agent run tree and provides wait:true
+	// completion signaling for spawn_agent tool calls (CP-19 / Task-082).
+	agentOrchestrator *AgentOrchestrator
+	registry          *ProviderRegistry
 
 	// policy decides auto-approve/auto-deny/ask for YOLO=false approvals (04-04).
 	// Default is ask-everything; Admin Web (03) configures the lists.
@@ -78,12 +85,46 @@ type interactiveRun struct {
 	lastCodexTurnSessionID string
 	providerAccountID      string
 	workspaceCwd           string
+	stepID                 string
 	modelName              string
 	yolo                   bool
 	// reasoningEffort is the desktop-selected effort level passed per-turn (T-4).
 	reasoningEffort string
 	// runKind is "chat" for normal-chat runs, "" / "workflow" for workflow runs (T-7).
 	runKind string
+
+	// Agent identity (CP-19 / Task-081). All fields are additive and zero-valued
+	// for an ordinary parentless "main" run, so existing behavior is unchanged.
+	// parentRunID is the spawning run's id ("" for the main/root run); agentName
+	// is the AgentDefinition this run embodies; role is the agent's role (e.g.
+	// "coder", "reviewer"); dependsOn lists run ids this agent waits on before it
+	// may consume work; agentStatus is the orchestration status ("" treated as the
+	// normal run lifecycle until the orchestrator sets it).
+	parentRunID          string
+	agentName            string
+	role                 string
+	dependsOn            []string
+	agentStatus          string
+	agentRound           int
+	agentCap             int
+	gateReason           string
+	pendingTurnPrompt    string
+	pendingRestartRunID  string
+	pendingRestartPrompt string
+	// uiInitiated marks a child run spawned from the desktop UI (not the AI spawn_agent
+	// tool). UI spawns are invisible to the parent's provider conversation, so the parent
+	// must be told about them out-of-band; tool spawns are already in provider history. (BUG-122)
+	uiInitiated bool
+	// waitForResult records the spawn's wait flag. A tool spawn with wait=true returns the
+	// child result synchronously to the model (already in provider history). A tool spawn
+	// with wait=false only acks "spawned" — its eventual result must be injected like a UI
+	// spawn so the parent still learns the outcome (BUG-126).
+	waitForResult bool
+	// pendingAgentContext holds notes about UI-spawned children (and their results) that
+	// have not yet been folded into this (parent) run's provider conversation. They are
+	// prepended to the next provider turn's prompt and then cleared. Persisted to
+	// sessions.ndjson so the parent still learns about them after a server restart. (BUG-122)
+	pendingAgentContext []string
 
 	status          RunStatus
 	createdAt       string
@@ -218,22 +259,441 @@ func newInteractiveService(registry *ProviderRegistry, catalog CatalogStore, wor
 	// Reclaim Codex image-attachment temp dirs orphaned by a prior hard crash/kill
 	// (Task-052); the per-turn deferred cleanup cannot run in that case. Best-effort.
 	sweepCodexImageAttachments(time.Hour, time.Now())
-	return &InteractiveService{
-		catalog:         catalog,
-		skillsCatalog:   newInteractiveCatalog(),
-		registry:        registry,
-		policy:          DefaultApprovalPolicyEngine(),
-		finalizer:       newFinalizer(),
-		workflowStore:   workflowStore,
-		orchestrator:    NewWorkflowOrchestrator(workflowStore),
-		runs:            map[string]*interactiveRun{},
-		approvals:       map[string]*approvalRecord{},
-		questions:       map[string]*questionRecord{},
-		activeAccountID: "default",
-		approvalTTL:     10 * time.Minute,
-		questionTTL:     10 * time.Minute,
-		maxTurnAttempts: 3,
+	svc := &InteractiveService{
+		catalog:           catalog,
+		skillsCatalog:     newInteractiveCatalog(),
+		agentCatalog:      newAgentCatalog(),
+		agentOrchestrator: newAgentOrchestrator(),
+		registry:          registry,
+		policy:            DefaultApprovalPolicyEngine(),
+		finalizer:         newFinalizer(),
+		workflowStore:     workflowStore,
+		orchestrator:      NewWorkflowOrchestrator(workflowStore),
+		runs:              map[string]*interactiveRun{},
+		approvals:         map[string]*approvalRecord{},
+		questions:         map[string]*questionRecord{},
+		activeAccountID:   "default",
+		approvalTTL:       10 * time.Minute,
+		questionTTL:       10 * time.Minute,
+		maxTurnAttempts:   3,
 	}
+	// Seed the id counter above the highest persisted run id so a runner restart does NOT
+	// reuse ids (run-1, run-2, …). Reuse made a fresh chat collide with a previous run of
+	// the same id and inherit its persisted child agents — old sub-agents appeared in a
+	// brand-new session's Agents panel. (BUG-117)
+	svc.seedIDCounter()
+	return svc
+}
+
+// seedIDCounter advances idCounter past the largest numeric suffix among persisted run ids
+// (and their parent ids) so freshly minted ids never collide with runs from before a
+// restart. Best-effort: no store / read error simply leaves the counter at zero.
+func (s *InteractiveService) seedIDCounter() {
+	indexReader, ok := s.workflowStore.(SessionIndexReader)
+	if !ok {
+		return
+	}
+	sessions, err := indexReader.ListAllProviderSessions(context.Background())
+	if err != nil {
+		return
+	}
+	var max int64
+	for _, sess := range sessions {
+		if n := numericIDSuffix(sess.RunID); n > max {
+			max = n
+		}
+		if n := numericIDSuffix(sess.ParentRunID); n > max {
+			max = n
+		}
+	}
+	for {
+		cur := s.idCounter.Load()
+		if cur >= max {
+			return
+		}
+		if s.idCounter.CompareAndSwap(cur, max) {
+			log.Printf("[runner] id counter seeded to %d from %d persisted runs", max, len(sessions))
+			return
+		}
+	}
+}
+
+// numericIDSuffix returns the trailing integer of an id like "run-14" (→ 14), or 0 when
+// the id has no numeric suffix.
+func numericIDSuffix(id string) int64 {
+	idx := strings.LastIndex(id, "-")
+	if idx < 0 || idx == len(id)-1 {
+		return 0
+	}
+	n, err := strconv.ParseInt(id[idx+1:], 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+func (s *InteractiveService) agentGraphSnapshot(parentRunID string) AgentGraphSnapshot {
+	return s.agentOrchestrator.graphSnapshot(parentRunID)
+}
+
+func (s *InteractiveService) agentBusHistory(parentRunID string) []AgentBusMessage {
+	return s.agentOrchestrator.graphSnapshot(parentRunID).BusMessages
+}
+
+func (s *InteractiveService) pauseAgentLoop(parentRunID, reason string) AgentGraphSnapshot {
+	s.agentOrchestrator.pause(parentRunID, reason)
+	snap := s.agentGraphSnapshot(parentRunID)
+	s.emitAgentGraph(parentRunID, snap)
+	return snap
+}
+func (s *InteractiveService) resumeAgentLoop(parentRunID string) AgentGraphSnapshot {
+	s.agentOrchestrator.resume(parentRunID)
+	s.resumePendingLoopWork(parentRunID)
+	snap := s.agentGraphSnapshot(parentRunID)
+	s.emitAgentGraph(parentRunID, snap)
+	return snap
+}
+func (s *InteractiveService) stopAgentLoop(parentRunID string) AgentGraphSnapshot {
+	s.agentOrchestrator.stop(parentRunID)
+	s.mu.Lock()
+	if parent := s.runs[parentRunID]; parent != nil {
+		parent.pendingRestartRunID = ""
+		parent.pendingRestartPrompt = ""
+	}
+	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
+		if child := s.runs[childID]; child != nil {
+			child.pendingTurnPrompt = ""
+			if child.turnInFlight && child.turnCancel != nil {
+				child.turnCancel()
+			}
+		}
+	}
+	s.mu.Unlock()
+	snap := s.agentGraphSnapshot(parentRunID)
+	s.emitAgentGraph(parentRunID, snap)
+	return snap
+}
+func (s *InteractiveService) injectAgentFeedback(parentRunID, toRunID, message string) AgentGraphSnapshot {
+	snap := s.agentOrchestrator.queueFeedback(parentRunID, AgentBusMessage{ID: s.nextID("bus"), ParentRunID: parentRunID, ToRunID: toRunID, Kind: "user-feedback", Message: message, Queued: true, OccurredAt: time.Now().UTC().Format(time.RFC3339Nano)})
+	if len(snap.BusMessages) > 0 {
+		s.emitAgentBus(parentRunID, snap.BusMessages[len(snap.BusMessages)-1])
+	}
+	snap = s.agentGraphSnapshot(parentRunID)
+	s.emitAgentGraph(parentRunID, snap)
+	return snap
+}
+
+func isAgentRole(rs *interactiveRun, role string) bool {
+	if rs == nil {
+		return false
+	}
+	role = strings.ToLower(role)
+	return strings.Contains(strings.ToLower(rs.agentName), role) || strings.Contains(strings.ToLower(rs.role), role)
+}
+
+func (s *InteractiveService) dependenciesSatisfiedLocked(rs *interactiveRun) bool {
+	if rs == nil || len(rs.dependsOn) == 0 {
+		return true
+	}
+	for _, depID := range rs.dependsOn {
+		dep := s.runs[depID]
+		if dep == nil {
+			return false
+		}
+		if dep.status != RunStatusCompleted {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *InteractiveService) loopAllowsNextTurnLocked(parentRunID string) bool {
+	state := s.agentOrchestrator.loop[parentRunID]
+	return state.Status != "paused" && state.Status != "stopped"
+}
+
+func (s *InteractiveService) queueChildTurnLocked(rs *interactiveRun, prompt, status string) {
+	if rs == nil {
+		return
+	}
+	rs.pendingTurnPrompt = prompt
+	if status != "" {
+		rs.agentStatus = status
+	}
+}
+
+func (s *InteractiveService) recordAgentBus(parentRunID string, msg AgentBusMessage) {
+	_ = s.agentOrchestrator.addBus(parentRunID, msg)
+	s.emitAgentBus(parentRunID, msg)
+}
+
+func (s *InteractiveService) takeQueuedFeedbackPrompt(parentRunID, runID, prompt string) (string, *AgentBusMessage) {
+	queued := s.agentOrchestrator.nextQueuedFeedbackFor(parentRunID, runID)
+	if queued == nil || queued.Message == "" {
+		return prompt, nil
+	}
+	queued.Queued = false
+	return strings.TrimSpace(prompt + "\n\n" + queued.Message), queued
+}
+
+func (s *InteractiveService) scheduleChildTurn(runID, stepID, prompt string) {
+	if runID == "" || stepID == "" || prompt == "" {
+		return
+	}
+	go func(runID, stepID, prompt string) {
+		_, _ = s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt}, "", "")
+	}(runID, stepID, prompt)
+}
+
+func (s *InteractiveService) releaseDependentAgents(parentRunID, completedRunID, handoffText string, occurredAt string) {
+	type queuedTurn struct {
+		runID   string
+		stepID  string
+		prompt  string
+		busMsg  AgentBusMessage
+		summary AgentRunSummary
+	}
+	queued := []queuedTurn{}
+	s.mu.Lock()
+	if !s.loopAllowsNextTurnLocked(parentRunID) {
+		for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
+			child := s.runs[childID]
+			if child == nil || child.pendingTurnPrompt == "" || !s.dependenciesSatisfiedLocked(child) {
+				continue
+			}
+			if handoffText != "" && !strings.Contains(child.pendingTurnPrompt, handoffText) {
+				child.pendingTurnPrompt = strings.TrimSpace(child.pendingTurnPrompt + "\n\n" + handoffText)
+			}
+		}
+		s.mu.Unlock()
+		return
+	}
+	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
+		child := s.runs[childID]
+		if child == nil || child.pendingTurnPrompt == "" || !s.dependenciesSatisfiedLocked(child) {
+			continue
+		}
+		prompt := child.pendingTurnPrompt
+		child.pendingTurnPrompt = ""
+		child.agentStatus = string(RunStatusRunning)
+		if handoffText != "" {
+			prompt = strings.TrimSpace(prompt + "\n\n" + handoffText)
+		}
+		queued = append(queued, queuedTurn{
+			runID:  child.id,
+			stepID: child.stepID,
+			prompt: prompt,
+			busMsg: AgentBusMessage{
+				ID:          s.nextID("bus"),
+				ParentRunID: parentRunID,
+				FromRunID:   completedRunID,
+				ToRunID:     child.id,
+				Kind:        "handoff",
+				Message:     handoffText,
+				Queued:      false,
+				OccurredAt:  occurredAt,
+			},
+			summary: AgentRunSummary{
+				RunID:       child.id,
+				AgentName:   child.agentName,
+				Role:        child.role,
+				Status:      child.status,
+				ParentRunID: child.parentRunID,
+				CreatedAt:   child.createdAt,
+				DependsOn:   append([]string(nil), child.dependsOn...),
+				AgentStatus: child.agentStatus,
+				ProviderKey: string(child.providerKey),
+				ModelName:   child.modelName,
+			},
+		})
+	}
+	s.mu.Unlock()
+	for _, item := range queued {
+		if item.busMsg.Message != "" {
+			s.recordAgentBus(parentRunID, item.busMsg)
+		}
+		s.agentOrchestrator.upsertSummary(parentRunID, item.summary)
+		prompt, queued := s.takeQueuedFeedbackPrompt(parentRunID, item.runID, item.prompt)
+		if queued != nil {
+			s.recordAgentBus(parentRunID, *queued)
+		}
+		s.scheduleChildTurn(item.runID, item.stepID, prompt)
+	}
+	if len(queued) > 0 {
+		s.emitAgentGraph(parentRunID, s.agentGraphSnapshot(parentRunID))
+	}
+}
+
+func (s *InteractiveService) resumePendingLoopWork(parentRunID string) {
+	type pendingTurn struct {
+		runID  string
+		stepID string
+		prompt string
+	}
+	var next *pendingTurn
+	s.mu.Lock()
+	if !s.loopAllowsNextTurnLocked(parentRunID) {
+		s.mu.Unlock()
+		return
+	}
+	if parent := s.runs[parentRunID]; parent != nil && parent.pendingRestartRunID != "" && parent.pendingRestartPrompt != "" {
+		for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
+			child := s.runs[childID]
+			if child == nil || child.id != parent.pendingRestartRunID || child.turnInFlight {
+				continue
+			}
+			next = &pendingTurn{runID: child.id, stepID: child.stepID, prompt: parent.pendingRestartPrompt}
+			parent.pendingRestartRunID = ""
+			parent.pendingRestartPrompt = ""
+			break
+		}
+	}
+	if next == nil {
+		for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
+			child := s.runs[childID]
+			if child == nil || child.pendingTurnPrompt == "" || child.turnInFlight || !s.dependenciesSatisfiedLocked(child) {
+				continue
+			}
+			next = &pendingTurn{runID: child.id, stepID: child.stepID, prompt: child.pendingTurnPrompt}
+			child.pendingTurnPrompt = ""
+			child.agentStatus = string(RunStatusRunning)
+			break
+		}
+	}
+	s.mu.Unlock()
+	if next != nil {
+		prompt, queued := s.takeQueuedFeedbackPrompt(parentRunID, next.runID, next.prompt)
+		if queued != nil {
+			s.recordAgentBus(parentRunID, *queued)
+		}
+		s.scheduleChildTurn(next.runID, next.stepID, prompt)
+	}
+}
+
+func (s *InteractiveService) emitAgentGraph(parentRunID string, snap AgentGraphSnapshot) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.emitAgentGraphLocked(parentRunID, snap)
+}
+
+func (s *InteractiveService) emitAgentGraphLocked(parentRunID string, snap AgentGraphSnapshot) {
+	if rs := s.runs[parentRunID]; rs != nil {
+		_ = s.emitLocked(rs, ProviderEvent{Type: EventAgentGraphUpdated, AgentGraphSnapshot: &snap})
+	}
+}
+
+func (s *InteractiveService) emitAgentBus(parentRunID string, msg AgentBusMessage) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.emitAgentBusLocked(parentRunID, msg)
+}
+
+func (s *InteractiveService) emitAgentBusLocked(parentRunID string, msg AgentBusMessage) {
+	if rs := s.runs[parentRunID]; rs != nil {
+		_ = s.emitLocked(rs, ProviderEvent{Type: EventAgentBusMessage, AgentBusMessage: &msg})
+	}
+}
+
+// emitOnParentRun persists and broadcasts ev on the parent run's event stream (BUG-121).
+// Safe to call without s.mu held; acquires it internally.
+func (s *InteractiveService) emitOnParentRun(parentRunID string, ev ProviderEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if rs := s.runs[parentRunID]; rs != nil {
+		_ = s.emitLocked(rs, ev)
+	}
+}
+
+// maxPendingAgentNotes caps the parent's UI-spawn context buffer so a user who spawns
+// many children without chatting cannot grow the next prompt without bound (BUG-122).
+const maxPendingAgentNotes = 50
+
+// composeAgentContextBlock renders the parent's pending UI-spawn notes as a single
+// system-note prefix folded into the next provider turn's prompt (BUG-122).
+func composeAgentContextBlock(notes []string) string {
+	var b strings.Builder
+	b.WriteString("[FlowPilot system note — sub-agents started in this session via the UI (not by you):\n")
+	for _, n := range notes {
+		b.WriteString("- ")
+		b.WriteString(n)
+		b.WriteString("\n")
+	}
+	b.WriteString("Use this when the user asks which sub-agents were started, their providers/models, or their results.]")
+	return b.String()
+}
+
+// composeAgentSpawnPrompt builds the first-turn prompt for a spawned sub-agent
+// in a provider-independent way so the same agent name yields an identical prompt
+// shape on Claude and Codex (BUG-128). Structure:
+//
+//	<agent system prompt>      (when any; kept FIRST so built-in-agent prompt
+//	                            detection in isAgentHistoryRun keeps matching)
+//	<agent identity line>      (names the agent + role and links its definition
+//	                            file so the model can open the full spec itself)
+//	<user prompt>
+//
+// A nil agentDef (unknown agent) returns the user prompt unchanged.
+func composeAgentSpawnPrompt(agentDef *AgentDefinition, userPrompt string) string {
+	if agentDef == nil {
+		return userPrompt
+	}
+	var b strings.Builder
+	if sp := strings.TrimSpace(agentDef.SystemPrompt); sp != "" {
+		b.WriteString(sp)
+		b.WriteString("\n\n")
+	}
+	b.WriteString(composeAgentIdentityLine(agentDef))
+	b.WriteString("\n\n")
+	b.WriteString(userPrompt)
+	return b.String()
+}
+
+// composeAgentIdentityLine renders the consistent, single-line agent reference
+// shared by every provider: the agent name, role, and a link to its definition
+// file (or a built-in marker when the agent has no on-disk path) (BUG-128).
+func composeAgentIdentityLine(def *AgentDefinition) string {
+	parts := make([]string, 0, 3)
+	if name := strings.TrimSpace(def.Name); name != "" {
+		parts = append(parts, "agent: "+name)
+	}
+	if role := strings.TrimSpace(def.Role); role != "" {
+		parts = append(parts, "role: "+role)
+	}
+	if path := strings.TrimSpace(def.Path); path != "" {
+		parts = append(parts, "definition: "+path)
+	} else {
+		source := strings.TrimSpace(def.Source)
+		if source == "" {
+			source = "unknown"
+		}
+		parts = append(parts, "definition: built-in ("+source+")")
+	}
+	return "[FlowPilot sub-agent — " + strings.Join(parts, " | ") + "]"
+}
+
+// appendPendingAgentContextLocked appends a note to the parent's UI-spawn context buffer
+// and schedules a best-effort persist so it survives a restart. Caller holds s.mu (BUG-122).
+func (s *InteractiveService) appendPendingAgentContextLocked(parentRunID, note string) {
+	if note == "" {
+		return
+	}
+	parent := s.runs[parentRunID]
+	if parent == nil {
+		return
+	}
+	parent.pendingAgentContext = append(parent.pendingAgentContext, note)
+	if len(parent.pendingAgentContext) > maxPendingAgentNotes {
+		parent.pendingAgentContext = parent.pendingAgentContext[len(parent.pendingAgentContext)-maxPendingAgentNotes:]
+	}
+	snap := sessionStateOf(parent)
+	go func() { _ = s.persistProviderSession(snap) }()
+}
+
+// appendPendingAgentContext is the lock-acquiring variant of appendPendingAgentContextLocked.
+func (s *InteractiveService) appendPendingAgentContext(parentRunID, note string) {
+	s.mu.Lock()
+	s.appendPendingAgentContextLocked(parentRunID, note)
+	s.mu.Unlock()
 }
 
 type workflowRunSeeder interface {
@@ -253,6 +713,9 @@ func (s *InteractiveService) AttachRunner(r *Runner) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.runner = r
+	s.agentCatalog.providerHomeFn = func() []AgentDefinition {
+		return discoverActiveProviderHomeAgents(r)
+	}
 }
 
 func (s *InteractiveService) persistProviderSession(session ProviderSessionState) error {
@@ -271,24 +734,31 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		providerSessionID = rs.realProviderSessionID
 	}
 	return ProviderSessionState{
-		RunID:             rs.id,
-		ProjectID:         rs.projectID,
-		WorkflowID:        rs.workflowID,
-		ProviderSessionID: providerSessionID,
-		ProviderKey:       rs.providerKey,
-		ProviderAccountID: rs.providerAccountID,
-		WorkingDirectory:  rs.workspaceCwd,
-		Status:            rs.status,
-		LastPrompt:        rs.lastPrompt,
-		LastMessage:       rs.lastMessage,
-		StartedAt:         rs.createdAt,
-		UpdatedAt:         rs.updatedAt,
-		RunKind:           rs.runKind,
-		SourceMachineID:   rs.sourceMachineID,
-		SourceRunID:       rs.sourceRunID,
-		RestoredFrom:      rs.restoredFrom,
-		SyncStatus:        rs.syncStatus,
-		SyncUpdatedAt:     rs.syncUpdatedAt,
+		RunID:               rs.id,
+		ProjectID:           rs.projectID,
+		WorkflowID:          rs.workflowID,
+		ProviderSessionID:   providerSessionID,
+		ProviderKey:         rs.providerKey,
+		ProviderAccountID:   rs.providerAccountID,
+		WorkingDirectory:    rs.workspaceCwd,
+		Status:              rs.status,
+		LastPrompt:          rs.lastPrompt,
+		LastMessage:         rs.lastMessage,
+		StartedAt:           rs.createdAt,
+		UpdatedAt:           rs.updatedAt,
+		RunKind:             rs.runKind,
+		SourceMachineID:     rs.sourceMachineID,
+		SourceRunID:         rs.sourceRunID,
+		RestoredFrom:        rs.restoredFrom,
+		SyncStatus:          rs.syncStatus,
+		SyncUpdatedAt:       rs.syncUpdatedAt,
+		ParentRunID:         rs.parentRunID,
+		AgentName:           rs.agentName,
+		Role:                rs.role,
+		DependsOn:           append([]string(nil), rs.dependsOn...),
+		AgentStatus:         rs.agentStatus,
+		ModelName:           rs.modelName,
+		PendingAgentContext: append([]string(nil), rs.pendingAgentContext...),
 	}
 }
 
@@ -375,14 +845,159 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 	switch ev.Type {
 	case EventPermissionRequired:
 		rs.status = RunStatusWaitingApproval
+		rs.agentStatus = string(RunStatusWaitingApproval)
 	case EventUserQuestionRequired:
 		rs.status = RunStatusWaitingQuestion
+		rs.agentStatus = string(RunStatusWaitingQuestion)
 	case EventTurnCompleted:
 		rs.status = RunStatusCompleted
+		rs.agentStatus = string(RunStatusCompleted)
+		// Signal any wait:true spawn_agent waiter — non-blocking (buffered channel).
+		// Must be called under s.mu so signalChild races after status is set.
+		// Fall back to the last EventMessageCompleted text when FinalMessage is empty:
+		// Codex new-protocol (turn/completed) may not carry finalMessage directly; the
+		// actual content arrives via streaming EventMessageCompleted events first.
+		finalMsg := ev.FinalMessage
+		if finalMsg == "" {
+			for i := len(rs.events) - 1; i >= 0; i-- {
+				if rs.events[i].Type == EventMessageCompleted && rs.events[i].Text != "" {
+					finalMsg = rs.events[i].Text
+					break
+				}
+			}
+		}
+		s.agentOrchestrator.signalChild(rs.id, finalMsg, false, "", RunStatusCompleted)
+		if rs.parentRunID != "" {
+			// Tell the parent's provider conversation that a child finished, so the parent
+			// agent can report its result on the next turn. UI spawns (BUG-122) and tool
+			// spawns with wait=false (BUG-126) both need this; a tool spawn with wait=true
+			// already returned the result synchronously as the tool result, so skip it.
+			if rs.uiInitiated || !rs.waitForResult {
+				s.appendPendingAgentContextLocked(rs.parentRunID, fmt.Sprintf(
+					"Sub-agent %q (provider: %s) completed. Result: %s",
+					rs.agentName, rs.providerKey, truncateDisplayField(finalMsg, 2000)))
+			}
+			switch {
+			case isAgentRole(rs, "coder"):
+				s.emitAgentGraphLocked(rs.parentRunID, s.agentOrchestrator.transition(rs.parentRunID, "ready-for-review"))
+				go s.recordAgentBus(rs.parentRunID, AgentBusMessage{ID: s.nextID("bus"), ParentRunID: rs.parentRunID, FromRunID: rs.id, Kind: "ready-for-review", Message: ev.FinalMessage, Queued: false, OccurredAt: ev.OccurredAt})
+			case isAgentRole(rs, "review"):
+				msg := strings.ToLower(ev.FinalMessage)
+				switch {
+				case strings.Contains(msg, "changes requested"):
+					go s.recordAgentBus(rs.parentRunID, AgentBusMessage{ID: s.nextID("bus"), ParentRunID: rs.parentRunID, FromRunID: rs.id, Kind: "changes-requested", Message: ev.FinalMessage, Queued: false, OccurredAt: ev.OccurredAt})
+					s.emitAgentGraphLocked(rs.parentRunID, s.agentOrchestrator.transition(rs.parentRunID, "changes-requested"))
+					roundSnap := s.agentOrchestrator.advanceRound(rs.parentRunID)
+					s.emitAgentGraphLocked(rs.parentRunID, roundSnap)
+					coderID := ""
+					for _, childID := range s.agentOrchestrator.listChildren(rs.parentRunID) {
+						if child := s.runs[childID]; isAgentRole(child, "coder") {
+							coderID = childID
+							break
+						}
+					}
+					if coderID != "" {
+						reviewText := ev.FinalMessage
+						if roundSnap.LoopState.Status != "stopped" {
+							runID := ""
+							prompt := ""
+							if parent := s.runs[rs.parentRunID]; parent != nil {
+								if child := s.runs[coderID]; child != nil {
+									if !s.loopAllowsNextTurnLocked(rs.parentRunID) || child.turnInFlight {
+										parent.pendingRestartRunID = child.id
+										parent.pendingRestartPrompt = reviewText
+									} else {
+										runID = child.id
+										prompt = reviewText
+									}
+								}
+							}
+							if runID != "" && prompt != "" {
+								if child := s.runs[runID]; child != nil {
+									stepID := child.stepID
+									go func(runID, stepID, prompt string) {
+										prompt, queued := s.takeQueuedFeedbackPrompt(rs.parentRunID, runID, prompt)
+										if queued != nil {
+											s.recordAgentBus(rs.parentRunID, *queued)
+										}
+										_, _ = s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt}, "", "")
+									}(runID, stepID, prompt)
+								}
+							}
+						}
+					}
+				case strings.Contains(msg, "rejected"):
+					go s.recordAgentBus(rs.parentRunID, AgentBusMessage{ID: s.nextID("bus"), ParentRunID: rs.parentRunID, FromRunID: rs.id, Kind: "rejected", Message: ev.FinalMessage, Queued: false, OccurredAt: ev.OccurredAt})
+					s.emitAgentGraphLocked(rs.parentRunID, s.agentOrchestrator.transition(rs.parentRunID, "rejected"))
+				default:
+					go s.recordAgentBus(rs.parentRunID, AgentBusMessage{ID: s.nextID("bus"), ParentRunID: rs.parentRunID, FromRunID: rs.id, Kind: "approved", Message: ev.FinalMessage, Queued: false, OccurredAt: ev.OccurredAt})
+					s.emitAgentGraphLocked(rs.parentRunID, s.agentOrchestrator.transition(rs.parentRunID, "approved"))
+				}
+			}
+		}
 	case EventTurnFailed:
 		rs.status = RunStatusFailed
+		rs.agentStatus = string(RunStatusFailed)
+		s.agentOrchestrator.signalChild(rs.id, "", true, ev.Error, RunStatusFailed)
+		if rs.parentRunID != "" {
+			if rs.uiInitiated || !rs.waitForResult {
+				s.appendPendingAgentContextLocked(rs.parentRunID, fmt.Sprintf(
+					"Sub-agent %q (provider: %s) failed: %s",
+					rs.agentName, rs.providerKey, truncateDisplayField(ev.Error, 500)))
+			}
+			s.emitAgentGraphLocked(rs.parentRunID, s.agentOrchestrator.transition(rs.parentRunID, "rejected"))
+		}
 	default:
-		rs.status = RunStatusRunning
+		// agent_graph_updated / agent_bus_message are orchestration/panel relays emitted on
+		// the PARENT run to refresh the Agents panel; they are NOT the parent's own turn
+		// progress. agent_spawned_by_user / agent_result_injected are timeline annotations
+		// written when the user triggers a UI spawn (BUG-121). None of these should flip
+		// the parent's run status to running. Only genuine turn-progress events advance status.
+		if ev.Type != EventAgentGraphUpdated && ev.Type != EventAgentBusMessage &&
+			ev.Type != EventAgentSpawnedByUser && ev.Type != EventAgentResultInjected {
+			rs.status = RunStatusRunning
+			if rs.parentRunID != "" {
+				rs.agentStatus = string(RunStatusRunning)
+			}
+		}
+	}
+	shouldEmitParentGraph := false
+	if rs.parentRunID != "" {
+		modelName := rs.modelName
+		if modelName == "" {
+			// Preserve a model name set at spawn time; rs.modelName may be empty
+			// when the child inherits an unresolved parent model.
+			if prev, ok := s.agentOrchestrator.currentSummary(rs.parentRunID, rs.id); ok {
+				modelName = prev.ModelName
+			}
+		}
+		s.agentOrchestrator.upsertSummary(rs.parentRunID, AgentRunSummary{
+			RunID:         rs.id,
+			AgentName:     rs.agentName,
+			Role:          rs.role,
+			Status:        rs.status,
+			ParentRunID:   rs.parentRunID,
+			CreatedAt:     rs.createdAt,
+			DependsOn:     append([]string(nil), rs.dependsOn...),
+			AgentStatus:   rs.agentStatus,
+			ProviderKey:   string(rs.providerKey),
+			ModelName:     modelName,
+			WaitForResult: rs.waitForResult,
+		})
+		shouldEmitParentGraph = shouldEmitAgentGraphForChildEvent(ev.Type)
+	}
+	if rs.parentRunID != "" && (ev.Type == EventTurnCompleted || ev.Type == EventTurnFailed) {
+		// [BUG-113 diag] A child run reaching a terminal state. finalMsgLen=0 with a low
+		// event count flags a child that completed without producing any assistant output
+		// (the "empty transcript" sub-agents seen in the Agents panel).
+		log.Printf("[agent-spawn] child terminal parent=%q child=%q agent=%q type=%q status=%q finalMsgLen=%d events=%d",
+			rs.parentRunID, rs.id, rs.agentName, ev.Type, rs.status, len(ev.FinalMessage), len(rs.events))
+	}
+	if rs.parentRunID != "" && ev.Type == EventTurnCompleted {
+		go s.releaseDependentAgents(rs.parentRunID, rs.id, ev.FinalMessage, ev.OccurredAt)
+	}
+	if rs.parentRunID != "" && shouldEmitParentGraph {
+		s.emitAgentGraphLocked(rs.parentRunID, s.agentOrchestrator.graphSnapshot(rs.parentRunID))
 	}
 
 	for _, ch := range rs.subs {
@@ -392,6 +1007,15 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 		}
 	}
 	return ev
+}
+
+func shouldEmitAgentGraphForChildEvent(eventType ProviderEventType) bool {
+	switch eventType {
+	case EventTurnStarted, EventPermissionRequired, EventUserQuestionRequired, EventTurnCompleted, EventTurnFailed:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *InteractiveService) subscribe(runID string, after int64) (int64, chan ProviderEvent, []ProviderEvent, bool) {
@@ -544,6 +1168,323 @@ func (b *turnBridge) AskQuestion(prompt string, options []QuestionOption, multiS
 	}
 }
 
+// SpawnAgent creates a child agent run from the current turn (CP-19 / Task-082).
+// When in.Wait==true it blocks until the child run's first turn completes, returning
+// its final message. Cancellation follows b.ctx (parent turn interrupt).
+func (b *turnBridge) SpawnAgent(in SpawnAgentInput) (SpawnAgentResult, error) {
+	return b.svc.spawnChildRun(b.ctx, b.rs.id, in)
+}
+
+// spawnChildRun is the shared spawn path for the spawn_agent tool and the HTTP handler.
+// It creates a child interactiveRun, tags it with agent identity, fires its first turn
+// asynchronously, and (when in.Wait==true) blocks until that turn completes.
+func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID string, in SpawnAgentInput) (SpawnAgentResult, error) {
+	// [BUG-113 diag] One line per spawn_agent invocation. If the agents list shows more
+	// children than expected, this reveals whether the orchestrator called spawn_agent
+	// multiple times (and with what params) vs. a single intended spawn.
+	log.Printf("[agent-spawn] request parent=%q agent=%q provider=%q wait=%t dependsOn=%v promptLen=%d",
+		parentRunID, in.Agent, in.Provider, in.Wait, in.DependsOn, len(in.Prompt))
+	// Validate that the parent run exists before creating any child resource.
+	var agentDef *AgentDefinition
+	s.mu.Lock()
+	parentRun := s.runs[parentRunID]
+	cwd := ""
+	projectID := ""
+	workflowID := ""
+	parentModel := ""
+	parentReasoningEffort := ""
+	parentProviderKey := ProviderKey("")
+	parentYolo := false
+	if parentRun != nil {
+		cwd = parentRun.workspaceCwd
+		projectID = parentRun.projectID
+		workflowID = parentRun.workflowID
+		parentModel = parentRun.modelName
+		parentReasoningEffort = parentRun.reasoningEffort
+		parentProviderKey = parentRun.providerKey
+		parentYolo = parentRun.yolo
+	}
+	s.mu.Unlock()
+	if parentRun == nil {
+		return SpawnAgentResult{}, fmt.Errorf("parent run %q not found", parentRunID)
+	}
+	if defs := s.agentCatalog.listAgents(cwd); len(defs) > 0 {
+		for i := range defs {
+			if strings.EqualFold(defs[i].Name, in.Agent) {
+				def := defs[i]
+				agentDef = &def
+				break
+			}
+		}
+	}
+
+	// Determine provider: explicit input > agent definition > parent run's provider.
+	providerKey := ProviderKey(in.Provider)
+	if providerKey == "" && agentDef != nil && agentDef.Provider != "" {
+		providerKey = ProviderKey(agentDef.Provider)
+	}
+	if providerKey == "" {
+		s.mu.Lock()
+		if parent := s.runs[parentRunID]; parent != nil {
+			providerKey = parent.providerKey
+		}
+		s.mu.Unlock()
+	}
+
+	// Resolve the child model and reasoning effort.
+	// Priority: agent definition > same-provider inheritance > per-provider default.
+	// When the child runs on a different provider than the parent, the parent's model
+	// name is invalid for the child (e.g. "sonnet" sent to Codex → 400).
+	childModel := parentModel
+	childReasoningEffort := parentReasoningEffort
+	if agentDef != nil && agentDef.Model != "" {
+		childModel = agentDef.Model
+		childReasoningEffort = agentDef.ModelReasoningEffort
+	} else if providerKey != parentProviderKey {
+		childModel = defaultModelForProvider(providerKey)
+		childReasoningEffort = ""
+	}
+	// If model is still unresolved (parent was started without an explicit model),
+	// fall back to the provider default so the UI always shows a model name.
+	if childModel == "" {
+		childModel = defaultModelForProvider(providerKey)
+	}
+
+	// Create the child run. createRun acquires s.mu internally; call it unlocked.
+	// The child inherits the parent's YOLO posture (BUG-129): with YOLO on, the
+	// child's gated actions must auto-approve just like the parent's, instead of
+	// stalling the (often wait=true) parent turn on a child approval prompt.
+	startIn := StartRunInput{
+		ProjectID:       projectID,
+		WorkflowID:      workflowID,
+		ChatMode:        "normal_chat",
+		Cwd:             cwd,
+		ProviderKey:     providerKey,
+		Model:           childModel,
+		ReasoningEffort: childReasoningEffort,
+		YoloMode:        parentYolo,
+	}
+	handle, apiErr := s.createRun(startIn)
+	if apiErr != nil {
+		return SpawnAgentResult{}, fmt.Errorf("%s: %s", apiErr.code, apiErr.msg)
+	}
+
+	// Register the wait:true completion channel BEFORE starting the child turn to
+	// eliminate the race between turn completion and the caller's select.
+	var waiterCh <-chan agentCompletion
+	if in.Wait {
+		waiterCh = s.agentOrchestrator.openWaiter(handle.RunID)
+	}
+
+	// Compose the first user turn the same way for every provider so a given
+	// agent name produces an identical prompt shape on Claude and Codex (BUG-128).
+	// The agent's system prompt (when any) stays first so built-in-agent prompt
+	// detection keeps working; a single identity line then names the agent and
+	// links its definition file so the model can open the full spec itself.
+	firstPrompt := composeAgentSpawnPrompt(agentDef, in.Prompt)
+
+	// Stamp agent identity on the newly created child run.
+	s.mu.Lock()
+	var childSnap ProviderSessionState
+	agentStatus := "spawned"
+	blockedStart := false
+	if rs := s.runs[handle.RunID]; rs != nil {
+		rs.parentRunID = parentRunID
+		rs.dependsOn = in.DependsOn
+		rs.agentStatus = "spawned"
+		rs.stepID = handle.StepID
+		rs.uiInitiated = in.UIInitiated
+		rs.waitForResult = in.Wait
+		if agentDef != nil {
+			rs.agentName = agentDef.Name
+			rs.role = agentDef.Role
+		} else {
+			rs.agentName = in.Agent
+			rs.role = strings.ToLower(in.Agent)
+		}
+		if len(rs.dependsOn) > 0 && (!s.dependenciesSatisfiedLocked(rs) || !s.loopAllowsNextTurnLocked(parentRunID)) {
+			rs.agentStatus = "waiting_dependency"
+			rs.pendingTurnPrompt = firstPrompt
+			agentStatus = rs.agentStatus
+			blockedStart = true
+		}
+		childSnap = sessionStateOf(rs)
+	}
+	s.mu.Unlock()
+	if childSnap.RunID != "" {
+		if err := s.persistProviderSession(childSnap); err != nil {
+			return SpawnAgentResult{}, err
+		}
+	}
+
+	// [BUG-113 diag] The minted child run + resolved identity. Pair this with the
+	// "[agent-spawn] request" line above to map each spawn call to its child run id.
+	log.Printf("[agent-spawn] child created parent=%q child=%q agent=%q role=%q provider=%q model=%q blockedStart=%t",
+		parentRunID, handle.RunID, childSnap.AgentName, childSnap.Role, childSnap.ProviderKey, childModel, blockedStart)
+
+	// Record the tree edge.
+	s.agentOrchestrator.registerChild(parentRunID, handle.RunID)
+	s.agentOrchestrator.mu.Lock()
+	s.agentOrchestrator.edges[parentRunID] = append(s.agentOrchestrator.edges[parentRunID], AgentDependencyEdge{FromRunID: parentRunID, ToRunID: handle.RunID, Kind: "spawn"})
+	for _, depID := range in.DependsOn {
+		s.agentOrchestrator.edges[parentRunID] = append(s.agentOrchestrator.edges[parentRunID], AgentDependencyEdge{FromRunID: depID, ToRunID: handle.RunID, Kind: "depends-on"})
+	}
+	st := s.agentOrchestrator.ensureLoopLocked(parentRunID)
+	if st.Status == "" {
+		st.Status = "running"
+	}
+	s.agentOrchestrator.loop[parentRunID] = st
+	s.agentOrchestrator.mu.Unlock()
+	s.agentOrchestrator.upsertSummary(parentRunID, AgentRunSummary{
+		RunID:         handle.RunID,
+		AgentName:     childSnap.AgentName,
+		Role:          childSnap.Role,
+		Status:        RunStatus(childSnap.Status),
+		ParentRunID:   parentRunID,
+		CreatedAt:     childSnap.StartedAt,
+		DependsOn:     append([]string(nil), in.DependsOn...),
+		AgentStatus:   agentStatus,
+		ProviderKey:   string(childSnap.ProviderKey),
+		ModelName:     childModel,
+		WaitForResult: in.Wait,
+	})
+	_ = s.agentOrchestrator.addBus(parentRunID, AgentBusMessage{ID: s.nextID("bus"), ParentRunID: parentRunID, FromRunID: parentRunID, ToRunID: handle.RunID, Kind: "handoff", Message: in.Prompt, Queued: false, OccurredAt: time.Now().UTC().Format(time.RFC3339Nano)})
+	s.emitAgentGraph(parentRunID, s.agentOrchestrator.graphSnapshot(parentRunID))
+	// Persist a spawn annotation on the parent run (BUG-121). This writes a permanent
+	// event to the parent's event log so the spawn is visible in the parent timeline
+	// after a server restart, regardless of whether the spawn came from the UI or a tool.
+	s.emitOnParentRun(parentRunID, ProviderEvent{
+		Type:       EventAgentSpawnedByUser,
+		AgentName:  childSnap.AgentName,
+		ChildRunID: handle.RunID,
+	})
+	// Queue a context note for the parent's next provider turn so the parent agent learns
+	// about a child the UI started (the AI tool path is already in provider history). (BUG-122)
+	if in.UIInitiated {
+		s.appendPendingAgentContext(parentRunID, fmt.Sprintf(
+			"Sub-agent %q (provider: %s, model: %s) was started from the FlowPilot UI.",
+			childSnap.AgentName, childSnap.ProviderKey, childModel))
+	}
+
+	// Fire the first turn asynchronously; the child streams via its own SSE.
+	if !blockedStart {
+		go func() {
+			_, turnErr := s.startTurn(handle.RunID, TurnInput{
+				StepID: handle.StepID,
+				Prompt: firstPrompt,
+			}, "", "")
+			if turnErr != nil {
+				// startTurn failed before the adapter ran — signal the waiter explicitly.
+				s.agentOrchestrator.signalChild(handle.RunID, "", true, turnErr.msg, RunStatusFailed)
+			}
+		}()
+	}
+
+	result := SpawnAgentResult{
+		RunID:             handle.RunID,
+		ProviderSessionID: handle.ProviderSessionID,
+		ProviderKey:       string(handle.ProviderKey),
+		Status:            "spawned",
+	}
+	if blockedStart {
+		result.Status = agentStatus
+	}
+
+	if in.Wait && !blockedStart {
+		select {
+		case completion := <-waiterCh:
+			if completion.failed {
+				return SpawnAgentResult{}, fmt.Errorf("child agent failed: %s", completion.errMsg)
+			}
+			result.Status = string(completion.status)
+			if completion.status == RunStatusCompleted {
+				result.FinalMessage = completion.finalMessage
+				// Persist the child's result as an annotation on the parent run (BUG-121).
+				if result.FinalMessage != "" {
+					s.emitOnParentRun(parentRunID, ProviderEvent{
+						Type:         EventAgentResultInjected,
+						AgentName:    childSnap.AgentName,
+						FinalMessage: result.FinalMessage,
+					})
+				}
+			}
+		case <-ctx.Done():
+			return SpawnAgentResult{}, ctx.Err()
+		}
+	}
+
+	return result, nil
+}
+
+// listAgentRunSummaries returns the child run summaries for a given parent run.
+// It includes live children (in-memory runs) and historical children persisted
+// from a previous sync/restore round-trip (CP-19 / Task-082).
+func (s *InteractiveService) listAgentRunSummaries(parentRunID string) []AgentRunSummary {
+	childIDs := s.agentOrchestrator.listChildren(parentRunID)
+	s.mu.Lock()
+	liveIDs := make(map[string]struct{}, len(childIDs))
+	out := make([]AgentRunSummary, 0, len(childIDs))
+	for _, id := range childIDs {
+		rs := s.runs[id]
+		if rs == nil {
+			continue
+		}
+		liveIDs[id] = struct{}{}
+		out = append(out, AgentRunSummary{
+			RunID:         rs.id,
+			AgentName:     rs.agentName,
+			Role:          rs.role,
+			Status:        rs.status,
+			ParentRunID:   rs.parentRunID,
+			CreatedAt:     rs.createdAt,
+			DependsOn:     append([]string(nil), rs.dependsOn...),
+			AgentStatus:   rs.agentStatus,
+			ProviderKey:   string(rs.providerKey),
+			ModelName:     rs.modelName,
+			WaitForResult: rs.waitForResult,
+		})
+	}
+	s.mu.Unlock()
+	// Append historical summaries from a prior sync/restore that are not in the live map.
+	seenIDs := make(map[string]struct{}, len(out))
+	for _, summary := range out {
+		seenIDs[summary.RunID] = struct{}{}
+	}
+	for _, h := range s.agentOrchestrator.historicalChildren(parentRunID) {
+		if _, live := liveIDs[h.RunID]; !live {
+			out = append(out, h)
+			seenIDs[h.RunID] = struct{}{}
+		}
+	}
+	if indexReader, ok := s.workflowStore.(SessionIndexReader); ok {
+		sessions, err := indexReader.ListAllProviderSessions(context.Background())
+		if err == nil {
+			for _, session := range sessions {
+				if session.ParentRunID != parentRunID {
+					continue
+				}
+				if _, seen := seenIDs[session.RunID]; seen {
+					continue
+				}
+				out = append(out, AgentRunSummary{
+					RunID:       session.RunID,
+					AgentName:   session.AgentName,
+					Role:        session.Role,
+					Status:      session.Status,
+					ParentRunID: session.ParentRunID,
+					CreatedAt:   session.StartedAt,
+					DependsOn:   append([]string(nil), session.DependsOn...),
+					AgentStatus: session.AgentStatus,
+					ProviderKey: string(session.ProviderKey),
+					ModelName:   session.ModelName,
+				})
+				seenIDs[session.RunID] = struct{}{}
+			}
+		}
+	}
+	return out
+}
+
 func (s *InteractiveService) expireApproval(id string) {
 	var snapshot *ProviderApprovalState
 	s.mu.Lock()
@@ -663,12 +1604,30 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	if rs.providerKey == ProviderKeyCodex && rs.realProviderSessionID != "" {
 		providerSessionID = rs.realProviderSessionID
 	}
+	// Fold any pending UI-spawn context into the provider prompt (NOT the displayed prompt,
+	// which was already emitted via turn_started with in.Prompt). This is how the parent
+	// agent learns about children started from the UI. Cleared once consumed; the cleared
+	// state is persisted by the post-turn sessionStateOf snapshot below. (BUG-122)
+	providerPrompt := in.Prompt
+	s.mu.Lock()
+	// Persist the per-turn YOLO posture as the run's current default (BUG-129). The UI
+	// toggle is sticky, so an explicit YoloMode this turn must update rs.yolo; otherwise a
+	// child spawned during this turn (spawnChildRun reads parentRun.yolo) would inherit the
+	// stale run-level default instead of the posture the user actually has enabled.
+	if in.YoloMode != nil {
+		rs.yolo = yolo
+	}
+	if len(rs.pendingAgentContext) > 0 {
+		providerPrompt = composeAgentContextBlock(rs.pendingAgentContext) + "\n\n" + in.Prompt
+		rs.pendingAgentContext = nil
+	}
+	s.mu.Unlock()
 	req := TurnRequest{
 		RunID:             rs.id,
 		StepID:            in.StepID,
 		ProviderSessionID: providerSessionID,
 		ProviderTurnID:    turnID,
-		Prompt:            in.Prompt,
+		Prompt:            providerPrompt,
 		ModelName:         model,
 		SelectedSkills:    in.SelectedSkills,
 		YoloMode:          yolo,
@@ -708,12 +1667,31 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	}
 	s.mu.Lock()
 	rs.turnInFlight = false
+	pendingRestartRunID := ""
+	pendingRestartPrompt := ""
+	if rs.parentRunID != "" {
+		if parent := s.runs[rs.parentRunID]; parent != nil {
+			pendingRestartRunID = parent.pendingRestartRunID
+			pendingRestartPrompt = parent.pendingRestartPrompt
+			parent.pendingRestartRunID = ""
+			parent.pendingRestartPrompt = ""
+		}
+	}
 	s.mu.Unlock()
 
 	// Finalizer hook runs OUTSIDE s.mu and only on a clean completion. A finalize
 	// failure is recorded as retryable and must not erase the completed turn (04-04).
 	if completed {
 		_ = s.finalizer.Finalize(fin)
+	}
+	if completed && pendingRestartRunID == rs.id && pendingRestartPrompt != "" {
+		prompt, queued := s.takeQueuedFeedbackPrompt(rs.parentRunID, rs.id, pendingRestartPrompt)
+		if queued != nil {
+			s.recordAgentBus(rs.parentRunID, *queued)
+		}
+		go func(runID, stepID, prompt string) {
+			_, _ = s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt}, "", "")
+		}(rs.id, rs.stepID, prompt)
 	}
 }
 
@@ -1158,4 +2136,19 @@ func truncateDisplayField(s string, max int) string {
 		return s
 	}
 	return string(runes[:max]) + "…"
+}
+
+// defaultModelForProvider returns the baseline model name to use when spawning a
+// child run on a different provider than the parent and the agent definition does
+// not declare an explicit model. Using the parent's model name cross-provider
+// causes a 400 from the target provider (e.g. "sonnet" sent to Codex).
+func defaultModelForProvider(key ProviderKey) string {
+	switch key {
+	case ProviderKeyCodex:
+		return "gpt-5.4-mini"
+	case ProviderKeyClaude:
+		return "sonnet"
+	default:
+		return ""
+	}
 }

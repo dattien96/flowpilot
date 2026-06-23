@@ -32,9 +32,10 @@ const (
 	// the per-turn --mcp-config. The tool names below encode it (claude's mcp__<server>__<tool>
 	// convention), and writeClaudeMCPConfig guards against an injected extra server shadowing
 	// it — so the name MUST be referenced via this const, never re-typed as a literal.
-	claudeMCPServerName   = "flowpilot"
-	claudeApproveToolName = "mcp__" + claudeMCPServerName + "__approve"
-	claudeAskUserToolName = "mcp__" + claudeMCPServerName + "__ask_user"
+	claudeMCPServerName      = "flowpilot"
+	claudeApproveToolName    = "mcp__" + claudeMCPServerName + "__approve"
+	claudeAskUserToolName    = "mcp__" + claudeMCPServerName + "__ask_user"
+	claudeSpawnAgentToolName = "mcp__" + claudeMCPServerName + "__spawn_agent"
 )
 
 // claudeArgs builds the headless stream-json invocation. YOLO drives --permission-mode
@@ -176,6 +177,21 @@ func handleClaudeAskUser(args map[string]any, bridge TurnBridge) map[string]any 
 		return claudeMcpTextResult("No answer was provided.")
 	}
 	return claudeMcpTextResult(strings.Join(choice, ", "))
+}
+
+// handleClaudeSpawnAgent maps a spawn_agent tool call to the bridge's SpawnAgent and returns
+// the result JSON as the tool result text.
+func handleClaudeSpawnAgent(args map[string]any, bridge TurnBridge) map[string]any {
+	in, err := parseSpawnAgentInput(args)
+	if err != nil {
+		return claudeMcpTextResult("spawn_agent: invalid arguments: " + err.Error())
+	}
+	result, err := bridge.SpawnAgent(in)
+	if err != nil {
+		return claudeMcpTextResult("spawn_agent failed: " + err.Error())
+	}
+	resultJSON, _ := json.Marshal(result)
+	return claudeMcpTextResult(string(resultJSON))
 }
 
 // claudeMcpToolResult wraps a decision object as the MCP tool result claude reads for

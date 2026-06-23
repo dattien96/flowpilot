@@ -184,6 +184,32 @@ function findActiveSlash(text: string, cursor: number): { index: number; query: 
   return null;
 }
 
+export type MentionRoutingDecision =
+  | { kind: "focus"; agentName: string; runId: string; prompt: string }
+  | { kind: "busy"; agentName: string; runId: string; prompt: string }
+  | { kind: "missing"; agentName: string };
+
+export function isChildRunFocused(activeAgentRunId: string | undefined, mainRunId: string | undefined): boolean {
+  return Boolean(activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId);
+}
+
+export function parseMentionRouting(
+  text: string,
+  agentRuns: Array<{ agentName: string; runId: string; status: string }>,
+): MentionRoutingDecision | null {
+  const trimmed = text.trim();
+  const match = trimmed.match(/^@([A-Za-z0-9_-]+)\s*(.*)$/s);
+  if (!match) return null;
+  const agentName = match[1];
+  const prompt = match[2].trim();
+  const target = agentRuns.find((run) => run.agentName.toLowerCase() === agentName.toLowerCase());
+  if (!target) return { kind: "missing", agentName };
+  if (target.status === "running" || target.status === "waiting_approval" || target.status === "waiting_question") {
+    return { kind: "busy", agentName, runId: target.runId, prompt };
+  }
+  return { kind: "focus", agentName, runId: target.runId, prompt };
+}
+
 // Chat composer + bottom controller strip. The controller keeps the current
 // skill picker active while visually de-emphasizing the other workspace
 // controls so the desktop layout reads like the mockup.
@@ -214,9 +240,16 @@ export function ChatInput(): React.ReactElement {
   const stop = useStore((s) => s.stop);
   const timeline = useStore((s) => s.timeline);
   const providerAccounts = useStore((s) => s.providerAccounts);
+  const agentRuns = useStore((s) => s.agentRuns);
+  const activeAgentRunId = useStore((s) => s.activeAgentRunId);
+  const mainRunId = useStore((s) => s.mainRunId ?? s.runId);
+  const focusAgentRun = useStore((s) => s.focusAgentRun);
+  const appendSystemMessage = useStore((s) => s.appendSystemMessage);
+  const openAgentSpawnGuide = useStore((s) => s.openAgentSpawnGuide);
   const pendingAccountSwitch = useStore((s) => s.pendingAccountSwitch);
   const accountSwitchLoading = useStore((s) => s.accountSwitchLoading);
   const requestManualAccountSwitch = useStore((s) => s.requestManualAccountSwitch);
+  const backToMainRun = useStore((s) => s.backToMainRun);
 
   const [text, setText] = useState("");
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
@@ -261,7 +294,20 @@ export function ChatInput(): React.ReactElement {
     return frag;
   }, [isChatMode, text, cursorPos, slashDismissedIndex]);
   const slashQuery = slashFragment?.query ?? null;
-  const showPicker = isChatMode && !!selectedProvider && (skillPickerOpen || slashFragment !== null);
+  // Slash sub-commands are namespaced by the command letter after "/": "/a…" (or "/agent")
+  // opens the spawn-agent UI, "/s…" (or "/skill") opens the skill picker. A bare "/" (or any
+  // other leading letter) opens nothing — a command letter is required so "/" no longer pops
+  // the skill UI on its own (BUG-134). The remainder after "/s" is the skill search term.
+  const slashCommand: "agent" | "skill" | null =
+    slashFragment === null
+      ? null
+      : slashFragment.query[0] === "a"
+        ? "agent"
+        : slashFragment.query[0] === "s"
+          ? "skill"
+          : null;
+  const showAgentCommand = isChatMode && !!selectedProvider && slashCommand === "agent";
+  const showPicker = isChatMode && !!selectedProvider && (skillPickerOpen || slashCommand === "skill");
   const totalSkills = skills.length;
   const filtered = useMemo(
     () => {
@@ -342,8 +388,12 @@ export function ChatInput(): React.ReactElement {
   // Keep pickerSearch in sync with the slash query so typing /foo in the textarea
   // still drives the in-picker filter in real time.
   useEffect(() => {
-    if (slashQuery !== null) setPickerSearch(slashQuery);
-  }, [slashQuery]);
+    if (slashCommand !== "skill" || slashQuery === null) return;
+    // The skill picker lives under the "/s" namespace, so the leading "s" (or the full
+    // "skill" word) is the command, not a search term; everything after it filters the list.
+    const term = slashQuery === "s" || slashQuery === "skill" ? "" : slashQuery.slice(1);
+    setPickerSearch(term);
+  }, [slashQuery, slashCommand]);
 
   // Clear the search box whenever the picker is dismissed.
   useEffect(() => {
@@ -383,15 +433,29 @@ export function ChatInput(): React.ReactElement {
       providerAccounts.some((a) => a.providerKey === selectedProvider && a.authStatus === "connected" && !a.isActive),
     [providerAccounts, selectedProvider],
   );
+  const childRunFocused = isChildRunFocused(activeAgentRunId, mainRunId);
+  const focusedAgentName = childRunFocused
+    ? agentRuns.find((run) => run.runId === activeAgentRunId)?.agentName ?? activeAgentRunId
+    : undefined;
+  const connectedProviders = useMemo(
+    () => new Set(providerAccounts.filter((account) => account.authStatus === "connected").map((account) => account.providerKey)),
+    [providerAccounts],
+  );
+  const selectedProviderConnected = !!selectedProvider && connectedProviders.has(selectedProvider);
 
   const blocked = status === "running" || status === "waiting_approval" || status === "waiting_question";
+  // A running child spawned with wait=true blocks the main run even when the main has no turn
+  // of its own in flight (e.g. a UI wait=true spawn) — the send button must reflect that (BUG-133).
+  const hasBlockingChild = agentRuns.some(
+    (r) => r.waitForResult && (r.status === "running" || r.status === "waiting_approval" || r.status === "waiting_question"),
+  );
   const usageLine = useMemo(
     () => usageSummaryLine(selectedProvider, displayedTokenUsage),
     [displayedTokenUsage, selectedProvider],
   );
 
   const canSend = isChatMode
-    ? hasSelectedProject && !!selectedProvider && !blocked && text.trim().length > 0 && !showPicker
+    ? hasSelectedProject && selectedProviderConnected && !blocked && !hasBlockingChild && !childRunFocused && text.trim().length > 0 && !showPicker && !showAgentCommand
     : hasSelectedProject &&
       (launchMode === "workflow" ? !!selectedWorkflowId : !!selectedStepId) &&
       !blocked &&
@@ -430,6 +494,27 @@ export function ChatInput(): React.ReactElement {
 
   const removeSkill = (name: string) => {
     setSelectedSkills((prev) => prev.filter((s) => s !== name));
+  };
+
+  // "/a" command: strip the slash fragment from the prompt and open the spawn-agent
+  // panel (the same UI as the right sidebar), then restore the caret. (Task-087)
+  const triggerAgentSlash = () => {
+    if (slashFragment === null) return;
+    const before = text.slice(0, slashFragment.index);
+    const after = text.slice(cursorPos);
+    const newCursor = slashFragment.index;
+    setText(before + after);
+    setCursorPos(newCursor);
+    setSlashDismissedIndex(null);
+    setSkillPickerOpen(false);
+    setTimeout(() => {
+      if (textAreaRef.current) {
+        textAreaRef.current.selectionStart = newCursor;
+        textAreaRef.current.selectionEnd = newCursor;
+        textAreaRef.current.focus();
+      }
+    }, 0);
+    openAgentSpawnGuide();
   };
 
   const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -475,11 +560,7 @@ export function ChatInput(): React.ReactElement {
     setAttachments((prev) => prev.filter((a) => a.id !== id));
   };
 
-  const send = () => {
-    if (!canSend) return;
-    const wireAttachments =
-      isChatMode && attachments.length > 0 ? attachments.map(toWire) : undefined;
-    void sendPrompt(text.trim(), isChatMode ? selectedSkills : undefined, wireAttachments);
+  const clearComposer = () => {
     setText("");
     setSelectedSkills([]);
     setSkillTokens([]);
@@ -488,7 +569,54 @@ export function ChatInput(): React.ReactElement {
     setSkillPickerOpen(false);
   };
 
+  const send = async () => {
+    if (!canSend) return;
+    if (childRunFocused) {
+      appendSystemMessage("Child transcript is read-only. Return to the main chat to send prompts.");
+      return;
+    }
+    const trimmed = text.trim();
+    const routed = parseMentionRouting(trimmed, agentRuns);
+    if (routed) {
+      if (routed.kind === "missing") {
+        appendSystemMessage(`No child run named @${routed.agentName}. Open Agents and spawn it first.`);
+        openAgentSpawnGuide(routed.agentName);
+        return;
+      }
+      if (routed.kind === "busy") {
+        await useStore.getState().injectAgentFeedback(routed.runId, routed.prompt || trimmed);
+        appendSystemMessage(`Queued feedback for @${routed.agentName}. It will be picked up when the child is safe to continue.`);
+        return;
+      }
+      await focusAgentRun(routed.runId);
+      if (routed.prompt.length === 0) {
+        appendSystemMessage(`Focused @${routed.agentName}. Add a prompt to send work to this child run.`);
+        return;
+      }
+      const routedAttachments = isChatMode && attachments.length > 0 ? attachments.map(toWire) : undefined;
+      clearComposer();
+      await sendPrompt(routed.prompt, isChatMode ? selectedSkills : undefined, routedAttachments);
+      return;
+    }
+    const wireAttachments =
+      isChatMode && attachments.length > 0 ? attachments.map(toWire) : undefined;
+    clearComposer();
+    await sendPrompt(trimmed, isChatMode ? selectedSkills : undefined, wireAttachments);
+  };
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (showAgentCommand) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        triggerAgentSlash();
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        if (slashFragment !== null) setSlashDismissedIndex(slashFragment.index);
+        return;
+      }
+    }
     if (showPicker && slashFragment !== null) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -519,18 +647,22 @@ export function ChatInput(): React.ReactElement {
     }
     if (e.key === "Enter" && !e.shiftKey && !showPicker) {
       e.preventDefault();
-      send();
+      void send();
     }
   };
 
-  const placeholder = blocked
+  const placeholder = hasBlockingChild && !blocked
+    ? "Waiting for a sub-agent (wait=true) to finish…"
+    : blocked
     ? "Waiting for the current turn..."
     : !hasSelectedProject
       ? "Select a project first."
     : isChatMode
-      ? selectedProvider
-        ? "Type a message. Use / anywhere to pick a skill."
-        : "Select a provider first."
+      ? childRunFocused
+        ? "Child transcript is read-only."
+        : selectedProvider
+          ? "Type a message. Use /s for skills, /a to spawn an agent, @ to message an agent."
+          : "Select a provider first."
       : launchMode === "workflow"
         ? selectedWorkflowId
           ? "Type a message. Enter to send."
@@ -624,12 +756,18 @@ export function ChatInput(): React.ReactElement {
                       <button
                         key={p.value}
                         type="button"
-                        className={`provider-chip provider-chip-${p.value}${selectedProvider === p.value ? " provider-chip-selected" : ""}`}
+                        className={`provider-chip provider-chip-${p.value}${selectedProvider === p.value ? " provider-chip-selected" : ""}${connectedProviders.has(p.value) ? "" : " provider-chip-unavailable"}`}
                         onClick={() => selectProvider(selectedProvider === p.value ? undefined : p.value)}
-                        disabled={blocked || providerLocked}
+                        disabled={blocked || providerLocked || !connectedProviders.has(p.value)}
                         aria-pressed={selectedProvider === p.value}
                         aria-label={p.label}
-                        title={providerLocked ? "Start a new chat to change provider" : p.label}
+                        title={
+                          !connectedProviders.has(p.value)
+                            ? `${p.label} is unavailable until an account is connected`
+                            : providerLocked
+                              ? "Start a new chat to change provider"
+                              : p.label
+                        }
                       >
                         <span className="provider-chip-icon">{p.icon}</span>
                         <span className="provider-chip-name">{p.label}</span>
@@ -764,6 +902,35 @@ export function ChatInput(): React.ReactElement {
         </div>
       )}
 
+      {showAgentCommand && (
+        <div className="skill-picker">
+          <div className="skill-picker-head">
+            <div className="skill-picker-head-top">
+              <span>Agent command</span>
+              <button
+                type="button"
+                className="skill-picker-close"
+                onClick={() => { if (slashFragment !== null) setSlashDismissedIndex(slashFragment.index); }}
+                aria-label="Close agent command"
+              >
+                ×
+              </button>
+            </div>
+          </div>
+          <button
+            type="button"
+            className="skill-item skill-item-highlighted"
+            onMouseDown={(e) => { e.preventDefault(); triggerAgentSlash(); }}
+          >
+            <span className="skill-mark">🤖</span>
+            <span className="skill-copy">
+              <span className="skill-name skill-name-idle">/a · Spawn sub-agent</span>
+              <span className="skill-desc">Open the spawn-agent panel (same as the right sidebar). Press Enter.</span>
+            </span>
+          </button>
+        </div>
+      )}
+
       {isChatMode && supportsVision && attachments.length > 0 && (
         <div className="chat-attachments" aria-label="Pending image attachments">
           {attachments.map((att) => (
@@ -799,9 +966,14 @@ export function ChatInput(): React.ReactElement {
           {attachError}
         </div>
       )}
+      {isChatMode && childRunFocused && (
+        <div className="ctxbar ring">
+          ↳ Viewing child agent <b>{focusedAgentName}</b> · transcript only
+        </div>
+      )}
 
       <div className="input-bar">
-        {isChatMode && !controllerExpanded && (
+        {isChatMode && !controllerExpanded && !childRunFocused && (
           <button
             type="button"
             className="chat-controller-toggle chat-controller-toggle-inline"
@@ -815,7 +987,7 @@ export function ChatInput(): React.ReactElement {
             </span>
           </button>
         )}
-        {isChatMode && (
+        {isChatMode && !childRunFocused && (
           <>
             <input
               ref={fileInputRef}
@@ -849,46 +1021,59 @@ export function ChatInput(): React.ReactElement {
             </button>
           </>
         )}
-        <div className={`text-area-wrapper${isChatMode && skillTokens.length > 0 ? " has-highlights" : ""}`}>
-          {isChatMode && skillTokens.length > 0 && (
-            <div className="text-area-backdrop" aria-hidden="true">
-              {buildBackdrop(text, skillTokens)}
+        {childRunFocused ? (
+          <>
+            <div className="text-area-wrapper">
+              <div className="input-note">Return to the main chat to send prompts or use @agent routing.</div>
             </div>
-          )}
-          <textarea
-            ref={textAreaRef}
-            className="text-area"
-            rows={2}
-            placeholder={placeholder}
-            value={text}
-            onChange={(e) => {
-              const newText = e.target.value;
-              const newCursor = e.target.selectionStart ?? 0;
-              setText(newText);
-              setCursorPos(newCursor);
-              if (slashDismissedIndex !== null && newText[slashDismissedIndex] !== "/") {
-                setSlashDismissedIndex(null);
-              }
-              setSkillTokens((prev) =>
-                prev.filter((t) => newText.slice(t.start, t.end) === t.name),
-              );
-            }}
-            onKeyDown={onKeyDown}
-            onPaste={onPaste}
-            onSelect={(e) => setCursorPos((e.target as HTMLTextAreaElement).selectionStart ?? 0)}
-            onPointerDown={() => {
-              if (skillPickerOpen) setSkillPickerOpen(false);
-            }}
-          />
-        </div>
-        {blocked ? (
-          <button className="btn send-btn send-btn-stop" onClick={() => void stop()} aria-label="Stop AI">
-            <StopIcon />
-          </button>
+            <button className="btn send-btn" onClick={backToMainRun}>
+              Main
+            </button>
+          </>
         ) : (
-          <button className="btn btn-primary send-btn" onClick={send} disabled={!canSend}>
-            Send
-          </button>
+          <>
+            <div className={`text-area-wrapper${isChatMode && skillTokens.length > 0 ? " has-highlights" : ""}`}>
+              {isChatMode && skillTokens.length > 0 && (
+                <div className="text-area-backdrop" aria-hidden="true">
+                  {buildBackdrop(text, skillTokens)}
+                </div>
+              )}
+              <textarea
+                ref={textAreaRef}
+                className="text-area"
+                rows={2}
+                placeholder={placeholder}
+                value={text}
+                onChange={(e) => {
+                  const newText = e.target.value;
+                  const newCursor = e.target.selectionStart ?? 0;
+                  setText(newText);
+                  setCursorPos(newCursor);
+                  if (slashDismissedIndex !== null && newText[slashDismissedIndex] !== "/") {
+                    setSlashDismissedIndex(null);
+                  }
+                  setSkillTokens((prev) =>
+                    prev.filter((t) => newText.slice(t.start, t.end) === t.name),
+                  );
+                }}
+                onKeyDown={onKeyDown}
+                onPaste={onPaste}
+                onSelect={(e) => setCursorPos((e.target as HTMLTextAreaElement).selectionStart ?? 0)}
+                onPointerDown={() => {
+                  if (skillPickerOpen) setSkillPickerOpen(false);
+                }}
+              />
+            </div>
+            {blocked ? (
+              <button className="btn send-btn send-btn-stop" onClick={() => void stop()} aria-label="Stop AI">
+                <StopIcon />
+              </button>
+            ) : (
+              <button className="btn btn-primary send-btn" onClick={send} disabled={!canSend}>
+                Send
+              </button>
+            )}
+          </>
         )}
       </div>
 

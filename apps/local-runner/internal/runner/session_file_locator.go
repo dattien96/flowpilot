@@ -56,6 +56,110 @@ func LocateSessionFile(providerKey ProviderKey, accountHome, sessionID, cwd stri
 	}
 }
 
+// migrateCodexReservedSpawnAgentTool repairs rollout metadata written before
+// BUG-124. Codex reloads dynamic_tools from session_meta during thread/resume, so
+// passing the corrected alias in resume params alone cannot override the stale,
+// now-reserved spawn_agent declaration.
+func migrateCodexReservedSpawnAgentTool(path string) (bool, error) {
+	src, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	// Idempotent close: the early-return paths below rely on the defer, but the success
+	// path must release the handle BEFORE renaming over `path` — Windows refuses to
+	// replace a file while a handle to it is still open ("Access is denied"). (BUG-127)
+	srcClosed := false
+	closeSrc := func() {
+		if !srcClosed {
+			srcClosed = true
+			_ = src.Close()
+		}
+	}
+	defer closeSrc()
+
+	info, err := src.Stat()
+	if err != nil {
+		return false, err
+	}
+	reader := bufio.NewReader(src)
+	firstLine, readErr := reader.ReadBytes('\n')
+	if readErr != nil && !errors.Is(readErr, io.EOF) {
+		return false, readErr
+	}
+	if len(firstLine) == 0 {
+		return false, nil
+	}
+
+	hadNewline := firstLine[len(firstLine)-1] == '\n'
+	rawLine := bytes.TrimSuffix(firstLine, []byte{'\n'})
+	var entry map[string]any
+	if err := json.Unmarshal(rawLine, &entry); err != nil {
+		return false, nil
+	}
+	if entry["type"] != "session_meta" {
+		return false, nil
+	}
+	payload, _ := entry["payload"].(map[string]any)
+	tools, _ := payload["dynamic_tools"].([]any)
+	changed := false
+	for _, item := range tools {
+		tool, _ := item.(map[string]any)
+		if tool["name"] == "spawn_agent" {
+			tool["name"] = codexSpawnAgentToolName
+			changed = true
+		}
+	}
+	if !changed {
+		return false, nil
+	}
+
+	migratedFirstLine, err := json.Marshal(entry)
+	if err != nil {
+		return false, err
+	}
+	if hadNewline {
+		migratedFirstLine = append(migratedFirstLine, '\n')
+	}
+
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".bug124-*")
+	if err != nil {
+		return false, err
+	}
+	tmpPath := tmp.Name()
+	cleanup := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+	}
+	if err := tmp.Chmod(info.Mode().Perm()); err != nil {
+		cleanup()
+		return false, err
+	}
+	if _, err := tmp.Write(migratedFirstLine); err != nil {
+		cleanup()
+		return false, err
+	}
+	if _, err := io.Copy(tmp, reader); err != nil {
+		cleanup()
+		return false, err
+	}
+	if err := tmp.Sync(); err != nil {
+		cleanup()
+		return false, err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return false, err
+	}
+	// Release the source handle before renaming over it (Windows requirement). The
+	// reader has already been fully drained into tmp via io.Copy above. (BUG-127)
+	closeSrc()
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return false, err
+	}
+	return true, nil
+}
+
 // RelocateSessionFile copies a provider session file into the target account home.
 // If srcPath and the computed destination are the same file (both accounts share
 // the same home directory), it returns srcPath immediately without copying.
@@ -183,6 +287,24 @@ func RestoreSessionFile(providerKey ProviderKey, targetHome, relativePath, sessi
 		return "", err
 	}
 	return dstPath, nil
+}
+
+// defaultProviderSessionHome returns the provider-owned data home even when the
+// provider is not installed or authenticated yet. This lets Drive restore keep
+// chat history readable while turn execution remains gated by provider auth.
+func defaultProviderSessionHome(providerKey ProviderKey) (string, bool) {
+	userHome := preferredUserHomeDir()
+	if strings.TrimSpace(userHome) == "" {
+		return "", false
+	}
+	switch providerKey {
+	case ProviderKeyCodex:
+		return filepath.Join(userHome, ".codex"), true
+	case ProviderKeyClaude:
+		return userHome, true
+	default:
+		return "", false
+	}
 }
 
 func DiscoverCodexRolloutSessionID(accountHome, cwd string) (string, bool) {

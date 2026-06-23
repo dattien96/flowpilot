@@ -20,12 +20,15 @@ func (e *UnsupportedProviderRuntimeError) Error() string {
 
 // TurnBridge is how an adapter emits normalized events and pauses for user
 // interaction. The interactive service implements it; the adapter calls it on its
-// own goroutine. RequestApproval/AskQuestion BLOCK until the user responds, the
+// own goroutine. RequestApproval/AskQuestion/SpawnAgent BLOCK until resolved, the
 // pending record expires, or the turn context is cancelled (interrupt).
 type TurnBridge interface {
 	Emit(ev ProviderEvent)
 	RequestApproval(details ApprovalDetails) (decision string, err error)
 	AskQuestion(prompt string, options []QuestionOption, multiSelect bool) (choice []string, err error)
+	// SpawnAgent creates a child agent run from the current turn. If in.Wait==true it
+	// blocks until the child run's first turn completes and returns its final message.
+	SpawnAgent(in SpawnAgentInput) (SpawnAgentResult, error)
 }
 
 // TurnRequest is the per-turn input handed to an adapter.

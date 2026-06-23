@@ -262,6 +262,695 @@ func TestChatModeTurnLevelControlsOverrideRunDefaults(t *testing.T) {
 	}
 }
 
+func TestAgentGraphRoutesExposeSnapshotAndControls(t *testing.T) {
+	svc, srv := newTestServer(t)
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	spawned, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{Agent: "coder", Prompt: "do it", Provider: "codex", Wait: false})
+	if spawnErr != nil {
+		t.Fatalf("spawnChildRun: %v", spawnErr)
+	}
+	status, body := doJSON(t, "GET", srv.URL+"/client/workflow-runs/"+parent.RunID+"/agent-graph", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("graph status=%d body=%s", status, body)
+	}
+	var graph AgentGraphSnapshot
+	if err := json.Unmarshal(body, &graph); err != nil {
+		t.Fatalf("decode graph: %v", err)
+	}
+	if graph.LoopState.RoundCap != 3 {
+		t.Fatalf("round cap = %d, want 3", graph.LoopState.RoundCap)
+	}
+	status, body = doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+parent.RunID+"/agent-loop/pause", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("pause status=%d body=%s", status, body)
+	}
+	if err := json.Unmarshal(body, &graph); err != nil {
+		t.Fatalf("decode paused graph: %v", err)
+	}
+	if len(graph.Runs) == 0 || graph.Runs[0].RunID != spawned.RunID || graph.Runs[0].AgentName == "" || graph.Runs[0].Status == "" {
+		t.Fatalf("pause graph lost run metadata: %+v", graph.Runs)
+	}
+	status, body = doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+parent.RunID+"/agent-loop/feedback", map[string]any{"message": "revise", "toRunId": "child-1"}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("feedback status=%d body=%s", status, body)
+	}
+	status, body = doJSON(t, "GET", srv.URL+"/client/workflow-runs/"+parent.RunID+"/agent-bus", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("bus status=%d body=%s", status, body)
+	}
+	var bus []AgentBusMessage
+	if err := json.Unmarshal(body, &bus); err != nil {
+		t.Fatalf("decode bus: %v", err)
+	}
+	foundFeedback := false
+	for _, msg := range bus {
+		if msg.Kind == "user-feedback" && msg.Message == "revise" {
+			foundFeedback = true
+			break
+		}
+	}
+	if !foundFeedback {
+		t.Fatalf("bus = %+v", bus)
+	}
+}
+
+func TestSpawnChildEmitsGraphAndBusEvents(t *testing.T) {
+	svc, srv := newTestServer(t)
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	if _, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{Agent: "coder", Prompt: "do it", Provider: "codex", Wait: false}); spawnErr != nil {
+		t.Fatalf("spawnChildRun: %v", spawnErr)
+	}
+	status, body := doJSON(t, "GET", srv.URL+"/admin/workflow-runs/"+parent.RunID+"/events", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("admin events status=%d body=%s", status, body)
+	}
+	var evs []ProviderEvent
+	if err := json.Unmarshal(body, &evs); err != nil {
+		t.Fatalf("decode events: %v", err)
+	}
+	hasGraph := false
+	hasBus := false
+	for _, ev := range evs {
+		if ev.Type == EventAgentGraphUpdated {
+			hasGraph = true
+		}
+		if ev.Type == EventAgentBusMessage {
+			hasBus = true
+		}
+	}
+	if !hasGraph || !hasBus {
+		t.Fatalf("events missing graph/bus updates: %+v", evs)
+	}
+}
+
+type loopRestartAdapter struct {
+	turns chan string
+}
+
+func (a *loopRestartAdapter) Key() ProviderKey { return ProviderKeyCodex }
+func (a *loopRestartAdapter) Capabilities() ProviderCapabilities {
+	return ProviderCapabilities{Streaming: true}
+}
+func (a *loopRestartAdapter) SendTurn(_ context.Context, req TurnRequest, bridge TurnBridge) error {
+	a.turns <- req.Prompt
+	switch {
+	case strings.Contains(strings.ToLower(req.Prompt), "review"):
+		bridge.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "changes requested"})
+	default:
+		bridge.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "coder complete"})
+	}
+	return nil
+}
+
+type gatedLoopAdapter struct {
+	turns        chan string
+	releaseCoder chan struct{}
+}
+
+func (a *gatedLoopAdapter) Key() ProviderKey { return ProviderKeyCodex }
+func (a *gatedLoopAdapter) Capabilities() ProviderCapabilities {
+	return ProviderCapabilities{Streaming: true}
+}
+func (a *gatedLoopAdapter) SendTurn(_ context.Context, req TurnRequest, bridge TurnBridge) error {
+	a.turns <- req.Prompt
+	switch {
+	case strings.Contains(strings.ToLower(req.Prompt), "implement"):
+		<-a.releaseCoder
+		bridge.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "coder complete"})
+	case strings.Contains(strings.ToLower(req.Prompt), "review"):
+		bridge.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "changes requested"})
+	default:
+		bridge.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "ok"})
+	}
+	return nil
+}
+
+func TestChangesRequestedRestartsCoderTurn(t *testing.T) {
+	svc := NewInteractiveService()
+	adapter := &loopRestartAdapter{turns: make(chan string, 4)}
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key:          ProviderKeyCodex,
+		DisplayName:  "Codex",
+		Status:       ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter:   func() ProviderRuntimeAdapter { return adapter },
+	})
+	svc.registry = reg
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	coder, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{Agent: "coder", Prompt: "implement", Provider: "codex", Wait: false})
+	if spawnErr != nil {
+		t.Fatalf("spawn coder: %v", spawnErr)
+	}
+	if _, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{Agent: "reviewer", Prompt: "review", Provider: "codex", DependsOn: []string{coder.RunID}, Wait: false}); spawnErr != nil {
+		t.Fatalf("spawn reviewer: %v", spawnErr)
+	}
+	seen := []string{}
+	deadline := time.After(3 * time.Second)
+	for len(seen) < 3 {
+		select {
+		case prompt := <-adapter.turns:
+			seen = append(seen, prompt)
+		case <-deadline:
+			t.Fatalf("timed out waiting for turns, saw %v", seen)
+		}
+	}
+	if !strings.Contains(strings.ToLower(seen[2]), "changes requested") {
+		t.Fatalf("third turn prompt = %q, want restarted coder with review feedback", seen[2])
+	}
+	graph := svc.agentGraphSnapshot(parent.RunID)
+	if graph.LoopState.Round != 1 {
+		t.Fatalf("loop round = %d, want 1 after changes-requested retry", graph.LoopState.Round)
+	}
+}
+
+func TestReviewerWaitsForDependencyAndResumeReleasesPendingTurn(t *testing.T) {
+	svc := NewInteractiveService()
+	adapter := &gatedLoopAdapter{turns: make(chan string, 4), releaseCoder: make(chan struct{})}
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key:          ProviderKeyCodex,
+		DisplayName:  "Codex",
+		Status:       ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter:   func() ProviderRuntimeAdapter { return adapter },
+	})
+	svc.registry = reg
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	svc.pauseAgentLoop(parent.RunID, "paused for test")
+	coder, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{Agent: "coder", Prompt: "implement", Provider: "codex", Wait: false})
+	if spawnErr != nil {
+		t.Fatalf("spawn coder: %v", spawnErr)
+	}
+	if _, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{Agent: "reviewer", Prompt: "review", Provider: "codex", DependsOn: []string{coder.RunID}, Wait: false}); spawnErr != nil {
+		t.Fatalf("spawn reviewer: %v", spawnErr)
+	}
+	select {
+	case prompt := <-adapter.turns:
+		if !strings.Contains(strings.ToLower(prompt), "implement") {
+			t.Fatalf("first prompt = %q, want coder turn", prompt)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for coder turn")
+	}
+	select {
+	case prompt := <-adapter.turns:
+		t.Fatalf("unexpected reviewer turn while paused: %q", prompt)
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(adapter.releaseCoder)
+	time.Sleep(50 * time.Millisecond)
+	select {
+	case prompt := <-adapter.turns:
+		t.Fatalf("unexpected reviewer turn after coder completion while paused: %q", prompt)
+	case <-time.After(200 * time.Millisecond):
+	}
+	graph := svc.agentGraphSnapshot(parent.RunID)
+	if got := graph.LoopState.Status; got != "paused" {
+		t.Fatalf("loop status = %q, want paused", got)
+	}
+	svc.resumeAgentLoop(parent.RunID)
+	select {
+	case prompt := <-adapter.turns:
+		if !strings.Contains(strings.ToLower(prompt), "review") || !strings.Contains(strings.ToLower(prompt), "coder complete") {
+			t.Fatalf("reviewer prompt = %q, want resumed handoff", prompt)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for reviewer turn after resume")
+	}
+}
+
+type dependencyReleaseAdapter struct {
+	turns           chan string
+	releaseReviewer chan struct{}
+}
+
+func (a *dependencyReleaseAdapter) Key() ProviderKey { return ProviderKeyCodex }
+func (a *dependencyReleaseAdapter) Capabilities() ProviderCapabilities {
+	return ProviderCapabilities{Streaming: true}
+}
+func (a *dependencyReleaseAdapter) SendTurn(_ context.Context, req TurnRequest, bridge TurnBridge) error {
+	a.turns <- req.Prompt
+	if strings.Contains(strings.ToLower(req.Prompt), "review this change") {
+		<-a.releaseReviewer
+	}
+	bridge.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: req.Prompt + " complete"})
+	return nil
+}
+
+func TestCompletedReviewerReleasesDependentTester(t *testing.T) {
+	svc := NewInteractiveService()
+	adapter := &dependencyReleaseAdapter{turns: make(chan string, 4), releaseReviewer: make(chan struct{})}
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key:          ProviderKeyCodex,
+		DisplayName:  "Codex",
+		Status:       ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter:   func() ProviderRuntimeAdapter { return adapter },
+	})
+	svc.registry = reg
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	reviewer, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{Agent: "reviewer", Prompt: "review this change", Provider: "codex", Wait: false})
+	if spawnErr != nil {
+		t.Fatalf("spawn reviewer: %v", spawnErr)
+	}
+	select {
+	case prompt := <-adapter.turns:
+		if !strings.Contains(strings.ToLower(prompt), "review this change") {
+			t.Fatalf("first prompt = %q, want reviewer turn", prompt)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for reviewer turn")
+	}
+	if _, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{
+		Agent:     "tester",
+		Prompt:    "run the regression checks",
+		Provider:  "codex",
+		DependsOn: []string{reviewer.RunID},
+		Wait:      false,
+	}); spawnErr != nil {
+		t.Fatalf("spawn tester: %v", spawnErr)
+	}
+	select {
+	case prompt := <-adapter.turns:
+		t.Fatalf("unexpected tester turn before reviewer completion: %q", prompt)
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(adapter.releaseReviewer)
+	select {
+	case prompt := <-adapter.turns:
+		if !strings.Contains(strings.ToLower(prompt), "run the regression checks") || !strings.Contains(strings.ToLower(prompt), "review this change complete") {
+			t.Fatalf("second prompt = %q, want dependent tester turn with reviewer handoff", prompt)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for dependent tester turn")
+	}
+}
+
+// TestSpawnChildWaitReturnsFinalMessageViaMessageCompleted guards BUG-106: when a child
+// provider's turn/completed notification carries an empty FinalMessage but the actual text
+// arrived via EventMessageCompleted streaming events, spawnChildRun(wait=true) must still
+// return the child's text in SpawnAgentResult.FinalMessage (not an empty string).
+func TestSpawnChildWaitReturnsFinalMessageViaMessageCompleted(t *testing.T) {
+	svc := NewInteractiveService()
+	// Adapter emits the child text ONLY via EventMessageCompleted (no FinalMessage on
+	// EventTurnCompleted) — reproducing Codex new-protocol turn/completed behaviour.
+	reg := newProviderRegistry()
+	msgOnlyAdapter := &msgOnlyTurnAdapter{reply: "CHILD_AGENT_DONE"}
+	reg.register(ProviderRegistration{
+		Key:          ProviderKeyCodex,
+		DisplayName:  "Codex",
+		Status:       ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter:   func() ProviderRuntimeAdapter { return msgOnlyAdapter },
+	})
+	svc.registry = reg
+
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+
+	result, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{
+		Agent:    "reviewer",
+		Prompt:   "check it",
+		Provider: "codex",
+		Wait:     true,
+	})
+	if spawnErr != nil {
+		t.Fatalf("spawnChildRun: %v", spawnErr)
+	}
+	if result.FinalMessage != "CHILD_AGENT_DONE" {
+		t.Fatalf("FinalMessage = %q, want %q", result.FinalMessage, "CHILD_AGENT_DONE")
+	}
+}
+
+// msgOnlyTurnAdapter emits the child reply via EventMessageCompleted with an empty
+// FinalMessage on EventTurnCompleted (reproduces Codex new-protocol turn/completed).
+type msgOnlyTurnAdapter struct{ reply string }
+
+func (a *msgOnlyTurnAdapter) Key() ProviderKey { return ProviderKeyCodex }
+func (a *msgOnlyTurnAdapter) Capabilities() ProviderCapabilities {
+	return ProviderCapabilities{Streaming: true}
+}
+func (a *msgOnlyTurnAdapter) SendTurn(_ context.Context, _ TurnRequest, bridge TurnBridge) error {
+	bridge.Emit(ProviderEvent{Type: EventMessageCompleted, Text: a.reply})
+	bridge.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: ""}) // empty — the bug case
+	return nil
+}
+
+// readTurnReqFor drains the shared capture channel until it sees the turn request for runID,
+// skipping unrelated runs' turns (e.g. the spawned child's own first turn).
+func readTurnReqFor(t *testing.T, ch chan TurnRequest, runID string) TurnRequest {
+	t.Helper()
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case req := <-ch:
+			if req.RunID == runID {
+				return req
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for turn request for run %s", runID)
+		}
+	}
+}
+
+// TestSpawnedChildInheritsParentYolo guards BUG-129: with YOLO enabled on the parent, a
+// child spawned via spawn_agent must run with YOLO too, so its gated actions auto-approve
+// instead of stalling the (often wait=true) parent on a child approval prompt. It also
+// covers the sticky per-turn posture: the parent enables YOLO per-turn (UI toggle), and the
+// child spawned afterward must inherit that posture, not the stale run-level default.
+func TestSpawnedChildInheritsParentYolo(t *testing.T) {
+	svc := NewInteractiveService()
+	capture := &captureTurnAdapter{ch: make(chan TurnRequest, 8)}
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key:          ProviderKeyClaude,
+		DisplayName:  "Claude",
+		Status:       ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true, SkillSelection: true, ApprovalEvents: true},
+		newAdapter:   func() ProviderRuntimeAdapter { return capture },
+	})
+	svc.registry = reg
+
+	// Parent starts WITHOUT run-level YOLO (the stale default the old code would copy).
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyClaude, Model: "claude-sonnet-4-6"})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+
+	// Parent turn enables YOLO per-turn (mirrors the UI toggle). This must stick on the run.
+	yoloOn := true
+	if _, apiErr := svc.startTurn(parent.RunID, TurnInput{StepID: "chat-" + parent.RunID, Prompt: "hi", YoloMode: &yoloOn}, "", ""); apiErr != nil {
+		t.Fatalf("parent startTurn: %s", apiErr.msg)
+	}
+	parentReq := readTurnReqFor(t, capture.ch, parent.RunID)
+	if !parentReq.YoloMode {
+		t.Fatalf("parent turn should carry YOLO=true")
+	}
+
+	// Spawn a child via the tool path AFTER the YOLO turn; it must inherit YOLO=true.
+	if _, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{
+		Agent: "reviewer", Prompt: "work", Provider: "claude", Wait: false,
+	}); spawnErr != nil {
+		t.Fatalf("spawnChildRun: %v", spawnErr)
+	}
+
+	// The child's first provider turn must run with YOLO enabled.
+	for {
+		select {
+		case req := <-capture.ch:
+			if req.RunID == parent.RunID {
+				continue // ignore any further parent turns
+			}
+			if !req.YoloMode {
+				t.Fatalf("child turn should inherit parent YOLO=true, got YoloMode=false (run %s)", req.RunID)
+			}
+			return
+		case <-time.After(3 * time.Second):
+			t.Fatal("timed out waiting for child turn request")
+		}
+	}
+}
+
+// TestAgentSummaryCarriesWaitForResultFlag guards BUG-133: the desktop gates the main run on
+// a running wait=true child, so the agent summary must expose the spawn's wait flag. A wait=false
+// (background) child must report waitForResult=false; a wait=true child must report true.
+func TestAgentSummaryCarriesWaitForResultFlag(t *testing.T) {
+	svc := NewInteractiveService()
+	capture := &captureTurnAdapter{ch: make(chan TurnRequest, 8)}
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key:          ProviderKeyClaude,
+		DisplayName:  "Claude",
+		Status:       ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true, SkillSelection: true, ApprovalEvents: true},
+		newAdapter:   func() ProviderRuntimeAdapter { return capture },
+	})
+	svc.registry = reg
+
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyClaude, Model: "claude-sonnet-4-6"})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+
+	bg, bgErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{Agent: "reviewer", Prompt: "bg", Provider: "claude", Wait: false})
+	if bgErr != nil {
+		t.Fatalf("spawn bg: %v", bgErr)
+	}
+	waiter, waitErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{Agent: "reviewer", Prompt: "blocking", Provider: "claude", Wait: true})
+	if waitErr != nil {
+		t.Fatalf("spawn wait: %v", waitErr)
+	}
+
+	byID := make(map[string]AgentRunSummary)
+	for _, s := range svc.listAgentRunSummaries(parent.RunID) {
+		byID[s.RunID] = s
+	}
+	if s, ok := byID[bg.RunID]; !ok || s.WaitForResult {
+		t.Fatalf("background child should have WaitForResult=false, got %+v (present=%t)", s, ok)
+	}
+	if s, ok := byID[waiter.RunID]; !ok || !s.WaitForResult {
+		t.Fatalf("wait=true child should have WaitForResult=true, got %+v (present=%t)", s, ok)
+	}
+}
+
+// TestUISpawnInjectsContextIntoParentProviderTurn guards BUG-122: a child agent spawned from
+// the desktop UI is invisible to the parent's provider conversation. The next parent turn's
+// provider prompt must carry a system note naming the child so the parent agent can answer
+// "which sub-agents did we start?", while the displayed prompt stays clean.
+// TestComposeAgentSpawnPromptIsProviderConsistent guards BUG-128: the spawn prompt
+// is built by one shared helper, so a given agent yields the same shape regardless
+// of provider — system prompt first (preserving built-in-agent prefix detection),
+// then a single identity line that links the definition file, then the user prompt.
+func TestComposeAgentSpawnPromptIsProviderConsistent(t *testing.T) {
+	def := &AgentDefinition{
+		Name:         "coder",
+		Role:         "coder",
+		SystemPrompt: "You are the coder sub-agent. Implement the change.",
+		Source:       "claude",
+		Path:         "/proj/.claude/agents/coder.md",
+	}
+	got := composeAgentSpawnPrompt(def, "do work")
+
+	// System prompt stays first so hasBuiltInAgentPromptPrefix keeps matching.
+	if !strings.HasPrefix(strings.ToLower(got), "you are the coder sub-agent.") {
+		t.Fatalf("system prompt must stay first, got %q", got)
+	}
+	// The agent is named and its definition file is linked.
+	if !strings.Contains(got, "[FlowPilot sub-agent — agent: coder | role: coder | definition: /proj/.claude/agents/coder.md]") {
+		t.Fatalf("identity line missing or malformed: %q", got)
+	}
+	// The user prompt is appended last, unchanged.
+	if !strings.HasSuffix(got, "do work") {
+		t.Fatalf("user prompt must be appended last, got %q", got)
+	}
+
+	// A built-in agent (no on-disk path) is marked as built-in, not blank.
+	builtin := &AgentDefinition{Name: "coder", Role: "coder", SystemPrompt: "sp", Source: "flowpilot"}
+	if line := composeAgentIdentityLine(builtin); !strings.Contains(line, "definition: built-in (flowpilot)") {
+		t.Fatalf("built-in agent should mark definition as built-in, got %q", line)
+	}
+
+	// A nil agent definition (unknown agent) leaves the user prompt untouched.
+	if got := composeAgentSpawnPrompt(nil, "just this"); got != "just this" {
+		t.Fatalf("nil agentDef must pass the prompt through unchanged, got %q", got)
+	}
+}
+
+func TestUISpawnInjectsContextIntoParentProviderTurn(t *testing.T) {
+	svc := NewInteractiveService()
+	capture := &captureTurnAdapter{ch: make(chan TurnRequest, 8)}
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key:          ProviderKeyClaude,
+		DisplayName:  "Claude",
+		Status:       ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true, SkillSelection: true, ApprovalEvents: true},
+		newAdapter:   func() ProviderRuntimeAdapter { return capture },
+	})
+	svc.registry = reg
+
+	mux := http.NewServeMux()
+	svc.RegisterInteractiveRoutes(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyClaude, Model: "claude-sonnet"})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+
+	// Spawn from the desktop UI (the HTTP handler sets UIInitiated=true). wait=false so the
+	// child runs in the background; its first turn flows through the same capture adapter.
+	status, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+parent.RunID+"/spawn-agent", map[string]any{
+		"agent": "coder", "prompt": "do work", "provider": "claude", "wait": false,
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("spawn status=%d body=%s", status, body)
+	}
+	var spawn SpawnAgentResult
+	if err := json.Unmarshal(body, &spawn); err != nil {
+		t.Fatalf("decode spawn: %v", err)
+	}
+	// Let the child turn complete so both the spawn note and the result note are queued.
+	waitTerminal(t, srv.URL, spawn.RunID)
+
+	// Parent turn: its provider prompt must carry the injected sub-agent context.
+	status, body = doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+parent.RunID+"/turns", map[string]any{
+		"stepId": "chat-" + parent.RunID, "prompt": "which sub-agents did we start?",
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("parent turn status=%d body=%s", status, body)
+	}
+
+	parentReq := readTurnReqFor(t, capture.ch, parent.RunID)
+	if !strings.Contains(parentReq.Prompt, "FlowPilot system note") || !strings.Contains(parentReq.Prompt, "coder") {
+		t.Fatalf("parent provider prompt missing UI-spawn context: %q", parentReq.Prompt)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(parentReq.Prompt), "which sub-agents did we start?") {
+		t.Fatalf("user prompt should be appended after the context block: %q", parentReq.Prompt)
+	}
+
+	// The displayed prompt (turn_started event) stays clean — the note is provider-only.
+	var displayed string
+	for _, e := range adminEvents(t, srv.URL, parent.RunID) {
+		if e.Type == EventTurnStarted && e.Prompt != "" {
+			displayed = e.Prompt
+		}
+	}
+	if displayed != "which sub-agents did we start?" {
+		t.Fatalf("displayed prompt should be clean, got %q", displayed)
+	}
+
+	// A second parent turn must NOT re-inject (the buffer was cleared after consumption).
+	status, body = doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+parent.RunID+"/turns", map[string]any{
+		"stepId": "chat-" + parent.RunID, "prompt": "thanks",
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("second parent turn status=%d body=%s", status, body)
+	}
+	secondReq := readTurnReqFor(t, capture.ch, parent.RunID)
+	if strings.Contains(secondReq.Prompt, "FlowPilot system note") {
+		t.Fatalf("context must be injected once, not re-sent: %q", secondReq.Prompt)
+	}
+}
+
+// TestToolSpawnWaitTrueDoesNotInjectParentContext guards BUG-122/BUG-126: an AI spawn_agent
+// tool call with wait=true returns the child result synchronously as the tool result (already
+// in the provider conversation), so it must NOT also be injected as a context note.
+func TestToolSpawnWaitTrueDoesNotInjectParentContext(t *testing.T) {
+	svc := NewInteractiveService()
+	capture := &captureTurnAdapter{ch: make(chan TurnRequest, 8)}
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key:          ProviderKeyClaude,
+		DisplayName:  "Claude",
+		Status:       ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true, SkillSelection: true, ApprovalEvents: true},
+		newAdapter:   func() ProviderRuntimeAdapter { return capture },
+	})
+	svc.registry = reg
+
+	mux := http.NewServeMux()
+	svc.RegisterInteractiveRoutes(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyClaude, Model: "claude-sonnet"})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+
+	// Direct service call mirrors the AI tool path with wait=true: the result is returned
+	// synchronously (UIInitiated stays false), so no injection should happen.
+	spawn, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{
+		Agent: "coder", Prompt: "do work", Provider: "claude", Wait: true,
+	})
+	if spawnErr != nil {
+		t.Fatalf("spawnChildRun: %v", spawnErr)
+	}
+	if spawn.FinalMessage == "" {
+		t.Fatalf("wait=true should return the child result synchronously, got empty")
+	}
+
+	status, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+parent.RunID+"/turns", map[string]any{
+		"stepId": "chat-" + parent.RunID, "prompt": "hello",
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("parent turn status=%d body=%s", status, body)
+	}
+	parentReq := readTurnReqFor(t, capture.ch, parent.RunID)
+	if strings.Contains(parentReq.Prompt, "FlowPilot system note") {
+		t.Fatalf("wait=true tool spawn must not inject context, got prompt: %q", parentReq.Prompt)
+	}
+}
+
+// TestToolSpawnWaitFalseInjectsResult guards BUG-126: an AI spawn_agent tool call with
+// wait=false only acks "spawned" — its eventual result is never returned to the model, so
+// the child's completion result must be injected into the parent's next provider turn, the
+// same way UI spawns are, keeping tool and UI spawn symmetric.
+func TestToolSpawnWaitFalseInjectsResult(t *testing.T) {
+	svc := NewInteractiveService()
+	capture := &captureTurnAdapter{ch: make(chan TurnRequest, 8)}
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key:          ProviderKeyClaude,
+		DisplayName:  "Claude",
+		Status:       ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true, SkillSelection: true, ApprovalEvents: true},
+		newAdapter:   func() ProviderRuntimeAdapter { return capture },
+	})
+	svc.registry = reg
+
+	mux := http.NewServeMux()
+	svc.RegisterInteractiveRoutes(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyClaude, Model: "claude-sonnet"})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+
+	// Tool path, background: UIInitiated=false, wait=false.
+	spawn, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{
+		Agent: "coder", Prompt: "do work", Provider: "claude", Wait: false,
+	})
+	if spawnErr != nil {
+		t.Fatalf("spawnChildRun: %v", spawnErr)
+	}
+	waitTerminal(t, srv.URL, spawn.RunID)
+
+	status, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+parent.RunID+"/turns", map[string]any{
+		"stepId": "chat-" + parent.RunID, "prompt": "what did the background agent return?",
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("parent turn status=%d body=%s", status, body)
+	}
+	parentReq := readTurnReqFor(t, capture.ch, parent.RunID)
+	if !strings.Contains(parentReq.Prompt, "FlowPilot system note") || !strings.Contains(parentReq.Prompt, "completed") {
+		t.Fatalf("wait=false tool spawn must inject the child result, got prompt: %q", parentReq.Prompt)
+	}
+}
+
 func waitFor(t *testing.T, cond func() bool, what string) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -440,6 +1129,266 @@ func TestProjectRunHistoryFiltersRunsByProject(t *testing.T) {
 	}
 }
 
+func TestProjectRunHistoryExcludesLiveChildAgentRuns(t *testing.T) {
+	_, srv := newTestServer(t)
+
+	status, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs", StartRunInput{
+		ProjectID: "proj-web", WorkflowID: "wf-feature", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex,
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("start run status=%d body=%s", status, body)
+	}
+	var handle RunHandle
+	if err := json.Unmarshal(body, &handle); err != nil {
+		t.Fatalf("decode handle: %v", err)
+	}
+	parent := handle.RunID
+
+	status, body = doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+parent+"/spawn-agent", SpawnAgentInput{
+		Agent:    "coder",
+		Prompt:   "implement the small change",
+		Provider: "codex",
+		Wait:     false,
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("spawn-agent status=%d body=%s", status, body)
+	}
+	var spawned SpawnAgentResult
+	if err := json.Unmarshal(body, &spawned); err != nil {
+		t.Fatalf("decode spawn result: %v", err)
+	}
+	if spawned.RunID == "" {
+		t.Fatalf("spawn result missing run id: %+v", spawned)
+	}
+
+	status, body = doJSON(t, "GET", srv.URL+"/client/projects/proj-web/workflow-runs", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("history status=%d body=%s", status, body)
+	}
+	var history []runHistoryItem
+	if err := json.Unmarshal(body, &history); err != nil {
+		t.Fatalf("decode history: %v", err)
+	}
+	if len(history) != 1 || history[0].RunID != parent {
+		t.Fatalf("history = %+v, want only parent %s; child %s must stay out of main history", history, parent, spawned.RunID)
+	}
+
+	status, body = doJSON(t, "GET", srv.URL+"/client/workflow-runs/"+parent+"/agents", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("agents status=%d body=%s", status, body)
+	}
+	var agents []AgentRunSummary
+	if err := json.Unmarshal(body, &agents); err != nil {
+		t.Fatalf("decode agents: %v", err)
+	}
+	if len(agents) != 1 || agents[0].RunID != spawned.RunID || agents[0].ParentRunID != parent {
+		t.Fatalf("agents = %+v, want child %s under parent %s", agents, spawned.RunID, parent)
+	}
+}
+
+func TestProjectRunHistoryExcludesLiveOrphanAgentMetadataRuns(t *testing.T) {
+	svc, _ := newTestServer(t)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	svc.mu.Lock()
+	svc.runs["parent-run"] = &interactiveRun{
+		id:                "parent-run",
+		projectID:         "proj-web",
+		workflowID:        "wf-feature",
+		providerKey:       ProviderKeyCodex,
+		providerSessionID: "session-parent",
+		status:            RunStatusCompleted,
+		createdAt:         now,
+		updatedAt:         now,
+		lastPrompt:        "Use spawn_agent exactly once with agent=\"reviewer\".",
+		runKind:           "chat",
+	}
+	svc.runs["orphan-agent-run"] = &interactiveRun{
+		id:                "orphan-agent-run",
+		projectID:         "proj-web",
+		workflowID:        "wf-feature",
+		providerKey:       ProviderKeyCodex,
+		providerSessionID: "session-child",
+		status:            RunStatusCompleted,
+		createdAt:         now,
+		updatedAt:         now,
+		lastPrompt:        "You are the reviewer sub-agent. Review the coder's diff.\n\nDo not use tools. Reply exactly: CHILD_AGENT_DONE.",
+		lastMessage:       "CHILD_AGENT_DONE",
+		runKind:           "chat",
+		agentName:         "reviewer",
+		role:              "reviewer",
+		agentStatus:       string(RunStatusCompleted),
+	}
+	svc.mu.Unlock()
+
+	history := svc.projectRunHistory("proj-web")
+
+	if len(history) != 1 || history[0].RunID != "parent-run" {
+		t.Fatalf("history = %+v, want only parent; live orphan agent metadata run must stay out of main history", history)
+	}
+}
+
+func TestProjectRunHistoryKeepsLiveRootRowsWithAgentMetadata(t *testing.T) {
+	svc, _ := newTestServer(t)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	svc.mu.Lock()
+	svc.runs["main-run"] = &interactiveRun{
+		id:                "main-run",
+		projectID:         "proj-web",
+		workflowID:        "wf-feature",
+		providerKey:       ProviderKeyCodex,
+		providerSessionID: "session-main",
+		status:            RunStatusCompleted,
+		createdAt:         now,
+		updatedAt:         now,
+		lastPrompt:        "Main agent prompt",
+		lastMessage:       "Main agent response",
+		runKind:           "chat",
+		agentName:         "main",
+		agentStatus:       string(RunStatusCompleted),
+	}
+	svc.mu.Unlock()
+
+	history := svc.projectRunHistory("proj-web")
+
+	if len(history) != 1 || history[0].RunID != "main-run" {
+		t.Fatalf("history = %+v, want main root row even when live metadata contains agent-like fields", history)
+	}
+}
+
+func TestProjectRunHistoryKeepsPersistedRootRowsWithAgentMetadataAfterRestart(t *testing.T) {
+	registry := DefaultProviderRegistry()
+	catalog := newInteractiveCatalog()
+	store := newFakeWorkflowStore()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             "main-run",
+		ProjectID:         "proj-web",
+		WorkflowID:        "wf-feature",
+		ProviderSessionID: "session-main",
+		ProviderKey:       ProviderKeyCodex,
+		Status:            RunStatusCompleted,
+		StartedAt:         now,
+		UpdatedAt:         now,
+		LastPrompt:        "Main agent prompt",
+		LastMessage:       "Main agent response",
+		RunKind:           "chat",
+		AgentName:         "main",
+		AgentStatus:       string(RunStatusCompleted),
+	}); err != nil {
+		t.Fatalf("seed main session: %v", err)
+	}
+
+	_, srv := newTestServerWith(t, registry, catalog, store)
+	status, body := doJSON(t, "GET", srv.URL+"/client/projects/proj-web/workflow-runs", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("history status=%d body=%s", status, body)
+	}
+	var history []runHistoryItem
+	if err := json.Unmarshal(body, &history); err != nil {
+		t.Fatalf("decode history: %v", err)
+	}
+	if len(history) != 1 || history[0].RunID != "main-run" {
+		t.Fatalf("history = %+v, want persisted main root row after restart", history)
+	}
+}
+
+func TestProjectRunHistoryExcludesPersistedChildAgentRuns(t *testing.T) {
+	registry := DefaultProviderRegistry()
+	catalog := newInteractiveCatalog()
+	store := newFakeWorkflowStore()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             "parent-run",
+		ProjectID:         "proj-web",
+		WorkflowID:        "wf-feature",
+		ProviderSessionID: "session-parent",
+		ProviderKey:       ProviderKeyCodex,
+		Status:            RunStatusCompleted,
+		StartedAt:         now,
+		UpdatedAt:         now,
+		LastPrompt:        "parent prompt",
+	}); err != nil {
+		t.Fatalf("seed parent session: %v", err)
+	}
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             "child-run",
+		ProjectID:         "proj-web",
+		WorkflowID:        "wf-feature",
+		ProviderSessionID: "session-child",
+		ProviderKey:       ProviderKeyCodex,
+		Status:            RunStatusCompleted,
+		StartedAt:         now,
+		UpdatedAt:         now,
+		LastPrompt:        "child prompt",
+		ParentRunID:       "parent-run",
+		AgentName:         "coder",
+		Role:              "coder",
+	}); err != nil {
+		t.Fatalf("seed child session: %v", err)
+	}
+
+	_, srv := newTestServerWith(t, registry, catalog, store)
+	status, body := doJSON(t, "GET", srv.URL+"/client/projects/proj-web/workflow-runs", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("history status=%d body=%s", status, body)
+	}
+	var history []runHistoryItem
+	if err := json.Unmarshal(body, &history); err != nil {
+		t.Fatalf("decode history: %v", err)
+	}
+	if len(history) != 1 || history[0].RunID != "parent-run" {
+		t.Fatalf("history = %+v, want only persisted parent; child-run must stay out of main history", history)
+	}
+}
+
+func TestProjectRunHistoryExcludesLegacyOrphanAgentPromptRuns(t *testing.T) {
+	registry := DefaultProviderRegistry()
+	catalog := newInteractiveCatalog()
+	store := newFakeWorkflowStore()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             "parent-run",
+		ProjectID:         "proj-web",
+		WorkflowID:        "wf-feature",
+		ProviderSessionID: "session-parent",
+		ProviderKey:       ProviderKeyCodex,
+		Status:            RunStatusCompleted,
+		StartedAt:         now,
+		UpdatedAt:         now,
+		LastPrompt:        "Use spawn_agent exactly once with agent=\"reviewer\".",
+	}); err != nil {
+		t.Fatalf("seed parent session: %v", err)
+	}
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             "orphan-child-run",
+		ProjectID:         "proj-web",
+		WorkflowID:        "wf-feature",
+		ProviderSessionID: "session-child",
+		ProviderKey:       ProviderKeyCodex,
+		Status:            RunStatusCompleted,
+		StartedAt:         now,
+		UpdatedAt:         now,
+		LastPrompt:        "You are the reviewer sub-agent. Review the coder's diff adversarially for correctness, regressions, and missed edge cases. Return either APPROVED or CHANGES-REQUESTED with specific, actionable feedback.\n\nDo not use tools. Reply exactly: CHILD_AGENT_DONE.",
+		LastMessage:       "CHILD_AGENT_DONE",
+		RunKind:           "chat",
+	}); err != nil {
+		t.Fatalf("seed orphan child session: %v", err)
+	}
+
+	_, srv := newTestServerWith(t, registry, catalog, store)
+	status, body := doJSON(t, "GET", srv.URL+"/client/projects/proj-web/workflow-runs", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("history status=%d body=%s", status, body)
+	}
+	var history []runHistoryItem
+	if err := json.Unmarshal(body, &history); err != nil {
+		t.Fatalf("decode history: %v", err)
+	}
+	if len(history) != 1 || history[0].RunID != "parent-run" {
+		t.Fatalf("history = %+v, want only parent; legacy orphan child must stay out of main history", history)
+	}
+}
+
 func TestEventStreamReplayNoGapsOrDupes(t *testing.T) {
 	_, srv := newTestServer(t)
 	runID := startRun(t, srv.URL)
@@ -589,7 +1538,7 @@ func TestAccountMismatch(t *testing.T) {
 	if st, _ := sendTurn(t, srv.URL, runID, "normal", nil); st != http.StatusConflict {
 		t.Fatalf("turn after account switch status=%d, want 409", st)
 	}
-	if st, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+runID+"/resume", nil, nil); st != http.StatusConflict || (!strings.Contains(string(body), "session_unavailable") && !strings.Contains(string(body), "account_unavailable") && !strings.Contains(string(body), "account_not_signed_in")) {
+	if st, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+runID+"/resume", nil, nil); st != http.StatusOK || !strings.Contains(string(body), "\"runId\":\"run-1\"") {
 		t.Fatalf("resume after switch status=%d body=%s", st, body)
 	}
 }
@@ -639,4 +1588,89 @@ func streamEvents(t *testing.T, base, runID string, afterSeq int64, wantCount in
 		}
 	}
 	return out
+}
+
+func TestSeedIDCounterAvoidsRunIDReuseAfterRestart(t *testing.T) {
+	store := newFakeWorkflowStore()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	// Persisted runs from a previous runner session; run-17 is a child of run-9.
+	for _, sess := range []ProviderSessionState{
+		{RunID: "run-9", ProviderKey: ProviderKeyCodex, Status: RunStatusCompleted, StartedAt: now, UpdatedAt: now, RunKind: "chat"},
+		{RunID: "run-17", ParentRunID: "run-9", ProviderKey: ProviderKeyCodex, Status: RunStatusCompleted, StartedAt: now, UpdatedAt: now, RunKind: "chat", AgentName: "reviewer"},
+	} {
+		if err := store.UpsertProviderSession(context.Background(), sess); err != nil {
+			t.Fatalf("seed session: %v", err)
+		}
+	}
+
+	svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+
+	// The next minted run id must be numerically above every persisted run id so a new
+	// chat cannot collide with a previous run and inherit its child agents. (BUG-117)
+	id := svc.nextID("run")
+	if n := numericIDSuffix(id); n <= 17 {
+		t.Fatalf("nextID after seeding = %q (suffix %d), want suffix > 17", id, n)
+	}
+}
+
+func TestNumericIDSuffix(t *testing.T) {
+	cases := map[string]int64{"run-14": 14, "evt-1": 1, "run-": 0, "main-run": 0, "": 0, "bus-007": 7}
+	for in, want := range cases {
+		if got := numericIDSuffix(in); got != want {
+			t.Errorf("numericIDSuffix(%q) = %d, want %d", in, got, want)
+		}
+	}
+}
+
+// TestReconstructRunPreservesUpdatedAt guards BUG-118: opening (reconstructing) a persisted
+// chat must keep its stored updatedAt — the in-memory history list reports rs.updatedAt, so
+// seeding it with `now` made every opened chat jump to the top with the current date.
+func TestReconstructRunPreservesUpdatedAt(t *testing.T) {
+	store := newFakeWorkflowStore()
+	persisted := "2026-06-19T10:00:00.000000000Z"
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:       "run-1",
+		ProviderKey: ProviderKeyClaude,
+		Status:      RunStatusCompleted,
+		RunKind:     "chat",
+		StartedAt:   "2026-06-19T09:00:00.000000000Z",
+		UpdatedAt:   persisted,
+	}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+
+	rs, apiErr := svc.loadPersistedRun("run-1")
+	if apiErr != nil {
+		t.Fatalf("loadPersistedRun: %v", apiErr)
+	}
+	if rs.updatedAt != persisted {
+		t.Fatalf("reconstructRun updatedAt = %q, want preserved %q", rs.updatedAt, persisted)
+	}
+}
+
+// TestAgentGraphUpdateDoesNotResetParentRunStatus guards BUG-120: agent_graph_updated and
+// agent_bus_message are orchestration relays emitted on the PARENT run to refresh the Agents
+// panel. They must NOT flip the parent's run status to running — otherwise an idle/completed
+// parent shows a perpetual "running" spinner whenever a child agent emits graph activity.
+func TestAgentGraphUpdateDoesNotResetParentRunStatus(t *testing.T) {
+	svc, _ := newTestServer(t)
+	parent, apiErr := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if apiErr != nil {
+		t.Fatalf("createRun: %v", apiErr)
+	}
+	svc.mu.Lock()
+	svc.runs[parent.RunID].status = RunStatusCompleted
+	svc.mu.Unlock()
+
+	// Child activity relays these on the parent run.
+	svc.emitAgentGraph(parent.RunID, svc.agentGraphSnapshot(parent.RunID))
+	svc.emitAgentBus(parent.RunID, AgentBusMessage{ID: "bus-1", ParentRunID: parent.RunID, Kind: "handoff", Message: "x"})
+
+	svc.mu.Lock()
+	got := svc.runs[parent.RunID].status
+	svc.mu.Unlock()
+	if got != RunStatusCompleted {
+		t.Fatalf("parent status after orchestration relays = %q, want %q (must not flip to running)", got, RunStatusCompleted)
+	}
 }

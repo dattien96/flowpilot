@@ -74,6 +74,12 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 		Use:   "serve",
 		Short: "Start the local HTTP server",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Tee runner diagnostics to a log file (alongside provider-accounts.json) so
+			// they survive past the launching terminal's scrollback. (BUG-115)
+			if closeLog, lerr := runner.SetupFileLogging(runner.DefaultLogFilePath()); lerr == nil {
+				defer func() { _ = closeLog() }()
+			}
+
 			instance, err := runner.New(cfg.workspace)
 			if err != nil {
 				return err

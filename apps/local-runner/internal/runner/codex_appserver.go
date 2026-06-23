@@ -39,7 +39,7 @@ func codexInitializeParams() map[string]any {
 }
 
 // codexThreadStartParams carries cwd, the YOLO-derived sandbox + approval mode (04-04),
-// and the dynamicTools list (the FlowPilot-owned ask_user tool). dynamicTools is the real
+// and the dynamicTools list (the FlowPilot-owned ask_user/spawn_agent tools). dynamicTools is the real
 // app-server registration channel (`ThreadStartParams.dynamicTools`); the model's call comes
 // back as an `item/tool/call` server->client request. (The earlier inline
 // `mcpServers:[{name,tools:[]}]` shape was silently ignored — ThreadStartParams has no
@@ -66,8 +66,11 @@ func codexThreadStartParams(cwd, sandbox, approvalMode, modelName, reasoningEffo
 	return p
 }
 
-func codexThreadResumeParams(threadID, cwd, sandbox, approvalMode, modelName, reasoningEffort string) map[string]any {
+func codexThreadResumeParams(threadID, cwd, sandbox, approvalMode, modelName, reasoningEffort string, dynamicTools []any) map[string]any {
 	p := map[string]any{"threadId": threadID}
+	if len(dynamicTools) > 0 {
+		p["dynamicTools"] = dynamicTools
+	}
 	if model := strings.TrimSpace(modelName); model != "" {
 		p["model"] = model
 	}

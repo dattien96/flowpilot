@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>CP-19 · Frame 01 redesign (native UI)</title>
+<style>
+  :root{
+    --bg:#0e1117; --bg-2:#161b22; --bg-3:#1c2230; --border:#2a3242;
+    --text:#d7dde6; --text-dim:#8b95a5; --accent:#4c8dff; --accent-2:#2f6bdb;
+    --warn:#f0b429; --ask:#b07cff; --ok:#3fb950; --err:#f85149;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    --codex:#e0e0e0; --claude:#e17554; --gemini:#7c6ff0;
+    --role-main:#4c8dff; --role-coder:#3fb950; --role-reviewer:#b07cff; --role-tester:#f0b429;
+    --new:#3fb950;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:#070a0e;color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:13px;line-height:1.45}
+  .page{max-width:1320px;margin:0 auto;padding:22px 18px 70px}
+  h1{font-size:20px;margin:0 0 4px}
+  .lede{color:var(--text-dim);max-width:900px;margin:0 0 14px;font-size:13px}
+  .tag{display:inline-block;font:600 11px var(--mono);letter-spacing:.4px;text-transform:uppercase;
+    color:var(--new);background:rgba(63,185,80,.12);border:1px solid rgba(63,185,80,.35);
+    padding:2px 9px;border-radius:20px;margin-bottom:10px}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;margin:0 0 16px;font-size:12px;color:var(--text-dim)}
+  .legend b{color:var(--text)}
+  .legend .kept{color:var(--text-dim)}
+  .dot-new{display:inline-block;width:10px;height:10px;border-radius:3px;background:rgba(63,185,80,.18);border:1px dashed var(--new);vertical-align:middle;margin-right:5px}
+  .dot-kept{display:inline-block;width:10px;height:10px;border-radius:3px;background:var(--bg-3);border:1px solid var(--border);vertical-align:middle;margin-right:5px}
+
+  /* ===== window chrome ===== */
+  .win{border:1px solid #000;border-radius:9px;overflow:hidden;box-shadow:0 26px 70px rgba(0,0,0,.6);background:var(--bg)}
+  .titlebar{display:flex;align-items:center;justify-content:space-between;background:#0b0e13;border-bottom:1px solid var(--border);padding:6px 10px;font-size:12px;color:var(--text-dim)}
+  .titlebar .wc{display:inline-flex;gap:14px;color:#6b7686;font-size:13px}
+  .menubar{display:flex;gap:16px;padding:4px 12px;background:#0b0e13;border-bottom:1px solid var(--border);font-size:12px;color:var(--text-dim)}
+
+  /* ===== app header ===== */
+  .app-header{display:flex;align-items:center;gap:12px;padding:8px 12px;border-bottom:1px solid var(--border);background:var(--bg-2)}
+  .icbtn{width:26px;height:24px;border:1px solid var(--border);border-radius:6px;background:var(--bg-3);display:inline-flex;align-items:center;justify-content:center;color:var(--text-dim)}
+  .brand{font-size:13px}.brand b{color:var(--text)}.brand span{color:var(--text-dim)}
+  .seg{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+  .seg button{border:0;background:transparent;color:var(--text-dim);padding:5px 14px;font-weight:600;font-size:12.5px;cursor:pointer}
+  .seg button.on{background:var(--accent);color:#fff}
+  .hgrow{flex:1}
+  .status{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text-dim);padding:4px 10px;border:1px solid var(--border);border-radius:20px;background:var(--bg-3)}
+  .status .d{width:8px;height:8px;border-radius:50%}
+  .d.ok{background:var(--ok)} .d.run{background:var(--ok)}
+  .status.agents{border-color:rgba(63,185,80,.55);position:relative}
+  .pulse{width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 0 rgba(63,185,80,.6);animation:p 1.6s infinite}
+  @keyframes p{0%{box-shadow:0 0 0 0 rgba(63,185,80,.55)}70%{box-shadow:0 0 0 7px rgba(63,185,80,0)}100%{box-shadow:0 0 0 0 rgba(63,185,80,0)}}
+  .hbtn{border:1px solid var(--border);background:var(--bg-3);color:var(--text);border-radius:7px;padding:5px 12px;font-size:12.5px;cursor:pointer}
+  .hlink{color:var(--text-dim);font-size:12.5px;cursor:pointer}
+  .NEW{font:700 8.5px var(--mono);letter-spacing:.5px;color:var(--new);background:rgba(63,185,80,.14);border:1px solid var(--new);border-radius:4px;padding:0 4px;vertical-align:middle;margin-left:6px}
+  .ring{outline:1.5px dashed var(--new);outline-offset:2px;border-radius:10px}
+
+  /* ===== layout ===== */
+  .shell{display:grid;grid-template-columns:248px 1fr 296px;height:760px}
+  .col{min-width:0;display:flex;flex-direction:column;overflow:hidden}
+  .col.left{background:var(--bg-2);border-right:1px solid var(--border)}
+  .col.main{background:var(--bg)}
+  .col.right{background:var(--bg-2);border-left:1px solid var(--border)}
+  .scroll{overflow:auto}
+  .scroll::-webkit-scrollbar{width:9px}.scroll::-webkit-scrollbar-thumb{background:#222a36;border-radius:6px}
+
+  /* left sidebar */
+  .blk{padding:11px 12px}
+  .blk-h{font-size:11px;letter-spacing:.5px;text-transform:uppercase;color:var(--text-dim);display:flex;align-items:center;gap:7px}
+  .badge{background:var(--accent);color:#fff;font-size:10px;font-weight:700;border-radius:20px;padding:1px 7px;margin-left:auto}
+  .blk-sub{font-size:11px;color:#5f6b7d;margin-top:3px;line-height:1.35}
+  .proj{border:1px solid var(--border);border-radius:9px;background:var(--bg-3);padding:9px 10px;margin-top:8px}
+  .proj.active{border-color:var(--accent);background:#16203a}
+  .proj .nm{font-weight:600;font-size:13px;display:flex;align-items:center;gap:7px}
+  .proj .pth{font:10.5px var(--mono);color:var(--text-dim);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .mini-tag{font-size:9.5px;font-weight:700;color:var(--ok);border:1px solid rgba(63,185,80,.4);background:rgba(63,185,80,.1);border-radius:4px;padding:0 5px}
+  .group{border:1px solid var(--border);border-radius:9px;background:var(--bg-3);margin-top:8px}
+  .group-h{display:flex;align-items:center;gap:7px;padding:8px 10px;font-weight:600;font-size:12.5px}
+  .group-h .cnt{color:var(--text-dim);font-weight:400;font-size:11px;margin-left:auto}
+  .hist{padding:7px 9px;border-top:1px solid var(--border);cursor:pointer}
+  .hist.sel{border-left:2px solid var(--accent);background:#141b2a}
+  .hist .t{font-size:12.5px}
+  .hist .m{font-size:10.5px;color:var(--text-dim);margin-top:1px}
+  .remote{display:flex;align-items:center;gap:8px;padding:7px 4px}
+  .remote .info{min-width:0}
+  .remote .t{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .remote .m{font:10px var(--mono);color:var(--text-dim)}
+  .dl{margin-left:auto;width:24px;height:24px;border:1px solid var(--border);border-radius:6px;display:inline-flex;align-items:center;justify-content:center;color:var(--text-dim);flex:0 0 auto}
+  .lnk{margin-left:auto;color:var(--accent);font-size:11px}
+
+  /* main timeline */
+  .tl{flex:1;overflow:auto;padding:14px 18px;display:flex;flex-direction:column;gap:11px}
+  .loadbtn{align-self:center;border:1px solid var(--border);background:var(--bg-3);color:var(--text-dim);border-radius:20px;padding:4px 14px;font-size:11.5px}
+  .msg{max-width:84%;padding:10px 12px;border-radius:11px;position:relative}
+  .msg .cp{position:absolute;top:7px;right:8px;width:18px;height:18px;opacity:.4}
+  .msg.user{align-self:flex-end;background:var(--accent-2);color:#eaf1ff;border-bottom-right-radius:3px}
+  .msg.ai{align-self:flex-start;background:var(--bg-2);border:1px solid var(--border);border-bottom-left-radius:3px}
+  .who{font-size:10.5px;color:var(--text-dim);margin-bottom:5px;display:flex;align-items:center;gap:6px}
+  .who b{color:var(--role-main)}
+  .pill-prov{font:700 9px var(--mono);padding:1px 6px;border-radius:5px;border:1px solid var(--border)}
+  .prov-codex{color:var(--codex);border-color:#444}
+  .prov-claude{color:var(--claude);border-color:#5a3a30}
+  .prov-gemini{color:var(--gemini);border-color:#403a66}
+  .toolrow{align-self:flex-start;font:11.5px var(--mono);color:var(--text-dim);border:1px solid var(--border);background:#12161d;border-radius:8px;padding:6px 10px;max-width:84%}
+  .toolrow b{color:var(--text)}
+  .toolrow.spawn{border-color:rgba(63,185,80,.4)}
+  .abanner{align-self:flex-start;max-width:84%;border-radius:10px;border:1px solid var(--border);padding:8px 11px;display:flex;align-items:center;gap:9px;font-size:12px}
+  .abanner.coder{border-color:rgba(63,185,80,.5);background:linear-gradient(90deg,rgba(63,185,80,.10),transparent)}
+  .abanner.reviewer{border-color:rgba(176,124,255,.5);background:linear-gradient(90deg,rgba(176,124,255,.10),transparent)}
+  .abanner .pulse.amber{background:var(--warn);box-shadow:0 0 0 0 rgba(240,180,41,.6);animation:pa 1.6s infinite}
+  @keyframes pa{0%{box-shadow:0 0 0 0 rgba(240,180,41,.5)}70%{box-shadow:0 0 0 7px rgba(240,180,41,0)}100%{box-shadow:0 0 0 0 rgba(240,180,41,0)}}
+  .openbtn{margin-left:auto;font-size:11px;color:var(--text);background:var(--bg-3);border:1px solid var(--border);border-radius:6px;padding:3px 9px;cursor:pointer;flex:0 0 auto}
+
+  /* composer (native) */
+  .composer{border-top:1px solid var(--border);background:var(--bg-2);padding:10px 12px}
+  .row{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+  .lab{font-size:10px;letter-spacing:.5px;text-transform:uppercase;color:#5f6b7d}
+  .ctl{border:1px solid var(--border);background:var(--bg-3);border-radius:7px;padding:5px 10px;font-size:12px;color:var(--text);display:inline-flex;align-items:center;gap:6px}
+  .toggle{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text-dim)}
+  .sw{width:30px;height:17px;border-radius:20px;background:#333c4c;position:relative}
+  .sw i{position:absolute;width:13px;height:13px;border-radius:50%;background:#8b95a5;top:2px;left:2px}
+  .provseg{display:flex;border:1px solid var(--border);border-radius:9px;overflow:hidden;width:100%}
+  .provseg button{flex:1;border:0;background:var(--bg);color:var(--text-dim);padding:9px;font-weight:600;font-size:12.5px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:7px;border-right:1px solid var(--border)}
+  .provseg button:last-child{border-right:0}
+  .provseg button.on{background:var(--bg-3);color:var(--text)}
+  .selects{display:flex;gap:10px;margin:8px 0}
+  .selbox{flex:1}
+  .selbox label{font-size:10px;letter-spacing:.5px;text-transform:uppercase;color:#5f6b7d;display:block;margin-bottom:4px}
+  .selbox .v{border:1px solid var(--border);background:var(--bg);border-radius:8px;padding:8px 11px;font-size:12.5px;display:flex;justify-content:space-between;color:var(--text)}
+  .inputrow{display:flex;align-items:center;gap:9px;border:1px solid var(--border);background:var(--bg);border-radius:10px;padding:8px 10px}
+  .clip{color:var(--text-dim)}
+  .inputrow .ph{flex:1;color:var(--text-dim);font-size:12.5px}
+  .inputrow .ph u{color:var(--accent);text-decoration:none}
+  .sendbtn{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:7px 18px;font-weight:600;cursor:pointer}
+
+  /* right sidebar panels */
+  .panel{border-bottom:1px solid var(--border);padding:11px 12px}
+  .panel-h{font-size:11px;letter-spacing:.5px;text-transform:uppercase;color:var(--text-dim);display:flex;align-items:center;gap:7px}
+  .panel-h .tools{margin-left:auto;display:inline-flex;gap:6px;color:#5f6b7d}
+  .panel-sub{font-size:11px;color:#5f6b7d;margin-top:4px;line-height:1.35}
+  .modeseg{display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;margin-top:9px}
+  .modeseg button{flex:1;border:0;background:var(--bg-3);color:var(--text-dim);padding:7px;font-weight:600;font-size:12.5px;cursor:pointer}
+  .modeseg button.on{background:var(--accent);color:#fff}
+
+  /* AGENTS panel (new, mode-agnostic) */
+  .panel.agents{background:rgba(63,185,80,.04)}
+  .acount{margin-left:6px;font-size:10px;font-weight:700;color:var(--ok);background:rgba(63,185,80,.12);border:1px solid rgba(63,185,80,.4);border-radius:20px;padding:0 7px}
+  .ag-sec{font-size:10px;letter-spacing:.5px;text-transform:uppercase;color:#5f6b7d;margin:10px 0 5px}
+  .acard{border:1px solid var(--border);border-radius:9px;background:var(--bg-3);padding:8px 10px;margin-bottom:6px;border-left-width:3px;cursor:pointer}
+  .acard:hover{border-color:var(--accent)}
+  .acard.main{border-left-color:var(--role-main)}
+  .acard.coder{border-left-color:var(--role-coder)}
+  .acard.reviewer{border-left-color:var(--role-reviewer)}
+  .acard.closed{opacity:.55;border-left-color:#3a4252}
+  .ac-top{display:flex;align-items:center;gap:7px}
+  .ac-nm{font-weight:600;font-size:12.5px}
+  .ac-st{margin-left:auto;font-size:10px;display:inline-flex;align-items:center;gap:5px;color:var(--text-dim)}
+  .sd{width:7px;height:7px;border-radius:50%}
+  .sd.run{background:var(--ok)}.sd.wait{background:var(--warn)}.sd.done{background:var(--accent)}.sd.closed{background:#3a4252}
+  .ac-meta{font-size:10.5px;color:var(--text-dim);margin-top:5px;display:flex;gap:7px;flex-wrap:wrap;align-items:center}
+  .ac-bar{margin-top:6px;height:4px;border-radius:3px;background:var(--bg);overflow:hidden}
+  .ac-bar i{display:block;height:100%}
+  .ac-last{font-size:10.5px;color:var(--text-dim);margin-top:5px;font-style:italic;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .spawn{width:100%;border:1px dashed var(--accent);color:var(--accent);background:transparent;border-radius:8px;padding:7px;font-weight:600;cursor:pointer;font-size:12px;margin-top:2px}
+
+  /* accounts panel */
+  .acc-sec{font-size:11px;letter-spacing:.4px;text-transform:uppercase;color:var(--text-dim);margin:10px 0 5px;display:flex;align-items:center}
+  .acc-sec .all{margin-left:auto;color:var(--accent);font-size:10.5px;text-transform:none;letter-spacing:0}
+  .acc-card{border:1px solid var(--border);border-radius:9px;background:var(--bg-3);padding:9px 10px}
+  .acc-email{font-size:12px;font-weight:600;display:flex;align-items:center;gap:7px}
+  .acc-name{font-size:11px;color:var(--text-dim);margin-top:1px}
+  .usage{font-size:10.5px;color:var(--text-dim);margin-top:7px;display:flex;justify-content:space-between}
+  .ubar{height:4px;border-radius:3px;background:var(--bg);overflow:hidden;margin-top:3px}
+  .ubar i{display:block;height:100%;background:var(--ok)}
+  .collapsed{color:var(--text-dim);font-size:11px;padding:7px 0 0;display:flex;align-items:center;gap:6px}
+
+  @media(max-width:900px){.shell{grid-template-columns:1fr;height:auto}.col{border:0;border-bottom:1px solid var(--border)}}
+</style>
+</head>
+<body>
+<div class="page">
+  <span class="tag">CP-19 · Frame 01 — re-drawn on the real desktop UI</span>
+  <h1>Main chat with sub-agents — native layout</h1>
+  <p class="lede">Same chrome, sidebars, composer and ACCOUNTS rail as the live app. The multi-agent additions slot in natively:
+  a <b>running-agents pill</b> in the header, an <b>AGENTS panel</b> on the right rail (a normal component shown in <em>both</em> Chat and Workflow modes, sitting between MODE and ACCOUNTS), inline <b>spawn / running banners</b> in the timeline, and an <b>@-mention</b> hint in the composer.</p>
+  <div class="legend">
+    <span><span class="dot-new"></span><b>New for CP-19</b> (dashed green outline + <span class="NEW">NEW</span>)</span>
+    <span><span class="dot-kept"></span><span class="kept">Kept from current app, unchanged</span></span>
+  </div>
+
+  <div class="win">
+    <!-- window chrome -->
+    <div class="titlebar"><span>FlowPilot Desktop (runner http://127.0.0.1:4317)</span><span class="wc">&#9472;&nbsp;&nbsp;&#9633;&nbsp;&nbsp;&#10005;</span></div>
+    <div class="menubar"><span>File</span><span>Edit</span><span>View</span><span>Window</span><span>Help</span></div>
+
+    <!-- app header -->
+    <div class="app-header">
+      <span class="icbtn">◧</span><span class="icbtn">◨</span>
+      <span class="brand"><b>FlowPilot</b> <span>desktop · runner http://127.0.0.1:4317</span></span>
+      <span class="seg" style="margin-left:8px"><button class="on">Chat</button><button>Settings</button></span>
+      <span class="hgrow"></span>
+      <span class="status"><span class="d ok"></span> Runner Online</span>
+      <span class="status"><span class="d ok"></span> Completed run-60</span>
+      <span class="status agents"><span class="pulse"></span> 2 agents running<span class="NEW">NEW</span></span>
+      <button class="hbtn">New run</button>
+      <span class="hlink">Sign out</span>
+    </div>
+
+    <div class="shell">
+      <!-- ===== LEFT ===== -->
+      <div class="col left scroll">
+        <div class="blk">
+          <div class="blk-h">Projects <span class="badge">3</span></div>
+          <div class="blk-sub">Recent workspaces first, with the active project highlighted.</div>
+          <div class="proj active"><div class="nm">Flowpilot <span class="mini-tag">ACTIVE</span></div><div class="pth">C:\working\flowpilot</div></div>
+          <div class="proj"><div class="nm">FlowPilot Admin Web Demo</div></div>
+          <div class="proj"><div class="nm">Meal Suggestion Android App 1</div><div class="pth">/Users/tiendat/Desktop/android/MPlan</div></div>
+        </div>
+        <div class="blk">
+          <div class="blk-h">History</div>
+          <div class="blk-sub">Grouped by project and sorted by latest activity.</div>
+          <div class="group">
+            <div class="group-h">▾ Flowpilot <span class="cnt">3 chats</span></div>
+            <div class="hist sel"><div class="t">codex-run-60. just say ok</div><div class="m">Completed · Jun 19, 01:33 PM</div></div>
+            <div class="hist"><div class="t">claude-run-46. Just say ok</div><div class="m">Completed · Jun 19, 01:14 PM</div></div>
+            <div class="hist"><div class="t">Sync this codex</div><div class="m">Cancelled · Jun 19, 01:05 PM</div></div>
+          </div>
+        </div>
+        <div class="blk">
+          <div class="blk-h">Remote Chats <span class="lnk">⤓ Restore All</span></div>
+          <div class="blk-sub">Drive-backed chat sessions available to restore into this project.</div>
+          <div class="remote"><div class="info"><div class="t">codex-run-60. just say ok</div><div class="m">codex · Jun 19, 01:33 PM</div></div><span class="dl">⤓</span></div>
+          <div class="remote"><div class="info"><div class="t">claude-run-46. Just say ok</div><div class="m">claude · Jun 19, 01:14 PM</div></div><span class="dl">⤓</span></div>
+          <div class="remote"><div class="info"><div class="t">hi claude</div><div class="m">claude · Jun 19, 10:26 AM</div></div><span class="dl">⤓</span></div>
+        </div>
+      </div>
+
+      <!-- ===== MAIN ===== -->
+      <div class="col main">
+        <div class="tl scroll">
+          <button class="loadbtn">↑ Load earlier prompts (13)</button>
+          <div class="msg user">Implement the cross-account resume fix, then have a reviewer check it before we commit.<span class="cp">⧉</span></div>
+          <div class="msg ai">
+            <div class="who"><b>Main agent</b> <span class="pill-prov prov-codex">CODEX</span></div>
+            Plan: I'll spawn a <b style="color:var(--role-coder)">coder</b> on the fix and a <b style="color:var(--role-reviewer)">reviewer</b> to gate it. The reviewer waits for the coder's diff, then we loop on feedback until it passes.
+            <span class="cp">⧉</span>
+          </div>
+          <div class="toolrow spawn">⚙ <b>spawn_agent</b>(agent:"coder", prompt:"implement BUG-094 fix", wait:false)</div>
+          <div class="abanner coder">
+            <span class="pulse"></span>
+            <span><b style="color:var(--role-coder)">coder</b> · Claude · running — <span style="color:var(--text-dim)">editing provider_accounts.go (3 files)</span></span>
+            <button class="openbtn">Open ↗</button>
+          </div>
+          <div class="toolrow spawn">⚙ <b>spawn_agent</b>(agent:"reviewer", prompt:"review coder diff", dependsOn:"coder")</div>
+          <div class="abanner reviewer">
+            <span class="pulse amber"></span>
+            <span><b style="color:var(--role-reviewer)">reviewer</b> · Codex · waiting — <span style="color:var(--text-dim)">blocked on coder ready signal</span></span>
+            <button class="openbtn">Open ↗</button>
+          </div>
+          <div class="msg ai">
+            <div class="who"><b>Main agent</b> <span class="pill-prov prov-codex">CODEX</span></div>
+            Both launched. I'll surface the reviewer's verdict here and keep the coder iterating. You can jump into either agent from the right panel.
+            <span class="cp">⧉</span>
+          </div>
+        </div>
+
+        <!-- native composer -->
+        <div class="composer">
+          <div class="row">
+            <span class="lab">Skills</span>
+            <span class="ctl">≣ Selected skills 0/46 ▾</span>
+            <span class="ctl">⇄ Switch acc</span>
+            <span class="toggle">YOLO <span class="sw"><i></i></span> Off</span>
+            <span class="ctl" style="padding:5px 8px">▾</span>
+          </div>
+          <div class="provseg">
+            <button class="on">◎ CODEX</button>
+            <button>✳ CLAUDE</button>
+            <button>◆ GEMINI</button>
+          </div>
+          <div class="selects">
+            <div class="selbox"><label>Model</label><div class="v">GPT 5.4 Mini <span>▾</span></div></div>
+            <div class="selbox"><label>Reasoning</label><div class="v">Default <span>▾</span></div></div>
+          </div>
+          <div class="inputrow ring">
+            <span class="clip">📎</span>
+            <span class="ph">Type a message. Use <u>/</u> to pick a skill, <u>@</u> to message an agent.<span class="NEW">@ NEW</span></span>
+            <button class="sendbtn">Send</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== RIGHT ===== -->
+      <div class="col right scroll">
+        <!-- MODE (kept) -->
+        <div class="panel">
+          <div class="panel-h">Mode</div>
+          <div class="panel-sub">Switch between direct chat and workflow launch selection.</div>
+          <div class="modeseg"><button class="on">Chat</button><button>Workflow</button></div>
+        </div>
+
+        <!-- AGENTS (new, mode-agnostic) -->
+        <div class="panel agents ring">
+          <div class="panel-h">Agents <span class="acount">2 running</span> <span class="NEW">NEW</span><span class="tools">⟳</span></div>
+          <div class="panel-sub">Sub-agents in this session — shown in both Chat and Workflow mode. Click to open · ＋ to spawn.</div>
+
+          <div class="ag-sec">● Running</div>
+          <div class="acard main">
+            <div class="ac-top"><span class="ac-nm" style="color:var(--role-main)">main</span><span class="ac-st"><span class="sd done"></span> active</span></div>
+            <div class="ac-meta"><span class="pill-prov prov-codex">CODEX</span> orchestrator</div>
+            <div class="ac-last">"Both launched. I'll surface…"</div>
+          </div>
+          <div class="acard coder">
+            <div class="ac-top"><span class="ac-nm" style="color:var(--role-coder)">coder</span><span class="ac-st"><span class="sd run"></span> running</span></div>
+            <div class="ac-meta"><span class="pill-prov prov-claude">CLAUDE</span> 3 files · 12.4k tok</div>
+            <div class="ac-bar"><i style="width:62%;background:var(--role-coder)"></i></div>
+            <div class="ac-last">editing provider_accounts.go…</div>
+          </div>
+          <div class="acard reviewer">
+            <div class="ac-top"><span class="ac-nm" style="color:var(--role-reviewer)">reviewer</span><span class="ac-st"><span class="sd wait"></span> waiting</span></div>
+            <div class="ac-meta"><span class="pill-prov prov-codex">CODEX</span> ⟂ depends: coder</div>
+            <div class="ac-last">blocked on coder ready signal</div>
+          </div>
+          <button class="spawn">＋ Spawn agent</button>
+
+          <div class="ag-sec">◌ Recently closed</div>
+          <div class="acard closed">
+            <div class="ac-top"><span class="ac-nm">scout</span><span class="ac-st"><span class="sd closed"></span> done</span></div>
+            <div class="ac-meta"><span class="pill-prov prov-gemini">GEMINI</span> found 4 call-sites</div>
+          </div>
+        </div>
+
+        <!-- ACCOUNTS (kept) -->
+        <div class="panel">
+          <div class="panel-h">Accounts <span class="tools">⚙ ⟳</span></div>
+          <div class="acc-sec">Claude <span class="all">All</span></div>
+          <div class="acc-card">
+            <div class="acc-email">claude.llmusr2@brtsys.com <span class="mini-tag">ACTIVE</span></div>
+            <div class="acc-name">Claude LLM User 2</div>
+            <div class="usage"><span>Remaining 5h</span><span>98% · resets Jun 19, 6:00 PM</span></div><div class="ubar"><i style="width:98%"></i></div>
+            <div class="usage"><span>Remaining 7d</span><span>59% · resets Jun 22, 9:00 AM</span></div><div class="ubar"><i style="width:59%"></i></div>
+          </div>
+          <div class="acc-sec">Codex <span class="all">All</span></div>
+          <div class="collapsed">▸ datnguyen.mealplanner@gmail.com <span class="mini-tag">ACTIVE</span></div>
+          <div class="acc-sec">Gemini <span class="all">All</span></div>
+          <div class="collapsed">▸ trashname899@gmail.com <span class="mini-tag">ACTIVE</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

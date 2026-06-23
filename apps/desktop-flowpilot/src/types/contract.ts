@@ -42,6 +42,99 @@ export interface ProviderSkill {
   source: "provider" | "flowpilot" | "workspace";
 }
 
+/**
+ * A loadable sub-agent definition (CP-19 / Task-081). Served by the runner's
+ * AgentCatalog: project-local `.claude/agents` + `.codex/agents`, provider homes,
+ * and FlowPilot built-ins, merged by name precedence. `provider`/`model` are
+ * optional preferences (empty = inherit the spawning run's provider).
+ */
+export interface AgentDefinition {
+  name: string;
+  description: string;
+  role: string;
+  provider?: string;
+  model?: string;
+  modelReasoningEffort?: string;
+  tools?: string[];
+  systemPrompt?: string;
+  /** Where the definition came from: "claude" | "codex" | "provider" | "flowpilot". */
+  source: string;
+  path?: string;
+}
+
+/**
+ * Input for spawning a child agent run (CP-19 / Task-082).
+ */
+export interface SpawnAgentInput {
+  agent: string;
+  prompt: string;
+  provider?: string;
+  dependsOn?: string[];
+  wait?: boolean;
+}
+
+/**
+ * Result returned after spawning a child agent run.
+ * When `wait` was true, `finalMessage` holds the child's completed turn text.
+ */
+export interface SpawnAgentResult {
+  runId: string;
+  providerSessionId: string;
+  providerKey: string;
+  status: string;
+  finalMessage?: string;
+}
+
+/**
+ * Summary of one agent run in the tree (CP-19 / Task-082).
+ */
+export interface AgentRunSummary {
+  runId: string;
+  agentName: string;
+  role: string;
+  status: RunStatus;
+  parentRunId?: string;
+  createdAt: string;
+  dependsOn?: string[];
+  agentStatus?: string;
+  providerKey?: string;
+  modelName?: string;
+  /** True when spawned with wait=true; such a running child blocks the main run (BUG-133). */
+  waitForResult?: boolean;
+}
+
+export interface AgentDependencyEdge {
+  fromRunId: string;
+  toRunId: string;
+  kind: string;
+}
+
+export interface AgentBusMessage {
+  id: string;
+  parentRunId: string;
+  fromRunId?: string;
+  toRunId?: string;
+  kind: string;
+  message: string;
+  queued: boolean;
+  occurredAt: string;
+}
+
+export interface AgentLoopState {
+  status: string;
+  round: number;
+  roundCap: number;
+  gateReason?: string;
+}
+
+export interface AgentGraphSnapshot {
+  parentRunId: string;
+  runs: AgentRunSummary[];
+  edges: AgentDependencyEdge[];
+  busMessages: AgentBusMessage[];
+  loopState: AgentLoopState;
+}
+
 export interface ProviderAccountUsageLine {
   label: string;
   remainingPercent: number;
@@ -123,6 +216,12 @@ export interface RunHandle {
   providerKey: ProviderKey;
   status: RunStatus;
   stepId?: string;
+  /**
+   * Seq of the last persisted event at resume time. History replay starts at seq 0 and
+   * stops here so a multi-turn run is replayed in full instead of truncating at the first
+   * turn_completed. Undefined when the runner predates this field. (BUG-112)
+   */
+  lastEventSeq?: number;
 }
 
 export interface RunHistoryItem {
@@ -141,6 +240,10 @@ export interface RunHistoryItem {
   sourceRunId?: string;
   syncStatus?: string;
   unavailableReason?: string;
+  parentRunId?: string;
+  agentName?: string;
+  role?: string;
+  agentStatus?: string;
 }
 
 export interface ChatSessionSyncRequest {
@@ -297,7 +400,11 @@ export type ProviderEventDTO =
       multiSelect?: boolean;
     })
   | (ProviderEventBaseDTO & { type: "turn_failed"; error: string; recoverable: boolean })
-  | (ProviderEventBaseDTO & { type: "turn_completed"; finalMessage: string });
+  | (ProviderEventBaseDTO & { type: "turn_completed"; finalMessage: string })
+  | (ProviderEventBaseDTO & { type: "agent_graph_updated"; agentGraphSnapshot: AgentGraphSnapshot })
+  | (ProviderEventBaseDTO & { type: "agent_bus_message"; agentBusMessage: AgentBusMessage })
+  | (ProviderEventBaseDTO & { type: "agent_spawned_by_user"; agentName: string; childRunId: string })
+  | (ProviderEventBaseDTO & { type: "agent_result_injected"; agentName: string; finalMessage: string });
 
 export type ProviderEventType = ProviderEventDTO["type"];
 
@@ -338,9 +445,35 @@ export interface RunnerClient {
   /** Stop the in-flight turn (POST /client/workflow-runs/{runId}/interrupt). */
   interrupt(runId: string): Promise<void>;
   /** Attach to a run's event stream and replay from afterSeq — used on reconnect. */
-  streamRun(runId: string, afterSeq?: number): AsyncIterable<ProviderEventDTO>;
+  streamRun(runId: string, afterSeq?: number, signal?: AbortSignal): AsyncIterable<ProviderEventDTO>;
   listArtifacts(runId: string): Promise<Artifact[]>;
   listSkills(provider: string, cwd?: string): Promise<ProviderSkill[]>;
+  /**
+   * List loadable sub-agent definitions for the spawn picker (CP-19 / Task-081).
+   * Optional so existing clients (mock) need not implement it until the Agents
+   * UI lands (Task-083); the real HTTP client implements it now.
+   */
+  listAgents?(cwd?: string): Promise<AgentDefinition[]>;
+  /**
+   * List child agent run summaries for a parent run (CP-19 / Task-082).
+   * Optional until the Agents panel lands (Task-083).
+   */
+  listAgentRuns?(parentRunId: string): Promise<AgentRunSummary[]>;
+  refreshAgentGraph?(parentRunId: string): Promise<AgentGraphSnapshot>;
+  pauseAgentLoop?(parentRunId: string): Promise<AgentGraphSnapshot>;
+  resumeAgentLoop?(parentRunId: string): Promise<AgentGraphSnapshot>;
+  injectAgentFeedback?(parentRunId: string, toRunId: string, message: string): Promise<AgentGraphSnapshot>;
+  stopAgentLoop?(parentRunId: string): Promise<AgentGraphSnapshot>;
+  /**
+   * Programmatically spawn a child agent run (CP-19 / Task-082).
+   * Optional until the Agents panel lands (Task-083).
+   */
+  spawnAgent?(input: SpawnAgentInput & { parentRunId: string }): Promise<SpawnAgentResult>;
+  /**
+   * Attach to a child run by switching the active stream to that run and returning
+   * its SSE iterator. Implemented client-side on top of `streamRun` in Phase 1.
+   */
+  focusAgentRun?(runId: string, signal?: AbortSignal): AsyncIterable<ProviderEventDTO>;
   connectProviderAccount(providerKey: ProviderKey): Promise<void>;
   activateProviderAccount(accountId: string): Promise<void>;
   openProviderAccountTerminal(accountId: string): Promise<void>;

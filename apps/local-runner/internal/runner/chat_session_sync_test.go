@@ -34,6 +34,19 @@ type fakeChatDriveAPI struct {
 	failUpload  bool
 }
 
+type recordingChatSessionStore struct {
+	*localFileSessionStore
+	upsertOrder []string
+}
+
+func (s *recordingChatSessionStore) UpsertProviderSession(ctx context.Context, session ProviderSessionState) error {
+	if err := s.localFileSessionStore.UpsertProviderSession(ctx, session); err != nil {
+		return err
+	}
+	s.upsertOrder = append(s.upsertOrder, session.RunID)
+	return nil
+}
+
 func newFakeChatDriveAPI(rootFolderID string) *fakeChatDriveAPI {
 	return &fakeChatDriveAPI{
 		nextID: 1,
@@ -549,6 +562,50 @@ func TestListRemoteChatSessionsReadsDriveIndex(t *testing.T) {
 	}
 }
 
+func TestListRemoteChatSessionsHidesChildAgentRecords(t *testing.T) {
+	svc, _, store, drive, workspace, accountHome := newChatSyncService(t)
+	parent := seedLocalChatRun(t, store, accountHome, workspace, "run-parent", []byte("parent-session"))
+	child := seedLocalChatRun(t, store, accountHome, workspace, "run-child", []byte("child-session"))
+	child.ParentRunID = parent.RunID
+	child.AgentName = "reviewer"
+	child.Role = "reviewer"
+	child.AgentStatus = string(RunStatusCompleted)
+	if err := store.UpsertProviderSession(context.Background(), child); err != nil {
+		t.Fatalf("UpsertProviderSession child: %v", err)
+	}
+
+	if _, apiErr := svc.syncChatRunToDrive(context.Background(), parent.RunID, ChatSessionSyncRequest{}); apiErr != nil {
+		t.Fatalf("syncChatRunToDrive() failed: %v", apiErr)
+	}
+
+	// Simulate the BUG-119 index shape that existed before parent_run_id was added.
+	for id, file := range drive.files {
+		if file.Name != "sessions.ndjson" {
+			continue
+		}
+		records := parseChatSessionDriveIndex(file.Content)
+		lines := make([]string, 0, len(records))
+		for i := range records {
+			records[i].ParentRunID = ""
+			line, err := json.Marshal(records[i])
+			if err != nil {
+				t.Fatalf("marshal legacy index record: %v", err)
+			}
+			lines = append(lines, string(line))
+		}
+		file.Content = []byte(strings.Join(lines, "\n") + "\n")
+		drive.files[id] = file
+	}
+
+	summaries, apiErr := svc.listRemoteChatSessions(context.Background(), "project-1")
+	if apiErr != nil {
+		t.Fatalf("listRemoteChatSessions() failed: %v", apiErr)
+	}
+	if len(summaries) != 1 || summaries[0].SourceRunID != parent.RunID {
+		t.Fatalf("remote summaries = %#v, want only parent", summaries)
+	}
+}
+
 func TestListRemoteChatSessionsIncludesRecordsFromSameDriveRootWithDifferentProjectIDs(t *testing.T) {
 	svc, _, store, api, workspace, accountHome := newChatSyncService(t)
 	seedLocalChatRun(t, store, accountHome, workspace, "run-codex", []byte("codex-session"))
@@ -710,14 +767,28 @@ func TestRestoreChatRunFromDriveMissingActiveAccountHome(t *testing.T) {
 		t.Fatalf("clear provider accounts: %v", err)
 	}
 	svc.SetActiveAccount("missing-account")
-	_, apiErr = svc.restoreChatRunFromDrive(context.Background(), ChatSessionRestoreRequest{
+	restored, apiErr := svc.restoreChatRunFromDrive(context.Background(), ChatSessionRestoreRequest{
 		ProjectID:       "project-1",
 		SourceMachineID: result.SourceMachineID,
 		SourceRunID:     result.SourceRunID,
 		Cwd:             workspace,
 	})
-	if apiErr == nil || apiErr.code != "account_unavailable" {
-		t.Fatalf("expected account_unavailable, got %#v", apiErr)
+	if apiErr != nil {
+		t.Fatalf("restoreChatRunFromDrive() failed without provider account: %v", apiErr)
+	}
+	session, found, err := store.GetProviderSession(context.Background(), restored.RunID)
+	if err != nil || !found {
+		t.Fatalf("GetProviderSession() failed: found=%v err=%v", found, err)
+	}
+	if session.ProviderAccountID != "default" {
+		t.Fatalf("ProviderAccountID = %q, want default", session.ProviderAccountID)
+	}
+	defaultHome, ok := defaultProviderSessionHome(ProviderKeyCodex)
+	if !ok {
+		t.Fatal("expected default Codex session home")
+	}
+	if _, found := LocateSessionFile(ProviderKeyCodex, defaultHome, session.ProviderSessionID, workspace); !found {
+		t.Fatal("expected restored session in the default Codex data home")
 	}
 }
 
@@ -731,14 +802,41 @@ func TestRestoreChatRunFromDriveMissingActiveAccountAuth(t *testing.T) {
 	if err := os.Remove(filepath.Join(accountHome, ".codex", "auth.json")); err != nil {
 		t.Fatalf("Remove auth.json: %v", err)
 	}
-	_, apiErr = svc.restoreChatRunFromDrive(context.Background(), ChatSessionRestoreRequest{
+	restored, apiErr := svc.restoreChatRunFromDrive(context.Background(), ChatSessionRestoreRequest{
 		ProjectID:       "project-1",
 		SourceMachineID: result.SourceMachineID,
 		SourceRunID:     result.SourceRunID,
 		Cwd:             workspace,
 	})
-	if apiErr == nil || apiErr.code != "account_not_signed_in" {
-		t.Fatalf("expected account_not_signed_in, got %#v", apiErr)
+	if apiErr != nil {
+		t.Fatalf("restoreChatRunFromDrive() failed without provider auth: %v", apiErr)
+	}
+	if _, apiErr := svc.resumeRun(restored.RunID); apiErr != nil {
+		t.Fatalf("resumeRun() should open restored chat read-only without provider auth: %v", apiErr)
+	}
+}
+
+func TestDefaultProviderSessionHomeSupportsClaudeWithoutInstallation(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	targetHome, ok := defaultProviderSessionHome(ProviderKeyClaude)
+	if !ok {
+		t.Fatal("expected default Claude session home")
+	}
+	if targetHome != home {
+		t.Fatalf("default Claude session home = %q, want %q", targetHome, home)
+	}
+
+	sessionID := "claude-restored-session"
+	relativePath := filepath.ToSlash(filepath.Join(".claude", "projects", "restored-project", sessionID+".jsonl"))
+	body := []byte(`{"type":"user","message":{"role":"user","content":"restored prompt"}}` + "\n")
+	restoredPath, err := RestoreSessionFile(ProviderKeyClaude, targetHome, relativePath, sessionID, t.TempDir(), body)
+	if err != nil {
+		t.Fatalf("RestoreSessionFile() failed without Claude installation: %v", err)
+	}
+	if got, err := os.ReadFile(restoredPath); err != nil || !bytes.Equal(got, body) {
+		t.Fatalf("restored Claude session = %q, err=%v", got, err)
 	}
 }
 
@@ -956,6 +1054,166 @@ func TestRestoreChatRunFromDriveResolvesRunIDCollision(t *testing.T) {
 	}
 	if restored.RunID == "run-collision" || !strings.HasPrefix(restored.RunID, "sync-") {
 		t.Fatalf("expected collision-safe run id, got %q", restored.RunID)
+	}
+}
+
+func TestRestoreChatRunFromDriveRemapsChildParentRunIDOnCollision(t *testing.T) {
+	svc, _, store, _, workspace, accountHome := newChatSyncService(t)
+	parent := seedLocalChatRun(t, store, accountHome, workspace, "run-collision", []byte("session-body"))
+	child := seedLocalChatRun(t, store, accountHome, workspace, "child-1", []byte("child-session-body"))
+	child.ParentRunID = parent.RunID
+	child.AgentName = "coder"
+	child.Role = "coder"
+	child.AgentStatus = string(RunStatusCompleted)
+	if err := store.UpsertProviderSession(context.Background(), child); err != nil {
+		t.Fatalf("UpsertProviderSession child: %v", err)
+	}
+	result, apiErr := svc.syncChatRunToDrive(context.Background(), "run-collision", ChatSessionSyncRequest{})
+	if apiErr != nil {
+		t.Fatalf("syncChatRunToDrive() failed: %v", apiErr)
+	}
+
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:     "run-collision",
+		ProjectID: "project-1",
+		Status:    RunStatusCompleted,
+		RunKind:   "chat",
+	}); err != nil {
+		t.Fatalf("UpsertProviderSession collision: %v", err)
+	}
+
+	restored, apiErr := svc.restoreChatRunFromDrive(context.Background(), ChatSessionRestoreRequest{
+		ProjectID:       "project-1",
+		SourceMachineID: result.SourceMachineID,
+		SourceRunID:     result.SourceRunID,
+		Cwd:             filepath.Join(workspace, "other"),
+	})
+	if apiErr != nil {
+		t.Fatalf("restoreChatRunFromDrive() failed: %v", apiErr)
+	}
+	if restored.RunID == "run-collision" || !strings.HasPrefix(restored.RunID, "sync-") {
+		t.Fatalf("expected collision-safe run id, got %q", restored.RunID)
+	}
+
+	summaries := svc.listAgentRunSummaries(restored.RunID)
+	if len(summaries) != 1 {
+		t.Fatalf("listAgentRunSummaries() = %d, want 1", len(summaries))
+	}
+	if summaries[0].ParentRunID != restored.RunID {
+		t.Fatalf("child ParentRunID = %q, want %q", summaries[0].ParentRunID, restored.RunID)
+	}
+}
+
+func TestRestoreParentChatRestoresChildrenAndPersistsAgentTree(t *testing.T) {
+	svc, instance, sourceStore, _, workspace, accountHome := newChatSyncService(t)
+	parent := seedLocalChatRun(t, sourceStore, accountHome, workspace, "run-parent-tree", []byte("parent-session"))
+	child := seedLocalChatRun(t, sourceStore, accountHome, workspace, "run-child-tree", []byte("child-session"))
+	child.ParentRunID = parent.RunID
+	child.AgentName = "coder"
+	child.Role = "coder"
+	child.AgentStatus = string(RunStatusCompleted)
+	child.ModelName = "gpt-5-codex"
+	if err := sourceStore.UpsertProviderSession(context.Background(), child); err != nil {
+		t.Fatalf("UpsertProviderSession child: %v", err)
+	}
+
+	synced, apiErr := svc.syncChatRunToDrive(context.Background(), parent.RunID, ChatSessionSyncRequest{})
+	if apiErr != nil {
+		t.Fatalf("syncChatRunToDrive() failed: %v", apiErr)
+	}
+
+	restoredStoreBase, err := NewLocalFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore restored: %v", err)
+	}
+	restoredStore := &recordingChatSessionStore{localFileSessionStore: restoredStoreBase}
+	restoredService := NewInteractiveServiceWithStore(DefaultProviderRegistry(), nil, restoredStore)
+	restoredService.AttachRunner(instance)
+	restoredService.SetActiveAccount("acct-sync")
+
+	restored, apiErr := restoredService.restoreChatRunFromDrive(context.Background(), ChatSessionRestoreRequest{
+		ProjectID:       "project-1",
+		SourceMachineID: synced.SourceMachineID,
+		SourceRunID:     synced.SourceRunID,
+		Cwd:             workspace,
+	})
+	if apiErr != nil {
+		t.Fatalf("restoreChatRunFromDrive() failed: %v", apiErr)
+	}
+
+	sessions, err := restoredStore.ListAllProviderSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ListAllProviderSessions: %v", err)
+	}
+	var restoredChild ProviderSessionState
+	for _, session := range sessions {
+		if session.ParentRunID == restored.RunID {
+			restoredChild = session
+			break
+		}
+	}
+	if restoredChild.RunID == "" {
+		t.Fatalf("restored sessions = %#v, want persisted child of %q", sessions, restored.RunID)
+	}
+	if restoredChild.AgentName != "coder" || restoredChild.Role != "coder" || restoredChild.ModelName != "gpt-5-codex" {
+		t.Fatalf("restored child metadata = %#v", restoredChild)
+	}
+	if len(restoredStore.upsertOrder) == 0 || restoredStore.upsertOrder[len(restoredStore.upsertOrder)-1] != restored.RunID {
+		t.Fatalf("session publication order = %#v, want parent %q last", restoredStore.upsertOrder, restored.RunID)
+	}
+	if _, apiErr := restoredService.resumeRun(restoredChild.RunID); apiErr != nil {
+		t.Fatalf("resumeRun(restored child) failed: %v", apiErr)
+	}
+
+	restartedService := NewInteractiveServiceWithStore(DefaultProviderRegistry(), nil, restoredStore)
+	summaries := restartedService.listAgentRunSummaries(restored.RunID)
+	if len(summaries) != 1 || summaries[0].RunID != restoredChild.RunID || summaries[0].ParentRunID != restored.RunID {
+		t.Fatalf("agent summaries after restart = %#v", summaries)
+	}
+}
+
+func TestRestoreParentChatDoesNotPublishMainHistoryWhenChildRestoreFails(t *testing.T) {
+	svc, instance, sourceStore, drive, workspace, accountHome := newChatSyncService(t)
+	parent := seedLocalChatRun(t, sourceStore, accountHome, workspace, "run-parent-failed-child", []byte("parent-session"))
+	child := seedLocalChatRun(t, sourceStore, accountHome, workspace, "run-child-fails", []byte("child-session"))
+	child.ParentRunID = parent.RunID
+	child.AgentName = "reviewer"
+	if err := sourceStore.UpsertProviderSession(context.Background(), child); err != nil {
+		t.Fatalf("UpsertProviderSession child: %v", err)
+	}
+	synced, apiErr := svc.syncChatRunToDrive(context.Background(), parent.RunID, ChatSessionSyncRequest{})
+	if apiErr != nil {
+		t.Fatalf("syncChatRunToDrive() failed: %v", apiErr)
+	}
+	childFileID := remoteProviderFileID(drive, "rollout-local-session-run-child-fails.jsonl")
+	if childFileID == "" {
+		t.Fatal("expected child provider file")
+	}
+	delete(drive.files, childFileID)
+
+	restoredStore, err := NewLocalFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore restored: %v", err)
+	}
+	restoredService := NewInteractiveServiceWithStore(DefaultProviderRegistry(), nil, restoredStore)
+	restoredService.AttachRunner(instance)
+	restoredService.SetActiveAccount("acct-sync")
+
+	_, apiErr = restoredService.restoreChatRunFromDrive(context.Background(), ChatSessionRestoreRequest{
+		ProjectID:       "project-1",
+		SourceMachineID: synced.SourceMachineID,
+		SourceRunID:     synced.SourceRunID,
+		Cwd:             workspace,
+	})
+	if apiErr == nil || apiErr.code != "sync_remote_not_found" {
+		t.Fatalf("restoreChatRunFromDrive() error = %#v, want child sync_remote_not_found", apiErr)
+	}
+	history, err := restoredStore.ListProviderSessionsByProject(context.Background(), "project-1")
+	if err != nil {
+		t.Fatalf("ListProviderSessionsByProject: %v", err)
+	}
+	if len(history) != 0 {
+		t.Fatalf("main history = %#v, want empty until every child restores", history)
 	}
 }
 

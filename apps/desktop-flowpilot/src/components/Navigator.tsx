@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useStore } from "@/state/store";
 import type { RunHistoryItem } from "@/types/contract";
-import { isProjectSyncing } from "@/components/navigatorHistory";
+import { filterVisibleHistory, isAgentHistoryItem, isProjectSyncing } from "@/components/navigatorHistory";
 
 const PROJECT_LIMIT = 3;
-const HISTORY_LIMIT = 10;
+const HISTORY_LIMIT = 5;
 const REMOTE_CHATS_LIMIT = 4;
 
 const RUN_TIME_FORMAT = new Intl.DateTimeFormat(undefined, {
@@ -31,7 +31,11 @@ function runTitle(text?: string): string {
 }
 
 function isUnsyncedChat(item: RunHistoryItem): boolean {
-  return item.runKind === "chat" && item.syncStatus !== "synced" && !item.unavailableReason;
+  return item.runKind === "chat" && !isAgentHistoryItem(item) && item.syncStatus !== "synced" && !item.unavailableReason;
+}
+
+function runTypeLabel(item: RunHistoryItem): string {
+  return isAgentHistoryItem(item) ? `Agent · ${item.agentName || item.role || "sub-agent"}` : RUN_LABEL[item.status];
 }
 
 // Upload-arrow glyph for per-chat and per-project sync buttons (sync = upload to Drive).
@@ -118,6 +122,7 @@ export function Navigator(): React.ReactElement {
   const syncAllInProject = useStore((s) => s.syncAllInProject);
   const deleteHistoryRun = useStore((s) => s.deleteHistoryRun);
   const restoreRemoteChatSession = useStore((s) => s.restoreRemoteChatSession);
+  const visibleRunHistory = useMemo(() => filterVisibleHistory(runHistory), [runHistory]);
 
   const runIdRef = useRef(runId);
   runIdRef.current = runId;
@@ -128,7 +133,7 @@ export function Navigator(): React.ReactElement {
   const [recentProjectIds, setRecentProjectIds] = useState<string[]>([]);
   const [projectHistoryById, setProjectHistoryById] = useState<Record<string, RunHistoryItem[]>>({});
   const [openProjectIds, setOpenProjectIds] = useState<Record<string, boolean>>({});
-  const [visibleHistoryCounts, setVisibleHistoryCounts] = useState<Record<string, number>>({});
+  const [expandedHistoryIds, setExpandedHistoryIds] = useState<Set<string>>(new Set());
   const [selectionModeProjectId, setSelectionModeProjectId] = useState<string | null>(null);
   const [selectedRunIds, setSelectedRunIds] = useState<Set<string>>(new Set());
   const [confirmAction, setConfirmAction] = useState<{ type: "delete" | "sync"; runIds: string[]; projectId: string } | null>(null);
@@ -243,7 +248,7 @@ export function Navigator(): React.ReactElement {
     const prev = prevHistoryRef.current;
     const currentRunId = runIdRef.current;
     const toAdd: string[] = [];
-    for (const item of runHistory) {
+    for (const item of visibleRunHistory) {
       const prevStatus = prev.get(item.runId);
       if (
         prevStatus !== undefined &&
@@ -262,19 +267,18 @@ export function Navigator(): React.ReactElement {
         return next;
       });
     }
-  }, [selectedProjectId, historyLoading, runHistory]);
+  }, [selectedProjectId, historyLoading, visibleRunHistory]);
 
   useEffect(() => {
     if (!selectedProjectId || historyLoading) return;
     setProjectHistoryById((current) => ({
       ...current,
-      [selectedProjectId]: sortByRecent(runHistory),
+      [selectedProjectId]: sortByRecent(visibleRunHistory),
     }));
-    if (runHistory.length > 0) {
+    if (visibleRunHistory.length > 0) {
       setOpenProjectIds((current) => (current[selectedProjectId] ? current : { ...current, [selectedProjectId]: true }));
-      setVisibleHistoryCounts((current) => (current[selectedProjectId] ? current : { ...current, [selectedProjectId]: HISTORY_LIMIT }));
     }
-  }, [historyLoading, runHistory, selectedProjectId]);
+  }, [historyLoading, selectedProjectId, visibleRunHistory]);
 
   useEffect(() => {
     setSelectionModeProjectId(null);
@@ -313,17 +317,16 @@ export function Navigator(): React.ReactElement {
       });
   }, [projectHistoryById]);
 
-  const visibleHistoryFor = (projectId: string, history: RunHistoryItem[]): RunHistoryItem[] => {
-    const count = visibleHistoryCounts[projectId] ?? HISTORY_LIMIT;
-    return history.slice(0, count);
-  };
-
   const toggleProjectHistory = (projectId: string) => {
     setOpenProjectIds((current) => ({ ...current, [projectId]: !current[projectId] }));
   };
 
-  const showMoreHistory = (projectId: string, total: number) => {
-    setVisibleHistoryCounts((current) => ({ ...current, [projectId]: total }));
+  const toggleShowAllHistory = (projectId: string) => {
+    setExpandedHistoryIds((current) => {
+      const next = new Set(current);
+      next.has(projectId) ? next.delete(projectId) : next.add(projectId);
+      return next;
+    });
   };
 
   const selectProjectAndTrack = (projectId: string) => {
@@ -407,8 +410,8 @@ export function Navigator(): React.ReactElement {
             {historyGroups.map(({ projectId, history }) => {
               const projectName = projectLabel(projectId, projects);
               const expanded = openProjectIds[projectId] ?? projectId === selectedProjectId;
-              const visibleHistory = expanded ? visibleHistoryFor(projectId, history) : [];
-              const hiddenCount = history.length - visibleHistory.length;
+              const showAllHistory = expandedHistoryIds.has(projectId);
+              const visibleHistory = expanded ? (showAllHistory ? history : history.slice(0, HISTORY_LIMIT)) : [];
               const unsyncedCount = history.filter(isUnsyncedChat).length;
               const projectSyncing = isProjectSyncing(history, projectId);
               return (
@@ -502,7 +505,7 @@ export function Navigator(): React.ReactElement {
                           item.status === "waiting_approval" || item.status === "waiting_question";
                         const isUnavailable = Boolean(item.unavailableReason);
                         const isActive = item.runId === runId;
-                        const showSync = item.runKind === "chat" && item.syncStatus !== "synced";
+                        const showSync = isUnsyncedChat(item);
                         const isSyncing = item.syncStatus === "syncing";
                         const syncFailed = item.syncStatus === "failed";
                         const inSelectionMode = selectionModeProjectId === projectId;
@@ -532,7 +535,7 @@ export function Navigator(): React.ReactElement {
                                   </span>
                                 </span>
                                 <span className="project-history-item-meta">
-                                  {RUN_LABEL[item.status]} · {RUN_TIME_FORMAT.format(new Date(item.updatedAt))}
+                                  {runTypeLabel(item)} · {RUN_TIME_FORMAT.format(new Date(item.updatedAt))}
                                 </span>
                               </div>
                               <div className="project-history-item-actions">
@@ -588,20 +591,20 @@ export function Navigator(): React.ReactElement {
                                 </span>
                               </span>
                               <span className="project-history-item-meta">
-                                {isSyncing ? "Syncing to Drive…" : RUN_LABEL[item.status]} · {RUN_TIME_FORMAT.format(new Date(item.updatedAt))}
+                                {isSyncing ? "Syncing to Drive…" : runTypeLabel(item)} · {RUN_TIME_FORMAT.format(new Date(item.updatedAt))}
                               </span>
                             </button>
                           </div>
                         );
                       })}
 
-                      {hiddenCount > 0 && (
+                      {history.length > HISTORY_LIMIT && (
                         <button
                           type="button"
                           className="project-history-more"
-                          onClick={() => showMoreHistory(projectId, history.length)}
+                          onClick={() => toggleShowAllHistory(projectId)}
                         >
-                          Show more ({hiddenCount} more)
+                          {showAllHistory ? "Show less" : `Show all (${history.length - HISTORY_LIMIT} more)`}
                         </button>
                       )}
                     </div>

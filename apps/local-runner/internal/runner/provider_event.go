@@ -45,6 +45,12 @@ const (
 	EventUserQuestionRequired ProviderEventType = "user_question_required"
 	EventTurnFailed           ProviderEventType = "turn_failed"
 	EventTurnCompleted        ProviderEventType = "turn_completed"
+	EventAgentGraphUpdated    ProviderEventType = "agent_graph_updated"
+	EventAgentBusMessage      ProviderEventType = "agent_bus_message"
+	// Emitted on the parent run when a user triggers a spawn from the UI (BUG-121).
+	// Persisted to the parent event log so the annotation survives server restarts.
+	EventAgentSpawnedByUser  ProviderEventType = "agent_spawned_by_user"
+	EventAgentResultInjected ProviderEventType = "agent_result_injected"
 )
 
 // ApprovalDecisionOption is one decision the runtime offers for an approval.
@@ -123,6 +129,44 @@ type ProviderEvent struct {
 	// turn_failed
 	Error       string `json:"error,omitempty"`
 	Recoverable bool   `json:"recoverable,omitempty"`
+	// agent_graph_updated / agent_bus_message
+	AgentGraphSnapshot *AgentGraphSnapshot `json:"agentGraphSnapshot,omitempty"`
+	AgentBusMessage    *AgentBusMessage    `json:"agentBusMessage,omitempty"`
+	// agent_spawned_by_user / agent_result_injected (BUG-121)
+	AgentName  string `json:"agentName,omitempty"`
+	ChildRunID string `json:"childRunId,omitempty"`
+}
+
+type AgentDependencyEdge struct {
+	FromRunID string `json:"fromRunId"`
+	ToRunID   string `json:"toRunId"`
+	Kind      string `json:"kind"`
+}
+
+type AgentBusMessage struct {
+	ID            string `json:"id"`
+	ParentRunID   string `json:"parentRunId"`
+	FromRunID     string `json:"fromRunId,omitempty"`
+	ToRunID       string `json:"toRunId,omitempty"`
+	Kind          string `json:"kind"`
+	Message       string `json:"message"`
+	Queued        bool   `json:"queued"`
+	OccurredAt    string `json:"occurredAt"`
+}
+
+type AgentLoopState struct {
+	Status     string `json:"status"`
+	Round      int    `json:"round"`
+	RoundCap   int    `json:"roundCap"`
+	GateReason string `json:"gateReason,omitempty"`
+}
+
+type AgentGraphSnapshot struct {
+	ParentRunID string               `json:"parentRunId"`
+	Runs        []AgentRunSummary    `json:"runs"`
+	Edges       []AgentDependencyEdge `json:"edges"`
+	BusMessages []AgentBusMessage    `json:"busMessages"`
+	LoopState   AgentLoopState       `json:"loopState"`
 }
 
 // ProviderCapabilities advertises what a provider supports (03/04-07).
@@ -162,6 +206,10 @@ type RunHandle struct {
 	ProviderKey       ProviderKey `json:"providerKey"`
 	Status            RunStatus   `json:"status"`
 	StepID            string      `json:"stepId,omitempty"`
+	// LastEventSeq is the seq of the last persisted event at resume time. The desktop
+	// replays the run from seq 0 and uses this as the stop cursor so a multi-turn run
+	// is replayed in full (not truncated at the first turn_completed). 0 when unknown.
+	LastEventSeq int64 `json:"lastEventSeq,omitempty"`
 }
 
 type StartRunInput struct {

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -34,8 +35,17 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /client/questions/{questionId}/answer", s.handleAnswerQuestion)
 	mux.HandleFunc("GET /client/workflow-runs/{runId}/artifacts", s.handleListArtifacts)
 	mux.HandleFunc("GET /client/provider-skills", s.handleListSkills)
+	mux.HandleFunc("GET /client/agents", s.handleListAgents)
 	mux.HandleFunc("GET /client/active-account", s.handleGetActiveAccount)
 	mux.HandleFunc("POST /client/active-account", s.handleSetActiveAccount)
+	mux.HandleFunc("POST /client/workflow-runs/{runId}/spawn-agent", s.handleSpawnAgent)
+	mux.HandleFunc("GET /client/workflow-runs/{runId}/agents", s.handleListAgentRuns)
+	mux.HandleFunc("GET /client/workflow-runs/{runId}/agent-graph", s.handleGetAgentGraph)
+	mux.HandleFunc("GET /client/workflow-runs/{runId}/agent-bus", s.handleGetAgentBus)
+	mux.HandleFunc("POST /client/workflow-runs/{runId}/agent-loop/pause", s.handlePauseAgentLoop)
+	mux.HandleFunc("POST /client/workflow-runs/{runId}/agent-loop/resume", s.handleResumeAgentLoop)
+	mux.HandleFunc("POST /client/workflow-runs/{runId}/agent-loop/feedback", s.handleInjectAgentFeedback)
+	mux.HandleFunc("POST /client/workflow-runs/{runId}/agent-loop/stop", s.handleStopAgentLoop)
 
 	// admin
 	mux.HandleFunc("GET /admin/providers", s.handleAdminProviders)
@@ -92,6 +102,14 @@ func (s *InteractiveService) handleListSkills(w http.ResponseWriter, r *http.Req
 	provider := r.URL.Query().Get("provider")
 	cwd := r.URL.Query().Get("cwd")
 	writeInteractiveJSON(w, http.StatusOK, s.skillsCatalog.listSkills(provider, cwd))
+}
+
+// handleListAgents serves the loadable sub-agent catalog (CP-19 / Task-081):
+// project-local .claude/agents + .codex/agents, provider homes, and built-ins,
+// merged by name precedence. `cwd` is the active project workspace.
+func (s *InteractiveService) handleListAgents(w http.ResponseWriter, r *http.Request) {
+	cwd := r.URL.Query().Get("cwd")
+	writeInteractiveJSON(w, http.StatusOK, s.agentCatalog.listAgents(cwd))
 }
 
 func (s *InteractiveService) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
@@ -592,6 +610,7 @@ func (s *InteractiveService) resumeRun(runID string) (RunHandle, *apiErr) {
 	rs := s.runs[runID]
 	s.mu.Unlock()
 	log.Printf("[chat-history-open] resume start run_id=%q in_memory=%t", runID, rs != nil)
+	inMemory := rs != nil
 	if rs == nil {
 		rebuilt, err := s.loadPersistedRun(runID)
 		if err != nil {
@@ -600,9 +619,19 @@ func (s *InteractiveService) resumeRun(runID string) (RunHandle, *apiErr) {
 		}
 		rs = rebuilt
 	}
-	if err := s.ensureResumeReady(rs); err != nil {
-		log.Printf("[chat-history-open] resume readiness failed run_id=%q provider=%q code=%q message=%q", runID, rs.providerKey, err.code, err.msg)
-		return RunHandle{}, err
+	// Skip session-file validation for live active runs: refreshResumeHandleLocked
+	// only runs post-turn, so realProviderSessionID is "" while a turn is in-flight
+	// and LocateSessionFile would fail with the synthetic "thread-*" placeholder.
+	isActiveInMemory := inMemory && rs.status != RunStatusCompleted && rs.status != RunStatusFailed && rs.status != RunStatusCancelled
+	if !isActiveInMemory {
+		if err := s.ensureResumeReady(rs); err != nil {
+			readOnlyChat := rs.runKind == "chat" && (err.code == "account_not_signed_in" || err.code == "account_unavailable")
+			if !readOnlyChat {
+				log.Printf("[chat-history-open] resume readiness failed run_id=%q provider=%q code=%q message=%q", runID, rs.providerKey, err.code, err.msg)
+				return RunHandle{}, err
+			}
+			log.Printf("[chat-history-open] resume continuing read-only run_id=%q provider=%q code=%q message=%q", runID, rs.providerKey, err.code, err.msg)
+		}
 	}
 	s.seedTranscriptFromDisk(rs)
 	handle := RunHandle{RunID: rs.id, ProviderSessionID: s.resumeSessionID(rs), ProviderKey: rs.providerKey, Status: rs.status}
@@ -614,8 +643,14 @@ func (s *InteractiveService) resumeRun(runID string) (RunHandle, *apiErr) {
 	}
 	s.mu.Lock()
 	eventCount := len(rs.events)
+	if eventCount > 0 {
+		// Seq of the last persisted event — the desktop replays from 0 and stops here so
+		// a multi-turn transcript is replayed in full instead of being truncated at the
+		// first turn_completed. (BUG-112)
+		handle.LastEventSeq = rs.events[eventCount-1].Seq
+	}
 	s.mu.Unlock()
-	log.Printf("[chat-history-open] resume complete run_id=%q provider=%q provider_session_id=%q status=%q events=%d", rs.id, rs.providerKey, handle.ProviderSessionID, rs.status, eventCount)
+	log.Printf("[chat-history-open] resume complete run_id=%q provider=%q provider_session_id=%q status=%q events=%d last_seq=%d", rs.id, rs.providerKey, handle.ProviderSessionID, rs.status, eventCount, handle.LastEventSeq)
 	return handle, nil
 }
 
@@ -656,6 +691,10 @@ type runHistoryItem struct {
 	SourceMachineID string `json:"sourceMachineId,omitempty"`
 	SourceRunID     string `json:"sourceRunId,omitempty"`
 	SyncStatus      string `json:"syncStatus,omitempty"`
+	ParentRunID     string `json:"parentRunId,omitempty"`
+	AgentName       string `json:"agentName,omitempty"`
+	Role            string `json:"role,omitempty"`
+	AgentStatus     string `json:"agentStatus,omitempty"`
 }
 
 func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryItem {
@@ -663,7 +702,7 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 	seen := map[string]bool{}
 	out := make([]runHistoryItem, 0, len(s.runs))
 	for _, rs := range s.runs {
-		if rs.projectID != projectID {
+		if rs.projectID != projectID || isLiveAgentHistoryRun(rs.parentRunID, rs.lastPrompt) {
 			continue
 		}
 		out = append(out, runHistoryItem{
@@ -677,6 +716,10 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 			LastPrompt:  rs.lastPrompt,
 			LastMessage: rs.lastMessage,
 			RunKind:     rs.runKind,
+			ParentRunID: rs.parentRunID,
+			AgentName:   rs.agentName,
+			Role:        rs.role,
+			AgentStatus: rs.agentStatus,
 		})
 		seen[rs.id] = true
 	}
@@ -689,7 +732,7 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 		sessions, err := reader.ListProviderSessionsByProject(context.Background(), projectID)
 		if err == nil {
 			for _, sess := range sessions {
-				if seen[sess.RunID] {
+				if seen[sess.RunID] || isAgentHistoryRun(sess.ParentRunID, sess.AgentName, sess.Role, sess.AgentStatus, sess.LastPrompt) {
 					continue
 				}
 				out = append(out, runHistoryItem{
@@ -699,15 +742,19 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 					ProviderKey: sess.ProviderKey,
 					// Persisted-only runs are not in the in-memory map, so an
 					// in-flight status is stale after a restart (T-067 4.4).
-					Status:      normalizeResumedStatus(sess.Status),
-					StartedAt:   sess.StartedAt,
-					UpdatedAt:   sess.UpdatedAt,
-					LastPrompt:  sess.LastPrompt,
-					LastMessage: sess.LastMessage,
-					RunKind:     sess.RunKind,
+					Status:          normalizeResumedStatus(sess.Status),
+					StartedAt:       sess.StartedAt,
+					UpdatedAt:       sess.UpdatedAt,
+					LastPrompt:      sess.LastPrompt,
+					LastMessage:     sess.LastMessage,
+					RunKind:         sess.RunKind,
 					SourceMachineID: sess.SourceMachineID,
 					SourceRunID:     sess.SourceRunID,
 					SyncStatus:      sess.SyncStatus,
+					ParentRunID:     sess.ParentRunID,
+					AgentName:       sess.AgentName,
+					Role:            sess.Role,
+					AgentStatus:     sess.AgentStatus,
 				})
 			}
 		}
@@ -717,6 +764,31 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 		return out[i].UpdatedAt > out[j].UpdatedAt
 	})
 	return out
+}
+
+func isAgentHistoryRun(parentRunID, agentName, role, agentStatus, lastPrompt string) bool {
+	if strings.TrimSpace(parentRunID) != "" {
+		return true
+	}
+	return hasBuiltInAgentPromptPrefix(lastPrompt)
+}
+
+func isLiveAgentHistoryRun(parentRunID, lastPrompt string) bool {
+	return isAgentHistoryRun(parentRunID, "", "", "", lastPrompt)
+}
+
+func hasBuiltInAgentPromptPrefix(prompt string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(prompt))
+	for _, marker := range []string{
+		"you are the coder sub-agent.",
+		"you are the reviewer sub-agent.",
+		"you are the tester sub-agent.",
+	} {
+		if strings.HasPrefix(normalized, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *InteractiveService) runSnapshot(runID string) (runSnapshotView, *apiErr) {
@@ -743,6 +815,59 @@ func (s *InteractiveService) runSnapshot(runID string) (runSnapshotView, *apiErr
 		}
 	}
 	return view, nil
+}
+
+// handleSpawnAgent allows a desktop client to programmatically spawn a child agent run for
+// a given parent run. Equivalent to the spawn_agent provider tool but HTTP-initiated.
+func (s *InteractiveService) handleSpawnAgent(w http.ResponseWriter, r *http.Request) {
+	var in SpawnAgentInput
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_request", "invalid request body"))
+		return
+	}
+	// This is a desktop UI spawn: tell spawnChildRun to surface the child to the parent's
+	// provider conversation (the AI tool path constructs SpawnAgentInput directly). (BUG-122)
+	in.UIInitiated = true
+	result, err := s.spawnChildRun(r.Context(), r.PathValue("runId"), in)
+	if err != nil {
+		writeInteractiveError(w, newAPIErr(http.StatusUnprocessableEntity, "spawn_failed", err.Error()))
+		return
+	}
+	writeInteractiveJSON(w, http.StatusOK, result)
+}
+
+// handleListAgentRuns returns the agent run summaries that are children of the given run.
+func (s *InteractiveService) handleListAgentRuns(w http.ResponseWriter, r *http.Request) {
+	writeInteractiveJSON(w, http.StatusOK, s.listAgentRunSummaries(r.PathValue("runId")))
+}
+
+func (s *InteractiveService) handleGetAgentGraph(w http.ResponseWriter, r *http.Request) {
+	writeInteractiveJSON(w, http.StatusOK, s.agentGraphSnapshot(r.PathValue("runId")))
+}
+
+func (s *InteractiveService) handleGetAgentBus(w http.ResponseWriter, r *http.Request) {
+	writeInteractiveJSON(w, http.StatusOK, s.agentBusHistory(r.PathValue("runId")))
+}
+
+func (s *InteractiveService) handlePauseAgentLoop(w http.ResponseWriter, r *http.Request) {
+	writeInteractiveJSON(w, http.StatusOK, s.pauseAgentLoop(r.PathValue("runId"), "paused by user"))
+}
+
+func (s *InteractiveService) handleResumeAgentLoop(w http.ResponseWriter, r *http.Request) {
+	writeInteractiveJSON(w, http.StatusOK, s.resumeAgentLoop(r.PathValue("runId")))
+}
+
+func (s *InteractiveService) handleInjectAgentFeedback(w http.ResponseWriter, r *http.Request) {
+	var body struct{ Message, ToRunID string }
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_request", "invalid request body"))
+		return
+	}
+	writeInteractiveJSON(w, http.StatusOK, s.injectAgentFeedback(r.PathValue("runId"), body.ToRunID, body.Message))
+}
+
+func (s *InteractiveService) handleStopAgentLoop(w http.ResponseWriter, r *http.Request) {
+	writeInteractiveJSON(w, http.StatusOK, s.stopAgentLoop(r.PathValue("runId")))
 }
 
 func fakeArtifacts(runID string) []Artifact {

@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 )
@@ -111,6 +112,8 @@ func (a *claudeAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tu
 				return fmt.Errorf("claude gated turn: runner MCP base URL not configured (fail closed)")
 			}
 			// YOLO=true: ask_user falls back to in-stream control_request path.
+			// spawn_agent has no in-stream fallback — it won't be available for this turn.
+			log.Printf("[claude-mcp] MCP base URL not set; FlowPilot tools (spawn_agent, ask_user) are unavailable for this turn — check runner startup")
 		} else {
 			var extra map[string]claudeMcpServer
 			if a.extraMCPServers != nil {
@@ -162,7 +165,9 @@ func (a *claudeAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tu
 	// when claude connects; bounded by a timeout so a slow/failed connect degrades to
 	// sending anyway rather than hanging the turn.
 	if mcpToken != "" {
-		a.mcpServer.waitReady(turnCtx, mcpToken, a.mcpReadyTimeout)
+		if !a.mcpServer.waitReady(turnCtx, mcpToken, a.mcpReadyTimeout) {
+			log.Printf("[claude-mcp] MCP connection did not become ready within timeout; FlowPilot tools (spawn_agent, ask_user) may be missing from this turn — the prompt will be delivered anyway")
+		}
 	}
 
 	if err := proc.stream.writeUserTurn(a.preparePrompt(req), req.Attachments); err != nil {
