@@ -9,6 +9,108 @@ describe("HttpLocalRunnerGateway", () => {
     gateway = new HttpLocalRunnerGateway("http://localhost:8080");
   });
 
+  describe("engine setup", () => {
+    it("loads engine status for a bound project", async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            projectId: "project-1",
+            workingDirectory: "/repo",
+            initialized: true,
+            tooling: [{ tool: "gitnexus", status: "ok", checked_at: "2026-06-23T00:00:00Z" }],
+            capability: {
+              has_gitnexus: true,
+              has_rtk: false,
+              has_node: true,
+              has_tests: true,
+              has_specs: true,
+              structure_tier: "gitnexus",
+              decision_tier: "full",
+              languages: ["go", "typescript"],
+            },
+            skillPack: {
+              packVersion: 1,
+              installed: true,
+              current: true,
+              skills: [],
+            },
+            lastInit: null,
+          }),
+      });
+      global.fetch = mockFetch;
+
+      const result = await gateway.getEngineStatus("project-1", "/repo");
+
+      expect(result.projectId).toBe("project-1");
+      expect(result.tooling[0]).toMatchObject({
+        tool: "gitnexus",
+        checkedAt: "2026-06-23T00:00:00Z",
+      });
+      expect(String(mockFetch.mock.calls[0][0])).toBe(
+        "http://localhost:8080/client/projects/project-1/engine/status?workingDirectory=%2Frepo",
+      );
+    });
+
+    it("posts engine init and maps the response", async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            projectId: "project-1",
+            workingDirectory: "/repo",
+            initialized: true,
+            tooling: [],
+            capability: {
+              has_gitnexus: false,
+              has_rtk: false,
+              has_node: true,
+              has_tests: true,
+              has_specs: true,
+              structure_tier: "fallback",
+              decision_tier: "full",
+              languages: ["go"],
+            },
+            skillPack: {
+              packVersion: 1,
+              installed: true,
+              current: true,
+              skills: [],
+            },
+            lastInit: {
+              trigger: "manual",
+              status: "success",
+              skipped: false,
+              attemptedAt: "2026-06-23T00:00:00Z",
+              completedAt: "2026-06-23T00:00:01Z",
+              workingDirectory: "/repo",
+              install: {
+                installedPaths: ["/repo/.claude/skills/flowpilot/git-commit-format/SKILL.md"],
+                skippedPaths: [],
+                errors: [],
+              },
+              steps: [{ step: "tooling_check", outcome: "ok" }],
+            },
+          }),
+      });
+      global.fetch = mockFetch;
+
+      const result = await gateway.initEngine("project-1", {
+        workingDirectory: "/repo",
+        trigger: "manual",
+      });
+
+      expect(result.lastInit?.status).toBe("success");
+      const [url, init] = mockFetch.mock.calls[0];
+      expect(String(url)).toBe("http://localhost:8080/client/projects/project-1/engine/init");
+      expect(init).toMatchObject({ method: "POST" });
+      expect(JSON.parse(init.body as string)).toEqual({
+        workingDirectory: "/repo",
+        trigger: "manual",
+      });
+    });
+  });
+
   describe("sendMessage", () => {
     it("parses structured session_dead error into LocalRunnerError", async () => {
       const mockFetch = vi.fn().mockResolvedValue({

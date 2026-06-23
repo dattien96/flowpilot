@@ -4,6 +4,7 @@ import type {
   LocalRunnerArtifactCloudSyncResult,
   LocalRunnerBackupResult,
   LocalRunnerDirectorySelection,
+  LocalRunnerEngineStatus,
   LocalRunnerFlow,
   LocalRunnerHealth,
   LocalRunnerIntegrationConnectionRequest,
@@ -31,6 +32,14 @@ import type {
 
 export interface LocalRunnerGateway {
   getHealth(): Promise<LocalRunnerHealth>;
+  getEngineStatus(projectId: string, workingDirectory: string): Promise<LocalRunnerEngineStatus>;
+  initEngine(
+    projectId: string,
+    request: {
+      workingDirectory: string;
+      trigger?: "manual" | "bind";
+    },
+  ): Promise<LocalRunnerEngineStatus>;
   pickDirectory(): Promise<LocalRunnerDirectorySelection>;
   listProviders(): Promise<LocalRunnerProvider[]>;
   listSkills(): Promise<LocalRunnerSkill[]>;

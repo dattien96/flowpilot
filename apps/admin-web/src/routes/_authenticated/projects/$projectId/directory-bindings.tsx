@@ -6,6 +6,7 @@ import { ProjectSectionNav } from "@/components/project/project-section-nav";
 import { Button } from "@/components/ui/button";
 import { createGatewayBundle } from "@/data/repository/browser-factory";
 import type { ProjectWorkspaceBinding } from "@/domain/model/entity/project-workspace-binding";
+import { autoInitProjectEngine } from "@/features/projects/project-engine-auto-init";
 import { Badge } from "@/presentation/components/ui/badge";
 
 type BindingDraft = {
@@ -148,6 +149,7 @@ function ProjectDirectoryBindingsContent({
               : binding,
           ),
         );
+        void autoInitProjectEngine(projectId, updated.localPath);
         return;
       }
 
@@ -168,6 +170,7 @@ function ProjectDirectoryBindingsContent({
             : binding,
         ),
       );
+      void autoInitProjectEngine(projectId, created.localPath);
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "Unable to save directory binding.");
     } finally {

@@ -26,6 +26,25 @@ type InstallResult struct {
 	Errors    []string
 }
 
+type ProviderStatus struct {
+	Provider string `json:"provider"`
+	Path     string `json:"path"`
+	Present  bool   `json:"present"`
+	Current  bool   `json:"current"`
+}
+
+type SkillStatus struct {
+	Name      string           `json:"name"`
+	Providers []ProviderStatus `json:"providers"`
+}
+
+type PackStatus struct {
+	PackVersion int           `json:"packVersion"`
+	Installed   bool          `json:"installed"`
+	Current     bool          `json:"current"`
+	Skills      []SkillStatus `json:"skills"`
+}
+
 // Install copies every embedded SKILL.md into <targetRepoDir>/<providerDir>/skills/flowpilot/<skill>/SKILL.md.
 // An existing file is skipped when its first line already declares the current PackVersion.
 // All errors are collected and returned in InstallResult.Errors; the function never panics.
@@ -81,6 +100,64 @@ func IsInstalled(targetRepoDir string) bool {
 	sentinel := filepath.Join(targetRepoDir, ".claude", "skills", "flowpilot", "git-commit-format", "SKILL.md")
 	_, err := os.Stat(sentinel)
 	return err == nil
+}
+
+func ProviderDirs() []string {
+	return append([]string(nil), providerDirs...)
+}
+
+func SkillNames() ([]string, error) {
+	entries, err := fs.ReadDir(flowPackFS, "flow-pack")
+	if err != nil {
+		return nil, fmt.Errorf("skillpack: read embedded flow-pack dir: %w", err)
+	}
+
+	skills := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			skills = append(skills, entry.Name())
+		}
+	}
+	return skills, nil
+}
+
+func Status(targetRepoDir string) (PackStatus, error) {
+	skills, err := SkillNames()
+	if err != nil {
+		return PackStatus{}, err
+	}
+
+	status := PackStatus{
+		PackVersion: PackVersion,
+		Installed:   true,
+		Current:     true,
+		Skills:      make([]SkillStatus, 0, len(skills)),
+	}
+
+	for _, skillName := range skills {
+		skill := SkillStatus{Name: skillName}
+		for _, providerDir := range providerDirs {
+			path := filepath.Join(targetRepoDir, providerDir, "skills", "flowpilot", skillName, "SKILL.md")
+			_, statErr := os.Stat(path)
+			present := statErr == nil
+			current := present && fileMatchesVersion(path, PackVersion)
+			skill.Providers = append(skill.Providers, ProviderStatus{
+				Provider: providerDir,
+				Path:     path,
+				Present:  present,
+				Current:  current,
+			})
+			if !present {
+				status.Installed = false
+			}
+			if !current {
+				status.Current = false
+			}
+		}
+		status.Skills = append(status.Skills, skill)
+	}
+
+	return status, nil
 }
 
 // fileMatchesVersion reads the first non-empty line of path and checks whether

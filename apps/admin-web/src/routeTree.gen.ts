@@ -48,6 +48,7 @@ import { Route as AuthenticatedProjectsProjectIdWorkflowsRouteImport } from './r
 import { Route as AuthenticatedProjectsProjectIdTechSpecsRouteImport } from './routes/_authenticated/projects/$projectId/tech-specs'
 import { Route as AuthenticatedProjectsProjectIdTasksRouteImport } from './routes/_authenticated/projects/$projectId/tasks'
 import { Route as AuthenticatedProjectsProjectIdSettingsRouteImport } from './routes/_authenticated/projects/$projectId/settings'
+import { Route as AuthenticatedProjectsProjectIdEngineRouteImport } from './routes/_authenticated/projects/$projectId/engine'
 import { Route as AuthenticatedProjectsProjectIdMembersRouteImport } from './routes/_authenticated/projects/$projectId/members'
 import { Route as AuthenticatedProjectsProjectIdMasterScheduleRouteImport } from './routes/_authenticated/projects/$projectId/master-schedule'
 import { Route as AuthenticatedProjectsProjectIdDirectoryBindingsRouteImport } from './routes/_authenticated/projects/$projectId/directory-bindings'
@@ -278,6 +279,12 @@ const AuthenticatedProjectsProjectIdSettingsRoute =
     path: '/settings',
     getParentRoute: () => AuthenticatedProjectsProjectIdRoute,
   } as any)
+const AuthenticatedProjectsProjectIdEngineRoute =
+  AuthenticatedProjectsProjectIdEngineRouteImport.update({
+    id: '/engine',
+    path: '/engine',
+    getParentRoute: () => AuthenticatedProjectsProjectIdRoute,
+  } as any)
 const AuthenticatedProjectsProjectIdMembersRoute =
   AuthenticatedProjectsProjectIdMembersRouteImport.update({
     id: '/members',
@@ -348,6 +355,7 @@ export interface FileRoutesByFullPath {
   '/projects/$projectId/business-logic': typeof AuthenticatedProjectsProjectIdBusinessLogicRoute
   '/projects/$projectId/coding-plan': typeof AuthenticatedProjectsProjectIdCodingPlanRoute
   '/projects/$projectId/directory-bindings': typeof AuthenticatedProjectsProjectIdDirectoryBindingsRoute
+  '/projects/$projectId/engine': typeof AuthenticatedProjectsProjectIdEngineRoute
   '/projects/$projectId/master-schedule': typeof AuthenticatedProjectsProjectIdMasterScheduleRoute
   '/projects/$projectId/members': typeof AuthenticatedProjectsProjectIdMembersRoute
   '/projects/$projectId/settings': typeof AuthenticatedProjectsProjectIdSettingsRoute
@@ -394,6 +402,7 @@ export interface FileRoutesByTo {
   '/projects/$projectId/business-logic': typeof AuthenticatedProjectsProjectIdBusinessLogicRoute
   '/projects/$projectId/coding-plan': typeof AuthenticatedProjectsProjectIdCodingPlanRoute
   '/projects/$projectId/directory-bindings': typeof AuthenticatedProjectsProjectIdDirectoryBindingsRoute
+  '/projects/$projectId/engine': typeof AuthenticatedProjectsProjectIdEngineRoute
   '/projects/$projectId/master-schedule': typeof AuthenticatedProjectsProjectIdMasterScheduleRoute
   '/projects/$projectId/members': typeof AuthenticatedProjectsProjectIdMembersRoute
   '/projects/$projectId/settings': typeof AuthenticatedProjectsProjectIdSettingsRoute
@@ -442,6 +451,7 @@ export interface FileRoutesById {
   '/_authenticated/projects/$projectId/business-logic': typeof AuthenticatedProjectsProjectIdBusinessLogicRoute
   '/_authenticated/projects/$projectId/coding-plan': typeof AuthenticatedProjectsProjectIdCodingPlanRoute
   '/_authenticated/projects/$projectId/directory-bindings': typeof AuthenticatedProjectsProjectIdDirectoryBindingsRoute
+  '/_authenticated/projects/$projectId/engine': typeof AuthenticatedProjectsProjectIdEngineRoute
   '/_authenticated/projects/$projectId/master-schedule': typeof AuthenticatedProjectsProjectIdMasterScheduleRoute
   '/_authenticated/projects/$projectId/members': typeof AuthenticatedProjectsProjectIdMembersRoute
   '/_authenticated/projects/$projectId/settings': typeof AuthenticatedProjectsProjectIdSettingsRoute
@@ -490,6 +500,7 @@ export interface FileRouteTypes {
     | '/projects/$projectId/business-logic'
     | '/projects/$projectId/coding-plan'
     | '/projects/$projectId/directory-bindings'
+    | '/projects/$projectId/engine'
     | '/projects/$projectId/master-schedule'
     | '/projects/$projectId/members'
     | '/projects/$projectId/settings'
@@ -536,6 +547,7 @@ export interface FileRouteTypes {
     | '/projects/$projectId/business-logic'
     | '/projects/$projectId/coding-plan'
     | '/projects/$projectId/directory-bindings'
+    | '/projects/$projectId/engine'
     | '/projects/$projectId/master-schedule'
     | '/projects/$projectId/members'
     | '/projects/$projectId/settings'
@@ -583,6 +595,7 @@ export interface FileRouteTypes {
     | '/_authenticated/projects/$projectId/business-logic'
     | '/_authenticated/projects/$projectId/coding-plan'
     | '/_authenticated/projects/$projectId/directory-bindings'
+    | '/_authenticated/projects/$projectId/engine'
     | '/_authenticated/projects/$projectId/master-schedule'
     | '/_authenticated/projects/$projectId/members'
     | '/_authenticated/projects/$projectId/settings'
@@ -901,6 +914,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedProjectsProjectIdDirectoryBindingsRouteImport
       parentRoute: typeof AuthenticatedProjectsProjectIdRoute
     }
+    '/_authenticated/projects/$projectId/engine': {
+      id: '/_authenticated/projects/$projectId/engine'
+      path: '/engine'
+      fullPath: '/projects/$projectId/engine'
+      preLoaderRoute: typeof AuthenticatedProjectsProjectIdEngineRouteImport
+      parentRoute: typeof AuthenticatedProjectsProjectIdRoute
+    }
     '/_authenticated/projects/$projectId/coding-plan': {
       id: '/_authenticated/projects/$projectId/coding-plan'
       path: '/coding-plan'
@@ -993,6 +1013,7 @@ interface AuthenticatedProjectsProjectIdRouteChildren {
   AuthenticatedProjectsProjectIdBusinessLogicRoute: typeof AuthenticatedProjectsProjectIdBusinessLogicRoute
   AuthenticatedProjectsProjectIdCodingPlanRoute: typeof AuthenticatedProjectsProjectIdCodingPlanRoute
   AuthenticatedProjectsProjectIdDirectoryBindingsRoute: typeof AuthenticatedProjectsProjectIdDirectoryBindingsRoute
+  AuthenticatedProjectsProjectIdEngineRoute: typeof AuthenticatedProjectsProjectIdEngineRoute
   AuthenticatedProjectsProjectIdMasterScheduleRoute: typeof AuthenticatedProjectsProjectIdMasterScheduleRoute
   AuthenticatedProjectsProjectIdMembersRoute: typeof AuthenticatedProjectsProjectIdMembersRoute
   AuthenticatedProjectsProjectIdSettingsRoute: typeof AuthenticatedProjectsProjectIdSettingsRoute
@@ -1011,6 +1032,8 @@ const AuthenticatedProjectsProjectIdRouteChildren: AuthenticatedProjectsProjectI
       AuthenticatedProjectsProjectIdCodingPlanRoute,
     AuthenticatedProjectsProjectIdDirectoryBindingsRoute:
       AuthenticatedProjectsProjectIdDirectoryBindingsRoute,
+    AuthenticatedProjectsProjectIdEngineRoute:
+      AuthenticatedProjectsProjectIdEngineRoute,
     AuthenticatedProjectsProjectIdMasterScheduleRoute:
       AuthenticatedProjectsProjectIdMasterScheduleRoute,
     AuthenticatedProjectsProjectIdMembersRoute:

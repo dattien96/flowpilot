@@ -6,6 +6,7 @@ import type {
   LocalRunnerArtifactCloudSyncResult,
   LocalRunnerBackupResult,
   LocalRunnerDirectorySelection,
+  LocalRunnerEngineStatus,
   LocalRunnerFlow,
   LocalRunnerHealth,
   LocalRunnerIntegrationConnectionRequest,
@@ -34,6 +35,75 @@ import type {
 } from "@/domain/model/entity/local-runner";
 
 type HealthResponse = Omit<LocalRunnerHealth, "baseUrl" | "errorMessage">;
+
+type RawEngineToolStatus = {
+  tool: string;
+  version?: string;
+  status: string;
+  checked_at: string;
+};
+
+type RawEngineCapabilityProfile = {
+  has_gitnexus: boolean;
+  has_rtk: boolean;
+  has_node: boolean;
+  has_tests: boolean;
+  has_specs: boolean;
+  structure_tier: string;
+  decision_tier: string;
+  languages: string[];
+};
+
+type RawEngineSkillProviderStatus = {
+  provider: string;
+  path: string;
+  present: boolean;
+  current: boolean;
+};
+
+type RawEngineSkillStatus = {
+  name: string;
+  providers: RawEngineSkillProviderStatus[];
+};
+
+type RawEngineSkillPackState = {
+  packVersion: number;
+  installed: boolean;
+  current: boolean;
+  skills: RawEngineSkillStatus[];
+};
+
+type RawEngineInitStepResult = {
+  step: string;
+  outcome: string;
+  detail?: string;
+  errorMessage?: string;
+};
+
+type RawEngineStatus = {
+  projectId: string;
+  workingDirectory: string;
+  initialized: boolean;
+  tooling: RawEngineToolStatus[];
+  capability: RawEngineCapabilityProfile;
+  skillPack: RawEngineSkillPackState;
+  lastInit?: {
+    trigger: string;
+    status: string;
+    skipped: boolean;
+    skipReason?: string;
+    attemptedAt: string;
+    completedAt: string;
+    workingDirectory: string;
+    install: {
+      installedPaths: string[];
+      skippedPaths: string[];
+      errors: string[];
+    };
+    steps: RawEngineInitStepResult[];
+  } | null;
+  warnings?: string[];
+};
 
 export class LocalRunnerError extends Error {
   code?: string;
@@ -101,6 +171,67 @@ function offlineHealth(baseUrl: string, errorMessage: string): LocalRunnerHealth
   };
 }
 
+function mapEngineStatus(raw: RawEngineStatus): LocalRunnerEngineStatus {
+  return {
+    projectId: raw.projectId,
+    workingDirectory: raw.workingDirectory,
+    initialized: raw.initialized,
+    tooling: (raw.tooling ?? []).map((tool) => ({
+      tool: tool.tool,
+      version: tool.version,
+      status: tool.status,
+      checkedAt: tool.checked_at,
+    })),
+    capability: {
+      hasGitNexus: raw.capability?.has_gitnexus ?? false,
+      hasRTK: raw.capability?.has_rtk ?? false,
+      hasNode: raw.capability?.has_node ?? false,
+      hasTests: raw.capability?.has_tests ?? false,
+      hasSpecs: raw.capability?.has_specs ?? false,
+      structureTier: raw.capability?.structure_tier ?? "fallback",
+      decisionTier: raw.capability?.decision_tier ?? "git-only",
+      languages: raw.capability?.languages ?? [],
+    },
+    skillPack: {
+      packVersion: raw.skillPack?.packVersion ?? 0,
+      installed: raw.skillPack?.installed ?? false,
+      current: raw.skillPack?.current ?? false,
+      skills: (raw.skillPack?.skills ?? []).map((skill) => ({
+        name: skill.name,
+        providers: (skill.providers ?? []).map((provider) => ({
+          provider: provider.provider,
+          path: provider.path,
+          present: provider.present,
+          current: provider.current,
+        })),
+      })),
+    },
+    lastInit: raw.lastInit
+      ? {
+          trigger: raw.lastInit.trigger,
+          status: raw.lastInit.status,
+          skipped: raw.lastInit.skipped,
+          skipReason: raw.lastInit.skipReason,
+          attemptedAt: raw.lastInit.attemptedAt,
+          completedAt: raw.lastInit.completedAt,
+          workingDirectory: raw.lastInit.workingDirectory,
+          install: {
+            installedPaths: raw.lastInit.install?.installedPaths ?? [],
+            skippedPaths: raw.lastInit.install?.skippedPaths ?? [],
+            errors: raw.lastInit.install?.errors ?? [],
+          },
+          steps: (raw.lastInit.steps ?? []).map((step) => ({
+            step: step.step,
+            outcome: step.outcome,
+            detail: step.detail,
+            errorMessage: step.errorMessage,
+          })),
+        }
+      : null,
+    warnings: raw.warnings ?? [],
+  };
+}
+
 export class HttpLocalRunnerGateway implements LocalRunnerGateway {
   constructor(private readonly baseUrl: string) {}
 
@@ -118,6 +249,38 @@ export class HttpLocalRunnerGateway implements LocalRunnerGateway {
         error instanceof Error ? error.message : "Unable to reach the local runner.",
       );
     }
+  }
+
+  async getEngineStatus(projectId: string, workingDirectory: string) {
+    const path =
+      `/client/projects/${encodeURIComponent(projectId)}/engine/status?workingDirectory=${encodeURIComponent(workingDirectory)}`;
+    return mapEngineStatus(await readJson<RawEngineStatus>(this.baseUrl, path));
+  }
+
+  async initEngine(
+    projectId: string,
+    request: {
+      workingDirectory: string;
+      trigger?: "manual" | "bind";
+    },
+  ) {
+    const response = await fetch(
+      new URL(`/client/projects/${encodeURIComponent(projectId)}/engine/init`, this.baseUrl),
+      {
+        method: "POST",
+        cache: "no-store",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(request),
+      },
+    );
+
+    if (!response.ok) {
+      throw new Error(`Engine init failed: ${response.status} ${response.statusText}`);
+    }
+
+    return mapEngineStatus((await response.json()) as RawEngineStatus);
   }
 
   async pickDirectory() {
