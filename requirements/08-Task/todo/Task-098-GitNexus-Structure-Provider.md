@@ -5,7 +5,7 @@
 - Document ID: `Task-098`
 - Title: `GitNexus Structure Provider`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-23`
