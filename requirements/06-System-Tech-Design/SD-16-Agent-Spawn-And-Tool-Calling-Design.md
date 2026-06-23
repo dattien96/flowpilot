@@ -2,6 +2,8 @@
 
 ## Metadata
 
+we fix and improve a lot for agent feature with claude: from the commit 541748ac952634147fc3c0c788a16b638b1ad631 -> till now. scan all those changes and make sure codex can work same with what claude supported
+
 - Document ID: `SD-16`
 - Title: `Agent Spawn And Tool-Calling Design`
 - Phase: `tech_design`
@@ -9,7 +11,7 @@
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-20`
-- Last Updated: `2026-06-20`
+- Last Updated: `2026-06-23`
 - Parent Documents: [SS-06: Workflow Skill Agent](../05-System-Specs/SS-06-Workflow-Skill-Agent.md), [SS-11: Workflow With Session](../05-System-Specs/SS-11-Workflow-With_Session.md)
 - Child Documents: [CP-19: Multiple Agents](../07-Coding-Plan/inprogress/CP-19-Multiple-Agents.md)
 - Related Documents: [SD-13: Multiple Agents](./SD-13-Multiple-Agents.md), [Task-081: Agent Abstraction And Catalog Loader](../08-Task/done/Task-081-Agent-Abstraction-And-Catalog-Loader.md), [Task-082: Spawn-Agent Tool And Orchestrator Core](../08-Task/done/Task-082-Spawn-Agent-Tool-And-Orchestrator-Core.md), [Task-083: Desktop Agents Panel And Focus Navigation](../08-Task/todo/Task-083-Desktop-Agents-Panel-And-Focus-Navigation.md), [Task-084: Dependency Feedback Loop And Orchestration Board](../08-Task/todo/Task-084-Dependency-Feedback-Loop-And-Orchestration-Board.md), [Task-085: Flow-Mode Supabase Agent Runs And Message Bus](../08-Task/todo/Task-085-Flow-Mode-Supabase-Agent-Runs-And-Message-Bus.md)
@@ -233,6 +235,7 @@ Why this option was chosen:
 - `SS-11 session continuity` -> `D-4`, Sections 5, 6, and 8.
 - `CP-19 P-1` child run as extended `interactiveRun` -> Sections 5 and 7.3.
 - `CP-19 P-2` two spawn entry points -> Sections 3, 6, 7.1, and 7.2.
+- `CP-19 P-2` result parity across entry points -> `D-6`, `D-7`, `D-8`, Section 14 (BUG-121, BUG-122, BUG-126).
 - `CP-19 P-3` agent definitions from `.claude/agents` and `.codex/agents` -> Sections 5, 6, and 13.
 - `CP-19 P-9` child gates remain owned by child stream -> Sections 7.3, 8, and 9.
 
@@ -292,7 +295,45 @@ Why this option was chosen:
 - `Q-A18` **Which path should the Agents panel button use?**
   - The button should use direct UI/API spawn, not prompt the main AI to call `spawn_agent`. This makes user-initiated spawning deterministic while preserving the same backend lifecycle.
 
-## 14: Test
+## 14. Agent Result Sharing
+
+This section defines how a finished child agent's result reaches the parent run, so the parent (main chat) can answer questions about its sub-agents and, in a later auto mode, act on their results automatically. It is the mechanism behind BUG-121, BUG-122, and BUG-126.
+
+### 14.1 Principle: share results, not working context
+
+- `D-6` Agents are isolated. A parent receives only a child's **final result** (the completed message, or the failure error) plus lightweight identity (agent name, provider, model). It never receives the child's transcript, tool calls, file diffs, or intermediate reasoning.
+- This isolation is intentional multi-agent design: each agent reasons independently; only the outcome flows back. It keeps prompts bounded and prevents one agent's internal detail from polluting another's context.
+
+### 14.2 Two delivery channels
+
+A child result reaches the parent through exactly one of two channels, chosen by spawn mode:
+
+| Spawn mode | wait | Delivery channel |
+|------------|------|------------------|
+| Tool (`spawn_agent`) | `true` | **Synchronous tool result.** `SpawnAgentResult` (runId, providerSessionId, providerKey, status, finalMessage) is returned as the tool-call result, landing natively in the parent's provider conversation in the same turn. |
+| Tool (`spawn_agent`) | `false` | **Asynchronous injection** (see 14.3) — only `status: spawned` is returned synchronously, so the eventual result is injected later. |
+| UI (`+ Spawn agent`) | `true` or `false` | **Asynchronous injection** — there is no main-AI turn awaiting a tool result, so the result is always injected. |
+
+### 14.3 Asynchronous injection mechanism
+
+- `D-7` The parent run carries a bounded `pendingAgentContext` buffer. When a child the parent needs to hear from finishes, a one-line note is appended:
+  - completed: `Sub-agent "<name>" (provider: <p>) completed. Result: <finalMessage truncated>`
+  - failed: `Sub-agent "<name>" (provider: <p>) failed: <error truncated>`
+  - UI spawns also append a "started" note at spawn time (`provider`, `model`); tool spawns do not, because the tool call itself already records the spawn in provider history.
+- On the parent's **next provider turn**, the buffered notes are composed into a `[FlowPilot system note: …]` block and prepended to the prompt sent to the provider — never to the user-visible prompt bubble. The buffer is then cleared; the note now lives in the provider session file as ordinary conversation history.
+- `D-8` **No double delivery.** A note is injected iff the result was not already returned synchronously, i.e. when `uiInitiated || !waitForResult`. A tool spawn with `wait=true` is therefore never injected (its result is the tool result).
+
+### 14.4 Persistence and restart
+
+- The `pendingAgentContext` buffer is persisted in `sessions.ndjson` (`pending_agent_context`) and restored on resume, so a spawn-then-restart-before-asking still reaches the parent.
+- Once a note has been folded into a turn, it survives restart for free: it is part of the provider session file that `seedTranscriptFromDisk` replays. This is the same durable channel that already makes synchronous tool results survive restart.
+
+### 14.5 Foundation for auto agent-to-agent mode
+
+- The parent accumulates child results between its turns and can summarize or react to them on its next turn. This is the building block for a future auto mode where the orchestrator launches background agents and consumes their results without a human prompt in between.
+- Future inter-agent messaging (one child addressing another) is expected to reuse the same buffer plus the existing agent bus, keeping a single result-routing path rather than a second mechanism.
+
+## 15. Test
 
 Setup
 
@@ -301,7 +342,7 @@ Setup
 3. Open a fresh normal chat with Codex.
 4. Keep the right-side Agents panel visible and keep History expanded.
 
-## Test 1: Prompt clears immediately
+### Test 1: Prompt clears immediately
 
 1. Type any normal prompt and press Enter.
 2. Expected:
@@ -309,7 +350,7 @@ Setup
    - The prompt appears in the timeline.
    - The turn can keep running without the old text staying in the input.
 
-## Test 2: spawn_agent on a fresh Codex chat
+### Test 2: spawn_agent on a fresh Codex chat
 
 1. Send this prompt exactly:
 
@@ -323,7 +364,7 @@ After the child returns, tell me the exact child result.
    - The child completes.
    - The main answer reports CHILD_AGENT_DONE.
 
-## Test 3: spawn_agent on a resumed Codex chat
+### Test 3: spawn_agent on a resumed Codex chat
 
 1. Reopen an existing Codex history chat, or send one normal prompt first so the next turn is on a resumed thread.
 2. Send the same prompt from Test 2.
@@ -332,7 +373,7 @@ After the child returns, tell me the exact child result.
    - This confirms resumed Codex threads still have spawn_agent registered.
    - No fake “I used a reviewer sub-agent” text without an actual child run.
 
-## Test 4: YOLO-off child approval flow
+### Test 4: YOLO-off child approval flow
 
 1. Send this prompt exactly:
 
@@ -353,7 +394,7 @@ Do not create the file yourself. Only the child agent should do it.
    - Child completes.
    - Main turn completes and reports the child result.
 
-## Test 5: History behavior
+### Test 5: History behavior
 
 1. Create more than 5 chats in one project.
 2. Expected:
@@ -362,7 +403,7 @@ Do not create the file yourself. Only the child agent should do it.
    - Clicking it expands the full list.
    - Clicking again collapses back to 5.
 
-## Test 6: Restart persistence sanity check
+### Test 6: Restart persistence sanity check
 
 1. After running the child-agent tests above, restart the runner/app.
 2. Reopen the same project.
@@ -370,3 +411,33 @@ Do not create the file yourself. Only the child agent should do it.
    - Parent chats are still in History.
    - Reopening a parent run should still show its agent-related state/history as supported by current persistence.
    - Child runs are not expected as separate top-level history rows.
+
+### Test 7: Result sharing — UI spawn reaches the main chat
+
+Validates Section 14 for the UI entry point (BUG-122).
+
+1. In a fresh main chat, open the Agents panel and click `+ Spawn agent`.
+2. Spawn `reviewer` with "Wait for result: ON" and child prompt: `Do not use tools. Reply exactly: SHARE_UI_DONE.`
+3. Wait for the child to show completed in the Agents panel.
+4. In the main chat, ask: `Which sub-agents did I start, and what did they return?`
+5. Expected:
+   - The main chat names the `reviewer` sub-agent and reports its result `SHARE_UI_DONE`.
+   - It does NOT claim "no sub-agents were started".
+   - The main answer does not include the child's internal steps/tool detail — only the final result (isolation per `D-6`).
+
+### Test 8: Result sharing — tool spawn parity for both wait modes
+
+Validates Section 14 delivery rule (`D-8`) for the AI tool entry point (BUG-126).
+
+1. In a fresh main chat, send:
+
+Use spawn_agent exactly once with agent="reviewer", provider="codex", wait=false.
+Child prompt: "Do not use tools. Reply exactly: SHARE_BG_DONE." Do not wait for it; just continue.
+
+2. Let the background child complete (watch the Agents panel).
+3. Now ask the main chat: `What did the background sub-agent return?`
+4. Expected (wait=false):
+   - The main chat reports `SHARE_BG_DONE` — the background result was delivered even though the tool call only acked "spawned".
+5. In another fresh chat, send a `wait=true` spawn (as in Test 2) and after it completes ask the same question.
+6. Expected (wait=true):
+   - The main chat still reports the result, and it is reported once (no duplicated "completed" note), because `wait=true` results arrive only as the synchronous tool result.
