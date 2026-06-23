@@ -5,7 +5,7 @@
 - Document ID: `Task-097`
 - Title: `Feature Catalog And Resolver`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-23`
