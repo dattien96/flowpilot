@@ -632,6 +632,64 @@ func readTurnReqFor(t *testing.T, ch chan TurnRequest, runID string) TurnRequest
 	}
 }
 
+// TestSpawnedChildInheritsParentYolo guards BUG-129: with YOLO enabled on the parent, a
+// child spawned via spawn_agent must run with YOLO too, so its gated actions auto-approve
+// instead of stalling the (often wait=true) parent on a child approval prompt. It also
+// covers the sticky per-turn posture: the parent enables YOLO per-turn (UI toggle), and the
+// child spawned afterward must inherit that posture, not the stale run-level default.
+func TestSpawnedChildInheritsParentYolo(t *testing.T) {
+	svc := NewInteractiveService()
+	capture := &captureTurnAdapter{ch: make(chan TurnRequest, 8)}
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key:          ProviderKeyClaude,
+		DisplayName:  "Claude",
+		Status:       ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true, SkillSelection: true, ApprovalEvents: true},
+		newAdapter:   func() ProviderRuntimeAdapter { return capture },
+	})
+	svc.registry = reg
+
+	// Parent starts WITHOUT run-level YOLO (the stale default the old code would copy).
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyClaude, Model: "claude-sonnet-4-6"})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+
+	// Parent turn enables YOLO per-turn (mirrors the UI toggle). This must stick on the run.
+	yoloOn := true
+	if _, apiErr := svc.startTurn(parent.RunID, TurnInput{StepID: "chat-" + parent.RunID, Prompt: "hi", YoloMode: &yoloOn}, "", ""); apiErr != nil {
+		t.Fatalf("parent startTurn: %s", apiErr.msg)
+	}
+	parentReq := readTurnReqFor(t, capture.ch, parent.RunID)
+	if !parentReq.YoloMode {
+		t.Fatalf("parent turn should carry YOLO=true")
+	}
+
+	// Spawn a child via the tool path AFTER the YOLO turn; it must inherit YOLO=true.
+	if _, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{
+		Agent: "reviewer", Prompt: "work", Provider: "claude", Wait: false,
+	}); spawnErr != nil {
+		t.Fatalf("spawnChildRun: %v", spawnErr)
+	}
+
+	// The child's first provider turn must run with YOLO enabled.
+	for {
+		select {
+		case req := <-capture.ch:
+			if req.RunID == parent.RunID {
+				continue // ignore any further parent turns
+			}
+			if !req.YoloMode {
+				t.Fatalf("child turn should inherit parent YOLO=true, got YoloMode=false (run %s)", req.RunID)
+			}
+			return
+		case <-time.After(3 * time.Second):
+			t.Fatal("timed out waiting for child turn request")
+		}
+	}
+}
+
 // TestUISpawnInjectsContextIntoParentProviderTurn guards BUG-122: a child agent spawned from
 // the desktop UI is invisible to the parent's provider conversation. The next parent turn's
 // provider prompt must carry a system note naming the child so the parent agent can answer
@@ -693,7 +751,7 @@ func TestUISpawnInjectsContextIntoParentProviderTurn(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyClaude, Model: "claude-sonnet-4-6"})
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyClaude, Model: "claude-sonnet"})
 	if err != nil {
 		t.Fatalf("createRun: %v", err)
 	}
@@ -774,7 +832,7 @@ func TestToolSpawnWaitTrueDoesNotInjectParentContext(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyClaude, Model: "claude-sonnet-4-6"})
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyClaude, Model: "claude-sonnet"})
 	if err != nil {
 		t.Fatalf("createRun: %v", err)
 	}
@@ -825,7 +883,7 @@ func TestToolSpawnWaitFalseInjectsResult(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyClaude, Model: "claude-sonnet-4-6"})
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyClaude, Model: "claude-sonnet"})
 	if err != nil {
 		t.Fatalf("createRun: %v", err)
 	}

@@ -1193,6 +1193,7 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 	parentModel := ""
 	parentReasoningEffort := ""
 	parentProviderKey := ProviderKey("")
+	parentYolo := false
 	if parentRun != nil {
 		cwd = parentRun.workspaceCwd
 		projectID = parentRun.projectID
@@ -1200,6 +1201,7 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		parentModel = parentRun.modelName
 		parentReasoningEffort = parentRun.reasoningEffort
 		parentProviderKey = parentRun.providerKey
+		parentYolo = parentRun.yolo
 	}
 	s.mu.Unlock()
 	if parentRun == nil {
@@ -1231,7 +1233,7 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 	// Resolve the child model and reasoning effort.
 	// Priority: agent definition > same-provider inheritance > per-provider default.
 	// When the child runs on a different provider than the parent, the parent's model
-	// name is invalid for the child (e.g. "claude-sonnet-4-6" sent to Codex → 400).
+	// name is invalid for the child (e.g. "sonnet" sent to Codex → 400).
 	childModel := parentModel
 	childReasoningEffort := parentReasoningEffort
 	if agentDef != nil && agentDef.Model != "" {
@@ -1248,6 +1250,9 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 	}
 
 	// Create the child run. createRun acquires s.mu internally; call it unlocked.
+	// The child inherits the parent's YOLO posture (BUG-129): with YOLO on, the
+	// child's gated actions must auto-approve just like the parent's, instead of
+	// stalling the (often wait=true) parent turn on a child approval prompt.
 	startIn := StartRunInput{
 		ProjectID:       projectID,
 		WorkflowID:      workflowID,
@@ -1256,6 +1261,7 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		ProviderKey:     providerKey,
 		Model:           childModel,
 		ReasoningEffort: childReasoningEffort,
+		YoloMode:        parentYolo,
 	}
 	handle, apiErr := s.createRun(startIn)
 	if apiErr != nil {
@@ -1601,6 +1607,13 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// state is persisted by the post-turn sessionStateOf snapshot below. (BUG-122)
 	providerPrompt := in.Prompt
 	s.mu.Lock()
+	// Persist the per-turn YOLO posture as the run's current default (BUG-129). The UI
+	// toggle is sticky, so an explicit YoloMode this turn must update rs.yolo; otherwise a
+	// child spawned during this turn (spawnChildRun reads parentRun.yolo) would inherit the
+	// stale run-level default instead of the posture the user actually has enabled.
+	if in.YoloMode != nil {
+		rs.yolo = yolo
+	}
 	if len(rs.pendingAgentContext) > 0 {
 		providerPrompt = composeAgentContextBlock(rs.pendingAgentContext) + "\n\n" + in.Prompt
 		rs.pendingAgentContext = nil
@@ -2125,13 +2138,13 @@ func truncateDisplayField(s string, max int) string {
 // defaultModelForProvider returns the baseline model name to use when spawning a
 // child run on a different provider than the parent and the agent definition does
 // not declare an explicit model. Using the parent's model name cross-provider
-// causes a 400 from the target provider (e.g. "claude-sonnet-4-6" sent to Codex).
+// causes a 400 from the target provider (e.g. "sonnet" sent to Codex).
 func defaultModelForProvider(key ProviderKey) string {
 	switch key {
 	case ProviderKeyCodex:
 		return "gpt-5.4-mini"
 	case ProviderKeyClaude:
-		return "claude-sonnet-4-6"
+		return "sonnet"
 	default:
 		return ""
 	}
