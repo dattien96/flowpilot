@@ -636,6 +636,45 @@ func readTurnReqFor(t *testing.T, ch chan TurnRequest, runID string) TurnRequest
 // the desktop UI is invisible to the parent's provider conversation. The next parent turn's
 // provider prompt must carry a system note naming the child so the parent agent can answer
 // "which sub-agents did we start?", while the displayed prompt stays clean.
+// TestComposeAgentSpawnPromptIsProviderConsistent guards BUG-128: the spawn prompt
+// is built by one shared helper, so a given agent yields the same shape regardless
+// of provider — system prompt first (preserving built-in-agent prefix detection),
+// then a single identity line that links the definition file, then the user prompt.
+func TestComposeAgentSpawnPromptIsProviderConsistent(t *testing.T) {
+	def := &AgentDefinition{
+		Name:         "coder",
+		Role:         "coder",
+		SystemPrompt: "You are the coder sub-agent. Implement the change.",
+		Source:       "claude",
+		Path:         "/proj/.claude/agents/coder.md",
+	}
+	got := composeAgentSpawnPrompt(def, "do work")
+
+	// System prompt stays first so hasBuiltInAgentPromptPrefix keeps matching.
+	if !strings.HasPrefix(strings.ToLower(got), "you are the coder sub-agent.") {
+		t.Fatalf("system prompt must stay first, got %q", got)
+	}
+	// The agent is named and its definition file is linked.
+	if !strings.Contains(got, "[FlowPilot sub-agent — agent: coder | role: coder | definition: /proj/.claude/agents/coder.md]") {
+		t.Fatalf("identity line missing or malformed: %q", got)
+	}
+	// The user prompt is appended last, unchanged.
+	if !strings.HasSuffix(got, "do work") {
+		t.Fatalf("user prompt must be appended last, got %q", got)
+	}
+
+	// A built-in agent (no on-disk path) is marked as built-in, not blank.
+	builtin := &AgentDefinition{Name: "coder", Role: "coder", SystemPrompt: "sp", Source: "flowpilot"}
+	if line := composeAgentIdentityLine(builtin); !strings.Contains(line, "definition: built-in (flowpilot)") {
+		t.Fatalf("built-in agent should mark definition as built-in, got %q", line)
+	}
+
+	// A nil agent definition (unknown agent) leaves the user prompt untouched.
+	if got := composeAgentSpawnPrompt(nil, "just this"); got != "just this" {
+		t.Fatalf("nil agentDef must pass the prompt through unchanged, got %q", got)
+	}
+}
+
 func TestUISpawnInjectsContextIntoParentProviderTurn(t *testing.T) {
 	svc := NewInteractiveService()
 	capture := &captureTurnAdapter{ch: make(chan TurnRequest, 8)}

@@ -622,6 +622,55 @@ func composeAgentContextBlock(notes []string) string {
 	return b.String()
 }
 
+// composeAgentSpawnPrompt builds the first-turn prompt for a spawned sub-agent
+// in a provider-independent way so the same agent name yields an identical prompt
+// shape on Claude and Codex (BUG-128). Structure:
+//
+//	<agent system prompt>      (when any; kept FIRST so built-in-agent prompt
+//	                            detection in isAgentHistoryRun keeps matching)
+//	<agent identity line>      (names the agent + role and links its definition
+//	                            file so the model can open the full spec itself)
+//	<user prompt>
+//
+// A nil agentDef (unknown agent) returns the user prompt unchanged.
+func composeAgentSpawnPrompt(agentDef *AgentDefinition, userPrompt string) string {
+	if agentDef == nil {
+		return userPrompt
+	}
+	var b strings.Builder
+	if sp := strings.TrimSpace(agentDef.SystemPrompt); sp != "" {
+		b.WriteString(sp)
+		b.WriteString("\n\n")
+	}
+	b.WriteString(composeAgentIdentityLine(agentDef))
+	b.WriteString("\n\n")
+	b.WriteString(userPrompt)
+	return b.String()
+}
+
+// composeAgentIdentityLine renders the consistent, single-line agent reference
+// shared by every provider: the agent name, role, and a link to its definition
+// file (or a built-in marker when the agent has no on-disk path) (BUG-128).
+func composeAgentIdentityLine(def *AgentDefinition) string {
+	parts := make([]string, 0, 3)
+	if name := strings.TrimSpace(def.Name); name != "" {
+		parts = append(parts, "agent: "+name)
+	}
+	if role := strings.TrimSpace(def.Role); role != "" {
+		parts = append(parts, "role: "+role)
+	}
+	if path := strings.TrimSpace(def.Path); path != "" {
+		parts = append(parts, "definition: "+path)
+	} else {
+		source := strings.TrimSpace(def.Source)
+		if source == "" {
+			source = "unknown"
+		}
+		parts = append(parts, "definition: built-in ("+source+")")
+	}
+	return "[FlowPilot sub-agent — " + strings.Join(parts, " | ") + "]"
+}
+
 // appendPendingAgentContextLocked appends a note to the parent's UI-spawn context buffer
 // and schedules a best-effort persist so it survives a restart. Caller holds s.mu (BUG-122).
 func (s *InteractiveService) appendPendingAgentContextLocked(parentRunID, note string) {
@@ -1220,13 +1269,12 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		waiterCh = s.agentOrchestrator.openWaiter(handle.RunID)
 	}
 
-	// Prepend the agent definition's system prompt to the first user turn so that
-	// built-in/project agents (coder, reviewer, …) behave as defined, even on
-	// providers that don't support a separate system_prompt channel.
-	firstPrompt := in.Prompt
-	if agentDef != nil && strings.TrimSpace(agentDef.SystemPrompt) != "" {
-		firstPrompt = agentDef.SystemPrompt + "\n\n" + in.Prompt
-	}
+	// Compose the first user turn the same way for every provider so a given
+	// agent name produces an identical prompt shape on Claude and Codex (BUG-128).
+	// The agent's system prompt (when any) stays first so built-in-agent prompt
+	// detection keeps working; a single identity line then names the agent and
+	// links its definition file so the model can open the full spec itself.
+	firstPrompt := composeAgentSpawnPrompt(agentDef, in.Prompt)
 
 	// Stamp agent identity on the newly created child run.
 	s.mu.Lock()

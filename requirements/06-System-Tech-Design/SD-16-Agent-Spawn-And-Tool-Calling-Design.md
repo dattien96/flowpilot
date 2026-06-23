@@ -179,7 +179,7 @@ Why this option was chosen:
 ### 7.3 Child Agent Runtime
 
 1. The child gets its own provider session/thread.
-2. The child prompt is composed from the agent system prompt plus the user's child task prompt.
+2. The child prompt is composed from the agent system prompt plus the user's child task prompt. Composition is **provider-independent** (BUG-128): a single helper (`composeAgentSpawnPrompt`) builds the same prompt shape for every provider — the agent system prompt first (kept first so built-in-agent prompt detection in run history keeps matching), then one identity line naming the agent/role and linking its definition file (`[FlowPilot sub-agent — agent: … | role: … | definition: <path or built-in>]`), then the user's child task prompt. The same agent name therefore yields an identical prompt shape on Claude and Codex; any content difference comes only from the resolved definition (catalog precedence per `D-5`), not from the composition path.
 3. The child streams events over its own run stream.
 4. Parent-level graph/bus events summarize child lifecycle for the main UI.
 5. The child approval/question gates are owned by the child stream, not by the parent message body.
