@@ -294,13 +294,20 @@ export function ChatInput(): React.ReactElement {
     return frag;
   }, [isChatMode, text, cursorPos, slashDismissedIndex]);
   const slashQuery = slashFragment?.query ?? null;
-  // Slash sub-commands: "/a" opens the spawn-agent UI (same panel as the right sidebar);
-  // everything else (incl. "/s" and bare "/") drives the skill picker. The leading command
-  // letter is treated as the command, not a search term.
+  // Slash sub-commands are namespaced by the command letter after "/": "/a…" (or "/agent")
+  // opens the spawn-agent UI, "/s…" (or "/skill") opens the skill picker. A bare "/" (or any
+  // other leading letter) opens nothing — a command letter is required so "/" no longer pops
+  // the skill UI on its own (BUG-134). The remainder after "/s" is the skill search term.
   const slashCommand: "agent" | "skill" | null =
-    slashFragment === null ? null : slashFragment.query === "a" ? "agent" : "skill";
+    slashFragment === null
+      ? null
+      : slashFragment.query[0] === "a"
+        ? "agent"
+        : slashFragment.query[0] === "s"
+          ? "skill"
+          : null;
   const showAgentCommand = isChatMode && !!selectedProvider && slashCommand === "agent";
-  const showPicker = isChatMode && !!selectedProvider && slashCommand !== "agent" && (skillPickerOpen || slashFragment !== null);
+  const showPicker = isChatMode && !!selectedProvider && (skillPickerOpen || slashCommand === "skill");
   const totalSkills = skills.length;
   const filtered = useMemo(
     () => {
@@ -381,11 +388,12 @@ export function ChatInput(): React.ReactElement {
   // Keep pickerSearch in sync with the slash query so typing /foo in the textarea
   // still drives the in-picker filter in real time.
   useEffect(() => {
-    if (slashQuery === null) return;
-    // "/s" is the explicit "open skill UI" command, so don't filter the list to "s";
-    // further typing ("/se…") still drives the search as usual.
-    setPickerSearch(slashQuery === "s" ? "" : slashQuery);
-  }, [slashQuery]);
+    if (slashCommand !== "skill" || slashQuery === null) return;
+    // The skill picker lives under the "/s" namespace, so the leading "s" (or the full
+    // "skill" word) is the command, not a search term; everything after it filters the list.
+    const term = slashQuery === "s" || slashQuery === "skill" ? "" : slashQuery.slice(1);
+    setPickerSearch(term);
+  }, [slashQuery, slashCommand]);
 
   // Clear the search box whenever the picker is dismissed.
   useEffect(() => {
@@ -436,13 +444,18 @@ export function ChatInput(): React.ReactElement {
   const selectedProviderConnected = !!selectedProvider && connectedProviders.has(selectedProvider);
 
   const blocked = status === "running" || status === "waiting_approval" || status === "waiting_question";
+  // A running child spawned with wait=true blocks the main run even when the main has no turn
+  // of its own in flight (e.g. a UI wait=true spawn) — the send button must reflect that (BUG-133).
+  const hasBlockingChild = agentRuns.some(
+    (r) => r.waitForResult && (r.status === "running" || r.status === "waiting_approval" || r.status === "waiting_question"),
+  );
   const usageLine = useMemo(
     () => usageSummaryLine(selectedProvider, displayedTokenUsage),
     [displayedTokenUsage, selectedProvider],
   );
 
   const canSend = isChatMode
-    ? hasSelectedProject && selectedProviderConnected && !blocked && !childRunFocused && text.trim().length > 0 && !showPicker && !showAgentCommand
+    ? hasSelectedProject && selectedProviderConnected && !blocked && !hasBlockingChild && !childRunFocused && text.trim().length > 0 && !showPicker && !showAgentCommand
     : hasSelectedProject &&
       (launchMode === "workflow" ? !!selectedWorkflowId : !!selectedStepId) &&
       !blocked &&
@@ -638,7 +651,9 @@ export function ChatInput(): React.ReactElement {
     }
   };
 
-  const placeholder = blocked
+  const placeholder = hasBlockingChild && !blocked
+    ? "Waiting for a sub-agent (wait=true) to finish…"
+    : blocked
     ? "Waiting for the current turn..."
     : !hasSelectedProject
       ? "Select a project first."
@@ -646,7 +661,7 @@ export function ChatInput(): React.ReactElement {
       ? childRunFocused
         ? "Child transcript is read-only."
         : selectedProvider
-          ? "Type a message. Use / to pick a skill, @ to message an agent."
+          ? "Type a message. Use /s for skills, /a to spawn an agent, @ to message an agent."
           : "Select a provider first."
       : launchMode === "workflow"
         ? selectedWorkflowId

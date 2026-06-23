@@ -93,5 +93,5 @@ The composer already supports `/` for skills. Users asked for an explicit `/a` t
 ## 8. Completion Notes
 
 - result: implemented in `ChatInput.tsx`; `/a` reuses `openAgentSpawnGuide`; `/s` opens the skill UI; type-check green.
-- follow-ups: the desktop vitest suite currently fails to load on this machine with a pre-existing ESM config error, so component unit tests were not executed here.
+- follow-ups: the initial implementation only triggered the agent command on the exact one-character query `"a"`, so `/agent` and other forms fell through to the skill picker and the command appeared not to work — fixed in [BUG-134](../../09-BugFix/done/BUG-134-Slash-A-Command-Does-Not-Open-Spawn-Agent-UI.md) (trigger broadened to `"a"`/`"agent"` and `"s"`/`"skill"`). The desktop vitest suite fails to load on this machine with a pre-existing ESM config error, and the Electron app was not run here, so `/a` end-to-end needs user retest.
 - upstream docs updated: none required; behavior is additive to the existing composer.
