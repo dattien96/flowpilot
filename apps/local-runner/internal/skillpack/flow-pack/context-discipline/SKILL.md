@@ -1,4 +1,8 @@
-version: 1
+---
+name: context-discipline
+description: Use the latest feature history entry as the starting point before changing code or docs.
+version: 2
+---
 
 # context-discipline
 

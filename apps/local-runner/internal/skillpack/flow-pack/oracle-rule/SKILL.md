@@ -1,4 +1,8 @@
-version: 1
+---
+name: oracle-rule
+description: Never change a test just to make it pass; fix the production code or escalate the spec conflict.
+version: 2
+---
 
 # oracle-rule
 
