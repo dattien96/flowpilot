@@ -1605,6 +1605,17 @@ function settleTerminalReplayVisuals(
   });
 }
 
+// Merge an incoming agent-run snapshot into the existing list by runId (incoming wins).
+// The live SSE graph snapshot is in-memory only and omits disk-persisted closed children
+// that the HTTP list (listAgentRunSummaries) includes; replacing wholesale dropped the
+// "Recently closed" entries while an agent was running. Merging preserves them (BUG-132).
+function mergeAgentRunsById(existing: AgentRunSummary[], incoming: AgentRunSummary[]): AgentRunSummary[] {
+  const byId = new Map<string, AgentRunSummary>();
+  for (const run of existing) byId.set(run.runId, run);
+  for (const run of incoming) byId.set(run.runId, run);
+  return [...byId.values()];
+}
+
 function applyEvent(s: AppState, e: ProviderEventDTO): Partial<AppState> {
   const next = applyTimelineEvent(s, e);
   const nextReplaySeq = {
@@ -1614,13 +1625,12 @@ function applyEvent(s: AppState, e: ProviderEventDTO): Partial<AppState> {
   if (e.type === "agent_graph_updated") {
     return {
       ...next,
-      agentRuns: e.agentGraphSnapshot.runs,
+      // Merge (not replace) so disk-persisted closed children stay visible while a new
+      // agent runs and emits in-memory-only snapshots (BUG-132).
+      agentRuns: mergeAgentRunsById(s.agentRuns, e.agentGraphSnapshot.runs),
       agentGraphSnapshot: e.agentGraphSnapshot,
       agentBusMessages: e.agentGraphSnapshot.busMessages,
       _runReplaySeq: nextReplaySeq,
-      // Invalidate any in-flight refreshAgentRuns fetch so it can't overwrite this
-      // fresher SSE snapshot with a stale list and flicker the count (BUG-130).
-      _agentRunsLoadSeq: s._agentRunsLoadSeq + 1,
     };
   }
   if (e.type === "agent_bus_message") {
@@ -1650,12 +1660,11 @@ function applyOrchestrationEvent(s: AppState, e: ProviderEventDTO): Partial<AppS
   const nextReplaySeq = { ...s._runReplaySeq, [e.workflowRunId]: e.seq };
   if (e.type === "agent_graph_updated") {
     return {
-      agentRuns: e.agentGraphSnapshot.runs,
+      // Merge (not replace) so disk-persisted closed children stay visible (BUG-132).
+      agentRuns: mergeAgentRunsById(s.agentRuns, e.agentGraphSnapshot.runs),
       agentGraphSnapshot: e.agentGraphSnapshot,
       agentBusMessages: e.agentGraphSnapshot.busMessages,
       _runReplaySeq: nextReplaySeq,
-      // Invalidate any in-flight refreshAgentRuns fetch (BUG-130).
-      _agentRunsLoadSeq: s._agentRunsLoadSeq + 1,
     };
   }
   if (e.type === "agent_bus_message") {
