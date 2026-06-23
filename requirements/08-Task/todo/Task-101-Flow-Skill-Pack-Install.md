@@ -5,7 +5,7 @@
 - Document ID: `Task-101`
 - Title: `Flow Skill Pack Install`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-23`
