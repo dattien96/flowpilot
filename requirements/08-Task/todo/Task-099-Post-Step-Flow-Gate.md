@@ -5,7 +5,7 @@
 - Document ID: `Task-099`
 - Title: `Post-Step Flow Gate`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-23`
