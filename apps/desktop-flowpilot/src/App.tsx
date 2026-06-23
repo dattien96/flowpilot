@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import type {
   DesktopBootstrapState,
   SupabaseConfigInput,
+  SupabaseSchemaApplyInput,
+  SupabaseSchemaApplyResult,
   SupabaseConfigValidation,
   SupabaseRuntimeStatus,
 } from "@flowpilot/client-core";
@@ -13,6 +15,7 @@ import { LoginScreen } from "@/components/LoginScreen";
 import { SettingsShell, type SettingsSection } from "@/components/SettingsShell";
 import { resolveDesktopBootstrapState } from "@/app/bootstrapState";
 import {
+  applySupabaseMigrationsUseCase,
   loadDesktopBootstrapUseCase,
   loginUseCase,
   logoutUseCase,
@@ -145,6 +148,17 @@ export function App(): React.ReactElement {
     }
   };
 
+  const handleApplySupabaseMigrations = async (
+    input: SupabaseSchemaApplyInput,
+  ): Promise<SupabaseSchemaApplyResult> => {
+    setBusy(true);
+    try {
+      return await applySupabaseMigrationsUseCase.execute(input);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   if (phase === "loading") {
     return (
       <div className="status-shell">
@@ -179,6 +193,7 @@ export function App(): React.ReactElement {
             ? () => setUnauthenticatedView("login")
             : undefined
         }
+        onApplySupabaseMigrations={handleApplySupabaseMigrations}
         onSaveSupabase={handleSaveSupabase}
         onSelectSection={setSettingsSection}
         onValidateSupabase={handleValidateSupabase}
@@ -265,6 +280,7 @@ export function App(): React.ReactElement {
             <SettingsShell
               activeSection="runner"
             busy={busy}
+            onApplySupabaseMigrations={handleApplySupabaseMigrations}
             onSaveSupabase={handleSaveSupabase}
             onSelectSection={setSettingsSection}
             onValidateSupabase={handleValidateSupabase}
@@ -275,6 +291,7 @@ export function App(): React.ReactElement {
         <SettingsShell
           activeSection={settingsSection}
           busy={busy}
+          onApplySupabaseMigrations={handleApplySupabaseMigrations}
           onSaveSupabase={handleSaveSupabase}
           onSelectSection={setSettingsSection}
           onValidateSupabase={handleValidateSupabase}

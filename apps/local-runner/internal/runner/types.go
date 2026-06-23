@@ -207,7 +207,7 @@ type ChatSyncGoogleDriveConnectionStatus struct {
 	Session           *ArtifactStorageGoogleDriveSession   `json:"session,omitempty"`
 	EffectiveSource   string                               `json:"effectiveSource"`
 	Ready             bool                                 `json:"ready"`
-	AvailableAccounts []GoogleDriveAccountStatus          `json:"availableAccounts,omitempty"`
+	AvailableAccounts []GoogleDriveAccountStatus           `json:"availableAccounts,omitempty"`
 }
 
 type ArtifactStorageGoogleDrivePickerToken struct {
@@ -257,6 +257,26 @@ type SupabaseWorkspaceConfigResponse struct {
 type SupabaseWorkspaceConfigRequest struct {
 	SupabaseWorkspaceConfig
 	ServiceRoleKey string `json:"serviceRoleKey"`
+}
+
+type SupabaseSchemaApplyRequest struct {
+	APIURL      string `json:"apiUrl"`
+	ProjectRef  string `json:"projectRef,omitempty"`
+	AccessToken string `json:"accessToken"`
+}
+
+type SupabaseSchemaMigrationResult struct {
+	Version string `json:"version"`
+	Name    string `json:"name"`
+	Status  string `json:"status"`
+	Message string `json:"message,omitempty"`
+}
+
+type SupabaseSchemaApplyResponse struct {
+	ProjectRef   string                          `json:"projectRef"`
+	AppliedCount int                             `json:"appliedCount"`
+	SkippedCount int                             `json:"skippedCount"`
+	Migrations   []SupabaseSchemaMigrationResult `json:"migrations"`
 }
 
 type SupabasePasswordLoginRequest struct {
@@ -342,7 +362,7 @@ type GoogleDriveMcpStatus struct {
 type GoogleDriveWorkspaceConfigResponse struct {
 	ArtifactSync    GoogleDriveArtifactSyncStatus        `json:"artifactSync"`
 	MCP             GoogleDriveMcpStatus                 `json:"mcp"`
-	Accounts        []GoogleDriveAccountStatus          `json:"accounts,omitempty"`
+	Accounts        []GoogleDriveAccountStatus           `json:"accounts,omitempty"`
 	ProviderConfigs []GoogleDriveMcpProviderConfigStatus `json:"providerConfigs,omitempty"`
 	RunnerReachable bool                                 `json:"runnerReachable"`
 	LastError       string                               `json:"lastError,omitempty"`

@@ -45,7 +45,8 @@ func TestEngineInitAndStatusEndpoints(t *testing.T) {
 		t.Fatal("expected initialized=true")
 	}
 
-	expectFileExists(t, filepath.Join(targetRepo, ".claude", "skills", "flowpilot", "git-commit-format", "SKILL.md"))
+	expectFileExists(t, filepath.Join(targetRepo, ".claude", "skills", "git-commit-format", "SKILL.md"))
+	expectFileExists(t, filepath.Join(targetRepo, ".agents", "skills", "git-commit-format", "SKILL.md"))
 	expectFileExists(t, filepath.Join(targetRepo, ".flowpilot", "tooling.json"))
 	expectFileExists(t, filepath.Join(targetRepo, ".flowpilot", "engine-init.json"))
 	expectFileExists(t, filepath.Join(targetRepo, ".flowpilot", "ledger", "feature_history.ndjson"))
@@ -68,7 +69,35 @@ func TestEngineInitAndStatusEndpoints(t *testing.T) {
 	}
 }
 
-func TestEngineInitRejectsRunnerWorkspace(t *testing.T) {
+func TestGlobalEngineToolingStatusEndpoint(t *testing.T) {
+	svc := NewInteractiveService()
+	svc.AttachRunner(&Runner{workspace: t.TempDir()})
+
+	mux := http.NewServeMux()
+	svc.RegisterInteractiveRoutes(mux)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	status, body := doJSON(t, http.MethodGet, server.URL+"/client/engine/tooling/status", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("status=%d body=%s", status, body)
+	}
+
+	var response EngineGlobalToolingStatusResponse
+	if err := json.Unmarshal(body, &response); err != nil {
+		t.Fatalf("decode global tooling response: %v", err)
+	}
+	if len(response.Tooling) != 3 {
+		t.Fatalf("expected 3 global tooling entries, got %d", len(response.Tooling))
+	}
+	for _, tool := range response.Tooling {
+		if tool.Tool == "skill_pack" {
+			t.Fatalf("global tooling response must not include skill_pack: %+v", response.Tooling)
+		}
+	}
+}
+
+func TestEngineInitAllowsRunnerWorkspace(t *testing.T) {
 	runnerWorkspace := createGitRepoForEngineTest(t)
 
 	svc := NewInteractiveService()
@@ -82,10 +111,10 @@ func TestEngineInitRejectsRunnerWorkspace(t *testing.T) {
 	status, body := doJSON(t, http.MethodPost, server.URL+"/client/projects/project-1/engine/init", map[string]any{
 		"workingDirectory": runnerWorkspace,
 	}, nil)
-	if status != http.StatusBadRequest {
+	if status != http.StatusOK {
 		t.Fatalf("status=%d body=%s", status, body)
 	}
-	if !containsJSONField(body, "self_repo_forbidden") {
+	if !containsJSONField(body, "\"projectId\":\"project-1\"") {
 		t.Fatalf("unexpected body=%s", body)
 	}
 }

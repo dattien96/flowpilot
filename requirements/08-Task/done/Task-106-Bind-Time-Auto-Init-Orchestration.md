@@ -10,94 +10,112 @@
 - Reviewers: `TBD`
 - Created: `2026-06-23`
 - Last Updated: `2026-06-23`
-- Parent Documents: [CP-34: Init / Setup Tool](../../07-Coding-Plan/todo/CP-34-Init-tool.md), [SD-17: Context And Regression Engine](../../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md), [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md)
+- Parent Documents: [CP-34: Init / Setup Tool — Desktop Engine Page & Project Auto-Init](../../07-Coding-Plan/todo/CP-34-Init-tool.md), [SD-17: Context And Regression Engine](../../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md), [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md)
 - Child Documents: `None`
-- Related Documents: [Task-104: Runner Engine-Setup Endpoints](./Task-104-Runner-Engine-Setup-Endpoints.md), [Task-096: Commit-History Ledger](./Task-096-Commit-History-Ledger.md), [Task-097: Feature Catalog And Resolver](./Task-097-Feature-Catalog-And-Resolver.md), [CP-31: Auto-Document Process](../../07-Coding-Plan/done/CP-31-Auto-Document-Process.md)
+- Related Documents: [Task-104: Runner Engine-Setup Endpoints](./Task-104-Runner-Engine-Setup-Endpoints.md), [Task-105: Desktop Settings Engine Page](./Task-105-Engine-Setup-UI-Tab.md), [Task-096: Commit-History Ledger](./Task-096-Commit-History-Ledger.md), [Task-097: Feature Catalog And Resolver](./Task-097-Feature-Catalog-And-Resolver.md), [CP-31: Auto-Document Process](../../07-Coding-Plan/done/CP-31-Auto-Document-Process.md)
 - Replaces: `None`
-- Tags: `local-runner, bind, orchestration, engine-init, non-fatal`
+- Tags: `desktop, bind, orchestration, engine-init, non-fatal`
 
 ## AI Quick View
 
 ### Summary
 
-- Make a freshly bound project engine-ready automatically from the desktop app flows that actually create or update project bindings.
-- Bind-time init is best-effort and async: it calls the runner init endpoint with `trigger=bind`, allowing the bind itself to succeed even if initialization partially fails.
-- The shipped slice covers tooling check, skill-pack sync, ledger build, catalog build, and persisted last-init state; CP-31 normalization was explicitly deferred because this repo has no callable normalization entrypoint.
+- Project bindings still trigger background engine init from desktop project create/save flows.
+- This slice only orchestrates project-local engine assets; global tooling lives on the separate `Settings -> Engine` page.
+- Bind-time init is async and best-effort, and the last-init result is later shown on the Engine page.
 
 ### Current Ask
 
-- Deliver CP-34 P-3 using the real binding save flows in the desktop app instead of a nonexistent runner-side binding lookup.
+- Keep CP-34 `P-3` attached to the real desktop binding save flows while the user-facing Engine page stays separate.
 
 ### Key Decisions
 
-- `T-1` Auto-init is launched from desktop project create and desktop project save flows, because those are the places where binding data exists in the current product surface.
-- `T-2` Auto-init is async and best-effort; the desktop app logs failures and does not block the primary save action.
-- `T-3` The runner enforces the staleness gate for `trigger=bind`, skipping when `.flowpilot` already exists, `tooling.json` exists, and the skill-pack is already current.
-- `T-4` The FlowPilot repo guard still applies, and the last init result is persisted for the desktop Engine Setup section.
+- `T-1` Auto-init launches from desktop project create and project save flows because those are the only places that own binding data.
+- `T-2` Auto-init is async and best-effort; project create/save must succeed even if engine init is partial or fails.
+- `T-3` Only project-local state is initialized here: skill-pack sync, ledger, catalog, and last-init state.
+- `T-4` Bind-trigger skip logic is project-local and uses `.flowpilot/engine-init.json` plus current skill-pack freshness.
+- `T-5` The shared runner init endpoint may target FlowPilot itself when it is intentionally the bound project; isolation is maintained by per-project binding scope.
 
 ### Constraints
 
-- Reuse Task-104's init path from the desktop app instead of duplicating engine logic in the binding flows.
+- Reuse Task-104's runner init path instead of duplicating engine logic in project save flows.
 
 ### Open Questions
 
-- None blocking after the shipped decision to gate bind-trigger init on existing `.flowpilot` state plus skill-pack freshness.
+- None blocking.
 
 ### Source Refs
 
-- `CP-34 §4.3`; `SD-17 §7.3`; `SS-14 AC-12`, AC-1, AC-9; `CP-31`.
+- `CP-34` `P-3`
+- `Task-104`
+- `Task-105`
+- `SD-17 §7.3`
+- `SS-14 AC-1`, `AC-12`, `AC-13`
 
 ## 1. Goal
 
-Binding a project leaves it engine-ready with no manual runner step, without ever risking the project save or directory-binding action itself.
+Ensure project binding create/save flows leave project-local engine state ready in the background without coupling the global tooling UI to project settings.
 
 ## 2. Parent Links
 
-- coding plan: `CP-34` P-3
-- tech design: `SD-17` §7.3
-- system spec: `SS-14` AC-12, AC-1, AC-9
-- specific upstream ids: `P-3`, `AC-12`
+- coding plan: `CP-34`
+- tech design: `SD-17`
+- system spec: `SS-14`
+- specific upstream ids: `P-3`, `AC-1`, `AC-12`, `AC-13`
 
 ## 3. Trigger
 
-Engine setup needed to happen when a project binding is created or updated, but the runner has no direct access to binding records, so orchestration had to be attached to the desktop settings save flows.
+The runner still cannot infer project bindings on its own, so bind-time engine init had to remain attached to desktop project flows even after the manual Engine UI moved to its own settings page.
 
 ## 4. Exact Change
 
-- `T-1` Add a shared desktop helper that calls the runner `engine/init` endpoint with `{ workingDirectory, trigger: "bind" }` and swallows failures after logging.
+- `T-1` Keep a shared desktop helper that calls the runner init endpoint with `{ workingDirectory, trigger: "bind" }`.
 - `T-2` Invoke that helper after binding-bearing save flows in desktop `ProjectsSettings`: project create and project save.
-- `T-3` Reuse the Task-104 runner init path so bind-trigger init performs tooling check, skill-pack sync, change-ledger build, and feature-catalog build.
-- `T-4` Persist last-init outcome for Task-105 via `.flowpilot/engine-init.json`.
-- `T-5` Explicitly defer CP-31 normalization from this slice because no normalization entrypoint exists in the current codebase.
+- `T-3` Reuse the Task-104 runner path so bind-trigger init performs tooling check, skill-pack sync, change-ledger build, and feature-catalog build.
+- `T-4` Persist last-init outcome for later display on the dedicated Engine page.
+- `T-5` Do not re-embed the manual engine UI in project settings; only the background orchestration stays there.
 
 ## 5. Touched Areas
 
-- files: `apps/desktop-flowpilot/src/components/settings/projectEngine.ts`, `apps/desktop-flowpilot/src/components/settings/ProjectsSettings.tsx`, plus the reused Task-104 runner files
-- modules: desktop project save flows, `runner`, `changeledger`, `featurecatalog`, `skillpack`, `tooling`
-- routes: none new
-- tables: none
+- files:
+  - `apps/desktop-flowpilot/src/components/settings/ProjectsSettings.tsx`
+  - `apps/desktop-flowpilot/src/components/settings/projectEngine.ts`
+  - reused Task-104 runner files
+- modules:
+  - desktop project save flows
+  - runner init orchestration
+  - skillpack
+  - tooling
+  - changeledger
+  - featurecatalog
+- routes:
+  - none new
+- tables:
+  - none
 
 ## 6. Acceptance Check
 
 Detailed DoD checklist:
 
 - [x] Desktop project create flow triggers best-effort bind-time engine init for each normalized binding.
-- [x] Desktop project save flow triggers best-effort bind-time engine init for each normalized binding after bindings are persisted.
-- [x] The same best-effort bind-time engine init helper is reused across both desktop save paths.
-- [x] The helper passes `trigger: "bind"` and the explicit binding `localPath` to the runner.
-- [x] Bind-time failures do not fail the project save or directory-binding action.
-- [x] The runner-side bind gate skips already-initialized repos when `.flowpilot` state and skill-pack freshness indicate no work is needed.
-- [x] Self-repo protection still prevents FlowPilot from initializing itself.
-- [x] Bind-trigger init persists last-init details that the desktop Engine Setup section can display later.
+- [x] Desktop project save flow triggers best-effort bind-time engine init after bindings are persisted.
+- [x] The same bind-time helper is reused across both desktop save paths.
+- [x] The helper passes `trigger: "bind"` and explicit binding `localPath` values to the runner.
+- [x] Bind-time failures do not fail project save or binding actions.
+- [x] The runner-side bind gate skips already-initialized repos when `engine-init.json` exists and the current skill-pack is already installed.
+- [x] Bind-trigger init can target FlowPilot itself when FlowPilot is intentionally bound as the project.
+- [x] Bind-trigger init persists last-init details that the dedicated Engine page can display later.
 - [x] Change-ledger and feature-catalog build run through the reused runner init path.
-- [x] CP-31 normalization is called out as deferred rather than silently omitted.
+- [x] Project settings no longer host the manual engine screen; they only host the background orchestration hook.
 
 ## 7. Out of Scope
 
-- The endpoints themselves (Task-104); the UI (Task-105); CP-31's normalization internals.
+- Runner transport details (Task-104).
+- Desktop Engine page composition (Task-105).
+- CP-31 normalization internals.
 
 ## 8. Completion Notes
 
-- result: implemented through desktop settings binding save flows plus the shared runner init endpoint.
-- follow-ups: wire CP-31 normalization later if a stable callable entrypoint is introduced.
-- upstream docs updated: `CP-34` updated to reflect that bind-time orchestration lives in the desktop app and that CP-31 normalization is deferred in the current repo.
+- result: implemented through desktop project create/save flows plus the shared runner init endpoint.
+- follow-ups: if a future callable normalization entrypoint exists, it can be added to the same runner init path rather than to the desktop save handlers.
+- upstream docs updated: `CP-34` now separates the dedicated Engine page from the project-save orchestration path.

@@ -34,10 +34,31 @@ export interface SupabaseConfigValidation {
   projectRef?: string;
 }
 
+export interface SupabaseSchemaApplyInput {
+  apiUrl: string;
+  projectRef?: string;
+  accessToken: string;
+}
+
+export interface SupabaseSchemaApplyMigration {
+  version: string;
+  name: string;
+  status: "applied" | "skipped";
+  message?: string;
+}
+
+export interface SupabaseSchemaApplyResult {
+  projectRef: string;
+  appliedCount: number;
+  skippedCount: number;
+  migrations: SupabaseSchemaApplyMigration[];
+}
+
 export interface RuntimeConfigRepository {
   loadSupabaseRuntimeStatus(): Promise<SupabaseRuntimeStatus>;
   validateSupabaseConfig(input: SupabaseConfigInput): Promise<SupabaseConfigValidation>;
   saveSupabaseConfig(input: SupabaseConfigInput): Promise<SupabaseRuntimeStatus>;
+  applySupabaseMigrations(input: SupabaseSchemaApplyInput): Promise<SupabaseSchemaApplyResult>;
 }
 
 export class LoadSupabaseRuntimeStatusUseCase {
@@ -61,5 +82,13 @@ export class SaveSupabaseConfigUseCase {
 
   execute(input: SupabaseConfigInput): Promise<SupabaseRuntimeStatus> {
     return this.repository.saveSupabaseConfig(input);
+  }
+}
+
+export class ApplySupabaseMigrationsUseCase {
+  constructor(private readonly repository: RuntimeConfigRepository) {}
+
+  execute(input: SupabaseSchemaApplyInput): Promise<SupabaseSchemaApplyResult> {
+    return this.repository.applySupabaseMigrations(input);
   }
 }

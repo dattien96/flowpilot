@@ -33,7 +33,7 @@
 
 ### Key Decisions
 
-- `AC-1` The engine operates only on the bound target project, never on FlowPilot's own source.
+- `AC-1` The engine operates only on the currently bound target project. If FlowPilot itself is intentionally bound as the target project, it is treated like any other target; no other project's data is injected.
 - `AC-3` Before editing a feature, the AI receives that feature's prior change history in order, so it builds on rather than undoes prior work.
 - `AC-6` A failing pre-existing test is never resolved by weakening the test or the code's intended behavior; it forces an SS/SD re-check.
 
@@ -105,7 +105,7 @@ A third, subtler failure compounds regressions: when a test fails, the AI "fixes
 
 ## 6. Acceptance Criteria
 
-- `AC-1` All context and history are built from and stored against the bound target project; FlowPilot never injects its own repository as context, and no project's data is visible to another.
+- `AC-1` All context and history are built from and stored against the currently bound target project. If FlowPilot itself is the bound target, its own repo may be used as context for that project; no other project's data is visible to another.
 - `AC-2` The engine produces useful structural context, change history, and regression checks on a bound repo that has no SS-13 documents and no FlowPilot change history, using code and git alone.
 - `AC-3` Before editing a feature, the AI is given that feature's prior change history in order (newest = current truth), so it builds on existing work instead of undoing it.
 - `AC-4` Where structural tooling (e.g., GitNexus) is available, a change that removes or breaks code still referenced elsewhere is surfaced before the step is accepted.

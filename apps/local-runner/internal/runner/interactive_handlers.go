@@ -22,6 +22,7 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /client/workflows/{workflowId}/steps", s.handleListSteps)
 	mux.HandleFunc("GET /client/projects/{projectId}/workflow-runs", s.handleListProjectRunHistory)
 	mux.HandleFunc("GET /client/projects/{projectId}/chat-sessions/remote", s.handleListRemoteChatSessions)
+	mux.HandleFunc("GET /client/engine/tooling/status", s.handleGetGlobalEngineToolingStatus)
 	mux.HandleFunc("GET /client/projects/{projectId}/engine/status", s.handleGetEngineStatus)
 	mux.HandleFunc("POST /client/projects/{projectId}/engine/init", s.handleInitEngine)
 	mux.HandleFunc("POST /client/workflow-runs", s.handleStartRun)

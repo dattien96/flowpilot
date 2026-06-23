@@ -36,6 +36,10 @@ type EngineStatusResponse struct {
 	Warnings         []string                      `json:"warnings,omitempty"`
 }
 
+type EngineGlobalToolingStatusResponse struct {
+	Tooling []tooling.ToolStatus `json:"tooling"`
+}
+
 type EngineInitState struct {
 	Trigger          string                  `json:"trigger"`
 	Status           string                  `json:"status"`
@@ -70,6 +74,12 @@ func (s *InteractiveService) handleGetEngineStatus(w http.ResponseWriter, r *htt
 
 	status := s.buildEngineStatusResponse(r.PathValue("projectId"), workingDirectory, nil, nil)
 	writeInteractiveJSON(w, http.StatusOK, status)
+}
+
+func (s *InteractiveService) handleGetGlobalEngineToolingStatus(w http.ResponseWriter, r *http.Request) {
+	writeInteractiveJSON(w, http.StatusOK, EngineGlobalToolingStatusResponse{
+		Tooling: tooling.CheckGlobal(),
+	})
 }
 
 func (s *InteractiveService) handleInitEngine(w http.ResponseWriter, r *http.Request) {
@@ -115,12 +125,7 @@ func (s *InteractiveService) resolveEngineWorkingDirectory(value string) (string
 		return "", newAPIErr(http.StatusBadRequest, "working_directory_unavailable", "workingDirectory must point to an existing directory")
 	}
 
-	runnerWorkspace := strings.TrimSpace(filepath.Clean(s.runner.workspace))
 	resolved = strings.TrimSpace(filepath.Clean(resolved))
-	if runnerWorkspace != "" && isSameOrWithinPath(resolved, runnerWorkspace) {
-		return "", newAPIErr(http.StatusBadRequest, "self_repo_forbidden", "engine cannot target FlowPilot's own repo")
-	}
-
 	return resolved, nil
 }
 
@@ -133,20 +138,13 @@ func (s *InteractiveService) buildEngineStatusResponse(
 	dotFlowpilotDir := filepath.Join(workingDirectory, ".flowpilot")
 	warnings := append([]string(nil), extraWarnings...)
 	toolStatuses := append([]tooling.ToolStatus(nil), precomputedTooling...)
-	if len(toolStatuses) == 0 {
-		var err error
-		toolStatuses, err = tooling.LoadToolingStatus(dotFlowpilotDir)
-		if err != nil {
-			toolStatuses, err = tooling.CheckAll(workingDirectory, dotFlowpilotDir)
-			if err != nil {
-				warnings = append(warnings, fmt.Sprintf("tooling check warning: %v", err))
-			}
-		}
-	}
-
 	skillPackState, err := skillpack.Status(workingDirectory)
 	if err != nil {
 		warnings = append(warnings, fmt.Sprintf("skill-pack status warning: %v", err))
+	}
+	if len(toolStatuses) == 0 {
+		toolStatuses = append(toolStatuses, tooling.CheckGlobal()...)
+		toolStatuses = append(toolStatuses, buildSkillPackToolStatus(skillPackState))
 	}
 
 	var initialized bool
@@ -294,8 +292,24 @@ func shouldSkipBindInit(trigger string, dotFlowpilotDir string, skillPackStatus 
 	if !skillPackStatus.Current {
 		return false
 	}
-	_, err := os.Stat(filepath.Join(dotFlowpilotDir, "tooling.json"))
+	_, err := os.Stat(filepath.Join(dotFlowpilotDir, "engine-init.json"))
 	return err == nil
+}
+
+func buildSkillPackToolStatus(status skillpack.PackStatus) tooling.ToolStatus {
+	toolStatus := tooling.ToolStatus{
+		Tool:      "skill_pack",
+		CheckedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	switch {
+	case status.Current:
+		toolStatus.Status = "ok"
+	case status.Installed:
+		toolStatus.Status = "stale"
+	default:
+		toolStatus.Status = "missing"
+	}
+	return toolStatus
 }
 
 func loadEngineInitState(dotFlowpilotDir string) (*EngineInitState, error) {

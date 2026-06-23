@@ -2,6 +2,8 @@ import { useState } from "react";
 import type {
   SupabaseConfigInput,
   SupabaseConfigValidation,
+  SupabaseSchemaApplyInput,
+  SupabaseSchemaApplyResult,
   SupabaseRuntimeStatus,
 } from "@flowpilot/client-core";
 
@@ -11,11 +13,23 @@ interface SupabaseSetupScreenProps {
   onBack?: () => void;
   onValidate: (input: SupabaseConfigInput) => Promise<SupabaseConfigValidation>;
   onSave: (input: SupabaseConfigInput) => Promise<void>;
+  onApplyMigrations: (
+    input: SupabaseSchemaApplyInput,
+  ) => Promise<SupabaseSchemaApplyResult>;
 }
 
 function suggestEdgeUrl(apiUrl: string) {
   const trimmed = apiUrl.trim().replace(/\/+$/, "");
   return trimmed ? `${trimmed}/functions/v1` : "";
+}
+
+function deriveProjectRef(apiUrl: string) {
+  try {
+    const host = new URL(apiUrl.trim()).host.toLowerCase();
+    return host.replace(/\.supabase\.co$/, "").split(".")[0] || "";
+  } catch {
+    return "";
+  }
 }
 
 export function SupabaseSetupScreen({
@@ -24,6 +38,7 @@ export function SupabaseSetupScreen({
   onBack,
   onValidate,
   onSave,
+  onApplyMigrations,
 }: SupabaseSetupScreenProps): React.ReactElement {
   const [form, setForm] = useState<SupabaseConfigInput>({
     apiUrl: runtimeStatus.apiUrl ?? "",
@@ -34,6 +49,9 @@ export function SupabaseSetupScreen({
   const [edgeTouched, setEdgeTouched] = useState(Boolean(runtimeStatus.edgeFunctionUrl));
   const [validation, setValidation] = useState<SupabaseConfigValidation | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
+  const [migrationBusy, setMigrationBusy] = useState(false);
+  const [migrationToken, setMigrationToken] = useState("");
+  const [migrationResult, setMigrationResult] = useState<SupabaseSchemaApplyResult | null>(null);
 
   const updateApiUrl = (apiUrl: string) => {
     setForm((current) => ({
@@ -70,6 +88,34 @@ export function SupabaseSetupScreen({
       setFeedback("Supabase config saved.");
     } catch (error) {
       setFeedback(error instanceof Error ? error.message : "Unable to save Supabase config.");
+    }
+  };
+
+  const handleApplyMigrations = async () => {
+    const projectRef =
+      validation?.projectRef
+      || runtimeStatus.projectRef
+      || deriveProjectRef(form.apiUrl);
+    if (!form.apiUrl.trim() || !projectRef || !migrationToken.trim()) {
+      setFeedback("Supabase URL, project ref, and a Management API access token are required to apply repo migrations.");
+      return;
+    }
+
+    setFeedback(null);
+    setMigrationBusy(true);
+    try {
+      const result = await onApplyMigrations({
+        apiUrl: form.apiUrl,
+        projectRef,
+        accessToken: migrationToken,
+      });
+      setMigrationResult(result);
+      setFeedback(`Schema init finished: ${result.appliedCount} applied, ${result.skippedCount} skipped.`);
+    } catch (error) {
+      setMigrationResult(null);
+      setFeedback(error instanceof Error ? error.message : "Unable to apply repo migrations.");
+    } finally {
+      setMigrationBusy(false);
     }
   };
 
@@ -126,6 +172,7 @@ export function SupabaseSetupScreen({
             disabled={busy}
             onChange={(event) => updateField("serviceRoleKey", event.target.value)}
             placeholder={runtimeStatus.hasServiceRoleKey ? "Leave blank to keep existing key" : "Privileged service role key"}
+            type="password"
             value={form.serviceRoleKey}
           />
         </label>
@@ -160,6 +207,53 @@ export function SupabaseSetupScreen({
           <button className="ghost-btn" onClick={onBack} type="button">
             Back
           </button>
+        ) : null}
+      </div>
+
+      <div className="settings-subpanel">
+        <div className="settings-panel-head">
+          <div>
+            <h3>Schema Initialization</h3>
+            <p>
+              Apply the checked-in `supabase/migrations` files to the configured project.
+              The Management API token is used only for this action and is not saved.
+            </p>
+          </div>
+        </div>
+
+        <div className="settings-grid">
+          <label className="settings-field settings-field-full">
+            <span>Management API Access Token</span>
+            <input
+              disabled={busy || migrationBusy}
+              onChange={(event) => setMigrationToken(event.target.value)}
+              placeholder="Supabase personal access token with database:write scope"
+              type="password"
+              value={migrationToken}
+            />
+          </label>
+        </div>
+
+        <div className="settings-actions">
+          <button
+            className="secondary-btn"
+            disabled={busy || migrationBusy || !runtimeStatus.runnerReachable}
+            onClick={() => void handleApplyMigrations()}
+            type="button"
+          >
+            {migrationBusy ? "Applying..." : "Apply Repo Migrations"}
+          </button>
+        </div>
+
+        {migrationResult ? (
+          <div className="settings-validation">
+            {migrationResult.migrations.map((migration) => (
+              <div className={`validation-row ${migration.status === "applied" ? "passed" : "warn"}`} key={migration.version}>
+                <span>{migration.version} {migration.name}</span>
+                <span>{migration.message || migration.status}</span>
+              </div>
+            ))}
+          </div>
         ) : null}
       </div>
     </section>

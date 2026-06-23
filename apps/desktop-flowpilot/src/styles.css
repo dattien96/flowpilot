@@ -743,14 +743,22 @@ input {
   border-radius: 12px;
   border: 1px solid var(--border);
   background: var(--bg-3);
+  min-width: 0;
 }
 .project-inline-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
   padding: 9px 0;
   border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+.project-inline-row span {
+  min-width: 0;
+}
+.project-inline-row span:last-child {
+  text-align: right;
+  overflow-wrap: anywhere;
 }
 .project-inline-row:first-of-type {
   border-top: 0;
@@ -898,12 +906,24 @@ input {
 }
 .validation-row {
   display: flex;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
   padding: 10px 12px;
   border-radius: 10px;
   background: var(--bg-3);
   border: 1px solid var(--border);
+}
+.validation-row span {
+  min-width: 0;
+}
+.validation-row span:first-child {
+  flex: 0 0 180px;
+}
+.validation-row span:last-child {
+  flex: 1;
+  text-align: right;
+  overflow-wrap: anywhere;
 }
 .validation-row.failed,
 .validation-row.fail {
@@ -5153,5 +5173,4 @@ body.is-resizing-sidebar {
   color: var(--text-dim);
   margin-top: 2px;
 }
-
 

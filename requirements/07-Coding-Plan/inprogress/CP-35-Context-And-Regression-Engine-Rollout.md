@@ -290,7 +290,7 @@ type Violation struct { Rule Rule; Detail string }
 
 ### Shared
 
-- [x] FlowPilot's own repo never used as context; each project isolated in its own `<target>/.flowpilot/` dir (AC-1). — **structural isolation by design ✓**
+- [x] Context stays isolated to the currently bound target project, and each project uses its own `<target>/.flowpilot/` dir (AC-1). FlowPilot itself is allowed when intentionally bound as the target. — **structural isolation by design ✓**
 - [x] All build/index/check steps non-fatal and retryable; raw artifact save always succeeds (AC-9). — **all packages non-fatal by design ✓**
 
 ### What remains before full P-4/P-5/P-6/P-8 DoD

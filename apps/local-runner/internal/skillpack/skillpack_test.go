@@ -26,17 +26,32 @@ func TestInstall_CreatesFilesInAllProviderDirs(t *testing.T) {
 		t.Fatalf("Install reported errors: %v", result.Errors)
 	}
 
-	for _, provider := range providerDirs {
-		for _, skill := range expectedSkills {
-			path := filepath.Join(dir, provider, "skills", "flowpilot", skill, "SKILL.md")
-			if _, statErr := os.Stat(path); statErr != nil {
-				t.Errorf("expected file missing: %s", path)
-			}
+	wantPaths := []string{
+		filepath.Join(dir, ".claude", "skills", "git-commit-format", "SKILL.md"),
+		filepath.Join(dir, ".agents", "skills", "git-commit-format", "SKILL.md"),
+	}
+	for _, path := range wantPaths {
+		if _, statErr := os.Stat(path); statErr != nil {
+			t.Errorf("expected file missing: %s", path)
+		}
+	}
+	for _, skill := range expectedSkills {
+		if _, statErr := os.Stat(filepath.Join(dir, ".claude", "skills", skill, "SKILL.md")); statErr != nil {
+			t.Errorf("expected Claude skill missing for %s", skill)
+		}
+		if _, statErr := os.Stat(filepath.Join(dir, ".agents", "skills", skill, "SKILL.md")); statErr != nil {
+			t.Errorf("expected agents skill missing for %s", skill)
+		}
+		if _, statErr := os.Stat(filepath.Join(dir, ".claude", "skills", "flowpilot", skill, "SKILL.md")); !os.IsNotExist(statErr) {
+			t.Errorf("unexpected nested flowpilot dir for Claude skill %s", skill)
+		}
+		if _, statErr := os.Stat(filepath.Join(dir, ".agents", "skills", "flowpilot", skill, "SKILL.md")); !os.IsNotExist(statErr) {
+			t.Errorf("unexpected nested flowpilot dir for agents skill %s", skill)
 		}
 	}
 
-	// 5 skills * 3 providers = 15 files installed
-	want := len(expectedSkills) * len(providerDirs)
+	// 5 skills * 2 physical install roots = 10 files installed
+	want := len(expectedSkills) * len(installRoots)
 	if len(result.Installed) != want {
 		t.Errorf("Installed count = %d, want %d", len(result.Installed), want)
 	}
@@ -84,7 +99,7 @@ func TestInstall_SkipsExistingSameVersionFiles(t *testing.T) {
 		t.Errorf("second Install.Installed = %d, want 0 (all should be skipped)", len(second.Installed))
 	}
 
-	want := len(expectedSkills) * len(providerDirs)
+	want := len(expectedSkills) * len(installRoots)
 	if len(second.Skipped) != want {
 		t.Errorf("second Install.Skipped = %d, want %d", len(second.Skipped), want)
 	}
@@ -94,11 +109,11 @@ func TestInstall_ReinstallsWhenVersionMismatch(t *testing.T) {
 	dir := t.TempDir()
 
 	// Write a file with a different version so it should be overwritten.
-	stalePath := filepath.Join(dir, ".claude", "skills", "flowpilot", "git-commit-format", "SKILL.md")
+	stalePath := filepath.Join(dir, ".claude", "skills", "git-commit-format", "SKILL.md")
 	if err := os.MkdirAll(filepath.Dir(stalePath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(stalePath, []byte("version: 0\n\nold content"), 0o644); err != nil {
+	if err := os.WriteFile(stalePath, []byte("---\nname: git-commit-format\ndescription: stale skill\nversion: 0\n---\n\nold content"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -123,7 +138,7 @@ func TestFileMatchesVersion(t *testing.T) {
 	}
 	defer os.Remove(f.Name())
 
-	f.WriteString("version: 1\n\nsome content\n")
+	f.WriteString("---\nname: test-skill\ndescription: test skill\nversion: 1\n---\n\nsome content\n")
 	f.Close()
 
 	if !fileMatchesVersion(f.Name(), 1) {

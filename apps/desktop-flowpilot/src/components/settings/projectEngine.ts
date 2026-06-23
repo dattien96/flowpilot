@@ -9,6 +9,10 @@ export interface ProjectEngineToolStatus {
   checkedAt: string;
 }
 
+export interface GlobalEngineToolingStatus {
+  tooling: ProjectEngineToolStatus[];
+}
+
 export interface ProjectEngineCapabilityProfile {
   hasGitNexus: boolean;
   hasRTK: boolean;
@@ -142,6 +146,10 @@ interface RawProjectEngineStatus {
   warnings?: string[];
 }
 
+interface RawGlobalEngineToolingStatus {
+  tooling: RawProjectEngineToolStatus[];
+}
+
 function mapProjectEngineStatus(raw: RawProjectEngineStatus): ProjectEngineStatus {
   return {
     projectId: raw.projectId,
@@ -200,6 +208,19 @@ function mapProjectEngineStatus(raw: RawProjectEngineStatus): ProjectEngineStatu
         }
       : null,
     warnings: raw.warnings ?? [],
+  };
+}
+
+function mapGlobalEngineToolingStatus(
+  raw: RawGlobalEngineToolingStatus,
+): GlobalEngineToolingStatus {
+  return {
+    tooling: (raw.tooling ?? []).map((tool) => ({
+      tool: tool.tool,
+      version: tool.version,
+      status: tool.status,
+      checkedAt: tool.checked_at,
+    })),
   };
 }
 
@@ -276,6 +297,19 @@ export function engineTone(status: string): "passed" | "warn" | "fail" {
     return "warn";
   }
   return "fail";
+}
+
+export async function fetchGlobalEngineToolingStatus(): Promise<GlobalEngineToolingStatus> {
+  const response = await fetch(
+    new URL("/client/engine/tooling/status", RUNNER_URL).toString(),
+    { cache: "no-store" },
+  );
+  if (!response.ok) {
+    throw new Error(await readProjectEngineError(response));
+  }
+  return mapGlobalEngineToolingStatus(
+    (await response.json()) as RawGlobalEngineToolingStatus,
+  );
 }
 
 export async function fetchProjectEngineStatus(

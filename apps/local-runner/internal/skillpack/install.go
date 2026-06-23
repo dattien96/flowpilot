@@ -13,10 +13,23 @@ import (
 //go:embed flow-pack
 var flowPackFS embed.FS
 
-const PackVersion = 1
+const PackVersion = 2
 
-// providerDirs are the AI tool directories that each receive the skill files.
-var providerDirs = []string{".claude", ".codex", ".gemini"}
+type installRoot struct {
+	Provider string
+	RootPath string
+}
+
+var installRoots = []installRoot{
+	{Provider: "claude", RootPath: filepath.Join(".claude", "skills")},
+	{Provider: "agents", RootPath: filepath.Join(".agents", "skills")},
+}
+
+var providerStatuses = []installRoot{
+	{Provider: "claude", RootPath: filepath.Join(".claude", "skills")},
+	{Provider: "codex", RootPath: filepath.Join(".agents", "skills")},
+	{Provider: "gemini", RootPath: filepath.Join(".agents", "skills")},
+}
 
 // InstallResult summarises what Install did for each file it encountered.
 type InstallResult struct {
@@ -45,7 +58,9 @@ type PackStatus struct {
 	Skills      []SkillStatus `json:"skills"`
 }
 
-// Install copies every embedded SKILL.md into <targetRepoDir>/<providerDir>/skills/flowpilot/<skill>/SKILL.md.
+// Install copies every embedded SKILL.md into:
+// - <targetRepoDir>/.claude/skills/<skill>/SKILL.md
+// - <targetRepoDir>/.agents/skills/<skill>/SKILL.md
 // An existing file is skipped when its first line already declares the current PackVersion.
 // All errors are collected and returned in InstallResult.Errors; the function never panics.
 func Install(targetRepoDir string) (InstallResult, error) {
@@ -69,8 +84,8 @@ func Install(targetRepoDir string) (InstallResult, error) {
 			continue
 		}
 
-		for _, providerDir := range providerDirs {
-			destDir := filepath.Join(targetRepoDir, providerDir, "skills", "flowpilot", skillName)
+		for _, root := range installRoots {
+			destDir := filepath.Join(targetRepoDir, root.RootPath, skillName)
 			destFile := filepath.Join(destDir, "SKILL.md")
 
 			if fileMatchesVersion(destFile, PackVersion) {
@@ -97,13 +112,24 @@ func Install(targetRepoDir string) (InstallResult, error) {
 
 // IsInstalled returns true when the primary sentinel file exists in the .claude provider dir.
 func IsInstalled(targetRepoDir string) bool {
-	sentinel := filepath.Join(targetRepoDir, ".claude", "skills", "flowpilot", "git-commit-format", "SKILL.md")
-	_, err := os.Stat(sentinel)
-	return err == nil
+	sentinels := []string{
+		filepath.Join(targetRepoDir, ".claude", "skills", "git-commit-format", "SKILL.md"),
+		filepath.Join(targetRepoDir, ".agents", "skills", "git-commit-format", "SKILL.md"),
+	}
+	for _, sentinel := range sentinels {
+		if _, err := os.Stat(sentinel); err != nil {
+			return false
+		}
+	}
+	return true
 }
 
 func ProviderDirs() []string {
-	return append([]string(nil), providerDirs...)
+	out := make([]string, 0, len(installRoots))
+	for _, root := range installRoots {
+		out = append(out, root.RootPath)
+	}
+	return out
 }
 
 func SkillNames() ([]string, error) {
@@ -136,13 +162,13 @@ func Status(targetRepoDir string) (PackStatus, error) {
 
 	for _, skillName := range skills {
 		skill := SkillStatus{Name: skillName}
-		for _, providerDir := range providerDirs {
-			path := filepath.Join(targetRepoDir, providerDir, "skills", "flowpilot", skillName, "SKILL.md")
+		for _, provider := range providerStatuses {
+			path := filepath.Join(targetRepoDir, provider.RootPath, skillName, "SKILL.md")
 			_, statErr := os.Stat(path)
 			present := statErr == nil
 			current := present && fileMatchesVersion(path, PackVersion)
 			skill.Providers = append(skill.Providers, ProviderStatus{
-				Provider: providerDir,
+				Provider: provider.Provider,
 				Path:     path,
 				Present:  present,
 				Current:  current,
@@ -160,30 +186,76 @@ func Status(targetRepoDir string) (PackStatus, error) {
 	return status, nil
 }
 
-// fileMatchesVersion reads the first non-empty line of path and checks whether
-// it equals "version: <v>". Returns false on any read error.
+// fileMatchesVersion reads a top-of-file YAML frontmatter version when present,
+// falling back to the legacy first-line "version: <v>" format. Returns false on
+// any read error.
 func fileMatchesVersion(path string, v int) bool {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return false
 	}
-	for _, line := range strings.SplitN(string(data), "\n", 10) {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) != 2 {
-			return false
-		}
-		if strings.TrimSpace(parts[0]) != "version" {
-			return false
-		}
-		n, err := strconv.Atoi(strings.TrimSpace(parts[1]))
-		if err != nil {
-			return false
-		}
-		return n == v
+
+	lines := strings.Split(string(data), "\n")
+	first := firstNonEmptyLine(lines)
+	if first == "" {
+		return false
+	}
+
+	if first == "---" {
+		return readFrontmatterVersion(lines) == v
+	}
+
+	if parsed, ok := parseVersionLine(first); ok {
+		return parsed == v
 	}
 	return false
+}
+
+func firstNonEmptyLine(lines []string) string {
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			return line
+		}
+	}
+	return ""
+}
+
+func readFrontmatterVersion(lines []string) int {
+	started := false
+	for _, rawLine := range lines {
+		line := strings.TrimSpace(rawLine)
+		if line == "" && !started {
+			continue
+		}
+		if !started {
+			if line != "---" {
+				return 0
+			}
+			started = true
+			continue
+		}
+		if line == "---" {
+			return 0
+		}
+		if parsed, ok := parseVersionLine(line); ok {
+			return parsed
+		}
+	}
+	return 0
+}
+
+func parseVersionLine(line string) (int, bool) {
+	parts := strings.SplitN(strings.TrimSpace(line), ":", 2)
+	if len(parts) != 2 {
+		return 0, false
+	}
+	if strings.TrimSpace(parts[0]) != "version" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }

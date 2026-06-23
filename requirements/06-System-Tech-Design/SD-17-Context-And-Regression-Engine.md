@@ -355,7 +355,7 @@ On project bind (via `CP-34`): install the skill pack into provider dirs; health
 ## 9. Security and Operational Concerns
 
 - **Tenant isolation:** all rows keyed by `project_id`; RLS mirrors CP-10 §3.1; no cross-project history.
-- **No self-context:** the engine never indexes FlowPilot's own repository.
+- **Target-project only context:** the engine only indexes the currently bound target project. If FlowPilot itself is intentionally bound as that target, it is allowed and remains isolated from other projects.
 - **Test execution sandboxing:** the Flow Gate runs the bound repo's tests = running third-party code; this must be sandboxed/isolated and is a stated security concern.
 - **Tooling install trust:** auto-installing GitNexus/RTK runs external installers; the setup tool must pin sources/versions and show what it runs.
 - **Local vs remote:** `.flowpilot/` is the working source of truth and git-ignored; remote mirror is opt-in under RLS; provider tokens stay on the runner (`CP-10 §2.3`). Drive sync of shared engine data reuses the chat-sync path (§5.1); machine-specific data (tooling status, GitNexus index) is never synced.
@@ -373,7 +373,7 @@ On project bind (via `CP-34`): install the skill pack into provider dirs; health
 
 - **unit:** git-log id parsing → `feature_history` order; change-audit `§13` block parse + join; Feature Resolver ranking + ambiguity threshold; flow-rule evaluation per trigger; GitNexus-absent fallback; capability tier selection.
 - **integration:** bind a repo with no specs → catalog + history build from git alone; NL ask "update the chat UI" → resolves to the chat feature and returns ordered history; code change without a CA note → gate reprompts then blocks; failing test → "make it pass" blocked, oracle path taken; GitNexus present → `code.dependents` returns real callers.
-- **manual:** bind a third-party repo; confirm skill pack installed, tooling health shown, no FlowPilot-repo content leaks into context; verify newest history entry is treated as current truth.
+- **manual:** bind a third-party repo and bind FlowPilot itself as a project; confirm skill pack installed, tooling health shown, and context always comes only from the currently bound target; verify newest history entry is treated as current truth.
 
 ## 12. Traceability to Spec
 

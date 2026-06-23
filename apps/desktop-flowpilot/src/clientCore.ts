@@ -1,5 +1,6 @@
 import {
   AdminUseCases,
+  ApplySupabaseMigrationsUseCase,
   CompositeArtifactRepository,
   CompositeIntegrationRepository,
   CompositeProviderRepository,
@@ -53,6 +54,10 @@ export const validateSupabaseConfigUseCase = new ValidateSupabaseConfigUseCase(
 );
 
 export const saveSupabaseConfigUseCase = new SaveSupabaseConfigUseCase(
+  runtimeConfigRepository,
+);
+
+export const applySupabaseMigrationsUseCase = new ApplySupabaseMigrationsUseCase(
   runtimeConfigRepository,
 );
 

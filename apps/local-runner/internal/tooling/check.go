@@ -109,6 +109,16 @@ func CheckAll(repoDir, dotFlowpilotDir string) ([]ToolStatus, error) {
 	return statuses, nil
 }
 
+// CheckGlobal probes machine-global tooling without any project-scoped checks.
+func CheckGlobal() []ToolStatus {
+	tools := []string{"gitnexus", "rtk", "node"}
+	statuses := make([]ToolStatus, 0, len(tools))
+	for _, t := range tools {
+		statuses = append(statuses, CheckTool(t, ""))
+	}
+	return statuses
+}
+
 // LoadToolingStatus reads dotFlowpilotDir/tooling.json and returns the slice.
 func LoadToolingStatus(dotFlowpilotDir string) ([]ToolStatus, error) {
 	data, err := os.ReadFile(filepath.Join(dotFlowpilotDir, "tooling.json"))
