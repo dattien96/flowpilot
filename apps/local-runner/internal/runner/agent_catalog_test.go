@@ -147,6 +147,51 @@ func TestAgentCatalogProjectLocalOverridesProviderHome(t *testing.T) {
 	}
 }
 
+func TestAgentCatalogProjectCodexTomlOverridesAccountToml(t *testing.T) {
+	cwd := t.TempDir()
+	agentsDir := filepath.Join(cwd, ".codex", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	projectAgent := `name = "coder-agent"
+description = "Project coder"
+model = "gpt-5.4-mini"
+model_reasoning_effort = "low"
+developer_instructions = "Use project instructions."
+`
+	if err := os.WriteFile(filepath.Join(agentsDir, "coder-agent.toml"), []byte(projectAgent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	accountAgent := AgentDefinition{
+		Name:         "coder-agent",
+		Description:  "Account coder",
+		Model:        "gpt-5.4",
+		SystemPrompt: "Use account instructions.",
+		Source:       "provider",
+		Path:         "/account/agents/coder-agent.toml",
+	}
+	catalog := &AgentCatalog{
+		builtins:       builtinAgentDefinitions(),
+		providerHomeFn: func() []AgentDefinition { return []AgentDefinition{accountAgent} },
+	}
+
+	byName := indexAgentsByName(catalog.listAgents(cwd))
+	def, ok := byName["coder-agent"]
+	if !ok {
+		t.Fatal("expected project Codex TOML agent")
+	}
+	if def.Source != "codex" || def.Path != filepath.Join(agentsDir, "coder-agent.toml") {
+		t.Fatalf("agent source = %q path = %q, want project Codex TOML", def.Source, def.Path)
+	}
+	if def.Model != "gpt-5.4-mini" || def.ModelReasoningEffort != "low" {
+		t.Fatalf("project model settings not loaded: model=%q effort=%q", def.Model, def.ModelReasoningEffort)
+	}
+	if def.SystemPrompt != "Use project instructions." {
+		t.Fatalf("SystemPrompt = %q", def.SystemPrompt)
+	}
+}
+
 // Codex agents are discovered too, and a comma-separated tools list parses.
 func TestAgentCatalogDiscoversCodexAgentsAndCommaTools(t *testing.T) {
 	cwd := t.TempDir()

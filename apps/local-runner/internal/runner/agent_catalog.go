@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
 // AgentDefinition is a loadable sub-agent spec (CP-19 P-3 / Task-081). It is
@@ -14,14 +16,14 @@ import (
 // declare a preferred provider, otherwise it inherits the spawning run's
 // provider.
 type AgentDefinition struct {
-	Name                string   `json:"name"`
-	Description         string   `json:"description"`
-	Role                string   `json:"role"`
-	Provider            string   `json:"provider,omitempty"`
-	Model               string   `json:"model,omitempty"`
-	ModelReasoningEffort string  `json:"modelReasoningEffort,omitempty"`
-	Tools               []string `json:"tools,omitempty"`
-	SystemPrompt        string   `json:"systemPrompt,omitempty"`
+	Name                 string   `json:"name"`
+	Description          string   `json:"description"`
+	Role                 string   `json:"role"`
+	Provider             string   `json:"provider,omitempty"`
+	Model                string   `json:"model,omitempty"`
+	ModelReasoningEffort string   `json:"modelReasoningEffort,omitempty"`
+	Tools                []string `json:"tools,omitempty"`
+	SystemPrompt         string   `json:"systemPrompt,omitempty"`
 	// Source is where the definition came from: project-local "claude" /
 	// "codex", a provider home "provider", or a FlowPilot "flowpilot" built-in.
 	Source string `json:"source"`
@@ -119,6 +121,32 @@ func discoverProviderHomeAgents() []AgentDefinition {
 	return defs
 }
 
+func discoverActiveProviderHomeAgents(r *Runner) []AgentDefinition {
+	if r == nil {
+		return discoverProviderHomeAgents()
+	}
+	defs := make([]AgentDefinition, 0, 8)
+	seenRoots := make(map[string]struct{})
+	for _, provider := range []string{"claude", "codex"} {
+		account, err := r.ResolveProviderAccount(provider, "")
+		if err != nil {
+			continue
+		}
+		for _, root := range providerHomeAgentDirs(provider, account.HomePath) {
+			cleanRoot := canonicalPathKey(root)
+			if cleanRoot == "" {
+				continue
+			}
+			if _, exists := seenRoots[cleanRoot]; exists {
+				continue
+			}
+			seenRoots[cleanRoot] = struct{}{}
+			defs = append(defs, agentsFromDir(root, "provider")...)
+		}
+	}
+	return defs
+}
+
 func providerHomeAgentDirs(provider, homePath string) []string {
 	homePath = strings.TrimSpace(homePath)
 	if homePath == "" {
@@ -134,8 +162,8 @@ func providerHomeAgentDirs(provider, homePath string) []string {
 	}
 }
 
-// agentsFromDir reads `*.md` agent files directly under baseDir. A missing or
-// non-directory path yields nil (tolerant of empty .codex/agents on first run).
+// agentsFromDir reads Claude markdown and Codex TOML agent files directly under
+// baseDir. A missing or non-directory path yields nil.
 func agentsFromDir(baseDir, source string) []AgentDefinition {
 	info, err := os.Stat(baseDir)
 	if err != nil || !info.IsDir() {
@@ -150,7 +178,8 @@ func agentsFromDir(baseDir, source string) []AgentDefinition {
 		if entry.IsDir() {
 			continue
 		}
-		if !strings.HasSuffix(strings.ToLower(entry.Name()), ".md") {
+		extension := strings.ToLower(filepath.Ext(entry.Name()))
+		if extension != ".md" && extension != ".toml" {
 			continue
 		}
 		path := filepath.Join(baseDir, entry.Name())
@@ -158,13 +187,66 @@ func agentsFromDir(baseDir, source string) []AgentDefinition {
 		if err != nil {
 			continue
 		}
-		def := parseAgentDefinition(path, string(raw), source)
+		var def AgentDefinition
+		switch extension {
+		case ".toml":
+			var ok bool
+			def, ok = parseCodexAgentDefinition(path, raw, source)
+			if !ok {
+				continue
+			}
+		default:
+			def = parseAgentDefinition(path, string(raw), source)
+		}
 		if strings.TrimSpace(def.Name) == "" {
 			continue
 		}
 		defs = append(defs, def)
 	}
 	return defs
+}
+
+type codexAgentFile struct {
+	Name                  string   `toml:"name"`
+	Description           string   `toml:"description"`
+	Role                  string   `toml:"role"`
+	Provider              string   `toml:"provider"`
+	Model                 string   `toml:"model"`
+	ModelReasoningEffort  string   `toml:"model_reasoning_effort"`
+	Tools                 []string `toml:"tools"`
+	DeveloperInstructions string   `toml:"developer_instructions"`
+}
+
+func parseCodexAgentDefinition(path string, contents []byte, source string) (AgentDefinition, bool) {
+	var file codexAgentFile
+	if err := toml.Unmarshal(contents, &file); err != nil {
+		return AgentDefinition{}, false
+	}
+	def := AgentDefinition{
+		Name:                 strings.TrimSpace(file.Name),
+		Description:          strings.TrimSpace(file.Description),
+		Role:                 strings.ToLower(strings.TrimSpace(file.Role)),
+		Provider:             strings.ToLower(strings.TrimSpace(file.Provider)),
+		Model:                strings.TrimSpace(file.Model),
+		ModelReasoningEffort: strings.ToLower(strings.TrimSpace(file.ModelReasoningEffort)),
+		Tools:                file.Tools,
+		SystemPrompt:         strings.TrimSpace(file.DeveloperInstructions),
+		Source:               source,
+		Path:                 path,
+	}
+	if def.Name == "" {
+		def.Name = strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	}
+	if def.Role == "" {
+		def.Role = strings.ToLower(def.Name)
+	}
+	if def.Description == "" {
+		def.Description = firstNonEmptyLine(def.SystemPrompt)
+	}
+	if len(def.Tools) == 0 {
+		def.Tools = nil
+	}
+	return def, true
 }
 
 // parseAgentDefinition reads frontmatter fields and the system-prompt body from

@@ -659,6 +659,9 @@ func (s *InteractiveService) AttachRunner(r *Runner) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.runner = r
+	s.agentCatalog.providerHomeFn = func() []AgentDefinition {
+		return discoverActiveProviderHomeAgents(r)
+	}
 }
 
 func (s *InteractiveService) persistProviderSession(session ProviderSessionState) error {
