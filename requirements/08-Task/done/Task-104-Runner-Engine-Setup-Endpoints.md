@@ -20,13 +20,13 @@
 
 ### Summary
 
-- Expose engine setup over HTTP so admin-web can inspect a bound repo and trigger initialization or re-sync on demand.
+- Expose engine setup over HTTP so the desktop app can inspect a bound repo and trigger initialization or re-sync on demand.
 - The shipped contract uses `projectId` in the path plus an explicit `workingDirectory`, because the runner does not own Supabase directory bindings.
 - `POST …/engine/init` performs tooling check, skill-pack sync, ledger build, catalog build, and persists `.flowpilot/engine-init.json`.
 
 ### Current Ask
 
-- Deliver the runner transport for CP-34 P-1 and document the final contract used by admin-web.
+- Deliver the runner transport for CP-34 P-1 and document the final contract used by the desktop settings surface.
 
 ### Key Decisions
 
@@ -60,7 +60,7 @@ A bound project's engine state is readable and initializable over HTTP, scoped t
 
 ## 3. Trigger
 
-The Engine tab and bind-time auto-init both need a reusable runner endpoint for status, install, and non-fatal re-sync.
+The desktop Engine Setup section and bind-time auto-init both need a reusable runner endpoint for status, install, and non-fatal re-sync.
 
 ## 4. Exact Change
 

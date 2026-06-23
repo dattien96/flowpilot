@@ -14,35 +14,35 @@
 - Child Documents: [Task-104: Runner Engine-Setup Endpoints](../../08-Task/todo/Task-104-Runner-Engine-Setup-Endpoints.md) (P-1), [Task-105: Engine Setup UI Tab](../../08-Task/todo/Task-105-Engine-Setup-UI-Tab.md) (P-2), [Task-106: Bind-Time Auto-Init Orchestration](../../08-Task/todo/Task-106-Bind-Time-Auto-Init-Orchestration.md) (P-3)
 - Related Documents: [CP-35: Context And Regression Engine Rollout](../inprogress/CP-35-Context-And-Regression-Engine-Rollout.md), [CP-31: Auto-Document Process](../done/CP-31-Auto-Document-Process.md), [CP-10: Integrations, Memory & Context Intelligence](../inprogress/CP-10-Integrations-Hardening.md), [CP-33: Desktop Project Chat Drive Folder Selection](./CP-33-Desktop-Project-Chat-Drive-Folder-Selection.md)
 - Replaces: `None`
-- Tags: `init, setup, skill-pack, tooling, gitnexus, rtk, capability-profile, admin-web, local-runner`
+- Tags: `init, setup, skill-pack, tooling, gitnexus, rtk, capability-profile, desktop, local-runner`
 
 ## AI Quick View
 
 ### Summary
 
 - The init/setup tool is the **install + health-check home** for the Context & Regression Engine (`SD-17 §7.3`): it installs the bundled flow skill pack into each bound project and verifies external tooling (GitNexus, RTK, node).
-- The Go logic already exists and is unit-tested — `skillpack.Install()` (Task-101) and `tooling.CheckAll()` / `ComputeCapabilityProfile()` (Task-102). This CP **wires them to HTTP, a gateway, and a Settings tab**; it writes no new engine logic.
-- Three slices: `P-1` runner endpoints (status + init/resync), `P-2` admin-web gateway + **Engine Setup tab** in the project area, `P-3` bind-time auto-init so a freshly bound project is engine-ready without a manual click.
+- The Go logic already exists and is unit-tested — `skillpack.Install()` (Task-101) and `tooling.CheckAll()` / `ComputeCapabilityProfile()` (Task-102). This CP wires them to HTTP and the desktop app's project settings surface; it writes no new engine logic.
+- Three slices: `P-1` runner endpoints (status + init/resync), `P-2` desktop app **Engine Setup** section inside project settings, `P-3` bind-time auto-init so a freshly bound project is engine-ready without a manual click.
 - Everything is **per bound project**, operates only on the target repo's `<target>/.flowpilot/`, and is **non-fatal**: a missing tool degrades the capability tier, it never blocks project use.
-- Implementation note: the runner does **not** own Supabase directory bindings, so the shipped HTTP contract uses `projectId` in the path plus an explicit `workingDirectory` from admin-web. Bind-time auto-init is therefore attached to the admin-web binding save flows, not inferred inside the runner.
+- Implementation note: the runner does **not** own project binding records, so the shipped HTTP contract uses `projectId` in the path plus an explicit `workingDirectory` from the desktop settings layer. Bind-time auto-init is therefore attached to the desktop project save flows, not inferred inside the runner.
 
 ### Current Ask
 
-- Give the user a visible project **Engine** surface to (1) see tooling health (gitnexus/rtk/node/skill_pack), (2) see which flow skills are installed, and (3) run install/re-sync — plus do this automatically when bindings are saved.
+- Give the user a visible desktop project **Engine Setup** surface to (1) see tooling health (gitnexus/rtk/node/skill_pack), (2) see which flow skills are installed, and (3) run install/re-sync — plus do this automatically when project bindings are saved.
 
 ### Key Decisions
 
-- `K-1` New project tab **"Engine"** (`ProjectSectionNav`) rather than burying it inside the existing `/settings` page, because it owns its own status fetch + actions.
-- `K-2` Two runner endpoints only: `GET …/engine/status` (read tooling.json + skill-pack install state) and `POST …/engine/init` (run `CheckAll` + `Install`, return fresh status). Idempotent; re-run = re-sync. Because directory bindings live in admin-web/Supabase, both endpoints take an explicit `workingDirectory`.
+- `K-1` The user-facing UI lives in the desktop app's `Settings -> Projects` area as an **Engine Setup** section on the selected project, because engine state is project-scoped and depends on the saved local binding.
+- `K-2` Two runner endpoints only: `GET …/engine/status` (read tooling.json + skill-pack install state) and `POST …/engine/init` (run `CheckAll` + `Install`, return fresh status). Idempotent; re-run = re-sync. Because binding records do not live in the runner, both endpoints take an explicit `workingDirectory`.
 - `K-3` The init action shows **exactly what it runs** before running external installers (`SD-17 §9` tooling-install trust); v1 only *checks* tools, it does not auto-install gitnexus/rtk (it reports `missing` and links to install docs).
 - `K-4` Bind-time auto-init is **best-effort and async** — project create/update/binding-save never fails because the engine init failed.
 
 ### Constraints
 
 - Operate only on the bound target project's workspace dir; **never** touch FlowPilot's own repo (`SS-14 AC-1`, `SD-17 §9`).
-- Reuse the runner's existing `http.ServeMux` route pattern (`internal/cli/root.go`, `interactive_handlers.go`) and the admin-web `HttpLocalRunnerGateway`.
+- Reuse the runner's existing `http.ServeMux` route pattern (`internal/cli/root.go`, `interactive_handlers.go`) and the desktop settings fetch pattern already used by other runner-backed settings panels.
 - Machine-specific results (`tooling.json`) are local-only, never synced (`SD-17 §5.1`).
-- `apps/admin-web` is a customized Next/Vite + TanStack Router app — match existing route/loader/gateway conventions; read `apps/admin-web/AGENTS.md` before touching it.
+- `apps/desktop-flowpilot` is an Electron + React settings surface — match the existing `ProjectsSettings` and runner-backed settings patterns.
 
 ### Open Questions
 
@@ -54,7 +54,7 @@
 - `SD-17 §3.6` (tooling availability), `§6.4` (skill-pack manifest + `checkTool`), `§7.3` (bind/setup flow), `§9` (install trust).
 - `SS-14 AC-12` (skills auto-installed), `AC-13` (tooling health + degrade).
 - `CP-35 §4.6/§4.7` (the `skillpack` / `tooling` packages this consumes).
-- Code: `internal/skillpack/install.go`, `internal/tooling/check.go`, `internal/cli/root.go`, `internal/runner/interactive_handlers.go`, `apps/admin-web/src/data/repository/local-runner/http-local-runner-gateway.ts`, `apps/admin-web/src/components/project/project-section-nav.tsx`.
+- Code: `internal/skillpack/install.go`, `internal/tooling/check.go`, `internal/cli/root.go`, `internal/runner/interactive_handlers.go`, `apps/desktop-flowpilot/src/components/settings/ProjectsSettings.tsx`, `apps/desktop-flowpilot/src/components/settings/projectEngine.ts`.
 
 ## 1. Goal
 
@@ -108,35 +108,39 @@ type EngineStatusResponse struct {
 - **Guard:** if `workspaceDir` resolves to the FlowPilot repo root, return `400` with "engine cannot target FlowPilot's own repo" (`SS-14 AC-1`).
 - **Non-fatal:** any tool check failing is reported as `missing`/`stale`, not a `500`; change-ledger/catalog failures are returned as a `partial` init result instead of aborting the whole request.
 
-### 4.2 `P-2` Admin-web gateway + Engine Setup tab
+### 4.2 `P-2` Desktop app Engine Setup section
 
-**Gateway** (`http-local-runner-gateway.ts`, extend `LocalRunnerGateway`):
+**Desktop helper** (`apps/desktop-flowpilot/src/components/settings/projectEngine.ts`):
 ```ts
-getEngineStatus(projectId: string): Promise<EngineStatus>          // GET …/engine/status
-initEngine(projectId: string): Promise<EngineInitResult>          // POST …/engine/init
+fetchProjectEngineStatus(projectId: string, workingDirectory: string): Promise<ProjectEngineStatus>
+initProjectEngine(projectId: string, workingDirectory: string, trigger: "manual" | "bind"): Promise<ProjectEngineStatus>
 ```
-Use the existing `readJson` / `fetch(new URL(...))` patterns; map snake/camel to the domain model.
+Use direct `fetch(new URL(..., RUNNER_URL))` helpers in the desktop renderer and map the runner JSON into a desktop-local engine model.
 
-**UI** — new route `apps/admin-web/src/routes/_authenticated/projects/$projectId/engine.tsx`:
-- Add `{ label: "Engine", suffix: "/engine" }` to `project-section-nav.tsx` `tabs`.
-- Sections:
-  - **Tooling health** — a row per tool (gitnexus, rtk, node, skill_pack) with a status `Badge` (`ok`=success, `missing`/`stale`=danger/neutral), version, and a "How to install" link for missing tools (`K-3`).
-  - **Capability tier** — show `structure_tier` / `decision_tier` and detected `languages` from `CapabilityProfile`, with a one-line "what this means" note (e.g. "GitNexus missing → file-level structure").
-  - **Skill pack** — list the 5 skills with installed/ version badges across `.claude/.codex/.gemini`.
-  - **Actions** — `Initialize / Re-sync engine` button → `initEngine.mutate()`, then `router.invalidate()`; show installed/skipped counts, last-init steps, and any errors inline.
-- Match the existing settings-page visual idiom (rounded cards, `PageFrame`, `ProjectSectionNav`).
+**UI** — `apps/desktop-flowpilot/src/components/settings/ProjectsSettings.tsx`:
+- Add a new collapsible project section: **Engine Setup**.
+- The section resolves the primary saved binding path, then loads engine status from the runner for that path.
+- Sections inside the panel:
+  - **Binding Summary** — working directory, initialized state, skill-pack version/current state, warnings.
+  - **Capability** — `structure_tier`, `decision_tier`, GitNexus/RTK/Node availability, tests/specs detection, languages.
+  - **Tooling Health** — one row per tool (`gitnexus`, `rtk`, `node`, `skill_pack`) with status + version + checked timestamp.
+  - **Skill Pack** — list each bundled skill with provider state across `.claude/.codex/.gemini`.
+  - **Last Init** — summary, trigger, timestamps, and step-level outcomes from `.flowpilot/engine-init.json`.
+- Actions:
+  - `Refresh Status`
+  - `Initialize / Re-sync Engine`
 
 ### 4.3 `P-3` Bind-time auto-init orchestration
 
-- On project create / project update / directory-binding save (the places where directory bindings are actually established in this codebase), call `engine/init` best-effort + async (`K-4`): check tooling, install skill pack, then build `changeledger` + `featurecatalog` from git.
+- On desktop project create and desktop project save (the places where bindings are actually established in this codebase), call `engine/init` best-effort + async (`K-4`): check tooling, install skill pack, then build `changeledger` + `featurecatalog` from git.
 - Skip silently if `workspaceDir` is FlowPilot's own repo. Run only when `.flowpilot/` is absent, `tooling.json` is absent, or the bundled skill-pack version is newer than the installed stamp (`Q-2` shipped default).
-- Surface the outcome on the Engine tab (`.flowpilot/engine-init.json` → last-init timestamp + result); never fail the save flow on engine-init error.
+- Surface the outcome in the desktop Engine Setup section (`.flowpilot/engine-init.json` → last-init timestamp + result); never fail the save flow on engine-init error.
 - `CP-31` doc normalization remains a follow-up: `SD-17` references it, but there is no callable normalization entrypoint in the current repo to invoke from this task without inventing new workflow behavior.
 
 ## 5. Touched Areas
 
-- **New:** `apps/admin-web/src/routes/_authenticated/projects/$projectId/engine.tsx`; a runner handler block for the two endpoints.
-- **Extended:** `interactive_handlers.go` (route registration); `http-local-runner-gateway.ts` + the `LocalRunnerGateway` interface + domain model; `project-section-nav.tsx` (new tab); project create/update/directory-binding save flows for `P-3`.
+- **New:** `apps/desktop-flowpilot/src/components/settings/projectEngine.ts`; a runner handler block for the two endpoints.
+- **Extended:** `interactive_handlers.go` (route registration); `apps/desktop-flowpilot/src/components/settings/ProjectsSettings.tsx` (Engine Setup section + bind-time auto-init); `internal/skillpack/install.go` (status export helpers).
 - **Reused (no change):** `internal/skillpack/`, `internal/tooling/` (consumed as-is); `PageFrame`, `Badge`, `Button`, `useMutation` UI primitives.
 - **Database:** none.
 
@@ -147,7 +151,7 @@ Use the existing `readJson` / `fetch(new URL(...))` patterns; map snake/camel to
 ## 7. Validation Plan
 
 - **Unit (Go):** endpoint handlers resolve the bound dir; FlowPilot-repo guard returns 400; status reflects `tooling.json`; init is idempotent (second call → all skills `skipped`). (Underlying `Install`/`CheckAll` already covered by Task-101/102 tests.)
-- **Integration:** save a project binding → Engine tab shows real tooling status; click Re-sync → skills appear in `.claude/.codex/.gemini` with version stamps; remove gitnexus → status shows `missing` and capability tier drops to file-level.
+- **Integration:** save a project binding in desktop settings → Engine Setup shows real tooling status; click Re-sync → skills appear in `.claude/.codex/.gemini` with version stamps; remove gitnexus → status shows `missing` and capability tier drops to file-level.
 - **Manual / E2E:** maps to `CP-35 §12` E2E-1 (store created), E2E-2 (tooling health), E2E-5 (skill pack installed). Confirm the FlowPilot repo can never be targeted.
 - **Observability:** init result (installed/skipped/errors + tooling status) logged via the runner's existing log path.
 
@@ -167,9 +171,9 @@ Use the existing `readJson` / `fetch(new URL(...))` patterns; map snake/camel to
 ### Per-slice
 
 - [x] `P-1` `GET …/engine/status` returns tooling + capability + skill-pack state for a bound project; `POST …/engine/init` runs `CheckAll` + `Install` idempotently, refreshes ledger/catalog, and refuses the FlowPilot repo. — **Task-104**
-- [x] `P-2` A project **Engine** tab shows tooling health, capability tier, skill-pack status, and a working Initialize/Re-sync action. — **Task-105**
-- [x] `P-3` Saving project bindings auto-runs engine init (best-effort, async, skips self-repo); outcome is shown on the Engine tab. — **Task-106**
-- [x] `go test ./internal/runner ./internal/skillpack ./internal/tooling` passes; admin-web targeted tests pass; offline `vite build` passes with a manually updated route tree.
+- [x] `P-2` A desktop project **Engine Setup** section shows tooling health, capability tier, skill-pack status, and a working Initialize/Re-sync action. — **Task-105**
+- [x] `P-3` Saving project bindings in desktop settings auto-runs engine init (best-effort, async, skips self-repo); outcome is shown in Engine Setup. — **Task-106**
+- [x] `go test ./internal/runner ./internal/skillpack ./internal/tooling` passes; desktop app build passes.
 
 ### Shared
 
@@ -194,16 +198,17 @@ Use the existing `readJson` / `fetch(new URL(...))` patterns; map snake/camel to
 
 1. Start the app surfaces:
    - local runner
-   - admin-web
-2. Open a project with at least one valid local directory binding.
-3. Open `Project → Engine`.
-4. Verify:
+   - desktop app
+2. Open `Settings -> Projects`.
+3. Select a project with at least one valid local directory binding.
+4. Open the `Engine Setup` section.
+5. Verify:
    - the primary binding path is shown
    - tooling rows render for `gitnexus`, `rtk`, `node`, `skill_pack`
    - capability badges and detected languages render
    - all 5 bundled skills render with provider badges for `.claude`, `.codex`, `.gemini`
-5. Click `Initialize / Re-sync engine`.
-6. Verify on disk inside the bound repo:
+6. Click `Initialize / Re-sync Engine`.
+7. Verify on disk inside the bound repo:
    - `.flowpilot/tooling.json`
    - `.flowpilot/engine-init.json`
    - `.flowpilot/ledger/feature_history.ndjson`
@@ -211,19 +216,19 @@ Use the existing `readJson` / `fetch(new URL(...))` patterns; map snake/camel to
    - `.claude/skills/flowpilot/*/SKILL.md`
    - `.codex/skills/flowpilot/*/SKILL.md`
    - `.gemini/skills/flowpilot/*/SKILL.md`
-7. Refresh the Engine tab and confirm `Last init` shows:
+8. Click `Refresh Status` and confirm `Last init` shows:
    - trigger
    - status
    - installed/skipped/error counts
    - step rows for tooling / skillpack / ledger / catalog
-8. Negative check:
+9. Negative check:
    - remove or break `gitnexus`
    - click re-sync again
-   - confirm Engine still succeeds or returns `partial`, the tool row becomes `missing`, and capability drops to fallback
-9. Self-repo guard:
+   - confirm Engine Setup still succeeds or returns `partial`, the tool row becomes `missing`, and capability drops to fallback
+10. Self-repo guard:
    - point the request at the FlowPilot repo
    - confirm the runner returns `self_repo_forbidden`
-10. Auto-init check:
-   - create or update a directory binding
+11. Auto-init check:
+   - create a project or save updated bindings in desktop `Settings -> Projects`
    - confirm the save succeeds even if runner init fails
-   - open Engine and confirm `Last init` updates when the background auto-init succeeds
+   - reopen `Engine Setup` and confirm `Last init` updates when the background auto-init succeeds

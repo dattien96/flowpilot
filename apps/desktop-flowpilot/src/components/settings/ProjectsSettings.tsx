@@ -16,10 +16,19 @@ import {
 import { getAdminUseCases } from "@/clientCore";
 import { RUNNER_URL } from "@/config";
 import { formatTimestamp, integrationTypes, toErrorMessage, validateDirectoryBindingsInOrder } from "@/components/settings/settingsHelpers";
+import {
+  autoInitProjectEngine,
+  engineTone,
+  fetchProjectEngineStatus,
+  initProjectEngine,
+  resolvePrimaryBindingPath,
+  summarizeProjectEngineInit,
+  type ProjectEngineStatus,
+} from "@/components/settings/projectEngine";
 
 type BindingDraft = Pick<ProjectWorkspaceBinding, "id" | "localPath" | "label"> & { persisted: boolean };
 type ProjectTargetSection = "teams" | "workflows" | "artifacts" | "google-drive" | "jira-mcp";
-type ProjectPanelKey = "overview" | "bindings" | "teams" | "mcp" | "runs" | "artifacts" | "chatSync";
+type ProjectPanelKey = "overview" | "bindings" | "engine" | "teams" | "mcp" | "runs" | "artifacts" | "chatSync";
 
 interface ChatSyncGoogleDriveAccountStatus {
   accountId: string;
@@ -98,6 +107,7 @@ function defaultExpandedPanels(): Record<ProjectPanelKey, boolean> {
   return {
     overview: true,
     bindings: false,
+    engine: false,
     teams: false,
     mcp: false,
     runs: false,
@@ -161,6 +171,9 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
   const [chatSyncLoading, setChatSyncLoading] = useState(false);
   const [chatSyncBusyAction, setChatSyncBusyAction] = useState<string | null>(null);
   const [chatSyncSelectedAccountId, setChatSyncSelectedAccountId] = useState("");
+  const [engineStatus, setEngineStatus] = useState<ProjectEngineStatus | null>(null);
+  const [engineLoading, setEngineLoading] = useState(false);
+  const [engineBusyAction, setEngineBusyAction] = useState<"refresh" | "init" | null>(null);
 
   const selectedProject = useMemo(
     () => projects.find((project) => project.id === selectedProjectId) ?? null,
@@ -186,6 +199,15 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
     () => localArtifacts.filter((artifact) => artifact.projectId === selectedProjectId).slice(0, 8),
     [localArtifacts, selectedProjectId],
   );
+  const primaryBindingPath = useMemo(
+    () => resolvePrimaryBindingPath(bindings),
+    [bindings],
+  );
+
+  useEffect(() => {
+    setBindings([]);
+    setEngineStatus(null);
+  }, [selectedProjectId]);
 
   const refresh = async (nextProjectId?: string) => {
     setLoading(true);
@@ -255,6 +277,57 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
       }
     })();
   }, [models, selectedProject]);
+
+  const loadEngineStatus = async (
+    projectId: string,
+    workingDirectory: string,
+    options?: { silent?: boolean },
+  ) => {
+    setEngineLoading(true);
+    try {
+      const payload = await fetchProjectEngineStatus(projectId, workingDirectory);
+      setEngineStatus(payload);
+      return payload;
+    } catch (error) {
+      setEngineStatus(null);
+      if (!options?.silent) {
+        setMessage(toErrorMessage(error, "Unable to load engine setup status."));
+      }
+      return null;
+    } finally {
+      setEngineLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!selectedProjectId || !primaryBindingPath) {
+      setEngineStatus(null);
+      setEngineLoading(false);
+      return;
+    }
+    let active = true;
+    void (async () => {
+      setEngineLoading(true);
+      try {
+        const payload = await fetchProjectEngineStatus(selectedProjectId, primaryBindingPath);
+        if (active) {
+          setEngineStatus(payload);
+        }
+      } catch (error) {
+        if (active) {
+          setEngineStatus(null);
+          setMessage(toErrorMessage(error, "Unable to load engine setup status."));
+        }
+      } finally {
+        if (active) {
+          setEngineLoading(false);
+        }
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [primaryBindingPath, selectedProjectId]);
 
   const loadChatSyncStatus = async (projectId: string, sessionId?: string) => {
     setChatSyncLoading(true);
@@ -360,6 +433,7 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
         label: "Primary",
       });
       await admin.teams.setProjectTeams(project.id, createSelectedTeamIds);
+      void autoInitProjectEngine(project.id, [{ localPath: createForm.directoryPath.trim() }]);
       setCreateForm(createEmptyCreateForm());
       setCreateSelectedTeamIds([]);
       setShowCreateView(false);
@@ -417,6 +491,12 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
           label: binding.label || (index === 0 ? "Primary" : null),
         });
       }
+      void autoInitProjectEngine(selectedProject.id, normalizedBindings).then(async () => {
+        const nextPrimaryBinding = resolvePrimaryBindingPath(normalizedBindings);
+        if (selectedProject.id === selectedProjectId && nextPrimaryBinding) {
+          await loadEngineStatus(selectedProject.id, nextPrimaryBinding, { silent: true });
+        }
+      });
       await refresh(selectedProject.id);
       setMessage("Project settings saved.");
     } catch (error) {
@@ -441,6 +521,33 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
       setMessage(`Usable binding: ${usablePath}`);
     } catch (error) {
       setMessage(toErrorMessage(error, "No usable binding found."));
+    }
+  };
+
+  const refreshEngineStatus = async () => {
+    if (!selectedProjectId || !primaryBindingPath) return;
+    setEngineBusyAction("refresh");
+    setMessage(null);
+    try {
+      await loadEngineStatus(selectedProjectId, primaryBindingPath);
+      setMessage("Engine status refreshed.");
+    } finally {
+      setEngineBusyAction(null);
+    }
+  };
+
+  const runManualEngineInit = async () => {
+    if (!selectedProjectId || !primaryBindingPath) return;
+    setEngineBusyAction("init");
+    setMessage(null);
+    try {
+      const payload = await initProjectEngine(selectedProjectId, primaryBindingPath, "manual");
+      setEngineStatus(payload);
+      setMessage(summarizeProjectEngineInit(payload.lastInit));
+    } catch (error) {
+      setMessage(toErrorMessage(error, "Unable to initialize the project engine."));
+    } finally {
+      setEngineBusyAction(null);
     }
   };
 
@@ -617,6 +724,123 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
                         </div>
                       ))}
                     </div>
+                  </>,
+                )}
+
+                {renderCollapsibleSection(
+                  "engine",
+                  "Engine Setup",
+                  "Inspect tooling, skill-pack state, and the last engine initialization for the primary binding.",
+                  <div className="settings-inline-actions">
+                    <button
+                      className="secondary-btn"
+                      disabled={!primaryBindingPath || engineBusyAction !== null}
+                      onClick={() => void refreshEngineStatus()}
+                      type="button"
+                    >
+                      {engineBusyAction === "refresh" ? "Refreshing..." : "Refresh Status"}
+                    </button>
+                    <button
+                      className="secondary-btn"
+                      disabled={!primaryBindingPath || engineBusyAction !== null}
+                      onClick={() => void runManualEngineInit()}
+                      type="button"
+                    >
+                      {engineBusyAction === "init" ? "Running..." : "Initialize / Re-sync Engine"}
+                    </button>
+                  </div>,
+                  <>
+                    {!primaryBindingPath ? (
+                      <div className="settings-empty">
+                        Add and save at least one directory binding before using Engine Setup.
+                      </div>
+                    ) : engineLoading ? (
+                      <div className="settings-feedback">Loading engine setup status...</div>
+                    ) : engineStatus ? (
+                      <div className="project-inline-list">
+                        <div className="project-inline-card">
+                          <strong>Binding Summary</strong>
+                          <div className="project-inline-row"><span>Working directory</span><span>{engineStatus.workingDirectory}</span></div>
+                          <div className="project-inline-row"><span>Initialized</span><span>{engineStatus.initialized ? "yes" : "no"}</span></div>
+                          <div className="project-inline-row"><span>Skill pack version</span><span>{engineStatus.skillPack.packVersion}</span></div>
+                          <div className="project-inline-row"><span>Skill pack current</span><span>{engineStatus.skillPack.current ? "yes" : "no"}</span></div>
+                          {engineStatus.warnings?.length ? (
+                            <div className="settings-feedback" style={{ marginTop: 12 }}>
+                              {engineStatus.warnings.join(" ")}
+                            </div>
+                          ) : null}
+                        </div>
+
+                        <div className="project-inline-card">
+                          <strong>Capability</strong>
+                          <div className="project-inline-row"><span>Structure tier</span><span>{engineStatus.capability.structureTier}</span></div>
+                          <div className="project-inline-row"><span>Decision tier</span><span>{engineStatus.capability.decisionTier}</span></div>
+                          <div className="project-inline-row"><span>GitNexus</span><span>{engineStatus.capability.hasGitNexus ? "available" : "missing"}</span></div>
+                          <div className="project-inline-row"><span>RTK</span><span>{engineStatus.capability.hasRTK ? "available" : "missing"}</span></div>
+                          <div className="project-inline-row"><span>Node</span><span>{engineStatus.capability.hasNode ? "available" : "missing"}</span></div>
+                          <div className="project-inline-row"><span>Tests detected</span><span>{engineStatus.capability.hasTests ? "yes" : "no"}</span></div>
+                          <div className="project-inline-row"><span>Specs detected</span><span>{engineStatus.capability.hasSpecs ? "yes" : "no"}</span></div>
+                          <div className="project-inline-row"><span>Languages</span><span>{engineStatus.capability.languages.join(", ") || "none detected"}</span></div>
+                        </div>
+
+                        <div className="project-inline-card">
+                          <strong>Tooling Health</strong>
+                          <div className="settings-validation" style={{ marginTop: 12 }}>
+                            {engineStatus.tooling.map((tool) => (
+                              <div className={`validation-row ${engineTone(tool.status)}`} key={tool.tool}>
+                                <span>{tool.tool}</span>
+                                <span>{tool.status}{tool.version ? ` / ${tool.version}` : ""} / {formatTimestamp(tool.checkedAt)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="project-inline-card">
+                          <strong>Skill Pack</strong>
+                          <div className="settings-list" style={{ marginTop: 12 }}>
+                            {engineStatus.skillPack.skills.map((skill) => (
+                              <div className="settings-list-item static" key={skill.name}>
+                                <div>
+                                  <strong>{skill.name}</strong>
+                                  <span>
+                                    {skill.providers.map((provider) => `${provider.provider}:${provider.present ? (provider.current ? "current" : "stale") : "missing"}`).join(" · ")}
+                                  </span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="project-inline-card">
+                          <strong>Last Init</strong>
+                          <div className="project-inline-row"><span>Summary</span><span>{summarizeProjectEngineInit(engineStatus.lastInit)}</span></div>
+                          {engineStatus.lastInit ? (
+                            <>
+                              <div className="project-inline-row"><span>Trigger</span><span>{engineStatus.lastInit.trigger}</span></div>
+                              <div className="project-inline-row"><span>Status</span><span>{engineStatus.lastInit.status}</span></div>
+                              <div className="project-inline-row"><span>Attempted</span><span>{formatTimestamp(engineStatus.lastInit.attemptedAt)}</span></div>
+                              <div className="project-inline-row"><span>Completed</span><span>{formatTimestamp(engineStatus.lastInit.completedAt)}</span></div>
+                              <div className="settings-validation" style={{ marginTop: 12 }}>
+                                {engineStatus.lastInit.steps.map((step) => (
+                                  <div className={`validation-row ${engineTone(step.outcome)}`} key={`${step.step}:${step.outcome}`}>
+                                    <span>{step.step}</span>
+                                    <span>{step.detail || step.errorMessage || step.outcome}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </>
+                          ) : (
+                            <div className="settings-empty" style={{ marginTop: 12 }}>
+                              No engine init has been recorded yet.
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="settings-empty">
+                        Engine status is unavailable for this binding right now.
+                      </div>
+                    )}
                   </>,
                 )}
 
