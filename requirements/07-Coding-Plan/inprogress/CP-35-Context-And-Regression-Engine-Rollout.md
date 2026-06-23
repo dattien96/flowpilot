@@ -306,20 +306,31 @@ alter table flow_rules enable row level security;
 
 ### Per-slice
 
-- [ ] `P-1` `GetFeatureHistory` returns ordered commits (newest last) on a no-spec repo from git alone; incremental cursor works; CA `§13` enrich applied when present.
-- [ ] `P-2` NL ask resolves to the correct `feature_key` (lexical + LLM pick, no vector); ambiguous asks return candidates; resolved history packed into the prompt newest-last with the "build on newest" framing.
-- [ ] `P-3` GitNexus present → summarized dependents with `Complete` flag; absent → file-level fallback, flagged.
-- [ ] `P-4` Gate hooks after `finishTurn`; code change without a CA note → reprompt then block; runs for all providers.
-- [ ] `P-5` A previously-green test that breaks (not changed by the task) blocks the step; pre-existing test edits flagged; no-spec path asks the user (delivers `CP-32`).
-- [ ] `P-6` Five-skill flow pack auto-installed into `.claude/.codex/.gemini` on bind with version stamps; `git-commit-format` enforces the `P-1` contract.
-- [ ] `P-7` `tooling.json` reflects gitnexus/rtk/node/skill_pack; capability tier selected; missing tool degrades, never fails.
-- [ ] `P-8` Engine files persist under `.flowpilot/`; shared data syncs to `context-engine/` via the chat-sync mechanism; machine-specific data stays local.
-- [ ] `go build ./...` and `go test ./internal/...` pass for all new modules.
+- [x] `P-1` `GetFeatureHistory` returns ordered commits (newest last) on a no-spec repo from git alone; incremental cursor works; CA `§13` enrich applied when present. — **`changeledger` package, 22 tests ✓ (Task-096)**
+- [x] `P-2` NL ask resolves to the correct `feature_key` (lexical + LLM pick, no vector); ambiguous asks return candidates; resolved history packed into the prompt newest-last with the "build on newest" framing. — **`featurecatalog` package, 15 tests ✓ (Task-097)**
+- [x] `P-3` GitNexus present → summarized dependents with `Complete` flag; absent → file-level fallback, flagged. — **`structure` package, 13 tests ✓ (Task-098)**
+- [ ] `P-4` Gate hooks after `finishTurn`; code change without a CA note → reprompt then block; runs for all providers. — **`flowgate` package done, 33 tests ✓ (Task-099); runner wiring into `interactive_service.go` pending (CP-10/CP-34)**
+- [ ] `P-5` A previously-green test that breaks (not changed by the task) blocks the step; pre-existing test edits flagged; no-spec path asks the user (delivers `CP-32`). — **`flowgate/oracle.go` done (Task-100); runner wiring pending**
+- [ ] `P-6` Five-skill flow pack auto-installed into `.claude/.codex/.gemini` on bind with version stamps; `git-commit-format` enforces the `P-1` contract. — **`skillpack` package + 5 embedded skills done, 5 tests ✓ (Task-101); `Install()` call on bind pending (CP-34)**
+- [x] `P-7` `tooling.json` reflects gitnexus/rtk/node/skill_pack; capability tier selected; missing tool degrades, never fails. — **`tooling` package, 7 tests ✓ (Task-102)**
+- [ ] `P-8` Engine files persist under `.flowpilot/`; shared data syncs to `context-engine/` via the chat-sync mechanism; machine-specific data stays local. — **`contextsync` local store done, 7 tests ✓ (Task-103); Drive syncer wiring from runner package pending**
+- [x] `go build ./...` and `go test ./internal/...` pass for all new modules. — **102 tests across 7 packages, all green ✓**
 
 ### Shared
 
-- [ ] All mirror tables RLS-scoped per `project_id`; FlowPilot's own repo never used as context (AC-1).
-- [ ] All build/index/check steps non-fatal and retryable; raw artifact save always succeeds (AC-9).
+- [ ] All mirror tables RLS-scoped per `project_id`; FlowPilot's own repo never used as context (AC-1). — **Supabase migration (§6 DDL) not yet run**
+- [x] All build/index/check steps non-fatal and retryable; raw artifact save always succeeds (AC-9). — **all packages non-fatal by design ✓**
+
+### What remains before full P-4/P-5/P-6/P-8 DoD
+
+Three wiring items are out of scope for Tasks 096–103 and blocked on upcoming work:
+
+| Wiring item | Required in | Blocks |
+|---|---|---|
+| Hook `flowgate.Enforce` after `finishTurn` in `interactive_service.go` | CP-10 / runner | P-4, P-5 |
+| Call `skillpack.Install()` on project bind | CP-34 | P-6 |
+| Wire `contextsync.SyncSharedFiles` with Drive helpers from runner | CP-10 / CP-34 | P-8 |
+| Run Supabase migration (§6 DDL) | infra / deploy | Shared mirror tables |
 
 ### AC coverage matrix (`SS-14` → slice / DoD)
 
@@ -344,3 +355,249 @@ alter table flow_rules enable row level security;
 | US-4 failing test → spec recheck | AC-6/AC-14 → Task-100 | US-8 force record + honest tests | AC-11/AC-14 → Task-099/100 |
 
 US-3's literal "declare-and-flag-drift" is the deferred scope-drift; v1 covers its *intent* (don't unexpectedly break or undo work) through history awareness (Task-097) + the regression suite (Task-100).
+
+## 11. Manual Testing Guide
+
+> **Prerequisites:** Go 1.21+, git on PATH, run all commands from `apps/local-runner/`.
+> The packages are fully implemented and unit-tested. This guide lets you exercise them against real data without needing runner wiring.
+
+---
+
+### T-1 — Changeledger (Plane C): read this repo's feature history
+
+```bash
+# Run the existing unit tests with verbose output to see parsing in action
+go test ./internal/changeledger/... -v -run TestParseRecord
+
+# Write a quick smoke test against the FlowPilot repo itself:
+cat > /tmp/ledger_smoke_test.go << 'EOF'
+//go:build ignore
+package main
+
+import (
+    "fmt"
+    "github.com/flowpilot/internal/changeledger"  // adjust if needed
+)
+
+func main() {
+    repoDir := "../.."          // root of flowpilot repo
+    dotFP   := "/tmp/.flowpilot-test"
+    if err := changeledger.Build(repoDir, dotFP); err != nil {
+        panic(err)
+    }
+    l, _ := changeledger.New(dotFP)
+    features := l.ListFeatures()
+    fmt.Printf("Features found: %v\n", features)
+    for _, f := range features {
+        history, _ := l.GetFeatureHistory(f)
+        if len(history) > 0 {
+            latest := history[len(history)-1]
+            fmt.Printf("  %s → latest: [%s] %s (%s)\n", f, latest.SourceDocID, latest.Summary, latest.CommittedAt[:10])
+        }
+    }
+}
+EOF
+```
+
+**What to verify:**
+- Feature keys appear (e.g. `chat-ui`, `agent-spawn`, `context-regression-engine`)
+- Each feature's latest entry matches its most recent commit
+- `ListFeatures()` returns sorted keys
+- Re-running `Build()` is incremental (cursor skips already-seen commits)
+
+**Check the cursor file was written:**
+```bash
+cat /tmp/.flowpilot-test/ledger/.cursor   # should be a commit hash
+wc -l /tmp/.flowpilot-test/ledger/feature_history.ndjson  # one line per commit
+```
+
+---
+
+### T-2 — Feature Catalog + Resolver: NL → feature_key
+
+```bash
+go test ./internal/featurecatalog/... -v
+```
+
+**Key tests to watch:**
+- `TestResolveFeature` — "update the chat ui" → top candidate `chat-ui` with score > 0
+- `TestHistorySlot` — output ends with `← current truth` on last entry
+- `TestBuild` — catalog seeds from FEATURE-KEYS.md
+
+**Manual spot-check** (resolve against real catalog):
+```bash
+go test ./internal/featurecatalog/... -v -run TestBuild
+```
+Expected: catalog contains entries for all keys in `../../change-audit/FEATURE-KEYS.md`.
+
+---
+
+### T-3 — Structure Provider: GitNexus / file-level fallback
+
+```bash
+go test ./internal/structure/... -v
+```
+
+**Key tests:**
+- `TestFallbackProvider_Available` → `false`
+- `TestFallbackProvider_Dependents` → returns `DependentsSummary{Complete: false}`
+- `TestDependentsSummaryJSON` → correct JSON marshaling
+
+**With GitNexus installed**, the `gitNexusProvider` path activates:
+```bash
+# Check if gitnexus is available
+npx gitnexus --version
+
+# If yes, the structure package will use real blast-radius data
+go test ./internal/structure/... -v -run TestGitNexus
+```
+
+---
+
+### T-4 — Flow Gate: evaluate + enforce rules
+
+```bash
+go test ./internal/flowgate/... -v
+```
+
+**Key scenarios to watch:**
+
+| Test | What it proves |
+|---|---|
+| `TestEvaluate_CodeChangeNoCA` | code changed, no CA note → `r-ca` violation |
+| `TestEvaluate_NoCodeChanges` | docs-only change → no violations |
+| `TestEvaluate_TestsFailed` | failed tests → `r-tests` violation |
+| `TestEnforce_RegressionAlwaysBlocks` | r-reg fires even in `gate_mode=warn` |
+| `TestEnforce_WarnMode_DowngradesRCA` | r-ca in warn mode → `warn` action, not `block` |
+| `TestDefaultRules` | 5 rules with correct IDs returned |
+
+**Manual rule evaluation** — build a mock TurnResult and call Evaluate:
+```bash
+go test ./internal/flowgate/... -v -run TestEnforce
+```
+
+---
+
+### T-5 — Regression Oracle: baseline capture + regressed test detection
+
+```bash
+go test ./internal/flowgate/... -v -run TestOracle
+go test ./internal/flowgate/... -v -run TestBaseline
+```
+
+**Key tests:**
+- `TestIsTestFile` — `_test.go`, `.test.ts`, `.spec.tsx` → `true`; `main.go` → `false`
+- `TestDetectTestCommand` — temp dir with `go.mod` → `"go test ./..."`
+- `TestRunOracle_NilBaseline` — no panic, returns empty `OracleResult`
+- `TestRunOracle_HasRegression` — green test now red (not in diff) → `HasRegression=true`
+
+**Baseline capture against this repo:**
+```bash
+go test ./internal/flowgate/... -v -run TestCaptureBaseline
+```
+Check that `guard/test_baseline.json` is written with `green_tests` populated.
+
+---
+
+### T-6 — Skill Pack: install to a test directory
+
+```bash
+go test ./internal/skillpack/... -v
+```
+
+**Key tests:**
+- `TestInstall` — 5 skills × 3 provider dirs = 15 files created in temp dir
+- `TestIsInstalled` — returns `true` after install
+- `TestReInstall_SkipsExisting` — same-version files not overwritten (appear in `Skipped`)
+
+**Manual install to a scratch directory:**
+```bash
+mkdir /tmp/test-target-repo
+go test ./internal/skillpack/... -v -run TestInstall
+```
+
+Then verify files exist:
+```bash
+ls /tmp/test-target-repo/.claude/skills/flowpilot/
+# Expected: audit-logging/  context-discipline/  git-commit-format/  oracle-rule/  phase-doc/
+cat /tmp/test-target-repo/.claude/skills/flowpilot/git-commit-format/SKILL.md | head -3
+# Expected: version: 1  (first line)
+```
+
+---
+
+### T-7 — Tooling Check: detect installed tools + capability profile
+
+```bash
+go test ./internal/tooling/... -v
+```
+
+**Key tests:**
+- `TestCheckTool_Node` — node is on PATH → `Status="ok"`, `Version` is non-empty
+- `TestStatusOf` — lookup by name returns correct struct
+- `TestComputeCapabilityProfile` — mock statuses produce correct tier strings
+- `TestCheckAll` — writes `tooling.json` to temp dir
+
+**Run against real environment:**
+```bash
+go test ./internal/tooling/... -v -run TestCheckAll
+```
+
+Check the generated file:
+```bash
+cat /tmp/tooling-test/tooling.json | python -m json.tool
+# Expected: array of 4 entries (gitnexus, rtk, node, skill_pack), each with status
+```
+
+**What to look for:**
+- `node` → `"ok"` if node is installed
+- `gitnexus` → `"ok"` if `npx gitnexus` works, `"missing"` otherwise
+- `rtk` → `"ok"` if RTK is installed, `"missing"` otherwise
+
+---
+
+### T-8 — Context Sync: local store layout + manifest
+
+```bash
+go test ./internal/contextsync/... -v
+```
+
+**Key tests:**
+- `TestNewEngineStore_CreatesDirs` — all 6 subdirs created
+- `TestSharedFiles` — returns 3 paths (ledger, catalog, flow-rules)
+- `TestIsLocalOnly` — guard/ and tooling.json → `true`; ledger → `false`
+- `TestWriteManifest` — manifest.json written with SHA256 entries
+- `TestSyncSharedFiles_NilSyncer` — all skipped, no error
+
+**Manual local store creation:**
+```bash
+go test ./internal/contextsync/... -v -run TestNewEngineStore
+ls /tmp/engine-store-test/.flowpilot/
+# Expected: ledger/  catalog/  settings/  guard/  structure/
+```
+
+---
+
+### Integration smoke test (no runner wiring needed)
+
+Run all packages together and confirm no regressions:
+
+```bash
+cd C:\working\flowpilot\apps\local-runner
+go build ./...
+go test ./internal/changeledger/... ./internal/featurecatalog/... ./internal/structure/... ./internal/flowgate/... ./internal/skillpack/... ./internal/tooling/... ./internal/contextsync/... -count=1
+```
+
+**Expected output:** `102 tests across 7 packages, all pass.`
+
+---
+
+### What is NOT yet testable (pending runner wiring)
+
+| Behavior | Blocked on |
+|---|---|
+| Flow Gate fires automatically after an AI turn | `interactive_service.go` hook (CP-10) |
+| Skill pack installs when you bind a project | `CP-34` bind flow |
+| Regression blocks a live AI step | runner wiring + running tests mid-turn |
+| feature_history syncs to Drive | Drive syncer wired from runner package |
+| Tooling health shown on setup page | `CP-34` UI |

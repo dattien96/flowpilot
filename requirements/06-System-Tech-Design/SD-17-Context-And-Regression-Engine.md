@@ -140,6 +140,89 @@ The engine depends on external tools (GitNexus, RTK, node) and the skill pack. T
 
 Symbol graphs, AST-normalized hashing, and the Change-Contract scope-drift loop are recorded as an optional advanced phase. They are used only where GitNexus already provides the data cheaply, because validation showed bespoke versions are noisy (false drift on ripple/format/rename) and costly. v1 covers regression through history awareness + tests + GitNexus-when-present.
 
+### 3.8 Architecture Diagram
+
+#### Layers — three context planes
+
+| Plane | Answers | Source | Slot | Status |
+|---|---|---|---|---|
+| **A — Decision** | "what was decided / why" | SD-10 `artifact_memories` + SS-13 docs | `decision.memory` (priority 0) | owned by SD-10/CP-10 |
+| **B — Structure** | "who depends on this now" | GitNexus provider → `npx gitnexus impact` | `code.dependents` (priority 2) | Task-098 ✓ |
+| **C — Change** | "what changed, in order — newest = truth" | `git log` + `[Type]:id` convention + CA `§13` | `feature.history` (priority 1) | Task-096 ✓ |
+
+Feature key resolved from NL by **Feature Resolver** (lexical + LLM pick, Task-097 ✓) before history lookup. No vector DB.
+
+#### Per-step flow
+
+```mermaid
+graph TD
+    subgraph PLANES["Context Planes"]
+        PA["A — Decision\n(SD-10 artifact_memories)"]
+        PB["B — Structure\n(GitNexus · Task-098 ✓)"]
+        PC["C — Change ✓\n(commit ledger · Task-096 ✓)"]
+    end
+
+    FR("Feature Resolver\nNL → feature_key\nTask-097 ✓")
+
+    subgraph FLOW["Per-Step Flow  ·  interactive_service.go"]
+        PRE["① PRE-STEP\nload A+B+C → pack to budget"]
+        AI["② EXECUTE\nAI provider + skill pack"]
+        GATE{"③ POST-STEP GATE\nobserve · evaluate rules\nTask-099 + Task-100 ✓"}
+        REC["④ RECORD\nfeature_history + CA note §13"]
+    end
+
+    STOP(["⛔ step blocked\nuser must resolve"])
+
+    PC --> FR
+    FR --> PRE
+    PA --> PRE
+    PB --> PRE
+    PRE --> AI
+    AI --> GATE
+    GATE -- "violation: reprompt ≤2" --> AI
+    GATE -- "pass" --> REC
+    GATE -- "violation: block" --> STOP
+
+    subgraph STORE["Storage  ·  Task-103 ✓"]
+        L[".flowpilot/ local-first"]
+        D["Drive context-engine/\n(3 shared files)"]
+    end
+
+    REC --> L
+    L -. "sync" .-> D
+```
+
+#### Flow Gate rules
+
+| Rule | Trigger | Required output | Action | Always? |
+|---|---|---|---|---|
+| `r-ca` | `code_changed` | change-audit note | reprompt | gate_mode |
+| `r-bug` | `bug_fixed` | BugFix doc | block | gate_mode |
+| `r-tests` | `tests_failed` | tests green or explained | block | **yes** |
+| `r-reg ★` | `regression_test_broke` | restore green (no weakening) | **block** | **always** |
+| `r-dep` | `removed_referenced_code` | confirm / update callers | block | GitNexus only |
+
+`r-reg` and `r-tests` are **always enforced** regardless of `gate_mode`. `gate_mode: warn` downgrades only `r-ca` and `r-bug`.
+
+#### Storage split
+
+```text
+<target>/.flowpilot/
+  ledger/feature_history.ndjson    ← synced to Drive
+  catalog/features.ndjson          ← synced to Drive
+  settings/flow-rules.json         ← synced to Drive
+  guard/test_baseline.json         ← local only (machine-specific)
+  tooling.json                     ← local only (machine-specific)
+  structure/                       ← local only (rebuildable index)
+
+change-audit/FEATURE-KEYS.md       ← git-synced (repo file, not Drive)
+```
+
+#### Tooling + skill pack (Task-101 ✓, Task-102 ✓)
+
+- **Skill pack** (5 skills) auto-installed to `.claude/.codex/.gemini` on bind: `git-commit-format`, `oracle-rule`, `audit-logging`, `phase-doc`, `context-discipline`.
+- **Tooling registry** checks `gitnexus`, `rtk`, `node`, `skill_pack` → writes `tooling.json` → drives `CapabilityProfile` → engine degrades gracefully when a tool is absent.
+
 ## 4. Component Impact
 
 **New runner modules:**
