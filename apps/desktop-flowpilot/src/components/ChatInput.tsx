@@ -294,7 +294,13 @@ export function ChatInput(): React.ReactElement {
     return frag;
   }, [isChatMode, text, cursorPos, slashDismissedIndex]);
   const slashQuery = slashFragment?.query ?? null;
-  const showPicker = isChatMode && !!selectedProvider && (skillPickerOpen || slashFragment !== null);
+  // Slash sub-commands: "/a" opens the spawn-agent UI (same panel as the right sidebar);
+  // everything else (incl. "/s" and bare "/") drives the skill picker. The leading command
+  // letter is treated as the command, not a search term.
+  const slashCommand: "agent" | "skill" | null =
+    slashFragment === null ? null : slashFragment.query === "a" ? "agent" : "skill";
+  const showAgentCommand = isChatMode && !!selectedProvider && slashCommand === "agent";
+  const showPicker = isChatMode && !!selectedProvider && slashCommand !== "agent" && (skillPickerOpen || slashFragment !== null);
   const totalSkills = skills.length;
   const filtered = useMemo(
     () => {
@@ -375,7 +381,10 @@ export function ChatInput(): React.ReactElement {
   // Keep pickerSearch in sync with the slash query so typing /foo in the textarea
   // still drives the in-picker filter in real time.
   useEffect(() => {
-    if (slashQuery !== null) setPickerSearch(slashQuery);
+    if (slashQuery === null) return;
+    // "/s" is the explicit "open skill UI" command, so don't filter the list to "s";
+    // further typing ("/se…") still drives the search as usual.
+    setPickerSearch(slashQuery === "s" ? "" : slashQuery);
   }, [slashQuery]);
 
   // Clear the search box whenever the picker is dismissed.
@@ -433,7 +442,7 @@ export function ChatInput(): React.ReactElement {
   );
 
   const canSend = isChatMode
-    ? hasSelectedProject && selectedProviderConnected && !blocked && !childRunFocused && text.trim().length > 0 && !showPicker
+    ? hasSelectedProject && selectedProviderConnected && !blocked && !childRunFocused && text.trim().length > 0 && !showPicker && !showAgentCommand
     : hasSelectedProject &&
       (launchMode === "workflow" ? !!selectedWorkflowId : !!selectedStepId) &&
       !blocked &&
@@ -472,6 +481,27 @@ export function ChatInput(): React.ReactElement {
 
   const removeSkill = (name: string) => {
     setSelectedSkills((prev) => prev.filter((s) => s !== name));
+  };
+
+  // "/a" command: strip the slash fragment from the prompt and open the spawn-agent
+  // panel (the same UI as the right sidebar), then restore the caret. (Task-087)
+  const triggerAgentSlash = () => {
+    if (slashFragment === null) return;
+    const before = text.slice(0, slashFragment.index);
+    const after = text.slice(cursorPos);
+    const newCursor = slashFragment.index;
+    setText(before + after);
+    setCursorPos(newCursor);
+    setSlashDismissedIndex(null);
+    setSkillPickerOpen(false);
+    setTimeout(() => {
+      if (textAreaRef.current) {
+        textAreaRef.current.selectionStart = newCursor;
+        textAreaRef.current.selectionEnd = newCursor;
+        textAreaRef.current.focus();
+      }
+    }, 0);
+    openAgentSpawnGuide();
   };
 
   const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -562,6 +592,18 @@ export function ChatInput(): React.ReactElement {
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (showAgentCommand) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        triggerAgentSlash();
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        if (slashFragment !== null) setSlashDismissedIndex(slashFragment.index);
+        return;
+      }
+    }
     if (showPicker && slashFragment !== null) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -842,6 +884,35 @@ export function ChatInput(): React.ReactElement {
               </button>
             );
           })}
+        </div>
+      )}
+
+      {showAgentCommand && (
+        <div className="skill-picker">
+          <div className="skill-picker-head">
+            <div className="skill-picker-head-top">
+              <span>Agent command</span>
+              <button
+                type="button"
+                className="skill-picker-close"
+                onClick={() => { if (slashFragment !== null) setSlashDismissedIndex(slashFragment.index); }}
+                aria-label="Close agent command"
+              >
+                ×
+              </button>
+            </div>
+          </div>
+          <button
+            type="button"
+            className="skill-item skill-item-highlighted"
+            onMouseDown={(e) => { e.preventDefault(); triggerAgentSlash(); }}
+          >
+            <span className="skill-mark">🤖</span>
+            <span className="skill-copy">
+              <span className="skill-name skill-name-idle">/a · Spawn sub-agent</span>
+              <span className="skill-desc">Open the spawn-agent panel (same as the right sidebar). Press Enter.</span>
+            </span>
+          </button>
         </div>
       )}
 
