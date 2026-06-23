@@ -250,7 +250,9 @@ export class SupabaseAdminRepository implements
   }
 
   async createProject(input: Partial<Project> & Pick<Project, "name" | "description" | "platform" | "repositoryUrl">) {
+    const legacyId = `project_${crypto.randomUUID().replaceAll("-", "").slice(0, 18)}`;
     const { data, error } = await this.supabase.from("projects").insert({
+      legacy_id: legacyId,
       name: input.name,
       description: input.description,
       platform: input.platform,
