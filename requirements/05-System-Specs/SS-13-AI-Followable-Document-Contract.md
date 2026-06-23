@@ -411,3 +411,35 @@ They are writing guides that show the exact section order and minimum expected c
 - downstream files can trace back to upstream documents without reading whole folders
 - `Task` and `BugFix` files are treated as deltas, not silent replacements for upstream documents
 - AI agents can load the top of a file and determine scope, authority, and next required reads quickly
+
+## 13. Machine-Readable Change-Ledger Block (change-audit notes)
+
+`change-audit/` notes are not one of the five governed phases, but they are the primary record of *what changed* and are consumed by the Context & Regression Engine (`SD-17`, Plane C). To let that engine fill the feature change ledger deterministically instead of re-reading diffs, every `change-audit/CA-###` note should carry one fenced, machine-readable block in addition to its human prose.
+
+### 13.1 Block format
+
+A single fenced `yaml` block delimited by stable markers:
+
+```yaml
+# ---8<--- flowpilot:change-ledger
+feature_key: <stable feature slug, e.g. notifications>
+source_doc_id: <Task-xxx | BUG-xxx | CP-xx | commit ref>
+entries:
+  - symbol: <qualified symbol or file path>
+    layer: data | domain | ui
+    change: added | modified | deleted
+    class: behavioral | cosmetic | structural | interface
+# --->8---
+```
+
+### 13.2 Rules
+
+- The block is additive; it never replaces the human `## Scope` / `## Completed` / `## Verification` sections required by the audit-logging skill.
+- `feature_key` should be stable across notes that touch the same feature, so history is groupable. Stability is maintained by **one registry file — `change-audit/FEATURE-KEYS.md`** — the source of truth for canonical kebab-case keys (`key — description`, one per line). When writing a note, pick an existing key from the registry; if none fits, append a new line. The Feature Catalog (`SD-17 §3.3`) seeds from this registry, so notes, ledger, and catalog share one vocabulary. As a committed repo file it travels with the repo via git — no separate sync is needed (it is not part of the `.flowpilot/` Drive sync).
+- Parsing is deterministic; model extraction is used only to fill missing fields or normalize legacy notes that predate this block.
+- One block per note. If a note legitimately spans features, list all entries under the dominant `feature_key` and note the structural exception in prose.
+
+### 13.3 Producer and consumer
+
+- Producer: the `.claude/skills/audit-logging` skill emits this block when writing a `CA-###` note.
+- Consumer: `SD-17 §6.3` parses it into `feature_change_manifests` / `feature_change_entries`.
