@@ -1026,6 +1026,11 @@ export function ChatInput(): React.ReactElement {
             <div className="text-area-wrapper">
               <div className="input-note">Return to the main chat to send prompts or use @agent routing.</div>
             </div>
+            {blocked && (
+              <button className="btn send-btn send-btn-stop" onClick={() => void stop()} aria-label="Stop child agent">
+                <StopIcon />
+              </button>
+            )}
             <button className="btn send-btn" onClick={backToMainRun}>
               Main
             </button>
