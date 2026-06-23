@@ -972,16 +972,17 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 			}
 		}
 		s.agentOrchestrator.upsertSummary(rs.parentRunID, AgentRunSummary{
-			RunID:       rs.id,
-			AgentName:   rs.agentName,
-			Role:        rs.role,
-			Status:      rs.status,
-			ParentRunID: rs.parentRunID,
-			CreatedAt:   rs.createdAt,
-			DependsOn:   append([]string(nil), rs.dependsOn...),
-			AgentStatus: rs.agentStatus,
-			ProviderKey: string(rs.providerKey),
-			ModelName:   modelName,
+			RunID:         rs.id,
+			AgentName:     rs.agentName,
+			Role:          rs.role,
+			Status:        rs.status,
+			ParentRunID:   rs.parentRunID,
+			CreatedAt:     rs.createdAt,
+			DependsOn:     append([]string(nil), rs.dependsOn...),
+			AgentStatus:   rs.agentStatus,
+			ProviderKey:   string(rs.providerKey),
+			ModelName:     modelName,
+			WaitForResult: rs.waitForResult,
 		})
 		shouldEmitParentGraph = shouldEmitAgentGraphForChildEvent(ev.Type)
 	}
@@ -1335,16 +1336,17 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 	s.agentOrchestrator.loop[parentRunID] = st
 	s.agentOrchestrator.mu.Unlock()
 	s.agentOrchestrator.upsertSummary(parentRunID, AgentRunSummary{
-		RunID:       handle.RunID,
-		AgentName:   childSnap.AgentName,
-		Role:        childSnap.Role,
-		Status:      RunStatus(childSnap.Status),
-		ParentRunID: parentRunID,
-		CreatedAt:   childSnap.StartedAt,
-		DependsOn:   append([]string(nil), in.DependsOn...),
-		AgentStatus: agentStatus,
-		ProviderKey: string(childSnap.ProviderKey),
-		ModelName:   childModel,
+		RunID:         handle.RunID,
+		AgentName:     childSnap.AgentName,
+		Role:          childSnap.Role,
+		Status:        RunStatus(childSnap.Status),
+		ParentRunID:   parentRunID,
+		CreatedAt:     childSnap.StartedAt,
+		DependsOn:     append([]string(nil), in.DependsOn...),
+		AgentStatus:   agentStatus,
+		ProviderKey:   string(childSnap.ProviderKey),
+		ModelName:     childModel,
+		WaitForResult: in.Wait,
 	})
 	_ = s.agentOrchestrator.addBus(parentRunID, AgentBusMessage{ID: s.nextID("bus"), ParentRunID: parentRunID, FromRunID: parentRunID, ToRunID: handle.RunID, Kind: "handoff", Message: in.Prompt, Queued: false, OccurredAt: time.Now().UTC().Format(time.RFC3339Nano)})
 	s.emitAgentGraph(parentRunID, s.agentOrchestrator.graphSnapshot(parentRunID))
@@ -1429,16 +1431,17 @@ func (s *InteractiveService) listAgentRunSummaries(parentRunID string) []AgentRu
 		}
 		liveIDs[id] = struct{}{}
 		out = append(out, AgentRunSummary{
-			RunID:       rs.id,
-			AgentName:   rs.agentName,
-			Role:        rs.role,
-			Status:      rs.status,
-			ParentRunID: rs.parentRunID,
-			CreatedAt:   rs.createdAt,
-			DependsOn:   append([]string(nil), rs.dependsOn...),
-			AgentStatus: rs.agentStatus,
-			ProviderKey: string(rs.providerKey),
-			ModelName:   rs.modelName,
+			RunID:         rs.id,
+			AgentName:     rs.agentName,
+			Role:          rs.role,
+			Status:        rs.status,
+			ParentRunID:   rs.parentRunID,
+			CreatedAt:     rs.createdAt,
+			DependsOn:     append([]string(nil), rs.dependsOn...),
+			AgentStatus:   rs.agentStatus,
+			ProviderKey:   string(rs.providerKey),
+			ModelName:     rs.modelName,
+			WaitForResult: rs.waitForResult,
 		})
 	}
 	s.mu.Unlock()

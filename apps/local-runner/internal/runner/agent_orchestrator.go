@@ -123,6 +123,9 @@ type AgentRunSummary struct {
 	AgentStatus string    `json:"agentStatus,omitempty"`
 	ProviderKey string    `json:"providerKey,omitempty"`
 	ModelName   string    `json:"modelName,omitempty"`
+	// WaitForResult mirrors the spawn's wait flag so the desktop can tell which running
+	// children block the main run (wait=true) vs. run in the background (wait=false) (BUG-133).
+	WaitForResult bool `json:"waitForResult,omitempty"`
 }
 
 // setHistoricalChildren stores agent summaries from a restored sync manifest so that

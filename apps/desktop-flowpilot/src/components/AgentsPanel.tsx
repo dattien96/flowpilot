@@ -99,7 +99,8 @@ export function AgentsPanel(): React.ReactElement {
   const mainRunStatus = activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId ? mainSnapshotStatus ?? activeStatus : activeStatus;
   const mainCardBusy = mainRunStatus === "running" || mainRunStatus === "waiting_approval" || mainRunStatus === "waiting_question";
 
-  // Dedup by runId and sort newest-first. The list is fed by both the orchestration
+  // Dedup by runId and sort newest-first.
+  // (declared before the blocking check below; hasBlockingChild reads orderedRuns) The list is fed by both the orchestration
   // SSE stream and a fire-and-forget HTTP refresh, which can race and momentarily
   // double-count or reorder agents; deduping by id keeps the count stable and sorting
   // by createdAt keeps the latest agent on top (BUG-130).
@@ -120,6 +121,14 @@ export function AgentsPanel(): React.ReactElement {
   const AGENT_COLLAPSE_LIMIT = 5;
   const visibleActiveRuns = showAllActive ? activeRuns : activeRuns.slice(0, AGENT_COLLAPSE_LIMIT);
   const visibleClosedRuns = showAllClosed ? closedRuns : closedRuns.slice(0, AGENT_COLLAPSE_LIMIT);
+
+  // A running child spawned with wait=true blocks the main run even when the main has no
+  // turn of its own in flight (e.g. a UI wait=true spawn). Gate spawning on it so the user
+  // cannot fan out concurrent agents while a blocking child is active (BUG-133).
+  const hasBlockingChild = orderedRuns.some(
+    (r) => r.waitForResult && (r.status === "running" || r.status === "waiting_approval" || r.status === "waiting_question"),
+  );
+  const spawnBlocked = mainCardBusy || hasBlockingChild;
 
   const dependencyCandidates = activeRuns;
 
@@ -220,8 +229,8 @@ export function AgentsPanel(): React.ReactElement {
           type="button"
           className="spawn"
           onClick={() => setOpen(true)}
-          disabled={!mainRunId || !client.spawnAgent || mainCardBusy}
-          title={mainCardBusy ? "Main agent is busy — wait for the current turn/agent to finish before spawning another." : undefined}
+          disabled={!mainRunId || !client.spawnAgent || spawnBlocked}
+          title={spawnBlocked ? "Main is busy (a turn or a wait=true agent is running) — wait for it to finish before spawning another." : undefined}
         >
           ＋ Spawn agent
         </button>
@@ -390,8 +399,8 @@ export function AgentsPanel(): React.ReactElement {
                 type="button"
                 className="bc primary"
                 onClick={() => void spawn()}
-                disabled={spawning || mainCardBusy || !dialog?.agentName || dialog.prompt.trim().length === 0}
-                title={mainCardBusy ? "Main agent is busy — wait for the current turn/agent to finish." : undefined}
+                disabled={spawning || spawnBlocked || !dialog?.agentName || dialog.prompt.trim().length === 0}
+                title={spawnBlocked ? "Main is busy (a turn or a wait=true agent is running) — wait for it to finish." : undefined}
               >
                 Spawn ▸
               </button>

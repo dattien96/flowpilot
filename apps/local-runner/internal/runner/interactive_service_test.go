@@ -690,6 +690,48 @@ func TestSpawnedChildInheritsParentYolo(t *testing.T) {
 	}
 }
 
+// TestAgentSummaryCarriesWaitForResultFlag guards BUG-133: the desktop gates the main run on
+// a running wait=true child, so the agent summary must expose the spawn's wait flag. A wait=false
+// (background) child must report waitForResult=false; a wait=true child must report true.
+func TestAgentSummaryCarriesWaitForResultFlag(t *testing.T) {
+	svc := NewInteractiveService()
+	capture := &captureTurnAdapter{ch: make(chan TurnRequest, 8)}
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key:          ProviderKeyClaude,
+		DisplayName:  "Claude",
+		Status:       ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true, SkillSelection: true, ApprovalEvents: true},
+		newAdapter:   func() ProviderRuntimeAdapter { return capture },
+	})
+	svc.registry = reg
+
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyClaude, Model: "claude-sonnet-4-6"})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+
+	bg, bgErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{Agent: "reviewer", Prompt: "bg", Provider: "claude", Wait: false})
+	if bgErr != nil {
+		t.Fatalf("spawn bg: %v", bgErr)
+	}
+	waiter, waitErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{Agent: "reviewer", Prompt: "blocking", Provider: "claude", Wait: true})
+	if waitErr != nil {
+		t.Fatalf("spawn wait: %v", waitErr)
+	}
+
+	byID := make(map[string]AgentRunSummary)
+	for _, s := range svc.listAgentRunSummaries(parent.RunID) {
+		byID[s.RunID] = s
+	}
+	if s, ok := byID[bg.RunID]; !ok || s.WaitForResult {
+		t.Fatalf("background child should have WaitForResult=false, got %+v (present=%t)", s, ok)
+	}
+	if s, ok := byID[waiter.RunID]; !ok || !s.WaitForResult {
+		t.Fatalf("wait=true child should have WaitForResult=true, got %+v (present=%t)", s, ok)
+	}
+}
+
 // TestUISpawnInjectsContextIntoParentProviderTurn guards BUG-122: a child agent spawned from
 // the desktop UI is invisible to the parent's provider conversation. The next parent turn's
 // provider prompt must carry a system note naming the child so the parent agent can answer

@@ -99,6 +99,8 @@ export interface AgentRunSummary {
   agentStatus?: string;
   providerKey?: string;
   modelName?: string;
+  /** True when spawned with wait=true; such a running child blocks the main run (BUG-133). */
+  waitForResult?: boolean;
 }
 
 export interface AgentDependencyEdge {
