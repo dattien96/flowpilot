@@ -157,6 +157,7 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
   });
   const [createSelectedTeamIds, setCreateSelectedTeamIds] = useState<string[]>([]);
   const [showCreateView, setShowCreateView] = useState(false);
+  const [pickingCreateDirectory, setPickingCreateDirectory] = useState(false);
   const [expandedPanels, setExpandedPanels] = useState<Record<ProjectPanelKey, boolean>>(defaultExpandedPanels);
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [deleteConfirmationText, setDeleteConfirmationText] = useState("");
@@ -380,6 +381,20 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
     }
   };
 
+  const pickCreateProjectDirectory = async () => {
+    setPickingCreateDirectory(true);
+    setMessage(null);
+    try {
+      const admin = await getAdminUseCases();
+      const selection = await admin.directories.pickDirectory();
+      setCreateForm((current) => ({ ...current, directoryPath: selection.path }));
+    } catch (error) {
+      setMessage(toErrorMessage(error, "Unable to select a directory. Paste the path manually if needed."));
+    } finally {
+      setPickingCreateDirectory(false);
+    }
+  };
+
   const saveProjectSettings = async () => {
     if (!selectedProject) return;
     setBusy(true);
@@ -539,7 +554,26 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
             <label className="settings-field"><span>Repository URL</span><input value={createForm.repositoryUrl} onChange={(event) => setCreateForm((current) => ({ ...current, repositoryUrl: event.target.value }))} /></label>
             <label className="settings-field settings-field-full"><span>Description</span><textarea value={createForm.description} onChange={(event) => setCreateForm((current) => ({ ...current, description: event.target.value }))} /></label>
             <label className="settings-field"><span>Platform</span><select value={createForm.platform} onChange={(event) => setCreateForm((current) => ({ ...current, platform: event.target.value as ProjectPlatform }))}><option value="android">android</option><option value="ios">ios</option><option value="web">web</option><option value="multi">multi</option></select></label>
-            <label className="settings-field"><span>Primary Directory</span><input value={createForm.directoryPath} onChange={(event) => setCreateForm((current) => ({ ...current, directoryPath: event.target.value }))} /></label>
+            <div className="settings-field settings-field-full">
+              <span>Primary Directory</span>
+              <div className="settings-inline-row">
+                <input
+                  value={createForm.directoryPath}
+                  onChange={(event) => setCreateForm((current) => ({ ...current, directoryPath: event.target.value }))}
+                />
+                <button
+                  className="secondary-btn"
+                  disabled={busy || pickingCreateDirectory}
+                  onClick={() => void pickCreateProjectDirectory()}
+                  type="button"
+                >
+                  {pickingCreateDirectory ? "Opening..." : "Browse Folder"}
+                </button>
+              </div>
+              <small className="settings-field-hint">
+                Opens the native folder chooser on macOS or Windows through the local runner.
+              </small>
+            </div>
           </div>
           <div className="settings-subpanel project-create-team-picker">
             <h3>Linked Teams</h3>

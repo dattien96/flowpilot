@@ -119,6 +119,14 @@ export class RunnerAdminRepository implements
     return payload.message ?? null;
   }
 
+  async pickDirectory() {
+    const response = await this.httpClient.request(new URL("/directories/pick", this.runnerBaseUrl), {
+      method: "POST",
+      cache: "no-store",
+    });
+    return readJson<{ path: string }>(response);
+  }
+
   async validatePath(path: string) {
     const response = await this.httpClient.request(new URL("/directories/validate", this.runnerBaseUrl), {
       method: "POST",
