@@ -578,6 +578,14 @@ func TestCodexAdapterResumeMigratesLegacySpawnAgentTool(t *testing.T) {
 	if err := os.WriteFile(sessionPath, []byte(legacy), 0o640); err != nil {
 		t.Fatal(err)
 	}
+	// Capture the OS-normalized mode of the original file. The migration must preserve
+	// it. We compare against this rather than a hardcoded 0640 so the assertion holds on
+	// Windows too, where file modes are reported as 0666 regardless of the create mode.
+	origInfo, statErr := os.Stat(sessionPath)
+	if statErr != nil {
+		t.Fatal(statErr)
+	}
+	wantMode := origInfo.Mode().Perm()
 
 	fc.serve(func(fc *fakeCodex, m map[string]any) {
 		switch m["method"] {
@@ -614,8 +622,8 @@ func TestCodexAdapterResumeMigratesLegacySpawnAgentTool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o640 {
-		t.Fatalf("rollout mode = %o, want 640", info.Mode().Perm())
+	if info.Mode().Perm() != wantMode {
+		t.Fatalf("rollout mode = %o, want %o (original mode must be preserved)", info.Mode().Perm(), wantMode)
 	}
 }
 

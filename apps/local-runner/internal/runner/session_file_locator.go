@@ -65,7 +65,17 @@ func migrateCodexReservedSpawnAgentTool(path string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	defer src.Close()
+	// Idempotent close: the early-return paths below rely on the defer, but the success
+	// path must release the handle BEFORE renaming over `path` — Windows refuses to
+	// replace a file while a handle to it is still open ("Access is denied"). (BUG-127)
+	srcClosed := false
+	closeSrc := func() {
+		if !srcClosed {
+			srcClosed = true
+			_ = src.Close()
+		}
+	}
+	defer closeSrc()
 
 	info, err := src.Stat()
 	if err != nil {
@@ -140,6 +150,9 @@ func migrateCodexReservedSpawnAgentTool(path string) (bool, error) {
 		_ = os.Remove(tmpPath)
 		return false, err
 	}
+	// Release the source handle before renaming over it (Windows requirement). The
+	// reader has already been fully drained into tmp via io.Copy above. (BUG-127)
+	closeSrc()
 	if err := os.Rename(tmpPath, path); err != nil {
 		_ = os.Remove(tmpPath)
 		return false, err
