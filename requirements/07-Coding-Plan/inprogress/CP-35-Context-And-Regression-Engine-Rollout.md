@@ -572,3 +572,208 @@ go test ./internal/changeledger/... ./internal/featurecatalog/... ./internal/str
 | Regression blocks a live AI step | runner wiring + running tests mid-turn |
 | feature_history syncs to Drive | Drive syncer wired from runner package |
 | Tooling health shown on setup page | `CP-34` UI |
+
+---
+
+## 12. E2E Testing on the Real App
+
+> **Use a dedicated test project — never bind the FlowPilot repo itself as the target.**
+> Suggested: any small Go or Node project with at least a few commits and one test file.
+> Labels: ✅ testable now | ⏳ requires runner wiring (CP-10 / CP-34)
+
+---
+
+### Prerequisites
+
+1. FlowPilot app running locally (web + runner).
+2. A test project directory available, e.g. `C:\test-projects\my-sample-app` with:
+   - At least 5 git commits
+   - At least one passing test (`go test ./...` or `npm test` passes)
+   - One source file that can be edited
+3. `git` and `node` on PATH.
+
+---
+
+### E2E-1 — Project bind creates engine store ✅
+
+**Steps:**
+1. In the FlowPilot UI, bind the test project (Settings → Bind Project → select `my-sample-app`).
+2. After bind completes, open a terminal and inspect:
+
+```bash
+ls my-sample-app/.flowpilot/
+# Expected: ledger/  catalog/  settings/  guard/  structure/
+```
+
+**Verify:**
+- `.flowpilot/ledger/feature_history.ndjson` exists and has at least 1 line (one commit per line).
+- `.flowpilot/ledger/.cursor` contains a commit hash.
+- `.flowpilot/tooling.json` exists with 4 entries (gitnexus, rtk, node, skill_pack).
+
+---
+
+### E2E-2 — Tooling health reflects real environment ✅
+
+**Steps:**
+1. After bind, read the tooling file:
+
+```bash
+cat my-sample-app/.flowpilot/tooling.json
+```
+
+**Verify:**
+- `node` → `"ok"` (node is installed).
+- `gitnexus` → `"ok"` if `npx gitnexus` resolves, `"missing"` otherwise.
+- `rtk` → reflects whether RTK is installed.
+- No entry is absent — all 4 tools are always checked.
+
+---
+
+### E2E-3 — Feature history populated from real git log ✅
+
+**Steps:**
+1. Run `go test ./internal/changeledger/... -v -run TestParseRecord` against the test project's directory to spot-check parsing.
+2. Read the generated NDJSON:
+
+```bash
+wc -l my-sample-app/.flowpilot/ledger/feature_history.ndjson
+cat my-sample-app/.flowpilot/ledger/feature_history.ndjson | tail -3
+```
+
+**Verify:**
+- Line count matches the number of non-merge commits in the repo (`git log --no-merges --oneline | wc -l`).
+- Each line is valid JSON with `commit_hash`, `feature_key`, `committed_at`.
+- Re-binding (or calling `Build()` again) is incremental — no duplicate lines added.
+
+---
+
+### E2E-4 — NL resolves to a feature key ✅
+
+**Steps:**
+1. Note a feature key that appears in `.flowpilot/ledger/feature_history.ndjson` (e.g. `auth`, `api`, `ui`).
+2. Run the resolver against the catalog:
+
+```bash
+cd apps/local-runner
+go test ./internal/featurecatalog/... -v -run TestResolveFeature
+```
+
+3. Also verify the catalog was built from the test project's commits:
+
+```bash
+wc -l my-sample-app/.flowpilot/catalog/features.ndjson
+# Should have one line per distinct feature_key found
+```
+
+**Verify:**
+- A natural-language phrase like "update the login page" resolves to the correct feature key.
+- The top candidate score is > 5.0.
+- History slot output ends with `← current truth` on the last entry.
+
+---
+
+### E2E-5 — Skill pack installed on bind ⏳ (requires CP-34)
+
+**Steps** (once CP-34 wiring is complete):
+1. Bind the test project.
+2. Check the installed skills:
+
+```bash
+ls my-sample-app/.claude/skills/flowpilot/
+# Expected: audit-logging/  context-discipline/  git-commit-format/  oracle-rule/  phase-doc/
+
+head -1 my-sample-app/.claude/skills/flowpilot/git-commit-format/SKILL.md
+# Expected: version: 1
+```
+
+**Verify:**
+- All 5 skills present in `.claude/`, `.codex/`, and `.gemini/`.
+- Re-bind with same version → files in `Skipped` (not overwritten).
+- Re-bind with bumped `PackVersion` → files updated.
+
+---
+
+### E2E-6 — Flow Gate: code change without CA note → reprompt ⏳ (requires CP-10)
+
+**Steps** (once `interactive_service.go` hook is wired):
+1. Start a workflow task in FlowPilot on the test project.
+2. Give the AI an instruction that will cause it to edit a source file (e.g. "add a comment to main.go").
+3. Let the turn complete **without** the AI writing a `change-audit/CA-*.md` note.
+
+**Verify:**
+- The runner automatically sends a follow-up reprompt: "You changed code but did not write a change-audit note. Please write one now."
+- After 2 failed reprompts, the step is blocked (not transitioned to `RunStatusCompleted`).
+- The SSE stream includes the `r-ca` violation message.
+
+---
+
+### E2E-7 — Flow Gate: code change WITH CA note → passes ⏳ (requires CP-10)
+
+**Steps:**
+1. Same setup as E2E-6.
+2. This time, tell the AI: "edit main.go and write a change-audit note".
+3. Let the turn complete.
+
+**Verify:**
+- No reprompt fires.
+- Step transitions to `RunStatusCompleted`.
+- `git status` shows both the source file change and a new `change-audit/CA-*.md` file.
+
+---
+
+### E2E-8 — Regression oracle: break a test → step blocked ⏳ (requires CP-10)
+
+**Steps** (test project must have at least one passing test):
+1. Start a task. The runner captures baseline at task start (`.flowpilot/guard/test_baseline.json` written).
+2. Manually (or via AI instruction) modify a source file in a way that breaks an existing test — **without modifying the test file itself**.
+3. Complete the turn.
+
+**Verify:**
+- Step is blocked with message: `"Previously-passing tests now fail: [TestXxx]. Fix the code; do not change these tests."`
+- `HasRegression=true` in the oracle result.
+- The test file is NOT in `GitDiff` (confirming oracle correctly identified this as a regression, not a spec change).
+
+---
+
+### E2E-9 — Oracle tampering detection ⏳ (requires CP-10)
+
+**Steps:**
+1. Start a task on the test project.
+2. Have the AI modify both a source file AND an existing test file (e.g. weaken an assertion to make it pass).
+
+**Verify:**
+- The runner flags `Tampered` test files.
+- A human-review prompt appears: "A pre-existing test file was modified. Confirm this change is intentional."
+- Step does **not** auto-complete without user confirmation.
+
+---
+
+### E2E-10 — Drive sync: shared files appear in Drive ⏳ (requires CP-10/CP-34)
+
+**Steps** (Google Drive connected):
+1. Bind the test project to a Drive-enabled project in FlowPilot.
+2. Complete any workflow step.
+
+**Verify in Google Drive** (under the project's chat folder → `context-engine/`):
+- `feature_history.ndjson` present.
+- `features.ndjson` present.
+- `flow-rules.json` present.
+- `manifest.json` present with correct SHA256 values.
+- `tooling.json` and `guard/test_baseline.json` are **absent** (machine-local, never synced).
+
+---
+
+### E2E summary
+
+| Test | Available now | Requires wiring |
+|---|---|---|
+| E2E-1 Engine store created on bind | ✅ | — |
+| E2E-2 Tooling health in tooling.json | ✅ | — |
+| E2E-3 Feature history from real git log | ✅ | — |
+| E2E-4 NL resolves to feature key | ✅ | — |
+| E2E-5 Skill pack auto-installed | — | CP-34 |
+| E2E-6 Gate reprompts on missing CA note | — | CP-10 |
+| E2E-7 Gate passes when CA note present | — | CP-10 |
+| E2E-8 Regression oracle blocks step | — | CP-10 |
+| E2E-9 Oracle flags test tampering | — | CP-10 |
+| E2E-10 Shared files sync to Drive | — | CP-10 / CP-34 |
