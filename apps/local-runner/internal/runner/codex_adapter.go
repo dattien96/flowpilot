@@ -21,6 +21,7 @@ import (
 type codexAdapter struct {
 	dispatcher *codexDispatcher
 	cwd        string
+	codexHome  string
 
 	// promptPrep assembles the final prompt before turn/start. Defaults to ask_user
 	// reinforcement; the live process adapter overrides it to also run
@@ -49,6 +50,13 @@ func newCodexAdapter(dispatcher *codexDispatcher, cwd string) *codexAdapter {
 // reserve ask_user for a required decision that genuinely blocks progress — otherwise the model
 // front-loads clarifying questions instead of doing obvious work (e.g. a plain file write).
 const askUserReinforcement = "\n\n---\nComplete the clear, unambiguous parts of the task directly — your normal tools and approval gates still apply. Only call the `ask_user` tool (prompt, options[], multiSelect?) when a required decision genuinely blocks you and you cannot reasonably infer the answer or make progress without it; do not use it for things you can do or reasonably assume first."
+
+// Codex dynamic tool names are sent through the OpenAI tool surface by the
+// app-server. The generic public name `spawn_agent` now collides with a reserved
+// encrypted-tool function name on newer models, which causes the turn to fail
+// before the model can act. Keep a FlowPilot-specific registration name on Codex
+// while normalizing it back to `spawn_agent` at the runner/UI boundary. (BUG-124)
+const codexSpawnAgentToolName = "flowpilot_spawn_agent"
 
 // preparePrompt builds the final turn prompt. The default applies ask_user
 // reinforcement; promptPrep (when set) replaces it with full runner-side assembly.
@@ -82,7 +90,7 @@ func codexAskUserDynamicTool() any {
 // ask_user so the model can create sub-agent runs (CP-19 / Task-082).
 func codexSpawnAgentDynamicTool() any {
 	return map[string]any{
-		"name":        "spawn_agent",
+		"name":        codexSpawnAgentToolName,
 		"description": "Spawn a sub-agent run for a focused task. The sub-agent runs with its own provider session and SSE stream. Use wait=true to block until the sub-agent's turn completes and receive its final message; use wait=false to fire-and-forget.",
 		"inputSchema": map[string]any{
 			"type": "object",
@@ -126,6 +134,11 @@ func (a *codexAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tur
 	threadMethod := "thread/start"
 	threadParams := codexThreadStartParams(cwd, sandbox, approvalMode, req.ModelName, req.ReasoningEffort, dynamicTools)
 	if resumeID := strings.TrimSpace(req.ProviderSessionID); resumeID != "" && !strings.HasPrefix(resumeID, "thread-") {
+		if sessionPath, ok := LocateSessionFile(ProviderKeyCodex, a.codexHome, resumeID, cwd); ok {
+			if _, err := migrateCodexReservedSpawnAgentTool(sessionPath); err != nil {
+				return fmt.Errorf("prepare codex session for resume: %w", err)
+			}
+		}
 		threadMethod = "thread/resume"
 		threadParams = codexThreadResumeParams(resumeID, cwd, sandbox, approvalMode, req.ModelName, req.ReasoningEffort, dynamicTools)
 	}
@@ -283,7 +296,7 @@ func (a *codexAdapter) handleDynamicToolCall(req codexInboundRequest) {
 			return
 		}
 		_ = a.dispatcher.reply(req.ID, codexDynamicToolResult(strings.Join(choice, ", "), true))
-	case "spawn_agent":
+	case "spawn_agent", codexSpawnAgentToolName:
 		args, _ := req.Params["arguments"].(map[string]any)
 		if args == nil {
 			args = map[string]any{}

@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -220,6 +222,8 @@ type captureBridge struct {
 	askOptions  []QuestionOption
 	askMulti    bool
 	askCallSeen bool
+	spawnSeen   bool
+	spawnInput  SpawnAgentInput
 }
 
 func (b *captureBridge) Emit(ev ProviderEvent) {
@@ -242,8 +246,12 @@ func (b *captureBridge) AskQuestion(prompt string, options []QuestionOption, mul
 	b.mu.Unlock()
 	return b.askAnswer, b.askErr
 }
-func (b *captureBridge) SpawnAgent(_ SpawnAgentInput) (SpawnAgentResult, error) {
-	return SpawnAgentResult{}, nil
+func (b *captureBridge) SpawnAgent(in SpawnAgentInput) (SpawnAgentResult, error) {
+	b.mu.Lock()
+	b.spawnSeen = true
+	b.spawnInput = in
+	b.mu.Unlock()
+	return SpawnAgentResult{RunID: "child-1", ProviderSessionID: "sess-child-1", ProviderKey: "codex", Status: "completed"}, nil
 }
 func (b *captureBridge) types() []ProviderEventType {
 	b.mu.Lock()
@@ -493,6 +501,124 @@ func TestCodexAdapterAskUserDynamicToolRoundTrip(t *testing.T) {
 	}
 }
 
+func TestCodexAdapterSpawnAgentDynamicToolAliasRoundTrip(t *testing.T) {
+	d, fc := startFakeCodex(t, nil)
+	adapter := newCodexAdapter(d, "/workspace")
+	d.setInbound(adapter.handleInbound)
+
+	toolReplies := make(chan map[string]any, 1)
+	fc.serve(func(fc *fakeCodex, m map[string]any) {
+		method, _ := m["method"].(string)
+		switch method {
+		case "thread/start":
+			fc.reply(m["id"], map[string]any{"threadId": "th1"})
+		case "turn/start":
+			fc.reply(m["id"], map[string]any{"turnId": "ct1"})
+			fc.send(map[string]any{"jsonrpc": "2.0", "id": 601, "method": "item/tool/call",
+				"params": map[string]any{
+					"threadId": "th1", "turnId": "ct1", "callId": "call_spawn", "namespace": nil,
+					"tool":      codexSpawnAgentToolName,
+					"arguments": map[string]any{"agent": "reviewer", "prompt": "check this", "wait": true},
+				}})
+		default:
+			if res, ok := m["result"].(map[string]any); ok {
+				if _, ok := res["contentItems"]; ok {
+					toolReplies <- res
+					fc.notify("turn.completed", map[string]any{"threadId": "th1", "finalMessage": "spawned"})
+				}
+			}
+		}
+	})
+
+	bridge := &captureBridge{approveWith: "approve"}
+	if err := adapter.SendTurn(context.Background(), TurnRequest{RunID: "r1", Prompt: "go"}, bridge); err != nil {
+		t.Fatalf("SendTurn: %v", err)
+	}
+
+	bridge.mu.Lock()
+	seen, in := bridge.spawnSeen, bridge.spawnInput
+	bridge.mu.Unlock()
+	if !seen {
+		t.Fatal("spawn alias was not routed to bridge.SpawnAgent")
+	}
+	if in.Agent != "reviewer" || in.Prompt != "check this" || !in.Wait {
+		t.Fatalf("spawn input = %+v", in)
+	}
+
+	select {
+	case res := <-toolReplies:
+		if res["success"] != true {
+			t.Fatalf("dynamic tool result success = %v, want true", res["success"])
+		}
+		items, _ := res["contentItems"].([]any)
+		first, _ := items[0].(map[string]any)
+		text, _ := first["text"].(string)
+		if first["type"] != "inputText" || !strings.Contains(text, "\"runId\":\"child-1\"") {
+			t.Fatalf("contentItems[0] = %+v, want spawn result JSON", first)
+		}
+	default:
+		t.Fatal("spawn result was not replied to Codex as a DynamicToolCallResponse")
+	}
+}
+
+func TestCodexAdapterResumeMigratesLegacySpawnAgentTool(t *testing.T) {
+	d, fc := startFakeCodex(t, nil)
+	adapter := newCodexAdapter(d, "/workspace")
+	adapter.codexHome = t.TempDir()
+	d.setInbound(adapter.handleInbound)
+
+	const sessionID = "legacy-session"
+	sessionDir := filepath.Join(adapter.codexHome, "sessions", "2026", "06", "22")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sessionPath := filepath.Join(sessionDir, "rollout-2026-06-22T00-00-00-"+sessionID+".jsonl")
+	legacy := `{"type":"session_meta","payload":{"id":"legacy-session","cwd":"/workspace","dynamic_tools":[{"name":"ask_user"},{"name":"spawn_agent"}]}}` + "\n" +
+		`{"type":"response_item","payload":{"type":"message","role":"user"}}` + "\n"
+	if err := os.WriteFile(sessionPath, []byte(legacy), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	fc.serve(func(fc *fakeCodex, m map[string]any) {
+		switch m["method"] {
+		case "thread/resume":
+			body, err := os.ReadFile(sessionPath)
+			if err != nil {
+				t.Errorf("read migrated rollout: %v", err)
+			}
+			if strings.Contains(string(body), `"name":"spawn_agent"`) || !strings.Contains(string(body), `"name":"flowpilot_spawn_agent"`) {
+				t.Errorf("legacy rollout was not migrated before thread/resume: %s", body)
+			}
+			fc.reply(m["id"], map[string]any{"threadId": sessionID})
+		case "turn/start":
+			fc.reply(m["id"], map[string]any{"turnId": "turn-1"})
+			fc.notify("turn.completed", map[string]any{"threadId": sessionID, "finalMessage": "ok"})
+		}
+	})
+
+	err := adapter.SendTurn(context.Background(), TurnRequest{
+		RunID: "r1", Prompt: "continue", ProviderSessionID: sessionID,
+	}, &captureBridge{approveWith: "approve"})
+	if err != nil {
+		t.Fatalf("SendTurn: %v", err)
+	}
+
+	body, err := os.ReadFile(sessionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(string(body), `{"type":"response_item","payload":{"type":"message","role":"user"}}`+"\n") {
+		t.Fatalf("migration changed rollout records after session_meta: %s", body)
+	}
+	info, err := os.Stat(sessionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("rollout mode = %o, want 640", info.Mode().Perm())
+	}
+}
+
 func TestCodexAdapterResumedTurnUsesThreadResumeForCommandApproval(t *testing.T) {
 	d, fc := startFakeCodex(t, nil)
 	adapter := newCodexAdapter(d, "/workspace")
@@ -610,8 +736,8 @@ func TestCodexAdapterResumedTurnRoutesAskUserDynamicTool(t *testing.T) {
 	select {
 	case params := <-resumeParams:
 		raw, _ := json.Marshal(params["dynamicTools"])
-		if !strings.Contains(string(raw), "ask_user") || !strings.Contains(string(raw), "spawn_agent") {
-			t.Fatalf("thread/resume dynamicTools should register ask_user and spawn_agent: %s", raw)
+		if !strings.Contains(string(raw), "ask_user") || !strings.Contains(string(raw), codexSpawnAgentToolName) || strings.Contains(string(raw), `"name":"spawn_agent"`) {
+			t.Fatalf("thread/resume dynamicTools should register ask_user and the FlowPilot spawn alias only: %s", raw)
 		}
 	default:
 		t.Fatal("did not capture thread/resume params")

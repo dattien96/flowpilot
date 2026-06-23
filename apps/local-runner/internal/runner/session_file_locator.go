@@ -56,6 +56,97 @@ func LocateSessionFile(providerKey ProviderKey, accountHome, sessionID, cwd stri
 	}
 }
 
+// migrateCodexReservedSpawnAgentTool repairs rollout metadata written before
+// BUG-124. Codex reloads dynamic_tools from session_meta during thread/resume, so
+// passing the corrected alias in resume params alone cannot override the stale,
+// now-reserved spawn_agent declaration.
+func migrateCodexReservedSpawnAgentTool(path string) (bool, error) {
+	src, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer src.Close()
+
+	info, err := src.Stat()
+	if err != nil {
+		return false, err
+	}
+	reader := bufio.NewReader(src)
+	firstLine, readErr := reader.ReadBytes('\n')
+	if readErr != nil && !errors.Is(readErr, io.EOF) {
+		return false, readErr
+	}
+	if len(firstLine) == 0 {
+		return false, nil
+	}
+
+	hadNewline := firstLine[len(firstLine)-1] == '\n'
+	rawLine := bytes.TrimSuffix(firstLine, []byte{'\n'})
+	var entry map[string]any
+	if err := json.Unmarshal(rawLine, &entry); err != nil {
+		return false, nil
+	}
+	if entry["type"] != "session_meta" {
+		return false, nil
+	}
+	payload, _ := entry["payload"].(map[string]any)
+	tools, _ := payload["dynamic_tools"].([]any)
+	changed := false
+	for _, item := range tools {
+		tool, _ := item.(map[string]any)
+		if tool["name"] == "spawn_agent" {
+			tool["name"] = codexSpawnAgentToolName
+			changed = true
+		}
+	}
+	if !changed {
+		return false, nil
+	}
+
+	migratedFirstLine, err := json.Marshal(entry)
+	if err != nil {
+		return false, err
+	}
+	if hadNewline {
+		migratedFirstLine = append(migratedFirstLine, '\n')
+	}
+
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".bug124-*")
+	if err != nil {
+		return false, err
+	}
+	tmpPath := tmp.Name()
+	cleanup := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+	}
+	if err := tmp.Chmod(info.Mode().Perm()); err != nil {
+		cleanup()
+		return false, err
+	}
+	if _, err := tmp.Write(migratedFirstLine); err != nil {
+		cleanup()
+		return false, err
+	}
+	if _, err := io.Copy(tmp, reader); err != nil {
+		cleanup()
+		return false, err
+	}
+	if err := tmp.Sync(); err != nil {
+		cleanup()
+		return false, err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return false, err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return false, err
+	}
+	return true, nil
+}
+
 // RelocateSessionFile copies a provider session file into the target account home.
 // If srcPath and the computed destination are the same file (both accounts share
 // the same home directory), it returns srcPath immediately without copying.

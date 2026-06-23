@@ -130,6 +130,7 @@ func (r *Runner) ensureCodexAppServer(ctx context.Context, scopeKey, cwd string,
 	}
 
 	adapter := newCodexAdapter(dispatcher, cwd)
+	adapter.codexHome = strings.TrimSpace(extraEnv["CODEX_HOME"])
 	// Runner-side prompt assembly before turn/start (04-03): full skill content
 	// injection + ask_user reinforcement.
 	adapter.promptPrep = func(req TurnRequest) string {
