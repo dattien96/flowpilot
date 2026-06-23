@@ -5,7 +5,7 @@
 - Document ID: `Task-103`
 - Title: `Engine Local Store And Drive Sync`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-23`
