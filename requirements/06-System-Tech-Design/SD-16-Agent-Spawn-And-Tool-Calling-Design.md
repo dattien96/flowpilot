@@ -335,97 +335,78 @@ A child result reaches the parent through exactly one of two channels, chosen by
 
 ## 15. Test
 
-Setup
 
-1. Start the desktop app and local runner as you normally do.
-2. Make sure YOLO is Off.
-3. Open a fresh normal chat with Codex.
-4. Keep the right-side Agents panel visible and keep History expanded.
+### Test 1: full - cases 18 & 20 FIXED by BUG-129 (child inherits parent YOLO)
 
-### Test 1: Prompt clears immediately
-
-1. Type any normal prompt and press Enter.
-2. Expected:
-   - The text box clears immediately.
-   - The prompt appears in the timeline.
-   - The turn can keep running without the old text staying in the input.
-
-### Test 2: spawn_agent on a fresh Codex chat
-
-1. Send this prompt exactly:
-
-Use spawn_agent exactly once with agent="reviewer", provider="codex", wait=true.
-Child prompt: "Do not use tools. Reply exactly: CHILD_AGENT_DONE."
+1. Make sure YOLO is Off.
+2. Start New Claude chat -> Prompt (Use spawn_agent exactly once with agent="reviewer", provider="codex", wait=true.
+Child prompt: "Do not use tools. Reply exactly: Number 11."
 After the child returns, tell me the exact child result.
-
-2. Expected:
-   - A child agent appears in Agents.
-   - The parent does not look blank/frozen; you can see the child state.
-   - The child completes.
-   - The main answer reports CHILD_AGENT_DONE.
-
-### Test 3: spawn_agent on a resumed Codex chat
-
-1. Reopen an existing Codex history chat, or send one normal prompt first so the next turn is on a resumed thread.
-2. Send the same prompt from Test 2.
-3. Expected:
-   - It still creates a real child agent.
-   - This confirms resumed Codex threads still have spawn_agent registered.
-   - No fake “I used a reviewer sub-agent” text without an actual child run.
-
-### Test 4: YOLO-off child approval flow
-
-1. Send this prompt exactly:
-
-Use spawn_agent exactly once with agent="coder", provider="codex", wait=true.
+) ----> Check result
+3.  Prompt (Use spawn_agent exactly once with agent="reviewer", provider="claude", wait=true.
+Child prompt: "Do not use tools. Reply exactly: Number 33."
+After the child returns, tell me the exact child result.
+) ----> Check result
+4. New run - start with Codex
+5. -> Prompt (Use spawn_agent exactly once with agent="reviewer", provider="codex", wait=true.
+Child prompt: "Do not use tools. Reply exactly: Number 44."
+After the child returns, tell me the exact child result.
+) ----> Check result
+6. Prompt (Use spawn_agent exactly once with agent="reviewer", provider="claude", wait=true.
+Child prompt: "Do not use tools. Reply exactly: Number 22."
+After the child returns, tell me the exact child result.
+) ----> Check result
+7. Back to claude chat -> switch xxx -> check
+8. Ask: Do you know my mentioned number ? -> expect 11-33
+9. Spawm new Claude Agent by UI -> Prompt (You are my claude sub-agent - DONT DO ANYTHING. Just return Like 66)
+10. Spawm new Codex Agent by UI -> Prompt (You are my codex sub-agent - DONT DO ANYTHING. Just return Like 55)
+11. Ask: Do you know my mentioned number ? -> expect 11-33-55-66
+12. Back to codex chat -> switch xxx -> check
+13. Ask: Do you know my mentioned number ? -> expect 22-44
+14. Spawm new Claude Agent by UI -> Prompt (You are my claude sub-agent - DONT DO ANYTHING. Just return Like 77)
+15. Spawm new Codex Agent by UI -> Prompt (You are my codex sub-agent - DONT DO ANYTHING. Just return 88)
+16. Ask: Do you know my mentioned number ? -> expect 22-44-77-88
+17. Back to claude chat - KEEP yolo off -> prompt (Use spawn_agent exactly once with agent="coder", provider="codex", wait=true.
+Child prompt: "Create a file called child-agent-yolo-off.txt in the current directory with the text 'child approval works'. Then reply exactly: CHILD_APPROVAL_DONE."
+Do not create the file yourself. Only the child agent should do it.) -> check APPROVE
+18. YOLO = true and send again -> check APPROVE   ----- **FIXED (BUG-129): with YOLO on, the child now auto-approves; no confirm.**
+19. Switch to codex chat  - KEEP yolo off -> prompt (Use spawn_agent exactly once with agent="coder", provider="claude", wait=true.
 Child prompt: "Create a file called child-agent-yolo-off.txt in the current directory with the text 'child approval works'. Then reply
 exactly: CHILD_APPROVAL_DONE."
-Do not create the file yourself. Only the child agent should do it.
+Do not create the file yourself. Only the child agent should do it.) -> check APPROVE
+20. YOLO = true and send again -> check APPROVE ----- **FIXED (BUG-129): with YOLO on, the child now auto-approves; no confirm.**
+21. Re-start sever and continue with Test 2
 
-2. Expected before approval:
-   - A child agent appears in Agents.
-   - The child status changes to waiting_approval.
-   - Approval state is visible in the main/child UI instead of looking like a silent hang.
-   - The file should not be created yet.
+### Test 2: regression test for YOLO - PASSED
+3 prompts
+Create a file called yolo-test.txt in the current directory with the text "yolo works" and after that is all skills name i mentioned
 
-3. Approve the child action.
-4. Expected after approval:
-   - File child-agent-yolo-off.txt is created.
-   - Child completes.
-   - Main turn completes and reports the child result.
+Using mcp google drive to let me know the current google email of this drive
 
-### Test 5: History behavior
+Use the ask_user tool to ask me which programming language I prefer: Python, TypeScript, or Go. Then write a "Hello World" in whichever I pick.
 
-1. Create more than 5 chats in one project.
-2. Expected:
-   - Local History initially shows 5 items.
-   - A button appears like Show all (N more).
-   - Clicking it expands the full list.
-   - Clicking again collapses back to 5.
 
-### Test 6: Restart persistence sanity check
+- Hi with current acc
+- Yolo off: full 3 prompts
+- Change to other acc
+- Hi with new acc
+- Yolo off: full 3 prompts
+- Switch to other chat -> back -> can see and continue other prompt
+- Restart sever
+- Open chat again
+- can see old history
+- change back previous acc - say hi
+- YOLO = true
+- Full 3 prompts now
+- Sync
+- Restart server
+- Open chat after sync 
+- YOLO = false
+- 3 prompt continue
 
-1. After running the child-agent tests above, restart the runner/app.
-2. Reopen the same project.
-3. Expected:
-   - Parent chats are still in History.
-   - Reopening a parent run should still show its agent-related state/history as supported by current persistence.
-   - Child runs are not expected as separate top-level history rows.
 
-### Test 7: Result sharing — UI spawn reaches the main chat
 
-Validates Section 14 for the UI entry point (BUG-122).
-
-1. In a fresh main chat, open the Agents panel and click `+ Spawn agent`.
-2. Spawn `reviewer` with "Wait for result: ON" and child prompt: `Do not use tools. Reply exactly: SHARE_UI_DONE.`
-3. Wait for the child to show completed in the Agents panel.
-4. In the main chat, ask: `Which sub-agents did I start, and what did they return?`
-5. Expected:
-   - The main chat names the `reviewer` sub-agent and reports its result `SHARE_UI_DONE`.
-   - It does NOT claim "no sub-agents were started".
-   - The main answer does not include the child's internal steps/tool detail — only the final result (isolation per `D-6`).
-
-### Test 8: Result sharing — tool spawn parity for both wait modes
+### Test 3: Result sharing — tool spawn parity for both wait modes
 
 Validates Section 14 delivery rule (`D-8`) for the AI tool entry point (BUG-126).
 
@@ -441,3 +422,30 @@ Child prompt: "Do not use tools. Reply exactly: SHARE_BG_DONE." Do not wait for 
 5. In another fresh chat, send a `wait=true` spawn (as in Test 2) and after it completes ask the same question.
 6. Expected (wait=true):
    - The main chat still reports the result, and it is reported once (no duplicated "completed" note), because `wait=true` results arrive only as the synchronous tool result.
+
+### Test 4: Spawn disabled while the main run is busy (BUG-131)
+
+Validates that the desktop cannot fan out unbounded concurrent spawns while the main run is blocked — the `+ Spawn agent` control mirrors the send button's busy gating.
+
+1. In a chat, spawn an agent from the UI with **Wait for result = ON** so the main run blocks on the child.
+2. While the child is running, observe the chat send button is disabled (existing, correct behavior).
+3. Expected: the `+ Spawn agent` button in the Agents panel is **also disabled** (greyed, with a "main is busy" tooltip), and the spawn modal's `Spawn ▸` button is disabled too — so a second agent cannot be started until the main run is idle.
+4. Trigger a normal main turn (no child) and confirm the same: while the main turn is `running`/`waiting_approval`/`waiting_question`, the spawn control is disabled; when it returns to idle, the control re-enables.
+5. Regression: with the main run idle, the spawn button works exactly as before.
+
+### Test 5: Wait semantics — blocking vs concurrent spawns (BUG-131)
+
+Validates the `wait` toggle's effect on the main run and on the ability to spawn more agents. This is the user-facing contract behind Test 4's gate.
+
+**wait=true → main blocks → no concurrent spawn**
+1. In a chat, spawn agent 1 from the UI with **Wait for result = ON**.
+2. Expected: the main run goes busy and stays blocked until agent 1 finishes — the chat send button AND the `+ Spawn agent` / `Spawn ▸` controls are disabled.
+3. While agent 1 is still running, confirm you **cannot** start a second agent (the spawn control is disabled).
+4. When agent 1 completes, the main run returns to idle and spawning is enabled again.
+
+**wait=false → main continues → multiple concurrent spawns**
+5. In a fresh chat, spawn agent A with **Wait for result = OFF**.
+6. Expected: the spawn dispatches and the main run does **not** block (it returns to idle); agent A streams in the Agents panel in the background.
+7. While agent A is still running, spawn agent B (wait=false) and then agent C (wait=false).
+8. Expected: A, B, and C all run concurrently and appear in the Agents panel (newest on top, collapsing past 5 — see BUG-130); the count reflects all running children without flicker.
+9. Mixed check: with background agents A/B/C running, starting a `wait=true` spawn blocks the main run as in step 2; the background agents keep running independently.
