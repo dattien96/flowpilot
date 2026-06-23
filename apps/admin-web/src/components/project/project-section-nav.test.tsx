@@ -20,11 +20,4 @@ describe("ProjectSectionNav", () => {
     const tab = screen.getByRole("link", { name: "Directory Binding" });
     expect(tab).toHaveAttribute("href", "/projects/project-alpha/directory-bindings");
   });
-
-  it("includes the engine tab", () => {
-    render(<ProjectSectionNav projectId="project-alpha" />);
-
-    const tab = screen.getByRole("link", { name: "Engine" });
-    expect(tab).toHaveAttribute("href", "/projects/project-alpha/engine");
-  });
 });

@@ -6,7 +6,6 @@ import { PageFrame } from "@/components/common/page-frame";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/presentation/components/ui/badge";
 import { createGatewayBundle } from "@/data/repository/browser-factory";
-import { autoInitProjectEngine } from "@/features/projects/project-engine-auto-init";
 import { getTeamLinkDelta } from "./project-team-links";
 
 type BindingDraft = {
@@ -101,10 +100,6 @@ function CreateProjectPage() {
       await Promise.all(
         toLink.map((teamId) => gateways.teamGateway.linkTeamToProject(project.id, teamId)),
       );
-
-      for (const binding of normalizedBindings) {
-        void autoInitProjectEngine(project.id, binding.localPath);
-      }
 
       return project;
     },

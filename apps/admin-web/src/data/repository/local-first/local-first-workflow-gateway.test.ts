@@ -58,12 +58,6 @@ function createLocalRunnerMock(): LocalRunnerGateway {
     getHealth: vi.fn(async () => {
       throw new Error("not implemented");
     }),
-    getEngineStatus: vi.fn(async () => {
-      throw new Error("not implemented");
-    }),
-    initEngine: vi.fn(async () => {
-      throw new Error("not implemented");
-    }),
     pickDirectory: vi.fn(async () => {
       throw new Error("not implemented");
     }),

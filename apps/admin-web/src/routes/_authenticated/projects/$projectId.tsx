@@ -19,7 +19,6 @@ import { ListStepDefinitionsUseCase } from "@/domain/usecase/workflow-engine/lis
 import { ListWorkflowsUseCase } from "@/domain/usecase/workflow-engine/list-workflows-usecase";
 import { StartWorkflowRunUseCase } from "@/domain/usecase/workflow-engine/start-workflow-run-usecase";
 import type { ProjectWorkspaceBinding } from "@/domain/model/entity/project-workspace-binding";
-import { autoInitProjectEngine } from "@/features/projects/project-engine-auto-init";
 import type { StepDefinition, Workflow } from "@/domain/model/entity/workflow-engine";
 import { ensureProjectHasUsableBinding } from "@/features/projects/project-binding-launch-guard";
 
@@ -432,10 +431,6 @@ export function ProjectDetailContent({ detail }: { detail: ReturnType<typeof Rou
           gateways.teamGateway.unlinkTeamFromProject(detail.project.id, teamId),
         ),
       ]);
-
-      for (const binding of normalizedBindings) {
-        void autoInitProjectEngine(detail.project.id, binding.localPath);
-      }
 
       return project;
     },
