@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"flowpilot-runner/internal/changeledger"
+	"flowpilot-runner/internal/contextsync"
 	"flowpilot-runner/internal/featurecatalog"
 	"flowpilot-runner/internal/skillpack"
 	"flowpilot-runner/internal/tooling"
@@ -207,16 +209,17 @@ func (s *InteractiveService) runEngineInit(
 		return s.buildEngineStatusResponse(projectID, workingDirectory, platform, nil, warnings), initState
 	}
 
-	statuses, toolingErr := tooling.CheckAll(workingDirectory, dotFlowpilotDir)
+	// Install skill pack first so the skill_pack sentinel exists when CheckAll probes it.
 	installResult, installErr := skillpack.Install(workingDirectory, platform)
+	statuses, toolingErr := tooling.CheckAll(workingDirectory, dotFlowpilotDir)
 
 	steps := []EngineInitStepResult{
-		buildEngineStep("tooling_check", toolingErr, fmt.Sprintf("%d tool entries refreshed", len(statuses))),
 		buildEngineStep(
 			"skillpack_install",
 			installErr,
 			fmt.Sprintf("%d installed, %d skipped, %d install errors", len(installResult.Installed), len(installResult.Skipped), len(installResult.Errors)),
 		),
+		buildEngineStep("tooling_check", toolingErr, fmt.Sprintf("%d tool entries refreshed", len(statuses))),
 	}
 
 	ledgerErr := changeledger.Build(workingDirectory, dotFlowpilotDir)
@@ -235,9 +238,30 @@ func (s *InteractiveService) runEngineInit(
 	}
 	steps = append(steps, buildEngineStep("featurecatalog_build", catalogErr, filepath.Join(dotFlowpilotDir, "catalog", "features.ndjson")))
 
+	// P-8 (CP-35): create EngineStore subdirs, write local manifest, sync shared
+	// files to the project's Drive `context-engine/` folder (best-effort).
+	var syncErr error
+	var syncDetail string
+	if store, storeErr := contextsync.NewEngineStore(dotFlowpilotDir); storeErr != nil {
+		syncErr = storeErr
+		syncDetail = filepath.Join(dotFlowpilotDir, "manifest.json")
+	} else if manifestErr := contextsync.WriteManifest(store); manifestErr != nil {
+		syncErr = manifestErr
+		syncDetail = filepath.Join(dotFlowpilotDir, "manifest.json")
+	} else {
+		syncer := s.buildEngineDriveSyncer(projectID)
+		result := contextsync.SyncSharedFiles(context.Background(), store, syncer)
+		if len(result.Synced) > 0 {
+			syncDetail = fmt.Sprintf("manifest ok; %d files synced to drive, %d skipped", len(result.Synced), len(result.Skipped))
+		} else {
+			syncDetail = fmt.Sprintf("manifest ok; %d files skipped (drive not connected)", len(result.Skipped))
+		}
+	}
+	steps = append(steps, buildEngineStep("contextsync_manifest", syncErr, syncDetail))
+
 	initState := &EngineInitState{
 		Trigger:          trigger,
-		Status:           summarizeEngineInitStatus(toolingErr, installErr, installResult.Errors, ledgerErr, catalogErr),
+		Status:           summarizeEngineInitStatus(toolingErr, installErr, installResult.Errors, ledgerErr, catalogErr, syncErr),
 		Skipped:          false,
 		AttemptedAt:      attemptedAt,
 		CompletedAt:      time.Now().UTC().Format(time.RFC3339),
@@ -279,8 +303,9 @@ func summarizeEngineInitStatus(
 	installResultErrors []string,
 	ledgerErr error,
 	catalogErr error,
+	syncErr error,
 ) string {
-	if toolingErr == nil && installErr == nil && len(installResultErrors) == 0 && ledgerErr == nil && catalogErr == nil {
+	if toolingErr == nil && installErr == nil && len(installResultErrors) == 0 && ledgerErr == nil && catalogErr == nil && syncErr == nil {
 		return "success"
 	}
 	return "partial"
