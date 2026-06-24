@@ -283,6 +283,26 @@ func TestRepromptPromptCoversBothMissingDocs(t *testing.T) {
 	}
 }
 
+// E2E-13: when r-ca AND r-bug both fire, RepromptPrompt must include instructions for
+// BOTH missing files in a single prompt so the AI can fix both in one turn.
+func TestRepromptPromptBothRCAAndRBugCombined(t *testing.T) {
+	rCA := Rule{ID: "r-ca", Trigger: "code_changed", Action: "reprompt", Enabled: true}
+	rBug := Rule{ID: "r-bug", Trigger: "bug_fixed", Action: "reprompt", Enabled: true}
+	result := Enforce([]Violation{
+		{Rule: rCA, Detail: "code changed but no change-audit note found"},
+		{Rule: rBug, Detail: "bug fix detected but no bugfix doc found"},
+	}, "enforce")
+	if result.Action != "reprompt" {
+		t.Errorf("Action = %q, want reprompt", result.Action)
+	}
+	prompt := RepromptPrompt(result)
+	for _, want := range []string{"change-audit/CA-", "requirements/09-BugFix/done/BUG-"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("combined reprompt missing %q\ngot: %s", want, prompt)
+		}
+	}
+}
+
 // When no reprompt-action rule is present, RepromptPrompt falls back to the terse message.
 func TestRepromptPromptFallsBackToMessage(t *testing.T) {
 	rTests := Rule{ID: "r-tests", Trigger: "tests_failed", Action: "block", Enabled: true}

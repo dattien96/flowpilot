@@ -750,8 +750,7 @@ newline-delimited JSON line of:
 1. Start a workflow task on the test project.
 
 2. Give the AI a prompt that explicitly asks for both the edit AND a CA note — e.g.:
-   > "Add a helper comment to the top of calc.go. Then write a change-audit note in
-   > `change-audit/CA-<today>.md` documenting the change."
+   > "Add a helper comment to the top of calc.go. Then write a change-audit note in `change-audit/CA-<today>.md` documenting the change."
 
 3. Let the turn run to completion.
 
@@ -1001,7 +1000,8 @@ cat "C:\test-projects\my-sample-app\.flowpilot\manifest.json" | python -m json.t
 2. Start a task with a prompt that (a) makes a real edit, (b) satisfies r-ca with a CA note
    so the **only** blocking signal is r-bug, (c) is framed as a bug fix, and (d) does **not**
    create a `BUG-…` doc — e.g.:
-   "There's a small bug: the helper comment at the top of `calc.go`
+   
+"There's a small bug: the helper comment at the top of `calc.go`
    is misleading. Fix it. Write a change-audit note in `change-audit/CA-<today>.md`. In your
    final summary, explicitly state that this was a **bug fix**. Do NOT create any BUG document."
 
@@ -1091,6 +1091,41 @@ cd C:\working\flowpilot; git checkout apps/local-runner/internal/flowgate/scratc
 
 ---
 
+### E2E-13 — Flow Gate: missing both CA note and BUG doc (r-ca + r-bug simultaneous reprompt)
+
+> **Code-state finding:** When both r-ca (`code_changed`, no CA note) and r-bug (`bug_fixed`, no BUG doc) fire in the same turn, `Enforce` resolves them both as `reprompt`. `RepromptPrompt` iterates **all** reprompt-action violations and emits one combined prompt listing both required files. The AI receives a single reprompt with instructions to create both `change-audit/CA-<NNN>.md` AND `requirements/09-BugFix/done/BUG-<NNN>.md`.
+>
+> **Why the first run of E2E-13 only showed r-bug:** The prompt omitted "Do NOT create a CA note", so the AI naturally wrote one — satisfying r-ca — and only r-bug fired. The E2E-13 prompt below is the corrected version that prevents BOTH artifacts.
+
+**Steps (run on the flowpilot repo or gate-sandbox; default enforce mode):**
+
+1. Confirm the Engine tab Flow Gate dropdown reads **"Enforce (default)"**.
+
+2. Start a task with this exact prompt (prevents BOTH the CA note and the BUG doc):
+   > "There's a small bug: the helper comment at the top of `calc.go` is misleading. Fix it.
+   > In your final summary, explicitly state that this was a **bug fix**.
+   > Do NOT create any CA note or change-audit file.
+   > Do NOT create any BUG document."
+
+3. Let the turn complete.
+
+**What to observe (desktop):**
+
+- An **amber ⚠ violation card** appears inline with BOTH details joined:
+  > ⚠ Flow gate: code changed but no change-audit note found; bug fix detected but no bugfix doc found
+- **One combined reprompt turn fires automatically.** The AI receives instructions for BOTH:
+  - Create `change-audit/CA-<NNN>.md`
+  - Create `requirements/09-BugFix/done/BUG-<NNN>.md`
+- On the reprompt turn the AI should add BOTH files. If it adds only one, the gate fires again for the remaining violation (≤2 total attempts).
+
+**What to observe (runner logs):**
+```
+[gate] violations=2 gateMode="enforce" hasCode=true hasCA=false
+[gate] reprompt attempt=0 stepID="…"
+```
+
+**Design note — "all rules handled":** When multiple reprompt-action rules fire simultaneously, ALL of them are represented in a single combined `RepromptPrompt`. This is the intended behavior: the AI fixes every open violation in one pass rather than in N round-trips. If the AI only fixes a subset, the gate fires again for the remainder (bounded by `maxFlowGateReprompts = 2`). Truly sequential per-rule handling is not needed and would waste turns.
+
 ### E2E summary
 
 | Test | Status | Gate mode needed | Notes |
@@ -1107,3 +1142,4 @@ cd C:\working\flowpilot; git checkout apps/local-runner/internal/flowgate/scratc
 | E2E-10 Shared files sync to Drive | ✅ | any | Requires Drive connected to project |
 | E2E-11 Bug fix without BUG doc reprompts (r-bug) | ⏳ | **enforce** (warn downgrades) | Triggered by "bug fix"/"fixed bug" in final message + no `BUG-`/`09-BugFix` file. Auto-reprompts (≤2) with actionable file-creation steps (BUG-139, BUG-140). Works on flowpilot-root. |
 | E2E-12 Delete a `.go` file blocks (r-dep) | ⏳ | **enforce** (warn downgrades) | v1 fires on ANY deleted `.go` (does not actually check callers). Works on flowpilot-root. |
+| E2E-13 Both CA + BUG missing → single combined reprompt (r-ca + r-bug) | ⏳ | **enforce** | Prompt must explicitly prohibit BOTH files. Gate fires with both details in one card; one combined reprompt lists both required artifacts. |
