@@ -1,7 +1,7 @@
 ---
 name: reactjs-conventions
 description: React.js project conventions for FlowPilot. Placeholder â€” expand with framework-specific rules.
-version: 3
+version: 5
 ---
 
 # React.js conventions

@@ -1,7 +1,7 @@
 ---
 name: golang-conventions
 description: Go project conventions for FlowPilot. Placeholder â€” expand with language-specific rules.
-version: 3
+version: 5
 ---
 
 # Go conventions

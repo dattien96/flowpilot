@@ -1,7 +1,7 @@
 ---
 name: kmm-conventions
 description: Kotlin Multiplatform (KMM) conventions for FlowPilot. Placeholder â€” expand with shared-module rules.
-version: 3
+version: 5
 ---
 
 # Kotlin Multiplatform (KMM) conventions

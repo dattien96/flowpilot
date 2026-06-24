@@ -1,7 +1,7 @@
 ---
 name: oracle-rule
 description: Never change a test just to make it pass; fix the production code or escalate the spec conflict.
-version: 3
+version: 5
 ---
 
 # oracle-rule

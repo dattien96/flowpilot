@@ -1,7 +1,7 @@
 ---
 name: vuejs-conventions
 description: Vue.js project conventions for FlowPilot. Placeholder â€” expand with framework-specific rules.
-version: 3
+version: 5
 ---
 
 # Vue.js conventions

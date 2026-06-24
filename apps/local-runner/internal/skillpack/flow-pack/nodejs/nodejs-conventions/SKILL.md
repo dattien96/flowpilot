@@ -1,7 +1,7 @@
 ---
 name: nodejs-conventions
 description: Node.js project conventions for FlowPilot. Placeholder â€” expand with runtime-specific rules.
-version: 3
+version: 5
 ---
 
 # Node.js conventions

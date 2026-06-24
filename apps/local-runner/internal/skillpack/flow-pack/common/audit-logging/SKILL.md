@@ -1,7 +1,7 @@
 ---
 name: audit-logging
 description: Write or update a change-audit note after any code change so the ledger stays complete.
-version: 3
+version: 5
 ---
 
 # audit-logging

@@ -1,7 +1,7 @@
 ---
 name: angularjs-conventions
 description: Angular project conventions for FlowPilot. Placeholder â€” expand with framework-specific rules.
-version: 3
+version: 5
 ---
 
 # Angular conventions

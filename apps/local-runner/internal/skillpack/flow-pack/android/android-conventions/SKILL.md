@@ -1,7 +1,7 @@
 ---
 name: android-conventions
 description: Android project conventions for FlowPilot. Placeholder â€” expand with platform-specific rules.
-version: 3
+version: 5
 ---
 
 # Android conventions

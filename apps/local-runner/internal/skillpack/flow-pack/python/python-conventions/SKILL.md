@@ -1,7 +1,7 @@
 ---
 name: python-conventions
 description: Python project conventions for FlowPilot. Placeholder â€” expand with language-specific rules.
-version: 3
+version: 5
 ---
 
 # Python conventions

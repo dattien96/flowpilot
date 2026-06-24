@@ -1,7 +1,7 @@
 ---
 name: java-conventions
 description: Java project conventions for FlowPilot. Placeholder â€” expand with language-specific rules.
-version: 3
+version: 5
 ---
 
 # Java conventions
