@@ -264,6 +264,7 @@ export class SupabaseAdminRepository implements
       default_model: input.defaultModel ?? null,
       default_reasoning_effort: input.defaultReasoningEffort ?? null,
       session_idle_ttl_minutes: input.sessionIdleTtlMinutes ?? 120,
+      created_by: "supabase-admin",
     }).select("*").single();
     assertNoError(error, "Unable to create project.");
     return mapProject(data);
