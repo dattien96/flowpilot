@@ -23,6 +23,7 @@
 - Adds a mode picker to chat creation: **Normal** (default) | **Task** | **Bug**
 - When Task or Bug is selected, the runner injects a targeted instruction block into the first turn's prompt — the AI knows upfront exactly which file to create
 - Runner stamps `TurnResult.ChangeType` from the declared mode, so the gate fires on explicit declaration instead of scanning the AI's final message for keywords
+- The declared mode is stored on the run after the first send, so later turns and gate reprompts keep the same Task/Bug intent even when the assistant reply is just a plain "done" message
 - Eliminates the v1 heuristic gap: r-task and r-bug no longer miss silent completions for declared-mode chats; message scanning remains as fallback for Normal chats only
 
 ### Current Ask
@@ -170,5 +171,5 @@ And `checkRule("bug_fixed")` already checks `tr.ChangeType == "bugfix"`. Once th
 ## 8. Completion Notes
 
 - result: not yet implemented — design doc only
-- follow-ups: implement UI pill row + runner injection + TurnResult stamping; then E2E-14 can be re-tested with declared Task mode (no forced phrase in prompt needed)
+- follow-ups: implement UI pill row + runner injection + TurnResult stamping; the first turn saves the declared mode on the run, and later turns reuse that saved intent so the gate still works even if the final assistant message never repeats `Task-` or `Bug-`; then E2E-14 can be re-tested with declared Task mode (no forced phrase in prompt needed)
 - upstream docs updated: SD-20 §2.7 already documents `ChangeType` as the future fix; this Task is the implementation of that note
