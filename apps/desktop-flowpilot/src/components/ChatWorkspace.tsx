@@ -9,7 +9,7 @@ import { SystemControls } from "@/components/SystemControls";
 import { ProviderAccountsPanel } from "@/components/ProviderAccountsPanel";
 import { AgentsPanel } from "@/components/AgentsPanel";
 import { OrchestrationBoard } from "@/components/OrchestrationBoard";
-import { useStore, accountLabel, providerLabel } from "@/state/store";
+import { useStore, accountLabel, providerLabel, type ChatStartMode } from "@/state/store";
 
 function WorkflowControlPanel(): React.ReactElement | null {
   const selectedProjectId = useStore((s) => s.selectedProjectId);
@@ -132,6 +132,110 @@ function WorkflowControlPanel(): React.ReactElement | null {
           </div>
         </>
       )}
+    </section>
+  );
+}
+
+function ChatModeIntentIcon({ mode }: { mode: ChatStartMode }): React.ReactElement {
+  if (mode === "task") {
+    return (
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <rect x="3" y="2.5" width="10" height="11" rx="2" fill="none" stroke="currentColor" strokeWidth="1.4" />
+        <path d="M5.3 5.7h5.4M5.3 8h5.4M5.3 10.3h3.2" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+      </svg>
+    );
+  }
+  if (mode === "bugfix") {
+    return (
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M8 3.1c1.8 0 3.2 1.3 3.2 3v2c0 2.3-1.4 4.3-3.2 4.3S4.8 10.4 4.8 8.1v-2c0-1.7 1.4-3 3.2-3z" fill="none" stroke="currentColor" strokeWidth="1.3" />
+        <path d="M6.2 2.4 5.2 1.2M9.8 2.4l1-1.2M4.1 6 2.4 5.1M11.9 6l1.7-.9M4 9.4l-1.7.9M12 9.4l1.7.9" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+      </svg>
+    );
+  }
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true">
+      <circle cx="8" cy="8" r="4.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
+    </svg>
+  );
+}
+
+function ChatStartIntentPanel(): React.ReactElement | null {
+  const chatMode = useStore((s) => s.chatMode);
+  const timeline = useStore((s) => s.timeline);
+  const chatStartMode = useStore((s) => s.chatStartMode);
+  const chatSourceDocId = useStore((s) => s.chatSourceDocId);
+  const lastTurnInput = useStore((s) => s.lastTurnInput);
+  const setChatStartMode = useStore((s) => s.setChatStartMode);
+  const setChatSourceDocId = useStore((s) => s.setChatSourceDocId);
+
+  if (chatMode !== "normal_chat") return null;
+
+  const hasTurns = timeline.length > 0;
+  const activeMode = hasTurns ? (lastTurnInput?.changeType ?? "normal") : chatStartMode;
+  const activeDocId = hasTurns ? (lastTurnInput?.sourceDocId ?? "") : chatSourceDocId;
+
+  if (hasTurns) {
+    if (activeMode === "normal") return null;
+    return (
+      <section className="workflow-rail workflow-rail-right chat-start-mode-panel">
+        <div className="project-rail-head">
+          <div>
+            <label>Declared Intent</label>
+            <p>This chat is locked to the selected flow-gate intent.</p>
+          </div>
+        </div>
+        <div className="chat-start-mode-summary">
+          <div className={`chat-start-mode-chip is-${activeMode}`}>
+            <span className="chat-start-mode-icon"><ChatModeIntentIcon mode={activeMode} /></span>
+            <span>{activeMode === "task" ? "Task" : "Bug"}</span>
+          </div>
+          {activeDocId ? <div className="chat-start-mode-docid">{activeDocId}</div> : <div className="chat-start-mode-docid muted">No document id declared</div>}
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="workflow-rail workflow-rail-right chat-start-mode-panel">
+      <div className="project-rail-head">
+        <div>
+          <label>Chat Intent</label>
+          <p>Declare Task or Bug before the first turn so the runner can mark this chat without relying on response text.</p>
+        </div>
+      </div>
+      <div className="tab-list tab-list-three" role="tablist" aria-label="Chat start intent">
+        {([
+          { mode: "normal" as const, label: "Normal" },
+          { mode: "task" as const, label: "Task" },
+          { mode: "bugfix" as const, label: "Bug" },
+        ]).map((item) => (
+          <button
+            key={item.mode}
+            type="button"
+            role="tab"
+            aria-selected={chatStartMode === item.mode}
+            className={`tab chat-start-mode-tab ${chatStartMode === item.mode ? "active" : ""}`}
+            onClick={() => setChatStartMode(item.mode)}
+          >
+            <span className="chat-start-mode-icon"><ChatModeIntentIcon mode={item.mode} /></span>
+            <span>{item.label}</span>
+          </button>
+        ))}
+      </div>
+      {chatStartMode !== "normal" ? (
+        <div className="nav-group">
+          <label>{chatStartMode === "task" ? "Task ID (optional)" : "Bug ID (optional)"}</label>
+          <input
+            value={chatSourceDocId}
+            placeholder={chatStartMode === "task" ? "Task-NNN (optional)" : "BUG-NNN (optional)"}
+            onChange={(event) => setChatSourceDocId(event.target.value)}
+          />
+          <p className="chat-start-mode-hint">
+            If set, the runner names the tracked document directly in the injected first-turn guidance.
+          </p>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -362,6 +466,7 @@ export function ChatWorkspace({
           <aside className="sidebar sidebar-right">
             <div className="right-sidebar-stack">
               <WorkflowControlPanel />
+              <ChatStartIntentPanel />
               <AgentsPanel />
               <ProviderAccountsPanel />
             </div>

@@ -1132,6 +1132,14 @@ input {
   padding: 5px 8px;
   font-size: 12px;
 }
+.nav-group input {
+  background: var(--bg-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 8px;
+  font-size: 12px;
+}
 .nav-hint {
   font-size: 11px;
   color: var(--text-dim);
@@ -1147,6 +1155,9 @@ input {
   border-radius: 7px;
   background: var(--bg-3);
 }
+.tab-list-three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
 .tab {
   display: flex;
   justify-content: center;
@@ -1161,6 +1172,61 @@ input {
 .tab.active {
   background: var(--accent-2);
   color: var(--text);
+}
+.chat-start-mode-panel {
+  gap: 10px;
+}
+.chat-start-mode-tab {
+  align-items: center;
+  gap: 6px;
+}
+.chat-start-mode-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+}
+.chat-start-mode-icon svg {
+  width: 16px;
+  height: 16px;
+}
+.chat-start-mode-hint {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.chat-start-mode-summary {
+  display: grid;
+  gap: 8px;
+}
+.chat-start-mode-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(76, 141, 255, 0.08);
+}
+.chat-start-mode-chip.is-task {
+  border-color: rgba(76, 141, 255, 0.35);
+}
+.chat-start-mode-chip.is-bugfix {
+  border-color: rgba(240, 180, 41, 0.35);
+  background: rgba(240, 180, 41, 0.08);
+}
+.chat-start-mode-docid {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  word-break: break-word;
+}
+.chat-start-mode-docid.muted {
+  color: var(--text-dim);
 }
 .nav-panel.hidden {
   display: none;

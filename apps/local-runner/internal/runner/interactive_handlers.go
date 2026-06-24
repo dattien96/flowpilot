@@ -219,6 +219,8 @@ func (s *InteractiveService) handleRestoreChatRun(w http.ResponseWriter, r *http
 type turnBody struct {
 	StepID         string           `json:"stepId"`
 	Prompt         string           `json:"prompt"`
+	ChangeType     string           `json:"changeType"`
+	SourceDocID    string           `json:"sourceDocId"`
 	SelectedSkills []SkillSelection `json:"selectedSkills"`
 	// ReasoningEffort/Model/YoloMode are per-turn chat overrides (T-4 / BUG-063). Model and
 	// YoloMode are pointers so an omitted field falls back to the run-level default rather
@@ -239,7 +241,7 @@ func (s *InteractiveService) handleStartTurn(w http.ResponseWriter, r *http.Requ
 	}
 	turnID, e := s.startTurn(
 		r.PathValue("runId"),
-		TurnInput{StepID: body.StepID, Prompt: body.Prompt, SelectedSkills: body.SelectedSkills, ReasoningEffort: body.ReasoningEffort, Model: body.Model, YoloMode: body.YoloMode, Attachments: body.Attachments},
+		TurnInput{StepID: body.StepID, Prompt: body.Prompt, ChangeType: body.ChangeType, SourceDocID: body.SourceDocID, SelectedSkills: body.SelectedSkills, ReasoningEffort: body.ReasoningEffort, Model: body.Model, YoloMode: body.YoloMode, Attachments: body.Attachments},
 		body.Scenario,
 		r.Header.Get("Idempotency-Key"),
 	)

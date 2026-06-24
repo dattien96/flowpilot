@@ -413,6 +413,40 @@ func TestEvaluateRTaskNoViolationWhenDocPresent(t *testing.T) {
 	}
 }
 
+func TestEvaluateRTaskFiresWhenChangeTypeIsTask(t *testing.T) {
+	tr := TurnResult{
+		ChangeType: "task",
+		GitDiff:    []ChangedFile{{Path: "internal/flowgate/evaluate.go", Status: "M"}},
+	}
+	violations := Evaluate(tr, DefaultRules())
+	found := false
+	for _, v := range violations {
+		if v.Rule.ID == "r-task" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected r-task violation when changeType=task and no task doc exists")
+	}
+}
+
+func TestEvaluateRBugFiresWhenChangeTypeIsBugfix(t *testing.T) {
+	tr := TurnResult{
+		ChangeType: "bugfix",
+		GitDiff:    []ChangedFile{{Path: "internal/flowgate/evaluate.go", Status: "M"}},
+	}
+	violations := Evaluate(tr, DefaultRules())
+	found := false
+	for _, v := range violations {
+		if v.Rule.ID == "r-bug" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected r-bug violation when changeType=bugfix and no bug doc exists")
+	}
+}
+
 // FORMAT-REFERENCE-TASK.md must not satisfy HasTaskDoc (same guard as r-bug / BUG-141).
 func TestHasTaskDocIgnoresFormatReferenceFile(t *testing.T) {
 	diff := []ChangedFile{

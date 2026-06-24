@@ -52,6 +52,7 @@ let activeAgentFocusStreamController: AbortController | undefined;
 export type LaunchMode = "workflow" | "step";
 export type ChatMode = "normal_chat" | "workflow_step_auto";
 export type WorkspaceMainView = "chat" | "board";
+export type ChatStartMode = "normal" | "task" | "bugfix";
 
 interface RunSnapshot {
   timeline: TimelineItem[];
@@ -132,6 +133,8 @@ interface AppState {
   selectedModel?: string;
   reasoningEffort?: string;
   yoloMode: boolean;
+  chatStartMode: ChatStartMode;
+  chatSourceDocId: string;
 
   // run
   runId?: string;
@@ -209,6 +212,8 @@ interface AppState {
   setSelectedModel(model?: string): void;
   setReasoningEffort(effort?: string): void;
   setYoloMode(yolo: boolean): void;
+  setChatStartMode(mode: ChatStartMode): void;
+  setChatSourceDocId(sourceDocId: string): void;
   selectWorkflow(workflowId: string): Promise<void>;
   selectStep(stepId: string): void;
   setScenario(scenario: ScenarioName): void;
@@ -276,6 +281,8 @@ export const useStore = create<AppState>((set, get) => ({
   chatMode: "normal_chat",
   selectedProvider: "codex",
   yoloMode: false,
+  chatStartMode: "normal",
+  chatSourceDocId: "",
   workspaceMainView: "chat",
   _historyReplaying: false,
   _historyLoadSeq: 0,
@@ -616,6 +623,17 @@ export const useStore = create<AppState>((set, get) => ({
     set({ yoloMode: yolo });
   },
 
+  setChatStartMode(mode) {
+    set((state) => ({
+      chatStartMode: mode,
+      chatSourceDocId: mode === "normal" ? "" : state.chatSourceDocId,
+    }));
+  },
+
+  setChatSourceDocId(sourceDocId) {
+    set({ chatSourceDocId: sourceDocId });
+  },
+
   async loadSkills(provider, cwd) {
     const { client } = get();
     try {
@@ -631,7 +649,7 @@ export const useStore = create<AppState>((set, get) => ({
     const {
       client, chatMode, launchMode,
       selectedProjectId, selectedWorkflowId, selectedStepId,
-      selectedProvider, selectedModel, reasoningEffort, yoloMode,
+      selectedProvider, selectedModel, reasoningEffort, yoloMode, chatStartMode, chatSourceDocId,
     } = get();
     const focusedRunId = get().activeAgentRunId;
     const mainRunId = get().mainRunId ?? get().runId;
@@ -692,6 +710,7 @@ export const useStore = create<AppState>((set, get) => ({
     }));
 
     let runId = get().runId;
+    const isFirstChatTurn = chatMode === "normal_chat" && !runId;
     try {
       if (!runId) {
         const handle = await client.startRun(
@@ -727,6 +746,11 @@ export const useStore = create<AppState>((set, get) => ({
         runId,
         stepId: turnStepId,
         prompt,
+        changeType: isFirstChatTurn && chatStartMode !== "normal" ? chatStartMode : undefined,
+        sourceDocId:
+          isFirstChatTurn && chatStartMode !== "normal" && chatSourceDocId.trim().length > 0
+            ? chatSourceDocId.trim()
+            : undefined,
         selectedSkills:
           skills && skills.length > 0
             ? skills.map((name) => {
@@ -1173,6 +1197,8 @@ export const useStore = create<AppState>((set, get) => ({
       _streamingAssistantId: undefined,
       _runSnapshots: {},
       _runReplaySeq: {},
+      chatStartMode: "normal",
+      chatSourceDocId: "",
       selectedModel: pickDefaultModel(selectedProvider, supportedModels),
     });
   },

@@ -56,11 +56,13 @@ func (s *InteractiveService) runFlowGate(
 		RunID:        rs.id,
 		StepID:       rs.stepID,
 		FinalMessage: fin.FinalMessage,
+		SourceDocID:  rs.sourceDocID,
 		GitDiff:      diff,
 		Tests: flowgate.TestOutcome{
 			Ran:    baseline != nil,
 			Failed: failedTests,
 		},
+		ChangeType: rs.changeType,
 	}
 
 	// 5. Load rules; fall back to defaults when flow-rules.json is absent.

@@ -90,6 +90,9 @@ type interactiveRun struct {
 	yolo                   bool
 	// reasoningEffort is the desktop-selected effort level passed per-turn (T-4).
 	reasoningEffort string
+	changeType      string
+	sourceDocID     string
+	turnCount       int
 	// runKind is "chat" for normal-chat runs, "" / "workflow" for workflow runs (T-7).
 	runKind string
 
@@ -140,12 +143,12 @@ type interactiveRun struct {
 	lastEventType   ProviderEventType
 	events          []ProviderEvent
 
-	turnInFlight      bool
-	repromptAttempts  int    // CP-35 P-5: number of flow-gate reprompts issued this turn
-	turnStartGitHead  string // CP-35: git HEAD captured at turn start for committed-diff detection
-	lastTurnStepID    string // CP-35: stepID of the most-recently started turn, used by gate reprompts
-	currentTurnID     string
-	turnCancel        context.CancelFunc
+	turnInFlight     bool
+	repromptAttempts int    // CP-35 P-5: number of flow-gate reprompts issued this turn
+	turnStartGitHead string // CP-35: git HEAD captured at turn start for committed-diff detection
+	lastTurnStepID   string // CP-35: stepID of the most-recently started turn, used by gate reprompts
+	currentTurnID    string
+	turnCancel       context.CancelFunc
 
 	pendingApprovalID string
 	pendingQuestionID string
@@ -761,6 +764,9 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		DependsOn:           append([]string(nil), rs.dependsOn...),
 		AgentStatus:         rs.agentStatus,
 		ModelName:           rs.modelName,
+		ChangeType:          rs.changeType,
+		SourceDocID:         rs.sourceDocID,
+		TurnCount:           rs.turnCount,
 		PendingAgentContext: append([]string(nil), rs.pendingAgentContext...),
 	}
 }
@@ -1613,6 +1619,7 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// state is persisted by the post-turn sessionStateOf snapshot below. (BUG-122)
 	providerPrompt := in.Prompt
 	s.mu.Lock()
+	providerPrompt = prependModePrefix(providerPrompt, rs.turnCount, rs.changeType, rs.sourceDocID)
 	// Persist the per-turn YOLO posture as the run's current default (BUG-129). The UI
 	// toggle is sticky, so an explicit YoloMode this turn must update rs.yolo; otherwise a
 	// child spawned during this turn (spawnChildRun reads parentRun.yolo) would inherit the
@@ -1911,6 +1918,15 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 
 	turnID := s.nextID("turn")
 	rs.turnInFlight = true
+	if rs.turnCount == 0 {
+		if changeType := normalizeChangeType(in.ChangeType); changeType != "" {
+			rs.changeType = changeType
+		}
+		if sourceDocID := strings.TrimSpace(in.SourceDocID); sourceDocID != "" {
+			rs.sourceDocID = sourceDocID
+		}
+	}
+	rs.turnCount++
 	rs.lastTurnStepID = in.StepID // CP-35: remember for gate reprompts
 	rs.currentTurnID = turnID
 	rs.lastPrompt = truncateDisplayField(in.Prompt, 100)

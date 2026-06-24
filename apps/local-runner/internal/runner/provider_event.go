@@ -147,14 +147,14 @@ type AgentDependencyEdge struct {
 }
 
 type AgentBusMessage struct {
-	ID            string `json:"id"`
-	ParentRunID   string `json:"parentRunId"`
-	FromRunID     string `json:"fromRunId,omitempty"`
-	ToRunID       string `json:"toRunId,omitempty"`
-	Kind          string `json:"kind"`
-	Message       string `json:"message"`
-	Queued        bool   `json:"queued"`
-	OccurredAt    string `json:"occurredAt"`
+	ID          string `json:"id"`
+	ParentRunID string `json:"parentRunId"`
+	FromRunID   string `json:"fromRunId,omitempty"`
+	ToRunID     string `json:"toRunId,omitempty"`
+	Kind        string `json:"kind"`
+	Message     string `json:"message"`
+	Queued      bool   `json:"queued"`
+	OccurredAt  string `json:"occurredAt"`
 }
 
 type AgentLoopState struct {
@@ -165,11 +165,11 @@ type AgentLoopState struct {
 }
 
 type AgentGraphSnapshot struct {
-	ParentRunID string               `json:"parentRunId"`
-	Runs        []AgentRunSummary    `json:"runs"`
+	ParentRunID string                `json:"parentRunId"`
+	Runs        []AgentRunSummary     `json:"runs"`
 	Edges       []AgentDependencyEdge `json:"edges"`
-	BusMessages []AgentBusMessage    `json:"busMessages"`
-	LoopState   AgentLoopState       `json:"loopState"`
+	BusMessages []AgentBusMessage     `json:"busMessages"`
+	LoopState   AgentLoopState        `json:"loopState"`
 }
 
 // ProviderCapabilities advertises what a provider supports (03/04-07).
@@ -247,6 +247,8 @@ type SkillSelection struct {
 type TurnInput struct {
 	StepID         string           `json:"stepId"`
 	Prompt         string           `json:"prompt"`
+	ChangeType     string           `json:"changeType,omitempty"`
+	SourceDocID    string           `json:"sourceDocId,omitempty"`
 	SelectedSkills []SkillSelection `json:"selectedSkills,omitempty"`
 	// ReasoningEffort/Model/YoloMode are per-turn chat overrides (BUG-063): the desktop
 	// resends the current control values on every chat turn so model, reasoning, and YOLO

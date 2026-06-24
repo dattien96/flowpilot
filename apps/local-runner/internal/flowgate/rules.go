@@ -35,6 +35,7 @@ type TurnResult struct {
 	GitDiff      []ChangedFile `json:"git_diff,omitempty"`
 	Tests        TestOutcome   `json:"tests"`
 	ChangeType   string        `json:"change_type,omitempty"`
+	SourceDocID  string        `json:"source_doc_id,omitempty"`
 }
 
 type Violation struct {

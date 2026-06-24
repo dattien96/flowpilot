@@ -252,6 +252,8 @@ export class HttpWsRunnerClient implements RunnerClient {
       {
         stepId: input.stepId,
         prompt: input.prompt,
+        changeType: input.changeType,
+        sourceDocId: input.sourceDocId,
         selectedSkills: input.selectedSkills,
         reasoningEffort: input.reasoningEffort,
         model: input.model,

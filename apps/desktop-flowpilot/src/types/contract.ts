@@ -322,6 +322,10 @@ export interface TurnInput {
   runId: string;
   stepId: string;
   prompt: string;
+  /** Declared chat-start intent for flow-gate task/bug handling (Task-114). */
+  changeType?: "task" | "bugfix";
+  /** Optional tracked document id declared alongside changeType, e.g. Task-114 or BUG-141. */
+  sourceDocId?: string;
   /** One or more skills attached to this turn (via the `/` picker). */
   selectedSkills?: SkillSelection[];
   /**

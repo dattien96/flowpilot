@@ -77,6 +77,8 @@ function seedStore(client: RunnerClient, runHistory: RunHistoryItem[]): void {
     selectedModel: undefined,
     reasoningEffort: undefined,
     yoloMode: false,
+    chatStartMode: "normal",
+    chatSourceDocId: "",
     runId: "current-run",
     mainRunId: "current-run",
     activeAgentRunId: undefined,
@@ -497,6 +499,44 @@ test("sendPrompt blocks direct prompting while a child transcript is focused", a
   const last = useStore.getState().timeline.at(-1);
   assert.equal(last?.kind, "system");
   assert.equal(last?.kind === "system" ? last.text : "", "Child transcript is read-only. Return to the main chat to send prompts.");
+});
+
+test("sendPrompt sends declared task intent only on the first chat turn", async () => {
+  const seen: TurnInput[] = [];
+  async function* completedSendTurn(input: TurnInput): AsyncIterable<ProviderEventDTO> {
+    seen.push(input);
+    yield { ...BASE_EVENT, seq: 2 + seen.length * 2, type: "turn_started", providerTurnId: `turn-${seen.length}`, prompt: input.prompt };
+    yield { ...BASE_EVENT, seq: 3 + seen.length * 2, type: "turn_completed", finalMessage: "done" };
+  }
+
+  seedStore(
+    makeClient({
+      startRun: async () => ({ runId: "new-run", providerSessionId: "session-1", providerKey: "codex", status: "running", stepId: "chat-new-run" }),
+      sendTurn: completedSendTurn,
+      listRunHistory: async () => [],
+    }),
+    [],
+  );
+
+  useStore.setState({
+    runId: undefined,
+    mainRunId: undefined,
+    activeStepId: undefined,
+    status: "idle",
+    timeline: [],
+    selectedProvider: "codex",
+    chatStartMode: "task",
+    chatSourceDocId: "Task-114",
+  });
+
+  await useStore.getState().sendPrompt("first");
+  await useStore.getState().sendPrompt("second");
+
+  assert.equal(seen.length, 2);
+  assert.equal(seen[0]?.changeType, "task");
+  assert.equal(seen[0]?.sourceDocId, "Task-114");
+  assert.equal(seen[1]?.changeType, undefined);
+  assert.equal(seen[1]?.sourceDocId, undefined);
 });
 
 test("openHistoryRun selects the resumed provider default model", async () => {
