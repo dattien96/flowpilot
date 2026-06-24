@@ -34,8 +34,8 @@ function isUnsyncedChat(item: RunHistoryItem): boolean {
   return item.runKind === "chat" && !isAgentHistoryItem(item) && item.syncStatus !== "synced" && !item.unavailableReason;
 }
 
-function runTypeLabel(item: RunHistoryItem): string {
-  return isAgentHistoryItem(item) ? `Agent · ${item.agentName || item.role || "sub-agent"}` : RUN_LABEL[item.status];
+function runTypeLabel(item: RunHistoryItem, statusOverride?: RunHistoryItem["status"]): string {
+  return isAgentHistoryItem(item) ? `Agent · ${item.agentName || item.role || "sub-agent"}` : RUN_LABEL[statusOverride ?? item.status];
 }
 
 // Upload-arrow glyph for per-chat and per-project sync buttons (sync = upload to Drive).
@@ -501,10 +501,14 @@ export function Navigator(): React.ReactElement {
 
                       {visibleHistory.map((item) => {
                         const isNew = newlyCompleted.has(item.runId);
-                        const hasIcon = isNew || item.status === "running" || item.status === "starting" ||
-                          item.status === "waiting_approval" || item.status === "waiting_question";
-                        const isUnavailable = Boolean(item.unavailableReason);
                         const isActive = item.runId === runId;
+                        // For the active chat the live store status is authoritative — the polled
+                        // runHistory snapshot can lag (e.g. a turn that completed then got blocked
+                        // by the flow gate), which would otherwise leave the spinner stuck. (CP-35)
+                        const effectiveStatus = isActive ? status : item.status;
+                        const hasIcon = isNew || effectiveStatus === "running" || effectiveStatus === "starting" ||
+                          effectiveStatus === "waiting_approval" || effectiveStatus === "waiting_question";
+                        const isUnavailable = Boolean(item.unavailableReason);
                         const showSync = isUnsyncedChat(item);
                         const isSyncing = item.syncStatus === "syncing";
                         const syncFailed = item.syncStatus === "failed";
@@ -585,13 +589,13 @@ export function Navigator(): React.ReactElement {
                               }}
                             >
                               <span className="project-history-item-top">
-                                {showRowSpinner ? <span className="history-status-spinner" aria-hidden="true" /> : <HistoryStatusIcon status={item.status} isNew={isNew} />}
+                                {showRowSpinner ? <span className="history-status-spinner" aria-hidden="true" /> : <HistoryStatusIcon status={effectiveStatus} isNew={isNew} />}
                                 <span className="project-history-item-title">
                                   {runTitle(item.lastPrompt || item.lastMessage)}
                                 </span>
                               </span>
                               <span className="project-history-item-meta">
-                                {isSyncing ? "Syncing to Drive…" : runTypeLabel(item)} · {RUN_TIME_FORMAT.format(new Date(item.updatedAt))}
+                                {isSyncing ? "Syncing to Drive…" : runTypeLabel(item, isActive ? status : undefined)} · {RUN_TIME_FORMAT.format(new Date(item.updatedAt))}
                               </span>
                             </button>
                           </div>
