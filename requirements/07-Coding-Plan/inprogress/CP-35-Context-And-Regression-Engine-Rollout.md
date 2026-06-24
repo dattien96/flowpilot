@@ -782,18 +782,17 @@ violations → `Enforce` returns `"pass"` → gate returns `false` → finalizer
 > the other. Both are always-block (`isAlwaysBlock` in `enforce.go`), so the step blocks
 > in **any** gate mode (enforce or warn).
 
-> **⚠ Test-runner detection requirement — the flowpilot repo root will NOT work.**
-> The oracle only runs when `DetectTestCommand(workspaceCwd)` finds a runner **at the bound
-> project's root**: a root `go.mod`, a root `package.json` with a `test` script, `pytest.ini`,
-> or `pyproject.toml`. The flowpilot repo root has **neither** — `go.mod` is nested at
-> `apps/local-runner/go.mod`, and the root `package.json` has no `test` script — so
-> `DetectTestCommand` returns `""`, `CaptureBaseline` writes an empty baseline, `RunOracle`
-> early-returns, and **r-tests/r-reg can never fire**. To test these two rules you must bind
-> a project whose **root** has a detectable runner. Two options:
->   - **(Recommended) A tiny Go sandbox** with its own root `go.mod` (Step A below).
->   - **Bind `apps/local-runner` itself** as a separate FlowPilot project (its root has
->     `go.mod`; `go test -v ./...` runs the real runner suite — slower, and breaking a real
->     test dirties your working tree).
+> **Test-runner detection (now monorepo-aware).** `DetectTestRunner(workspaceCwd)` first
+> checks the bound project root, then — if the root has no runner — walks the tree
+> (skipping `node_modules`/`vendor`/`build`/hidden dirs, depth-capped) for a nested marker
+> and records both the command and the directory it runs in (`test_dir` in the baseline).
+> Ecosystem priority is go > python > node; ties break on the shallowest path.
+>   - **flowpilot repo root now works**: detection finds `apps/local-runner/go.mod` and runs
+>     `go test -v ./...` there. ⚠ **Performance caveat:** the oracle re-runs the **entire**
+>     `apps/local-runner` suite on **every post-turn gate call**, which can take minutes per
+>     turn. Fine for a one-off E2E check, heavy for routine use.
+>   - **(Recommended for speed/safety) a tiny Go sandbox** (Step A below) — its suite is one
+>     test, so each gate call is instant and your real working tree is never dirtied.
 
 > **Baseline note:** The baseline is captured lazily on the **first gate call** for a
 > project (when `.flowpilot/guard/test_baseline.json` is absent). The first task on a fresh
@@ -1094,7 +1093,7 @@ cd C:\working\flowpilot; git checkout apps/local-runner/internal/flowgate/scratc
 | E2E-5 Skill pack auto-installed | ✅ | any | — |
 | E2E-6 Gate reprompts on missing CA note (r-ca) | ✅ | **enforce** (default) | Amber ⚠ card + auto reprompt turn, renders in-place |
 | E2E-7 Gate passes when CA note present | ✅ | enforce or warn | Step completes normally |
-| E2E-8 Regression oracle blocks step (r-tests **and** r-reg) | ⏳ | any (always blocks) | **Coupled in v1** — fire together. Needs a project with a root test runner; flowpilot-root won't (go.mod nested). Use Go sandbox. |
+| E2E-8 Regression oracle blocks step (r-tests **and** r-reg) | ⏳ | any (always blocks) | **Coupled in v1** — fire together. Detection now finds nested runners, so flowpilot-root works (runs `apps/local-runner` suite every turn — slow). Go sandbox recommended for speed. |
 | E2E-9 Oracle flags test tampering (r-tamper) | ✅ | any (always warn) | Amber ⚠ card; step still completes (warn-only) |
 | E2E-10 Shared files sync to Drive | ✅ | any | Requires Drive connected to project |
 | E2E-11 Bug fix without BUG doc blocks (r-bug) | ⏳ | **enforce** (warn downgrades) | Triggered by "bug fix"/"fixed bug" in final message + no `BUG-`/`09-BugFix` file. Works on flowpilot-root. |
