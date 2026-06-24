@@ -238,6 +238,11 @@ func (s *InteractiveService) runEngineInit(
 	}
 	steps = append(steps, buildEngineStep("featurecatalog_build", catalogErr, filepath.Join(dotFlowpilotDir, "catalog", "features.ndjson")))
 
+	// CP-35: install the post-commit git hook so new commits are visible to the
+	// oracle before the next AI turn — without waiting for a session restart.
+	hookErr := changeledger.InstallPostCommitHook(workingDirectory)
+	steps = append(steps, buildEngineStep("hook_install", hookErr, filepath.Join(workingDirectory, ".git", "hooks", "post-commit")))
+
 	// P-8 (CP-35): create EngineStore subdirs, write local manifest, sync shared
 	// files to the project's Drive `context-engine/` folder (best-effort).
 	var syncErr error

@@ -1623,6 +1623,9 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		rs.pendingAgentContext = nil
 	}
 	s.mu.Unlock()
+	// Live ledger refresh (CP-35): pick up commits made during this session so the
+	// oracle always sees the current change history, not just what existed at bind time.
+	s.rebuildLedgerIfDirty(rs.workspaceCwd)
 	req := TurnRequest{
 		RunID:             rs.id,
 		StepID:            in.StepID,
