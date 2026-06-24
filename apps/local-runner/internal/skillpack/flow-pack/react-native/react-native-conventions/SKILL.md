@@ -1,0 +1,15 @@
+---
+name: react-native-conventions
+description: React Native project conventions for FlowPilot. Placeholder — expand with platform-specific rules.
+version: 2
+---
+
+# React Native conventions
+
+Starter skill installed for **React Native** projects alongside the common FlowPilot skill pack.
+
+Add React Native-specific conventions here — component/navigation structure, native module rules, Metro/build config, and testing rules the AI should follow.
+
+## TODO
+
+- Replace this placeholder with real React Native guidance.
