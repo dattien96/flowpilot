@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -28,8 +29,13 @@ func (s *InteractiveService) runFlowGate(
 	}
 	dotFP := filepath.Join(cwd, ".flowpilot")
 
-	// 1. Observe git diff — non-fatal.
-	diff, _ := flowgate.ObserveGitDiff(cwd)
+	// 1. Observe git diff — include commits made during the turn (CP-35).
+	// ObserveGitDiffSince merges committed changes since turn-start with any
+	// remaining uncommitted changes, so files the AI committed are not missed.
+	s.mu.Lock()
+	baseSHA := rs.turnStartGitHead
+	s.mu.Unlock()
+	diff, _ := flowgate.ObserveGitDiffSince(cwd, baseSHA)
 
 	// 2. Load or capture test baseline — non-fatal.
 	baseline, _ := flowgate.LoadBaseline(dotFP)
@@ -121,4 +127,13 @@ func (s *InteractiveService) runFlowGate(
 // loadGateMode delegates to the shared readGateMode helper (engine_gate_config.go).
 func loadGateMode(dotFP string) string {
 	return readGateMode(dotFP)
+}
+
+// captureGitHead returns the current HEAD SHA in repoDir, trimmed of whitespace.
+func captureGitHead(repoDir string) (string, error) {
+	out, err := exec.Command("git", "-C", repoDir, "rev-parse", "HEAD").Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }

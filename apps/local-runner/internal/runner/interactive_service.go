@@ -140,10 +140,11 @@ type interactiveRun struct {
 	lastEventType   ProviderEventType
 	events          []ProviderEvent
 
-	turnInFlight     bool
-	repromptAttempts int // CP-35 P-5: number of flow-gate reprompts issued this turn
-	currentTurnID    string
-	turnCancel       context.CancelFunc
+	turnInFlight      bool
+	repromptAttempts  int    // CP-35 P-5: number of flow-gate reprompts issued this turn
+	turnStartGitHead  string // CP-35: git HEAD captured at turn start for committed-diff detection
+	currentTurnID     string
+	turnCancel        context.CancelFunc
 
 	pendingApprovalID string
 	pendingQuestionID string
@@ -1639,6 +1640,12 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		Cwd:               rs.workspaceCwd,
 		Scenario:          scenario,
 		Attachments:       in.Attachments,
+	}
+	// CP-35: snapshot HEAD before the AI runs so gate_hook can diff committed changes.
+	if head, headErr := captureGitHead(rs.workspaceCwd); headErr == nil {
+		s.mu.Lock()
+		rs.turnStartGitHead = head
+		s.mu.Unlock()
 	}
 	bridge := &turnBridge{svc: s, rs: rs, ctx: ctx, turnID: turnID, yolo: yolo}
 	err := s.sendTurnWithRetry(ctx, adapter, req, bridge)
