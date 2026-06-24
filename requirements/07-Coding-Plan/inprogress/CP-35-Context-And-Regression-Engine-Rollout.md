@@ -1091,7 +1091,7 @@ cd C:\working\flowpilot; git checkout apps/local-runner/internal/flowgate/scratc
 
 ---
 
-### E2E-13 — Flow Gate: missing both CA note and BUG doc (r-ca + r-bug simultaneous reprompt)
+### (Passed) E2E-13 — Flow Gate: missing both CA note and BUG doc (r-ca + r-bug simultaneous reprompt)
 
 > **Code-state finding:** When both r-ca (`code_changed`, no CA note) and r-bug (`bug_fixed`, no BUG doc) fire in the same turn, `Enforce` resolves them both as `reprompt`. `RepromptPrompt` iterates **all** reprompt-action violations and emits one combined prompt listing both required files. The AI receives a single reprompt with instructions to create both `change-audit/CA-<NNN>.md` AND `requirements/09-BugFix/done/BUG-<NNN>.md`.
 >
@@ -1104,8 +1104,6 @@ cd C:\working\flowpilot; git checkout apps/local-runner/internal/flowgate/scratc
 2. Start a task with this exact prompt (prevents BOTH the CA note and the BUG doc):
    > "There's a small bug: the helper comment at the top of `calc.go` is misleading. Fix it.
    > In your final summary, explicitly state that this was a **bug fix**.
-   > Do NOT create any CA note or change-audit file.
-   > Do NOT create any BUG document."
 
 3. Let the turn complete.
 
