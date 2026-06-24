@@ -87,6 +87,26 @@ func (s *InteractiveService) handleGetGlobalEngineToolingStatus(w http.ResponseW
 	})
 }
 
+func (s *InteractiveService) handleInstallLibreTranslate(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Minute)
+	defer cancel()
+
+	result := tooling.InstallLibreTranslate(ctx)
+
+	type installResponse struct {
+		Success bool                 `json:"success"`
+		Output  string               `json:"output"`
+		Error   string               `json:"error,omitempty"`
+		Tooling []tooling.ToolStatus `json:"tooling"`
+	}
+	writeInteractiveJSON(w, http.StatusOK, installResponse{
+		Success: result.Success,
+		Output:  result.Output,
+		Error:   result.Error,
+		Tooling: tooling.CheckGlobal(),
+	})
+}
+
 func (s *InteractiveService) handleInitEngine(w http.ResponseWriter, r *http.Request) {
 	var request engineSetupRequest
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil && err.Error() != "EOF" {

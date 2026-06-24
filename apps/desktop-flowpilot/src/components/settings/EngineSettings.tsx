@@ -7,9 +7,11 @@ import {
   fetchGlobalEngineToolingStatus,
   fetchProjectEngineStatus,
   initProjectEngine,
+  installLibreTranslateTool,
   saveProjectEngineGateMode,
   summarizeProjectEngineInit,
   type GlobalEngineToolingStatus,
+  type LibreTranslateInstallResult,
   type ProjectEngineStatus,
 } from "@/components/settings/projectEngine";
 
@@ -46,6 +48,8 @@ export function EngineSettings(): React.ReactElement {
   const [gateMode, setGateMode] = useState<string>("enforce");
   const [gateModeLocal, setGateModeLocal] = useState<string>("enforce");
   const [gateModeSaving, setGateModeSaving] = useState(false);
+  const [libreInstallBusy, setLibreInstallBusy] = useState(false);
+  const [libreInstallResult, setLibreInstallResult] = useState<LibreTranslateInstallResult | null>(null);
 
   const selectedEntry = useMemo(
     () => selectedProjectEntry(entries, selectedProjectId),
@@ -141,6 +145,30 @@ export function EngineSettings(): React.ReactElement {
     }
   };
 
+  const installLibreTranslate = async () => {
+    setLibreInstallBusy(true);
+    setLibreInstallResult(null);
+    const ac = new AbortController();
+    const timer = window.setTimeout(() => ac.abort(), 15 * 60 * 1000);
+    try {
+      const result = await installLibreTranslateTool(ac.signal);
+      setLibreInstallResult(result);
+      if (result.success) {
+        setToolingStatus({ tooling: result.tooling });
+      }
+    } catch (error) {
+      setLibreInstallResult({
+        success: false,
+        output: "",
+        error: toErrorMessage(error, "Install failed."),
+        tooling: [],
+      });
+    } finally {
+      window.clearTimeout(timer);
+      setLibreInstallBusy(false);
+    }
+  };
+
   const refreshProjectStatus = async () => {
     if (!selectedProjectId || !selectedBindingPath) return;
     setProjectBusyAction("refresh");
@@ -228,6 +256,77 @@ export function EngineSettings(): React.ReactElement {
           {!toolingStatus?.tooling?.length && !loading ? (
             <div className="settings-empty">No global tooling status available yet.</div>
           ) : null}
+        </div>
+      </div>
+
+      <div className="settings-subpanel">
+        <div className="settings-panel-head">
+          <div>
+            <h3>Translation Engine (LibreTranslate)</h3>
+            <p>
+              Free self-hosted translation — no API key, no credit card. Runs on{" "}
+              <code>http://localhost:5000</code> after install.
+            </p>
+          </div>
+        </div>
+
+        {/* Python + LibreTranslate status rows */}
+        <div className="settings-validation">
+          {(["python", "libretranslate"] as const).map((name) => {
+            const tool = (toolingStatus?.tooling ?? []).find((t) => t.tool === name);
+            const status = tool?.status ?? "unknown";
+            return (
+              <div className={`validation-row ${engineTone(status)}`} key={name}>
+                <span>{name}</span>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span>
+                    {status}
+                    {tool?.version ? ` / ${tool.version}` : ""}
+                    {tool?.checkedAt ? ` / ${formatTimestamp(tool.checkedAt)}` : ""}
+                  </span>
+                  {name === "libretranslate" && status !== "ok" && (
+                    <button
+                      className="secondary-btn"
+                      style={{ fontSize: 11, padding: "2px 10px" }}
+                      disabled={libreInstallBusy}
+                      onClick={() => void installLibreTranslate()}
+                      type="button"
+                    >
+                      {libreInstallBusy ? "Installing…" : "Install"}
+                    </button>
+                  )}
+                  {name === "python" && status !== "ok" && (
+                    <span style={{ fontSize: 11, color: "var(--text-dim)" }}>
+                      Install Python 3.8+ first
+                    </span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {libreInstallBusy && (
+          <div className="settings-feedback">
+            Installing LibreTranslate… this may take several minutes.
+          </div>
+        )}
+        {libreInstallResult && !libreInstallBusy && (
+          <div className={`settings-feedback ${libreInstallResult.success ? "" : "error"}`}>
+            {libreInstallResult.success
+              ? "LibreTranslate installed. Start it with: libretranslate --load-only en,vi"
+              : (libreInstallResult.error ?? "Install failed.")}
+          </div>
+        )}
+
+        <div className="settings-note" style={{ marginTop: 10, fontSize: 12, color: "var(--text-dim)", lineHeight: 1.5 }}>
+          After installing, start the server with:{" "}
+          <code style={{ background: "var(--bg-3)", padding: "1px 5px", borderRadius: 4 }}>
+            libretranslate --load-only en,vi
+          </code>
+          <br />
+          Downloads ~400 MB of language models on first run.
+          Then configure the base URL in <strong>Translation Settings</strong>.
         </div>
       </div>
 

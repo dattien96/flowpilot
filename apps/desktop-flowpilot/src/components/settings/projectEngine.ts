@@ -148,6 +148,20 @@ interface RawProjectEngineStatus {
   warnings?: string[];
 }
 
+interface RawLibreTranslateInstallResult {
+  success: boolean;
+  output: string;
+  error?: string;
+  tooling: RawProjectEngineToolStatus[];
+}
+
+export interface LibreTranslateInstallResult {
+  success: boolean;
+  output: string;
+  error?: string;
+  tooling: ProjectEngineToolStatus[];
+}
+
 interface RawGlobalEngineToolingStatus {
   tooling: RawProjectEngineToolStatus[];
 }
@@ -313,6 +327,28 @@ export async function fetchGlobalEngineToolingStatus(): Promise<GlobalEngineTool
   return mapGlobalEngineToolingStatus(
     (await response.json()) as RawGlobalEngineToolingStatus,
   );
+}
+
+export async function installLibreTranslateTool(signal?: AbortSignal): Promise<LibreTranslateInstallResult> {
+  const response = await fetch(
+    new URL("/client/engine/tooling/install/libretranslate", RUNNER_URL).toString(),
+    { method: "POST", cache: "no-store", signal },
+  );
+  if (!response.ok) {
+    throw new Error(await readProjectEngineError(response));
+  }
+  const raw = (await response.json()) as RawLibreTranslateInstallResult;
+  return {
+    success: raw.success,
+    output: raw.output,
+    error: raw.error,
+    tooling: (raw.tooling ?? []).map((t) => ({
+      tool: t.tool,
+      version: t.version,
+      status: t.status,
+      checkedAt: t.checked_at,
+    })),
+  };
 }
 
 export async function fetchProjectEngineStatus(

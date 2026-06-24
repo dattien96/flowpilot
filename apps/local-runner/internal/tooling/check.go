@@ -80,6 +80,35 @@ func CheckTool(name string, repoDir string) ToolStatus {
 		}
 		ts.Status = "missing"
 
+	case "python":
+		for _, bin := range []string{"python", "python3"} {
+			out, err := exec.Command(bin, "--version").Output()
+			if err == nil {
+				ts.Version = strings.TrimSpace(string(out))
+				ts.Status = "ok"
+				return ts
+			}
+		}
+		ts.Status = "missing"
+
+	case "libretranslate":
+		// Prefer binary on PATH.
+		if _, err := exec.LookPath("libretranslate"); err == nil {
+			ts.Status = "ok"
+			ts.Version = libreTranslateVersion()
+			return ts
+		}
+		// Fall back to pip show (installed but not yet on PATH after fresh install).
+		for _, pip := range []string{"pip", "pip3"} {
+			out, err := exec.Command(pip, "show", "libretranslate").Output()
+			if err == nil && strings.Contains(string(out), "Name: libretranslate") {
+				ts.Version = pipShowVersion(string(out))
+				ts.Status = "ok"
+				return ts
+			}
+		}
+		ts.Status = "missing"
+
 	default:
 		ts.Status = "missing"
 	}
@@ -111,12 +140,34 @@ func CheckAll(repoDir, dotFlowpilotDir string) ([]ToolStatus, error) {
 
 // CheckGlobal probes machine-global tooling without any project-scoped checks.
 func CheckGlobal() []ToolStatus {
-	tools := []string{"gitnexus", "rtk", "node"}
+	tools := []string{"gitnexus", "rtk", "node", "python", "libretranslate"}
 	statuses := make([]ToolStatus, 0, len(tools))
 	for _, t := range tools {
 		statuses = append(statuses, CheckTool(t, ""))
 	}
 	return statuses
+}
+
+// libreTranslateVersion returns the installed libretranslate version via pip show.
+func libreTranslateVersion() string {
+	for _, pip := range []string{"pip", "pip3"} {
+		out, err := exec.Command(pip, "show", "libretranslate").Output()
+		if err == nil {
+			return pipShowVersion(string(out))
+		}
+	}
+	return ""
+}
+
+// pipShowVersion parses "Version: X.Y.Z" from pip show output.
+func pipShowVersion(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "Version:") {
+			return strings.TrimSpace(strings.TrimPrefix(trimmed, "Version:"))
+		}
+	}
+	return ""
 }
 
 // LoadToolingStatus reads dotFlowpilotDir/tooling.json and returns the slice.
