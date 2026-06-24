@@ -503,3 +503,40 @@ test("two genuinely different consecutive messages both render (BUG-116 guard is
     .map((it) => (it.kind === "assistant" ? it.text : ""));
   assert.deepEqual(texts, ["first point", "second point"], "distinct messages must not be collapsed");
 });
+
+test("re-applying file_changed does not duplicate the file row (CP-35)", () => {
+  // A chat switch re-streams the run from seq 0; the same file_changed must not stack.
+  const events = [
+    baseEvent({ id: "evt-ts", seq: 1, type: "turn_started", providerTurnId: "t1", prompt: "edit" }),
+    baseEvent({ id: "evt-f1", seq: 2, type: "file_changed", path: "calc.go", changeType: "modified" }),
+    baseEvent({ id: "evt-tc", seq: 3, type: "turn_completed", finalMessage: "done" }),
+  ];
+  const once = foldEvents(events);
+  const twice = foldEvents([...events, ...events]);
+  const filesOnce = once.timeline.filter((it) => it.kind === "file");
+  const filesTwice = twice.timeline.filter((it) => it.kind === "file");
+  assert.equal(filesOnce.length, 1);
+  assert.equal(filesTwice.length, 1, "re-streamed file_changed must not duplicate the row");
+});
+
+test("a blocking flow_gate_violation settles status so the composer unblocks (CP-35)", () => {
+  const state = foldEvents([
+    baseEvent({ id: "evt-ts", seq: 1, type: "turn_started", providerTurnId: "t1", prompt: "break a test" }),
+    baseEvent({ id: "evt-mc", seq: 2, type: "message_completed", text: "done" }),
+    baseEvent({ id: "evt-tc", seq: 3, type: "turn_completed", finalMessage: "done" }),
+    baseEvent({ id: "evt-gate", seq: 4, type: "flow_gate_violation", error: "Flow gate: Tests failed: TestAdd", status: "block" }),
+  ]);
+  assert.equal(state.status, "completed", "a hard block must not leave the chat stuck on running");
+  const warn = state.timeline.find((it) => it.kind === "system" && it.id === "evt-gate");
+  assert.ok(warn, "the inline warn card is still rendered");
+});
+
+test("a reprompt flow_gate_violation keeps the prior status (a turn_started follows) (CP-35)", () => {
+  const state = foldEvents([
+    baseEvent({ id: "evt-ts", seq: 1, type: "turn_started", providerTurnId: "t1", prompt: "change code" }),
+    baseEvent({ id: "evt-tc", seq: 2, type: "turn_completed", finalMessage: "done" }),
+    baseEvent({ id: "evt-gate", seq: 3, type: "flow_gate_violation", error: "Flow gate: missing CA note", status: "reprompt" }),
+  ]);
+  // prev was "completed" from turn_completed; reprompt keeps it (the follow-up turn_started flips to running).
+  assert.equal(state.status, "completed");
+});

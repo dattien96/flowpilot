@@ -196,6 +196,44 @@ function AccountSwitchModal(): React.ReactElement | null {
   );
 }
 
+function GateBlockModal(): React.ReactElement | null {
+  const gateBlock = useStore((s) => s.gateBlock);
+  const dismissGateBlock = useStore((s) => s.dismissGateBlock);
+
+  if (!gateBlock) return null;
+
+  // The runner prefixes the message with "Flow gate: "; strip it for the body since
+  // the modal title already says "Flow gate".
+  const detail = gateBlock.message.replace(/^Flow gate:\s*/i, "");
+
+  return (
+    <div
+      className="account-switch-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Flow gate blocked the step"
+      onClick={dismissGateBlock}
+    >
+      <div className="account-switch-modal gate-block-modal" onClick={(e) => e.stopPropagation()}>
+        <p className="gate-block-title">
+          <span className="gate-block-icon" aria-hidden="true">⛔</span>
+          Flow gate blocked this step
+        </p>
+        <p className="gate-block-detail">{detail}</p>
+        <p className="gate-block-hint">
+          Previously-passing tests are failing. This is a hard stop — fix the code so the
+          tests pass again. Do not edit or delete the tests to make them green.
+        </p>
+        <div className="account-switch-actions">
+          <button type="button" className="project-history-confirm-ok" onClick={dismissGateBlock}>
+            Got it
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function ChatWorkspace({
   leftSidebarVisible,
   rightSidebarVisible,
@@ -283,6 +321,7 @@ export function ChatWorkspace({
   return (
     <div ref={shellRef} className={`app-body workspace-shell ${leftSidebarVisible ? "left-visible" : "left-hidden"} ${rightSidebarVisible ? "right-visible" : "right-hidden"}`} style={workspaceStyle}>
       <AccountSwitchModal />
+      <GateBlockModal />
       {leftSidebarVisible && (
         <>
           <aside className="sidebar sidebar-left">

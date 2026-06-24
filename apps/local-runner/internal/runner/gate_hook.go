@@ -39,11 +39,10 @@ func (s *InteractiveService) runFlowGate(
 	diff, _ := flowgate.ObserveGitDiffSince(cwd, baseSHA)
 	log.Printf("[gate] cwd=%q baseSHA=%q diffLen=%d diff=%+v", cwd, baseSHA, len(diff), diff)
 
-	// 2. Load or capture test baseline — non-fatal.
+	// 2. Load test baseline — non-fatal. Baseline must already exist (captured at
+	// turn-start by ensureBaseline before the AI ran). If still nil the oracle
+	// is skipped for this turn rather than capturing a broken-state snapshot.
 	baseline, _ := flowgate.LoadBaseline(dotFP)
-	if baseline == nil {
-		baseline, _ = flowgate.CaptureBaseline(cwd, dotFP)
-	}
 
 	// 3. Run regression oracle against the diff.
 	oracle := flowgate.RunOracle(cwd, baseline, diff)
@@ -98,12 +97,15 @@ func (s *InteractiveService) runFlowGate(
 	// 8. Enforce — read gate_mode from .flowpilot/settings/gate-config.json; default warn.
 	result := flowgate.Enforce(violations, loadGateMode(dotFP))
 
-	// 9. Emit the violation event so the desktop can surface it inline.
+	// 9. Emit the violation event so the desktop can surface it inline. Status carries
+	// the resolved action ("block" | "reprompt" | "warn") so the desktop can render a
+	// blocking gate (e.g. failed tests) as a modal rather than only an inline card.
 	s.mu.Lock()
 	s.emitLocked(rs, ProviderEvent{
 		Type:           EventFlowGateViolation,
 		ProviderTurnID: turnID,
 		Error:          result.Message,
+		Status:         result.Action,
 	})
 	s.mu.Unlock()
 
@@ -134,6 +136,20 @@ func (s *InteractiveService) runFlowGate(
 // loadGateMode delegates to the shared readGateMode helper (engine_gate_config.go).
 func loadGateMode(dotFP string) string {
 	return readGateMode(dotFP)
+}
+
+// ensureBaseline captures a test baseline for cwd if one does not already exist.
+// It must be called BEFORE the AI turn starts so the snapshot reflects a known-good
+// state. If baseline capture fails it is silently ignored (non-fatal). (CP-35)
+func (s *InteractiveService) ensureBaseline(cwd string) {
+	if cwd == "" {
+		return
+	}
+	dotFP := filepath.Join(cwd, ".flowpilot")
+	if bl, _ := flowgate.LoadBaseline(dotFP); bl != nil {
+		return // already exists
+	}
+	_, _ = flowgate.CaptureBaseline(cwd, dotFP)
 }
 
 // captureGitHead returns the current HEAD SHA in repoDir, trimmed of whitespace.

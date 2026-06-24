@@ -152,6 +152,9 @@ interface AppState {
   remoteHistoryLoadError?: string;
   pendingApproval?: PendingApproval;
   pendingQuestion?: PendingQuestion;
+  /** A hard-blocking flow-gate violation (e.g. failed tests) the user must acknowledge.
+   *  Set only for action === "block"; surfaced as a modal. (CP-35) */
+  gateBlock?: { message: string };
   lastTurnInput?: TurnInput;
   latestTokenUsage?: TokenUsageSnapshot;
   recoverable: boolean;
@@ -237,6 +240,7 @@ interface AppState {
   confirmAccountSwitch(): Promise<void>;
   cancelAccountSwitch(): void;
   requestManualAccountSwitch(): void;
+  dismissGateBlock(): void;
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -1061,6 +1065,7 @@ export const useStore = create<AppState>((set, get) => ({
       artifacts: [],
       pendingApproval: undefined,
       pendingQuestion: undefined,
+      gateBlock: undefined,
       latestTokenUsage: undefined,
       lastTurnInput: undefined,
       recoverable: false,
@@ -1177,6 +1182,10 @@ export const useStore = create<AppState>((set, get) => ({
 
   cancelAccountSwitch() {
     set({ pendingAccountSwitch: undefined });
+  },
+
+  dismissGateBlock() {
+    set({ gateBlock: undefined });
   },
 
   requestManualAccountSwitch() {
@@ -1649,8 +1658,15 @@ function applyEvent(s: AppState, e: ProviderEventDTO): Partial<AppState> {
       _runReplaySeq: nextReplaySeq,
     };
   }
+  if (e.type === "flow_gate_violation" && e.status === "block" && !s._historyReplaying) {
+    // A hard block (failed/regressed tests) stops the work — unlike r-ca/r-bug which
+    // auto-reprompt. Surface it as a modal the user must acknowledge. Suppressed during
+    // history replay so opening an old chat doesn't re-pop the modal. (CP-35)
+    return { ...next, gateBlock: { message: e.error }, _runReplaySeq: nextReplaySeq };
+  }
   if (e.type === "turn_started") {
-    return { ...next, latestTokenUsage: undefined, _runReplaySeq: nextReplaySeq };
+    // A fresh turn (incl. a gate reprompt) clears any prior block modal.
+    return { ...next, latestTokenUsage: undefined, gateBlock: undefined, _runReplaySeq: nextReplaySeq };
   }
   if (e.type === "token_usage_updated") {
     return { ...next, latestTokenUsage: e.tokenUsage, _runReplaySeq: nextReplaySeq };
@@ -1734,6 +1750,7 @@ function emptyRunSnapshot(status: RunStatus): Partial<AppState> {
     status,
     pendingApproval: undefined,
     pendingQuestion: undefined,
+    gateBlock: undefined,
     latestTokenUsage: undefined,
     lastTurnInput: undefined,
     recoverable: false,

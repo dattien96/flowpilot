@@ -26,6 +26,7 @@ func Enforce(violations []Violation, gateMode string) EnforceResult {
 
 	highest := "approve"
 	var details []string
+	seen := map[string]bool{}
 
 	for _, v := range violations {
 		action := v.Rule.Action
@@ -41,7 +42,13 @@ func Enforce(violations []Violation, gateMode string) EnforceResult {
 		if actionSeverity[action] > actionSeverity[highest] {
 			highest = action
 		}
-		details = append(details, v.Detail)
+		// Dedupe identical details: r-tests and r-reg are coupled in v1 (both fire on
+		// the same failing-test condition with an identical Detail), which would
+		// otherwise render the message twice ("Tests failed: X; Tests failed: X").
+		if !seen[v.Detail] {
+			seen[v.Detail] = true
+			details = append(details, v.Detail)
+		}
 	}
 
 	return EnforceResult{

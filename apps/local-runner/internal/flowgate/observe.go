@@ -61,7 +61,9 @@ func ObserveGitDiffSince(repoDir, baseSHA string) ([]ChangedFile, error) {
 }
 
 func ObserveGitDiff(repoDir string) ([]ChangedFile, error) {
-	cmd := exec.Command("git", "-C", repoDir, "status", "--porcelain")
+	// -uall expands untracked directories to individual files so paths like
+	// "change-audit/CA-002.md" are not collapsed to "change-audit/" by git.
+	cmd := exec.Command("git", "-C", repoDir, "status", "--porcelain", "-uall")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, nil

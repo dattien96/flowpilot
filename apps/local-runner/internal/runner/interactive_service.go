@@ -1642,12 +1642,14 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		Scenario:          scenario,
 		Attachments:       in.Attachments,
 	}
-	// CP-35: snapshot HEAD before the AI runs so gate_hook can diff committed changes.
+	// CP-35: snapshot HEAD and seed test baseline before the AI runs.
+	// Both must happen before sendTurnWithRetry so the gate sees pre-change state.
 	if head, headErr := captureGitHead(rs.workspaceCwd); headErr == nil {
 		s.mu.Lock()
 		rs.turnStartGitHead = head
 		s.mu.Unlock()
 	}
+	s.ensureBaseline(rs.workspaceCwd)
 	bridge := &turnBridge{svc: s, rs: rs, ctx: ctx, turnID: turnID, yolo: yolo}
 	err := s.sendTurnWithRetry(ctx, adapter, req, bridge)
 	if err == nil {

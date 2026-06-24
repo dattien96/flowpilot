@@ -56,6 +56,12 @@ function statusFromEvent(e: ProviderEventDTO, prev: RunStatus): RunStatus {
       return "completed";
     case "turn_failed":
       return "failed";
+    case "flow_gate_violation":
+      // A block/warn gate is terminal: settle so the chat input unblocks instead of
+      // appearing to load forever (status === "running" disables the composer). A
+      // reprompt is immediately followed by a turn_started, so keep the prior status
+      // and let that event flip back to running. (CP-35)
+      return e.status === "reprompt" ? prev : "completed";
     default:
       return prev === "waiting_approval" || prev === "waiting_question" ? "running" : prev;
   }
@@ -244,7 +250,12 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
 
     case "file_changed":
       closeAssistant();
-      timeline.push({ kind: "file", id: e.id, path: e.path, changeType: e.changeType });
+      // Idempotent guard (BUG-111): a chat switch re-streams the run from seq 0, so a
+      // file_changed whose row already exists must not be pushed again — otherwise the
+      // same "calc.go modified" / "CA-*.md created" rows duplicate after switching back.
+      if (!timeline.some((it) => it.kind === "file" && it.id === e.id)) {
+        timeline.push({ kind: "file", id: e.id, path: e.path, changeType: e.changeType });
+      }
       break;
 
     case "permission_required":

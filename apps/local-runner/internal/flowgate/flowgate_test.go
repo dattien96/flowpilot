@@ -236,6 +236,25 @@ func TestEnforceMessageContainsDetails(t *testing.T) {
 	}
 }
 
+// r-tests and r-reg are coupled in v1: both fire on the same failing-test condition
+// with an identical Detail. Enforce must dedupe so the message is not doubled
+// ("Tests failed: X; Tests failed: X"). (CP-35)
+func TestEnforceDedupesIdenticalDetails(t *testing.T) {
+	rTests := Rule{ID: "r-tests", Trigger: "tests_failed", Action: "block", Enabled: true}
+	rReg := Rule{ID: "r-reg", Trigger: "regression_test_broke", Action: "block", Enabled: true}
+	violations := []Violation{
+		{Rule: rTests, Detail: "Tests failed: TestAdd"},
+		{Rule: rReg, Detail: "Tests failed: TestAdd"},
+	}
+	result := Enforce(violations, "enforce")
+	if result.Action != "block" {
+		t.Errorf("Action = %q, want block", result.Action)
+	}
+	if result.Message != "Flow gate: Tests failed: TestAdd" {
+		t.Errorf("Message = %q, want single (deduped) detail", result.Message)
+	}
+}
+
 func TestIsDocOrAuditFile(t *testing.T) {
 	cases := []struct {
 		path string
