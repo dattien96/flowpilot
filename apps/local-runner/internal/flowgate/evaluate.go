@@ -29,20 +29,24 @@ func checkRule(rule Rule, tr TurnResult) *Violation {
 		}
 
 	case "bug_fixed":
-		msgLower := strings.ToLower(tr.FinalMessage)
-		isBugFix := tr.ChangeType == "bugfix" ||
-			strings.Contains(msgLower, "fixed bug") ||
-			strings.Contains(msgLower, "bug fix")
+		isBugFix := tr.ChangeType == "bugfix"
+		if !isBugFix {
+			msgLower := strings.ToLower(tr.FinalMessage)
+			isBugFix = strings.Contains(msgLower, "fixed bug") ||
+				strings.Contains(msgLower, "bug fix")
+		}
 		if isBugFix && !HasBugFixDoc(tr.GitDiff) {
 			return &Violation{Rule: rule, Detail: "bug fix detected but no bugfix doc found"}
 		}
 
 	case "task_referenced":
-		// Fires when the AI's final message references a Task-NNN ID (meaning the AI
-		// is completing a tracked task) but no Task document was added to the diff.
-		// ChangeType == "task" is reserved for a future explicit signal; the message
-		// heuristic covers v1. (SD-20 §2.7, Task-113)
-		hasTaskRef := taskIDRegex.MatchString(tr.FinalMessage) || tr.ChangeType == "task"
+		// Explicitly declared Task mode wins first. If the run already carries
+		// ChangeType == "task", we do not consult the final-message regex at all.
+		// Otherwise we fall back to the v1 Task-ID heuristic. (SD-20 §2.7, Task-113)
+		hasTaskRef := tr.ChangeType == "task"
+		if !hasTaskRef {
+			hasTaskRef = taskIDRegex.MatchString(tr.FinalMessage)
+		}
 		if hasTaskRef && !HasTaskDoc(tr.GitDiff) {
 			return &Violation{Rule: rule, Detail: "task reference detected but no task document found"}
 		}
