@@ -22,3 +22,4 @@ Source of truth for stable `feature_key` values used by:
 - google-drive — Drive connection, artifact and chat sync
 - supabase-config — Supabase connection and runtime config
 - context-regression-engine — SD-17 context + regression engine (Plane C, gate, resolver)
+- project-nav — desktop project navigator sidebar: project selector, history panel, remote chats

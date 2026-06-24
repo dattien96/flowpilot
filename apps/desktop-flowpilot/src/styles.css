@@ -1178,6 +1178,10 @@ input {
   display: grid;
   gap: 8px;
 }
+.project-history-section--remote {
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
 .project-rail-head {
   display: flex;
   align-items: flex-start;

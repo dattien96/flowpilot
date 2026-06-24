@@ -135,10 +135,42 @@ export function Navigator(): React.ReactElement {
   const [restoringIds, setRestoringIds] = useState<Set<string>>(new Set());
   const [restoringAll, setRestoringAll] = useState(false);
   const [showAllRemoteChats, setShowAllRemoteChats] = useState(false);
+  const [remoteSelectionMode, setRemoteSelectionMode] = useState(false);
+  const [selectedRemoteKeys, setSelectedRemoteKeys] = useState<Set<string>>(new Set());
+  const remoteLongPressRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const exitSelectionMode = useCallback(() => {
     setSelectionModeProjectId(null);
     setSelectedRunIds(new Set());
+  }, []);
+
+  const exitRemoteSelectionMode = useCallback(() => {
+    setRemoteSelectionMode(false);
+    setSelectedRemoteKeys(new Set());
+  }, []);
+
+  const toggleRemoteSelection = useCallback((key: string) => {
+    setSelectedRemoteKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const startRemoteLongPress = useCallback((key: string) => {
+    remoteLongPressRef.current = setTimeout(() => {
+      remoteLongPressRef.current = null;
+      setRemoteSelectionMode(true);
+      setSelectedRemoteKeys(new Set([key]));
+    }, 500);
+  }, []);
+
+  const cancelRemoteLongPress = useCallback(() => {
+    if (remoteLongPressRef.current) {
+      clearTimeout(remoteLongPressRef.current);
+      remoteLongPressRef.current = null;
+    }
   }, []);
 
   const toggleItemSelection = useCallback((runId: string) => {
@@ -439,6 +471,15 @@ export function Navigator(): React.ReactElement {
                 >
                   Delete
                 </button>
+                <button
+                  type="button"
+                  className="project-history-selection-action project-history-selection-action--delete"
+                  disabled={activeHistory.length === 0}
+                  onClick={() => requestConfirm("delete", activeHistory.map((h) => h.runId), selectedProjectId!)}
+                  title="Delete all chats"
+                >
+                  Delete All
+                </button>
               </div>
             )}
 
@@ -563,7 +604,7 @@ export function Navigator(): React.ReactElement {
         )}
       </section>
 
-      <section className="project-history-section">
+      <section className="project-history-section project-history-section--remote">
         <div className="project-rail-head">
           <div>
             <label>Remote Chats</label>
@@ -571,18 +612,29 @@ export function Navigator(): React.ReactElement {
           </div>
           <div className="project-rail-head-actions">
             {remoteHistoryLoading && <span className="project-rail-state">Loading</span>}
-            {remoteChatSessions.filter((item) => !item.unavailableReason).length > 0 && (
+            {remoteSelectionMode ? (
               <button
                 type="button"
-                className="project-history-sync-all"
-                onClick={() => void restoreAll()}
-                disabled={restoringAll || restoringIds.size > 0}
-                title="Restore all remote chats into this project"
-                aria-label="Restore all remote chats"
+                className="project-history-selection-exit"
+                onClick={exitRemoteSelectionMode}
+                title="Exit selection mode"
+                aria-label="Exit selection mode"
               >
-                {restoringAll ? <span className="history-status-spinner" aria-hidden="true" /> : <RestoreGlyph />}
-                <span>{restoringAll ? "Restoring…" : "Restore All"}</span>
+                ←
               </button>
+            ) : (
+              remoteChatSessions.filter((item) => !item.unavailableReason).length > 0 && (
+                <button
+                  type="button"
+                  className="project-history-sync-all"
+                  onClick={() => void restoreAll()}
+                  disabled={restoringAll || restoringIds.size > 0}
+                  title={restoringAll ? "Restoring…" : "Restore all remote chats"}
+                  aria-label="Restore all remote chats"
+                >
+                  {restoringAll ? <span className="history-status-spinner" aria-hidden="true" /> : <RestoreGlyph />}
+                </button>
+              )
             )}
           </div>
         </div>
@@ -600,19 +652,83 @@ export function Navigator(): React.ReactElement {
           </div>
         ) : (
           <div className="project-history-list">
+            {remoteSelectionMode && (
+              <div className="project-history-selection-toolbar">
+                <span className="project-history-selection-count">
+                  {selectedRemoteKeys.size} selected
+                </span>
+                <button
+                  type="button"
+                  className="project-history-selection-action"
+                  disabled={restoringAll || restoringIds.size > 0}
+                  onClick={() => void restoreAll()}
+                  title="Restore all remote chats"
+                >
+                  <RestoreGlyph /> Restore All
+                </button>
+              </div>
+            )}
             {(showAllRemoteChats ? remoteChatSessions : remoteChatSessions.slice(0, REMOTE_CHATS_LIMIT)).map((item) => {
               const key = `${item.sourceMachineId}:${item.sourceRunId}`;
               const isRestoring = restoringIds.has(key);
+              const isSelected = selectedRemoteKeys.has(key);
+
+              if (remoteSelectionMode) {
+                return (
+                  <div
+                    key={key}
+                    className={`project-history-item-row project-history-item-row--selectable${isSelected ? " project-history-item-row--selected" : ""}${item.unavailableReason ? " project-history-item-row--disabled" : ""}`}
+                    onClick={() => { if (!item.unavailableReason) toggleRemoteSelection(key); }}
+                  >
+                    <input
+                      type="checkbox"
+                      className="project-history-item-checkbox"
+                      checked={isSelected}
+                      disabled={Boolean(item.unavailableReason)}
+                      onChange={() => toggleRemoteSelection(key)}
+                      onClick={(e) => e.stopPropagation()}
+                      aria-label={`Select ${runTitle(item.lastPrompt || item.lastMessage)}`}
+                    />
+                    <div className="project-history-item project-history-item--selectable">
+                      <span className="project-history-item-top">
+                        <span className="project-history-item-title">
+                          {runTitle(item.lastPrompt || item.lastMessage)}
+                        </span>
+                      </span>
+                      <span className="project-history-item-meta">
+                        {item.providerKey} · {item.updatedAt ? RUN_TIME_FORMAT.format(new Date(item.updatedAt)) : "Remote"}
+                      </span>
+                    </div>
+                    {!item.unavailableReason && (
+                      <button
+                        type="button"
+                        className="project-history-sync-icon"
+                        disabled={isRestoring || restoringAll}
+                        onClick={(e) => { e.stopPropagation(); void restoreItem(item); }}
+                        title="Restore this chat"
+                        aria-label="Restore chat"
+                      >
+                        {isRestoring ? <span className="history-status-spinner" aria-hidden="true" /> : <RestoreGlyph />}
+                      </button>
+                    )}
+                  </div>
+                );
+              }
+
               return (
                 <div key={key} className="project-history-item-row">
                   <button
                     type="button"
                     className={`project-history-item${item.unavailableReason ? " project-history-item--disabled" : ""}`}
                     disabled={Boolean(item.unavailableReason) || isRestoring}
-                    onClick={() => void restoreItem(item)}
+                    onPointerDown={() => startRemoteLongPress(key)}
+                    onPointerUp={cancelRemoteLongPress}
+                    onPointerLeave={cancelRemoteLongPress}
+                    onClick={() => { if (!item.unavailableReason && !isRestoring) void restoreItem(item); }}
                     title={item.unavailableReason || `${item.sourceMachineId}/${item.sourceRunId}`}
                   >
                     <span className="project-history-item-top">
+                      {isRestoring && <span className="history-status-spinner" aria-hidden="true" />}
                       <span className="project-history-item-title">
                         {runTitle(item.lastPrompt || item.lastMessage)}
                       </span>
@@ -621,18 +737,6 @@ export function Navigator(): React.ReactElement {
                       {item.providerKey} · {item.updatedAt ? RUN_TIME_FORMAT.format(new Date(item.updatedAt)) : "Remote"}
                     </span>
                   </button>
-                  {!item.unavailableReason && (
-                    <button
-                      type="button"
-                      className="project-history-sync"
-                      disabled={isRestoring || restoringAll}
-                      onClick={() => void restoreItem(item)}
-                      title="Restore this chat"
-                      aria-label="Restore chat"
-                    >
-                      {isRestoring ? <span className="history-status-spinner" aria-hidden="true" /> : <RestoreGlyph />}
-                    </button>
-                  )}
                 </div>
               );
             })}
