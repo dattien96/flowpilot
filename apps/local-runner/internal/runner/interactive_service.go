@@ -143,6 +143,7 @@ type interactiveRun struct {
 	turnInFlight      bool
 	repromptAttempts  int    // CP-35 P-5: number of flow-gate reprompts issued this turn
 	turnStartGitHead  string // CP-35: git HEAD captured at turn start for committed-diff detection
+	lastTurnStepID    string // CP-35: stepID of the most-recently started turn, used by gate reprompts
 	currentTurnID     string
 	turnCancel        context.CancelFunc
 
@@ -1908,6 +1909,7 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 
 	turnID := s.nextID("turn")
 	rs.turnInFlight = true
+	rs.lastTurnStepID = in.StepID // CP-35: remember for gate reprompts
 	rs.currentTurnID = turnID
 	rs.lastPrompt = truncateDisplayField(in.Prompt, 100)
 	rs.updatedAt = time.Now().UTC().Format(time.RFC3339Nano)

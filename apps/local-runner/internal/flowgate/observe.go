@@ -78,6 +78,12 @@ func ObserveGitDiff(repoDir string) ([]ChangedFile, error) {
 		workStatus := string(line[1])
 		path := strings.TrimSpace(line[3:])
 
+		// Untracked files (index='?', work='?') are treated as Added so that new
+		// CA notes created but not yet staged are still visible to the gate.
+		if indexStatus == "?" && workStatus == "?" {
+			files = append(files, ChangedFile{Path: path, Status: "A"})
+			continue
+		}
 		status := resolveStatus(indexStatus, workStatus)
 		if status == "" {
 			continue

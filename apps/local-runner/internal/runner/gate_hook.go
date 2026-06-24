@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"log"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -36,6 +37,7 @@ func (s *InteractiveService) runFlowGate(
 	baseSHA := rs.turnStartGitHead
 	s.mu.Unlock()
 	diff, _ := flowgate.ObserveGitDiffSince(cwd, baseSHA)
+	log.Printf("[gate] cwd=%q baseSHA=%q diffLen=%d diff=%+v", cwd, baseSHA, len(diff), diff)
 
 	// 2. Load or capture test baseline — non-fatal.
 	baseline, _ := flowgate.LoadBaseline(dotFP)
@@ -70,6 +72,9 @@ func (s *InteractiveService) runFlowGate(
 
 	// 6. Evaluate rule set.
 	violations := flowgate.Evaluate(tr, rules)
+	hasCA := flowgate.HasChangeAuditNote(diff)
+	hasCode := flowgate.HasCodeChanges(diff)
+	log.Printf("[gate] violations=%d gateMode=%q hasCode=%v hasCA=%v", len(violations), loadGateMode(dotFP), hasCode, hasCA)
 
 	// 7. Surface oracle-detected tampering as an additional warn violation so the
 	// desktop can display it even when no rule explicitly covers it.
@@ -110,11 +115,13 @@ func (s *InteractiveService) runFlowGate(
 		s.mu.Lock()
 		attempts := rs.repromptAttempts
 		rs.repromptAttempts++
+		stepID := rs.lastTurnStepID
 		s.mu.Unlock()
+		log.Printf("[gate] reprompt attempt=%d stepID=%q", attempts, stepID)
 		if attempts < maxFlowGateReprompts {
 			go func(runID, stepID, prompt string) {
 				_, _ = s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt}, "", "")
-			}(rs.id, rs.stepID, result.Message)
+			}(rs.id, stepID, result.Message)
 		}
 		// Whether reprompting or max reached, suppress the current completion.
 		return true
