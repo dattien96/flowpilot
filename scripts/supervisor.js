@@ -39,6 +39,7 @@ const controlPath = path.join(flowpilotDir, 'supervisor.cmd');
 let webProcess = null;
 let runnerProcess = null;
 let desktopProcess = null;
+let libreProcess = null;
 let hintDesktopPid = null;
 let isExiting = false;
 let isRestarting = false;
@@ -153,6 +154,16 @@ function signalManagedProcess(child, signal) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isLibreTranslateInstalled() {
+  try {
+    const cmd = process.platform === 'win32' ? 'where libretranslate' : 'which libretranslate';
+    execSync(cmd, { stdio: 'ignore' });
+    return true;
+  } catch (e) {
+    return false;
+  }
 }
 
 async function stopManagedProcess(child, label) {
@@ -369,12 +380,37 @@ async function startServicesFresh(existing = {}) {
     attachDesktopExitHandler(desktopProcess);
   }
 
+  // Spawn LibreTranslate if installed (optional — exit does not bring down the stack)
+  if (isLibreTranslateInstalled()) {
+    const librePort = 5000;
+    const libreInUse = await isPortInUse(librePort);
+    if (libreInUse) {
+      console.log(`[Supervisor] LibreTranslate already running on port ${librePort}, skipping start.`);
+    } else {
+      console.log(`[Supervisor] Starting LibreTranslate on port ${librePort} (en + vi only)...`);
+      libreProcess = spawn('libretranslate', ['--load-only', 'en,vi', '--port', String(librePort)], {
+        shell: true,
+        stdio: 'inherit',
+        detached: process.platform !== 'win32',
+      });
+      libreProcess.detached = process.platform !== 'win32';
+      libreProcess.on('exit', (code) => {
+        if (!isExiting && !isRestarting) {
+          console.log(`[Supervisor] LibreTranslate exited with code ${code}. Web + runner keep running.`);
+        }
+      });
+    }
+  } else {
+    console.log('[Supervisor] LibreTranslate not installed, skipping translation service. (Install via Engine Settings)');
+  }
+
   // Write supervisor metadata
   const metadata = {
     supervisorPid: process.pid,
     webPid: webProcess ? webProcess.pid : null,
     runnerPid: runnerProcess ? runnerProcess.pid : null,
     desktopPid: desktopProcess ? desktopProcess.pid : null,
+    librePid: libreProcess ? libreProcess.pid : null,
     controlPath: controlPath,
   };
   fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2));
@@ -437,6 +473,7 @@ function cleanupAndExit() {
   signalManagedProcess(runnerProcess, 'SIGINT');
   signalManagedProcess(webProcess, 'SIGINT');
   signalManagedProcess(desktopProcess, 'SIGINT');
+  signalManagedProcess(libreProcess, 'SIGINT');
 
   // Wait up to 3 seconds for processes to exit on their own before force-killing
   let checks = 0;
@@ -445,8 +482,9 @@ function cleanupAndExit() {
     const runnerAlive = runnerProcess && runnerProcess.exitCode === null && !runnerProcess.killed && isPidAlive(runnerProcess.pid);
     const webAlive = webProcess && webProcess.exitCode === null && !webProcess.killed && isPidAlive(webProcess.pid);
     const desktopAlive = desktopProcess && desktopProcess.exitCode === null && !desktopProcess.killed && isPidAlive(desktopProcess.pid);
+    const libreAlive = libreProcess && libreProcess.exitCode === null && !libreProcess.killed && isPidAlive(libreProcess.pid);
 
-    if (!runnerAlive && !webAlive && !desktopAlive) {
+    if (!runnerAlive && !webAlive && !desktopAlive && !libreAlive) {
       clearInterval(interval);
       finishExit();
     } else {
@@ -457,6 +495,7 @@ function cleanupAndExit() {
         if (runnerAlive) killProcessTree(runnerProcess);
         if (webAlive) killProcessTree(webProcess);
         if (desktopAlive) killProcessTree(desktopProcess);
+        if (libreAlive) killProcessTree(libreProcess);
         finishExit();
       }
     }
@@ -482,6 +521,7 @@ function handleRestart() {
   signalManagedProcess(runnerProcess, 'SIGINT');
   signalManagedProcess(webProcess, 'SIGINT');
   signalManagedProcess(desktopProcess, 'SIGINT');
+  signalManagedProcess(libreProcess, 'SIGINT');
 
   // Wait up to 2 seconds for processes to exit, then force-kill if still alive
   let checks = 0;
@@ -490,8 +530,9 @@ function handleRestart() {
     const runnerAlive = runnerProcess && runnerProcess.exitCode === null && !runnerProcess.killed && isPidAlive(runnerProcess.pid);
     const webAlive = webProcess && webProcess.exitCode === null && !webProcess.killed && isPidAlive(webProcess.pid);
     const desktopAlive = desktopProcess && desktopProcess.exitCode === null && !desktopProcess.killed && isPidAlive(desktopProcess.pid);
+    const libreAlive = libreProcess && libreProcess.exitCode === null && !libreProcess.killed && isPidAlive(libreProcess.pid);
 
-    if (!runnerAlive && !webAlive && !desktopAlive) {
+    if (!runnerAlive && !webAlive && !desktopAlive && !libreAlive) {
       clearInterval(interval);
       isRestarting = false;
       startServices();
@@ -503,6 +544,7 @@ function handleRestart() {
         if (runnerAlive) killProcessTree(runnerProcess);
         if (webAlive) killProcessTree(webProcess);
         if (desktopAlive) killProcessTree(desktopProcess);
+        if (libreAlive) killProcessTree(libreProcess);
         setTimeout(() => {
           isRestarting = false;
           startServices();
