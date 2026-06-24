@@ -398,22 +398,23 @@ Clarifications based on implementation review (CP-35, 2026-06-24). Use these to 
 
 ### 13.1 What local files are created when a project is bound?
 
-Binding triggers `POST /client/projects/{id}/engine/init?trigger=bind` in the desktop. The runner calls `runEngineInit()` in `engine_setup.go`, which runs four sequential steps:
+Binding triggers `POST /client/projects/{id}/engine/init?trigger=bind` in the desktop. The runner calls `runEngineInit()` in `engine_setup.go`, which runs these sequential steps (skill install runs **before** the tooling check so the `skill_pack` sentinel exists when it is probed):
 
 ```
-1. tooling.CheckAll()        → .flowpilot/tooling.json
-2. skillpack.Install()       → .claude/skills/*/SKILL.md
+1. skillpack.Install()       → .claude/skills/*/SKILL.md
                              → .agents/skills/*/SKILL.md
+2. tooling.CheckAll()        → .flowpilot/tooling.json
 3. changeledger.Build()      → .flowpilot/ledger/feature_history.ndjson
                              → .flowpilot/ledger/.cursor
 4. featurecatalog.Build()    → .flowpilot/catalog/features.ndjson
-5. contextsync.NewEngineStore + WriteManifest
+5. contextsync.NewEngineStore + WriteManifest + SyncSharedFiles
                              → .flowpilot/ledger/ (subdir created)
                              → .flowpilot/catalog/ (subdir created)
                              → .flowpilot/settings/ (subdir created)
                              → .flowpilot/guard/ (subdir created)
                              → .flowpilot/structure/ (subdir created)
                              → .flowpilot/manifest.json
+                             → Drive context-engine/ (if connected)
 Then:
    engine-init.json          → .flowpilot/engine-init.json
 ```
@@ -549,3 +550,23 @@ The gate is provider-agnostic because it runs in the runner after every `finishT
 `interactiveRun.repromptAttempts` prevents infinite reprompt loops. When `Enforce()` returns `action: reprompt`, the gate increments this counter and only launches a new turn if `attempts < maxFlowGateReprompts` (= 2). On the third attempt, the gate still returns `block=true` (suppressing the completion) but does NOT launch another turn, leaving the step in a state where only the user can resolve it.
 
 The counter resets with each new `interactiveRun` (i.e., each new run / step start).
+
+---
+
+### 13.10 `tooling.json` vs `engine-init.json` vs `manifest.json` — are they redundant?
+
+No. These three files in `.flowpilot/` answer three different questions and never replace one another.
+
+| File | Written by | Answers | Contents | Drive-synced? |
+|---|---|---|---|---|
+| `tooling.json` | `tooling.CheckAll()` | "What tools are installed on *this machine*?" | Array of `{tool, version, status, checked_at}` for `gitnexus`, `rtk`, `node`, `skill_pack` | ❌ machine-local |
+| `engine-init.json` | `saveEngineInitState()` | "What happened the *last time* init ran?" | `{trigger, status, skipped, skipReason, attemptedAt, completedAt, workingDirectory, install summary, steps[]}` — an audit record of each init step's outcome | ❌ run log (local) |
+| `manifest.json` | `contextsync.WriteManifest()` | "What is the *integrity/state* of the shared data files?" | Array of `{path, sha256, size_bytes}` for the 3 shared files (`feature_history.ndjson`, `features.ndjson`, `flow-rules.json`) | used as the Drive `_index` reference |
+
+**Distinct roles:**
+
+- **`tooling.json` — capability snapshot.** The desktop Engine page reads it to show which tools are present/missing and to compute the `CapabilityProfile` tier. It is about the *environment*. The "Refresh Tooling" action rewrites it independently of a full init, which is why it is a separate file from `engine-init.json`.
+- **`engine-init.json` — last-run log.** Records that init was triggered (`bind`/`manual`), whether it was skipped, and the per-step results (`skillpack_install`, `tooling_check`, `changeledger_build`, `featurecatalog_build`, `contextsync_manifest`). `shouldSkipBindInit()` uses its existence as one of the three skip-gate conditions (§13.3), and the UI shows it as "Last Init". It is about the *process*.
+- **`manifest.json` — content fingerprint.** sha256 + size of the actual shared data files so a Drive/cross-machine sync can detect changes and verify integrity. It is about the *data*.
+
+**The only overlap** is conceptual: `engine-init.json`'s `steps[]` records that the `contextsync_manifest` step ran, and `manifest.json` is the artifact that step produced. One says "the manifest step ran OK"; the other *is* the manifest with the hashes. Neither replaces the other. The single theoretical merge candidate is folding `tooling.json` into `engine-init.json` (both local) — but they are deliberately separate because tooling is refreshed on its own button without a full init.
