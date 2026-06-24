@@ -70,6 +70,7 @@ export interface ProjectEngineStatus {
   projectId: string;
   workingDirectory: string;
   initialized: boolean;
+  gateMode: string;
   tooling: ProjectEngineToolStatus[];
   capability: ProjectEngineCapabilityProfile;
   skillPack: ProjectEngineSkillPackState;
@@ -125,6 +126,7 @@ interface RawProjectEngineStatus {
   projectId: string;
   workingDirectory: string;
   initialized: boolean;
+  gateMode?: string;
   tooling: RawProjectEngineToolStatus[];
   capability: RawProjectEngineCapabilityProfile;
   skillPack: RawProjectEngineSkillPackState;
@@ -155,6 +157,7 @@ function mapProjectEngineStatus(raw: RawProjectEngineStatus): ProjectEngineStatu
     projectId: raw.projectId,
     workingDirectory: raw.workingDirectory,
     initialized: raw.initialized,
+    gateMode: raw.gateMode ?? "enforce",
     tooling: (raw.tooling ?? []).map((tool) => ({
       tool: tool.tool,
       version: tool.version,
@@ -356,6 +359,48 @@ export async function initProjectEngine(
     throw new Error(await readProjectEngineError(response));
   }
   return mapProjectEngineStatus((await response.json()) as RawProjectEngineStatus);
+}
+
+export async function fetchProjectEngineGateMode(
+  projectId: string,
+  workingDirectory: string,
+): Promise<string> {
+  const response = await fetch(
+    new URL(
+      `/client/projects/${encodeURIComponent(projectId)}/engine/gate-config?workingDirectory=${encodeURIComponent(workingDirectory)}`,
+      RUNNER_URL,
+    ).toString(),
+    { cache: "no-store" },
+  );
+  if (!response.ok) {
+    throw new Error(await readProjectEngineError(response));
+  }
+  const payload = (await response.json()) as { gateMode?: string };
+  return payload.gateMode ?? "enforce";
+}
+
+export async function saveProjectEngineGateMode(
+  projectId: string,
+  workingDirectory: string,
+  gateMode: string,
+): Promise<string> {
+  const response = await fetch(
+    new URL(
+      `/client/projects/${encodeURIComponent(projectId)}/engine/gate-config`,
+      RUNNER_URL,
+    ).toString(),
+    {
+      method: "POST",
+      cache: "no-store",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ workingDirectory, gate_mode: gateMode }),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(await readProjectEngineError(response));
+  }
+  const payload = (await response.json()) as { gateMode?: string };
+  return payload.gateMode ?? "enforce";
 }
 
 export async function autoInitProjectEngine(

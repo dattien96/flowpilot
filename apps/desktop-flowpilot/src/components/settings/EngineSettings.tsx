@@ -7,6 +7,7 @@ import {
   fetchGlobalEngineToolingStatus,
   fetchProjectEngineStatus,
   initProjectEngine,
+  saveProjectEngineGateMode,
   summarizeProjectEngineInit,
   type GlobalEngineToolingStatus,
   type ProjectEngineStatus,
@@ -42,6 +43,9 @@ export function EngineSettings(): React.ReactElement {
   const [selectedBindingPath, setSelectedBindingPath] = useState("");
   const [toolingStatus, setToolingStatus] = useState<GlobalEngineToolingStatus | null>(null);
   const [projectStatus, setProjectStatus] = useState<ProjectEngineStatus | null>(null);
+  const [gateMode, setGateMode] = useState<string>("enforce");
+  const [gateModeLocal, setGateModeLocal] = useState<string>("enforce");
+  const [gateModeSaving, setGateModeSaving] = useState(false);
 
   const selectedEntry = useMemo(
     () => selectedProjectEntry(entries, selectedProjectId),
@@ -112,6 +116,8 @@ export function EngineSettings(): React.ReactElement {
         const status = await fetchProjectEngineStatus(selectedProjectId, selectedBindingPath, selectedEntry?.project.platform);
         if (active) {
           setProjectStatus(status);
+          setGateMode(status.gateMode);
+          setGateModeLocal(status.gateMode);
         }
       } catch (error) {
         if (active) {
@@ -142,6 +148,8 @@ export function EngineSettings(): React.ReactElement {
     try {
       const status = await fetchProjectEngineStatus(selectedProjectId, selectedBindingPath, selectedEntry?.project.platform);
       setProjectStatus(status);
+      setGateMode(status.gateMode);
+      setGateModeLocal(status.gateMode);
       setMessage("Project engine status refreshed.");
     } catch (error) {
       setMessage(toErrorMessage(error, "Unable to refresh project engine status."));
@@ -162,6 +170,22 @@ export function EngineSettings(): React.ReactElement {
       setMessage(toErrorMessage(error, "Unable to initialize the selected project engine."));
     } finally {
       setProjectBusyAction(null);
+    }
+  };
+
+  const saveGateMode = async () => {
+    if (!selectedProjectId || !selectedBindingPath) return;
+    setGateModeSaving(true);
+    setMessage(null);
+    try {
+      const saved = await saveProjectEngineGateMode(selectedProjectId, selectedBindingPath, gateModeLocal);
+      setGateMode(saved);
+      setGateModeLocal(saved);
+      setMessage(`Flow gate mode set to "${saved}".`);
+    } catch (error) {
+      setMessage(toErrorMessage(error, "Unable to save gate mode."));
+    } finally {
+      setGateModeSaving(false);
     }
   };
 
@@ -345,6 +369,103 @@ export function EngineSettings(): React.ReactElement {
           </div>
         )}
       </div>
+      <div className="settings-subpanel">
+        <div className="settings-panel-head">
+          <div>
+            <h3>Flow Gate</h3>
+            <p>
+              The gate runs after every AI turn. Enforce activates reprompt and block actions.
+              Warn logs violations without interrupting the step.
+            </p>
+          </div>
+          <div className="settings-actions" style={{ marginTop: 0 }}>
+            <button
+              className="secondary-btn"
+              disabled={!selectedProjectId || !selectedBindingPath || gateModeSaving || gateModeLocal === gateMode}
+              onClick={() => void saveGateMode()}
+              type="button"
+            >
+              {gateModeSaving ? "Saving..." : "Save"}
+            </button>
+          </div>
+        </div>
+
+        {selectedProjectId && selectedBindingPath ? (
+          <div className="settings-grid" style={{ marginBottom: 20 }}>
+            <label className="settings-field">
+              <span>Gate mode</span>
+              <select
+                value={gateModeLocal}
+                onChange={(event) => setGateModeLocal(event.target.value)}
+              >
+                <option value="enforce">Enforce (default) — reprompt + block on violations</option>
+                <option value="warn">Warn only — log violations, never block</option>
+              </select>
+            </label>
+          </div>
+        ) : (
+          <div className="settings-empty" style={{ marginTop: 16 }}>
+            Select a project binding above to configure the flow gate.
+          </div>
+        )}
+
+        <div className="settings-validation">
+          {GATE_RULES.map((rule) => (
+            <div className={`validation-row ${rule.alwaysEnforced ? "passed" : gateModeLocal === "enforce" ? "passed" : "warn"}`} key={rule.id}>
+              <span>
+                <strong>{rule.id}</strong>
+                {"  "}
+                {rule.description}
+              </span>
+              <span>
+                {rule.alwaysEnforced
+                  ? "always blocks"
+                  : gateModeLocal === "enforce"
+                    ? rule.enforceAction
+                    : "warn only"}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
     </section>
   );
 }
+
+const GATE_RULES: Array<{
+  id: string;
+  description: string;
+  enforceAction: string;
+  alwaysEnforced: boolean;
+}> = [
+  {
+    id: "r-ca",
+    description: "Code changed without a change-audit note",
+    enforceAction: "reprompt",
+    alwaysEnforced: false,
+  },
+  {
+    id: "r-bug",
+    description: "Bug fix without a BugFix doc in requirements/",
+    enforceAction: "block",
+    alwaysEnforced: false,
+  },
+  {
+    id: "r-tests",
+    description: "Task tests failing at step completion",
+    enforceAction: "block",
+    alwaysEnforced: true,
+  },
+  {
+    id: "r-reg",
+    description: "Previously-green test now fails (regression)",
+    enforceAction: "block",
+    alwaysEnforced: true,
+  },
+  {
+    id: "r-dep",
+    description: "Deleted file still referenced by callers",
+    enforceAction: "block",
+    alwaysEnforced: false,
+  },
+];

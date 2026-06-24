@@ -32,6 +32,7 @@ type EngineStatusResponse struct {
 	ProjectID        string                        `json:"projectId"`
 	WorkingDirectory string                        `json:"workingDirectory"`
 	Initialized      bool                          `json:"initialized"`
+	GateMode         string                        `json:"gateMode"`
 	Tooling          []tooling.ToolStatus          `json:"tooling"`
 	Capability       tooling.CapabilityProfile     `json:"capability"`
 	SkillPack        skillpack.PackStatus          `json:"skillPack"`
@@ -166,6 +167,7 @@ func (s *InteractiveService) buildEngineStatusResponse(
 		ProjectID:        projectID,
 		WorkingDirectory: workingDirectory,
 		Initialized:      initialized,
+		GateMode:         readGateMode(dotFlowpilotDir),
 		Tooling:          toolStatuses,
 		Capability:       tooling.ComputeCapabilityProfile(workingDirectory, toolStatuses),
 		SkillPack:        skillPackState,
@@ -250,6 +252,10 @@ func (s *InteractiveService) runEngineInit(
 		catalogErr = ledgerErr
 	}
 	steps = append(steps, buildEngineStep("featurecatalog_build", catalogErr, filepath.Join(dotFlowpilotDir, "catalog", "features.ndjson")))
+
+	// CP-35 P-4: write gate-config.json with gate_mode:"enforce" on first init.
+	// Existing user config is never overwritten.
+	writeDefaultGateConfig(dotFlowpilotDir)
 
 	// CP-35: install the post-commit git hook so new commits are visible to the
 	// oracle before the next AI turn — without waiting for a session restart.

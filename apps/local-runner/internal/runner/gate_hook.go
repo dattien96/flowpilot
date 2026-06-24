@@ -84,8 +84,8 @@ func (s *InteractiveService) runFlowGate(
 		return false
 	}
 
-	// 8. Enforce — default gate_mode is "warn" until per-project settings land.
-	result := flowgate.Enforce(violations, "warn")
+	// 8. Enforce — read gate_mode from .flowpilot/settings/gate-config.json; default warn.
+	result := flowgate.Enforce(violations, loadGateMode(dotFP))
 
 	// 9. Emit the violation event so the desktop can surface it inline.
 	s.mu.Lock()
@@ -116,4 +116,9 @@ func (s *InteractiveService) runFlowGate(
 
 	// "warn" or "approve": log only, let the turn complete normally.
 	return false
+}
+
+// loadGateMode delegates to the shared readGateMode helper (engine_gate_config.go).
+func loadGateMode(dotFP string) string {
+	return readGateMode(dotFP)
 }
