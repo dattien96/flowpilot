@@ -5292,6 +5292,8 @@ body.is-resizing-sidebar {
   display: flex;
   flex-direction: column;
   gap: 0;
+  max-width: 340px;
+  width: max-content;
   filter: drop-shadow(0 4px 16px rgba(0, 0, 0, 0.5));
 }
 
@@ -5335,6 +5337,9 @@ body.is-resizing-sidebar {
   font-size: 12px;
   line-height: 1.4;
   flex: 1;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  min-width: 0;
 }
 
 .translate-result {

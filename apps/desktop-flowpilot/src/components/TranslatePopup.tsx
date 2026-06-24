@@ -52,10 +52,7 @@ export function TranslatePopup({ containerRef }: Props): React.ReactElement | nu
 
     const onMouseDown = (e: MouseEvent) => {
       if (popoverRef.current && popoverRef.current.contains(e.target as Node)) return;
-      const sel = window.getSelection();
-      if (!sel || sel.isCollapsed) {
-        dismiss();
-      }
+      dismiss();
     };
 
     document.addEventListener("mouseup", onMouseUp);
