@@ -5283,3 +5283,105 @@ body.is-resizing-sidebar {
 .md-table tr:nth-child(even) td {
   background: rgba(255, 255, 255, 0.02);
 }
+
+/* --- Translate popup ----------------------------------------------------- */
+.translate-popover {
+  position: fixed;
+  transform: translateX(-50%);
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  filter: drop-shadow(0 4px 16px rgba(0, 0, 0, 0.5));
+}
+
+.translate-chip-btn {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-2);
+  color: var(--text);
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.translate-chip-btn:hover {
+  background: var(--bg-3);
+  border-color: rgba(76, 141, 255, 0.5);
+}
+
+.translate-loading {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-2);
+  color: var(--text-dim);
+  padding: 7px 14px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.translate-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  border: 1px solid rgba(229, 115, 107, 0.4);
+  border-radius: 8px;
+  background: var(--bg-2);
+  padding: 7px 10px;
+  max-width: 320px;
+}
+.translate-error-msg {
+  color: var(--danger, #e5736b);
+  font-size: 12px;
+  line-height: 1.4;
+  flex: 1;
+}
+
+.translate-result {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-2);
+  min-width: 220px;
+  max-width: 380px;
+  overflow: hidden;
+}
+.translate-result-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-3);
+}
+.translate-result-lang {
+  flex: 1;
+  font-size: 11px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  letter-spacing: 0.05em;
+}
+.translate-result-text {
+  padding: 9px 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+}
+
+.translate-copy-btn,
+.translate-dismiss {
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-dim);
+  padding: 2px 6px;
+  font-size: 12px;
+  cursor: pointer;
+  line-height: 1;
+}
+.translate-copy-btn:hover,
+.translate-dismiss:hover {
+  border-color: var(--border);
+  background: var(--bg-2);
+  color: var(--text);
+}

@@ -222,6 +222,7 @@ function sliceTimelineFromPrompt(timeline: TimelineItem[], visiblePromptCount: n
 }
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
+import { TranslatePopup } from "./TranslatePopup";
 
 const shortName = (path: string): string => path.split("/").pop() ?? path;
 
@@ -505,6 +506,7 @@ export function Timeline(): React.ReactElement {
   const backToMainRun = useStore((s) => s.backToMainRun);
   const focusAgentRun = useStore((s) => s.focusAgentRun);
   const endRef = useRef<HTMLDivElement>(null);
+  const timelineRef = useRef<HTMLDivElement>(null);
 
   const totalPromptCount = countPrompts(timeline);
   const [visiblePromptCount, setVisiblePromptCount] = useState(TIMELINE_PAGE_SIZE);
@@ -531,7 +533,8 @@ export function Timeline(): React.ReactElement {
   }, [timeline]);
 
   return (
-    <div className={`timeline ${activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId ? "timeline-agent-focused" : ""}`}>
+    <div ref={timelineRef} className={`timeline ${activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId ? "timeline-agent-focused" : ""}`}>
+      <TranslatePopup containerRef={timelineRef} />
       {activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId ? (
         <div className="crumb ring">
           <button type="button" className="crumb-backbtn" onClick={backToMainRun}>

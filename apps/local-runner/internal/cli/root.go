@@ -1608,6 +1608,24 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				}
 			})
 
+			mux.HandleFunc("GET /translate", func(w http.ResponseWriter, r *http.Request) {
+				q := strings.TrimSpace(r.URL.Query().Get("q"))
+				if q == "" {
+					writeHTTPError(w, http.StatusBadRequest, errors.New("q is required"))
+					return
+				}
+				result, err := instance.TranslateText(runner.TranslateRequest{
+					Q:      q,
+					Source: r.URL.Query().Get("source"),
+					Target: r.URL.Query().Get("target"),
+				})
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+				writeHTTPJSON(w, result)
+			})
+
 			// Graceful shutdown on SIGINT/SIGTERM
 			sigChan := make(chan os.Signal, 1)
 			signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
