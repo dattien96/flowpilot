@@ -717,6 +717,14 @@ head -5 my-sample-app/.claude/skills/git-commit-format/SKILL.md
 - After 2 reprompts without a CA note, no further auto-turns fire and the step stays
   blocked until the user intervenes.
 
+**What to observe (desktop — with the CP-35 UI fixes):**
+
+- An **amber ⚠ violation card** appears inline in the chat after the first turn:
+  > ⚠ Flow gate: code changed but no change-audit note found
+- The reprompt turn then renders **in-place** (no tab-switch needed) — the prior bug where
+  the UI only updated after switching chats is fixed (`consumeOrchestrationStream` now
+  applies post-turn gate events via `applyEvent`).
+
 **What to observe (secondary — browser DevTools):**
 
 Open DevTools → Network → filter for `events/stream`. In the response body look for a
@@ -725,15 +733,10 @@ newline-delimited JSON line of:
 {"type":"flow_gate_violation","error":"Flow gate: code changed but no change-audit note found","providerTurnId":"<id>"}
 ```
 
-> **Note:** The desktop UI does not yet render a violation card inline — the event is
-> emitted but the frontend has no `flow_gate_violation` handler. The blocking and reprompt
-> behaviour work end-to-end regardless of this display gap.
-
 **Verify in runner logs (optional):**
-```powershell
-# Look for the gate hook log lines in runner stdout
-# [gate] r-ca violation: code changed but no change-audit note found
-# [gate] reprompt attempt 1/2
+```
+[gate] violations=1 gateMode="enforce" hasCode=true hasCA=false
+[gate] reprompt attempt=0 stepID="chat-run-XXXX"
 ```
 
 ---
@@ -769,68 +772,124 @@ violations → `Enforce` returns `"pass"` → gate returns `false` → finalizer
 
 ---
 
-### E2E-8 — Regression oracle: break a test → step blocked
+### E2E-8 — Regression oracle: break a test → step blocked (covers BOTH r-tests AND r-reg)
 
-> `r-tests` and `r-reg` bypass `gate_mode` entirely (`isAlwaysBlock` in `enforce.go`).
-> This test works in both enforce and warn modes.
+> **Code-state finding (v1) — r-tests and r-reg are coupled.** In `gate_hook.go`,
+> `TurnResult.Tests.Failed` is populated **only** from `oracle.Regressed`. Both
+> `r-tests` (`tests_failed`) and `r-reg` (`regression_test_broke`) check the identical
+> condition in `evaluate.go` — `tr.Tests.Ran && len(tr.Tests.Failed) > 0` — so in v1
+> they **always fire together** on a regression. There is no input that trips one without
+> the other. Both are always-block (`isAlwaysBlock` in `enforce.go`), so the step blocks
+> in **any** gate mode (enforce or warn).
+
+> **⚠ Test-runner detection requirement — the flowpilot repo root will NOT work.**
+> The oracle only runs when `DetectTestCommand(workspaceCwd)` finds a runner **at the bound
+> project's root**: a root `go.mod`, a root `package.json` with a `test` script, `pytest.ini`,
+> or `pyproject.toml`. The flowpilot repo root has **neither** — `go.mod` is nested at
+> `apps/local-runner/go.mod`, and the root `package.json` has no `test` script — so
+> `DetectTestCommand` returns `""`, `CaptureBaseline` writes an empty baseline, `RunOracle`
+> early-returns, and **r-tests/r-reg can never fire**. To test these two rules you must bind
+> a project whose **root** has a detectable runner. Two options:
+>   - **(Recommended) A tiny Go sandbox** with its own root `go.mod` (Step A below).
+>   - **Bind `apps/local-runner` itself** as a separate FlowPilot project (its root has
+>     `go.mod`; `go test -v ./...` runs the real runner suite — slower, and breaking a real
+>     test dirties your working tree).
 
 > **Baseline note:** The baseline is captured lazily on the **first gate call** for a
-> project (when `.flowpilot/guard/test_baseline.json` is absent). That means the first
-> task on a fresh project captures the baseline AFTER the AI's first turn — with whatever
-> test state the code is in at that moment. To guarantee the baseline captures a clean
-> green state, complete a harmless task first (step A below).
+> project (when `.flowpilot/guard/test_baseline.json` is absent). The first task on a fresh
+> project captures the baseline AFTER that turn — with whatever test state exists then. To
+> guarantee a clean green baseline, run a harmless no-edit task first (Step B).
 
-**Steps:**
+**Step A — create a Go sandbox project (one-time):**
 
-**Step A — prime a clean baseline (one-time per test project):**
+```powershell
+mkdir C:\test-projects\gate-sandbox; cd C:\test-projects\gate-sandbox
+git init
+go mod init gatesandbox
+```
+
+Create `calc.go`:
+```go
+package main
+
+func Add(a, b int) int { return a + b }
+
+func main() {}
+```
+
+Create `calc_test.go`:
+```go
+package main
+
+import "testing"
+
+func TestAdd(t *testing.T) {
+	if Add(2, 3) != 5 {
+		t.Fatalf("Add(2,3) = %d, want 5", Add(2, 3))
+	}
+}
+```
+
+```powershell
+git add -A; git commit -m "init sandbox"
+go test -v ./...
+# --- PASS: TestAdd   ← confirm green before binding
+```
+
+Then in FlowPilot: bind `C:\test-projects\gate-sandbox` as a project and let the engine
+init (auto-creates `.flowpilot/` with `gate-config.json` = enforce).
+
+**Step B — prime a clean baseline:**
 
 1. Delete any stale baseline:
    ```powershell
-   Remove-Item "C:\test-projects\my-sample-app\.flowpilot\guard\test_baseline.json" -ErrorAction SilentlyContinue
+   Remove-Item "C:\test-projects\gate-sandbox\.flowpilot\guard\test_baseline.json" -ErrorAction SilentlyContinue
    ```
-
-2. Confirm tests pass cleanly in the project:
+2. Start a harmless task (no code changes):
+   > "Tell me what the Add function does. Do not edit any files."
+3. Let it complete, then verify the baseline captured TestAdd:
    ```powershell
-   cd C:\test-projects\my-sample-app
-   go test -v ./...
-   # All tests: --- PASS: TestXxx
-   ```
-
-3. Start a harmless workflow task (no code changes):
-   > "Tell me what the main package does. Do not edit any files."
-
-4. Let the turn complete. The gate fires, finds no code changes, and captures the baseline
-   on first call. Verify:
-   ```powershell
-   cat "C:\test-projects\my-sample-app\.flowpilot\guard\test_baseline.json"
-   # "green_tests": ["TestFoo", "TestBar", ...]  ← must be non-empty
+   cat "C:\test-projects\gate-sandbox\.flowpilot\guard\test_baseline.json"
+   # "green_tests": ["TestAdd"]            ← must be non-empty
    # "test_command": "go test -v ./..."
    ```
-   > If `green_tests` is empty, the project has no tests or they all fail — pick a different test project.
 
-**Step B — break a test:**
+**Step C — break the test (without touching the test file):**
 
-5. Start a new workflow task. Give the AI a prompt that will cause it to break an existing
-   test WITHOUT touching the test file itself — e.g.:
-   > "In main.go, change the return value of `Add(a, b int)` from `a + b` to `a - b`."
+4. Start a new task:
+   > "In calc.go, change the body of Add from `return a + b` to `return a - b`. Write a
+   > change-audit note in `change-audit/CA-<today>.md` so the CA rule is satisfied."
 
-6. Let the turn complete.
+   > (The CA note keeps r-ca quiet so the **regression** is the only blocking signal.)
 
-**What to observe:**
+5. Let the turn complete.
 
-- The step does NOT transition to `RunStatusCompleted`.
-- `runFlowGate` returns `true` → `completed = false` → `finalizer.Finalize` is not called.
-- In DevTools `events/stream`:
-  ```json
-  {"type":"flow_gate_violation","error":"Flow gate: Tests failed: TestAdd","providerTurnId":"<id>"}
-  ```
-- The gate message: `"Previously-passing tests now fail: TestAdd. Fix the code; do not change these tests."`
-- The modified test file (e.g. `add_test.go`) is **not** in the git diff — only `main.go` is.
+**What to observe (desktop — with the CP-35 UI fixes):**
 
-**Verify baseline was used:**
+- After the AI says "Done", an **amber ⚠ violation card** appears inline in the chat:
+  > ⚠ Flow gate: Tests failed: TestAdd
+- **No reprompt turn fires** (r-tests/r-reg are block, not reprompt).
+- The step does NOT finalize: server-side `runFlowGate` returns `true` →
+  `completed = false` → `finalizer.Finalize` is not called.
+
+**What to observe (runner logs):**
+```
+[gate] violations=N gateMode="enforce" hasCode=true hasCA=true
+# the regression detail line: "Previously-passing tests now fail: TestAdd. Fix the code; do not change these tests."
+```
+
+**Verify the diff is source-only:**
 ```powershell
-cat "C:\test-projects\my-sample-app\.flowpilot\guard\test_baseline.json"
-# "green_tests" includes "TestAdd"  ← confirmed it was in baseline
+cd C:\test-projects\gate-sandbox
+git status   # calc.go modified, CA note added — calc_test.go NOT touched
+```
+> If `calc_test.go` were in the diff, the oracle treats the failure as "covered by the
+> changed test file" (`isTestFromChangedFile`) and would NOT count it as a regression —
+> that is the r-tamper path (E2E-9), not the regression path.
+
+**Cleanup:**
+```powershell
+cd C:\test-projects\gate-sandbox; git checkout calc.go; Remove-Item change-audit -Recurse -Force -ErrorAction SilentlyContinue
 ```
 
 ---
@@ -843,29 +902,32 @@ cat "C:\test-projects\my-sample-app\.flowpilot\guard\test_baseline.json"
 
 **Steps:**
 
-1. Ensure the baseline exists (run Step A from E2E-8 first if needed).
+> Uses the same Go sandbox (and primed baseline) as E2E-8 — `calc.go` / `calc_test.go`.
 
-2. Start a workflow task. Give the AI a prompt that forces it to edit both a source file
-   AND a pre-existing test file — e.g.:
-   > "In `add_test.go`, change the expected value in `TestAdd` from `5` to `3` so it
-   > matches the current (broken) implementation. Also update `main.go` accordingly."
+1. Ensure the baseline exists (run E2E-8 Step A + B first if needed).
+
+2. Start a task that forces the AI to edit a **pre-existing test file** — e.g.:
+   > "In `calc_test.go`, change the expected value in `TestAdd` from `5` to `0` so it matches
+   > a new `Add` that returns `a - b`. Also update `calc.go` to `return a - b`."
 
 3. Let the turn complete.
 
-**What to observe:**
+**What to observe (desktop):**
 
-- `RunOracle` sees `add_test.go` with `Status: "M"` in the diff → `IsTestFile` → true
-  → `oracle.HasTampering = true`.
-- `gate_hook.go` appends violation: `r-tamper / "pre-existing test file modified: add_test.go"`.
-- `Enforce` treats `r-tamper` action `"warn"` → highest action across all violations is
-  `"warn"` (or `"block"` if other rules also fired) → gate emits event but does not block
-  unless another rule independently blocks.
-- **Step completes** (unless another rule independently blocked it).
-- In DevTools `events/stream`:
-  ```json
-  {"type":"flow_gate_violation","error":"Flow gate: pre-existing test file modified: add_test.go","providerTurnId":"<id>"}
-  ```
-- `git status` shows both `main.go` and `add_test.go` modified.
+- An **amber ⚠ violation card** appears inline:
+  > ⚠ Flow gate: pre-existing test file modified: calc_test.go
+- **Step still completes** — r-tamper is hardcoded `action: "warn"` and never blocks (unless
+  another rule independently blocks the same turn).
+
+**What to observe (mechanics):**
+
+- `RunOracle` sees `calc_test.go` with `Status: "M"` → `IsTestFile` → true →
+  `oracle.HasTampering = true`.
+- `gate_hook.go` appends violation: `r-tamper / "pre-existing test file modified: calc_test.go"`.
+- Because the failing test now lives in a **changed** test file, `isTestFromChangedFile`
+  excludes it from `oracle.Regressed` → r-tests/r-reg do **not** fire on it → only the warn
+  tamper violation surfaces.
+- `git status` shows both `calc.go` and `calc_test.go` modified.
 
 > To make tampering block in a future iteration: change the `r-tamper` rule's `Action`
 > from `"warn"` to `"block"` in `gate_hook.go` (or expose it as a configurable rule).
@@ -920,6 +982,107 @@ cat "C:\test-projects\my-sample-app\.flowpilot\manifest.json" | python -m json.t
 
 ---
 
+### E2E-11 — Flow Gate: bug fix without a BUG doc → block (r-bug)
+
+> **Code-state finding:** `r-bug` (`bug_fixed`, action `block`) fires in `evaluate.go` when
+> the AI's **final message** contains `"fixed bug"` or `"bug fix"` (case-insensitive) — or
+> `tr.ChangeType == "bugfix"`, which is never set in v1 — **AND** `HasBugFixDoc(diff)` is
+> false. `HasBugFixDoc` returns true if any changed file path contains
+> `requirements/09-BugFix` **or** the substring `BUG-`. So a turn the AI describes as a bug
+> fix, that does not add/modify a `BUG-…` file, trips the rule.
+> `r-bug` is **not** always-block → it blocks in **enforce** mode and downgrades to **warn**
+> in warn mode. No test runner required — this works on the flowpilot repo directly.
+
+**Steps (run on the flowpilot repo; default enforce mode):**
+
+1. Confirm the Engine tab Flow Gate dropdown reads **"Enforce (default)"**.
+
+2. Start a task with a prompt that (a) makes a real edit, (b) satisfies r-ca with a CA note
+   so the **only** blocking signal is r-bug, (c) is framed as a bug fix, and (d) does **not**
+   create a `BUG-…` doc — e.g.:
+   > "There's a small bug: the helper comment at the top of `apps/admin-web/src/app/page.tsx`
+   > is misleading. Fix it. Write a change-audit note in `change-audit/CA-<today>.md`. In your
+   > final summary, explicitly state that this was a **bug fix**. Do NOT create any BUG document."
+
+3. Let the turn complete.
+
+**What to observe (desktop):**
+
+- An **amber ⚠ violation card** appears inline:
+  > ⚠ Flow gate: bug fix detected but no bugfix doc found
+- **No reprompt turn** (r-bug is block). The step does not finalize.
+
+**What to observe (runner logs):**
+```
+[gate] violations=1 gateMode="enforce" hasCode=true hasCA=true
+```
+> If you also omit the CA note, `violations=2` and the message concatenates both r-ca and
+> r-bug details; `block` (r-bug) still wins over `reprompt` (r-ca), so the turn blocks.
+
+**Confirm the pass case:** repeat with the prompt additionally asking for a
+`requirements/09-BugFix/BUG-<n>-fix-page-comment.md` doc (or any file with `BUG-` in its
+path). `HasBugFixDoc` → true → r-bug does not fire → step completes.
+
+**Cleanup:**
+```powershell
+cd C:\working\flowpilot; git checkout apps/admin-web/src/app/page.tsx; Remove-Item change-audit/CA-*.md -ErrorAction SilentlyContinue
+```
+
+---
+
+### E2E-12 — Flow Gate: delete a `.go` file → block (r-dep)
+
+> **Code-state finding:** `r-dep` (`removed_referenced_code`, action `block`) fires in
+> `evaluate.go` when **any** changed file has `Status == "D"` and a `.go` extension. ⚠ Note
+> the v1 check is **purely path/status based** — despite the rule name and
+> `required_output: confirm_or_update_callers`, it does **not** actually inspect callers or
+> the structure graph. Any deleted `.go` file trips it. `r-dep` is **not** always-block →
+> blocks in **enforce**, downgrades to **warn** in warn mode. No test runner required.
+
+**Steps (run on the flowpilot repo; default enforce mode):**
+
+1. Create a throwaway Go file so the test is safe and self-contained:
+   ```powershell
+   cd C:\working\flowpilot
+   Set-Content apps\local-runner\internal\flowgate\scratch_dep.go @'
+   package flowgate
+
+   // ScratchDep exists only for E2E-12 (r-dep). Safe to delete.
+   func ScratchDep() string { return "scratch" }
+   '@ -Encoding utf8
+   git add apps/local-runner/internal/flowgate/scratch_dep.go; git commit -m "[Test][context-regression-engine] add scratch file for r-dep E2E"
+   ```
+
+2. Start a task:
+   > "Delete the file `apps/local-runner/internal/flowgate/scratch_dep.go`. It is no longer needed."
+
+3. Let the turn complete.
+
+**What to observe (desktop):**
+
+- An **amber ⚠ violation card** appears inline:
+  > ⚠ Flow gate: Removed: apps/local-runner/internal/flowgate/scratch_dep.go
+- **No reprompt turn** (r-dep is block). The step does not finalize.
+
+**What to observe (runner logs):**
+```
+[gate] cwd="C:\working\flowpilot" baseSHA="…" diffLen=N diff=[… {Path:apps/local-runner/internal/flowgate/scratch_dep.go Status:D} …]
+[gate] violations=1 gateMode="enforce" …
+```
+> `ObserveGitDiffSince` reports the deletion whether the AI committed it (`git diff
+> baseSHA..HEAD`) or left it staged/unstaged (`git status --porcelain`).
+
+**Warn-mode variant:** switch the Flow Gate dropdown to **Warn only**, Save, and repeat.
+The same amber card appears but the step is allowed to finalize (action downgraded to warn).
+
+**Cleanup:**
+```powershell
+cd C:\working\flowpilot; git checkout apps/local-runner/internal/flowgate/scratch_dep.go 2>$null; Remove-Item apps\local-runner\internal\flowgate\scratch_dep.go -ErrorAction SilentlyContinue
+# if you committed step 1, also: git reset --soft HEAD~1 (to drop the scratch commit)
+```
+
+---
+
 ### E2E summary
 
 | Test | Status | Gate mode needed | Notes |
@@ -929,8 +1092,10 @@ cat "C:\test-projects\my-sample-app\.flowpilot\manifest.json" | python -m json.t
 | E2E-3 Feature history from real git log | ✅ | any | — |
 | E2E-4 NL resolves to feature key | ✅ | any | — |
 | E2E-5 Skill pack auto-installed | ✅ | any | — |
-| E2E-6 Gate reprompts on missing CA note | ✅ | **enforce** (default) | Violation visible in DevTools only — no desktop card yet |
+| E2E-6 Gate reprompts on missing CA note (r-ca) | ✅ | **enforce** (default) | Amber ⚠ card + auto reprompt turn, renders in-place |
 | E2E-7 Gate passes when CA note present | ✅ | enforce or warn | Step completes normally |
-| E2E-8 Regression oracle blocks step | ✅ | any (always blocks) | Prime baseline first with a harmless task |
-| E2E-9 Oracle flags test tampering | ✅ | any (always warn) | Step completes; violation in DevTools only |
+| E2E-8 Regression oracle blocks step (r-tests **and** r-reg) | ⏳ | any (always blocks) | **Coupled in v1** — fire together. Needs a project with a root test runner; flowpilot-root won't (go.mod nested). Use Go sandbox. |
+| E2E-9 Oracle flags test tampering (r-tamper) | ✅ | any (always warn) | Amber ⚠ card; step still completes (warn-only) |
 | E2E-10 Shared files sync to Drive | ✅ | any | Requires Drive connected to project |
+| E2E-11 Bug fix without BUG doc blocks (r-bug) | ⏳ | **enforce** (warn downgrades) | Triggered by "bug fix"/"fixed bug" in final message + no `BUG-`/`09-BugFix` file. Works on flowpilot-root. |
+| E2E-12 Delete a `.go` file blocks (r-dep) | ⏳ | **enforce** (warn downgrades) | v1 fires on ANY deleted `.go` (does not actually check callers). Works on flowpilot-root. |
