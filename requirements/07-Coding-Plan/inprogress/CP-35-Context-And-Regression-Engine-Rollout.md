@@ -9,7 +9,7 @@
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-23`
-- Last Updated: `2026-06-23`
+- Last Updated: `2026-06-24`
 - Parent Documents: [SD-17: Context And Regression Engine](../../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md), [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md)
 - Child Documents: [Task-096: Commit-History Ledger](../../08-Task/todo/Task-096-Commit-History-Ledger.md) (P-1), [Task-097: Feature Catalog And Resolver](../../08-Task/todo/Task-097-Feature-Catalog-And-Resolver.md) (P-2), [Task-098: GitNexus Structure Provider](../../08-Task/todo/Task-098-GitNexus-Structure-Provider.md) (P-3), [Task-099: Post-Step Flow Gate](../../08-Task/todo/Task-099-Post-Step-Flow-Gate.md) (P-4), [Task-100: Regression Suite And Oracle Rule](../../08-Task/todo/Task-100-Regression-Suite-And-Oracle-Rule.md) (P-5), [Task-101: Flow Skill Pack Install](../../08-Task/todo/Task-101-Flow-Skill-Pack-Install.md) (P-6), [Task-102: Tooling Check And Capability Profile](../../08-Task/todo/Task-102-Tooling-Check-And-Capability-Profile.md) (P-7), [Task-103: Engine Local Store And Drive Sync](../../08-Task/todo/Task-103-Engine-Local-Store-And-Drive-Sync.md) (P-8)
 - Related Documents: [CP-10: Integrations, Memory & Context Intelligence](./CP-10-Integrations-Hardening.md), [CP-34: Init Tool](../done/CP-34-Init-tool.md), [CP-31: Auto-Document Process](../done/CP-31-Auto-Document-Process.md), [CP-32: UnitTest Rule](../done/CP-32-UnitTest-Rule.md), [CP-23: Context Control & Wrong-Way Detection](../todo/CP-23-Auto-Learn-To-Skill.md), [SD-10: Context Resolver & RAG](../../06-System-Tech-Design/SD-10-Context-Resolver-RAG.md)
@@ -1168,6 +1168,31 @@ Run the same scenario but bind a freshly-scaffolded project where `requirements/
 - AI edits the change-audit note instead of creating the Task doc
 - Reprompt omits the path `requirements/08-Task/done/Task-<NNN>.md`
 
+---
+
+### E2E-15 — Declared Task mode survives a simple follow-up prompt
+
+> **Task-114 coverage:** this checks the stored `ChangeType` path, not the old final-message regex path. The prompt can be plain text like "continue" or "please keep going" with no `Task-` / `Bug-` mention, because the chat start UI already declared the run as Task or Bug before the first turn.
+
+**Steps (run on the flowpilot repo or gate-sandbox; default enforce mode):**
+
+1. Start a new chat and select **Task** in the chat start intent UI.
+2. Leave the ID blank or enter a normal Task ID such as `Task-114`.
+3. Send a simple follow-up prompt like:
+   > "continue"
+4. Let the assistant respond without repeating `Task-` or `Bug-` in its final message.
+
+**What to observe:**
+
+- The runner still stamps the run with the declared Task intent from the first turn.
+- The gate uses that saved intent, so r-task can fire even though the follow-up prompt and final assistant message are plain text.
+- The reprompt instructions still point the AI to `requirements/08-Task/done/Task-<NNN>.md` and `requirements/08-Task/FORMAT-REFERENCE-TASK.md`.
+
+**What must NOT happen:**
+- The gate waits forever because the final assistant message does not contain `Task-`
+- The Task/Bug declaration is lost after the first turn
+- The runner falls back to the regex-only path for a declared chat
+
 ### E2E summary
 
 | Test | Status | Gate mode needed | Notes |
@@ -1186,3 +1211,4 @@ Run the same scenario but bind a freshly-scaffolded project where `requirements/
 | E2E-12 Delete a `.go` file blocks (r-dep) | ⏳ | **enforce** (warn downgrades) | v1 fires on ANY deleted `.go` (does not actually check callers). Works on flowpilot-root. |
 | E2E-13 Both CA + BUG missing → single combined reprompt (r-ca + r-bug) | ⏳ | **enforce** | Prompt must explicitly prohibit BOTH files. Gate fires with both details in one card; one combined reprompt lists both required artifacts. |
 | E2E-14 Task reference without Task doc reprompts (r-task) | ⏳ | **enforce** (warn downgrades) | AI final message contains `Task-NNN`; no `requirements/08-Task/done/Task-NNN-*.md` in diff → gate fires r-task reprompt with file-creation instructions. FORMAT-REFERENCE-TASK.md must NOT satisfy the predicate. |
+| E2E-15 Declared Task mode survives plain follow-up prompt | ⏳ | **enforce** (warn downgrades) | Covers Task-114: the run keeps its stored Task/Bug intent even when the next prompt and final assistant message do not mention `Task-` or `Bug-`. |

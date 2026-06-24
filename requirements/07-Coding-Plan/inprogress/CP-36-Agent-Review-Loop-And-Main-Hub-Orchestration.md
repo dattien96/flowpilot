@@ -280,16 +280,14 @@ Task-089 -> 095
 - **tests to add:**
   - Go unit: `parseReviewOutcomeInput`; `submitReviewOutcome` transitions (approved/changes_requested/blocked, cap boundary, override); consolidated cohort note (out-of-order, failed reviewer); `maybeAutoReinvokeOrchestrator` guards + single-flight + Stop-cancels; explicit-mode gate (no double coder restart).
   - Go contract: `tools/list` advertises `submit_review_outcome` (Claude + Codex, start + resume); `POST .../review-outcome` and `POST .../agent-loop/extend-cap` round-trips; additive `AgentLoopState` JSON serialization.
-  - E2E: declared Task/Bug mode persists across turns, so a simple follow-up prompt like "please continue" still triggers the explicit-mode gate even when the last assistant message does not mention `Task-` or `Bug-`; this covers the stored `changeType` path instead of only the regex path.
   - Frontend: board renders N reviewers, round/cap, open-issue count, `blocked` + extend-cap control; store `submitReviewOutcome`/`extendRoundCap`; SSE snapshot updates; single-agent fallback.
 - **manual checks (desktop):**
   1. YOLO on. Prompt the main agent: *"Use the agent-review-loop skill: have a coder add input validation to X, then 2 reviewers (correctness + security) review until no issues, max 3 rounds."*
   2. Verify: coder runs → 2 reviewers run in parallel (Agents panel) → board shows round 1, both reviewer nodes → consolidated note triggers a synthesis turn (no user typing) → `submit_review_outcome` posts a verdict → on changes_requested the coder restarts with the merged feedback → loop continues.
   3. Force a conflict (one reviewer says "add handling", one says "unreachable") and confirm the synthesis turn resolves it into ONE issue list, not two contradictory restarts.
-  4. Start a declared Task/Bug chat and send a plain follow-up like "continue" or "fix it" without any `Task-` / `Bug-` text; confirm the explicit-mode gate still runs from the stored run intent rather than from the final-message regex.
-  5. Drive to the cap with open issues → board shows `blocked` + Extend cap; the agent calls `ask_user`; choosing "Extend cap by 2" resumes the loop.
-  6. Press Stop mid-loop → no further reinvocation; main run idle.
-  7. Restart the server mid-loop → resume keeps `autoOrchestrate`/round and continues.
+  4. Drive to the cap with open issues → board shows `blocked` + Extend cap; the agent calls `ask_user`; choosing "Extend cap by 2" resumes the loop.
+  5. Press Stop mid-loop → no further reinvocation; main run idle.
+  6. Restart the server mid-loop → resume keeps `autoOrchestrate`/round and continues.
 - **failure cases:** a reviewer fails mid-turn (note records `failed`, synthesis proceeds with remaining); orchestrator submits an invalid status (tool returns error, no state change); auto-reinvoke attempted while a turn is in flight (suppressed); cap=0 / override to 0 (treated as default 3); a non-loop normal chat never auto-reinvokes.
 
 ## 8. Rollout and Fallback
