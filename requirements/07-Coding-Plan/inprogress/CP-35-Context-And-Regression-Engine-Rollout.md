@@ -1193,6 +1193,31 @@ Run the same scenario but bind a freshly-scaffolded project where `requirements/
 - The Task/Bug declaration is lost after the first turn
 - The runner falls back to the regex-only path for a declared chat
 
+---
+
+### E2E-16 — Declared Bug mode survives a simple follow-up prompt
+
+> **Task-114 coverage:** this is the Bug-side mirror of E2E-15. It proves the stored `ChangeType` path works for Bug chats too, even when the next prompt is just "continue" and the final assistant message does not mention `Task-` or `Bug-`.
+
+**Steps (run on the flowpilot repo or gate-sandbox; default enforce mode):**
+
+1. Start a new chat and select **Bug** in the chat start intent UI.
+2. Leave the ID blank or enter a normal Bug ID such as `BUG-141`.
+3. Send a simple follow-up prompt like:
+   > "continue"
+4. Let the assistant respond without repeating `Task-` or `Bug-` in its final message.
+
+**What to observe:**
+
+- The runner still stamps the run with the declared Bug intent from the first turn.
+- The gate uses that saved intent, so r-bug can fire even though the follow-up prompt and final assistant message are plain text.
+- The reprompt instructions still point the AI to `requirements/09-BugFix/done/BUG-<NNN>.md` and `requirements/09-BugFix/FORMAT-REFERENCE-BUGFIX.md`.
+
+**What must NOT happen:**
+- The gate waits forever because the final assistant message does not contain `Bug-`
+- The Bug declaration is lost after the first turn
+- The runner falls back to the regex-only path for a declared chat
+
 ### E2E summary
 
 | Test | Status | Gate mode needed | Notes |
@@ -1212,3 +1237,4 @@ Run the same scenario but bind a freshly-scaffolded project where `requirements/
 | E2E-13 Both CA + BUG missing → single combined reprompt (r-ca + r-bug) | ⏳ | **enforce** | Prompt must explicitly prohibit BOTH files. Gate fires with both details in one card; one combined reprompt lists both required artifacts. |
 | E2E-14 Task reference without Task doc reprompts (r-task) | ⏳ | **enforce** (warn downgrades) | AI final message contains `Task-NNN`; no `requirements/08-Task/done/Task-NNN-*.md` in diff → gate fires r-task reprompt with file-creation instructions. FORMAT-REFERENCE-TASK.md must NOT satisfy the predicate. |
 | E2E-15 Declared Task mode survives plain follow-up prompt | ⏳ | **enforce** (warn downgrades) | Covers Task-114: the run keeps its stored Task/Bug intent even when the next prompt and final assistant message do not mention `Task-` or `Bug-`. |
+| E2E-16 Declared Bug mode survives plain follow-up prompt | ⏳ | **enforce** (warn downgrades) | Bug-side mirror of E2E-15: the run keeps its stored Bug intent even when the next prompt and final assistant message do not mention `Task-` or `Bug-`. |
