@@ -9,7 +9,7 @@ import (
 
 const (
 	translateAPIKeySecret   = "translate:libre:api-key"
-	translateDefaultBaseURL = "https://libretranslate.com"
+	translateDefaultBaseURL = "http://localhost:5000"
 	translateConfigFileName = "translate-config.json"
 )
 
