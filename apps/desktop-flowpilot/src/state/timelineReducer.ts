@@ -17,7 +17,7 @@ export type TimelineItem =
   | { kind: "file"; id: string; path: string; changeType?: string }
   | { kind: "approval"; id: string; approvalId: string; details: ApprovalDetails; decision?: string }
   | { kind: "question"; id: string; questionId: string; prompt: string; options: QuestionOption[]; multiSelect?: boolean; answer?: string | string[] }
-  | { kind: "system"; id: string; text: string; tone: "info" | "error" };
+  | { kind: "system"; id: string; text: string; tone: "info" | "error" | "warn" };
 
 export interface PendingApproval {
   approvalId: string;
@@ -290,6 +290,16 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
       // Idempotent — replay from seq 0 must not duplicate the row. (BUG-121)
       if (!timeline.some((it) => it.kind === "system" && it.id === e.id)) {
         timeline.push({ kind: "system", id: e.id, text: `**[${e.agentName}]** ${e.finalMessage}`, tone: "info" });
+      }
+      shouldKeepThinking = thinkingItem !== undefined;
+      break;
+
+    case "flow_gate_violation":
+      // CP-35: the gate fired. For a reprompt rule a turn_started follows; for a
+      // block rule this card is the only signal. Render it and never spawn a
+      // thinking row, so block rules don't leave a dangling "Thinking..." line.
+      if (!timeline.some((it) => it.kind === "system" && it.id === e.id)) {
+        timeline.push({ kind: "system", id: e.id, text: `⚠ ${e.error}`, tone: "warn" });
       }
       shouldKeepThinking = thinkingItem !== undefined;
       break;

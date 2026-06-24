@@ -2482,6 +2482,10 @@ input {
 .system-line.error {
   color: var(--err);
 }
+.system-line.warn {
+  color: var(--warn, #d9920a);
+  font-weight: 600;
+}
 
 .agent-rail {
   gap: 12px;
