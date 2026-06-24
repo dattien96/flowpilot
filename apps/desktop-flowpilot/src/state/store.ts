@@ -42,6 +42,8 @@ import {
 
 export type { TimelineItem } from "./timelineReducer";
 
+const LAST_PROJECT_KEY = "fp:lastProjectId";
+
 let loadProjectsInFlight: Promise<void> | null = null;
 let activeHistoryReplayController: AbortController | undefined;
 let activeOrchestrationStreamController: AbortController | undefined;
@@ -155,6 +157,10 @@ interface AppState {
   /** A hard-blocking flow-gate violation (e.g. failed tests) the user must acknowledge.
    *  Set only for action === "block"; surfaced as a modal. (CP-35) */
   gateBlock?: { message: string };
+  /** Run IDs that received a live gate block. Persists across chat switches so Navigator
+   *  can suppress the "Running" spinner for a blocked-but-inactive chat whose server
+   *  status hasn't settled to idle yet. Cleared per-run when turn_started fires. (CP-35) */
+  _gateBlockedRunIds: Record<string, boolean>;
   lastTurnInput?: TurnInput;
   latestTokenUsage?: TokenUsageSnapshot;
   recoverable: boolean;
@@ -277,6 +283,7 @@ export const useStore = create<AppState>((set, get) => ({
   _agentRunsLoadSeq: 0,
   _runSnapshots: {},
   _runReplaySeq: {},
+  _gateBlockedRunIds: {},
   _streamRunSeq: 0,
   _orchestrationStreamSeq: 0,
   agentSpawnGuideAgentName: undefined,
@@ -312,6 +319,11 @@ export const useStore = create<AppState>((set, get) => ({
       try {
         const projects = await withRetry(() => client.listProjects());
         set((s) => ({ projects, ...(s.runId ? {} : { status: "idle" }) }));
+        if (!get().selectedProjectId && projects.length > 0) {
+          const saved = localStorage.getItem(LAST_PROJECT_KEY);
+          const match = saved ? projects.find((p) => p.id === saved) : undefined;
+          void get().selectProject((match ?? projects[0]).id);
+        }
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error("[FlowPilot] listProjects failed:", err);
@@ -550,6 +562,7 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   async selectProject(projectId) {
+    localStorage.setItem(LAST_PROJECT_KEY, projectId);
     set({
       selectedProjectId: projectId,
       selectedWorkflowId: undefined,
@@ -1555,6 +1568,14 @@ async function consumeOrchestrationStream(
       // CP-35: gate reprompt events (turn_started, message_delta, turn_completed, etc.)
       // arrive after sendTurn() has already closed on turn_completed. Apply them via
       // applyEvent so the timeline shows the reprompt turn without a tab-switch.
+      //
+      // Dynamic watermark: skip events already covered by the concurrent history replay
+      // stream (_runReplaySeq tracks its progress as it goes). Without this guard, when
+      // openHistoryRun triggers both a replay stream and this orchestration stream from
+      // seq 0, the orchestration stream re-processes flow_gate_violation after
+      // _historyReplaying turns false — re-popping the block modal on every chat open.
+      // (CP-35 BUG-138)
+      if (e.seq <= (get()._runReplaySeq[runId] ?? afterSeq)) continue;
       set((s) => applyEvent(s, e));
     }
   }
@@ -1662,11 +1683,26 @@ function applyEvent(s: AppState, e: ProviderEventDTO): Partial<AppState> {
     // A hard block (failed/regressed tests) stops the work — unlike r-ca/r-bug which
     // auto-reprompt. Surface it as a modal the user must acknowledge. Suppressed during
     // history replay so opening an old chat doesn't re-pop the modal. (CP-35)
-    return { ...next, gateBlock: { message: e.error }, _runReplaySeq: nextReplaySeq };
+    // Also record the run ID so Navigator can suppress the "Running" spinner while this
+    // chat is inactive (polled runHistory still shows "running" until the user re-prompts).
+    return {
+      ...next,
+      gateBlock: { message: e.error },
+      _gateBlockedRunIds: { ...s._gateBlockedRunIds, [e.workflowRunId]: true },
+      _runReplaySeq: nextReplaySeq,
+    };
   }
   if (e.type === "turn_started") {
-    // A fresh turn (incl. a gate reprompt) clears any prior block modal.
-    return { ...next, latestTokenUsage: undefined, gateBlock: undefined, _runReplaySeq: nextReplaySeq };
+    // A fresh turn (incl. a gate reprompt) clears any prior block modal and removes the
+    // run from the gate-blocked set (the user re-prompted, so the run is running again).
+    const { [e.workflowRunId]: _cleared, ...remainingGateBlockedRunIds } = s._gateBlockedRunIds;
+    return {
+      ...next,
+      latestTokenUsage: undefined,
+      gateBlock: undefined,
+      _gateBlockedRunIds: remainingGateBlockedRunIds,
+      _runReplaySeq: nextReplaySeq,
+    };
   }
   if (e.type === "token_usage_updated") {
     return { ...next, latestTokenUsage: e.tokenUsage, _runReplaySeq: nextReplaySeq };

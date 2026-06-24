@@ -999,7 +999,7 @@ cat "C:\test-projects\my-sample-app\.flowpilot\manifest.json" | python -m json.t
 2. Start a task with a prompt that (a) makes a real edit, (b) satisfies r-ca with a CA note
    so the **only** blocking signal is r-bug, (c) is framed as a bug fix, and (d) does **not**
    create a `BUG-…` doc — e.g.:
-   > "There's a small bug: the helper comment at the top of `apps/admin-web/src/app/page.tsx`
+   > "There's a small bug: the helper comment at the top of `calc.go`
    > is misleading. Fix it. Write a change-audit note in `change-audit/CA-<today>.md`. In your
    > final summary, explicitly state that this was a **bug fix**. Do NOT create any BUG document."
 

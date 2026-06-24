@@ -35,7 +35,7 @@
 
 - `D-1` Each rule is a pure function of one `TurnResult` (final message, git diff, test outcome); rules never call providers and never mutate the repo.
 - `D-2` `r-tests` and `r-reg` are always-block regardless of `gate_mode`; `r-ca`, `r-bug`, `r-dep` honor `gate_mode` (enforce → their declared action; warn → downgraded to `warn`).
-- `D-3` `r-ca` and `r-bug` are **auto-remediable**: on violation the gate reprompts the AI (≤2 attempts) with the missing requirement. `r-tests`/`r-reg` are **not** auto-remediable — they are a hard stop surfaced to the user as a modal.
+- `D-3` `r-ca` and `r-bug` are **auto-remediable**: on violation the gate reprompts the AI (≤2 attempts) with the missing requirement. `r-tests`/`r-reg` are **not** auto-remediable — they are a hard stop surfaced to the user as a modal. (`r-bug` was initially declared `block`; corrected to `reprompt` — BUG-139.)
 - `D-4` The test baseline is captured once, **before** the first turn executes, and reused for the session; the gate only ever *loads* it.
 - `D-5` `r-tests`/`r-reg` coupling is accepted for v1; the emitted message is deduped so the user sees one line, not two.
 - `D-6` Running the full suite per turn is the v1 regression mechanism; its cost is a known trade-off recorded here for a later pass (scoped/affected-tests-only, caching, or opt-in).
@@ -109,8 +109,8 @@ All triggers are evaluated in `checkRule` (`evaluate.go`). Signals come from `ob
 | Trigger | `bug_fixed` |
 | Fires when | `isBugFix && !HasBugFixDoc(diff)` |
 | Required output | a file under `requirements/09-BugFix/` or containing `BUG-` in its path |
-| Action | `block` |
-| `gate_mode` | enforce → block; warn → downgraded to `warn` |
+| Action | `reprompt` (auto-remediated, ≤2 attempts) |
+| `gate_mode` | enforce → reprompt; warn → downgraded to `warn` |
 
 - **`isBugFix`**: `ChangeType == "bugfix"` **or** the AI's final message contains `"fixed bug"` / `"bug fix"` (case-insensitive).
 - v1 relies on the final-message heuristic; `ChangeType` is reserved for a future explicit signal.

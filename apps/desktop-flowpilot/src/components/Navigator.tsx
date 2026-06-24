@@ -3,7 +3,6 @@ import { useStore } from "@/state/store";
 import type { RunHistoryItem } from "@/types/contract";
 import { filterVisibleHistory, isAgentHistoryItem, isProjectSyncing } from "@/components/navigatorHistory";
 
-const PROJECT_LIMIT = 3;
 const HISTORY_LIMIT = 5;
 const REMOTE_CHATS_LIMIT = 4;
 
@@ -98,10 +97,6 @@ function sortByRecent(items: RunHistoryItem[]): RunHistoryItem[] {
   });
 }
 
-function projectLabel(projectId: string, projects: { id: string; name: string; path: string }[]): string {
-  return projects.find((project) => project.id === projectId)?.name ?? projectId;
-}
-
 export function Navigator(): React.ReactElement {
   const projects = useStore((s) => s.projects);
   const selectedProjectId = useStore((s) => s.selectedProjectId);
@@ -123,16 +118,15 @@ export function Navigator(): React.ReactElement {
   const deleteHistoryRun = useStore((s) => s.deleteHistoryRun);
   const restoreRemoteChatSession = useStore((s) => s.restoreRemoteChatSession);
   const visibleRunHistory = useMemo(() => filterVisibleHistory(runHistory), [runHistory]);
+  const gateBlockedRunIds = useStore((s) => s._gateBlockedRunIds);
 
   const runIdRef = useRef(runId);
   runIdRef.current = runId;
   const prevHistoryRef = useRef<Map<string, RunHistoryItem["status"]>>(new Map());
 
-  const [showAllProjects, setShowAllProjects] = useState(false);
   const [newlyCompleted, setNewlyCompleted] = useState<Set<string>>(new Set());
   const [recentProjectIds, setRecentProjectIds] = useState<string[]>([]);
   const [projectHistoryById, setProjectHistoryById] = useState<Record<string, RunHistoryItem[]>>({});
-  const [openProjectIds, setOpenProjectIds] = useState<Record<string, boolean>>({});
   const [expandedHistoryIds, setExpandedHistoryIds] = useState<Set<string>>(new Set());
   const [selectionModeProjectId, setSelectionModeProjectId] = useState<string | null>(null);
   const [selectedRunIds, setSelectedRunIds] = useState<Set<string>>(new Set());
@@ -275,9 +269,6 @@ export function Navigator(): React.ReactElement {
       ...current,
       [selectedProjectId]: sortByRecent(visibleRunHistory),
     }));
-    if (visibleRunHistory.length > 0) {
-      setOpenProjectIds((current) => (current[selectedProjectId] ? current : { ...current, [selectedProjectId]: true }));
-    }
   }, [historyLoading, selectedProjectId, visibleRunHistory]);
 
   useEffect(() => {
@@ -303,23 +294,11 @@ export function Navigator(): React.ReactElement {
       .filter((project): project is (typeof projects)[number] => Boolean(project));
   }, [projects, recentProjectIds]);
 
-  const visibleProjects = showAllProjects ? orderedProjects : orderedProjects.slice(0, PROJECT_LIMIT);
-  const canShowMoreProjects = orderedProjects.length > PROJECT_LIMIT;
-
-  const historyGroups = useMemo(() => {
-    return Object.entries(projectHistoryById)
-      .map(([projectId, history]) => ({ projectId, history }))
-      .filter((group) => group.history.length > 0)
-      .sort((a, b) => {
-        const aTime = new Date(a.history[0]?.updatedAt ?? 0).getTime();
-        const bTime = new Date(b.history[0]?.updatedAt ?? 0).getTime();
-        return bTime - aTime;
-      });
-  }, [projectHistoryById]);
-
-  const toggleProjectHistory = (projectId: string) => {
-    setOpenProjectIds((current) => ({ ...current, [projectId]: !current[projectId] }));
-  };
+  const activeHistory = selectedProjectId ? (projectHistoryById[selectedProjectId] ?? []) : [];
+  const showAllHistory = expandedHistoryIds.has(selectedProjectId ?? "");
+  const visibleHistory = showAllHistory ? activeHistory : activeHistory.slice(0, HISTORY_LIMIT);
+  const unsyncedCount = activeHistory.filter(isUnsyncedChat).length;
+  const projectSyncing = isProjectSyncing(activeHistory, selectedProjectId ?? "");
 
   const toggleShowAllHistory = (projectId: string) => {
     setExpandedHistoryIds((current) => {
@@ -341,47 +320,34 @@ export function Navigator(): React.ReactElement {
     <div className="navigator project-rail">
       <section className="project-rail-section">
         <div className="project-rail-head">
-          <div>
-            <label>Projects</label>
-            <p>Recent workspaces first, with the active project highlighted.</p>
+          <label className="project-rail-head-label">
+            Active Project
+            <span className="project-count-badge-inline">{projects.length}</span>
+          </label>
+        </div>
+
+        {orderedProjects.length === 0 ? (
+          <div className="project-rail-empty">No projects loaded yet.</div>
+        ) : (
+          <div className="project-selector">
+            <select
+              className="project-selector-select"
+              value={selectedProjectId ?? ""}
+              onChange={(e) => selectProjectAndTrack(e.target.value)}
+              aria-label="Active project"
+            >
+              {orderedProjects.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.name}
+                </option>
+              ))}
+            </select>
+            {selectedProjectId && (
+              <span className="project-selector-path">
+                {orderedProjects.find((p) => p.id === selectedProjectId)?.path}
+              </span>
+            )}
           </div>
-          <span className="project-count-badge">{projects.length}</span>
-        </div>
-
-        <div className="project-rail-list">
-          {visibleProjects.length === 0 ? (
-            <div className="project-rail-empty">No projects loaded yet.</div>
-          ) : (
-            visibleProjects.map((project) => {
-              const active = project.id === selectedProjectId;
-              const recentIndex = recentProjectIds.indexOf(project.id);
-              return (
-                <button
-                  key={project.id}
-                  type="button"
-                  className={`project-rail-item ${active ? "active" : ""}`}
-                  onClick={() => selectProjectAndTrack(project.id)}
-                >
-                  <span className="project-rail-item-top">
-                    <strong>{project.name}</strong>
-                    {active && <span className="project-rail-active">Active</span>}
-                    {!active && recentIndex >= 0 && <span className="project-rail-recent">Recent</span>}
-                  </span>
-                  <span className="project-rail-path">{project.path}</span>
-                </button>
-              );
-            })
-          )}
-        </div>
-
-        {canShowMoreProjects && (
-          <button
-            type="button"
-            className="project-rail-more"
-            onClick={() => setShowAllProjects((value) => !value)}
-          >
-            {showAllProjects ? "Show fewer projects" : "Show more projects"}
-          </button>
         )}
       </section>
 
@@ -389,9 +355,46 @@ export function Navigator(): React.ReactElement {
         <div className="project-rail-head">
           <div>
             <label>History</label>
-            <p>Grouped by project and sorted by latest activity.</p>
+            {activeHistory.length > 0 && (
+              <p className="project-history-chat-count">{activeHistory.length} chats</p>
+            )}
           </div>
-          {historyLoading && <span className="project-rail-state">Loading</span>}
+          <div className="project-rail-head-actions">
+            {historyLoading && <span className="project-rail-state">Loading</span>}
+            {selectionModeProjectId === selectedProjectId ? (
+              <button
+                type="button"
+                className="project-history-selection-exit"
+                onClick={exitSelectionMode}
+                title="Exit selection mode"
+                aria-label="Exit selection mode"
+              >
+                ←
+              </button>
+            ) : (
+              unsyncedCount > 0 && selectedProjectId && (
+                <button
+                  type="button"
+                  className="project-history-sync-all"
+                  onClick={() => void syncAllInProject(selectedProjectId)}
+                  disabled={projectSyncing}
+                  title={
+                    projectSyncing
+                      ? `Syncing ${unsyncedCount} chat${unsyncedCount > 1 ? "s" : ""} to Drive`
+                      : `Sync ${unsyncedCount} chat${unsyncedCount > 1 ? "s" : ""} to Drive`
+                  }
+                  aria-label={
+                    projectSyncing
+                      ? `Syncing all ${unsyncedCount} unsynced chats to Drive`
+                      : `Sync all ${unsyncedCount} unsynced chats to Drive`
+                  }
+                >
+                  {projectSyncing ? <span className="history-status-spinner" aria-hidden="true" /> : <SyncGlyph />}
+                  <span>{projectSyncing ? "Syncing…" : unsyncedCount}</span>
+                </button>
+              )
+            )}
+          </div>
         </div>
 
         {historyLoadError && (
@@ -401,221 +404,161 @@ export function Navigator(): React.ReactElement {
           </div>
         )}
 
-        {historyGroups.length === 0 ? (
+        {activeHistory.length === 0 ? (
           <div className="project-rail-empty">
             {selectedProjectId ? "Open a run to build project history." : "Select a project to load history."}
           </div>
         ) : (
-          <div className="project-history-groups">
-            {historyGroups.map(({ projectId, history }) => {
-              const projectName = projectLabel(projectId, projects);
-              const expanded = openProjectIds[projectId] ?? projectId === selectedProjectId;
-              const showAllHistory = expandedHistoryIds.has(projectId);
-              const visibleHistory = expanded ? (showAllHistory ? history : history.slice(0, HISTORY_LIMIT)) : [];
-              const unsyncedCount = history.filter(isUnsyncedChat).length;
-              const projectSyncing = isProjectSyncing(history, projectId);
-              return (
-                <section key={projectId} className="project-history-group">
-                  <div className={`project-history-group-head ${expanded ? "active" : ""}${selectionModeProjectId === projectId ? " project-history-group-head--selecting" : ""}`}>
-                    <button
-                      type="button"
-                      className="project-history-group-toggle"
-                      onClick={() => { if (selectionModeProjectId !== projectId) toggleProjectHistory(projectId); }}
-                    >
-                      <span className="project-history-group-title">
-                        <strong>{projectName}</strong>
-                        <small>{history.length} chats</small>
+          <div className="project-history-list">
+            {selectionModeProjectId === selectedProjectId && (
+              <div className="project-history-selection-toolbar">
+                <span className="project-history-selection-count">
+                  {selectedRunIds.size} selected
+                </span>
+                <button
+                  type="button"
+                  className="project-history-selection-action"
+                  disabled={selectedRunIds.size === 0}
+                  onClick={() => {
+                    const syncable = [...selectedRunIds].filter((id) => {
+                      const it = activeHistory.find((h) => h.runId === id);
+                      return it && isUnsyncedChat(it);
+                    });
+                    requestConfirm("sync", syncable, selectedProjectId!);
+                  }}
+                  title="Sync selected chats to Drive"
+                >
+                  <SyncGlyph /> Sync
+                </button>
+                <button
+                  type="button"
+                  className="project-history-selection-action project-history-selection-action--delete"
+                  disabled={selectedRunIds.size === 0}
+                  onClick={() => requestConfirm("delete", [...selectedRunIds], selectedProjectId!)}
+                  title="Delete selected chats"
+                >
+                  Delete
+                </button>
+              </div>
+            )}
+
+            {visibleHistory.map((item) => {
+              const isNew = newlyCompleted.has(item.runId);
+              const isActive = item.runId === runId;
+              // For the active chat the live store status is authoritative — the polled
+              // runHistory snapshot can lag (e.g. a turn that completed then got blocked
+              // by the flow gate), which would otherwise leave the spinner stuck. (CP-35)
+              // For inactive chats, fall back to the gate-blocked-run set if available:
+              // the runner keeps a blocked run in "running" state until the user re-prompts,
+              // so without this the navigator spinner would persist after switching away. (CP-35 BUG-137)
+              const effectiveStatus = isActive
+                ? status
+                : (gateBlockedRunIds[item.runId] ? "completed" : item.status);
+              const hasIcon = isNew || effectiveStatus === "running" || effectiveStatus === "starting" ||
+                effectiveStatus === "waiting_approval" || effectiveStatus === "waiting_question";
+              const isUnavailable = Boolean(item.unavailableReason);
+              const showSync = isUnsyncedChat(item);
+              const isSyncing = item.syncStatus === "syncing";
+              const syncFailed = item.syncStatus === "failed";
+              const inSelectionMode = selectionModeProjectId === selectedProjectId;
+              const showRowSpinner = isSyncing && !inSelectionMode;
+              const isSelected = selectedRunIds.has(item.runId);
+
+              if (inSelectionMode) {
+                return (
+                  <div
+                    key={item.runId}
+                    className={`project-history-item-row project-history-item-row--selectable${isSelected ? " project-history-item-row--selected" : ""}`}
+                    onClick={() => toggleItemSelection(item.runId)}
+                  >
+                    <input
+                      type="checkbox"
+                      className="project-history-item-checkbox"
+                      checked={isSelected}
+                      onChange={() => toggleItemSelection(item.runId)}
+                      onClick={(e) => e.stopPropagation()}
+                      aria-label={`Select ${runTitle(item.lastPrompt || item.lastMessage)}`}
+                    />
+                    <div className="project-history-item project-history-item--selectable">
+                      <span className="project-history-item-top">
+                        <HistoryStatusIcon status={item.status} isNew={isNew} />
+                        <span className="project-history-item-title">
+                          {runTitle(item.lastPrompt || item.lastMessage)}
+                        </span>
                       </span>
-                      {selectionModeProjectId !== projectId && (
-                        <span className="project-history-group-chevron">{expanded ? "▾" : "▸"}</span>
+                      <span className="project-history-item-meta">
+                        {runTypeLabel(item)} · {RUN_TIME_FORMAT.format(new Date(item.updatedAt))}
+                      </span>
+                    </div>
+                    <div className="project-history-item-actions">
+                      {showSync && (
+                        <button
+                          type="button"
+                          className={`project-history-sync-icon${syncFailed ? " project-history-sync-icon--failed" : ""}`}
+                          disabled={isSyncing}
+                          onClick={(e) => { e.stopPropagation(); requestConfirm("sync", [item.runId], selectedProjectId!); }}
+                          title={syncFailed ? "Sync failed — click to retry" : "Sync this chat to Drive"}
+                          aria-label="Sync chat to Drive"
+                        >
+                          {isSyncing ? <span className="history-status-spinner" aria-hidden="true" /> : <SyncGlyph />}
+                        </button>
                       )}
-                    </button>
-                    {selectionModeProjectId === projectId ? (
                       <button
                         type="button"
-                        className="project-history-selection-exit"
-                        onClick={exitSelectionMode}
-                        title="Exit selection mode"
-                        aria-label="Exit selection mode"
+                        className="project-history-delete-icon"
+                        onClick={(e) => { e.stopPropagation(); requestConfirm("delete", [item.runId], selectedProjectId!); }}
+                        title="Delete this chat"
+                        aria-label="Delete chat"
                       >
-                        ←
+                        ×
                       </button>
-                    ) : (
-                      unsyncedCount > 0 && (
-                        <button
-                          type="button"
-                          className="project-history-sync-all"
-                          onClick={() => void syncAllInProject(projectId)}
-                          disabled={projectSyncing}
-                          title={
-                            projectSyncing
-                              ? `Syncing ${unsyncedCount} chat${unsyncedCount > 1 ? "s" : ""} to Drive`
-                              : `Sync ${unsyncedCount} chat${unsyncedCount > 1 ? "s" : ""} to Drive`
-                          }
-                          aria-label={
-                            projectSyncing
-                              ? `Syncing all ${unsyncedCount} unsynced chats to Drive`
-                              : `Sync all ${unsyncedCount} unsynced chats to Drive`
-                          }
-                        >
-                          {projectSyncing ? <span className="history-status-spinner" aria-hidden="true" /> : <SyncGlyph />}
-                          <span>{projectSyncing ? "Syncing…" : unsyncedCount}</span>
-                        </button>
-                      )
-                    )}
-                  </div>
-
-                  {expanded && (
-                    <div className="project-history-list">
-                      {selectionModeProjectId === projectId && (
-                        <div className="project-history-selection-toolbar">
-                          <span className="project-history-selection-count">
-                            {selectedRunIds.size} selected
-                          </span>
-                          <button
-                            type="button"
-                            className="project-history-selection-action"
-                            disabled={selectedRunIds.size === 0}
-                            onClick={() => {
-                              const syncable = [...selectedRunIds].filter((id) => {
-                                const it = history.find((h) => h.runId === id);
-                                return it && isUnsyncedChat(it);
-                              });
-                              requestConfirm("sync", syncable, projectId);
-                            }}
-                            title="Sync selected chats to Drive"
-                          >
-                            <SyncGlyph /> Sync
-                          </button>
-                          <button
-                            type="button"
-                            className="project-history-selection-action project-history-selection-action--delete"
-                            disabled={selectedRunIds.size === 0}
-                            onClick={() => requestConfirm("delete", [...selectedRunIds], projectId)}
-                            title="Delete selected chats"
-                          >
-                            Delete
-                          </button>
-                        </div>
-                      )}
-
-                      {visibleHistory.map((item) => {
-                        const isNew = newlyCompleted.has(item.runId);
-                        const isActive = item.runId === runId;
-                        // For the active chat the live store status is authoritative — the polled
-                        // runHistory snapshot can lag (e.g. a turn that completed then got blocked
-                        // by the flow gate), which would otherwise leave the spinner stuck. (CP-35)
-                        const effectiveStatus = isActive ? status : item.status;
-                        const hasIcon = isNew || effectiveStatus === "running" || effectiveStatus === "starting" ||
-                          effectiveStatus === "waiting_approval" || effectiveStatus === "waiting_question";
-                        const isUnavailable = Boolean(item.unavailableReason);
-                        const showSync = isUnsyncedChat(item);
-                        const isSyncing = item.syncStatus === "syncing";
-                        const syncFailed = item.syncStatus === "failed";
-                        const inSelectionMode = selectionModeProjectId === projectId;
-                        const showRowSpinner = isSyncing && !inSelectionMode;
-                        const isSelected = selectedRunIds.has(item.runId);
-
-                        if (inSelectionMode) {
-                          return (
-                            <div
-                              key={item.runId}
-                              className={`project-history-item-row project-history-item-row--selectable${isSelected ? " project-history-item-row--selected" : ""}`}
-                              onClick={() => toggleItemSelection(item.runId)}
-                            >
-                              <input
-                                type="checkbox"
-                                className="project-history-item-checkbox"
-                                checked={isSelected}
-                                onChange={() => toggleItemSelection(item.runId)}
-                                onClick={(e) => e.stopPropagation()}
-                                aria-label={`Select ${runTitle(item.lastPrompt || item.lastMessage)}`}
-                              />
-                              <div className="project-history-item project-history-item--selectable">
-                                <span className="project-history-item-top">
-                                  <HistoryStatusIcon status={item.status} isNew={isNew} />
-                                  <span className="project-history-item-title">
-                                    {runTitle(item.lastPrompt || item.lastMessage)}
-                                  </span>
-                                </span>
-                                <span className="project-history-item-meta">
-                                  {runTypeLabel(item)} · {RUN_TIME_FORMAT.format(new Date(item.updatedAt))}
-                                </span>
-                              </div>
-                              <div className="project-history-item-actions">
-                                {showSync && (
-                                  <button
-                                    type="button"
-                                    className={`project-history-sync-icon${syncFailed ? " project-history-sync-icon--failed" : ""}`}
-                                    disabled={isSyncing}
-                                    onClick={(e) => { e.stopPropagation(); requestConfirm("sync", [item.runId], projectId); }}
-                                    title={syncFailed ? "Sync failed — click to retry" : "Sync this chat to Drive"}
-                                    aria-label="Sync chat to Drive"
-                                  >
-                                    {isSyncing ? <span className="history-status-spinner" aria-hidden="true" /> : <SyncGlyph />}
-                                  </button>
-                                )}
-                                <button
-                                  type="button"
-                                  className="project-history-delete-icon"
-                                  onClick={(e) => { e.stopPropagation(); requestConfirm("delete", [item.runId], projectId); }}
-                                  title="Delete this chat"
-                                  aria-label="Delete chat"
-                                >
-                                  ×
-                                </button>
-                              </div>
-                            </div>
-                          );
-                        }
-
-                        return (
-                          <div
-                            key={item.runId}
-                            className={`project-history-item-row${isUnavailable ? " project-history-item-row--disabled" : ""}`}
-                            title={item.unavailableReason || item.runId}
-                          >
-                            <button
-                              type="button"
-                              className={`project-history-item${hasIcon ? " project-history-item--has-icon" : ""}${isUnavailable ? " project-history-item--disabled" : ""}${isActive ? " project-history-item--active" : ""}`}
-                              disabled={isUnavailable}
-                              aria-current={isActive ? "true" : undefined}
-                              onPointerDown={() => startLongPress(item, projectId)}
-                              onPointerUp={cancelLongPress}
-                              onPointerLeave={cancelLongPress}
-                              onClick={() => {
-                                if (isNew) setNewlyCompleted((c) => { const n = new Set(c); n.delete(item.runId); return n; });
-                                void openHistoryRun(item.runId);
-                              }}
-                            >
-                              <span className="project-history-item-top">
-                                {showRowSpinner ? <span className="history-status-spinner" aria-hidden="true" /> : <HistoryStatusIcon status={effectiveStatus} isNew={isNew} />}
-                                <span className="project-history-item-title">
-                                  {runTitle(item.lastPrompt || item.lastMessage)}
-                                </span>
-                              </span>
-                              <span className="project-history-item-meta">
-                                {isSyncing ? "Syncing to Drive…" : runTypeLabel(item, isActive ? status : undefined)} · {RUN_TIME_FORMAT.format(new Date(item.updatedAt))}
-                              </span>
-                            </button>
-                          </div>
-                        );
-                      })}
-
-                      {history.length > HISTORY_LIMIT && (
-                        <button
-                          type="button"
-                          className="project-history-more"
-                          onClick={() => toggleShowAllHistory(projectId)}
-                        >
-                          {showAllHistory ? "Show less" : `Show all (${history.length - HISTORY_LIMIT} more)`}
-                        </button>
-                      )}
                     </div>
-                  )}
-                </section>
+                  </div>
+                );
+              }
+
+              return (
+                <div
+                  key={item.runId}
+                  className={`project-history-item-row${isUnavailable ? " project-history-item-row--disabled" : ""}`}
+                  title={item.unavailableReason || item.runId}
+                >
+                  <button
+                    type="button"
+                    className={`project-history-item${hasIcon ? " project-history-item--has-icon" : ""}${isUnavailable ? " project-history-item--disabled" : ""}${isActive ? " project-history-item--active" : ""}`}
+                    disabled={isUnavailable}
+                    aria-current={isActive ? "true" : undefined}
+                    onPointerDown={() => startLongPress(item, selectedProjectId!)}
+                    onPointerUp={cancelLongPress}
+                    onPointerLeave={cancelLongPress}
+                    onClick={() => {
+                      if (isNew) setNewlyCompleted((c) => { const n = new Set(c); n.delete(item.runId); return n; });
+                      void openHistoryRun(item.runId);
+                    }}
+                  >
+                    <span className="project-history-item-top">
+                      {showRowSpinner ? <span className="history-status-spinner" aria-hidden="true" /> : <HistoryStatusIcon status={effectiveStatus} isNew={isNew} />}
+                      <span className="project-history-item-title">
+                        {runTitle(item.lastPrompt || item.lastMessage)}
+                      </span>
+                    </span>
+                    <span className="project-history-item-meta">
+                      {isSyncing ? "Syncing to Drive…" : runTypeLabel(item, isActive ? status : undefined)} · {RUN_TIME_FORMAT.format(new Date(item.updatedAt))}
+                    </span>
+                  </button>
+                </div>
               );
             })}
+
+            {activeHistory.length > HISTORY_LIMIT && (
+              <button
+                type="button"
+                className="project-history-more"
+                onClick={() => toggleShowAllHistory(selectedProjectId!)}
+              >
+                {showAllHistory ? "Show less" : `Show all (${activeHistory.length - HISTORY_LIMIT} more)`}
+              </button>
+            )}
           </div>
         )}
       </section>
