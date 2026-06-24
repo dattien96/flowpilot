@@ -1540,8 +1540,14 @@ async function consumeOrchestrationStream(
     if (isStale()) return;
     if (!isEventForRun(e, runId)) continue;
     if (e.seq <= afterSeq) continue;
-    if (e.type !== "agent_graph_updated" && e.type !== "agent_bus_message") continue;
-    set((s) => applyOrchestrationEvent(s, e));
+    if (e.type === "agent_graph_updated" || e.type === "agent_bus_message") {
+      set((s) => applyOrchestrationEvent(s, e));
+    } else {
+      // CP-35: gate reprompt events (turn_started, message_delta, turn_completed, etc.)
+      // arrive after sendTurn() has already closed on turn_completed. Apply them via
+      // applyEvent so the timeline shows the reprompt turn without a tab-switch.
+      set((s) => applyEvent(s, e));
+    }
   }
 }
 
