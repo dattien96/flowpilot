@@ -16,6 +16,7 @@ var reFeatureKeyLine = regexp.MustCompile(`^-\s+([a-z][a-z0-9-]+)\s`)
 var reSafeKey = regexp.MustCompile(`[^a-z0-9]+`)
 
 // EnrichAll resolves feature_key for each entry using the priority order from CP-35 §4.1:
+//  0. feature declared in the commit tags `[Type][feature][layer?]` (Confidence=high, set by parser)
 //  1. flowpilot:change-ledger §13 block in change-audit/CA-*.md (Confidence=high)
 //  2. FEATURE-KEYS.md keyword match on subject (Confidence=low)
 //  3. Dominant top-level changed path from `git show --name-only` (Confidence=low)
@@ -34,6 +35,13 @@ func EnrichAll(entries []Entry, repoDir string) []Entry {
 }
 
 func enrichEntry(e Entry, repoDir string, caIndex map[string]string, knownKeys []string) Entry {
+	// Priority 0: the feature was declared explicitly in the commit tags
+	// `[Type][feature][layer?]` (set high-confidence by the parser). This is the most
+	// direct signal — trust it over any inference below.
+	if e.Confidence == ConfidenceHigh && e.FeatureKey != "" {
+		return e
+	}
+
 	// Priority 1: CA §13 block exact source_doc_id match
 	if e.SourceDocID != "" {
 		if key, ok := caIndex[e.SourceDocID]; ok && key != "" {

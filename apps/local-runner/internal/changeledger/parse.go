@@ -16,6 +16,12 @@ const gitLogFormat = "--pretty=format:%H\x1f%cI\x1f%s\x1f%b\x1e"
 var (
 	reChangeType  = regexp.MustCompile(`(?i)^\[(\w+)\]`)
 	reSourceDocID = regexp.MustCompile(`(Task-\d+|BUG-\d+|CP-\d+[\w-]*)`)
+	// reTags captures the leading consecutive bracket run of the commit contract
+	// `[Type][feature][layer?]` (CP-35 §3.2). Group 1 = Type (always), group 2 =
+	// feature (kebab-case, when a second bracket is present), group 3 = layer
+	// (optional third bracket). The old single-bracket form `[Type]: desc` matches
+	// with only group 1 populated, so it stays backward-compatible.
+	reTags = regexp.MustCompile(`^\s*\[([^\]]*)\](?:\s*\[([^\]]*)\])?(?:\s*\[([^\]]*)\])?`)
 )
 
 // ParseRepo runs `git log` on repoDir, reads commits since the last cursor (incremental),
@@ -84,32 +90,78 @@ func parseRecord(raw string) (Entry, bool) {
 		body = strings.TrimSpace(parts[3])
 	}
 
-	return Entry{
+	changeType, feature, layer := parseTags(subject)
+	e := Entry{
 		CommitHash:  hash,
-		ChangeType:  extractChangeType(subject),
+		ChangeType:  changeType,
+		Layer:       layer,
 		SourceDocID: extractSourceDocID(subject, body),
 		Summary:     cleanSummary(subject),
 		CommittedAt: committedAt,
-		Confidence:  ConfidenceLow, // enrich.go upgrades to high when CA block matches
-	}, true
+		Confidence:  ConfidenceLow, // enrich.go upgrades when CA block / FEATURE-KEYS.md / path matches
+	}
+	// When the commit explicitly declares its feature in the second bracket, that is
+	// the authoritative key (CP-35 §3.2). enrich.go honors a pre-set high-confidence key.
+	if feature != "" {
+		e.FeatureKey = feature
+		e.Confidence = ConfidenceHigh
+	}
+	return e, true
 }
 
+// parseTags reads the `[Type][feature][layer?]` bracket prefix. The feature and
+// layer are returned as kebab-case slugs; both are empty for the old single-bracket
+// `[Type]: desc` form.
+func parseTags(subject string) (changeType, feature, layer string) {
+	m := reTags.FindStringSubmatch(subject)
+	if m == nil {
+		return "other", "", ""
+	}
+	changeType = normalizeChangeType(m[1])
+	if len(m) > 2 {
+		feature = slugTag(m[2])
+	}
+	if len(m) > 3 {
+		layer = slugTag(m[3])
+	}
+	return changeType, feature, layer
+}
+
+// slugTag normalizes a raw bracket token to a kebab-case key (lowercase, non-alnum
+// collapsed to single hyphens, trimmed). Returns "" for an empty/punctuation token.
+func slugTag(raw string) string {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	if s == "" {
+		return ""
+	}
+	s = reSafeKey.ReplaceAllString(s, "-")
+	return strings.Trim(s, "-")
+}
+
+// extractChangeType resolves the change type from the leading [Type] bracket.
+// Retained for the single-bracket form and direct test use.
 func extractChangeType(subject string) string {
 	m := reChangeType.FindStringSubmatch(subject)
 	if m == nil {
 		return "other"
 	}
-	switch strings.ToLower(m[1]) {
-	case "feature":
+	return normalizeChangeType(m[1])
+}
+
+func normalizeChangeType(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "feature", "feat":
 		return "feature"
-	case "bugfix", "bug":
+	case "bugfix", "bug", "fix":
 		return "bugfix"
 	case "refactor":
 		return "refactor"
-	case "docs":
+	case "docs", "doc":
 		return "docs"
 	case "hotfix":
 		return "hotfix"
+	case "test":
+		return "test"
 	default:
 		return "other"
 	}
@@ -122,12 +174,13 @@ func extractSourceDocID(subject, body string) string {
 	return reSourceDocID.FindString(body)
 }
 
-// cleanSummary strips the [Type]: Task-NNN prefix so the human-readable part remains.
+// cleanSummary strips the leading bracket run (`[Type][feature][layer?]` or the
+// old `[Type]:`) and any leading source-doc id so the human-readable part remains.
 func cleanSummary(subject string) string {
 	s := subject
 
-	// Strip leading [Type] tag
-	if loc := reChangeType.FindStringIndex(s); loc != nil && loc[0] == 0 {
+	// Strip the leading bracket run ([Type] / [Type][feature][layer]).
+	if loc := reTags.FindStringIndex(s); loc != nil && loc[0] == 0 {
 		s = s[loc[1]:]
 	}
 	s = strings.TrimSpace(s)

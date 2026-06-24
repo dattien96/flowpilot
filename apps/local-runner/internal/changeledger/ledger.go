@@ -19,8 +19,9 @@ const (
 type Entry struct {
 	CommitHash  string `json:"commit_hash"`
 	FeatureKey  string `json:"feature_key"`
-	SourceDocID string `json:"source_doc_id"` // Task-087 | BUG-130 | CP-35 | ""
-	ChangeType  string `json:"change_type"`   // feature | bugfix | refactor | docs | hotfix | other
+	Layer       string `json:"layer,omitempty"` // optional third commit tag: ui | api | domain | data | ...
+	SourceDocID string `json:"source_doc_id"`   // Task-087 | BUG-130 | CP-35 | ""
+	ChangeType  string `json:"change_type"`     // feature | bugfix | refactor | docs | hotfix | other
 	Summary     string `json:"summary"`
 	CommittedAt string `json:"committed_at"` // RFC3339
 	OrderIndex  int    `json:"order_index"`  // ascending by commit time; newest = max

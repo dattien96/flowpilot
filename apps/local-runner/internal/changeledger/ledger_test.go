@@ -48,6 +48,57 @@ func TestParseRecord_BugFix(t *testing.T) {
 	}
 }
 
+func TestParseRecord_FeatureTag(t *testing.T) {
+	// New contract: [Type][feature][layer?] — feature is extracted exactly, high confidence.
+	raw := "f1f1f1\x1f2026-06-01T10:00:00Z\x1f[Feature][project-nav][ui] add creation navigation Task-087\x1f"
+	e, ok := parseRecord(raw)
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if e.ChangeType != "feature" {
+		t.Errorf("changeType: got %q", e.ChangeType)
+	}
+	if e.FeatureKey != "project-nav" {
+		t.Errorf("featureKey: got %q, want project-nav", e.FeatureKey)
+	}
+	if e.Layer != "ui" {
+		t.Errorf("layer: got %q, want ui", e.Layer)
+	}
+	if e.Confidence != ConfidenceHigh {
+		t.Errorf("confidence: got %q, want high (feature declared in commit)", e.Confidence)
+	}
+	if e.SourceDocID != "Task-087" {
+		t.Errorf("sourceDocID: got %q, want Task-087", e.SourceDocID)
+	}
+	if e.Summary != "add creation navigation Task-087" {
+		t.Errorf("summary: got %q", e.Summary)
+	}
+}
+
+func TestParseRecord_FeatureTagNoLayer(t *testing.T) {
+	// Two brackets only: [Type][feature] — layer is empty, feature still extracted.
+	raw := "f2f2f2\x1f2026-06-02T10:00:00Z\x1f[Docs][agent] update agent spawn doc\x1f"
+	e, ok := parseRecord(raw)
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if e.ChangeType != "docs" {
+		t.Errorf("changeType: got %q", e.ChangeType)
+	}
+	if e.FeatureKey != "agent" {
+		t.Errorf("featureKey: got %q, want agent", e.FeatureKey)
+	}
+	if e.Layer != "" {
+		t.Errorf("layer: got %q, want empty", e.Layer)
+	}
+	if e.Confidence != ConfidenceHigh {
+		t.Errorf("confidence: got %q, want high", e.Confidence)
+	}
+	if e.Summary != "update agent spawn doc" {
+		t.Errorf("summary: got %q", e.Summary)
+	}
+}
+
 func TestParseRecord_NoTag(t *testing.T) {
 	raw := "aaa111\x1f2026-02-01T00:00:00Z\x1fsome commit with no tag\x1f"
 	e, ok := parseRecord(raw)
