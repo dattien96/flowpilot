@@ -701,7 +701,7 @@ head -5 my-sample-app/.claude/skills/git-commit-format/SKILL.md
 
 3. Give the AI a prompt that will cause it to edit a source file but **not** write a
    `change-audit/CA-*.md` note — e.g.:
-   > "Add a helper comment to the top of page.tsx in admin-web."
+   > "Add a helper comment to the top of calc.go."
 
 4. Let the turn run to completion. Do not interrupt.
 
@@ -750,7 +750,7 @@ newline-delimited JSON line of:
 1. Start a workflow task on the test project.
 
 2. Give the AI a prompt that explicitly asks for both the edit AND a CA note — e.g.:
-   > "Add a helper comment to the top of page.tsx in admin-web. Then write a change-audit note in
+   > "Add a helper comment to the top of calc.go. Then write a change-audit note in
    > `change-audit/CA-<today>.md` documenting the change."
 
 3. Let the turn run to completion.
@@ -772,7 +772,7 @@ violations → `Enforce` returns `"pass"` → gate returns `false` → finalizer
 
 ---
 
-### E2E-8 — Regression oracle: break a test → step blocked (covers BOTH r-tests AND r-reg)
+### E2E-8 (Passed) — Regression oracle: break a test → step blocked (covers BOTH r-tests AND r-reg)
 
 > **Code-state finding (v1) — r-tests and r-reg are coupled.** In `gate_hook.go`,
 > `TurnResult.Tests.Failed` is populated **only** from `oracle.Regressed`. Both
@@ -857,7 +857,7 @@ init (auto-creates `.flowpilot/` with `gate-config.json` = enforce).
 
 4. Start a new task:
    > "In calc.go, change the body of Add from `return a + b` to `return a - b`. Write a
-   > change-audit note in `change-audit/CA-<today>.md` so the CA rule is satisfied."
+   > change-audit note in `change-audit/CA-xxx.md` so the CA rule is satisfied."
 
    > (The CA note keeps r-ca quiet so the **regression** is the only blocking signal.)
 
