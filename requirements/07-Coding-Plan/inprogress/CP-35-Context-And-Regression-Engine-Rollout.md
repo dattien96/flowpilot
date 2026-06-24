@@ -635,7 +635,7 @@ cat my-sample-app/.flowpilot/ledger/feature_history.ndjson | tail -3
 
 ---
 
-### E2E-4 (Passed) — NL resolves to a feature key ✅
+### (Passed) E2E-4 — NL resolves to a feature key ✅
 
 **Steps:**
 1. Note a feature key that appears in `.flowpilot/ledger/feature_history.ndjson` (e.g. `auth`, `api`, `ui`).
@@ -771,7 +771,7 @@ violations → `Enforce` returns `"pass"` → gate returns `false` → finalizer
 
 ---
 
-### E2E-8 (Passed) — Regression oracle: break a test → step blocked (covers BOTH r-tests AND r-reg)
+### (Passed) E2E-8 — Regression oracle: break a test → step blocked (covers BOTH r-tests AND r-reg)
 
 > **Code-state finding (v1) — r-tests and r-reg are coupled.** In `gate_hook.go`,
 > `TurnResult.Tests.Failed` is populated **only** from `oracle.Regressed`. Both
@@ -1123,6 +1123,48 @@ cd C:\working\flowpilot; git checkout apps/local-runner/internal/flowgate/scratc
 ```
 
 **Design note — "all rules handled":** When multiple reprompt-action rules fire simultaneously, ALL of them are represented in a single combined `RepromptPrompt`. This is the intended behavior: the AI fixes every open violation in one pass rather than in N round-trips. If the AI only fixes a subset, the gate fires again for the remainder (bounded by `maxFlowGateReprompts = 2`). Truly sequential per-rule handling is not needed and would waste turns.
+
+---
+
+### E2E-14 — Flow Gate: Task reference in final message without Task doc (r-task reprompt)
+
+> **Code-state finding:** r-task fires when `taskIDRegex` (`\bTask-\d+\b`) matches the AI's final message but no file matching `requirements/08-Task/` or `Task-` appears in the git diff (excluding FORMAT-REFERENCE-TASK.md, which is a scaffold template and must never satisfy the predicate). Action is `reprompt`; the AI receives explicit file-creation instructions naming the exact path and FORMAT-REFERENCE to follow — same pattern as r-bug / E2E-11.
+
+**Steps (run on the flowpilot repo or gate-sandbox; default enforce mode):**
+
+1. Confirm the Engine tab Flow Gate dropdown reads **"Enforce (default)"**.
+
+2. Start a task with this exact prompt (forces a Task-NNN reference in the final message, prevents the Task doc being added):
+   > "Add a one-line comment to `calc.go` explaining what the `add` function does.
+   > In your final summary, include the sentence: **"This completes Task-200."**
+   > Do NOT create any file under `requirements/08-Task/`. Only edit `calc.go`."
+
+3. Let the turn complete.
+
+**What to observe (desktop):**
+
+- An **amber ⚠ violation card** appears inline:
+  > ⚠ Flow gate: task reference detected but no task document found
+- **One reprompt turn fires automatically.** The AI receives instructions that include:
+  - `requirements/08-Task/done/Task-<NNN>.md` — exact path with the same Task number referenced
+  - `requirements/08-Task/FORMAT-REFERENCE-TASK.md` — structure to follow
+  - "Do NOT edit the change-audit note to satisfy this" guard
+- On the reprompt turn the AI should create the Task doc. The gate re-checks and passes if the file is present.
+
+**What to observe (runner logs):**
+```
+[gate] violations=1 gateMode="enforce" trigger="task_referenced"
+[gate] reprompt attempt=0 stepID="…"
+```
+
+**FORMAT-REFERENCE guard check (negative case):**
+
+Run the same scenario but bind a freshly-scaffolded project where `requirements/08-Task/FORMAT-REFERENCE-TASK.md` exists as an untracked file (created by `reqscaffold`). The gate must still fire r-task — the scaffold template must NOT satisfy `HasTaskDoc`. Confirm the violation card appears even with the FORMAT-REFERENCE file present.
+
+**What must NOT happen:**
+- Gate passes silently because `FORMAT-REFERENCE-TASK.md` is in the diff (BUG-141 class regression)
+- AI edits the change-audit note instead of creating the Task doc
+- Reprompt omits the path `requirements/08-Task/done/Task-<NNN>.md`
 
 ### E2E summary
 
