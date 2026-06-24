@@ -580,6 +580,7 @@ export function GoogleDriveSettings(): React.ReactElement {
             "Open APIs & Services > Library.",
             "Enable Google Drive API.",
             "Enable Google Picker API.",
+            "Enable Cloud Translation API — required for the in-chat Translate to Vietnamese feature (free up to 500k chars/month).",
             "Also enable Google Docs API, Google Sheets API, and Google Slides API if you want broader MCP support.",
           ]} />
           <div className="settings-actions">
