@@ -39,8 +39,10 @@ type TurnResult struct {
 }
 
 type Violation struct {
-	Rule   Rule   `json:"rule"`
-	Detail string `json:"detail"`
+	Rule        Rule   `json:"rule"`
+	Detail      string `json:"detail"`
+	SourceDocID string `json:"source_doc_id,omitempty"`
+	Declared    bool   `json:"declared,omitempty"`
 }
 
 func DefaultRules() []Rule {

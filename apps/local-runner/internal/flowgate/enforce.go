@@ -86,12 +86,37 @@ func RepromptPrompt(result EnforceResult) string {
 func remediationFor(v Violation) string {
 	switch v.Rule.Trigger {
 	case "bug_fixed":
+		if v.Declared {
+			if v.SourceDocID != "" {
+				return "• Missing BugFix document. This chat started in Bug mode, so the gate expects its BugFix doc even if the final message does not say \"bug fix\". " +
+					"Create a NEW file `requirements/09-BugFix/done/" + v.SourceDocID + "-<short-title>.md` " +
+					"following the structure in `requirements/09-BugFix/FORMAT-REFERENCE-BUGFIX.md`. " +
+					"Do NOT edit the change-audit note to satisfy this — the BugFix document is a separate, required artifact."
+			}
+			return "• Missing BugFix document. This chat started in Bug mode, so the gate expects its BugFix doc even if the final message does not say \"bug fix\". " +
+				"Create a NEW file `requirements/09-BugFix/done/BUG-<next-available>-<short-title>.md` " +
+				"(use the next available zero-padded BUG number) following the structure in " +
+				"`requirements/09-BugFix/FORMAT-REFERENCE-BUGFIX.md`. " +
+				"Do NOT edit the change-audit note to satisfy this — the BugFix document is a separate, required artifact."
+		}
 		return "• Missing BugFix document. You fixed a bug but did not add its BugFix doc. " +
 			"Create a NEW file `requirements/09-BugFix/done/BUG-<NNN>.md` " +
 			"(use the next available zero-padded number) following the structure in " +
 			"`requirements/09-BugFix/FORMAT-REFERENCE-BUGFIX.md`. " +
 			"Do NOT edit the change-audit note to satisfy this — the BugFix document is a separate, required artifact."
 	case "task_referenced":
+		if v.Declared {
+			if v.SourceDocID != "" {
+				return "• Missing Task document. This chat started in Task mode, so the gate expects its Task doc even if the final message does not mention a Task id. " +
+					"Create a NEW file `requirements/08-Task/done/" + v.SourceDocID + "-<short-title>.md` " +
+					"following the structure in `requirements/08-Task/FORMAT-REFERENCE-TASK.md`. " +
+					"Do NOT edit the change-audit note to satisfy this — the Task document is a separate, required artifact."
+			}
+			return "• Missing Task document. This chat started in Task mode, so the gate expects its Task doc even if the final message does not mention a Task id. " +
+				"Create a NEW file `requirements/08-Task/done/Task-<next-available>-<short-title>.md` " +
+				"(use the next available zero-padded Task number) following the structure in `requirements/08-Task/FORMAT-REFERENCE-TASK.md`. " +
+				"Do NOT edit the change-audit note to satisfy this — the Task document is a separate, required artifact."
+		}
 		return "• Missing Task document. Your final message references a Task-NNN but you did not add its Task doc. " +
 			"Create a NEW file `requirements/08-Task/done/Task-<NNN>.md` " +
 			"(use the same Task number you referenced; use the next available zero-padded number if new) " +

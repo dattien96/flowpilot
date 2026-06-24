@@ -415,14 +415,21 @@ func TestEvaluateRTaskNoViolationWhenDocPresent(t *testing.T) {
 
 func TestEvaluateRTaskFiresWhenChangeTypeIsTask(t *testing.T) {
 	tr := TurnResult{
-		ChangeType: "task",
-		GitDiff:    []ChangedFile{{Path: "internal/flowgate/evaluate.go", Status: "M"}},
+		ChangeType:  "task",
+		SourceDocID: "Task-114",
+		GitDiff:     []ChangedFile{{Path: "internal/flowgate/evaluate.go", Status: "M"}},
 	}
 	violations := Evaluate(tr, DefaultRules())
 	found := false
 	for _, v := range violations {
 		if v.Rule.ID == "r-task" {
 			found = true
+			if !v.Declared {
+				t.Error("expected explicit task mode violation to be marked declared")
+			}
+			if v.SourceDocID != "Task-114" {
+				t.Fatalf("sourceDocID = %q, want Task-114", v.SourceDocID)
+			}
 		}
 	}
 	if !found {
@@ -432,14 +439,21 @@ func TestEvaluateRTaskFiresWhenChangeTypeIsTask(t *testing.T) {
 
 func TestEvaluateRBugFiresWhenChangeTypeIsBugfix(t *testing.T) {
 	tr := TurnResult{
-		ChangeType: "bugfix",
-		GitDiff:    []ChangedFile{{Path: "internal/flowgate/evaluate.go", Status: "M"}},
+		ChangeType:  "bugfix",
+		SourceDocID: "BUG-141",
+		GitDiff:     []ChangedFile{{Path: "internal/flowgate/evaluate.go", Status: "M"}},
 	}
 	violations := Evaluate(tr, DefaultRules())
 	found := false
 	for _, v := range violations {
 		if v.Rule.ID == "r-bug" {
 			found = true
+			if !v.Declared {
+				t.Error("expected explicit bug mode violation to be marked declared")
+			}
+			if v.SourceDocID != "BUG-141" {
+				t.Fatalf("sourceDocID = %q, want BUG-141", v.SourceDocID)
+			}
 		}
 	}
 	if !found {
@@ -467,5 +481,24 @@ func TestRepromptPromptRTaskIsActionable(t *testing.T) {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("r-task reprompt missing %q\ngot: %s", want, prompt)
 		}
+	}
+}
+
+func TestRepromptPromptDeclaredTaskUsesResolvedID(t *testing.T) {
+	rTask := Rule{ID: "r-task", Trigger: "task_referenced", Action: "reprompt", Enabled: true}
+	result := Enforce([]Violation{{
+		Rule:        rTask,
+		Detail:      "declared task mode but no task document found",
+		SourceDocID: "Task-114",
+		Declared:    true,
+	}}, "enforce")
+	prompt := RepromptPrompt(result)
+	for _, want := range []string{"started in Task mode", "Task-114-<short-title>.md"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("declared task reprompt missing %q\ngot: %s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "Your final message references a Task-NNN") {
+		t.Errorf("declared task reprompt should not mention regex path\n%s", prompt)
 	}
 }

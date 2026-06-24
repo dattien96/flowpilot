@@ -1922,9 +1922,7 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		if changeType := normalizeChangeType(in.ChangeType); changeType != "" {
 			rs.changeType = changeType
 		}
-		if sourceDocID := strings.TrimSpace(in.SourceDocID); sourceDocID != "" {
-			rs.sourceDocID = sourceDocID
-		}
+		rs.sourceDocID = resolveSourceDocID(rs.workspaceCwd, rs.changeType, in.SourceDocID)
 	}
 	rs.turnCount++
 	rs.lastTurnStepID = in.StepID // CP-35: remember for gate reprompts

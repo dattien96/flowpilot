@@ -36,6 +36,14 @@ func checkRule(rule Rule, tr TurnResult) *Violation {
 				strings.Contains(msgLower, "bug fix")
 		}
 		if isBugFix && !HasBugFixDoc(tr.GitDiff) {
+			if tr.ChangeType == "bugfix" {
+				return &Violation{
+					Rule:        rule,
+					Detail:      "declared bug mode but no bugfix document found",
+					SourceDocID: tr.SourceDocID,
+					Declared:    true,
+				}
+			}
 			return &Violation{Rule: rule, Detail: "bug fix detected but no bugfix doc found"}
 		}
 
@@ -48,6 +56,14 @@ func checkRule(rule Rule, tr TurnResult) *Violation {
 			hasTaskRef = taskIDRegex.MatchString(tr.FinalMessage)
 		}
 		if hasTaskRef && !HasTaskDoc(tr.GitDiff) {
+			if tr.ChangeType == "task" {
+				return &Violation{
+					Rule:        rule,
+					Detail:      "declared task mode but no task document found",
+					SourceDocID: tr.SourceDocID,
+					Declared:    true,
+				}
+			}
 			return &Violation{Rule: rule, Detail: "task reference detected but no task document found"}
 		}
 
