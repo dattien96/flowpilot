@@ -856,10 +856,10 @@ init (auto-creates `.flowpilot/` with `gate-config.json` = enforce).
 **Step C — break the test (without touching the test file):**
 
 4. Start a new task:
-   > "In calc.go, change the body of Add from `return a + b` to `return a - b`. Write a
-   > change-audit note in `change-audit/CA-xxx.md` so the CA rule is satisfied."
+    "In calc.go, change the body of Add from `return a + b` to `return a - b`. Write a
+   change-audit note in `change-audit/CA-xxx.md` so the CA rule is satisfied."
 
-   > (The CA note keeps r-ca quiet so the **regression** is the only blocking signal.)
+   (The CA note keeps r-ca quiet so the **regression** is the only blocking signal.)
 
 5. Let the turn complete.
 
@@ -1001,9 +1001,9 @@ cat "C:\test-projects\my-sample-app\.flowpilot\manifest.json" | python -m json.t
 2. Start a task with a prompt that (a) makes a real edit, (b) satisfies r-ca with a CA note
    so the **only** blocking signal is r-bug, (c) is framed as a bug fix, and (d) does **not**
    create a `BUG-…` doc — e.g.:
-   > "There's a small bug: the helper comment at the top of `calc.go`
-   > is misleading. Fix it. Write a change-audit note in `change-audit/CA-<today>.md`. In your
-   > final summary, explicitly state that this was a **bug fix**. Do NOT create any BUG document."
+   "There's a small bug: the helper comment at the top of `calc.go`
+   is misleading. Fix it. Write a change-audit note in `change-audit/CA-<today>.md`. In your
+   final summary, explicitly state that this was a **bug fix**. Do NOT create any BUG document."
 
 3. Let the turn complete.
 

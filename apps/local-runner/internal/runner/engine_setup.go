@@ -13,6 +13,7 @@ import (
 	"flowpilot-runner/internal/changeledger"
 	"flowpilot-runner/internal/contextsync"
 	"flowpilot-runner/internal/featurecatalog"
+	"flowpilot-runner/internal/reqscaffold"
 	"flowpilot-runner/internal/skillpack"
 	"flowpilot-runner/internal/tooling"
 )
@@ -248,6 +249,13 @@ func (s *InteractiveService) runEngineInit(
 	installResult, installErr := skillpack.Install(workingDirectory, platform)
 	statuses, toolingErr := tooling.CheckAll(workingDirectory, dotFlowpilotDir)
 
+	// Scaffold requirements/ folder structure with embedded FORMAT-REFERENCE files.
+	// Runs on every full init (not skipped); existing files are never overwritten.
+	// (CP-35 Task-112)
+	scaffoldResult, scaffoldErr := reqscaffold.Scaffold(workingDirectory)
+	scaffoldDetail := fmt.Sprintf("%d created, %d skipped, %d errors",
+		len(scaffoldResult.Created), len(scaffoldResult.Skipped), len(scaffoldResult.Errors))
+
 	steps := []EngineInitStepResult{
 		buildEngineStep(
 			"skillpack_install",
@@ -255,6 +263,7 @@ func (s *InteractiveService) runEngineInit(
 			fmt.Sprintf("%d installed, %d skipped, %d install errors", len(installResult.Installed), len(installResult.Skipped), len(installResult.Errors)),
 		),
 		buildEngineStep("tooling_check", toolingErr, fmt.Sprintf("%d tool entries refreshed", len(statuses))),
+		buildEngineStep("req_scaffold", scaffoldErr, scaffoldDetail),
 	}
 
 	ledgerErr := changeledger.Build(workingDirectory, dotFlowpilotDir)
@@ -305,7 +314,7 @@ func (s *InteractiveService) runEngineInit(
 
 	initState := &EngineInitState{
 		Trigger:          trigger,
-		Status:           summarizeEngineInitStatus(toolingErr, installErr, installResult.Errors, ledgerErr, catalogErr, syncErr),
+		Status:           summarizeEngineInitStatus(toolingErr, installErr, installResult.Errors, scaffoldErr, ledgerErr, catalogErr, syncErr),
 		Skipped:          false,
 		AttemptedAt:      attemptedAt,
 		CompletedAt:      time.Now().UTC().Format(time.RFC3339),
@@ -345,11 +354,12 @@ func summarizeEngineInitStatus(
 	toolingErr error,
 	installErr error,
 	installResultErrors []string,
+	scaffoldErr error,
 	ledgerErr error,
 	catalogErr error,
 	syncErr error,
 ) string {
-	if toolingErr == nil && installErr == nil && len(installResultErrors) == 0 && ledgerErr == nil && catalogErr == nil && syncErr == nil {
+	if toolingErr == nil && installErr == nil && len(installResultErrors) == 0 && scaffoldErr == nil && ledgerErr == nil && catalogErr == nil && syncErr == nil {
 		return "success"
 	}
 	return "partial"
