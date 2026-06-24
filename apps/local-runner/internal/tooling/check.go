@@ -72,8 +72,8 @@ func CheckTool(name string, repoDir string) ToolStatus {
 		ts.Status = "missing"
 
 	case "skill_pack":
-		// Presence check only — no version concept.
-		skillPath := filepath.Join(repoDir, ".claude", "skills", "flowpilot", "git-commit-format", "SKILL.md")
+		// Presence check only — sentinel is the git-commit-format skill under .claude/skills/.
+		skillPath := filepath.Join(repoDir, ".claude", "skills", "git-commit-format", "SKILL.md")
 		if _, err := os.Stat(skillPath); err == nil {
 			ts.Status = "ok"
 			return ts
