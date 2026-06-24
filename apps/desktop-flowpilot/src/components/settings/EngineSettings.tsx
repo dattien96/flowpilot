@@ -109,7 +109,7 @@ export function EngineSettings(): React.ReactElement {
     let active = true;
     void (async () => {
       try {
-        const status = await fetchProjectEngineStatus(selectedProjectId, selectedBindingPath);
+        const status = await fetchProjectEngineStatus(selectedProjectId, selectedBindingPath, selectedEntry?.project.platform);
         if (active) {
           setProjectStatus(status);
         }
@@ -140,7 +140,7 @@ export function EngineSettings(): React.ReactElement {
     setProjectBusyAction("refresh");
     setMessage(null);
     try {
-      const status = await fetchProjectEngineStatus(selectedProjectId, selectedBindingPath);
+      const status = await fetchProjectEngineStatus(selectedProjectId, selectedBindingPath, selectedEntry?.project.platform);
       setProjectStatus(status);
       setMessage("Project engine status refreshed.");
     } catch (error) {
@@ -155,7 +155,7 @@ export function EngineSettings(): React.ReactElement {
     setProjectBusyAction("init");
     setMessage(null);
     try {
-      const status = await initProjectEngine(selectedProjectId, selectedBindingPath, "manual");
+      const status = await initProjectEngine(selectedProjectId, selectedBindingPath, "manual", selectedEntry?.project.platform);
       setProjectStatus(status);
       setMessage(summarizeProjectEngineInit(status.lastInit));
     } catch (error) {

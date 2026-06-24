@@ -45,7 +45,7 @@ function mapProject(row: Row): Project {
     id: String(row.id),
     name: String(row.name ?? ""),
     description: String(row.description ?? ""),
-    platform: (row.platform ?? "multi") as ProjectPlatform,
+    platform: (row.platform ?? "none") as ProjectPlatform,
     repositoryUrl: String(row.repository_url ?? ""),
     directoryPath: row.directory_path ? String(row.directory_path) : null,
     status: String(row.status ?? "active"),

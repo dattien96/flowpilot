@@ -77,11 +77,35 @@ interface ProjectsSettingsProps {
   onNavigateSection?: (section: ProjectTargetSection) => void;
 }
 
+// Each option installs the common skill pack plus its same-named skill folder.
+// "none" installs common skills only; "kmm" additionally pulls android + ios.
+const PROJECT_PLATFORM_OPTIONS: ReadonlyArray<{ value: ProjectPlatform; label: string }> = [
+  { value: "none", label: "none (common skills only)" },
+  { value: "android", label: "android" },
+  { value: "ios", label: "ios" },
+  { value: "kmm", label: "kotlin multiplatform (kmm)" },
+  { value: "react-native", label: "react native" },
+  { value: "flutter", label: "flutter" },
+  { value: "reactjs", label: "reactjs" },
+  { value: "vuejs", label: "vuejs" },
+  { value: "angularjs", label: "angularjs" },
+  { value: "golang", label: "golang" },
+  { value: "java", label: "java" },
+  { value: "python", label: "python" },
+  { value: "nodejs", label: "nodejs" },
+];
+
+function renderPlatformOptions(): React.ReactNode {
+  return PROJECT_PLATFORM_OPTIONS.map((option) => (
+    <option key={option.value} value={option.value}>{option.label}</option>
+  ));
+}
+
 function createEmptyProjectForm() {
   return {
     name: "",
     description: "",
-    platform: "android" as ProjectPlatform,
+    platform: "none" as ProjectPlatform,
     repositoryUrl: "",
     status: "active",
   };
@@ -91,7 +115,7 @@ function createEmptyCreateForm() {
   return {
     name: "",
     description: "",
-    platform: "android" as ProjectPlatform,
+    platform: "none" as ProjectPlatform,
     repositoryUrl: "",
     directoryPath: "",
   };
@@ -368,7 +392,7 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
         label: "Primary",
       });
       await admin.teams.setProjectTeams(project.id, createSelectedTeamIds);
-      void autoInitProjectEngine(project.id, [{ localPath: createForm.directoryPath.trim() }]);
+      void autoInitProjectEngine(project.id, [{ localPath: createForm.directoryPath.trim() }], createForm.platform);
       setCreateForm(createEmptyCreateForm());
       setCreateSelectedTeamIds([]);
       setShowCreateView(false);
@@ -440,7 +464,7 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
           label: binding.label || (index === 0 ? "Primary" : null),
         });
       }
-      void autoInitProjectEngine(selectedProject.id, normalizedBindings);
+      void autoInitProjectEngine(selectedProject.id, normalizedBindings, projectForm.platform);
       await refresh(selectedProject.id);
       setMessage("Project settings saved.");
     } catch (error) {
@@ -553,7 +577,7 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
             <label className="settings-field"><span>Name</span><input value={createForm.name} onChange={(event) => setCreateForm((current) => ({ ...current, name: event.target.value }))} /></label>
             <label className="settings-field"><span>Repository URL</span><input value={createForm.repositoryUrl} onChange={(event) => setCreateForm((current) => ({ ...current, repositoryUrl: event.target.value }))} /></label>
             <label className="settings-field settings-field-full"><span>Description</span><textarea value={createForm.description} onChange={(event) => setCreateForm((current) => ({ ...current, description: event.target.value }))} /></label>
-            <label className="settings-field"><span>Platform</span><select value={createForm.platform} onChange={(event) => setCreateForm((current) => ({ ...current, platform: event.target.value as ProjectPlatform }))}><option value="android">android</option><option value="ios">ios</option><option value="web">web</option><option value="multi">multi</option></select></label>
+            <label className="settings-field"><span>Platform</span><select value={createForm.platform} onChange={(event) => setCreateForm((current) => ({ ...current, platform: event.target.value as ProjectPlatform }))}>{renderPlatformOptions()}</select></label>
             <div className="settings-field settings-field-full">
               <span>Primary Directory</span>
               <div className="settings-inline-row">
@@ -631,7 +655,7 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
                     <label className="settings-field"><span>Name</span><input value={projectForm.name} onChange={(event) => setProjectForm((current) => ({ ...current, name: event.target.value }))} /></label>
                     <label className="settings-field"><span>Repository URL</span><input value={projectForm.repositoryUrl} onChange={(event) => setProjectForm((current) => ({ ...current, repositoryUrl: event.target.value }))} /></label>
                     <label className="settings-field settings-field-full"><span>Description</span><textarea value={projectForm.description} onChange={(event) => setProjectForm((current) => ({ ...current, description: event.target.value }))} /></label>
-                    <label className="settings-field"><span>Platform</span><select value={projectForm.platform} onChange={(event) => setProjectForm((current) => ({ ...current, platform: event.target.value as ProjectPlatform }))}><option value="android">android</option><option value="ios">ios</option><option value="web">web</option><option value="multi">multi</option></select></label>
+                    <label className="settings-field"><span>Platform</span><select value={projectForm.platform} onChange={(event) => setProjectForm((current) => ({ ...current, platform: event.target.value as ProjectPlatform }))}>{renderPlatformOptions()}</select></label>
                     <label className="settings-field"><span>Status</span><select value={projectForm.status} onChange={(event) => setProjectForm((current) => ({ ...current, status: event.target.value }))}><option value="active">active</option><option value="archived">archived</option></select></label>
                     <label className="settings-field"><span>Default Model</span><select value={defaults.defaultModel} onChange={(event) => setDefaults((current) => ({ ...current, defaultModel: event.target.value }))}>{models.map((model) => <option key={model.id} value={model.modelId}>{model.displayName}</option>)}</select></label>
                     <label className="settings-field"><span>Reasoning</span><select value={defaults.defaultReasoningEffort} onChange={(event) => setDefaults((current) => ({ ...current, defaultReasoningEffort: event.target.value }))}><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra High</option></select></label>

@@ -2,6 +2,7 @@ package skillpack
 
 import (
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -14,6 +15,9 @@ import (
 var flowPackFS embed.FS
 
 const PackVersion = 2
+
+// commonGroup is always installed regardless of project platform.
+const commonGroup = "common"
 
 type installRoot struct {
 	Provider string
@@ -29,6 +33,12 @@ var providerStatuses = []installRoot{
 	{Provider: "claude", RootPath: filepath.Join(".claude", "skills")},
 	{Provider: "codex", RootPath: filepath.Join(".agents", "skills")},
 	{Provider: "gemini", RootPath: filepath.Join(".agents", "skills")},
+}
+
+// skillRef identifies one embedded skill by its flow-pack group and skill name.
+type skillRef struct {
+	Group string
+	Name  string
 }
 
 // InstallResult summarises what Install did for each file it encountered.
@@ -58,25 +68,83 @@ type PackStatus struct {
 	Skills      []SkillStatus `json:"skills"`
 }
 
-// Install copies every embedded SKILL.md into:
-// - <targetRepoDir>/.claude/skills/<skill>/SKILL.md
-// - <targetRepoDir>/.agents/skills/<skill>/SKILL.md
-// An existing file is skipped when its first line already declares the current PackVersion.
-// All errors are collected and returned in InstallResult.Errors; the function never panics.
-func Install(targetRepoDir string) (InstallResult, error) {
-	result := InstallResult{Target: targetRepoDir}
+// normalizePlatform lower-cases and trims a raw platform value so unknown,
+// empty, and "none" platforms all collapse to common-only behavior.
+func normalizePlatform(platform string) string {
+	return strings.ToLower(strings.TrimSpace(platform))
+}
 
-	entries, err := fs.ReadDir(flowPackFS, "flow-pack")
-	if err != nil {
-		return result, fmt.Errorf("skillpack: read embedded flow-pack dir: %w", err)
+// platformGroups returns the ordered, de-duplicated set of flow-pack groups to
+// install for a given project platform. The common group is always first; a
+// recognised platform contributes its same-named group, except Kotlin
+// Multiplatform (kmm) which additionally pulls the android and ios groups.
+func platformGroups(platform string) []string {
+	groups := []string{commonGroup}
+
+	switch normalizePlatform(platform) {
+	case "kmm":
+		groups = append(groups, "kmm", "android", "ios")
+	case "android", "ios", "react-native", "flutter", "reactjs", "vuejs",
+		"angularjs", "golang", "java", "python", "nodejs":
+		groups = append(groups, normalizePlatform(platform))
 	}
 
-	for _, entry := range entries {
-		if !entry.IsDir() {
+	return dedupeStrings(groups)
+}
+
+func dedupeStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if _, ok := seen[value]; ok {
 			continue
 		}
-		skillName := entry.Name()
-		srcPath := "flow-pack/" + skillName + "/SKILL.md"
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+// skillsForPlatform returns the embedded skills to install for the platform,
+// across the common group plus any platform-specific groups.
+func skillsForPlatform(platform string) ([]skillRef, error) {
+	refs := make([]skillRef, 0)
+	for _, group := range platformGroups(platform) {
+		entries, err := fs.ReadDir(flowPackFS, "flow-pack/"+group)
+		if err != nil {
+			// A mapped group should always have an embedded folder; tolerate a
+			// missing one rather than failing the whole install.
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("skillpack: read embedded group %q: %w", group, err)
+		}
+		for _, entry := range entries {
+			if entry.IsDir() {
+				refs = append(refs, skillRef{Group: group, Name: entry.Name()})
+			}
+		}
+	}
+	return refs, nil
+}
+
+// Install copies every embedded SKILL.md for the project's platform into:
+// - <targetRepoDir>/.claude/skills/<skill>/SKILL.md
+// - <targetRepoDir>/.agents/skills/<skill>/SKILL.md
+// The common group is always installed; a platform contributes its own group
+// (kmm also pulls android + ios). An existing file is skipped when it already
+// declares the current PackVersion. All errors are collected and returned in
+// InstallResult.Errors; the function never panics.
+func Install(targetRepoDir string, platform string) (InstallResult, error) {
+	result := InstallResult{Target: targetRepoDir}
+
+	refs, err := skillsForPlatform(platform)
+	if err != nil {
+		return result, err
+	}
+
+	for _, ref := range refs {
+		srcPath := "flow-pack/" + ref.Group + "/" + ref.Name + "/SKILL.md"
 
 		srcBytes, err := flowPackFS.ReadFile(srcPath)
 		if err != nil {
@@ -85,7 +153,7 @@ func Install(targetRepoDir string) (InstallResult, error) {
 		}
 
 		for _, root := range installRoots {
-			destDir := filepath.Join(targetRepoDir, root.RootPath, skillName)
+			destDir := filepath.Join(targetRepoDir, root.RootPath, ref.Name)
 			destFile := filepath.Join(destDir, "SKILL.md")
 
 			if fileMatchesVersion(destFile, PackVersion) {
@@ -110,7 +178,9 @@ func Install(targetRepoDir string) (InstallResult, error) {
 	return result, nil
 }
 
-// IsInstalled returns true when the primary sentinel file exists in the .claude provider dir.
+// IsInstalled returns true when the primary sentinel file exists in each
+// provider dir. The sentinel is a common-group skill, so it is present for
+// every platform once the pack has been installed.
 func IsInstalled(targetRepoDir string) bool {
 	sentinels := []string{
 		filepath.Join(targetRepoDir, ".claude", "skills", "git-commit-format", "SKILL.md"),
@@ -132,23 +202,22 @@ func ProviderDirs() []string {
 	return out
 }
 
-func SkillNames() ([]string, error) {
-	entries, err := fs.ReadDir(flowPackFS, "flow-pack")
+// SkillNames returns the de-duplicated skill names that apply to the given
+// platform (common skills plus any platform-specific skills).
+func SkillNames(platform string) ([]string, error) {
+	refs, err := skillsForPlatform(platform)
 	if err != nil {
-		return nil, fmt.Errorf("skillpack: read embedded flow-pack dir: %w", err)
+		return nil, err
 	}
-
-	skills := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() {
-			skills = append(skills, entry.Name())
-		}
+	names := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		names = append(names, ref.Name)
 	}
-	return skills, nil
+	return dedupeStrings(names), nil
 }
 
-func Status(targetRepoDir string) (PackStatus, error) {
-	skills, err := SkillNames()
+func Status(targetRepoDir string, platform string) (PackStatus, error) {
+	refs, err := skillsForPlatform(platform)
 	if err != nil {
 		return PackStatus{}, err
 	}
@@ -157,13 +226,13 @@ func Status(targetRepoDir string) (PackStatus, error) {
 		PackVersion: PackVersion,
 		Installed:   true,
 		Current:     true,
-		Skills:      make([]SkillStatus, 0, len(skills)),
+		Skills:      make([]SkillStatus, 0, len(refs)),
 	}
 
-	for _, skillName := range skills {
-		skill := SkillStatus{Name: skillName}
+	for _, ref := range refs {
+		skill := SkillStatus{Name: ref.Name}
 		for _, provider := range providerStatuses {
-			path := filepath.Join(targetRepoDir, provider.RootPath, skillName, "SKILL.md")
+			path := filepath.Join(targetRepoDir, provider.RootPath, ref.Name, "SKILL.md")
 			_, statErr := os.Stat(path)
 			present := statErr == nil
 			current := present && fileMatchesVersion(path, PackVersion)

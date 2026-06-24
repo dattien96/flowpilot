@@ -315,10 +315,12 @@ export async function fetchGlobalEngineToolingStatus(): Promise<GlobalEngineTool
 export async function fetchProjectEngineStatus(
   projectId: string,
   workingDirectory: string,
+  platform?: string,
 ): Promise<ProjectEngineStatus> {
+  const platformSuffix = platform ? `&platform=${encodeURIComponent(platform)}` : "";
   const response = await fetch(
     new URL(
-      `/client/projects/${encodeURIComponent(projectId)}/engine/status?workingDirectory=${encodeURIComponent(workingDirectory)}`,
+      `/client/projects/${encodeURIComponent(projectId)}/engine/status?workingDirectory=${encodeURIComponent(workingDirectory)}${platformSuffix}`,
       RUNNER_URL,
     ).toString(),
     { cache: "no-store" },
@@ -333,6 +335,7 @@ export async function initProjectEngine(
   projectId: string,
   workingDirectory: string,
   trigger: ProjectEngineTrigger,
+  platform?: string,
 ): Promise<ProjectEngineStatus> {
   const response = await fetch(
     new URL(`/client/projects/${encodeURIComponent(projectId)}/engine/init`, RUNNER_URL).toString(),
@@ -345,6 +348,7 @@ export async function initProjectEngine(
       body: JSON.stringify({
         workingDirectory,
         trigger,
+        ...(platform ? { platform } : {}),
       }),
     },
   );
@@ -357,12 +361,13 @@ export async function initProjectEngine(
 export async function autoInitProjectEngine(
   projectId: string,
   bindings: ReadonlyArray<{ localPath: string }>,
+  platform?: string,
 ): Promise<void> {
   const paths = uniqueBindingPaths(bindings);
   await Promise.allSettled(
     paths.map(async (workingDirectory) => {
       try {
-        await initProjectEngine(projectId, workingDirectory, "bind");
+        await initProjectEngine(projectId, workingDirectory, "bind", platform);
       } catch (error) {
         console.warn(
           "[ProjectsSettings] bind-time engine init failed",

@@ -1,4 +1,17 @@
-export type ProjectPlatform = "android" | "ios" | "web" | "multi" | "nextjs" | "react";
+export type ProjectPlatform =
+  | "none"
+  | "android"
+  | "ios"
+  | "kmm"
+  | "react-native"
+  | "flutter"
+  | "reactjs"
+  | "vuejs"
+  | "angularjs"
+  | "golang"
+  | "java"
+  | "python"
+  | "nodejs";
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 export type ArtifactStorageProvider = "supabase" | "google_drive";
 

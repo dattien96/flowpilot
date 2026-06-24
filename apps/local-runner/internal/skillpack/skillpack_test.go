@@ -3,10 +3,12 @@ package skillpack
 import (
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"testing"
 )
 
-var expectedSkills = []string{
+var commonSkills = []string{
 	"git-commit-format",
 	"oracle-rule",
 	"audit-logging",
@@ -14,28 +16,18 @@ var expectedSkills = []string{
 	"context-discipline",
 }
 
-func TestInstall_CreatesFilesInAllProviderDirs(t *testing.T) {
+func TestInstall_CommonOnlyForNonePlatform(t *testing.T) {
 	dir := t.TempDir()
 
-	result, err := Install(dir)
+	result, err := Install(dir, "none")
 	if err != nil {
 		t.Fatalf("Install returned error: %v", err)
 	}
-
 	if len(result.Errors) > 0 {
 		t.Fatalf("Install reported errors: %v", result.Errors)
 	}
 
-	wantPaths := []string{
-		filepath.Join(dir, ".claude", "skills", "git-commit-format", "SKILL.md"),
-		filepath.Join(dir, ".agents", "skills", "git-commit-format", "SKILL.md"),
-	}
-	for _, path := range wantPaths {
-		if _, statErr := os.Stat(path); statErr != nil {
-			t.Errorf("expected file missing: %s", path)
-		}
-	}
-	for _, skill := range expectedSkills {
+	for _, skill := range commonSkills {
 		if _, statErr := os.Stat(filepath.Join(dir, ".claude", "skills", skill, "SKILL.md")); statErr != nil {
 			t.Errorf("expected Claude skill missing for %s", skill)
 		}
@@ -45,18 +37,69 @@ func TestInstall_CreatesFilesInAllProviderDirs(t *testing.T) {
 		if _, statErr := os.Stat(filepath.Join(dir, ".claude", "skills", "flowpilot", skill, "SKILL.md")); !os.IsNotExist(statErr) {
 			t.Errorf("unexpected nested flowpilot dir for Claude skill %s", skill)
 		}
-		if _, statErr := os.Stat(filepath.Join(dir, ".agents", "skills", "flowpilot", skill, "SKILL.md")); !os.IsNotExist(statErr) {
-			t.Errorf("unexpected nested flowpilot dir for agents skill %s", skill)
-		}
 	}
 
-	// 5 skills * 2 physical install roots = 10 files installed
-	want := len(expectedSkills) * len(installRoots)
+	// A none/common-only platform must NOT install any platform-specific skill.
+	if _, statErr := os.Stat(filepath.Join(dir, ".claude", "skills", "android-conventions", "SKILL.md")); !os.IsNotExist(statErr) {
+		t.Error("android-conventions should not be installed for platform=none")
+	}
+
+	// common skills * 2 physical install roots
+	want := len(commonSkills) * len(installRoots)
 	if len(result.Installed) != want {
 		t.Errorf("Installed count = %d, want %d", len(result.Installed), want)
 	}
 	if len(result.Skipped) != 0 {
 		t.Errorf("Skipped count = %d, want 0", len(result.Skipped))
+	}
+}
+
+func TestInstall_AndroidIncludesCommonAndAndroid(t *testing.T) {
+	dir := t.TempDir()
+
+	result, err := Install(dir, "android")
+	if err != nil {
+		t.Fatalf("Install returned error: %v", err)
+	}
+	if len(result.Errors) > 0 {
+		t.Fatalf("Install reported errors: %v", result.Errors)
+	}
+
+	if _, statErr := os.Stat(filepath.Join(dir, ".claude", "skills", "android-conventions", "SKILL.md")); statErr != nil {
+		t.Error("android-conventions should be installed for platform=android")
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, ".claude", "skills", "git-commit-format", "SKILL.md")); statErr != nil {
+		t.Error("common skill git-commit-format should be installed for platform=android")
+	}
+
+	// (common + 1 android skill) * 2 roots
+	want := (len(commonSkills) + 1) * len(installRoots)
+	if len(result.Installed) != want {
+		t.Errorf("Installed count = %d, want %d", len(result.Installed), want)
+	}
+}
+
+func TestInstall_KMMIncludesCommonAndroidIosAndKmm(t *testing.T) {
+	dir := t.TempDir()
+
+	result, err := Install(dir, "kmm")
+	if err != nil {
+		t.Fatalf("Install returned error: %v", err)
+	}
+	if len(result.Errors) > 0 {
+		t.Fatalf("Install reported errors: %v", result.Errors)
+	}
+
+	for _, skill := range []string{"kmm-conventions", "android-conventions", "ios-conventions"} {
+		if _, statErr := os.Stat(filepath.Join(dir, ".claude", "skills", skill, "SKILL.md")); statErr != nil {
+			t.Errorf("expected %s installed for platform=kmm", skill)
+		}
+	}
+
+	// (common + kmm + android + ios) * 2 roots
+	want := (len(commonSkills) + 3) * len(installRoots)
+	if len(result.Installed) != want {
+		t.Errorf("Installed count = %d, want %d", len(result.Installed), want)
 	}
 }
 
@@ -67,7 +110,7 @@ func TestIsInstalled_TrueAfterInstall(t *testing.T) {
 		t.Fatal("IsInstalled should be false before install")
 	}
 
-	if _, err := Install(dir); err != nil {
+	if _, err := Install(dir, "none"); err != nil {
 		t.Fatalf("Install failed: %v", err)
 	}
 
@@ -79,7 +122,7 @@ func TestIsInstalled_TrueAfterInstall(t *testing.T) {
 func TestInstall_SkipsExistingSameVersionFiles(t *testing.T) {
 	dir := t.TempDir()
 
-	first, err := Install(dir)
+	first, err := Install(dir, "android")
 	if err != nil {
 		t.Fatalf("first Install returned error: %v", err)
 	}
@@ -87,7 +130,7 @@ func TestInstall_SkipsExistingSameVersionFiles(t *testing.T) {
 		t.Fatalf("first Install errors: %v", first.Errors)
 	}
 
-	second, err := Install(dir)
+	second, err := Install(dir, "android")
 	if err != nil {
 		t.Fatalf("second Install returned error: %v", err)
 	}
@@ -99,7 +142,7 @@ func TestInstall_SkipsExistingSameVersionFiles(t *testing.T) {
 		t.Errorf("second Install.Installed = %d, want 0 (all should be skipped)", len(second.Installed))
 	}
 
-	want := len(expectedSkills) * len(installRoots)
+	want := (len(commonSkills) + 1) * len(installRoots)
 	if len(second.Skipped) != want {
 		t.Errorf("second Install.Skipped = %d, want %d", len(second.Skipped), want)
 	}
@@ -117,7 +160,7 @@ func TestInstall_ReinstallsWhenVersionMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := Install(dir)
+	result, err := Install(dir, "none")
 	if err != nil {
 		t.Fatalf("Install returned error: %v", err)
 	}
@@ -128,6 +171,63 @@ func TestInstall_ReinstallsWhenVersionMismatch(t *testing.T) {
 	// The stale file must have been overwritten with the current pack version.
 	if !fileMatchesVersion(stalePath, PackVersion) {
 		t.Errorf("stale file was not updated to PackVersion %d", PackVersion)
+	}
+}
+
+func TestPlatformGroups(t *testing.T) {
+	cases := map[string][]string{
+		"":                       {"common"},
+		"none":                   {"common"},
+		"unknown-thing":          {"common"},
+		"android":                {"common", "android"},
+		"ios":                    {"common", "ios"},
+		"Android":                {"common", "android"},
+		"  python  ":             {"common", "python"},
+		"kmm":                    {"common", "kmm", "android", "ios"},
+		"react-native":           {"common", "react-native"},
+		"nodejs":                 {"common", "nodejs"},
+	}
+	for input, want := range cases {
+		got := platformGroups(input)
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("platformGroups(%q) = %v, want %v", input, got, want)
+		}
+	}
+}
+
+func TestSkillNames_IncludesPlatformSkill(t *testing.T) {
+	names, err := SkillNames("android")
+	if err != nil {
+		t.Fatalf("SkillNames error: %v", err)
+	}
+	sort.Strings(names)
+	if !contains(names, "git-commit-format") {
+		t.Error("expected common skill git-commit-format in SkillNames(android)")
+	}
+	if !contains(names, "android-conventions") {
+		t.Error("expected android-conventions in SkillNames(android)")
+	}
+}
+
+func TestStatus_CurrentAfterInstall(t *testing.T) {
+	dir := t.TempDir()
+
+	if _, err := Install(dir, "android"); err != nil {
+		t.Fatalf("Install failed: %v", err)
+	}
+
+	status, err := Status(dir, "android")
+	if err != nil {
+		t.Fatalf("Status error: %v", err)
+	}
+	if !status.Installed {
+		t.Error("Status.Installed = false, want true after install")
+	}
+	if !status.Current {
+		t.Error("Status.Current = false, want true after install")
+	}
+	if status.PackVersion != PackVersion {
+		t.Errorf("Status.PackVersion = %d, want %d", status.PackVersion, PackVersion)
 	}
 }
 
@@ -147,4 +247,13 @@ func TestFileMatchesVersion(t *testing.T) {
 	if fileMatchesVersion(f.Name(), 2) {
 		t.Error("expected no match for version 2")
 	}
+}
+
+func contains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }

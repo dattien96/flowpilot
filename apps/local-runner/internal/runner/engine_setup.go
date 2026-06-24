@@ -23,6 +23,7 @@ const (
 type engineSetupRequest struct {
 	WorkingDirectory string `json:"workingDirectory"`
 	Trigger          string `json:"trigger,omitempty"`
+	Platform         string `json:"platform,omitempty"`
 }
 
 type EngineStatusResponse struct {
@@ -72,7 +73,8 @@ func (s *InteractiveService) handleGetEngineStatus(w http.ResponseWriter, r *htt
 		return
 	}
 
-	status := s.buildEngineStatusResponse(r.PathValue("projectId"), workingDirectory, nil, nil)
+	platform := strings.TrimSpace(r.URL.Query().Get("platform"))
+	status := s.buildEngineStatusResponse(r.PathValue("projectId"), workingDirectory, platform, nil, nil)
 	writeInteractiveJSON(w, http.StatusOK, status)
 }
 
@@ -100,7 +102,7 @@ func (s *InteractiveService) handleInitEngine(w http.ResponseWriter, r *http.Req
 		trigger = engineInitTriggerManual
 	}
 
-	status, initState := s.runEngineInit(r.PathValue("projectId"), workingDirectory, trigger)
+	status, initState := s.runEngineInit(r.PathValue("projectId"), workingDirectory, strings.TrimSpace(request.Platform), trigger)
 	status.LastInit = initState
 	writeInteractiveJSON(w, http.StatusOK, status)
 }
@@ -132,13 +134,14 @@ func (s *InteractiveService) resolveEngineWorkingDirectory(value string) (string
 func (s *InteractiveService) buildEngineStatusResponse(
 	projectID string,
 	workingDirectory string,
+	platform string,
 	precomputedTooling []tooling.ToolStatus,
 	extraWarnings []string,
 ) EngineStatusResponse {
 	dotFlowpilotDir := filepath.Join(workingDirectory, ".flowpilot")
 	warnings := append([]string(nil), extraWarnings...)
 	toolStatuses := append([]tooling.ToolStatus(nil), precomputedTooling...)
-	skillPackState, err := skillpack.Status(workingDirectory)
+	skillPackState, err := skillpack.Status(workingDirectory, platform)
 	if err != nil {
 		warnings = append(warnings, fmt.Sprintf("skill-pack status warning: %v", err))
 	}
@@ -172,13 +175,14 @@ func (s *InteractiveService) buildEngineStatusResponse(
 func (s *InteractiveService) runEngineInit(
 	projectID string,
 	workingDirectory string,
+	platform string,
 	trigger string,
 ) (EngineStatusResponse, *EngineInitState) {
 	dotFlowpilotDir := filepath.Join(workingDirectory, ".flowpilot")
 	attemptedAt := time.Now().UTC().Format(time.RFC3339)
 	warnings := []string{}
 
-	currentSkillPack, err := skillpack.Status(workingDirectory)
+	currentSkillPack, err := skillpack.Status(workingDirectory, platform)
 	if err != nil {
 		warnings = append(warnings, fmt.Sprintf("skill-pack status warning: %v", err))
 	}
@@ -200,11 +204,11 @@ func (s *InteractiveService) runEngineInit(
 		if err := saveEngineInitState(dotFlowpilotDir, initState); err != nil {
 			warnings = append(warnings, fmt.Sprintf("engine-init state warning: %v", err))
 		}
-		return s.buildEngineStatusResponse(projectID, workingDirectory, nil, warnings), initState
+		return s.buildEngineStatusResponse(projectID, workingDirectory, platform, nil, warnings), initState
 	}
 
 	statuses, toolingErr := tooling.CheckAll(workingDirectory, dotFlowpilotDir)
-	installResult, installErr := skillpack.Install(workingDirectory)
+	installResult, installErr := skillpack.Install(workingDirectory, platform)
 
 	steps := []EngineInitStepResult{
 		buildEngineStep("tooling_check", toolingErr, fmt.Sprintf("%d tool entries refreshed", len(statuses))),
@@ -250,7 +254,7 @@ func (s *InteractiveService) runEngineInit(
 		warnings = append(warnings, fmt.Sprintf("engine-init state warning: %v", err))
 	}
 
-	return s.buildEngineStatusResponse(projectID, workingDirectory, statuses, warnings), initState
+	return s.buildEngineStatusResponse(projectID, workingDirectory, platform, statuses, warnings), initState
 }
 
 func buildEngineStep(step string, err error, detail string) EngineInitStepResult {
