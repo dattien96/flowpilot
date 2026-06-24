@@ -1,14 +1,14 @@
 ---
 name: flutter-conventions
-description: Flutter project conventions for FlowPilot. Placeholder — expand with platform-specific rules.
-version: 2
+description: Flutter project conventions for FlowPilot. Placeholder â€” expand with platform-specific rules.
+version: 3
 ---
 
 # Flutter conventions
 
 Starter skill installed for **Flutter** projects alongside the common FlowPilot skill pack.
 
-Add Flutter-specific conventions here — widget/state-management structure, naming, `pubspec` rules, testing, and build rules the AI should follow.
+Add Flutter-specific conventions here â€” widget/state-management structure, naming, `pubspec` rules, testing, and build rules the AI should follow.
 
 ## TODO
 

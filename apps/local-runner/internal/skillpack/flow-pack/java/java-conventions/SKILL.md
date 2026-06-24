@@ -1,14 +1,14 @@
 ---
 name: java-conventions
-description: Java project conventions for FlowPilot. Placeholder — expand with language-specific rules.
-version: 2
+description: Java project conventions for FlowPilot. Placeholder â€” expand with language-specific rules.
+version: 3
 ---
 
 # Java conventions
 
 Starter skill installed for **Java** projects alongside the common FlowPilot skill pack.
 
-Add Java-specific conventions here — package structure, naming, Maven/Gradle build rules, JUnit testing, and design patterns the AI should follow.
+Add Java-specific conventions here â€” package structure, naming, Maven/Gradle build rules, JUnit testing, and design patterns the AI should follow.
 
 ## TODO
 

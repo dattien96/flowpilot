@@ -1,7 +1,7 @@
 ---
 name: phase-doc
 description: Follow the SS-13 document contract when writing or updating requirements and specification docs.
-version: 2
+version: 3
 ---
 
 # phase-doc

@@ -1,14 +1,14 @@
 ---
 name: python-conventions
-description: Python project conventions for FlowPilot. Placeholder — expand with language-specific rules.
-version: 2
+description: Python project conventions for FlowPilot. Placeholder â€” expand with language-specific rules.
+version: 3
 ---
 
 # Python conventions
 
 Starter skill installed for **Python** projects alongside the common FlowPilot skill pack.
 
-Add Python-specific conventions here — package/module layout, typing rules, virtualenv/poetry, `pytest` patterns, and style rules the AI should follow.
+Add Python-specific conventions here â€” package/module layout, typing rules, virtualenv/poetry, `pytest` patterns, and style rules the AI should follow.
 
 ## TODO
 

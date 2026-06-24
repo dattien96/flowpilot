@@ -1,7 +1,7 @@
 ---
 name: git-commit-format
 description: Enforce the FlowPilot commit message contract on every non-merge commit.
-version: 2
+version: 3
 ---
 
 # git-commit-format

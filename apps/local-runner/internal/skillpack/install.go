@@ -14,7 +14,7 @@ import (
 //go:embed flow-pack
 var flowPackFS embed.FS
 
-const PackVersion = 2
+const PackVersion = 3
 
 // commonGroup is always installed regardless of project platform.
 const commonGroup = "common"
