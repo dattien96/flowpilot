@@ -685,103 +685,252 @@ head -5 my-sample-app/.claude/skills/git-commit-format/SKILL.md
 
 ---
 
-### E2E-6 — Flow Gate: code change without CA note → reprompt ✅
+### E2E-6 — Flow Gate: code change without CA note → reprompt
+
+> **Gate mode prerequisite:** gate mode defaults to `enforce` since bind auto-creates
+> `.flowpilot/settings/gate-config.json` with `{"gate_mode":"enforce"}`. No manual setup needed.
+> Confirm in the Engine tab → Flow Gate panel: dropdown shows "Enforce (default)".
 
 **Steps:**
-1. Start a workflow task in FlowPilot on the test project.
-2. Give the AI an instruction that will cause it to edit a source file (e.g. "add a comment to main.go").
-3. Let the turn complete **without** the AI writing a `change-audit/CA-*.md` note.
 
-**How it works:**
-After `finishTurn()` returns and `rs.turnInFlight = false`, `runTurn` calls `s.runFlowGate(ctx, rs, turnID, fin)`. Inside `gate_hook.go`:
-1. `ObserveGitDiff(cwd)` sees the modified `.go` file.
-2. `Evaluate(tr, rules)` fires `r-ca` → `action: reprompt`.
-3. `Enforce(violations, "warn")` downgrades reprompt to warn in warn mode (default), OR keeps reprompt in enforce mode.
-4. `EventFlowGateViolation` event is emitted to the SSE stream.
-5. `startTurn(runID, TurnInput{Prompt: result.Message})` sends the follow-up turn.
+1. In FlowPilot, open the Engine tab (desktop app → Engine). Confirm the selected project's
+   Flow Gate dropdown reads **"Enforce (default) — reprompt + block on violations"**.
+   If it reads "Warn only", switch it and click **Save**.
 
-**Verify:**
-- The SSE stream contains a `flow_gate_violation` event with the reprompt message.
-- A follow-up turn is sent automatically: "You changed code but did not write a change-audit note. Please write one now."
-- After `maxFlowGateReprompts` (2) attempts, no more auto-reprompts fire.
-- Step is NOT transitioned to `RunStatusCompleted` while reprompting.
+2. Start a workflow task on the test project.
+
+3. Give the AI a prompt that will cause it to edit a source file but **not** write a
+   `change-audit/CA-*.md` note — e.g.:
+   > "Add a helper comment to the top of main.go."
+
+4. Let the turn run to completion. Do not interrupt.
+
+**What to observe (primary — no DevTools required):**
+
+- **A second turn fires automatically** within ~1 s of the first turn ending. The runner
+  calls `startTurn` with the prompt:
+  > "Flow gate: code changed but no change-audit note found"
+- The step does NOT transition to `RunStatusCompleted` — it remains in-progress while
+  the reprompt turn is active.
+- After the AI responds to the reprompt (ideally writing the CA note), if it still
+  doesn't write one, a third auto-turn fires (up to `maxFlowGateReprompts = 2` attempts).
+- After 2 reprompts without a CA note, no further auto-turns fire and the step stays
+  blocked until the user intervenes.
+
+**What to observe (secondary — browser DevTools):**
+
+Open DevTools → Network → filter for `events/stream`. In the response body look for a
+newline-delimited JSON line of:
+```json
+{"type":"flow_gate_violation","error":"Flow gate: code changed but no change-audit note found","providerTurnId":"<id>"}
+```
+
+> **Note:** The desktop UI does not yet render a violation card inline — the event is
+> emitted but the frontend has no `flow_gate_violation` handler. The blocking and reprompt
+> behaviour work end-to-end regardless of this display gap.
+
+**Verify in runner logs (optional):**
+```powershell
+# Look for the gate hook log lines in runner stdout
+# [gate] r-ca violation: code changed but no change-audit note found
+# [gate] reprompt attempt 1/2
+```
 
 ---
 
-### E2E-7 — Flow Gate: code change WITH CA note → passes ✅
+### E2E-7 — Flow Gate: code change WITH CA note → passes
+
+> Same gate mode as E2E-6 — no mode change needed.
 
 **Steps:**
-1. Same setup as E2E-6.
-2. This time, tell the AI: "edit main.go and write a change-audit note".
+
+1. Start a workflow task on the test project.
+
+2. Give the AI a prompt that explicitly asks for both the edit AND a CA note — e.g.:
+   > "Add a helper comment to the top of main.go. Then write a change-audit note in
+   > `change-audit/CA-<today>.md` documenting the change."
+
+3. Let the turn run to completion.
+
+**What to observe:**
+
+- No second auto-turn fires after the first turn ends.
+- The step transitions to `RunStatusCompleted`.
+- In the project directory:
+  ```powershell
+  git status
+  # Should show: both main.go (modified) AND change-audit/CA-*.md (new file)
+  ```
+- No `flow_gate_violation` JSON line appears in the `events/stream` DevTools response.
+
+**Why it passes:** `ObserveGitDiff` sees the `change-audit/CA-*.md` as Added in the diff →
+`HasChangeAuditNote(diff)` returns `true` → `r-ca` trigger condition is not met → zero
+violations → `Enforce` returns `"pass"` → gate returns `false` → finalizer runs normally.
+
+---
+
+### E2E-8 — Regression oracle: break a test → step blocked
+
+> `r-tests` and `r-reg` bypass `gate_mode` entirely (`isAlwaysBlock` in `enforce.go`).
+> This test works in both enforce and warn modes.
+
+> **Baseline note:** The baseline is captured lazily on the **first gate call** for a
+> project (when `.flowpilot/guard/test_baseline.json` is absent). That means the first
+> task on a fresh project captures the baseline AFTER the AI's first turn — with whatever
+> test state the code is in at that moment. To guarantee the baseline captures a clean
+> green state, complete a harmless task first (step A below).
+
+**Steps:**
+
+**Step A — prime a clean baseline (one-time per test project):**
+
+1. Delete any stale baseline:
+   ```powershell
+   Remove-Item "C:\test-projects\my-sample-app\.flowpilot\guard\test_baseline.json" -ErrorAction SilentlyContinue
+   ```
+
+2. Confirm tests pass cleanly in the project:
+   ```powershell
+   cd C:\test-projects\my-sample-app
+   go test -v ./...
+   # All tests: --- PASS: TestXxx
+   ```
+
+3. Start a harmless workflow task (no code changes):
+   > "Tell me what the main package does. Do not edit any files."
+
+4. Let the turn complete. The gate fires, finds no code changes, and captures the baseline
+   on first call. Verify:
+   ```powershell
+   cat "C:\test-projects\my-sample-app\.flowpilot\guard\test_baseline.json"
+   # "green_tests": ["TestFoo", "TestBar", ...]  ← must be non-empty
+   # "test_command": "go test -v ./..."
+   ```
+   > If `green_tests` is empty, the project has no tests or they all fail — pick a different test project.
+
+**Step B — break a test:**
+
+5. Start a new workflow task. Give the AI a prompt that will cause it to break an existing
+   test WITHOUT touching the test file itself — e.g.:
+   > "In main.go, change the return value of `Add(a, b int)` from `a + b` to `a - b`."
+
+6. Let the turn complete.
+
+**What to observe:**
+
+- The step does NOT transition to `RunStatusCompleted`.
+- `runFlowGate` returns `true` → `completed = false` → `finalizer.Finalize` is not called.
+- In DevTools `events/stream`:
+  ```json
+  {"type":"flow_gate_violation","error":"Flow gate: Tests failed: TestAdd","providerTurnId":"<id>"}
+  ```
+- The gate message: `"Previously-passing tests now fail: TestAdd. Fix the code; do not change these tests."`
+- The modified test file (e.g. `add_test.go`) is **not** in the git diff — only `main.go` is.
+
+**Verify baseline was used:**
+```powershell
+cat "C:\test-projects\my-sample-app\.flowpilot\guard\test_baseline.json"
+# "green_tests" includes "TestAdd"  ← confirmed it was in baseline
+```
+
+---
+
+### E2E-9 — Oracle tampering detection
+
+> `r-tamper` is always `action: "warn"` in the runner (hardcoded in `gate_hook.go`).
+> The step **completes** regardless of gate mode — the violation is surfaced as an event
+> only. There is no block path for tampering in v1.
+
+**Steps:**
+
+1. Ensure the baseline exists (run Step A from E2E-8 first if needed).
+
+2. Start a workflow task. Give the AI a prompt that forces it to edit both a source file
+   AND a pre-existing test file — e.g.:
+   > "In `add_test.go`, change the expected value in `TestAdd` from `5` to `3` so it
+   > matches the current (broken) implementation. Also update `main.go` accordingly."
+
 3. Let the turn complete.
 
-**Verify:**
-- `Evaluate(tr, rules)` returns no violations (CA file detected in `GitDiff`).
-- No `flow_gate_violation` event emitted.
-- Step transitions to `RunStatusCompleted`.
-- `git status` shows both the source file change and a new `change-audit/CA-*.md` file.
+**What to observe:**
+
+- `RunOracle` sees `add_test.go` with `Status: "M"` in the diff → `IsTestFile` → true
+  → `oracle.HasTampering = true`.
+- `gate_hook.go` appends violation: `r-tamper / "pre-existing test file modified: add_test.go"`.
+- `Enforce` treats `r-tamper` action `"warn"` → highest action across all violations is
+  `"warn"` (or `"block"` if other rules also fired) → gate emits event but does not block
+  unless another rule independently blocks.
+- **Step completes** (unless another rule independently blocked it).
+- In DevTools `events/stream`:
+  ```json
+  {"type":"flow_gate_violation","error":"Flow gate: pre-existing test file modified: add_test.go","providerTurnId":"<id>"}
+  ```
+- `git status` shows both `main.go` and `add_test.go` modified.
+
+> To make tampering block in a future iteration: change the `r-tamper` rule's `Action`
+> from `"warn"` to `"block"` in `gate_hook.go` (or expose it as a configurable rule).
 
 ---
 
-### E2E-8 — Regression oracle: break a test → step blocked ✅
+### E2E-10 — Drive sync: shared files appear in Drive (requires Drive connected)
 
-**Steps** (test project must have at least one passing test):
-1. Start a task. `CaptureBaseline(cwd, dotFP)` runs inside `runFlowGate` on the first gate call and writes `.flowpilot/guard/test_baseline.json`.
-2. Manually (or via AI instruction) modify a source file in a way that breaks an existing test — **without modifying the test file itself**.
-3. Complete the turn.
-
-**How it works:**
-`RunOracle(cwd, baseline, diff)` computes `regressed = baseline.green ∩ now_red ∩ {not in GitDiff}`. `HasRegression=true` is set. This becomes `failedTests` in `TurnResult.Tests.Failed`, firing `r-tests` → block.
-
-**Verify:**
-- Step blocked with `EventFlowGateViolation`: `"Previously-passing tests now fail: [TestXxx]. Fix the code; do not change these tests."`
-- `runFlowGate` returns `true` → `completed = false` → `finalizer.Finalize` is NOT called.
-- The test file is NOT in `GitDiff`.
-
----
-
-### E2E-9 — Oracle tampering detection ✅
+**Prerequisites:**
+- The test project is bound to a FlowPilot project that has Google Drive configured
+  (connected to `cambt1001@gmail.com` per memory).
+- The engine has been initialised at least once (`.flowpilot/` directory exists).
 
 **Steps:**
-1. Start a task on the test project.
-2. Have the AI modify both a source file AND an existing test file (e.g. weaken an assertion to make it pass).
 
-**How it works:**
-`RunOracle` detects the pre-existing test file in `GitDiff`. `oracle.HasTampering = true`. `gate_hook.go` appends a `r-tamper` warn violation.
+1. In FlowPilot, bind or re-init the engine for the test project:
+   - Engine tab → select project + binding → click **"Initialize / Re-sync Project"**
+   - Or trigger via the bind flow (Settings → project binding).
 
-**Verify:**
-- `EventFlowGateViolation` emitted with `r-tamper` detail: `"pre-existing test file modified: [filename]"`.
-- With `gate_mode: warn` (default), step still completes but violation is surfaced on the desktop.
-- With `gate_mode: enforce`, step is blocked pending user confirmation.
+2. Wait for init to complete. Check the `engine-init.json` for the sync outcome:
+   ```powershell
+   cat "C:\test-projects\my-sample-app\.flowpilot\engine-init.json" | python -m json.tool
+   ```
+   Look for the `contextsync_manifest` step:
+   ```json
+   {"step": "contextsync_manifest", "outcome": "ok",
+    "detail": "manifest ok; 3 files synced to drive, 0 skipped"}
+   ```
+   If `detail` says `"0 files skipped (drive not connected)"`, Drive is not linked — check
+   the project's Drive connection in FlowPilot settings.
 
----
+3. Open Google Drive (as `cambt1001@gmail.com`) → navigate to the project's chat folder
+   → `context-engine/` subfolder.
 
-### E2E-10 — Drive sync: shared files appear in Drive ✅ (requires Drive connected)
+**Verify present (shared data):**
+- `feature_history.ndjson` ✓
+- `features.ndjson` ✓
+- `flow-rules.json` ✓
+- `manifest.json` ✓ (contains SHA256 entries for the three files above)
 
-**Steps** (Google Drive connected):
-1. Bind the test project to a Drive-enabled project in FlowPilot.
-2. Complete any workflow step.
+**Verify absent (machine-local data — must NOT appear in Drive):**
+- `tooling.json` ✗
+- `guard/test_baseline.json` ✗
 
-**Verify in Google Drive** (under the project's chat folder → `context-engine/`):
-- `feature_history.ndjson` present.
-- `features.ndjson` present.
-- `flow-rules.json` present.
-- `manifest.json` present with correct SHA256 values.
-- `tooling.json` and `guard/test_baseline.json` are **absent** (machine-local, never synced).
+**Verify manifest integrity:**
+```powershell
+# Local manifest
+cat "C:\test-projects\my-sample-app\.flowpilot\manifest.json" | python -m json.tool
+# Each entry: {"path": "...", "sha256": "...", "size": N}
+# SHA256 should match the file in Drive
+```
 
 ---
 
 ### E2E summary
 
-| Test | Available now | Requires wiring |
-|---|---|---|
-| E2E-1 Engine store created on bind | ✅ | — |
-| E2E-2 Tooling health in tooling.json | ✅ | — |
-| E2E-3 Feature history from real git log | ✅ | — |
-| E2E-4 NL resolves to feature key | ✅ | — |
-| E2E-5 Skill pack auto-installed | ✅ | — |
-| E2E-6 Gate reprompts on missing CA note | ✅ | — |
-| E2E-7 Gate passes when CA note present | ✅ | — |
-| E2E-8 Regression oracle blocks step | ✅ | — |
-| E2E-9 Oracle flags test tampering | ✅ | — |
-| E2E-10 Shared files sync to Drive | ✅ (requires Drive connected) | — |
+| Test | Status | Gate mode needed | Notes |
+|---|---|---|---|
+| E2E-1 Engine store created on bind | ✅ | any | — |
+| E2E-2 Tooling health in tooling.json | ✅ | any | — |
+| E2E-3 Feature history from real git log | ✅ | any | — |
+| E2E-4 NL resolves to feature key | ✅ | any | — |
+| E2E-5 Skill pack auto-installed | ✅ | any | — |
+| E2E-6 Gate reprompts on missing CA note | ✅ | **enforce** (default) | Violation visible in DevTools only — no desktop card yet |
+| E2E-7 Gate passes when CA note present | ✅ | enforce or warn | Step completes normally |
+| E2E-8 Regression oracle blocks step | ✅ | any (always blocks) | Prime baseline first with a harmless task |
+| E2E-9 Oracle flags test tampering | ✅ | any (always warn) | Step completes; violation in DevTools only |
+| E2E-10 Shared files sync to Drive | ✅ | any | Requires Drive connected to project |
