@@ -120,6 +120,13 @@ func HasChangeAuditNote(diff []ChangedFile) bool {
 
 func HasBugFixDoc(diff []ChangedFile) bool {
 	for _, f := range diff {
+		// Exclude FORMAT-REFERENCE-*.md files — they are scaffold templates, not real
+		// BugFix documents. The reqscaffold creates these in the target project on bind;
+		// without this guard, the untracked template causes HasBugFixDoc to return true,
+		// silently suppressing the r-bug violation. (BUG-141)
+		if strings.Contains(f.Path, "FORMAT-REFERENCE-") {
+			continue
+		}
 		if strings.Contains(f.Path, "requirements/09-BugFix") || strings.Contains(f.Path, "BUG-") {
 			return true
 		}

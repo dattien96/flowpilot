@@ -333,3 +333,27 @@ func TestHasBugFixDoc(t *testing.T) {
 		t.Error("expected HasBugFixDoc to return true")
 	}
 }
+
+// The reqscaffold creates requirements/09-BugFix/FORMAT-REFERENCE-BUGFIX.md in bound
+// projects. Without the guard, HasBugFixDoc would match on "requirements/09-BugFix" and
+// return true, silently suppressing the r-bug violation even when no real BUG doc was
+// written. (BUG-141)
+func TestHasBugFixDocIgnoresFormatReferenceFile(t *testing.T) {
+	diff := []ChangedFile{
+		{Path: "requirements/09-BugFix/FORMAT-REFERENCE-BUGFIX.md", Status: "A"},
+		{Path: "calc.go", Status: "M"},
+	}
+	if HasBugFixDoc(diff) {
+		t.Error("FORMAT-REFERENCE-BUGFIX.md must not count as a bugfix doc")
+	}
+}
+
+func TestHasBugFixDocRealDocAlongsideFormatReference(t *testing.T) {
+	diff := []ChangedFile{
+		{Path: "requirements/09-BugFix/FORMAT-REFERENCE-BUGFIX.md", Status: "A"},
+		{Path: "requirements/09-BugFix/done/BUG-141-fix-something.md", Status: "A"},
+	}
+	if !HasBugFixDoc(diff) {
+		t.Error("a real BUG doc alongside FORMAT-REFERENCE should still return true")
+	}
+}
