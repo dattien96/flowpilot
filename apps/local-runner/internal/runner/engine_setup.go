@@ -189,6 +189,19 @@ func (s *InteractiveService) runEngineInit(
 		warnings = append(warnings, fmt.Sprintf("skill-pack status warning: %v", err))
 	}
 
+	// Always run an incremental ledger update on bind when .flowpilot already exists.
+	// shouldSkipBindInit may short-circuit the full init, which would leave new commits
+	// invisible to the oracle until the next manual re-init or post-commit hook fires.
+	// changeledger.Build is cursor-based so this is cheap (only new commits processed).
+	if trigger == engineInitTriggerBind {
+		if _, statErr := os.Stat(dotFlowpilotDir); statErr == nil {
+			_ = changeledger.Build(workingDirectory, dotFlowpilotDir)
+			if l, lErr := changeledger.New(dotFlowpilotDir); lErr == nil {
+				_, _ = featurecatalog.Build(workingDirectory, l, dotFlowpilotDir)
+			}
+		}
+	}
+
 	if shouldSkipBindInit(trigger, dotFlowpilotDir, currentSkillPack) {
 		initState := &EngineInitState{
 			Trigger:          trigger,
