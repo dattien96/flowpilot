@@ -36,8 +36,8 @@ func TestDetectTestCommandGoMod(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd := DetectTestCommand(dir)
-	if cmd != "go test ./..." {
-		t.Errorf("expected 'go test ./...', got %q", cmd)
+	if cmd != "go test -v ./..." {
+		t.Errorf("expected 'go test -v ./...', got %q", cmd)
 	}
 }
 
@@ -71,8 +71,8 @@ func TestDetectTestCommandPytestIni(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd := DetectTestCommand(dir)
-	if cmd != "pytest -q" {
-		t.Errorf("expected 'pytest -q', got %q", cmd)
+	if cmd != "pytest -v" {
+		t.Errorf("expected 'pytest -v', got %q", cmd)
 	}
 }
 
@@ -82,8 +82,8 @@ func TestDetectTestCommandPyproject(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd := DetectTestCommand(dir)
-	if cmd != "pytest -q" {
-		t.Errorf("expected 'pytest -q', got %q", cmd)
+	if cmd != "pytest -v" {
+		t.Errorf("expected 'pytest -v', got %q", cmd)
 	}
 }
 
@@ -174,7 +174,7 @@ func TestCaptureAndLoadBaseline(t *testing.T) {
 		t.Errorf("expected empty TestCmd for unknown project, got %q", bl.TestCmd)
 	}
 
-	// Create go.mod so DetectTestCommand returns "go test ./..."
+	// Create go.mod so DetectTestCommand returns "go test -v ./..."
 	if err := os.WriteFile(filepath.Join(repoDir, "go.mod"), []byte("module example\n\ngo 1.21\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -182,8 +182,8 @@ func TestCaptureAndLoadBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CaptureBaseline with go.mod: %v", err)
 	}
-	if bl2.TestCmd != "go test ./..." {
-		t.Errorf("expected 'go test ./...', got %q", bl2.TestCmd)
+	if bl2.TestCmd != "go test -v ./..." {
+		t.Errorf("expected 'go test -v ./...', got %q", bl2.TestCmd)
 	}
 	if bl2.CapturedAt == "" {
 		t.Error("CapturedAt should be set")

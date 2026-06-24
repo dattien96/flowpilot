@@ -29,7 +29,9 @@ func IsTestFile(path string) bool {
 
 func DetectTestCommand(repoDir string) string {
 	if _, err := os.Stat(filepath.Join(repoDir, "go.mod")); err == nil {
-		return "go test ./..."
+		// -v is required: without it Go only prints "ok package/path" with no per-test
+		// "--- PASS:" / "--- FAIL:" lines, so the baseline captures zero test names.
+		return "go test -v ./..."
 	}
 	if _, err := os.Stat(filepath.Join(repoDir, "package.json")); err == nil {
 		data, err := os.ReadFile(filepath.Join(repoDir, "package.json"))
@@ -44,10 +46,11 @@ func DetectTestCommand(repoDir string) string {
 		return ""
 	}
 	if _, err := os.Stat(filepath.Join(repoDir, "pytest.ini")); err == nil {
-		return "pytest -q"
+		// -v is required: -q suppresses per-test PASSED/FAILED lines.
+		return "pytest -v"
 	}
 	if _, err := os.Stat(filepath.Join(repoDir, "pyproject.toml")); err == nil {
-		return "pytest -q"
+		return "pytest -v"
 	}
 	return ""
 }
