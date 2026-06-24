@@ -1126,9 +1126,11 @@ cd C:\working\flowpilot; git checkout apps/local-runner/internal/flowgate/scratc
 
 ---
 
-### E2E-14 — Flow Gate: Task reference in final message without Task doc (r-task reprompt)
+### (Passed) E2E-14 — Flow Gate: Task reference in final message without Task doc (r-task reprompt)
 
-> **Code-state finding:** r-task fires when `taskIDRegex` (`\bTask-\d+\b`) matches the AI's final message but no file matching `requirements/08-Task/` or `Task-` appears in the git diff (excluding FORMAT-REFERENCE-TASK.md, which is a scaffold template and must never satisfy the predicate). Action is `reprompt`; the AI receives explicit file-creation instructions naming the exact path and FORMAT-REFERENCE to follow — same pattern as r-bug / E2E-11.
+> **Code-state finding:** r-task fires when `taskIDRegex` (`\bTask-\d+\b`) matches the AI's **final message** but no file matching `requirements/08-Task/` or `Task-` appears in the git diff (excluding FORMAT-REFERENCE-TASK.md). Action is `reprompt`; the AI receives explicit file-creation instructions naming the exact path and FORMAT-REFERENCE to follow — same pattern as r-bug / E2E-11.
+>
+> **v1 heuristic limitation:** r-task only fires when the AI explicitly writes `Task-NNN` in its final summary. If the AI completes a task silently — no Task ID in the final message — the gate does not trigger. Same gap exists in r-bug (relies on "bug fix" wording). The `tr.ChangeType == "task"` field is reserved for a future explicit signal from the workflow/step definition, which would remove the message-scanning dependency. The E2E prompt below intentionally forces the AI to mention the Task ID so the rule fires.
 
 **Steps (run on the flowpilot repo or gate-sandbox; default enforce mode):**
 
@@ -1137,7 +1139,7 @@ cd C:\working\flowpilot; git checkout apps/local-runner/internal/flowgate/scratc
 2. Start a task with this exact prompt (forces a Task-NNN reference in the final message, prevents the Task doc being added):
    > "Add a one-line comment to `calc.go` explaining what the `add` function does.
    > In your final summary, include the sentence: **"This completes Task-200."**
-   > Do NOT create any file under `requirements/08-Task/`. Only edit `calc.go`."
+   > Only edit `calc.go`."
 
 3. Let the turn complete.
 
