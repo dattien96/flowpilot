@@ -20,7 +20,7 @@
 
 ### Summary
 
-- SD-17 introduced the Post-Step Flow Gate and listed five rules (`r-ca`, `r-bug`, `r-tests`, `r-reg`, `r-dep`) at a glance. This document is the **exact, code-level contract** for each rule: its trigger condition, the signal it reads, the required output that satisfies it, its action, and how `gate_mode` affects it.
+- SD-17 introduced the Post-Step Flow Gate and listed five rules (`r-ca`, `r-bug`, `r-tests`, `r-reg`, `r-dep`) at a glance. This document is the **exact, code-level contract** for each rule — now six rules including `r-task` (Task-113) — covering trigger condition, signal, required output, action, and `gate_mode` effect.
 - The gate runs **once per turn** in the runner after `finishTurn`, observes the turn's git diff + test outcome, evaluates every enabled rule, and resolves a single highest-severity action (`approve` < `warn` < `reprompt` < `block`).
 - Two rules (`r-tests`, `r-reg`) are **always-block** — never downgraded by `gate_mode` — because a previously-green test going red is the strongest, cheapest regression signal we have.
 - `r-tests` and `r-reg` are **coupled in v1**: both fire on the identical condition (`Tests.Ran && len(Failed) > 0`) with an identical detail string. The engine dedupes the message and treats it as one hard stop.
@@ -35,7 +35,7 @@
 
 - `D-1` Each rule is a pure function of one `TurnResult` (final message, git diff, test outcome); rules never call providers and never mutate the repo.
 - `D-2` `r-tests` and `r-reg` are always-block regardless of `gate_mode`; `r-ca`, `r-bug`, `r-dep` honor `gate_mode` (enforce → their declared action; warn → downgraded to `warn`).
-- `D-3` `r-ca` and `r-bug` are **auto-remediable**: on violation the gate reprompts the AI (≤2 attempts) with the missing requirement. `r-tests`/`r-reg` are **not** auto-remediable — they are a hard stop surfaced to the user as a modal. (`r-bug` was initially declared `block`; corrected to `reprompt` — BUG-139.)
+- `D-3` `r-ca`, `r-bug`, and `r-task` are **auto-remediable**: on violation the gate reprompts the AI (≤2 attempts) with the missing requirement. `r-tests`/`r-reg` are **not** auto-remediable — they are a hard stop surfaced to the user as a modal. (`r-bug` was initially declared `block`; corrected to `reprompt` — BUG-139.)
 - `D-4` The test baseline is captured once, **before** the first turn executes, and reused for the session; the gate only ever *loads* it.
 - `D-5` `r-tests`/`r-reg` coupling is accepted for v1; the emitted message is deduped so the user sees one line, not two.
 - `D-6` Running the full suite per turn is the v1 regression mechanism; its cost is a known trade-off recorded here for a later pass (scoped/affected-tests-only, caching, or opt-in).
@@ -150,7 +150,41 @@ All triggers are evaluated in `checkRule` (`evaluate.go`). Signals come from `ob
 
 - v1 is intentionally coarse: it does **not** consult the call graph. Despite the name it does not yet verify remaining callers; that requires the GitNexus structure provider (`SD-17 D-5`, `Q-3`).
 
-### 2.6 `r-tamper` — oracle tampering (synthetic)
+### 2.6 `r-task` — task doc required (Task-113)
+
+| Field | Value |
+|---|---|
+| Trigger | `task_referenced` |
+| Fires when | `taskIDRegex.MatchString(FinalMessage) && !HasTaskDoc(diff)` |
+| Required output | a file under `requirements/08-Task/` or containing `Task-` in its path |
+| Action | `reprompt` (auto-remediated, ≤2 attempts) |
+| `gate_mode` | enforce → reprompt; warn → downgraded to `warn` |
+
+- **`taskIDRegex`**: `regexp.MustCompile(`\bTask-\d+\b`)` — word-boundary anchored so `Task-113` matches but `MyTask-113` does not.
+- **`HasTaskDoc`**: any file whose path contains `requirements/08-Task/` or `Task-`, **excluding** paths that contain `FORMAT-REFERENCE-` (scaffold templates must not satisfy the predicate — same guard as `HasBugFixDoc`, BUG-141).
+- v1 relies on the final-message heuristic; `ChangeType == "task"` is reserved for a future explicit signal (see §2.7).
+
+### 2.7 `r-task` / `r-bug` — v1 heuristic limitation and how `FinalMessage` is sourced
+
+**The detection chain (exact code path):**
+
+```
+Provider stream (Claude/Codex)
+  → adapter emits EventTurnCompleted{FinalMessage: raw["result"]}   // claude_event_mapper.go:135
+  → interactive_service.go:1827 copies e.FinalMessage into finalizeInput.FinalMessage
+  → runFlowGate(fin) puts fin.FinalMessage into TurnResult.FinalMessage  // gate_hook.go:58
+  → checkRule("task_referenced") runs taskIDRegex.MatchString(tr.FinalMessage)  // evaluate.go
+```
+
+`FinalMessage` is the **complete text of the AI's last assistant turn** — the full prose the user sees at the end of the step. For Claude it comes from the `result` field of the SDK's terminal result frame. For Codex it is assembled from the last `message.completed` event.
+
+**The gap:** both `r-task` and `r-bug` scan this text for a keyword or ID. If the AI writes a silent summary — "Done." or "Added the comment." — without mentioning `Task-NNN` or "bug fix", the rule never fires. The gate has no other signal for these rules in v1.
+
+**Why this is acceptable for v1:** the gate is an *enforcement layer*, not a tracking layer. Its job is to catch the case where the AI explicitly acknowledges closing a tracked item but forgets the required artifact. Silent completions are a separate problem (workflow design, step prompts) outside the gate's scope.
+
+**Future fix — `ChangeType` explicit signal:** when the runner or step definition knows the current step maps to Task-113, it will stamp `TurnResult.ChangeType = "task"` (already checked in `evaluate.go` as `tr.ChangeType == "task"`). That makes the rule fire regardless of what the AI says, removing the message-scanning dependency entirely.
+
+### 2.8 `r-tamper` — oracle tampering (synthetic)
 
 - Not a configured rule; appended by the gate when the oracle reports a pre-existing test file was **modified** in the same turn (`f.Status == "M"` on a test file). Emitted as `warn` so the desktop can surface possible oracle tampering without hard-blocking.
 
@@ -205,8 +239,8 @@ Until one of these lands, treat per-turn full-suite execution as a known cost, d
 ## 6. Traceability
 
 - `SD-17` Flow Gate rules table / `§6.3` → §2 (exact per-rule contract).
-- `SD-17 §7.2` oracle rule → §2.3/§2.4/§2.6, §4.
+- `SD-17 §7.2` oracle rule → §2.3/§2.4/§2.8, §4.
 - `SD-17 D-12` (pre-existing tests always block) → `D-2`, §2.3/§2.4.
-- `SS-14 AC-6` (oracle integrity) → §2.4, §3 (no test-weakening), §2.6.
+- `SS-14 AC-6` (oracle integrity) → §2.4, §3 (no test-weakening), §2.8.
 - `SS-14 AC-11` (force required outputs) → §2, §3.
 - New: regression performance trade-off → §5 (`D-6`, `Q-1`).
