@@ -1,11 +1,11 @@
 package runner
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 )
@@ -24,9 +24,8 @@ type TranslateResponse struct {
 	Target         string `json:"target"`
 }
 
-// TranslateText calls the Google Cloud Translation Basic API (v2) using the
-// stored Picker API key. The same key works for translations when the Cloud
-// Translation API is enabled on the same Google Cloud project.
+// TranslateText calls the LibreTranslate POST /translate API using the
+// configured base URL and optional API key from the runner secret store.
 func (r *Runner) TranslateText(req TranslateRequest) (TranslateResponse, error) {
 	q := strings.TrimSpace(req.Q)
 	if q == "" {
@@ -36,73 +35,69 @@ func (r *Runner) TranslateText(req TranslateRequest) (TranslateResponse, error) 
 	if target == "" {
 		target = "vi"
 	}
+	source := strings.TrimSpace(req.Source)
+	if source == "" {
+		source = "auto"
+	}
 
-	secrets, err := r.googleDriveSecretState()
+	cfg, err := r.LoadTranslateConfig()
 	if err != nil {
-		return TranslateResponse{}, fmt.Errorf("could not load Google API key: %w", err)
+		return TranslateResponse{}, fmt.Errorf("could not load translate config: %w", err)
 	}
-	if !secrets.hasPickerAPIKey {
-		return TranslateResponse{}, fmt.Errorf("no Google API key configured — add one in Settings → Google")
+	baseURL := strings.TrimRight(cfg.BaseURL, "/")
+
+	payload := map[string]string{
+		"q":      q,
+		"source": source,
+		"target": target,
+		"format": "text",
+	}
+	if cfg.HasAPIKey {
+		if key, _ := r.ensureSecretStore().Get(translateAPIKeySecret); strings.TrimSpace(key) != "" {
+			payload["api_key"] = strings.TrimSpace(key)
+		}
 	}
 
-	params := url.Values{}
-	params.Set("key", secrets.pickerAPIKey)
-	params.Set("q", q)
-	params.Set("target", target)
-	params.Set("format", "text")
-	if src := strings.TrimSpace(req.Source); src != "" {
-		params.Set("source", src)
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return TranslateResponse{}, err
 	}
 
-	apiURL := "https://translation.googleapis.com/language/translate/v2?" + params.Encode()
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(apiURL)
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Post(baseURL+"/translate", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return TranslateResponse{}, fmt.Errorf("translation request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return TranslateResponse{}, fmt.Errorf("failed to read response body: %w", err)
+		return TranslateResponse{}, fmt.Errorf("failed to read response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		var apiErr struct {
-			Error struct {
-				Message string `json:"message"`
-				Code    int    `json:"code"`
-			} `json:"error"`
+			Error string `json:"error"`
 		}
-		if json.Unmarshal(body, &apiErr) == nil && apiErr.Error.Message != "" {
-			return TranslateResponse{}, fmt.Errorf("Google Translate API %d: %s", apiErr.Error.Code, apiErr.Error.Message)
+		if json.Unmarshal(respBody, &apiErr) == nil && apiErr.Error != "" {
+			return TranslateResponse{}, fmt.Errorf("LibreTranslate: %s", apiErr.Error)
 		}
-		return TranslateResponse{}, fmt.Errorf("Google Translate API returned status %d", resp.StatusCode)
+		return TranslateResponse{}, fmt.Errorf("LibreTranslate returned status %d", resp.StatusCode)
 	}
 
-	// v2 response: {"data":{"translations":[{"translatedText":"...","detectedSourceLanguage":"..."}]}}
 	var result struct {
-		Data struct {
-			Translations []struct {
-				TranslatedText         string `json:"translatedText"`
-				DetectedSourceLanguage string `json:"detectedSourceLanguage"`
-			} `json:"translations"`
-		} `json:"data"`
+		TranslatedText string `json:"translatedText"`
 	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return TranslateResponse{}, fmt.Errorf("failed to parse translation response: %w", err)
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return TranslateResponse{}, fmt.Errorf("failed to parse response: %w", err)
 	}
-	if len(result.Data.Translations) == 0 {
-		return TranslateResponse{}, fmt.Errorf("empty translations array in response")
+	if result.TranslatedText == "" {
+		return TranslateResponse{}, fmt.Errorf("empty translation in response")
 	}
 
-	detected := result.Data.Translations[0].DetectedSourceLanguage
-	if detected == "" {
-		detected = req.Source
-	}
 	return TranslateResponse{
-		TranslatedText: result.Data.Translations[0].TranslatedText,
-		Source:         detected,
+		TranslatedText: result.TranslatedText,
+		Source:         source,
 		Target:         target,
 	}, nil
 }
