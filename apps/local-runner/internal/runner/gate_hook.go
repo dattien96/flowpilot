@@ -1,0 +1,119 @@
+package runner
+
+import (
+	"context"
+	"path/filepath"
+	"strings"
+
+	"flowpilot-runner/internal/flowgate"
+)
+
+const maxFlowGateReprompts = 2
+
+// runFlowGate is the post-turn enforcement hook (CP-35 P-4/P-5). It is called
+// after turnInFlight=false and before finalizer.Finalize on a clean completion.
+//
+// It observes the git diff and test outcomes, evaluates the flow rules, and
+// either allows the turn to finalise, reprompts the AI with the missing
+// requirement, or blocks the step from completing.
+//
+// All errors inside this function are non-fatal: if the gate cannot observe or
+// evaluate it returns false (degraded = safe, turn completes normally).
+func (s *InteractiveService) runFlowGate(
+	_ context.Context, rs *interactiveRun, turnID string, fin finalizeInput,
+) (block bool) {
+	cwd := rs.workspaceCwd
+	if cwd == "" {
+		return false
+	}
+	dotFP := filepath.Join(cwd, ".flowpilot")
+
+	// 1. Observe git diff — non-fatal.
+	diff, _ := flowgate.ObserveGitDiff(cwd)
+
+	// 2. Load or capture test baseline — non-fatal.
+	baseline, _ := flowgate.LoadBaseline(dotFP)
+	if baseline == nil {
+		baseline, _ = flowgate.CaptureBaseline(cwd, dotFP)
+	}
+
+	// 3. Run regression oracle against the diff.
+	oracle := flowgate.RunOracle(cwd, baseline, diff)
+
+	// 4. Build TurnResult for the evaluator.
+	var failedTests []string
+	if oracle.HasRegression {
+		failedTests = oracle.Regressed
+	}
+	tr := flowgate.TurnResult{
+		RunID:        rs.id,
+		StepID:       rs.stepID,
+		FinalMessage: fin.FinalMessage,
+		GitDiff:      diff,
+		Tests: flowgate.TestOutcome{
+			Ran:    baseline != nil,
+			Failed: failedTests,
+		},
+	}
+
+	// 5. Load rules; fall back to defaults when flow-rules.json is absent.
+	rules := flowgate.DefaultRules()
+	if loaded, err := flowgate.LoadRules(filepath.Join(dotFP, "settings")); err == nil {
+		rules = loaded
+	}
+
+	// 6. Evaluate rule set.
+	violations := flowgate.Evaluate(tr, rules)
+
+	// 7. Surface oracle-detected tampering as an additional warn violation so the
+	// desktop can display it even when no rule explicitly covers it.
+	if oracle.HasTampering {
+		violations = append(violations, flowgate.Violation{
+			Rule: flowgate.Rule{
+				ID:      "r-tamper",
+				Scope:   "step",
+				Trigger: "oracle_tamper",
+				Action:  "warn",
+				Enabled: true,
+			},
+			Detail: "pre-existing test file modified: " + strings.Join(oracle.Tampered, ", "),
+		})
+	}
+
+	if len(violations) == 0 {
+		return false
+	}
+
+	// 8. Enforce — default gate_mode is "warn" until per-project settings land.
+	result := flowgate.Enforce(violations, "warn")
+
+	// 9. Emit the violation event so the desktop can surface it inline.
+	s.mu.Lock()
+	s.emitLocked(rs, ProviderEvent{
+		Type:           EventFlowGateViolation,
+		ProviderTurnID: turnID,
+		Error:          result.Message,
+	})
+	s.mu.Unlock()
+
+	switch result.Action {
+	case "block":
+		return true
+
+	case "reprompt":
+		s.mu.Lock()
+		attempts := rs.repromptAttempts
+		rs.repromptAttempts++
+		s.mu.Unlock()
+		if attempts < maxFlowGateReprompts {
+			go func(runID, stepID, prompt string) {
+				_, _ = s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt}, "", "")
+			}(rs.id, rs.stepID, result.Message)
+		}
+		// Whether reprompting or max reached, suppress the current completion.
+		return true
+	}
+
+	// "warn" or "approve": log only, let the turn complete normally.
+	return false
+}

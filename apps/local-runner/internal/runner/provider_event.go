@@ -51,6 +51,9 @@ const (
 	// Persisted to the parent event log so the annotation survives server restarts.
 	EventAgentSpawnedByUser  ProviderEventType = "agent_spawned_by_user"
 	EventAgentResultInjected ProviderEventType = "agent_result_injected"
+	// Emitted after a turn completes when the post-turn flow gate detects a violation
+	// (CP-35 P-4/P-5). The desktop surfaces it as an inline warning card.
+	EventFlowGateViolation ProviderEventType = "flow_gate_violation"
 )
 
 // ApprovalDecisionOption is one decision the runtime offers for an approval.

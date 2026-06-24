@@ -140,9 +140,10 @@ type interactiveRun struct {
 	lastEventType   ProviderEventType
 	events          []ProviderEvent
 
-	turnInFlight  bool
-	currentTurnID string
-	turnCancel    context.CancelFunc
+	turnInFlight     bool
+	repromptAttempts int // CP-35 P-5: number of flow-gate reprompts issued this turn
+	currentTurnID    string
+	turnCancel       context.CancelFunc
 
 	pendingApprovalID string
 	pendingQuestionID string
@@ -1678,6 +1679,14 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		}
 	}
 	s.mu.Unlock()
+
+	// Post-turn flow gate (CP-35 P-4/P-5): observe diff, evaluate rules, enforce.
+	// Non-fatal: any internal error inside runFlowGate degrades to pass.
+	if completed {
+		if s.runFlowGate(ctx, rs, turnID, fin) {
+			completed = false
+		}
+	}
 
 	// Finalizer hook runs OUTSIDE s.mu and only on a clean completion. A finalize
 	// failure is recorded as retryable and must not erase the completed turn (04-04).
