@@ -685,7 +685,7 @@ head -5 my-sample-app/.claude/skills/git-commit-format/SKILL.md
 
 ---
 
-### E2E-6 — Flow Gate: code change without CA note → reprompt
+### (Passed) E2E-6 — Flow Gate: code change without CA note → reprompt
 
 > **Gate mode prerequisite:** gate mode defaults to `enforce` since bind auto-creates
 > `.flowpilot/settings/gate-config.json` with `{"gate_mode":"enforce"}`. No manual setup needed.
@@ -701,7 +701,7 @@ head -5 my-sample-app/.claude/skills/git-commit-format/SKILL.md
 
 3. Give the AI a prompt that will cause it to edit a source file but **not** write a
    `change-audit/CA-*.md` note — e.g.:
-   > "Add a helper comment to the top of main.go."
+   > "Add a helper comment to the top of page.tsx in admin-web."
 
 4. Let the turn run to completion. Do not interrupt.
 
@@ -738,7 +738,7 @@ newline-delimited JSON line of:
 
 ---
 
-### E2E-7 — Flow Gate: code change WITH CA note → passes
+### (Passed) E2E-7 — Flow Gate: code change WITH CA note → passes
 
 > Same gate mode as E2E-6 — no mode change needed.
 
@@ -747,7 +747,7 @@ newline-delimited JSON line of:
 1. Start a workflow task on the test project.
 
 2. Give the AI a prompt that explicitly asks for both the edit AND a CA note — e.g.:
-   > "Add a helper comment to the top of main.go. Then write a change-audit note in
+   > "Add a helper comment to the top of page.tsx in admin-web. Then write a change-audit note in
    > `change-audit/CA-<today>.md` documenting the change."
 
 3. Let the turn run to completion.
