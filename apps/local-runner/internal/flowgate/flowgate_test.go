@@ -9,10 +9,10 @@ import (
 
 func TestDefaultRules(t *testing.T) {
 	rules := DefaultRules()
-	if len(rules) != 5 {
-		t.Fatalf("expected 5 rules, got %d", len(rules))
+	if len(rules) != 6 {
+		t.Fatalf("expected 6 rules, got %d", len(rules))
 	}
-	ids := []string{"r-ca", "r-bug", "r-tests", "r-reg", "r-dep"}
+	ids := []string{"r-ca", "r-bug", "r-task", "r-tests", "r-reg", "r-dep"}
 	for i, id := range ids {
 		if rules[i].ID != id {
 			t.Errorf("rules[%d].ID = %q, want %q", i, rules[i].ID, id)
@@ -375,5 +375,63 @@ func TestHasBugFixDocRealDocAlongsideFormatReference(t *testing.T) {
 	}
 	if !HasBugFixDoc(diff) {
 		t.Error("a real BUG doc alongside FORMAT-REFERENCE should still return true")
+	}
+}
+
+// r-task: final message references Task-NNN but no Task doc in diff → reprompt.
+func TestEvaluateRTaskFiresWhenTaskRefMissingDoc(t *testing.T) {
+	tr := TurnResult{
+		FinalMessage: "Completed Task-113 implementation.",
+		GitDiff:      []ChangedFile{{Path: "internal/flowgate/evaluate.go", Status: "M"}},
+	}
+	violations := Evaluate(tr, DefaultRules())
+	found := false
+	for _, v := range violations {
+		if v.Rule.ID == "r-task" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected r-task violation when Task-NNN referenced but no task doc in diff")
+	}
+}
+
+// r-task must NOT fire when the Task doc is present in the diff.
+func TestEvaluateRTaskNoViolationWhenDocPresent(t *testing.T) {
+	tr := TurnResult{
+		FinalMessage: "Completed Task-113 implementation.",
+		GitDiff: []ChangedFile{
+			{Path: "internal/flowgate/evaluate.go", Status: "M"},
+			{Path: "requirements/08-Task/done/Task-113-r-task-rule.md", Status: "A"},
+		},
+	}
+	violations := Evaluate(tr, DefaultRules())
+	for _, v := range violations {
+		if v.Rule.ID == "r-task" {
+			t.Error("unexpected r-task violation when Task doc is present")
+		}
+	}
+}
+
+// FORMAT-REFERENCE-TASK.md must not satisfy HasTaskDoc (same guard as r-bug / BUG-141).
+func TestHasTaskDocIgnoresFormatReferenceFile(t *testing.T) {
+	diff := []ChangedFile{
+		{Path: "requirements/08-Task/FORMAT-REFERENCE-TASK.md", Status: "A"},
+		{Path: "main.go", Status: "M"},
+	}
+	if HasTaskDoc(diff) {
+		t.Error("FORMAT-REFERENCE-TASK.md must not count as a task doc")
+	}
+}
+
+// RepromptPrompt for r-task must name the exact file and format reference.
+func TestRepromptPromptRTaskIsActionable(t *testing.T) {
+	rTask := Rule{ID: "r-task", Trigger: "task_referenced", Action: "reprompt", Enabled: true}
+	result := Enforce([]Violation{{Rule: rTask, Detail: "task reference detected but no task document found"}}, "enforce")
+	prompt := RepromptPrompt(result)
+	for _, want := range []string{"requirements/08-Task/done/Task-", "FORMAT-REFERENCE-TASK.md", "Do NOT edit the change-audit note"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("r-task reprompt missing %q\ngot: %s", want, prompt)
+		}
 	}
 }

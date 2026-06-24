@@ -91,6 +91,12 @@ func remediationFor(v Violation) string {
 			"(use the next available zero-padded number) following the structure in " +
 			"`requirements/09-BugFix/FORMAT-REFERENCE-BUGFIX.md`. " +
 			"Do NOT edit the change-audit note to satisfy this — the BugFix document is a separate, required artifact."
+	case "task_referenced":
+		return "• Missing Task document. Your final message references a Task-NNN but you did not add its Task doc. " +
+			"Create a NEW file `requirements/08-Task/done/Task-<NNN>.md` " +
+			"(use the same Task number you referenced; use the next available zero-padded number if new) " +
+			"following the structure in `requirements/08-Task/FORMAT-REFERENCE-TASK.md`. " +
+			"Do NOT edit the change-audit note to satisfy this — the Task document is a separate, required artifact."
 	case "code_changed":
 		return "• Missing change-audit note. You changed code but did not add a change-audit note. " +
 			"Create a NEW file `change-audit/CA-<NNN>.md` recording what changed and why."

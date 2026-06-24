@@ -46,6 +46,7 @@ func DefaultRules() []Rule {
 	return []Rule{
 		{ID: "r-ca", Scope: "step", Trigger: "code_changed", RequiredOutput: "change_audit_note", Action: "reprompt", Enabled: true},
 		{ID: "r-bug", Scope: "step", Trigger: "bug_fixed", RequiredOutput: "bugfix_doc", Action: "reprompt", Enabled: true},
+		{ID: "r-task", Scope: "step", Trigger: "task_referenced", RequiredOutput: "task_doc", Action: "reprompt", Enabled: true},
 		{ID: "r-tests", Scope: "step", Trigger: "tests_failed", RequiredOutput: "tests_green_or_explained", Action: "block", Enabled: true},
 		{ID: "r-reg", Scope: "step", Trigger: "regression_test_broke", RequiredOutput: "restore_green_without_weakening", Action: "block", Enabled: true},
 		{ID: "r-dep", Scope: "step", Trigger: "removed_referenced_code", RequiredOutput: "confirm_or_update_callers", Action: "block", Enabled: true},

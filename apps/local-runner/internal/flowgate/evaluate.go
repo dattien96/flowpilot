@@ -1,8 +1,11 @@
 package flowgate
 
 import (
+	"regexp"
 	"strings"
 )
+
+var taskIDRegex = regexp.MustCompile(`\bTask-\d+\b`)
 
 func Evaluate(tr TurnResult, rules []Rule) []Violation {
 	var violations []Violation
@@ -32,6 +35,16 @@ func checkRule(rule Rule, tr TurnResult) *Violation {
 			strings.Contains(msgLower, "bug fix")
 		if isBugFix && !HasBugFixDoc(tr.GitDiff) {
 			return &Violation{Rule: rule, Detail: "bug fix detected but no bugfix doc found"}
+		}
+
+	case "task_referenced":
+		// Fires when the AI's final message references a Task-NNN ID (meaning the AI
+		// is completing a tracked task) but no Task document was added to the diff.
+		// ChangeType == "task" is reserved for a future explicit signal; the message
+		// heuristic covers v1. (SD-20 §2.7, Task-113)
+		hasTaskRef := taskIDRegex.MatchString(tr.FinalMessage) || tr.ChangeType == "task"
+		if hasTaskRef && !HasTaskDoc(tr.GitDiff) {
+			return &Violation{Rule: rule, Detail: "task reference detected but no task document found"}
 		}
 
 	case "tests_failed":

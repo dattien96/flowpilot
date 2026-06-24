@@ -118,6 +118,18 @@ func HasChangeAuditNote(diff []ChangedFile) bool {
 	return false
 }
 
+func HasTaskDoc(diff []ChangedFile) bool {
+	for _, f := range diff {
+		if strings.Contains(f.Path, "FORMAT-REFERENCE-") {
+			continue
+		}
+		if strings.Contains(f.Path, "requirements/08-Task") || strings.Contains(f.Path, "Task-") {
+			return true
+		}
+	}
+	return false
+}
+
 func HasBugFixDoc(diff []ChangedFile) bool {
 	for _, f := range diff {
 		// Exclude FORMAT-REFERENCE-*.md files — they are scaffold templates, not real
