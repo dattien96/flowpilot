@@ -9,7 +9,7 @@
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-23`
-- Last Updated: `2026-06-23`
+- Last Updated: `2026-06-24`
 - Parent Documents: [SS-14: Code Context And Regression Safety](../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md), [SS-02: Project Context](../05-System-Specs/SS-02-Project-Context.md), [SS-09: Artifact Memory Context Retrieval](../05-System-Specs/SS-09-Artifact-Memory-Context-Retrieval.md), [SS-13: AI-Followable Document Contract](../05-System-Specs/SS-13-AI-Followable-Document-Contract.md)
 - Child Documents: [CP-35: Context And Regression Engine Rollout](../07-Coding-Plan/inprogress/CP-35-Context-And-Regression-Engine-Rollout.md)
 - Related Documents: [SD-10: Context Resolver & RAG](./SD-10-Context-Resolver-RAG.md), [SD-16: Agent Spawn And Tool-Calling Design](./SD-16-Agent-Spawn-And-Tool-Calling-Design.md), [CP-10: Integrations, Memory & Context Intelligence](../07-Coding-Plan/inprogress/CP-10-Integrations-Hardening.md), [CP-34: Init Tool](../07-Coding-Plan/done/CP-34-Init-tool.md), [CP-31: Auto-Document Process](../07-Coding-Plan/done/CP-31-Auto-Document-Process.md), [CP-32: UnitTest Rule](../07-Coding-Plan/done/CP-32-UnitTest-Rule.md), [CP-23: Context Control & Wrong-Way Detection](../07-Coding-Plan/todo/CP-23-Auto-Learn-To-Skill.md)
@@ -103,16 +103,21 @@ All planes are built from and stored against the bound target project; FlowPilot
 
 ### 3.2 `D-3` Plane C: the commit-history ledger
 
-Every commit already carries its feature linkage through FlowPilot's commit convention:
+Every commit carries its feature linkage **directly in the commit message** through FlowPilot's commit contract `[Type][feature][layer?] <description>`:
 
 ```text
-[Feature]: Task-087 chat /s and /a slash commands
-[BugFix]:  BUG-130/131 stabilize agents panel
+[Feature][slash-commands][ui] add /s and /a chat commands Task-087
+[BugFix][agents-panel]      stabilize agents panel BUG-130
+[Refactor][skill-pack]      extract install logic CP-35
 ```
 
-So `git log --grep="Task-087"` yields the commits, in order, with hashes and diffs — automatically. The `change-audit/CA-###` note (with the `SS-13 §13` `flowpilot:change-ledger` block) supplies the human summary and `feature_key`. The ledger is the join of these, keyed by id and **sorted by commit order, newest last**. No AST, no symbol identity, no hashing.
+The parser reads the brackets in order: bracket 1 → `change_type`, **bracket 2 → `feature_key` (`confidence: high`)**, bracket 3 → optional `layer`. So `git log` yields, for every commit, the exact feature it belonged to — no inference. The `change-audit/CA-###` note (with the `SS-13 §13` `flowpilot:change-ledger` block) still supplies the human summary and can also carry `feature_key`. The ledger is the join of these, keyed by feature and **sorted by commit order, newest last**. No AST, no symbol identity, no hashing.
 
-Because the ledger depends entirely on this format, the bundled `git-commit-format` skill (§6.4) enforces it at commit time — the commit message is a contract between that skill (producer) and the ledger parser (consumer), the same pattern as the `SS-13 §13` block for change-audit notes. Feature keys themselves are kept stable across notes by a single registry file (`change-audit/FEATURE-KEYS.md`, `SS-13 §13`), which the Feature Catalog (§3.3) seeds from.
+Putting the feature **in** the commit is what makes history precise. Without a feature bracket the engine must guess from file paths, which collapses an entire top-level directory (e.g. `domain/`) into one bucket spanning many unrelated features — too coarse to answer "what changed for *this* feature." The mandatory feature bracket prevents that.
+
+Because the ledger depends on this format, the bundled `git-commit-format` skill (§6.4) enforces it at commit time — the commit message is a contract between that skill (producer) and the ledger parser (consumer), the same pattern as the `SS-13 §13` block for change-audit notes. Feature keys are kept stable by a single registry file (`change-audit/FEATURE-KEYS.md`, `SS-13 §13`); the `git-commit-format` skill requires the `[feature]` value to exist there (the `audit-logging` skill appends new keys when none fits), and the Feature Catalog (§3.3) seeds from it.
+
+**Fallback chain when the feature bracket is absent** (legacy commits / non-FlowPilot history), in priority order: (0) feature bracket in the commit → high; (1) `feature_key` in a matching CA `§13` block → high; (2) `FEATURE-KEYS.md` keyword match → low; (3) dominant top-level changed path → low; (4) the source-doc id itself → low. Levels 2–4 are coarse by nature and flagged `confidence: low`.
 
 ### 3.3 `D-4` Feature resolution from natural language
 
@@ -318,7 +323,7 @@ getFeatureHistory("chat-ui")  →  (oldest → newest)
 
 ### 6.4 Skill pack manifest and tooling health
 
-- Skill pack: a versioned set of provider-agnostic skill files (`git-commit-format`, `oracle-rule`, `audit-logging`, `phase-doc`, `context-discipline`) with install targets `.claude/`, `.codex/`, `.gemini/`. `git-commit-format` enforces the commit-message contract (`[Type]: <id> <desc>`, id ∈ `Task-`/`BUG-`/`CP-`) that the change ledger (§3.2) parses.
+- Skill pack: a versioned set of provider-agnostic skill files (`git-commit-format`, `oracle-rule`, `audit-logging`, `phase-doc`, `context-discipline`) with install targets `.claude/skills/` and `.agents/skills/` (Codex + Gemini share `.agents/`). `git-commit-format` enforces the commit-message contract `[Type][feature][layer?] <desc>` (Type ∈ `Feature`/`BugFix`/`Refactor`/`Docs`/`Hotfix`/`Test`; feature ∈ `FEATURE-KEYS.md`; layer optional; source-doc id `Task-`/`BUG-`/`CP-` in the description) that the change ledger (§3.2) parses for an exact `feature_key`. It also enforces English, a ≤72-char first line, and no AI-authorship attribution (this consolidates the former standalone `git-commit` skill).
 - Tooling health: `checkTool(name) → { status, version }` for `gitnexus`, `rtk`, `node`, `skill_pack`; consumed by `tooling_status` and the setup page (`CP-34`).
 
 ## 7. Execution Flow
@@ -384,3 +389,163 @@ On project bind (via `CP-34`): install the skill pack into provider dirs; health
 - `SS-14 AC-13` (tooling installed + health-checked, degrade) → `D-8`, §3.6, §6.4, §8.
 - Pain #1 (whole-project context) → Plane B provider (`D-5`) + Plane C history (`D-3`).
 - Pain #2 (regression) → ordered history awareness (`D-3`/`D-4`) + Flow Gate (`D-6`) + oracle rule (`D-10`).
+
+## 13. Implementation Notes (Q&A Addendum)
+
+Clarifications based on implementation review (CP-35, 2026-06-24). Use these to resolve the most common misunderstandings.
+
+---
+
+### 13.1 What local files are created when a project is bound?
+
+Binding triggers `POST /client/projects/{id}/engine/init?trigger=bind` in the desktop. The runner calls `runEngineInit()` in `engine_setup.go`, which runs four sequential steps:
+
+```
+1. tooling.CheckAll()        → .flowpilot/tooling.json
+2. skillpack.Install()       → .claude/skills/*/SKILL.md
+                             → .agents/skills/*/SKILL.md
+3. changeledger.Build()      → .flowpilot/ledger/feature_history.ndjson
+                             → .flowpilot/ledger/.cursor
+4. featurecatalog.Build()    → .flowpilot/catalog/features.ndjson
+5. contextsync.NewEngineStore + WriteManifest
+                             → .flowpilot/ledger/ (subdir created)
+                             → .flowpilot/catalog/ (subdir created)
+                             → .flowpilot/settings/ (subdir created)
+                             → .flowpilot/guard/ (subdir created)
+                             → .flowpilot/structure/ (subdir created)
+                             → .flowpilot/manifest.json
+Then:
+   engine-init.json          → .flowpilot/engine-init.json
+```
+
+All steps are non-fatal. If the repo has no git history or no `change-audit/` notes, steps 3–4 still succeed with partial results.
+
+---
+
+### 13.2 What are the correct skill install directories?
+
+Skills are installed into **two** roots, not three:
+
+| Root | Used by |
+|---|---|
+| `.claude/skills/<skill>/SKILL.md` | Claude Code |
+| `.agents/skills/<skill>/SKILL.md` | Codex AND Gemini |
+
+There is **no `.gemini/` directory**. Both Codex and Gemini share `.agents/skills/`. The `providerStatuses` struct in `skillpack/install.go` maps codex → `.agents/skills` and gemini → `.agents/skills` for status checking.
+
+---
+
+### 13.3 What happens if the user deletes `.flowpilot/` contents?
+
+`shouldSkipBindInit()` checks three conditions before skipping a bind-triggered re-init:
+1. `.flowpilot/` directory exists
+2. skill pack is current (version matches)
+3. `engine-init.json` exists
+
+If **any** child file or subdirectory is missing (e.g. user deletes `feature_history.ndjson`), `shouldSkipBindInit` still returns `true` (it does NOT verify individual child files exist). The workaround is to trigger a **manual re-init** from `Settings → Engine → Initialize / Re-sync Project`, which bypasses the skip gate (`trigger=manual`). The engine treats `.flowpilot/` as a cache — it is always safe to delete and rebuild.
+
+---
+
+### 13.4 How is `feature_history.ndjson` built?
+
+`changeledger.Build()` calls `git log --no-merges` with an incremental cursor. For each commit:
+
+1. `parseTags()` reads the `[Type][feature][layer?]` bracket run → `ChangeType` (bracket 1), `FeatureKey` + `confidence: high` (bracket 2, when present), `Layer` (bracket 3, optional).
+2. Subject + body regex `(Task-\d+|BUG-\d+|CP-\d+[\w-]*)` → `SourceDocID`.
+3. `EnrichAll()` runs the priority resolution (see §13.5) — but **skips entries whose feature was already set high-confidence by the commit bracket** (priority 0).
+4. One NDJSON line is appended per commit, sorted ascending by `CommittedAt`. `OrderIndex` is assigned after sort (newest = highest index).
+5. The newest commit hash is written to `.flowpilot/ledger/.cursor` for the next incremental run.
+
+**This is pure code — no AI involved.** The AI only appears later in the feature resolver (§3.3, D-4) when resolving NL → `feature_key`.
+
+---
+
+### 13.5 How is `feature_key` extracted from commits?
+
+Feature-key resolution applies five priority levels in order. The first that matches wins:
+
+| Priority | Source | Confidence |
+|---|---|---|
+| 0 | **`[Type][feature][layer?]` commit bracket** — the feature declared directly in the commit message (set by `parseTags` in `parse.go`) | `high` |
+| 1 | `change-audit/CA-*.md` scissor block — `feature_key:` field inside `# ---8<--- flowpilot:change-ledger` block, matched by `SourceDocID` | `high` |
+| 2 | `change-audit/FEATURE-KEYS.md` — keyword match against the commit subject/body | `low` |
+| 3 | `git show --name-only` — dominant top-level changed path → coarse directory bucket | `low` |
+| 4 | `SourceDocID` itself used as the key | `low` |
+
+**This is pure code — no AI.** Priority 0 is the intended path: the `git-commit-format` skill makes the AI put the feature in the commit, so extraction is exact. Priorities 2–4 are coarse legacy fallbacks (priority 3 buckets a whole directory like `domain/` into one key) and are flagged `confidence: low` — meaningful feature history depends on commits adopting the bracket contract (priority 0) or carrying CA notes (priority 1).
+
+---
+
+### 13.6 How is `features.ndjson` (the Feature Catalog) built?
+
+`featurecatalog.Build()` assembles the catalog from three sources:
+
+1. **`change-audit/FEATURE-KEYS.md`** (authoritative key list) — each line `- key — description` becomes a `Feature` entry with `title` and `keywords`.
+2. **SS-*.md + CP-*.md docs** — H1 headings and AI Quick View summaries contribute `title`, `summary`, and `DocRefs`.
+3. **Distinct `feature_key` values** from the ledger — commits that have a key but no matching SS/CP doc get a stub entry.
+
+`FileGlobs` per key are aggregated from `git show --name-only` across all commits for that key.
+
+The file is truncated and rewritten on every call to `Build()`.
+
+---
+
+### 13.7 Who writes and maintains `FEATURE-KEYS.md`?
+
+`change-audit/FEATURE-KEYS.md` is the authoritative feature key registry. Ownership:
+
+| Actor | Role |
+|---|---|
+| **Human (owner)** | Seeds the initial list with domain-representative keys |
+| **AI (audit-logging skill)** | Appends new keys when no existing key fits a change; NEVER deletes or renames existing keys |
+| **Code** | Never writes to this file; only reads it (enrich.go, catalog.go) |
+
+The `audit-logging` skill (v3, CP-35) instructs the AI to:
+1. Open `FEATURE-KEYS.md` and find the best matching key before creating a CA note.
+2. If no key fits, append a new `- my-new-key — description` line first.
+3. Create the CA note using that key in the scissor block.
+
+The skill is auto-installed to `.claude/skills/audit-logging/SKILL.md` and `.agents/skills/audit-logging/SKILL.md` on every project bind. The `PackVersion` mechanism ensures re-installs happen when the skill content changes.
+
+---
+
+### 13.8 How does the Post-Step Flow Gate execute in the runner?
+
+The gate runs in `interactive_service.go:runTurn()` via `gate_hook.go:runFlowGate()`.
+
+**Exact call site** (after `finishTurn()` completes and `rs.turnInFlight = false`):
+
+```go
+// Post-turn flow gate (CP-35 P-4/P-5)
+if completed {
+    if s.runFlowGate(ctx, rs, turnID, fin) {
+        completed = false
+    }
+}
+// Finalizer hook runs only on clean completions.
+if completed {
+    _ = s.finalizer.Finalize(fin)
+}
+```
+
+**`runFlowGate` steps:**
+1. `ObserveGitDiff(cwd)` — `git status --porcelain` against workspace.
+2. `LoadBaseline(dotFP)` — load `.flowpilot/guard/test_baseline.json`; if absent, `CaptureBaseline()` creates it.
+3. `RunOracle(cwd, baseline, diff)` — detect regressions (pre-existing green test now red, not in diff) and oracle tampering (pre-existing test file modified).
+4. Build `TurnResult` with `FinalMessage`, `GitDiff`, `Tests.Failed`.
+5. `LoadRules(settings/)` — load `flow-rules.json` or fall back to `DefaultRules()`.
+6. `Evaluate(tr, rules)` — check all rule triggers.
+7. Append oracle tampering as a `warn` violation if detected.
+8. `Enforce(violations, "warn")` — resolve final `Action` per rule and `gate_mode`.
+9. Emit `EventFlowGateViolation` SSE event with the violation message.
+10. Route: `"block"` → return `true` (step suppressed); `"reprompt"` → launch a follow-up turn via `startTurn()`, return `true`; `"warn"` → log only, return `false` (step completes).
+
+The gate is provider-agnostic because it runs in the runner after every `finishTurn()`, regardless of which provider (Claude, Codex, Gemini) produced the turn.
+
+---
+
+### 13.9 What is the `repromptAttempts` counter for?
+
+`interactiveRun.repromptAttempts` prevents infinite reprompt loops. When `Enforce()` returns `action: reprompt`, the gate increments this counter and only launches a new turn if `attempts < maxFlowGateReprompts` (= 2). On the third attempt, the gate still returns `block=true` (suppressing the completion) but does NOT launch another turn, leaving the step in a state where only the user can resolve it.
+
+The counter resets with each new `interactiveRun` (i.e., each new run / step start).
