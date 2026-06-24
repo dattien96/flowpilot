@@ -1681,13 +1681,22 @@ function applyEvent(s: AppState, e: ProviderEventDTO): Partial<AppState> {
   }
   if (e.type === "flow_gate_violation" && e.status === "block" && !s._historyReplaying) {
     // A hard block (failed/regressed tests) stops the work — unlike r-ca/r-bug which
-    // auto-reprompt. Surface it as a modal the user must acknowledge. Suppressed during
-    // history replay so opening an old chat doesn't re-pop the modal. (CP-35)
-    // Also record the run ID so Navigator can suppress the "Running" spinner while this
-    // chat is inactive (polled runHistory still shows "running" until the user re-prompts).
+    // auto-reprompt. Surface it as a modal the user must acknowledge. (CP-35)
+    //
+    // The modal must appear EXACTLY ONCE — on the live block. Reopening the chat re-streams
+    // the persisted flow_gate_violation through consumeOrchestrationStream (from seq 0), and
+    // the `_historyReplaying` guard alone is racy because that stream outlives the replay's
+    // _historyReplaying=true window. So we use `_gateBlockedRunIds` as the authoritative,
+    // race-free guard: the run is added on the first block and only cleared on the next
+    // `turn_started` (the user re-prompted). If it is already in the set, the block was
+    // already surfaced — update bookkeeping but do NOT re-pop the modal. (BUG-138)
+    //
+    // `_gateBlockedRunIds` also lets Navigator suppress the "Running" spinner while the
+    // run sits blocked (the runner keeps it "running" until re-prompted). (BUG-137)
+    const alreadyBlocked = Boolean(s._gateBlockedRunIds[e.workflowRunId]);
     return {
       ...next,
-      gateBlock: { message: e.error },
+      ...(alreadyBlocked ? {} : { gateBlock: { message: e.error } }),
       _gateBlockedRunIds: { ...s._gateBlockedRunIds, [e.workflowRunId]: true },
       _runReplaySeq: nextReplaySeq,
     };

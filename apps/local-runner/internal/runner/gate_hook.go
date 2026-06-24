@@ -121,9 +121,11 @@ func (s *InteractiveService) runFlowGate(
 		s.mu.Unlock()
 		log.Printf("[gate] reprompt attempt=%d stepID=%q", attempts, stepID)
 		if attempts < maxFlowGateReprompts {
+			// Send actionable remediation steps (which file to create), not the terse
+			// symptom message — the AI otherwise can't self-correct. (BUG-140)
 			go func(runID, stepID, prompt string) {
 				_, _ = s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt}, "", "")
-			}(rs.id, stepID, result.Message)
+			}(rs.id, stepID, flowgate.RepromptPrompt(result))
 		}
 		// Whether reprompting or max reached, suppress the current completion.
 		return true

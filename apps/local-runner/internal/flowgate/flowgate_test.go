@@ -3,6 +3,7 @@ package flowgate
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -252,6 +253,42 @@ func TestEnforceDedupesIdenticalDetails(t *testing.T) {
 	}
 	if result.Message != "Flow gate: Tests failed: TestAdd" {
 		t.Errorf("Message = %q, want single (deduped) detail", result.Message)
+	}
+}
+
+// RepromptPrompt must give the AI actionable, file-level remediation — not the terse
+// symptom message — so it knows to CREATE a BugFix doc rather than edit something else.
+// (BUG-140)
+func TestRepromptPromptIsActionable(t *testing.T) {
+	rBug := Rule{ID: "r-bug", Trigger: "bug_fixed", Action: "reprompt", Enabled: true}
+	result := Enforce([]Violation{{Rule: rBug, Detail: "bug fix detected but no bugfix doc found"}}, "enforce")
+	prompt := RepromptPrompt(result)
+	for _, want := range []string{"requirements/09-BugFix/done/BUG-", "FORMAT-REFERENCE-BUGFIX.md", "Do NOT edit the change-audit note"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("reprompt prompt missing %q\ngot: %s", want, prompt)
+		}
+	}
+}
+
+func TestRepromptPromptCoversBothMissingDocs(t *testing.T) {
+	rCA := Rule{ID: "r-ca", Trigger: "code_changed", Action: "reprompt", Enabled: true}
+	rBug := Rule{ID: "r-bug", Trigger: "bug_fixed", Action: "reprompt", Enabled: true}
+	result := Enforce([]Violation{
+		{Rule: rCA, Detail: "code changed but no change-audit note found"},
+		{Rule: rBug, Detail: "bug fix detected but no bugfix doc found"},
+	}, "enforce")
+	prompt := RepromptPrompt(result)
+	if !strings.Contains(prompt, "change-audit/CA-") || !strings.Contains(prompt, "requirements/09-BugFix/done/BUG-") {
+		t.Errorf("reprompt prompt should name both files\ngot: %s", prompt)
+	}
+}
+
+// When no reprompt-action rule is present, RepromptPrompt falls back to the terse message.
+func TestRepromptPromptFallsBackToMessage(t *testing.T) {
+	rTests := Rule{ID: "r-tests", Trigger: "tests_failed", Action: "block", Enabled: true}
+	result := Enforce([]Violation{{Rule: rTests, Detail: "Tests failed: TestAdd"}}, "enforce")
+	if RepromptPrompt(result) != result.Message {
+		t.Errorf("expected fallback to message %q, got %q", result.Message, RepromptPrompt(result))
 	}
 }
 

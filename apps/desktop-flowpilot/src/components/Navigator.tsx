@@ -486,15 +486,18 @@ export function Navigator(): React.ReactElement {
             {visibleHistory.map((item) => {
               const isNew = newlyCompleted.has(item.runId);
               const isActive = item.runId === runId;
-              // For the active chat the live store status is authoritative — the polled
-              // runHistory snapshot can lag (e.g. a turn that completed then got blocked
-              // by the flow gate), which would otherwise leave the spinner stuck. (CP-35)
-              // For inactive chats, fall back to the gate-blocked-run set if available:
-              // the runner keeps a blocked run in "running" state until the user re-prompts,
-              // so without this the navigator spinner would persist after switching away. (CP-35 BUG-137)
-              const effectiveStatus = isActive
-                ? status
-                : (gateBlockedRunIds[item.runId] ? "completed" : item.status);
+              // A gate-blocked run is treated as "completed" whether or not it is the
+              // active chat. The runner keeps such a run in "running" state until the user
+              // re-prompts, so both the polled runHistory ("running") AND the live store
+              // status after reopening a blocked chat (openHistoryRun sets status from the
+              // resumed handle = "running") would otherwise show a stuck spinner. The
+              // gate-blocked set is cleared on the next turn_started, restoring the live
+              // spinner for a genuine new turn. (CP-35 BUG-137)
+              // Otherwise: the active chat trusts the live store status (the polled snapshot
+              // can lag a just-completed turn); inactive chats use the polled status.
+              const effectiveStatus = gateBlockedRunIds[item.runId]
+                ? "completed"
+                : (isActive ? status : item.status);
               const hasIcon = isNew || effectiveStatus === "running" || effectiveStatus === "starting" ||
                 effectiveStatus === "waiting_approval" || effectiveStatus === "waiting_question";
               const isUnavailable = Boolean(item.unavailableReason);

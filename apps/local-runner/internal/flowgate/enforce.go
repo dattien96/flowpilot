@@ -57,3 +57,44 @@ func Enforce(violations []Violation, gateMode string) EnforceResult {
 		Message:    "Flow gate: " + strings.Join(details, "; "),
 	}
 }
+
+// RepromptPrompt builds the actionable instruction sent to the AI when the gate
+// resolves to "reprompt". The inline desktop card uses the terse EnforceResult.Message
+// (a symptom, e.g. "bug fix detected but no bugfix doc found"), but that is NOT enough
+// for the AI to self-correct — observed in E2E-11, where the AI edited the change-audit
+// note instead of creating the required BugFix document. This returns explicit,
+// per-rule remediation steps naming the exact file to create. (BUG-140)
+func RepromptPrompt(result EnforceResult) string {
+	var parts []string
+	for _, v := range result.Violations {
+		// Only the auto-remediable (reprompt) rules get guidance; block/warn rules
+		// never reach the reprompt branch.
+		if v.Rule.Action != "reprompt" {
+			continue
+		}
+		parts = append(parts, remediationFor(v))
+	}
+	if len(parts) == 0 {
+		return result.Message
+	}
+	return "The flow gate is asking you to add a required document before this step can complete:\n\n" +
+		strings.Join(parts, "\n\n") +
+		"\n\nCreate the file(s) above now. The gate re-checks automatically after your next turn."
+}
+
+// remediationFor maps a reprompt violation to a concrete, file-level instruction.
+func remediationFor(v Violation) string {
+	switch v.Rule.Trigger {
+	case "bug_fixed":
+		return "• Missing BugFix document. You fixed a bug but did not add its BugFix doc. " +
+			"Create a NEW file `requirements/09-BugFix/done/BUG-<NNN>.md` " +
+			"(use the next available zero-padded number) following the structure in " +
+			"`requirements/09-BugFix/FORMAT-REFERENCE-BUGFIX.md`. " +
+			"Do NOT edit the change-audit note to satisfy this — the BugFix document is a separate, required artifact."
+	case "code_changed":
+		return "• Missing change-audit note. You changed code but did not add a change-audit note. " +
+			"Create a NEW file `change-audit/CA-<NNN>.md` recording what changed and why."
+	default:
+		return "• " + v.Detail
+	}
+}

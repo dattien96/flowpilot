@@ -981,16 +981,18 @@ cat "C:\test-projects\my-sample-app\.flowpilot\manifest.json" | python -m json.t
 
 ---
 
-### E2E-11 — Flow Gate: bug fix without a BUG doc → block (r-bug)
+### (Passed) E2E-11 — Flow Gate: bug fix without a BUG doc → reprompt (r-bug)
 
-> **Code-state finding:** `r-bug` (`bug_fixed`, action `block`) fires in `evaluate.go` when
-> the AI's **final message** contains `"fixed bug"` or `"bug fix"` (case-insensitive) — or
-> `tr.ChangeType == "bugfix"`, which is never set in v1 — **AND** `HasBugFixDoc(diff)` is
-> false. `HasBugFixDoc` returns true if any changed file path contains
-> `requirements/09-BugFix` **or** the substring `BUG-`. So a turn the AI describes as a bug
-> fix, that does not add/modify a `BUG-…` file, trips the rule.
-> `r-bug` is **not** always-block → it blocks in **enforce** mode and downgrades to **warn**
-> in warn mode. No test runner required — this works on the flowpilot repo directly.
+> **Code-state finding:** `r-bug` (`bug_fixed`, action `reprompt` — corrected from `block`,
+> BUG-139) fires in `evaluate.go` when the AI's **final message** contains `"fixed bug"` or
+> `"bug fix"` (case-insensitive) — or `tr.ChangeType == "bugfix"`, which is never set in v1 —
+> **AND** `HasBugFixDoc(diff)` is false. `HasBugFixDoc` returns true if any changed file path
+> contains `requirements/09-BugFix` **or** the substring `BUG-`. So a turn the AI describes as
+> a bug fix, that does not add/modify a `BUG-…` file, trips the rule.
+> `r-bug` is auto-remediable: in **enforce** mode it **reprompts** the AI (≤2 attempts) with
+> actionable instructions to create the missing BugFix doc (the reprompt prompt names the exact
+> file to create — BUG-140); in warn mode it downgrades to **warn**. No test runner required —
+> this works on the flowpilot repo directly.
 
 **Steps (run on the flowpilot repo; default enforce mode):**
 
@@ -1009,18 +1011,25 @@ cat "C:\test-projects\my-sample-app\.flowpilot\manifest.json" | python -m json.t
 
 - An **amber ⚠ violation card** appears inline:
   > ⚠ Flow gate: bug fix detected but no bugfix doc found
-- **No reprompt turn** (r-bug is block). The step does not finalize.
+- **A reprompt turn fires automatically** (r-bug is `reprompt`, ≤2 attempts). The AI receives
+  actionable instructions naming the file to create and should add a
+  `requirements/09-BugFix/done/BUG-<NNN>.md` doc, after which the gate re-checks and the step
+  completes. The AI must **not** edit the change-audit note instead (the reprompt prompt says
+  so explicitly — BUG-140).
+- **No hard-stop modal** (that is reserved for `block`: r-tests/r-reg).
 
 **What to observe (runner logs):**
 ```
 [gate] violations=1 gateMode="enforce" hasCode=true hasCA=true
+[gate] reprompt attempt=0 stepID="…"
 ```
 > If you also omit the CA note, `violations=2` and the message concatenates both r-ca and
-> r-bug details; `block` (r-bug) still wins over `reprompt` (r-ca), so the turn blocks.
+> r-bug details; both are `reprompt`, so the resolved action is `reprompt` and the gate
+> reprompts for **both** missing docs in one turn.
 
 **Confirm the pass case:** repeat with the prompt additionally asking for a
 `requirements/09-BugFix/BUG-<n>-fix-page-comment.md` doc (or any file with `BUG-` in its
-path). `HasBugFixDoc` → true → r-bug does not fire → step completes.
+path). `HasBugFixDoc` → true → r-bug does not fire → step completes with no reprompt.
 
 **Cleanup:**
 ```powershell
@@ -1096,5 +1105,5 @@ cd C:\working\flowpilot; git checkout apps/local-runner/internal/flowgate/scratc
 | E2E-8 Regression oracle blocks step (r-tests **and** r-reg) | ⏳ | any (always blocks) | **Coupled in v1** — fire together. Detection now finds nested runners, so flowpilot-root works (runs `apps/local-runner` suite every turn — slow). Go sandbox recommended for speed. |
 | E2E-9 Oracle flags test tampering (r-tamper) | ✅ | any (always warn) | Amber ⚠ card; step still completes (warn-only) |
 | E2E-10 Shared files sync to Drive | ✅ | any | Requires Drive connected to project |
-| E2E-11 Bug fix without BUG doc blocks (r-bug) | ⏳ | **enforce** (warn downgrades) | Triggered by "bug fix"/"fixed bug" in final message + no `BUG-`/`09-BugFix` file. Works on flowpilot-root. |
+| E2E-11 Bug fix without BUG doc reprompts (r-bug) | ⏳ | **enforce** (warn downgrades) | Triggered by "bug fix"/"fixed bug" in final message + no `BUG-`/`09-BugFix` file. Auto-reprompts (≤2) with actionable file-creation steps (BUG-139, BUG-140). Works on flowpilot-root. |
 | E2E-12 Delete a `.go` file blocks (r-dep) | ⏳ | **enforce** (warn downgrades) | v1 fires on ANY deleted `.go` (does not actually check callers). Works on flowpilot-root. |
