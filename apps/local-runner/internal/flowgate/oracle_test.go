@@ -95,6 +95,47 @@ func TestDetectTestCommandEmpty(t *testing.T) {
 	}
 }
 
+// A monorepo whose root has no usable runner but a nested module does (e.g. flowpilot
+// with go.mod under apps/local-runner) must still be detected, with TestDir pointing
+// at the module directory. (CP-35)
+func TestDetectTestRunnerNestedGoMod(t *testing.T) {
+	root := t.TempDir()
+	// Root package.json with no test script — the old root-only detector returned "".
+	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(`{"name":"mono"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	modDir := filepath.Join(root, "apps", "local-runner")
+	if err := os.MkdirAll(modDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(modDir, "go.mod"), []byte("module example\n\ngo 1.21\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := DetectTestRunner(root)
+	if r.Cmd != "go test -v ./..." {
+		t.Errorf("Cmd = %q, want 'go test -v ./...'", r.Cmd)
+	}
+	if r.Dir != "apps/local-runner" {
+		t.Errorf("Dir = %q, want 'apps/local-runner'", r.Dir)
+	}
+}
+
+// node_modules and other vendored trees must not be walked — a package.json with a
+// test script buried in node_modules must never be selected. (CP-35)
+func TestDetectNestedRunnerSkipsVendored(t *testing.T) {
+	root := t.TempDir()
+	buried := filepath.Join(root, "node_modules", "somepkg")
+	if err := os.MkdirAll(buried, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(buried, "package.json"), []byte(`{"scripts":{"test":"jest"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if r := DetectTestRunner(root); r.Cmd != "" {
+		t.Errorf("expected no runner (node_modules skipped), got %q in %q", r.Cmd, r.Dir)
+	}
+}
+
 func TestRunOracleNilBaseline(t *testing.T) {
 	result := RunOracle("/some/dir", nil, nil)
 	if result.HasRegression {

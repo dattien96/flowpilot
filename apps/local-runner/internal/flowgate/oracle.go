@@ -22,7 +22,7 @@ func RunOracle(repoDir string, baseline *Baseline, diff []ChangedFile) OracleRes
 		return OracleResult{}
 	}
 
-	nowFailed := runTests(repoDir, baseline.TestCmd)
+	nowFailed := runTests(repoDir, baseline.TestCmd, baseline.TestDir)
 
 	var changedTestFiles []string
 	for _, f := range diff {
@@ -59,13 +59,13 @@ func RunOracle(repoDir string, baseline *Baseline, diff []ChangedFile) OracleRes
 	}
 }
 
-func runTests(repoDir, testCmd string) []string {
+func runTests(repoDir, testCmd, testDir string) []string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	parts := strings.Fields(testCmd)
 	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
-	cmd.Dir = repoDir
+	cmd.Dir = filepath.Join(repoDir, filepath.FromSlash(testDir))
 	out, _ := cmd.CombinedOutput()
 
 	var failed []string
