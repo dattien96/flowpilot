@@ -179,7 +179,7 @@ The current `r-reg` block is correct but unhelpful: it tells the user "stop" wit
 > **Testbed:** the Go sandbox at `D:\working\gate-sandbox` (`calc.go` / `calc_test.go`, bound as a FlowPilot project, gate mode `enforce`).
 > **Hard dependency:** these scenarios require the oracle to actually detect a regression. The sandbox baseline is currently **stale** (`green_tests: ["TestAdd"]` while `calc_test.go` also has `TestSubtract`). Until **Task-156**'s HEAD-keyed baseline refresh lands, first re-prime a clean baseline (Prep below) so the regression is detectable; otherwise `r-reg` will not fire and no card appears.
 
-### Prep â€” clean green baseline
+### (Passed) Prep â€” clean green baseline
 
 1. Delete any stale baseline:
    ```powershell
@@ -189,13 +189,13 @@ The current `r-reg` block is correct but unhelpful: it tells the user "stop" wit
 3. In FlowPilot, run a harmless no-edit task on the sandbox ("Tell me what `Add` does. Do not edit files.") to capture a fresh baseline.
 4. Verify: `cat D:\working\gate-sandbox\.flowpilot\guard\test_baseline.json` â†’ `green_tests` includes `TestAdd` **and** `TestSubtract`.
 
-### E2E-1 â€” Regression shows a decision card, not a dead-end
+### (Passed) E2E-1 â€” Regression shows a decision card, not a dead-end
 
 1. Start a task: "In `calc.go`, change `Add` to `return a - b`. Add a `change-audit/CA-xxx.md` note." (CA note keeps `r-ca` quiet so the regression is the only signal.)
 2. Let the turn complete.
 - **Expect:** the step blocks (`r-reg`), and the desktop shows a **3-option decision card** (via the ask-user Question card), not the old "Got it" modal. `calc_test.go` is untouched in `git status`.
 
-### E2E-2 â€” opt-1: keep test, fix code
+### (Passed) E2E-2 â€” opt-1: keep test, fix code
 
 1. From the card pick **"Keep test + requirement â†’ fix code"**.
 - **Expect:** a reprompt turn fires telling the AI to restore `TestAdd` by fixing `calc.go`; no override file is written; `05-System-Specs` is untouched. After the AI reverts `Add` to `a + b`, the suite is green and the step finalizes.
@@ -214,15 +214,15 @@ The current `r-reg` block is correct but unhelpful: it tells the user "stop" wit
 
 > Requires a `05-System-Specs/SS-*.md` linked to the feature owning `calc.go` (create one, or reuse the file from E2E-3).
 
-1. Break `Add`; pick **"Suggest requirement changes"**.
-- **Expect:** the AI opens/targets the **specific** linked `SS-*.md` (no scan of all specs), proposes the change there, and on agreement edits that file then aligns the test.
+1. Break `Add`; pick **”Suggest requirement changes”**.
+- **Expect:** the AI opens/targets the **specific** linked `SS-*.md` (no scan of all specs), proposes the change there, and on agreement edits that file then aligns the test. The modal does **not** re-appear during the proposal turn (fixed by `proposalTurnPending` flag — r-reg/r-tests suppressed for the single proposal turn).
 
-### E2E-5 â€” opt-3: custom instruction
+### (Passed) E2E-5 â€” opt-3: custom instruction
 
 1. Break `Add`; pick **"Other"** and type a custom instruction (e.g. "Revert Add and add a regression comment").
 - **Expect:** the free text is sent verbatim as the next-turn instruction; no override is written; no spec is created.
 
-### E2E-6 â€” audit & gate-mode invariants
+### (Passed) E2E-6 â€” audit & gate-mode invariants
 
 1. After any resolution, confirm the chosen option + confirmation are retrievable (audit log / gate report).
 2. Switch the project to `gate_mode: warn` and repeat E2E-1.

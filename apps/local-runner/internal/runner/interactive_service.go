@@ -155,6 +155,10 @@ type interactiveRun struct {
 	// pendingGateBlock holds r-reg details for the decision handler (Task-155).
 	// Cleared when the user submits a decision via handleGateDecision.
 	pendingGateBlock *gateBlockInfo
+	// proposalTurnPending is set true when the user picks opt-2 (suggest requirement change).
+	// The next turn is a proposal-only turn where the AI proposes but does not fix code yet;
+	// runFlowGate must not re-block on r-reg/r-tests during that turn.
+	proposalTurnPending bool
 
 	subs    map[int64]chan ProviderEvent
 	nextSub int64

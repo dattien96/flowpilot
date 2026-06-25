@@ -2894,6 +2894,13 @@ input {
   display: flex;
   flex-direction: column;
   gap: 7px;
+  margin-bottom: 10px;
+}
+.gate-custom-input {
+  width: 100%;
+  box-sizing: border-box;
+  flex: none;
+  margin-bottom: 4px;
 }
 .option {
   display: flex;

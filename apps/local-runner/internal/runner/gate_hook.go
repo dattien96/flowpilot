@@ -91,6 +91,24 @@ func (s *InteractiveService) runFlowGate(
 	hasCode := flowgate.HasCodeChanges(diff)
 	log.Printf("[gate] violations=%d gateMode=%q hasCode=%v hasCA=%v", len(violations), loadGateMode(dotFP), hasCode, hasCA)
 
+	// 8a. Proposal-turn exemption (Task-155 opt-2): the AI just proposed a requirement
+	// change and has not fixed code yet; tests are expected to still fail. Suppress
+	// r-reg and r-tests for this single turn so the modal does not re-appear.
+	s.mu.Lock()
+	proposalTurn := rs.proposalTurnPending
+	rs.proposalTurnPending = false
+	s.mu.Unlock()
+	if proposalTurn {
+		filtered := violations[:0]
+		for _, v := range violations {
+			if v.Rule.ID != "r-reg" && v.Rule.ID != "r-tests" {
+				filtered = append(filtered, v)
+			}
+		}
+		violations = filtered
+		log.Printf("[gate] proposal turn: r-reg/r-tests suppressed")
+	}
+
 	// 9. Surface oracle-detected tampering as an additional warn violation.
 	if oracle.HasTampering {
 		violations = append(violations, flowgate.Violation{
@@ -190,6 +208,13 @@ func (s *InteractiveService) SubmitGateDecision(runID, option, customText string
 			tests, tests)
 	case "suggest-requirement-change":
 		prompt = buildSuggestRequirementPrompt(info, cwd)
+		// Mark the upcoming turn as a proposal turn so runFlowGate does not
+		// re-block on r-reg/r-tests — the AI is proposing, not fixing code yet.
+		s.mu.Lock()
+		if rs2 := s.runs[runID]; rs2 != nil {
+			rs2.proposalTurnPending = true
+		}
+		s.mu.Unlock()
 	case "custom":
 		if strings.TrimSpace(customText) == "" {
 			return newAPIErr(400, "invalid_request", "customText is required for option 'custom'")
