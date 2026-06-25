@@ -507,6 +507,172 @@ func TestRepromptPromptRTaskIsActionable(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Task-159: Polyglot ecosystem coverage — IsTestFile and DetectTestRunner
+// ---------------------------------------------------------------------------
+
+func TestIsTestFileDart(t *testing.T) {
+	cases := []struct{ path string; want bool }{
+		{"lib/add_test.dart", true},
+		{"test/widget_test.dart", true},
+		{"lib/add.dart", false},
+		{"lib/test_helper.dart", false},
+	}
+	for _, c := range cases {
+		if got := IsTestFile(c.path); got != c.want {
+			t.Errorf("IsTestFile(%q) = %v, want %v", c.path, got, c.want)
+		}
+	}
+}
+
+func TestIsTestFileKotlin(t *testing.T) {
+	cases := []struct{ path string; want bool }{
+		{"src/test/java/com/example/AddTest.kt", true},
+		{"src/test/java/com/example/CalculatorTest.kt", true},
+		{"src/main/java/com/example/Add.kt", false},
+		{"src/main/java/com/example/TestHelper.kt", false},
+	}
+	for _, c := range cases {
+		if got := IsTestFile(c.path); got != c.want {
+			t.Errorf("IsTestFile(%q) = %v, want %v", c.path, got, c.want)
+		}
+	}
+}
+
+func TestIsTestFileJava(t *testing.T) {
+	cases := []struct{ path string; want bool }{
+		{"src/test/java/com/example/AddTest.java", true},
+		{"src/test/java/com/example/AddTests.java", true},
+		{"src/main/java/com/example/Add.java", false},
+		{"src/main/java/com/example/TestHelper.java", false},
+	}
+	for _, c := range cases {
+		if got := IsTestFile(c.path); got != c.want {
+			t.Errorf("IsTestFile(%q) = %v, want %v", c.path, got, c.want)
+		}
+	}
+}
+
+func TestIsTestFileSwift(t *testing.T) {
+	cases := []struct{ path string; want bool }{
+		{"MyAppTests/AddTests.swift", true},
+		{"MyAppUITests/LoginTests.swift", true},
+		{"Sources/MyApp/Add.swift", false},
+		{"Sources/MyApp/TestHelper.swift", false},
+	}
+	for _, c := range cases {
+		if got := IsTestFile(c.path); got != c.want {
+			t.Errorf("IsTestFile(%q) = %v, want %v", c.path, got, c.want)
+		}
+	}
+}
+
+func TestDetectGradleRunner(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "build.gradle"), []byte(""), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "gradlew"), []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	runner := DetectTestRunner(dir)
+	if runner.Cmd != "./gradlew test" {
+		t.Errorf("got %q, want \"./gradlew test\"", runner.Cmd)
+	}
+	if runner.Dir != "" {
+		t.Errorf("Dir = %q, want empty (root)", runner.Dir)
+	}
+}
+
+func TestDetectGradleRunnerBatFallback(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "build.gradle"), []byte(""), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "gradlew.bat"), []byte("@echo off\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runner := DetectTestRunner(dir)
+	if runner.Cmd != "gradlew.bat test" {
+		t.Errorf("got %q, want \"gradlew.bat test\"", runner.Cmd)
+	}
+}
+
+func TestDetectMavenRunner(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "pom.xml"), []byte("<project/>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runner := DetectTestRunner(dir)
+	if runner.Cmd != "mvn test -q" {
+		t.Errorf("got %q, want \"mvn test -q\"", runner.Cmd)
+	}
+}
+
+func TestAngularNoWatchMode(t *testing.T) {
+	dir := t.TempDir()
+	pkg := `{"scripts":{"test":"ng test"}}`
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(pkg), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "angular.json"), []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runner := DetectTestRunner(dir)
+	if !strings.Contains(runner.Cmd, "--watch=false") {
+		t.Errorf("Angular runner must include --watch=false, got %q", runner.Cmd)
+	}
+	if !strings.Contains(runner.Cmd, "--no-progress") {
+		t.Errorf("Angular runner must include --no-progress, got %q", runner.Cmd)
+	}
+}
+
+func TestNonAngularNpmTestUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	pkg := `{"scripts":{"test":"jest"}}`
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(pkg), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runner := DetectTestRunner(dir)
+	if runner.Cmd != "npm test" {
+		t.Errorf("non-Angular npm project: got %q, want \"npm test\"", runner.Cmd)
+	}
+}
+
+func TestDetectFlutterSkipsWhenNotOnPath(t *testing.T) {
+	if flutterOnPath() {
+		t.Skip("flutter is on PATH; skipping not-on-path test")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "pubspec.yaml"), []byte("name: myapp\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runner := DetectTestRunner(dir)
+	if strings.HasPrefix(runner.Cmd, "flutter") {
+		t.Errorf("flutter should not be detected when SDK is not on PATH, got %q", runner.Cmd)
+	}
+}
+
+// r-tamper must fire for Kotlin test files modified during a turn. This verifies
+// the IsTestFile expansion (Task-159) feeds through to the tamper check in RunOracle.
+func TestTamperDetectionKotlinTestFile(t *testing.T) {
+	if !IsTestFile("src/test/java/com/example/AddTest.kt") {
+		t.Fatal("IsTestFile must recognise *Test.kt for tamper detection to work")
+	}
+	diff := []ChangedFile{
+		{Path: "src/test/java/com/example/AddTest.kt", Status: "M"},
+	}
+	var tampered []string
+	for _, f := range diff {
+		if IsTestFile(f.Path) && f.Status == "M" {
+			tampered = append(tampered, f.Path)
+		}
+	}
+	if len(tampered) == 0 {
+		t.Error("expected AddTest.kt to be flagged as tampered")
+	}
+}
+
 func TestRepromptPromptDeclaredTaskUsesResolvedID(t *testing.T) {
 	rTask := Rule{ID: "r-task", Trigger: "task_referenced", Action: "reprompt", Enabled: true}
 	result := Enforce([]Violation{{

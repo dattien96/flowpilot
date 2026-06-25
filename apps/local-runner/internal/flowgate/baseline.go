@@ -81,12 +81,22 @@ type TestRunner struct {
 	Dir string
 }
 
-var reTestGo = regexp.MustCompile(`_test\.go$`)
-var reTestJS = regexp.MustCompile(`\.test\.[jt]sx?$|\.spec\.[jt]sx?$`)
-var reTestPy = regexp.MustCompile(`(^|/)test_.*\.py$`)
+var reTestGo    = regexp.MustCompile(`_test\.go$`)
+var reTestJS    = regexp.MustCompile(`\.test\.[jt]sx?$|\.spec\.[jt]sx?$`)
+var reTestPy    = regexp.MustCompile(`(^|/)test_.*\.py$`)
+var reTestDart  = regexp.MustCompile(`_test\.dart$`)
+var reTestKt    = regexp.MustCompile(`Test\.kt$`)
+var reTestJava  = regexp.MustCompile(`Tests?\.java$`)
+var reTestSwift = regexp.MustCompile(`Tests?\.swift$`)
 
 func IsTestFile(path string) bool {
-	return reTestGo.MatchString(path) || reTestJS.MatchString(path) || reTestPy.MatchString(path)
+	return reTestGo.MatchString(path) ||
+		reTestJS.MatchString(path) ||
+		reTestPy.MatchString(path) ||
+		reTestDart.MatchString(path) ||
+		reTestKt.MatchString(path) ||
+		reTestJava.MatchString(path) ||
+		reTestSwift.MatchString(path)
 }
 
 // DetectTestCommand returns just the command string for the detected runner (root
@@ -123,10 +133,42 @@ func detectRunnerInDir(dir string) string {
 	if _, err := os.Stat(filepath.Join(dir, "pyproject.toml")); err == nil {
 		return "pytest -v"
 	}
+	// Flutter — require flutter on PATH; skip silently if SDK is absent. (Task-159)
+	if _, err := os.Stat(filepath.Join(dir, "pubspec.yaml")); err == nil {
+		if flutterOnPath() {
+			return "flutter test"
+		}
+	}
+	// Android / Java Gradle — prefer Unix wrapper, fall back to Windows bat. (Task-159)
+	if _, err := os.Stat(filepath.Join(dir, "build.gradle")); err == nil {
+		if _, err2 := os.Stat(filepath.Join(dir, "gradlew")); err2 == nil {
+			return "./gradlew test"
+		}
+		if _, err2 := os.Stat(filepath.Join(dir, "gradlew.bat")); err2 == nil {
+			return "gradlew.bat test"
+		}
+	}
+	// Java Maven (Task-159)
+	if _, err := os.Stat(filepath.Join(dir, "pom.xml")); err == nil {
+		return "mvn test -q"
+	}
+	// Angular: ng test default is watch-mode (never exits). Append --watch=false so
+	// executeSuite always gets a process that terminates. (Task-159)
 	if hasNpmTestScript(filepath.Join(dir, "package.json")) {
+		if _, err := os.Stat(filepath.Join(dir, "angular.json")); err == nil {
+			return "npx ng test --watch=false --no-progress"
+		}
 		return "npm test"
 	}
 	return ""
+}
+
+// flutterOnPath reports whether the flutter CLI is available on PATH.
+// Used to guard flutter test detection so missing SDK doesn't produce a
+// confusing 5-minute executeSuite timeout. (Task-159)
+func flutterOnPath() bool {
+	_, err := exec.LookPath("flutter")
+	return err == nil
 }
 
 // hasNpmTestScript reports whether package.json at pkgPath declares a "test" script.
@@ -187,14 +229,16 @@ func detectNestedRunner(repoDir string) TestRunner {
 }
 
 // runnerRank orders ecosystems by how reliably the oracle parses their output.
+// Lower = higher priority; ties break on shallowest path in detectNestedRunner. (Task-159)
 func runnerRank(cmd string) int {
 	switch {
-	case strings.HasPrefix(cmd, "go test"):
-		return 0
-	case strings.HasPrefix(cmd, "pytest"):
-		return 1
-	default:
-		return 2
+	case strings.HasPrefix(cmd, "go test"):     return 0
+	case strings.HasPrefix(cmd, "pytest"):      return 1
+	case strings.HasPrefix(cmd, "flutter"):     return 2
+	case strings.HasPrefix(cmd, "./gradlew"),
+		strings.HasPrefix(cmd, "gradlew.bat"):  return 3
+	case strings.HasPrefix(cmd, "mvn"):         return 4
+	default:                                    return 5 // npm / npx
 	}
 }
 
