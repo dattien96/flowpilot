@@ -1705,24 +1705,23 @@ function applyEvent(s: AppState, e: ProviderEventDTO): Partial<AppState> {
       _runReplaySeq: nextReplaySeq,
     };
   }
-  if (e.type === "flow_gate_violation" && e.status === "block" && !s._historyReplaying) {
-    // A hard block (failed/regressed tests) stops the work — unlike r-ca/r-bug which
-    // auto-reprompt. Surface it as a modal the user must acknowledge. (CP-35)
+  if (e.type === "flow_gate_violation" && (e.status === "block" || e.status === "warn") && !s._historyReplaying) {
+    // block: hard stop — surface a modal the user must acknowledge. The modal must appear
+    // EXACTLY ONCE: Reopening the chat re-streams the persisted flow_gate_violation, and
+    // the `_historyReplaying` guard is racy. `_gateBlockedRunIds` is the authoritative guard:
+    // added on the first block, cleared on the next turn_started. (CP-35, BUG-138)
     //
-    // The modal must appear EXACTLY ONCE — on the live block. Reopening the chat re-streams
-    // the persisted flow_gate_violation through consumeOrchestrationStream (from seq 0), and
-    // the `_historyReplaying` guard alone is racy because that stream outlives the replay's
-    // _historyReplaying=true window. So we use `_gateBlockedRunIds` as the authoritative,
-    // race-free guard: the run is added on the first block and only cleared on the next
-    // `turn_started` (the user re-prompted). If it is already in the set, the block was
-    // already surfaced — update bookkeeping but do NOT re-pop the modal. (BUG-138)
+    // warn: store settles to "completed" (statusFromEvent), but the backend runner keeps the
+    // run in "running" state until the user re-prompts — the same mismatch as block. Without
+    // tracking in _gateBlockedRunIds, switching to another chat makes the Navigator fall back
+    // to item.status = "running" and show an infinite spinner. (BUG-145)
     //
-    // `_gateBlockedRunIds` also lets Navigator suppress the "Running" spinner while the
-    // run sits blocked (the runner keeps it "running" until re-prompted). (BUG-137)
+    // Both cases: add to _gateBlockedRunIds so Navigator shows a stable completed icon for
+    // inactive gate-settled runs. Cleared on the next turn_started. (BUG-137)
     const alreadyBlocked = Boolean(s._gateBlockedRunIds[e.workflowRunId]);
     return {
       ...next,
-      ...(alreadyBlocked ? {} : { gateBlock: { message: e.error } }),
+      ...(e.status === "block" && !alreadyBlocked ? { gateBlock: { message: e.error } } : {}),
       _gateBlockedRunIds: { ...s._gateBlockedRunIds, [e.workflowRunId]: true },
       _runReplaySeq: nextReplaySeq,
     };

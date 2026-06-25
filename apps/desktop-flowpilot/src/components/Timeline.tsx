@@ -529,7 +529,13 @@ export function Timeline(): React.ReactElement {
   const showAgentHeader = shouldShowAgentTimelineHeader(activeAgentRunId, mainRunId, agentRuns.length);
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    // Defer scroll one rAF so any layout shift from pagination (e.g. "Load earlier"
+    // button inserted at the top when a gate reprompt pushes totalPromptCount over
+    // TIMELINE_PAGE_SIZE) is fully committed before we measure the scroll target. (BUG-146)
+    const id = requestAnimationFrame(() => {
+      endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    });
+    return () => cancelAnimationFrame(id);
   }, [timeline]);
 
   return (
