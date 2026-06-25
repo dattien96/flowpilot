@@ -24,7 +24,10 @@ func Evaluate(tr TurnResult, rules []Rule) []Violation {
 func checkRule(rule Rule, tr TurnResult) *Violation {
 	switch rule.Trigger {
 	case "code_changed":
-		if HasCodeChanges(tr.GitDiff) && !HasChangeAuditNote(tr.GitDiff) {
+		// Use WrittenPaths (files the AI tool-called) not GitDiff: the git working tree may
+		// contain pre-existing dirty files or runner-internal state (e.g. test_baseline.json)
+		// that are not changes the AI made and must not trigger a change-audit requirement.
+		if HasCodeChangesInList(tr.WrittenPaths) && !HasChangeAuditNote(tr.GitDiff) {
 			return &Violation{Rule: rule, Detail: "code changed but no change-audit note found"}
 		}
 

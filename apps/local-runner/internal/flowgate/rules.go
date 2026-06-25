@@ -33,6 +33,11 @@ type TurnResult struct {
 	FinalMessage string        `json:"final_message"`
 	ToolCalls    []string      `json:"tool_calls,omitempty"`
 	GitDiff      []ChangedFile `json:"git_diff,omitempty"`
+	// WrittenPaths lists files actually written by AI tool calls in this turn.
+	// Use this (not GitDiff) to decide whether the AI changed source code — GitDiff
+	// includes pre-existing dirty files and runner-internal state (e.g. test_baseline.json)
+	// that are invisible to the user and must not trigger change-audit requirements.
+	WrittenPaths []string      `json:"written_paths,omitempty"`
 	Tests        TestOutcome   `json:"tests"`
 	ChangeType   string        `json:"change_type,omitempty"`
 	SourceDocID  string        `json:"source_doc_id,omitempty"`

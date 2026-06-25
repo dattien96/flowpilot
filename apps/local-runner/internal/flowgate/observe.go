@@ -160,3 +160,16 @@ func HasCodeChanges(diff []ChangedFile) bool {
 	}
 	return false
 }
+
+// HasCodeChangesInList checks if any path in the list is a source code file
+// (not a doc/audit/requirements file). Takes a plain []string instead of []ChangedFile
+// so it can be called with TurnResult.WrittenPaths (files the AI tool-called directly),
+// which is the correct signal for whether the AI changed code in this turn.
+func HasCodeChangesInList(paths []string) bool {
+	for _, p := range paths {
+		if !IsDocOrAuditFile(p) {
+			return true
+		}
+	}
+	return false
+}

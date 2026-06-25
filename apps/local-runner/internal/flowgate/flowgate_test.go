@@ -63,6 +63,7 @@ func TestEvaluateCodeChangeWithoutAuditNote(t *testing.T) {
 		GitDiff: []ChangedFile{
 			{Path: "internal/foo/foo.go", Status: "M"},
 		},
+		WrittenPaths: []string{"internal/foo/foo.go"}, // AI wrote this file
 	}
 	violations := Evaluate(tr, DefaultRules())
 	found := false
@@ -82,11 +83,33 @@ func TestEvaluateCodeChangeWithAuditNote(t *testing.T) {
 			{Path: "internal/foo/foo.go", Status: "M"},
 			{Path: "change-audit/CA-001.md", Status: "A"},
 		},
+		WrittenPaths: []string{"internal/foo/foo.go", "change-audit/CA-001.md"}, // AI wrote both
 	}
 	violations := Evaluate(tr, DefaultRules())
 	for _, v := range violations {
 		if v.Rule.ID == "r-ca" {
 			t.Error("unexpected r-ca violation when audit note is present")
+		}
+	}
+}
+
+// r-ca must not fire when the AI wrote no files in this turn, even if the git
+// working tree has pre-existing dirty code files or runner-internal state changes
+// (e.g. test_baseline.json). This was the false positive seen in E2E case 1 of
+// Task-155: "Tell me what Add does. Do not edit files." triggered the gate because
+// ObserveGitDiff picked up stale sandbox files.
+func TestEvaluateReadOnlyTurnNeverTriggersRCA(t *testing.T) {
+	tr := TurnResult{
+		GitDiff: []ChangedFile{
+			{Path: "internal/foo/foo.go", Status: "M"},
+			{Path: ".flowpilot/guard/test_baseline.json", Status: "M"},
+		},
+		WrittenPaths: nil, // AI wrote nothing this turn
+	}
+	violations := Evaluate(tr, DefaultRules())
+	for _, v := range violations {
+		if v.Rule.ID == "r-ca" {
+			t.Error("r-ca must not fire on a read-only turn even with dirty git tree")
 		}
 	}
 }

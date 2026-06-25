@@ -71,6 +71,7 @@ func (s *InteractiveService) runFlowGate(
 		FinalMessage: fin.FinalMessage,
 		SourceDocID:  rs.sourceDocID,
 		GitDiff:      diff,
+		WrittenPaths: fin.ChangedFiles, // files actually written by AI tool calls this turn
 		Tests: flowgate.TestOutcome{
 			Ran:    baseline != nil,
 			Failed: failedTests,
