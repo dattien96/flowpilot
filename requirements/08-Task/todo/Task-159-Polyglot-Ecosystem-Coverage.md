@@ -101,8 +101,97 @@ AI finishes turn
 **`DetectTestRunner`** — required to run the suite. Without it `baseline.TestCmd == ""` → `RunOracle` returns `Disabled: true` → `r-reg` never fires → false safety.
 
 **`IsTestFile`** — required for oracle correctness, not just coverage:
-1. **False-positive suppression**: if the AI intentionally rewrites `calc_test.dart`, failures in that file are not regressions. Without `_test.dart` in `IsTestFile`, FlowPilot blocks legitimate test updates in Flutter projects.
-2. **Tamper detection**: if the AI silently weakens a test to make it pass, `r-tamper` fires. Without `*Test.java` in `IsTestFile`, a Java AI can gut a test undetected.
+1. **False-positive suppression** *(named-test mode only)*: when the AI intentionally rewrites a test file and the suite fails, the failing test names are checked against `changedTestFiles`. If the test came from a file the AI edited, it is skipped — not a regression. This guard only fires when `executeSuite` returns named test IDs (`nowFailed` non-empty: Go, pytest, npm). For coarse-mode ecosystems (Flutter, Java, Android, Swift), `nowFailed` is empty and the `"suite_regressed"` sentinel is emitted directly, bypassing this check — named-test parsing for those ecosystems would be required to fully close this gap.
+2. **Tamper detection** *(all ecosystems)*: if the AI silently modifies a pre-existing test file (`Status == "M"`), `r-tamper` fires regardless of whether the suite passes or fails. This is the immediate correctness benefit of the `IsTestFile` expansion — it applies to every ecosystem, named-test mode or not.
+
+#### Example — Case 1: False-positive suppression (Go, named-test mode)
+
+**Setup:** Go project, baseline green. User asks AI to update `TestAdd` because `Add` now always adds 1 (new requirement).
+
+The AI edits `calc_test.go`:
+```go
+// BEFORE (was green at baseline)
+func TestAdd(t *testing.T) {
+    if Add(2, 3) != 5 { t.Fatal("wrong") }
+}
+
+// AFTER (AI rewrites per new requirement)
+func TestAdd(t *testing.T) {
+    if Add(2, 3) != 6 { t.Fatal("wrong") }  // new: always +1
+}
+```
+
+`go test -v` exits non-zero, parses `--- FAIL: TestAdd`. Now `runOracle`:
+
+```
+changedTestFiles = []                            ← WITHOUT fix: IsTestFile("calc_test.go")
+                                                   already true — Go was covered from day 1
+
+// For a NEW ecosystem (e.g. Kotlin), same logic applies once IsTestFile recognises *Test.kt:
+changedTestFiles = ["com/example/AddTest.kt"]    ← WITH Task-159 fix
+
+isTestFromChangedFile("TestAdd", changedTestFiles)
+  → stem of "AddTest.kt" = "addtest" / "add"
+  → "TestAdd" contains "add" → true → SKIP
+
+regressed = []                                   ← nothing counted as regressed
+r-reg does NOT fire → AI's intentional rewrite is allowed ✓
+```
+
+Without `IsTestFile` recognising the file, `isTestFromChangedFile` returns false → `TestAdd` is counted as a regression → `r-reg` fires and blocks the AI even though the user asked for the change.
+
+> **Scope note:** this path only fires when `nowFailed` is non-empty. For coarse-mode ecosystems (Flutter, Android, Java, Swift), `"suite_regressed"` is emitted unconditionally when the suite fails, regardless of which files changed. Named-test parsing for those ecosystems is needed to make this guard effective there too.
+
+---
+
+#### Example — Case 2: Tamper detection (Java, all modes)
+
+**Setup:** Java Maven project. `TestAdd` regressed — `Add` returns the wrong value. Rather than fixing the code, the AI silently guts the test.
+
+The AI edits `AddTest.java`:
+```java
+// BEFORE (was green at baseline, now failing because Add is broken)
+@Test public void testAdd() {
+    assertEquals(5, calculator.add(2, 3));
+}
+
+// AFTER (AI weakens the test so it always passes)
+@Test public void testAdd() {
+    assertTrue(true);   // ← gutted
+}
+```
+
+`mvn test -q` exits 0 — suite is "green" again. The regression check never fires. The only guard is the tamper check inside `RunOracle`:
+
+```go
+for _, f := range diff {
+    if IsTestFile(f.Path) && f.Status == "M" {
+        tampered = append(tampered, f.Path)
+    }
+}
+```
+
+**Without `*Test.java` in `IsTestFile`:**
+```
+f.Path = "src/test/java/com/example/AddTest.java"
+IsTestFile(...)  →  false
+tampered = []
+r-tamper does NOT fire → AI has silently gutted the test, undetected ✗
+```
+
+**With `*Test.java` in `IsTestFile` (Task-159):**
+```
+IsTestFile("src/test/java/com/example/AddTest.java")  →  true  (reTestJava matches)
+tampered = ["src/test/java/com/example/AddTest.java"]
+HasTampering = true
+```
+
+`runFlowGate` appends an `r-tamper` violation and the gate blocks the step:
+> `"pre-existing test file modified: src/test/java/com/example/AddTest.java"`
+
+The AI cannot gut the test undetected — works in coarse mode and named-test mode alike. ✓
+
+---
 
 ## 4. Exact Change
 
