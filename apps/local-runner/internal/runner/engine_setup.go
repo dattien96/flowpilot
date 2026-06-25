@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -27,6 +28,8 @@ type engineSetupRequest struct {
 	WorkingDirectory string `json:"workingDirectory"`
 	Trigger          string `json:"trigger,omitempty"`
 	Platform         string `json:"platform,omitempty"`
+	XcodeScheme      string `json:"xcodeScheme,omitempty"`
+	XcodeDestination string `json:"xcodeDestination,omitempty"`
 }
 
 type EngineStatusResponse struct {
@@ -126,9 +129,47 @@ func (s *InteractiveService) handleInitEngine(w http.ResponseWriter, r *http.Req
 		trigger = engineInitTriggerManual
 	}
 
-	status, initState := s.runEngineInit(r.PathValue("projectId"), workingDirectory, strings.TrimSpace(request.Platform), trigger)
+	platform := strings.TrimSpace(request.Platform)
+	xcodeScheme := strings.TrimSpace(request.XcodeScheme)
+	xcodeDestination := strings.TrimSpace(request.XcodeDestination)
+
+	// Write/update test-config.json for iOS projects when scheme and destination are
+	// provided. This lets the runner auto-capture a baseline without the user needing
+	// to create .flowpilot/settings/test-config.json manually. (Task-159)
+	if platform == "ios" && xcodeScheme != "" && xcodeDestination != "" {
+		dotFP := filepath.Join(workingDirectory, ".flowpilot")
+		if err := writeIOSTestConfig(dotFP, xcodeScheme, xcodeDestination); err != nil {
+			log.Printf("[engine] iOS test-config write error: %v", err)
+		}
+	}
+
+	status, initState := s.runEngineInit(r.PathValue("projectId"), workingDirectory, platform, trigger)
 	status.LastInit = initState
 	writeInteractiveJSON(w, http.StatusOK, status)
+}
+
+// writeIOSTestConfig writes .flowpilot/settings/test-config.json with the
+// xcodebuild command built from the project's scheme and destination. Existing
+// test_dir and result_format values are preserved. (Task-159)
+func writeIOSTestConfig(dotFP, xcodeScheme, xcodeDestination string) error {
+	settingsDir := filepath.Join(dotFP, "settings")
+	if err := os.MkdirAll(settingsDir, 0o755); err != nil {
+		return err
+	}
+	configPath := filepath.Join(settingsDir, "test-config.json")
+	cfg := map[string]interface{}{}
+	if data, err := os.ReadFile(configPath); err == nil {
+		_ = json.Unmarshal(data, &cfg)
+	}
+	cfg["test_command"] = fmt.Sprintf(
+		"xcodebuild test -scheme %s -destination '%s'",
+		xcodeScheme, xcodeDestination,
+	)
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(configPath, data, 0o644)
 }
 
 func (s *InteractiveService) resolveEngineWorkingDirectory(value string) (string, *apiErr) {

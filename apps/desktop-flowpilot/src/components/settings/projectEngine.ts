@@ -370,11 +370,17 @@ export async function fetchProjectEngineStatus(
   return mapProjectEngineStatus((await response.json()) as RawProjectEngineStatus);
 }
 
+export interface XcodeConfig {
+  xcodeScheme?: string | null;
+  xcodeDestination?: string | null;
+}
+
 export async function initProjectEngine(
   projectId: string,
   workingDirectory: string,
   trigger: ProjectEngineTrigger,
   platform?: string,
+  xcodeConfig?: XcodeConfig,
 ): Promise<ProjectEngineStatus> {
   const response = await fetch(
     new URL(`/client/projects/${encodeURIComponent(projectId)}/engine/init`, RUNNER_URL).toString(),
@@ -388,6 +394,8 @@ export async function initProjectEngine(
         workingDirectory,
         trigger,
         ...(platform ? { platform } : {}),
+        ...(xcodeConfig?.xcodeScheme ? { xcodeScheme: xcodeConfig.xcodeScheme } : {}),
+        ...(xcodeConfig?.xcodeDestination ? { xcodeDestination: xcodeConfig.xcodeDestination } : {}),
       }),
     },
   );
@@ -443,12 +451,13 @@ export async function autoInitProjectEngine(
   projectId: string,
   bindings: ReadonlyArray<{ localPath: string }>,
   platform?: string,
+  xcodeConfig?: XcodeConfig,
 ): Promise<void> {
   const paths = uniqueBindingPaths(bindings);
   await Promise.allSettled(
     paths.map(async (workingDirectory) => {
       try {
-        await initProjectEngine(projectId, workingDirectory, "bind", platform);
+        await initProjectEngine(projectId, workingDirectory, "bind", platform, xcodeConfig);
       } catch (error) {
         console.warn(
           "[ProjectsSettings] bind-time engine init failed",

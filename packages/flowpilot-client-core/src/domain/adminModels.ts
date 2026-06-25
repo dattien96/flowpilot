@@ -28,6 +28,8 @@ export interface Project {
   defaultModel: string | null;
   defaultReasoningEffort: ReasoningEffort | null;
   sessionIdleTtlMinutes: number | null;
+  xcodeScheme: string | null;
+  xcodeDestination: string | null;
   createdAt: string;
   updatedAt: string;
 }
