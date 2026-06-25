@@ -216,6 +216,7 @@ Only iOS requires additional project-level fields because `xcodebuild test` will
 
 The iOS fields (`xcodeScheme`, `xcodeDestination`) are stored in the `projects` Supabase table and written to `.flowpilot/settings/test-config.json` by the runner on engine init — no manual file creation required.
 
+![alt text](image.png)
 ### Current ecosystem coverage
 
 | Ecosystem | Auto-detect today | r-reg fires | Named tests | IsTestFile |
