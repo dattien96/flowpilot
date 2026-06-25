@@ -137,7 +137,7 @@ func TestDetectNestedRunnerSkipsVendored(t *testing.T) {
 }
 
 func TestRunOracleNilBaseline(t *testing.T) {
-	result := RunOracle("/some/dir", nil, nil)
+	result := RunOracle("/some/dir", nil, nil, nil)
 	if result.HasRegression {
 		t.Error("nil baseline should produce no regression")
 	}
@@ -151,7 +151,7 @@ func TestRunOracleNilBaseline(t *testing.T) {
 
 func TestRunOracleEmptyTestCmd(t *testing.T) {
 	bl := &Baseline{CapturedAt: "2024-01-01T00:00:00Z", GreenTests: []string{"TestFoo"}, TestCmd: ""}
-	result := RunOracle("/some/dir", bl, nil)
+	result := RunOracle("/some/dir", bl, nil, nil)
 	if result.HasRegression {
 		t.Error("empty TestCmd should produce no regression")
 	}
@@ -254,7 +254,7 @@ func TestRunOracleTampering(t *testing.T) {
 		{Path: "internal/foo/foo_test.go", Status: "M"},
 		{Path: "internal/foo/foo.go", Status: "M"},
 	}
-	result := RunOracle(repoDir, bl, diff)
+	result := RunOracle(repoDir, bl, diff, nil)
 	if !result.HasTampering {
 		t.Error("expected HasTampering=true when a test file is Modified in diff")
 	}
@@ -273,7 +273,7 @@ func TestRunOracleNewTestFileNotTampered(t *testing.T) {
 	diff := []ChangedFile{
 		{Path: "internal/foo/foo_test.go", Status: "A"}, // Added, not Modified
 	}
-	result := RunOracle(repoDir, bl, diff)
+	result := RunOracle(repoDir, bl, diff, nil)
 	if result.HasTampering {
 		t.Error("newly added test file should not be considered tampered")
 	}

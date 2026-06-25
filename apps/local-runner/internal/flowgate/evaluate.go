@@ -74,7 +74,12 @@ func checkRule(rule Rule, tr TurnResult) *Violation {
 
 	case "regression_test_broke":
 		if tr.Tests.Ran && len(tr.Tests.Failed) > 0 {
-			return &Violation{Rule: rule, Detail: "Tests failed: " + strings.Join(tr.Tests.Failed, ", ")}
+			return &Violation{
+				Rule:           rule,
+				Detail:         "Tests failed: " + strings.Join(tr.Tests.Failed, ", "),
+				Options:        []string{"keep-test-fix-code", "suggest-requirement-change", "custom"},
+				RegressedTests: tr.Tests.Failed,
+			}
 		}
 
 	case "removed_referenced_code":

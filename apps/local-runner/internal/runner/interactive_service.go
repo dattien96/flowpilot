@@ -152,6 +152,9 @@ type interactiveRun struct {
 
 	pendingApprovalID string
 	pendingQuestionID string
+	// pendingGateBlock holds r-reg details for the decision handler (Task-155).
+	// Cleared when the user submits a decision via handleGateDecision.
+	pendingGateBlock *gateBlockInfo
 
 	subs    map[int64]chan ProviderEvent
 	nextSub int64

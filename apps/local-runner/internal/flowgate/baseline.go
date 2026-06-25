@@ -1,8 +1,6 @@
 package flowgate
 
 import (
-	"bufio"
-	"context"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -22,6 +20,58 @@ type Baseline struct {
 	// project root ("" = root). It is non-empty for monorepos where the runner lives
 	// in a subdirectory (e.g. a nested go.mod). (CP-35)
 	TestDir string `json:"test_dir,omitempty"`
+	// HeadSHA is the git HEAD SHA at capture time. Used to detect when the baseline is
+	// stale and must be refreshed. Empty on baselines captured before Task-156. (Task-156)
+	HeadSHA string `json:"head_sha,omitempty"`
+	// Dirty records whether the working tree was dirty at capture time. (Task-156)
+	Dirty bool `json:"dirty,omitempty"`
+	// SuitePassed records whether the test command exited 0 at capture time.
+	// The exit-code primary regression signal compares this against the current run. (Task-156)
+	SuitePassed bool `json:"suite_passed,omitempty"`
+}
+
+// TestConfig holds explicit test runner configuration from the project's
+// .flowpilot/settings/test-config.json. When present it takes precedence over
+// auto-detection so any language with a runnable test command is covered. (Task-156)
+type TestConfig struct {
+	TestCommand  string `json:"test_command,omitempty"`
+	TestDir      string `json:"test_dir,omitempty"`
+	ResultFormat string `json:"result_format,omitempty"`
+}
+
+// LoadTestConfig reads the optional per-project test runner config. Missing file → empty config.
+func LoadTestConfig(dotFP string) TestConfig {
+	data, err := os.ReadFile(filepath.Join(dotFP, "settings", "test-config.json"))
+	if err != nil {
+		return TestConfig{}
+	}
+	var cfg TestConfig
+	_ = json.Unmarshal(data, &cfg)
+	return cfg
+}
+
+// captureGitState returns the current HEAD SHA and whether the working tree is dirty.
+// Both values are empty/false on error (non-fatal).
+func captureGitState(repoDir string) (headSHA string, dirty bool) {
+	if out, err := exec.Command("git", "-C", repoDir, "rev-parse", "HEAD").Output(); err == nil {
+		headSHA = strings.TrimSpace(string(out))
+	}
+	if out, err := exec.Command("git", "-C", repoDir, "status", "--porcelain").Output(); err == nil {
+		dirty = len(strings.TrimSpace(string(out))) > 0
+	}
+	return
+}
+
+// RefreshBaselineIfStale loads the stored baseline and returns it unchanged when
+// HEAD and working-tree state match. When they differ (or the baseline is missing
+// or pre-Task-156 with no HeadSHA), it re-captures a fresh baseline. (Task-156)
+func RefreshBaselineIfStale(repoDir, dotFP string) (*Baseline, error) {
+	bl, _ := LoadBaseline(dotFP)
+	headSHA, dirty := captureGitState(repoDir)
+	if bl != nil && bl.HeadSHA != "" && bl.HeadSHA == headSHA && bl.Dirty == dirty {
+		return bl, nil // still fresh
+	}
+	return CaptureBaseline(repoDir, dotFP)
 }
 
 // TestRunner is a detected test command plus the directory it runs in, relative to
@@ -149,23 +199,36 @@ func runnerRank(cmd string) int {
 }
 
 func CaptureBaseline(repoDir, dotFlowpilotDir string) (*Baseline, error) {
-	runner := DetectTestRunner(repoDir)
-	if runner.Cmd == "" {
-		return &Baseline{}, nil
+	// Explicit config takes precedence over auto-detection (Task-156 T-2).
+	cfg := LoadTestConfig(dotFlowpilotDir)
+	runner := TestRunner{}
+	if cfg.TestCommand != "" {
+		runner = TestRunner{Cmd: cfg.TestCommand, Dir: cfg.TestDir}
+	} else {
+		runner = DetectTestRunner(repoDir)
 	}
-
-	names := runAndParseGreen(repoDir, runner.Cmd, runner.Dir)
 
 	guardDir := filepath.Join(dotFlowpilotDir, "guard")
 	if err := os.MkdirAll(guardDir, 0o755); err != nil {
 		return nil, err
 	}
 
+	headSHA, dirty := captureGitState(repoDir)
+
+	var names []string
+	suitePassed := false
+	if runner.Cmd != "" {
+		suitePassed, names, _ = executeSuite(repoDir, runner.Cmd, runner.Dir)
+	}
+
 	bl := &Baseline{
-		CapturedAt: time.Now().UTC().Format(time.RFC3339),
-		GreenTests: names,
-		TestCmd:    runner.Cmd,
-		TestDir:    runner.Dir,
+		CapturedAt:  time.Now().UTC().Format(time.RFC3339),
+		GreenTests:  names,
+		TestCmd:     runner.Cmd,
+		TestDir:     runner.Dir,
+		HeadSHA:     headSHA,
+		Dirty:       dirty,
+		SuitePassed: suitePassed,
 	}
 
 	data, err := json.MarshalIndent(bl, "", "  ")
@@ -194,49 +257,3 @@ func LoadBaseline(dotFlowpilotDir string) (*Baseline, error) {
 	return &bl, nil
 }
 
-// runAndParseGreen executes the test command in repoDir/testDir and returns names
-// of passing tests.
-func runAndParseGreen(repoDir, testCmd, testDir string) []string {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
-	parts := strings.Fields(testCmd)
-	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
-	cmd.Dir = filepath.Join(repoDir, filepath.FromSlash(testDir))
-	out, _ := cmd.CombinedOutput()
-
-	var names []string
-	scanner := bufio.NewScanner(strings.NewReader(string(out)))
-	for scanner.Scan() {
-		line := scanner.Text()
-		switch {
-		case strings.HasPrefix(testCmd, "go test"):
-			if strings.Contains(line, "--- PASS:") {
-				// "--- PASS: TestName (0.00s)"
-				after := strings.TrimPrefix(line, "--- PASS:")
-				after = strings.TrimSpace(after)
-				fields := strings.Fields(after)
-				if len(fields) > 0 {
-					names = append(names, fields[0])
-				}
-			}
-		case strings.HasPrefix(testCmd, "npm"):
-			// best-effort: lines containing "✓" or "passing"
-			if strings.Contains(line, "✓") || strings.Contains(line, "passing") {
-				name := strings.TrimSpace(strings.TrimPrefix(line, "✓"))
-				if name != "" && !strings.Contains(name, "passing") {
-					names = append(names, name)
-				}
-			}
-		case strings.HasPrefix(testCmd, "pytest"):
-			// "test_foo PASSED"
-			if strings.Contains(line, " PASSED") {
-				fields := strings.Fields(line)
-				if len(fields) >= 1 {
-					names = append(names, fields[0])
-				}
-			}
-		}
-	}
-	return names
-}

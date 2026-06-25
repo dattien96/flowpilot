@@ -132,6 +132,9 @@ type ProviderEvent struct {
 	// turn_failed
 	Error       string `json:"error,omitempty"`
 	Recoverable bool   `json:"recoverable,omitempty"`
+	// flow_gate_violation (r-reg decision card — Task-155)
+	GateOptions        []string `json:"gateOptions,omitempty"`
+	GateRegressedTests []string `json:"gateRegressedTests,omitempty"`
 	// agent_graph_updated / agent_bus_message
 	AgentGraphSnapshot *AgentGraphSnapshot `json:"agentGraphSnapshot,omitempty"`
 	AgentBusMessage    *AgentBusMessage    `json:"agentBusMessage,omitempty"`

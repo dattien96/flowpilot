@@ -9,10 +9,10 @@
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-24`
-- Last Updated: `2026-06-24`
+- Last Updated: `2026-06-25`
 - Parent Documents: [SD-17: Context And Regression Engine](./SD-17-Context-And-Regression-Engine.md)
 - Child Documents: [CP-35: Context And Regression Engine Rollout](../07-Coding-Plan/inprogress/CP-35-Context-And-Regression-Engine-Rollout.md)
-- Related Documents: [SD-16: Agent Spawn And Tool-Calling Design](./SD-16-Agent-Spawn-And-Tool-Calling-Design.md), [SS-14: Code Context And Regression Safety](../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md)
+- Related Documents: [SD-16: Agent Spawn And Tool-Calling Design](./SD-16-Agent-Spawn-And-Tool-Calling-Design.md), [SS-14: Code Context And Regression Safety](../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md), [Task-155: Regression Block Decision Card (r-reg)](../08-Task/todo/Task-155-update-r-reg.md), [Task-156: Regression Oracle — Polyglot Signal And Baseline Cost](../08-Task/todo/Task-156-R-Test-Performance.md), [Task-157: Feature-Key Accuracy For History Context](../08-Task/todo/Task-157-Improve-Context-Hardness.md)
 - Replaces: `None (expands SD-17 §3.5 / §6.3 / Flow Gate rules table)`
 - Tags: `flow-gate, regression, oracle, rules, enforcement, local-runner, change-audit`
 
@@ -26,6 +26,7 @@
 - `r-tests` and `r-reg` are **coupled in v1**: both fire on the identical condition (`Tests.Ran && len(Failed) > 0`) with an identical detail string. The engine dedupes the message and treats it as one hard stop.
 - The regression oracle requires a **green baseline captured before the turn ran**. The baseline is captured once at first turn-start (`ensureBaseline`), not lazily inside the gate — otherwise the broken state would be captured as "green" and no regression would ever be detected.
 - **Known performance cost (deferred):** the gate runs the project's full test suite on **every turn** to detect regressions. On large/slow suites this is expensive and will need an opt-in / scoped / cached strategy later (§5).
+- **Planned hardening (not yet implemented):** three drafted tasks evolve this contract — `Task-155` turns the `r-reg` block from a dead-end modal into a 3-option decision card (§2.4, §3); `Task-156` makes the oracle polyglot (exit-code signal) and the baseline HEAD-keyed/affordable (§2.4, §4, §5, resolving `Q-1`/`Q-2`); `Task-157` may add a 7th rule enforcing the commit `[feature]` key (§2.9). Sections below mark each affected point inline.
 
 ### Current Ask
 
@@ -35,10 +36,10 @@
 
 - `D-1` Each rule is a pure function of one `TurnResult` (final message, git diff, test outcome); rules never call providers and never mutate the repo.
 - `D-2` `r-tests` and `r-reg` are always-block regardless of `gate_mode`; `r-ca`, `r-bug`, `r-dep` honor `gate_mode` (enforce → their declared action; warn → downgraded to `warn`).
-- `D-3` `r-ca`, `r-bug`, and `r-task` are **auto-remediable**: on violation the gate reprompts the AI (≤2 attempts) with the missing requirement. `r-tests`/`r-reg` are **not** auto-remediable — they are a hard stop surfaced to the user as a modal. (`r-bug` was initially declared `block`; corrected to `reprompt` — BUG-139.)
-- `D-4` The test baseline is captured once, **before** the first turn executes, and reused for the session; the gate only ever *loads* it.
+- `D-3` `r-ca`, `r-bug`, and `r-task` are **auto-remediable**: on violation the gate reprompts the AI (≤2 attempts) with the missing requirement. `r-tests`/`r-reg` are **not** auto-remediable — they are a hard stop surfaced to the user as a modal. (`r-bug` was initially declared `block`; corrected to `reprompt` — BUG-139.) **→ Planned (Task-155):** the `r-reg` hard stop becomes a *user-resolved decision card* (keep test → fix code · suggest requirement change → human agrees → test unlocks · custom), not a dead-end modal; severity stays always-block.
+- `D-4` The test baseline is captured once, **before** the first turn executes, and reused for the session; the gate only ever *loads* it. **→ Planned (Task-156):** supersede "capture once" with a HEAD-SHA + dirty-tree-keyed baseline that is re-captured only when the tree changed (per chat, not per turn), so a legitimate committed behavior change refreshes the baseline (`Q-2`) without re-running an unchanged suite.
 - `D-5` `r-tests`/`r-reg` coupling is accepted for v1; the emitted message is deduped so the user sees one line, not two.
-- `D-6` Running the full suite per turn is the v1 regression mechanism; its cost is a known trade-off recorded here for a later pass (scoped/affected-tests-only, caching, or opt-in).
+- `D-6` Running the full suite per turn is the v1 regression mechanism; its cost is a known trade-off recorded here for a later pass (scoped/affected-tests-only, caching, or opt-in). **→ Planned (Task-156):** the regression signal moves to the suite **exit code** against an explicit per-project `test_command` (universal across Go/Node/Python/Android/iOS/…), with named-test granularity only where a structured format is parseable; scope-to-changed-packages + async capture address the cost.
 
 ### Constraints
 
@@ -48,9 +49,10 @@
 
 ### Open Questions
 
-- `Q-1` Regression scope: run the full suite, only tests in changed packages, or only tests reachable from changed symbols (needs GitNexus)?
-- `Q-2` Baseline refresh: when should a stale baseline be re-captured (e.g. after the user legitimately changes behavior and commits)?
+- `Q-1` Regression scope: run the full suite, only tests in changed packages, or only tests reachable from changed symbols (needs GitNexus)? **→ Being settled by Task-156.**
+- `Q-2` Baseline refresh: when should a stale baseline be re-captured (e.g. after the user legitimately changes behavior and commits)? **→ Being settled by Task-156 (HEAD-SHA + dirty-tree keyed).**
 - `Q-3` `r-dep` precision: v1 fires on any deleted `.go` file; should it gate on actual remaining callers (GitNexus) before blocking?
+- `Q-4` Feature-key enforcement: should a missing/unregistered commit `[feature]` key become a formal gate rule (§2.9)? **→ Being explored by Task-157.**
 
 ### Source Refs
 
@@ -125,6 +127,7 @@ All triggers are evaluated in `checkRule` (`evaluate.go`). Signals come from `ob
 | Action | `block` — **always** (not `gate_mode`-gated) |
 
 - `Tests.Ran` is true whenever a baseline exists. `Tests.Failed` is the set of **regressed** tests from the oracle (green-in-baseline, red-now, not from a changed test file).
+- **Current coverage gap (→ Task-156):** a baseline only exists when `DetectTestRunner` resolves a runner (Go/Node/Python) and `oracle.go` can parse its stdout. On Android/iOS/Java/Rust/other projects no baseline is captured → `Tests.Ran=false` → `r-tests`/`r-reg` **never fire**, so the regression guarantee is silently absent there. Task-156 makes the signal exit-code-based and honors an explicit `test_command` to close this.
 
 ### 2.4 `r-reg` — no regressions
 
@@ -137,6 +140,7 @@ All triggers are evaluated in `checkRule` (`evaluate.go`). Signals come from `ob
 
 - **Coupled with `r-tests` in v1**: identical condition, identical detail. `Enforce` dedupes the detail so the message reads once (`Flow gate: Tests failed: TestAdd`), not twice. Both being always-block means the resolved action is `block` either way.
 - The distinction the names imply (a generic failing test vs. a *previously-green* test now red) collapses in v1 because the oracle only surfaces regressions in `Failed`. Decoupling is a future enhancement (`Q-1`).
+- **→ Planned (Task-155 + Task-156):** `r-reg` keeps `block`, but (a) the block is resolved through a 3-option decision card (§3), and (b) the underlying signal becomes exit-code-based so `r-reg` actually fires on non-Go/Node/Python targets (today it cannot — see §2.3 note). When the user accepts a requirement change, a per-test override (under `.flowpilot/guard/`) prevents that specific test from re-blocking/re-flagging on the next pass.
 
 ### 2.5 `r-dep` — removed referenced code
 
@@ -188,6 +192,17 @@ Provider stream (Claude/Codex)
 
 - Not a configured rule; appended by the gate when the oracle reports a pre-existing test file was **modified** in the same turn (`f.Status == "M"` on a test file). Emitted as `warn` so the desktop can surface possible oracle tampering without hard-blocking.
 
+### 2.9 `r-commit` — feature-key required (planned, Task-157, not yet implemented)
+
+| Field | Value |
+|---|---|
+| Trigger | `commit_feature_key_missing` |
+| Fires when | a code-changing turn's commit(s) lack a `[feature]` bracket or use a key not in `change-audit/FEATURE-KEYS.md` |
+| Required output | a commit whose `[feature]` is a registered key (register the new key first) |
+| Action | `reprompt` (auto-remediated, ≤2 attempts), `gate_mode`-gated like `r-ca` |
+
+- Today the `[feature]` contract is enforced only by the **soft** `git-commit-format` skill; the ledger's `feature_key` accuracy (and therefore the history-context value, `SS-14 AC-3`) depends on the AI following it. Task-157 promotes it to a runner gate signal (the runner is the source of truth, `SS-14 BR-6`) and feeds a `featurecatalog.SuggestKey` candidate into the reprompt. Status: **draft / not implemented** — listed here so the rule set stays discoverable.
+
 ## 3. Enforcement resolution & UX
 
 `Enforce` (`enforce.go`) collapses all violations into one result:
@@ -206,6 +221,16 @@ Desktop UX (driven by the `status` field on `flow_gate_violation`):
 
 A `block` is a hard stop: there is **no** auto-reprompt. The modal explains the failing tests and that the fix must make them pass without editing the tests.
 
+**→ Planned (Task-155):** for `r-reg` the acknowledge-only modal is replaced by a **decision card** with three choices, each driving the next turn rather than just dismissing:
+
+| Option | Next action | Test editable? |
+|---|---|---|
+| Keep test + requirement → fix code (default) | reprompt: restore green by fixing the code | no (tampering still fires) |
+| Suggest requirement changes | AI proposes the `SS`/`SD`/requirement change for review; **only on explicit user agreement** is a per-test override recorded, the upstream doc updated, and the test aligned | only after agreement |
+| Custom | user free-text becomes the next-turn instruction | n/a |
+
+The chosen option is recorded for audit. This realizes the `SS-14 AC-6`/`E-6` human-confirm path; it does not loosen `r-reg` severity (still always-block) and never silently rewrites a test.
+
 ## 4. Baseline lifecycle (why capture before the turn)
 
 The oracle can only call a test "regressed" if it was green **before** the change. Therefore the baseline must reflect pre-change state:
@@ -214,6 +239,8 @@ The oracle can only call a test "regressed" if it was green **before** the chang
 - The gate **only loads** the baseline; it never captures one. (An earlier lazy-capture-in-gate bug captured the *already-broken* state as the baseline, so the broken test was recorded as never-green and no regression was ever detected — E2E-8 failure.)
 - `DetectTestRunner` finds the runner at the repo root or, for monorepos, the best nested runner (e.g. a nested `go.mod` under `apps/local-runner/`); `TestDir` records where to run it. The baseline stores `{GreenTests, TestCmd, TestDir}`.
 - The baseline is local-only (`.flowpilot/guard/`), machine-specific, never Drive-synced (`SD-17 §5.1`).
+
+**→ Planned (Task-156):** the baseline additionally stores the `head_sha` + dirty-tree marker it was captured at, plus `test_command`/`test_dir`/`result_format`. `ensureBaseline` refreshes it when HEAD/working-tree differs from the stored marker (still never lazily inside the gate's failing state), runs per chat rather than per turn, and captures async so it never blocks finalize. This keeps the "captured from a known-good state" invariant while fixing staleness (`Q-2`) and replacing the strict capture-once rule (`D-4`).
 
 ## 5. Performance concern (deferred — revisit)
 
@@ -236,6 +263,8 @@ Why it must change later (options, not yet chosen — `Q-1`):
 
 Until one of these lands, treat per-turn full-suite execution as a known cost, document it for users with large suites, and prefer a fast nested runner (`TestDir`) over a slow root suite where possible.
 
+**→ Resolution in progress (Task-156):** the chosen v2 direction is (a) exit-code signal against an explicit `test_command` for universality, (b) HEAD-keyed baseline refresh to avoid re-running an unchanged tree, (c) scope-to-changed-packages where the ecosystem allows, and (d) async/non-blocking capture. Task-156 settles `Q-1` (scope) and `Q-2` (refresh trigger).
+
 ## 6. Traceability
 
 - `SD-17` Flow Gate rules table / `§6.3` → §2 (exact per-rule contract).
@@ -244,3 +273,4 @@ Until one of these lands, treat per-turn full-suite execution as a known cost, d
 - `SS-14 AC-6` (oracle integrity) → §2.4, §3 (no test-weakening), §2.8.
 - `SS-14 AC-11` (force required outputs) → §2, §3.
 - New: regression performance trade-off → §5 (`D-6`, `Q-1`).
+- Planned hardening: `Task-155` (regression decision card) → `D-3`, §2.4, §3; `Task-156` (polyglot signal + baseline cost) → `D-4`, `D-6`, §2.3, §2.4, §4, §5, `Q-1`, `Q-2`; `Task-157` (feature-key gate) → §2.9, `Q-4`.

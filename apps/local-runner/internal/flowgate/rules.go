@@ -43,6 +43,12 @@ type Violation struct {
 	Detail      string `json:"detail"`
 	SourceDocID string `json:"source_doc_id,omitempty"`
 	Declared    bool   `json:"declared,omitempty"`
+	// Options lists the decision choices for r-reg blocks (Task-155 decision card).
+	// Populated only for regression_test_broke violations.
+	Options []string `json:"options,omitempty"`
+	// RegressedTests is the list of specifically-identified regressed test names.
+	// Populated only for regression_test_broke violations.
+	RegressedTests []string `json:"regressed_tests,omitempty"`
 }
 
 func DefaultRules() []Rule {
