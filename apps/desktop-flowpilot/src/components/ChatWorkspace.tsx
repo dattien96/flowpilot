@@ -374,13 +374,14 @@ function GateBlockModal(): React.ReactElement | null {
               </label>
             ))}
           </div>
-          <input
-            className="text-input gate-custom-input"
+          <textarea
+            className="gate-custom-textarea"
             placeholder="Custom instruction…"
+            rows={3}
             value={customText}
             disabled={submitting}
             onChange={(e) => setCustomText(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter" && canSubmit) void handleSubmit(); }}
+            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && canSubmit) { e.preventDefault(); void handleSubmit(); } }}
           />
           <div className="account-switch-actions">
             <button type="button" className="btn btn-ghost" disabled={submitting} onClick={dismissGateBlock}>

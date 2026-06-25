@@ -2896,10 +2896,20 @@ input {
   gap: 7px;
   margin-bottom: 10px;
 }
-.gate-custom-input {
+.gate-custom-textarea {
   width: 100%;
   box-sizing: border-box;
   flex: none;
+  min-height: 72px;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-3);
+  color: var(--text);
+  padding: 11px 12px;
+  font-size: 13px;
+  font-family: inherit;
+  line-height: 1.5;
   margin-bottom: 4px;
 }
 .option {
