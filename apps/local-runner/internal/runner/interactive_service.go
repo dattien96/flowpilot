@@ -90,6 +90,9 @@ type interactiveRun struct {
 	yolo                   bool
 	// reasoningEffort is the desktop-selected effort level passed per-turn (T-4).
 	reasoningEffort string
+	changeType      string
+	sourceDocID     string
+	turnCount       int
 	// runKind is "chat" for normal-chat runs, "" / "workflow" for workflow runs (T-7).
 	runKind string
 
@@ -140,12 +143,22 @@ type interactiveRun struct {
 	lastEventType   ProviderEventType
 	events          []ProviderEvent
 
-	turnInFlight  bool
-	currentTurnID string
-	turnCancel    context.CancelFunc
+	turnInFlight     bool
+	repromptAttempts int    // CP-35 P-5: number of flow-gate reprompts issued this turn
+	turnStartGitHead string // CP-35: git HEAD captured at turn start for committed-diff detection
+	lastTurnStepID   string // CP-35: stepID of the most-recently started turn, used by gate reprompts
+	currentTurnID    string
+	turnCancel       context.CancelFunc
 
 	pendingApprovalID string
 	pendingQuestionID string
+	// pendingGateBlock holds r-reg details for the decision handler (Task-155).
+	// Cleared when the user submits a decision via handleGateDecision.
+	pendingGateBlock *gateBlockInfo
+	// proposalTurnPending is set true when the user picks opt-2 (suggest requirement change).
+	// The next turn is a proposal-only turn where the AI proposes but does not fix code yet;
+	// runFlowGate must not re-block on r-reg/r-tests during that turn.
+	proposalTurnPending bool
 
 	subs    map[int64]chan ProviderEvent
 	nextSub int64
@@ -758,6 +771,9 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		DependsOn:           append([]string(nil), rs.dependsOn...),
 		AgentStatus:         rs.agentStatus,
 		ModelName:           rs.modelName,
+		ChangeType:          rs.changeType,
+		SourceDocID:         rs.sourceDocID,
+		TurnCount:           rs.turnCount,
 		PendingAgentContext: append([]string(nil), rs.pendingAgentContext...),
 	}
 }
@@ -1610,6 +1626,7 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// state is persisted by the post-turn sessionStateOf snapshot below. (BUG-122)
 	providerPrompt := in.Prompt
 	s.mu.Lock()
+	providerPrompt = prependModePrefix(providerPrompt, rs.turnCount, rs.changeType, rs.sourceDocID)
 	// Persist the per-turn YOLO posture as the run's current default (BUG-129). The UI
 	// toggle is sticky, so an explicit YoloMode this turn must update rs.yolo; otherwise a
 	// child spawned during this turn (spawnChildRun reads parentRun.yolo) would inherit the
@@ -1622,6 +1639,9 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		rs.pendingAgentContext = nil
 	}
 	s.mu.Unlock()
+	// Live ledger refresh (CP-35): pick up commits made during this session so the
+	// oracle always sees the current change history, not just what existed at bind time.
+	s.rebuildLedgerIfDirty(rs.workspaceCwd)
 	req := TurnRequest{
 		RunID:             rs.id,
 		StepID:            in.StepID,
@@ -1636,6 +1656,14 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		Scenario:          scenario,
 		Attachments:       in.Attachments,
 	}
+	// CP-35: snapshot HEAD and seed test baseline before the AI runs.
+	// Both must happen before sendTurnWithRetry so the gate sees pre-change state.
+	if head, headErr := captureGitHead(rs.workspaceCwd); headErr == nil {
+		s.mu.Lock()
+		rs.turnStartGitHead = head
+		s.mu.Unlock()
+	}
+	s.ensureBaseline(rs.workspaceCwd)
 	bridge := &turnBridge{svc: s, rs: rs, ctx: ctx, turnID: turnID, yolo: yolo}
 	err := s.sendTurnWithRetry(ctx, adapter, req, bridge)
 	if err == nil {
@@ -1678,6 +1706,14 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		}
 	}
 	s.mu.Unlock()
+
+	// Post-turn flow gate (CP-35 P-4/P-5): observe diff, evaluate rules, enforce.
+	// Non-fatal: any internal error inside runFlowGate degrades to pass.
+	if completed {
+		if s.runFlowGate(ctx, rs, turnID, fin) {
+			completed = false
+		}
+	}
 
 	// Finalizer hook runs OUTSIDE s.mu and only on a clean completion. A finalize
 	// failure is recorded as retryable and must not erase the completed turn (04-04).
@@ -1889,6 +1925,14 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 
 	turnID := s.nextID("turn")
 	rs.turnInFlight = true
+	if rs.turnCount == 0 {
+		if changeType := normalizeChangeType(in.ChangeType); changeType != "" {
+			rs.changeType = changeType
+		}
+		rs.sourceDocID = resolveSourceDocID(rs.workspaceCwd, rs.changeType, in.SourceDocID)
+	}
+	rs.turnCount++
+	rs.lastTurnStepID = in.StepID // CP-35: remember for gate reprompts
 	rs.currentTurnID = turnID
 	rs.lastPrompt = truncateDisplayField(in.Prompt, 100)
 	rs.updatedAt = time.Now().UTC().Format(time.RFC3339Nano)

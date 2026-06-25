@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.resetAuthSessionStateUseCase = exports.logoutUseCase = exports.loginUseCase = exports.saveCompatConfigUseCase = exports.runCompatDeepCheckUseCase = exports.runCompatCheckUseCase = exports.loadCompatInfoUseCase = exports.loadCompatConfigUseCase = exports.loadRunnerHealthUseCase = exports.saveSupabaseConfigUseCase = exports.validateSupabaseConfigUseCase = exports.loadSupabaseRuntimeStatusUseCase = exports.loadDesktopBootstrapUseCase = exports.authRepository = exports.runnerRepository = exports.runtimeConfigRepository = void 0;
+exports.resetAuthSessionStateUseCase = exports.logoutUseCase = exports.loginUseCase = exports.saveCompatConfigUseCase = exports.runCompatDeepCheckUseCase = exports.runCompatCheckUseCase = exports.loadCompatInfoUseCase = exports.loadCompatConfigUseCase = exports.loadRunnerHealthUseCase = exports.applySupabaseMigrationsUseCase = exports.saveSupabaseConfigUseCase = exports.validateSupabaseConfigUseCase = exports.loadSupabaseRuntimeStatusUseCase = exports.loadDesktopBootstrapUseCase = exports.authRepository = exports.runnerRepository = exports.runtimeConfigRepository = void 0;
 exports.resetAdminUseCases = resetAdminUseCases;
 exports.getAdminUseCases = getAdminUseCases;
 const client_core_1 = require("@flowpilot/client-core");
@@ -14,6 +14,7 @@ exports.loadDesktopBootstrapUseCase = new client_core_1.LoadDesktopBootstrapUseC
 exports.loadSupabaseRuntimeStatusUseCase = new client_core_1.LoadSupabaseRuntimeStatusUseCase(exports.runtimeConfigRepository);
 exports.validateSupabaseConfigUseCase = new client_core_1.ValidateSupabaseConfigUseCase(exports.runtimeConfigRepository);
 exports.saveSupabaseConfigUseCase = new client_core_1.SaveSupabaseConfigUseCase(exports.runtimeConfigRepository);
+exports.applySupabaseMigrationsUseCase = new client_core_1.ApplySupabaseMigrationsUseCase(exports.runtimeConfigRepository);
 exports.loadRunnerHealthUseCase = new client_core_1.LoadRunnerHealthUseCase(exports.runnerRepository);
 exports.loadCompatConfigUseCase = new client_core_1.LoadCompatConfigUseCase(exports.runnerRepository);
 exports.loadCompatInfoUseCase = new client_core_1.LoadCompatInfoUseCase(exports.runnerRepository);

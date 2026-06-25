@@ -152,6 +152,12 @@ class HttpWsRunnerClient {
     interrupt(runId) {
         return this.postJSON(`/client/workflow-runs/${encodeURIComponent(runId)}/interrupt`);
     }
+    submitGateDecision(runId, option, customText) {
+        return this.postJSON(`/client/workflow-runs/${encodeURIComponent(runId)}/gate-decision`, { option, ...(customText ? { customText } : {}) });
+    }
+    submitGateAgreement(runId, testNames) {
+        return this.postJSON(`/client/workflow-runs/${encodeURIComponent(runId)}/gate-agreement`, { testNames });
+    }
     async connectProviderAccount(providerKey) {
         await this.postJSON("/provider-accounts/connect", { providerKey });
     }
@@ -173,6 +179,8 @@ class HttpWsRunnerClient {
         const { turnId } = await this.postJSON(`/client/workflow-runs/${encodeURIComponent(input.runId)}/turns`, {
             stepId: input.stepId,
             prompt: input.prompt,
+            changeType: input.changeType,
+            sourceDocId: input.sourceDocId,
             selectedSkills: input.selectedSkills,
             reasoningEffort: input.reasoningEffort,
             model: input.model,

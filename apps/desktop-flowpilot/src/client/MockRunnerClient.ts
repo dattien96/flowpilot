@@ -235,6 +235,14 @@ export class MockRunnerClient implements RunnerClient {
     if (cancel) cancel();
   }
 
+  async submitGateDecision(_runId: string, _option: string, _customText?: string): Promise<void> {
+    // Mock stub — real gate decisions are only possible with a live runner (Task-155).
+  }
+
+  async submitGateAgreement(_runId: string, _testNames: string[]): Promise<void> {
+    // Mock stub — real gate agreement is only possible with a live runner (Task-155).
+  }
+
   async *streamRun(runId: string, afterSeq = 0, signal?: AbortSignal): AsyncIterable<ProviderEventDTO> {
     const log = this.eventLog.get(runId) ?? [];
     for (const ev of log) {

@@ -76,6 +76,9 @@ type ProviderSessionState struct {
 	DependsOn   []string
 	AgentStatus string
 	ModelName   string
+	ChangeType  string
+	SourceDocID string
+	TurnCount   int
 	// PendingAgentContext carries notes about UI-spawned children not yet folded into this
 	// run's provider conversation, persisted so the parent still learns about them after a
 	// restart (BUG-122).

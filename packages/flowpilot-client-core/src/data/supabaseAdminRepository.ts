@@ -45,7 +45,7 @@ function mapProject(row: Row): Project {
     id: String(row.id),
     name: String(row.name ?? ""),
     description: String(row.description ?? ""),
-    platform: (row.platform ?? "multi") as ProjectPlatform,
+    platform: (row.platform ?? "none") as ProjectPlatform,
     repositoryUrl: String(row.repository_url ?? ""),
     directoryPath: row.directory_path ? String(row.directory_path) : null,
     status: String(row.status ?? "active"),
@@ -54,6 +54,8 @@ function mapProject(row: Row): Project {
     defaultModel: row.default_model ? String(row.default_model) : null,
     defaultReasoningEffort: row.default_reasoning_effort ? (row.default_reasoning_effort as ReasoningEffort) : null,
     sessionIdleTtlMinutes: row.session_idle_ttl_minutes == null ? null : Number(row.session_idle_ttl_minutes),
+    xcodeScheme: row.xcode_scheme ? String(row.xcode_scheme) : null,
+    xcodeDestination: row.xcode_destination ? String(row.xcode_destination) : null,
     createdAt: String(row.created_at ?? ""),
     updatedAt: String(row.updated_at ?? ""),
   };
@@ -250,7 +252,9 @@ export class SupabaseAdminRepository implements
   }
 
   async createProject(input: Partial<Project> & Pick<Project, "name" | "description" | "platform" | "repositoryUrl">) {
+    const legacyId = `project_${crypto.randomUUID().replaceAll("-", "").slice(0, 18)}`;
     const { data, error } = await this.supabase.from("projects").insert({
+      legacy_id: legacyId,
       name: input.name,
       description: input.description,
       platform: input.platform,
@@ -262,6 +266,9 @@ export class SupabaseAdminRepository implements
       default_model: input.defaultModel ?? null,
       default_reasoning_effort: input.defaultReasoningEffort ?? null,
       session_idle_ttl_minutes: input.sessionIdleTtlMinutes ?? 120,
+      xcode_scheme: input.xcodeScheme ?? null,
+      xcode_destination: input.xcodeDestination ?? null,
+      created_by: "supabase-admin",
     }).select("*").single();
     assertNoError(error, "Unable to create project.");
     return mapProject(data);
@@ -280,6 +287,8 @@ export class SupabaseAdminRepository implements
     if (patch.defaultModel !== undefined) payload.default_model = patch.defaultModel;
     if (patch.defaultReasoningEffort !== undefined) payload.default_reasoning_effort = patch.defaultReasoningEffort;
     if (patch.sessionIdleTtlMinutes !== undefined) payload.session_idle_ttl_minutes = patch.sessionIdleTtlMinutes;
+    if (patch.xcodeScheme !== undefined) payload.xcode_scheme = patch.xcodeScheme;
+    if (patch.xcodeDestination !== undefined) payload.xcode_destination = patch.xcodeDestination;
     payload.updated_at = now();
     const { data, error } = await this.supabase.from("projects").update(payload).eq("id", projectId).select("*").single();
     assertNoError(error, "Unable to update project.");

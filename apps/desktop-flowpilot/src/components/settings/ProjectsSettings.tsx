@@ -16,6 +16,9 @@ import {
 import { getAdminUseCases } from "@/clientCore";
 import { RUNNER_URL } from "@/config";
 import { formatTimestamp, integrationTypes, toErrorMessage, validateDirectoryBindingsInOrder } from "@/components/settings/settingsHelpers";
+import {
+  autoInitProjectEngine,
+} from "@/components/settings/projectEngine";
 
 type BindingDraft = Pick<ProjectWorkspaceBinding, "id" | "localPath" | "label"> & { persisted: boolean };
 type ProjectTargetSection = "teams" | "workflows" | "artifacts" | "google-drive" | "jira-mcp";
@@ -74,13 +77,39 @@ interface ProjectsSettingsProps {
   onNavigateSection?: (section: ProjectTargetSection) => void;
 }
 
+// Each option installs the common skill pack plus its same-named skill folder.
+// "none" installs common skills only; "kmm" additionally pulls android + ios.
+const PROJECT_PLATFORM_OPTIONS: ReadonlyArray<{ value: ProjectPlatform; label: string }> = [
+  { value: "none", label: "none (common skills only)" },
+  { value: "android", label: "android" },
+  { value: "ios", label: "ios" },
+  { value: "kmm", label: "kotlin multiplatform (kmm)" },
+  { value: "react-native", label: "react native" },
+  { value: "flutter", label: "flutter" },
+  { value: "reactjs", label: "reactjs" },
+  { value: "vuejs", label: "vuejs" },
+  { value: "angularjs", label: "angularjs" },
+  { value: "golang", label: "golang" },
+  { value: "java", label: "java" },
+  { value: "python", label: "python" },
+  { value: "nodejs", label: "nodejs" },
+];
+
+function renderPlatformOptions(): React.ReactNode {
+  return PROJECT_PLATFORM_OPTIONS.map((option) => (
+    <option key={option.value} value={option.value}>{option.label}</option>
+  ));
+}
+
 function createEmptyProjectForm() {
   return {
     name: "",
     description: "",
-    platform: "android" as ProjectPlatform,
+    platform: "none" as ProjectPlatform,
     repositoryUrl: "",
     status: "active",
+    xcodeScheme: "",
+    xcodeDestination: "",
   };
 }
 
@@ -88,9 +117,11 @@ function createEmptyCreateForm() {
   return {
     name: "",
     description: "",
-    platform: "android" as ProjectPlatform,
+    platform: "none" as ProjectPlatform,
     repositoryUrl: "",
     directoryPath: "",
+    xcodeScheme: "",
+    xcodeDestination: "",
   };
 }
 
@@ -154,6 +185,7 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
   });
   const [createSelectedTeamIds, setCreateSelectedTeamIds] = useState<string[]>([]);
   const [showCreateView, setShowCreateView] = useState(false);
+  const [pickingCreateDirectory, setPickingCreateDirectory] = useState(false);
   const [expandedPanels, setExpandedPanels] = useState<Record<ProjectPanelKey, boolean>>(defaultExpandedPanels);
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [deleteConfirmationText, setDeleteConfirmationText] = useState("");
@@ -186,6 +218,10 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
     () => localArtifacts.filter((artifact) => artifact.projectId === selectedProjectId).slice(0, 8),
     [localArtifacts, selectedProjectId],
   );
+
+  useEffect(() => {
+    setBindings([]);
+  }, [selectedProjectId]);
 
   const refresh = async (nextProjectId?: string) => {
     setLoading(true);
@@ -244,6 +280,8 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
           platform: selectedProject.platform,
           repositoryUrl: selectedProject.repositoryUrl,
           status: selectedProject.status,
+          xcodeScheme: selectedProject.xcodeScheme ?? "",
+          xcodeDestination: selectedProject.xcodeDestination ?? "",
         });
         setDefaults({
           defaultModel: selectedProject.defaultModel ?? models[0]?.modelId ?? "gpt-5.4",
@@ -360,6 +398,7 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
         label: "Primary",
       });
       await admin.teams.setProjectTeams(project.id, createSelectedTeamIds);
+      void autoInitProjectEngine(project.id, [{ localPath: createForm.directoryPath.trim() }], createForm.platform, { xcodeScheme: createForm.xcodeScheme, xcodeDestination: createForm.xcodeDestination });
       setCreateForm(createEmptyCreateForm());
       setCreateSelectedTeamIds([]);
       setShowCreateView(false);
@@ -369,6 +408,20 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
       setMessage(toErrorMessage(error, "Unable to create project."));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const pickCreateProjectDirectory = async () => {
+    setPickingCreateDirectory(true);
+    setMessage(null);
+    try {
+      const admin = await getAdminUseCases();
+      const selection = await admin.directories.pickDirectory();
+      setCreateForm((current) => ({ ...current, directoryPath: selection.path }));
+    } catch (error) {
+      setMessage(toErrorMessage(error, "Unable to select a directory. Paste the path manually if needed."));
+    } finally {
+      setPickingCreateDirectory(false);
     }
   };
 
@@ -398,6 +451,8 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
         defaultModel: defaults.defaultModel,
         defaultReasoningEffort: defaults.defaultReasoningEffort as Project["defaultReasoningEffort"],
         sessionIdleTtlMinutes: defaults.sessionIdleTtlMinutes,
+        xcodeScheme: projectForm.xcodeScheme.trim() || null,
+        xcodeDestination: projectForm.xcodeDestination.trim() || null,
       });
       await admin.teams.setProjectTeams(selectedProject.id, selectedTeamIds);
       for (const type of integrationTypes) {
@@ -417,6 +472,7 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
           label: binding.label || (index === 0 ? "Primary" : null),
         });
       }
+      void autoInitProjectEngine(selectedProject.id, normalizedBindings, projectForm.platform, { xcodeScheme: projectForm.xcodeScheme, xcodeDestination: projectForm.xcodeDestination });
       await refresh(selectedProject.id);
       setMessage("Project settings saved.");
     } catch (error) {
@@ -529,8 +585,31 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
             <label className="settings-field"><span>Name</span><input value={createForm.name} onChange={(event) => setCreateForm((current) => ({ ...current, name: event.target.value }))} /></label>
             <label className="settings-field"><span>Repository URL</span><input value={createForm.repositoryUrl} onChange={(event) => setCreateForm((current) => ({ ...current, repositoryUrl: event.target.value }))} /></label>
             <label className="settings-field settings-field-full"><span>Description</span><textarea value={createForm.description} onChange={(event) => setCreateForm((current) => ({ ...current, description: event.target.value }))} /></label>
-            <label className="settings-field"><span>Platform</span><select value={createForm.platform} onChange={(event) => setCreateForm((current) => ({ ...current, platform: event.target.value as ProjectPlatform }))}><option value="android">android</option><option value="ios">ios</option><option value="web">web</option><option value="multi">multi</option></select></label>
-            <label className="settings-field"><span>Primary Directory</span><input value={createForm.directoryPath} onChange={(event) => setCreateForm((current) => ({ ...current, directoryPath: event.target.value }))} /></label>
+            <label className="settings-field"><span>Platform</span><select value={createForm.platform} onChange={(event) => setCreateForm((current) => ({ ...current, platform: event.target.value as ProjectPlatform, xcodeScheme: "", xcodeDestination: "" }))}>{renderPlatformOptions()}</select></label>
+            {createForm.platform === "ios" && (<>
+              <label className="settings-field"><span>Xcode Scheme</span><input placeholder="e.g. MyApp" value={createForm.xcodeScheme} onChange={(event) => setCreateForm((current) => ({ ...current, xcodeScheme: event.target.value }))} /></label>
+              <label className="settings-field settings-field-full"><span>Xcode Destination</span><input placeholder="e.g. platform=iOS Simulator,name=iPhone 15" value={createForm.xcodeDestination} onChange={(event) => setCreateForm((current) => ({ ...current, xcodeDestination: event.target.value }))} /></label>
+            </>)}
+            <div className="settings-field settings-field-full">
+              <span>Primary Directory</span>
+              <div className="settings-inline-row">
+                <input
+                  value={createForm.directoryPath}
+                  onChange={(event) => setCreateForm((current) => ({ ...current, directoryPath: event.target.value }))}
+                />
+                <button
+                  className="secondary-btn"
+                  disabled={busy || pickingCreateDirectory}
+                  onClick={() => void pickCreateProjectDirectory()}
+                  type="button"
+                >
+                  {pickingCreateDirectory ? "Opening..." : "Browse Folder"}
+                </button>
+              </div>
+              <small className="settings-field-hint">
+                Opens the native folder chooser on macOS or Windows through the local runner.
+              </small>
+            </div>
           </div>
           <div className="settings-subpanel project-create-team-picker">
             <h3>Linked Teams</h3>
@@ -588,7 +667,11 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
                     <label className="settings-field"><span>Name</span><input value={projectForm.name} onChange={(event) => setProjectForm((current) => ({ ...current, name: event.target.value }))} /></label>
                     <label className="settings-field"><span>Repository URL</span><input value={projectForm.repositoryUrl} onChange={(event) => setProjectForm((current) => ({ ...current, repositoryUrl: event.target.value }))} /></label>
                     <label className="settings-field settings-field-full"><span>Description</span><textarea value={projectForm.description} onChange={(event) => setProjectForm((current) => ({ ...current, description: event.target.value }))} /></label>
-                    <label className="settings-field"><span>Platform</span><select value={projectForm.platform} onChange={(event) => setProjectForm((current) => ({ ...current, platform: event.target.value as ProjectPlatform }))}><option value="android">android</option><option value="ios">ios</option><option value="web">web</option><option value="multi">multi</option></select></label>
+                    <label className="settings-field"><span>Platform</span><select value={projectForm.platform} onChange={(event) => setProjectForm((current) => ({ ...current, platform: event.target.value as ProjectPlatform, xcodeScheme: "", xcodeDestination: "" }))}>{renderPlatformOptions()}</select></label>
+                    {projectForm.platform === "ios" && (<>
+                      <label className="settings-field"><span>Xcode Scheme</span><input placeholder="e.g. MyApp" value={projectForm.xcodeScheme} onChange={(event) => setProjectForm((current) => ({ ...current, xcodeScheme: event.target.value }))} /></label>
+                      <label className="settings-field settings-field-full"><span>Xcode Destination</span><input placeholder="e.g. platform=iOS Simulator,name=iPhone 15" value={projectForm.xcodeDestination} onChange={(event) => setProjectForm((current) => ({ ...current, xcodeDestination: event.target.value }))} /></label>
+                    </>)}
                     <label className="settings-field"><span>Status</span><select value={projectForm.status} onChange={(event) => setProjectForm((current) => ({ ...current, status: event.target.value }))}><option value="active">active</option><option value="archived">archived</option></select></label>
                     <label className="settings-field"><span>Default Model</span><select value={defaults.defaultModel} onChange={(event) => setDefaults((current) => ({ ...current, defaultModel: event.target.value }))}>{models.map((model) => <option key={model.id} value={model.modelId}>{model.displayName}</option>)}</select></label>
                     <label className="settings-field"><span>Reasoning</span><select value={defaults.defaultReasoningEffort} onChange={(event) => setDefaults((current) => ({ ...current, defaultReasoningEffort: event.target.value }))}><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra High</option></select></label>

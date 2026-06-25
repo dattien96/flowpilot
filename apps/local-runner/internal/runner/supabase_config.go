@@ -9,11 +9,13 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
 
 const supabaseServiceRoleSecretKey = "supabase:workspace:service-role-key"
+const supabaseManagementAPIBaseURL = "https://api.supabase.com"
 
 func (r *Runner) LoadSupabaseWorkspaceConfig() (SupabaseWorkspaceConfigResponse, error) {
 	config, err := r.loadSupabaseWorkspaceConfig()
@@ -99,6 +101,83 @@ func (r *Runner) SaveSupabaseWorkspaceConfig(input SupabaseWorkspaceConfigReques
 		SupabaseWorkspaceConfig: config,
 		HasServiceRoleKey:       true,
 	}, nil
+}
+
+func (r *Runner) ApplySupabaseMigrations(input SupabaseSchemaApplyRequest) (SupabaseSchemaApplyResponse, error) {
+	apiURL := strings.TrimSpace(input.APIURL)
+	projectRef := strings.TrimSpace(input.ProjectRef)
+	accessToken := strings.TrimSpace(input.AccessToken)
+	if projectRef == "" {
+		if parsed, ok := parseHTTPSURL(apiURL); ok {
+			projectRef = supabaseProjectRefFromHost(parsed.Host)
+		}
+	}
+	if projectRef == "" {
+		return SupabaseSchemaApplyResponse{}, errors.New("project ref is required to apply repo migrations")
+	}
+	if accessToken == "" {
+		return SupabaseSchemaApplyResponse{}, errors.New("management API access token is required")
+	}
+
+	migrations, err := r.loadRepoSupabaseMigrations()
+	if err != nil {
+		return SupabaseSchemaApplyResponse{}, err
+	}
+	if len(migrations) == 0 {
+		return SupabaseSchemaApplyResponse{}, errors.New("no repo Supabase migrations were found")
+	}
+
+	if _, err := runSupabaseManagementQuery(projectRef, accessToken, ensureSupabaseMigrationHistorySQL(), false); err != nil {
+		return SupabaseSchemaApplyResponse{}, err
+	}
+
+	appliedVersions, err := loadAppliedSupabaseMigrationVersions(projectRef, accessToken)
+	if err != nil {
+		return SupabaseSchemaApplyResponse{}, err
+	}
+
+	result := SupabaseSchemaApplyResponse{
+		ProjectRef: projectRef,
+		Migrations: make([]SupabaseSchemaMigrationResult, 0, len(migrations)),
+	}
+
+	for _, migration := range migrations {
+		if _, alreadyApplied := appliedVersions[migration.Version]; alreadyApplied {
+			result.SkippedCount++
+			result.Migrations = append(result.Migrations, SupabaseSchemaMigrationResult{
+				Version: migration.Version,
+				Name:    migration.Name,
+				Status:  "skipped",
+				Message: "already applied remotely",
+			})
+			continue
+		}
+
+		if _, err := runSupabaseManagementQuery(
+			projectRef,
+			accessToken,
+			buildSupabaseMigrationApplyQuery(migration),
+			false,
+		); err != nil {
+			return SupabaseSchemaApplyResponse{}, fmt.Errorf(
+				"apply migration %s_%s: %w",
+				migration.Version,
+				migration.Name,
+				err,
+			)
+		}
+
+		appliedVersions[migration.Version] = struct{}{}
+		result.AppliedCount++
+		result.Migrations = append(result.Migrations, SupabaseSchemaMigrationResult{
+			Version: migration.Version,
+			Name:    migration.Name,
+			Status:  "applied",
+			Message: "migration applied and recorded",
+		})
+	}
+
+	return result, nil
 }
 
 func (r *Runner) rollbackSupabaseServiceRoleKey(hadPrevious bool, previousValue string) {
@@ -286,6 +365,206 @@ func (r *Runner) probeSupabaseEndpoint(key string, baseURL string, apiKey string
 		return failedCheck(key, fmt.Sprintf("Supabase responded with %d: %s", statusCode, strings.TrimSpace(string(body))))
 	}
 	return passedCheck(key, successMessage)
+}
+
+type repoSupabaseMigration struct {
+	Version string
+	Name    string
+	Query   string
+}
+
+func (r *Runner) loadRepoSupabaseMigrations() ([]repoSupabaseMigration, error) {
+	if strings.TrimSpace(r.workspace) == "" {
+		return nil, errors.New("runner workspace is not configured")
+	}
+
+	migrationsDir := filepath.Join(r.workspace, "supabase", "migrations")
+	entries, err := os.ReadDir(migrationsDir)
+	if err != nil {
+		return nil, fmt.Errorf("read repo migrations dir: %w", err)
+	}
+
+	migrations := make([]repoSupabaseMigration, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".sql") {
+			continue
+		}
+
+		baseName := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
+		version, name, found := strings.Cut(baseName, "_")
+		if !found {
+			name = baseName
+		}
+		version = strings.TrimSpace(version)
+		name = strings.TrimSpace(name)
+		if version == "" {
+			return nil, fmt.Errorf("invalid migration filename %q", entry.Name())
+		}
+
+		raw, err := os.ReadFile(filepath.Join(migrationsDir, entry.Name()))
+		if err != nil {
+			return nil, fmt.Errorf("read migration %s: %w", entry.Name(), err)
+		}
+		query := strings.TrimSpace(string(raw))
+		if query == "" {
+			continue
+		}
+
+		migrations = append(migrations, repoSupabaseMigration{
+			Version: version,
+			Name:    name,
+			Query:   query,
+		})
+	}
+
+	sort.Slice(migrations, func(i, j int) bool {
+		return migrations[i].Version < migrations[j].Version
+	})
+	return migrations, nil
+}
+
+func ensureSupabaseMigrationHistorySQL() string {
+	return strings.TrimSpace(`
+create schema if not exists supabase_migrations;
+create table if not exists supabase_migrations.schema_migrations (
+  version text primary key,
+  statements text[],
+  name text
+);
+alter table supabase_migrations.schema_migrations add column if not exists statements text[];
+alter table supabase_migrations.schema_migrations add column if not exists name text;
+`)
+}
+
+func buildSupabaseMigrationApplyQuery(migration repoSupabaseMigration) string {
+	return strings.Join([]string{
+		"begin;",
+		migration.Query,
+		fmt.Sprintf(
+			"insert into supabase_migrations.schema_migrations(version, name, statements) values (%s, %s, array[%s]) on conflict (version) do nothing;",
+			pgDollarQuote(migration.Version, "fp_ver"),
+			pgDollarQuote(migration.Name, "fp_name"),
+			pgDollarQuote(migration.Query, "fp_sql"),
+		),
+		"commit;",
+	}, "\n")
+}
+
+func pgDollarQuote(value string, prefix string) string {
+	tag := prefix
+	for strings.Contains(value, "$"+tag+"$") {
+		tag += "_x"
+	}
+	return "$" + tag + "$" + value + "$" + tag + "$"
+}
+
+func loadAppliedSupabaseMigrationVersions(projectRef string, accessToken string) (map[string]struct{}, error) {
+	body, err := runSupabaseManagementQuery(
+		projectRef,
+		accessToken,
+		"select version from supabase_migrations.schema_migrations order by version;",
+		true,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := parseSupabaseManagementRows(body)
+	if err != nil {
+		return nil, err
+	}
+
+	versions := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		version := strings.TrimSpace(fmt.Sprint(row["version"]))
+		if version == "" || version == "<nil>" {
+			continue
+		}
+		versions[version] = struct{}{}
+	}
+	return versions, nil
+}
+
+func runSupabaseManagementQuery(
+	projectRef string,
+	accessToken string,
+	query string,
+	readOnly bool,
+) ([]byte, error) {
+	payload, err := json.Marshal(map[string]any{
+		"query":     query,
+		"read_only": readOnly,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	endpoint := strings.TrimRight(supabaseManagementAPIBaseURL, "/") +
+		"/v1/projects/" + url.PathEscape(projectRef) + "/database/query"
+	statusCode, body, err := httpRequestFn(
+		context.Background(),
+		http.MethodPost,
+		endpoint,
+		map[string]string{
+			"Content-Type":  "application/json",
+			"Authorization": "Bearer " + accessToken,
+			"User-Agent":    "FlowPilot Desktop Schema Init",
+		},
+		payload,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("Supabase Management API responded with %d: %s", statusCode, strings.TrimSpace(string(body)))
+	}
+	return body, nil
+}
+
+func parseSupabaseManagementRows(body []byte) ([]map[string]any, error) {
+	trimmed := strings.TrimSpace(string(body))
+	if trimmed == "" || trimmed == "null" {
+		return nil, nil
+	}
+
+	var directRows []map[string]any
+	if err := json.Unmarshal(body, &directRows); err == nil {
+		return directRows, nil
+	}
+
+	var envelope map[string]any
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil, fmt.Errorf("decode Supabase query response: %w", err)
+	}
+
+	for _, key := range []string{"rows", "result", "data"} {
+		rows, ok := envelope[key]
+		if !ok {
+			continue
+		}
+		decoded, err := normalizeSupabaseManagementRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		return decoded, nil
+	}
+	return nil, nil
+}
+
+func normalizeSupabaseManagementRows(value any) ([]map[string]any, error) {
+	items, ok := value.([]any)
+	if !ok {
+		return nil, errors.New("Supabase query response rows were not an array")
+	}
+	rows := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		row, ok := item.(map[string]any)
+		if !ok {
+			return nil, errors.New("Supabase query response row was not an object")
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
 }
 
 func normalizeSupabaseWorkspaceConfig(config SupabaseWorkspaceConfig) SupabaseWorkspaceConfig {

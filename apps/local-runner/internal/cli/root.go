@@ -751,6 +751,23 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				}
 				writeHTTPJSON(w, result)
 			})
+			mux.HandleFunc("/supabase-config/apply-migrations", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				var payload runner.SupabaseSchemaApplyRequest
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+				result, err := instance.ApplySupabaseMigrations(payload)
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+				writeHTTPJSON(w, result)
+			})
 			mux.HandleFunc("/supabase-auth/login", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1589,6 +1606,24 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				if f, ok := w.(http.Flusher); ok {
 					f.Flush()
 				}
+			})
+
+			mux.HandleFunc("GET /translate", func(w http.ResponseWriter, r *http.Request) {
+				q := strings.TrimSpace(r.URL.Query().Get("q"))
+				if q == "" {
+					writeHTTPError(w, http.StatusBadRequest, errors.New("q is required"))
+					return
+				}
+				result, err := instance.TranslateText(runner.TranslateRequest{
+					Q:      q,
+					Source: r.URL.Query().Get("source"),
+					Target: r.URL.Query().Get("target"),
+				})
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+				writeHTTPJSON(w, result)
 			})
 
 			// Graceful shutdown on SIGINT/SIGTERM

@@ -1,6 +1,199 @@
 import { useEffect, useRef, useState } from "react";
 import { providerLabel, useStore, type TimelineItem } from "@/state/store";
 
+// ---------------------------------------------------------------------------
+// Lightweight Markdown renderer — no external dependency
+// Handles: headings, fenced code, HR, tables, unordered lists, paragraphs,
+// and inline bold / italic / inline-code.
+// Copy button keeps the raw Markdown string via CopyBubble's `text` prop.
+// ---------------------------------------------------------------------------
+
+type MdBlock =
+  | { kind: "code"; lang: string; content: string }
+  | { kind: "heading"; level: number; text: string }
+  | { kind: "hr" }
+  | { kind: "table"; headers: string[]; rows: string[][] }
+  | { kind: "list"; items: string[] }
+  | { kind: "paragraph"; text: string };
+
+const HEADING_TAGS = ["h1", "h2", "h3", "h4", "h5", "h6"] as const;
+
+function renderInline(text: string, keyPrefix: string): React.ReactNode {
+  const parts: React.ReactNode[] = [];
+  const re = /(`[^`]+`|\*\*[^*\n]+\*\*|__[^_\n]+__|(?<!\*)\*(?!\*)([^*\n]+)(?<!\*)\*(?!\*)|(?<!_)_(?!_)([^_\n]+)(?<!_)_(?!_))/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  let idx = 0;
+
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) parts.push(text.slice(last, m.index));
+    const raw = m[0];
+    const key = `${keyPrefix}-${idx++}`;
+    if (raw.startsWith("`")) {
+      parts.push(<code key={key} className="md-icode">{raw.slice(1, -1)}</code>);
+    } else if (raw.startsWith("**") || raw.startsWith("__")) {
+      parts.push(<strong key={key}>{raw.slice(2, -2)}</strong>);
+    } else {
+      parts.push(<em key={key}>{raw.slice(1, -1)}</em>);
+    }
+    last = m.index + raw.length;
+  }
+
+  if (last < text.length) parts.push(text.slice(last));
+  return parts.length === 0 ? "" : parts.length === 1 && typeof parts[0] === "string" ? parts[0] : <>{parts}</>;
+}
+
+function parseMdBlocks(text: string): MdBlock[] {
+  const blocks: MdBlock[] = [];
+  const lines = text.split("\n");
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // Fenced code block
+    const fenceMatch = /^(`{3,}|~{3,})(\S*)/.exec(line);
+    if (fenceMatch) {
+      const fence = fenceMatch[1];
+      const lang = fenceMatch[2] ?? "";
+      const codeLines: string[] = [];
+      i++;
+      while (i < lines.length && !lines[i].startsWith(fence)) {
+        codeLines.push(lines[i]);
+        i++;
+      }
+      blocks.push({ kind: "code", lang, content: codeLines.join("\n") });
+      i++;
+      continue;
+    }
+
+    // ATX heading
+    const hm = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (hm) {
+      blocks.push({ kind: "heading", level: hm[1].length, text: hm[2] });
+      i++;
+      continue;
+    }
+
+    // Horizontal rule (---, ***, ___)
+    if (/^[-*_]{3,}\s*$/.test(line) && new Set(line.trim().split("")).size === 1) {
+      blocks.push({ kind: "hr" });
+      i++;
+      continue;
+    }
+
+    // Table: first line starts with |
+    if (line.trimStart().startsWith("|")) {
+      const tableLines: string[] = [];
+      while (i < lines.length && lines[i].trimStart().startsWith("|")) {
+        tableLines.push(lines[i]);
+        i++;
+      }
+      const parseRow = (r: string): string[] =>
+        r.split("|").slice(1, -1).map((c) => c.trim());
+      const isSeparator = (r: string): boolean => /^[\s|:-]+$/.test(r);
+      const hasHeader = tableLines.length >= 2 && isSeparator(tableLines[1]);
+      const headers = parseRow(tableLines[0]);
+      const dataRows = (hasHeader ? tableLines.slice(2) : tableLines.slice(1)).map(parseRow);
+      blocks.push({ kind: "table", headers, rows: dataRows });
+      continue;
+    }
+
+    // Unordered list
+    if (/^[ \t]*[-*+] /.test(line)) {
+      const items: string[] = [];
+      while (i < lines.length && /^[ \t]*[-*+] /.test(lines[i])) {
+        items.push(lines[i].replace(/^[ \t]*[-*+] /, ""));
+        i++;
+      }
+      blocks.push({ kind: "list", items });
+      continue;
+    }
+
+    // Empty line
+    if (line.trim() === "") {
+      i++;
+      continue;
+    }
+
+    // Paragraph — collect until blank or special line
+    const paraLines: string[] = [];
+    while (
+      i < lines.length &&
+      lines[i].trim() !== "" &&
+      !/^(`{3,}|~{3,})/.test(lines[i]) &&
+      !lines[i].trimStart().startsWith("|") &&
+      !/^#{1,6}\s/.test(lines[i]) &&
+      !/^[ \t]*[-*+] /.test(lines[i]) &&
+      !/^[-*_]{3,}\s*$/.test(lines[i])
+    ) {
+      paraLines.push(lines[i]);
+      i++;
+    }
+    if (paraLines.length > 0) {
+      blocks.push({ kind: "paragraph", text: paraLines.join("\n") });
+    }
+  }
+
+  return blocks;
+}
+
+function MarkdownContent({ text }: { text: string }): React.ReactElement {
+  const blocks = parseMdBlocks(text);
+  return (
+    <div className="md-body">
+      {blocks.map((block, bi) => {
+        const key = `b${bi}`;
+        if (block.kind === "code") {
+          return (
+            <pre key={key} className="md-pre">
+              <code>{block.content}</code>
+            </pre>
+          );
+        }
+        if (block.kind === "heading") {
+          const Tag = HEADING_TAGS[Math.min(block.level - 1, 5)];
+          return <Tag key={key} className={`md-h md-h${block.level}`}>{renderInline(block.text, key)}</Tag>;
+        }
+        if (block.kind === "hr") {
+          return <hr key={key} className="md-hr" />;
+        }
+        if (block.kind === "table") {
+          return (
+            <div key={key} className="md-table-wrap">
+              <table className="md-table">
+                {block.headers.length > 0 && (
+                  <thead>
+                    <tr>{block.headers.map((h, hi) => <th key={hi}>{renderInline(h, `${key}-h${hi}`)}</th>)}</tr>
+                  </thead>
+                )}
+                <tbody>
+                  {block.rows.map((row, ri) => (
+                    <tr key={ri}>
+                      {row.map((cell, ci) => <td key={ci}>{renderInline(cell, `${key}-r${ri}c${ci}`)}</td>)}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          );
+        }
+        if (block.kind === "list") {
+          return (
+            <ul key={key} className="md-ul">
+              {block.items.map((item, ii) => <li key={ii}>{renderInline(item, `${key}-i${ii}`)}</li>)}
+            </ul>
+          );
+        }
+        if (block.kind === "paragraph") {
+          return <p key={key} className="md-p">{renderInline(block.text, key)}</p>;
+        }
+        return null;
+      })}
+    </div>
+  );
+}
+
 const TIMELINE_PAGE_SIZE = 6;
 
 function countPrompts(timeline: TimelineItem[]): number {
@@ -29,6 +222,7 @@ function sliceTimelineFromPrompt(timeline: TimelineItem[], visiblePromptCount: n
 }
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
+import { TranslatePopup } from "./TranslatePopup";
 
 const shortName = (path: string): string => path.split("/").pop() ?? path;
 
@@ -243,7 +437,7 @@ function Item({ it }: { it: TimelineGroup }): React.ReactElement | null {
     case "assistant":
       return (
         <CopyBubble text={it.text} className={`bubble assistant ${it.finalized ? "final" : "streaming"}`}>
-          {it.text}
+          <MarkdownContent text={it.text} />
           {!it.finalized && <span className="caret">▌</span>}
         </CopyBubble>
       );
@@ -312,6 +506,7 @@ export function Timeline(): React.ReactElement {
   const backToMainRun = useStore((s) => s.backToMainRun);
   const focusAgentRun = useStore((s) => s.focusAgentRun);
   const endRef = useRef<HTMLDivElement>(null);
+  const timelineRef = useRef<HTMLDivElement>(null);
 
   const totalPromptCount = countPrompts(timeline);
   const [visiblePromptCount, setVisiblePromptCount] = useState(TIMELINE_PAGE_SIZE);
@@ -334,11 +529,18 @@ export function Timeline(): React.ReactElement {
   const showAgentHeader = shouldShowAgentTimelineHeader(activeAgentRunId, mainRunId, agentRuns.length);
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    // Defer scroll one rAF so any layout shift from pagination (e.g. "Load earlier"
+    // button inserted at the top when a gate reprompt pushes totalPromptCount over
+    // TIMELINE_PAGE_SIZE) is fully committed before we measure the scroll target. (BUG-146)
+    const id = requestAnimationFrame(() => {
+      endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    });
+    return () => cancelAnimationFrame(id);
   }, [timeline]);
 
   return (
-    <div className={`timeline ${activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId ? "timeline-agent-focused" : ""}`}>
+    <div ref={timelineRef} className={`timeline ${activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId ? "timeline-agent-focused" : ""}`}>
+      <TranslatePopup containerRef={timelineRef} />
       {activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId ? (
         <div className="crumb ring">
           <button type="button" className="crumb-backbtn" onClick={backToMainRun}>

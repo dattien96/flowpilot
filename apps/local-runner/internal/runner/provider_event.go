@@ -51,6 +51,9 @@ const (
 	// Persisted to the parent event log so the annotation survives server restarts.
 	EventAgentSpawnedByUser  ProviderEventType = "agent_spawned_by_user"
 	EventAgentResultInjected ProviderEventType = "agent_result_injected"
+	// Emitted after a turn completes when the post-turn flow gate detects a violation
+	// (CP-35 P-4/P-5). The desktop surfaces it as an inline warning card.
+	EventFlowGateViolation ProviderEventType = "flow_gate_violation"
 )
 
 // ApprovalDecisionOption is one decision the runtime offers for an approval.
@@ -129,6 +132,9 @@ type ProviderEvent struct {
 	// turn_failed
 	Error       string `json:"error,omitempty"`
 	Recoverable bool   `json:"recoverable,omitempty"`
+	// flow_gate_violation (r-reg decision card — Task-155)
+	GateOptions        []string `json:"gateOptions,omitempty"`
+	GateRegressedTests []string `json:"gateRegressedTests,omitempty"`
 	// agent_graph_updated / agent_bus_message
 	AgentGraphSnapshot *AgentGraphSnapshot `json:"agentGraphSnapshot,omitempty"`
 	AgentBusMessage    *AgentBusMessage    `json:"agentBusMessage,omitempty"`
@@ -144,14 +150,14 @@ type AgentDependencyEdge struct {
 }
 
 type AgentBusMessage struct {
-	ID            string `json:"id"`
-	ParentRunID   string `json:"parentRunId"`
-	FromRunID     string `json:"fromRunId,omitempty"`
-	ToRunID       string `json:"toRunId,omitempty"`
-	Kind          string `json:"kind"`
-	Message       string `json:"message"`
-	Queued        bool   `json:"queued"`
-	OccurredAt    string `json:"occurredAt"`
+	ID          string `json:"id"`
+	ParentRunID string `json:"parentRunId"`
+	FromRunID   string `json:"fromRunId,omitempty"`
+	ToRunID     string `json:"toRunId,omitempty"`
+	Kind        string `json:"kind"`
+	Message     string `json:"message"`
+	Queued      bool   `json:"queued"`
+	OccurredAt  string `json:"occurredAt"`
 }
 
 type AgentLoopState struct {
@@ -162,11 +168,11 @@ type AgentLoopState struct {
 }
 
 type AgentGraphSnapshot struct {
-	ParentRunID string               `json:"parentRunId"`
-	Runs        []AgentRunSummary    `json:"runs"`
+	ParentRunID string                `json:"parentRunId"`
+	Runs        []AgentRunSummary     `json:"runs"`
 	Edges       []AgentDependencyEdge `json:"edges"`
-	BusMessages []AgentBusMessage    `json:"busMessages"`
-	LoopState   AgentLoopState       `json:"loopState"`
+	BusMessages []AgentBusMessage     `json:"busMessages"`
+	LoopState   AgentLoopState        `json:"loopState"`
 }
 
 // ProviderCapabilities advertises what a provider supports (03/04-07).
@@ -244,6 +250,8 @@ type SkillSelection struct {
 type TurnInput struct {
 	StepID         string           `json:"stepId"`
 	Prompt         string           `json:"prompt"`
+	ChangeType     string           `json:"changeType,omitempty"`
+	SourceDocID    string           `json:"sourceDocId,omitempty"`
 	SelectedSkills []SkillSelection `json:"selectedSkills,omitempty"`
 	// ReasoningEffort/Model/YoloMode are per-turn chat overrides (BUG-063): the desktop
 	// resends the current control values on every chat turn so model, reasoning, and YOLO

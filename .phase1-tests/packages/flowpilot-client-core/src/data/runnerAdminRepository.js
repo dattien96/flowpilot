@@ -88,6 +88,13 @@ class RunnerAdminRepository {
         const payload = await readJson(response);
         return payload.message ?? null;
     }
+    async pickDirectory() {
+        const response = await this.httpClient.request(new URL("/directories/pick", this.runnerBaseUrl), {
+            method: "POST",
+            cache: "no-store",
+        });
+        return readJson(response);
+    }
     async validatePath(path) {
         const response = await this.httpClient.request(new URL("/directories/validate", this.runnerBaseUrl), {
             method: "POST",

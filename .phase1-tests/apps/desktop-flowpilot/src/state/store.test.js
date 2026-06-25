@@ -77,6 +77,8 @@ function seedStore(client, runHistory) {
         selectedModel: undefined,
         reasoningEffort: undefined,
         yoloMode: false,
+        chatStartMode: "normal",
+        chatSourceDocId: "",
         runId: "current-run",
         mainRunId: "current-run",
         activeAgentRunId: undefined,
@@ -435,6 +437,36 @@ async function* cursorChildStream() {
     const last = store_1.useStore.getState().timeline.at(-1);
     strict_1.default.equal(last?.kind, "system");
     strict_1.default.equal(last?.kind === "system" ? last.text : "", "Child transcript is read-only. Return to the main chat to send prompts.");
+});
+(0, node_test_1.default)("sendPrompt sends declared task intent only on the first chat turn", async () => {
+    const seen = [];
+    async function* completedSendTurn(input) {
+        seen.push(input);
+        yield { ...BASE_EVENT, seq: 2 + seen.length * 2, type: "turn_started", providerTurnId: `turn-${seen.length}`, prompt: input.prompt };
+        yield { ...BASE_EVENT, seq: 3 + seen.length * 2, type: "turn_completed", finalMessage: "done" };
+    }
+    seedStore(makeClient({
+        startRun: async () => ({ runId: "new-run", providerSessionId: "session-1", providerKey: "codex", status: "running", stepId: "chat-new-run" }),
+        sendTurn: completedSendTurn,
+        listRunHistory: async () => [],
+    }), []);
+    store_1.useStore.setState({
+        runId: undefined,
+        mainRunId: undefined,
+        activeStepId: undefined,
+        status: "idle",
+        timeline: [],
+        selectedProvider: "codex",
+        chatStartMode: "task",
+        chatSourceDocId: "Task-114",
+    });
+    await store_1.useStore.getState().sendPrompt("first");
+    await store_1.useStore.getState().sendPrompt("second");
+    strict_1.default.equal(seen.length, 2);
+    strict_1.default.equal(seen[0]?.changeType, "task");
+    strict_1.default.equal(seen[0]?.sourceDocId, "Task-114");
+    strict_1.default.equal(seen[1]?.changeType, undefined);
+    strict_1.default.equal(seen[1]?.sourceDocId, undefined);
 });
 (0, node_test_1.default)("openHistoryRun selects the resumed provider default model", async () => {
     const handle = {

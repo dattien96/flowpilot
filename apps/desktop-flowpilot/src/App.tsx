@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import type {
   DesktopBootstrapState,
   SupabaseConfigInput,
+  SupabaseSchemaApplyInput,
+  SupabaseSchemaApplyResult,
   SupabaseConfigValidation,
   SupabaseRuntimeStatus,
 } from "@flowpilot/client-core";
@@ -13,6 +15,8 @@ import { LoginScreen } from "@/components/LoginScreen";
 import { SettingsShell, type SettingsSection } from "@/components/SettingsShell";
 import { resolveDesktopBootstrapState } from "@/app/bootstrapState";
 import {
+  applySupabaseMigrationsUseCase,
+  getAdminUseCases,
   loadDesktopBootstrapUseCase,
   loginUseCase,
   logoutUseCase,
@@ -22,6 +26,7 @@ import {
   validateSupabaseConfigUseCase,
 } from "@/clientCore";
 import { runnerModeLabel } from "@/client/createRunnerClient";
+import { autoInitProjectEngine } from "@/components/settings/projectEngine";
 
 type AppPhase = "loading" | "unauthenticated" | "authenticated";
 type UnauthenticatedView = "login" | "settings";
@@ -63,6 +68,29 @@ export function App(): React.ReactElement {
   useEffect(() => {
     void refreshBootstrap();
   }, []);
+
+  // On every authenticated boot, run a bind-time engine init for all projects so
+  // the change ledger picks up commits made since the last session — without the
+  // user having to click "Re-init" or save project settings.
+  useEffect(() => {
+    if (phase !== "authenticated") return;
+    void (async () => {
+      try {
+        const admin = await getAdminUseCases();
+        const projects = await admin.projects.listProjects();
+        await Promise.allSettled(
+          projects.map(async (project) => {
+            const bindings = await admin.projects.listBindings(project.id);
+            if (bindings.length > 0) {
+              await autoInitProjectEngine(project.id, bindings, project.platform);
+            }
+          }),
+        );
+      } catch {
+        // best-effort: a startup bind failure must never crash the app
+      }
+    })();
+  }, [phase]);
 
   const refreshBootstrap = async () => {
     setPhase("loading");
@@ -145,6 +173,17 @@ export function App(): React.ReactElement {
     }
   };
 
+  const handleApplySupabaseMigrations = async (
+    input: SupabaseSchemaApplyInput,
+  ): Promise<SupabaseSchemaApplyResult> => {
+    setBusy(true);
+    try {
+      return await applySupabaseMigrationsUseCase.execute(input);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   if (phase === "loading") {
     return (
       <div className="status-shell">
@@ -179,6 +218,7 @@ export function App(): React.ReactElement {
             ? () => setUnauthenticatedView("login")
             : undefined
         }
+        onApplySupabaseMigrations={handleApplySupabaseMigrations}
         onSaveSupabase={handleSaveSupabase}
         onSelectSection={setSettingsSection}
         onValidateSupabase={handleValidateSupabase}
@@ -265,6 +305,7 @@ export function App(): React.ReactElement {
             <SettingsShell
               activeSection="runner"
             busy={busy}
+            onApplySupabaseMigrations={handleApplySupabaseMigrations}
             onSaveSupabase={handleSaveSupabase}
             onSelectSection={setSettingsSection}
             onValidateSupabase={handleValidateSupabase}
@@ -275,6 +316,7 @@ export function App(): React.ReactElement {
         <SettingsShell
           activeSection={settingsSection}
           busy={busy}
+          onApplySupabaseMigrations={handleApplySupabaseMigrations}
           onSaveSupabase={handleSaveSupabase}
           onSelectSection={setSettingsSection}
           onValidateSupabase={handleValidateSupabase}

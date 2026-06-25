@@ -42,6 +42,8 @@ import {
 
 export type { TimelineItem } from "./timelineReducer";
 
+const LAST_PROJECT_KEY = "fp:lastProjectId";
+
 let loadProjectsInFlight: Promise<void> | null = null;
 let activeHistoryReplayController: AbortController | undefined;
 let activeOrchestrationStreamController: AbortController | undefined;
@@ -50,6 +52,7 @@ let activeAgentFocusStreamController: AbortController | undefined;
 export type LaunchMode = "workflow" | "step";
 export type ChatMode = "normal_chat" | "workflow_step_auto";
 export type WorkspaceMainView = "chat" | "board";
+export type ChatStartMode = "normal" | "task" | "bugfix";
 
 interface RunSnapshot {
   timeline: TimelineItem[];
@@ -130,6 +133,8 @@ interface AppState {
   selectedModel?: string;
   reasoningEffort?: string;
   yoloMode: boolean;
+  chatStartMode: ChatStartMode;
+  chatSourceDocId: string;
 
   // run
   runId?: string;
@@ -152,6 +157,20 @@ interface AppState {
   remoteHistoryLoadError?: string;
   pendingApproval?: PendingApproval;
   pendingQuestion?: PendingQuestion;
+  /** A hard-blocking flow-gate violation (e.g. failed tests) the user must acknowledge.
+   *  Set only for action === "block"; surfaced as a modal or decision card. (CP-35 / Task-155) */
+  gateBlock?: {
+    message: string;
+    /** Decision card options — present only for r-reg regression blocks (Task-155). */
+    options?: string[];
+    regressedTests?: string[];
+    /** The runId that originated the block, for gate-decision API calls (Task-155). */
+    runId?: string;
+  };
+  /** Run IDs that received a live gate block. Persists across chat switches so Navigator
+   *  can suppress the "Running" spinner for a blocked-but-inactive chat whose server
+   *  status hasn't settled to idle yet. Cleared per-run when turn_started fires. (CP-35) */
+  _gateBlockedRunIds: Record<string, boolean>;
   lastTurnInput?: TurnInput;
   latestTokenUsage?: TokenUsageSnapshot;
   recoverable: boolean;
@@ -200,6 +219,8 @@ interface AppState {
   setSelectedModel(model?: string): void;
   setReasoningEffort(effort?: string): void;
   setYoloMode(yolo: boolean): void;
+  setChatStartMode(mode: ChatStartMode): void;
+  setChatSourceDocId(sourceDocId: string): void;
   selectWorkflow(workflowId: string): Promise<void>;
   selectStep(stepId: string): void;
   setScenario(scenario: ScenarioName): void;
@@ -237,6 +258,9 @@ interface AppState {
   confirmAccountSwitch(): Promise<void>;
   cancelAccountSwitch(): void;
   requestManualAccountSwitch(): void;
+  dismissGateBlock(): void;
+  /** Submit the user's choice on the r-reg gate decision card (Task-155). */
+  submitGateDecision(option: string, customText?: string): Promise<void>;
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -266,6 +290,8 @@ export const useStore = create<AppState>((set, get) => ({
   chatMode: "normal_chat",
   selectedProvider: "codex",
   yoloMode: false,
+  chatStartMode: "normal",
+  chatSourceDocId: "",
   workspaceMainView: "chat",
   _historyReplaying: false,
   _historyLoadSeq: 0,
@@ -273,6 +299,7 @@ export const useStore = create<AppState>((set, get) => ({
   _agentRunsLoadSeq: 0,
   _runSnapshots: {},
   _runReplaySeq: {},
+  _gateBlockedRunIds: {},
   _streamRunSeq: 0,
   _orchestrationStreamSeq: 0,
   agentSpawnGuideAgentName: undefined,
@@ -308,6 +335,11 @@ export const useStore = create<AppState>((set, get) => ({
       try {
         const projects = await withRetry(() => client.listProjects());
         set((s) => ({ projects, ...(s.runId ? {} : { status: "idle" }) }));
+        if (!get().selectedProjectId && projects.length > 0) {
+          const saved = localStorage.getItem(LAST_PROJECT_KEY);
+          const match = saved ? projects.find((p) => p.id === saved) : undefined;
+          void get().selectProject((match ?? projects[0]).id);
+        }
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error("[FlowPilot] listProjects failed:", err);
@@ -546,6 +578,7 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   async selectProject(projectId) {
+    localStorage.setItem(LAST_PROJECT_KEY, projectId);
     set({
       selectedProjectId: projectId,
       selectedWorkflowId: undefined,
@@ -599,6 +632,17 @@ export const useStore = create<AppState>((set, get) => ({
     set({ yoloMode: yolo });
   },
 
+  setChatStartMode(mode) {
+    set((state) => ({
+      chatStartMode: mode,
+      chatSourceDocId: mode === "normal" ? "" : state.chatSourceDocId,
+    }));
+  },
+
+  setChatSourceDocId(sourceDocId) {
+    set({ chatSourceDocId: sourceDocId });
+  },
+
   async loadSkills(provider, cwd) {
     const { client } = get();
     try {
@@ -614,7 +658,7 @@ export const useStore = create<AppState>((set, get) => ({
     const {
       client, chatMode, launchMode,
       selectedProjectId, selectedWorkflowId, selectedStepId,
-      selectedProvider, selectedModel, reasoningEffort, yoloMode,
+      selectedProvider, selectedModel, reasoningEffort, yoloMode, chatStartMode, chatSourceDocId,
     } = get();
     const focusedRunId = get().activeAgentRunId;
     const mainRunId = get().mainRunId ?? get().runId;
@@ -675,6 +719,7 @@ export const useStore = create<AppState>((set, get) => ({
     }));
 
     let runId = get().runId;
+    const isFirstChatTurn = chatMode === "normal_chat" && !runId;
     try {
       if (!runId) {
         const handle = await client.startRun(
@@ -710,6 +755,11 @@ export const useStore = create<AppState>((set, get) => ({
         runId,
         stepId: turnStepId,
         prompt,
+        changeType: isFirstChatTurn && chatStartMode !== "normal" ? chatStartMode : undefined,
+        sourceDocId:
+          isFirstChatTurn && chatStartMode !== "normal" && chatSourceDocId.trim().length > 0
+            ? chatSourceDocId.trim()
+            : undefined,
         selectedSkills:
           skills && skills.length > 0
             ? skills.map((name) => {
@@ -1061,6 +1111,7 @@ export const useStore = create<AppState>((set, get) => ({
       artifacts: [],
       pendingApproval: undefined,
       pendingQuestion: undefined,
+      gateBlock: undefined,
       latestTokenUsage: undefined,
       lastTurnInput: undefined,
       recoverable: false,
@@ -1155,6 +1206,8 @@ export const useStore = create<AppState>((set, get) => ({
       _streamingAssistantId: undefined,
       _runSnapshots: {},
       _runReplaySeq: {},
+      chatStartMode: "normal",
+      chatSourceDocId: "",
       selectedModel: pickDefaultModel(selectedProvider, supportedModels),
     });
   },
@@ -1177,6 +1230,18 @@ export const useStore = create<AppState>((set, get) => ({
 
   cancelAccountSwitch() {
     set({ pendingAccountSwitch: undefined });
+  },
+
+  dismissGateBlock() {
+    set({ gateBlock: undefined });
+  },
+
+  async submitGateDecision(option: string, customText?: string) {
+    const { gateBlock, client } = get();
+    if (!gateBlock?.runId || !client.submitGateDecision) return;
+    const runId = gateBlock.runId;
+    set({ gateBlock: undefined });
+    await client.submitGateDecision(runId, option, customText);
   },
 
   requestManualAccountSwitch() {
@@ -1540,8 +1605,22 @@ async function consumeOrchestrationStream(
     if (isStale()) return;
     if (!isEventForRun(e, runId)) continue;
     if (e.seq <= afterSeq) continue;
-    if (e.type !== "agent_graph_updated" && e.type !== "agent_bus_message") continue;
-    set((s) => applyOrchestrationEvent(s, e));
+    if (e.type === "agent_graph_updated" || e.type === "agent_bus_message") {
+      set((s) => applyOrchestrationEvent(s, e));
+    } else {
+      // CP-35: gate reprompt events (turn_started, message_delta, turn_completed, etc.)
+      // arrive after sendTurn() has already closed on turn_completed. Apply them via
+      // applyEvent so the timeline shows the reprompt turn without a tab-switch.
+      //
+      // Dynamic watermark: skip events already covered by the concurrent history replay
+      // stream (_runReplaySeq tracks its progress as it goes). Without this guard, when
+      // openHistoryRun triggers both a replay stream and this orchestration stream from
+      // seq 0, the orchestration stream re-processes flow_gate_violation after
+      // _historyReplaying turns false — re-popping the block modal on every chat open.
+      // (CP-35 BUG-138)
+      if (e.seq <= (get()._runReplaySeq[runId] ?? afterSeq)) continue;
+      set((s) => applyEvent(s, e));
+    }
   }
 }
 
@@ -1643,8 +1722,47 @@ function applyEvent(s: AppState, e: ProviderEventDTO): Partial<AppState> {
       _runReplaySeq: nextReplaySeq,
     };
   }
+  if (e.type === "flow_gate_violation" && (e.status === "block" || e.status === "warn") && !s._historyReplaying) {
+    // block: hard stop — surface a modal the user must acknowledge. The modal must appear
+    // EXACTLY ONCE: Reopening the chat re-streams the persisted flow_gate_violation, and
+    // the `_historyReplaying` guard is racy. `_gateBlockedRunIds` is the authoritative guard:
+    // added on the first block, cleared on the next turn_started. (CP-35, BUG-138)
+    //
+    // warn: store settles to "completed" (statusFromEvent), but the backend runner keeps the
+    // run in "running" state until the user re-prompts — the same mismatch as block. Without
+    // tracking in _gateBlockedRunIds, switching to another chat makes the Navigator fall back
+    // to item.status = "running" and show an infinite spinner. (BUG-145)
+    //
+    // Both cases: add to _gateBlockedRunIds so Navigator shows a stable completed icon for
+    // inactive gate-settled runs. Cleared on the next turn_started. (BUG-137)
+    const alreadyBlocked = Boolean(s._gateBlockedRunIds[e.workflowRunId]);
+    const newGateBlock =
+      e.status === "block" && !alreadyBlocked
+        ? {
+            message: e.error,
+            options: e.gateOptions,
+            regressedTests: e.gateRegressedTests,
+            runId: e.workflowRunId,
+          }
+        : undefined;
+    return {
+      ...next,
+      ...(newGateBlock ? { gateBlock: newGateBlock } : {}),
+      _gateBlockedRunIds: { ...s._gateBlockedRunIds, [e.workflowRunId]: true },
+      _runReplaySeq: nextReplaySeq,
+    };
+  }
   if (e.type === "turn_started") {
-    return { ...next, latestTokenUsage: undefined, _runReplaySeq: nextReplaySeq };
+    // A fresh turn (incl. a gate reprompt) clears any prior block modal and removes the
+    // run from the gate-blocked set (the user re-prompted, so the run is running again).
+    const { [e.workflowRunId]: _cleared, ...remainingGateBlockedRunIds } = s._gateBlockedRunIds;
+    return {
+      ...next,
+      latestTokenUsage: undefined,
+      gateBlock: undefined,
+      _gateBlockedRunIds: remainingGateBlockedRunIds,
+      _runReplaySeq: nextReplaySeq,
+    };
   }
   if (e.type === "token_usage_updated") {
     return { ...next, latestTokenUsage: e.tokenUsage, _runReplaySeq: nextReplaySeq };
@@ -1728,6 +1846,7 @@ function emptyRunSnapshot(status: RunStatus): Partial<AppState> {
     status,
     pendingApproval: undefined,
     pendingQuestion: undefined,
+    gateBlock: undefined,
     latestTokenUsage: undefined,
     lastTurnInput: undefined,
     recoverable: false,

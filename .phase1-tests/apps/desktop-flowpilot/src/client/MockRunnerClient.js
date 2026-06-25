@@ -179,6 +179,12 @@ class MockRunnerClient {
         if (cancel)
             cancel();
     }
+    async submitGateDecision(_runId, _option, _customText) {
+        // Mock stub — real gate decisions are only possible with a live runner (Task-155).
+    }
+    async submitGateAgreement(_runId, _testNames) {
+        // Mock stub — real gate agreement is only possible with a live runner (Task-155).
+    }
     async *streamRun(runId, afterSeq = 0, signal) {
         const log = this.eventLog.get(runId) ?? [];
         for (const ev of log) {

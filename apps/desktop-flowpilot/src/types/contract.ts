@@ -322,6 +322,10 @@ export interface TurnInput {
   runId: string;
   stepId: string;
   prompt: string;
+  /** Declared chat-start intent for flow-gate task/bug handling (Task-114). */
+  changeType?: "task" | "bugfix";
+  /** Optional tracked document id declared alongside changeType, e.g. Task-114 or BUG-141. */
+  sourceDocId?: string;
   /** One or more skills attached to this turn (via the `/` picker). */
   selectedSkills?: SkillSelection[];
   /**
@@ -404,7 +408,16 @@ export type ProviderEventDTO =
   | (ProviderEventBaseDTO & { type: "agent_graph_updated"; agentGraphSnapshot: AgentGraphSnapshot })
   | (ProviderEventBaseDTO & { type: "agent_bus_message"; agentBusMessage: AgentBusMessage })
   | (ProviderEventBaseDTO & { type: "agent_spawned_by_user"; agentName: string; childRunId: string })
-  | (ProviderEventBaseDTO & { type: "agent_result_injected"; agentName: string; finalMessage: string });
+  | (ProviderEventBaseDTO & { type: "agent_result_injected"; agentName: string; finalMessage: string })
+  | (ProviderEventBaseDTO & {
+      type: "flow_gate_violation";
+      error: string;
+      status?: string;
+      /** Decision options for the r-reg block card (Task-155). Present only on regression blocks. */
+      gateOptions?: string[];
+      /** Specifically-identified regressed test names (Task-155). May be ["suite_regressed"]. */
+      gateRegressedTests?: string[];
+    });
 
 export type ProviderEventType = ProviderEventDTO["type"];
 
@@ -481,6 +494,17 @@ export interface RunnerClient {
   restartStack(): Promise<void>;
   /** System control — mirrors admin-web's runner gateway (`POST /system/shutdown`). */
   shutdownStack(): Promise<void>;
+  /**
+   * Submit a user decision for the r-reg gate block card (Task-155).
+   * option: "keep-test-fix-code" | "suggest-requirement-change" | "custom"
+   * customText: required when option === "custom".
+   */
+  submitGateDecision?(runId: string, option: string, customText?: string): Promise<void>;
+  /**
+   * Record explicit user agreement to the AI's opt-2 requirement proposal (Task-155).
+   * testNames: the test names to unlock (written as overrides).
+   */
+  submitGateAgreement?(runId: string, testNames: string[]): Promise<void>;
   /** Dev-only fake-adapter scenario hint (mock + P2 fake adapter); real runtimes ignore it. */
   setScenario?(scenario: string): void;
 }

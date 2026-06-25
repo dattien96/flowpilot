@@ -17,7 +17,7 @@ export type TimelineItem =
   | { kind: "file"; id: string; path: string; changeType?: string }
   | { kind: "approval"; id: string; approvalId: string; details: ApprovalDetails; decision?: string }
   | { kind: "question"; id: string; questionId: string; prompt: string; options: QuestionOption[]; multiSelect?: boolean; answer?: string | string[] }
-  | { kind: "system"; id: string; text: string; tone: "info" | "error" };
+  | { kind: "system"; id: string; text: string; tone: "info" | "error" | "warn" };
 
 export interface PendingApproval {
   approvalId: string;
@@ -56,6 +56,12 @@ function statusFromEvent(e: ProviderEventDTO, prev: RunStatus): RunStatus {
       return "completed";
     case "turn_failed":
       return "failed";
+    case "flow_gate_violation":
+      // A block/warn gate is terminal: settle so the chat input unblocks instead of
+      // appearing to load forever (status === "running" disables the composer). A
+      // reprompt is immediately followed by a turn_started, so keep the prior status
+      // and let that event flip back to running. (CP-35)
+      return e.status === "reprompt" ? prev : "completed";
     default:
       return prev === "waiting_approval" || prev === "waiting_question" ? "running" : prev;
   }
@@ -244,7 +250,12 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
 
     case "file_changed":
       closeAssistant();
-      timeline.push({ kind: "file", id: e.id, path: e.path, changeType: e.changeType });
+      // Idempotent guard (BUG-111): a chat switch re-streams the run from seq 0, so a
+      // file_changed whose row already exists must not be pushed again — otherwise the
+      // same "calc.go modified" / "CA-*.md created" rows duplicate after switching back.
+      if (!timeline.some((it) => it.kind === "file" && it.id === e.id)) {
+        timeline.push({ kind: "file", id: e.id, path: e.path, changeType: e.changeType });
+      }
       break;
 
     case "permission_required":
@@ -290,6 +301,16 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
       // Idempotent — replay from seq 0 must not duplicate the row. (BUG-121)
       if (!timeline.some((it) => it.kind === "system" && it.id === e.id)) {
         timeline.push({ kind: "system", id: e.id, text: `**[${e.agentName}]** ${e.finalMessage}`, tone: "info" });
+      }
+      shouldKeepThinking = thinkingItem !== undefined;
+      break;
+
+    case "flow_gate_violation":
+      // CP-35: the gate fired. For a reprompt rule a turn_started follows; for a
+      // block rule this card is the only signal. Render it and never spawn a
+      // thinking row, so block rules don't leave a dangling "Thinking..." line.
+      if (!timeline.some((it) => it.kind === "system" && it.id === e.id)) {
+        timeline.push({ kind: "system", id: e.id, text: `⚠ ${e.error}`, tone: "warn" });
       }
       shouldKeepThinking = thinkingItem !== undefined;
       break;

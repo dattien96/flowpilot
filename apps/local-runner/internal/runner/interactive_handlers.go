@@ -22,6 +22,12 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /client/workflows/{workflowId}/steps", s.handleListSteps)
 	mux.HandleFunc("GET /client/projects/{projectId}/workflow-runs", s.handleListProjectRunHistory)
 	mux.HandleFunc("GET /client/projects/{projectId}/chat-sessions/remote", s.handleListRemoteChatSessions)
+	mux.HandleFunc("GET /client/engine/tooling/status", s.handleGetGlobalEngineToolingStatus)
+	mux.HandleFunc("POST /client/engine/tooling/install/libretranslate", s.handleInstallLibreTranslate)
+	mux.HandleFunc("GET /client/projects/{projectId}/engine/status", s.handleGetEngineStatus)
+	mux.HandleFunc("POST /client/projects/{projectId}/engine/init", s.handleInitEngine)
+	mux.HandleFunc("GET /client/projects/{projectId}/engine/gate-config", s.handleGetEngineGateConfig)
+	mux.HandleFunc("POST /client/projects/{projectId}/engine/gate-config", s.handleSetEngineGateConfig)
 	mux.HandleFunc("POST /client/workflow-runs", s.handleStartRun)
 	mux.HandleFunc("GET /client/workflow-runs/{runId}", s.handleGetRun)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/resume", s.handleResumeRun)
@@ -46,6 +52,8 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/agent-loop/resume", s.handleResumeAgentLoop)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/agent-loop/feedback", s.handleInjectAgentFeedback)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/agent-loop/stop", s.handleStopAgentLoop)
+	mux.HandleFunc("POST /client/workflow-runs/{runId}/gate-decision", s.handleGateDecision)
+	mux.HandleFunc("POST /client/workflow-runs/{runId}/gate-agreement", s.handleGateAgreement)
 
 	// admin
 	mux.HandleFunc("GET /admin/providers", s.handleAdminProviders)
@@ -213,6 +221,8 @@ func (s *InteractiveService) handleRestoreChatRun(w http.ResponseWriter, r *http
 type turnBody struct {
 	StepID         string           `json:"stepId"`
 	Prompt         string           `json:"prompt"`
+	ChangeType     string           `json:"changeType"`
+	SourceDocID    string           `json:"sourceDocId"`
 	SelectedSkills []SkillSelection `json:"selectedSkills"`
 	// ReasoningEffort/Model/YoloMode are per-turn chat overrides (T-4 / BUG-063). Model and
 	// YoloMode are pointers so an omitted field falls back to the run-level default rather
@@ -233,7 +243,7 @@ func (s *InteractiveService) handleStartTurn(w http.ResponseWriter, r *http.Requ
 	}
 	turnID, e := s.startTurn(
 		r.PathValue("runId"),
-		TurnInput{StepID: body.StepID, Prompt: body.Prompt, SelectedSkills: body.SelectedSkills, ReasoningEffort: body.ReasoningEffort, Model: body.Model, YoloMode: body.YoloMode, Attachments: body.Attachments},
+		TurnInput{StepID: body.StepID, Prompt: body.Prompt, ChangeType: body.ChangeType, SourceDocID: body.SourceDocID, SelectedSkills: body.SelectedSkills, ReasoningEffort: body.ReasoningEffort, Model: body.Model, YoloMode: body.YoloMode, Attachments: body.Attachments},
 		body.Scenario,
 		r.Header.Get("Idempotency-Key"),
 	)
@@ -868,6 +878,45 @@ func (s *InteractiveService) handleInjectAgentFeedback(w http.ResponseWriter, r 
 
 func (s *InteractiveService) handleStopAgentLoop(w http.ResponseWriter, r *http.Request) {
 	writeInteractiveJSON(w, http.StatusOK, s.stopAgentLoop(r.PathValue("runId")))
+}
+
+// handleGateDecision handles POST /client/workflow-runs/{runId}/gate-decision.
+// Body: {"option": "keep-test-fix-code"|"suggest-requirement-change"|"custom", "customText": "..."}
+// Clears the pending gate block and fires the appropriate reprompt turn. (Task-155)
+func (s *InteractiveService) handleGateDecision(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("runId")
+	var body struct {
+		Option     string `json:"option"`
+		CustomText string `json:"customText"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeInteractiveError(w, newAPIErr(400, "invalid_body", "invalid JSON body"))
+		return
+	}
+	if e := s.SubmitGateDecision(runID, body.Option, body.CustomText); e != nil {
+		writeInteractiveError(w, e)
+		return
+	}
+	writeInteractiveJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
+}
+
+// handleGateAgreement handles POST /client/workflow-runs/{runId}/gate-agreement.
+// Body: {"testNames": ["TestFoo", "TestBar"]}
+// Records human agreement to the AI-proposed requirement change and writes overrides. (Task-155)
+func (s *InteractiveService) handleGateAgreement(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("runId")
+	var body struct {
+		TestNames []string `json:"testNames"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeInteractiveError(w, newAPIErr(400, "invalid_body", "invalid JSON body"))
+		return
+	}
+	if e := s.RecordGateAgreement(runID, body.TestNames); e != nil {
+		writeInteractiveError(w, e)
+		return
+	}
+	writeInteractiveJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
 }
 
 func fakeArtifacts(runID string) []Artifact {

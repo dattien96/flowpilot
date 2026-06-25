@@ -1,6 +1,8 @@
 import type {
   RuntimeConfigRepository,
   SupabaseConfigInput,
+  SupabaseSchemaApplyInput,
+  SupabaseSchemaApplyResult,
   SupabaseConfigValidation,
   SupabaseRuntimeStatus,
 } from "../domain/runtime";
@@ -122,6 +124,25 @@ export class RunnerRuntimeConfigRepository implements RuntimeConfigRepository {
     }
 
     return this.loadSupabaseRuntimeStatus();
+  }
+
+  async applySupabaseMigrations(
+    input: SupabaseSchemaApplyInput,
+  ): Promise<SupabaseSchemaApplyResult> {
+    const response = await this.httpClient.request(
+      new URL("/supabase-config/apply-migrations", this.runnerBaseUrl),
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+      },
+    );
+
+    if (!response.ok) {
+      throw new Error(await readError(response));
+    }
+
+    return (await response.json()) as SupabaseSchemaApplyResult;
   }
 
   async loadSupabaseWorkspaceConfigWithSecret(): Promise<SupabaseWorkspaceConfigWithSecret | null> {

@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.SaveSupabaseConfigUseCase = exports.ValidateSupabaseConfigUseCase = exports.LoadSupabaseRuntimeStatusUseCase = void 0;
+exports.ApplySupabaseMigrationsUseCase = exports.SaveSupabaseConfigUseCase = exports.ValidateSupabaseConfigUseCase = exports.LoadSupabaseRuntimeStatusUseCase = void 0;
 class LoadSupabaseRuntimeStatusUseCase {
     repository;
     constructor(repository) {
@@ -31,3 +31,13 @@ class SaveSupabaseConfigUseCase {
     }
 }
 exports.SaveSupabaseConfigUseCase = SaveSupabaseConfigUseCase;
+class ApplySupabaseMigrationsUseCase {
+    repository;
+    constructor(repository) {
+        this.repository = repository;
+    }
+    execute(input) {
+        return this.repository.applySupabaseMigrations(input);
+    }
+}
+exports.ApplySupabaseMigrationsUseCase = ApplySupabaseMigrationsUseCase;

@@ -1,7 +1,14 @@
-import type { SupabaseConfigInput, SupabaseConfigValidation, SupabaseRuntimeStatus } from "@flowpilot/client-core";
+import type {
+  SupabaseConfigInput,
+  SupabaseConfigValidation,
+  SupabaseRuntimeStatus,
+  SupabaseSchemaApplyInput,
+  SupabaseSchemaApplyResult,
+} from "@flowpilot/client-core";
 import { AiProvidersSettings } from "@/components/settings/AiProvidersSettings";
 import { ArtifactsSettings } from "@/components/settings/ArtifactsSettings";
 import { CheckVersionSettings } from "@/components/settings/CheckVersionSettings";
+import { EngineSettings } from "@/components/settings/EngineSettings";
 import { GoogleDriveSettings } from "@/components/settings/GoogleDriveSettings";
 import { McpSettings } from "@/components/settings/McpSettings";
 import { ProjectsSettings } from "@/components/settings/ProjectsSettings";
@@ -12,6 +19,7 @@ import { SupabaseSetupScreen } from "@/components/SupabaseSetupScreen";
 
 export type SettingsSection =
   | "supabase"
+  | "engine"
   | "projects"
   | "workflows"
   | "teams"
@@ -30,10 +38,14 @@ interface SettingsShellProps {
   onSelectSection: (section: SettingsSection) => void;
   onValidateSupabase: (input: SupabaseConfigInput) => Promise<SupabaseConfigValidation>;
   onSaveSupabase: (input: SupabaseConfigInput) => Promise<void>;
+  onApplySupabaseMigrations: (
+    input: SupabaseSchemaApplyInput,
+  ) => Promise<SupabaseSchemaApplyResult>;
   visibleSections?: readonly SettingsSection[];
 }
 
 const defaultSectionOrder: readonly SettingsSection[] = [
+  "engine",
   "projects",
   "workflows",
   "teams",
@@ -54,6 +66,7 @@ export function SettingsShell({
   onSelectSection,
   onValidateSupabase,
   onSaveSupabase,
+  onApplySupabaseMigrations,
   visibleSections,
 }: SettingsShellProps): React.ReactElement {
   const runnerOffline = !runtimeStatus.runnerReachable;
@@ -84,6 +97,8 @@ export function SettingsShell({
             const label =
               section === "ai-providers"
                 ? "AI Providers"
+                : section === "engine"
+                  ? "Engine"
                 : section === "workflows"
                   ? "Workflows/Steps"
                 : section === "google-drive"
@@ -137,10 +152,13 @@ export function SettingsShell({
           <SupabaseSetupScreen
             busy={busy}
             onBack={onBack}
+            onApplyMigrations={onApplySupabaseMigrations}
             onSave={onSaveSupabase}
             onValidate={onValidateSupabase}
             runtimeStatus={runtimeStatus}
           />
+        ) : currentSection === "engine" ? (
+          <EngineSettings />
         ) : currentSection === "projects" ? (
           <ProjectsSettings onNavigateSection={onSelectSection} />
         ) : currentSection === "workflows" ? (

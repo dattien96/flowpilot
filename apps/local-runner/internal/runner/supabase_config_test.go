@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -199,6 +201,79 @@ func TestSupabaseWorkspaceConfigPersistFailureRollsBackSecret(t *testing.T) {
 	}
 }
 
+func TestApplySupabaseMigrationsSkipsAppliedVersionsAndAppliesRemaining(t *testing.T) {
+	workspace := t.TempDir()
+	instance := &Runner{workspace: workspace}
+	migrationsDir := filepath.Join(workspace, "supabase", "migrations")
+	if err := os.MkdirAll(migrationsDir, 0o755); err != nil {
+		t.Fatalf("mkdir migrations: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(migrationsDir, "20260515050000_admin_mvp_skeleton.sql"), []byte("create table if not exists public.projects(id uuid primary key);"), 0o644); err != nil {
+		t.Fatalf("write migration 1: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(migrationsDir, "20260519070000_projects_uuid_baseline.sql"), []byte("alter table public.projects add column if not exists legacy_project_id text;"), 0o644); err != nil {
+		t.Fatalf("write migration 2: %v", err)
+	}
+
+	original := httpRequestFn
+	callCount := 0
+	httpRequestFn = func(_ context.Context, method string, endpoint string, headers map[string]string, body []byte) (int, []byte, error) {
+		callCount++
+		if method != http.MethodPost {
+			return 0, nil, fmt.Errorf("unexpected method %s", method)
+		}
+		if endpoint != "https://api.supabase.com/v1/projects/demo-ref/database/query" {
+			return 0, nil, fmt.Errorf("unexpected endpoint %s", endpoint)
+		}
+		if got := headers["Authorization"]; got != "Bearer mgmt-token" {
+			return 0, nil, fmt.Errorf("unexpected auth header %q", got)
+		}
+		query := extractSupabaseQuery(t, body)
+		switch callCount {
+		case 1:
+			if !strings.Contains(query, "create schema if not exists supabase_migrations") {
+				return 0, nil, fmt.Errorf("expected ensure-history query, got %q", query)
+			}
+			return http.StatusCreated, []byte(`{}`), nil
+		case 2:
+			if !strings.Contains(query, "select version from supabase_migrations.schema_migrations") {
+				return 0, nil, fmt.Errorf("expected migration-history query, got %q", query)
+			}
+			return http.StatusCreated, []byte(`[{"version":"20260515050000"}]`), nil
+		case 3:
+			if !strings.Contains(query, "legacy_project_id") || !strings.Contains(query, "20260519070000") {
+				return 0, nil, fmt.Errorf("expected apply query for second migration, got %q", query)
+			}
+			return http.StatusCreated, []byte(`{}`), nil
+		default:
+			return 0, nil, fmt.Errorf("unexpected extra management-api call %d", callCount)
+		}
+	}
+	t.Cleanup(func() {
+		httpRequestFn = original
+	})
+
+	result, err := instance.ApplySupabaseMigrations(SupabaseSchemaApplyRequest{
+		APIURL:      "https://demo-ref.supabase.co",
+		AccessToken: "mgmt-token",
+	})
+	if err != nil {
+		t.Fatalf("ApplySupabaseMigrations() failed: %v", err)
+	}
+	if result.ProjectRef != "demo-ref" {
+		t.Fatalf("projectRef = %q, want demo-ref", result.ProjectRef)
+	}
+	if result.AppliedCount != 1 || result.SkippedCount != 1 {
+		t.Fatalf("unexpected result counts: %+v", result)
+	}
+	if len(result.Migrations) != 2 {
+		t.Fatalf("migrations len = %d, want 2", len(result.Migrations))
+	}
+	if result.Migrations[0].Status != "skipped" || result.Migrations[1].Status != "applied" {
+		t.Fatalf("unexpected migration statuses: %+v", result.Migrations)
+	}
+}
+
 type failingSetSecretStore struct{}
 
 func (s failingSetSecretStore) Set(key, value string) error {
@@ -231,4 +306,14 @@ func hasFailedCheck(checks []SupabaseValidationCheck, key string) bool {
 		}
 	}
 	return false
+}
+
+func extractSupabaseQuery(t *testing.T, body []byte) string {
+	t.Helper()
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode request body: %v", err)
+	}
+	query, _ := payload["query"].(string)
+	return query
 }

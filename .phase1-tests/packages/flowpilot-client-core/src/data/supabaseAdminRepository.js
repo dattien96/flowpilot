@@ -13,7 +13,7 @@ function mapProject(row) {
         id: String(row.id),
         name: String(row.name ?? ""),
         description: String(row.description ?? ""),
-        platform: (row.platform ?? "multi"),
+        platform: (row.platform ?? "none"),
         repositoryUrl: String(row.repository_url ?? ""),
         directoryPath: row.directory_path ? String(row.directory_path) : null,
         status: String(row.status ?? "active"),
@@ -198,7 +198,9 @@ class SupabaseAdminRepository {
         return (data ?? []).map(mapProject);
     }
     async createProject(input) {
+        const legacyId = `project_${crypto.randomUUID().replaceAll("-", "").slice(0, 18)}`;
         const { data, error } = await this.supabase.from("projects").insert({
+            legacy_id: legacyId,
             name: input.name,
             description: input.description,
             platform: input.platform,
@@ -210,6 +212,7 @@ class SupabaseAdminRepository {
             default_model: input.defaultModel ?? null,
             default_reasoning_effort: input.defaultReasoningEffort ?? null,
             session_idle_ttl_minutes: input.sessionIdleTtlMinutes ?? 120,
+            created_by: "supabase-admin",
         }).select("*").single();
         assertNoError(error, "Unable to create project.");
         return mapProject(data);

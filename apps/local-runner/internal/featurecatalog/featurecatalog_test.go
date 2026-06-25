@@ -1,0 +1,273 @@
+package featurecatalog
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"flowpilot-runner/internal/changeledger"
+)
+
+// --- tokenize ---
+
+func TestTokenize_RemovesStopwords(t *testing.T) {
+	tokens := tokenize("the quick brown fox")
+	for _, tok := range tokens {
+		if tok == "the" {
+			t.Errorf("stopword 'the' should be removed")
+		}
+	}
+}
+
+func TestTokenize_RemovesShortTokens(t *testing.T) {
+	tokens := tokenize("a go is ok")
+	for _, tok := range tokens {
+		if len(tok) < 3 {
+			t.Errorf("token %q shorter than 3 chars should be removed", tok)
+		}
+	}
+}
+
+func TestTokenize_UniqueTokens(t *testing.T) {
+	tokens := tokenize("chat chat chat")
+	if len(tokens) != 1 {
+		t.Errorf("expected 1 unique token, got %d: %v", len(tokens), tokens)
+	}
+}
+
+func TestTokenize_SplitsOnNonAlpha(t *testing.T) {
+	tokens := tokenize("chat-ui feature")
+	found := make(map[string]bool)
+	for _, tok := range tokens {
+		found[tok] = true
+	}
+	if !found["chat"] {
+		t.Error("expected 'chat' in tokens")
+	}
+	if !found["feature"] {
+		t.Error("expected 'feature' in tokens")
+	}
+}
+
+// --- Build from FEATURE-KEYS.md ---
+
+type stubLedger struct{ keys []string }
+
+func (s *stubLedger) ListFeatures() []string { return s.keys }
+
+func writeTempFeatureKeys(t *testing.T, dir, content string) {
+	t.Helper()
+	auditDir := filepath.Join(dir, "change-audit")
+	if err := os.MkdirAll(auditDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(auditDir, "FEATURE-KEYS.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBuild_FromFeatureKeys(t *testing.T) {
+	repoDir := t.TempDir()
+	dotDir := t.TempDir()
+
+	writeTempFeatureKeys(t, repoDir, `# Feature Keys
+
+- chat-ui — Real-time chat user interface
+- auth-flow — Authentication and authorization flow
+`)
+
+	ledger := &stubLedger{}
+	cat, err := Build(repoDir, ledger, dotDir)
+	if err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+
+	f, ok := cat.Get("chat-ui")
+	if !ok {
+		t.Fatal("expected 'chat-ui' feature in catalog")
+	}
+	if !strings.Contains(f.Summary, "Real-time") {
+		t.Errorf("unexpected summary: %q", f.Summary)
+	}
+
+	_, ok = cat.Get("auth-flow")
+	if !ok {
+		t.Error("expected 'auth-flow' feature in catalog")
+	}
+}
+
+func TestBuild_PersistsNDJSON(t *testing.T) {
+	repoDir := t.TempDir()
+	dotDir := t.TempDir()
+
+	writeTempFeatureKeys(t, repoDir, "- my-feature — My great feature\n")
+	ledger := &stubLedger{}
+
+	if _, err := Build(repoDir, ledger, dotDir); err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+
+	cat2, err := LoadCatalog(dotDir)
+	if err != nil {
+		t.Fatalf("LoadCatalog error: %v", err)
+	}
+	if _, ok := cat2.Get("my-feature"); !ok {
+		t.Error("expected 'my-feature' after round-trip load")
+	}
+}
+
+func TestBuild_AddsLedgerKeysNotInFeatureKeys(t *testing.T) {
+	repoDir := t.TempDir()
+	dotDir := t.TempDir()
+
+	writeTempFeatureKeys(t, repoDir, "- chat-ui — Chat UI\n")
+	ledger := &stubLedger{keys: []string{"new-from-ledger"}}
+
+	cat, err := Build(repoDir, ledger, dotDir)
+	if err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+	if _, ok := cat.Get("new-from-ledger"); !ok {
+		t.Error("expected ledger-only key in catalog")
+	}
+}
+
+// --- ResolveFeature ---
+
+func catalogWithFeatures(features ...Feature) *Catalog {
+	c := New()
+	for _, f := range features {
+		c.Add(f)
+	}
+	return c
+}
+
+func TestResolveFeature_TopCandidateIsChatUI(t *testing.T) {
+	cat := catalogWithFeatures(
+		Feature{Key: "chat-ui", Title: "Chat UI", Keywords: tokenize("chat-ui chat ui")},
+		Feature{Key: "auth-flow", Title: "Auth Flow", Keywords: tokenize("auth-flow authentication")},
+		Feature{Key: "billing", Title: "Billing", Keywords: tokenize("billing payment invoice")},
+	)
+
+	candidates, err := ResolveFeature("update the chat ui", cat)
+	if err != nil {
+		t.Fatalf("ResolveFeature error: %v", err)
+	}
+	if len(candidates) == 0 {
+		t.Fatal("expected at least one candidate")
+	}
+	if candidates[0].Key != "chat-ui" {
+		t.Errorf("expected top candidate 'chat-ui', got %q (score %.1f)", candidates[0].Key, candidates[0].Score)
+	}
+}
+
+func TestResolveFeature_UnrelatedNLReturnsEmpty(t *testing.T) {
+	cat := catalogWithFeatures(
+		Feature{Key: "chat-ui", Title: "Chat UI", Keywords: tokenize("chat ui")},
+	)
+
+	candidates, err := ResolveFeature("xyz completely unrelated qqq", cat)
+	if err != nil {
+		t.Fatalf("ResolveFeature error: %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Errorf("expected no candidates for unrelated NL, got %d: %v", len(candidates), candidates)
+	}
+}
+
+// --- TopCandidate ---
+
+func TestTopCandidate_AboveThreshold(t *testing.T) {
+	candidates := []Candidate{
+		{Key: "chat-ui", Score: 8.0},
+		{Key: "auth-flow", Score: 3.0},
+	}
+	top, ok := TopCandidate(candidates, 5.0)
+	if !ok {
+		t.Fatal("expected TopCandidate to return true")
+	}
+	if top.Key != "chat-ui" {
+		t.Errorf("expected 'chat-ui', got %q", top.Key)
+	}
+}
+
+func TestTopCandidate_BelowThreshold(t *testing.T) {
+	candidates := []Candidate{
+		{Key: "chat-ui", Score: 2.0},
+	}
+	_, ok := TopCandidate(candidates, 5.0)
+	if ok {
+		t.Error("expected TopCandidate to return false for score below threshold")
+	}
+}
+
+func TestTopCandidate_EmptyCandidates(t *testing.T) {
+	_, ok := TopCandidate(nil, 5.0)
+	if ok {
+		t.Error("expected TopCandidate to return false for empty candidates")
+	}
+}
+
+// --- HistorySlot ---
+
+func TestHistorySlot_CurrentTruthMarker(t *testing.T) {
+	entries := []changeledger.Entry{
+		{CommitHash: "aabbccdd1234", FeatureKey: "chat-ui", SourceDocID: "Task-010", Summary: "initial chat", CommittedAt: "2024-01-15T10:00:00Z"},
+		{CommitHash: "eeff99881234", FeatureKey: "chat-ui", SourceDocID: "Task-020", Summary: "add reactions", CommittedAt: "2024-03-22T08:00:00Z"},
+	}
+
+	stub := &historyStub{entries: entries}
+	result := HistorySlot("chat-ui", stub)
+
+	if result == "" {
+		t.Fatal("expected non-empty HistorySlot output")
+	}
+	if !strings.Contains(result, "← current truth") {
+		t.Errorf("expected '← current truth' marker in output:\n%s", result)
+	}
+
+	lines := strings.Split(strings.TrimSpace(result), "\n")
+	lastLine := lines[len(lines)-1]
+	if !strings.Contains(lastLine, "← current truth") {
+		t.Errorf("'← current truth' marker should be on the last entry line, got:\n%s", lastLine)
+	}
+
+	firstEntryLine := lines[1]
+	if strings.Contains(firstEntryLine, "← current truth") {
+		t.Error("'← current truth' marker should NOT appear on first entry")
+	}
+}
+
+func TestHistorySlot_EmptyReturnsEmpty(t *testing.T) {
+	stub := &historyStub{entries: nil}
+	result := HistorySlot("nonexistent", stub)
+	if result != "" {
+		t.Errorf("expected empty string for missing feature, got %q", result)
+	}
+}
+
+func TestHistorySlot_UsesCommitHashWhenNoDocID(t *testing.T) {
+	entries := []changeledger.Entry{
+		{CommitHash: "deadbeef1234", FeatureKey: "chat-ui", SourceDocID: "", Summary: "bare commit", CommittedAt: "2024-05-01T00:00:00Z"},
+	}
+	stub := &historyStub{entries: entries}
+	result := HistorySlot("chat-ui", stub)
+	if !strings.Contains(result, "deadbeef") {
+		t.Errorf("expected commit hash prefix in output:\n%s", result)
+	}
+}
+
+type historyStub struct {
+	entries []changeledger.Entry
+}
+
+func (h *historyStub) GetFeatureHistory(key string) ([]changeledger.Entry, error) {
+	var out []changeledger.Entry
+	for _, e := range h.entries {
+		if e.FeatureKey == key {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}

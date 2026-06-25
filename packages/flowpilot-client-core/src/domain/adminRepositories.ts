@@ -118,6 +118,11 @@ export interface DirectoryValidationResult {
   reason: string;
 }
 
+export interface DirectorySelectionResult {
+  path: string;
+}
+
 export interface DirectoryRepository {
+  pickDirectory(): Promise<DirectorySelectionResult>;
   validatePath(path: string): Promise<DirectoryValidationResult>;
 }
