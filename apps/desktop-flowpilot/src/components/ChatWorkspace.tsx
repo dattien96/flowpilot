@@ -162,46 +162,22 @@ function ChatModeIntentIcon({ mode }: { mode: ChatStartMode }): React.ReactEleme
 
 function ChatStartIntentPanel(): React.ReactElement | null {
   const chatMode = useStore((s) => s.chatMode);
-  const timeline = useStore((s) => s.timeline);
   const chatStartMode = useStore((s) => s.chatStartMode);
   const chatSourceDocId = useStore((s) => s.chatSourceDocId);
-  const lastTurnInput = useStore((s) => s.lastTurnInput);
+  const runStatus = useStore((s) => s.status);
   const setChatStartMode = useStore((s) => s.setChatStartMode);
   const setChatSourceDocId = useStore((s) => s.setChatSourceDocId);
 
   if (chatMode !== "normal_chat") return null;
 
-  const hasTurns = timeline.length > 0;
-  const activeMode = hasTurns ? (lastTurnInput?.changeType ?? "normal") : chatStartMode;
-  const activeDocId = hasTurns ? (lastTurnInput?.sourceDocId ?? "") : chatSourceDocId;
-
-  if (hasTurns) {
-    if (activeMode === "normal") return null;
-    return (
-      <section className="workflow-rail workflow-rail-right chat-start-mode-panel">
-        <div className="project-rail-head">
-          <div>
-            <label>Declared Intent</label>
-            <p>This chat is locked to the selected flow-gate intent.</p>
-          </div>
-        </div>
-        <div className="chat-start-mode-summary">
-          <div className={`chat-start-mode-chip is-${activeMode}`}>
-            <span className="chat-start-mode-icon"><ChatModeIntentIcon mode={activeMode} /></span>
-            <span>{activeMode === "task" ? "Task" : "Bug"}</span>
-          </div>
-          {activeDocId ? <div className="chat-start-mode-docid">{activeDocId}</div> : <div className="chat-start-mode-docid muted">No document id declared</div>}
-        </div>
-      </section>
-    );
-  }
+  const isRunning = runStatus === "running";
 
   return (
     <section className="workflow-rail workflow-rail-right chat-start-mode-panel">
       <div className="project-rail-head">
         <div>
           <label>Chat Intent</label>
-          <p>Declare Task or Bug before the first turn so the runner can mark this chat without relying on response text.</p>
+          <p>Select the intent type for this chat. Disabled while the AI is running.</p>
         </div>
       </div>
       <div className="tab-list tab-list-three" role="tablist" aria-label="Chat start intent">
@@ -215,7 +191,8 @@ function ChatStartIntentPanel(): React.ReactElement | null {
             type="button"
             role="tab"
             aria-selected={chatStartMode === item.mode}
-            className={`tab chat-start-mode-tab ${chatStartMode === item.mode ? "active" : ""}`}
+            className={`tab chat-start-mode-tab is-${item.mode} ${chatStartMode === item.mode ? "active" : ""}`}
+            disabled={isRunning}
             onClick={() => setChatStartMode(item.mode)}
           >
             <span className="chat-start-mode-icon"><ChatModeIntentIcon mode={item.mode} /></span>
@@ -228,6 +205,7 @@ function ChatStartIntentPanel(): React.ReactElement | null {
           <label>{chatStartMode === "task" ? "Task ID (optional)" : "Bug ID (optional)"}</label>
           <input
             value={chatSourceDocId}
+            disabled={isRunning}
             placeholder={chatStartMode === "task" ? "Task-NNN (optional)" : "BUG-NNN (optional)"}
             onChange={(event) => setChatSourceDocId(event.target.value)}
           />
@@ -345,12 +323,9 @@ export function ChatWorkspace({
   const workspaceMainView = useStore((s) => s.workspaceMainView);
   const chatMode = useStore((s) => s.chatMode);
   const chatStartMode = useStore((s) => s.chatStartMode);
-  const timeline = useStore((s) => s.timeline);
-  const lastTurnInput = useStore((s) => s.lastTurnInput);
   const runStatus = useStore((s) => s.status);
 
-  const hasTurns = timeline.length > 0;
-  const activeChatSubMode = hasTurns ? (lastTurnInput?.changeType ?? "normal") : chatStartMode;
+  const activeChatSubMode = chatStartMode;
   const chatAreaClass =
     chatMode === "workflow_step_auto"
       ? "chat-area-flow"

@@ -1263,6 +1263,22 @@ input {
 .chat-start-mode-tab {
   align-items: center;
   gap: 6px;
+  border: 1px solid transparent;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+.chat-start-mode-tab.active.is-task {
+  border-color: rgba(64, 196, 99, 0.6);
+  background: rgba(64, 196, 99, 0.12);
+  color: rgba(64, 196, 99, 0.95);
+}
+.chat-start-mode-tab.active.is-bugfix {
+  border-color: rgba(240, 72, 72, 0.6);
+  background: rgba(240, 72, 72, 0.12);
+  color: rgba(240, 72, 72, 0.95);
+}
+.chat-start-mode-tab:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 .chat-start-mode-icon {
   display: inline-flex;
