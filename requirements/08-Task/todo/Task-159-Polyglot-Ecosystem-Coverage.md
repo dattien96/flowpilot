@@ -195,6 +195,27 @@ The AI cannot gut the test undetected — works in coarse mode and named-test mo
 
 ## 4. Exact Change
 
+### Platform UI configuration requirements
+
+Only iOS requires additional project-level fields because `xcodebuild test` will not run without an explicit `-scheme` and `-destination` — these cannot be inferred without parsing Xcode project files. Every other platform either has a universally runnable default command or delegates configuration to a file already present in the project (`package.json`, `build.gradle`, `angular.json`).
+
+| Platform | Test command | Extra fields needed? | Reason |
+|---|---|---|---|
+| **android** | `./gradlew test` | ✗ | Inferred from `build.gradle` + `gradlew` |
+| **ios** | `xcodebuild test -scheme X -destination 'Y'` | **✓ Scheme + Destination** | Command fails without these; not inferable from project files |
+| **kmm** | `./gradlew test` | ✗ | Same Gradle detection as Android |
+| **react-native** | `npm test` | ✗ | Inferred from `package.json` |
+| **flutter** | `flutter test` | ✗ | Inferred from `pubspec.yaml` |
+| **reactjs** | `npm test` | ✗ | Inferred from `package.json` |
+| **vuejs** | `npm test` | ✗ | Inferred from `package.json` |
+| **angularjs** | `npx ng test --watch=false` | ✗ | Inferred from `package.json` + `angular.json` |
+| **golang** | `go test -v ./...` | ✗ | Inferred from `go.mod` |
+| **java** | `mvn test -q` or `./gradlew test` | ✗ | Inferred from `pom.xml` or `build.gradle` |
+| **python** | `pytest -v` | ✗ | Inferred from `pytest.ini` / `pyproject.toml` |
+| **nodejs** | `npm test` | ✗ | Inferred from `package.json` |
+
+The iOS fields (`xcodeScheme`, `xcodeDestination`) are stored in the `projects` Supabase table and written to `.flowpilot/settings/test-config.json` by the runner on engine init — no manual file creation required.
+
 ### Current ecosystem coverage
 
 | Ecosystem | Auto-detect today | r-reg fires | Named tests | IsTestFile |
