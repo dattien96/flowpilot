@@ -16,6 +16,14 @@ key: vector -> id -> id cua file
 get duoc file thi se biet ben trong summary change for feat nhu nao
 De lam dc cai nay thi can co flow va doc chuan format
 
+
+**NOTE: IGNORE now, use Task-157 instead**
+for this job, CA is enough, so we don't need Plane-A RAG. The logic chain:
+
+RAG (SD-10) was imagined to supply the "why" via semantic recall of past chat summaries. But the r-ca gate forces a CA note for every task/bugfix (under gate_mode: enforce), and that CA note is the durable, git-synced "why" summary — Scope, Completed, and especially Residual Notes. So the "why" is already captured deterministically in git. T-7 just surfaces it. No embeddings, no semantic index needed.
+
+One honest caveat I baked into the doc so future-you isn't surprised: under gate_mode: warn, r-ca is downgraded, so a CA note can be absent. That's exactly why Tier 1 (commit subject) stays always-on and Tier 2 degrades gracefully. And I left a follow-up: if CA notes turn out to be consistently missing in practice, that's the signal to reconsider Plane-A RAG — but not now. RAG/SD-10 remains a separate, broader track (cross-feature decision recall), explicitly out of scope
+
 ---
 
 ## 1. Core Concept
