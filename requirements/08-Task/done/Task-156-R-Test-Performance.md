@@ -138,9 +138,11 @@ git status      # should be clean
 
 ---
 
-### E2E-1 â€” Stale baseline triggers refresh when HEAD changes
+### (Passed) E2E-1 â€” Stale baseline triggers refresh when HEAD changes
 
 **Goal:** verify that `RefreshBaselineIfStale` re-captures when HEAD changes, and that the new baseline records the current HEAD SHA and `suite_passed=true`.
+
+Tested: test_baseline.json content update with latest commit Hash on each new chat run.
 
 1. Delete any existing baseline:
    ```powershell
@@ -158,7 +160,7 @@ git status      # should be clean
 
 ---
 
-### E2E-2 â€” Unchanged HEAD reuses cached baseline (no re-run)
+### (Passed) E2E-2 â€” Unchanged HEAD reuses cached baseline (no re-run)
 
 **Goal:** verify that `RefreshBaselineIfStale` returns the cached baseline without re-running tests when HEAD is unchanged.
 
@@ -169,7 +171,7 @@ git status      # should be clean
 
 ---
 
-### E2E-3 â€” Exit-code regression detection â€” coarse mode (sentinel)
+### (Passed) E2E-3 â€” Exit-code regression detection â€” coarse mode (sentinel)
 
 **Goal:** verify that a panicking suite triggers `r-reg` with the `”suite_regressed”` sentinel when no named test can be parsed from stdout.
 
@@ -181,7 +183,7 @@ git status      # should be clean
 
 ---
 
-### E2E-4 â€” Named regression detection (structured output)
+### (Passed) E2E-4 â€” Named regression detection (structured output)
 
 **Goal:** verify that a normal test failure (not a panic) produces named test IDs, not the coarse sentinel.
 
@@ -192,14 +194,18 @@ git status      # should be clean
 
 ---
 
-### E2E-5 â€” Explicit `test_command` in TestConfig takes precedence
+### (Passed) E2E-5 â€” Explicit `test_command` in TestConfig takes precedence
 
 **Goal:** verify that `.flowpilot/settings/test-config.json` overrides the auto-detected command.
+
+``
+This one described that : if we override the file test-config.json to override how test run. For example we said only run test for FUn A -> then if fun B failed, Flowpilot can not detect it
+``
 
 1. Create the config:
    ```powershell
    New-Item -ItemType Directory -Force .flowpilot\settings | Out-Null
-   '{“test_command”: “go test -v -run TestAdd ./...”}' | Set-Content .flowpilot\settings\test-config.json
+   '{"test_command": "go test -v -run TestAdd ./..."}' | Set-Content .flowpilot\settings\test-config.json
    ```
 2. Delete the baseline and open a new chat. After baseline capture:
    ```powershell
@@ -217,7 +223,7 @@ git status      # should be clean
 
 ---
 
-### E2E-6 â€” No test command â†' oracle disabled state
+### (Passed) E2E-6 â€” No test command â†' oracle disabled state
 
 **Goal:** verify that a project with no detectable test runner surfaces an explicit “regression check unavailable” state rather than silently passing.
 
