@@ -1170,7 +1170,7 @@ Run the same scenario but bind a freshly-scaffolded project where `requirements/
 
 ---
 
-### E2E-15 — Declared Task mode survives a simple follow-up prompt
+### (Passed) E2E-15 — Declared Task mode survives a simple follow-up prompt
 
 > **Task-114 coverage:** this checks the stored `ChangeType` path, not the old final-message regex path. The prompt can be plain text like "continue" or "please keep going" with no `Task-` / `Bug-` mention, because the chat start UI already declared the run as Task or Bug before the first turn.
 
@@ -1179,7 +1179,7 @@ Run the same scenario but bind a freshly-scaffolded project where `requirements/
 1. Start a new chat and select **Task** in the chat start intent UI.
 2. Leave the ID blank or enter a normal Task ID such as `Task-114`.
 3. Send a simple follow-up prompt like:
-   > "continue"
+   > "implement feature minus"
 4. Let the assistant respond without repeating `Task-` or `Bug-` in its final message.
 
 **What to observe:**
@@ -1195,7 +1195,7 @@ Run the same scenario but bind a freshly-scaffolded project where `requirements/
 
 ---
 
-### E2E-16 — Declared Bug mode survives a simple follow-up prompt
+### (Passed) E2E-16 — Declared Bug mode survives a simple follow-up prompt
 
 > **Task-114 coverage:** this is the Bug-side mirror of E2E-15. It proves the stored `ChangeType` path works for Bug chats too, even when the next prompt is just "continue" and the final assistant message does not mention `Task-` or `Bug-`.
 
@@ -1203,8 +1203,8 @@ Run the same scenario but bind a freshly-scaffolded project where `requirements/
 
 1. Start a new chat and select **Bug** in the chat start intent UI.
 2. Leave the ID blank or enter a normal Bug ID such as `BUG-141`.
-3. Send a simple follow-up prompt like:
-   > "continue"
+3. Send a simple follow-up prompt like: **DONT USE bug or fix char**
+   > "There's a small issue: the helper comment at the top of `calc.go` is misleading. See it"
 4. Let the assistant respond without repeating `Task-` or `Bug-` in its final message.
 
 **What to observe:**
