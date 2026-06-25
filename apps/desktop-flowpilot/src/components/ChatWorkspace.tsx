@@ -278,16 +278,123 @@ function AccountSwitchModal(): React.ReactElement | null {
   );
 }
 
+const GATE_DECISION_OPTIONS: { value: string; label: string; description: string }[] = [
+  {
+    value: "keep-test-fix-code",
+    label: "Fix the code",
+    description: "Keep the test as the source of truth and repair the code until it passes.",
+  },
+  {
+    value: "suggest-requirement-change",
+    label: "Suggest requirement change",
+    description: "Have the AI propose a requirement update that would justify this behavior.",
+  },
+  {
+    value: "custom",
+    label: "Custom instruction",
+    description: "Type your own direction for the AI.",
+  },
+];
+
 function GateBlockModal(): React.ReactElement | null {
   const gateBlock = useStore((s) => s.gateBlock);
   const dismissGateBlock = useStore((s) => s.dismissGateBlock);
+  const submitGateDecision = useStore((s) => s.submitGateDecision);
+  const [customText, setCustomText] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
   if (!gateBlock) return null;
 
-  // The runner prefixes the message with "Flow gate: "; strip it for the body since
-  // the modal title already says "Flow gate".
   const detail = gateBlock.message.replace(/^Flow gate:\s*/i, "");
+  const hasOptions = Array.isArray(gateBlock.options) && gateBlock.options.length > 0;
 
+  // r-reg decision card (Task-155)
+  if (hasOptions) {
+    const handleOption = async (value: string) => {
+      if (submitting) return;
+      if (value === "custom" && !customText.trim()) return;
+      setSubmitting(true);
+      await submitGateDecision(value, value === "custom" ? customText : undefined);
+    };
+
+    const tests =
+      gateBlock.regressedTests
+        ?.filter((t) => t !== "suite_regressed")
+        .slice(0, 5)
+        .join(", ") ?? "";
+    const coarse = gateBlock.regressedTests?.includes("suite_regressed") && !tests;
+
+    return (
+      <div
+        className="account-switch-overlay"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Regression gate — choose how to proceed"
+      >
+        <div className="account-switch-modal gate-block-modal gate-decision-card" onClick={(e) => e.stopPropagation()}>
+          <p className="gate-block-title">
+            <span className="gate-block-icon" aria-hidden="true">⛔</span>
+            Regression gate — tests broke
+          </p>
+          {coarse ? (
+            <p className="gate-block-detail">The test suite exited with errors (no named tests identified).</p>
+          ) : tests ? (
+            <p className="gate-block-detail">
+              Previously-passing tests are now failing: <strong>{tests}</strong>
+              {(gateBlock.regressedTests?.length ?? 0) > 5 ? " …" : ""}
+            </p>
+          ) : (
+            <p className="gate-block-detail">{detail}</p>
+          )}
+          <p className="gate-block-hint">How would you like to proceed?</p>
+          <div className="option-list">
+            {GATE_DECISION_OPTIONS.map((opt) => (
+              <div key={opt.value}>
+                <button
+                  type="button"
+                  className="option"
+                  disabled={submitting}
+                  onClick={() => { if (opt.value !== "custom") void handleOption(opt.value); }}
+                >
+                  <span className="option-body">
+                    <span className="option-label">{opt.label}</span>
+                    <span className="option-desc">{opt.description}</span>
+                  </span>
+                </button>
+                {opt.value === "custom" && (
+                  <div className="other-row">
+                    <input
+                      className="text-input"
+                      placeholder="Type your instruction…"
+                      value={customText}
+                      disabled={submitting}
+                      onChange={(e) => setCustomText(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter" && customText.trim()) void handleOption("custom"); }}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      disabled={submitting || !customText.trim()}
+                      onClick={() => void handleOption("custom")}
+                    >
+                      Submit
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+          <div className="account-switch-actions">
+            <button type="button" className="btn btn-ghost" disabled={submitting} onClick={dismissGateBlock}>
+              Dismiss
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Plain gate block (non-r-reg violations)
   return (
     <div
       className="account-switch-overlay"

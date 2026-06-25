@@ -5,6 +5,141 @@ exports.Timeline = Timeline;
 const jsx_runtime_1 = require("react/jsx-runtime");
 const react_1 = require("react");
 const store_1 = require("@/state/store");
+const HEADING_TAGS = ["h1", "h2", "h3", "h4", "h5", "h6"];
+function renderInline(text, keyPrefix) {
+    const parts = [];
+    const re = /(`[^`]+`|\*\*[^*\n]+\*\*|__[^_\n]+__|(?<!\*)\*(?!\*)([^*\n]+)(?<!\*)\*(?!\*)|(?<!_)_(?!_)([^_\n]+)(?<!_)_(?!_))/g;
+    let last = 0;
+    let m;
+    let idx = 0;
+    while ((m = re.exec(text)) !== null) {
+        if (m.index > last)
+            parts.push(text.slice(last, m.index));
+        const raw = m[0];
+        const key = `${keyPrefix}-${idx++}`;
+        if (raw.startsWith("`")) {
+            parts.push((0, jsx_runtime_1.jsx)("code", { className: "md-icode", children: raw.slice(1, -1) }, key));
+        }
+        else if (raw.startsWith("**") || raw.startsWith("__")) {
+            parts.push((0, jsx_runtime_1.jsx)("strong", { children: raw.slice(2, -2) }, key));
+        }
+        else {
+            parts.push((0, jsx_runtime_1.jsx)("em", { children: raw.slice(1, -1) }, key));
+        }
+        last = m.index + raw.length;
+    }
+    if (last < text.length)
+        parts.push(text.slice(last));
+    return parts.length === 0 ? "" : parts.length === 1 && typeof parts[0] === "string" ? parts[0] : (0, jsx_runtime_1.jsx)(jsx_runtime_1.Fragment, { children: parts });
+}
+function parseMdBlocks(text) {
+    const blocks = [];
+    const lines = text.split("\n");
+    let i = 0;
+    while (i < lines.length) {
+        const line = lines[i];
+        // Fenced code block
+        const fenceMatch = /^(`{3,}|~{3,})(\S*)/.exec(line);
+        if (fenceMatch) {
+            const fence = fenceMatch[1];
+            const lang = fenceMatch[2] ?? "";
+            const codeLines = [];
+            i++;
+            while (i < lines.length && !lines[i].startsWith(fence)) {
+                codeLines.push(lines[i]);
+                i++;
+            }
+            blocks.push({ kind: "code", lang, content: codeLines.join("\n") });
+            i++;
+            continue;
+        }
+        // ATX heading
+        const hm = /^(#{1,6})\s+(.*)$/.exec(line);
+        if (hm) {
+            blocks.push({ kind: "heading", level: hm[1].length, text: hm[2] });
+            i++;
+            continue;
+        }
+        // Horizontal rule (---, ***, ___)
+        if (/^[-*_]{3,}\s*$/.test(line) && new Set(line.trim().split("")).size === 1) {
+            blocks.push({ kind: "hr" });
+            i++;
+            continue;
+        }
+        // Table: first line starts with |
+        if (line.trimStart().startsWith("|")) {
+            const tableLines = [];
+            while (i < lines.length && lines[i].trimStart().startsWith("|")) {
+                tableLines.push(lines[i]);
+                i++;
+            }
+            const parseRow = (r) => r.split("|").slice(1, -1).map((c) => c.trim());
+            const isSeparator = (r) => /^[\s|:-]+$/.test(r);
+            const hasHeader = tableLines.length >= 2 && isSeparator(tableLines[1]);
+            const headers = parseRow(tableLines[0]);
+            const dataRows = (hasHeader ? tableLines.slice(2) : tableLines.slice(1)).map(parseRow);
+            blocks.push({ kind: "table", headers, rows: dataRows });
+            continue;
+        }
+        // Unordered list
+        if (/^[ \t]*[-*+] /.test(line)) {
+            const items = [];
+            while (i < lines.length && /^[ \t]*[-*+] /.test(lines[i])) {
+                items.push(lines[i].replace(/^[ \t]*[-*+] /, ""));
+                i++;
+            }
+            blocks.push({ kind: "list", items });
+            continue;
+        }
+        // Empty line
+        if (line.trim() === "") {
+            i++;
+            continue;
+        }
+        // Paragraph — collect until blank or special line
+        const paraLines = [];
+        while (i < lines.length &&
+            lines[i].trim() !== "" &&
+            !/^(`{3,}|~{3,})/.test(lines[i]) &&
+            !lines[i].trimStart().startsWith("|") &&
+            !/^#{1,6}\s/.test(lines[i]) &&
+            !/^[ \t]*[-*+] /.test(lines[i]) &&
+            !/^[-*_]{3,}\s*$/.test(lines[i])) {
+            paraLines.push(lines[i]);
+            i++;
+        }
+        if (paraLines.length > 0) {
+            blocks.push({ kind: "paragraph", text: paraLines.join("\n") });
+        }
+    }
+    return blocks;
+}
+function MarkdownContent({ text }) {
+    const blocks = parseMdBlocks(text);
+    return ((0, jsx_runtime_1.jsx)("div", { className: "md-body", children: blocks.map((block, bi) => {
+            const key = `b${bi}`;
+            if (block.kind === "code") {
+                return ((0, jsx_runtime_1.jsx)("pre", { className: "md-pre", children: (0, jsx_runtime_1.jsx)("code", { children: block.content }) }, key));
+            }
+            if (block.kind === "heading") {
+                const Tag = HEADING_TAGS[Math.min(block.level - 1, 5)];
+                return (0, jsx_runtime_1.jsx)(Tag, { className: `md-h md-h${block.level}`, children: renderInline(block.text, key) }, key);
+            }
+            if (block.kind === "hr") {
+                return (0, jsx_runtime_1.jsx)("hr", { className: "md-hr" }, key);
+            }
+            if (block.kind === "table") {
+                return ((0, jsx_runtime_1.jsx)("div", { className: "md-table-wrap", children: (0, jsx_runtime_1.jsxs)("table", { className: "md-table", children: [block.headers.length > 0 && ((0, jsx_runtime_1.jsx)("thead", { children: (0, jsx_runtime_1.jsx)("tr", { children: block.headers.map((h, hi) => (0, jsx_runtime_1.jsx)("th", { children: renderInline(h, `${key}-h${hi}`) }, hi)) }) })), (0, jsx_runtime_1.jsx)("tbody", { children: block.rows.map((row, ri) => ((0, jsx_runtime_1.jsx)("tr", { children: row.map((cell, ci) => (0, jsx_runtime_1.jsx)("td", { children: renderInline(cell, `${key}-r${ri}c${ci}`) }, ci)) }, ri))) })] }) }, key));
+            }
+            if (block.kind === "list") {
+                return ((0, jsx_runtime_1.jsx)("ul", { className: "md-ul", children: block.items.map((item, ii) => (0, jsx_runtime_1.jsx)("li", { children: renderInline(item, `${key}-i${ii}`) }, ii)) }, key));
+            }
+            if (block.kind === "paragraph") {
+                return (0, jsx_runtime_1.jsx)("p", { className: "md-p", children: renderInline(block.text, key) }, key);
+            }
+            return null;
+        }) }));
+}
 const TIMELINE_PAGE_SIZE = 6;
 function countPrompts(timeline) {
     return timeline.filter((item) => item.kind === "prompt").length;
@@ -28,6 +163,7 @@ function sliceTimelineFromPrompt(timeline, visiblePromptCount) {
 }
 const ApprovalCard_1 = require("./ApprovalCard");
 const QuestionCard_1 = require("./QuestionCard");
+const TranslatePopup_1 = require("./TranslatePopup");
 const shortName = (path) => path.split("/").pop() ?? path;
 const TOOL_ICON = { running: "⏳", success: "✓", failed: "✕", cancelled: "⊘" };
 const FILE_ICON = { created: "＋", modified: "✎", deleted: "－", renamed: "→" };
@@ -138,7 +274,7 @@ function buildTimelineGroups(timeline) {
 function Item({ it }) {
     switch (it.kind) {
         case "assistant":
-            return ((0, jsx_runtime_1.jsxs)(CopyBubble, { text: it.text, className: `bubble assistant ${it.finalized ? "final" : "streaming"}`, children: [it.text, !it.finalized && (0, jsx_runtime_1.jsx)("span", { className: "caret", children: "\u258C" })] }));
+            return ((0, jsx_runtime_1.jsxs)(CopyBubble, { text: it.text, className: `bubble assistant ${it.finalized ? "final" : "streaming"}`, children: [(0, jsx_runtime_1.jsx)(MarkdownContent, { text: it.text }), !it.finalized && (0, jsx_runtime_1.jsx)("span", { className: "caret", children: "\u258C" })] }));
         case "prompt":
             return ((0, jsx_runtime_1.jsxs)("div", { className: "prompt-stack", children: [it.attachments && it.attachments.length > 0 && ((0, jsx_runtime_1.jsx)("div", { className: "prompt-attachments", "aria-label": `${it.attachments.length} image attachment(s)`, children: it.attachments.map((att) => att.previewUrl ? ((0, jsx_runtime_1.jsx)("img", { className: "prompt-attachment-thumb", src: att.previewUrl, alt: att.originalName, title: att.originalName }, att.id)) : ((0, jsx_runtime_1.jsxs)("span", { className: "prompt-attachment-chip", title: att.originalName, children: ["\uD83D\uDDBC ", att.originalName] }, att.id))) })), (0, jsx_runtime_1.jsx)(CopyBubble, { text: it.text, className: "bubble prompt", children: it.text }), it.selectedSkills && it.selectedSkills.length > 0 && ((0, jsx_runtime_1.jsx)(PromptSkillsSummary, { skills: it.selectedSkills }))] }));
         case "thinking":
@@ -167,6 +303,7 @@ function Timeline() {
     const backToMainRun = (0, store_1.useStore)((s) => s.backToMainRun);
     const focusAgentRun = (0, store_1.useStore)((s) => s.focusAgentRun);
     const endRef = (0, react_1.useRef)(null);
+    const timelineRef = (0, react_1.useRef)(null);
     const totalPromptCount = countPrompts(timeline);
     const [visiblePromptCount, setVisiblePromptCount] = (0, react_1.useState)(TIMELINE_PAGE_SIZE);
     (0, react_1.useEffect)(() => {
@@ -183,9 +320,15 @@ function Timeline() {
     const runningAgentCount = agentRuns.filter((run) => run.status === "running" || run.status === "waiting_approval" || run.status === "waiting_question").length;
     const showAgentHeader = shouldShowAgentTimelineHeader(activeAgentRunId, mainRunId, agentRuns.length);
     (0, react_1.useEffect)(() => {
-        endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+        // Defer scroll one rAF so any layout shift from pagination (e.g. "Load earlier"
+        // button inserted at the top when a gate reprompt pushes totalPromptCount over
+        // TIMELINE_PAGE_SIZE) is fully committed before we measure the scroll target. (BUG-146)
+        const id = requestAnimationFrame(() => {
+            endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+        });
+        return () => cancelAnimationFrame(id);
     }, [timeline]);
-    return ((0, jsx_runtime_1.jsxs)("div", { className: `timeline ${activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId ? "timeline-agent-focused" : ""}`, children: [activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId ? ((0, jsx_runtime_1.jsxs)("div", { className: "crumb ring", children: [(0, jsx_runtime_1.jsx)("button", { type: "button", className: "crumb-backbtn", onClick: backToMainRun, children: "\u2190 Back to main agent" }), (0, jsx_runtime_1.jsxs)("span", { className: "crumb-path", children: [(0, jsx_runtime_1.jsx)("b", { children: "main" }), " ", (0, jsx_runtime_1.jsx)("span", { style: { opacity: 0.5 }, children: "\u203A" }), " ", (0, jsx_runtime_1.jsx)("span", { className: "here", children: agentRuns.find(r => r.runId === activeAgentRunId)?.agentName ?? activeAgentRunId })] }), (0, jsx_runtime_1.jsxs)("span", { className: "crumb-path", style: { marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: "6px" }, children: [(0, jsx_runtime_1.jsx)("span", { className: "pulse" }), " live child run"] })] })) : null, timeline.length === 0 && (0, jsx_runtime_1.jsx)("div", { className: "empty", children: "Select a project, choose your chat controls, and send a prompt to begin." }), hiddenPromptCount > 0 && ((0, jsx_runtime_1.jsxs)("button", { type: "button", className: "load-earlier-btn", onClick: () => setVisiblePromptCount((current) => Math.min(totalPromptCount, current + TIMELINE_PAGE_SIZE)), children: ["\u2191 Load earlier prompts (", hiddenPromptCount, ")"] })), timelineGroups.map((it) => ((0, jsx_runtime_1.jsx)(Item, { it: it }, it.id))), (!activeAgentRunId || activeAgentRunId === mainRunId) &&
+    return ((0, jsx_runtime_1.jsxs)("div", { ref: timelineRef, className: `timeline ${activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId ? "timeline-agent-focused" : ""}`, children: [(0, jsx_runtime_1.jsx)(TranslatePopup_1.TranslatePopup, { containerRef: timelineRef }), activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId ? ((0, jsx_runtime_1.jsxs)("div", { className: "crumb ring", children: [(0, jsx_runtime_1.jsx)("button", { type: "button", className: "crumb-backbtn", onClick: backToMainRun, children: "\u2190 Back to main agent" }), (0, jsx_runtime_1.jsxs)("span", { className: "crumb-path", children: [(0, jsx_runtime_1.jsx)("b", { children: "main" }), " ", (0, jsx_runtime_1.jsx)("span", { style: { opacity: 0.5 }, children: "\u203A" }), " ", (0, jsx_runtime_1.jsx)("span", { className: "here", children: agentRuns.find(r => r.runId === activeAgentRunId)?.agentName ?? activeAgentRunId })] }), (0, jsx_runtime_1.jsxs)("span", { className: "crumb-path", style: { marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: "6px" }, children: [(0, jsx_runtime_1.jsx)("span", { className: "pulse" }), " live child run"] })] })) : null, timeline.length === 0 && (0, jsx_runtime_1.jsx)("div", { className: "empty", children: "Select a project, choose your chat controls, and send a prompt to begin." }), hiddenPromptCount > 0 && ((0, jsx_runtime_1.jsxs)("button", { type: "button", className: "load-earlier-btn", onClick: () => setVisiblePromptCount((current) => Math.min(totalPromptCount, current + TIMELINE_PAGE_SIZE)), children: ["\u2191 Load earlier prompts (", hiddenPromptCount, ")"] })), timelineGroups.map((it) => ((0, jsx_runtime_1.jsx)(Item, { it: it }, it.id))), (!activeAgentRunId || activeAgentRunId === mainRunId) &&
                 agentRuns
                     .filter((run) => run.status === "running" || run.status === "waiting_approval" || run.status === "waiting_question")
                     .map((run) => {
@@ -193,7 +336,7 @@ function Timeline() {
                     const roleClass = lowerName.includes("coder") ? "coder" : lowerName.includes("review") ? "reviewer" : lowerName.includes("test") ? "tester" : "";
                     const roleColor = roleClass === "coder" ? "var(--role-coder)" : roleClass === "reviewer" ? "var(--role-reviewer)" : roleClass === "tester" ? "var(--role-tester)" : "var(--text)";
                     const isWaiting = run.status === "waiting_approval" || run.status === "waiting_question";
-                    const providerName = lowerName.includes("coder") ? "Claude" : "Codex";
+                    const providerName = (0, store_1.providerLabel)(run.providerKey ?? "");
                     return ((0, jsx_runtime_1.jsxs)("div", { className: `abanner ${roleClass}`, children: [(0, jsx_runtime_1.jsx)("span", { className: `pulse ${isWaiting ? "amber" : ""}` }), (0, jsx_runtime_1.jsxs)("span", { children: [(0, jsx_runtime_1.jsx)("b", { style: { color: roleColor }, children: run.agentName }), " \u00B7 ", providerName, " \u00B7 ", run.status, run.agentStatus && (0, jsx_runtime_1.jsxs)("span", { style: { color: "var(--text-dim)" }, children: [" \u2014 ", run.agentStatus] })] }), (0, jsx_runtime_1.jsx)("button", { type: "button", className: "abanner-open-btn", onClick: () => void focusAgentRun(run.runId), children: "Open \u2197" })] }, run.runId));
                 }), (0, jsx_runtime_1.jsx)("div", { ref: endRef })] }));
 }

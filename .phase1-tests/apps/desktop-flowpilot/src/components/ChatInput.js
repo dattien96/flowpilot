@@ -207,7 +207,19 @@ function ChatInput() {
         return frag;
     }, [isChatMode, text, cursorPos, slashDismissedIndex]);
     const slashQuery = slashFragment?.query ?? null;
-    const showPicker = isChatMode && !!selectedProvider && (skillPickerOpen || slashFragment !== null);
+    // Slash sub-commands are namespaced by the command letter after "/": "/a…" (or "/agent")
+    // opens the spawn-agent UI, "/s…" (or "/skill") opens the skill picker. A bare "/" (or any
+    // other leading letter) opens nothing — a command letter is required so "/" no longer pops
+    // the skill UI on its own (BUG-134). The remainder after "/s" is the skill search term.
+    const slashCommand = slashFragment === null
+        ? null
+        : slashFragment.query[0] === "a"
+            ? "agent"
+            : slashFragment.query[0] === "s"
+                ? "skill"
+                : null;
+    const showAgentCommand = isChatMode && !!selectedProvider && slashCommand === "agent";
+    const showPicker = isChatMode && !!selectedProvider && (skillPickerOpen || slashCommand === "skill");
     const totalSkills = skills.length;
     const filtered = (0, react_1.useMemo)(() => {
         if (!showPicker)
@@ -281,9 +293,13 @@ function ChatInput() {
     // Keep pickerSearch in sync with the slash query so typing /foo in the textarea
     // still drives the in-picker filter in real time.
     (0, react_1.useEffect)(() => {
-        if (slashQuery !== null)
-            setPickerSearch(slashQuery);
-    }, [slashQuery]);
+        if (slashCommand !== "skill" || slashQuery === null)
+            return;
+        // The skill picker lives under the "/s" namespace, so the leading "s" (or the full
+        // "skill" word) is the command, not a search term; everything after it filters the list.
+        const term = slashQuery === "s" || slashQuery === "skill" ? "" : slashQuery.slice(1);
+        setPickerSearch(term);
+    }, [slashQuery, slashCommand]);
     // Clear the search box whenever the picker is dismissed.
     (0, react_1.useEffect)(() => {
         if (!showPicker)
@@ -320,10 +336,15 @@ function ChatInput() {
     const focusedAgentName = childRunFocused
         ? agentRuns.find((run) => run.runId === activeAgentRunId)?.agentName ?? activeAgentRunId
         : undefined;
+    const connectedProviders = (0, react_1.useMemo)(() => new Set(providerAccounts.filter((account) => account.authStatus === "connected").map((account) => account.providerKey)), [providerAccounts]);
+    const selectedProviderConnected = !!selectedProvider && connectedProviders.has(selectedProvider);
     const blocked = status === "running" || status === "waiting_approval" || status === "waiting_question";
+    // A running child spawned with wait=true blocks the main run even when the main has no turn
+    // of its own in flight (e.g. a UI wait=true spawn) — the send button must reflect that (BUG-133).
+    const hasBlockingChild = agentRuns.some((r) => r.waitForResult && (r.status === "running" || r.status === "waiting_approval" || r.status === "waiting_question"));
     const usageLine = (0, react_1.useMemo)(() => usageSummaryLine(selectedProvider, displayedTokenUsage), [displayedTokenUsage, selectedProvider]);
     const canSend = isChatMode
-        ? hasSelectedProject && !!selectedProvider && !blocked && !childRunFocused && text.trim().length > 0 && !showPicker
+        ? hasSelectedProject && selectedProviderConnected && !blocked && !hasBlockingChild && !childRunFocused && text.trim().length > 0 && !showPicker && !showAgentCommand
         : hasSelectedProject &&
             (launchMode === "workflow" ? !!selectedWorkflowId : !!selectedStepId) &&
             !blocked &&
@@ -360,6 +381,27 @@ function ChatInput() {
     };
     const removeSkill = (name) => {
         setSelectedSkills((prev) => prev.filter((s) => s !== name));
+    };
+    // "/a" command: strip the slash fragment from the prompt and open the spawn-agent
+    // panel (the same UI as the right sidebar), then restore the caret. (Task-087)
+    const triggerAgentSlash = () => {
+        if (slashFragment === null)
+            return;
+        const before = text.slice(0, slashFragment.index);
+        const after = text.slice(cursorPos);
+        const newCursor = slashFragment.index;
+        setText(before + after);
+        setCursorPos(newCursor);
+        setSlashDismissedIndex(null);
+        setSkillPickerOpen(false);
+        setTimeout(() => {
+            if (textAreaRef.current) {
+                textAreaRef.current.selectionStart = newCursor;
+                textAreaRef.current.selectionEnd = newCursor;
+                textAreaRef.current.focus();
+            }
+        }, 0);
+        openAgentSpawnGuide();
     };
     const onPaste = (e) => {
         if (!supportsVision || !isChatMode || blocked)
@@ -448,6 +490,19 @@ function ChatInput() {
         await sendPrompt(trimmed, isChatMode ? selectedSkills : undefined, wireAttachments);
     };
     const onKeyDown = (e) => {
+        if (showAgentCommand) {
+            if (e.key === "Enter") {
+                e.preventDefault();
+                triggerAgentSlash();
+                return;
+            }
+            if (e.key === "Escape") {
+                e.preventDefault();
+                if (slashFragment !== null)
+                    setSlashDismissedIndex(slashFragment.index);
+                return;
+            }
+        }
         if (showPicker && slashFragment !== null) {
             if (e.key === "ArrowDown") {
                 e.preventDefault();
@@ -484,28 +539,34 @@ function ChatInput() {
             void send();
         }
     };
-    const placeholder = blocked
-        ? "Waiting for the current turn..."
-        : !hasSelectedProject
-            ? "Select a project first."
-            : isChatMode
-                ? childRunFocused
-                    ? "Child transcript is read-only."
-                    : selectedProvider
-                        ? "Type a message. Use / to pick a skill, @ to message an agent."
-                        : "Select a provider first."
-                : launchMode === "workflow"
-                    ? selectedWorkflowId
-                        ? "Type a message. Enter to send."
-                        : "Select a workflow first."
-                    : selectedStepId
-                        ? "Type a message. Enter to send."
-                        : "Select a step first.";
+    const placeholder = hasBlockingChild && !blocked
+        ? "Waiting for a sub-agent (wait=true) to finish…"
+        : blocked
+            ? "Waiting for the current turn..."
+            : !hasSelectedProject
+                ? "Select a project first."
+                : isChatMode
+                    ? childRunFocused
+                        ? "Child transcript is read-only."
+                        : selectedProvider
+                            ? "Type a message. Use /s for skills, /a to spawn an agent, @ to message an agent."
+                            : "Select a provider first."
+                    : launchMode === "workflow"
+                        ? selectedWorkflowId
+                            ? "Type a message. Enter to send."
+                            : "Select a workflow first."
+                        : selectedStepId
+                            ? "Type a message. Enter to send."
+                            : "Select a step first.";
     return ((0, jsx_runtime_1.jsxs)("div", { ref: rootRef, className: `chat-input ${!hasSelectedProject ? "chat-input-locked" : ""}`, children: [isChatMode && ((0, jsx_runtime_1.jsx)("div", { className: `chat-controller ${controllerExpanded ? "expanded" : "collapsed"}`, children: controllerExpanded && ((0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsxs)("div", { className: "chat-controller-top", children: [(0, jsx_runtime_1.jsxs)("div", { className: "chat-controller-skill-strip", children: [(0, jsx_runtime_1.jsx)("span", { className: "chat-controller-label", children: "Skills" }), (0, jsx_runtime_1.jsxs)("button", { type: "button", className: `skill-select-button ${showPicker ? "active" : ""}`, onClick: () => setSkillPickerOpen((current) => !current), "aria-expanded": showPicker, disabled: !selectedProvider || blocked, "aria-label": selectedProvider
                                                 ? `Selected skills ${selectedSkills.length} of ${totalSkills}`
                                                 : "Select skills", children: [(0, jsx_runtime_1.jsxs)("span", { className: "skill-select-icon", "aria-hidden": "true", children: [(0, jsx_runtime_1.jsx)("span", {}), (0, jsx_runtime_1.jsx)("span", {}), (0, jsx_runtime_1.jsx)("span", {})] }), (0, jsx_runtime_1.jsx)("span", { className: "skill-select-text", children: !selectedProvider
                                                         ? "Select provider first"
-                                                        : `Selected skills ${selectedSkills.length}/${totalSkills}` }), (0, jsx_runtime_1.jsx)("span", { className: "skill-select-caret", "aria-hidden": "true", children: "\u25BE" })] })] }), (0, jsx_runtime_1.jsxs)("div", { className: "chat-controller-head", children: [isChatMode && hasBetterAccount && ((0, jsx_runtime_1.jsxs)("button", { type: "button", className: "acc-switch-btn", onClick: requestManualAccountSwitch, disabled: blocked || !!pendingAccountSwitch || accountSwitchLoading, title: "Switch to a better account for this provider", "aria-label": "Switch to a better account", children: [(0, jsx_runtime_1.jsx)(SwitchAccountIcon, {}), (0, jsx_runtime_1.jsx)("span", { children: "Switch acc" })] })), (0, jsx_runtime_1.jsxs)("div", { className: "chat-controller-switch chat-controller-switch-top", children: [(0, jsx_runtime_1.jsx)("span", { className: "chat-controller-label", children: "YOLO" }), (0, jsx_runtime_1.jsxs)("button", { type: "button", role: "switch", "aria-checked": yoloMode, className: `yolo-toggle ${yoloMode ? "active" : ""}`, onClick: () => setYoloMode(!yoloMode), disabled: blocked, children: [(0, jsx_runtime_1.jsx)("span", { className: "yolo-toggle-track", "aria-hidden": "true", children: (0, jsx_runtime_1.jsx)("span", { className: "yolo-toggle-thumb" }) }), (0, jsx_runtime_1.jsx)("span", { className: "yolo-toggle-label", children: yoloMode ? "On" : "Off" })] })] }), (0, jsx_runtime_1.jsx)("button", { type: "button", className: "chat-controller-toggle", onClick: () => setControllerExpanded(false), "aria-label": "Collapse chat controls", children: (0, jsx_runtime_1.jsx)("span", { "aria-hidden": "true", children: "\u25BE" }) })] })] }), (0, jsx_runtime_1.jsxs)("div", { className: "chat-controller-grid", children: [(0, jsx_runtime_1.jsxs)("div", { className: `provider-picker${providerLocked ? " provider-picker-locked" : ""}`, children: [(0, jsx_runtime_1.jsx)("span", { className: "chat-controller-label", children: "Provider" }), (0, jsx_runtime_1.jsx)("div", { className: "provider-chips", children: PROVIDER_CARDS.map((p) => ((0, jsx_runtime_1.jsxs)("button", { type: "button", className: `provider-chip provider-chip-${p.value}${selectedProvider === p.value ? " provider-chip-selected" : ""}`, onClick: () => selectProvider(selectedProvider === p.value ? undefined : p.value), disabled: blocked || providerLocked, "aria-pressed": selectedProvider === p.value, "aria-label": p.label, title: providerLocked ? "Start a new chat to change provider" : p.label, children: [(0, jsx_runtime_1.jsx)("span", { className: "provider-chip-icon", children: p.icon }), (0, jsx_runtime_1.jsx)("span", { className: "provider-chip-name", children: p.label })] }, p.value))) })] }), (0, jsx_runtime_1.jsxs)("label", { className: "chat-controller-field muted", children: [(0, jsx_runtime_1.jsx)("span", { children: "Model" }), availableModels.length > 0 ? ((0, jsx_runtime_1.jsxs)("select", { value: selectedModel ?? "", onChange: (e) => setSelectedModel(e.target.value || undefined), disabled: blocked, children: [(0, jsx_runtime_1.jsx)("option", { value: "", children: "Default" }), availableModels.map((model) => ((0, jsx_runtime_1.jsx)("option", { value: model.modelId, children: model.displayName }, model.id)))] })) : ((0, jsx_runtime_1.jsx)("input", { type: "text", value: selectedModel ?? "", onChange: (e) => setSelectedModel(e.target.value || undefined), placeholder: "Default", disabled: blocked }))] }), (0, jsx_runtime_1.jsxs)("label", { className: "chat-controller-field muted", children: [(0, jsx_runtime_1.jsx)("span", { children: "Reasoning" }), (0, jsx_runtime_1.jsx)("select", { value: reasoningEffort ?? "", onChange: (e) => setReasoningEffort(e.target.value || undefined), disabled: blocked, children: REASONING_OPTIONS.map((option) => ((0, jsx_runtime_1.jsx)("option", { value: option.value, children: option.label }, option.value))) })] })] })] })) })), showPicker && ((0, jsx_runtime_1.jsxs)("div", { className: "skill-picker", children: [(0, jsx_runtime_1.jsxs)("div", { className: "skill-picker-head", children: [(0, jsx_runtime_1.jsxs)("div", { className: "skill-picker-head-top", children: [(0, jsx_runtime_1.jsx)("span", { children: "Skills \u00B7 pick one or more" }), (0, jsx_runtime_1.jsx)("button", { type: "button", className: "skill-picker-close", onClick: () => {
+                                                        : `Selected skills ${selectedSkills.length}/${totalSkills}` }), (0, jsx_runtime_1.jsx)("span", { className: "skill-select-caret", "aria-hidden": "true", children: "\u25BE" })] })] }), (0, jsx_runtime_1.jsxs)("div", { className: "chat-controller-head", children: [isChatMode && hasBetterAccount && ((0, jsx_runtime_1.jsxs)("button", { type: "button", className: "acc-switch-btn", onClick: requestManualAccountSwitch, disabled: blocked || !!pendingAccountSwitch || accountSwitchLoading, title: "Switch to a better account for this provider", "aria-label": "Switch to a better account", children: [(0, jsx_runtime_1.jsx)(SwitchAccountIcon, {}), (0, jsx_runtime_1.jsx)("span", { children: "Switch acc" })] })), (0, jsx_runtime_1.jsxs)("div", { className: "chat-controller-switch chat-controller-switch-top", children: [(0, jsx_runtime_1.jsx)("span", { className: "chat-controller-label", children: "YOLO" }), (0, jsx_runtime_1.jsxs)("button", { type: "button", role: "switch", "aria-checked": yoloMode, className: `yolo-toggle ${yoloMode ? "active" : ""}`, onClick: () => setYoloMode(!yoloMode), disabled: blocked, children: [(0, jsx_runtime_1.jsx)("span", { className: "yolo-toggle-track", "aria-hidden": "true", children: (0, jsx_runtime_1.jsx)("span", { className: "yolo-toggle-thumb" }) }), (0, jsx_runtime_1.jsx)("span", { className: "yolo-toggle-label", children: yoloMode ? "On" : "Off" })] })] }), (0, jsx_runtime_1.jsx)("button", { type: "button", className: "chat-controller-toggle", onClick: () => setControllerExpanded(false), "aria-label": "Collapse chat controls", children: (0, jsx_runtime_1.jsx)("span", { "aria-hidden": "true", children: "\u25BE" }) })] })] }), (0, jsx_runtime_1.jsxs)("div", { className: "chat-controller-grid", children: [(0, jsx_runtime_1.jsxs)("div", { className: `provider-picker${providerLocked ? " provider-picker-locked" : ""}`, children: [(0, jsx_runtime_1.jsx)("span", { className: "chat-controller-label", children: "Provider" }), (0, jsx_runtime_1.jsx)("div", { className: "provider-chips", children: PROVIDER_CARDS.map((p) => ((0, jsx_runtime_1.jsxs)("button", { type: "button", className: `provider-chip provider-chip-${p.value}${selectedProvider === p.value ? " provider-chip-selected" : ""}${connectedProviders.has(p.value) ? "" : " provider-chip-unavailable"}`, onClick: () => selectProvider(selectedProvider === p.value ? undefined : p.value), disabled: blocked || providerLocked || !connectedProviders.has(p.value), "aria-pressed": selectedProvider === p.value, "aria-label": p.label, title: !connectedProviders.has(p.value)
+                                                    ? `${p.label} is unavailable until an account is connected`
+                                                    : providerLocked
+                                                        ? "Start a new chat to change provider"
+                                                        : p.label, children: [(0, jsx_runtime_1.jsx)("span", { className: "provider-chip-icon", children: p.icon }), (0, jsx_runtime_1.jsx)("span", { className: "provider-chip-name", children: p.label })] }, p.value))) })] }), (0, jsx_runtime_1.jsxs)("label", { className: "chat-controller-field muted", children: [(0, jsx_runtime_1.jsx)("span", { children: "Model" }), availableModels.length > 0 ? ((0, jsx_runtime_1.jsxs)("select", { value: selectedModel ?? "", onChange: (e) => setSelectedModel(e.target.value || undefined), disabled: blocked, children: [(0, jsx_runtime_1.jsx)("option", { value: "", children: "Default" }), availableModels.map((model) => ((0, jsx_runtime_1.jsx)("option", { value: model.modelId, children: model.displayName }, model.id)))] })) : ((0, jsx_runtime_1.jsx)("input", { type: "text", value: selectedModel ?? "", onChange: (e) => setSelectedModel(e.target.value || undefined), placeholder: "Default", disabled: blocked }))] }), (0, jsx_runtime_1.jsxs)("label", { className: "chat-controller-field muted", children: [(0, jsx_runtime_1.jsx)("span", { children: "Reasoning" }), (0, jsx_runtime_1.jsx)("select", { value: reasoningEffort ?? "", onChange: (e) => setReasoningEffort(e.target.value || undefined), disabled: blocked, children: REASONING_OPTIONS.map((option) => ((0, jsx_runtime_1.jsx)("option", { value: option.value, children: option.label }, option.value))) })] })] })] })) })), showPicker && ((0, jsx_runtime_1.jsxs)("div", { className: "skill-picker", children: [(0, jsx_runtime_1.jsxs)("div", { className: "skill-picker-head", children: [(0, jsx_runtime_1.jsxs)("div", { className: "skill-picker-head-top", children: [(0, jsx_runtime_1.jsx)("span", { children: "Skills \u00B7 pick one or more" }), (0, jsx_runtime_1.jsx)("button", { type: "button", className: "skill-picker-close", onClick: () => {
                                             if (slashFragment !== null)
                                                 setSlashDismissedIndex(slashFragment.index);
                                             setSkillPickerOpen(false);
@@ -548,13 +609,14 @@ function ChatInput() {
                         const active = selectedSkills.includes(s.name);
                         const highlighted = idx === pickerHighlightIndex;
                         return ((0, jsx_runtime_1.jsxs)("button", { type: "button", className: `skill-item ${active ? "skill-item-active" : ""} ${highlighted ? "skill-item-highlighted" : ""}`, onClick: () => (active ? removeSkill(s.name) : pickSkill(s.name)), children: [(0, jsx_runtime_1.jsx)("span", { className: "skill-mark", children: active ? "☑" : "☐" }), (0, jsx_runtime_1.jsxs)("span", { className: "skill-copy", children: [(0, jsx_runtime_1.jsxs)("span", { className: `skill-name ${active ? "skill-name-active" : "skill-name-idle"}`, children: ["/", s.name] }), s.description && (0, jsx_runtime_1.jsx)("span", { className: "skill-desc", title: s.description, children: s.description })] }), (0, jsx_runtime_1.jsx)("span", { className: `skill-src src-${s.source}`, children: skillSourceLabel(s.source) })] }, s.name));
-                    })] })), isChatMode && supportsVision && attachments.length > 0 && ((0, jsx_runtime_1.jsx)("div", { className: "chat-attachments", "aria-label": "Pending image attachments", children: attachments.map((att) => ((0, jsx_runtime_1.jsxs)("div", { className: "chat-attachment-chip", role: "button", tabIndex: 0, onClick: () => setPreviewAtt(att), onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ")
+                    })] })), showAgentCommand && ((0, jsx_runtime_1.jsxs)("div", { className: "skill-picker", children: [(0, jsx_runtime_1.jsx)("div", { className: "skill-picker-head", children: (0, jsx_runtime_1.jsxs)("div", { className: "skill-picker-head-top", children: [(0, jsx_runtime_1.jsx)("span", { children: "Agent command" }), (0, jsx_runtime_1.jsx)("button", { type: "button", className: "skill-picker-close", onClick: () => { if (slashFragment !== null)
+                                        setSlashDismissedIndex(slashFragment.index); }, "aria-label": "Close agent command", children: "\u00D7" })] }) }), (0, jsx_runtime_1.jsxs)("button", { type: "button", className: "skill-item skill-item-highlighted", onMouseDown: (e) => { e.preventDefault(); triggerAgentSlash(); }, children: [(0, jsx_runtime_1.jsx)("span", { className: "skill-mark", children: "\uD83E\uDD16" }), (0, jsx_runtime_1.jsxs)("span", { className: "skill-copy", children: [(0, jsx_runtime_1.jsx)("span", { className: "skill-name skill-name-idle", children: "/a \u00B7 Spawn sub-agent" }), (0, jsx_runtime_1.jsx)("span", { className: "skill-desc", children: "Open the spawn-agent panel (same as the right sidebar). Press Enter." })] })] })] })), isChatMode && supportsVision && attachments.length > 0 && ((0, jsx_runtime_1.jsx)("div", { className: "chat-attachments", "aria-label": "Pending image attachments", children: attachments.map((att) => ((0, jsx_runtime_1.jsxs)("div", { className: "chat-attachment-chip", role: "button", tabIndex: 0, onClick: () => setPreviewAtt(att), onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ")
                         setPreviewAtt(att); }, "aria-label": `Preview ${att.originalName}`, title: "Click to preview", children: [(0, jsx_runtime_1.jsx)("img", { className: "chat-attachment-thumb", src: att.previewUrl, alt: att.originalName }), (0, jsx_runtime_1.jsx)("span", { className: "chat-attachment-name", title: att.originalName, children: att.originalName }), (0, jsx_runtime_1.jsx)("button", { type: "button", className: "chat-attachment-remove", onClick: (e) => { e.stopPropagation(); removeAttachment(att.id); }, disabled: blocked, "aria-label": `Remove ${att.originalName}`, children: "\u00D7" })] }, att.id))) })), isChatMode && attachError && ((0, jsx_runtime_1.jsx)("div", { className: "chat-attachment-error", role: "alert", children: attachError })), isChatMode && childRunFocused && ((0, jsx_runtime_1.jsxs)("div", { className: "ctxbar ring", children: ["\u21B3 Viewing child agent ", (0, jsx_runtime_1.jsx)("b", { children: focusedAgentName }), " \u00B7 transcript only"] })), (0, jsx_runtime_1.jsxs)("div", { className: "input-bar", children: [isChatMode && !controllerExpanded && !childRunFocused && ((0, jsx_runtime_1.jsx)("button", { type: "button", className: "chat-controller-toggle chat-controller-toggle-inline", onClick: () => setControllerExpanded(true), "aria-label": "Expand chat controls", children: (0, jsx_runtime_1.jsxs)("span", { className: "chat-controller-menu-icon", "aria-hidden": "true", children: [(0, jsx_runtime_1.jsx)("span", {}), (0, jsx_runtime_1.jsx)("span", {}), (0, jsx_runtime_1.jsx)("span", {})] }) })), isChatMode && !childRunFocused && ((0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsx)("input", { ref: fileInputRef, type: "file", accept: normalizeImage_1.ACCEPT_ATTR, multiple: true, hidden: true, onChange: (e) => {
                                     void onPickFiles(e.target.files);
                                     e.target.value = ""; // allow re-picking the same file
                                 } }), (0, jsx_runtime_1.jsxs)("button", { type: "button", className: "attach-btn", onClick: () => fileInputRef.current?.click(), disabled: !supportsVision || blocked || attachments.length >= normalizeImage_1.MAX_ATTACHMENTS, "aria-label": supportsVision
                                     ? "Attach image"
-                                    : "Image attachments are not supported by the selected provider", title: supportsVision ? "Attach image (or paste with Ctrl+V)" : "Selected provider does not support images", children: [(0, jsx_runtime_1.jsx)("span", { "aria-hidden": "true", children: "\uD83D\uDCCE" }), attachments.length > 0 && ((0, jsx_runtime_1.jsx)("span", { className: "attach-badge", "aria-label": `${attachments.length} image${attachments.length > 1 ? "s" : ""} attached`, children: attachments.length }))] })] })), childRunFocused ? ((0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsx)("div", { className: "text-area-wrapper", children: (0, jsx_runtime_1.jsx)("div", { className: "input-note", children: "Return to the main chat to send prompts or use @agent routing." }) }), (0, jsx_runtime_1.jsx)("button", { className: "btn send-btn", onClick: backToMainRun, children: "Main" })] })) : ((0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsxs)("div", { className: `text-area-wrapper${isChatMode && skillTokens.length > 0 ? " has-highlights" : ""}`, children: [isChatMode && skillTokens.length > 0 && ((0, jsx_runtime_1.jsx)("div", { className: "text-area-backdrop", "aria-hidden": "true", children: buildBackdrop(text, skillTokens) })), (0, jsx_runtime_1.jsx)("textarea", { ref: textAreaRef, className: "text-area", rows: 2, placeholder: placeholder, value: text, onChange: (e) => {
+                                    : "Image attachments are not supported by the selected provider", title: supportsVision ? "Attach image (or paste with Ctrl+V)" : "Selected provider does not support images", children: [(0, jsx_runtime_1.jsx)("span", { "aria-hidden": "true", children: "\uD83D\uDCCE" }), attachments.length > 0 && ((0, jsx_runtime_1.jsx)("span", { className: "attach-badge", "aria-label": `${attachments.length} image${attachments.length > 1 ? "s" : ""} attached`, children: attachments.length }))] })] })), childRunFocused ? ((0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsx)("div", { className: "text-area-wrapper", children: (0, jsx_runtime_1.jsx)("div", { className: "input-note", children: "Return to the main chat to send prompts or use @agent routing." }) }), blocked && ((0, jsx_runtime_1.jsx)("button", { className: "btn send-btn send-btn-stop", onClick: () => void stop(), "aria-label": "Stop child agent", children: (0, jsx_runtime_1.jsx)(StopIcon, {}) })), (0, jsx_runtime_1.jsx)("button", { className: "btn send-btn", onClick: backToMainRun, children: "Main" })] })) : ((0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsxs)("div", { className: `text-area-wrapper${isChatMode && skillTokens.length > 0 ? " has-highlights" : ""}`, children: [isChatMode && skillTokens.length > 0 && ((0, jsx_runtime_1.jsx)("div", { className: "text-area-backdrop", "aria-hidden": "true", children: buildBackdrop(text, skillTokens) })), (0, jsx_runtime_1.jsx)("textarea", { ref: textAreaRef, className: "text-area", rows: 2, placeholder: placeholder, value: text, onChange: (e) => {
                                             const newText = e.target.value;
                                             const newCursor = e.target.selectionStart ?? 0;
                                             setText(newText);

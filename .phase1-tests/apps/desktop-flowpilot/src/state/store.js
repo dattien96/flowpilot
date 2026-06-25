@@ -11,6 +11,7 @@ const clientCore_1 = require("@/clientCore");
 const config_1 = require("@/config");
 const navigatorCatalog_1 = require("@/app/navigatorCatalog");
 const timelineReducer_1 = require("./timelineReducer");
+const LAST_PROJECT_KEY = "fp:lastProjectId";
 let loadProjectsInFlight = null;
 let activeHistoryReplayController;
 let activeOrchestrationStreamController;
@@ -78,12 +79,16 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
     chatMode: "normal_chat",
     selectedProvider: "codex",
     yoloMode: false,
+    chatStartMode: "normal",
+    chatSourceDocId: "",
     workspaceMainView: "chat",
     _historyReplaying: false,
     _historyLoadSeq: 0,
     _remoteHistoryLoadSeq: 0,
+    _agentRunsLoadSeq: 0,
     _runSnapshots: {},
     _runReplaySeq: {},
+    _gateBlockedRunIds: {},
     _streamRunSeq: 0,
     _orchestrationStreamSeq: 0,
     agentSpawnGuideAgentName: undefined,
@@ -119,6 +124,11 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
             try {
                 const projects = await withRetry(() => client.listProjects());
                 set((s) => ({ projects, ...(s.runId ? {} : { status: "idle" }) }));
+                if (!get().selectedProjectId && projects.length > 0) {
+                    const saved = localStorage.getItem(LAST_PROJECT_KEY);
+                    const match = saved ? projects.find((p) => p.id === saved) : undefined;
+                    void get().selectProject((match ?? projects[0]).id);
+                }
             }
             catch (err) {
                 // eslint-disable-next-line no-console
@@ -190,9 +200,13 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
             set({ agentRuns: [] });
             return;
         }
+        // Stale-response guard (BUG-130): this fetch is fire-and-forget and can land after a
+        // newer SSE agent-graph update. Only apply the result if no later refresh started.
+        const seq = get()._agentRunsLoadSeq + 1;
+        set({ _agentRunsLoadSeq: seq });
         try {
             const agentRuns = await client.listAgentRuns(parentRunId);
-            if (get().mainRunId === parentRunId || get().runId === parentRunId) {
+            if (get()._agentRunsLoadSeq === seq && (get().mainRunId === parentRunId || get().runId === parentRunId)) {
                 set({ agentRuns });
             }
         }
@@ -352,6 +366,7 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
         set({ agentSpawnGuideOpen: false, agentSpawnGuideAgentName: undefined });
     },
     async selectProject(projectId) {
+        localStorage.setItem(LAST_PROJECT_KEY, projectId);
         set({
             selectedProjectId: projectId,
             selectedWorkflowId: undefined,
@@ -395,6 +410,15 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
     setYoloMode(yolo) {
         set({ yoloMode: yolo });
     },
+    setChatStartMode(mode) {
+        set((state) => ({
+            chatStartMode: mode,
+            chatSourceDocId: mode === "normal" ? "" : state.chatSourceDocId,
+        }));
+    },
+    setChatSourceDocId(sourceDocId) {
+        set({ chatSourceDocId: sourceDocId });
+    },
     async loadSkills(provider, cwd) {
         const { client } = get();
         try {
@@ -407,7 +431,7 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
         }
     },
     async sendPrompt(prompt, skills, attachments) {
-        const { client, chatMode, launchMode, selectedProjectId, selectedWorkflowId, selectedStepId, selectedProvider, selectedModel, reasoningEffort, yoloMode, } = get();
+        const { client, chatMode, launchMode, selectedProjectId, selectedWorkflowId, selectedStepId, selectedProvider, selectedModel, reasoningEffort, yoloMode, chatStartMode, chatSourceDocId, } = get();
         const focusedRunId = get().activeAgentRunId;
         const mainRunId = get().mainRunId ?? get().runId;
         if (chatMode === "normal_chat" && focusedRunId && mainRunId && focusedRunId !== mainRunId) {
@@ -464,6 +488,7 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
             ],
         }));
         let runId = get().runId;
+        const isFirstChatTurn = chatMode === "normal_chat" && !runId;
         try {
             if (!runId) {
                 const handle = await client.startRun(chatMode === "normal_chat"
@@ -496,6 +521,10 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
                 runId,
                 stepId: turnStepId,
                 prompt,
+                changeType: isFirstChatTurn && chatStartMode !== "normal" ? chatStartMode : undefined,
+                sourceDocId: isFirstChatTurn && chatStartMode !== "normal" && chatSourceDocId.trim().length > 0
+                    ? chatSourceDocId.trim()
+                    : undefined,
                 selectedSkills: skills && skills.length > 0
                     ? skills.map((name) => {
                         // Carry the picker's absolute skill path so the runner reads the exact
@@ -829,6 +858,7 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
             artifacts: [],
             pendingApproval: undefined,
             pendingQuestion: undefined,
+            gateBlock: undefined,
             latestTokenUsage: undefined,
             lastTurnInput: undefined,
             recoverable: false,
@@ -913,6 +943,8 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
             _streamingAssistantId: undefined,
             _runSnapshots: {},
             _runReplaySeq: {},
+            chatStartMode: "normal",
+            chatSourceDocId: "",
             selectedModel: pickDefaultModel(selectedProvider, supportedModels),
         });
     },
@@ -930,6 +962,17 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
     },
     cancelAccountSwitch() {
         set({ pendingAccountSwitch: undefined });
+    },
+    dismissGateBlock() {
+        set({ gateBlock: undefined });
+    },
+    async submitGateDecision(option, customText) {
+        const { gateBlock, client } = get();
+        if (!gateBlock?.runId || !client.submitGateDecision)
+            return;
+        const runId = gateBlock.runId;
+        set({ gateBlock: undefined });
+        await client.submitGateDecision(runId, option, customText);
     },
     requestManualAccountSwitch() {
         const { selectedProvider, providerAccounts } = get();
@@ -1239,9 +1282,24 @@ async function consumeOrchestrationStream(runId, stream, orchestrationSeq, after
             continue;
         if (e.seq <= afterSeq)
             continue;
-        if (e.type !== "agent_graph_updated" && e.type !== "agent_bus_message")
-            continue;
-        set((s) => applyOrchestrationEvent(s, e));
+        if (e.type === "agent_graph_updated" || e.type === "agent_bus_message") {
+            set((s) => applyOrchestrationEvent(s, e));
+        }
+        else {
+            // CP-35: gate reprompt events (turn_started, message_delta, turn_completed, etc.)
+            // arrive after sendTurn() has already closed on turn_completed. Apply them via
+            // applyEvent so the timeline shows the reprompt turn without a tab-switch.
+            //
+            // Dynamic watermark: skip events already covered by the concurrent history replay
+            // stream (_runReplaySeq tracks its progress as it goes). Without this guard, when
+            // openHistoryRun triggers both a replay stream and this orchestration stream from
+            // seq 0, the orchestration stream re-processes flow_gate_violation after
+            // _historyReplaying turns false — re-popping the block modal on every chat open.
+            // (CP-35 BUG-138)
+            if (e.seq <= (get()._runReplaySeq[runId] ?? afterSeq))
+                continue;
+            set((s) => applyEvent(s, e));
+        }
     }
 }
 /**
@@ -1287,6 +1345,18 @@ function settleTerminalReplayVisuals(runId, replayStatus, set) {
         };
     });
 }
+// Merge an incoming agent-run snapshot into the existing list by runId (incoming wins).
+// The live SSE graph snapshot is in-memory only and omits disk-persisted closed children
+// that the HTTP list (listAgentRunSummaries) includes; replacing wholesale dropped the
+// "Recently closed" entries while an agent was running. Merging preserves them (BUG-132).
+function mergeAgentRunsById(existing, incoming) {
+    const byId = new Map();
+    for (const run of existing)
+        byId.set(run.runId, run);
+    for (const run of incoming)
+        byId.set(run.runId, run);
+    return [...byId.values()];
+}
 function applyEvent(s, e) {
     const next = (0, timelineReducer_1.applyTimelineEvent)(s, e);
     const nextReplaySeq = {
@@ -1296,7 +1366,9 @@ function applyEvent(s, e) {
     if (e.type === "agent_graph_updated") {
         return {
             ...next,
-            agentRuns: e.agentGraphSnapshot.runs,
+            // Merge (not replace) so disk-persisted closed children stay visible while a new
+            // agent runs and emits in-memory-only snapshots (BUG-132).
+            agentRuns: mergeAgentRunsById(s.agentRuns, e.agentGraphSnapshot.runs),
             agentGraphSnapshot: e.agentGraphSnapshot,
             agentBusMessages: e.agentGraphSnapshot.busMessages,
             _runReplaySeq: nextReplaySeq,
@@ -1312,8 +1384,46 @@ function applyEvent(s, e) {
             _runReplaySeq: nextReplaySeq,
         };
     }
+    if (e.type === "flow_gate_violation" && (e.status === "block" || e.status === "warn") && !s._historyReplaying) {
+        // block: hard stop — surface a modal the user must acknowledge. The modal must appear
+        // EXACTLY ONCE: Reopening the chat re-streams the persisted flow_gate_violation, and
+        // the `_historyReplaying` guard is racy. `_gateBlockedRunIds` is the authoritative guard:
+        // added on the first block, cleared on the next turn_started. (CP-35, BUG-138)
+        //
+        // warn: store settles to "completed" (statusFromEvent), but the backend runner keeps the
+        // run in "running" state until the user re-prompts — the same mismatch as block. Without
+        // tracking in _gateBlockedRunIds, switching to another chat makes the Navigator fall back
+        // to item.status = "running" and show an infinite spinner. (BUG-145)
+        //
+        // Both cases: add to _gateBlockedRunIds so Navigator shows a stable completed icon for
+        // inactive gate-settled runs. Cleared on the next turn_started. (BUG-137)
+        const alreadyBlocked = Boolean(s._gateBlockedRunIds[e.workflowRunId]);
+        const newGateBlock = e.status === "block" && !alreadyBlocked
+            ? {
+                message: e.error,
+                options: e.gateOptions,
+                regressedTests: e.gateRegressedTests,
+                runId: e.workflowRunId,
+            }
+            : undefined;
+        return {
+            ...next,
+            ...(newGateBlock ? { gateBlock: newGateBlock } : {}),
+            _gateBlockedRunIds: { ...s._gateBlockedRunIds, [e.workflowRunId]: true },
+            _runReplaySeq: nextReplaySeq,
+        };
+    }
     if (e.type === "turn_started") {
-        return { ...next, latestTokenUsage: undefined, _runReplaySeq: nextReplaySeq };
+        // A fresh turn (incl. a gate reprompt) clears any prior block modal and removes the
+        // run from the gate-blocked set (the user re-prompted, so the run is running again).
+        const { [e.workflowRunId]: _cleared, ...remainingGateBlockedRunIds } = s._gateBlockedRunIds;
+        return {
+            ...next,
+            latestTokenUsage: undefined,
+            gateBlock: undefined,
+            _gateBlockedRunIds: remainingGateBlockedRunIds,
+            _runReplaySeq: nextReplaySeq,
+        };
     }
     if (e.type === "token_usage_updated") {
         return { ...next, latestTokenUsage: e.tokenUsage, _runReplaySeq: nextReplaySeq };
@@ -1328,7 +1438,8 @@ function applyOrchestrationEvent(s, e) {
     const nextReplaySeq = { ...s._runReplaySeq, [e.workflowRunId]: e.seq };
     if (e.type === "agent_graph_updated") {
         return {
-            agentRuns: e.agentGraphSnapshot.runs,
+            // Merge (not replace) so disk-persisted closed children stay visible (BUG-132).
+            agentRuns: mergeAgentRunsById(s.agentRuns, e.agentGraphSnapshot.runs),
             agentGraphSnapshot: e.agentGraphSnapshot,
             agentBusMessages: e.agentGraphSnapshot.busMessages,
             _runReplaySeq: nextReplaySeq,
@@ -1391,6 +1502,7 @@ function emptyRunSnapshot(status) {
         status,
         pendingApproval: undefined,
         pendingQuestion: undefined,
+        gateBlock: undefined,
         latestTokenUsage: undefined,
         lastTurnInput: undefined,
         recoverable: false,

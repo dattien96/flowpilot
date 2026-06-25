@@ -158,8 +158,15 @@ interface AppState {
   pendingApproval?: PendingApproval;
   pendingQuestion?: PendingQuestion;
   /** A hard-blocking flow-gate violation (e.g. failed tests) the user must acknowledge.
-   *  Set only for action === "block"; surfaced as a modal. (CP-35) */
-  gateBlock?: { message: string };
+   *  Set only for action === "block"; surfaced as a modal or decision card. (CP-35 / Task-155) */
+  gateBlock?: {
+    message: string;
+    /** Decision card options — present only for r-reg regression blocks (Task-155). */
+    options?: string[];
+    regressedTests?: string[];
+    /** The runId that originated the block, for gate-decision API calls (Task-155). */
+    runId?: string;
+  };
   /** Run IDs that received a live gate block. Persists across chat switches so Navigator
    *  can suppress the "Running" spinner for a blocked-but-inactive chat whose server
    *  status hasn't settled to idle yet. Cleared per-run when turn_started fires. (CP-35) */
@@ -252,6 +259,8 @@ interface AppState {
   cancelAccountSwitch(): void;
   requestManualAccountSwitch(): void;
   dismissGateBlock(): void;
+  /** Submit the user's choice on the r-reg gate decision card (Task-155). */
+  submitGateDecision(option: string, customText?: string): Promise<void>;
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -1227,6 +1236,14 @@ export const useStore = create<AppState>((set, get) => ({
     set({ gateBlock: undefined });
   },
 
+  async submitGateDecision(option: string, customText?: string) {
+    const { gateBlock, client } = get();
+    if (!gateBlock?.runId || !client.submitGateDecision) return;
+    const runId = gateBlock.runId;
+    set({ gateBlock: undefined });
+    await client.submitGateDecision(runId, option, customText);
+  },
+
   requestManualAccountSwitch() {
     const { selectedProvider, providerAccounts } = get();
     if (!selectedProvider) return;
@@ -1719,9 +1736,18 @@ function applyEvent(s: AppState, e: ProviderEventDTO): Partial<AppState> {
     // Both cases: add to _gateBlockedRunIds so Navigator shows a stable completed icon for
     // inactive gate-settled runs. Cleared on the next turn_started. (BUG-137)
     const alreadyBlocked = Boolean(s._gateBlockedRunIds[e.workflowRunId]);
+    const newGateBlock =
+      e.status === "block" && !alreadyBlocked
+        ? {
+            message: e.error,
+            options: e.gateOptions,
+            regressedTests: e.gateRegressedTests,
+            runId: e.workflowRunId,
+          }
+        : undefined;
     return {
       ...next,
-      ...(e.status === "block" && !alreadyBlocked ? { gateBlock: { message: e.error } } : {}),
+      ...(newGateBlock ? { gateBlock: newGateBlock } : {}),
       _gateBlockedRunIds: { ...s._gateBlockedRunIds, [e.workflowRunId]: true },
       _runReplaySeq: nextReplaySeq,
     };

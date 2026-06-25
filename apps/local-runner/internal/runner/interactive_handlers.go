@@ -52,6 +52,8 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/agent-loop/resume", s.handleResumeAgentLoop)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/agent-loop/feedback", s.handleInjectAgentFeedback)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/agent-loop/stop", s.handleStopAgentLoop)
+	mux.HandleFunc("POST /client/workflow-runs/{runId}/gate-decision", s.handleGateDecision)
+	mux.HandleFunc("POST /client/workflow-runs/{runId}/gate-agreement", s.handleGateAgreement)
 
 	// admin
 	mux.HandleFunc("GET /admin/providers", s.handleAdminProviders)
@@ -876,6 +878,45 @@ func (s *InteractiveService) handleInjectAgentFeedback(w http.ResponseWriter, r 
 
 func (s *InteractiveService) handleStopAgentLoop(w http.ResponseWriter, r *http.Request) {
 	writeInteractiveJSON(w, http.StatusOK, s.stopAgentLoop(r.PathValue("runId")))
+}
+
+// handleGateDecision handles POST /client/workflow-runs/{runId}/gate-decision.
+// Body: {"option": "keep-test-fix-code"|"suggest-requirement-change"|"custom", "customText": "..."}
+// Clears the pending gate block and fires the appropriate reprompt turn. (Task-155)
+func (s *InteractiveService) handleGateDecision(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("runId")
+	var body struct {
+		Option     string `json:"option"`
+		CustomText string `json:"customText"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeInteractiveError(w, newAPIErr(400, "invalid_body", "invalid JSON body"))
+		return
+	}
+	if e := s.SubmitGateDecision(runID, body.Option, body.CustomText); e != nil {
+		writeInteractiveError(w, e)
+		return
+	}
+	writeInteractiveJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
+}
+
+// handleGateAgreement handles POST /client/workflow-runs/{runId}/gate-agreement.
+// Body: {"testNames": ["TestFoo", "TestBar"]}
+// Records human agreement to the AI-proposed requirement change and writes overrides. (Task-155)
+func (s *InteractiveService) handleGateAgreement(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("runId")
+	var body struct {
+		TestNames []string `json:"testNames"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeInteractiveError(w, newAPIErr(400, "invalid_body", "invalid JSON body"))
+		return
+	}
+	if e := s.RecordGateAgreement(runID, body.TestNames); e != nil {
+		writeInteractiveError(w, e)
+		return
+	}
+	writeInteractiveJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
 }
 
 func fakeArtifacts(runID string) []Artifact {
