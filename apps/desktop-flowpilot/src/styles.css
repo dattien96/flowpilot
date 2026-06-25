@@ -308,6 +308,66 @@ input {
   border: 2px solid transparent;
   border-image: linear-gradient(135deg, #4c8dff 0%, #a855f7 40%, #ec4899 70%, #f97316 100%) 1;
 }
+/* Animatable CSS property for the sweeping conic gradient angle */
+@property --sweep {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+@keyframes chat-border-sweep {
+  to { --sweep: 360deg; }
+}
+/* Running state: rotating comet ring, same bottom-30% fade as idle.
+   3-layer mask:
+     layer3 (base)   : full border-box solid
+     layer2 EXCLUDE   : content-box cutout → leaves 2px ring only
+     layer1 INTERSECT : bottom-fade gradient → clips ring above 55% */
+.chat-area-running::after {
+  border: none;
+  border-image: none;
+  padding: 2px;
+  mask:
+    linear-gradient(to top, black 0%, black 28%, transparent 55%),
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask:
+    linear-gradient(to top, black 0%, black 28%, transparent 55%),
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: intersect, exclude;
+  -webkit-mask-composite: destination-in, xor;
+  animation: chat-border-sweep 2s linear infinite;
+}
+.chat-area-task.chat-area-running::after {
+  background: conic-gradient(
+    from var(--sweep),
+    rgba(64, 196, 99, 0.08) 0deg,
+    rgba(64, 196, 99, 0.9) 60deg,
+    rgba(180, 255, 180, 1) 90deg,
+    rgba(64, 196, 99, 0.9) 120deg,
+    rgba(64, 196, 99, 0.08) 180deg
+  );
+}
+.chat-area-bug.chat-area-running::after {
+  background: conic-gradient(
+    from var(--sweep),
+    rgba(240, 72, 72, 0.08) 0deg,
+    rgba(240, 72, 72, 0.9) 60deg,
+    rgba(255, 180, 180, 1) 90deg,
+    rgba(240, 72, 72, 0.9) 120deg,
+    rgba(240, 72, 72, 0.08) 180deg
+  );
+}
+.chat-area-flow.chat-area-running::after {
+  background: conic-gradient(
+    from var(--sweep),
+    #4c8dff 0deg,
+    #a855f7 90deg,
+    #ec4899 180deg,
+    #f97316 270deg,
+    #4c8dff 360deg
+  );
+}
 .sidebar-resizer {
   width: 8px;
   border: 0;

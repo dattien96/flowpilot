@@ -347,6 +347,7 @@ export function ChatWorkspace({
   const chatStartMode = useStore((s) => s.chatStartMode);
   const timeline = useStore((s) => s.timeline);
   const lastTurnInput = useStore((s) => s.lastTurnInput);
+  const runStatus = useStore((s) => s.status);
 
   const hasTurns = timeline.length > 0;
   const activeChatSubMode = hasTurns ? (lastTurnInput?.changeType ?? "normal") : chatStartMode;
@@ -358,6 +359,7 @@ export function ChatWorkspace({
         : activeChatSubMode === "bugfix"
           ? "chat-area-bug"
           : "";
+  const isRunning = runStatus === "running";
   const defaultWidthsAppliedRef = useRef(false);
   const shellRef = useRef<HTMLDivElement>(null);
   const dragStateRef = useRef<{
@@ -459,7 +461,7 @@ export function ChatWorkspace({
         </>
       )}
 
-      <main className={`main workspace-main${chatAreaClass ? ` ${chatAreaClass}` : ""}`}>
+      <main className={`main workspace-main${chatAreaClass ? ` ${chatAreaClass}` : ""}${isRunning && chatAreaClass ? " chat-area-running" : ""}`}>
         {workspaceMainView === "board" ? (
           <OrchestrationBoard />
         ) : (
