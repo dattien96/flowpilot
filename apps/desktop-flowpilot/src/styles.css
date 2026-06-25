@@ -284,6 +284,30 @@ input {
   flex: 1;
   position: relative;
 }
+/* Mode stroke: ::after draws the border; mask fades it from solid at the
+   bottom line + lower-30% of the sides to fully transparent above. */
+.chat-area-task::after,
+.chat-area-bug::after,
+.chat-area-flow::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 10;
+  /* vertical thirds: solid from bottom up to ~30%, then dissolves */
+  mask-image: linear-gradient(to top, black 0%, black 28%, transparent 55%);
+  -webkit-mask-image: linear-gradient(to top, black 0%, black 28%, transparent 55%);
+}
+.chat-area-task::after {
+  border: 2px solid rgba(64, 196, 99, 0.7);
+}
+.chat-area-bug::after {
+  border: 2px solid rgba(240, 72, 72, 0.7);
+}
+.chat-area-flow::after {
+  border: 2px solid transparent;
+  border-image: linear-gradient(135deg, #4c8dff 0%, #a855f7 40%, #ec4899 70%, #f97316 100%) 1;
+}
 .sidebar-resizer {
   width: 8px;
   border: 0;

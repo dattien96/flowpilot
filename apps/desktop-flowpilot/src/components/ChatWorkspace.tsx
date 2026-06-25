@@ -343,6 +343,21 @@ export function ChatWorkspace({
   rightSidebarVisible,
 }: ChatWorkspaceProps): React.ReactElement {
   const workspaceMainView = useStore((s) => s.workspaceMainView);
+  const chatMode = useStore((s) => s.chatMode);
+  const chatStartMode = useStore((s) => s.chatStartMode);
+  const timeline = useStore((s) => s.timeline);
+  const lastTurnInput = useStore((s) => s.lastTurnInput);
+
+  const hasTurns = timeline.length > 0;
+  const activeChatSubMode = hasTurns ? (lastTurnInput?.changeType ?? "normal") : chatStartMode;
+  const chatAreaClass =
+    chatMode === "workflow_step_auto"
+      ? "chat-area-flow"
+      : activeChatSubMode === "task"
+        ? "chat-area-task"
+        : activeChatSubMode === "bugfix"
+          ? "chat-area-bug"
+          : "";
   const defaultWidthsAppliedRef = useRef(false);
   const shellRef = useRef<HTMLDivElement>(null);
   const dragStateRef = useRef<{
@@ -444,7 +459,7 @@ export function ChatWorkspace({
         </>
       )}
 
-      <main className="main workspace-main">
+      <main className={`main workspace-main${chatAreaClass ? ` ${chatAreaClass}` : ""}`}>
         {workspaceMainView === "board" ? (
           <OrchestrationBoard />
         ) : (
