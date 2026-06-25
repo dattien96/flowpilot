@@ -201,7 +201,7 @@ The current `r-reg` block is correct but unhelpful: it tells the user "stop" wit
 - **Expect:** a reprompt turn fires telling the AI to restore `TestAdd` by fixing `calc.go`; no override file is written; `05-System-Specs` is untouched. After the AI reverts `Add` to `a + b`, the suite is green and the step finalizes.
 2. Negative: if the AI instead edits `calc_test.go`, `r-tamper` is flagged and/or `r-reg` re-fires â€” the test path stays locked.
 
-### E2E-3 â€” opt-2 on an EMPTY spec (sandbox default): suggest-or-input
+### (Passed) E2E-3 â€” opt-2 on an EMPTY spec (sandbox default): suggest-or-input
 
 1. Re-break `Add` (as E2E-1). On the card pick **"Suggest requirement changes"**.
 - **Expect:** because `05-System-Specs` has only `FORMAT-REFERENCE-SS.md`, the AI **proposes a requirement** (e.g. "`Add(a,b)` returns `a - b`") or invites you to input your own â€” and does **not** edit the test yet.
@@ -210,12 +210,16 @@ The current `r-reg` block is correct but unhelpful: it tells the user "stop" wit
 3. Run the next turn / re-evaluate.
 - **Expect:** `TestAdd` is no longer re-blocked or re-flagged (override honored). Without your agreement in step 2, nothing would have unlocked.
 
-### E2E-4 â€” opt-2 with an existing governing spec: open the specific file
+Passed after fix in commit 942bcd9a2a7ed5a00ecc658fcfdd97a3266c4794
+
+### (Passed) E2E-4 â€” opt-2 with an existing governing spec: open the specific file
 
 > Requires a `05-System-Specs/SS-*.md` linked to the feature owning `calc.go` (create one, or reuse the file from E2E-3).
 
 1. Break `Add`; pick **”Suggest requirement changes”**.
 - **Expect:** the AI opens/targets the **specific** linked `SS-*.md` (no scan of all specs), proposes the change there, and on agreement edits that file then aligns the test. The modal does **not** re-appear during the proposal turn (fixed by `proposalTurnPending` flag — r-reg/r-tests suppressed for the single proposal turn).
+
+Passed after fix in commit 942bcd9a2a7ed5a00ecc658fcfdd97a3266c4794
 
 ### (Passed) E2E-5 â€” opt-3: custom instruction
 
