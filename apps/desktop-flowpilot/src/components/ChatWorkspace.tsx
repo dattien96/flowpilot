@@ -278,7 +278,7 @@ function AccountSwitchModal(): React.ReactElement | null {
   );
 }
 
-const GATE_DECISION_OPTIONS: { value: string; label: string; description: string }[] = [
+const GATE_RADIO_OPTIONS: { value: string; label: string; description: string }[] = [
   {
     value: "keep-test-fix-code",
     label: "Fix the code",
@@ -289,17 +289,13 @@ const GATE_DECISION_OPTIONS: { value: string; label: string; description: string
     label: "Suggest requirement change",
     description: "Have the AI propose a requirement update that would justify this behavior.",
   },
-  {
-    value: "custom",
-    label: "Custom instruction",
-    description: "Type your own direction for the AI.",
-  },
 ];
 
 function GateBlockModal(): React.ReactElement | null {
   const gateBlock = useStore((s) => s.gateBlock);
   const dismissGateBlock = useStore((s) => s.dismissGateBlock);
   const submitGateDecision = useStore((s) => s.submitGateDecision);
+  const [selected, setSelected] = useState<string | null>(null);
   const [customText, setCustomText] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -310,11 +306,21 @@ function GateBlockModal(): React.ReactElement | null {
 
   // r-reg decision card (Task-155)
   if (hasOptions) {
-    const handleOption = async (value: string) => {
-      if (submitting) return;
-      if (value === "custom" && !customText.trim()) return;
+    // Custom text overrides radio selection; one of them must be present to submit.
+    const effectiveOption = customText.trim() ? "custom" : selected;
+    const canSubmit = Boolean(effectiveOption);
+
+    const handleSubmit = async () => {
+      if (submitting || !canSubmit || !effectiveOption) return;
       setSubmitting(true);
-      await submitGateDecision(value, value === "custom" ? customText : undefined);
+      try {
+        await submitGateDecision(
+          effectiveOption,
+          effectiveOption === "custom" ? customText : undefined,
+        );
+      } finally {
+        setSubmitting(false);
+      }
     };
 
     const tests =
@@ -348,45 +354,45 @@ function GateBlockModal(): React.ReactElement | null {
           )}
           <p className="gate-block-hint">How would you like to proceed?</p>
           <div className="option-list">
-            {GATE_DECISION_OPTIONS.map((opt) => (
-              <div key={opt.value}>
-                <button
-                  type="button"
-                  className="option"
+            {GATE_RADIO_OPTIONS.map((opt) => (
+              <label
+                key={opt.value}
+                className={`option option-radio${selected === opt.value ? " selected" : ""}`}
+              >
+                <input
+                  type="radio"
+                  name="gate-decision"
+                  value={opt.value}
+                  checked={selected === opt.value}
                   disabled={submitting}
-                  onClick={() => { if (opt.value !== "custom") void handleOption(opt.value); }}
-                >
-                  <span className="option-body">
-                    <span className="option-label">{opt.label}</span>
-                    <span className="option-desc">{opt.description}</span>
-                  </span>
-                </button>
-                {opt.value === "custom" && (
-                  <div className="other-row">
-                    <input
-                      className="text-input"
-                      placeholder="Type your instruction…"
-                      value={customText}
-                      disabled={submitting}
-                      onChange={(e) => setCustomText(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === "Enter" && customText.trim()) void handleOption("custom"); }}
-                    />
-                    <button
-                      type="button"
-                      className="btn btn-primary"
-                      disabled={submitting || !customText.trim()}
-                      onClick={() => void handleOption("custom")}
-                    >
-                      Submit
-                    </button>
-                  </div>
-                )}
-              </div>
+                  onChange={() => setSelected(opt.value)}
+                />
+                <span className="option-body">
+                  <span className="option-label">{opt.label}</span>
+                  <span className="option-desc">{opt.description}</span>
+                </span>
+              </label>
             ))}
           </div>
+          <input
+            className="text-input gate-custom-input"
+            placeholder="Custom instruction…"
+            value={customText}
+            disabled={submitting}
+            onChange={(e) => setCustomText(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && canSubmit) void handleSubmit(); }}
+          />
           <div className="account-switch-actions">
             <button type="button" className="btn btn-ghost" disabled={submitting} onClick={dismissGateBlock}>
               Dismiss
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={submitting || !canSubmit}
+              onClick={() => void handleSubmit()}
+            >
+              Submit
             </button>
           </div>
         </div>
