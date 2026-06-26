@@ -19,3 +19,10 @@ Desktop chat composer UI in `apps/desktop-flowpilot`, focused on the skills pick
 
 - This is a UI-only polish slice.
 - No store, runner, or provider contract changed.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: chat-ui
+source_doc_id: CA-087
+change_type: feature
+summary: Desktop ChatInput Skill Picker Close Button
+# --->8---

@@ -38,3 +38,10 @@ This work spans project defaults, workflow defaults, reusable workflow steps, wo
 - The migration backfills `step_definitions.model` from `gpt-5.5` to `gpt-5.4`; if any old environments intentionally depend on `gpt-5.5` step defaults, they will need a separate override after this migration.
 - The Codex review loop timed out twice before returning findings, so verification currently relies on the successful app build, targeted tests, and diff checks.
 - The working tree still contains other previously modified files from the broader AI orchestration workstream; this audit note covers the model-derived provider/defaults slice specifically.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: ai-providers
+source_doc_id: CA-011
+change_type: feature
+summary: Model-Derived Provider Defaults
+# --->8---

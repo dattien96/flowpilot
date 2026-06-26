@@ -34,3 +34,10 @@
 - Malformed Codex TOML agent files are skipped.
 - Model availability is still validated by Codex when the child turn starts.
 - Existing unrelated worktree changes were preserved.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: agent-spawn
+source_doc_id: CA-116
+change_type: fix
+summary: Fix Project Codex Agent Catalog Precedence
+# --->8---

@@ -23,3 +23,10 @@ Implemented local project-to-workspace directory bindings to support linking loc
 ## Verification
 
 - Ran unit tests in `apps/admin-web` via `npm run test` (including project workspace bindings tests, all passed).
+
+# ---8<--- flowpilot:change-ledger
+feature_key: project-nav
+source_doc_id: CP-15
+change_type: feature
+summary: Project Workspace Bindings
+# --->8---

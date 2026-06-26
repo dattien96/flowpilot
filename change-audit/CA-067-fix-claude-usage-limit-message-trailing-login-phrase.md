@@ -32,3 +32,10 @@ Files changed:
   `claudeUsageLimitError`) is unchanged.
 - If Claude CLI ever surfaces a reset-time estimate in its result metadata, the message
   could include it (noted as an open question in BUG-051 and BUG-054).
+
+# ---8<--- flowpilot:change-ledger
+feature_key: ai-providers
+source_doc_id: BUG-051
+change_type: fix
+summary: Fix Claude Usage Limit Message Trailing Login Phrase
+# --->8---

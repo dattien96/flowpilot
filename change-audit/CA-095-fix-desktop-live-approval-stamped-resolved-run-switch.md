@@ -41,3 +41,10 @@ Both the `for await` loop check and the post-loop check use `isStale()`. The ori
 
 - `_streamRunSeq` is intentionally NOT reset in `resetRun` or `selectProject` — those actions set `runId: undefined`, which already makes `shouldApplyRunEvent` return false for any pending stream. Keeping the counter monotonic avoids wrap-around edge cases.
 - `timelineReducer.ts` (BUG-074 F-1 stale detection) is unchanged — the invariant it relies on is now restored: only one active `consumeStream` per run at any time.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: mcp-tools
+source_doc_id: BUG-079
+change_type: fix
+summary: Fix Desktop Live Approval Stamped Resolved On Run Switch
+# --->8---

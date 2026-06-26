@@ -50,3 +50,10 @@
 - This fix is intentionally Codex-only. Claude continues to use MCP `spawn_agent`.
 - Existing Codex rollout files are migrated lazily on their first resume after upgrade.
 - Existing user edits in `AGENTS.md` and `CLAUDE.md` were preserved.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: agent-spawn
+source_doc_id: CA-115
+change_type: fix
+summary: Fix Codex Spawn-Agent Reserved Tool Name
+# --->8---

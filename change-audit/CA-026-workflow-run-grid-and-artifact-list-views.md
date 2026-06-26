@@ -15,3 +15,10 @@ This audit covers the list-view and grid-view UI updates that improved browsing 
 - Verified the artifact grid renders with the expected card layout.
 - Confirmed the list view remains usable for quick browsing and deletion.
 
+
+# ---8<--- flowpilot:change-ledger
+feature_key: workflow-runtime
+source_doc_id: CA-026
+change_type: feature
+summary: Workflow Run Grid and Artifact List Views
+# --->8---

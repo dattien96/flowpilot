@@ -28,3 +28,10 @@
 
 - Targeted ESLint could not start because the workspace is missing the `eslint-config-next` package imported by `apps/admin-web/eslint.config.mjs`.
 - The production build retains existing browser-compatibility warnings for `node:path` and `node:fs`, plus the existing large-chunk warning.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: terminal-session
+source_doc_id: CA-038
+change_type: fix
+summary: Fix Terminal Thinking Stream Rendering
+# --->8---

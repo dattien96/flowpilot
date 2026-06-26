@@ -41,3 +41,10 @@ A chat run belongs to exactly one provider (Claude XOR Codex) — the delete nev
 - **Supabase path.** `SupabaseWorkflowStore` does not implement `DeleteProviderSession`. When Supabase is configured the NDJSON rewrite is bypassed — a follow-up should add a Supabase delete path (SQL `DELETE FROM workflow_sessions WHERE workflow_run_id = $1`).
 - **No undo.** Delete is immediate and permanent for both the local record and the provider session file.
 - **Cross-provider safety.** `deleteChatSession` uses the `ProviderKey` stored on the session record to restrict account scanning — a Claude session never touches Codex directories and vice versa.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: chat-history
+source_doc_id: CA-100
+change_type: feature
+summary: Delete Chat History
+# --->8---

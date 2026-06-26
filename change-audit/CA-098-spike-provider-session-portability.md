@@ -78,3 +78,10 @@ Same as A, but step 2 copies the rollout to the **second machine's** `CODEX_HOME
 - Removed the test rollout + the `sessions\2026\06\17\` date dir created in both `.codexHome3` and `.codexHome4` (neither had 06/17 sessions before). Both trees restored to pre-test state (newest dirs back to 06/15 and 06/16 respectively).
 - Note: each target account's `session_index.jsonl` may carry one dangling entry from the resume (points to the now-removed rollout). Harmless; left untouched to avoid hand-editing the index.
 - Observed separately: `.codexHome3`'s stored login is stale (`refresh_token_reused`) and `.codexHome1` has no `auth.json` — both need re-login before FlowPilot can use them for live turns. `.codexHome4` auth is valid.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: cross-provider-handoff
+source_doc_id: TASK-067
+change_type: feature
+summary: Spike: Provider Session File Portability (Cross-Account / Cross-PC)
+# --->8---

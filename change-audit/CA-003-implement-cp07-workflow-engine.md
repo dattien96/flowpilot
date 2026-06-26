@@ -43,3 +43,10 @@ Verified during the implementation pass:
 
 - The workflow-engine work now spans both admin-web and Supabase, so future changes should keep the route tree, gateway contract, and migrations in sync.
 - `/settings/integrations` is intentionally removed because MCP management now lives on the dedicated MCP pages.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: workflow-runtime
+source_doc_id: CP-07
+change_type: feature
+summary: Implement CP-07 Workflow Engine
+# --->8---

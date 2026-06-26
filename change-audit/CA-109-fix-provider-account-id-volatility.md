@@ -20,3 +20,10 @@ Replace random ID generation for auto-discovered default and managed provider ac
 
 - Existing users with random IDs in their `provider-accounts.json` are unaffected; their existing IDs are preserved on load.
 - New installations and any post-regeneration state will produce stable, repeatable IDs.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: ai-providers
+source_doc_id: CA-109
+change_type: fix
+summary: Fix Provider Account ID Volatility
+# --->8---

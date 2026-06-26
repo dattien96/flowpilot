@@ -26,3 +26,10 @@ Added a collapsible skills summary chip that appears directly below the chat inp
 
 - No expanded-state persistence across sessions.
 - The chip is only in normal chat mode; workflow/step mode is unaffected.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: chat-ui
+source_doc_id: CA-070
+change_type: feature
+summary: Desktop Chat Turn Skills Summary Chip
+# --->8---

@@ -44,3 +44,10 @@ These bugs caused poor UX after a gate block: spinner showing on unrelated chats
 - The block modal still fires exactly once on the live block: the first `flow_gate_violation` finds the run absent from `_gateBlockedRunIds`, sets `gateBlock`, then flags the run. Subsequent re-streams find it flagged → no re-pop. The flag clears on `turn_started` so a genuinely new block surfaces again.
 - CP-35 reprompt path (orchestration stream processes late turn events) is preserved — those events have seqs above the replay watermark, and the reprompt prompt is now actionable (BUG-140).
 - `Enforce` resolution/severity is unchanged; `RepromptPrompt` is an additive helper used only for the AI-facing prompt.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: context-regression-engine
+source_doc_id: BUG-137
+change_type: fix
+summary: Fix Gate Block UI Bugs and Correct r-bug Action
+# --->8---

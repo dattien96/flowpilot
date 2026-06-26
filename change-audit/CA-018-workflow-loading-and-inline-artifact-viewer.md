@@ -18,3 +18,10 @@ This audit covers the execution loading polish and inline artifact preview work 
 - Verified artifact file reads through the local runner flow.
 - Confirmed markdown links render without the invalid absolute-path prefix.
 
+
+# ---8<--- flowpilot:change-ledger
+feature_key: workflow-runtime
+source_doc_id: CA-018
+change_type: feature
+summary: Workflow Loading and Inline Artifact Viewer
+# --->8---

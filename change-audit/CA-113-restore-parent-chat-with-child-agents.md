@@ -45,3 +45,10 @@
 
 - Automated Drive coverage uses the repository fake; a real PC-A-to-PC-B restore remains the final manual smoke test.
 - Existing user edits in `AGENTS.md` and `CLAUDE.md` were preserved.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: agent-spawn
+source_doc_id: BUG-119
+change_type: feature
+summary: Restore Parent Chat With Child Agents
+# --->8---

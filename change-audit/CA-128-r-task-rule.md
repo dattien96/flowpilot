@@ -28,3 +28,10 @@ The same enforcement gap that existed for r-bug (AI completes a task but forgets
 - Trigger heuristic: `\bTask-\d+\b` regex on `FinalMessage` — same pattern as r-bug's message scan
 - FORMAT-REFERENCE guard on `HasTaskDoc` prevents scaffold-created templates from satisfying the predicate (proactive application of the BUG-141 lesson)
 - Reprompt text explicitly says "Do NOT edit the change-audit note" to avoid the AI misidentifying an existing doc as the solution
+
+# ---8<--- flowpilot:change-ledger
+feature_key: context-regression-engine
+source_doc_id: TASK-113
+change_type: feature
+summary: r-task Rule: Missing Task Doc Reprompt
+# --->8---

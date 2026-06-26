@@ -53,3 +53,10 @@ a built-in `Read` tool that matches the original instruction.
   Codex app-server source. Removing the always-empty field is correct regardless of suppression
   behavior.
 - Bug document: `requirements/09-BugFix/done/BUG-077-Codex-Skill-Prompt-Silently-Dropped-Wrong-Instruction.md`
+
+# ---8<--- flowpilot:change-ledger
+feature_key: skill-injection
+source_doc_id: TASK-065
+change_type: fix
+summary: Fix Codex Skill Prompt Drop and Provider-Neutral Instruction
+# --->8---

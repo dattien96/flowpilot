@@ -19,3 +19,10 @@ Improved the application grid layout to pin the sidebar and isolate scrollabilit
 ## Verification
 
 - Ran unit tests in `apps/admin-web` via `npm run test` (all tests passed successfully, including the newly added layout assertion).
+
+# ---8<--- flowpilot:change-ledger
+feature_key: project-nav
+source_doc_id: CA-012
+change_type: feature
+summary: Pin Sidebar and Isolate Content Scroll
+# --->8---

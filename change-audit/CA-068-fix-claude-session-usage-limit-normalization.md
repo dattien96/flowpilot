@@ -22,3 +22,10 @@ Record the follow-up Claude quota fix that extends usage-limit normalization int
 - GitNexus symbol impact tooling was not available in this thread, so required impact analysis and post-change detect-changes checks could not be executed.
 - This fix covers the Claude session/chat execution path in addition to the workflow-adapter path already addressed by BUG-051 and BUG-054.
 - The repository currently contains an untracked earlier audit file named `CA-067-fix-claude-usage-limit-message-trailing-login-phrase.md`; this new note intentionally uses `CA-068` to avoid colliding with the existing `CA-067` task audit numbering.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: ai-providers
+source_doc_id: BUG-054
+change_type: fix
+summary: Fix Claude Session Usage Limit Normalization
+# --->8---

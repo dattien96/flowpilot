@@ -26,3 +26,10 @@ Record the desktop parity fix for `requirements/10-Refactor/Migrate-Web-To-Deskt
 - GitNexus symbol impact tooling was not available in this thread, so required impact analysis and post-change detect-changes checks could not be executed.
 - This slice restores only the missing desktop connect action. Full account-management parity inside settings remains broader than this change.
 - Provider config mirroring for newly connected accounts is still tracked separately in `requirements/08-Task/todo/Task-027-Ai-Provider-Config-Mirror.md`.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: ai-providers
+source_doc_id: TASK-027
+change_type: feature
+summary: Desktop Provider Settings Connect Account
+# --->8---

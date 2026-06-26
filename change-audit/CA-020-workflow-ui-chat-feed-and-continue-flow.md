@@ -16,3 +16,10 @@ This audit covers the first workflow UI revamp that converted the run detail pag
 - Verified the chat-style layout renders step history in order.
 - Confirmed follow-up actions appear when the run is in a continueable state.
 
+
+# ---8<--- flowpilot:change-ledger
+feature_key: workflow-runtime
+source_doc_id: CA-020
+change_type: feature
+summary: Workflow UI Chat Feed and Continue Flow
+# --->8---

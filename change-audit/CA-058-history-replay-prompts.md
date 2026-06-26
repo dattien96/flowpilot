@@ -26,3 +26,10 @@
 
 - `go test ./internal/runner -count=1` was also run, but it fails on pre-existing environment/config requirements unrelated to this bug: Google Drive proxy auth setup and missing `powershell` on this machine.
 - The installed GitNexus CLI does not expose `detect_changes`; scope was checked with `git status --short` and `git diff`.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: chat-history
+source_doc_id: BUG-046
+change_type: feature
+summary: History Replay Restores User Prompts
+# --->8---

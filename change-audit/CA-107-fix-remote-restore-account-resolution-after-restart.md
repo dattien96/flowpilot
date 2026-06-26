@@ -27,3 +27,10 @@ Correct Drive-backed Remote Chats restore after a runner restart when the provid
 - GitNexus MCP tools were unavailable in this session, so impact analysis was performed manually.
 - Existing uncommitted BUG-091 restore conflict changes were preserved and validated by the targeted restore suite.
 - Recovery is intentionally exact-ID based; it does not choose the newest unrelated provider session.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: google-drive
+source_doc_id: BUG-092
+change_type: fix
+summary: Fix Remote Restore Account Resolution After Restart
+# --->8---

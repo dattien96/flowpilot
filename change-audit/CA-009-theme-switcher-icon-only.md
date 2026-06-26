@@ -16,3 +16,10 @@ Updated the `ThemeSwitcher` component to be icon-only to improve the sidebar app
 ## Verification
 
 - Ran unit tests in `apps/admin-web` via `npm run test` (all 131 tests passed successfully).
+
+# ---8<--- flowpilot:change-ledger
+feature_key: chat-ui
+source_doc_id: CA-009
+change_type: feature
+summary: Theme Switcher Icon-Only Update
+# --->8---

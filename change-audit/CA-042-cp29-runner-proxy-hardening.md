@@ -26,3 +26,10 @@ Closed the runner-side CP-29 gaps around proxy preflight, approval expiry, and a
 - Final review pass on `2026-06-09` tightened the rejected Google Drive approval test to assert the pending approval lookup and workflow-step join explicitly.
 - The proxy approval deadline now matches the current session deadline, so approvals on nearly expired sessions will expire quickly by design.
 - Runner-side tests now inject the in-memory secret store in CP-29 fixtures and do not touch the macOS keychain.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: google-drive
+source_doc_id: CP-29
+change_type: feature
+summary: CP-29 Runner Proxy Hardening
+# --->8---

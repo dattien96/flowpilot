@@ -82,3 +82,10 @@ Added `isCodexInjectedContext(text string) bool` — detects CLI-injected preamb
 ### Test Results
 
 `go test ./internal/runner -count=1` passed: 624 tests, 0 failures.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: chat-history
+source_doc_id: BUG-083
+change_type: feature
+summary: CA-101-fix-chat-resume-composed-prompt-and-codex-multi-rollout
+# --->8---

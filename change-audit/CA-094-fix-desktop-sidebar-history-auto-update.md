@@ -40,3 +40,10 @@ Rewrote `RunStatus.tsx` to remove the History button, its popover, the `useRef`/
 
 - The existing `_historyLoadSeq` stale-response guard (BUG-060 F-3) remains active and protects against overlapping `loadRunHistory` calls that the new polling may cause.
 - Polling cadence (3 s / 10 s) matches the admin-web active-session polling pattern. Adjust only after confirming server load.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: project-nav
+source_doc_id: BUG-078
+change_type: fix
+summary: Fix Desktop Sidebar History Auto-Update
+# --->8---

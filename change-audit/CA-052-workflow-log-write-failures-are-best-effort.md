@@ -15,3 +15,10 @@
 
 - `npx vitest run src/features/workflow-engine/workflow-start-runtime.test.ts`
 - `npm run build`
+
+# ---8<--- flowpilot:change-ledger
+feature_key: workflow-runtime
+source_doc_id: CA-052
+change_type: feature
+summary: Workflow Log Write Failures Are Best Effort
+# --->8---

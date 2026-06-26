@@ -39,3 +39,10 @@
 
 - The vitest ESM load failure is a pre-existing toolchain issue, out of scope here; it blocks component-level automated verification.
 - These fixes correct three runtime defects in the prior agent-panel work (BUG-130/131, Task-087).
+
+# ---8<--- flowpilot:change-ledger
+feature_key: agent-spawn
+source_doc_id: BUG-132
+change_type: feature
+summary: Agent Panel Runtime Fixes
+# --->8---

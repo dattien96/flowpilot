@@ -78,3 +78,10 @@ After the fix, verify:
 ## Note
 
 This was not a frontend SDK bug and not a missing custom access-token wrapper issue like the Go backend pattern used in `BeMplan`. In `flowpilot`, the immediate failure was caused by missing RLS policies on the Supabase table itself.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: supabase-config
+source_doc_id: CA-001
+change_type: feature
+summary: Supabase Table Policies
+# --->8---

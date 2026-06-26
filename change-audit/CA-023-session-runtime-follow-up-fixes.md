@@ -15,3 +15,10 @@ This audit captures the follow-up fixes and supporting documentation added after
 - Verified the session runtime tests after the follow-up fix.
 - Confirmed the UI surfaces the correct session state for each step.
 
+
+# ---8<--- flowpilot:change-ledger
+feature_key: workflow-runtime
+source_doc_id: CA-023
+change_type: feature
+summary: Session Runtime Follow-Up Fixes
+# --->8---

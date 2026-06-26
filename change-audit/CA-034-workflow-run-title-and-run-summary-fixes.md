@@ -15,3 +15,10 @@ This audit captures the run title and summary fixes that made the workflow histo
 - Verified the run detail header resolves from prompt data when available.
 - Confirmed the UUID fallback only appears when no prompt text can be derived.
 
+
+# ---8<--- flowpilot:change-ledger
+feature_key: workflow-runtime
+source_doc_id: CA-034
+change_type: feature
+summary: Workflow Run Title and Summary Fixes
+# --->8---

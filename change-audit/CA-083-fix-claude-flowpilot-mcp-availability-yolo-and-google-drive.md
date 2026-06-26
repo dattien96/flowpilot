@@ -87,3 +87,10 @@ equivalent strict flag, so it reads `config.toml` natively — hence the asymmet
 - GitNexus interactive tools (`gitnexus_impact`/`context`/`query`) were not available in this
   thread; edits relied on direct call-graph inspection (`SendTurn` → `claudeArgs` →
   `writeClaudeMCPConfig` → `provider_registry` factory → `claudeProcessPool`).
+
+# ---8<--- flowpilot:change-ledger
+feature_key: mcp-tools
+source_doc_id: BUG-073
+change_type: fix
+summary: Fix Claude FlowPilot MCP Availability: ask_user in YOLO=on + Google Drive at Runtime
+# --->8---

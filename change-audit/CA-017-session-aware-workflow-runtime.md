@@ -36,3 +36,10 @@ Introduce a session-aware workflow execution policy that optimizes runtime execu
 ## Residual Notes
 
 - Local runner sessions are preserved in memory during runner lifetime. If the local runner is killed or restarted, active provider processes are torn down, but subsequent actions on the UI automatically trigger graceful recovery and baseline a fresh session.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: workflow-runtime
+source_doc_id: CA-017
+change_type: feature
+summary: Session-Aware Workflow Runtime
+# --->8---

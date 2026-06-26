@@ -26,3 +26,10 @@
 
 - The desktop package still lacks a first-class frontend test runner, so this regression guard currently uses a focused reducer test compiled with one-off TypeScript output.
 - GitNexus MCP tooling was not available in this session, so symbol impact and change-scope checks were done with local code search and diff inspection instead of graph analysis.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: chat-history
+source_doc_id: CA-059
+change_type: fix
+summary: Fix Desktop Thinking Row Persistence
+# --->8---

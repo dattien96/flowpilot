@@ -26,3 +26,10 @@ This issue was caused by Vite's dev server middleware (`flowPilotApiRuntime` in 
 
 - Same-origin API calls made by the browser in the dev server now correctly execute the local runner and other backend mocks configured in `src/app/api/...`.
 - No changes were made to production Next.js API routing.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: workflow-runtime
+source_doc_id: CA-006
+change_type: fix
+summary: Fix Local Runner API Proxy in Vite Dev Server
+# --->8---

@@ -26,3 +26,10 @@ Record the desktop `/projects` parity pass that reworked the `Projects` settings
 - GitNexus symbol impact tooling was not available in this thread, so required impact analysis and post-change detect-changes checks could not be executed.
 - This slice closes only the project-page review section; workflows, teams, Google Drive, and broader artifact parity are still separate follow-up work.
 - The desktop settings shell still uses in-tab view state rather than full nested routes for project create/detail subviews.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: project-nav
+source_doc_id: CA-066
+change_type: feature
+summary: Desktop Projects Registry Detail Parity
+# --->8---

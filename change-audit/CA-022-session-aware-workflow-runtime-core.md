@@ -16,3 +16,10 @@ This audit covers the core session-aware runtime work that changed how workflow 
 - Verified the new session lifecycle unit tests in the Go runner.
 - Confirmed the frontend runtime can resolve the correct session policy for shared and isolated steps.
 
+
+# ---8<--- flowpilot:change-ledger
+feature_key: workflow-runtime
+source_doc_id: CA-022
+change_type: feature
+summary: Session-Aware Workflow Runtime Core
+# --->8---

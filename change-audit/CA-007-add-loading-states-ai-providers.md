@@ -24,3 +24,10 @@ Added visual loading feedback when refreshing the provider inventory or installi
 ## Residual Notes
 
 - Visual transitions are handled cleanly with Lucide icons (`RefreshCw`) and standard Shadcn button styling.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: ai-providers
+source_doc_id: CA-007
+change_type: feature
+summary: Visual Loading States and UI Sync for AI Providers settings
+# --->8---

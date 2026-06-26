@@ -36,3 +36,10 @@
 
 - The vitest ESM load failure is a pre-existing toolchain/config issue, out of scope for these fixes.
 - YOLO-off parents still spawn YOLO-off children that request approval (gating preserved).
+
+# ---8<--- flowpilot:change-ledger
+feature_key: agent-spawn
+source_doc_id: BUG-129
+change_type: feature
+summary: Agent Spawn UX Hardening
+# --->8---

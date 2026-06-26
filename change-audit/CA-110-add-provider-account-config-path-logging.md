@@ -18,3 +18,10 @@ Add diagnostic log lines to `loadProviderAccountState` and `saveProviderAccountS
 
 - No log on successful reads to avoid spam on every `ListProviderAccounts` call.
 - Log prefix `[provider-accounts]` is grep-friendly.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: ai-providers
+source_doc_id: CA-110
+change_type: feature
+summary: Add Provider Account Config Path Logging
+# --->8---

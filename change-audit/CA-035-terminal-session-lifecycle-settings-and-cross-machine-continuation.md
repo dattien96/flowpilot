@@ -29,3 +29,10 @@ This audit records the full CP-21 terminal-session change set, not just Task-02b
 - The persisted checkpoint format is prompt/output history stored in `workflow_run_sessions.metadata_json`; it does not yet include a separate rolling summary or artifact reference replay.
 - Cross-machine recovery still depends on the bootstrap prompt being sufficient for the conversation length and complexity.
 - The full unstaged change set has a broad blast radius across settings, workflow runtime, API routes, local-runner session lifecycle, and Supabase schema.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: terminal-session
+source_doc_id: CP-21
+change_type: feature
+summary: Terminal Session Lifecycle, Settings, and Cross-Machine Continuation
+# --->8---

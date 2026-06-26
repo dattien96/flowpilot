@@ -41,3 +41,10 @@
 
 - Delete is still local-only. Synced Google Drive chat-session artifacts are not removed here.
 - Provider-file deletion remains best-effort; session/history cleanup still completes if a rollout file is already missing.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: agent-spawn
+source_doc_id: CA-114
+change_type: feature
+summary: Delete Chat Cascades To Child Agents
+# --->8---

@@ -36,3 +36,10 @@
 
 - History is in-memory and resets with the local runner process, matching the current interactive-run state boundary.
 - `npx gitnexus detect_changes --scope all` is documented in `AGENTS.md`, but this installed CLI returns `unknown command`; scope was checked with `git status --short` and `git diff --name-only` instead.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: project-nav
+source_doc_id: TASK-037
+change_type: feature
+summary: Desktop Project Run History Popover
+# --->8---

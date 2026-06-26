@@ -36,3 +36,10 @@ Update the step definitions supported model check constraint in Supabase databas
 ## Residual Notes
 
 - The user must apply the migration (`supabase db push` or equivalent in their local/staging environment) to reflect the changes in the database.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: ai-providers
+source_doc_id: CA-036
+change_type: feature
+summary: Update Supported Models Constraint
+# --->8---

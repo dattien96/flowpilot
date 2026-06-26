@@ -34,3 +34,10 @@ Tightened the CP-29 Google Drive proxy MCP path so provider setup, MCP preflight
 - The proxy server now uses artifact-sync stored Google credentials, but until explicit run/project scoping is passed into the proxy process it only auto-selects a single connected project. If more than one Google Drive artifact-sync connection is present locally, the proxy returns a clear error instead of guessing.
 - CP-29 is still only partially delivered beyond the readiness and provider-config slice. Manual write approval enforcement, rejection handling, approval UI, write audit artifacts, and full end-to-end validation coverage remain open work.
 - The GitNexus MCP impact/detect tools were not exposed in this tool environment, so scope verification used repo-local search plus focused test coverage after re-running `npx gitnexus analyze`.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: google-drive
+source_doc_id: CP-29
+change_type: fix
+summary: Fix Google Drive Proxy Readiness
+# --->8---

@@ -86,3 +86,10 @@
 - Task-044 T-8 (desktop unit tests for mode switching, ChatInput canSend) and Go HTTP tests for normal-chat start validation are not included in this pass.
 - Claude-specific reasoning values (`Max`, `Extra`, `Ultracode`) are out of scope pending canonical CLI-flag confirmation; the base four (`low|medium|high|xhigh`) are wired.
 - GitNexus tools were not exposed in this session; impact analysis was done by local code inspection.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: chat-ui
+source_doc_id: BUG-060
+change_type: fix
+summary: Desktop Chat Mode Split And BUG-060 History Fix
+# --->8---

@@ -18,3 +18,10 @@ Mirror the BUG-092 stale-account recovery fallback into `BuildChatSessionSyncMan
 
 - Recovery is exact-session-ID based; it never selects an unrelated session file.
 - `account_unavailable` is still returned when no same-provider home contains the exact session file.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: google-drive
+source_doc_id: BUG-092
+change_type: fix
+summary: Fix Sync-To-Drive Stale Account Recovery
+# --->8---

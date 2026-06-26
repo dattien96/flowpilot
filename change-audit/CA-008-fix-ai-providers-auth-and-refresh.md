@@ -36,3 +36,10 @@ Also added the ability to trigger provider authentication commands in a new nati
 
 - Ran `go test ./...` in the `apps/local-runner` module (all CLI and Runner tests passed).
 - Executed unit tests in `apps/admin-web` via `npm run test` (all 131 tests passed successfully).
+
+# ---8<--- flowpilot:change-ledger
+feature_key: ai-providers
+source_doc_id: CA-008
+change_type: fix
+summary: Fix AI Providers Authentication and Refresh Flows
+# --->8---

@@ -22,3 +22,10 @@ Record the follow-up desktop account UX change that adds `Connect New Account` t
 - GitNexus symbol impact tooling was not available in this thread, so required impact analysis and post-change detect-changes checks could not be executed.
 - This change improves the quick-access dashboard modal only; broader account-management parity is still a separate decision.
 - Provider config mirroring for newly connected accounts is still tracked by `requirements/08-Task/todo/Task-027-Ai-Provider-Config-Mirror.md`.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: ai-providers
+source_doc_id: TASK-027
+change_type: feature
+summary: Desktop Provider Modal Connect Account
+# --->8---

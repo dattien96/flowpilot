@@ -28,3 +28,10 @@ This change aims to complete both features to ensure accurate, context-rich prom
 
 - **Sub-Agent Execution is Still Hint-Only:** The `subagent` field defined in step definitions is currently rendered only as a textual hint (e.g. `Subagent: code-reviewer`) in the prompt. It does not enforce a dedicated sub-agent loop or separate CLI profile override. This requires a product direction decision before implementation (Option B: CLI Profiles vs Option C: Full Agent Loop).
 - The `supabase db reset` command requires Docker Desktop to apply the new migration. The migration file is committed, so the DB will automatically be seeded upon the next local startup.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: skill-injection
+source_doc_id: CP-09
+change_type: feature
+summary: Inject Skill Content and Seed Step-Specific Prompt Bases
+# --->8---

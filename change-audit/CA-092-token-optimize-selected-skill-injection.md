@@ -43,3 +43,10 @@ are preserved.
 - Skill files without a `description:` frontmatter key produce no `> …` line in the injected block;
   the path pointer alone is still actionable for the AI.
 - Task document: `requirements/08-Task/done/Task-065-Token-Optimize-Selected-Skill-Injection.md`
+
+# ---8<--- flowpilot:change-ledger
+feature_key: skill-injection
+source_doc_id: BUG-076
+change_type: feature
+summary: Token-Optimize Selected Skill Injection
+# --->8---

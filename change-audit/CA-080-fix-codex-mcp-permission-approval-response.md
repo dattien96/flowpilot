@@ -29,3 +29,10 @@
 
 - The desktop approval DTO was not expanded to show the raw permission-profile object; the current approval card still shows provider-neutral command/cwd/reason fields.
 - The GitNexus CLI does not expose the MCP-only `gitnexus_detect_changes()` command in this session, so pre-commit detect-changes was not run.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: mcp-tools
+source_doc_id: BUG-070
+change_type: fix
+summary: Fix Codex MCP Permission Approval Response
+# --->8---

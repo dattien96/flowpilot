@@ -23,3 +23,10 @@ Correct Claude account-switch documentation and fix provider-neutral Remote Chat
 
 - Claude account choice is deterministic by slot when quota telemetry is unavailable; it is not a quota ranking.
 - The repository Phase 1 Node test script still has environment/path resolution failures unrelated to this change.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: cross-provider-handoff
+source_doc_id: TASK-018
+change_type: fix
+summary: Fix Cross-Provider Chat Parity Gaps
+# --->8---

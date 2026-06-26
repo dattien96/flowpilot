@@ -33,3 +33,10 @@ Fix local chat deletion so Codex chats remove the full local rollout chain acros
 
 - Google Drive chat-session sync artifacts are not deleted by this local delete path.
 - Provider-file deletion remains best-effort by design; history removal still succeeds even if a file cannot be removed.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: chat-history
+source_doc_id: CA-102
+change_type: fix
+summary: Fix Delete Chat Codex Rollout Cleanup
+# --->8---

@@ -21,3 +21,10 @@
 ## Residual Notes
 
 - None.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: workflow-runtime
+source_doc_id: CA-049
+change_type: feature
+summary: Workflow Runs Detail Page UX Refinements
+# --->8---

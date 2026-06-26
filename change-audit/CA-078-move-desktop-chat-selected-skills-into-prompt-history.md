@@ -21,3 +21,10 @@ Desktop chat renderer state and timeline UI in `apps/desktop-flowpilot`.
 
 - This slice preserves prompt-owned skill history during the live desktop session.
 - Replayed run history still depends on the event stream payload shape and was not expanded here to carry prompt skill names.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: skill-injection
+source_doc_id: CA-078
+change_type: feature
+summary: Move Desktop Chat Selected Skills Into Prompt History
+# --->8---

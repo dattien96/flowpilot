@@ -24,3 +24,10 @@
 
 - A full live desktop Claude turn still depends on a valid Claude account or `ANTHROPIC_API_KEY` and should be smoke-tested in the user's authenticated environment.
 - GitNexus MCP tooling was not available in this thread, so impact and affected-scope checks were performed with local search, targeted tests, and diff inspection.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: ai-providers
+source_doc_id: BUG-050
+change_type: fix
+summary: Fix Desktop Claude Provider Run Start
+# --->8---

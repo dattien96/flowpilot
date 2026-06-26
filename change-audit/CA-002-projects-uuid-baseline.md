@@ -67,3 +67,10 @@ After applying the migration, verify:
 ## Note
 
 This is a compatibility migration, not a full schema cleanup. The legacy text columns are intentionally retained so the app and seed data can transition safely before a later cleanup migration removes them.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: supabase-config
+source_doc_id: CP-04
+change_type: feature
+summary: Projects UUID Baseline
+# --->8---

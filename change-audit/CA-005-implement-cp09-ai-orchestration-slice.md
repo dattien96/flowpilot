@@ -52,3 +52,10 @@ Verified outcomes:
 - The implementation intentionally avoided widening the shared workflow-engine gateway because `createGatewayBundle` and related factory surfaces have CRITICAL blast radius.
 - Router generation still reports pre-existing warnings for route-adjacent test files without `Route` exports.
 - Existing `mcp-servers` tests still emit React `act(...)` warnings unrelated to this CP-09 slice.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: ai-providers
+source_doc_id: CP-09
+change_type: feature
+summary: Implement CP-09 AI Orchestration Slice
+# --->8---

@@ -37,3 +37,10 @@ The full cancel chain already existed:
 
 - The existing "Stop" text button in `RunStatus.tsx:77` (header bar) still exists alongside the new composer stop button — two stop affordances now visible when AI is active. A follow-up task (Task-065 candidate) should hide or remove the header-bar Stop button
 - The stop is turn-scoped: it cancels only the current in-flight turn, not the whole run/thread. The run stays alive and the user can send another message after stopping
+
+# ---8<--- flowpilot:change-ledger
+feature_key: chat-ui
+source_doc_id: TASK-065
+change_type: feature
+summary: Desktop ChatInput Send→Stop Button Transform
+# --->8---
