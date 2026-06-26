@@ -133,6 +133,26 @@ func TestBuild_AddsLedgerKeysNotInFeatureKeys(t *testing.T) {
 	}
 }
 
+func TestBuild_SupersededFeatureKeyUsesSuccessor(t *testing.T) {
+	repoDir := t.TempDir()
+	dotDir := t.TempDir()
+
+	writeTempFeatureKeys(t, repoDir, `- old-chat — superseded by chat-ui
+- chat-ui — Chat UI
+`)
+
+	cat, err := Build(repoDir, &stubLedger{}, dotDir)
+	if err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+	if _, ok := cat.Get("old-chat"); ok {
+		t.Fatal("superseded key should not be offered as an active feature")
+	}
+	if _, ok := cat.Get("chat-ui"); !ok {
+		t.Fatal("successor key should be active")
+	}
+}
+
 // --- ResolveFeature ---
 
 func catalogWithFeatures(features ...Feature) *Catalog {
