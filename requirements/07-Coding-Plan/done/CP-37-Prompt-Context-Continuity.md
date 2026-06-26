@@ -230,9 +230,26 @@ Let say in run-5308 (1 chat) you can chat many turns, only the latest turn keep 
 
 **E3 — unrelated substantive prompt drops context.** In the same `calc-core` chat send **`write a haiku about the sea`** → the injected blocks **disappear**. A substantive off-topic prompt is *not* low-signal, so it does not inherit calc-core (contrast E1, where `try again` *does* inherit). This is the distinction: low-signal → inherit; substantive-but-unresolved → drop.
 
-*Covers: `V-161-10` (record-path inherit), `V-161-11` (inject fallback + pivot + low-signal/substantive split).*
+**E4 — low-signal battery (each inherits the established feature).** In an established `calc-core` chat (after at least one substantive `calc-core` turn), send each of these as its own turn and check `last-prompt.txt` each time:
 
-#### Test F — Generation triggers (Task-163)
+| Prompt | Why it's low-signal | Expected on the turn |
+|--------|---------------------|----------------------|
+| `continue` / `try again` / `retry` / `do it` / `go on` / `proceed` | curated continuation phrase | injects the `calc-core` blocks (inherited) |
+| `ok` / `yes` / `yep` / `sure` | curated acknowledgement | injects the `calc-core` blocks |
+| `no` | ≤ 3 words, not a feature | injects the `calc-core` blocks |
+| `hi` | ≤ 3 words, not a feature | injects the `calc-core` blocks |
+
+For **all** of them the `## Prior work on "calc-core"` / `## Prior discussion on "calc-core"` blocks must still appear (resolution scans back to the last substantive `calc-core` prompt), and a triggered summary still records under **`calc-core`** (never `unknown`). The rule under test: **low-signal = a curated continuation/ack phrase OR ≤ 3 words → inherit the running feature.**
+
+**Two boundaries to confirm the heuristic isn't over-reaching:**
+- **Fresh chat, low-signal first turn.** Open a **new** chat and make the *first* prompt `hi` (or `continue`) → injects **nothing** (no prior turn to inherit from; `last-prompt.txt` is just the bare prompt). Low-signal only *inherits* — it never invents a feature.
+- **Longer off-topic (> 3 words).** `write a haiku about the sea` (E3) and e.g. `tell me a joke about cats` → **drop** the blocks. They exceed the ≤ 3-word bar and match no feature, so they are treated as a topic change, not a continuation.
+
+> Note on `hi`: a greeting in an established calc-core chat **does** inherit calc-core (it's ≤ 3 words). That's intended — it keeps continuity and is harmless (the context is just available, the model can ignore it). The case you saw earlier in `run-5611` was a *handoff* turn, not a `hi` turn — a different path, already fixed.
+
+*Covers: `V-161-10` (record-path inherit), `V-161-11` (inject fallback + pivot + low-signal/substantive split + fresh-chat-no-inherit). Unit: `isLowSignalPrompt` battery / `TestInjectFeatureHistoryFallsBackToPriorTurnFeature` / `TestInjectFeatureHistoryDropsContextOnUnrelatedPrompt`.*
+
+#### Test F- (Passed)  — Generation triggers (Task-163)
 
 **F1 - (OK) — manual "Gen summary" button.** With a `calc-core` chat **idle/completed**, the **Gen summary** button near the YOLO toggle is enabled (disabled while running). Press → system line "Chat summary updated." and the `calc-core` row is written/refreshed. Press again with no new turn → "Chat summary unchanged" (hash match, no model call).
 
@@ -243,7 +260,7 @@ Let say in run-5308 (1 chat) you can chat many turns, only the latest turn keep 
 OK, for each run -> only latest turn was overrided and keep
 Let say in run-5308 (1 chat) you can chat many turns, only the latest turn keep for this run
 
-**F4 — startup backfill.** Stop the runner, delete the `calc-core` row, restart (`serve`) → the one-shot background scan regenerates it without user action; hash-matched rows are left untouched.
+**F4- (OK) — startup backfill.** Stop the runner, delete the `calc-core` row, restart (`serve`) → the one-shot background scan regenerates it without user action; hash-matched rows are left untouched.
 
 *Covers: `V-161-12` (manual button), `V-161-13` (idle timer + reset), `V-161-15` (upsert + hashed state_key), `V-161-16` (startup backfill).*
 

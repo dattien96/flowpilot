@@ -832,6 +832,32 @@ func TestInjectFeatureHistoryFallsBackToPriorTurnFeature(t *testing.T) {
 	}
 }
 
+// The low-signal battery from CP-37 Test E4: curated continuation/ack phrases and
+// any ≤3-word non-feature prompt are low-signal (inherit the running feature);
+// longer off-topic prompts are not (drop context).
+func TestIsLowSignalPromptBattery(t *testing.T) {
+	low := []string{
+		"continue", "try again", "retry", "do it", "go on", "proceed",
+		"ok", "yes", "yep", "sure", "no", "hi", "", "  ok  ", "OK!", "Continue.",
+	}
+	for _, p := range low {
+		if !isLowSignalPrompt(p) {
+			t.Errorf("isLowSignalPrompt(%q) = false, want true (low-signal → inherit)", p)
+		}
+	}
+	high := []string{
+		"write a haiku about the sea",
+		"tell me a joke about cats",
+		"add a safe arithmetic divide to calc-core",
+		"now add number formatting helpers",
+	}
+	for _, p := range high {
+		if isLowSignalPrompt(p) {
+			t.Errorf("isLowSignalPrompt(%q) = true, want false (substantive → resolve/drop)", p)
+		}
+	}
+}
+
 // A substantive but unrelated prompt must NOT inherit the prior feature's context
 // — only low-signal continuations do. "write a haiku about the sea" after a
 // resolved feature turn injects nothing (CP-37 Test A negative control holds even
