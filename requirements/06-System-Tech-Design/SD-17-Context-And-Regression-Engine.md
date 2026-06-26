@@ -867,6 +867,8 @@ func resolveTurnsFeature(turns []transcriptTurn, catalog *Catalog) (Candidate, b
 
 Net effect: continuation/retry turns inherit the conversation's established feature, so they keep getting history injected and contribute to the summary — while a real topic change still re-resolves.
 
+> **Implemented refinement (CP-37 Test E4 — "Continuations-only").** The fallback is gated to **explicit continuation phrases only** (`isContinuationPrompt`: `continue` / `try again` / `do it` / `go on` / `proceed` / …), *not* to every prompt that fails `TopCandidate(5.0)`. A greeting or bare acknowledgement (`hi`, `ok`, `yes`, `no`) does **not** inherit — it injects nothing and is dropped from bucketing — so social/unrelated chatter (the `"hi claude, are you handsome???"` case above) never drags in stale feature context. There is deliberately **no blind word-count fallback**. Gate reprompts and cross-provider handoff envelopes are handled the same way: system prompts whose process-describing text (it names feature keys, embeds prior conversation) must never drive resolution — they inherit the established feature instead, and the handoff's first turn is seeded with the source feature resolved from the clean source transcript.
+
 #### 6. Hit-limit / rate-limit case
 This is fully covered, and it's the important one:
 
@@ -896,7 +898,7 @@ Today: **every completed turn re-summarizes the whole transcript and *appends* a
 | Issue | Cause | Fix |
 |---|---|---|
 | **2. File growth** | append-per-turn → N lines per chat | **Upsert by `(run_id, feature_key)`** — one rolling line per chat-session per feature, rewritten in place. The timeline still shows the last 3 *chats*, which is the actual intent ("prior discussions"), not the last 3 turns. |
-| **3. Feature mixing** | the summary is fed the *entire* transcript, so a `chat-ui` turn's summary includes earlier `calc-core` discussion | **Bucket turns by feature** (resolve each turn; low-signal turns attach to the running feature) and summarize **only the current feature's turns**. `chat-ui`'s summary then contains only `chat-ui`. |
+| **3. Feature mixing** | the summary is fed the *entire* transcript, so a `chat-ui` turn's summary includes earlier `calc-core` discussion | **Bucket turns by feature** (resolve each turn; explicit *continuation* turns attach to the running feature, while greetings/acks/off-topic are dropped) and summarize **only the current feature's turns**. `chat-ui`'s summary then contains only `chat-ui`. |
 | **1. One model call per turn** | "rolling" = refresh on every change | *Tradeoff — your call below.* |
 
 Fixes #2 and #3 are unambiguous correctness wins — I'll implement those regardless (upsert + per-feature bucketing, with the `state_key` then keyed to the *feature's* turns so a `chat-ui` turn doesn't needlessly refresh `calc-core`).

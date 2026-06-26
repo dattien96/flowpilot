@@ -23,7 +23,7 @@
 - **Refines, does not replace, Task-161.** Task-161 delivered the per-feature chat-discussion timeline, but generated the summary **per turn** (one cheap-model call per content-changing turn) and **appended** a line each time. In real use that surfaced three costs: (1) a model call on every turn, (2) `chat_summary.ndjson` growing one line per turn, and (3) cross-feature mixing when a single chat spanned two features (the summary was fed the whole transcript). This task fixes all three.
 - **Three deliberate triggers instead of per-turn.** Generation now fires from: a **5-minute idle timer** (any new turn resets it to zero), a **manual "Gen summary" button** (generate-now, bypassing the wait), and a **one-shot startup background scan** (backfill chats with no summary or a stale hash). Per-turn generation is removed.
 - **One rolling row per `(run, feature)`, upserted.** Summaries are rewritten in place (atomic temp+rename), so a chat keeps one line per feature regardless of length; the timeline still surfaces the most-recent chats per feature.
-- **Per-feature bucketing — no mixing.** Each turn is bucketed to the feature it belongs to (low-signal turns attach to the running feature); a feature's summary is built only from its own turns.
+- **Per-feature bucketing — no mixing.** Each turn is bucketed to the feature it belongs to (explicit continuation turns attach to the running feature; greetings/acks/off-topic are dropped, not bucketed); a feature's summary is built only from its own turns.
 - **Hashed `state_key`.** The transcript fingerprint is a SHA-256 (was the raw concatenated transcript), so the dedup key is O(1) in size and the file no longer embeds the whole conversation on every line.
 - **Best-effort and non-fatal throughout.** Every trigger degrades to the deterministic heuristic summarizer (and to no-op) on any failure; nothing blocks a turn, a switch, or boot.
 
@@ -37,7 +37,7 @@
 - `T-2` **Manual generate endpoint + button.** `POST /client/workflow-runs/{runId}/chat-summary` generates immediately (supersedes the pending timer), returns `409 chat_summary_run_busy` while a turn is active, and is a **no-op when the stored hash already matches**. The desktop renders a "Gen summary" button near the YOLO toggle, enabled only when the chat is idle/completed.
 - `T-3` **Startup backfill scan.** One background goroutine at `serve` boot walks persisted root chat runs and generates any missing/stale summary (hash-match → skip; live in-memory runs → skip, owned by their timer/button).
 - `T-4` **Upsert per `(run, feature)`.** Replace the append model with `ChatSummaryLedger.UpsertForRun` (rewrite the matching row, atomic). One rolling summary per chat-session per feature.
-- `T-5` **Per-feature bucketing.** `bucketTurnsByFeature` groups turns by resolved feature (low-signal turns inherit the running feature); the summary uses only the current feature's turns, and `state_key` is scoped to those turns.
+- `T-5` **Per-feature bucketing.** `bucketTurnsByFeature` groups turns by resolved feature (explicit continuation turns inherit the running feature; greetings/acks/off-topic are dropped); the summary uses only the current feature's turns, and `state_key` is scoped to those turns.
 - `T-6` **Hashed `state_key`.** `transcriptStateKey = runID + ":" + sha256(featureTurns)`.
 
 ### Constraints
@@ -79,7 +79,7 @@ Task-161 shipped the per-feature chat-discussion timeline but generated the summ
 - `T-2` `runner` + `desktop` — add `POST /client/workflow-runs/{runId}/chat-summary` → `generateChatSummaryNow`: 409 while running, bypass the timer, no-op on hash match, returns `{runId, generated, skipped, reason}`. Desktop: `ChatSummaryResult` type, `generateChatSummary` client method + store action, and a "Gen summary" button near the YOLO toggle (enabled only when idle/completed).
 - `T-3` `runner`/`cli` — `ScanPersistedChatsForSummaries(ctx)` enumerates persisted root chat runs (`SessionIndexReader`), loads + seeds each, and runs the summary core (hash-match → skip; live run → skip). Wired as one background goroutine in the `serve` command.
 - `T-4` `changeledger` — `ChatSummaryLedger.UpsertForRun` replaces the `(run_id, feature_key)` row and atomically rewrites the file (temp + rename).
-- `T-5` `runner`/`featurecatalog` — `bucketTurnsByFeature` groups turns per resolved feature (low-signal turns attach to the running feature); `runChatSummaryJob` summarizes only the current feature's turns and scopes `state_key` to them.
+- `T-5` `runner`/`featurecatalog` — `bucketTurnsByFeature` groups turns per resolved feature (explicit continuation turns attach to the running feature; greetings/acks/off-topic are dropped, not bucketed); `runChatSummaryJob` summarizes only the current feature's turns and scopes `state_key` to them.
 - `T-6` `runner` — `transcriptStateKey` returns `runID + ":" + sha256hex(latestTranscriptState(featureTurns))`.
 - `T-7` tests — `TestGenerateChatSummaryNow` (busy/now/no-op), `TestBucketTurnsByFeatureSeparatesFeatures` (no mixing), `TestRecordChatSummaryRefreshesInPlaceAfterNewTurn` (upsert + hashed key), plus the existing record/inject/handoff suite stays green.
 
@@ -108,7 +108,7 @@ All items are true for Task-163:
 - [x] **DOD-2 (manual control):** `POST …/chat-summary` generates now (bypassing the wait), returns 409 while running, and is a no-op on hash match; the desktop button is enabled only when idle/completed.
 - [x] **DOD-3 (startup scan):** one boot-time background goroutine backfills missing/stale summaries, skipping up-to-date and live runs.
 - [x] **DOD-4 (upsert):** summaries are stored one row per `(run, feature)`, atomically rewritten in place — no per-turn growth.
-- [x] **DOD-5 (no mixing):** turns are bucketed per feature; a feature's summary uses only its own turns; low-signal turns inherit the running feature.
+- [x] **DOD-5 (no mixing):** turns are bucketed per feature; a feature's summary uses only its own turns; explicit continuation turns inherit the running feature, while greetings/acknowledgements/off-topic turns are dropped (not bucketed).
 - [x] **DOD-6 (hashed state_key):** `state_key` is a SHA-256 of the feature's transcript turns, O(1) in size, refreshing on change and matching (skip) when unchanged.
 - [x] **DOD-7 (non-fatal + reuse):** every trigger degrades to the heuristic and to no-op on failure, never blocking a turn/switch/boot, and reuses Task-161's summarizer unchanged.
 - [x] **DOD-8 (tests):** `TestGenerateChatSummaryNow`, `TestBucketTurnsByFeatureSeparatesFeatures`, `TestRecordChatSummaryRefreshesInPlaceAfterNewTurn` pass; the runner + non-runner CP-37 sweeps and desktop typecheck are green.
