@@ -115,6 +115,9 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 			)
 			interactive.AttachRunner(instance)
 			interactive.RegisterInteractiveRoutes(mux)
+			// Backfill rolling chat summaries for persisted chats missing one (or
+			// with a stale transcript hash) — one best-effort background pass.
+			go interactive.ScanPersistedChatsForSummaries(ctx)
 			mux.HandleFunc("GET /client/projects/{projectId}/chat-sync/google-drive/status", func(w http.ResponseWriter, r *http.Request) {
 				status, err := instance.GetGoogleDriveChatSyncConnectionStatus(r.PathValue("projectId"), r.URL.Query().Get("sessionId"))
 				if err != nil {
