@@ -33,3 +33,10 @@ This audit captures several UI/UX and backend enhancements made to improve the e
 
 - The `/files/read` endpoint currently relies on the user restarting their `local-runner` to recompile the Go backend. Future iterations may want to build automatic version enforcement or backend reloading.
 - The path matching logic is somewhat naive (`/abs/path/` and `file:///` stripping). We may want a more robust URI parser if the `local-runner` CLI alters its output format in the future.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: workflow-runtime
+source_doc_id: CA-016
+change_type: feature
+summary: Workflow Runs UI Polish
+# --->8---

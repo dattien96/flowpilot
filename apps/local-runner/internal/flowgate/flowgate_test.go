@@ -9,10 +9,10 @@ import (
 
 func TestDefaultRules(t *testing.T) {
 	rules := DefaultRules()
-	if len(rules) != 6 {
-		t.Fatalf("expected 6 rules, got %d", len(rules))
+	if len(rules) != 7 {
+		t.Fatalf("expected 7 rules, got %d", len(rules))
 	}
-	ids := []string{"r-ca", "r-bug", "r-task", "r-tests", "r-reg", "r-dep"}
+	ids := []string{"r-ca", "r-fk", "r-bug", "r-task", "r-tests", "r-reg", "r-dep"}
 	for i, id := range ids {
 		if rules[i].ID != id {
 			t.Errorf("rules[%d].ID = %q, want %q", i, rules[i].ID, id)
@@ -125,6 +125,60 @@ func TestEvaluateNoCodeChanges(t *testing.T) {
 	for _, v := range violations {
 		if v.Rule.ID == "r-ca" {
 			t.Errorf("unexpected r-ca violation with no code changes")
+		}
+	}
+}
+
+func TestEvaluateCommitFeatureKeyMissingSkipsDocsOnlyTurns(t *testing.T) {
+	tr := TurnResult{
+		GitDiff: []ChangedFile{
+			{Path: "requirements/08-Task/done/Task-001.md", Status: "A"},
+		},
+		CommitSubjects:   []string{"[Task][missing-key][docs] add docs"},
+		KnownFeatureKeys: []string{"chat-ui"},
+	}
+	violations := Evaluate(tr, DefaultRules())
+	for _, v := range violations {
+		if v.Rule.ID == "r-fk" {
+			t.Fatal("unexpected r-fk violation for docs-only turn")
+		}
+	}
+}
+
+func TestEvaluateCommitFeatureKeyMissingRejectsUnknownKey(t *testing.T) {
+	tr := TurnResult{
+		GitDiff: []ChangedFile{
+			{Path: "internal/chat/input.go", Status: "M"},
+		},
+		WrittenPaths:     []string{"internal/chat/input.go"},
+		CommitSubjects:   []string{"[Task][unknown-key][ui] update chat"},
+		KnownFeatureKeys: []string{"chat-ui"},
+	}
+	violations := Evaluate(tr, DefaultRules())
+	found := false
+	for _, v := range violations {
+		if v.Rule.ID == "r-fk" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected r-fk violation for unknown key")
+	}
+}
+
+func TestEvaluateCommitFeatureKeyMissingAcceptsVerifiedKey(t *testing.T) {
+	tr := TurnResult{
+		GitDiff: []ChangedFile{
+			{Path: "internal/chat/input.go", Status: "M"},
+		},
+		WrittenPaths:     []string{"internal/chat/input.go"},
+		CommitSubjects:   []string{"[Task][chat-ui][ui] update chat"},
+		KnownFeatureKeys: []string{"chat-ui"},
+	}
+	violations := Evaluate(tr, DefaultRules())
+	for _, v := range violations {
+		if v.Rule.ID == "r-fk" {
+			t.Fatal("unexpected r-fk violation for verified key")
 		}
 	}
 }
@@ -512,7 +566,10 @@ func TestRepromptPromptRTaskIsActionable(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestIsTestFileDart(t *testing.T) {
-	cases := []struct{ path string; want bool }{
+	cases := []struct {
+		path string
+		want bool
+	}{
 		{"lib/add_test.dart", true},
 		{"test/widget_test.dart", true},
 		{"lib/add.dart", false},
@@ -526,7 +583,10 @@ func TestIsTestFileDart(t *testing.T) {
 }
 
 func TestIsTestFileKotlin(t *testing.T) {
-	cases := []struct{ path string; want bool }{
+	cases := []struct {
+		path string
+		want bool
+	}{
 		{"src/test/java/com/example/AddTest.kt", true},
 		{"src/test/java/com/example/CalculatorTest.kt", true},
 		{"src/main/java/com/example/Add.kt", false},
@@ -540,7 +600,10 @@ func TestIsTestFileKotlin(t *testing.T) {
 }
 
 func TestIsTestFileJava(t *testing.T) {
-	cases := []struct{ path string; want bool }{
+	cases := []struct {
+		path string
+		want bool
+	}{
 		{"src/test/java/com/example/AddTest.java", true},
 		{"src/test/java/com/example/AddTests.java", true},
 		{"src/main/java/com/example/Add.java", false},
@@ -554,7 +617,10 @@ func TestIsTestFileJava(t *testing.T) {
 }
 
 func TestIsTestFileSwift(t *testing.T) {
-	cases := []struct{ path string; want bool }{
+	cases := []struct {
+		path string
+		want bool
+	}{
 		{"MyAppTests/AddTests.swift", true},
 		{"MyAppUITests/LoginTests.swift", true},
 		{"Sources/MyApp/Add.swift", false},

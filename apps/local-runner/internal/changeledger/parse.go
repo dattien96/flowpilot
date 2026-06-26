@@ -98,13 +98,10 @@ func parseRecord(raw string) (Entry, bool) {
 		SourceDocID: extractSourceDocID(subject, body),
 		Summary:     cleanSummary(subject),
 		CommittedAt: committedAt,
-		Confidence:  ConfidenceLow, // enrich.go upgrades when CA block / FEATURE-KEYS.md / path matches
+		Confidence:  ConfidenceLow,
 	}
-	// When the commit explicitly declares its feature in the second bracket, that is
-	// the authoritative key (CP-35 §3.2). enrich.go honors a pre-set high-confidence key.
 	if feature != "" {
 		e.FeatureKey = feature
-		e.Confidence = ConfidenceHigh
 	}
 	return e, true
 }

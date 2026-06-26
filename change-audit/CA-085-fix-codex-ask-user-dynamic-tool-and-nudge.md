@@ -108,3 +108,10 @@ Claude.
   NOT produced by this work and is left untouched for separate review.
 - GitNexus interactive tools were not connected this session; edits relied on manual call-graph
   inspection plus the authoritative `codex app-server` JSON schema / TS bindings.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: mcp-tools
+source_doc_id: TASK-056
+change_type: fix
+summary: Fix Codex ask_user Live Flow: dynamicTools + item/tool/call + Nudge Tuning (Task-056)
+# --->8---

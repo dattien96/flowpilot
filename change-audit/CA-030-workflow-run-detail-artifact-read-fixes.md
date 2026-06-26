@@ -15,3 +15,10 @@ This audit covers the local-runner file-read path fixes that resolved artifact l
 - Verified the file-read path works against `.flowpilot` artifact locations.
 - Confirmed the artifact tab shows a normal error instead of hanging indefinitely when the file cannot be read.
 
+
+# ---8<--- flowpilot:change-ledger
+feature_key: artifacts
+source_doc_id: CA-030
+change_type: feature
+summary: Workflow Run Detail Artifact Read Fixes
+# --->8---

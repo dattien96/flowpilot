@@ -32,3 +32,10 @@
 
 - Only the child's final result is shared; the full child transcript is intentionally never exposed to the parent (multi-agent isolation).
 - Injection rides the existing BUG-122 `pendingAgentContext` buffer and its `sessions.ndjson` persistence; no new mechanism added.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: agent-spawn
+source_doc_id: BUG-122
+change_type: fix
+summary: Fix Tool-Spawn Wait-False Result Delivery
+# --->8---

@@ -26,3 +26,10 @@
 ## Residual Notes
 
 - `item/tool/call` is still unsupported and should be handled separately if Codex requires FlowPilot to execute dynamic client tools.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: mcp-tools
+source_doc_id: BUG-071
+change_type: fix
+summary: Fix Codex MCP Elicitation Approval And Skill Preview
+# --->8---

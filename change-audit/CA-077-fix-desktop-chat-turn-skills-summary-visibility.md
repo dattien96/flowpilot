@@ -22,3 +22,10 @@ Desktop chat composer UI in `apps/desktop-flowpilot`, focused on the selected tu
 
 - Browser smoke testing reached the Vite renderer, but the local desktop bootstrap required auth before the chat composer, so authenticated visual verification was not completed in this session.
 - No runner, provider, store contract, or data model changes were made.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: chat-ui
+source_doc_id: TASK-053
+change_type: fix
+summary: Fix Desktop Chat Turn Skills Summary Visibility
+# --->8---

@@ -29,6 +29,17 @@ function makeClient(overrides: Partial<RunnerClient> = {}): RunnerClient {
     spawnAgent: async () => ({ runId: "agent-1", providerSessionId: "session-agent", providerKey: "codex", status: "completed" }),
     startRun: async () => ({ runId: "new-run", providerSessionId: "session-1", providerKey: "codex", status: "running" }),
     resumeRun: async (runId) => ({ runId, providerSessionId: "session-1", providerKey: "codex", status: "completed" }),
+    handoffContext: async (runId, input) => ({
+      sourceRunId: runId,
+      sourceProviderKey: "codex",
+      targetProviderKey: input.targetProviderKey,
+      prompt: "[mock handoff]",
+      includedTurnCount: 0,
+      omittedTurnCount: 0,
+      truncated: false,
+      handoffMode: "raw",
+    }),
+    generateChatSummary: async (runId) => ({ runId, generated: true, skipped: false }),
     syncChatRun: async (runId) => ({ runId, sourceMachineId: "mch_sync", sourceRunId: runId, syncStatus: "synced", syncedAt: "2026-06-17T10:10:00Z", remotePath: "chat-sessions/runs/mch_sync/" + runId + "/manifest.json" }),
     deleteRun: async () => {},
     restoreChatRun: async (input) => ({ runId: input.sourceRunId, sourceMachineId: input.sourceMachineId, sourceRunId: input.sourceRunId, providerKey: "codex", restoreStatus: "restored" }),
@@ -99,6 +110,8 @@ function seedStore(client: RunnerClient, runHistory: RunHistoryItem[]): void {
     scenario: "normal",
     pendingAccountSwitch: undefined,
     accountSwitchLoading: false,
+    pendingProviderSwitch: undefined,
+    providerSwitchLoading: false,
     _accountSwitchTriedIds: [],
     _streamingAssistantId: undefined,
     _historyLoadSeq: 0,
@@ -1666,6 +1679,52 @@ test("requestManualAccountSwitch sets pendingAccountSwitch with reason=manual wi
   assert.equal(state.pendingAccountSwitch?.reason, "manual");
   assert.equal(state.pendingAccountSwitch?.candidateAccount.id, "acc-2");
   assert.deepEqual(state._accountSwitchTriedIds, [], "_accountSwitchTriedIds must not be touched by manual switch");
+});
+
+test("confirmProviderSwitch records handoff diagnostics in the new timeline", async () => {
+  const timeline = [{ kind: "prompt", id: "prompt-1", text: "existing" }] as TimelineItem[];
+  seedStore(
+    makeClient({
+      handoffContext: async () => ({
+        sourceRunId: "run-old",
+        sourceProviderKey: "claude",
+        targetProviderKey: "codex",
+        prompt: "handoff prompt",
+        includedTurnCount: 3,
+        omittedTurnCount: 0,
+        truncated: false,
+        handoffMode: "hybrid",
+      }),
+      startRun: async () => ({ runId: "run-new", providerSessionId: "session-new", providerKey: "codex", status: "running", stepId: "chat-run-new" }),
+      sendTurn: () => emptyStream(),
+      listRunHistory: async () => [],
+    }),
+    [],
+  );
+  useStore.setState({
+    pendingProviderSwitch: {
+      sourceRunId: "run-old",
+      sourceProviderKey: "claude",
+      sourceRunStatus: "completed",
+      targetProviderKey: "codex",
+      targetModel: undefined,
+    },
+    selectedProjectId: "project-1",
+    chatMode: "normal_chat",
+    runId: "run-old",
+    selectedProvider: "claude",
+    selectedModel: "claude-sonnet-4",
+    status: "completed",
+    timeline,
+  });
+
+  await useStore.getState().confirmProviderSwitch();
+
+  const notice = useStore.getState().timeline.find(
+    (item): item is Extract<TimelineItem, { kind: "system" }> => item.kind === "system" && item.id.startsWith("handoff-mode-"),
+  );
+  assert.ok(notice, "handoff diagnostic should be stored in timeline");
+  assert.ok(notice.text.includes("hybrid"), "handoff diagnostic should include handoff mode");
 });
 
 test("Claude usage-limit failure with null quota offers fallback switch candidate", async () => {

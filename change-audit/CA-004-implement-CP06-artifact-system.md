@@ -72,3 +72,10 @@ Verified during the implementation pass:
 - The artifact list page intentionally uses collapsible cards so the editor remains usable as the catalog grows.
 - The current implementation supports multiple input and output artifact bindings per step, but several built-in steps still use a single primary output binding for readability.
 
+
+# ---8<--- flowpilot:change-ledger
+feature_key: artifacts
+source_doc_id: CP-06
+change_type: feature
+summary: Implement CP-06 Artifact System
+# --->8---

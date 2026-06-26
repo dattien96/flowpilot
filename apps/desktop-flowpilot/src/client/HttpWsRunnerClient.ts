@@ -7,6 +7,9 @@ import type {
   ChatSessionRestoreResult,
   ChatSessionSyncRequest,
   ChatSessionSyncResult,
+  HandoffContextRequest,
+  HandoffContextResponse,
+  ChatSummaryResult,
   Project,
   ProviderAccountSummary,
   ProviderEventDTO,
@@ -217,6 +220,12 @@ export class HttpWsRunnerClient implements RunnerClient {
   }
   restoreChatRun(input: ChatSessionRestoreRequest): Promise<ChatSessionRestoreResult> {
     return this.postJSON<ChatSessionRestoreResult>("/client/chat-sessions/restore", input);
+  }
+  handoffContext(runId: string, input: HandoffContextRequest): Promise<HandoffContextResponse> {
+    return this.postJSON<HandoffContextResponse>(`/client/workflow-runs/${encodeURIComponent(runId)}/handoff-context`, input);
+  }
+  generateChatSummary(runId: string): Promise<ChatSummaryResult> {
+    return this.postJSON<ChatSummaryResult>(`/client/workflow-runs/${encodeURIComponent(runId)}/chat-summary`, {});
   }
   submitApproval(approvalId: string, decision: string): Promise<void> {
     return this.postJSON<void>(`/client/approvals/${encodeURIComponent(approvalId)}/decision`, { decision });

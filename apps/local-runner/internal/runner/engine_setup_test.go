@@ -87,8 +87,8 @@ func TestGlobalEngineToolingStatusEndpoint(t *testing.T) {
 	if err := json.Unmarshal(body, &response); err != nil {
 		t.Fatalf("decode global tooling response: %v", err)
 	}
-	if len(response.Tooling) != 3 {
-		t.Fatalf("expected 3 global tooling entries, got %d", len(response.Tooling))
+	if len(response.Tooling) != 5 {
+		t.Fatalf("expected 5 global tooling entries, got %d", len(response.Tooling))
 	}
 	for _, tool := range response.Tooling {
 		if tool.Tool == "skill_pack" {

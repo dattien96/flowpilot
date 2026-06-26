@@ -42,3 +42,10 @@ Implement reliable session/process killing for AI provider executions (such as v
 ## Residual Notes
 
 - Running the stack locally requires executing `just dev`, which now uses the supervisor to orchestrate Next.js and Go processes.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: terminal-session
+source_doc_id: CA-037
+change_type: feature
+summary: Kill Claude Process and Dev Stack Lifecycle Controls
+# --->8---

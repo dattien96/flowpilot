@@ -7,6 +7,9 @@ import type {
   ChatSessionRestoreResult,
   ChatSessionSyncRequest,
   ChatSessionSyncResult,
+  HandoffContextRequest,
+  HandoffContextResponse,
+  ChatSummaryResult,
   Project,
   ProviderAccountSummary,
   ProviderEventBaseDTO,
@@ -305,6 +308,25 @@ export class MockRunnerClient implements RunnerClient {
       providerKey: "codex",
       restoreStatus: "restored",
     };
+  }
+
+  async handoffContext(runId: string, input: HandoffContextRequest): Promise<HandoffContextResponse> {
+    await delay(40);
+    return {
+      sourceRunId: runId,
+      sourceProviderKey: "codex",
+      targetProviderKey: input.targetProviderKey,
+      prompt: `[mock handoff] source=${runId} target=${input.targetProviderKey}`,
+      includedTurnCount: 0,
+      omittedTurnCount: 0,
+      truncated: false,
+      handoffMode: "raw",
+    };
+  }
+
+  async generateChatSummary(runId: string): Promise<ChatSummaryResult> {
+    await delay(20);
+    return { runId, generated: true, skipped: false };
   }
 
   async connectProviderAccount(providerKey: "codex" | "claude" | "gemini"): Promise<void> {

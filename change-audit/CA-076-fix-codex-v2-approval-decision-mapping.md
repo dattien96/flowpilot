@@ -23,3 +23,10 @@
 
 - GitNexus MCP tools were not available in this session; impact analysis was done by local inspection of `codexAdapter.handleInbound`, the dispatcher inbound route, and the generated Codex app-server schema.
 - `item/permissions/requestApproval` uses a non-decision response shape and is intentionally not solved in this bug.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: mcp-tools
+source_doc_id: BUG-066
+change_type: fix
+summary: Fix Codex V2 Approval Decision Mapping
+# --->8---

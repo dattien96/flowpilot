@@ -13,13 +13,21 @@ Source of truth for stable `feature_key` values used by:
 - Keep keys stable: do not rename silently. To retire a key, mark it `superseded by <new-key>` rather than deleting.
 - One feature per key; a note that spans features uses its dominant key.
 
-## Keys (seed — extend as features are catalogued)
+## Keys (catalogued from the change-audit history — extend as new features land)
 
-- chat-ui — desktop chat workspace, input, history, slash commands
-- agent-spawn — child agent spawning and orchestration
-- workflow-runtime — workflow run engine, steps, sessions
-- ai-providers — provider adapters (Claude, Codex) and account config
-- google-drive — Drive connection, artifact and chat sync
-- supabase-config — Supabase connection and runtime config
-- context-regression-engine — SD-17 context + regression engine (Plane C, gate, resolver)
-- project-nav — desktop project navigator sidebar: project selector, history panel, remote chats
+- chat-ui — desktop chat workspace: input bar, slash commands, markdown rendering, skill-picker UI, mode borders, send/stop control
+- chat-history — chat persistence, resume, replay, delete, and restore across restarts (incl. Codex rollout files)
+- project-nav — desktop project navigator: project selector, run-history popover, registry detail parity, sync-progress cues
+- agent-spawn — child agent spawning, agent panel, lifecycle, and parent/child cascade
+- workflow-runtime — workflow run engine: steps, sessions, runs UI, orchestrator bridge, provider-event persistence
+- artifacts — artifact system: generation, sync, catalog, preview/viewer
+- ai-providers — provider adapters (Claude, Codex, Gemini): auth/refresh, model aliases, usage-limit handling, account config
+- mcp-tools — MCP servers/tools: permission & approval flow, ask_user, elicitation, project MCP context
+- skill-injection — skill content injection, skill packs, prompt-composition order
+- yolo-policy — YOLO auto-approve configuration and runtime policy (workflow-level + single-step)
+- google-drive — Google Drive connection, artifact/chat sync, and restore
+- supabase-config — Supabase connection, RLS policies, runtime config, schema constraints
+- terminal-session — terminal/process lifecycle, dev-stack controls, thinking-stream rendering
+- context-regression-engine — SD-17 context + regression engine (Plane C): gate, resolver, requirements scaffold, flow rules
+- cross-provider-handoff — cross-provider chat handoff: provider-neutral transcript transfer + summary-based hybrid
+- token-usage

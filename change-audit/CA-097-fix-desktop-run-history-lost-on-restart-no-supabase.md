@@ -75,3 +75,10 @@ In `root.go`, `storeDir` is `filepath.Join(instance.Health().Cwd, ".flowpilot", 
 - Task-070 / commit 48db8f0 is the Supabase half of this fix (complete). This is the local-disk half.
 - `fakeWorkflowStore` is deliberately left unchanged — it remains the test double.
 - History only persists for runs created after the fix is deployed; runs from prior sessions were never written to disk.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: chat-history
+source_doc_id: BUG-080
+change_type: fix
+summary: Fix Desktop Run History Lost On Restart (No Supabase)
+# --->8---

@@ -22,3 +22,10 @@
 
 - Full runner-package tests were not rerun after this follow-up; earlier in the same session they failed on unrelated Google Drive MCP setup and Windows shell environment assumptions.
 - GitNexus tools were not exposed in this session, so required symbol impact checks were documented as unavailable and replaced with local code inspection.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: ai-providers
+source_doc_id: CA-072
+change_type: fix
+summary: Fix Claude Credential Config Dir
+# --->8---

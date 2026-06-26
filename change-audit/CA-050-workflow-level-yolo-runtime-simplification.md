@@ -33,3 +33,10 @@ Implemented Task-030 so workflow execution and run-detail rendering now use the 
 
 - The second Vitest command also triggered many unrelated existing suite failures from the wider admin-web test surface while still showing `supabase/functions/_shared/workflow-engine-state-machine.test.ts` passing. Those failures were pre-existing and outside Task-030 scope.
 - Historical `workflow_runs.yolo_mode` remains in place for compatibility and audit history, but current runtime behavior no longer treats run snapshots or step-level values as active policy.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: yolo-policy
+source_doc_id: TASK-030
+change_type: feature
+summary: Workflow-Level YOLO Runtime Simplification
+# --->8---

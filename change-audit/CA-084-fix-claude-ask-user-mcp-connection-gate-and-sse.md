@@ -117,3 +117,10 @@ the YOLO=on + `--mcp-config` path established in CA-083, now actually reaching t
 - GitNexus interactive tools (`gitnexus_impact`/`context`/`query`) were not connected this thread;
   edits relied on manual call-graph inspection (`SendTurn` → `claudeArgs` /
   `writeClaudeMCPConfig` → `claudeMCPServer.dispatch` / `serveSSE` / `waitReady`).
+
+# ---8<--- flowpilot:change-ledger
+feature_key: mcp-tools
+source_doc_id: TASK-055
+change_type: fix
+summary: Fix Claude ask_user Live Flow: MCP Connection Gate + GET SSE (Task-055)
+# --->8---

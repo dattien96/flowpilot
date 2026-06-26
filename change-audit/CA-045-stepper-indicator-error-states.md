@@ -21,3 +21,10 @@
 ## Residual Notes
 
 - None.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: workflow-runtime
+source_doc_id: CA-045
+change_type: feature
+summary: Stepper Indicator Error and Warning States
+# --->8---

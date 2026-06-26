@@ -20,3 +20,10 @@ Record the follow-up fix that stops the local runner from retrying terminal Clau
 - GitNexus symbol impact tooling was not available in this thread, so required impact analysis and post-change detect-changes checks could not be executed.
 - The final user-facing quota message still appears, but it should now appear once without the `[recovering: re-sending turn...]` retry banners.
 - A future cleanup could replace retry-boundary string classification with typed terminal provider errors.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: ai-providers
+source_doc_id: CA-069
+change_type: fix
+summary: Fix Claude Usage Limit Retry Classification
+# --->8---

@@ -18,3 +18,10 @@
 ## Verification
 
 - `go test ./internal/runner -run 'Test(NormalTurnPersistsWithSeq|ServiceUsesInjectedCatalogStore|ServiceListsInjectedWorkflowsGlobally|ServiceListsInjectedStepsGlobally|ServiceCatalogErrorSurfaces|SkillsServedLocallyWithInjectedStore|CatalogStoreForFallsBackToFake|CatalogStoreForUsesSupabaseWhenConfigured|StartTurnSurfacesWorkflowStateStoreErrors)$'`
+
+# ---8<--- flowpilot:change-ledger
+feature_key: workflow-runtime
+source_doc_id: CA-053
+change_type: feature
+summary: Phase 8 A1 Interactive Orchestrator Bridge
+# --->8---

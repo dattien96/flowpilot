@@ -278,6 +278,69 @@ function AccountSwitchModal(): React.ReactElement | null {
   );
 }
 
+function ProviderSwitchModal(): React.ReactElement | null {
+  const pendingProviderSwitch = useStore((s) => s.pendingProviderSwitch);
+  const providerSwitchLoading = useStore((s) => s.providerSwitchLoading);
+  const confirmProviderSwitch = useStore((s) => s.confirmProviderSwitch);
+  const cancelProviderSwitch = useStore((s) => s.cancelProviderSwitch);
+
+  if (!pendingProviderSwitch && !providerSwitchLoading) return null;
+
+  return (
+    <div
+      className="account-switch-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Switch provider"
+      onClick={!providerSwitchLoading ? cancelProviderSwitch : undefined}
+    >
+      <div className="account-switch-modal" onClick={(e) => e.stopPropagation()}>
+        {providerSwitchLoading ? (
+          <p className="account-switch-loading">Starting a new chat with the selected provider...</p>
+        ) : pendingProviderSwitch ? (
+          <>
+            <p className="account-switch-reason">Switch providers for this chat?</p>
+            <p className="gate-block-detail" style={{ marginTop: 0 }}>
+              FlowPilot will build a bounded context handoff from the source run and start a new run.
+              The source chat stays in history.
+            </p>
+            <div className="account-switch-details">
+              <div className="account-switch-row">
+                <span className="account-switch-row-label">Source</span>
+                <span>{providerLabel(pendingProviderSwitch.sourceProviderKey)}</span>
+              </div>
+              <div className="account-switch-row">
+                <span className="account-switch-row-label">Run</span>
+                <span>{pendingProviderSwitch.sourceRunId}</span>
+              </div>
+              <div className="account-switch-row">
+                <span className="account-switch-row-label">Status</span>
+                <span>{pendingProviderSwitch.sourceRunStatus}</span>
+              </div>
+              <div className="account-switch-row">
+                <span className="account-switch-row-label">Target</span>
+                <span>{providerLabel(pendingProviderSwitch.targetProviderKey)}</span>
+              </div>
+              <div className="account-switch-row">
+                <span className="account-switch-row-label">Model</span>
+                <span>{pendingProviderSwitch.targetModel ?? "Default"}</span>
+              </div>
+            </div>
+            <div className="account-switch-actions">
+              <button type="button" className="project-history-confirm-cancel" onClick={cancelProviderSwitch}>
+                Cancel
+              </button>
+              <button type="button" className="project-history-confirm-ok" onClick={() => void confirmProviderSwitch()}>
+                Start new chat with {providerLabel(pendingProviderSwitch.targetProviderKey)}
+              </button>
+            </div>
+          </>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 const GATE_RADIO_OPTIONS: { value: string; label: string; description: string }[] = [
   {
     value: "keep-test-fix-code",
@@ -530,6 +593,7 @@ export function ChatWorkspace({
 
   return (
     <div ref={shellRef} className={`app-body workspace-shell ${leftSidebarVisible ? "left-visible" : "left-hidden"} ${rightSidebarVisible ? "right-visible" : "right-hidden"}`} style={workspaceStyle}>
+      <ProviderSwitchModal />
       <AccountSwitchModal />
       <GateBlockModal />
       {leftSidebarVisible && (

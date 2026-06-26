@@ -20,3 +20,10 @@ Affected layer: `apps/desktop-flowpilot/src/components/ChatInput.tsx` — `child
 
 - Stopping the entire agent loop (`stopAgentLoop`) from the child view is not in scope; that control remains on the orchestration board.
 - Follow-up: if the child agent needs a restart-from-child affordance, that should be a separate task under CP-19.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: agent-spawn
+source_doc_id: CP-19
+change_type: feature
+summary: Child Agent Stop Button
+# --->8---

@@ -7,8 +7,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
+	"flowpilot-runner/internal/changeledger"
+	"flowpilot-runner/internal/featurecatalog"
 	"flowpilot-runner/internal/flowgate"
 )
 
@@ -44,6 +47,10 @@ func (s *InteractiveService) runFlowGate(
 	s.mu.Unlock()
 	diff, _ := flowgate.ObserveGitDiffSince(cwd, baseSHA)
 	log.Printf("[gate] cwd=%q baseSHA=%q diffLen=%d diff=%+v", cwd, baseSHA, len(diff), diff)
+	changedPaths := changedPathsFromDiff(diff)
+	commitSubjects := collectCommitSubjectsSince(cwd, baseSHA)
+	knownFeatureKeys := loadKnownFeatureKeys(cwd)
+	suggestedFeatureKeys := suggestFeatureKeys(dotFP, changedPaths, strings.Join(commitSubjects, "\n"))
 
 	// 2. Load test baseline — non-fatal.
 	baseline, _ := flowgate.LoadBaseline(dotFP)
@@ -66,12 +73,16 @@ func (s *InteractiveService) runFlowGate(
 		failedTests = oracle.Regressed
 	}
 	tr := flowgate.TurnResult{
-		RunID:        rs.id,
-		StepID:       rs.stepID,
-		FinalMessage: fin.FinalMessage,
-		SourceDocID:  rs.sourceDocID,
-		GitDiff:      diff,
-		WrittenPaths: fin.ChangedFiles, // files actually written by AI tool calls this turn
+		RunID:                rs.id,
+		StepID:               rs.stepID,
+		FinalMessage:         fin.FinalMessage,
+		SourceDocID:          rs.sourceDocID,
+		GitDiff:              diff,
+		CommitSubjects:       commitSubjects,
+		ChangedPaths:         changedPaths,
+		KnownFeatureKeys:     knownFeatureKeys,
+		SuggestedFeatureKeys: suggestedFeatureKeys,
+		WrittenPaths:         fin.ChangedFiles, // files actually written by AI tool calls this turn
 		Tests: flowgate.TestOutcome{
 			Ran:    baseline != nil,
 			Failed: failedTests,
@@ -343,6 +354,72 @@ func loadGateMode(dotFP string) string {
 	return readGateMode(dotFP)
 }
 
+func changedPathsFromDiff(diff []flowgate.ChangedFile) []string {
+	if len(diff) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(diff))
+	for _, file := range diff {
+		if strings.TrimSpace(file.Path) != "" {
+			out = append(out, filepath.ToSlash(strings.TrimSpace(file.Path)))
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func collectCommitSubjectsSince(cwd, baseSHA string) []string {
+	args := []string{"-C", cwd, "log", "--no-merges", "--format=%s"}
+	if strings.TrimSpace(baseSHA) != "" {
+		args = append(args, baseSHA+"..HEAD")
+	}
+	out, err := exec.Command("git", args...).Output()
+	if err != nil || len(out) == 0 {
+		return nil
+	}
+	var subjects []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			subjects = append(subjects, line)
+		}
+	}
+	return subjects
+}
+
+func loadKnownFeatureKeys(cwd string) []string {
+	known := changeledger.LoadKnownKeys(filepath.Join(cwd, "change-audit", "FEATURE-KEYS.md"))
+	if len(known) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(known))
+	for key := range known {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func suggestFeatureKeys(dotFP string, changedPaths []string, message string) []string {
+	catalog, err := featurecatalog.LoadCatalog(dotFP)
+	if err != nil {
+		return nil
+	}
+	candidates := featurecatalog.SuggestKey(changedPaths, message, catalog)
+	if len(candidates) == 0 {
+		return nil
+	}
+	limit := 3
+	if len(candidates) < limit {
+		limit = len(candidates)
+	}
+	keys := make([]string, 0, limit)
+	for i := 0; i < limit; i++ {
+		keys = append(keys, candidates[i].Key)
+	}
+	return keys
+}
+
 // captureGitHead returns the current HEAD SHA in repoDir, trimmed of whitespace.
 func captureGitHead(repoDir string) (string, error) {
 	if repoDir == "" {
@@ -369,4 +446,3 @@ func (s *InteractiveService) ensureBaseline(cwd string) {
 		}
 	}()
 }
-

@@ -45,3 +45,10 @@ one each for Codex, Claude, and Gemini.
   explicit "Auto" option — this is a UX change worth confirming with the team.
 - The `.chat-controller-grid` column count changed from 3 to 2; if a third non-provider field
   is added in the future, the grid template must be updated.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: chat-ui
+source_doc_id: CA-088
+change_type: feature
+summary: Desktop ChatInput Provider Card Picker
+# --->8---

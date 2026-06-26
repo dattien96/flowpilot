@@ -22,3 +22,10 @@
 
 - Claude local auth metadata does not expose a precise reset timestamp, so the current message tells the user to switch account or wait for reset without showing the reset time.
 - GitNexus MCP tooling was not available in this thread, so impact and scope checks were done with local search and targeted tests.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: ai-providers
+source_doc_id: BUG-051
+change_type: fix
+summary: Fix Claude Limit Error Classification
+# --->8---

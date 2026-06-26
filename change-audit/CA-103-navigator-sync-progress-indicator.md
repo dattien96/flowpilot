@@ -53,3 +53,10 @@ Added `navigatorHistory.test.ts` to verify:
 
 - The fix intentionally reuses the existing `runHistory.syncStatus` field from the store.
 - No runner or Drive API behavior changed; this is a desktop-side UX correction only.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: project-nav
+source_doc_id: BUG-088
+change_type: feature
+summary: Navigator Sync Progress Indicator
+# --->8---

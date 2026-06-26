@@ -23,3 +23,10 @@
 
 - GitNexus tools were not exposed in this session, so the required symbol impact check was documented as unavailable and replaced with local code inspection.
 - The similarly named CLI-package `readJSONFile` remains separate; no caller evidence tied it to this regression.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: ai-providers
+source_doc_id: CA-071
+change_type: fix
+summary: Fix BOM-Prefixed Local JSON Auth
+# --->8---

@@ -31,3 +31,10 @@
 
 - Cross-provider content differences for the same agent name remain a function of catalog precedence (BUG-125), not the composition path; this change only unifies and labels the shape.
 - Built-in agents have no on-disk path, so their identity line shows `definition: built-in (<source>)` rather than a file link.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: agent-spawn
+source_doc_id: BUG-128
+change_type: feature
+summary: Provider-Consistent Agent Spawn Prompt Composition
+# --->8---

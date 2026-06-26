@@ -7,10 +7,16 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"flowpilot-runner/internal/changeledger"
+	"flowpilot-runner/internal/featurecatalog"
+	"flowpilot-runner/internal/flowgate"
 )
 
 func init() { fakeAdapterDelay = 0 }
@@ -192,6 +198,824 @@ func TestChatModeSelectedControlsReachProviderTurnRequest(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for captured provider turn request")
+	}
+}
+
+func TestLiveChatInjectsFeatureHistoryForSupportedProviders(t *testing.T) {
+	workspace := t.TempDir()
+	repoDir := t.TempDir()
+	dotDir := filepath.Join(workspace, ".flowpilot")
+	if err := os.MkdirAll(filepath.Join(repoDir, "change-audit"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "change-audit", "FEATURE-KEYS.md"), []byte("- chat-ui — Chat UI\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ledger, err := changeledger.New(dotDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.Upsert([]changeledger.Entry{{CommitHash: "c1", FeatureKey: "chat-ui", Summary: "first history", CommittedAt: "2026-01-01T00:00:00Z", Confidence: changeledger.ConfidenceHigh}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := featurecatalog.Build(repoDir, ledger, dotDir); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewInteractiveService()
+	capture := &captureTurnAdapter{ch: make(chan TurnRequest, 1)}
+	rs := &interactiveRun{id: "run-1", providerKey: ProviderKeyClaude, workspaceCwd: workspace, runKind: "chat", turnCount: 1}
+	svc.runTurn(context.Background(), rs, capture, TurnInput{StepID: "step-1", Prompt: "chat-ui"}, "", "turn-1")
+
+	select {
+	case req := <-capture.ch:
+		if !strings.Contains(req.Prompt, "first history") {
+			t.Fatalf("expected feature history in prompt, got %q", req.Prompt)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for captured prompt")
+	}
+}
+
+func TestLiveChatRefreshesLedgerBeforeFeatureHistoryInjection(t *testing.T) {
+	workspace := t.TempDir()
+	runGit(t, workspace, "init")
+	runGit(t, workspace, "config", "user.email", "test@example.com")
+	runGit(t, workspace, "config", "user.name", "Test User")
+	auditDir := filepath.Join(workspace, "change-audit")
+	if err := os.MkdirAll(auditDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(auditDir, "FEATURE-KEYS.md"), []byte("- chat-ui — Chat UI\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "chat.txt"), []byte("first"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, workspace, "add", ".")
+	runGit(t, workspace, "commit", "-m", "[Feature][chat-ui][runner] fresh history Task-157")
+	dotDir := filepath.Join(workspace, ".flowpilot")
+	if err := os.MkdirAll(dotDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(changeledger.SentinelPath(dotDir), []byte("dirty"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewInteractiveService()
+	capture := &captureTurnAdapter{ch: make(chan TurnRequest, 1)}
+	rs := &interactiveRun{id: "run-1", providerKey: ProviderKeyCodex, workspaceCwd: workspace, runKind: "chat", turnCount: 1}
+	svc.runTurn(context.Background(), rs, capture, TurnInput{StepID: "step-1", Prompt: "chat-ui"}, "", "turn-1")
+
+	select {
+	case req := <-capture.ch:
+		if !strings.Contains(req.Prompt, "fresh history") {
+			t.Fatalf("expected refreshed history in prompt, got %q", req.Prompt)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for captured prompt")
+	}
+}
+
+func TestLoadHandoffSummaryUsesMatchingStateKey(t *testing.T) {
+	workspace := t.TempDir()
+	repoDir := t.TempDir()
+	dotDir := filepath.Join(workspace, ".flowpilot")
+	if err := os.MkdirAll(filepath.Join(repoDir, "change-audit"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "change-audit", "FEATURE-KEYS.md"), []byte("- chat-ui — Chat UI\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dotDir, "ledger"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rs := &interactiveRun{
+		id:           "run-1",
+		runKind:      "chat",
+		workspaceCwd: workspace,
+		events: []ProviderEvent{
+			{Type: EventTurnStarted, Prompt: "chat-ui"},
+			{Type: EventMessageCompleted, Text: "first answer"},
+			{Type: EventTurnCompleted, FinalMessage: "first answer"},
+			{Type: EventTurnStarted, Prompt: "chat-ui"},
+			{Type: EventMessageCompleted, Text: "second answer"},
+			{Type: EventTurnCompleted, FinalMessage: "second answer"},
+		},
+	}
+	svc := NewInteractiveService()
+	ledger, err := changeledger.NewChatSummaryLedger(dotDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseLedger, err := changeledger.New(dotDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := baseLedger.Upsert([]changeledger.Entry{{CommitHash: "c1", FeatureKey: "chat-ui", Summary: "history"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := featurecatalog.Build(repoDir, baseLedger, dotDir); err != nil {
+		t.Fatal(err)
+	}
+	matchKey := transcriptStateKey(rs.id, transcriptTurnsFromRun(rs))
+	if err := ledger.Append([]changeledger.ChatSummaryEntry{
+		{RunID: rs.id, TurnID: "turn-1", FeatureKey: "chat-ui", StateKey: "turn-1:old-state", Summary: "stale summary", CreatedAt: "2026-01-01T00:00:00Z"},
+		{RunID: rs.id, TurnID: "turn-1", FeatureKey: "chat-ui", StateKey: matchKey, Summary: "fresh summary", CreatedAt: "2026-01-02T00:00:00Z"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := svc.loadHandoffSummary(rs, transcriptTurnsFromRun(rs))
+	if got != "fresh summary" {
+		t.Fatalf("loadHandoffSummary() = %q, want fresh summary", got)
+	}
+}
+
+// Regression: hybrid must survive off-feature turns. The recorder hashes the
+// feature-bucketed turns, so the handoff must hash the SAME set — otherwise an
+// interleaved off-feature turn (e.g. a one-off "write a haiku") changes the
+// all-turns hash and silently degrades hybrid to raw, even though a valid summary
+// for the run exists.
+func TestLoadHandoffSummaryMatchesAcrossOffFeatureTurns(t *testing.T) {
+	workspace := t.TempDir()
+	repoDir := t.TempDir()
+	dotDir := filepath.Join(workspace, ".flowpilot")
+	if err := os.MkdirAll(filepath.Join(repoDir, "change-audit"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "change-audit", "FEATURE-KEYS.md"), []byte("- chat-ui — Chat UI\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dotDir, "ledger"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rs := &interactiveRun{
+		id:           "run-1",
+		runKind:      "chat",
+		workspaceCwd: workspace,
+		events: []ProviderEvent{
+			{Type: EventTurnStarted, Prompt: "chat-ui"},
+			{Type: EventTurnCompleted, FinalMessage: "first answer"},
+			{Type: EventTurnStarted, Prompt: "write a haiku about the sea"}, // off-feature
+			{Type: EventTurnCompleted, FinalMessage: "waves fold into shore"},
+			{Type: EventTurnStarted, Prompt: "chat-ui"},
+			{Type: EventTurnCompleted, FinalMessage: "second answer"},
+		},
+	}
+	svc := NewInteractiveService()
+	ledger, err := changeledger.NewChatSummaryLedger(dotDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseLedger, err := changeledger.New(dotDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := baseLedger.Upsert([]changeledger.Entry{{CommitHash: "c1", FeatureKey: "chat-ui", Summary: "history"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := featurecatalog.Build(repoDir, baseLedger, dotDir); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := featurecatalog.LoadCatalog(dotDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	allTurns := transcriptTurnsFromRun(rs)
+	bucketKey := transcriptStateKey(rs.id, featureBucketTurns(allTurns, catalog, "chat-ui"))
+	// The off-feature turn must actually change the all-turns hash, else the test
+	// proves nothing.
+	if bucketKey == transcriptStateKey(rs.id, allTurns) {
+		t.Fatal("setup invalid: off-feature turn did not change the all-turns hash")
+	}
+	if err := ledger.Append([]changeledger.ChatSummaryEntry{
+		{RunID: rs.id, TurnID: "turn-3", FeatureKey: "chat-ui", StateKey: bucketKey, Summary: "fresh summary", CreatedAt: "2026-01-02T00:00:00Z"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := svc.loadHandoffSummary(rs, allTurns); got != "fresh summary" {
+		t.Fatalf("hybrid summary not matched across off-feature turns: got %q (would degrade to raw)", got)
+	}
+}
+
+func TestBuildHandoffContextUsesRawModeWhenNoSummaryAndHistoryFits(t *testing.T) {
+	svc := NewInteractiveService()
+	rs := &interactiveRun{
+		id:          "run-1",
+		providerKey: ProviderKeyCodex,
+		runKind:     "chat",
+		events: []ProviderEvent{
+			{Type: EventTurnStarted, Prompt: "continue this task"},
+			{Type: EventTurnCompleted, FinalMessage: "previous answer"},
+		},
+	}
+	svc.mu.Lock()
+	svc.runs[rs.id] = rs
+	svc.mu.Unlock()
+
+	result, apiErr := svc.buildHandoffContext(context.Background(), rs.id, handoffContextRequest{TargetProviderKey: ProviderKeyClaude})
+	if apiErr != nil {
+		t.Fatalf("buildHandoffContext returned error: %+v", apiErr)
+	}
+	// No cached summary and the whole short conversation fits: pure raw floor,
+	// no summary block and no self-summarize instruction.
+	if result.HandoffMode != "raw" {
+		t.Fatalf("handoff mode = %q, want raw", result.HandoffMode)
+	}
+	if strings.Contains(result.Prompt, "First summarize the previous conversation") {
+		t.Fatalf("raw handoff should not carry the self-summarize instruction: %q", result.Prompt)
+	}
+	if strings.Contains(result.Prompt, "<conversation_summary>") {
+		t.Fatalf("raw handoff should not carry a summary block: %q", result.Prompt)
+	}
+	if !strings.Contains(result.Prompt, "continue this task") || !strings.Contains(result.Prompt, "previous answer") {
+		t.Fatalf("raw handoff missing the conversation: %q", result.Prompt)
+	}
+}
+
+func TestBuildHandoffContextUsesTargetSummaryModeWhenHistoryTruncated(t *testing.T) {
+	svc := NewInteractiveService()
+	// A single newest turn larger than the budget forces truncation, so the raw
+	// floor is lossy and (with no cached summary) the mode is target_summary.
+	rs := &interactiveRun{
+		id:          "run-1",
+		providerKey: ProviderKeyCodex,
+		runKind:     "chat",
+		events: []ProviderEvent{
+			{Type: EventTurnStarted, Prompt: "kick off"},
+			{Type: EventTurnCompleted, FinalMessage: strings.Repeat("verbose answer. ", 6000)},
+		},
+	}
+	svc.mu.Lock()
+	svc.runs[rs.id] = rs
+	svc.mu.Unlock()
+
+	result, apiErr := svc.buildHandoffContext(context.Background(), rs.id, handoffContextRequest{TargetProviderKey: ProviderKeyClaude})
+	if apiErr != nil {
+		t.Fatalf("buildHandoffContext returned error: %+v", apiErr)
+	}
+	if result.HandoffMode != "target_summary" {
+		t.Fatalf("handoff mode = %q, want target_summary for a truncated history", result.HandoffMode)
+	}
+	if !result.Truncated {
+		t.Fatalf("expected Truncated=true for an oversized turn")
+	}
+	if !strings.Contains(result.Prompt, "First summarize the previous conversation") {
+		t.Fatalf("handoff prompt missing target-summary instruction: %q", result.Prompt)
+	}
+}
+
+func TestBuildHandoffContextIgnoresEmptyStateKeySummary(t *testing.T) {
+	workspace := t.TempDir()
+	repoDir := t.TempDir()
+	dotDir := filepath.Join(workspace, ".flowpilot")
+	if err := os.MkdirAll(filepath.Join(repoDir, "change-audit"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "change-audit", "FEATURE-KEYS.md"), []byte("- chat-ui — Chat UI\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	baseLedger, err := changeledger.New(dotDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := baseLedger.Upsert([]changeledger.Entry{{CommitHash: "c1", FeatureKey: "chat-ui", Summary: "history"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := featurecatalog.Build(repoDir, baseLedger, dotDir); err != nil {
+		t.Fatal(err)
+	}
+	summaryLedger, err := changeledger.NewChatSummaryLedger(dotDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := summaryLedger.Append([]changeledger.ChatSummaryEntry{
+		{RunID: "run-1", TurnID: "turn-1", FeatureKey: "chat-ui", Summary: "legacy summary", CreatedAt: "2026-01-01T00:00:00Z"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewInteractiveService()
+	rs := &interactiveRun{
+		id:           "run-1",
+		providerKey:  ProviderKeyCodex,
+		runKind:      "chat",
+		workspaceCwd: workspace,
+		events: []ProviderEvent{
+			{Type: EventTurnStarted, Prompt: "chat-ui"},
+			{Type: EventTurnCompleted, FinalMessage: "previous answer"},
+		},
+	}
+	svc.mu.Lock()
+	svc.runs[rs.id] = rs
+	svc.mu.Unlock()
+
+	result, apiErr := svc.buildHandoffContext(context.Background(), rs.id, handoffContextRequest{TargetProviderKey: ProviderKeyClaude})
+	if apiErr != nil {
+		t.Fatalf("buildHandoffContext returned error: %+v", apiErr)
+	}
+	// The stale summary has no matching state_key, so it is ignored. The short
+	// transcript fits whole, so the degrade lands on the raw floor (not hybrid).
+	if result.HandoffMode != "raw" {
+		t.Fatalf("handoff mode = %q, want raw for ignored empty-state-key summary", result.HandoffMode)
+	}
+	// The stale summary must not be used as the hybrid <conversation_summary>. (It
+	// may still appear in the prepended "## Prior discussion" feature block, which is
+	// the Task-161 timeline — a separate, legitimate channel.)
+	if strings.Contains(result.Prompt, "<conversation_summary>") {
+		t.Fatalf("empty-state-key summary should not become a hybrid conversation_summary: %q", result.Prompt)
+	}
+}
+
+func TestRecordChatSummaryTriggersBestEffortContextSync(t *testing.T) {
+	workspace, repoDir, rs := chatSummarySyncFixture(t)
+	svc := NewInteractiveService()
+
+	var gotProjectID, gotDotDir string
+	svc.syncContextEngineFilesHook = func(projectID, dotFlowpilotDir string) (error, string) {
+		gotProjectID = projectID
+		gotDotDir = dotFlowpilotDir
+		return nil, "manifest ok; 4 files synced to drive, 0 skipped"
+	}
+
+	svc.recordChatSummarySync(rs, "turn-1")
+
+	if gotProjectID != rs.projectID {
+		t.Fatalf("sync projectID = %q, want %q", gotProjectID, rs.projectID)
+	}
+	wantDotDir := filepath.Join(workspace, ".flowpilot")
+	if gotDotDir != wantDotDir {
+		t.Fatalf("sync dotFlowpilotDir = %q, want %q", gotDotDir, wantDotDir)
+	}
+
+	ledger, err := changeledger.NewChatSummaryLedger(wantDotDir)
+	if err != nil {
+		t.Fatalf("NewChatSummaryLedger error: %v", err)
+	}
+	summaries, err := ledger.GetFeatureSummaries("chat-ui")
+	if err != nil {
+		t.Fatalf("GetFeatureSummaries error: %v", err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("summary count = %d, want 1", len(summaries))
+	}
+	if !strings.Contains(summaries[0].Summary, "sync trigger") {
+		t.Fatalf("summary %q missing expected content", summaries[0].Summary)
+	}
+
+	if _, err := os.Stat(filepath.Join(repoDir, "change-audit", "FEATURE-KEYS.md")); err != nil {
+		t.Fatalf("fixture repo missing feature keys: %v", err)
+	}
+}
+
+func TestRecordChatSummarySwallowsSyncFailure(t *testing.T) {
+	workspace, _, rs := chatSummarySyncFixture(t)
+	svc := NewInteractiveService()
+	svc.syncContextEngineFilesHook = func(projectID, dotFlowpilotDir string) (error, string) {
+		return os.ErrPermission, "manifest ok; 4 files synced to drive, 0 skipped"
+	}
+
+	svc.recordChatSummarySync(rs, "turn-1")
+
+	ledger, err := changeledger.NewChatSummaryLedger(filepath.Join(workspace, ".flowpilot"))
+	if err != nil {
+		t.Fatalf("NewChatSummaryLedger error: %v", err)
+	}
+	summaries, err := ledger.GetFeatureSummaries("chat-ui")
+	if err != nil {
+		t.Fatalf("GetFeatureSummaries error: %v", err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("summary count = %d, want 1", len(summaries))
+	}
+
+	data, err := os.ReadFile(filepath.Join(workspace, ".flowpilot", "ledger", "chat_summary.ndjson"))
+	if err != nil {
+		t.Fatalf("ReadFile chat_summary.ndjson: %v", err)
+	}
+	if !strings.Contains(string(data), `"feature_key":"chat-ui"`) {
+		t.Fatalf("chat_summary.ndjson missing feature key: %s", data)
+	}
+}
+
+func chatSummarySyncFixture(t *testing.T) (workspace string, repoDir string, rs *interactiveRun) {
+	t.Helper()
+	workspace = t.TempDir()
+	repoDir = t.TempDir()
+	dotDir := filepath.Join(workspace, ".flowpilot")
+	if err := os.MkdirAll(filepath.Join(repoDir, "change-audit"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "change-audit", "FEATURE-KEYS.md"), []byte("- chat-ui — Chat UI\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	baseLedger, err := changeledger.New(dotDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := baseLedger.Upsert([]changeledger.Entry{{CommitHash: "c1", FeatureKey: "chat-ui", Summary: "history"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := featurecatalog.Build(repoDir, baseLedger, dotDir); err != nil {
+		t.Fatal(err)
+	}
+	rs = &interactiveRun{
+		id:           "run-1",
+		projectID:    "proj-chat-sync",
+		runKind:      "chat",
+		workspaceCwd: workspace,
+		events: []ProviderEvent{
+			{Type: EventTurnStarted, Prompt: "chat-ui"},
+			{Type: EventMessageCompleted, Text: "assistant response for sync trigger"},
+			{Type: EventTurnCompleted, FinalMessage: "assistant response for sync trigger"},
+		},
+	}
+	return workspace, repoDir, rs
+}
+
+// A repeated finalization with no new committed turn must reuse the cached
+// summary (Task-162 T-3): the state_key matches, so no duplicate entry and no
+// second (cheap-model) summarization is performed.
+func TestRecordChatSummaryReusesCachedSummaryOnUnchangedState(t *testing.T) {
+	workspace, _, rs := chatSummarySyncFixture(t)
+	svc := NewInteractiveService()
+	svc.syncContextEngineFilesHook = func(string, string) (error, string) { return nil, "ok" }
+
+	svc.recordChatSummarySync(rs, "turn-1")
+	svc.recordChatSummarySync(rs, "turn-2")
+
+	ledger, err := changeledger.NewChatSummaryLedger(filepath.Join(workspace, ".flowpilot"))
+	if err != nil {
+		t.Fatalf("NewChatSummaryLedger error: %v", err)
+	}
+	summaries, err := ledger.GetFeatureSummaries("chat-ui")
+	if err != nil {
+		t.Fatalf("GetFeatureSummaries error: %v", err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("summary count = %d, want 1 (cache guard should suppress the duplicate)", len(summaries))
+	}
+}
+
+// A new committed turn changes the transcript state and must refresh the rolling
+// summary in place (upsert): still one entry per run+feature, but with an updated
+// state_key — not a second appended line.
+func TestRecordChatSummaryRefreshesInPlaceAfterNewTurn(t *testing.T) {
+	workspace, _, rs := chatSummarySyncFixture(t)
+	svc := NewInteractiveService()
+	svc.syncContextEngineFilesHook = func(string, string) (error, string) { return nil, "ok" }
+
+	svc.recordChatSummarySync(rs, "turn-1")
+	ledger, err := changeledger.NewChatSummaryLedger(filepath.Join(workspace, ".flowpilot"))
+	if err != nil {
+		t.Fatalf("NewChatSummaryLedger error: %v", err)
+	}
+	first, _ := ledger.GetFeatureSummaries("chat-ui")
+	if len(first) != 1 {
+		t.Fatalf("first summary count = %d, want 1", len(first))
+	}
+
+	rs.events = append(rs.events,
+		ProviderEvent{Type: EventTurnStarted, Prompt: "chat-ui follow up"},
+		ProviderEvent{Type: EventMessageCompleted, Text: "second response for sync trigger"},
+		ProviderEvent{Type: EventTurnCompleted, FinalMessage: "second response for sync trigger"},
+	)
+	svc.recordChatSummarySync(rs, "turn-2")
+
+	ledger2, err := changeledger.NewChatSummaryLedger(filepath.Join(workspace, ".flowpilot"))
+	if err != nil {
+		t.Fatalf("NewChatSummaryLedger error: %v", err)
+	}
+	after, _ := ledger2.GetFeatureSummaries("chat-ui")
+	if len(after) != 1 {
+		t.Fatalf("summary count = %d, want 1 (upsert refreshes in place, no new line)", len(after))
+	}
+	if after[0].StateKey == first[0].StateKey {
+		t.Fatalf("expected state_key to change after a new turn, got unchanged %q", after[0].StateKey)
+	}
+}
+
+// A chat that spans two features must bucket turns per feature so each summary
+// sees only its own turns (no cross-feature mixing). Low-signal turns attach to
+// the running feature (CP-37 V-161-14).
+func TestBucketTurnsByFeatureSeparatesFeatures(t *testing.T) {
+	catalog := featurecatalog.New()
+	catalog.Add(featurecatalog.Feature{Key: "alpha", Keywords: []string{"alpha"}})
+	catalog.Add(featurecatalog.Feature{Key: "bravo", Keywords: []string{"bravo"}})
+
+	turns := []transcriptTurn{
+		{User: "work on alpha feature", Assistant: "did alpha"},
+		{User: "continue", Assistant: "kept going on alpha"},
+		{User: "now switch to bravo feature", Assistant: "did bravo"},
+	}
+	buckets := bucketTurnsByFeature(turns, catalog)
+
+	if len(buckets["alpha"]) != 2 {
+		t.Fatalf("alpha bucket = %d turns, want 2 (incl. the low-signal continue)", len(buckets["alpha"]))
+	}
+	if len(buckets["bravo"]) != 1 {
+		t.Fatalf("bravo bucket = %d turns, want 1", len(buckets["bravo"]))
+	}
+	for _, turn := range buckets["alpha"] {
+		if strings.Contains(turn.User, "bravo") {
+			t.Fatalf("alpha bucket leaked a bravo turn: %q", turn.User)
+		}
+	}
+}
+
+// The manual generate endpoint errors while a turn is in flight and otherwise
+// generates immediately (CP-37 V-161-12 / V-161-13).
+func TestGenerateChatSummaryNow(t *testing.T) {
+	_, _, rs := chatSummarySyncFixture(t)
+	svc := NewInteractiveService()
+	svc.syncContextEngineFilesHook = func(string, string) (error, string) { return nil, "ok" }
+	svc.mu.Lock()
+	svc.runs[rs.id] = rs
+	svc.mu.Unlock()
+
+	// Busy → 409.
+	svc.mu.Lock()
+	rs.turnInFlight = true
+	svc.mu.Unlock()
+	if _, apiErr := svc.generateChatSummaryNow(rs.id); apiErr == nil || apiErr.status != 409 {
+		t.Fatalf("expected 409 while running, got %+v", apiErr)
+	}
+
+	// Idle → generates.
+	svc.mu.Lock()
+	rs.turnInFlight = false
+	svc.mu.Unlock()
+	resp, apiErr := svc.generateChatSummaryNow(rs.id)
+	if apiErr != nil {
+		t.Fatalf("generateChatSummaryNow error: %+v", apiErr)
+	}
+	if !resp.Generated {
+		t.Fatalf("expected Generated=true, got %+v", resp)
+	}
+	// Second call with no change → skipped (hash match), still no error.
+	resp2, apiErr := svc.generateChatSummaryNow(rs.id)
+	if apiErr != nil {
+		t.Fatalf("second generateChatSummaryNow error: %+v", apiErr)
+	}
+	if resp2.Generated || !resp2.Skipped {
+		t.Fatalf("expected second call skipped (no change), got %+v", resp2)
+	}
+}
+
+func TestNormalizeSummaryBullets(t *testing.T) {
+	out := normalizeSummaryBullets("- Goal: ship handoff\n* decided to reuse the summarizer\n\n  • blocked on review\nextra line one\nextra line two\nextra line three")
+	lines := strings.Split(out, "\n")
+	if len(lines) != 5 {
+		t.Fatalf("bullet count = %d, want 5 (capped): %q", len(lines), out)
+	}
+	for _, ln := range lines {
+		if !strings.HasPrefix(ln, "- ") {
+			t.Fatalf("line not normalized to a bullet: %q", ln)
+		}
+	}
+	if strings.Contains(out, "</previous_conversation>") {
+		t.Fatal("closing tag should be escaped")
+	}
+}
+
+// A low-signal latest prompt ("try again") must inherit the conversation's
+// established feature by scanning back to the earlier substantive prompt, so the
+// summary is still recorded under that feature (CP-37 V-161-10).
+func TestRecordChatSummaryResolvesFeatureFromEarlierTurnOnLowSignalPrompt(t *testing.T) {
+	workspace, _, _ := chatSummarySyncFixture(t)
+	svc := NewInteractiveService()
+	svc.syncContextEngineFilesHook = func(string, string) (error, string) { return nil, "ok" }
+
+	rs := &interactiveRun{
+		id:           "run-low-signal",
+		projectID:    "proj-low",
+		runKind:      "chat",
+		workspaceCwd: workspace,
+		events: []ProviderEvent{
+			{Type: EventTurnStarted, Prompt: "chat-ui"},
+			{Type: EventMessageCompleted, Text: "worked on the chat-ui input"},
+			{Type: EventTurnCompleted, FinalMessage: "worked on the chat-ui input"},
+			{Type: EventTurnStarted, Prompt: "try again"},
+			{Type: EventMessageCompleted, Text: "retried the change"},
+			{Type: EventTurnCompleted, FinalMessage: "retried the change"},
+		},
+	}
+	svc.recordChatSummarySync(rs, "turn-2")
+
+	ledger, err := changeledger.NewChatSummaryLedger(filepath.Join(workspace, ".flowpilot"))
+	if err != nil {
+		t.Fatalf("NewChatSummaryLedger error: %v", err)
+	}
+	summaries, err := ledger.GetFeatureSummaries("chat-ui")
+	if err != nil {
+		t.Fatalf("GetFeatureSummaries error: %v", err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("summary count = %d, want 1 (low-signal latest prompt should inherit chat-ui)", len(summaries))
+	}
+}
+
+// Injection on a low-signal prompt falls back to the established feature when
+// prior turns resolve it, and injects nothing when there is no prior context to
+// fall back on (CP-37 V-161-11).
+func TestInjectFeatureHistoryFallsBackToPriorTurnFeature(t *testing.T) {
+	workspace, _, _ := chatSummarySyncFixture(t)
+
+	prior := []transcriptTurn{{User: "chat-ui", Assistant: "worked on the chat-ui input"}}
+	withPrior := injectFeatureHistoryPrompt(workspace, "continue", prior)
+	if !strings.Contains(withPrior, `## Prior work on "chat-ui"`) {
+		t.Fatalf("expected chat-ui history injected via fallback, got: %q", withPrior)
+	}
+
+	noPrior := injectFeatureHistoryPrompt(workspace, "continue", nil)
+	if noPrior != "continue" {
+		t.Fatalf("expected prompt unchanged with no prior feature, got: %q", noPrior)
+	}
+}
+
+// The continuation battery from CP-37 Test E4: only explicit continuations inherit
+// the running feature. Greetings, acknowledgements, and any other short or
+// substantive prompt do NOT — they drop prior context.
+func TestIsContinuationPrompt(t *testing.T) {
+	continuations := []string{
+		"continue", "try again", "retry", "do it", "do it again", "go on",
+		"go ahead", "keep going", "proceed", "resume", "next", "more", "redo",
+		"Continue.", "  retry  ", "TRY AGAIN",
+	}
+	for _, p := range continuations {
+		if !isContinuationPrompt(p) {
+			t.Errorf("isContinuationPrompt(%q) = false, want true (continuation → inherit)", p)
+		}
+	}
+	notContinuations := []string{
+		"ok", "okay", "yes", "yep", "no", "sure", // acknowledgements — do NOT inherit
+		"hi", "hello", "hey", "thanks", "", // greetings / empty — do NOT inherit
+		"write a haiku about the sea", // substantive off-topic
+		"add a safe arithmetic divide to calc-core",
+	}
+	for _, p := range notContinuations {
+		if isContinuationPrompt(p) {
+			t.Errorf("isContinuationPrompt(%q) = true, want false (non-continuation → drop)", p)
+		}
+	}
+}
+
+// A substantive but unrelated prompt must NOT inherit the prior feature's context
+// — only low-signal continuations do. "write a haiku about the sea" after a
+// resolved feature turn injects nothing (CP-37 Test A negative control holds even
+// mid-conversation).
+func TestInjectFeatureHistoryDropsContextOnUnrelatedPrompt(t *testing.T) {
+	workspace, _, _ := chatSummarySyncFixture(t)
+
+	prior := []transcriptTurn{{User: "chat-ui", Assistant: "worked on the chat-ui input"}}
+	out := injectFeatureHistoryPrompt(workspace, "write a haiku about the sea", prior)
+	if out != "write a haiku about the sea" {
+		t.Fatalf("expected no injection for unrelated substantive prompt, got: %q", out)
+	}
+	if strings.Contains(out, "Prior work on") {
+		t.Fatalf("unrelated prompt should not inherit prior feature context: %q", out)
+	}
+}
+
+// A substantive but unrelated turn must not attach to the running feature's
+// bucket — otherwise its content would pollute that feature's summary.
+func TestBucketTurnsByFeatureDropsUnrelatedTurn(t *testing.T) {
+	catalog := featurecatalog.New()
+	catalog.Add(featurecatalog.Feature{Key: "alpha", Keywords: []string{"alpha"}})
+
+	turns := []transcriptTurn{
+		{User: "work on alpha feature", Assistant: "did alpha"},
+		{User: "write a haiku about the sea", Assistant: "here is a haiku"},
+	}
+	buckets := bucketTurnsByFeature(turns, catalog)
+	if len(buckets["alpha"]) != 1 {
+		t.Fatalf("alpha bucket = %d turns, want 1 (unrelated turn dropped)", len(buckets["alpha"]))
+	}
+}
+
+// A flow-gate reprompt must inherit the conversation's established feature, not
+// resolve on its own process text — which names feature keys ("Suggested feature
+// keys: meta") and would otherwise mis-resolve the turn (CP-37 Test B).
+func TestResolveInjectionFeatureGateRepromptInheritsEstablishedFeature(t *testing.T) {
+	catalog := featurecatalog.New()
+	catalog.Add(featurecatalog.Feature{Key: "alpha", Keywords: []string{"alpha"}})
+	catalog.Add(featurecatalog.Feature{Key: "meta", Keywords: []string{"feature", "document", "change"}})
+
+	prior := []transcriptTurn{{User: "work on alpha"}}
+	reprompt := flowgate.GateRepromptPrefix +
+		"\n\n• Missing change-audit note. You changed code but did not add a change-audit note." +
+		"\n\n• Missing or unverified feature key. Suggested feature keys: meta, alpha."
+
+	top, ok := resolveInjectionFeature(reprompt, prior, catalog)
+	if !ok || top.Key != "alpha" {
+		t.Fatalf("gate reprompt should inherit alpha, got ok=%v key=%q", ok, top.Key)
+	}
+}
+
+// A cross-provider handoff envelope must not self-resolve a feature from its own
+// text — it embeds the prior conversation and gate-reprompt lines that name feature
+// keys (e.g. "Suggested feature keys: sandbox-meta"). On a fresh target run (no
+// prior turns) that means no block, NOT a feature the envelope merely mentions
+// (CP-37 Test D — run-5611 injected the wrong "sandbox-meta" history before this).
+func TestResolveInjectionFeatureHandoffPromptDoesNotSelfResolve(t *testing.T) {
+	catalog := featurecatalog.New()
+	catalog.Add(featurecatalog.Feature{Key: "sandbox-meta", Keywords: []string{"sandbox", "meta"}})
+	catalog.Add(featurecatalog.Feature{Key: "calc-core", Keywords: []string{"calc", "arithmetic"}})
+
+	handoff := handoffPromptPrefix +
+		"\n\nSource provider: claude\n\n<previous_conversation>\nUser:\n" +
+		"The flow gate is asking… Suggested feature keys: sandbox-meta, calc-core.\n</previous_conversation>"
+
+	if _, ok := resolveInjectionFeature(handoff, nil, catalog); ok {
+		t.Fatal("handoff envelope must not self-resolve a feature on a fresh target run")
+	}
+}
+
+// The recording/bucketing path must likewise keep a gate reprompt on the running
+// feature instead of opening a bogus bucket for a key its text mentions.
+func TestBucketTurnsByFeatureGateRepromptInheritsFeature(t *testing.T) {
+	catalog := featurecatalog.New()
+	catalog.Add(featurecatalog.Feature{Key: "alpha", Keywords: []string{"alpha"}})
+	catalog.Add(featurecatalog.Feature{Key: "meta", Keywords: []string{"feature", "document", "change"}})
+
+	turns := []transcriptTurn{
+		{User: "work on alpha", Assistant: "did alpha"},
+		{User: flowgate.GateRepromptPrefix + "\n\n• Missing change-audit note. Suggested feature keys: meta.", Assistant: "added the doc"},
+	}
+	buckets := bucketTurnsByFeature(turns, catalog)
+	if len(buckets["alpha"]) != 2 {
+		t.Fatalf("alpha bucket = %d turns, want 2 (reprompt inherits alpha)", len(buckets["alpha"]))
+	}
+	if _, ok := buckets["meta"]; ok {
+		t.Fatalf("gate reprompt must not open a 'meta' bucket")
+	}
+}
+
+func TestBuildHandoffContextRejectsInvalidSources(t *testing.T) {
+	tests := []struct {
+		name    string
+		run     *interactiveRun
+		target  ProviderKey
+		wantErr string
+	}{
+		{
+			name: "same provider",
+			run: &interactiveRun{
+				id:          "run-same",
+				providerKey: ProviderKeyCodex,
+				runKind:     "chat",
+				events:      []ProviderEvent{{Type: EventTurnStarted, Prompt: "hello"}},
+			},
+			target:  ProviderKeyCodex,
+			wantErr: "handoff_same_provider",
+		},
+		{
+			name: "busy run",
+			run: &interactiveRun{
+				id:           "run-busy",
+				providerKey:  ProviderKeyCodex,
+				runKind:      "chat",
+				turnInFlight: true,
+				events:       []ProviderEvent{{Type: EventTurnStarted, Prompt: "hello"}},
+			},
+			target:  ProviderKeyClaude,
+			wantErr: "handoff_run_busy",
+		},
+		{
+			name: "non chat",
+			run: &interactiveRun{
+				id:          "run-workflow",
+				providerKey: ProviderKeyCodex,
+				runKind:     "workflow",
+				events:      []ProviderEvent{{Type: EventTurnStarted, Prompt: "hello"}},
+			},
+			target:  ProviderKeyClaude,
+			wantErr: "handoff_run_kind_unsupported",
+		},
+		{
+			name: "unsupported source",
+			run: &interactiveRun{
+				id:          "run-gemini",
+				providerKey: ProviderKeyGemini,
+				runKind:     "chat",
+				events:      []ProviderEvent{{Type: EventTurnStarted, Prompt: "hello"}},
+			},
+			target:  ProviderKeyClaude,
+			wantErr: "handoff_source_provider_unsupported",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := NewInteractiveService()
+			svc.mu.Lock()
+			svc.runs[tt.run.id] = tt.run
+			svc.mu.Unlock()
+
+			_, apiErr := svc.buildHandoffContext(context.Background(), tt.run.id, handoffContextRequest{TargetProviderKey: tt.target})
+			if apiErr == nil || apiErr.code != tt.wantErr {
+				t.Fatalf("buildHandoffContext error = %+v, want code %q", apiErr, tt.wantErr)
+			}
+		})
 	}
 }
 

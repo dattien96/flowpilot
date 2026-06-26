@@ -22,3 +22,10 @@
 
 - No dedicated UI test currently covers sidebar ordering or the inline runner cue.
 - The broader R3 phase-1 parity checklist still contains other desktop-vs-web gaps beyond this localized fix.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: project-nav
+source_doc_id: BUG-053
+change_type: fix
+summary: Fix Desktop Settings Nav Order And Runner Status Cue
+# --->8---

@@ -27,3 +27,10 @@
 
 - The user-generated `yolo-test.txt` remains in the workspace and was not deleted.
 - A full `go test ./internal/runner -count=1` was not rerun after this patch; the previous broad run still failed on unrelated Google Drive config/provider-home/registry/history tests.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: yolo-policy
+source_doc_id: BUG-070
+change_type: fix
+summary: Fix Codex YOLO-Off Write Gate And Selected Skill Names
+# --->8---

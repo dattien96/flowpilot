@@ -51,3 +51,10 @@ Full rewrite of the component:
 - `updateTeam` uses an optimistic local state update for the team list name to avoid a full refresh, which is consistent with the existing project-detail save pattern.
 - Team-project links are not surfaced from the Teams detail page; they remain managed from the Projects settings page.
 - Google Drive tab parity (review item 6 Google Drive + review items 7.x Artifacts) remain as separate tasks.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: project-nav
+source_doc_id: TASK-042
+change_type: feature
+summary: Desktop Teams Registry Detail Parity
+# --->8---

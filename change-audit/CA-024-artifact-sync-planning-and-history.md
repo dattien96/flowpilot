@@ -62,3 +62,10 @@ GitNexus reports:
 - This audit covers planning only. Implementation and automated tests remain pending.
 - Google OAuth environment values and the public QR connect origin are prerequisites.
 - The plan defaults to one Drive authorization and selected folder per project.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: artifacts
+source_doc_id: CP-06
+change_type: feature
+summary: Artifact Sync Planning And Cloud Provider Review
+# --->8---

@@ -33,3 +33,10 @@
 ## Residual Risk
 
 - Full `go test ./internal/runner` is blocked by unrelated local environment failures in Google Drive MCP and `powershell`-based provider tests.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: ai-providers
+source_doc_id: BUG-045
+change_type: fix
+summary: Fix Codex AppServer Thread ID Shape
+# --->8---

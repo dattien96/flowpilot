@@ -1,6 +1,7 @@
 package featurecatalog
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -133,6 +134,26 @@ func TestBuild_AddsLedgerKeysNotInFeatureKeys(t *testing.T) {
 	}
 }
 
+func TestBuild_SupersededFeatureKeyUsesSuccessor(t *testing.T) {
+	repoDir := t.TempDir()
+	dotDir := t.TempDir()
+
+	writeTempFeatureKeys(t, repoDir, `- old-chat — superseded by chat-ui
+- chat-ui — Chat UI
+`)
+
+	cat, err := Build(repoDir, &stubLedger{}, dotDir)
+	if err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+	if _, ok := cat.Get("old-chat"); ok {
+		t.Fatal("superseded key should not be offered as an active feature")
+	}
+	if _, ok := cat.Get("chat-ui"); !ok {
+		t.Fatal("successor key should be active")
+	}
+}
+
 // --- ResolveFeature ---
 
 func catalogWithFeatures(features ...Feature) *Catalog {
@@ -255,6 +276,39 @@ func TestHistorySlot_UsesCommitHashWhenNoDocID(t *testing.T) {
 	result := HistorySlot("chat-ui", stub)
 	if !strings.Contains(result, "deadbeef") {
 		t.Errorf("expected commit hash prefix in output:\n%s", result)
+	}
+}
+
+// A feature with many commits must inject a bounded block: only the most recent
+// recentHistoryEntryCount entries render, prefixed with an omission marker, and
+// the newest is still tagged "← current truth".
+func TestHistorySlot_CapsLongHistory(t *testing.T) {
+	var entries []changeledger.Entry
+	for i := 0; i < 100; i++ {
+		entries = append(entries, changeledger.Entry{
+			CommitHash:  fmt.Sprintf("hash%08d", i),
+			FeatureKey:  "calc-core",
+			SourceDocID: fmt.Sprintf("Task-%03d", i),
+			Summary:     fmt.Sprintf("commit number %d", i),
+			CommittedAt: fmt.Sprintf("2024-01-%02dT10:00:00Z", (i%27)+1),
+		})
+	}
+
+	result := HistorySlot("calc-core", &historyStub{entries: entries})
+	entryLines := 0
+	for _, ln := range strings.Split(result, "\n") {
+		if strings.HasPrefix(ln, "- [") {
+			entryLines++
+		}
+	}
+	if entryLines != recentHistoryEntryCount {
+		t.Fatalf("rendered %d entry lines, want %d (capped)", entryLines, recentHistoryEntryCount)
+	}
+	if !strings.Contains(result, "older entries omitted") {
+		t.Errorf("expected omission marker for the dropped entries:\n%s", result)
+	}
+	if !strings.Contains(result, "← current truth") {
+		t.Error("newest entry should still carry the current-truth marker")
 	}
 }
 

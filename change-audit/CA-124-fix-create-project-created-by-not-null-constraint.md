@@ -24,3 +24,10 @@ Files changed:
 - `supabaseAdminRepository.ts:createProject` now requires both `legacy_id` (added in BUG-135 / CA-002) and `created_by` (this fix) to be explicit. Neither column has a DB-level default.
 - A future migration that drops `legacy_id` or adds defaults to `created_by` would allow these to be removed from the insert.
 - Tracked in: [BUG-136](../requirements/09-BugFix/done/BUG-136-Create-Project-Fails-With-created-by-Not-Null-Constraint.md)
+
+# ---8<--- flowpilot:change-ledger
+feature_key: supabase-config
+source_doc_id: BUG-135
+change_type: fix
+summary: Fix Create Project created_by Not-Null Constraint
+# --->8---

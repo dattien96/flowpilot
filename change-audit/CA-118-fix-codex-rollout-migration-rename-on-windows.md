@@ -29,3 +29,10 @@
 
 - File modes on Windows are reported as `0666`; the migration preserves whatever mode the OS reports, which is the correct cross-platform behavior.
 - Pre-existing environment-dependent test failures remain out of scope and are not introduced by this change.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: chat-history
+source_doc_id: BUG-124
+change_type: fix
+summary: Fix Codex Rollout Migration Rename On Windows
+# --->8---

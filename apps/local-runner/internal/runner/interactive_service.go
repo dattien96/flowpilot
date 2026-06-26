@@ -68,6 +68,15 @@ type InteractiveService struct {
 	// up to this many times before failing the turn (04-05 send-with-retry). A user
 	// interrupt or an approval/question expiry is NOT retried.
 	maxTurnAttempts int
+
+	syncContextEngineFilesHook func(projectID, dotFlowpilotDir string) (error, string)
+
+	// summaryTimers holds the per-run idle timer that fires a rolling chat-summary
+	// after the chat has been quiet for the idle window. A new turn cancels it; a
+	// completed turn (re)schedules it. Guarded by summaryMu (not s.mu) so the timer
+	// callback never contends with turn handling.
+	summaryMu     sync.Mutex
+	summaryTimers map[string]*time.Timer
 }
 
 type interactiveRun struct {
@@ -148,6 +157,7 @@ type interactiveRun struct {
 	turnStartGitHead string // CP-35: git HEAD captured at turn start for committed-diff detection
 	lastTurnStepID   string // CP-35: stepID of the most-recently started turn, used by gate reprompts
 	currentTurnID    string
+	lastTurnID       string // id of the most-recently completed turn, for the rolling chat summary
 	turnCancel       context.CancelFunc
 
 	pendingApprovalID string
@@ -289,6 +299,7 @@ func newInteractiveService(registry *ProviderRegistry, catalog CatalogStore, wor
 		approvalTTL:       10 * time.Minute,
 		questionTTL:       10 * time.Minute,
 		maxTurnAttempts:   3,
+		summaryTimers:     map[string]*time.Timer{},
 	}
 	// Seed the id counter above the highest persisted run id so a runner restart does NOT
 	// reuse ids (run-1, run-2, …). Reuse made a fresh chat collide with a previous run of
@@ -296,6 +307,13 @@ func newInteractiveService(registry *ProviderRegistry, catalog CatalogStore, wor
 	// brand-new session's Agents panel. (BUG-117)
 	svc.seedIDCounter()
 	return svc
+}
+
+func (s *InteractiveService) syncContextEngineFilesBestEffort(projectID, dotFlowpilotDir string) (error, string) {
+	if s.syncContextEngineFilesHook != nil {
+		return s.syncContextEngineFilesHook(projectID, dotFlowpilotDir)
+	}
+	return s.syncContextEngineFiles(projectID, dotFlowpilotDir)
 }
 
 // seedIDCounter advances idCounter past the largest numeric suffix among persisted run ids
@@ -1642,6 +1660,19 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// Live ledger refresh (CP-35): pick up commits made during this session so the
 	// oracle always sees the current change history, not just what existed at bind time.
 	s.rebuildLedgerIfDirty(rs.workspaceCwd)
+	if s.shouldInjectFeatureHistory(rs.providerKey) {
+		providerPrompt = injectFeatureHistoryPrompt(rs.workspaceCwd, providerPrompt, transcriptTurnsFromRun(rs))
+	}
+	// Observability for E2E: persist/log the fully-composed turn prompt (feature
+	// history + discussion + mode prefix + user text) under the FlowPilot tool
+	// workspace (namespaced by project id), NOT inside the target project. On by
+	// default; disable with FLOWPILOT_LOG_PROMPT=0. The adapter prepends skill
+	// content downstream; this captures everything the injection seam produced.
+	toolWorkspace := ""
+	if s.runner != nil {
+		toolWorkspace = s.runner.workspace
+	}
+	logComposedPrompt(toolWorkspace, rs.projectID, rs.id, turnID, providerPrompt)
 	req := TurnRequest{
 		RunID:             rs.id,
 		StepID:            in.StepID,
@@ -1719,6 +1750,13 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// failure is recorded as retryable and must not erase the completed turn (04-04).
 	if completed {
 		_ = s.finalizer.Finalize(fin)
+		// Rolling chat summary is no longer produced per turn; arm the idle timer
+		// so it runs once the chat has been quiet for the idle window. A new turn
+		// cancels this (see startTurn), restarting the window from zero.
+		s.mu.Lock()
+		rs.lastTurnID = turnID
+		s.mu.Unlock()
+		s.scheduleChatSummary(rs.id)
 	}
 	if completed && pendingRestartRunID == rs.id && pendingRestartPrompt != "" {
 		prompt, queued := s.takeQueuedFeedbackPrompt(rs.parentRunID, rs.id, pendingRestartPrompt)
@@ -1728,6 +1766,15 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		go func(runID, stepID, prompt string) {
 			_, _ = s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt}, "", "")
 		}(rs.id, rs.stepID, prompt)
+	}
+}
+
+func (s *InteractiveService) shouldInjectFeatureHistory(providerKey ProviderKey) bool {
+	switch providerKey {
+	case ProviderKeyCodex, ProviderKeyClaude, ProviderKeyGemini:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1925,6 +1972,9 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 
 	turnID := s.nextID("turn")
 	rs.turnInFlight = true
+	// A new turn resets the idle-summary window to zero (a pending summary timer
+	// is cancelled here and re-armed when this turn completes).
+	s.cancelChatSummary(rs.id)
 	if rs.turnCount == 0 {
 		if changeType := normalizeChangeType(in.ChangeType); changeType != "" {
 			rs.changeType = changeType

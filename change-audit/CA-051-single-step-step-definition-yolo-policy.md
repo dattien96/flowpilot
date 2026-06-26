@@ -25,3 +25,10 @@ Finalized the YOLO source-of-truth rule after Task-030/Task-031 churn. YOLO may 
 - The working tree already contained uncommitted Task-030 changes before this slice; this audit records the final YOLO rule sync.
 - Existing code may still need a follow-up implementation pass if any UI currently allows YOLO mutation from the run detail page or other prohibited run-level surfaces.
 - The build still emits existing Vite warnings about browser-externalized Node modules and large chunks.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: yolo-policy
+source_doc_id: TASK-030
+change_type: feature
+summary: Single-Step Step-Definition YOLO Policy
+# --->8---

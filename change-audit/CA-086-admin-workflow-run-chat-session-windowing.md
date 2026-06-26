@@ -25,3 +25,10 @@ Admin workflow run detail UI in `apps/admin-web`, focused on long prompt-respons
 
 - This is a render-side performance slice. It does not yet add backend/API pagination or persisted prompt-response caches.
 - The next performance layer, if needed, should page workflow outputs/logs at the data boundary so very large runs are not fully loaded before rendering.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: workflow-runtime
+source_doc_id: CA-086
+change_type: feature
+summary: Admin Workflow Run Chat Session Windowing
+# --->8---

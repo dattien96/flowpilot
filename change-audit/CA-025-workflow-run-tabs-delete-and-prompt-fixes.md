@@ -16,3 +16,10 @@ This audit covers the workflow run detail tab layout, delete actions on the run 
 - Verified the run detail page shows the expected tab set and delete controls.
 - Confirmed the prompt tab no longer renders empty sections.
 
+
+# ---8<--- flowpilot:change-ledger
+feature_key: workflow-runtime
+source_doc_id: CA-025
+change_type: feature
+summary: Workflow Run Tabs, Delete, and Prompt Fixes
+# --->8---

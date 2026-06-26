@@ -15,3 +15,10 @@ This audit captures the provider command diagnostics work that made the executio
 - Confirmed `command.txt` shows the stdin prompt marker.
 - Verified the workflow run detail page renders the command viewer with the captured command text.
 
+
+# ---8<--- flowpilot:change-ledger
+feature_key: workflow-runtime
+source_doc_id: CA-019
+change_type: feature
+summary: Workflow Command Viewer and Prompt Marker
+# --->8---

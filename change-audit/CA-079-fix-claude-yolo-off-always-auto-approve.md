@@ -43,3 +43,10 @@ every Claude adapter creation, restoring the gating posture for every YOLO=false
   such cases since it runs on every adapter creation.
 - `item/permissions/requestApproval` (Codex) and the analog Claude `ask_user` path remain
   out of scope (separate concerns).
+
+# ---8<--- flowpilot:change-ledger
+feature_key: yolo-policy
+source_doc_id: BUG-069
+change_type: fix
+summary: Fix Claude YOLO=off Always Auto-Approves
+# --->8---

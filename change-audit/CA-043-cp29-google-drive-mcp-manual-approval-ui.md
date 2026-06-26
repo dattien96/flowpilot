@@ -21,3 +21,10 @@ Closed the remaining CP-29 non-YOLO approval gaps in the admin-web run-detail su
 
 - GitNexus CLI in this environment exposes `impact`, `query`, and `context`, but not the `detect_changes` command named in `AGENTS.md`; scope review was done with `git diff` after impact analysis.
 - The proxy approval route still uses the legacy `google-drive-write-approval` path name for compatibility, even though it now handles both read and write MCP approvals.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: google-drive
+source_doc_id: CP-29
+change_type: feature
+summary: CP-29 Google Drive MCP Manual Approval UI
+# --->8---

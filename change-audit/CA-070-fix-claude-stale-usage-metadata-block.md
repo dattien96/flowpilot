@@ -26,3 +26,10 @@
 - If Claude itself returns a current quota error, FlowPilot will still show `Claude usage limit reached...`.
 - Local config backup: `C:\Users\dat.nguyen\AppData\Roaming\FlowPilot\provider-accounts.json.bak-20260615-121123`.
 - GitNexus tools were not exposed in this session, so the required symbol impact check was documented as unavailable and replaced with local code inspection.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: ai-providers
+source_doc_id: CA-070
+change_type: fix
+summary: Fix Claude Stale Usage Metadata Block
+# --->8---

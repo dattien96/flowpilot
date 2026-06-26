@@ -25,3 +25,10 @@ Fixed the CP-29 approval replay regression where a paused Google Drive MCP step 
 - The targeted Vitest invocation in this shell still fails before test discovery because direct file runs are not resolving the repo's `@/...` path aliases in this environment.
 - GitNexus tools were not available in this thread, so the repo's normal symbol impact analysis flow had to be replaced with careful local inspection only.
 - The existing `workflow-start-runtime` test file also contains the previously added single-step YOLO regression coverage from the earlier fix in this branch.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: google-drive
+source_doc_id: CP-29
+change_type: fix
+summary: Fix Google Drive Approval Replay Process Key
+# --->8---

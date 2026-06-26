@@ -22,3 +22,10 @@ Fix the local-runner chat resume path for legacy desktop history rows whose `pro
 
 - A broader targeted batch also including `TestRestoredCodexRunUsesCLIResumePath` was not fully green on Windows. That test failed because its shell stub did not create the expected `codex-home.txt` capture file; the same-home resume regression tests passed.
 - The greyout behavior remains correct for real missing provider files, missing auth, or true destination collisions. This change only handles the false collision where source and destination are the same file.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: chat-history
+source_doc_id: CA-099
+change_type: fix
+summary: Fix Desktop Legacy Default Account Chat Resume
+# --->8---

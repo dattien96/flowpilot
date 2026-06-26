@@ -38,3 +38,10 @@
 
 - Manual validation on PC B with Claude not installed remains recommended.
 - Existing user edits in `AGENTS.md` and `CLAUDE.md` were not modified.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: chat-history
+source_doc_id: TASK-073
+change_type: feature
+summary: Restore Chats Without Active Provider
+# --->8---

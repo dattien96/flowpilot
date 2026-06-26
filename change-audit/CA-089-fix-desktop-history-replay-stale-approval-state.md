@@ -46,3 +46,10 @@ After `consumeStream` returns, if `handle.status` (server ground truth) is not `
 
 - If exact decision values (approve vs deny) need to be surfaced in history, server-side persistence of the decision event in the stream is required. The current `"resolved"` sentinel is correct and honest.
 - If a new gate type beyond `permission_required` / `user_question_required` is introduced, add a symmetric stale-detection block in F-1 and a matching branch in the F-2 post-stream cleanup.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: chat-history
+source_doc_id: BUG-074
+change_type: fix
+summary: Fix Desktop History Replay Stale Approval State
+# --->8---

@@ -69,3 +69,10 @@ Does a local file exist at targetPath?
 - Prefix-extension acceptance is intentionally Codex-only. If Claude session-file append semantics are later confirmed, the gate can be widened with dedicated tests.
 - This change narrows the definition of "conflict" only; genuinely divergent rollout chains sharing a session id are still rejected and never silently merged.
 - Source review came from a Codex review loop; findings on stale metadata, missing direct tests, and the Codex/Claude gate were all incorporated.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: google-drive
+source_doc_id: BUG-091
+change_type: fix
+summary: Fix Drive Restore Prefix-Extension Conflict
+# --->8---

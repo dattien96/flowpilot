@@ -71,3 +71,10 @@ Verified during the implementation pass:
   - project settings as link-only assignment
 - The dedicated MCP Test Console now covers Jira first and leaves the other type sections ready for follow-up work.
 - The `change-audit` note is intentionally implementation-focused and does not replace the formal coding-plan docs.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: mcp-tools
+source_doc_id: CP-05
+change_type: feature
+summary: Implement CP-05
+# --->8---

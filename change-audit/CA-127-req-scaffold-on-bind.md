@@ -34,3 +34,10 @@ produce free-form documents or fail compliance checks. Embedding them in the run
 - Existing FORMAT-REFERENCE files are never overwritten (install-once semantics).
 - The scaffold failure does not abort the rest of the init sequence.
 - The skill-pack embed pattern (`//go:embed`) is reused exactly.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: context-regression-engine
+source_doc_id: TASK-112
+change_type: feature
+summary: Requirements Scaffold On Bind
+# --->8---

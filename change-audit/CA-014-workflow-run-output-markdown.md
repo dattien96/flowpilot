@@ -21,3 +21,10 @@ Added support for storing and rendering markdown outputs directly inside artifac
 
 - Verified the workflow run detail screen correctly renders outputs.
 - Executed unit tests in `apps/admin-web` via `npm run test` (all tests passed).
+
+# ---8<--- flowpilot:change-ledger
+feature_key: workflow-runtime
+source_doc_id: CP-15
+change_type: feature
+summary: Workflow Run Output Markdown Support
+# --->8---

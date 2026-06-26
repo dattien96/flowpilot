@@ -15,3 +15,10 @@ This audit captures the later follow-up UX fixes on the workflow run detail page
 - Verified the prompt bubble stays visible after sending a follow-up message.
 - Confirmed the loading state no longer wipes the user message from the feed.
 
+
+# ---8<--- flowpilot:change-ledger
+feature_key: workflow-runtime
+source_doc_id: CA-029
+change_type: feature
+summary: Workflow Run Detail Follow-Up UX
+# --->8---

@@ -7,10 +7,13 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"flowpilot-runner/internal/promptblock"
 )
 
 // reFeatureKeyLine matches lines like: `- chat-ui — description`
 var reFeatureKeyLine = regexp.MustCompile(`^-\s+([a-z][a-z0-9-]+)\s`)
+var reSupersededBy = regexp.MustCompile(`(?i)\bsuperseded\s+by\s+([a-z][a-z0-9-]+)\b`)
 
 // reSafeKey normalizes an arbitrary string to a kebab-case key.
 var reSafeKey = regexp.MustCompile(`[^a-z0-9]+`)
@@ -25,7 +28,7 @@ var reSafeKey = regexp.MustCompile(`[^a-z0-9]+`)
 // The CA index is built once; path resolution is lazy per-entry.
 func EnrichAll(entries []Entry, repoDir string) []Entry {
 	caIndex := buildCAIndex(repoDir)
-	knownKeys := loadKnownKeys(filepath.Join(repoDir, "change-audit", "FEATURE-KEYS.md"))
+	knownKeys := LoadKnownKeys(filepath.Join(repoDir, "change-audit", "FEATURE-KEYS.md"))
 
 	enriched := make([]Entry, len(entries))
 	for i, e := range entries {
@@ -34,18 +37,37 @@ func EnrichAll(entries []Entry, repoDir string) []Entry {
 	return enriched
 }
 
-func enrichEntry(e Entry, repoDir string, caIndex map[string]string, knownKeys []string) Entry {
-	// Priority 0: the feature was declared explicitly in the commit tags
-	// `[Type][feature][layer?]` (set high-confidence by the parser). This is the most
-	// direct signal — trust it over any inference below.
+type caRecord struct {
+	FeatureKey string
+	Excerpt    string
+}
+
+func enrichEntry(e Entry, repoDir string, caIndex map[string]caRecord, knownKeys map[string]struct{}) Entry {
+	if e.FeatureKey != "" && isKnownFeatureKey(e.FeatureKey, knownKeys) {
+		e.Confidence = ConfidenceHigh
+	} else if e.FeatureKey != "" {
+		e.Confidence = ConfidenceLow
+	}
+
+	// Priority 0: an explicitly declared and registry-verified feature key.
 	if e.Confidence == ConfidenceHigh && e.FeatureKey != "" {
+		if e.CAExcerpt == "" && e.SourceDocID != "" {
+			if rec, ok := caIndex[e.SourceDocID]; ok && rec.Excerpt != "" {
+				e.CAExcerpt = rec.Excerpt
+			}
+		}
 		return e
 	}
 
 	// Priority 1: CA §13 block exact source_doc_id match
 	if e.SourceDocID != "" {
-		if key, ok := caIndex[e.SourceDocID]; ok && key != "" {
-			e.FeatureKey = key
+		if rec, ok := caIndex[e.SourceDocID]; ok {
+			if rec.FeatureKey != "" {
+				e.FeatureKey = rec.FeatureKey
+			}
+			if rec.Excerpt != "" {
+				e.CAExcerpt = rec.Excerpt
+			}
 			e.Confidence = ConfidenceHigh
 			return e
 		}
@@ -53,7 +75,7 @@ func enrichEntry(e Entry, repoDir string, caIndex map[string]string, knownKeys [
 
 	// Priority 2: FEATURE-KEYS.md keyword match on summary + source doc id
 	combined := strings.ToLower(e.Summary + " " + e.SourceDocID)
-	for _, key := range knownKeys {
+	for key := range knownKeys {
 		slug := strings.ReplaceAll(key, "-", " ")
 		if strings.Contains(combined, slug) || strings.Contains(combined, key) {
 			e.FeatureKey = key
@@ -83,17 +105,17 @@ func enrichEntry(e Entry, repoDir string, caIndex map[string]string, knownKeys [
 
 // buildCAIndex scans change-audit/CA-*.md in the repo and builds a map of
 // source_doc_id → feature_key extracted from flowpilot:change-ledger §13 blocks.
-func buildCAIndex(repoDir string) map[string]string {
-	index := make(map[string]string)
+func buildCAIndex(repoDir string) map[string]caRecord {
+	index := make(map[string]caRecord)
 	pattern := filepath.Join(repoDir, "change-audit", "CA-*.md")
 	files, err := filepath.Glob(pattern)
 	if err != nil || len(files) == 0 {
 		return index
 	}
 	for _, file := range files {
-		key, docID := parseCABlock(file)
+		key, docID, excerpt := parseCABlock(file)
 		if key != "" && docID != "" {
-			index[docID] = key
+			index[docID] = caRecord{FeatureKey: key, Excerpt: excerpt}
 		}
 	}
 	return index
@@ -102,7 +124,7 @@ func buildCAIndex(repoDir string) map[string]string {
 // parseCABlock reads one CA note and extracts (feature_key, source_doc_id) from the
 // flowpilot:change-ledger block defined in SS-13 §13.1. Returns empty strings when
 // the block is absent.
-func parseCABlock(path string) (featureKey, sourceDocID string) {
+func parseCABlock(path string) (featureKey, sourceDocID, excerpt string) {
 	f, err := os.Open(path)
 	if err != nil {
 		return
@@ -110,6 +132,9 @@ func parseCABlock(path string) (featureKey, sourceDocID string) {
 	defer f.Close()
 
 	inBlock := false
+	var section string
+	var scopeLine string
+	var residualLine string
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		line := sc.Text()
@@ -119,7 +144,27 @@ func parseCABlock(path string) (featureKey, sourceDocID string) {
 			continue
 		}
 		if stripped == "# --->8---" {
-			break
+			inBlock = false
+			continue
+		}
+		switch strings.ToLower(stripped) {
+		case "## scope":
+			section = "scope"
+			continue
+		case "## residual notes":
+			section = "residual"
+			continue
+		case "## completed":
+			section = ""
+			continue
+		}
+		if section != "" && stripped != "" && !strings.HasPrefix(stripped, "feature_key:") && !strings.HasPrefix(stripped, "source_doc_id:") {
+			if section == "scope" && scopeLine == "" {
+				scopeLine = stripped
+			}
+			if section == "residual" && residualLine == "" {
+				residualLine = stripped
+			}
 		}
 		if !inBlock {
 			continue
@@ -131,26 +176,56 @@ func parseCABlock(path string) (featureKey, sourceDocID string) {
 			sourceDocID = strings.TrimSpace(strings.TrimPrefix(stripped, "source_doc_id:"))
 		}
 	}
+	parts := make([]string, 0, 2)
+	if scopeLine != "" {
+		parts = append(parts, "Scope: "+scopeLine)
+	}
+	if residualLine != "" {
+		parts = append(parts, "Residual Notes: "+residualLine)
+	}
+	if len(parts) > 0 {
+		excerpt, _ = promptblock.TruncateUTF8(strings.Join(parts, " | "), 400)
+	}
 	return
 }
 
-// loadKnownKeys reads FEATURE-KEYS.md and returns all kebab-case keys.
+// LoadKnownKeys reads FEATURE-KEYS.md and returns all kebab-case keys.
 // Lines follow the format: `- key — description`
-func loadKnownKeys(path string) []string {
+func LoadKnownKeys(path string) map[string]struct{} {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil
 	}
 	defer f.Close()
 
-	var keys []string
+	keys := make(map[string]struct{})
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
-		if m := reFeatureKeyLine.FindStringSubmatch(sc.Text()); m != nil {
-			keys = append(keys, m[1])
+		line := sc.Text()
+		if m := reFeatureKeyLine.FindStringSubmatch(line); m != nil {
+			if successor := supersededSuccessor(line); successor != "" {
+				keys[successor] = struct{}{}
+				continue
+			}
+			keys[m[1]] = struct{}{}
 		}
 	}
 	return keys
+}
+
+func supersededSuccessor(line string) string {
+	if m := reSupersededBy.FindStringSubmatch(line); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+func isKnownFeatureKey(key string, knownKeys map[string]struct{}) bool {
+	if key == "" {
+		return false
+	}
+	_, ok := knownKeys[key]
+	return ok
 }
 
 // pathFeatureKey runs `git show --name-only --no-commit-id --format= <hash>` and

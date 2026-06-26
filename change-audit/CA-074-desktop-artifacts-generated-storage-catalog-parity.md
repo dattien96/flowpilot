@@ -41,3 +41,10 @@ New classes: `.settings-list-empty`, `.artifact-subtabs`, `.artifact-subtab`, `.
 - **Sync button**: calls the runner endpoint directly via `RUNNER_URL`. If the runner is not running, the sync button will surface an error in the feedback banner — expected behavior.
 - **Storage tab Google Drive status card** (image-11.png from review doc): the full OAuth account status panel (connected account, folder ID, last validated, etc.) is handled by `GoogleDriveSettings.tsx` (Task-043). The Storage tab shows only the lightweight driver config, which is appropriate for per-project storage preference selection.
 - **Task document**: `requirements/08-Task/done/Task-045-Desktop-Artifacts-Generated-Storage-Catalog-Parity.md`
+
+# ---8<--- flowpilot:change-ledger
+feature_key: artifacts
+source_doc_id: TASK-043
+change_type: feature
+summary: Desktop Artifacts Generated / Storage / Catalog Parity
+# --->8---

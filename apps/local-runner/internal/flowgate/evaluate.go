@@ -31,6 +31,22 @@ func checkRule(rule Rule, tr TurnResult) *Violation {
 			return &Violation{Rule: rule, Detail: "code changed but no change-audit note found"}
 		}
 
+	case "commit_feature_key_missing":
+		if len(tr.CommitSubjects) == 0 {
+			return nil
+		}
+		if !HasCodeChanges(tr.GitDiff) && !HasCodeChangesInList(tr.WrittenPaths) {
+			return nil
+		}
+		if missingFeatureKey(tr.CommitSubjects, tr.KnownFeatureKeys) {
+			return &Violation{
+				Rule:        rule,
+				Detail:      "code-changing turn committed without a verified feature key",
+				Options:     append([]string(nil), tr.SuggestedFeatureKeys...),
+				SourceDocID: tr.SourceDocID,
+			}
+		}
+
 	case "bug_fixed":
 		isBugFix := tr.ChangeType == "bugfix"
 		if !isBugFix {
@@ -93,4 +109,52 @@ func checkRule(rule Rule, tr TurnResult) *Violation {
 		}
 	}
 	return nil
+}
+
+func missingFeatureKey(commitSubjects []string, knownKeys []string) bool {
+	if len(commitSubjects) == 0 {
+		return true
+	}
+	for _, subject := range commitSubjects {
+		key, ok := declaredFeatureKey(subject)
+		if !ok || !isKnownFeatureKey(key, knownKeys) {
+			return true
+		}
+	}
+	return false
+}
+
+func declaredFeatureKey(subject string) (string, bool) {
+	subject = strings.TrimSpace(subject)
+	if !strings.HasPrefix(subject, "[") {
+		return "", false
+	}
+	endType := strings.Index(subject, "]")
+	if endType < 0 {
+		return "", false
+	}
+	rest := strings.TrimSpace(subject[endType+1:])
+	if !strings.HasPrefix(rest, "[") {
+		return "", false
+	}
+	endFeature := strings.Index(rest, "]")
+	if endFeature < 0 {
+		return "", false
+	}
+	key := strings.ToLower(strings.TrimSpace(rest[1:endFeature]))
+	key = strings.ReplaceAll(key, " ", "-")
+	key = strings.ReplaceAll(key, "_", "-")
+	for strings.Contains(key, "--") {
+		key = strings.ReplaceAll(key, "--", "-")
+	}
+	return strings.Trim(key, "-"), strings.Trim(key, "-") != ""
+}
+
+func isKnownFeatureKey(key string, knownKeys []string) bool {
+	for _, known := range knownKeys {
+		if known == key {
+			return true
+		}
+	}
+	return false
 }

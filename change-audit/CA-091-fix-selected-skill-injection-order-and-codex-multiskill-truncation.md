@@ -55,3 +55,10 @@ by the AI when the user sent a direct task prompt:
   but unknown fields are ignored by JSON-RPC callers. The prompt text injection via `promptPrep` already
   delivers all skill content reliably for both providers.
 - BugFix document: `requirements/09-BugFix/done/BUG-076-Selected-Skills-Ignored-When-User-Prompts-Main-Task.md`
+
+# ---8<--- flowpilot:change-ledger
+feature_key: skill-injection
+source_doc_id: BUG-076
+change_type: fix
+summary: Fix Selected-Skill Injection Order and Codex Multi-Skill Truncation
+# --->8---

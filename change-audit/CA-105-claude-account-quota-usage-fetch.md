@@ -44,3 +44,10 @@ Adds real-time 5h/7d quota data for Claude accounts so the account sidebar shows
 - Model-specific sub-bucket headers (e.g. "Sonnet only") are not returned by the current API; only unified 5h/7d headers are available.
 - Claude auto-switch still uses slot-order fallback (not quota ranking) — `Q-1` from Task-018 is now unblocked but requires a separate implementation slice.
 - No caching implemented; quota is re-fetched on every account list refresh. If latency becomes visible, a 5-minute file cache is the recommended follow-up (`Q-2` in Task-080).
+
+# ---8<--- flowpilot:change-ledger
+feature_key: ai-providers
+source_doc_id: TASK-018
+change_type: feature
+summary: Claude Account Quota Usage Fetch
+# --->8---

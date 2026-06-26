@@ -16,3 +16,10 @@ This audit covers the log-backed response fallback and the fix for response vers
 - Verified the response body stays aligned with the matching local file version.
 - Confirmed the prompt and response tabs no longer collapse into the latest prompt only.
 
+
+# ---8<--- flowpilot:change-ledger
+feature_key: workflow-runtime
+source_doc_id: CA-028
+change_type: feature
+summary: Workflow Run Log Fallback and Response Versioning
+# --->8---

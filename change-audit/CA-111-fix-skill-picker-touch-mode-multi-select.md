@@ -27,3 +27,10 @@ The skill picker has two entry modes:
 
 - No automated UI tests cover this component; regression relies on manual testing.
 - Related doc: `requirements/09-BugFix/done/BUG-096-Desktop-Chat-Skill-Picker-Touch-Mode-Does-Not-Allow-Multi-Select.md`
+
+# ---8<--- flowpilot:change-ledger
+feature_key: chat-ui
+source_doc_id: BUG-096
+change_type: fix
+summary: Fix Skill Picker Touch Mode Multi-Select
+# --->8---

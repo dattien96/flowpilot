@@ -292,6 +292,29 @@ export interface ChatSessionRestoreResult {
   restoreStatus: string;
 }
 
+export interface HandoffContextRequest {
+  targetProviderKey: ProviderKey;
+  maxBytes?: number;
+}
+
+export interface HandoffContextResponse {
+  sourceRunId: string;
+  sourceProviderKey: ProviderKey;
+  targetProviderKey: ProviderKey;
+  prompt: string;
+  includedTurnCount: number;
+  omittedTurnCount: number;
+  truncated: boolean;
+  handoffMode: "raw" | "hybrid" | "target_summary";
+}
+
+export interface ChatSummaryResult {
+  runId: string;
+  generated: boolean;
+  skipped: boolean;
+  reason?: string;
+}
+
 export interface SkillSelection {
   name: string;
   path?: string;
@@ -451,6 +474,8 @@ export interface RunnerClient {
   syncChatRun(runId: string, input?: ChatSessionSyncRequest): Promise<ChatSessionSyncResult>;
   deleteRun(runId: string): Promise<void>;
   restoreChatRun(input: ChatSessionRestoreRequest): Promise<ChatSessionRestoreResult>;
+  handoffContext(runId: string, input: HandoffContextRequest): Promise<HandoffContextResponse>;
+  generateChatSummary(runId: string): Promise<ChatSummaryResult>;
   /** Streaming turn: yields normalized provider events until terminal. */
   sendTurn(input: TurnInput): AsyncIterable<ProviderEventDTO>;
   submitApproval(approvalId: string, decision: string): Promise<void>;

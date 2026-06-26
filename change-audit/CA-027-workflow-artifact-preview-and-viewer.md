@@ -16,3 +16,10 @@ This audit documents the artifact preview and browser-tab viewing workflow added
 - Verified the artifact can be opened in a new tab and renders as markdown.
 - Confirmed the old inline preview controls no longer appear.
 
+
+# ---8<--- flowpilot:change-ledger
+feature_key: artifacts
+source_doc_id: CA-027
+change_type: feature
+summary: Workflow Artifact Preview and Viewer
+# --->8---

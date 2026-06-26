@@ -17,3 +17,10 @@ Mapped UI/Database model names to the actual model aliases expected by underlyin
 
 - Ran `go test ./...` in the `apps/local-runner` module (all CLI and Runner tests passed successfully).
 - Verified local runner compiles and starts correctly.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: ai-providers
+source_doc_id: CA-010
+change_type: feature
+summary: Map AI Provider Model Aliases
+# --->8---

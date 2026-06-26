@@ -56,3 +56,10 @@ Added after `.history-status-icon--question` in `styles.css`.
 
 - `newlyCompleted` is session-only / ephemeral — not persisted to localStorage or the store. If the app is reloaded, no ticks are shown regardless of background completions.
 - `prevHistoryRef` is keyed by `runId` (globally unique UUIDs) so there is no collision between projects.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: project-nav
+source_doc_id: TASK-066
+change_type: feature
+summary: Desktop History Just-Done Tick Indicator
+# --->8---

@@ -23,3 +23,10 @@
 - Refresh/reopen behavior was already correct, so no runner persistence fix was needed.
 - The desktop package still uses a focused one-off reducer test compile/run for this reducer test rather than a first-class package test script.
 - GitNexus MCP tooling was not available in this thread, so impact and scope checks were done with local search and targeted tests.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: chat-ui
+source_doc_id: BUG-052
+change_type: fix
+summary: Fix Desktop Stale Run Stream Events
+# --->8---

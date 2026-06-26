@@ -33,3 +33,10 @@
 
 - Full `go test ./...` in `apps/local-runner` still has unrelated environment-dependent failures outside this task.
 - The admin-web production build still emits the existing `node:path` / `node:fs` browser-compatibility warnings and the existing large-chunk warning.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: supabase-config
+source_doc_id: CA-039
+change_type: feature
+summary: Supabase Runtime Config And Setup Flow
+# --->8---

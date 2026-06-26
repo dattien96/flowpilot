@@ -18,3 +18,10 @@
 ## Verification
 
 - `go test ./internal/runner -run 'Test(NormalTurnPersistsWithSeq|SupabaseStoreAppendEventShaping|SupabaseStoreLoadRunStepsShaping|SupabaseStoreApplyTransitionShaping|SupabaseStoreSurfacesHTTPError|ServiceUsesInjectedCatalogStore|ServiceListsInjectedWorkflowsGlobally|ServiceListsInjectedStepsGlobally|ServiceCatalogErrorSurfaces|SkillsServedLocallyWithInjectedStore|CatalogStoreForFallsBackToFake|CatalogStoreForUsesSupabaseWhenConfigured|StartTurnSurfacesWorkflowStateStoreErrors)$'`
+
+# ---8<--- flowpilot:change-ledger
+feature_key: workflow-runtime
+source_doc_id: CA-054
+change_type: feature
+summary: Phase 8 A2 Provider Event Persistence
+# --->8---

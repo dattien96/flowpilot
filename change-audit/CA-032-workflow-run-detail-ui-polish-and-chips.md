@@ -15,3 +15,10 @@ This audit covers the smaller workflow run detail UI refinements made after the 
 - Verified the tab chips render with the reduced typography.
 - Confirmed the attempt labels and badges read correctly on repeated prompts.
 
+
+# ---8<--- flowpilot:change-ledger
+feature_key: workflow-runtime
+source_doc_id: CA-032
+change_type: feature
+summary: Workflow Run Detail UI Polish and Chips
+# --->8---

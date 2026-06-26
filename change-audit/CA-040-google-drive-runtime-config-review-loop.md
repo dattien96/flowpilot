@@ -52,3 +52,10 @@
 - Full `npx tsc --noEmit` in `apps/admin-web` still reports unrelated pre-existing errors outside the Google Drive provider-config files, including `src/data/repository/local-first/local-first-workflow-gateway.ts`.
 - Gemini discovery now intentionally uses a conservative shape check for `settings.json` and `oauth*.json`; if the upstream CLI introduces additional legitimate top-level schemas, the allowlist may need another small update.
 - Workflow-level failure propagation for MCP-marked step results is covered through the lower-level runtime/request tests and the existing `result.status !== "success"` guards, but this loop did not add dedicated end-to-end step-level regressions for `submitWorkflowStepFollowUpRuntime` or `runWorkflowStartRuntime`.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: google-drive
+source_doc_id: CP-28
+change_type: feature
+summary: Google Drive Runtime Config Review Loop
+# --->8---

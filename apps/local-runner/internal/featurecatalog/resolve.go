@@ -69,3 +69,70 @@ func TopCandidate(candidates []Candidate, threshold float64) (Candidate, bool) {
 	}
 	return Candidate{}, false
 }
+
+// SuggestKey ranks keys using the files actually changed plus the natural-language
+// intent. It is deterministic and reuses the same lexical score surface as
+// ResolveFeature, with path matches weighted above pure text hints.
+func SuggestKey(changedPaths []string, message string, catalog *Catalog) []Candidate {
+	scores := make(map[string]float64)
+
+	for _, c := range mustResolve(message, catalog) {
+		scores[c.Key] += c.Score
+	}
+
+	changed := normalizePaths(changedPaths)
+	for _, feat := range catalog.All() {
+		for _, glob := range feat.FileGlobs {
+			if glob == "" {
+				continue
+			}
+			prefix := globPrefix(glob)
+			for _, path := range changed {
+				if prefix != "" && strings.HasPrefix(path, prefix) {
+					scores[feat.Key] += 6.0
+					break
+				}
+			}
+		}
+	}
+
+	out := make([]Candidate, 0, len(scores))
+	for key, score := range scores {
+		if score > 0 {
+			out = append(out, Candidate{Key: key, Score: score})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Score == out[j].Score {
+			return out[i].Key < out[j].Key
+		}
+		return out[i].Score > out[j].Score
+	})
+	return out
+}
+
+func mustResolve(message string, catalog *Catalog) []Candidate {
+	candidates, err := ResolveFeature(message, catalog)
+	if err != nil {
+		return nil
+	}
+	return candidates
+}
+
+func normalizePaths(paths []string) []string {
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		p = strings.TrimSpace(strings.ToLower(strings.ReplaceAll(p, "\\", "/")))
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func globPrefix(glob string) string {
+	glob = strings.ToLower(strings.ReplaceAll(strings.TrimSpace(glob), "\\", "/"))
+	glob = strings.TrimSuffix(glob, "/**")
+	glob = strings.TrimSuffix(glob, "/*")
+	return glob
+}

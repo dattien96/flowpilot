@@ -15,3 +15,10 @@ This audit documents the workflow run history delete flow and the related gatewa
 - Verified selected runs and full run history can be deleted from the UI.
 - Confirmed the backing gateways remove dependent records consistently.
 
+
+# ---8<--- flowpilot:change-ledger
+feature_key: workflow-runtime
+source_doc_id: CA-033
+change_type: feature
+summary: Workflow Run History Delete Flow
+# --->8---

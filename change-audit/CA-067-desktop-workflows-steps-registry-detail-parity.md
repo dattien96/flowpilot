@@ -27,3 +27,10 @@ Record the desktop `/workflows` and `/workflow-steps` parity pass that reworked 
 - GitNexus symbol impact tooling was not available in this thread, so required impact analysis and post-change detect-changes checks could not be executed.
 - This slice closes only the workflow/step settings review section; teams, Google Drive, and artifact parity are still separate follow-up work.
 - The desktop settings shell still uses internal tab/view state for create/detail transitions rather than full nested desktop routes.
+
+# ---8<--- flowpilot:change-ledger
+feature_key: workflow-runtime
+source_doc_id: CA-067
+change_type: feature
+summary: Desktop Workflows Steps Registry Detail Parity
+# --->8---

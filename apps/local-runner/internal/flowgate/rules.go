@@ -37,10 +37,14 @@ type TurnResult struct {
 	// Use this (not GitDiff) to decide whether the AI changed source code — GitDiff
 	// includes pre-existing dirty files and runner-internal state (e.g. test_baseline.json)
 	// that are invisible to the user and must not trigger change-audit requirements.
-	WrittenPaths []string      `json:"written_paths,omitempty"`
-	Tests        TestOutcome   `json:"tests"`
-	ChangeType   string        `json:"change_type,omitempty"`
-	SourceDocID  string        `json:"source_doc_id,omitempty"`
+	WrittenPaths         []string    `json:"written_paths,omitempty"`
+	Tests                TestOutcome `json:"tests"`
+	ChangeType           string      `json:"change_type,omitempty"`
+	SourceDocID          string      `json:"source_doc_id,omitempty"`
+	CommitSubjects       []string    `json:"commit_subjects,omitempty"`
+	ChangedPaths         []string    `json:"changed_paths,omitempty"`
+	KnownFeatureKeys     []string    `json:"known_feature_keys,omitempty"`
+	SuggestedFeatureKeys []string    `json:"suggested_feature_keys,omitempty"`
 }
 
 type Violation struct {
@@ -59,6 +63,7 @@ type Violation struct {
 func DefaultRules() []Rule {
 	return []Rule{
 		{ID: "r-ca", Scope: "step", Trigger: "code_changed", RequiredOutput: "change_audit_note", Action: "reprompt", Enabled: true},
+		{ID: "r-fk", Scope: "step", Trigger: "commit_feature_key_missing", RequiredOutput: "verified_feature_key", Action: "reprompt", Enabled: true},
 		{ID: "r-bug", Scope: "step", Trigger: "bug_fixed", RequiredOutput: "bugfix_doc", Action: "reprompt", Enabled: true},
 		{ID: "r-task", Scope: "step", Trigger: "task_referenced", RequiredOutput: "task_doc", Action: "reprompt", Enabled: true},
 		{ID: "r-tests", Scope: "step", Trigger: "tests_failed", RequiredOutput: "tests_green_or_explained", Action: "block", Enabled: true},
