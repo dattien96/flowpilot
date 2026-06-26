@@ -49,7 +49,8 @@ func TestParseRecord_BugFix(t *testing.T) {
 }
 
 func TestParseRecord_FeatureTag(t *testing.T) {
-	// New contract: [Type][feature][layer?] — feature is extracted exactly, high confidence.
+	// New contract: [Type][feature][layer?] — feature is extracted exactly, but confidence
+	// stays low until validation against the registry.
 	raw := "f1f1f1\x1f2026-06-01T10:00:00Z\x1f[Feature][project-nav][ui] add creation navigation Task-087\x1f"
 	e, ok := parseRecord(raw)
 	if !ok {
@@ -64,8 +65,8 @@ func TestParseRecord_FeatureTag(t *testing.T) {
 	if e.Layer != "ui" {
 		t.Errorf("layer: got %q, want ui", e.Layer)
 	}
-	if e.Confidence != ConfidenceHigh {
-		t.Errorf("confidence: got %q, want high (feature declared in commit)", e.Confidence)
+	if e.Confidence != ConfidenceLow {
+		t.Errorf("confidence: got %q, want low until registry validation", e.Confidence)
 	}
 	if e.SourceDocID != "Task-087" {
 		t.Errorf("sourceDocID: got %q, want Task-087", e.SourceDocID)
@@ -91,8 +92,8 @@ func TestParseRecord_FeatureTagNoLayer(t *testing.T) {
 	if e.Layer != "" {
 		t.Errorf("layer: got %q, want empty", e.Layer)
 	}
-	if e.Confidence != ConfidenceHigh {
-		t.Errorf("confidence: got %q, want high", e.Confidence)
+	if e.Confidence != ConfidenceLow {
+		t.Errorf("confidence: got %q, want low until registry validation", e.Confidence)
 	}
 	if e.Summary != "update agent spawn doc" {
 		t.Errorf("summary: got %q", e.Summary)
@@ -282,12 +283,15 @@ entries:
 	}
 	f.Close()
 
-	key, docID := parseCABlock(f.Name())
+	key, docID, excerpt := parseCABlock(f.Name())
 	if key != "chat-ui" {
 		t.Errorf("feature_key: got %q, want %q", key, "chat-ui")
 	}
 	if docID != "Task-087" {
 		t.Errorf("source_doc_id: got %q, want %q", docID, "Task-087")
+	}
+	if excerpt != "Scope: Changed some stuff." {
+		t.Errorf("excerpt: got %q, want %q", excerpt, "Scope: Changed some stuff.")
 	}
 }
 
@@ -301,9 +305,9 @@ func TestParseCABlock_NoBlock(t *testing.T) {
 	f.WriteString(content)
 	f.Close()
 
-	key, docID := parseCABlock(f.Name())
-	if key != "" || docID != "" {
-		t.Errorf("expected empty for no block, got key=%q docID=%q", key, docID)
+	key, docID, excerpt := parseCABlock(f.Name())
+	if key != "" || docID != "" || excerpt != "" {
+		t.Errorf("expected empty for no block, got key=%q docID=%q excerpt=%q", key, docID, excerpt)
 	}
 }
 
@@ -324,15 +328,37 @@ func TestLoadKnownKeys(t *testing.T) {
 	f.WriteString(content)
 	f.Close()
 
-	keys := loadKnownKeys(f.Name())
+	keys := LoadKnownKeys(f.Name())
 	if len(keys) != 3 {
 		t.Fatalf("expected 3 keys, got %d: %v", len(keys), keys)
 	}
-	if keys[0] != "chat-ui" {
-		t.Errorf("keys[0]: got %q, want %q", keys[0], "chat-ui")
+	if _, ok := keys["chat-ui"]; !ok {
+		t.Errorf("expected chat-ui key in %v", keys)
 	}
-	if keys[2] != "workflow-runtime" {
-		t.Errorf("keys[2]: got %q, want %q", keys[2], "workflow-runtime")
+	if _, ok := keys["workflow-runtime"]; !ok {
+		t.Errorf("expected workflow-runtime key in %v", keys)
+	}
+}
+
+func TestLoadKnownKeysSkipsSupersededAliases(t *testing.T) {
+	content := `# Feature Keys
+- old-chat — superseded by chat-ui
+- chat-ui — Chat UI
+`
+	f, err := os.CreateTemp(t.TempDir(), "FEATURE-KEYS*.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	f.WriteString(content)
+	f.Close()
+
+	keys := LoadKnownKeys(f.Name())
+	if _, ok := keys["old-chat"]; ok {
+		t.Fatalf("superseded alias should not be active: %v", keys)
+	}
+	if _, ok := keys["chat-ui"]; !ok {
+		t.Fatalf("successor key should be active: %v", keys)
 	}
 }
 
@@ -342,7 +368,7 @@ func TestEnrichEntry_CABlock(t *testing.T) {
 	content := "```yaml\n# ---8<--- flowpilot:change-ledger\nfeature_key: chat-ui\nsource_doc_id: Task-087\nentries:\n  - symbol: Foo\n    layer: ui\n    change: modified\n    class: behavioral\n# --->8---\n```"
 	os.WriteFile(caFile, []byte(content), 0o644)
 
-	caIndex := map[string]string{"Task-087": "chat-ui"}
+	caIndex := map[string]caRecord{"Task-087": {FeatureKey: "chat-ui"}}
 	e := Entry{CommitHash: "abc", SourceDocID: "Task-087", Summary: "add slash cmd", Confidence: ConfidenceLow}
 
 	got := enrichEntry(e, t.TempDir(), caIndex, nil)
@@ -355,7 +381,7 @@ func TestEnrichEntry_CABlock(t *testing.T) {
 }
 
 func TestEnrichEntry_KeywordMatch(t *testing.T) {
-	knownKeys := []string{"chat-ui", "agent-spawn", "workflow-runtime"}
+	knownKeys := map[string]struct{}{"chat-ui": {}, "agent-spawn": {}, "workflow-runtime": {}}
 	e := Entry{CommitHash: "abc", Summary: "update chat ui components", Confidence: ConfidenceLow}
 
 	got := enrichEntry(e, t.TempDir(), nil, knownKeys)
@@ -370,7 +396,7 @@ func TestEnrichEntry_KeywordMatch(t *testing.T) {
 func TestEnrichEntry_FallbackDocID(t *testing.T) {
 	e := Entry{CommitHash: "abc", SourceDocID: "Task-999", Summary: "some change", Confidence: ConfidenceLow}
 
-	got := enrichEntry(e, t.TempDir(), map[string]string{}, nil)
+	got := enrichEntry(e, t.TempDir(), map[string]caRecord{}, nil)
 	if got.FeatureKey != "task-999" {
 		t.Errorf("FeatureKey: got %q, want %q", got.FeatureKey, "task-999")
 	}
