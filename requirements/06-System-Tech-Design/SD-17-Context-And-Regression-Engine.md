@@ -119,6 +119,8 @@ Because the ledger depends on this format, the bundled `git-commit-format` skill
 
 **Fallback chain when the feature bracket is absent** (legacy commits / non-FlowPilot history), in priority order: (0) feature bracket in the commit → high; (1) `feature_key` in a matching CA `§13` block → high; (2) `FEATURE-KEYS.md` keyword match → low; (3) dominant top-level changed path → low; (4) the source-doc id itself → low. Levels 2–4 are coarse by nature and flagged `confidence: low`.
 
+**Sibling Change-plane entry — the per-feature chat-summary timeline** (`Task-161`, resolving `Q-1` toward Plane C). Beside `feature_history.ndjson`, a `ledger/chat_summary.ndjson` keeps a time-ordered, per-`feature_key` record of what was *discussed* in past chats (decisions, rejected approaches, preferences, blockers) that never became a commit. It stays deterministic and ordered like the commit ledger — only the summary *text* is AI-generated (by a cheap-tier model of the chat's own provider, heuristic fallback). [Task-163](../08-Task/done/Task-163-Chat-Summary-Generation-Triggers.md) defines *when* it is produced — an idle timer, a manual control, and a startup backfill scan — and stores it as one upsert row per `(run, feature)` keyed by a transcript-state hash. Both timelines inject side by side at the prompt-assembly seam (`§6.1`).
+
 ### 3.3 `D-4` Feature resolution from natural language
 
 The user rarely supplies a `feature_key`. Resolution is a two-step:
@@ -190,7 +192,7 @@ graph TD
 
     subgraph STORE["Storage  ·  Task-103 ✓"]
         L[".flowpilot/ local-first"]
-        D["Drive context-engine/\n(3 shared files)"]
+        D["Drive context-engine/\n(4 shared files)"]
     end
 
     REC --> L
@@ -214,6 +216,7 @@ graph TD
 ```text
 <target>/.flowpilot/
   ledger/feature_history.ndjson    ← synced to Drive
+  ledger/chat_summary.ndjson       ← synced to Drive
   catalog/features.ndjson          ← synced to Drive
   settings/flow-rules.json         ← synced to Drive
   guard/test_baseline.json         ← local only (machine-specific)
@@ -459,6 +462,8 @@ If **any** child file or subdirectory is missing (e.g. user deletes `feature_his
 
 **This is pure code — no AI involved.** The AI only appears later in the feature resolver (§3.3, D-4) when resolving NL → `feature_key`.
 
+Task-157 now consumes this resolver in the live runner prompt-assembly seam so the packed feature history block is actually prepended to the AI prompt.
+
 ---
 
 ### 13.5 How is `feature_key` extracted from commits?
@@ -561,7 +566,7 @@ No. These three files in `.flowpilot/` answer three different questions and neve
 |---|---|---|---|---|
 | `tooling.json` | `tooling.CheckAll()` | "What tools are installed on *this machine*?" | Array of `{tool, version, status, checked_at}` for `gitnexus`, `rtk`, `node`, `skill_pack` | ❌ machine-local |
 | `engine-init.json` | `saveEngineInitState()` | "What happened the *last time* init ran?" | `{trigger, status, skipped, skipReason, attemptedAt, completedAt, workingDirectory, install summary, steps[]}` — an audit record of each init step's outcome | ❌ run log (local) |
-| `manifest.json` | `contextsync.WriteManifest()` | "What is the *integrity/state* of the shared data files?" | Array of `{path, sha256, size_bytes}` for the 3 shared files (`feature_history.ndjson`, `features.ndjson`, `flow-rules.json`) | used as the Drive `_index` reference |
+| `manifest.json` | `contextsync.WriteManifest()` | "What is the *integrity/state* of the shared data files?" | Array of `{path, sha256, size_bytes}` for shared files (`feature_history.ndjson`, `chat_summary.ndjson`, `features.ndjson`, `flow-rules.json`) | used as the Drive `_index` reference |
 
 **Distinct roles:**
 
@@ -570,3 +575,345 @@ No. These three files in `.flowpilot/` answer three different questions and neve
 - **`manifest.json` — content fingerprint.** sha256 + size of the actual shared data files so a Drive/cross-machine sync can detect changes and verify integrity. It is about the *data*.
 
 **The only overlap** is conceptual: `engine-init.json`'s `steps[]` records that the `contextsync_manifest` step ran, and `manifest.json` is the artifact that step produced. One says "the manifest step ran OK"; the other *is* the manifest with the hashes. Neither replaces the other. The single theoretical merge candidate is folding `tooling.json` into `engine-init.json` (both local) — but they are deliberately separate because tooling is refreshed on its own button without a full init.
+
+### 13.11 Q&A for key-feature in Task-157
+#### 1. Who created feature-key ?
+(1) - The AI declares the key — by writing the [Type][feature][layer] bracket in the commit subject (the **git-commit-format** skill tells it to). The feature bracket is the AI's declaration of "this commit belongs to feature X." parse.go reads bracket‑2 as the candidate key.
+(2) - A human (or the AI, explicitly) creates the canonical key — by adding a line to **change-audit/FEATURE-KEYS.md**. That committed git file is the registry of valid keys
+
+#### 2. How will one key was selected?
+(1) After done feature/task -> AI commit and provide the feature-key in the [Type][feature][layer] bracket
+(2) Our Runner Golang got that - But we need to validate cause AI can gen wrong
+(3) enrich.go checks it by see the file **change-audit/FEATURE-KEYS.md**. because this file is our trust file. keys in here are correct keys (User can append key here yourself)
+  - (3.1) If the key AI gen is exist in this file -> Good job, set **Confidence=high** and ok with that key
+  - (3.2) If it was not exist in this file (OR AI actually DID not created the key, missing bracket) -> Will not reject but will not trust rightaway -> set **Confidence=low**
+  - (3.3) GO to next step if Confidence=low: **The r-fk gate (commit_feature_key_missing)**
+  -> this one will be triggerred if 1 key created by AI treated as low confident
+
+    (3.3.1) Our code used **SuggestKey(changedPaths, message)**
+    This one is our func, based on the message and the files actually changed
+    -> got a list of candidate keys (but SuggestKey only ranks existing registry keys by how well the files you touched match; it never mints a new one)
+    (3.3.2) Reprompt to Ai: something like this: Your key is wrong, can you see my candidate keys, you can pick suitable keys from it if has
+    (3.3.4) Ai will continue work -> pick suitable key if has and re-commit or ( or registers a new one in FEATURE-KEYS.md)
+
+  - (3.4) If all above failed -> the latest fallback is
+  enrich.go walks CA‑note §13 block → keyword match → dominant changed path → source‑doc‑id → unknown, all stamped Confidence=low
+  Based on our doc to gen a new key (just fallback, we can not make suare this key is correct)
+
+  * (Q2.1): How SuggestKey work, what is the message it received?
+``Signature: SuggestKey(changedPaths []string, message string, catalog *Catalog) []Candidate``
+changedPaths = changedPathsFromDiff(diff)
+message = strings.Join(commitSubjects, "\n") -> that mean get commit mes from what Ai commit
+
+Worked example (your sandbox)
+A turn commits [Feature][calculator][logic] add abs touching calc.go:
+
+- Text: calc-core's keywords are [calc, core, arithmetic, operations]; the token calculator doesn't equal calc, the key calc-core isn't in the subject → ~0 text points.
+- Path: calc-core's glob calc.go prefix-matches the changed calc.go → +6.0. So calc-core surfaces purely from the file you touched, even though you typed the wrong bracket calculator. That calc-core suggestion is what the gate puts in the reprompt.
+
+#### 3. Does it work with bug too, or only Taks?
+Both — the organizing unit is feature_key, not the change type. The commit contract is [Type][feature][layer]; the second bracket is the feature, and Type can be Feature, Bugfix, Refactor, etc. So a bug‑fix commit [Bugfix][calc-core][logic] fix divide overflow files under feature_key = calc-core exactly like a feature commit.
+
+#### 4. When these improved data injected to the prompt?
+Basically now we have
+- Q1: what feature, and what changed for it? -> Handled in Task-157 by feature/commit history
+- Q2: Why changed it? Handled in Task-157 by the ledger + CA. Ca file always exist cause we have gate r-ca
+- Q3: what was discussed about this feature in past chats ? Handled in Task-161 with per-feature chat-discussion history
+
+For our prompt now we have injectSkillContent on every chat turn if i selected skills ?
+So how about my new data above? When do we inject it?
+
+In the **live chat turn** ([interactive_service.go:1638‑1664](apps/local-runner/internal/runner/interactive_service.go:1638)), the prompt is assembled in this order:
+
+```
+providerPrompt = in.Prompt                       // raw user text
+providerPrompt = prependModePrefix(...)          // Task/Bug mode banner (first turn)
+rebuildLedgerIfDirty(...)                         // refresh ledger from new commits
+providerPrompt = injectFeatureHistoryPrompt(...)  // ← **YOUR new data (Q1+Q2+Q3)**
+req := TurnRequest{ Prompt: providerPrompt, SelectedSkills: in.SelectedSkills }
+```
+
+-> So the answer is **every chat turn** -> BUT **But Q1/Q2/Q3 data only appear when a feature resolves**
+`injectFeatureHistoryPrompt` ([feature_history.go](apps/local-runner/internal/runner/feature_history.go)) is *called* every turn, but it returns the prompt **unchanged** unless:
+1. catalog + ledger load, **and**
+2. `ResolveFeature(userPrompt)` returns a top candidate with **score ≥ 5.0** (a confident feature match), **and**
+3. `HistorySlot` is non‑empty.
+
+If the turn doesn't resolve to a feature (e.g. "write a haiku"), nothing is injected. When it does resolve, both blocks go in together:
+
+#### 5. If always run, does it affected the app performance ?
+Let's say i have many prompts in 1 chat session and each one need to be gone through these thing?
+
+It's OK. No network, no LLM call at injection time
+Each turn `injectFeatureHistoryPrompt` does only:
+- read 3 small local NDJSON files (`features.ndjson`, `feature_history.ndjson`, `chat_summary.ndjson`),
+- in‑memory lexical scoring (`ResolveFeature` = tokenize + `strings.Contains`, O(features × tokens)),
+- filter+render the matching feature's entries.
+
+**The one real cost is the write side, and it's currently synchronous.**
+At turn *end*, `recordChatSummaryIfNeeded` calls the cheap **Haiku/Gpt5.4mini/...** summarizer ([interactive_service.go:1734](apps/local-runner/internal/runner/interactive_service.go:1734)), and that runs **on the finalize path, blocking** (up to a 60s timeout). The `state_key` cache skips it when the transcript hasn't changed — but a normal turn *does* change the transcript, so in practice each feature‑resolving turn pays one Haiku round‑trip (~1–3s) at completion. The user already has the assistant's answer by then, but it delays "turn fully settled."
+
+   → If that latency matters, the clean fix is to run `recordChatSummaryIfNeeded` in a goroutine (it's already best‑effort/non‑fatal, so fire‑and‑forget is safe). The read/injection path needs no change. **Want me to make the summary recording non‑blocking?**
+  
+-> Yes, need this update
+
+### 13.12 Q&A for Task-161 - summary chat logic
+#### 1. When ?
+ in the turn-completion path, after the flow gate passes and only when completed == true
+So: once per successfully-completed chat turn ("rolling"). A failed/interrupted/gate-blocked turn does not summarize.
+
+#### 2. What ?
+recordChatSummaryIfNeeded (chat_summary.go) does two things:
+
+- Synchronously snapshots the just-finished transcript into an owned chatSummaryJob (so the live run is never read again).
+- go s.runChatSummaryJob(job) — everything expensive **runs in a bg goroutine - Dont block app**.
+
+The actual model call lives in runChatSummaryJob → summarizeChatTurns → Runner.SummarizeChatTranscript (one-shot claude --print / codex exec / gemini).
+
+
+- Inside runChatSummaryJob, in order:
+
+ + LoadCatalog fails → return
+ + ResolveFeature(latestPrompt) fails → return
+ + TopCandidate(≥ 5.0) not confident → return (unknown feature is never recorded — avoids noise)
+ + NewChatSummaryLedger fails → return
+ + state_key cache check (dedup, below) → maybe return
+ + summarizeChatTurns empty → return
+ + Append fails → return
+ + best-effort Drive sync — error swallowed
+
+#### 3. Error handling? — three layers, all non-fatal
+- The model call (SummarizeChatTranscript): returns an error on no-connected-account, missing CLI, non-zero exit, 60s timeout (context.WithTimeout), or empty output.
+- Fallback: **summarizeChatTurns** catches that error and falls back to **heuristicSummarizeTurns** — a deterministic keyword summary. So even total model failure still records something useful.
+- The whole job: every step returns silently on error. Because it runs after the turn already completed, in a goroutine, nothing here can ever block, fail, or corrupt the user's turn. Worst case: no summary line is added this turn.
+
+**(Q3.1) What is **heuristicSummarizeTurns** — a deterministic keyword summary? explain how it worked?**
+
+It's a pure string-matching summarizer — no model, no semantics, same input → same output, instant and offline. It's the fallback floor when the cheap model is unavailable. Algorithm ([chat_summary.go](apps/local-runner/internal/runner/chat_summary.go)):
+
+**Step 1 — Goal bullet.** Take the first turn with non-empty user text, compact it to ≤180 chars → `"Goal: <first user message>"`.
+
+**Step 2 — one classified bullet per turn.** For each turn, look at the assistant text (or the user text if no assistant), lowercase it, and classify by the **first** keyword group it contains:
+
+| Trigger words in the text | Bullet label |
+|---|---|
+| `blocked`, `can't`, `cannot` | `Blocked: …` |
+| `prefer`, `should`, `want`, `need` | `Preference/decision: …` |
+| `decided`, `use`, `keep`, `switch` | `Decision: …` |
+| contains `?` | `Open question: …` |
+| (none of the above) | the text itself, compacted |
+
+**Step 3 — cap & format.** Stop at 5 bullets total; each gets a trailing `.`, prefixed `- `, joined by newlines, whole thing truncated to 900 bytes (UTF-8-safe). `compactTranscriptText` also collapses whitespace and escapes `</previous_conversation>`.
+
+So a chat like *"add divide" → "Added Divide; division by zero returns 0"* becomes:
+```
+- Goal: add divide to calc.
+- Decision: Added Divide; division by zero returns 0. (matched "use"/"decided"? → here "returns" no; "Divide"… actually plain unless a keyword hits)
+```
+
+**Honest limitation:** it's crude — first-match keyword labeling, and triggers like `use` are very loose (lots of sentences contain "use" → mislabeled "Decision"). It's a *floor* that guarantees a non-empty, deterministic summary, not a quality one. That's exactly why we added the real cheap-model path on top.
+
+#### 4. Edge cases handled
+
+##### 4.1 Workflow run (not runKind=="chat") ?
+Not supported now. That mean this one only in chat mode
+Consider to continue when do flow mode -Todo
+
+##### 4.2 Empty workspaceCwd / 0 reconstructed turns
+Current code: Skip recording (no summary line written)
+
+Empty workspaceCwd -> the run isn't bound to a workspace directory, so there's no .flowpilot/ to read the catalog/ledger from or write chat_summary.ndjson to
+
+0 reconstructed turns -> transcriptTurnsFromRun found no usable User/Assistant content in rs.events (e.g. a turn that errored before producing anything, or only system/tool events). Nothing to summarize.
+
+##### 4.3 Prompt doesn't resolve to a feature (score < 5)
+Current code: skipped, not recorded
+
+`ResolveFeature` scores catalog features against the latest user prompt; `TopCandidate(5.0)` requires the top score ≥ 5.0 (e.g. the feature key/title appears in the prompt = +5, or two keyword hits = +3 each). A generic chat ("write a haiku") clears nothing → dropped. 
+
+**Why skip:** filing a vague chat under a guessed feature would pollute that feature's discussion timeline with **noise** — **better to record nothing**.
+
+-> DO it if it correct. Dont do if it is in correct, it is better than do 1 incorrect -> wrong context
+
+##### 4.4 No catalog/ledger on disk yet
+Current code: skipped
+
+LoadCatalog/NewChatSummaryLedger returns an error (engine not yet built / brand-new project). Without a catalog you can't resolve a feature anyway. Silent skip.
+
+##### 4.5 Model fails / no account / CLI missing
+Current code: heuristic fallback
+
+`SummarizeChatTranscript` errors (no connected account for the provider and no `ANTHROPIC_API_KEY`; binary not on PATH; non-zero exit from rate-limit/auth; 60s timeout; empty output). This does **not** skip — `summarizeChatTurns` falls back to `heuristicSummarizeTurns`, which produces a deterministic summary (we already have ≥1 turn here). So a summary line **is** written, just from the heuristic instead of the model.
+
+##### 4.6 Codex- or Gemini-only user
+Current code: uses that provider's model
+
+##### 4.7 Transcript > 16 KB
+Current code: truncated before the call (summarizerMaxInputBytes)
+
+##### 4.8 Model output > 4 KB
+Current code: clipped, then normalizeSummaryBullets caps to ≤ 5 bullets / 900 B
+
+#### 5. Duplicate-call handling
+This is example row in **chat_summary.ndjson**
+``
+{
+"**run_id**":"run-seed-002",
+"**turn_id**":"turn-1",
+"**feature_key**":"calc-core",
+"**state_key**":"run-seed-002:seed-b",
+"**summary**":"- Decision: Divide returns 0 on a zero divisor and does not propagate an error yet.\n- Open question: whether to add a separate error-returning DivideChecked helper later.\n- Blocked: no decision yet on overflow handling for very large products in Multiply",
+"**created_at**":"2026-06-26T09:15:00Z"}
+``
+
+The state_key = runID + ":" + <concatenated transcript text> (chat_summary.go:178). 
+
+Before generating, it checks the newest stored entry for (feature_key, run_id):
+if existing[len(existing)-1].StateKey == stateKey { return }  // skip, no model call
+
+**(Q5.1) How it worked**?
+`state_key = runID + ":" + latestTranscriptState(turns)`, where `latestTranscriptState` joins every turn as `User\nAssistant`, separated by `\n---\n`.
+
+**Example** — run `run-42`, two turns:
+
+```
+turn 1  User: add divide to calc
+        Assistant: Added Divide with a zero guard.
+turn 2  User: what about overflow?
+        Assistant: Multiply can overflow; not handled yet.
+```
+
+→
+```
+state_key = "run-42:add divide to calc
+Added Divide with a zero guard.
+---
+what about overflow?
+Multiply can overflow; not handled yet."
+```
+
+It's a **content fingerprint of the whole run's transcript**, prefixed by the run id.
+
+**How dedup uses it** ([chat_summary.go:91](apps/local-runner/internal/runner/chat_summary.go:91)): before generating, it reads the newest stored summary for `(feature_key, run_id)` and compares its `StateKey` to the freshly-computed one:
+
+- **Cancel → reopen, no new turn:** transcript text is identical → same `state_key` → **match → skip** (no model call, no duplicate line).
+- **You send another prompt:** turn 3 appends new text → the concatenated string differs → different `state_key` → **no match → generate + append** a refreshed summary.
+- **Retry/edit of a turn:** changes the text → new `state_key` → refreshes (this is why it hashes the *content*, not just the turn count or last message).
+
+The same key is also what the handoff (`loadHandoffSummary`) uses to pick only a summary that matches the *current* transcript state — so a stale summary from before the latest turn is ignored.
+
+**(Q5.2) You concat the raw text to key - Must you hash** -> Fixed
+The hash changes **iff the transcript content changes**, so:
+
+| Action                       | New summary generated?                                    |
+| ------------------------------| -----------------------------------------------------------|
+| Continue (new prompt)        | **Yes** — new turn → new hash                             |
+| Try again, different answer  | **Yes** — content differs → new hash                      |
+| Try again, identical answer  | No — same hash → deduped                                  |
+| Cancel → reopen, no new turn | No — same hash → deduped                                  |
+| Just viewing an old chat     | No — doesn't even trigger (only fires on turn completion) |
+
+**(Q5.3) What if i send some prompt like: continue, try again,**
+NOTE: prompt to try again, not any retry button ui.
+
+Because when AI got error i can prompt to trigger it again
+But these ones are un-useful prompt in term of comparing logic?
+
+
+**With current code, yes it can be duplicate about the logic part - But never in the real usecase**
+
+ok we can say that, when we chat these ones -> the state key is different hash -> trigger summary flow again. but inorder to chat these ones, THE PREVIOUS AI STATE must be error/cancel right (except 1 case, it's done but you still want other res -> you prompt try again -> gen re-trigger summary is VALID NOW)
+
+ok so if the previous turn is error/cancel -> violate our check: ONLY SUMMARY WHEN STATE = COMPLETE
+as well as we have logic TopCandidate(5.0) -> no Ai response so this fun ABSOLUTELY < 0.5 related score -> SKIP too
+
+so 2 layers report FAILED -> can not duplicat here
+
+**But it is actually a bug in logic part, need to handle**
+Because in normal chat, you can prompt un-benefit prompt (hi claude, are you handsome ???) -> The code based on that latest prompt and failed TopCandidate(5.0) too
+
+```
+Turn 1  "add divide to calc-core"   → resolves calc-core ✓  (summary recorded, history injected)
+Turn 2  "try again"                 → resolves nothing ✗  (no summary, AND no Prior-work/Prior-discussion injected this turn)
+Turn 3  "continue"                  → resolves nothing ✗  (same)
+```
+Can you see even in same chat, in the turn 3, we lost the context of the feature now
+
+So the fix is: DO NOT BINDLY based on latest prompt if it is not benefit
+In above case we need : "try again" / "continue" → **falls back to turn 1's "add divide to calc-core" → still resolves calc-core.**
+###### The fix: resolve from the newest *substantive* prompt
+
+Instead of "use the last user message," scan user turns **newest → oldest** and use the first one that clears the threshold. So:
+
+- "try again" / "continue" → falls back to turn 1's `"add divide to calc-core"` → still resolves **calc-core**.
+- A genuine pivot ("now let's do chat-ui") → that prompt resolves on its own, so pivots still work (better than hard run-stickiness, which would cling to the old feature).
+
+I'd apply it in one shared helper used by both the recorder and the injector, so they stay consistent. Roughly:
+
+```go
+func resolveTurnsFeature(turns []transcriptTurn, catalog *Catalog) (Candidate, bool) {
+    for i := len(turns)-1; i >= 0; i-- {        // newest substantive prompt first
+        if u := strings.TrimSpace(turns[i].User); u != "" {
+            if c, ok := TopCandidate(ResolveFeature(u, catalog), 5.0); ok {
+                return c, true
+            }
+        }
+    }
+    return Candidate{}, false
+}
+```
+
+(Injection-side it'd scan the live transcript rather than just the current prompt.)
+
+Net effect: continuation/retry turns inherit the conversation's established feature, so they keep getting history injected and contribute to the summary — while a real topic change still re-resolves.
+
+#### 6. Hit-limit / rate-limit case
+This is fully covered, and it's the important one:
+
+- If the cheap model is **rate-limited or out of quota**, `cmd.Run()` returns non-zero → error → **heuristic fallback** records a deterministic summary instead. The switch/chat is never blocked.
+- A **hung** call is bounded by the 60 s timeout, then falls back the same way.
+- Caveat from the provider-following design: the summarizer now runs on **your chat's own provider**. If *that* provider is the one being rate-limited (often exactly why you're about to switch), the summary call fails too — but the heuristic floor still produces a summary, and since it's async and post-turn, you never feel it. The summary does count against your provider quota (it's a real cheap call), which is the cost of getting a real AI summary instead of the heuristic.
+
+#### 7. Performance with many prompts
+
+For a chat where N turns each resolve to a feature:
+
+- **Per turn:** one cheap-tier model call, **async** — it never delays your next prompt. The read/injection side (each turn's "Prior discussion" block) is local file reads + bounded to the most-recent **3** entries.
+- **Cost:** N cheap-model calls accumulate over a long session (each on your provider's *mini/haiku/flash* tier). The state_key cache skips only *unchanged* turns, and a real turn always changes the transcript — so in practice **every content-changing turn does make one call.** That's the real cost to be aware of.
+- **File growth:** `chat_summary.ndjson` gains one line per content-changing turn for that run. Injection stays bounded (last 3), but the file grows linearly and `GetFeatureSummaries` re-reads the whole file each turn. Modest, but it does grow — and there's mild redundancy (each line is a fuller summary of the same growing run, only the last 3 shown).
+
+Ok i see:
+* every content-changing turn does make one call
+* File growth: chat_summary.ndjson
+* in 1 chat - Do 2 features then the summary will be mix
+
+We've nailed the three real costs. Let me separate them, because two have clean fixes and one is a genuine product tradeoff.
+
+##### Root cause (one design choice drives all three)
+
+Today: **every completed turn re-summarizes the whole transcript and *appends* a new line.** That single decision causes all three symptoms:
+
+| Issue | Cause | Fix |
+|---|---|---|
+| **2. File growth** | append-per-turn → N lines per chat | **Upsert by `(run_id, feature_key)`** — one rolling line per chat-session per feature, rewritten in place. The timeline still shows the last 3 *chats*, which is the actual intent ("prior discussions"), not the last 3 turns. |
+| **3. Feature mixing** | the summary is fed the *entire* transcript, so a `chat-ui` turn's summary includes earlier `calc-core` discussion | **Bucket turns by feature** (resolve each turn; low-signal turns attach to the running feature) and summarize **only the current feature's turns**. `chat-ui`'s summary then contains only `chat-ui`. |
+| **1. One model call per turn** | "rolling" = refresh on every change | *Tradeoff — your call below.* |
+
+Fixes #2 and #3 are unambiguous correctness wins — I'll implement those regardless (upsert + per-feature bucketing, with the `state_key` then keyed to the *feature's* turns so a `chat-ui` turn doesn't needlessly refresh `calc-core`).
+
+##### Issue #1 is the real tradeoff: how often to call the model
+
+It's "rolling" precisely so a summary already exists when you switch providers mid-chat (Task-162's zero-budget case). Calling less often saves tokens but the summary can lag. Since the handoff degrades gracefully (`hybrid` → `target_summary` → `raw`) and the discussion block only needs a *recent-enough* summary, all three options below are safe — they differ in freshness vs. cost:
+
+
+##### New refactor: 
+When to call gen summary ?
+Now after each response returned -> NO
+Updated
+- (1) When chat idle after complete for a window (5 mins). If it ran through 2 mins and you continue to chat -> counter reset from 0. count again
+- (2) When user ACTIVELY press the button Gen summary -> 
+  + design this button in the chat controller. Some where near the YOLO area. If the chat is running -> disable. Only enable when it is in completed state
+  + If press this button but we have summary hash stored before -> ignore
+  + If press this one before 5 mins count -> ingore 5mins count logic
+- (3) When start server, 1 bg job to scan all chat that dont have summary in local file OR the hash do not match with latest response
+

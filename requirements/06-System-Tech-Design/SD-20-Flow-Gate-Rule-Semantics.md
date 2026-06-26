@@ -11,8 +11,8 @@
 - Created: `2026-06-24`
 - Last Updated: `2026-06-25`
 - Parent Documents: [SD-17: Context And Regression Engine](./SD-17-Context-And-Regression-Engine.md)
-- Child Documents: [CP-35: Context And Regression Engine Rollout](../07-Coding-Plan/inprogress/CP-35-Context-And-Regression-Engine-Rollout.md)
-- Related Documents: [SD-16: Agent Spawn And Tool-Calling Design](./SD-16-Agent-Spawn-And-Tool-Calling-Design.md), [SS-14: Code Context And Regression Safety](../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md), [Task-155: Regression Block Decision Card (r-reg)](../08-Task/todo/Task-155-update-r-reg.md), [Task-156: Regression Oracle — Polyglot Signal And Baseline Cost](../08-Task/todo/Task-156-R-Test-Performance.md), [Task-157: Feature-Key Accuracy For History Context](../08-Task/todo/Task-157-Improve-Context-Hardness.md)
+- Child Documents: [CP-35: Context And Regression Engine Rollout](../07-Coding-Plan/done/CP-35-Context-And-Regression-Engine-Rollout.md)
+- Related Documents: [SD-16: Agent Spawn And Tool-Calling Design](./SD-16-Agent-Spawn-And-Tool-Calling-Design.md), [SS-14: Code Context And Regression Safety](../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md), [Task-155: Regression Block Decision Card (r-reg)](../08-Task/todo/Task-155-update-r-reg.md), [Task-156: Regression Oracle — Polyglot Signal And Baseline Cost](../08-Task/todo/Task-156-R-Test-Performance.md), [Task-157: Feature-Key Accuracy For History Context](../08-Task/done/Task-157-Improve-Context-Hardness.md)
 - Replaces: `None (expands SD-17 §3.5 / §6.3 / Flow Gate rules table)`
 - Tags: `flow-gate, regression, oracle, rules, enforcement, local-runner, change-audit`
 
@@ -192,7 +192,7 @@ Provider stream (Claude/Codex)
 
 - Not a configured rule; appended by the gate when the oracle reports a pre-existing test file was **modified** in the same turn (`f.Status == "M"` on a test file). Emitted as `warn` so the desktop can surface possible oracle tampering without hard-blocking.
 
-### 2.9 `r-commit` — feature-key required (planned, Task-157, not yet implemented)
+### 2.9 `r-commit` — feature-key required (Task-157)
 
 | Field | Value |
 |---|---|
@@ -201,7 +201,7 @@ Provider stream (Claude/Codex)
 | Required output | a commit whose `[feature]` is a registered key (register the new key first) |
 | Action | `reprompt` (auto-remediated, ≤2 attempts), `gate_mode`-gated like `r-ca` |
 
-- Today the `[feature]` contract is enforced only by the **soft** `git-commit-format` skill; the ledger's `feature_key` accuracy (and therefore the history-context value, `SS-14 AC-3`) depends on the AI following it. Task-157 promotes it to a runner gate signal (the runner is the source of truth, `SS-14 BR-6`) and feeds a `featurecatalog.SuggestKey` candidate into the reprompt. Status: **draft / not implemented** — listed here so the rule set stays discoverable.
+- The `[feature]` contract is now enforced by the runner gate signal as well as the soft `git-commit-format` skill; the ledger's `feature_key` accuracy (and therefore the history-context value, `SS-14 AC-3`) depends on the AI following it. Task-157 promotes it to a runner gate signal (the runner is the source of truth, `SS-14 BR-6`) and feeds a `featurecatalog.SuggestKey` candidate into the reprompt.
 
 ## 3. Enforcement resolution & UX
 

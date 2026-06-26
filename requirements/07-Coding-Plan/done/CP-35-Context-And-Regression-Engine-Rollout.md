@@ -133,7 +133,7 @@ type Candidate struct { Key string `json:"key"`; Score float64 `json:"score"` }
 
 **slots.go wiring (into `internal/contextresolver/`):**
 - `feature.resolve` (priority 1): resolves run-intake/task text → `feature_key`, stored on run context.
-- `feature.history` (priority 1): `feature_key` → `[]Entry` → packed (§4.2.1).
+- `feature.history` (priority 1): `feature_key` → `[]Entry` → packed (§4.2.1). Task-157 wires this slot into the live prompt-assembly seam so the packed block is prepended on resolved turns.
 
 **4.2.1 Prompt packing (satisfies AC-3):** render history as:
 ```
@@ -231,7 +231,7 @@ type Violation struct { Rule Rule; Detail string }
 
 ### 4.8 `P-8` Local store + Drive sync — `internal/contextsync/`, reuse `chat_session_sync.go`
 
-- Persist per `SD-17 §5.1`. Sync only shared data (`feature_history.ndjson`, `features.ndjson`, `flow-rules.json`) to the project's chat Drive folder under `context-engine/`, reusing `ensureGoogleDriveFolderPath` / `upsertGoogleDriveFile` and the NDJSON `_index` + `manifest.json` + SHA256 pattern.
+- Persist per `SD-17 §5.1`. Sync only shared data (`feature_history.ndjson`, `chat_summary.ndjson`, `features.ndjson`, `flow-rules.json`) to the project's chat Drive folder under `context-engine/`, reusing `ensureGoogleDriveFolderPath` / `upsertGoogleDriveFile` and the NDJSON `_index` + `manifest.json` + SHA256 pattern.
 - Trigger: after ledger/catalog rebuild and on step complete (debounced). Keep machine-specific/ephemeral data (`test_baseline`, gate reports, `tooling.json`, GitNexus index) local-only.
 - The feature-key registry (`change-audit/FEATURE-KEYS.md`) is a committed repo file — synced via **git**, not Drive; only the derived `.flowpilot/catalog/features.ndjson` cache is Drive-synced (`SS-13 §13`).
 - Reuses `CP-33` Drive folder selection.
@@ -529,7 +529,7 @@ go test ./internal/contextsync/... -v
 
 **Key tests:**
 - `TestNewEngineStore_CreatesDirs` — all 6 subdirs created
-- `TestSharedFiles` — returns 3 paths (ledger, catalog, flow-rules)
+- `TestSharedFiles` — returns 4 paths (ledger, chat-summary, catalog, flow-rules)
 - `TestIsLocalOnly` — guard/ and tooling.json → `true`; ledger → `false`
 - `TestWriteManifest` — manifest.json written with SHA256 entries
 - `TestSyncSharedFiles_NilSyncer` — all skipped, no error
@@ -962,9 +962,10 @@ cd C:\test-projects\gate-sandbox; git checkout calc.go; Remove-Item change-audit
 
 **Verify present (shared data):**
 - `feature_history.ndjson` ✓
+- `chat_summary.ndjson` ✓
 - `features.ndjson` ✓
 - `flow-rules.json` ✓
-- `manifest.json` ✓ (contains SHA256 entries for the three files above)
+- `manifest.json` ✓ (contains SHA256 entries for the four files above)
 
 **Verify absent (machine-local data — must NOT appear in Drive):**
 - `tooling.json` ✗
