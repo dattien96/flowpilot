@@ -196,14 +196,31 @@ Let say in run-5308 (1 chat) you can chat many turns, only the latest turn keep 
 
 **Setup:** continue a Claude chat with ≥3 turns about calc-core.
 
-**D1 — switch provider.** While **idle**, click the **Codex** chip → a **confirmation modal** opens (source/target/model/source-run; current run unchanged). Click **"Start new chat with Codex"**.
-**Expect:** exactly **one** new Codex run; old Claude run preserved/re-openable; the first user turn is the handoff prompt (ordered raw `User:`/`Assistant:` inside `<previous_conversation>`, no hidden/system/tool/reasoning content). A system line reports **"Handoff from Claude used `<mode>` context"** — `hybrid` (cached summary present, `<conversation_summary>` precedes raw) / `target_summary` (no summary + history truncated → self-summarize instruction) / `raw` (no summary, whole convo fit). All three succeed; the switch never blocks.
+**Where to look (two different signals — don't confuse them):**
+- **The mode** is reported as a **system message in the desktop chat feed** of the *new* run: `Handoff from Claude used <mode> context.` (rendered from the `handoffMode` API field — store.ts). It is **not** in `last-prompt.txt`.
+- **The prompt markers** (below) *are* in the target run's first `last-prompt.txt`, inside the handoff envelope that starts with `[FlowPilot cross-provider chat handoff]`.
+- The `## Prior work on "calc-core"` / `## Prior discussion on "calc-core"` blocks at the **top** of that same prompt are the **Task-157/161 feature injection** (the target's first turn also flows through the injection seam — `V-162-05`). They are **separate** from the handoff envelope and appear in *every* mode — do not mistake the `## Prior discussion` block for the handoff's `<conversation_summary>`.
 
-**D2 — force hybrid.** Have a couple of committed turns so a `calc-core` rolling summary exists with a matching `state_key`, then switch → system line reads **`used hybrid context`** and the first Codex turn shows `<conversation_summary>` + recent raw.
+**D1 — switch mechanics.** While **idle**, click the **Codex** chip → a **confirmation modal** opens (source/target/model/source-run; current run unchanged). Click **"Start new chat with Codex"**.
+**Expect:** exactly **one** new Codex run; the old Claude run preserved/re-openable; the first user turn is the handoff prompt — ordered raw `User:` / `Assistant:` pairs inside `<previous_conversation>`, with no hidden/system/tool/reasoning content. The switch never blocks. The mode is one of the three below.
+
+**The three handoff modes (mutually exclusive — exactly one applies per switch):**
+
+| Mode | Trigger (decided in `buildHandoffContext`) | Prompt signal in the envelope | Chat-feed system line |
+|------|--------------------------------------------|-------------------------------|-----------------------|
+| **`raw`** | No state-matched cached summary for this run **and** the whole conversation fit in 64 KiB (nothing omitted/truncated). | **Neither** a `<conversation_summary>` block **nor** a self-summarize sentence — header goes straight to `<previous_conversation>`. | `…used raw context.` |
+| **`hybrid`** | A cached rolling summary exists **for this source run** whose `state_key` matches the current transcript (a summary was generated and no new turns since). | A `<conversation_summary>…</conversation_summary>` block **precedes** `<previous_conversation>`. | `…used hybrid context.` |
+| **`target_summary`** | **No** matching cached summary **and** the raw conversation did **not** fit (older turns omitted or a turn truncated). | **No** `<conversation_summary>`; instead the sentence *"No cached FlowPilot summary was available, and older turns were dropped…First summarize the previous conversation for yourself…"* precedes `<previous_conversation>`, which itself contains `[Earlier conversation omitted due to handoff size limit]`. | `…used target_summary context.` |
+
+**D2a — get `raw`.** A short calc-core chat (a few turns, well under 64 KiB) where you have **not** generated a summary for this run. Switch → chat feed `used raw context`; envelope has no `<conversation_summary>` and no self-summarize sentence. *(This is the common case — `V-078-01/06`, `V-162-02`.)*
+
+**D2b — get `hybrid`.** First press **Gen summary** (Test F1) — or let the idle timer fire — so a `calc-core` summary with a matching `state_key` exists for this run; then switch **without** sending a new turn. → chat feed `used hybrid context`; envelope shows `<conversation_summary>` before `<previous_conversation>`. *(`V-162-01`.)* If you send another turn after generating, the `state_key` no longer matches and it degrades back to `raw`/`target_summary` (`V-162-04`).
+
+**D2c — get `target_summary`.** Needs a conversation whose raw transcript exceeds 64 KiB with no cached summary — hard to reach by hand in the sandbox, so this mode is primarily **unit-covered** (`V-078-03` oversized packing, `V-162-02` degrade). To force it manually, paste several very long messages, then switch without generating a summary → chat feed `used target_summary context`; envelope has the self-summarize sentence + the omission marker.
 
 **D3 — guards.** Switching **while a turn runs** → chips disabled. **Double-click** confirm → still exactly one run. **Empty** chat → switches immediately, no modal. A **Gemini-source** chat is rejected (`handoff_source_provider_unsupported`); Gemini is fine as a target.
 
-*Covers: `V-078-01/06` (switch + orchestration), `V-078-05` (Gemini-source rejection), `V-162-01` (hybrid), `V-162-02` (degrade), `V-162-05` (Task-157/161 context still injected on the target's first turn); `V-078-02/03/04` (reconstruction, 64 KiB bound, oversized-turn) and `V-162-03/04` (run-scoped + state refresh) are unit-level.*
+*Covers: `V-078-01/06` (switch + orchestration) → D1/D2a, `V-078-05` (Gemini-source rejection) → D3, `V-162-01` (hybrid) → D2b, `V-162-02` (degrade) → D2a/D2c, `V-162-05` (Task-157/161 context on the target's first turn) → "Where to look"; `V-078-02/03/04` (reconstruction, 64 KiB bound, oversized-turn) and `V-162-03/04` (run-scoped selection + state refresh) are unit-level.*
 
 #### Test E — Conversation-sticky resolution + explicit pivot (Task-161)
 
