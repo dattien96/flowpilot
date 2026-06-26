@@ -7,12 +7,13 @@ import (
 )
 
 func TestLogComposedPromptDefaultOnOptOut(t *testing.T) {
-	cwd := t.TempDir()
-	promptPath := filepath.Join(cwd, ".flowpilot", "runs", "run-x", "prompt-turn-1.txt")
+	tool := t.TempDir() // the FlowPilot tool workspace (NOT the target project)
+	promptPath := filepath.Join(tool, ".flowpilot", "runs", "proj-1", "run-x", "prompt-turn-1.txt")
+	lastPath := filepath.Join(tool, ".flowpilot", "runs", "proj-1", "last-prompt.txt")
 
-	// On by default (env unset) → writes the per-turn file and the last-prompt pointer.
+	// On by default (env unset) → writes under the tool workspace, namespaced by project id.
 	os.Unsetenv("FLOWPILOT_LOG_PROMPT")
-	logComposedPrompt("run-x", "turn-1", cwd, "hello world")
+	logComposedPrompt(tool, "proj-1", "run-x", "turn-1", "hello world")
 	data, err := os.ReadFile(promptPath)
 	if err != nil {
 		t.Fatalf("read prompt file: %v", err)
@@ -20,15 +21,15 @@ func TestLogComposedPromptDefaultOnOptOut(t *testing.T) {
 	if string(data) != "hello world" {
 		t.Fatalf("prompt file = %q, want %q", data, "hello world")
 	}
-	if _, err := os.Stat(filepath.Join(cwd, ".flowpilot", "runs", "last-prompt.txt")); err != nil {
+	if _, err := os.Stat(lastPath); err != nil {
 		t.Fatalf("expected last-prompt.txt: %v", err)
 	}
 
 	// Opt-out: FLOWPILOT_LOG_PROMPT=0 → no file written.
-	cwd2 := t.TempDir()
+	tool2 := t.TempDir()
 	t.Setenv("FLOWPILOT_LOG_PROMPT", "0")
-	logComposedPrompt("run-y", "turn-1", cwd2, "secret")
-	if _, err := os.Stat(filepath.Join(cwd2, ".flowpilot", "runs", "run-y", "prompt-turn-1.txt")); !os.IsNotExist(err) {
+	logComposedPrompt(tool2, "proj-1", "run-y", "turn-1", "secret")
+	if _, err := os.Stat(filepath.Join(tool2, ".flowpilot", "runs", "proj-1", "run-y", "prompt-turn-1.txt")); !os.IsNotExist(err) {
 		t.Fatal("expected no prompt file when FLOWPILOT_LOG_PROMPT=0")
 	}
 }

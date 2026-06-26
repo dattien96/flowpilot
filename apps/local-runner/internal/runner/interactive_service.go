@@ -1664,10 +1664,15 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		providerPrompt = injectFeatureHistoryPrompt(rs.workspaceCwd, providerPrompt, transcriptTurnsFromRun(rs))
 	}
 	// Observability for E2E: persist/log the fully-composed turn prompt (feature
-	// history + discussion + mode prefix + user text). Opt-in via FLOWPILOT_LOG_PROMPT
-	// since prompts can carry sensitive content. The adapter prepends skill content
-	// downstream; this captures everything the injection seam produced.
-	logComposedPrompt(rs.id, turnID, rs.workspaceCwd, providerPrompt)
+	// history + discussion + mode prefix + user text) under the FlowPilot tool
+	// workspace (namespaced by project id), NOT inside the target project. On by
+	// default; disable with FLOWPILOT_LOG_PROMPT=0. The adapter prepends skill
+	// content downstream; this captures everything the injection seam produced.
+	toolWorkspace := ""
+	if s.runner != nil {
+		toolWorkspace = s.runner.workspace
+	}
+	logComposedPrompt(toolWorkspace, rs.projectID, rs.id, turnID, providerPrompt)
 	req := TurnRequest{
 		RunID:             rs.id,
 		StepID:            in.StepID,

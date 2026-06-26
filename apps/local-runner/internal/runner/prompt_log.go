@@ -26,23 +26,28 @@ func promptLogEnabled() bool {
 // tester can inspect exactly what context was injected.
 //
 // On by default (disable with FLOWPILOT_LOG_PROMPT=0). It logs a one-line marker
-// and, when a workspace is known, writes the full prompt to
-// `.flowpilot/runs/<runId>/prompt-<turnID>.txt` (and refreshes
-// `.flowpilot/runs/last-prompt.txt` for quick access).
-func logComposedPrompt(runID, turnID, cwd, prompt string) {
+// and writes the full prompt under the FlowPilot tool workspace (NOT the target
+// project), namespaced by project id:
+//
+//	<toolWorkspace>/.flowpilot/runs/<projectID>/<runID>/prompt-<turnID>.txt
+//	<toolWorkspace>/.flowpilot/runs/<projectID>/last-prompt.txt   (latest, for quick access)
+func logComposedPrompt(toolWorkspace, projectID, runID, turnID, prompt string) {
 	if !promptLogEnabled() {
 		return
 	}
-	log.Printf("[prompt] run=%s turn=%s bytes=%d\n%s", runID, turnID, len(prompt), prompt)
+	log.Printf("[prompt] project=%s run=%s turn=%s bytes=%d\n%s", projectID, runID, turnID, len(prompt), prompt)
 
-	if strings.TrimSpace(cwd) == "" {
+	if strings.TrimSpace(toolWorkspace) == "" {
 		return
 	}
-	runsDir := filepath.Join(cwd, ".flowpilot", "runs")
-	dir := filepath.Join(runsDir, runID)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if strings.TrimSpace(projectID) == "" {
+		projectID = "unknown-project"
+	}
+	projectDir := filepath.Join(toolWorkspace, ".flowpilot", "runs", projectID)
+	runDir := filepath.Join(projectDir, runID)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		return
 	}
-	_ = os.WriteFile(filepath.Join(dir, "prompt-"+turnID+".txt"), []byte(prompt), 0o644)
-	_ = os.WriteFile(filepath.Join(runsDir, "last-prompt.txt"), []byte(prompt), 0o644)
+	_ = os.WriteFile(filepath.Join(runDir, "prompt-"+turnID+".txt"), []byte(prompt), 0o644)
+	_ = os.WriteFile(filepath.Join(projectDir, "last-prompt.txt"), []byte(prompt), 0o644)
 }
