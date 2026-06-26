@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -58,4 +59,20 @@ func (s *InteractiveService) buildEngineDriveSyncer(projectID string) contextsyn
 		accessToken:     accessToken,
 		contextFolderID: contextFolderID,
 	}
+}
+
+func (s *InteractiveService) syncContextEngineFiles(projectID string, dotFlowpilotDir string) (error, string) {
+	store, storeErr := contextsync.NewEngineStore(dotFlowpilotDir)
+	if storeErr != nil {
+		return storeErr, filepath.Join(dotFlowpilotDir, "manifest.json")
+	}
+	if manifestErr := contextsync.WriteManifest(store); manifestErr != nil {
+		return manifestErr, filepath.Join(dotFlowpilotDir, "manifest.json")
+	}
+	syncer := s.buildEngineDriveSyncer(projectID)
+	result := contextsync.SyncSharedFiles(context.Background(), store, syncer)
+	if len(result.Synced) > 0 {
+		return nil, fmt.Sprintf("manifest ok; %d files synced to drive, %d skipped", len(result.Synced), len(result.Skipped))
+	}
+	return nil, fmt.Sprintf("manifest ok; %d files skipped (drive not connected)", len(result.Skipped))
 }

@@ -7,9 +7,10 @@ import (
 )
 
 const (
-	LedgerFile    = "ledger/feature_history.ndjson"
-	CatalogFile   = "catalog/features.ndjson"
-	FlowRulesFile = "settings/flow-rules.json"
+	LedgerFile      = "ledger/feature_history.ndjson"
+	ChatSummaryFile = "ledger/chat_summary.ndjson"
+	CatalogFile     = "catalog/features.ndjson"
+	FlowRulesFile   = "settings/flow-rules.json"
 )
 
 type EngineStore struct {
@@ -30,6 +31,10 @@ func (s *EngineStore) LedgerPath() string {
 	return filepath.Join(s.DotFlowpilotDir, LedgerFile)
 }
 
+func (s *EngineStore) ChatSummaryPath() string {
+	return filepath.Join(s.DotFlowpilotDir, ChatSummaryFile)
+}
+
 func (s *EngineStore) CatalogPath() string {
 	return filepath.Join(s.DotFlowpilotDir, CatalogFile)
 }
@@ -47,7 +52,7 @@ func (s *EngineStore) ToolingPath() string {
 }
 
 func (s *EngineStore) SharedFiles() []string {
-	return []string{s.LedgerPath(), s.CatalogPath(), s.FlowRulesPath()}
+	return []string{s.LedgerPath(), s.ChatSummaryPath(), s.CatalogPath(), s.FlowRulesPath()}
 }
 
 func (s *EngineStore) IsLocalOnly(path string) bool {
