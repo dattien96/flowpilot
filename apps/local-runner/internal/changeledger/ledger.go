@@ -23,6 +23,7 @@ type Entry struct {
 	SourceDocID string `json:"source_doc_id"`   // Task-087 | BUG-130 | CP-35 | ""
 	ChangeType  string `json:"change_type"`     // feature | bugfix | refactor | docs | hotfix | other
 	Summary     string `json:"summary"`
+	CAExcerpt   string `json:"ca_excerpt,omitempty"`
 	CommittedAt string `json:"committed_at"` // RFC3339
 	OrderIndex  int    `json:"order_index"`  // ascending by commit time; newest = max
 	Confidence  string `json:"confidence"`   // "high" | "low"
