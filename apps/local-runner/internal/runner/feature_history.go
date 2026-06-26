@@ -10,31 +10,48 @@ import (
 )
 
 func injectFeatureHistoryPrompt(workspace string, prompt string, priorTurns []transcriptTurn) string {
+	// A handoff envelope already carries its (correctly source-resolved) feature
+	// block, prepended at build time. Never re-inject from the flat envelope text —
+	// it embeds gate-reprompt lines naming feature keys and would mis-resolve.
+	if isHandoffPrompt(prompt) {
+		return prompt
+	}
 	dotFlowpilotDir := filepath.Join(workspace, ".flowpilot")
 	catalog, err := featurecatalog.LoadCatalog(dotFlowpilotDir)
 	if err != nil {
 		return prompt
 	}
-	ledger, err := changeledger.New(dotFlowpilotDir)
-	if err != nil {
-		return prompt
-	}
-
 	top, ok := resolveInjectionFeature(prompt, priorTurns, catalog)
 	if !ok {
 		return prompt
 	}
-	history := featurecatalog.HistorySlot(top.Key, ledger)
-	if strings.TrimSpace(history) == "" {
+	block := composeFeatureBlocks(dotFlowpilotDir, top.Key)
+	if strings.TrimSpace(block) == "" {
 		return prompt
+	}
+	return block + "\n\n---\n\n" + prompt
+}
+
+// composeFeatureBlocks returns the prior-work (+ prior-discussion) blocks for a
+// known feature key, or "" when there is no committed history. Shared by per-turn
+// injection and the cross-provider handoff (which resolves its feature from the
+// clean source transcript rather than the envelope text).
+func composeFeatureBlocks(dotFlowpilotDir string, featureKey string) string {
+	ledger, err := changeledger.New(dotFlowpilotDir)
+	if err != nil {
+		return ""
+	}
+	history := featurecatalog.HistorySlot(featureKey, ledger)
+	if strings.TrimSpace(history) == "" {
+		return ""
 	}
 	combined := history
 	if summaryLedger, err := changeledger.NewChatSummaryLedger(dotFlowpilotDir); err == nil {
-		if discussion := featurecatalog.ChatSummarySlot(top.Key, summaryLedger); strings.TrimSpace(discussion) != "" {
+		if discussion := featurecatalog.ChatSummarySlot(featureKey, summaryLedger); strings.TrimSpace(discussion) != "" {
 			combined += "\n\n" + discussion
 		}
 	}
-	return combined + "\n\n---\n\n" + prompt
+	return combined
 }
 
 // resolveInjectionFeature decides which feature's history to inject for the
@@ -45,10 +62,12 @@ func injectFeatureHistoryPrompt(workspace string, prompt string, priorTurns []tr
 // to nothing on its own and is NOT low-signal, so no stale prior context is
 // carried forward — the block is simply omitted.
 func resolveInjectionFeature(prompt string, priorTurns []transcriptTurn, catalog *featurecatalog.Catalog) (featurecatalog.Candidate, bool) {
-	// A gate reprompt resolves on its own process text (it names feature keys and
-	// writes change-audit files), so it must NEVER resolve standalone — inherit the
-	// conversation's established feature directly.
-	if isGateReprompt(prompt) {
+	// A system prompt (gate reprompt or cross-provider handoff envelope) resolves on
+	// its own process text — it names feature keys, writes change-audit files, and
+	// embeds prior conversation — so it must NEVER resolve standalone. Inherit the
+	// conversation's established feature instead (on a fresh run that means no block,
+	// rather than a feature the envelope merely mentions).
+	if isSystemPrompt(prompt) {
 		return resolveTurnsFeature(priorTurns, catalog)
 	}
 	// Otherwise the current prompt's own resolution wins (even when short, e.g. a
@@ -81,9 +100,10 @@ func resolveOnePrompt(prompt string, catalog *featurecatalog.Catalog) (featureca
 func resolveTurnsFeature(turns []transcriptTurn, catalog *featurecatalog.Catalog) (featurecatalog.Candidate, bool) {
 	for i := len(turns) - 1; i >= 0; i-- {
 		user := strings.TrimSpace(turns[i].User)
-		// Gate reprompts are transparent: their process-describing text must not
-		// drive resolution, so skip them and keep scanning for the real feature.
-		if user == "" || isGateReprompt(user) {
+		// System prompts (gate reprompts, handoff envelopes) are transparent: their
+		// process-describing text must not drive resolution, so skip them and keep
+		// scanning for the real feature.
+		if user == "" || isSystemPrompt(user) {
 			continue
 		}
 		if top, ok := resolveOnePrompt(user, catalog); ok {
@@ -96,6 +116,20 @@ func resolveTurnsFeature(turns []transcriptTurn, catalog *featurecatalog.Catalog
 // isGateReprompt reports whether a prompt is a system-issued flow-gate reprompt.
 func isGateReprompt(prompt string) bool {
 	return strings.HasPrefix(strings.TrimSpace(prompt), flowgate.GateRepromptPrefix)
+}
+
+// isHandoffPrompt reports whether a prompt is (or contains) a cross-provider
+// handoff envelope. Contains, not HasPrefix: the handoff prompt is built with its
+// source feature block prepended, so the marker is no longer at the very start.
+func isHandoffPrompt(prompt string) bool {
+	return strings.Contains(prompt, handoffPromptPrefix)
+}
+
+// isSystemPrompt reports whether a prompt is system-generated (a gate reprompt or
+// a handoff envelope). Such prompts describe process / embed prior conversation, so
+// their text must not drive feature resolution, recording, or bucketing.
+func isSystemPrompt(prompt string) bool {
+	return isGateReprompt(prompt) || isHandoffPrompt(prompt)
 }
 
 // lowSignalPhrases are short continuations / acknowledgements that carry no topic
@@ -135,10 +169,10 @@ func bucketTurnsByFeature(turns []transcriptTurn, catalog *featurecatalog.Catalo
 	current := ""
 	for _, turn := range turns {
 		if user := strings.TrimSpace(turn.User); user != "" {
-			if isGateReprompt(user) {
-				// System reprompt: attach to the running feature, never start one
-				// from its process-describing text (which would resolve to whatever
-				// feature key it names).
+			if isSystemPrompt(user) {
+				// System prompt (gate reprompt / handoff envelope): attach to the
+				// running feature, never start one from its process-describing text
+				// (which would resolve to whatever feature key it names).
 			} else if top, ok := resolveOnePrompt(user, catalog); ok {
 				current = top.Key
 			} else if !isLowSignalPrompt(user) {

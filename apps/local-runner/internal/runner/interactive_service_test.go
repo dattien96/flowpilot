@@ -518,8 +518,11 @@ func TestBuildHandoffContextIgnoresEmptyStateKeySummary(t *testing.T) {
 	if result.HandoffMode != "raw" {
 		t.Fatalf("handoff mode = %q, want raw for ignored empty-state-key summary", result.HandoffMode)
 	}
-	if strings.Contains(result.Prompt, "legacy summary") {
-		t.Fatalf("stale legacy summary should not be included: %q", result.Prompt)
+	// The stale summary must not be used as the hybrid <conversation_summary>. (It
+	// may still appear in the prepended "## Prior discussion" feature block, which is
+	// the Task-161 timeline — a separate, legitimate channel.)
+	if strings.Contains(result.Prompt, "<conversation_summary>") {
+		t.Fatalf("empty-state-key summary should not become a hybrid conversation_summary: %q", result.Prompt)
 	}
 }
 
@@ -878,6 +881,25 @@ func TestResolveInjectionFeatureGateRepromptInheritsEstablishedFeature(t *testin
 	top, ok := resolveInjectionFeature(reprompt, prior, catalog)
 	if !ok || top.Key != "alpha" {
 		t.Fatalf("gate reprompt should inherit alpha, got ok=%v key=%q", ok, top.Key)
+	}
+}
+
+// A cross-provider handoff envelope must not self-resolve a feature from its own
+// text — it embeds the prior conversation and gate-reprompt lines that name feature
+// keys (e.g. "Suggested feature keys: sandbox-meta"). On a fresh target run (no
+// prior turns) that means no block, NOT a feature the envelope merely mentions
+// (CP-37 Test D — run-5611 injected the wrong "sandbox-meta" history before this).
+func TestResolveInjectionFeatureHandoffPromptDoesNotSelfResolve(t *testing.T) {
+	catalog := featurecatalog.New()
+	catalog.Add(featurecatalog.Feature{Key: "sandbox-meta", Keywords: []string{"sandbox", "meta"}})
+	catalog.Add(featurecatalog.Feature{Key: "calc-core", Keywords: []string{"calc", "arithmetic"}})
+
+	handoff := handoffPromptPrefix +
+		"\n\nSource provider: claude\n\n<previous_conversation>\nUser:\n" +
+		"The flow gate is asking… Suggested feature keys: sandbox-meta, calc-core.\n</previous_conversation>"
+
+	if _, ok := resolveInjectionFeature(handoff, nil, catalog); ok {
+		t.Fatal("handoff envelope must not self-resolve a feature on a fresh target run")
 	}
 }
 

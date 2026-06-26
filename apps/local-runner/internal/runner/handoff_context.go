@@ -14,6 +14,13 @@ import (
 
 const handoffMaxBytes = 64 * 1024
 
+// handoffPromptPrefix is the leading marker of every handoff envelope (see
+// renderHandoffPrompt). The runner matches it to recognise a handoff turn so
+// feature resolution does NOT resolve on the envelope text — which embeds the
+// prior conversation and gate-reprompt lines that name feature keys and would
+// otherwise mis-resolve the target run's first turn.
+const handoffPromptPrefix = "[FlowPilot cross-provider chat handoff]"
+
 type handoffContextRequest struct {
 	TargetProviderKey ProviderKey `json:"targetProviderKey"`
 	MaxBytes          int         `json:"maxBytes,omitempty"`
@@ -96,6 +103,14 @@ func (s *InteractiveService) buildHandoffContext(_ context.Context, runID string
 	}
 
 	prompt := renderHandoffPrompt(rs.providerKey, rs.id, summaryText, mode, conversation)
+	// Prepend the SOURCE feature's history (resolved from the clean source transcript,
+	// which skips system/gate-reprompt turns — not the envelope text, which names
+	// feature keys and would mis-resolve). This keeps the target's first turn in
+	// Task-157/161 context (D-1 / V-162-05), correctly attributed. The per-turn
+	// injection seam skips handoff prompts so this block is never re-resolved.
+	if block := s.handoffFeatureBlocks(rs, turns); block != "" {
+		prompt = block + "\n\n---\n\n" + prompt
+	}
 	return handoffContextResponse{
 		SourceRunID:       rs.id,
 		SourceProviderKey: rs.providerKey,
@@ -199,6 +214,26 @@ func appendTranscriptLine(existing, next string) string {
 	return existing + "\n" + next
 }
 
+// handoffFeatureBlocks resolves the source conversation's feature from its clean
+// transcript (resolveTurnsFeature skips system/gate-reprompt turns) and returns
+// that feature's history block, or "" if none resolves. Used to seed the handoff
+// target's first turn with the right feature context.
+func (s *InteractiveService) handoffFeatureBlocks(rs *interactiveRun, turns []transcriptTurn) string {
+	if rs == nil || rs.workspaceCwd == "" {
+		return ""
+	}
+	dotFP := filepath.Join(rs.workspaceCwd, ".flowpilot")
+	catalog, err := featurecatalog.LoadCatalog(dotFP)
+	if err != nil {
+		return ""
+	}
+	top, ok := resolveTurnsFeature(turns, catalog)
+	if !ok {
+		return ""
+	}
+	return composeFeatureBlocks(dotFP, top.Key)
+}
+
 func (s *InteractiveService) loadHandoffSummary(rs *interactiveRun, turns []transcriptTurn) string {
 	if rs == nil || rs.workspaceCwd == "" {
 		return ""
@@ -240,7 +275,7 @@ func (s *InteractiveService) loadHandoffSummary(rs *interactiveRun, turns []tran
 // adds neither.
 func renderHandoffPrompt(sourceProvider ProviderKey, sourceRunID string, summaryText string, handoffMode string, conversation string) string {
 	var sb strings.Builder
-	sb.WriteString("[FlowPilot cross-provider chat handoff]\n\n")
+	sb.WriteString(handoffPromptPrefix + "\n\n")
 	sb.WriteString("This is conversation history from a different AI provider and a different\n")
 	sb.WriteString("provider session. Treat it as background context only. Do not claim that you\n")
 	sb.WriteString("performed the previous assistant's actions. Historical assistant messages may\n")

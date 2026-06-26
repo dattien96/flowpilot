@@ -199,7 +199,7 @@ Let say in run-5308 (1 chat) you can chat many turns, only the latest turn keep 
 **Where to look (two different signals — don't confuse them):**
 - **The mode** is reported as a **system message in the desktop chat feed** of the *new* run: `Handoff from Claude used <mode> context.` (rendered from the `handoffMode` API field — store.ts). It is **not** in `last-prompt.txt`.
 - **The prompt markers** (below) *are* in the target run's first `last-prompt.txt`, inside the handoff envelope that starts with `[FlowPilot cross-provider chat handoff]`.
-- The `## Prior work on "calc-core"` / `## Prior discussion on "calc-core"` blocks at the **top** of that same prompt are the **Task-157/161 feature injection** (the target's first turn also flows through the injection seam — `V-162-05`). They are **separate** from the handoff envelope and appear in *every* mode — do not mistake the `## Prior discussion` block for the handoff's `<conversation_summary>`.
+- The `## Prior work on "calc-core"` / `## Prior discussion on "calc-core"` blocks at the **top** of that same prompt are the **Task-157/161 feature injection** (`V-162-05`). They are **separate** from the handoff envelope and appear in *every* mode — do not mistake the `## Prior discussion` block for the handoff's `<conversation_summary>`. This block's feature is resolved from the **source conversation's transcript** (so it matches the work being handed off, e.g. `calc-core`), **not** from the handoff envelope text — the envelope embeds gate-reprompt lines naming feature keys (`sandbox-meta`, …) that would otherwise mis-resolve it. Confirm the top block names the **same** feature as the conversation, not a key the gate text merely mentioned.
 
 **D1 — switch mechanics.** While **idle**, click the **Codex** chip → a **confirmation modal** opens (source/target/model/source-run; current run unchanged). Click **"Start new chat with Codex"**.
 **Expect:** exactly **one** new Codex run; the old Claude run preserved/re-openable; the first user turn is the handoff prompt — ordered raw `User:` / `Assistant:` pairs inside `<previous_conversation>`, with no hidden/system/tool/reasoning content. The switch never blocks. The mode is one of the three below.
@@ -219,8 +219,6 @@ Let say in run-5308 (1 chat) you can chat many turns, only the latest turn keep 
 
 **D2c — get `target_summary`.** Needs a conversation whose raw transcript exceeds 64 KiB with no cached summary — hard to reach by hand in the sandbox, so this mode is primarily **unit-covered** (`V-078-03` oversized packing, `V-162-02` degrade). To force it manually, paste several very long messages, then switch without generating a summary → chat feed `used target_summary context`; envelope has the self-summarize sentence + the omission marker.
 
-**D3 — guards.** Switching **while a turn runs** → chips disabled. **Double-click** confirm → still exactly one run. **Empty** chat → switches immediately, no modal. A **Gemini-source** chat is rejected (`handoff_source_provider_unsupported`); Gemini is fine as a target.
-
 *Covers: `V-078-01/06` (switch + orchestration) → D1/D2a, `V-078-05` (Gemini-source rejection) → D3, `V-162-01` (hybrid) → D2b, `V-162-02` (degrade) → D2a/D2c, `V-162-05` (Task-157/161 context on the target's first turn) → "Where to look"; `V-078-02/03/04` (reconstruction, 64 KiB bound, oversized-turn) and `V-162-03/04` (run-scoped selection + state refresh) are unit-level.*
 
 #### Test E — Conversation-sticky resolution + explicit pivot (Task-161)
@@ -236,11 +234,14 @@ Let say in run-5308 (1 chat) you can chat many turns, only the latest turn keep 
 
 #### Test F — Generation triggers (Task-163)
 
-**F1 — manual "Gen summary" button.** With a `calc-core` chat **idle/completed**, the **Gen summary** button near the YOLO toggle is enabled (disabled while running). Press → system line "Chat summary updated." and the `calc-core` row is written/refreshed. Press again with no new turn → "Chat summary unchanged" (hash match, no model call).
+**F1 - (OK) — manual "Gen summary" button.** With a `calc-core` chat **idle/completed**, the **Gen summary** button near the YOLO toggle is enabled (disabled while running). Press → system line "Chat summary updated." and the `calc-core` row is written/refreshed. Press again with no new turn → "Chat summary unchanged" (hash match, no model call).
 
-**F2 — idle timer + reset.** Launch with `FLOWPILOT_SUMMARY_IDLE_MS=15000`. Complete a `calc-core` turn, wait 15 s with no new turn → a summary appears on its own. In another chat, send a turn then another before 15 s → the countdown resets; the summary lands ~15 s after the *last* turn. No summary while a turn is in flight.
+**F2- (OK) — idle timer + reset.** Launch with `FLOWPILOT_SUMMARY_IDLE_MS=15000`. Complete a `calc-core` turn, wait 15 s with no new turn → a summary appears on its own. In another chat, send a turn then another before 15 s → the countdown resets; the summary lands ~15 s after the *last* turn. No summary while a turn is in flight.
 
-**F3 — upsert.** Across several `calc-core` turns in one chat, `chat_summary.ndjson` keeps **one** `calc-core` row, rewritten in place (not one per turn); `state_key` is a fixed-length hash that changes only when the transcript changes.
+**F3- (OK) — upsert.** Across several `calc-core` turns in one chat, `chat_summary.ndjson` keeps **one** `calc-core` row, rewritten in place (not one per turn); `state_key` is a fixed-length hash that changes only when the transcript changes.
+
+OK, for each run -> only latest turn was overrided and keep
+Let say in run-5308 (1 chat) you can chat many turns, only the latest turn keep for this run
 
 **F4 — startup backfill.** Stop the runner, delete the `calc-core` row, restart (`serve`) → the one-shot background scan regenerates it without user action; hash-matched rows are left untouched.
 
