@@ -900,7 +900,8 @@ func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionReque
 	commandPath := filepath.Join(runDir, "command.txt")
 	metadataPath := filepath.Join(runDir, "metadata.json")
 
-	promptWithSkills := r.injectSkillContent(workspace, request.Prompt, request.SkillIds)
+	promptWithHistory := r.injectFeatureHistory(workspace, request.Prompt)
+	promptWithSkills := r.injectSkillContent(workspace, promptWithHistory, request.SkillIds)
 	actualPrompt, err := r.preparePromptForRequiredMcps(
 		promptWithSkills,
 		request.RequiredMcps,
@@ -1055,6 +1056,11 @@ func (r *Runner) injectSkillContent(workspace string, prompt string, skillIds []
 	}
 
 	return strings.Join(injected, "")
+}
+
+func (r *Runner) injectFeatureHistory(workspace string, prompt string) string {
+	// One-shot prompt execution has no prior conversation to fall back on.
+	return injectFeatureHistoryPrompt(workspace, prompt, nil)
 }
 
 // injectSelectedSkills prepends a compact skill reference block to the prompt so the model

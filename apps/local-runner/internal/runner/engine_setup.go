@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"flowpilot-runner/internal/changeledger"
-	"flowpilot-runner/internal/contextsync"
 	"flowpilot-runner/internal/featurecatalog"
 	"flowpilot-runner/internal/reqscaffold"
 	"flowpilot-runner/internal/skillpack"
@@ -33,15 +32,15 @@ type engineSetupRequest struct {
 }
 
 type EngineStatusResponse struct {
-	ProjectID        string                        `json:"projectId"`
-	WorkingDirectory string                        `json:"workingDirectory"`
-	Initialized      bool                          `json:"initialized"`
-	GateMode         string                        `json:"gateMode"`
-	Tooling          []tooling.ToolStatus          `json:"tooling"`
-	Capability       tooling.CapabilityProfile     `json:"capability"`
-	SkillPack        skillpack.PackStatus          `json:"skillPack"`
-	LastInit         *EngineInitState              `json:"lastInit,omitempty"`
-	Warnings         []string                      `json:"warnings,omitempty"`
+	ProjectID        string                    `json:"projectId"`
+	WorkingDirectory string                    `json:"workingDirectory"`
+	Initialized      bool                      `json:"initialized"`
+	GateMode         string                    `json:"gateMode"`
+	Tooling          []tooling.ToolStatus      `json:"tooling"`
+	Capability       tooling.CapabilityProfile `json:"capability"`
+	SkillPack        skillpack.PackStatus      `json:"skillPack"`
+	LastInit         *EngineInitState          `json:"lastInit,omitempty"`
+	Warnings         []string                  `json:"warnings,omitempty"`
 }
 
 type EngineGlobalToolingStatusResponse struct {
@@ -49,15 +48,15 @@ type EngineGlobalToolingStatusResponse struct {
 }
 
 type EngineInitState struct {
-	Trigger          string                  `json:"trigger"`
-	Status           string                  `json:"status"`
-	Skipped          bool                    `json:"skipped"`
-	SkipReason       string                  `json:"skipReason,omitempty"`
-	AttemptedAt      string                  `json:"attemptedAt"`
-	CompletedAt      string                  `json:"completedAt"`
-	WorkingDirectory string                  `json:"workingDirectory"`
-	Install          EngineInstallSummary    `json:"install"`
-	Steps            []EngineInitStepResult  `json:"steps"`
+	Trigger          string                 `json:"trigger"`
+	Status           string                 `json:"status"`
+	Skipped          bool                   `json:"skipped"`
+	SkipReason       string                 `json:"skipReason,omitempty"`
+	AttemptedAt      string                 `json:"attemptedAt"`
+	CompletedAt      string                 `json:"completedAt"`
+	WorkingDirectory string                 `json:"workingDirectory"`
+	Install          EngineInstallSummary   `json:"install"`
+	Steps            []EngineInitStepResult `json:"steps"`
 }
 
 type EngineInstallSummary struct {
@@ -334,23 +333,7 @@ func (s *InteractiveService) runEngineInit(
 
 	// P-8 (CP-35): create EngineStore subdirs, write local manifest, sync shared
 	// files to the project's Drive `context-engine/` folder (best-effort).
-	var syncErr error
-	var syncDetail string
-	if store, storeErr := contextsync.NewEngineStore(dotFlowpilotDir); storeErr != nil {
-		syncErr = storeErr
-		syncDetail = filepath.Join(dotFlowpilotDir, "manifest.json")
-	} else if manifestErr := contextsync.WriteManifest(store); manifestErr != nil {
-		syncErr = manifestErr
-		syncDetail = filepath.Join(dotFlowpilotDir, "manifest.json")
-	} else {
-		syncer := s.buildEngineDriveSyncer(projectID)
-		result := contextsync.SyncSharedFiles(context.Background(), store, syncer)
-		if len(result.Synced) > 0 {
-			syncDetail = fmt.Sprintf("manifest ok; %d files synced to drive, %d skipped", len(result.Synced), len(result.Skipped))
-		} else {
-			syncDetail = fmt.Sprintf("manifest ok; %d files skipped (drive not connected)", len(result.Skipped))
-		}
-	}
+	syncErr, syncDetail := s.syncContextEngineFiles(projectID, dotFlowpilotDir)
 	steps = append(steps, buildEngineStep("contextsync_manifest", syncErr, syncDetail))
 
 	initState := &EngineInitState{
