@@ -125,6 +125,14 @@ func remediationFor(v Violation) string {
 	case "code_changed":
 		return "• Missing change-audit note. You changed code but did not add a change-audit note. " +
 			"Create a NEW file `change-audit/CA-<NNN>.md` recording what changed and why."
+	case "commit_feature_key_missing":
+		shortlist := ""
+		if len(v.Options) > 0 {
+			shortlist = "Suggested feature keys: " + strings.Join(v.Options, ", ") + ". "
+		}
+		return "• Missing or unverified feature key. " + shortlist +
+			"Use a verified key from `change-audit/FEATURE-KEYS.md`, or register a new one there first if none fits. " +
+			"Then update the commit subject to use `[Type][feature][layer?]` before retrying."
 	default:
 		return "• " + v.Detail
 	}
