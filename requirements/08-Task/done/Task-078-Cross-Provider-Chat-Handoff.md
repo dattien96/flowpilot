@@ -5,14 +5,14 @@
 - Document ID: `Task-078`
 - Title: `Cross-Provider Chat Handoff`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-19`
 - Last Updated: `2026-06-19`
 - Parent Documents: [CP-18: Refactor Workflow With Session](../../07-Coding-Plan/done/CP-18-Refactor-Workflow-With_Session.md), [SD-12: Refactor Workflow With Session](../../06-System-Tech-Design/SD-12-Refactor-Workflow-With_Session.md), [SS-11: Workflow With Session](../../05-System-Specs/SS-11-Workflow-With_Session.md)
-- Child Documents: `none`
-- Related Documents: [SD-14: Codex Cross-Account Chat Resume And Home Sync](../../06-System-Tech-Design/SD-14-Codex-Cross-Account-Chat-Resume-And-Home-Sync.md), [Task-063: Desktop Chat Provider Chip Picker](../done/Task-063-Desktop-Chat-Provider-Card-Picker.md), [Task-067: Desktop Post-Restart Run Resume Via Provider Session ID](../done/Task-067-Desktop-Post-Restart-Run-Resume-Via-Provider-Session-Id.md), [Task-076: Replay User Prompts On Chat Transcript Resume](../done/Task-076-Replay-User-Prompts-On-Chat-Transcript-Resume.md), [BUG-083: Desktop Chat Resume Replays Composed Prompt Not User Input](../../09-BugFix/done/BUG-083-Desktop-Chat-Resume-Replays-Composed-Prompt-Not-User-Input.md)
+- Child Documents: [Task-162: Summary-Based Cross-Provider Handoff](Task-162-Summary-Based-Cross-Provider-Handoff.md)
+- Related Documents: [SD-14: Codex Cross-Account Chat Resume And Home Sync](../../06-System-Tech-Design/SD-14-Codex-Cross-Account-Chat-Resume-And-Home-Sync.md), [Task-063: Desktop Chat Provider Chip Picker](../done/Task-063-Desktop-Chat-Provider-Card-Picker.md), [Task-067: Desktop Post-Restart Run Resume Via Provider Session ID](../done/Task-067-Desktop-Post-Restart-Run-Resume-Via-Provider-Session-Id.md), [Task-076: Replay User Prompts On Chat Transcript Resume](../done/Task-076-Replay-User-Prompts-On-Chat-Transcript-Resume.md), [BUG-083: Desktop Chat Resume Replays Composed Prompt Not User Input](../../09-BugFix/done/BUG-083-Desktop-Chat-Resume-Replays-Composed-Prompt-Not-User-Input.md), [Task-157: Feature-Key Accuracy For History Context](Task-157-Improve-Context-Hardness.md), [CP-37: Prompt Context Continuity](../../07-Coding-Plan/done/CP-37-Prompt-Context-Continuity.md)
 - Replaces: `none`
 - Tags: `desktop, chat, provider-switch, cross-provider, handoff, transcript, local-runner`
 
@@ -27,8 +27,7 @@
 
 ### Current Ask
 
-- Produce a detailed implementation plan for user-confirmed cross-provider switching in desktop chat.
-- After confirmation, create a new run for the target provider and send the previous question/answer history as context.
+- The user-confirmed cross-provider switch is now implemented: the desktop creates a fresh target run, transfers the bounded transcript context, and preserves the source run unchanged.
 
 ### Key Decisions
 
@@ -49,10 +48,11 @@
 - Do not use the truncated 100-character `lastPrompt` or `lastMessage` fields as handoff source data.
 - Do not allow switching while a turn is running, awaiting approval, or being interrupted.
 - Existing same-provider account switching and resume behavior must remain unchanged.
+- **Keep this task and [Task-157: Feature-Key Accuracy For History Context](Task-157-Improve-Context-Hardness.md) decoupled but complementary — both are needed.** This handoff transfers the **conversation transcript** (what was *said* in the thread); Task-157 injects the **feature/commit change history** (what *changed* in code, plus the CA "why"). The transcript cannot be replaced by commit history (it would lose the live discussion), and commit history cannot be replaced by the transcript (the assistant's claimed actions "may be incomplete or incorrect" per `T-7`, whereas the git ledger is ground truth). Because Task-157 injects on **every** turn at the shared prompt-assembly seam (`runner.go` prompt assembly), the handoff **target** run's first turn already receives the feature history automatically — do **not** add it to the handoff prompt or call Task-157 directly. Share one bounded-prompt-block helper (UTF-8-safe truncation, escaping, omission markers) across both rather than reinventing budgeting.
 
 ### Open Questions
 
-- `Q-1` Should a later phase replace old-turn truncation with an LLM-generated structured summary when the 64 KiB budget is exceeded?
+- `Q-1` Resolved — yes, but in a later phase, not here. This task ships the **raw floor + the slot** the summary plugs into; raw transfer stays the guaranteed zero-budget fallback (the user often switches *because* the source provider hit its token limit). [Task-162](Task-162-Summary-Based-Cross-Provider-Handoff.md) adds the AI-summary hybrid (summary of older turns + most-recent K turns raw), reusing the rolling summarizer built in [Task-161](Task-161-Per-Feature-Chat-Summary-Timeline.md). No RAG.
 - `Q-2` Should the handoff confirmation modal allow editing or excluding individual prior turns before transfer?
 - `Q-3` (resolved) Gemini as a source provider is deferred to a future feature; MVP gates it out via `handoff_source_provider_unsupported` (see §4 `T-4`). Gemini remains valid as a target.
 
@@ -314,12 +314,26 @@ wait for the user's next request.
 - Targeted Go tests, desktop component/store tests, TypeScript typecheck, and relevant builds pass.
 - Manual smoke testing confirms modal focus, cancel, successful switch, failure recovery, and reopening both source and target history items.
 
+### 6.1 Definition of Done (DOD)
+
+All items are true for Task-078:
+
+- [x] **DOD-1:** selecting another provider in an idle chat opens the confirmation modal instead of mutating the live run immediately.
+- [x] **DOD-2:** confirming the switch creates a new target run and a new provider session.
+- [x] **DOD-3:** the handoff prompt is reconstructed from persisted transcript data and bounded to the 64 KiB raw floor.
+- [x] **DOD-4:** same-provider switching keeps using the existing resume path; Gemini-source handoff is rejected in MVP.
+- [x] **DOD-5:** the source run remains preserved and reopenable after the handoff.
+- [x] **DOD-6:** the desktop store, runner endpoint, and type contracts are covered by tests and typecheck.
+- [x] **DOD-7 (single target run):** double-clicking confirm (or confirming during an in-flight handoff) creates exactly one target run — the `providerSwitchLoading` logic guard blocks re-entry and the confirm overlay blocks pointer input until the handoff settles; the flag clears on both success and failure so a failed handoff stays retryable.
+- [x] **DOD-8 (privacy + escaping):** the handoff prompt carries only visible user/assistant text — hidden system/developer frames, FlowPilot preambles, reasoning traces, tool-call payloads, credentials, and attachment bytes are excluded; any literal `</previous_conversation>` in historical content is escaped via the shared `promptblock` helper so it cannot terminate the envelope.
+- [x] **DOD-9 (bounded floor):** raw packing retains newest-complete turns within 64 KiB, inserts the omission marker with a non-zero omitted count on overflow, and includes a single oversized newest turn truncated (with the per-turn marker) rather than failing.
+
 ## 7. Out of Scope
 
 - Migrating or sharing a live provider session across providers.
 - Copying Claude session files into Codex homes or Codex rollout files into Claude homes.
 - Gemini as a handoff **source** provider (no transcript extractor yet); Gemini remains valid as a **target**.
-- LLM-generated summaries, semantic compression, or factual verification of historical assistant responses. This raw-transfer approach is the MVP stopgap; the AI-summary context pipeline in [CP-10: Integrations, Memory & Context Intelligence](../../07-Coding-Plan/todo/CP-10-Integrations-Hardening.md) is expected to replace it later (tracked as a CP-10 follow-up item).
+- LLM-generated summaries, semantic compression, or factual verification of historical assistant responses. This raw-transfer approach is the MVP stopgap; the AI-summary context pipeline in [CP-10: Integrations, Memory & Context Intelligence](../../07-Coding-Plan/done/CP-10-Integrations-Hardening.md) is expected to replace it later (tracked as a CP-10 follow-up item).
 - Carrying raw reasoning traces, hidden prompts, tool payloads, credentials, or approval state.
 - Carrying image/audio/file attachment bytes to the target provider.
 - Automatically selecting a provider based on cost, quota, latency, or model capability.
@@ -327,12 +341,10 @@ wait for the user's next request.
 - Merging source and target timelines into one persisted run.
 - Deleting or closing the source run after a successful handoff.
 - Cross-provider handoff for workflow-step or subagent runs in MVP.
+- Injecting feature/commit change history into the handoff prompt — that is [Task-157](Task-157-Improve-Context-Hardness.md)'s job and arrives automatically on the target run's first turn via the shared per-turn injection seam. This task transfers the conversation transcript only.
 
 ## 8. Completion Notes
 
-- result: Detailed task plan created; upstream `SS-11`/`SD-12`/`CP-18` amended for consistency; no production code or runtime contract changed yet.
-- follow-ups:
-  - enable Gemini as a source provider once it has equivalent persisted transcript extraction (deferred future feature),
-  - replace raw context transfer with the AI-summary context pipeline when [CP-10](../../07-Coding-Plan/todo/CP-10-Integrations-Hardening.md) lands (CP-10 carries the reciprocal follow-up item),
-  - consider turn-level preview/edit controls as a separate privacy enhancement.
-- upstream docs updated: `SS-11` (section 5.2 + Product Rule 8), `SD-12` (section 3.4), `CP-18` (section 5.7 Successor Work note). The governing rule change is in place; implementation can proceed once the amendments are reviewed/approved.
+- result: done
+- follow-ups: the summary follow-on in Task-162 can refine quality, but the raw bounded handoff itself is complete.
+- upstream docs updated: `SS-11` (section 5.2 + Product Rule 8), `SD-12` (section 3.4), and `CP-18` (section 5.7 Successor Work note) capture the implemented cross-provider path.
