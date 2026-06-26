@@ -756,7 +756,6 @@ export function ChatInput(): React.ReactElement {
                     </button>
                   </div>
                   <div className="chat-controller-switch chat-controller-switch-top">
-                    <span className="chat-controller-label">Summary</span>
                     <button
                       type="button"
                       className="gen-summary-btn"
