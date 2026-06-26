@@ -7,17 +7,30 @@ import (
 	"strings"
 )
 
+// promptLogEnabled reports whether composed-prompt logging is on. It is ON BY
+// DEFAULT so the composed prompt is always available for inspection; set
+// FLOWPILOT_LOG_PROMPT to a falsey value (0/false/off/no) to turn it off when
+// prompts carry sensitive content you don't want written/logged.
+func promptLogEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("FLOWPILOT_LOG_PROMPT"))) {
+	case "0", "false", "off", "no":
+		return false
+	default:
+		return true
+	}
+}
+
 // logComposedPrompt records the fully-composed per-turn prompt (feature history +
 // prior discussion + mode prefix + raw user text — everything the prompt-assembly
 // seam produced, before the provider adapter prepends skill content) so an E2E
 // tester can inspect exactly what context was injected.
 //
-// Opt-in via FLOWPILOT_LOG_PROMPT (any non-empty value) because prompts can carry
-// sensitive content. When enabled it logs a one-line marker and, when a workspace
-// is known, writes the full prompt to `.flowpilot/runs/<runId>/prompt-<turnID>.txt`
-// (and refreshes `.flowpilot/runs/last-prompt.txt` for quick access).
+// On by default (disable with FLOWPILOT_LOG_PROMPT=0). It logs a one-line marker
+// and, when a workspace is known, writes the full prompt to
+// `.flowpilot/runs/<runId>/prompt-<turnID>.txt` (and refreshes
+// `.flowpilot/runs/last-prompt.txt` for quick access).
 func logComposedPrompt(runID, turnID, cwd, prompt string) {
-	if strings.TrimSpace(os.Getenv("FLOWPILOT_LOG_PROMPT")) == "" {
+	if !promptLogEnabled() {
 		return
 	}
 	log.Printf("[prompt] run=%s turn=%s bytes=%d\n%s", runID, turnID, len(prompt), prompt)
