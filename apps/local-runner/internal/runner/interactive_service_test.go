@@ -16,6 +16,7 @@ import (
 
 	"flowpilot-runner/internal/changeledger"
 	"flowpilot-runner/internal/featurecatalog"
+	"flowpilot-runner/internal/flowgate"
 )
 
 func init() { fakeAdapterDelay = 0 }
@@ -791,6 +792,45 @@ func TestBucketTurnsByFeatureDropsUnrelatedTurn(t *testing.T) {
 	buckets := bucketTurnsByFeature(turns, catalog)
 	if len(buckets["alpha"]) != 1 {
 		t.Fatalf("alpha bucket = %d turns, want 1 (unrelated turn dropped)", len(buckets["alpha"]))
+	}
+}
+
+// A flow-gate reprompt must inherit the conversation's established feature, not
+// resolve on its own process text — which names feature keys ("Suggested feature
+// keys: meta") and would otherwise mis-resolve the turn (CP-37 Test B).
+func TestResolveInjectionFeatureGateRepromptInheritsEstablishedFeature(t *testing.T) {
+	catalog := featurecatalog.New()
+	catalog.Add(featurecatalog.Feature{Key: "alpha", Keywords: []string{"alpha"}})
+	catalog.Add(featurecatalog.Feature{Key: "meta", Keywords: []string{"feature", "document", "change"}})
+
+	prior := []transcriptTurn{{User: "work on alpha"}}
+	reprompt := flowgate.GateRepromptPrefix +
+		"\n\n• Missing change-audit note. You changed code but did not add a change-audit note." +
+		"\n\n• Missing or unverified feature key. Suggested feature keys: meta, alpha."
+
+	top, ok := resolveInjectionFeature(reprompt, prior, catalog)
+	if !ok || top.Key != "alpha" {
+		t.Fatalf("gate reprompt should inherit alpha, got ok=%v key=%q", ok, top.Key)
+	}
+}
+
+// The recording/bucketing path must likewise keep a gate reprompt on the running
+// feature instead of opening a bogus bucket for a key its text mentions.
+func TestBucketTurnsByFeatureGateRepromptInheritsFeature(t *testing.T) {
+	catalog := featurecatalog.New()
+	catalog.Add(featurecatalog.Feature{Key: "alpha", Keywords: []string{"alpha"}})
+	catalog.Add(featurecatalog.Feature{Key: "meta", Keywords: []string{"feature", "document", "change"}})
+
+	turns := []transcriptTurn{
+		{User: "work on alpha", Assistant: "did alpha"},
+		{User: flowgate.GateRepromptPrefix + "\n\n• Missing change-audit note. Suggested feature keys: meta.", Assistant: "added the doc"},
+	}
+	buckets := bucketTurnsByFeature(turns, catalog)
+	if len(buckets["alpha"]) != 2 {
+		t.Fatalf("alpha bucket = %d turns, want 2 (reprompt inherits alpha)", len(buckets["alpha"]))
+	}
+	if _, ok := buckets["meta"]; ok {
+		t.Fatalf("gate reprompt must not open a 'meta' bucket")
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 
 	"flowpilot-runner/internal/changeledger"
 	"flowpilot-runner/internal/featurecatalog"
+	"flowpilot-runner/internal/flowgate"
 )
 
 func injectFeatureHistoryPrompt(workspace string, prompt string, priorTurns []transcriptTurn) string {
@@ -44,13 +45,23 @@ func injectFeatureHistoryPrompt(workspace string, prompt string, priorTurns []tr
 // to nothing on its own and is NOT low-signal, so no stale prior context is
 // carried forward — the block is simply omitted.
 func resolveInjectionFeature(prompt string, priorTurns []transcriptTurn, catalog *featurecatalog.Catalog) (featurecatalog.Candidate, bool) {
+	// A gate reprompt resolves on its own process text (it names feature keys and
+	// writes change-audit files), so it must NEVER resolve standalone — inherit the
+	// conversation's established feature directly.
+	if isGateReprompt(prompt) {
+		return resolveTurnsFeature(priorTurns, catalog)
+	}
+	// Otherwise the current prompt's own resolution wins (even when short, e.g. a
+	// prompt that names a feature). Only when it fails to resolve does a low-signal
+	// continuation ("continue"/"try again") inherit; a substantive but unrelated
+	// prompt resolves to nothing and drops the prior context.
 	if top, ok := resolveOnePrompt(prompt, catalog); ok {
 		return top, true
 	}
-	if !isLowSignalPrompt(prompt) {
-		return featurecatalog.Candidate{}, false
+	if isLowSignalPrompt(prompt) {
+		return resolveTurnsFeature(priorTurns, catalog)
 	}
-	return resolveTurnsFeature(priorTurns, catalog)
+	return featurecatalog.Candidate{}, false
 }
 
 // resolveOnePrompt resolves a single prompt to its top feature at or above the
@@ -69,14 +80,22 @@ func resolveOnePrompt(prompt string, catalog *featurecatalog.Catalog) (featureca
 // latest prompt (injection), and to pick a run's feature for recording/handoff.
 func resolveTurnsFeature(turns []transcriptTurn, catalog *featurecatalog.Catalog) (featurecatalog.Candidate, bool) {
 	for i := len(turns) - 1; i >= 0; i-- {
-		if strings.TrimSpace(turns[i].User) == "" {
+		user := strings.TrimSpace(turns[i].User)
+		// Gate reprompts are transparent: their process-describing text must not
+		// drive resolution, so skip them and keep scanning for the real feature.
+		if user == "" || isGateReprompt(user) {
 			continue
 		}
-		if top, ok := resolveOnePrompt(turns[i].User, catalog); ok {
+		if top, ok := resolveOnePrompt(user, catalog); ok {
 			return top, true
 		}
 	}
 	return featurecatalog.Candidate{}, false
+}
+
+// isGateReprompt reports whether a prompt is a system-issued flow-gate reprompt.
+func isGateReprompt(prompt string) bool {
+	return strings.HasPrefix(strings.TrimSpace(prompt), flowgate.GateRepromptPrefix)
 }
 
 // lowSignalPhrases are short continuations / acknowledgements that carry no topic
@@ -116,7 +135,11 @@ func bucketTurnsByFeature(turns []transcriptTurn, catalog *featurecatalog.Catalo
 	current := ""
 	for _, turn := range turns {
 		if user := strings.TrimSpace(turn.User); user != "" {
-			if top, ok := resolveOnePrompt(user, catalog); ok {
+			if isGateReprompt(user) {
+				// System reprompt: attach to the running feature, never start one
+				// from its process-describing text (which would resolve to whatever
+				// feature key it names).
+			} else if top, ok := resolveOnePrompt(user, catalog); ok {
 				current = top.Key
 			} else if !isLowSignalPrompt(user) {
 				// Substantive but unrelated turn: it neither starts a feature nor

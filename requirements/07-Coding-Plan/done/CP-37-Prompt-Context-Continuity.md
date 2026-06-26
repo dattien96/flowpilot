@@ -173,7 +173,9 @@ These cover the sweep cases (`V-157-08`, `V-161-09`, `V-078-07`, `V-162-06`) and
 
 **Variant (warn mode):** set `gate-config.json` to `{"gate_mode":"warn"}`, repeat → a **warning**, not a blocking reprompt. Restore `enforce`.
 
-*Covers: `V-157-05` (gate reprompt), `V-157-04` (path-anchored SuggestKey), `V-157-03` (key validation).*
+**Context check on the remediation turn:** the gate reprompt is fired as a new turn, but its text describes *process* (it names feature keys and tells you to write a `change-audit/` file). That turn must **inherit the established feature** (`calc-core`), not resolve on its own text — confirm `last-prompt.txt` for the remediation turn still shows the `## Prior work on "calc-core"` block (not some other key the reprompt happened to mention). Reprompt turns are treated as continuations, so they never open a stray feature/summary bucket either.
+
+*Covers: `V-157-05` (gate reprompt), `V-157-04` (path-anchored SuggestKey), `V-157-03` (key validation); gate-reprompt context inheritance unit-covered by `TestResolveInjectionFeatureGateRepromptInheritsEstablishedFeature` / `TestBucketTurnsByFeatureGateRepromptInheritsFeature`.*
 
 #### Test C — Prior-discussion injection + rolling summary + sync (Task-161)
 

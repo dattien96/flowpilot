@@ -2,6 +2,14 @@ package flowgate
 
 import "strings"
 
+// GateRepromptPrefix is the leading sentence of every gate reprompt (see
+// RepromptPrompt). The runner matches this prefix to recognise a system reprompt
+// turn so feature resolution treats it as a continuation of the conversation's
+// established feature, rather than resolving on the reprompt's own
+// process-describing text (which names feature keys and writes change-audit files
+// and would otherwise mis-resolve the turn).
+const GateRepromptPrefix = "The flow gate is asking you to add a required document before this step can complete:"
+
 type EnforceResult struct {
 	Action     string      `json:"action"`
 	Violations []Violation `json:"violations,omitempty"`
@@ -77,7 +85,7 @@ func RepromptPrompt(result EnforceResult) string {
 	if len(parts) == 0 {
 		return result.Message
 	}
-	return "The flow gate is asking you to add a required document before this step can complete:\n\n" +
+	return GateRepromptPrefix + "\n\n" +
 		strings.Join(parts, "\n\n") +
 		"\n\nCreate the file(s) above now. The gate re-checks automatically after your next turn."
 }
