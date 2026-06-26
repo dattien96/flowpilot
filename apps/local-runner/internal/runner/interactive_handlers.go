@@ -35,6 +35,8 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/sync-chat", s.handleSyncChatRun)
 	mux.HandleFunc("POST /client/chat-sessions/restore", s.handleRestoreChatRun)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/turns", s.handleStartTurn)
+	mux.HandleFunc("POST /client/workflow-runs/{runId}/handoff-context", s.handleHandoffContext)
+	mux.HandleFunc("POST /client/workflow-runs/{runId}/chat-summary", s.handleGenerateChatSummary)
 	mux.HandleFunc("GET /client/workflow-runs/{runId}/events/stream", s.handleEventStream)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/interrupt", s.handleInterrupt)
 	mux.HandleFunc("POST /client/approvals/{approvalId}/decision", s.handleApprovalDecision)
