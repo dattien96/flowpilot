@@ -19,12 +19,7 @@ func injectFeatureHistoryPrompt(workspace string, prompt string, priorTurns []tr
 		return prompt
 	}
 
-	// Resolve the conversation's feature, not just this prompt: try the current
-	// prompt first, then fall back through prior turns. A low-signal prompt
-	// ("continue", "try again") thus inherits the established feature instead of
-	// dropping context, while an explicit topic change still re-resolves.
-	turns := append(append([]transcriptTurn{}, priorTurns...), transcriptTurn{User: prompt})
-	top, ok := resolveTurnsFeature(turns, catalog)
+	top, ok := resolveInjectionFeature(prompt, priorTurns, catalog)
 	if !ok {
 		return prompt
 	}
@@ -41,26 +36,75 @@ func injectFeatureHistoryPrompt(workspace string, prompt string, priorTurns []tr
 	return combined + "\n\n---\n\n" + prompt
 }
 
+// resolveInjectionFeature decides which feature's history to inject for the
+// current prompt. The current prompt's own resolution always wins. When it does
+// not resolve, the conversation's established feature is inherited ONLY if the
+// current prompt is low-signal (a "continue"/"try again" continuation). A
+// substantive but unrelated prompt (e.g. "write a haiku about the sea") resolves
+// to nothing on its own and is NOT low-signal, so no stale prior context is
+// carried forward — the block is simply omitted.
+func resolveInjectionFeature(prompt string, priorTurns []transcriptTurn, catalog *featurecatalog.Catalog) (featurecatalog.Candidate, bool) {
+	if top, ok := resolveOnePrompt(prompt, catalog); ok {
+		return top, true
+	}
+	if !isLowSignalPrompt(prompt) {
+		return featurecatalog.Candidate{}, false
+	}
+	return resolveTurnsFeature(priorTurns, catalog)
+}
+
+// resolveOnePrompt resolves a single prompt to its top feature at or above the
+// confidence threshold.
+func resolveOnePrompt(prompt string, catalog *featurecatalog.Catalog) (featurecatalog.Candidate, bool) {
+	candidates, err := featurecatalog.ResolveFeature(strings.TrimSpace(prompt), catalog)
+	if err != nil {
+		return featurecatalog.Candidate{}, false
+	}
+	return featurecatalog.TopCandidate(candidates, 5.0)
+}
+
 // resolveTurnsFeature finds the conversation's feature by scanning user prompts
 // newest → oldest and returning the first that resolves at or above the
-// confidence threshold. This makes resolution conversation-sticky: a low-signal
-// latest prompt ("continue"/"try again") falls back to the most recent
-// substantive prompt's feature, while a genuine pivot resolves on its own.
+// confidence threshold. Used to inherit the established feature for a low-signal
+// latest prompt (injection), and to pick a run's feature for recording/handoff.
 func resolveTurnsFeature(turns []transcriptTurn, catalog *featurecatalog.Catalog) (featurecatalog.Candidate, bool) {
 	for i := len(turns) - 1; i >= 0; i-- {
-		user := strings.TrimSpace(turns[i].User)
-		if user == "" {
+		if strings.TrimSpace(turns[i].User) == "" {
 			continue
 		}
-		candidates, err := featurecatalog.ResolveFeature(user, catalog)
-		if err != nil {
-			continue
-		}
-		if top, ok := featurecatalog.TopCandidate(candidates, 5.0); ok {
+		if top, ok := resolveOnePrompt(turns[i].User, catalog); ok {
 			return top, true
 		}
 	}
 	return featurecatalog.Candidate{}, false
+}
+
+// lowSignalPhrases are short continuations / acknowledgements that carry no topic
+// of their own; they inherit the conversation's established feature rather than
+// dropping its context.
+var lowSignalPhrases = map[string]struct{}{
+	"continue": {}, "continue please": {}, "please continue": {}, "go on": {},
+	"go ahead": {}, "keep going": {}, "carry on": {}, "resume": {}, "proceed": {},
+	"next": {}, "next step": {}, "more": {}, "go": {}, "and": {}, "then": {},
+	"try again": {}, "retry": {}, "again": {}, "redo": {}, "do it": {},
+	"do it again": {}, "fix it": {}, "yes": {}, "yep": {}, "yeah": {}, "ok": {},
+	"okay": {}, "k": {}, "sure": {},
+}
+
+// isLowSignalPrompt reports whether a prompt is a short continuation that carries
+// no new topic of its own. Such a prompt inherits the conversation's established
+// feature; a longer, substantive prompt that simply fails to resolve does not —
+// its prior context is dropped rather than wrongly carried forward.
+func isLowSignalPrompt(prompt string) bool {
+	p := strings.ToLower(strings.TrimSpace(prompt))
+	p = strings.Trim(p, " \t\r\n.!?,;:")
+	if p == "" {
+		return true
+	}
+	if _, ok := lowSignalPhrases[p]; ok {
+		return true
+	}
+	return len(strings.Fields(p)) <= 3
 }
 
 // bucketTurnsByFeature groups turns by the feature each belongs to. A turn whose
@@ -72,10 +116,13 @@ func bucketTurnsByFeature(turns []transcriptTurn, catalog *featurecatalog.Catalo
 	current := ""
 	for _, turn := range turns {
 		if user := strings.TrimSpace(turn.User); user != "" {
-			if candidates, err := featurecatalog.ResolveFeature(user, catalog); err == nil {
-				if top, ok := featurecatalog.TopCandidate(candidates, 5.0); ok {
-					current = top.Key
-				}
+			if top, ok := resolveOnePrompt(user, catalog); ok {
+				current = top.Key
+			} else if !isLowSignalPrompt(user) {
+				// Substantive but unrelated turn: it neither starts a feature nor
+				// attaches to the running one, so its content can't leak into a
+				// feature's summary.
+				continue
 			}
 		}
 		if current != "" {

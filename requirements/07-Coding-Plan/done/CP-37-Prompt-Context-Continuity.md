@@ -160,7 +160,7 @@ These cover the sweep cases (`V-157-08`, `V-161-09`, `V-078-07`, `V-162-06`) and
 
 **Expect:** the assistant already knows `calc-core` has `Add`/`Subtract`/`Multiply`/`Divide`, treats the **divide-with-zero-guard** commit as the current state, and references the **residual note** (divide-by-zero returns 0; error propagation deferred) instead of re-proposing what exists. Confirm via `last-prompt.txt`: a `## Prior work on "calc-core"` block, oldest→newest, divide marked `← current truth`, with the Tier-2 CA excerpt under it.
 
-**Negative control:** send `write a haiku about the sea` → no "Prior work" block (feature does not resolve; safe fallback).
+**Negative control (holds mid-conversation too):** send `write a haiku about the sea` → **no** "Prior work"/"Prior discussion" block. This is true even as a *follow-up inside an established calc chat*: a substantive but unrelated prompt **drops** the prior feature's context instead of inheriting it. Only *low-signal* continuations (`continue` / `try again`) inherit the established feature — see Test E.
 
 *Covers: `V-157-01` (happy path), `V-157-06` (Tier-2 excerpt), `V-157-02` (safe fallback / no-resolve).*
 
@@ -206,7 +206,9 @@ These cover the sweep cases (`V-157-08`, `V-161-09`, `V-078-07`, `V-162-06`) and
 
 **E2 — pivot re-resolves.** In the same chat send **`now add number formatting helpers`** → the injected blocks switch to `calc-format` (Sign→Clamp + its CA "why" + discussion), not clinging to calc-core.
 
-*Covers: `V-161-10` (record-path inherit), `V-161-11` (inject fallback + pivot).*
+**E3 — unrelated substantive prompt drops context.** In the same `calc-core` chat send **`write a haiku about the sea`** → the injected blocks **disappear**. A substantive off-topic prompt is *not* low-signal, so it does not inherit calc-core (contrast E1, where `try again` *does* inherit). This is the distinction: low-signal → inherit; substantive-but-unresolved → drop.
+
+*Covers: `V-161-10` (record-path inherit), `V-161-11` (inject fallback + pivot + low-signal/substantive split).*
 
 #### Test F — Generation triggers (Task-163)
 
@@ -326,7 +328,7 @@ The detailed Setup / Run / Verify for every formal case. Each case carries a **�
 - `V-161-11` **Low-signal prompt still gets history injected; explicit pivot re-resolves (inject path)** *(→ Test E1 + E2)*
   Setup: an ongoing chat already resolved to feature A with prior commit/discussion history.
   Run: (a) send a low-signal turn (`continue` / `try again`); then (b) send a turn that clearly names a *different* registered feature B.
-  Verify: on (a) the assembled prompt still contains feature A's `## Prior work on "A"` / `## Prior discussion on "A"` blocks (inherited via fallback); on (b) the prompt re-resolves and injects feature B's history instead of clinging to A. A brand-new chat whose first prompt is low-signal (no prior turns) injects nothing. (Unit: `TestInjectFeatureHistoryFallsBackToPriorTurnFeature`.)
+  Verify: on (a) the assembled prompt still contains feature A's `## Prior work on "A"` / `## Prior discussion on "A"` blocks (inherited via fallback); on (b) the prompt re-resolves and injects feature B's history instead of clinging to A. A brand-new chat whose first prompt is low-signal (no prior turns) injects nothing. A **substantive but unrelated** follow-up (e.g. `write a haiku about the sea`) is *not* low-signal, so it inherits **nothing** — feature A's context is dropped, not carried forward. (Units: `TestInjectFeatureHistoryFallsBackToPriorTurnFeature`, `TestInjectFeatureHistoryDropsContextOnUnrelatedPrompt`, `TestBucketTurnsByFeatureDropsUnrelatedTurn`.)
 
 - `V-161-12` **Manual "Gen summary" button (now / busy / no-op)** *(→ Test F1)*
   Setup: an existing chat resolved to a feature.

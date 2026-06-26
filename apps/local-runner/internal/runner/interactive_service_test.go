@@ -761,6 +761,39 @@ func TestInjectFeatureHistoryFallsBackToPriorTurnFeature(t *testing.T) {
 	}
 }
 
+// A substantive but unrelated prompt must NOT inherit the prior feature's context
+// — only low-signal continuations do. "write a haiku about the sea" after a
+// resolved feature turn injects nothing (CP-37 Test A negative control holds even
+// mid-conversation).
+func TestInjectFeatureHistoryDropsContextOnUnrelatedPrompt(t *testing.T) {
+	workspace, _, _ := chatSummarySyncFixture(t)
+
+	prior := []transcriptTurn{{User: "chat-ui", Assistant: "worked on the chat-ui input"}}
+	out := injectFeatureHistoryPrompt(workspace, "write a haiku about the sea", prior)
+	if out != "write a haiku about the sea" {
+		t.Fatalf("expected no injection for unrelated substantive prompt, got: %q", out)
+	}
+	if strings.Contains(out, "Prior work on") {
+		t.Fatalf("unrelated prompt should not inherit prior feature context: %q", out)
+	}
+}
+
+// A substantive but unrelated turn must not attach to the running feature's
+// bucket — otherwise its content would pollute that feature's summary.
+func TestBucketTurnsByFeatureDropsUnrelatedTurn(t *testing.T) {
+	catalog := featurecatalog.New()
+	catalog.Add(featurecatalog.Feature{Key: "alpha", Keywords: []string{"alpha"}})
+
+	turns := []transcriptTurn{
+		{User: "work on alpha feature", Assistant: "did alpha"},
+		{User: "write a haiku about the sea", Assistant: "here is a haiku"},
+	}
+	buckets := bucketTurnsByFeature(turns, catalog)
+	if len(buckets["alpha"]) != 1 {
+		t.Fatalf("alpha bucket = %d turns, want 1 (unrelated turn dropped)", len(buckets["alpha"]))
+	}
+}
+
 func TestBuildHandoffContextRejectsInvalidSources(t *testing.T) {
 	tests := []struct {
 		name    string
