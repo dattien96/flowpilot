@@ -229,11 +229,9 @@ func (s *InteractiveService) runChatSummaryJob(job chatSummaryJob) bool {
 	}
 
 	// Summarize only the turns belonging to this feature (no cross-feature
-	// mixing when one chat spans two features).
-	featureTurns := bucketTurnsByFeature(job.turns, catalog)[top.Key]
-	if len(featureTurns) == 0 {
-		featureTurns = job.turns
-	}
+	// mixing when one chat spans two features). The handoff path derives the same
+	// state_key from this same set, so both must use featureBucketTurns.
+	featureTurns := featureBucketTurns(job.turns, catalog, top.Key)
 
 	ledger, err := changeledger.NewChatSummaryLedger(dotFP)
 	if err != nil {

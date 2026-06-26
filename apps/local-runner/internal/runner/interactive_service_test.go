@@ -331,6 +331,73 @@ func TestLoadHandoffSummaryUsesMatchingStateKey(t *testing.T) {
 	}
 }
 
+// Regression: hybrid must survive off-feature turns. The recorder hashes the
+// feature-bucketed turns, so the handoff must hash the SAME set — otherwise an
+// interleaved off-feature turn (e.g. a one-off "write a haiku") changes the
+// all-turns hash and silently degrades hybrid to raw, even though a valid summary
+// for the run exists.
+func TestLoadHandoffSummaryMatchesAcrossOffFeatureTurns(t *testing.T) {
+	workspace := t.TempDir()
+	repoDir := t.TempDir()
+	dotDir := filepath.Join(workspace, ".flowpilot")
+	if err := os.MkdirAll(filepath.Join(repoDir, "change-audit"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "change-audit", "FEATURE-KEYS.md"), []byte("- chat-ui — Chat UI\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dotDir, "ledger"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rs := &interactiveRun{
+		id:           "run-1",
+		runKind:      "chat",
+		workspaceCwd: workspace,
+		events: []ProviderEvent{
+			{Type: EventTurnStarted, Prompt: "chat-ui"},
+			{Type: EventTurnCompleted, FinalMessage: "first answer"},
+			{Type: EventTurnStarted, Prompt: "write a haiku about the sea"}, // off-feature
+			{Type: EventTurnCompleted, FinalMessage: "waves fold into shore"},
+			{Type: EventTurnStarted, Prompt: "chat-ui"},
+			{Type: EventTurnCompleted, FinalMessage: "second answer"},
+		},
+	}
+	svc := NewInteractiveService()
+	ledger, err := changeledger.NewChatSummaryLedger(dotDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseLedger, err := changeledger.New(dotDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := baseLedger.Upsert([]changeledger.Entry{{CommitHash: "c1", FeatureKey: "chat-ui", Summary: "history"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := featurecatalog.Build(repoDir, baseLedger, dotDir); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := featurecatalog.LoadCatalog(dotDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	allTurns := transcriptTurnsFromRun(rs)
+	bucketKey := transcriptStateKey(rs.id, featureBucketTurns(allTurns, catalog, "chat-ui"))
+	// The off-feature turn must actually change the all-turns hash, else the test
+	// proves nothing.
+	if bucketKey == transcriptStateKey(rs.id, allTurns) {
+		t.Fatal("setup invalid: off-feature turn did not change the all-turns hash")
+	}
+	if err := ledger.Append([]changeledger.ChatSummaryEntry{
+		{RunID: rs.id, TurnID: "turn-3", FeatureKey: "chat-ui", StateKey: bucketKey, Summary: "fresh summary", CreatedAt: "2026-01-02T00:00:00Z"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := svc.loadHandoffSummary(rs, allTurns); got != "fresh summary" {
+		t.Fatalf("hybrid summary not matched across off-feature turns: got %q (would degrade to raw)", got)
+	}
+}
+
 func TestBuildHandoffContextUsesRawModeWhenNoSummaryAndHistoryFits(t *testing.T) {
 	svc := NewInteractiveService()
 	rs := &interactiveRun{

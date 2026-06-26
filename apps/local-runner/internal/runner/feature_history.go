@@ -154,3 +154,17 @@ func bucketTurnsByFeature(turns []transcriptTurn, catalog *featurecatalog.Catalo
 	}
 	return buckets
 }
+
+// featureBucketTurns returns the turns belonging to featureKey — the exact set the
+// chat-summary recorder summarizes — falling back to all turns when the bucket is
+// empty. The recorder AND the cross-provider handoff both derive the summary
+// `state_key` from this set, so they MUST agree on it; computing the key over a
+// different turn set (e.g. all turns vs. bucketed turns) would make the handoff's
+// state_key never match the stored one, silently disabling hybrid mode.
+func featureBucketTurns(turns []transcriptTurn, catalog *featurecatalog.Catalog, featureKey string) []transcriptTurn {
+	featureTurns := bucketTurnsByFeature(turns, catalog)[featureKey]
+	if len(featureTurns) == 0 {
+		featureTurns = turns
+	}
+	return featureTurns
+}

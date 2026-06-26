@@ -218,7 +218,10 @@ func (s *InteractiveService) loadHandoffSummary(rs *interactiveRun, turns []tran
 	}
 	summaries, err := ledger.GetFeatureSummariesForRun(top.Key, rs.id)
 	if err == nil && len(summaries) > 0 {
-		expectedStateKey := transcriptStateKey(rs.id, turns)
+		// The recorder hashed the feature-bucketed turns, not the whole transcript,
+		// so match that set here — otherwise the state_key never agrees and hybrid
+		// silently degrades to raw for any chat with off-feature turns.
+		expectedStateKey := transcriptStateKey(rs.id, featureBucketTurns(turns, catalog, top.Key))
 		for i := len(summaries) - 1; i >= 0; i-- {
 			if summaries[i].StateKey != expectedStateKey {
 				continue

@@ -192,7 +192,7 @@ Let say in run-5308 (1 chat) you can chat many turns, only the latest turn keep 
 
 *Covers: `V-161-02` (discussion injection), `V-161-01/03` (append + unknown suppression), `V-161-06/07/08` (sync up + degrade), `V-161-17` (sync down / cross-PC restore); summarizer-failure degrade `V-161-04` and reuse `V-161-05` are unit-level.*
 
-#### Test D — Cross-provider handoff: raw floor + summary hybrid (Task-078 · Task-162)
+#### Test D - (Remain D2c was not test) — Cross-provider handoff: raw floor + summary hybrid (Task-078 · Task-162)
 
 **Setup:** continue a Claude chat with ≥3 turns about calc-core.
 
@@ -214,7 +214,8 @@ Let say in run-5308 (1 chat) you can chat many turns, only the latest turn keep 
 
 **D2a — get `raw`.** A short calc-core chat (a few turns, well under 64 KiB) where you have **not** generated a summary for this run. Switch → chat feed `used raw context`; envelope has no `<conversation_summary>` and no self-summarize sentence. *(This is the common case — `V-078-01/06`, `V-162-02`.)*
 
-**D2b — get `hybrid`.** First press **Gen summary** (Test F1) — or let the idle timer fire — so a `calc-core` summary with a matching `state_key` exists for this run; then switch **without** sending a new turn. → chat feed `used hybrid context`; envelope shows `<conversation_summary>` before `<previous_conversation>`. *(`V-162-01`.)* If you send another turn after generating, the `state_key` no longer matches and it degrades back to `raw`/`target_summary` (`V-162-04`).
+**D2b — get `hybrid`.** First press **Gen summary** (Test F1) — or let the idle timer fire — so a `calc-core` summary exists for this run; then switch. → chat feed `used hybrid context`; envelope shows `<conversation_summary>` before `<previous_conversation>`. *(`V-162-01`.)*
+> **Why a stored summary may still hand off as `raw`:** hybrid requires the summary's `state_key` to match what the handoff recomputes. Both sides hash the **feature-bucketed turns** (only the `calc-core` turns), *not* the whole transcript — so an interleaved off-feature turn (a "write a haiku" detour, a gate reprompt) does **not** break the match. Only a **new `calc-core` turn** after you generated the summary changes the bucket and degrades it back to `raw`/`target_summary` (regenerate, or switch before adding calc-core turns). *(`V-162-04`; if both sides hashed all turns instead, any off-feature turn would silently force `raw` — the bug fixed in `featureBucketTurns`.)*
 
 **D2c — get `target_summary`.** Needs a conversation whose raw transcript exceeds 64 KiB with no cached summary — hard to reach by hand in the sandbox, so this mode is primarily **unit-covered** (`V-078-03` oversized packing, `V-162-02` degrade). To force it manually, paste several very long messages, then switch without generating a summary → chat feed `used target_summary context`; envelope has the self-summarize sentence + the omission marker.
 
