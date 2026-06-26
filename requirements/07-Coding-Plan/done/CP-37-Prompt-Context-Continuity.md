@@ -107,201 +107,156 @@ Each phase is fully specified in its task; this CP records scope, order, and the
 - No embeddings/RAG in any of the four tasks; retrieval is deterministic key/time lookup throughout.
 - Each task's own acceptance checks pass; `go test ./internal/{runner,featurecatalog,changeledger,flowgate}/...` green.
 
-## 7. Validation Matrix
+## 7. Validation & E2E Test Guide
 
-This section lists the **pre-E2E** test cases that should be run to validate the four delivered tasks before the final real-app manual E2E pass. The later "click through the real desktop app and verify behavior end-to-end" pass is intentionally left to the manual validation the user will run separately.
+Validation has two layers:
 
-> **Manual E2E walkthrough.** A hands-on, click-through guide that exercises all four tasks against a prepared sandbox lives at `D:\working\gate-sandbox\CP-37-E2E-TEST-GUIDE.md` (Tests A–D map back to the `V-###` cases below). The sandbox already has the fixture seeded — a `calc-core` feature with two `[Feature][calc-core]…` commits, a `CA-900` note carrying `## Scope`/`## Residual Notes`, and two prior chat-discussion summaries — so the only setup is binding the project in the desktop app.
+- **§7.1 Automated pre-E2E sweeps** — run these first; they back most of the unit-level `V-###` cases.
+- **§7.3 Manual E2E walkthrough (Tests A–G)** — a hands-on, click-through pass in the **real desktop app** against the prepared `gate-sandbox` fixture (§7.2). This is the followable "verify behavior end-to-end" layer.
 
-### 7.1 Task-157 Validation
+Every formal `V-###` case maps to one of these — see the **§7.4 case index**. (A standalone copy of the walkthrough also lives at `D:\working\gate-sandbox\CP-37-E2E-TEST-GUIDE.md`.)
 
-- `V-157-01` **Feature history injection happy path**
-  Setup: use a repo/workspace whose `.flowpilot/catalog/features.ndjson` and `.flowpilot/ledger/feature_history.ndjson` already contain a known feature with at least 2 history entries.
-  Run: trigger prompt assembly for a turn whose text clearly matches that feature.
-  Verify: the generated `prompt.txt` starts with `## Prior work on "<feature>"`, entries render oldest→newest, and the last entry is marked `← current truth`.
+### 7.1 Automated pre-E2E sweeps (run first)
 
-- `V-157-02` **Feature history injection safe fallback**
-  Setup: temporarily remove or corrupt `.flowpilot/catalog/features.ndjson` or `.flowpilot/ledger/feature_history.ndjson`.
-  Run: trigger prompt assembly for the same turn as `V-157-01`.
-  Verify: the turn still proceeds, the prompt body is unchanged except for the missing history block, and no runner error is surfaced to the user.
+- **Runner:** `cd apps/local-runner && go test ./internal/changeledger ./internal/featurecatalog ./internal/flowgate ./internal/runner ./internal/promptblock ./internal/contextsync`
+- **Desktop:** `cd apps/desktop-flowpilot && npm run typecheck`
 
-- `V-157-03` **Commit-key validation**
-  Setup: prepare one commit subject with an unregistered key like `[Feature][chatui][ui] ...` and one with a registered key like `[Feature][chat-ui][ui] ...`.
-  Run: exercise parse/enrich logic or the corresponding unit tests.
-  Verify: the typo key stays low-confidence and falls through to inference; the registered key becomes high-confidence and is preserved.
+These cover the sweep cases (`V-157-08`, `V-161-09`, `V-078-07`, `V-162-06`) and the unit-level cases called out by name in the walkthrough below (`V-157-03/04`, `V-161-04/05`, `V-078-02/03/04/05`, `V-162-03`, etc.).
 
-- `V-157-04` **Path-anchored suggestion**
-  Setup: collect changed paths that clearly belong to one historical feature, for example paths under one known module or screen.
-  Run: call `SuggestKey(changedPaths, message)` using a neutral message plus those paths.
-  Verify: the top-ranked candidate matches the expected feature and its score is driven by the file-glob match, not just message wording.
+### 7.2 Prepared test fixture (gate-sandbox)
 
-- `V-157-05` **Feature-key gate reprompt**
-  Setup: create a code-changing turn that commits without a verified `[feature]` bracket.
-  Run: let the post-turn flow gate evaluate that turn.
-  Verify: `commit_feature_key_missing` emits a reprompt, the remediation text includes the suggested shortlist and the "register new key" instruction, and a follow-up committed turn with a registered key passes cleanly.
+**Two clean features are seeded** so the pivot / no-mixing cases have somewhere to pivot to:
 
-- `V-157-06` **Tier-2 CA excerpt rendering**
-  Setup: ensure the most recent history entries link to CA notes with `## Scope` and `## Residual Notes`.
-  Run: render `HistorySlot(featureKey, ledger)`.
-  Verify: only the recent entries include the capped CA excerpt lines, older entries remain subject-only, and the excerpt is truncated safely when long.
+| Fixture | State | Powers |
+|---------|-------|--------|
+| `change-audit/FEATURE-KEYS.md` | registers `calc-core` **and** `calc-format` | key validation (high-confidence) |
+| Git history — feature A | 2 commits `[Feature][calc-core][logic] …` on `calc.go` (`add multiply`, then `Task-900 add divide with zero guard`) | ordered "Prior work" for calc-core |
+| Git history — feature B | 2 commits `[Feature][calc-format][logic] …` on `format.go` (`add Sign helper`, then `Task-901 add Clamp range helper`) | ordered "Prior work" for calc-format |
+| `change-audit/CA-900-*.md`, `CA-901-*.md` | `## Scope` + `## Residual Notes`, linked via `source_doc_id: Task-900 / Task-901` | Tier-2 CA "why" excerpts |
+| `.flowpilot/ledger/feature_history.ndjson` | calc-core: multiply→divide (high, `ca_excerpt`); calc-format: Sign→Clamp (high, `ca_excerpt`) | injected commit history |
+| `.flowpilot/catalog/features.ndjson` | `calc-core` (globs `calc.go`) and `calc-format` (globs `format.go`) with keywords | feature resolution + SuggestKey |
+| `.flowpilot/ledger/chat_summary.ndjson` | 2 `calc-core` + 1 `calc-format` seeded discussion summaries | injected "Prior discussion" |
+| `.flowpilot/settings/gate-config.json` | `gate_mode: enforce` | the feature-key gate reprompts (not warn-only) |
 
-- `V-157-07` **No-spec degrade path**
-  Setup: test against a repo or fixture with no `FEATURE-KEYS.md` and no CA notes.
-  Run: rebuild the ledger/catalog and trigger prompt injection.
-  Verify: feature history still derives from git-only fallback signals, no crash occurs, and Tier-2 excerpt content is simply absent.
+> **Prompt wording matters.** Feature resolution needs a score ≥ 5, so a prompt must contain a distinctive feature keyword (or the key itself), not just the bare word "calc":
+> - `calc-core` ← include **arithmetic / multiply / divide / operations** (e.g. "the calc-core arithmetic divide").
+> - `calc-format` ← include **number / formatting / format / Sign / Clamp**.
+>
+> A vague prompt like "improve calc" resolves to nothing (no block injected) — that is correct behavior, not a bug.
 
-- `V-157-08` **Automated package sweep**
-  Run: `cd apps/local-runner && go test ./internal/changeledger ./internal/featurecatalog ./internal/flowgate ./internal/runner`
-  Verify: all targeted packages pass.
+> **Inspect the real injected prompt (on by default).** Every turn writes the fully-composed prompt under the **FlowPilot tool workspace** (where the runner runs — *not* inside the target project), namespaced by project id: `<runner-workspace>\.flowpilot\runs\<projectId>\<runId>\prompt-<turnId>.txt`, latest at `…\<projectId>\last-prompt.txt`. Open `last-prompt.txt` to confirm the `## Prior work on …` / `## Prior discussion on …` blocks were injected. (Disable with `FLOWPILOT_LOG_PROMPT=0`.)
 
-### 7.2 Task-161 Validation
+**Prerequisites & bind**
 
-- `V-161-01` **Chat-summary ledger append**
-  Setup: complete a chat turn on a feature-resolvable run with at least one user prompt and one assistant response.
-  Run: let `recordChatSummaryIfNeeded` execute at turn finalization.
-  Verify: `.flowpilot/ledger/chat_summary.ndjson` receives a new line with the expected `feature_key`, `run_id`, `turn_id`, and increasing `created_at`.
+- FlowPilot desktop app running; a **Claude** account connected (chat provider *and* the cheap-model summarizer); a **second** provider (e.g. **Codex**) for the handoff tests (D); *(optional)* Google Drive chat sync for C3.
+- Optional: `FLOWPILOT_SUMMARIZER_MODEL` to override the cheap model; `FLOWPILOT_SUMMARY_IDLE_MS` to shorten the idle-summary window for F2.
+- Bind the project at `D:\working\gate-sandbox`, let engine init finish, pick **Claude** + **Normal** chat mode.
 
-- `V-161-02` **Discussion block injection**
-  Setup: seed `chat_summary.ndjson` with prior summaries for one feature.
-  Run: start a new turn whose prompt resolves to that feature.
-  Verify: the injected prompt includes `## Prior discussion on "<feature>"` after the commit-history block and only the most recent bounded summary entries are shown.
+### 7.3 Manual E2E walkthrough (Tests A–G)
 
-- `V-161-03` **Unknown-feature suppression**
-  Setup: use a prompt that does not resolve confidently to any feature.
-  Run: finalize the turn and then start another turn.
-  Verify: no new `chat_summary` entry is appended for that ambiguous turn and no prior-discussion block is injected on the next turn.
+#### Test A — Feature-history + CA "why" injection (Task-157)
 
-- `V-161-04` **Summarizer failure degrade**
-  Setup: simulate a missing/unreadable chat-summary ledger or force summary generation to return empty.
-  Run: finalize the turn and then trigger prompt injection.
-  Verify: the turn still completes normally and only Task-157 feature history remains in the prompt.
+**Do:** in a new Normal chat, send: `What would it take to add a safe arithmetic divide operation to calc-core?`
 
-- `V-161-05` **Shared summarizer reuse seam**
-  Setup: record a summary for a feature and inspect the emitted summary format.
-  Run: feed that same run into the Task-162 handoff path.
-  Verify: the handoff path can reuse the summary without reformatting or schema translation.
+**Expect:** the assistant already knows `calc-core` has `Add`/`Subtract`/`Multiply`/`Divide`, treats the **divide-with-zero-guard** commit as the current state, and references the **residual note** (divide-by-zero returns 0; error propagation deferred) instead of re-proposing what exists. Confirm via `last-prompt.txt`: a `## Prior work on "calc-core"` block, oldest→newest, divide marked `← current truth`, with the Tier-2 CA excerpt under it.
 
-- `V-161-06` **E2E context-engine sync includes chat summaries**
-  Setup: bind a project with Google Drive chat sync connected, then create `.flowpilot/ledger/chat_summary.ndjson` beside existing `.flowpilot/ledger/feature_history.ndjson` and `.flowpilot/catalog/features.ndjson`.
-  Run: trigger engine context sync through project bind/init or the shared context-sync helper.
-  Verify: Drive `context-engine/` contains `chat_summary.ndjson` alongside `feature_history.ndjson`, `features.ndjson`, and `flow-rules.json` when present; local `.flowpilot/manifest.json` includes a SHA256/size entry for `ledger/chat_summary.ndjson`.
+**Negative control:** send `write a haiku about the sea` → no "Prior work" block (feature does not resolve; safe fallback).
 
-- `V-161-07` **E2E post-turn chat-summary sync trigger**
-  Setup: use a Drive-connected project and complete a normal chat turn that resolves confidently to a feature.
-  Run: let `recordChatSummaryIfNeeded` append the summary during turn finalization.
-  Verify: the same completed turn leaves the local summary durable and best-effort sync uploads the updated `chat_summary.ndjson` to Drive `context-engine/` without requiring a later engine init or manual chat-session sync.
+*Covers: `V-157-01` (happy path), `V-157-06` (Tier-2 excerpt), `V-157-02` (safe fallback / no-resolve).*
 
-- `V-161-08` **E2E Drive-unavailable sync degrade**
-  Setup: disconnect or omit the project Google Drive chat-sync binding, then complete a feature-resolvable chat turn.
-  Run: let chat-summary append and context-engine sync attempt execute.
-  Verify: `.flowpilot/ledger/chat_summary.ndjson` still receives the local entry, the turn remains completed, no user-facing error is emitted, and the context-sync result treats Drive as skipped rather than failed.
+#### Test B — Feature-key gate reprompt (Task-157)
 
-- `V-161-10` **Low-signal latest prompt inherits the feature (record path)**
-  Setup: a feature-resolvable chat (a turn that clearly matches a registered feature), followed by a low-signal continuation/retry turn whose own text does not resolve to any feature (e.g. `try again`, `continue`, `go on`).
-  Run: let the chat-summary recorder run after the continuation turn.
-  Verify: a `chat_summary` entry is still recorded under the **established feature** (resolution scans back from the latest prompt to the most recent substantive prompt), not dropped as `unknown`; no entry is filed under a wrong/empty key. (Unit: `TestRecordChatSummaryResolvesFeatureFromEarlierTurnOnLowSignalPrompt`.)
+**Do:** ask the chat to make a small change and commit it with a **bad** key:
+> `Add an Abs(a int) int helper to calc.go and commit it with exactly the message "[Feature][calculator][logic] add abs".` (`calculator` is not registered.)
 
-- `V-161-11` **Low-signal prompt still gets history injected; explicit pivot re-resolves (inject path)**
-  Setup: an ongoing chat already resolved to feature A with prior commit/discussion history.
-  Run: (a) send a low-signal turn (`continue` / `try again`); then (b) send a turn that clearly names a *different* registered feature B.
-  Verify: on (a) the assembled prompt still contains feature A's `## Prior work on "A"` / `## Prior discussion on "A"` blocks (inherited via fallback); on (b) the prompt re-resolves and injects feature B's history instead of clinging to A. A brand-new chat whose first prompt is low-signal (no prior turns) injects nothing. (Unit: `TestInjectFeatureHistoryFallsBackToPriorTurnFeature`.)
+**Expect:** the post-turn flow gate fires a **reprompt** (`commit_feature_key_missing` / `r-fk`) inline; the remediation suggests the verified key **`calc-core`** (derived from the changed path `calc.go`) **and** offers "register a new key in `FEATURE-KEYS.md`". Re-committing as `[Feature][calc-core][logic] add abs` passes.
 
-- `V-161-12` **Manual "Gen summary" button (now / busy / no-op)**
-  Setup: an existing chat resolved to a feature.
-  Run: with the chat **running**, observe the Gen-summary control; then with the chat **idle**, press it; then press it again with no new turn.
-  Verify: the button is disabled while running and `POST …/chat-summary` returns `chat_summary_run_busy` (409) if forced; when idle it generates immediately (bypassing the idle wait) and reports `generated:true`; a second press with an unchanged transcript returns `generated:false, skipped:true` (hash match). (Unit: `TestGenerateChatSummaryNow`.)
+**Variant (warn mode):** set `gate-config.json` to `{"gate_mode":"warn"}`, repeat → a **warning**, not a blocking reprompt. Restore `enforce`.
 
-- `V-161-13` **Idle-timer trigger + reset**
-  Setup: set a short idle window via `FLOWPILOT_SUMMARY_IDLE_MS`; complete a feature-resolvable turn.
-  Run: (a) wait the window with no new turn; (b) in a second run, send a new turn before the window elapses, then wait.
-  Verify: (a) the summary is generated once the window passes; (b) the new turn resets the countdown — the summary fires only after the window from the *last* turn, not the first. No summary is produced while a turn is in flight.
+*Covers: `V-157-05` (gate reprompt), `V-157-04` (path-anchored SuggestKey), `V-157-03` (key validation).*
 
-- `V-161-14` **No cross-feature mixing (per-feature bucketing)**
-  Setup: one chat that discusses feature A for several turns, then pivots to feature B.
-  Run: let the recorder run after the B turns.
-  Verify: feature B's `chat_summary` entry summarizes only the B turns (no A discussion leaks in), and A's entry covers only the A turns; low-signal turns attach to the running feature. (Unit: `TestBucketTurnsByFeatureSeparatesFeatures`.)
+#### Test C — Prior-discussion injection + rolling summary + sync (Task-161)
 
-- `V-161-15` **Rolling upsert (one line per run+feature, hashed state_key)**
-  Setup: a chat resolved to a feature; complete several content-changing turns.
-  Run: inspect `.flowpilot/ledger/chat_summary.ndjson` after each turn.
-  Verify: the run keeps exactly **one** line per feature, rewritten in place as the chat grows (not one line per turn); the `state_key` is a fixed-length hash that changes when the transcript changes and matches (skips regen) when it does not. (Unit: `TestRecordChatSummaryRefreshesInPlaceAfterNewTurn`.)
+**C1 — discussion injected.** New Normal chat: `Picking the calc-core arithmetic divide back up — where did we land on error handling?`
+→ the assistant reflects the **seeded discussion** (integer semantics, float division rejected, divide-by-zero returns 0, open `DivideChecked` question). Confirm a `## Prior discussion on "calc-core"` block in `last-prompt.txt`.
 
-- `V-161-16` **Startup backfill scan**
-  Setup: a persisted chat with no `chat_summary` entry (or a stale hash) and the runner stopped.
-  Run: start the runner (`serve`).
-  Verify: the one-shot background scan generates the missing/stale summary for that chat without a user action; chats whose stored hash already matches are left untouched (no redundant model call); live in-memory runs are skipped (owned by their idle timer/button).
+**C2 — rolling summary recorded.** Have a 1–2 turn exchange about calc-core, then let the chat go idle. Inspect `.flowpilot/ledger/chat_summary.ndjson` → a row for `calc-core` with a fresh `run_id`, `state_key`, increasing `created_at`. Re-opening with no new turn must **not** duplicate it (state-key cache). *(See Test F for the trigger that produces this.)*
 
-- `V-161-09` **Automated package sweep**
-  Run: `cd apps/local-runner && go test ./internal/changeledger ./internal/featurecatalog ./internal/runner`
-  Verify: all targeted packages pass.
+**C3 — Drive sync (optional).** With Google Drive chat sync connected: Drive `context-engine/` contains `chat_summary.ndjson` beside `feature_history.ndjson`/`features.ndjson`, and `.flowpilot/manifest.json` lists `ledger/chat_summary.ndjson`. With Drive disconnected: the local row still appears, the turn shows no error (sync "skipped", not "failed").
 
-### 7.3 Task-078 Validation
+*Covers: `V-161-02` (discussion injection), `V-161-01/03` (append + unknown suppression), `V-161-06/07/08` (sync + degrade); summarizer-failure degrade `V-161-04` and reuse `V-161-05` are unit-level.*
 
-- `V-078-01` **Idle-chat provider switch**
-  Setup: open a normal chat with an existing idle run in desktop state.
-  Run: select a different provider chip.
-  Verify: the confirmation modal opens, the current `runId` does not change yet, and the source timeline remains visible until confirmation.
+#### Test D — Cross-provider handoff: raw floor + summary hybrid (Task-078 · Task-162)
 
-- `V-078-02` **Source transcript reconstruction**
-  Setup: prepare one Claude-source run and one Codex-source run with multi-turn history.
-  Run: call the handoff-context endpoint for each run.
-  Verify: the reconstructed prompt contains ordered raw user prompts and visible assistant responses only; hidden/system/tool payload content is excluded.
+**Setup:** continue a Claude chat with ≥3 turns about calc-core.
 
-- `V-078-03` **Bounded raw handoff packing**
-  Setup: use a source transcript whose raw content exceeds 64 KiB.
-  Run: build the handoff prompt.
-  Verify: the newest complete turns are retained, the omission marker appears, `includedTurnCount` is non-zero, and `omittedTurnCount` reflects the dropped older turns.
+**D1 — switch provider.** While **idle**, click the **Codex** chip → a **confirmation modal** opens (source/target/model/source-run; current run unchanged). Click **"Start new chat with Codex"**.
+**Expect:** exactly **one** new Codex run; old Claude run preserved/re-openable; the first user turn is the handoff prompt (ordered raw `User:`/`Assistant:` inside `<previous_conversation>`, no hidden/system/tool/reasoning content). A system line reports **"Handoff from Claude used `<mode>` context"** — `hybrid` (cached summary present, `<conversation_summary>` precedes raw) / `target_summary` (no summary + history truncated → self-summarize instruction) / `raw` (no summary, whole convo fit). All three succeed; the switch never blocks.
 
-- `V-078-04` **Single oversized turn fallback**
-  Setup: create a source transcript where the newest single turn alone exceeds the byte budget.
-  Run: build the handoff prompt.
-  Verify: that turn is still included in truncated form, the per-turn truncation marker is present, and the request does not fail with `handoff_context_unavailable`.
+**D2 — force hybrid.** Have a couple of committed turns so a `calc-core` rolling summary exists with a matching `state_key`, then switch → system line reads **`used hybrid context`** and the first Codex turn shows `<conversation_summary>` + recent raw.
 
-- `V-078-05` **Unsupported-source rejection**
-  Setup: use a Gemini-source run.
-  Run: call `POST /client/workflow-runs/{runId}/handoff-context`.
-  Verify: the runner returns `handoff_source_provider_unsupported` and no target run is created.
+**D3 — guards.** Switching **while a turn runs** → chips disabled. **Double-click** confirm → still exactly one run. **Empty** chat → switches immediately, no modal. A **Gemini-source** chat is rejected (`handoff_source_provider_unsupported`); Gemini is fine as a target.
 
-- `V-078-06` **Desktop orchestration**
-  Setup: confirm the modal on an idle source chat.
-  Run: let the desktop store request handoff context, create the target run, and send the first turn.
-  Verify: exactly one target run is created, the first user turn is the handoff prompt, the source run remains in history, and a failed handoff keeps the source run intact and retryable.
+*Covers: `V-078-01/06` (switch + orchestration), `V-078-05` (Gemini-source rejection), `V-162-01` (hybrid), `V-162-02` (degrade), `V-162-05` (Task-157/161 context still injected on the target's first turn); `V-078-02/03/04` (reconstruction, 64 KiB bound, oversized-turn) and `V-162-03/04` (run-scoped + state refresh) are unit-level.*
 
-- `V-078-07` **Type and store safety**
-  Run: `cd apps/desktop-flowpilot && npm run typecheck`
-  Verify: the desktop contract/store code compiles cleanly.
+#### Test E — Conversation-sticky resolution + explicit pivot (Task-161)
 
-### 7.4 Task-162 Validation
+**E1 — low-signal inherits the feature.** In a `calc-core` chat (e.g. "improve the calc-core arithmetic divide"), after a turn or two send a low-signal turn: **`try again`** or **`continue`**.
+→ the next prompt still injects the `calc-core` blocks (resolution scans back to the last substantive prompt), and a summary is still recorded under `calc-core`, not `unknown`.
 
-- `V-162-01` **Hybrid handoff happy path**
-  Setup: create a source run with a cached same-run summary in `chat_summary.ndjson`.
-  Run: request handoff context for that run.
-  Verify: the prompt contains `<conversation_summary>` followed by `<previous_conversation>`, and the response reports `handoffMode = "hybrid"`.
+**E2 — pivot re-resolves.** In the same chat send **`now add number formatting helpers`** → the injected blocks switch to `calc-format` (Sign→Clamp + its CA "why" + discussion), not clinging to calc-core.
 
-- `V-162-02` **Raw/target-summary degrade path**
-  Setup: use a source run with no cached summary for that run.
-  Run: request handoff context.
-  Verify: the request still succeeds, no unrelated summary is pulled in, and the mode reflects the degrade path rather than falsely claiming hybrid context.
+*Covers: `V-161-10` (record-path inherit), `V-161-11` (inject fallback + pivot).*
 
-- `V-162-03` **Run-scoped summary selection**
-  Setup: create two runs on the same feature, with a newer summary recorded on the other run.
-  Run: request handoff for the older run.
-  Verify: the handoff uses only the summary whose `run_id` matches the source run and does not import the newer other-run summary.
+#### Test F — Generation triggers (Task-163)
 
-- `V-162-04` **Transcript-state refresh**
-  Setup: request handoff twice without new committed turns, then again after one more committed turn.
-  Run: inspect the summary selected across those calls.
-  Verify: the first two requests reuse the cached summary; the later request after a new committed turn reflects refreshed content/state.
+**F1 — manual "Gen summary" button.** With a `calc-core` chat **idle/completed**, the **Gen summary** button near the YOLO toggle is enabled (disabled while running). Press → system line "Chat summary updated." and the `calc-core` row is written/refreshed. Press again with no new turn → "Chat summary unchanged" (hash match, no model call).
 
-- `V-162-05` **Feature-history coexistence**
-  Setup: perform a provider handoff for a feature with both commit history and prior discussion history.
-  Run: inspect the target run's first assembled prompt.
-  Verify: the handoff prompt content is present and the shared prompt-assembly seam still prepends Task-157/Task-161 context without blowing past bounded prompt packing.
+**F2 — idle timer + reset.** Launch with `FLOWPILOT_SUMMARY_IDLE_MS=15000`. Complete a `calc-core` turn, wait 15 s with no new turn → a summary appears on its own. In another chat, send a turn then another before 15 s → the countdown resets; the summary lands ~15 s after the *last* turn. No summary while a turn is in flight.
 
-- `V-162-06` **Cross-surface verification sweep**
-  Run: `cd apps/local-runner && go test ./internal/changeledger ./internal/featurecatalog ./internal/flowgate ./internal/runner`
-  Run: `cd apps/desktop-flowpilot && npm run typecheck`
-  Verify: both the runner and desktop validation sweeps pass.
+**F3 — upsert.** Across several `calc-core` turns in one chat, `chat_summary.ndjson` keeps **one** `calc-core` row, rewritten in place (not one per turn); `state_key` is a fixed-length hash that changes only when the transcript changes.
+
+**F4 — startup backfill.** Stop the runner, delete the `calc-core` row, restart (`serve`) → the one-shot background scan regenerates it without user action; hash-matched rows are left untouched.
+
+*Covers: `V-161-12` (manual button), `V-161-13` (idle timer + reset), `V-161-15` (upsert + hashed state_key), `V-161-16` (startup backfill).*
+
+#### Test G — No cross-feature mixing (Task-163)
+
+In **one** chat, discuss `calc-core` for a couple of turns, then pivot to `calc-format`. Trigger a summary (idle or the button) and inspect `chat_summary.ndjson`.
+→ the `calc-format` row summarizes only the format discussion (no divide/zero-guard leakage); the `calc-core` row only the arithmetic discussion. Each feature's summary is built from its own turns.
+
+*Covers: `V-161-14` (per-feature bucketing).*
+
+### 7.4 Formal case index (`V-###`)
+
+| Case | Covered by |
+|------|-----------|
+| `V-157-01`, `V-157-02`, `V-157-06` | Test A |
+| `V-157-03`, `V-157-04` | Test B (+ automated sweep) |
+| `V-157-05` | Test B |
+| `V-157-07` (no-spec degrade) | automated / fixture without `FEATURE-KEYS.md`+CA |
+| `V-157-08` | §7.1 runner sweep |
+| `V-161-01`, `V-161-02`, `V-161-03` | Test C |
+| `V-161-04`, `V-161-05` | automated (summarizer degrade / handoff reuse) |
+| `V-161-06`, `V-161-07`, `V-161-08` | Test C3 |
+| `V-161-09` | §7.1 runner sweep |
+| `V-161-10`, `V-161-11` | Test E |
+| `V-161-12`, `V-161-13`, `V-161-15`, `V-161-16` | Test F |
+| `V-161-14` | Test G |
+| `V-078-01`, `V-078-06` | Test D1 |
+| `V-078-02`, `V-078-03`, `V-078-04` | automated (`internal/runner` handoff tests) |
+| `V-078-05` | Test D3 |
+| `V-078-07` | §7.1 desktop typecheck |
+| `V-162-01` | Test D2 |
+| `V-162-02`, `V-162-05` | Test D1 |
+| `V-162-03`, `V-162-04` | automated (`internal/runner` handoff tests) |
+| `V-162-06` | §7.1 runner + desktop sweeps |
+
+### 7.5 Reset / re-seed (sandbox)
+
+- The four feature commits (`calc-core` ×2, `calc-format` ×2) + `CA-900`/`CA-901` are the durable fixture; do not squash them.
+- The runner **upserts one row per `(run, feature)`** in `chat_summary.ndjson` and may rewrite it — keep a copy of the seeded baseline before experimenting and restore it to reset prior-discussion.
+- Fixture/maintenance commits use the `sandbox-meta` key and the ledger cursor is pinned, so they never pollute `calc-core`/`calc-format` history. To rebuild cleanly from git, re-bind the project (engine init is cursor-based / incremental).
 
 ## 8. Out of Scope
 

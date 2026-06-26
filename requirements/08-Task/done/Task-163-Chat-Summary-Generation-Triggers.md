@@ -55,7 +55,7 @@
 
 ### Source Refs
 
-- Builds on Task-161 (timeline + shared summarizer) and Task-162 (state-key cache, handoff reuse). `SD-17 §3.2` (chat-summary sibling entry), `§5.1` (on-disk layout), `§6.1` (injection seam). `CP-37 §5` (shared mechanisms), `§7.2` (`V-161-12`…`V-161-16`).
+- Builds on Task-161 (timeline + shared summarizer) and Task-162 (state-key cache, handoff reuse). `SD-17 §3.2` (chat-summary sibling entry), `§5.1` (on-disk layout), `§6.1` (injection seam). `CP-37 §5` (shared mechanisms), `§7.3` Test F + `§7.4` index (`V-161-12`…`V-161-16`).
 - Code: `apps/local-runner/internal/runner/{chat_summary.go,feature_history.go,interactive_service.go,interactive_handlers.go}`, `internal/changeledger/chat_summary.go`, `internal/cli/root.go`; `apps/desktop-flowpilot/src/{components/ChatInput.tsx,state/store.ts,client/HttpWsRunnerClient.ts,client/MockRunnerClient.ts,types/contract.ts,styles.css}`.
 
 ## 1. Goal
