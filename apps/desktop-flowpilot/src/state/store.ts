@@ -133,6 +133,7 @@ interface AppState {
   selectedModel?: string;
   reasoningEffort?: string;
   yoloMode: boolean;
+  summaryGenerating: boolean;
   chatStartMode: ChatStartMode;
   chatSourceDocId: string;
 
@@ -183,6 +184,14 @@ interface AppState {
     reason: "usage_limit" | "manual";
   };
   accountSwitchLoading: boolean;
+  pendingProviderSwitch?: {
+    sourceRunId: string;
+    sourceProviderKey: ProviderKey;
+    sourceRunStatus: RunStatus;
+    targetProviderKey: ProviderKey;
+    targetModel?: string;
+  };
+  providerSwitchLoading: boolean;
   _accountSwitchTriedIds: string[];
 
   // internal: id of the assistant bubble currently accumulating deltas
@@ -219,6 +228,7 @@ interface AppState {
   setSelectedModel(model?: string): void;
   setReasoningEffort(effort?: string): void;
   setYoloMode(yolo: boolean): void;
+  generateChatSummary(): Promise<void>;
   setChatStartMode(mode: ChatStartMode): void;
   setChatSourceDocId(sourceDocId: string): void;
   selectWorkflow(workflowId: string): Promise<void>;
@@ -258,6 +268,8 @@ interface AppState {
   confirmAccountSwitch(): Promise<void>;
   cancelAccountSwitch(): void;
   requestManualAccountSwitch(): void;
+  confirmProviderSwitch(): Promise<void>;
+  cancelProviderSwitch(): void;
   dismissGateBlock(): void;
   /** Submit the user's choice on the r-reg gate decision card (Task-155). */
   submitGateDecision(option: string, customText?: string): Promise<void>;
@@ -285,11 +297,13 @@ export const useStore = create<AppState>((set, get) => ({
   recoverable: false,
   scenario: "normal",
   accountSwitchLoading: false,
+  providerSwitchLoading: false,
   _accountSwitchTriedIds: [],
   launchMode: "workflow",
   chatMode: "normal_chat",
   selectedProvider: "codex",
   yoloMode: false,
+  summaryGenerating: false,
   chatStartMode: "normal",
   chatSourceDocId: "",
   workspaceMainView: "chat",
@@ -614,9 +628,135 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   selectProvider(provider) {
-    set({ selectedProvider: provider, selectedModel: pickDefaultModel(provider, get().supportedModels) });
-    if (provider) {
-      void get().loadSkills(provider);
+    const state = get();
+    if (!provider) {
+      set({
+        selectedProvider: undefined,
+        selectedModel: undefined,
+        pendingProviderSwitch: undefined,
+        pendingAccountSwitch: undefined,
+        accountSwitchLoading: false,
+      });
+      return;
+    }
+    if (state.selectedProvider === provider) {
+      return;
+    }
+    const targetModel = pickDefaultModel(provider, state.supportedModels);
+    const canRequestHandoff =
+      state.chatMode === "normal_chat" &&
+      Boolean(state.runId) &&
+      !isInteractiveChatBlocked(state.status);
+    if (canRequestHandoff && state.selectedProvider) {
+      const sourceRunId = state.runId;
+      if (!sourceRunId) return;
+      set({
+        pendingProviderSwitch: {
+          sourceRunId,
+          sourceProviderKey: state.selectedProvider,
+          sourceRunStatus: state.status,
+          targetProviderKey: provider,
+          targetModel,
+        },
+        pendingAccountSwitch: undefined,
+        accountSwitchLoading: false,
+      });
+      return;
+    }
+    set({ selectedProvider: provider, selectedModel: targetModel, pendingProviderSwitch: undefined });
+    void get().loadSkills(provider);
+  },
+
+  cancelProviderSwitch() {
+    set({ pendingProviderSwitch: undefined, providerSwitchLoading: false });
+  },
+
+  async confirmProviderSwitch() {
+    const state = get();
+    const pending = state.pendingProviderSwitch;
+    if (!pending || state.providerSwitchLoading) return;
+    if (state.chatMode !== "normal_chat" || !state.selectedProjectId) {
+      set({ pendingProviderSwitch: undefined, providerSwitchLoading: false });
+      return;
+    }
+
+    const targetProviderKey = pending.targetProviderKey;
+    const targetModel = pending.targetModel ?? pickDefaultModel(targetProviderKey, state.supportedModels);
+    const cwd = selectedProjectPath(state);
+    set({ providerSwitchLoading: true });
+
+    try {
+      const handoff = await state.client.handoffContext(pending.sourceRunId, { targetProviderKey });
+      const handle = await state.client.startRun({
+        projectId: state.selectedProjectId,
+        providerKey: targetProviderKey,
+        model: targetModel,
+        reasoningEffort: state.reasoningEffort,
+        yoloMode: state.yoloMode,
+        chatMode: "normal_chat",
+        cwd,
+      });
+      set({
+        selectedProvider: targetProviderKey,
+        selectedModel: targetModel,
+        runId: handle.runId,
+        mainRunId: handle.runId,
+        activeAgentRunId: undefined,
+        activeStepId: handle.stepId,
+        status: handle.status,
+        timeline: [],
+        artifacts: [],
+        pendingApproval: undefined,
+        pendingQuestion: undefined,
+        gateBlock: undefined,
+        latestTokenUsage: undefined,
+        lastTurnInput: undefined,
+        recoverable: false,
+        pendingAccountSwitch: undefined,
+        accountSwitchLoading: false,
+        pendingProviderSwitch: undefined,
+        providerSwitchLoading: false,
+        _accountSwitchTriedIds: [],
+        _streamingAssistantId: undefined,
+        agentRuns: [],
+        agentGraphSnapshot: undefined,
+        agentBusMessages: [],
+        agentSpawnGuideOpen: false,
+        agentSpawnGuideAgentName: undefined,
+        _runReplaySeq: {},
+        _runSnapshots: {},
+        _historyReplaying: false,
+        _streamRunSeq: state._streamRunSeq + 1,
+      });
+      set((s) => ({
+        timeline: [
+          ...s.timeline,
+          {
+            kind: "system",
+            id: `handoff-mode-${s.timeline.length}`,
+            text: `Handoff from ${providerLabel(handoff.sourceProviderKey)} used ${handoff.handoffMode} context.`,
+            tone: "info",
+          },
+        ],
+      }));
+      void get().loadSkills(targetProviderKey);
+      await get().sendPrompt(handoff.prompt);
+      void get().loadRunHistory();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] provider handoff failed:", err);
+      set((s) => ({
+        providerSwitchLoading: false,
+        timeline: [
+          ...s.timeline,
+          {
+            kind: "system",
+            id: `handoff-err-${s.timeline.length}`,
+            text: `Failed to start a new chat with ${providerLabel(targetProviderKey)}: ${String(err)}`,
+            tone: "error",
+          },
+        ],
+      }));
     }
   },
 
@@ -630,6 +770,46 @@ export const useStore = create<AppState>((set, get) => ({
 
   setYoloMode(yolo) {
     set({ yoloMode: yolo });
+  },
+
+  async generateChatSummary() {
+    const state = get();
+    const runId = state.runId;
+    if (!runId || state.summaryGenerating) return;
+    if (isInteractiveChatBlocked(state.status)) return;
+    set({ summaryGenerating: true });
+    try {
+      const result = await state.client.generateChatSummary(runId);
+      set((s) => ({
+        summaryGenerating: false,
+        timeline: [
+          ...s.timeline,
+          {
+            kind: "system",
+            id: `chat-summary-${s.timeline.length}`,
+            text: result.generated
+              ? "Chat summary updated."
+              : `Chat summary unchanged${result.reason ? ` (${result.reason})` : ""}.`,
+            tone: "info",
+          },
+        ],
+      }));
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] generateChatSummary failed:", err);
+      set((s) => ({
+        summaryGenerating: false,
+        timeline: [
+          ...s.timeline,
+          {
+            kind: "system",
+            id: `chat-summary-err-${s.timeline.length}`,
+            text: `Failed to generate chat summary: ${String(err)}`,
+            tone: "error",
+          },
+        ],
+      }));
+    }
   },
 
   setChatStartMode(mode) {
@@ -994,6 +1174,8 @@ export const useStore = create<AppState>((set, get) => ({
         recoverable: false,
         pendingAccountSwitch: undefined,
         accountSwitchLoading: false,
+        pendingProviderSwitch: undefined,
+        providerSwitchLoading: false,
         _accountSwitchTriedIds: [],
         _streamingAssistantId: undefined,
       });
@@ -1117,6 +1299,8 @@ export const useStore = create<AppState>((set, get) => ({
       recoverable: false,
       pendingAccountSwitch: undefined,
       accountSwitchLoading: false,
+      pendingProviderSwitch: undefined,
+      providerSwitchLoading: false,
       _accountSwitchTriedIds: [],
       _streamingAssistantId: undefined,
       agentRuns: [],
@@ -1202,6 +1386,8 @@ export const useStore = create<AppState>((set, get) => ({
       recoverable: false,
       pendingAccountSwitch: undefined,
       accountSwitchLoading: false,
+      pendingProviderSwitch: undefined,
+      providerSwitchLoading: false,
       _accountSwitchTriedIds: [],
       _streamingAssistantId: undefined,
       _runSnapshots: {},
@@ -1334,6 +1520,10 @@ export function providerLabel(providerKey: string): string {
   if (providerKey === "claude") return "Claude";
   if (providerKey === "codex") return "Codex";
   return providerKey;
+}
+
+function isInteractiveChatBlocked(status: RunStatus): boolean {
+  return status === "running" || status === "waiting_approval" || status === "waiting_question";
 }
 
 function findBestCandidate(
