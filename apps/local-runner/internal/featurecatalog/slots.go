@@ -7,6 +7,8 @@ import (
 	"flowpilot-runner/internal/changeledger"
 )
 
+const recentHistoryExcerptCount = 3
+
 // ResolveSlot resolves a natural-language feature reference to ranked candidates
 // and formats the result for prompt injection.
 func ResolveSlot(nl string, catalog *Catalog) string {
@@ -51,6 +53,15 @@ func HistorySlot(featureKey string, ledger interface {
 			marker = "   ← current truth"
 		}
 		sb.WriteString(fmt.Sprintf("- [%s %s] %s%s\n", id, date, e.Summary, marker))
+		if e.CAExcerpt != "" && i >= len(entries)-recentHistoryExcerptCount {
+			for _, line := range strings.Split(e.CAExcerpt, "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" {
+					continue
+				}
+				sb.WriteString("  - " + line + "\n")
+			}
+		}
 	}
 	return sb.String()
 }

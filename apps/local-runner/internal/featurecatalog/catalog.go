@@ -4,11 +4,17 @@ import (
 	"bufio"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
+
+	"flowpilot-runner/internal/changeledger"
 )
+
+var reSupersededBy = regexp.MustCompile(`(?i)\bsuperseded\s+by\s+([a-z][a-z0-9-]+)\b`)
 
 type Feature struct {
 	Key       string   `json:"feature_key"`
@@ -117,11 +123,95 @@ func Build(repoDir string, ledger interface{ ListFeatures() []string }, dotFlowp
 		}
 	}
 
-	// (d) Persist
+	// (d) Derive historical file-glob hints from the committed paths for each
+	// feature key. This powers path-anchored resolution and suggestion scoring.
+	if entriesLister, ok := ledger.(interface{ AllEntries() []changeledger.Entry }); ok {
+		inferFileGlobs(c, repoDir, entriesLister.AllEntries())
+	}
+
+	// (e) Persist
 	if err := writeCatalog(c, dotFlowpilotDir); err != nil {
 		return c, err
 	}
 	return c, nil
+}
+
+func inferFileGlobs(c *Catalog, repoDir string, entries []changeledger.Entry) {
+	if repoDir == "" || len(entries) == 0 {
+		return
+	}
+
+	byFeature := make(map[string]map[string]struct{})
+	for _, entry := range entries {
+		if entry.FeatureKey == "" || entry.CommitHash == "" {
+			continue
+		}
+		files := changedFilesForCommit(repoDir, entry.CommitHash)
+		if len(files) == 0 {
+			continue
+		}
+		featureFiles := byFeature[entry.FeatureKey]
+		if featureFiles == nil {
+			featureFiles = make(map[string]struct{})
+			byFeature[entry.FeatureKey] = featureFiles
+		}
+		for _, file := range files {
+			glob := filePathToGlob(file)
+			if glob != "" {
+				featureFiles[glob] = struct{}{}
+			}
+		}
+	}
+
+	for key, globs := range byFeature {
+		feat, ok := c.Get(key)
+		if !ok {
+			feat = Feature{Key: key}
+		}
+		for glob := range globs {
+			feat.FileGlobs = append(feat.FileGlobs, glob)
+		}
+		sort.Strings(feat.FileGlobs)
+		c.Add(feat)
+	}
+}
+
+func changedFilesForCommit(repoDir, commitHash string) []string {
+	out, err := exec.Command(
+		"git", "-C", repoDir,
+		"show", "--name-only", "--no-commit-id", "--format=", commitHash,
+	).Output()
+	if err != nil || len(out) == 0 {
+		return nil
+	}
+	var files []string
+	sc := bufio.NewScanner(strings.NewReader(string(out)))
+	for sc.Scan() {
+		file := strings.TrimSpace(sc.Text())
+		if file != "" {
+			files = append(files, filepath.ToSlash(file))
+		}
+	}
+	return files
+}
+
+func filePathToGlob(file string) string {
+	file = filepath.ToSlash(strings.TrimSpace(file))
+	if file == "" {
+		return ""
+	}
+	dir := filepath.ToSlash(filepath.Dir(file))
+	if dir == "." {
+		return file
+	}
+	return dir + "/**"
+}
+
+func supersededSuccessor(line string) string {
+	if m := reSupersededBy.FindStringSubmatch(line); m != nil {
+		return m[1]
+	}
+	return ""
 }
 
 func loadFeatureKeys(c *Catalog, path string) error {
@@ -152,6 +242,10 @@ func loadFeatureKeys(c *Catalog, path string) error {
 		}
 		if key == "" {
 			continue
+		}
+		if successor := supersededSuccessor(line); successor != "" {
+			key = successor
+			description = strings.TrimSpace(description + " canonical successor")
 		}
 		feat := Feature{
 			Key:      key,
