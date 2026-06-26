@@ -1663,6 +1663,11 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	if s.shouldInjectFeatureHistory(rs.providerKey) {
 		providerPrompt = injectFeatureHistoryPrompt(rs.workspaceCwd, providerPrompt, transcriptTurnsFromRun(rs))
 	}
+	// Observability for E2E: persist/log the fully-composed turn prompt (feature
+	// history + discussion + mode prefix + user text). Opt-in via FLOWPILOT_LOG_PROMPT
+	// since prompts can carry sensitive content. The adapter prepends skill content
+	// downstream; this captures everything the injection seam produced.
+	logComposedPrompt(rs.id, turnID, rs.workspaceCwd, providerPrompt)
 	req := TurnRequest{
 		RunID:             rs.id,
 		StepID:            in.StepID,
