@@ -28,12 +28,12 @@ func TestNewEngineStoreCreatesSubdirs(t *testing.T) {
 	}
 }
 
-func TestSharedFilesReturnsThreePaths(t *testing.T) {
+func TestSharedFilesReturnsSharedPaths(t *testing.T) {
 	base := t.TempDir()
 	store, _ := NewEngineStore(base)
 	shared := store.SharedFiles()
-	if len(shared) != 3 {
-		t.Fatalf("SharedFiles() len = %d, want 3", len(shared))
+	if len(shared) != 4 {
+		t.Fatalf("SharedFiles() len = %d, want 4", len(shared))
 	}
 	// Verify each expected path is present
 	found := map[string]bool{}
@@ -42,6 +42,7 @@ func TestSharedFilesReturnsThreePaths(t *testing.T) {
 	}
 	for _, want := range []string{
 		filepath.ToSlash(filepath.Join(base, LedgerFile)),
+		filepath.ToSlash(filepath.Join(base, ChatSummaryFile)),
 		filepath.ToSlash(filepath.Join(base, CatalogFile)),
 		filepath.ToSlash(filepath.Join(base, FlowRulesFile)),
 	} {
@@ -110,6 +111,10 @@ func TestWriteManifest(t *testing.T) {
 	if err := os.WriteFile(store.LedgerPath(), ledgerContent, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	chatSummaryContent := []byte(`{"feature_key":"test","summary":"discussion"}`)
+	if err := os.WriteFile(store.ChatSummaryPath(), chatSummaryContent, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	catalogContent := []byte(`{"id":"feat-1"}`)
 	if err := os.WriteFile(store.CatalogPath(), catalogContent, 0o644); err != nil {
 		t.Fatal(err)
@@ -130,9 +135,9 @@ func TestWriteManifest(t *testing.T) {
 		t.Fatalf("unmarshal manifest: %v", err)
 	}
 
-	// FlowRulesFile does not exist, so only 2 entries expected.
-	if len(entries) != 2 {
-		t.Fatalf("manifest entries = %d, want 2", len(entries))
+	// FlowRulesFile does not exist, so only 3 entries expected.
+	if len(entries) != 3 {
+		t.Fatalf("manifest entries = %d, want 3", len(entries))
 	}
 
 	for _, e := range entries {
@@ -160,9 +165,9 @@ func TestSyncSharedFilesNilSyncer(t *testing.T) {
 	if len(result.Errors) != 0 {
 		t.Errorf("expected 0 errors, got %d", len(result.Errors))
 	}
-	// All 3 shared files should be skipped (1 exists but syncer nil, 2 don't exist).
-	if len(result.Skipped) != 3 {
-		t.Errorf("expected 3 skipped, got %d: %v", len(result.Skipped), result.Skipped)
+	// All 4 shared files should be skipped (1 exists but syncer nil, 3 don't exist).
+	if len(result.Skipped) != 4 {
+		t.Errorf("expected 4 skipped, got %d: %v", len(result.Skipped), result.Skipped)
 	}
 }
 
@@ -171,6 +176,7 @@ func TestSyncSharedFilesWithSyncer(t *testing.T) {
 	store, _ := NewEngineStore(base)
 
 	os.WriteFile(store.LedgerPath(), []byte("ledger data"), 0o644)
+	os.WriteFile(store.ChatSummaryPath(), []byte("chat summary data"), 0o644)
 	os.WriteFile(store.CatalogPath(), []byte("catalog data"), 0o644)
 
 	var synced []string
@@ -181,8 +187,8 @@ func TestSyncSharedFilesWithSyncer(t *testing.T) {
 
 	result := SyncSharedFiles(context.Background(), store, syncer)
 
-	if len(result.Synced) != 2 {
-		t.Errorf("expected 2 synced, got %d: %v", len(result.Synced), result.Synced)
+	if len(result.Synced) != 3 {
+		t.Errorf("expected 3 synced, got %d: %v", len(result.Synced), result.Synced)
 	}
 	if len(result.Skipped) != 1 {
 		t.Errorf("expected 1 skipped (FlowRules absent), got %d", len(result.Skipped))
