@@ -234,6 +234,8 @@ export function ChatInput(): React.ReactElement {
   const setSelectedModel = useStore((s) => s.setSelectedModel);
   const setReasoningEffort = useStore((s) => s.setReasoningEffort);
   const setYoloMode = useStore((s) => s.setYoloMode);
+  const generateChatSummary = useStore((s) => s.generateChatSummary);
+  const summaryGenerating = useStore((s) => s.summaryGenerating);
   const pendingApproval = useStore((s) => s.pendingApproval);
   const pendingQuestion = useStore((s) => s.pendingQuestion);
   const latestTokenUsage = useStore((s) => s.latestTokenUsage);
@@ -248,6 +250,8 @@ export function ChatInput(): React.ReactElement {
   const openAgentSpawnGuide = useStore((s) => s.openAgentSpawnGuide);
   const pendingAccountSwitch = useStore((s) => s.pendingAccountSwitch);
   const accountSwitchLoading = useStore((s) => s.accountSwitchLoading);
+  const pendingProviderSwitch = useStore((s) => s.pendingProviderSwitch);
+  const providerSwitchLoading = useStore((s) => s.providerSwitchLoading);
   const requestManualAccountSwitch = useStore((s) => s.requestManualAccountSwitch);
   const backToMainRun = useStore((s) => s.backToMainRun);
 
@@ -272,8 +276,7 @@ export function ChatInput(): React.ReactElement {
   const wasPickerVisibleRef = useRef(false);
 
   const isChatMode = chatMode === "normal_chat";
-  // Lock provider once any turn has been sent in the current chat session.
-  const providerLocked = isChatMode && timeline.length > 0;
+  const isSwitchBusy = pendingProviderSwitch !== undefined || providerSwitchLoading;
   const supportsVision = !!selectedProvider && VISION_PROVIDERS.has(selectedProvider);
   const hasSelectedProject = !!selectedProjectId;
   const selectedProjectPath = useMemo(
@@ -427,6 +430,18 @@ export function ChatInput(): React.ReactElement {
     setDisplayedTokenUsage(undefined);
   }, [selectedProvider]);
 
+  useEffect(() => {
+    setText("");
+    setSelectedSkills([]);
+    setSkillTokens([]);
+    setAttachments([]);
+    setAttachError(null);
+    setPreviewAtt(null);
+    setSkillPickerOpen(false);
+    setSlashDismissedIndex(null);
+    setPickerHighlightIndex(-1);
+  }, [runId]);
+
   const hasBetterAccount = useMemo(
     () =>
       !!selectedProvider &&
@@ -444,6 +459,9 @@ export function ChatInput(): React.ReactElement {
   const selectedProviderConnected = !!selectedProvider && connectedProviders.has(selectedProvider);
 
   const blocked = status === "running" || status === "waiting_approval" || status === "waiting_question";
+  // The manual "Gen summary" control is available only for an existing chat that
+  // is idle/completed (never mid-turn) — mirrors the runner's busy guard.
+  const canGenerateSummary = isChatMode && !!runId && timeline.length > 0 && !blocked && !summaryGenerating;
   // A running child spawned with wait=true blocks the main run even when the main has no turn
   // of its own in flight (e.g. a UI wait=true spawn) — the send button must reflect that (BUG-133).
   const hasBlockingChild = agentRuns.some(
@@ -737,6 +755,18 @@ export function ChatInput(): React.ReactElement {
                       <span className="yolo-toggle-label">{yoloMode ? "On" : "Off"}</span>
                     </button>
                   </div>
+                  <div className="chat-controller-switch chat-controller-switch-top">
+                    <span className="chat-controller-label">Summary</span>
+                    <button
+                      type="button"
+                      className="gen-summary-btn"
+                      onClick={() => void generateChatSummary()}
+                      disabled={!canGenerateSummary}
+                      title="Generate the rolling chat summary now (available when the chat is idle)"
+                    >
+                      {summaryGenerating ? "Generating…" : "Gen summary"}
+                    </button>
+                  </div>
                   <button
                     type="button"
                     className="chat-controller-toggle"
@@ -749,7 +779,7 @@ export function ChatInput(): React.ReactElement {
               </div>
 
               <div className="chat-controller-grid">
-                <div className={`provider-picker${providerLocked ? " provider-picker-locked" : ""}`}>
+                <div className="provider-picker">
                   <span className="chat-controller-label">Provider</span>
                   <div className="provider-chips">
                     {PROVIDER_CARDS.map((p) => (
@@ -757,16 +787,17 @@ export function ChatInput(): React.ReactElement {
                         key={p.value}
                         type="button"
                         className={`provider-chip provider-chip-${p.value}${selectedProvider === p.value ? " provider-chip-selected" : ""}${connectedProviders.has(p.value) ? "" : " provider-chip-unavailable"}`}
-                        onClick={() => selectProvider(selectedProvider === p.value ? undefined : p.value)}
-                        disabled={blocked || providerLocked || !connectedProviders.has(p.value)}
+                        onClick={() => {
+                          if (selectedProvider === p.value) return;
+                          selectProvider(p.value);
+                        }}
+                        disabled={blocked || isSwitchBusy || !connectedProviders.has(p.value)}
                         aria-pressed={selectedProvider === p.value}
                         aria-label={p.label}
                         title={
                           !connectedProviders.has(p.value)
                             ? `${p.label} is unavailable until an account is connected`
-                            : providerLocked
-                              ? "Start a new chat to change provider"
-                              : p.label
+                            : p.label
                         }
                       >
                         <span className="provider-chip-icon">{p.icon}</span>
