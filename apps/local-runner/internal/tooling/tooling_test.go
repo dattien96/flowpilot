@@ -170,8 +170,8 @@ func TestCheckAllWritesToTempDir(t *testing.T) {
 
 func TestCheckGlobalExcludesProjectScopedSkillPack(t *testing.T) {
 	statuses := CheckGlobal()
-	if len(statuses) != 3 {
-		t.Fatalf("expected 3 global tool statuses, got %d", len(statuses))
+	if len(statuses) != 5 {
+		t.Fatalf("expected 5 global tool statuses, got %d", len(statuses))
 	}
 	for _, status := range statuses {
 		if status.Tool == "skill_pack" {
