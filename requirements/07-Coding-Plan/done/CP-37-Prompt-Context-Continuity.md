@@ -223,31 +223,31 @@ Let say in run-5308 (1 chat) you can chat many turns, only the latest turn keep 
 
 #### Test E — Conversation-sticky resolution + explicit pivot (Task-161)
 
-**E1 — low-signal inherits the feature.** In a `calc-core` chat (e.g. "improve the calc-core arithmetic divide"), after a turn or two send a low-signal turn: **`try again`** or **`continue`**.
+**E1 — continuation inherits the feature.** In a `calc-core` chat (e.g. "improve the calc-core arithmetic divide"), after a turn or two send a continuation turn: **`try again`** or **`continue`**.
 → the next prompt still injects the `calc-core` blocks (resolution scans back to the last substantive prompt), and a summary is still recorded under `calc-core`, not `unknown`.
 
 **E2 — pivot re-resolves.** In the same chat send **`now add number formatting helpers`** → the injected blocks switch to `calc-format` (Sign→Clamp + its CA "why" + discussion), not clinging to calc-core.
 
-**E3 — unrelated substantive prompt drops context.** In the same `calc-core` chat send **`write a haiku about the sea`** → the injected blocks **disappear**. A substantive off-topic prompt is *not* low-signal, so it does not inherit calc-core (contrast E1, where `try again` *does* inherit). This is the distinction: low-signal → inherit; substantive-but-unresolved → drop.
+**E3 — unrelated substantive prompt drops context.** In the same `calc-core` chat send **`write a haiku about the sea`** → the injected blocks **disappear**. It is not a continuation, so it does not inherit calc-core (contrast E1, where `try again` *does* inherit). The distinction: **explicit continuation → inherit; everything else unresolved → drop.**
 
-**E4 — low-signal battery (each inherits the established feature).** In an established `calc-core` chat (after at least one substantive `calc-core` turn), send each of these as its own turn and check `last-prompt.txt` each time:
+**E4 — continuation battery (only explicit continuations inherit).** In an established `calc-core` chat (after ≥ 1 substantive `calc-core` turn), send each as its own turn and check `last-prompt.txt`:
 
-| Prompt | Why it's low-signal | Expected on the turn |
-|--------|---------------------|----------------------|
-| `continue` / `try again` / `retry` / `do it` / `go on` / `proceed` | curated continuation phrase | injects the `calc-core` blocks (inherited) |
-| `ok` / `yes` / `yep` / `sure` | curated acknowledgement | injects the `calc-core` blocks |
-| `no` | ≤ 3 words, not a feature | injects the `calc-core` blocks |
-| `hi` | ≤ 3 words, not a feature | injects the `calc-core` blocks |
+| Prompt | Class | Expected on the turn |
+|--------|-------|----------------------|
+| `continue` / `try again` / `retry` / `do it` / `go on` / `proceed` / `keep going` | continuation | **injects** the `calc-core` blocks (inherited) |
+| `ok` / `yes` / `no` / `sure` | acknowledgement | **no block** — does not inherit |
+| `hi` / `hello` / `thanks` | greeting | **no block** — does not inherit |
+| `write a haiku about the sea` | substantive off-topic | **no block** (same as E3) |
 
-For **all** of them the `## Prior work on "calc-core"` / `## Prior discussion on "calc-core"` blocks must still appear (resolution scans back to the last substantive `calc-core` prompt), and a triggered summary still records under **`calc-core`** (never `unknown`). The rule under test: **low-signal = a curated continuation/ack phrase OR ≤ 3 words → inherit the running feature.**
+Only an **explicit continuation** re-injects the `## Prior work` / `## Prior discussion` blocks (resolution scans back to the last substantive `calc-core` prompt) and keeps a triggered summary under `calc-core`. Acknowledgements, greetings, and off-topic prompts inject **nothing** on that turn. The rule under test: **inherit only for a curated continuation phrase — no blind word-count fallback.**
 
-**Two boundaries to confirm the heuristic isn't over-reaching:**
-- **Fresh chat, low-signal first turn.** Open a **new** chat and make the *first* prompt `hi` (or `continue`) → injects **nothing** (no prior turn to inherit from; `last-prompt.txt` is just the bare prompt). Low-signal only *inherits* — it never invents a feature.
-- **Longer off-topic (> 3 words).** `write a haiku about the sea` (E3) and e.g. `tell me a joke about cats` → **drop** the blocks. They exceed the ≤ 3-word bar and match no feature, so they are treated as a topic change, not a continuation.
+**Boundaries:**
+- **Fresh chat, continuation first turn.** New chat, first prompt `continue` → injects **nothing** (no prior to inherit). Continuations only *inherit*; they never invent a feature.
+- **Continuation vs. ack, back-to-back.** After a real calc-core turn, send `continue` (blocks appear) then `ok` (no block) — the split is the whole point.
 
-> Note on `hi`: a greeting in an established calc-core chat **does** inherit calc-core (it's ≤ 3 words). That's intended — it keeps continuity and is harmless (the context is just available, the model can ignore it). The case you saw earlier in `run-5611` was a *handoff* turn, not a `hi` turn — a different path, already fixed.
+> Design note: this is the **Continuations-only** rule you chose — greetings (`hi`) and bare acks (`ok`/`yes`/`no`) do **not** drag in calc-core context; only explicit "keep going" instructions do. (The `run-5611` case was a *handoff* turn, not a `hi` turn — a separate path, already fixed.)
 
-*Covers: `V-161-10` (record-path inherit), `V-161-11` (inject fallback + pivot + low-signal/substantive split + fresh-chat-no-inherit). Unit: `isLowSignalPrompt` battery / `TestInjectFeatureHistoryFallsBackToPriorTurnFeature` / `TestInjectFeatureHistoryDropsContextOnUnrelatedPrompt`.*
+*Covers: `V-161-10` (record-path inherit), `V-161-11` (inject fallback + pivot + continuation/non-continuation split + fresh-chat-no-inherit). Unit: `TestIsContinuationPrompt` / `TestInjectFeatureHistoryFallsBackToPriorTurnFeature` / `TestInjectFeatureHistoryDropsContextOnUnrelatedPrompt`.*
 
 #### Test F- (Passed)  — Generation triggers (Task-163)
 

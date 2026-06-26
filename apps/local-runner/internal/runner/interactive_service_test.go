@@ -832,28 +832,29 @@ func TestInjectFeatureHistoryFallsBackToPriorTurnFeature(t *testing.T) {
 	}
 }
 
-// The low-signal battery from CP-37 Test E4: curated continuation/ack phrases and
-// any ≤3-word non-feature prompt are low-signal (inherit the running feature);
-// longer off-topic prompts are not (drop context).
-func TestIsLowSignalPromptBattery(t *testing.T) {
-	low := []string{
-		"continue", "try again", "retry", "do it", "go on", "proceed",
-		"ok", "yes", "yep", "sure", "no", "hi", "", "  ok  ", "OK!", "Continue.",
+// The continuation battery from CP-37 Test E4: only explicit continuations inherit
+// the running feature. Greetings, acknowledgements, and any other short or
+// substantive prompt do NOT — they drop prior context.
+func TestIsContinuationPrompt(t *testing.T) {
+	continuations := []string{
+		"continue", "try again", "retry", "do it", "do it again", "go on",
+		"go ahead", "keep going", "proceed", "resume", "next", "more", "redo",
+		"Continue.", "  retry  ", "TRY AGAIN",
 	}
-	for _, p := range low {
-		if !isLowSignalPrompt(p) {
-			t.Errorf("isLowSignalPrompt(%q) = false, want true (low-signal → inherit)", p)
+	for _, p := range continuations {
+		if !isContinuationPrompt(p) {
+			t.Errorf("isContinuationPrompt(%q) = false, want true (continuation → inherit)", p)
 		}
 	}
-	high := []string{
-		"write a haiku about the sea",
-		"tell me a joke about cats",
+	notContinuations := []string{
+		"ok", "okay", "yes", "yep", "no", "sure", // acknowledgements — do NOT inherit
+		"hi", "hello", "hey", "thanks", "", // greetings / empty — do NOT inherit
+		"write a haiku about the sea", // substantive off-topic
 		"add a safe arithmetic divide to calc-core",
-		"now add number formatting helpers",
 	}
-	for _, p := range high {
-		if isLowSignalPrompt(p) {
-			t.Errorf("isLowSignalPrompt(%q) = true, want false (substantive → resolve/drop)", p)
+	for _, p := range notContinuations {
+		if isContinuationPrompt(p) {
+			t.Errorf("isContinuationPrompt(%q) = true, want false (non-continuation → drop)", p)
 		}
 	}
 }

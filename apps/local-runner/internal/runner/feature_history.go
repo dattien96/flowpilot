@@ -56,11 +56,10 @@ func composeFeatureBlocks(dotFlowpilotDir string, featureKey string) string {
 
 // resolveInjectionFeature decides which feature's history to inject for the
 // current prompt. The current prompt's own resolution always wins. When it does
-// not resolve, the conversation's established feature is inherited ONLY if the
-// current prompt is low-signal (a "continue"/"try again" continuation). A
-// substantive but unrelated prompt (e.g. "write a haiku about the sea") resolves
-// to nothing on its own and is NOT low-signal, so no stale prior context is
-// carried forward — the block is simply omitted.
+// not resolve, the conversation's established feature is inherited ONLY for an
+// explicit continuation ("continue"/"try again"). Everything else that fails to
+// resolve — a greeting ("hi"), an acknowledgement ("ok"/"no"), or a substantive
+// off-topic prompt ("write a haiku about the sea") — injects nothing.
 func resolveInjectionFeature(prompt string, priorTurns []transcriptTurn, catalog *featurecatalog.Catalog) (featurecatalog.Candidate, bool) {
 	// A system prompt (gate reprompt or cross-provider handoff envelope) resolves on
 	// its own process text — it names feature keys, writes change-audit files, and
@@ -71,13 +70,12 @@ func resolveInjectionFeature(prompt string, priorTurns []transcriptTurn, catalog
 		return resolveTurnsFeature(priorTurns, catalog)
 	}
 	// Otherwise the current prompt's own resolution wins (even when short, e.g. a
-	// prompt that names a feature). Only when it fails to resolve does a low-signal
-	// continuation ("continue"/"try again") inherit; a substantive but unrelated
-	// prompt resolves to nothing and drops the prior context.
+	// prompt that names a feature). Only an explicit continuation inherits when it
+	// fails to resolve; anything else drops the prior context.
 	if top, ok := resolveOnePrompt(prompt, catalog); ok {
 		return top, true
 	}
-	if isLowSignalPrompt(prompt) {
+	if isContinuationPrompt(prompt) {
 		return resolveTurnsFeature(priorTurns, catalog)
 	}
 	return featurecatalog.Candidate{}, false
@@ -95,8 +93,8 @@ func resolveOnePrompt(prompt string, catalog *featurecatalog.Catalog) (featureca
 
 // resolveTurnsFeature finds the conversation's feature by scanning user prompts
 // newest → oldest and returning the first that resolves at or above the
-// confidence threshold. Used to inherit the established feature for a low-signal
-// latest prompt (injection), and to pick a run's feature for recording/handoff.
+// confidence threshold. Used to inherit the established feature for a continuation
+// prompt (injection), and to pick a run's feature for recording/handoff.
 func resolveTurnsFeature(turns []transcriptTurn, catalog *featurecatalog.Catalog) (featurecatalog.Candidate, bool) {
 	for i := len(turns) - 1; i >= 0; i-- {
 		user := strings.TrimSpace(turns[i].User)
@@ -132,38 +130,39 @@ func isSystemPrompt(prompt string) bool {
 	return isGateReprompt(prompt) || isHandoffPrompt(prompt)
 }
 
-// lowSignalPhrases are short continuations / acknowledgements that carry no topic
-// of their own; they inherit the conversation's established feature rather than
-// dropping its context.
-var lowSignalPhrases = map[string]struct{}{
+// continuationPhrases are explicit "keep going" instructions that carry no topic
+// of their own and so inherit the conversation's established feature. This set is
+// deliberately narrow: greetings ("hi"), acknowledgements ("ok"/"yes"/"no"), and
+// any other short prompt are NOT continuations — they do not inherit. (A prompt
+// that names a feature resolves on its own; everything else drops prior context.)
+var continuationPhrases = map[string]struct{}{
 	"continue": {}, "continue please": {}, "please continue": {}, "go on": {},
 	"go ahead": {}, "keep going": {}, "carry on": {}, "resume": {}, "proceed": {},
 	"next": {}, "next step": {}, "more": {}, "go": {}, "and": {}, "then": {},
 	"try again": {}, "retry": {}, "again": {}, "redo": {}, "do it": {},
-	"do it again": {}, "fix it": {}, "yes": {}, "yep": {}, "yeah": {}, "ok": {},
-	"okay": {}, "k": {}, "sure": {},
+	"do it again": {}, "fix it": {},
 }
 
-// isLowSignalPrompt reports whether a prompt is a short continuation that carries
-// no new topic of its own. Such a prompt inherits the conversation's established
-// feature; a longer, substantive prompt that simply fails to resolve does not —
-// its prior context is dropped rather than wrongly carried forward.
-func isLowSignalPrompt(prompt string) bool {
+// isContinuationPrompt reports whether a prompt is an explicit continuation
+// ("continue"/"try again"/"do it"…). Only a continuation inherits the
+// conversation's established feature; greetings, acknowledgements, and any
+// substantive-but-unresolved prompt do not — their prior context is dropped rather
+// than wrongly carried forward.
+func isContinuationPrompt(prompt string) bool {
 	p := strings.ToLower(strings.TrimSpace(prompt))
 	p = strings.Trim(p, " \t\r\n.!?,;:")
 	if p == "" {
-		return true
+		return false
 	}
-	if _, ok := lowSignalPhrases[p]; ok {
-		return true
-	}
-	return len(strings.Fields(p)) <= 3
+	_, ok := continuationPhrases[p]
+	return ok
 }
 
 // bucketTurnsByFeature groups turns by the feature each belongs to. A turn whose
-// own prompt resolves sets the running feature; low-signal turns ("continue")
-// attach to the running feature. This lets a chat that spans two features
-// produce one summary per feature from only that feature's turns (no mixing).
+// own prompt resolves sets the running feature; an explicit continuation
+// ("continue") attaches to the running feature. This lets a chat that spans two
+// features produce one summary per feature from only that feature's turns (no
+// mixing).
 func bucketTurnsByFeature(turns []transcriptTurn, catalog *featurecatalog.Catalog) map[string][]transcriptTurn {
 	buckets := make(map[string][]transcriptTurn)
 	current := ""
@@ -175,10 +174,10 @@ func bucketTurnsByFeature(turns []transcriptTurn, catalog *featurecatalog.Catalo
 				// (which would resolve to whatever feature key it names).
 			} else if top, ok := resolveOnePrompt(user, catalog); ok {
 				current = top.Key
-			} else if !isLowSignalPrompt(user) {
-				// Substantive but unrelated turn: it neither starts a feature nor
-				// attaches to the running one, so its content can't leak into a
-				// feature's summary.
+			} else if !isContinuationPrompt(user) {
+				// Not a continuation (greeting, acknowledgement, or substantive
+				// off-topic): it neither starts a feature nor attaches to the running
+				// one, so its content can't leak into a feature's summary.
 				continue
 			}
 		}
