@@ -154,7 +154,7 @@ These cover the sweep cases (`V-157-08`, `V-161-09`, `V-078-07`, `V-162-06`) and
 
 ### 7.3 Manual E2E walkthrough (Tests A–G)
 
-#### Test A — Feature-history + CA "why" injection (Task-157)
+#### Test A - (Passed) — Feature-history + CA "why" injection (Task-157)
 
 **Do:** in a new Normal chat, send: `What would it take to add a safe arithmetic divide operation to calc-core?`
 
@@ -164,7 +164,7 @@ These cover the sweep cases (`V-157-08`, `V-161-09`, `V-078-07`, `V-162-06`) and
 
 *Covers: `V-157-01` (happy path), `V-157-06` (Tier-2 excerpt), `V-157-02` (safe fallback / no-resolve).*
 
-#### Test B — Feature-key gate reprompt (Task-157)
+#### Test B- (Passed) — Feature-key gate reprompt (Task-157)
 
 **Do:** ask the chat to make a small change and commit it with a **bad** key:
 > `Add an Abs(a int) int helper to calc.go and commit it with exactly the message "[Feature][calculator][logic] add abs".` (`calculator` is not registered.)
@@ -177,16 +177,20 @@ These cover the sweep cases (`V-157-08`, `V-161-09`, `V-078-07`, `V-162-06`) and
 
 *Covers: `V-157-05` (gate reprompt), `V-157-04` (path-anchored SuggestKey), `V-157-03` (key validation); gate-reprompt context inheritance unit-covered by `TestResolveInjectionFeatureGateRepromptInheritsEstablishedFeature` / `TestBucketTurnsByFeatureGateRepromptInheritsFeature`.*
 
-#### Test C — Prior-discussion injection + rolling summary + sync (Task-161)
+#### Test C- (Passed) — Prior-discussion injection + rolling summary + sync (Task-161)
 
 **C1 — discussion injected.** New Normal chat: `Picking the calc-core arithmetic divide back up — where did we land on error handling?`
 → the assistant reflects the **seeded discussion** (integer semantics, float division rejected, divide-by-zero returns 0, open `DivideChecked` question). Confirm a `## Prior discussion on "calc-core"` block in `last-prompt.txt`.
 
-**C2 — rolling summary recorded.** Have a 1–2 turn exchange about calc-core, then let the chat go idle. Inspect `.flowpilot/ledger/chat_summary.ndjson` → a row for `calc-core` with a fresh `run_id`, `state_key`, increasing `created_at`. Re-opening with no new turn must **not** duplicate it (state-key cache). *(See Test F for the trigger that produces this.)*
+**C2 — rolling summary recorded.** Have a 1–2 turn exchange about calc-core, then let the chat go idle. Inspect `.flowpilot/ledger/chat_summary.ndjson` → a row for `calc-core` with a fresh `run_id`, `state_key`, increasing `created_at`. Re-opening with no new turn must **not** duplicate it (state-key cache). *(See Test F for the trigger that produces this.)* -> OK, for each run -> only latest turn was overrided and keep
 
-**C3 — Drive sync (optional).** With Google Drive chat sync connected: Drive `context-engine/` contains `chat_summary.ndjson` beside `feature_history.ndjson`/`features.ndjson`, and `.flowpilot/manifest.json` lists `ledger/chat_summary.ndjson`. With Drive disconnected: the local row still appears, the turn shows no error (sync "skipped", not "failed").
+Let say in run-5308 (1 chat) you can chat many turns, only the latest turn keep for this run
 
-*Covers: `V-161-02` (discussion injection), `V-161-01/03` (append + unknown suppression), `V-161-06/07/08` (sync + degrade); summarizer-failure degrade `V-161-04` and reuse `V-161-05` are unit-level.*
+**C3 — Drive sync up (optional).** With Google Drive chat sync connected: Drive `context-engine/` contains `chat_summary.ndjson` beside `feature_history.ndjson`/`features.ndjson`, and `.flowpilot/manifest.json` lists `ledger/chat_summary.ndjson`. Upload fires on **engine init** and after **every** chat-summary write (full-file replace, best-effort). With Drive disconnected: the local row still appears, the turn shows no error (sync "skipped", not "failed").
+
+**C4 — Drive sync down on a new machine.** On a *fresh* PC (or after deleting `.flowpilot/ledger/chat_summary.ndjson`): bind the same Drive-connected project. Engine init **rebuilds `feature_history.ndjson` + `features.ndjson` from git locally** (no download needed — they are derived artifacts), and the new `chat_summary_restore` init step **pulls `context-engine/chat_summary.ndjson` from Drive** and merges it. Confirm the engine-init step list shows `chat_summary_restore: restored N chat-summary entries from drive`, and a `## Prior discussion` block injects on the next calc-core turn without re-running any chats. The merge is **additive** — only `(run_id, feature_key)` pairs missing locally are imported, so it never clobbers a newer local summary, and re-binding imports nothing the second time (idempotent). With Drive disconnected the step reports "drive not connected; chat summaries left as-is" (non-fatal).
+
+*Covers: `V-161-02` (discussion injection), `V-161-01/03` (append + unknown suppression), `V-161-06/07/08` (sync up + degrade), `V-161-17` (sync down / cross-PC restore); summarizer-failure degrade `V-161-04` and reuse `V-161-05` are unit-level.*
 
 #### Test D — Cross-provider handoff: raw floor + summary hybrid (Task-078 · Task-162)
 
@@ -356,6 +360,11 @@ The detailed Setup / Run / Verify for every formal case. Each case carries a **�
   Setup: a persisted chat with no `chat_summary` entry (or a stale hash) and the runner stopped.
   Run: start the runner (`serve`).
   Verify: the one-shot background scan generates the missing/stale summary for that chat without a user action; chats whose stored hash already matches are left untouched (no redundant model call); live in-memory runs are skipped (owned by their idle timer/button).
+
+- `V-161-17` **Drive sync-down on bind (cross-PC restore)** *(→ Test C4)*
+  Setup: a Drive-connected project whose `context-engine/chat_summary.ndjson` holds summaries; locally delete `.flowpilot/ledger/chat_summary.ndjson` (simulating a fresh machine).
+  Run: bind the project (engine init runs the `chat_summary_restore` step).
+  Verify: the local ledger is repopulated from Drive (`feature_history.ndjson`/`features.ndjson` instead rebuild from git, not from Drive); the merge is additive — only `(run_id, feature_key)` pairs not already present locally are imported, so a newer local summary is never clobbered and a second bind imports nothing (idempotent); Drive absent → the step is a non-fatal "skipped". (Unit: `TestMergeChatSummaryNDJSONAdditive`.)
 
 #### 7.4.3 Task-078 (cross-provider raw handoff)
 

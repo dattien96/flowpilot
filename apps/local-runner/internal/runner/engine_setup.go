@@ -331,6 +331,12 @@ func (s *InteractiveService) runEngineInit(
 	hookErr := changeledger.InstallPostCommitHook(workingDirectory)
 	steps = append(steps, buildEngineStep("hook_install", hookErr, filepath.Join(workingDirectory, ".git", "hooks", "post-commit")))
 
+	// CP-37: pull the chat-summary timeline from Drive before uploading, so a fresh
+	// machine recovers prior-discussion continuity (commit/feature history rebuilds
+	// from git above; chat summaries can only come from Drive). Additive merge.
+	restoreErr, restoreDetail := s.restoreChatSummaryFromDrive(projectID, dotFlowpilotDir)
+	steps = append(steps, buildEngineStep("chat_summary_restore", restoreErr, restoreDetail))
+
 	// P-8 (CP-35): create EngineStore subdirs, write local manifest, sync shared
 	// files to the project's Drive `context-engine/` folder (best-effort).
 	syncErr, syncDetail := s.syncContextEngineFiles(projectID, dotFlowpilotDir)
