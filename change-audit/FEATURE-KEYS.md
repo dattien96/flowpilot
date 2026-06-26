@@ -30,3 +30,4 @@ Source of truth for stable `feature_key` values used by:
 - terminal-session — terminal/process lifecycle, dev-stack controls, thinking-stream rendering
 - context-regression-engine — SD-17 context + regression engine (Plane C): gate, resolver, requirements scaffold, flow rules
 - cross-provider-handoff — cross-provider chat handoff: provider-neutral transcript transfer + summary-based hybrid
+- token-usage
