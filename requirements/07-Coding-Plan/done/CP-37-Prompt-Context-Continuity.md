@@ -266,10 +266,34 @@ Let say in run-5308 (1 chat) you can chat many turns, only the latest turn keep 
 
 #### Test G — No cross-feature mixing (Task-163)
 
-In **one** chat, discuss `calc-core` for a couple of turns, then pivot to `calc-format`. Trigger a summary (idle or the button) and inspect `chat_summary.ndjson`.
-→ the `calc-format` row summarizes only the format discussion (no divide/zero-guard leakage); the `calc-core` row only the arithmetic discussion. Each feature's summary is built from its own turns.
+The point: when **one** chat spans two features, each feature's summary is built **only** from that feature's own turns — no leakage.
 
-*Covers: `V-161-14` (per-feature bucketing).*
+> **Know this before you start (how triggers populate rows).** A single summary trigger records **one** row — for the chat's *current* feature only (`runChatSummaryJob` resolves the latest feature, then summarizes just that feature's bucketed turns and upserts one row per `(run, feature)`). So to end up with **both** a `calc-core` and a `calc-format` row for the same run, you must trigger **once per phase** (or let the idle timer fire in each phase). Triggering only once at the very end yields just the `calc-format` row — that alone still proves no-mixing for that row, but you won't see the calc-core row unless you triggered during the calc-core phase.
+
+**G1 — two features → two clean rows.**
+**Do:**
+1. New Normal chat. Phase A (`calc-core`): send `improve the calc-core arithmetic divide` and one follow-up. Then press **Gen summary** (or let the idle timer fire).
+2. Phase B (`calc-format`): in the **same** chat send `now add number formatting helpers (Sign/Clamp) to calc-format` and one follow-up. Press **Gen summary** again.
+3. Inspect `.flowpilot/ledger/chat_summary.ndjson`, filtering to this chat's `run_id`.
+
+**Expect:**
+- Exactly **two** rows for this `run_id` — one `"feature_key":"calc-core"`, one `"feature_key":"calc-format"` (distinct keys → the upsert keeps both; same key would overwrite).
+- The **`calc-core`** row's `summary` mentions only divide / zero-guard / arithmetic — **no** Sign/Clamp/number-formatting text.
+- The **`calc-format`** row's `summary` mentions only Sign / Clamp / number-formatting — **no** divide/zero-guard text.
+
+**G2 — interleaved low-signal / off-topic turns don't pollute a bucket.**
+**Do:** during Phase A, between two `calc-core` turns, insert (a) a low-signal turn `continue` and (b) a substantive off-topic turn `write a haiku about the sea`; then trigger the summary.
+
+**Expect (bucketing rule):**
+| Interleaved turn | Bucketed to | Effect on summaries |
+|------------------|-------------|---------------------|
+| `continue` (low-signal) | the running feature (`calc-core`) | folds into calc-core; harmless |
+| a gate reprompt (if one fires) | the running feature (`calc-core`) | folds into calc-core; never opens its own row |
+| `write a haiku about the sea` (substantive, unrelated) | **dropped** — no bucket | no sea/haiku text in **either** the calc-core or calc-format summary |
+
+So the calc-core summary stays about arithmetic/divide even with the detour turns mixed into the live chat.
+
+*Covers: `V-161-14` (per-feature bucketing). Units: `TestBucketTurnsByFeatureSeparatesFeatures` (split), `TestBucketTurnsByFeatureDropsUnrelatedTurn` (off-topic dropped), `TestBucketTurnsByFeatureGateRepromptInheritsFeature` (reprompt folds into running feature).*
 
 ### 7.4 Full validation matrix (`V-###`)
 
