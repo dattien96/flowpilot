@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Project, ProjectWorkspaceBinding } from "@flowpilot/client-core";
 import { getAdminUseCases } from "@/clientCore";
+import { LIBRETRANSLATE_URL } from "@/config";
 import { formatTimestamp, toErrorMessage } from "@/components/settings/settingsHelpers";
 import {
   engineTone,
@@ -36,6 +37,7 @@ function selectedProjectEntry(
 }
 
 export function EngineSettings(): React.ReactElement {
+  const libreTranslatePort = LIBRETRANSLATE_URL.split(":").at(-1) ?? "5001";
   const [loading, setLoading] = useState(true);
   const [toolingBusy, setToolingBusy] = useState(false);
   const [projectBusyAction, setProjectBusyAction] = useState<"refresh" | "init" | null>(null);
@@ -265,7 +267,7 @@ export function EngineSettings(): React.ReactElement {
             <h3>Translation Engine (LibreTranslate)</h3>
             <p>
               Free self-hosted translation — no API key, no credit card. Runs on{" "}
-              <code>http://localhost:5000</code> after install.
+              <code>{LIBRETRANSLATE_URL}</code> after install.
             </p>
           </div>
         </div>
@@ -314,7 +316,7 @@ export function EngineSettings(): React.ReactElement {
         {libreInstallResult && !libreInstallBusy && (
           <div className={`settings-feedback ${libreInstallResult.success ? "" : "error"}`}>
             {libreInstallResult.success
-              ? "LibreTranslate installed. Start it with: libretranslate --load-only en,vi"
+              ? `LibreTranslate installed. Start it with: libretranslate --load-only en,vi --port ${libreTranslatePort}`
               : (libreInstallResult.error ?? "Install failed.")}
           </div>
         )}
@@ -322,7 +324,7 @@ export function EngineSettings(): React.ReactElement {
         <div className="settings-note" style={{ marginTop: 10, fontSize: 12, color: "var(--text-dim)", lineHeight: 1.5 }}>
           After installing, start the server with:{" "}
           <code style={{ background: "var(--bg-3)", padding: "1px 5px", borderRadius: 4 }}>
-            libretranslate --load-only en,vi
+            {`libretranslate --load-only en,vi --port ${libreTranslatePort}`}
           </code>
           <br />
           Downloads ~400 MB of language models on first run.

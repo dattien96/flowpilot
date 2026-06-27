@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  getLocalRunnerBaseUrl,
   getSupabaseAnonKey,
   getSupabaseEdgeFunctionUrl,
   getSupabaseUrl,
@@ -19,6 +20,8 @@ function resetEnv(values: Partial<NodeJS.ProcessEnv> = {}) {
     "SUPABASE_API_URL",
     "SUPABASE_API_KEY",
     "SUPABASE_API_EDGE_FUNCTION_URL",
+    "FLOWPILOT_RUNNER_URL",
+    "FLOWPILOT_RUNNER_PORT",
   ]) {
     if (!(key in values)) {
       delete process.env[key];
@@ -28,6 +31,16 @@ function resetEnv(values: Partial<NodeJS.ProcessEnv> = {}) {
 
 afterEach(() => {
   process.env = originalEnv;
+});
+
+describe("getLocalRunnerBaseUrl", () => {
+  it("derives the runner URL from FLOWPILOT_RUNNER_PORT", () => {
+    resetEnv({
+      FLOWPILOT_RUNNER_PORT: "4318",
+    });
+
+    expect(getLocalRunnerBaseUrl()).toBe("http://127.0.0.1:4318");
+  });
 });
 
 describe("hasSupabaseEnv", () => {

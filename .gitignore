@@ -27,6 +27,7 @@ yarn-error.log*
 # local env files
 .env*.local
 .env
+.env.dev
 
 # vercel
 .vercel
@@ -37,6 +38,7 @@ next-env.d.ts
 
 .flowpilot
 .gitnexus
+.linked-worktrees/
 
 # AI Rules
 .agents/
@@ -45,6 +47,8 @@ next-env.d.ts
 core-ai-rules/
 .cursorrules
 .qwen/
+/AGENTS.md
+/CLAUDE.md
 implementation_plan.md
 flow_variant_Confirm.md
 task.md

@@ -3,21 +3,66 @@ const fs = require('fs');
 const path = require('path');
 const net = require('net');
 const http = require('http');
+const os = require('os');
+
+const defaultRootDir = path.resolve(__dirname, '..');
+let rootDir = defaultRootDir;
+
+function parseDotenvValue(rawValue) {
+  let value = rawValue.trim();
+  const quote = value[0];
+  if ((quote === '"' || quote === "'") && value[value.length - 1] === quote) {
+    value = value.slice(1, -1);
+    if (quote === '"') {
+      value = value.replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t');
+    }
+    return value;
+  }
+  return value.replace(/\s+#.*$/, '').trim();
+}
+
+function loadEnvFile(envFile) {
+  if (!envFile) return;
+  const envPath = path.resolve(rootDir, envFile);
+  if (!fs.existsSync(envPath)) {
+    console.warn(`[Supervisor] Env file ${path.relative(rootDir, envPath)} not found; using shell env/defaults.`);
+    return;
+  }
+  const content = fs.readFileSync(envPath, 'utf8');
+  for (const line of content.split(/\r?\n/)) {
+    const match = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)?\s*$/);
+    if (!match) continue;
+    const [, key, rawValue = ''] = match;
+    process.env[key] = parseDotenvValue(rawValue);
+  }
+}
 
 // Parse arguments
-let webPort = '3002';
-let runnerPort = '4317';
+let webPort = '';
+let runnerPort = '';
+let desktopPort = '';
 let restartExisting = false;
 let withDesktop = false;
 let withWeb = true;
+let envFile = '';
+let rootDirArg = '';
 let desktopPath = 'apps/desktop-flowpilot';
 const args = process.argv.slice(2);
 for (let i = 0; i < args.length; i++) {
-  if (args[i] === '--web-port' && args[i + 1]) {
+  if (args[i] === '--root-dir' && args[i + 1]) {
+    rootDirArg = args[i + 1];
+    i++;
+  } else if (args[i] === '--env-file' && args[i + 1]) {
+    envFile = args[i + 1];
+    i++;
+  } else if (args[i] === '--web-port' && args[i + 1]) {
     webPort = args[i + 1];
     i++;
   } else if (args[i] === '--runner-port' && args[i + 1]) {
     runnerPort = args[i + 1];
+    i++;
+  } else if (args[i] === '--desktop-port' && args[i + 1]) {
+    desktopPort = args[i + 1];
     i++;
   } else if (args[i] === '--restart-existing') {
     restartExisting = true;
@@ -31,10 +76,25 @@ for (let i = 0; i < args.length; i++) {
   }
 }
 
-const rootDir = path.resolve(__dirname, '..');
+if (rootDirArg) {
+  rootDir = path.resolve(rootDirArg);
+}
+
+loadEnvFile(envFile);
+webPort = webPort || process.env.FLOWPILOT_ADMIN_WEB_PORT || '3002';
+runnerPort = runnerPort || process.env.FLOWPILOT_RUNNER_PORT || '4317';
+desktopPort = desktopPort || process.env.FLOWPILOT_DESKTOP_PORT || '';
+
 const flowpilotDir = path.join(rootDir, '.flowpilot');
 const metadataPath = path.join(flowpilotDir, 'supervisor.json');
 const controlPath = path.join(flowpilotDir, 'supervisor.cmd');
+const runnerUrl = process.env.FLOWPILOT_RUNNER_URL || `http://127.0.0.1:${runnerPort}`;
+const adminWebUrl = process.env.VITE_ADMIN_WEB_URL || `http://localhost:${webPort}`;
+const googleDriveRedirectUri =
+  process.env.GOOGLE_DRIVE_REDIRECT_URI ||
+  `${runnerUrl.replace(/\/+$/, '')}/artifact-storage/google-drive/oauth/callback`;
+const goCacheDir = process.env.GOCACHE || path.join(os.tmpdir(), 'flowpilot-go-cache');
+const librePort = process.env.FLOWPILOT_LIBRETRANSLATE_PORT || '5001';
 
 let webProcess = null;
 let runnerProcess = null;
@@ -157,13 +217,69 @@ function sleep(ms) {
 }
 
 function isLibreTranslateInstalled() {
+  return resolveLibreTranslateCommand() !== null;
+}
+
+function resolveLibreTranslateCommand() {
   try {
     const cmd = process.platform === 'win32' ? 'where libretranslate' : 'which libretranslate';
     execSync(cmd, { stdio: 'ignore' });
-    return true;
-  } catch (e) {
-    return false;
+    return { command: 'libretranslate', args: [] };
+  } catch (e) {}
+
+  const homeCandidates = [];
+  if (process.env.HOME) {
+    homeCandidates.push(process.env.HOME);
   }
+  if (process.env.USERPROFILE && !homeCandidates.includes(process.env.USERPROFILE)) {
+    homeCandidates.push(process.env.USERPROFILE);
+  }
+  if (process.env.USER) {
+    const userHome = path.join('/Users', process.env.USER);
+    if (!homeCandidates.includes(userHome)) {
+      homeCandidates.push(userHome);
+    }
+  }
+
+  for (const home of homeCandidates) {
+    const pythonRoot = path.join(home, 'Library', 'Python');
+    try {
+      const versionDirs = fs
+        .readdirSync(pythonRoot, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .sort()
+        .reverse();
+      for (const version of versionDirs) {
+        const candidate = path.join(pythonRoot, version, 'bin', 'libretranslate');
+        if (fs.existsSync(candidate)) {
+          return { command: candidate, args: [] };
+        }
+      }
+    } catch (scanErr) {}
+
+    const localBinCandidate = path.join(home, '.local', 'bin', 'libretranslate');
+    if (fs.existsSync(localBinCandidate)) {
+      return { command: localBinCandidate, args: [] };
+    }
+  }
+
+  for (const pair of [
+    { pip: 'pip', python: 'python' },
+    { pip: 'pip3', python: 'python3' },
+  ]) {
+    try {
+      const output = execSync(`${pair.pip} show libretranslate`, {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      if (output.includes('Name: libretranslate')) {
+        return { command: pair.python, args: ['-m', 'libretranslate'] };
+      }
+    } catch (pipErr) {}
+  }
+
+  return null;
 }
 
 async function stopManagedProcess(child, label) {
@@ -312,6 +428,15 @@ async function startServicesFresh(existing = {}) {
         shell: true,
         stdio: 'inherit',
         detached: process.platform !== 'win32',
+        env: {
+          ...process.env,
+          FLOWPILOT_ADMIN_WEB_PORT: webPort,
+          FLOWPILOT_RUNNER_PORT: runnerPort,
+          FLOWPILOT_RUNNER_URL: runnerUrl,
+          VITE_LOCAL_RUNNER_URL: process.env.VITE_LOCAL_RUNNER_URL || runnerUrl,
+          VITE_ADMIN_WEB_URL: adminWebUrl,
+          GOOGLE_DRIVE_REDIRECT_URI: googleDriveRedirectUri,
+        },
       });
       webProcess.detached = process.platform !== 'win32';
 
@@ -334,6 +459,10 @@ async function startServicesFresh(existing = {}) {
     );
     const runnerEnv = {
       ...process.env,
+      GOCACHE: goCacheDir,
+      FLOWPILOT_RUNNER_PORT: runnerPort,
+      FLOWPILOT_RUNNER_URL: runnerUrl,
+      GOOGLE_DRIVE_REDIRECT_URI: googleDriveRedirectUri,
       FLOWPILOT_CODEX_APPSERVER: hasCodexAppServerFlag
         ? process.env.FLOWPILOT_CODEX_APPSERVER
         : '1',
@@ -366,15 +495,28 @@ async function startServicesFresh(existing = {}) {
     // Point the desktop at the runner we just (re)started so it uses the real
     // HttpWsRunnerClient instead of the offline mock. An explicit VITE_RUNNER_URL in
     // the environment still wins (e.g. to target a remote runner).
-    const desktopRunnerUrl = process.env.VITE_RUNNER_URL || `http://127.0.0.1:${runnerPort}`;
+    const desktopRunnerUrl = process.env.VITE_RUNNER_URL || runnerUrl;
     console.log(`[Supervisor] Starting desktop app (Electron + Vite) → runner ${desktopRunnerUrl}...`);
     const desktopCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-    desktopProcess = spawn(desktopCmd, ['run', 'dev'], {
+    const desktopArgs = ['run', 'dev'];
+    if (desktopPort) {
+      desktopArgs.push('--', '--port', desktopPort, '--strictPort', '--host', '127.0.0.1');
+    }
+    desktopProcess = spawn(desktopCmd, desktopArgs, {
       cwd: path.join(rootDir, desktopPath),
       shell: true,
       stdio: 'inherit',
       detached: process.platform !== 'win32',
-      env: { ...process.env, VITE_RUNNER_URL: desktopRunnerUrl },
+      env: {
+        ...process.env,
+        FLOWPILOT_ADMIN_WEB_PORT: webPort,
+        FLOWPILOT_RUNNER_PORT: runnerPort,
+        FLOWPILOT_RUNNER_URL: runnerUrl,
+        VITE_RUNNER_URL: desktopRunnerUrl,
+        VITE_LOCAL_RUNNER_URL: process.env.VITE_LOCAL_RUNNER_URL || runnerUrl,
+        VITE_ADMIN_WEB_URL: adminWebUrl,
+        GOOGLE_DRIVE_REDIRECT_URI: googleDriveRedirectUri,
+      },
     });
     desktopProcess.detached = process.platform !== 'win32';
     attachDesktopExitHandler(desktopProcess);
@@ -382,23 +524,31 @@ async function startServicesFresh(existing = {}) {
 
   // Spawn LibreTranslate if installed (optional — exit does not bring down the stack)
   if (isLibreTranslateInstalled()) {
-    const librePort = 5000;
     const libreInUse = await isPortInUse(librePort);
     if (libreInUse) {
       console.log(`[Supervisor] LibreTranslate already running on port ${librePort}, skipping start.`);
     } else {
+      const libreCommand = resolveLibreTranslateCommand();
+      if (!libreCommand) {
+        console.log('[Supervisor] LibreTranslate package detected but no runnable command was resolved. Skipping translation service.');
+      } else {
       console.log(`[Supervisor] Starting LibreTranslate on port ${librePort} (en + vi only)...`);
-      libreProcess = spawn('libretranslate', ['--load-only', 'en,vi', '--port', String(librePort)], {
-        shell: true,
-        stdio: 'inherit',
-        detached: process.platform !== 'win32',
-      });
-      libreProcess.detached = process.platform !== 'win32';
-      libreProcess.on('exit', (code) => {
-        if (!isExiting && !isRestarting) {
-          console.log(`[Supervisor] LibreTranslate exited with code ${code}. Web + runner keep running.`);
-        }
-      });
+      libreProcess = spawn(
+        libreCommand.command,
+        [...libreCommand.args, '--load-only', 'en,vi', '--port', String(librePort)],
+        {
+          shell: true,
+          stdio: 'inherit',
+          detached: process.platform !== 'win32',
+        },
+      );
+        libreProcess.detached = process.platform !== 'win32';
+        libreProcess.on('exit', (code) => {
+          if (!isExiting && !isRestarting) {
+            console.log(`[Supervisor] LibreTranslate exited with code ${code}. Web + runner keep running.`);
+          }
+        });
+      }
     }
   } else {
     console.log('[Supervisor] LibreTranslate not installed, skipping translation service. (Install via Engine Settings)');
@@ -412,6 +562,11 @@ async function startServicesFresh(existing = {}) {
     desktopPid: desktopProcess ? desktopProcess.pid : null,
     librePid: libreProcess ? libreProcess.pid : null,
     controlPath: controlPath,
+    webPort: parseInt(webPort, 10),
+    runnerPort: parseInt(runnerPort, 10),
+    desktopPort: desktopPort ? parseInt(desktopPort, 10) : null,
+    runnerUrl,
+    adminWebUrl,
   };
   fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2));
 }

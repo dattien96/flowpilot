@@ -1,6 +1,13 @@
 type EnvSource = Record<string, string | undefined>;
+type EnvGlobal = typeof globalThis & {
+  __FLOWPILOT_VITE_ENV__?: EnvSource;
+};
 
 function currentEnv(): EnvSource {
+  const candidate = globalThis as EnvGlobal;
+  if (candidate.__FLOWPILOT_VITE_ENV__) {
+    return candidate.__FLOWPILOT_VITE_ENV__;
+  }
   return (import.meta as ImportMeta & { env?: EnvSource }).env ?? {};
 }
 
@@ -34,5 +41,9 @@ export function getSupabaseEdgeFunctionUrl() {
 }
 
 export function getLocalRunnerBaseUrl() {
-  return currentEnv().VITE_LOCAL_RUNNER_URL ?? "http://127.0.0.1:4317";
+  const env = currentEnv();
+  if (env.VITE_LOCAL_RUNNER_URL) return env.VITE_LOCAL_RUNNER_URL;
+  if (env.FLOWPILOT_RUNNER_URL) return env.FLOWPILOT_RUNNER_URL;
+  if (env.FLOWPILOT_RUNNER_PORT) return `http://127.0.0.1:${env.FLOWPILOT_RUNNER_PORT}`;
+  return "http://127.0.0.1:4317";
 }
