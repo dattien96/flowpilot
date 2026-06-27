@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 
 const rootDir = path.resolve(__dirname, '..');
+const defaultProductionWorktree = '.linked-worktrees/flowpilot-main';
 
 function fail(message) {
   console.error(`[ProductionWorktree] ${message}`);
@@ -50,7 +51,7 @@ function parseWorktreeList(output) {
 }
 
 function resolvePreferredWorktree(entries, currentRoot) {
-  const configured = (process.env.FLOWPILOT_PRODUCTION_WORKTREE || '').trim();
+  const configured = (process.env.FLOWPILOT_PRODUCTION_WORKTREE || defaultProductionWorktree).trim();
   if (configured) {
     const targetPath = path.resolve(rootDir, configured);
     const matching = entries.find((entry) => path.resolve(entry.path) === targetPath);
@@ -83,6 +84,43 @@ function resolvePreferredWorktree(entries, currentRoot) {
   );
 }
 
+function ensureProductionWorktree(dryRun) {
+  const configuredPath = (process.env.FLOWPILOT_PRODUCTION_WORKTREE || defaultProductionWorktree).trim();
+  const worktreePath = path.resolve(rootDir, configuredPath);
+  const args = [
+    'scripts/self-worktree.js',
+    '--detach-at-ref',
+    'refs/heads/main',
+    '--sync-ref',
+    'refs/heads/main',
+    '--path',
+    configuredPath,
+    '--env-file',
+    '.env',
+    '--template',
+    '.env.example',
+  ];
+
+  if (dryRun) {
+    args.push('--dry-run');
+  }
+
+  const result = spawnSync('node', args, {
+    cwd: rootDir,
+    encoding: 'utf8',
+  });
+  if (result.status !== 0) {
+    fail((result.stderr || result.stdout || 'Failed to prepare production worktree').trim());
+  }
+
+  const lines = (result.stdout || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const reportedPath = lines[lines.length - 1];
+  return reportedPath || worktreePath;
+}
+
 function main() {
   let dryRun = false;
   const forwardedArgs = [];
@@ -95,6 +133,7 @@ function main() {
   }
 
   const currentRoot = getCurrentWorktreeRoot();
+  const preparedPath = ensureProductionWorktree(dryRun);
   const entries = parseWorktreeList(runGit(['worktree', 'list', '--porcelain']));
   const target = resolvePreferredWorktree(entries, currentRoot);
   const supervisorPath = path.join(rootDir, 'scripts', 'supervisor.js');
@@ -105,6 +144,9 @@ function main() {
   const args = ['scripts/supervisor.js', '--root-dir', target.path, '--env-file', '.env', ...forwardedArgs];
   console.log(`[ProductionWorktree] Using ${target.path}${target.branch ? ` (${target.branch})` : ''}`);
   if (dryRun) {
+    if (path.resolve(target.path) !== path.resolve(preparedPath)) {
+      console.log(`[ProductionWorktree] prepared ${preparedPath}`);
+    }
     console.log(`[ProductionWorktree] node ${args.join(' ')}`);
     return;
   }

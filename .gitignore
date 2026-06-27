@@ -47,6 +47,8 @@ next-env.d.ts
 core-ai-rules/
 .cursorrules
 .qwen/
+/AGENTS.md
+/CLAUDE.md
 implementation_plan.md
 flow_variant_Confirm.md
 task.md

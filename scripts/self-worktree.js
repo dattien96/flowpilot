@@ -13,6 +13,8 @@ let envFileName = '.env.dev';
 let templateName = '.env.dev.example';
 let existingBranchMode = false;
 let sourceWorktreePath = rootDir;
+let detachRef = '';
+let syncRef = '';
 
 for (let index = 0; index < args.length; index += 1) {
   const arg = args[index];
@@ -49,6 +51,16 @@ for (let index = 0; index < args.length; index += 1) {
     index += 1;
     continue;
   }
+  if (arg === '--detach-at-ref' && args[index + 1]) {
+    detachRef = args[index + 1];
+    index += 1;
+    continue;
+  }
+  if (arg === '--sync-ref' && args[index + 1]) {
+    syncRef = args[index + 1];
+    index += 1;
+    continue;
+  }
   if (arg === '--no-copy-env') {
     copyEnv = false;
     continue;
@@ -70,6 +82,17 @@ function fail(message) {
 function runGit(gitArgs) {
   const result = spawnSync('git', gitArgs, {
     cwd: rootDir,
+    encoding: 'utf8',
+  });
+  if (result.status !== 0) {
+    fail((result.stderr || result.stdout || `git ${gitArgs.join(' ')} failed`).trim());
+  }
+  return result.stdout;
+}
+
+function runGitInDirectory(cwd, gitArgs) {
+  const result = spawnSync('git', gitArgs, {
+    cwd,
     encoding: 'utf8',
   });
   if (result.status !== 0) {
@@ -118,17 +141,37 @@ function ensureWorktree() {
   }
 
   if (dryRun) {
-    console.log(
-      `[SelfWorktree] git worktree add ${targetPath}${existingBranchMode ? ` ${branchName}` : ` -b ${branchName}`}`,
-    );
+    if (detachRef) {
+      console.log(`[SelfWorktree] git worktree add --detach ${targetPath} ${detachRef}`);
+    } else {
+      console.log(
+        `[SelfWorktree] git worktree add ${targetPath}${existingBranchMode ? ` ${branchName}` : ` -b ${branchName}`}`,
+      );
+    }
     return targetPath;
   }
 
-  const gitArgs = existingBranchMode
-    ? ['worktree', 'add', targetPath, branchName]
-    : ['worktree', 'add', targetPath, '-b', branchName];
+  const gitArgs = detachRef
+    ? ['worktree', 'add', '--detach', targetPath, detachRef]
+    : existingBranchMode
+      ? ['worktree', 'add', targetPath, branchName]
+      : ['worktree', 'add', targetPath, '-b', branchName];
   runGit(gitArgs);
   return targetPath;
+}
+
+function ensureSyncedRef(worktreePath) {
+  if (!syncRef) return;
+  const resolvedRef = runGit(['rev-parse', syncRef]).trim();
+
+  if (dryRun) {
+    console.log(`[SelfWorktree] git -C ${worktreePath} checkout --detach ${resolvedRef}`);
+    console.log(`[SelfWorktree] git -C ${worktreePath} reset --hard ${resolvedRef}`);
+    return;
+  }
+
+  runGitInDirectory(worktreePath, ['checkout', '--detach', resolvedRef]);
+  runGitInDirectory(worktreePath, ['reset', '--hard', resolvedRef]);
 }
 
 function ensureEnvFile(worktreePath) {
@@ -191,6 +234,7 @@ function ensureFlowpilotState(worktreePath) {
 
 function main() {
   const worktreePath = ensureWorktree();
+  ensureSyncedRef(worktreePath);
   ensureEnvFile(worktreePath);
   ensureSharedDependencies(worktreePath);
   ensureFlowpilotState(worktreePath);

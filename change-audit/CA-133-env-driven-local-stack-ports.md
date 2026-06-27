@@ -10,8 +10,8 @@
 
 - Added `.env` loading to `Justfile` and introduced env-driven ports for admin web, runner, and desktop dev server while keeping the existing `3002`/`4317` defaults.
 - Updated `just dev`/`just dev-no-desktop`/`just desktop-dev` to run directly in the current worktree with `.env.dev`, so any feature/task branch can launch its own dev stack locally.
-- Added a `scripts/start-production-worktree.js` launcher so `just production` resolves a separate linked `main` worktree and runs the stack there with `.env`, while still using the current checkout's `supervisor.js` via `--root-dir`.
-- Added `scripts/self-worktree.js` plus a `just production-worktree` recipe to create or reuse a linked `main` worktree under `.linked-worktrees/flowpilot-main`, seed its `.env`, link shared dependency directories, and support pinning that path via `FLOWPILOT_PRODUCTION_WORKTREE`.
+- Added a `scripts/start-production-worktree.js` launcher so `just production` first prepares the dedicated production worktree, syncs its checkout to the current repo's local `main`, refreshes the copied `.flowpilot` state, and then runs the stack there with `.env`, while still using the current checkout's `supervisor.js` via `--root-dir`.
+- Added `scripts/self-worktree.js` plus a `just production-worktree` recipe to create or reuse a linked production worktree under `.linked-worktrees/flowpilot-main`, seed its `.env`, link shared dependency directories, refresh the copied `.flowpilot` state, and support pinning that path via `FLOWPILOT_PRODUCTION_WORKTREE`.
 - Kept `just self-worktree` as a generic helper for creating other linked worktrees when needed.
 - Added tracked `.env.example` and `.env.dev.example` templates while ignoring both real `.env` and `.env.dev` files.
 - Propagated the resolved runner/admin origins from `scripts/supervisor.js` into admin-web, desktop, and runner child processes.
@@ -30,7 +30,7 @@
 - `node --test .phase1-tests/tests/phase1/desktopRunnerMode.test.js` passed.
 - `node --check scripts/start-production-worktree.js` passed.
 - `node --check scripts/self-worktree.js` passed.
-- `node scripts/start-production-worktree.js --dry-run --restart-existing` resolves the linked `main` worktree and the `scripts/supervisor.js --root-dir <main-worktree> --env-file .env` command.
+- `node scripts/start-production-worktree.js --dry-run --restart-existing` prepares the linked production worktree, syncs it to local `main`, and prints the `scripts/supervisor.js --root-dir <main-worktree> --env-file .env` command.
 - `node scripts/self-worktree.js --dry-run` prints the expected `../flowpilot-dev` creation plan and `.env.dev` seed step.
 - Verified the linked `.linked-worktrees/flowpilot-main` worktree is on `main`, has working symlinks for root/admin-web/desktop `node_modules`, and both app-local `node_modules/.bin/vite` executables resolve there.
 - `git diff --check` passed.

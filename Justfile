@@ -108,7 +108,7 @@ self-worktree branch='task/flowpilot-dev' worktree_path='../flowpilot-dev':
 
 # Create or reuse the linked main-branch production worktree and print its absolute path.
 production-worktree worktree_path='.linked-worktrees/flowpilot-main':
-    @node scripts/self-worktree.js --branch main --path {{worktree_path}} --env-file .env --template .env.example --existing-branch
+    @node scripts/self-worktree.js --detach-at-ref refs/heads/main --sync-ref refs/heads/main --path {{worktree_path}} --env-file .env --template .env.example
 
 
 # Print runner health as JSON
