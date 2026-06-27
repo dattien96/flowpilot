@@ -207,11 +207,14 @@ const envDir = path.resolve(__dirname, "../..");
 
 export default defineConfig(({ mode }) => {
   Object.assign(process.env, loadEnv(mode, envDir, ""));
+  const adminWebPort = Number(process.env.FLOWPILOT_ADMIN_WEB_PORT ?? "3002");
 
   return {
     envDir,
     envPrefix: [
       "VITE_",
+      "FLOWPILOT_RUNNER_PORT",
+      "FLOWPILOT_RUNNER_URL",
       "SUPABASE_API_URL",
       "SUPABASE_API_KEY",
       "SUPABASE_API_EDGE_FUNCTION_URL",
@@ -229,7 +232,7 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       host: "0.0.0.0",
-      port: 3002,
+      port: adminWebPort,
       strictPort: true,
       watch: {
         usePolling: true,
@@ -237,7 +240,7 @@ export default defineConfig(({ mode }) => {
       },
       hmr: {
         host: "localhost",
-        clientPort: 3002,
+        clientPort: adminWebPort,
       },
     },
   };

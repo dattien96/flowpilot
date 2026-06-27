@@ -17,12 +17,16 @@ function withRunnerEnv(
   };
   const previousViteEnv = candidate.__FLOWPILOT_VITE_ENV__;
   const previousRunnerUrl = process.env.VITE_RUNNER_URL;
+  const previousLocalRunnerUrl = process.env.VITE_LOCAL_RUNNER_URL;
   const previousUseRunner = process.env.VITE_USE_RUNNER;
 
   candidate.__FLOWPILOT_VITE_ENV__ = env;
 
   if (env.VITE_RUNNER_URL === undefined) delete process.env.VITE_RUNNER_URL;
   else process.env.VITE_RUNNER_URL = env.VITE_RUNNER_URL;
+
+  if (env.VITE_LOCAL_RUNNER_URL === undefined) delete process.env.VITE_LOCAL_RUNNER_URL;
+  else process.env.VITE_LOCAL_RUNNER_URL = env.VITE_LOCAL_RUNNER_URL;
 
   if (env.VITE_USE_RUNNER === undefined) delete process.env.VITE_USE_RUNNER;
   else process.env.VITE_USE_RUNNER = env.VITE_USE_RUNNER;
@@ -36,6 +40,9 @@ function withRunnerEnv(
     if (previousRunnerUrl === undefined) delete process.env.VITE_RUNNER_URL;
     else process.env.VITE_RUNNER_URL = previousRunnerUrl;
 
+    if (previousLocalRunnerUrl === undefined) delete process.env.VITE_LOCAL_RUNNER_URL;
+    else process.env.VITE_LOCAL_RUNNER_URL = previousLocalRunnerUrl;
+
     if (previousUseRunner === undefined) delete process.env.VITE_USE_RUNNER;
     else process.env.VITE_USE_RUNNER = previousUseRunner;
   }
@@ -48,6 +55,15 @@ test("resolveRunnerUrlFromSources prefers renderer Vite env over process env", (
   );
 
   assert.equal(url, "http://renderer-runner:4000");
+});
+
+test("resolveRunnerUrlFromSources accepts VITE_LOCAL_RUNNER_URL", () => {
+  const url = resolveRunnerUrlFromSources(
+    { VITE_LOCAL_RUNNER_URL: "http://local-runner:4318" },
+    {},
+  );
+
+  assert.equal(url, "http://local-runner:4318");
 });
 
 test("resolveRunnerUrlFromSources falls back to process env when renderer env is missing", () => {

@@ -18,15 +18,22 @@ import {
   type GoogleDriveRuntimeStatus,
   type GoogleDriveValidationResult,
 } from "@/lib/google-drive/runtime-config";
+import { getLocalRunnerBaseUrl } from "@/lib/env/browser-env";
 import { Badge } from "@/presentation/components/ui/badge";
 import { GoogleDriveProviderConfigCard } from "./components/-GoogleDriveProviderConfigCard";
 
-const DEFAULT_REDIRECT_URI =
-  "http://127.0.0.1:4317/artifact-storage/google-drive/oauth/callback";
-const PICKER_ALLOWED_REFERRERS = [
-  "http://127.0.0.1:4317/*",
-  "http://localhost:4317/*",
-];
+const GOOGLE_DRIVE_CALLBACK_PATH = "/artifact-storage/google-drive/oauth/callback";
+const DEFAULT_REDIRECT_URI = `${getLocalRunnerBaseUrl().replace(/\/+$/, "")}${GOOGLE_DRIVE_CALLBACK_PATH}`;
+const PICKER_ALLOWED_REFERRERS = pickerAllowedReferrers(getLocalRunnerBaseUrl());
+
+function pickerAllowedReferrers(runnerUrl: string) {
+  const url = new URL(runnerUrl);
+  const port = url.port ? `:${url.port}` : "";
+  const hosts = new Set([url.hostname]);
+  if (url.hostname === "127.0.0.1") hosts.add("localhost");
+  if (url.hostname === "localhost") hosts.add("127.0.0.1");
+  return Array.from(hosts).map((host) => `${url.protocol}//${host}${port}/*`);
+}
 
 function isStepConfigured(value: string) {
   return value === "configured" || value === "online" || value === "connected" || value === "ready";

@@ -10,13 +10,16 @@ type RunnerEnvGlobal = typeof globalThis & {
 
 // Selects the transport behind the RunnerClient contract (04-01 Part B):
 //   - VITE_RUNNER_URL set  -> HttpWsRunnerClient against that runner
+//   - VITE_LOCAL_RUNNER_URL set -> HttpWsRunnerClient against that runner
 //   - VITE_USE_RUNNER=1     -> HttpWsRunnerClient against the default RUNNER_URL
 //   - otherwise            -> MockRunnerClient (offline / UI dev)
 // The renderer never references a concrete client — only this factory does.
 export function resolveRunnerUrlFromSources(viteEnv: RunnerEnv = {}, processEnv: RunnerEnv = {}): string | null {
   if (viteEnv.VITE_RUNNER_URL) return viteEnv.VITE_RUNNER_URL;
+  if (viteEnv.VITE_LOCAL_RUNNER_URL) return viteEnv.VITE_LOCAL_RUNNER_URL;
   if (viteEnv.VITE_USE_RUNNER === "1" || viteEnv.VITE_USE_RUNNER === "true") return RUNNER_URL;
   if (processEnv.VITE_RUNNER_URL) return processEnv.VITE_RUNNER_URL;
+  if (processEnv.VITE_LOCAL_RUNNER_URL) return processEnv.VITE_LOCAL_RUNNER_URL;
   if (processEnv.VITE_USE_RUNNER === "1" || processEnv.VITE_USE_RUNNER === "true") return RUNNER_URL;
   return null;
 }

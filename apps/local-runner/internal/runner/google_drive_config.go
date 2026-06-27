@@ -17,6 +17,8 @@ import (
 const (
 	googleDriveArtifactSyncClientSecretKey    = "google-drive:artifact-sync:client-secret"
 	googleDriveArtifactSyncPickerAPIKeySecret = "google-drive:artifact-sync:picker-api-key"
+	googleDriveDefaultRunnerURL               = "http://127.0.0.1:4317"
+	googleDriveOAuthCallbackPath              = "/artifact-storage/google-drive/oauth/callback"
 	googleDriveDefaultRedirectURI             = "http://127.0.0.1:4317/artifact-storage/google-drive/oauth/callback"
 	googleDriveOAuthCredentialsFileName       = "gcp-oauth.keys.json"
 	googleDriveMcpTokenFileName               = "tokens.json"
@@ -183,7 +185,7 @@ func (r *Runner) SaveGoogleDriveWorkspaceConfig(input GoogleDriveWorkspaceConfig
 		artifactConfig.RedirectURI = normalizeGoogleDriveRedirectURI(input.RedirectURI)
 	}
 	if artifactConfig.RedirectURI == "" {
-		artifactConfig.RedirectURI = googleDriveDefaultRedirectURI
+		artifactConfig.RedirectURI = googleDriveRuntimeRedirectURI()
 	}
 
 	mcpConfig := current.MCP
@@ -338,7 +340,7 @@ func (r *Runner) ValidateGoogleDriveWorkspaceConfig(input GoogleDriveWorkspaceCo
 	checks = append(checks, googleDriveCheck("artifact_client_id_present", artifact.ClientID != "", "Artifact sync client ID is present.", "Artifact sync client ID is required."))
 	checks = append(checks, googleDriveCheck("artifact_client_secret_present", artifact.HasClientSecret, "Artifact sync client secret is present.", "Artifact sync client secret is required."))
 	checks = append(checks, googleDriveCheck("artifact_redirect_uri_present", artifact.RedirectURI != "", "Artifact sync redirect URI is present.", "Artifact sync redirect URI is required."))
-	checks = append(checks, googleDriveCheck("artifact_redirect_uri_matches_runner_callback", strings.EqualFold(strings.TrimSpace(artifact.RedirectURI), googleDriveDefaultRedirectURI), "Artifact sync redirect URI matches the runner callback.", "Artifact sync redirect URI must match the runner callback URL."))
+	checks = append(checks, googleDriveCheck("artifact_redirect_uri_matches_runner_callback", strings.EqualFold(strings.TrimSpace(artifact.RedirectURI), googleDriveRuntimeRedirectURI()), "Artifact sync redirect URI matches the runner callback.", "Artifact sync redirect URI must match the runner callback URL."))
 	checks = append(checks, googleDriveCheck("picker_api_key_present", artifact.HasPickerAPIKey, "Google Picker API key is present.", "Google Picker API key is required."))
 
 	mcp := status.MCP
@@ -1052,15 +1054,15 @@ func readGoogleDriveArtifactEnvConfig() (googleDriveArtifactEnvConfig, error) {
 	clientID := strings.TrimSpace(os.Getenv("GOOGLE_DRIVE_CLIENT_ID"))
 	clientSecret := strings.TrimSpace(os.Getenv("GOOGLE_DRIVE_CLIENT_SECRET"))
 	redirectURI := normalizeGoogleDriveRedirectURI(os.Getenv("GOOGLE_DRIVE_REDIRECT_URI"))
+	if redirectURI == "" {
+		redirectURI = googleDriveRuntimeRedirectURI()
+	}
 	pickerAPIKey := strings.TrimSpace(os.Getenv("GOOGLE_PICKER_API_KEY"))
 	if clientID == "" {
 		return googleDriveArtifactEnvConfig{}, errors.New("missing required environment variable: GOOGLE_DRIVE_CLIENT_ID")
 	}
 	if clientSecret == "" {
 		return googleDriveArtifactEnvConfig{}, errors.New("missing required environment variable: GOOGLE_DRIVE_CLIENT_SECRET")
-	}
-	if redirectURI == "" {
-		return googleDriveArtifactEnvConfig{}, errors.New("missing required environment variable: GOOGLE_DRIVE_REDIRECT_URI")
 	}
 	if pickerAPIKey == "" {
 		return googleDriveArtifactEnvConfig{}, errors.New("missing required environment variable: GOOGLE_PICKER_API_KEY")
@@ -1076,6 +1078,23 @@ func readGoogleDriveArtifactEnvConfig() (googleDriveArtifactEnvConfig, error) {
 
 func normalizeGoogleDriveRedirectURI(value string) string {
 	return strings.TrimRight(strings.TrimSpace(value), "/")
+}
+
+func googleDriveRuntimeRedirectURI() string {
+	if redirectURI := normalizeGoogleDriveRedirectURI(os.Getenv("GOOGLE_DRIVE_REDIRECT_URI")); redirectURI != "" {
+		return redirectURI
+	}
+	return strings.TrimRight(googleDriveRuntimeRunnerURL(), "/") + googleDriveOAuthCallbackPath
+}
+
+func googleDriveRuntimeRunnerURL() string {
+	if runnerURL := strings.TrimSpace(os.Getenv("FLOWPILOT_RUNNER_URL")); runnerURL != "" {
+		return strings.TrimRight(runnerURL, "/")
+	}
+	if port := strings.TrimSpace(os.Getenv("FLOWPILOT_RUNNER_PORT")); port != "" {
+		return "http://127.0.0.1:" + port
+	}
+	return googleDriveDefaultRunnerURL
 }
 
 func googleDriveClientIDChangeNeedsNewSecret(current googleDriveWorkspaceConfigFile, input GoogleDriveWorkspaceConfigRequest, hasStoredSecret bool) bool {
@@ -1420,7 +1439,7 @@ func (r *Runner) buildGoogleDriveArtifactRuntimeConfigFromSaved(config googleDri
 	}
 
 	if result.RedirectURI == "" {
-		result.RedirectURI = googleDriveDefaultRedirectURI
+		result.RedirectURI = googleDriveRuntimeRedirectURI()
 	}
 
 	if secretState.hasClientSecret {

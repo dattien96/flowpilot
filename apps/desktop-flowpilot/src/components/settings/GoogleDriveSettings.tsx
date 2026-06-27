@@ -80,8 +80,18 @@ interface GoogleDriveValidationResult {
   checks: GoogleDriveValidationCheck[];
 }
 
-const DEFAULT_REDIRECT_URI = "http://127.0.0.1:4317/artifact-storage/google-drive/oauth/callback";
-const PICKER_ALLOWED_REFERRERS = ["http://127.0.0.1:4317/*", "http://localhost:4317/*"];
+const GOOGLE_DRIVE_CALLBACK_PATH = "/artifact-storage/google-drive/oauth/callback";
+const DEFAULT_REDIRECT_URI = `${RUNNER_URL}${GOOGLE_DRIVE_CALLBACK_PATH}`;
+const PICKER_ALLOWED_REFERRERS = pickerAllowedReferrers(RUNNER_URL);
+
+function pickerAllowedReferrers(runnerUrl: string): string[] {
+  const url = new URL(runnerUrl);
+  const port = url.port ? `:${url.port}` : "";
+  const hosts = new Set([url.hostname]);
+  if (url.hostname === "127.0.0.1") hosts.add("localhost");
+  if (url.hostname === "localhost") hosts.add("127.0.0.1");
+  return Array.from(hosts).map((host) => `${url.protocol}//${host}${port}/*`);
+}
 const PROVIDER_LABELS: Record<string, string> = { codex: "Codex", gemini: "Gemini", claude: "Claude" };
 
 function runnerFetch(path: string, init?: RequestInit): Promise<Response> {

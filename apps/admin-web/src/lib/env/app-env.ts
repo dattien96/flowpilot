@@ -21,7 +21,13 @@ export function getSupabaseEdgeFunctionUrl() {
 }
 
 export function getLocalRunnerBaseUrl() {
-  return process.env.FLOWPILOT_RUNNER_URL ?? "http://127.0.0.1:4317";
+  if (process.env.FLOWPILOT_RUNNER_URL) {
+    return process.env.FLOWPILOT_RUNNER_URL;
+  }
+  if (process.env.FLOWPILOT_RUNNER_PORT) {
+    return `http://127.0.0.1:${process.env.FLOWPILOT_RUNNER_PORT}`;
+  }
+  return "http://127.0.0.1:4317";
 }
 
 export function getRequiredEnv(name: string) {

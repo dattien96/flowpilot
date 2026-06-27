@@ -28,7 +28,7 @@ type config struct {
 }
 
 func NewRootCommand() *cobra.Command {
-	cfg := &config{host: "127.0.0.1", port: 4317}
+	cfg := &config{host: "127.0.0.1", port: defaultRunnerPort()}
 
 	rootCmd := &cobra.Command{
 		Use:           "flowpilot",
@@ -50,6 +50,18 @@ func NewRootCommand() *cobra.Command {
 	rootCmd.AddCommand(newFlowsCommand(cfg))
 
 	return rootCmd
+}
+
+func defaultRunnerPort() int {
+	value := strings.TrimSpace(os.Getenv("FLOWPILOT_RUNNER_PORT"))
+	if value == "" {
+		return 4317
+	}
+	port, err := strconv.Atoi(value)
+	if err != nil || port <= 0 {
+		return 4317
+	}
+	return port
 }
 
 func newRunnerCommand(cfg *config) *cobra.Command {
@@ -1852,7 +1864,7 @@ func withCORS(next http.Handler) http.Handler {
 		if isLoopbackOrigin(origin) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 		} else {
-			w.Header().Set("Access-Control-Allow-Origin", "http://127.0.0.1:3002")
+			w.Header().Set("Access-Control-Allow-Origin", defaultAdminWebOrigin())
 		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Idempotency-Key, Last-Event-ID")
@@ -1864,6 +1876,16 @@ func withCORS(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+func defaultAdminWebOrigin() string {
+	if origin := strings.TrimRight(strings.TrimSpace(os.Getenv("VITE_ADMIN_WEB_URL")), "/"); origin != "" {
+		return origin
+	}
+	if port := strings.TrimSpace(os.Getenv("FLOWPILOT_ADMIN_WEB_PORT")); port != "" {
+		return "http://127.0.0.1:" + port
+	}
+	return "http://127.0.0.1:3002"
 }
 
 func netJoinHostPort(host string, port int) string {

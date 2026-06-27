@@ -1,8 +1,26 @@
-// Client config (Part A). Part B reads these from a settings file / env.
+type EnvSource = Record<string, string | undefined>;
+type EnvGlobal = typeof globalThis & {
+  __FLOWPILOT_VITE_ENV__?: EnvSource;
+};
 
-/** Admin-web dev URL — supervisor.js serves the web on port 3002. */
-export const ADMIN_WEB_URL = "http://localhost:3002";
+function currentEnv(): EnvSource {
+  const candidate = globalThis as EnvGlobal;
+  if (candidate.__FLOWPILOT_VITE_ENV__) {
+    return candidate.__FLOWPILOT_VITE_ENV__;
+  }
+  return (typeof process !== "undefined" ? process.env : {}) as EnvSource;
+}
 
-/** Local runner base URL (used by HttpWsRunnerClient in Part B). The runner serves
- * on 4317 by default (supervisor.js / Justfile). */
-export const RUNNER_URL = "http://127.0.0.1:4317";
+function trimTrailingSlash(value: string): string {
+  return value.replace(/\/+$/, "");
+}
+
+export const ADMIN_WEB_URL = trimTrailingSlash(
+  currentEnv().VITE_ADMIN_WEB_URL ?? "http://localhost:3002",
+);
+
+export const RUNNER_URL = trimTrailingSlash(
+  currentEnv().VITE_RUNNER_URL ??
+    currentEnv().VITE_LOCAL_RUNNER_URL ??
+    "http://127.0.0.1:4317",
+);

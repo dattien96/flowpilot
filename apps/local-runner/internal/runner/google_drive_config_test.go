@@ -56,6 +56,38 @@ func TestGoogleDriveWorkspaceConfigSaveAndLoad(t *testing.T) {
 	}
 }
 
+func TestGoogleDriveRuntimeRedirectURIUsesRunnerPortEnv(t *testing.T) {
+	t.Setenv("FLOWPILOT_RUNNER_URL", "")
+	t.Setenv("GOOGLE_DRIVE_REDIRECT_URI", "")
+	t.Setenv("FLOWPILOT_RUNNER_PORT", "4318")
+
+	want := "http://127.0.0.1:4318/artifact-storage/google-drive/oauth/callback"
+	if got := googleDriveRuntimeRedirectURI(); got != want {
+		t.Fatalf("googleDriveRuntimeRedirectURI() = %q, want %q", got, want)
+	}
+}
+
+func TestValidateGoogleDriveWorkspaceConfigAcceptsRuntimeRedirectURI(t *testing.T) {
+	t.Setenv("FLOWPILOT_RUNNER_URL", "http://127.0.0.1:4318")
+	t.Setenv("GOOGLE_DRIVE_REDIRECT_URI", "")
+
+	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
+	result, err := instance.ValidateGoogleDriveWorkspaceConfig(GoogleDriveWorkspaceConfigRequest{
+		ClientID:     "client-id",
+		ClientSecret: "client-secret",
+		RedirectURI:  "http://127.0.0.1:4318/artifact-storage/google-drive/oauth/callback",
+		PickerAPIKey: "picker-api-key",
+	})
+	if err != nil {
+		t.Fatalf("ValidateGoogleDriveWorkspaceConfig() error: %v", err)
+	}
+
+	check := findGoogleDriveValidationCheck(result.Checks, "artifact_redirect_uri_matches_runner_callback")
+	if check.Status != "passed" {
+		t.Fatalf("runtime redirect check = %#v, want passed", check)
+	}
+}
+
 func TestUploadGoogleDriveMcpOAuthCredentialsWritesCredentialFile(t *testing.T) {
 	workspace := t.TempDir()
 	homeDir := t.TempDir()
