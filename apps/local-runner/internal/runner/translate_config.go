@@ -2,6 +2,7 @@ package runner
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,7 +10,6 @@ import (
 
 const (
 	translateAPIKeySecret   = "translate:libre:api-key"
-	translateDefaultBaseURL = "http://localhost:5000"
 	translateConfigFileName = "translate-config.json"
 )
 
@@ -43,7 +43,7 @@ func (r *Runner) loadTranslateConfigFile() translateConfigFile {
 		_ = json.Unmarshal(raw, &cfg)
 	}
 	if strings.TrimSpace(cfg.BaseURL) == "" {
-		cfg.BaseURL = translateDefaultBaseURL
+		cfg.BaseURL = defaultTranslateBaseURL()
 	}
 	return cfg
 }
@@ -63,7 +63,7 @@ func (r *Runner) LoadTranslateConfig() (TranslateConfigStatus, error) {
 func (r *Runner) SaveTranslateConfig(req TranslateConfigRequest) (TranslateConfigStatus, error) {
 	baseURL := strings.TrimSpace(req.BaseURL)
 	if baseURL == "" {
-		baseURL = translateDefaultBaseURL
+		baseURL = defaultTranslateBaseURL()
 	}
 
 	cfg := translateConfigFile{BaseURL: baseURL}
@@ -89,4 +89,15 @@ func (r *Runner) SaveTranslateConfig(req TranslateConfigRequest) (TranslateConfi
 		BaseURL:   baseURL,
 		HasAPIKey: strings.TrimSpace(storedKey) != "",
 	}, nil
+}
+
+func defaultTranslateBaseURL() string {
+	if value := strings.TrimSpace(os.Getenv("FLOWPILOT_LIBRETRANSLATE_URL")); value != "" {
+		return value
+	}
+	port := strings.TrimSpace(os.Getenv("FLOWPILOT_LIBRETRANSLATE_PORT"))
+	if port == "" {
+		port = "5001"
+	}
+	return fmt.Sprintf("http://127.0.0.1:%s", port)
 }

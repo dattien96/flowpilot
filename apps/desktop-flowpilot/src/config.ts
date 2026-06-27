@@ -24,3 +24,10 @@ export const RUNNER_URL = trimTrailingSlash(
     currentEnv().VITE_LOCAL_RUNNER_URL ??
     "http://127.0.0.1:4317",
 );
+
+export const LIBRETRANSLATE_URL = trimTrailingSlash(
+  currentEnv().FLOWPILOT_LIBRETRANSLATE_URL ??
+    (currentEnv().FLOWPILOT_LIBRETRANSLATE_PORT
+      ? `http://127.0.0.1:${currentEnv().FLOWPILOT_LIBRETRANSLATE_PORT}`
+      : "http://127.0.0.1:5001"),
+);

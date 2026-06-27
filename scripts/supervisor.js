@@ -94,6 +94,7 @@ const googleDriveRedirectUri =
   process.env.GOOGLE_DRIVE_REDIRECT_URI ||
   `${runnerUrl.replace(/\/+$/, '')}/artifact-storage/google-drive/oauth/callback`;
 const goCacheDir = process.env.GOCACHE || path.join(os.tmpdir(), 'flowpilot-go-cache');
+const librePort = process.env.FLOWPILOT_LIBRETRANSLATE_PORT || '5001';
 
 let webProcess = null;
 let runnerProcess = null;
@@ -216,12 +217,69 @@ function sleep(ms) {
 }
 
 function isLibreTranslateInstalled() {
+  return resolveLibreTranslateCommand() !== null;
+}
+
+function resolveLibreTranslateCommand() {
   try {
     const cmd = process.platform === 'win32' ? 'where libretranslate' : 'which libretranslate';
     execSync(cmd, { stdio: 'ignore' });
-    return true;
+    return { command: 'libretranslate', args: [] };
   } catch (e) {}
-  return false;
+
+  const homeCandidates = [];
+  if (process.env.HOME) {
+    homeCandidates.push(process.env.HOME);
+  }
+  if (process.env.USERPROFILE && !homeCandidates.includes(process.env.USERPROFILE)) {
+    homeCandidates.push(process.env.USERPROFILE);
+  }
+  if (process.env.USER) {
+    const userHome = path.join('/Users', process.env.USER);
+    if (!homeCandidates.includes(userHome)) {
+      homeCandidates.push(userHome);
+    }
+  }
+
+  for (const home of homeCandidates) {
+    const pythonRoot = path.join(home, 'Library', 'Python');
+    try {
+      const versionDirs = fs
+        .readdirSync(pythonRoot, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .sort()
+        .reverse();
+      for (const version of versionDirs) {
+        const candidate = path.join(pythonRoot, version, 'bin', 'libretranslate');
+        if (fs.existsSync(candidate)) {
+          return { command: candidate, args: [] };
+        }
+      }
+    } catch (scanErr) {}
+
+    const localBinCandidate = path.join(home, '.local', 'bin', 'libretranslate');
+    if (fs.existsSync(localBinCandidate)) {
+      return { command: localBinCandidate, args: [] };
+    }
+  }
+
+  for (const pair of [
+    { pip: 'pip', python: 'python' },
+    { pip: 'pip3', python: 'python3' },
+  ]) {
+    try {
+      const output = execSync(`${pair.pip} show libretranslate`, {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      if (output.includes('Name: libretranslate')) {
+        return { command: pair.python, args: ['-m', 'libretranslate'] };
+      }
+    } catch (pipErr) {}
+  }
+
+  return null;
 }
 
 async function stopManagedProcess(child, label) {
@@ -466,23 +524,31 @@ async function startServicesFresh(existing = {}) {
 
   // Spawn LibreTranslate if installed (optional — exit does not bring down the stack)
   if (isLibreTranslateInstalled()) {
-    const librePort = 5000;
     const libreInUse = await isPortInUse(librePort);
     if (libreInUse) {
       console.log(`[Supervisor] LibreTranslate already running on port ${librePort}, skipping start.`);
     } else {
+      const libreCommand = resolveLibreTranslateCommand();
+      if (!libreCommand) {
+        console.log('[Supervisor] LibreTranslate package detected but no runnable command was resolved. Skipping translation service.');
+      } else {
       console.log(`[Supervisor] Starting LibreTranslate on port ${librePort} (en + vi only)...`);
-      libreProcess = spawn('libretranslate', ['--load-only', 'en,vi', '--port', String(librePort)], {
+      libreProcess = spawn(
+        libreCommand.command,
+        [...libreCommand.args, '--load-only', 'en,vi', '--port', String(librePort)],
+        {
           shell: true,
           stdio: 'inherit',
           detached: process.platform !== 'win32',
-      });
-      libreProcess.detached = process.platform !== 'win32';
-      libreProcess.on('exit', (code) => {
-        if (!isExiting && !isRestarting) {
-          console.log(`[Supervisor] LibreTranslate exited with code ${code}. Web + runner keep running.`);
-        }
-      });
+        },
+      );
+        libreProcess.detached = process.platform !== 'win32';
+        libreProcess.on('exit', (code) => {
+          if (!isExiting && !isRestarting) {
+            console.log(`[Supervisor] LibreTranslate exited with code ${code}. Web + runner keep running.`);
+          }
+        });
+      }
     }
   } else {
     console.log('[Supervisor] LibreTranslate not installed, skipping translation service. (Install via Engine Settings)');
