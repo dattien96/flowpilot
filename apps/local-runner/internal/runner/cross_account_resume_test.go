@@ -2093,6 +2093,68 @@ func TestResumeRunMissingPersistedSessionReturnsRunNotFound(t *testing.T) {
 	}
 }
 
+func TestResumeRunGeminiPersistedResumeIsExplicitlyUnsupported(t *testing.T) {
+	store, err := NewLocalFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             "run-gemini",
+		RunKind:           "chat",
+		ProviderKey:       ProviderKeyGemini,
+		ProviderSessionID: "gemini-real-1",
+		ProviderAccountID: "acct-gemini",
+		WorkingDirectory:  "/repo",
+		Status:            RunStatusCompleted,
+	}); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+	svc := NewInteractiveServiceWithStore(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+
+	_, apiErr := svc.resumeRun("run-gemini")
+	if apiErr == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if apiErr.code != "resume_unsupported" {
+		t.Fatalf("apiErr.code = %q, want resume_unsupported", apiErr.code)
+	}
+	if apiErr.msg != "Gemini persisted resume is not supported yet" {
+		t.Fatalf("apiErr.msg = %q, want Gemini-specific resume unsupported message", apiErr.msg)
+	}
+}
+
+func TestResumeRunInMemoryCompletedGeminiRemainsReadable(t *testing.T) {
+	svc := NewInteractiveServiceWith(DefaultProviderRegistry(), newInteractiveCatalog())
+	runID := "run-gemini-live"
+	svc.mu.Lock()
+	svc.runs[runID] = &interactiveRun{
+		id:                runID,
+		runKind:           "chat",
+		providerKey:       ProviderKeyGemini,
+		providerSessionID: "thread-1",
+		status:            RunStatusCompleted,
+		events: []ProviderEvent{
+			{Seq: 1, Type: EventMessageCompleted, Text: "hello"},
+			{Seq: 2, Type: EventTurnCompleted, FinalMessage: "hello"},
+		},
+	}
+	svc.mu.Unlock()
+
+	handle, apiErr := svc.resumeRun(runID)
+	if apiErr != nil {
+		t.Fatalf("resumeRun error = %+v, want nil", apiErr)
+	}
+	if handle.RunID != runID {
+		t.Fatalf("handle.RunID = %q, want %q", handle.RunID, runID)
+	}
+	if handle.ProviderKey != ProviderKeyGemini {
+		t.Fatalf("handle.ProviderKey = %q, want gemini", handle.ProviderKey)
+	}
+	if handle.LastEventSeq != 2 {
+		t.Fatalf("handle.LastEventSeq = %d, want 2", handle.LastEventSeq)
+	}
+}
+
 // TS-015: resolveAccountHome returns the configured home path for an explicit account ID.
 func TestResolveAccountHomeExplicitAccount(t *testing.T) {
 	root := t.TempDir()

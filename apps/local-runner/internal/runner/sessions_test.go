@@ -55,6 +55,13 @@ func TestDetermineProviderSessionID(t *testing.T) {
 		t.Errorf("Expected gemini_acp_session_123, got %s", geminiID)
 	}
 
+	// Test Gemini keeps explicit real session ids
+	realGemini := "gemini-real-123"
+	geminiRealID := DetermineProviderSessionID("gemini_acp", "gemini", "123", realGemini, &realGemini)
+	if geminiRealID != "gemini-real-123" {
+		t.Errorf("Expected gemini-real-123, got %s", geminiRealID)
+	}
+
 	// Test Claude fallback
 	claudeID := DetermineProviderSessionID("claude_stream_json", "claude", "456", "", nil)
 	if claudeID != "claude_stream_session_456" {
@@ -152,6 +159,143 @@ func TestStartSessionGeminiACPUsesCurrentHandshake(t *testing.T) {
 
 	if !strings.Contains(strings.Join(startedArgs, " "), "--model gemini-2.5-flash") {
 		t.Fatalf("expected Gemini ACP session to normalize legacy model alias, got args %v", startedArgs)
+	}
+
+	if handle.ProcessKey != nil {
+		if err := r.CloseSession(context.Background(), handle); err != nil {
+			t.Fatalf("CloseSession failed: %v", err)
+		}
+	}
+}
+
+func TestStartSessionGeminiACPLoadsRealResumeSession(t *testing.T) {
+	originalCmdCtx := commandContextFn
+	defer func() { commandContextFn = originalCmdCtx }()
+	var startedArgs []string
+	sessionRequestPath := filepath.Join(t.TempDir(), "session-request.json")
+	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+		startedArgs = append([]string{}, arg...)
+		return testShellCommand(
+			ctx,
+			shellReadLine()+
+				shellOutputLine(`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}`)+
+				"IFS= read -r session_line\n"+
+				"printf '%s' \"$session_line\" > "+strconv.Quote(sessionRequestPath)+"\n"+
+				shellOutputLine(`{"jsonrpc":"2.0","id":2,"result":{"sessionId":"loaded-gemini-session"}}`)+"sleep 2\n",
+		)
+	}
+
+	r, _ := New(".")
+	resumeID := "real-gemini-session"
+
+	handle, err := r.StartSession(context.Background(), AiSessionStartRequest{
+		ProviderKey:             "gemini",
+		ModelName:               "gemini-flash",
+		WorkingDirectory:        ".",
+		ResumeProviderSessionID: &resumeID,
+	})
+	if err != nil {
+		t.Fatalf("StartSession failed: %v", err)
+	}
+
+	if handle.ProviderSessionID != "loaded-gemini-session" {
+		t.Fatalf("expected Gemini provider session id to come from ACP session/load, got %q", handle.ProviderSessionID)
+	}
+
+	raw, err := os.ReadFile(sessionRequestPath)
+	if err != nil {
+		t.Fatalf("read session request: %v", err)
+	}
+	if written := string(raw); !strings.Contains(written, `"method":"session/load"`) || !strings.Contains(written, `"sessionId":"real-gemini-session"`) {
+		t.Fatalf("expected Gemini session/load request for explicit real resume id, got %q", written)
+	}
+
+	if got := strings.Join(startedArgs, " "); !strings.Contains(got, "--model gemini-2.5-flash") {
+		t.Fatalf("expected Gemini ACP session to normalize legacy model alias, got args %v", startedArgs)
+	}
+
+	if handle.ProcessKey != nil {
+		if err := r.CloseSession(context.Background(), handle); err != nil {
+			t.Fatalf("CloseSession failed: %v", err)
+		}
+	}
+}
+
+func TestStartSessionGeminiACPRejectsSyntheticLegacyResumeWithoutMapping(t *testing.T) {
+	originalCmdCtx := commandContextFn
+	defer func() { commandContextFn = originalCmdCtx }()
+	sessionRequestPath := filepath.Join(t.TempDir(), "session-request.json")
+	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+		return testShellCommand(
+			ctx,
+			shellReadLine()+
+				shellOutputLine(`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}`)+
+				"IFS= read -r session_line\n"+
+				"printf '%s' \"$session_line\" > "+strconv.Quote(sessionRequestPath)+"\n"+
+				shellOutputLine(`{"jsonrpc":"2.0","id":2,"result":{"sessionId":"fresh-gemini-session"}}`)+"sleep 2\n",
+		)
+	}
+
+	r, _ := New(".")
+	resumeID := "gemini_acp_session_legacy-1"
+
+	handle, err := r.StartSession(context.Background(), AiSessionStartRequest{
+		ProviderKey:             "gemini",
+		ModelName:               "gemini-flash",
+		WorkingDirectory:        ".",
+		ResumeProviderSessionID: &resumeID,
+	})
+	if err == nil || !strings.Contains(err.Error(), "synthetic session") {
+		t.Fatalf("StartSession error = %v, want synthetic resume failure", err)
+	}
+	if handle.ProviderSessionID != "" {
+		t.Fatalf("expected empty handle on failure, got %q", handle.ProviderSessionID)
+	}
+	if _, err := os.ReadFile(sessionRequestPath); err == nil {
+		t.Fatalf("expected no session request to be persisted on rejected resume")
+	}
+}
+
+func TestStartSessionGeminiACPLoadsMappedSyntheticResumeSession(t *testing.T) {
+	originalCmdCtx := commandContextFn
+	defer func() { commandContextFn = originalCmdCtx }()
+	sessionRequestPath := filepath.Join(t.TempDir(), "session-request.json")
+	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+		return testShellCommand(
+			ctx,
+			shellReadLine()+
+				shellOutputLine(`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}`)+
+				"IFS= read -r session_line\n"+
+				"printf '%s' \"$session_line\" > "+strconv.Quote(sessionRequestPath)+"\n"+
+				shellOutputLine(`{"jsonrpc":"2.0","id":2,"result":{"sessionId":"loaded-gemini-session"}}`)+"sleep 2\n",
+		)
+	}
+
+	r, _ := New(".")
+	r.geminiSessions.setRealSession("acct-gemini", "gemini_acp_session_legacy-1", "real-gemini-session")
+	resumeID := "gemini_acp_session_legacy-1"
+
+	handle, err := r.StartSession(context.Background(), AiSessionStartRequest{
+		ProviderKey:             "gemini",
+		ProviderAccountID:       "acct-gemini",
+		ModelName:               "gemini-flash",
+		WorkingDirectory:        ".",
+		ResumeProviderSessionID: &resumeID,
+	})
+	if err != nil {
+		t.Fatalf("StartSession failed: %v", err)
+	}
+
+	if handle.ProviderSessionID != "loaded-gemini-session" {
+		t.Fatalf("expected Gemini provider session id to come from mapped ACP session/load, got %q", handle.ProviderSessionID)
+	}
+
+	raw, err := os.ReadFile(sessionRequestPath)
+	if err != nil {
+		t.Fatalf("read session request: %v", err)
+	}
+	if written := string(raw); !strings.Contains(written, `"method":"session/load"`) || !strings.Contains(written, `"sessionId":"real-gemini-session"`) {
+		t.Fatalf("expected mapped Gemini session/load request, got %q", written)
 	}
 
 	if handle.ProcessKey != nil {

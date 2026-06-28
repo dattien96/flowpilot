@@ -635,7 +635,8 @@ func (s *InteractiveService) resumeRun(runID string) (RunHandle, *apiErr) {
 	// only runs post-turn, so realProviderSessionID is "" while a turn is in-flight
 	// and LocateSessionFile would fail with the synthetic "thread-*" placeholder.
 	isActiveInMemory := inMemory && rs.status != RunStatusCompleted && rs.status != RunStatusFailed && rs.status != RunStatusCancelled
-	if !isActiveInMemory {
+	isReadOnlyGeminiInMemory := inMemory && rs.providerKey == ProviderKeyGemini && len(rs.events) > 0
+	if !isActiveInMemory && !isReadOnlyGeminiInMemory {
 		if err := s.ensureResumeReady(rs); err != nil {
 			readOnlyChat := rs.runKind == "chat" && (err.code == "account_not_signed_in" || err.code == "account_unavailable")
 			if !readOnlyChat {

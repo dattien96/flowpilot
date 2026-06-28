@@ -136,6 +136,20 @@ func writeJsonRpcRequest(w io.Writer, method string, params interface{}, id inte
 	return err
 }
 
+func writeJsonRpcResponse(w io.Writer, id interface{}, result interface{}) error {
+	resp := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"result":  result,
+	}
+	data, err := json.Marshal(resp)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(append(data, '\n'))
+	return err
+}
+
 func readJsonRpcMessage(scanner *bufio.Scanner) (map[string]interface{}, error) {
 	if !scanner.Scan() {
 		if err := scanner.Err(); err != nil {
@@ -260,80 +274,6 @@ func jsonRpcErrorMessage(message map[string]interface{}) string {
 	}
 
 	return ""
-}
-
-func geminiACPInitializeParams() map[string]interface{} {
-	return map[string]interface{}{
-		"protocolVersion": 1,
-		"capabilities":    map[string]interface{}{},
-		"clientInfo": map[string]interface{}{
-			"name":    "flowpilot",
-			"version": "1.0",
-		},
-	}
-}
-
-func geminiACPSessionNewParams(cwd string) map[string]interface{} {
-	return map[string]interface{}{
-		"cwd":        cwd,
-		"mcpServers": []interface{}{},
-	}
-}
-
-func geminiACPPromptParams(sessionID string, prompt string) map[string]interface{} {
-	return map[string]interface{}{
-		"sessionId": sessionID,
-		"prompt": []map[string]string{
-			{
-				"type": "text",
-				"text": prompt,
-			},
-		},
-	}
-}
-
-func extractGeminiACPText(message map[string]interface{}) string {
-	method, _ := message["method"].(string)
-	if method != "session/update" {
-		return ""
-	}
-
-	params, ok := message["params"].(map[string]interface{})
-	if !ok {
-		return ""
-	}
-
-	update, ok := params["update"].(map[string]interface{})
-	if !ok {
-		return ""
-	}
-
-	if updateType, _ := update["sessionUpdate"].(string); updateType != "agent_message_chunk" {
-		return ""
-	}
-
-	content, ok := update["content"].(map[string]interface{})
-	if !ok {
-		return ""
-	}
-
-	if contentType, _ := content["type"].(string); contentType != "text" {
-		return ""
-	}
-
-	if text, ok := content["text"].(string); ok {
-		return text
-	}
-
-	return ""
-}
-
-func appendGeminiACPText(output *strings.Builder, message map[string]interface{}) {
-	if output == nil {
-		return
-	}
-
-	output.WriteString(extractGeminiACPText(message))
 }
 
 func extractClaudeStreamText(line []byte) string {
@@ -605,27 +545,47 @@ func (r *Runner) StartSession(ctx context.Context, req AiSessionStartRequest) (A
 			cmd.Process.Kill()
 			return AiSessionHandle{}, fmt.Errorf("failed Gemini ACP initialize: %s", errMsg)
 		}
-		if err := writeJsonRpcRequest(stdin, "session/new", geminiACPSessionNewParams(resolvedWorkingDirectory), 2); err != nil {
+		sessionMethod := "session/new"
+		sessionParams := geminiACPSessionNewParams(resolvedWorkingDirectory)
+		resumeID := ""
+		scopeKey := strings.TrimSpace(req.ProviderAccountID)
+		if req.ResumeProviderSessionID != nil {
+			resumeID = strings.TrimSpace(*req.ResumeProviderSessionID)
+		}
+		if resumeID != "" {
+			if !isSyntheticGeminiSessionID(resumeID) {
+				sessionMethod = "session/load"
+				sessionParams = geminiACPSessionLoadParams(resumeID, resolvedWorkingDirectory, nil)
+			} else if r.geminiSessions != nil && scopeKey != "" {
+				if real := r.geminiSessions.realSession(scopeKey, resumeID); real != "" {
+					sessionMethod = "session/load"
+					sessionParams = geminiACPSessionLoadParams(real, resolvedWorkingDirectory, nil)
+				} else {
+					cmd.Process.Kill()
+					return AiSessionHandle{}, fmt.Errorf("failed Gemini ACP resume: synthetic session %q has no scoped real mapping", resumeID)
+				}
+			} else {
+				cmd.Process.Kill()
+				return AiSessionHandle{}, fmt.Errorf("failed Gemini ACP resume: synthetic session %q has no scoped real mapping", resumeID)
+			}
+		}
+		if err := writeJsonRpcRequest(stdin, sessionMethod, sessionParams, 2); err != nil {
 			cmd.Process.Kill()
-			return AiSessionHandle{}, fmt.Errorf("failed to write session/new request: %w", err)
+			return AiSessionHandle{}, fmt.Errorf("failed to write %s request: %w", sessionMethod, err)
 		}
 		resp, err = readJsonRpcResponse(stdoutScanner, 2)
 		if err != nil {
 			cmd.Process.Kill()
-			return AiSessionHandle{}, fmt.Errorf("failed to read session/new response: %w", err)
+			return AiSessionHandle{}, fmt.Errorf("failed to read %s response: %w", sessionMethod, err)
 		}
 		if errMsg := jsonRpcErrorMessage(resp); errMsg != "" {
 			cmd.Process.Kill()
-			return AiSessionHandle{}, fmt.Errorf("failed Gemini ACP session/new: %s", errMsg)
+			return AiSessionHandle{}, fmt.Errorf("failed Gemini ACP %s: %s", sessionMethod, errMsg)
 		}
-		if result, ok := resp["result"].(map[string]interface{}); ok {
-			if sId, ok := result["sessionId"].(string); ok {
-				providerSessionID = sId
-			}
-		}
+		providerSessionID = geminiACPResponseSessionID(resp)
 		if providerSessionID == "" {
 			cmd.Process.Kill()
-			return AiSessionHandle{}, fmt.Errorf("failed Gemini ACP session/new: missing sessionId")
+			return AiSessionHandle{}, fmt.Errorf("failed Gemini ACP %s: missing sessionId", sessionMethod)
 		}
 	}
 	providerSessionID = DetermineProviderSessionID(transportType, session.Provider, session.SessionID, providerSessionID, req.ResumeProviderSessionID)
@@ -832,33 +792,12 @@ func (r *Runner) SendMessageWithCallback(ctx context.Context, req AiSessionMessa
 		outputMarkdown = streamedOutput.String()
 		if result, ok := resp["result"].(map[string]interface{}); ok {
 			if outputMarkdown == "" {
-				if text, ok := result["text"].(string); ok {
-					outputMarkdown = text
-				}
+				outputMarkdown = geminiACPResultText(result)
 			}
-			if outputMarkdown == "" {
-				if content, ok := result["content"].([]interface{}); ok {
-					for _, entry := range content {
-						block, ok := entry.(map[string]interface{})
-						if !ok {
-							continue
-						}
-						if blockType, _ := block["type"].(string); blockType != "text" {
-							continue
-						}
-						if text, ok := block["text"].(string); ok {
-							outputMarkdown += text
-						}
-					}
-				}
-			}
-			if pSessionID, ok := result["sessionId"].(string); ok && strings.TrimSpace(pSessionID) != "" {
+			if pSessionID := geminiACPResponseSessionID(resp); pSessionID != "" {
 				session.Mu.Lock()
 				session.ProviderSessionID = pSessionID
 				session.Mu.Unlock()
-			}
-			if text, ok := result["text"].(string); ok && outputMarkdown == "" {
-				outputMarkdown = text
 			}
 		}
 	} else if session.TransportType == "claude_stream_json" {
@@ -1258,6 +1197,10 @@ func DetermineProviderSessionID(transportType, provider, sessionID, currentProvi
 		currentProviderSessionID = *resumeProviderSessionID
 	}
 	return currentProviderSessionID
+}
+
+func isSyntheticGeminiSessionID(providerSessionID string) bool {
+	return strings.HasPrefix(strings.TrimSpace(providerSessionID), "gemini_acp_session_")
 }
 
 func normalizeClaudeEffort(reasoningEffort string) string {
