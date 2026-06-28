@@ -23,6 +23,7 @@
 - Wire the `Task-168` context package into Flow Mode Plan-to-Coding handoff.
 - Coding receives one stable context block and does not broaden retrieval on its own.
 - Prompt logging must make the composed handoff inspectable.
+- Handoff reads the package from the same `workflow_run_id` and prior Plan `workflow_step_run_id`.
 - Existing chat prompt injection behavior must not regress.
 
 ### Current Ask
@@ -35,6 +36,7 @@
 - `T-2` Coding prompt includes the same package on retries unless Plan is rerun.
 - `T-3` Handoff is step-scoped and source-referenced.
 - `T-4` Prompt logging remains the primary manual inspection path.
+- `T-5` Handoff state follows current `workflow_runs` / `workflow_run_steps` persistence; no parallel flow session is introduced.
 
 ### Constraints
 
@@ -42,6 +44,7 @@
 - Do not change provider adapter contracts unless required to pass prompt text through existing turn input.
 - Do not add vector retrieval or model-side tool browsing for Coding context expansion.
 - Preserve `isHandoffPrompt` and system-prompt protections in `feature_history.go`.
+- Use `WorkflowStore`/run artifacts/events for durable handoff lookup rather than direct Supabase calls in prompt code.
 
 ### Open Questions
 
@@ -52,10 +55,13 @@
 - `CP-41 P-3`, `DOD-2`, `DOD-5`
 - `Task-168`
 - `CA-132`
+- current code: `workflow_orchestrator.go`, `workflow_prompt.go`, `workflow_store.go`, `supabase_workflow_store.go`, `prompt_log.go`
 
 ## 1. Goal
 
 Make the Flow Mode Plan step hand a rendered context package to the Coding step through a stable prompt section that downstream code and tests can inspect.
+
+The handoff must use the current persisted flow structure: a Coding `workflow_run_steps` row reads the package produced by a previous Plan `workflow_run_steps` row under the same `workflow_runs.id`.
 
 ## 2. Parent Links
 
@@ -71,9 +77,10 @@ Once the Plan step can build a package, Flow Mode needs a reliable way to pass i
 ## 4. Exact Change
 
 - `T-1` Add Flow Mode handoff storage/state.
-  - Store the `FlowContextPackage` or rendered package against the workflow run and Plan step result.
+  - Store the `FlowContextPackage` or rendered package against the `workflow_run_id` and Plan `workflow_step_run_id`.
   - The package should be available to the next Coding step without rebuilding.
   - If the user reruns Plan, replace the package with the new Plan output.
+  - Preferred durable surface: run artifact or `workflow_provider_events.payload_json` entry linked to the Plan step.
 
 - `T-2` Add Coding prompt composition.
   - Prepend the rendered package under `## Flow Context Package`.
@@ -87,6 +94,11 @@ Once the Plan step can build a package, Flow Mode needs a reliable way to pass i
   - Coding retries must reuse the same Plan package by default.
   - A retry may add Testing feedback from `Task-170`, but must not mutate the original package.
   - A Plan rerun is the only normal way to replace the package.
+
+- `T-3a` Add step lookup semantics.
+  - Locate the most recent completed Plan step in the current run before the Coding step.
+  - Read the package tied to that Plan step.
+  - If no package exists, Coding should degrade with a warning block and continue only when the workflow allows no-context execution.
 
 - `T-4` Add prompt logging coverage.
   - Ensure `logComposedPrompt` captures the Flow Context Package in the final Coding prompt.
@@ -113,12 +125,14 @@ Once the Plan step can build a package, Flow Mode needs a reliable way to pass i
 - routes:
   - existing workflow run/turn routes only
 - tables:
-  - none expected
+  - existing: `workflow_runs`, `workflow_run_steps`, `workflow_provider_events`
+  - optional existing artifact storage for package payloads
 
 ## 6. Acceptance Check
 
 - A Flow Mode Coding step receives the rendered package from Plan.
 - The package appears once, before the Coding instruction, with source refs intact.
+- The package is selected by the current `workflow_run_id` and prior Plan `workflow_step_run_id`.
 - A Coding retry reuses the same package and appends only retry feedback when `Task-170` is present.
 - A Plan rerun replaces the package.
 - Normal chat prompt injection and cross-provider handoff protections still pass existing tests.
@@ -132,6 +146,9 @@ Once the Plan step can build a package, Flow Mode needs a reliable way to pass i
 - `TestFlowContextPackageAppearsInPromptLog`
 - `TestNormalChatFeatureHistoryInjectionUnchanged`
 - `TestSystemPromptDoesNotResolveFromContextPackageText`
+- `TestCodingStepLoadsPackageFromPriorPlanStep`
+- `TestCodingStepWarnsWhenPlanPackageMissing`
+- `TestPlanPackageLookupScopedToWorkflowRun`
 
 ### 6.2 Definition of Done
 
@@ -142,6 +159,7 @@ Once the Plan step can build a package, Flow Mode needs a reliable way to pass i
 - [ ] `DOD-5` Existing chat/handoff prompt tests still pass.
 - [ ] `DOD-6` No vector DB, embedding, or similarity-search path is introduced.
 - [ ] `DOD-7` Targeted runner tests pass.
+- [ ] `DOD-8` Handoff lookup is scoped to the existing run/step persistence model.
 
 ## 7. Out of Scope
 

@@ -23,6 +23,7 @@
 - CP-41 is the parent implementation design for Flow Mode issue/bug context harnessing.
 - The harness is deterministic: resolve `feature_key`, retrieve CA excerpts, ordered commits, chat summaries, and source excerpts by direct lookup.
 - Vector DB, embedding index, and similarity search are explicitly out of scope.
+- The design follows current Flow Mode storage: one `workflow_runs` row has N ordered `workflow_run_steps` rows persisted through `WorkflowStore`/`SupabaseWorkflowStore`.
 - Delivery is split into four executable tasks: context package contract, Plan-to-Coding handoff, Testing retry loop, and Audit draft/commit prep.
 - Existing research/Q&A notes remain preserved under section `11. Q&A / Preserved Notes`.
 
@@ -38,6 +39,7 @@
 - `P-4` The Coding step receives the Plan context package as a stable handoff block and must not independently broaden retrieval.
 - `P-5` Testing feedback is summarized into bounded retry state and sent back to Coding with a max retry limit of `3`.
 - `P-6` Audit output is a draft package containing CA-note content and commit-message suggestion; writing remains explicit/controlled.
+- `P-7` CP-41 must not create a parallel flow/session model; all new package, retry, validation, and audit state attaches to the existing `workflow_run_id` and relevant `workflow_step_run_id`.
 
 ### Constraints
 
@@ -47,6 +49,8 @@
 - Existing content in this file is retained as source notes rather than deleted.
 - Child tasks must include concrete DOD and test items.
 - Future implementation must extend existing seams rather than creating a parallel context system: `feature_history.go`, `HistorySlot`, `ChatSummarySlot`, `workflow_orchestrator.go`, `gate_hook.go`, and prompt logging.
+- Flow state must stay aligned with the existing persisted model: `workflow_runs`, `workflow_run_steps`, `workflow_run_logs`, `workflow_provider_events`, provider sessions, and artifacts where appropriate.
+- If a task needs durable structured state that current tables cannot represent, the task must either use an existing artifact/event/log path or explicitly introduce a small schema/config migration; it must not store hidden-only in-memory state.
 
 ### Open Questions
 
@@ -65,6 +69,7 @@
 - `Task-096`, `Task-097`, `Task-157`, `Task-161`, `Task-163`.
 - `CA-132` latest `context-regression-engine` audit anchor for prompt context continuity and provider handoff.
 - `Task-168`, `Task-169`, `Task-170`, `Task-171` child task implementation slices.
+- Current code refs: `workflow_orchestrator.go`, `workflow_state_machine.go`, `workflow_store.go`, `supabase_workflow_store.go`, `workflow_prompt.go`, `feature_history.go`, `gate_hook.go`, `artifacts.go`, `provider_event.go`.
 
 ## 1. Goal
 
@@ -80,6 +85,19 @@ The target behavior is:
 - prepare audit output when validation passes.
 
 The implementation must build on the current `context-regression-engine` state from `CA-132`: feature-history injection, bounded chat summaries, and prompt-context continuity already exist and should be extended rather than duplicated.
+
+Current Flow Mode invariant:
+
+```text
+workflow_runs
+  └── workflow_run_steps[] ordered by execution_order_index
+        ├── plan step: creates FlowContextPackage
+        ├── coding step: consumes FlowContextPackage
+        ├── testing step: records validation result and retry state
+        └── audit/result step: exposes audit draft and commit suggestion
+```
+
+The runner already advances this model through `WorkflowOrchestrator.Progress`, `PlanWorkflowProgress`, and the `WorkflowStore` interface. The live store is `SupabaseWorkflowStore`, which persists step transitions to `workflow_run_steps`, run status to `workflow_runs`, logs to `workflow_run_logs`, and provider events to `workflow_provider_events`.
 
 ## 2. Input Documents
 
@@ -98,11 +116,18 @@ The implementation must build on the current `context-regression-engine` state f
 - `requirements/08-Task/todo/Task-169-Plan-To-Coding-Context-Handoff.md`
 - `requirements/08-Task/todo/Task-170-Testing-Feedback-Retry-Loop.md`
 - `requirements/08-Task/todo/Task-171-Audit-Step-Draft-And-Commit-Prep.md`
+- `apps/local-runner/internal/runner/workflow_orchestrator.go`
+- `apps/local-runner/internal/runner/workflow_state_machine.go`
+- `apps/local-runner/internal/runner/workflow_store.go`
+- `apps/local-runner/internal/runner/supabase_workflow_store.go`
+- `apps/local-runner/internal/runner/workflow_prompt.go`
+- `apps/local-runner/internal/runner/provider_event.go`
 
 ## 3. Implementation Strategy
 
 - overall approach:
   - Treat Flow Mode Plan as the context harness step and the only step that assembles broad context.
+  - Attach the package to the active `workflow_run_id` and Plan `workflow_step_run_id`; downstream steps read from the same run, not from a separate "flow session".
   - Reuse the existing Feature Resolver, `composeFeatureBlocks`, `HistorySlot`, and `ChatSummarySlot`.
   - Add a typed/bounded context package contract that downstream steps can consume without rereading unbounded history.
   - Preserve the current deterministic retrieval model. Do not add vector DB retrieval.
@@ -117,12 +142,14 @@ The implementation must build on the current `context-regression-engine` state f
   - `.flowpilot/ledger/feature_history.ndjson` and `.flowpilot/ledger/chat_summary.ndjson` remain the history sources.
   - Existing flow-gate and phase-document contracts remain authoritative.
   - Existing provider adapters remain responsible for model execution; CP-41 only changes context packaging and flow sequencing.
+  - Existing `WorkflowStore` remains the persistence boundary; new code should add methods or artifact/event usage there rather than calling Supabase directly from feature-specific code.
 
 ## 4. Work Breakdown
 
 - `P-1` [Task-168](../../08-Task/todo/Task-168-Flow-Mode-Context-Package-Contract.md) Define the Flow Mode context package contract.
   - Inputs: user ask, resolved `feature_key`, issue details, changed paths when available.
   - Contents: feature history, CA excerpts, chat summaries, current source-file excerpts, upstream docs, constraints, and confidence notes.
+  - Identity: include `workflow_run_id`, Plan `workflow_step_run_id`, resolved `feature_key`, package id/hash, source doc ids, and created time.
   - Packing order: source refs and constraints first, newest prior truth, relevant source excerpts, prior discussion, validation hints.
   - Output: a bounded payload with stable fields and no provider-specific text.
 
@@ -135,6 +162,7 @@ The implementation must build on the current `context-regression-engine` state f
 
 - `P-3` [Task-169](../../08-Task/todo/Task-169-Plan-To-Coding-Context-Handoff.md) Pass the context package to the Coding step.
   - Add a stable prompt section for context package handoff.
+  - Resolve the package by current `workflow_run_id` and the prior Plan `workflow_step_run_id`.
   - Mark the newest prior history entry as current truth when present.
   - Preserve confidence warnings when the feature key is inferred or ambiguous.
   - Ensure Coding receives the same package on retries unless the Plan step is intentionally rerun.
@@ -144,15 +172,17 @@ The implementation must build on the current `context-regression-engine` state f
   - On failure, summarize compiler/test output into a bounded feedback block.
   - Retry Coding with the previous attempted change, failure summary, and original context package.
   - Cap retries at a small fixed limit, initially `3`.
+  - Persist retry attempt count/status on the current run/step using existing `workflow_run_steps.retry_count` where it fits, plus logs/events/artifacts for detailed summaries.
 
 - `P-5` [Task-170](../../08-Task/todo/Task-170-Testing-Feedback-Retry-Loop.md) Add Flow state tracking for retries.
   - Store per-attempt summary: attempted change, command run, result, key failure lines, next instruction.
-  - Keep state in runner-owned flow state, not in LLM memory.
+  - Keep state in runner-owned flow state tied to `workflow_run_id` and `workflow_step_run_id`, not in LLM memory.
   - Avoid raw unbounded logs in prompts.
 
 - `P-6` [Task-171](../../08-Task/todo/Task-171-Audit-Step-Draft-And-Commit-Prep.md) Add Audit-step preparation.
   - Generate an audit draft that captures what changed, why, validation result, and residual notes.
   - Prepare a commit-message suggestion using the existing `[Type][feature][layer?]` contract.
+  - Attach the audit draft to the Audit/result step as an inspectable run artifact or event payload.
   - Keep final commit/audit write behind explicit user or workflow confirmation if required by the existing flow.
 
 ## 5. Touched Areas
@@ -175,7 +205,9 @@ The implementation must build on the current `context-regression-engine` state f
   - local command/test execution
   - audit logging and commit-message preparation
 - database:
-  - none for CP-41.
+  - existing tables: `workflow_runs`, `workflow_run_steps`, `workflow_run_logs`, `workflow_provider_events`, `workflow_provider_sessions`.
+  - optional artifact path: existing run artifact storage for large context packages, validation summaries, and audit drafts.
+  - no new table is required by default; any task that proves current tables cannot hold required durable state must define a narrow migration.
 - external systems:
   - no new external vector DB or embedding service.
   - existing provider CLIs/APIs may still be used by the runner according to existing provider contracts.
@@ -183,8 +215,9 @@ The implementation must build on the current `context-regression-engine` state f
 ## 6. Data or Migration Steps
 
 - schema:
-  - No app database schema migration is planned.
-  - If retry state needs persistence, prefer an internal runner artifact or existing run-state structure.
+  - No app database schema migration is planned by default.
+  - Prefer existing step fields (`status`, `retry_count`, `rejection_note`), `workflow_run_logs`, `workflow_provider_events.payload_json`, and artifacts.
+  - If retry/context/audit state needs first-class queryability beyond those surfaces, add a narrow migration in the relevant child task instead of writing hidden local-only state.
 - data backfill:
   - No new backfill is required beyond existing feature-history and chat-summary ledger generation.
 - config updates:
@@ -201,6 +234,7 @@ The implementation must build on the current `context-regression-engine` state f
   - `Task-169`: Coding-step prompt receives bounded Plan context with source refs and confidence status.
   - `Task-170`: Testing-step failure produces bounded retry feedback and retry loop stops at max retry limit.
   - `Task-171`: Audit-step draft includes feature key, source doc id, validation result, residual notes, and commit-message suggestion.
+  - workflow persistence: fake `WorkflowStore` and mocked `SupabaseWorkflowStore` prove package/retry/audit state is attached to the correct `workflow_run_id` and `workflow_step_run_id`.
 - manual checks:
   - run a Flow Mode issue where history and chat summaries exist for the feature key.
   - run a Flow Mode issue with no prior history and confirm graceful degradation.
@@ -212,6 +246,8 @@ The implementation must build on the current `context-regression-engine` state f
   - failed build/test command with very large logs.
   - repeated retry failures.
   - audit draft cannot be written because `feature_key` or source doc id is missing.
+  - runner restart after Plan package creation.
+  - Supabase unavailable while local artifacts/logs are available.
 
 ## 8. Rollout and Fallback
 
@@ -235,6 +271,7 @@ The implementation must build on the current `context-regression-engine` state f
 - `R-4` Auto-generated audit notes can overstate certainty. Mitigation: keep audit output as a draft unless the workflow explicitly approves writing it.
 - `R-5` Adding semantic retrieval later could weaken determinism. Mitigation: CP-41 excludes vector DB retrieval; any future semantic layer needs a separate design/plan.
 - `R-6` Creating a new package could duplicate existing feature-history injection. Mitigation: `Task-168` must wrap/extend existing `feature_history.go` seams and tests must assert old injection behavior still works.
+- `R-7` Context package state could drift from persisted workflow step state. Mitigation: every package/retry/audit artifact must carry `workflow_run_id` and `workflow_step_run_id`, and tests must verify lookup by those ids.
 
 ## 10. Definition of Done
 
@@ -245,6 +282,7 @@ The implementation must build on the current `context-regression-engine` state f
 - [ ] `DOD-5` The complete implementation does not call or require any vector DB, embedding index, or similarity-search service.
 - [ ] `DOD-6` All child tasks include DOD and explicit test items.
 - [ ] `DOD-7` Manual Flow Mode run confirms graceful degradation when history/chat summaries are absent.
+- [ ] `DOD-8` Package, retry, validation, and audit state are attached to existing workflow run/step persistence, not a parallel session model.
 
 ## 11. Q&A / Preserved Notes
 
