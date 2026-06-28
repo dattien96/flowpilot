@@ -5,7 +5,7 @@
 - Document ID: `Task-171`
 - Title: `Audit Step Draft And Commit Prep`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-28`
@@ -184,6 +184,6 @@ After Coding and Testing succeed, Flow Mode should close the loop by preparing t
 
 ## 8. Completion Notes
 
-- result: `pending`
+- result: `complete`
 - follow-ups: final CP-41 rollout can mark done after all child tasks pass.
 - upstream docs updated: update `CP-41` only if audit ownership or write policy changes.

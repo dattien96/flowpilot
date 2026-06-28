@@ -2,10 +2,12 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -1663,6 +1665,9 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	if s.shouldInjectFeatureHistory(rs.providerKey) {
 		providerPrompt = injectFeatureHistoryPrompt(rs.workspaceCwd, providerPrompt, transcriptTurnsFromRun(rs))
 	}
+	if flowPrompt := s.injectFlowContextPrompt(rs, in, providerPrompt); flowPrompt != "" {
+		providerPrompt = flowPrompt
+	}
 	// Observability for E2E: persist/log the fully-composed turn prompt (feature
 	// history + discussion + mode prefix + user text) under the FlowPilot tool
 	// workspace (namespaced by project id), NOT inside the target project. On by
@@ -1767,6 +1772,104 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 			_, _ = s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt}, "", "")
 		}(rs.id, rs.stepID, prompt)
 	}
+}
+
+func (s *InteractiveService) injectFlowContextPrompt(rs *interactiveRun, in TurnInput, providerPrompt string) string {
+	if rs == nil || rs.workflowID == "" || rs.workspaceCwd == "" || in.StepID == "" {
+		return ""
+	}
+	step, ok := s.workflowStepByID(rs.id, in.StepID)
+	if !ok {
+		return ""
+	}
+	stepType := strings.ToLower(strings.TrimSpace(step.StepType))
+	switch stepType {
+	case "plan":
+		pkg, err := BuildFlowContextPackage(rs.workspaceCwd, in.Prompt, transcriptTurnsFromRun(rs), FlowContextHints{
+			WorkflowRunID: rs.id,
+			PlanStepRunID: in.StepID,
+			Prompt:        in.Prompt,
+			SourceDocID:   resolveSourceDocID(rs.workspaceCwd, rs.changeType, in.SourceDocID),
+		})
+		if err != nil {
+			return ""
+		}
+		if s.runner != nil {
+			_, _ = s.runner.SaveFlowContextPackageArtifact(rs.projectID, pkg)
+		}
+		return providerPrompt
+	case "coding":
+		pkg, ok := s.loadLatestFlowContextPackage(rs.id)
+		if !ok {
+			warning := "## Flow Context Package\n- Missing package for this run.\n- Use the existing run/step context only when continuing."
+			return strings.TrimSpace(warning + "\n\n---\n\n" + providerPrompt)
+		}
+		rendered := RenderFlowContextPackage(pkg)
+		instruction := strings.Join([]string{
+			"Use the Flow Context Package below as the source of truth for prior context.",
+			"Do not broaden retrieval unless explicitly instructed.",
+			"Preserve source refs when explaining changes.",
+		}, "\n")
+		return strings.TrimSpace(rendered + "\n\n" + instruction + "\n\n---\n\n" + providerPrompt)
+	case "testing":
+		return providerPrompt
+	case "audit", "result_summary":
+		if draft, ok := s.loadLatestFlowAuditDraft(rs.id); ok {
+			rendered := RenderFlowAuditDraft(draft)
+			return strings.TrimSpace(rendered + "\n\n---\n\n" + providerPrompt)
+		}
+		return providerPrompt
+	default:
+		return ""
+	}
+}
+
+func (s *InteractiveService) loadLatestFlowContextPackage(runID string) (FlowContextPackage, bool) {
+	if s.runner == nil {
+		return FlowContextPackage{}, false
+	}
+	artifacts, err := s.runner.ListArtifacts()
+	if err != nil {
+		return FlowContextPackage{}, false
+	}
+	for _, artifact := range artifacts {
+		if artifact.WorkflowRunID != runID || artifact.SourceKind != artifactSourceFlowContext {
+			continue
+		}
+		raw, readErr := os.ReadFile(artifact.ContentPath)
+		if readErr != nil {
+			continue
+		}
+		var pkg FlowContextPackage
+		if json.Unmarshal(raw, &pkg) == nil {
+			return pkg, true
+		}
+	}
+	return FlowContextPackage{}, false
+}
+
+func (s *InteractiveService) loadLatestFlowAuditDraft(runID string) (FlowAuditDraft, bool) {
+	if s.runner == nil {
+		return FlowAuditDraft{}, false
+	}
+	artifacts, err := s.runner.ListArtifacts()
+	if err != nil {
+		return FlowAuditDraft{}, false
+	}
+	for _, artifact := range artifacts {
+		if artifact.WorkflowRunID != runID || artifact.SourceKind != artifactSourceFlowAuditDraft {
+			continue
+		}
+		raw, readErr := os.ReadFile(artifact.ContentPath)
+		if readErr != nil {
+			continue
+		}
+		var draft FlowAuditDraft
+		if json.Unmarshal(raw, &draft) == nil {
+			return draft, true
+		}
+	}
+	return FlowAuditDraft{}, false
 }
 
 func (s *InteractiveService) shouldInjectFeatureHistory(providerKey ProviderKey) bool {

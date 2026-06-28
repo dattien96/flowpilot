@@ -126,11 +126,31 @@ func (s *InteractiveService) handleListArtifacts(w http.ResponseWriter, r *http.
 	runID := r.PathValue("runId")
 	// Prefer real finalizer artifacts once a turn has finalized (04-04); fall back
 	// to the fake catalog before the first finalize.
-	if arts, ok := s.finalizer.artifactsForRun(runID); ok {
-		writeInteractiveJSON(w, http.StatusOK, arts)
+	arts := []Artifact{}
+	if final, ok := s.finalizer.artifactsForRun(runID); ok {
+		arts = append(arts, final...)
+	}
+	if s.runner != nil {
+		if details, err := s.runner.ListArtifacts(); err == nil {
+			for _, detail := range details {
+				if detail.WorkflowRunID == runID {
+					arts = append(arts, Artifact{
+						ID:        detail.ArtifactID,
+						RunID:     detail.WorkflowRunID,
+						Kind:      detail.SourceKind,
+						Name:      detail.Title,
+						Preview:   detail.PreviewMarkdown,
+						CreatedAt: detail.CreatedAt,
+					})
+				}
+			}
+		}
+	}
+	if len(arts) == 0 {
+		writeInteractiveJSON(w, http.StatusOK, fakeArtifacts(runID))
 		return
 	}
-	writeInteractiveJSON(w, http.StatusOK, fakeArtifacts(runID))
+	writeInteractiveJSON(w, http.StatusOK, arts)
 }
 
 func (s *InteractiveService) handleListProjectRunHistory(w http.ResponseWriter, r *http.Request) {

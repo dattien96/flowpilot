@@ -5,7 +5,7 @@
 - Document ID: `Task-168`
 - Title: `Flow Mode Context Package Contract`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-28`
@@ -196,6 +196,6 @@ CP-41 needs a stable Plan-step output before Coding, Testing, and Audit can be w
 
 ## 8. Completion Notes
 
-- result: `pending`
+- result: `complete`
 - follow-ups: `Task-169` consumes the renderer output.
 - upstream docs updated: update `CP-41` only if implementation changes the task boundaries.

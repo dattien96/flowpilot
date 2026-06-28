@@ -5,7 +5,7 @@
 - Document ID: `Task-169`
 - Title: `Plan To Coding Context Handoff`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-28`
@@ -170,6 +170,6 @@ Once the Plan step can build a package, Flow Mode needs a reliable way to pass i
 
 ## 8. Completion Notes
 
-- result: `pending`
+- result: `complete`
 - follow-ups: `Task-170` appends validation feedback to this handoff path.
 - upstream docs updated: update `CP-41` only if handoff ownership changes.

@@ -20,6 +20,9 @@ import (
 
 const (
 	artifactSourcePromptExecution = "prompt_execution"
+	artifactSourceFlowContext     = "flow_context_package"
+	artifactSourceFlowAuditDraft  = "flow_audit_draft"
+	artifactSourceFlowValidation  = "flow_validation_result"
 	artifactSyncStatusLocalOnly   = "local_only"
 	artifactSyncStatusSynced      = "synced"
 	artifactSyncStatusFailed      = "failed"
@@ -375,6 +378,154 @@ func (r *Runner) SavePromptArtifact(request PromptExecutionRequest, result Promp
 	}
 
 	return artifact, nil
+}
+
+func (r *Runner) SaveFlowContextPackageArtifact(projectID string, pkg FlowContextPackage) (ArtifactDetail, error) {
+	return r.saveFlowArtifact(
+		projectID,
+		flowContextArtifactFeatureID,
+		pkg.WorkflowRunID,
+		pkg.PlanStepRunID,
+		artifactSourceFlowContext,
+		"Flow Context Package",
+		pkg.PackageID,
+		mustJSONString(pkg),
+		RenderFlowContextPackage(pkg),
+		pkg.PackageID,
+		"",
+		"",
+	)
+}
+
+func (r *Runner) SaveFlowAuditDraftArtifact(projectID string, draft FlowAuditDraft, stepID string) (ArtifactDetail, error) {
+	return r.saveFlowArtifact(
+		projectID,
+		flowContextArtifactFeatureID,
+		draft.WorkflowRunID,
+		stepID,
+		artifactSourceFlowAuditDraft,
+		"Flow Audit Draft",
+		draft.DraftID,
+		mustJSONString(draft),
+		RenderFlowAuditDraft(draft),
+		draft.DraftID,
+		"",
+		"",
+	)
+}
+
+func (r *Runner) SaveFlowValidationArtifact(projectID string, result FlowValidationResult) (ArtifactDetail, error) {
+	return r.saveFlowArtifact(
+		projectID,
+		flowContextArtifactFeatureID,
+		result.WorkflowRunID,
+		result.TestingStepRunID,
+		artifactSourceFlowValidation,
+		"Flow Validation Result",
+		flowValidationArtifactID(result),
+		mustJSONString(result),
+		summarizeFlowValidationOutput(result.ValidationCommand, result.StdoutSummary, result.StderrSummary, result.ExitCode),
+		"",
+		"",
+		"",
+	)
+}
+
+func flowValidationArtifactID(result FlowValidationResult) string {
+	if strings.TrimSpace(result.WorkflowRunID) == "" {
+		return "flowvalidation_unknown"
+	}
+	return "flowvalidation_" + result.WorkflowRunID + "_" + result.TestingStepRunID
+}
+
+func (r *Runner) saveFlowArtifact(projectID, featureID, runID, stepKey, sourceKind, title, artifactID, contentBody, promptText, actualPromptText, stdoutText, stderrText string) (ArtifactDetail, error) {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		projectID = "local"
+	}
+	featureID = strings.TrimSpace(featureID)
+	if featureID == "" {
+		featureID = flowContextArtifactFeatureID
+	}
+	stepKey = strings.TrimSpace(stepKey)
+	if stepKey == "" {
+		stepKey = "flow"
+	}
+	artifactID = strings.TrimSpace(artifactID)
+	if artifactID == "" {
+		artifactID = "artifact_" + runID
+	}
+	baseDir := r.artifactDirectory(projectID, featureID, runID, stepKey, artifactID)
+	if err := os.MkdirAll(baseDir, 0o755); err != nil {
+		return ArtifactDetail{}, err
+	}
+
+	manifestPath := filepath.Join(baseDir, "manifest.json")
+	promptPath := filepath.Join(baseDir, "prompt.md")
+	actualPromptPath := filepath.Join(baseDir, "actual-prompt.md")
+	stdoutPath := filepath.Join(baseDir, "stdout.txt")
+	stderrPath := filepath.Join(baseDir, "stderr.txt")
+	commandPath := filepath.Join(baseDir, "command.txt")
+	contentPath := filepath.Join(baseDir, "content.md")
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	artifact := ArtifactDetail{
+		ArtifactSummary: ArtifactSummary{
+			ArtifactID:      artifactID,
+			Title:           title,
+			SourceKind:      sourceKind,
+			ProjectID:       projectID,
+			FeatureID:       featureID,
+			WorkflowRunID:   runID,
+			WorkflowStepKey: stepKey,
+			ProviderKey:     "runner",
+			LocalPath:       baseDir,
+			RemotePath:      "",
+			RemoteURL:       "",
+			SyncStatus:      artifactSyncStatusLocalOnly,
+			CreatedAt:       now,
+			UpdatedAt:       now,
+			ContentMarkdown: contentBody,
+			PreviewMarkdown: readPreview(contentBody),
+		},
+		ManifestPath:     manifestPath,
+		PromptPath:       promptPath,
+		ActualPromptPath: actualPromptPath,
+		StdoutPath:       stdoutPath,
+		StderrPath:       stderrPath,
+		CommandPath:      commandPath,
+		ContentPath:      contentPath,
+		PromptText:       promptText,
+		ActualPromptText: actualPromptText,
+		StdoutText:       stdoutText,
+		StderrText:       stderrText,
+		CommandText:      "",
+	}
+	files := map[string]string{
+		contentPath: contentBody,
+		promptPath:  promptText,
+		stdoutPath:  stdoutText,
+		stderrPath:  stderrText,
+		commandPath: "",
+	}
+	if actualPromptText != "" {
+		files[actualPromptPath] = actualPromptText
+	}
+	if err := writeArtifactFiles(files); err != nil {
+		return ArtifactDetail{}, err
+	}
+	if err := artifact.writeManifest(manifestPath); err != nil {
+		return ArtifactDetail{}, err
+	}
+	return artifact, nil
+}
+
+func mustJSONString(v any) string {
+	raw, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return "{}"
+	}
+	return string(raw)
 }
 
 func (r *Runner) GetStorageDriver() (StorageDriverConfig, error) {

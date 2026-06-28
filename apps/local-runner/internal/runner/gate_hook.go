@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"flowpilot-runner/internal/changeledger"
 	"flowpilot-runner/internal/featurecatalog"
@@ -33,7 +34,7 @@ type gateBlockInfo struct {
 // All errors inside this function are non-fatal: if the gate cannot observe or
 // evaluate it returns false (degraded = safe, turn completes normally).
 func (s *InteractiveService) runFlowGate(
-	_ context.Context, rs *interactiveRun, turnID string, fin finalizeInput,
+	ctx context.Context, rs *interactiveRun, turnID string, fin finalizeInput,
 ) (block bool) {
 	cwd := rs.workspaceCwd
 	if cwd == "" {
@@ -57,6 +58,10 @@ func (s *InteractiveService) runFlowGate(
 
 	// 3. Load per-test overrides (Task-155): agreed-changed tests are not re-counted.
 	overrides, _ := flowgate.LoadOverrides(dotFP)
+
+	if blocked, _ := s.maybeRunFlowValidation(ctx, rs, fin, dotFP); blocked {
+		return true
+	}
 
 	// 4. Run regression oracle with override awareness.
 	oracle := flowgate.RunOracle(cwd, baseline, diff, overrides)
@@ -191,6 +196,139 @@ func (s *InteractiveService) runFlowGate(
 
 	// "warn" or "approve": log only, let the turn complete normally.
 	return false
+}
+
+func (s *InteractiveService) maybeRunFlowValidation(ctx context.Context, rs *interactiveRun, fin finalizeInput, dotFP string) (blocked bool, handled bool) {
+	if rs == nil {
+		return false, false
+	}
+	step, ok := s.workflowStepByID(rs.id, rs.stepID)
+	if !ok || !strings.EqualFold(step.StepType, "testing") {
+		return false, false
+	}
+	cfg, err := loadFlowModeConfig(dotFP)
+	if err != nil {
+		log.Printf("[flow-validation] config load failed run=%q step=%q err=%v", rs.id, rs.stepID, err)
+		return false, true
+	}
+	if cfg.MaxRetries <= 0 {
+		cfg.MaxRetries = 3
+	}
+	if cfg.ValidationCommand == "" {
+		result := FlowValidationResult{
+			WorkflowRunID:        rs.id,
+			TestingStepRunID:     rs.stepID,
+			CodingStepRunID:      "",
+			ValidationCommand:    "",
+			ValidationWorkingDir: cfg.ValidationWorkingDirectory,
+			Status:               "skipped_no_command",
+			ExitCode:             0,
+			FailureSummary:       "Testing validation command is not configured.",
+		}
+		if s.runner != nil {
+			_, _ = s.runner.SaveFlowValidationArtifact(rs.projectID, result)
+		}
+		return false, true
+	}
+	wrkDir := cfg.ValidationWorkingDirectory
+	if wrkDir == "" {
+		wrkDir = rs.workspaceCwd
+	}
+	stdout, stderr, exitCode, runErr := runValidationCommand(ctx, wrkDir, cfg.ValidationCommand)
+	passed := runErr == nil && exitCode == 0
+	failureSummary := ""
+	if !passed {
+		failureSummary = summarizeFlowValidationOutput(cfg.ValidationCommand, stdout, stderr, exitCode)
+	}
+	codingStep, hasCoding := s.latestCompletedStepByType(rs.id, "coding")
+	result := FlowValidationResult{
+		WorkflowRunID:        rs.id,
+		TestingStepRunID:     rs.stepID,
+		CodingStepRunID:      codingStep.ID,
+		ValidationCommand:    cfg.ValidationCommand,
+		ValidationWorkingDir: wrkDir,
+		Status:               "passed",
+		ExitCode:             exitCode,
+		StdoutSummary:        stdout,
+		StderrSummary:        stderr,
+		FailureSummary:       failureSummary,
+		MaxRetries:           cfg.MaxRetries,
+		PreviousCodingTurnID: rs.lastTurnID,
+	}
+	if !passed {
+		result.Status = "failed"
+	}
+	if s.runner != nil {
+		if _, saveErr := s.runner.SaveFlowValidationArtifact(rs.projectID, result); saveErr != nil {
+			log.Printf("[flow-validation] artifact save failed run=%q step=%q err=%v", rs.id, rs.stepID, saveErr)
+		}
+	}
+	if passed || !hasCoding {
+		if passed && s.runner != nil {
+			if auditStep, ok := s.firstStepByType(rs.id, "audit"); ok {
+				pkg, pkgOK := s.loadLatestFlowContextPackage(rs.id)
+				if pkgOK {
+					draft := BuildFlowAuditDraft(rs.workspaceCwd, pkg, codingStep.ID, rs.stepID, auditStep.ID, fin.ChangedFiles, []string{cfg.ValidationCommand}, nil, "Validation passed.", "feature", truncateDisplayField(fin.FinalMessage, 200))
+					_, _ = s.runner.SaveFlowAuditDraftArtifact(rs.projectID, draft, auditStep.ID)
+				}
+			}
+		}
+		return false, true
+	}
+	if isValidationEnvironmentFailure(exitCode, stderr, runErr) {
+		result.Status = "environment_error"
+		if s.runner != nil {
+			_, _ = s.runner.SaveFlowValidationArtifact(rs.projectID, result)
+		}
+		return false, true
+	}
+	if codingStep.RetryCount >= cfg.MaxRetries {
+		result.Status = "failed_validation_max_retries"
+		if s.runner != nil {
+			_, _ = s.runner.SaveFlowValidationArtifact(rs.projectID, result)
+		}
+		return false, true
+	}
+
+	planPkg, pkgOK := s.loadLatestFlowContextPackage(rs.id)
+	if !pkgOK {
+		planPkg = FlowContextPackage{WorkflowRunID: rs.id, PlanStepRunID: codingStep.ID, FeatureKey: "", FeatureConfidence: FlowContextConfidenceMissing, Warnings: []string{"missing original plan package"}}
+	}
+	result.RetryAttempt = codingStep.RetryCount + 1
+	result.OriginalPlanPackageID = planPkg.PackageID
+	if s.runner != nil {
+		_, _ = s.runner.SaveFlowValidationArtifact(rs.projectID, result)
+	}
+	prompt := buildValidationRetryPrompt(planPkg, result)
+	transition := PlanRejectedStepRetry(codingStep.ID, codingStep.RetryCount, time.Now().UTC().Format(time.RFC3339Nano), result.FailureSummary)
+	if err := s.workflowStore.ApplyStepTransition(ctx, rs.id, transition); err != nil {
+		log.Printf("[flow-validation] retry transition failed run=%q codingStep=%q err=%v", rs.id, codingStep.ID, err)
+		return false, true
+	}
+	go func(runID, stepID, prompt string) {
+		_, _ = s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt}, "", "")
+	}(rs.id, codingStep.ID, prompt)
+	return true, true
+}
+
+func isValidationEnvironmentFailure(exitCode int, stderr string, runErr error) bool {
+	if exitCode == 126 || exitCode == 127 {
+		return true
+	}
+	if runErr == nil {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(runErr.Error() + " " + stderr))
+	switch {
+	case strings.Contains(msg, "permission denied"):
+		return true
+	case strings.Contains(msg, "not found"):
+		return true
+	case strings.Contains(msg, "no such file"):
+		return true
+	default:
+		return false
+	}
 }
 
 // SubmitGateDecision handles the user's r-reg decision card choice (Task-155).

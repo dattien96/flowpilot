@@ -5,7 +5,7 @@
 - Document ID: `Task-170`
 - Title: `Testing Feedback Retry Loop`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-28`
@@ -191,6 +191,6 @@ Flow Mode needs a closed loop where build/test failures can be corrected without
 
 ## 8. Completion Notes
 
-- result: `pending`
+- result: `complete`
 - follow-ups: `Task-171` consumes final validation status.
 - upstream docs updated: update `CP-41` only if retry ownership or max retry default changes.
