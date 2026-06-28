@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -241,6 +242,10 @@ func (s *InteractiveService) maybeRunFlowValidation(ctx context.Context, rs *int
 		failureSummary = summarizeFlowValidationOutput(cfg.ValidationCommand, stdout, stderr, exitCode)
 	}
 	codingStep, hasCoding := s.latestCompletedStepByType(rs.id, "coding")
+	testingStepRetryCount := 0
+	if currentStep, ok := s.workflowStepByID(rs.id, rs.stepID); ok {
+		testingStepRetryCount = currentStep.RetryCount
+	}
 	result := FlowValidationResult{
 		WorkflowRunID:        rs.id,
 		TestingStepRunID:     rs.stepID,
@@ -268,7 +273,7 @@ func (s *InteractiveService) maybeRunFlowValidation(ctx context.Context, rs *int
 			if auditStep, ok := s.firstStepByType(rs.id, "audit"); ok {
 				pkg, pkgOK := s.loadLatestFlowContextPackage(rs.id)
 				if pkgOK {
-					draft := BuildFlowAuditDraft(rs.workspaceCwd, pkg, codingStep.ID, rs.stepID, auditStep.ID, fin.ChangedFiles, []string{cfg.ValidationCommand}, nil, "Validation passed.", "feature", truncateDisplayField(fin.FinalMessage, 200))
+					draft := BuildFlowAuditDraft(rs.workspaceCwd, pkg, codingStep.ID, rs.stepID, auditStep.ID, s.loadPersistedCodingChangedFiles(rs.id, rs.lastTurnID), []string{cfg.ValidationCommand}, nil, "Validation passed.", "feature", truncateDisplayField(fin.FinalMessage, 200))
 					_, _ = s.runner.SaveFlowAuditDraftArtifact(rs.projectID, draft, auditStep.ID)
 				}
 			}
@@ -282,7 +287,7 @@ func (s *InteractiveService) maybeRunFlowValidation(ctx context.Context, rs *int
 		}
 		return false, true
 	}
-	if codingStep.RetryCount >= cfg.MaxRetries {
+	if testingStepRetryCount >= cfg.MaxRetries {
 		result.Status = "failed_validation_max_retries"
 		if s.runner != nil {
 			_, _ = s.runner.SaveFlowValidationArtifact(rs.projectID, result)
@@ -294,21 +299,40 @@ func (s *InteractiveService) maybeRunFlowValidation(ctx context.Context, rs *int
 	if !pkgOK {
 		planPkg = FlowContextPackage{WorkflowRunID: rs.id, PlanStepRunID: codingStep.ID, FeatureKey: "", FeatureConfidence: FlowContextConfidenceMissing, Warnings: []string{"missing original plan package"}}
 	}
-	result.RetryAttempt = codingStep.RetryCount + 1
+	result.RetryAttempt = testingStepRetryCount + 1
 	result.OriginalPlanPackageID = planPkg.PackageID
 	if s.runner != nil {
 		_, _ = s.runner.SaveFlowValidationArtifact(rs.projectID, result)
 	}
 	prompt := buildValidationRetryPrompt(planPkg, result)
-	transition := PlanRejectedStepRetry(codingStep.ID, codingStep.RetryCount, time.Now().UTC().Format(time.RFC3339Nano), result.FailureSummary)
+	transition := PlanRejectedStepRetry(rs.stepID, testingStepRetryCount, time.Now().UTC().Format(time.RFC3339Nano), result.FailureSummary)
 	if err := s.workflowStore.ApplyStepTransition(ctx, rs.id, transition); err != nil {
-		log.Printf("[flow-validation] retry transition failed run=%q codingStep=%q err=%v", rs.id, codingStep.ID, err)
+		log.Printf("[flow-validation] retry transition failed run=%q testingStep=%q err=%v", rs.id, rs.stepID, err)
 		return false, true
 	}
 	go func(runID, stepID, prompt string) {
 		_, _ = s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt}, "", "")
-	}(rs.id, codingStep.ID, prompt)
+	}(rs.id, rs.stepID, prompt)
 	return true, true
+}
+
+func (s *InteractiveService) loadPersistedCodingChangedFiles(runID, turnID string) []string {
+	if s.finalizer != nil && strings.TrimSpace(turnID) != "" {
+		if state, ok := s.finalizer.state(runID, turnID); ok {
+			for _, artifact := range state.artifacts {
+				if artifact.Kind != "rag_document" || strings.TrimSpace(artifact.Preview) == "" {
+					continue
+				}
+				var doc struct {
+					ChangedFiles []string `json:"changedFiles"`
+				}
+				if json.Unmarshal([]byte(artifact.Preview), &doc) == nil && len(doc.ChangedFiles) > 0 {
+					return uniqueSorted(doc.ChangedFiles)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func isValidationEnvironmentFailure(exitCode int, stderr string, runErr error) bool {

@@ -111,6 +111,60 @@ func TestBuildFlowContextPackageRejectsOutsideWorkspacePath(t *testing.T) {
 	}
 }
 
+func TestBuildFlowContextPackageDoesNotInheritOnAmbiguousPrompt(t *testing.T) {
+	workspace := t.TempDir()
+	repoDir := workspace
+	dotFP := filepath.Join(workspace, ".flowpilot")
+	mustWrite(t, filepath.Join(repoDir, "change-audit", "FEATURE-KEYS.md"), "- context-regression-engine — Context Regression Engine\n")
+	ledger, err := changeledger.New(dotFP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.Upsert([]changeledger.Entry{{CommitHash: "c1", FeatureKey: "context-regression-engine", Summary: "seed", CommittedAt: "2026-06-28T00:00:00Z", Confidence: changeledger.ConfidenceHigh}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := featurecatalog.Build(repoDir, ledger, dotFP); err != nil {
+		t.Fatal(err)
+	}
+
+	pkg, err := BuildFlowContextPackage(workspace, "write a haiku about the sea", []transcriptTurn{{User: "context-regression-engine"}}, FlowContextHints{
+		WorkflowRunID: "run-1",
+		PlanStepRunID: "plan-1",
+		Prompt:        "write a haiku about the sea",
+	})
+	if err != nil {
+		t.Fatalf("BuildFlowContextPackage: %v", err)
+	}
+	if pkg.FeatureKey != "" {
+		t.Fatalf("ambiguous prompt should not inherit prior history, got feature %q", pkg.FeatureKey)
+	}
+}
+
+func TestRenderFlowContextPackageIsBoundedByMaxBytes(t *testing.T) {
+	pkg := FlowContextPackage{
+		PackageID:         "pkg-1",
+		WorkflowRunID:     "run-1",
+		PlanStepRunID:     "plan-1",
+		FeatureKey:        "context-regression-engine",
+		FeatureConfidence: FlowContextConfidenceVerified,
+		MaxBytes:          160,
+		SourceRefs:        []FlowContextSourceRef{{Kind: "feature", FeatureKey: "context-regression-engine"}},
+		HistoryBlock:      strings.Repeat("history\n", 12),
+		DiscussionBlock:   strings.Repeat("discussion\n", 12),
+		SourceExcerpts:    []FlowContextExcerpt{{Path: "internal/runner/sample.go", IncludedText: strings.Repeat("x", 120)}},
+		Constraints:       []string{strings.Repeat("constraint ", 12)},
+		Warnings:          []string{strings.Repeat("warning ", 12)},
+		Omitted:           []string{strings.Repeat("omitted ", 12)},
+	}
+	rendered := RenderFlowContextPackage(pkg)
+	if len(rendered) > pkg.MaxBytes {
+		t.Fatalf("rendered package exceeded max bytes: got %d want <= %d", len(rendered), pkg.MaxBytes)
+	}
+	if !strings.HasSuffix(rendered, "...[truncated]") {
+		t.Fatalf("rendered package should be truncated, got %q", rendered)
+	}
+}
+
 func TestFlowContextPackagePersistsAndReloads(t *testing.T) {
 	workspace := t.TempDir()
 	repoDir := workspace
@@ -197,6 +251,53 @@ func TestCodingPromptIncludesFlowContextOnce(t *testing.T) {
 	}
 	if !strings.Contains(got, "Use the Flow Context Package below as the source of truth") {
 		t.Fatalf("coding prompt missing handoff instruction: %q", got)
+	}
+}
+
+func TestCodingPromptUsesFlowContextPackageWhenMissingLegacyHistory(t *testing.T) {
+	workspace := t.TempDir()
+	repoDir := workspace
+	dotFP := filepath.Join(workspace, ".flowpilot")
+	mustWrite(t, filepath.Join(repoDir, "change-audit", "FEATURE-KEYS.md"), "- context-regression-engine — Context Regression Engine\n")
+	ledger, err := changeledger.New(dotFP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.Upsert([]changeledger.Entry{{CommitHash: "c1", FeatureKey: "context-regression-engine", Summary: "seed", CommittedAt: "2026-06-28T00:00:00Z", Confidence: changeledger.ConfidenceHigh}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := featurecatalog.Build(repoDir, ledger, dotFP); err != nil {
+		t.Fatal(err)
+	}
+	pkg, err := BuildFlowContextPackage(workspace, "context-regression-engine", nil, FlowContextHints{
+		WorkflowRunID: "run-1",
+		PlanStepRunID: "plan-1",
+		Prompt:        "context-regression-engine",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner, err := New(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.SaveFlowContextPackageArtifact("proj-1", pkg); err != nil {
+		t.Fatal(err)
+	}
+	store := newFakeWorkflowStore()
+	store.seed("run-1", []RuntimeWorkflowStep{
+		step("plan-1", "plan", StepStatusDone, false),
+		step("coding-1", "coding", StepStatusPending, false),
+	})
+	svc := NewInteractiveServiceWithStore(DefaultProviderRegistry(), nil, store)
+	svc.runner = runner
+	rs := &interactiveRun{id: "run-1", workflowID: "wf-1", workspaceCwd: workspace}
+	got := svc.injectFlowContextPrompt(rs, TurnInput{StepID: "coding-1", Prompt: "implement the plan"}, "implement the plan")
+	if strings.Count(got, "## Flow Context Package") != 1 {
+		t.Fatalf("coding prompt should include one flow context block, got %q", got)
+	}
+	if strings.Contains(got, "legacy feature history") {
+		t.Fatalf("coding prompt unexpectedly included legacy history: %q", got)
 	}
 }
 

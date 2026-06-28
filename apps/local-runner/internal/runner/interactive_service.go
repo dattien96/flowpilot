@@ -1662,7 +1662,7 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// Live ledger refresh (CP-35): pick up commits made during this session so the
 	// oracle always sees the current change history, not just what existed at bind time.
 	s.rebuildLedgerIfDirty(rs.workspaceCwd)
-	if s.shouldInjectFeatureHistory(rs.providerKey) {
+	if s.shouldInjectFeatureHistory(rs.providerKey) && !s.isFlowContextDownstreamStep(rs.id, in.StepID) {
 		providerPrompt = injectFeatureHistoryPrompt(rs.workspaceCwd, providerPrompt, transcriptTurnsFromRun(rs))
 	}
 	if flowPrompt := s.injectFlowContextPrompt(rs, in, providerPrompt); flowPrompt != "" {
@@ -1821,6 +1821,19 @@ func (s *InteractiveService) injectFlowContextPrompt(rs *interactiveRun, in Turn
 		return providerPrompt
 	default:
 		return ""
+	}
+}
+
+func (s *InteractiveService) isFlowContextDownstreamStep(runID, stepID string) bool {
+	step, ok := s.workflowStepByID(runID, stepID)
+	if !ok {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(step.StepType)) {
+	case "coding", "testing", "audit", "result_summary":
+		return true
+	default:
+		return false
 	}
 }
 

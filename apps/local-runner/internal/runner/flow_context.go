@@ -108,11 +108,6 @@ func BuildFlowContextPackage(workspace, prompt string, priorTurns []transcriptTu
 			if top.Score < 5.0 {
 				pkg.FeatureConfidence = FlowContextConfidenceLow
 			}
-		} else {
-			if top, ok := resolveTurnsFeature(priorTurns, catalog); ok {
-				pkg.FeatureKey = top.Key
-				pkg.FeatureConfidence = FlowContextConfidenceLow
-			}
 		}
 	}
 
@@ -181,6 +176,18 @@ func BuildFlowContextPackage(workspace, prompt string, priorTurns []transcriptTu
 		{Title: "Omitted", Body: renderFlowContextBulletList(pkg.Omitted)},
 	}
 	return pkg, nil
+}
+
+func boundFlowContextRenderedPackage(pkg FlowContextPackage, rendered string) string {
+	maxBytes := pkg.MaxBytes
+	if maxBytes <= 0 || len(rendered) <= maxBytes {
+		return rendered
+	}
+	const marker = "\n...[truncated]"
+	if maxBytes <= len(marker) {
+		return rendered[:maxBytes]
+	}
+	return rendered[:maxBytes-len(marker)] + marker
 }
 
 func flowContextPackageID(pkg FlowContextPackage) string {
@@ -417,7 +424,7 @@ func RenderFlowContextPackage(pkg FlowContextPackage) string {
 		sb.WriteString(body)
 		sb.WriteString("\n")
 	}
-	return strings.TrimSpace(sb.String())
+	return boundFlowContextRenderedPackage(pkg, strings.TrimSpace(sb.String()))
 }
 
 func renderFlowContextPackageBody(pkg FlowContextPackage) string {

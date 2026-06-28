@@ -237,6 +237,51 @@ func TestLiveChatInjectsFeatureHistoryForSupportedProviders(t *testing.T) {
 	}
 }
 
+func TestFlowPlanPromptStillReceivesFeatureHistory(t *testing.T) {
+	workspace := t.TempDir()
+	repoDir := t.TempDir()
+	dotDir := filepath.Join(workspace, ".flowpilot")
+	if err := os.MkdirAll(filepath.Join(repoDir, "change-audit"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "change-audit", "FEATURE-KEYS.md"), []byte("- chat-ui — Chat UI\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ledger, err := changeledger.New(dotDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.Upsert([]changeledger.Entry{{CommitHash: "c1", FeatureKey: "chat-ui", Summary: "first history", CommittedAt: "2026-01-01T00:00:00Z", Confidence: changeledger.ConfidenceHigh}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := featurecatalog.Build(repoDir, ledger, dotDir); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewInteractiveService()
+	capture := &captureTurnAdapter{ch: make(chan TurnRequest, 1)}
+	store := newFakeWorkflowStore()
+	store.seed("run-1", []RuntimeWorkflowStep{
+		step("step-plan", "plan", StepStatusPending, false),
+	})
+	svc.workflowStore = store
+	svc.runner = nil
+	rs := &interactiveRun{id: "run-1", providerKey: ProviderKeyCodex, workspaceCwd: workspace, runKind: "flow", workflowID: "wf-1", turnCount: 1}
+	svc.runTurn(context.Background(), rs, capture, TurnInput{StepID: "step-plan", Prompt: "chat-ui"}, "", "turn-1")
+
+	select {
+	case req := <-capture.ch:
+		if !strings.Contains(req.Prompt, "first history") {
+			t.Fatalf("plan prompt lost feature history, got %q", req.Prompt)
+		}
+		if strings.Contains(req.Prompt, "## Flow Context Package") {
+			t.Fatalf("plan prompt should not double-inject flow context package, got %q", req.Prompt)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for captured prompt")
+	}
+}
+
 func TestLiveChatRefreshesLedgerBeforeFeatureHistoryInjection(t *testing.T) {
 	workspace := t.TempDir()
 	runGit(t, workspace, "init")
