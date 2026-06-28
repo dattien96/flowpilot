@@ -446,9 +446,6 @@ func (s *InteractiveService) locateSessionAcrossProviderAccounts(providerKey Pro
 }
 
 func (s *InteractiveService) ensureResumeReady(rs *interactiveRun) *apiErr {
-	if rs.providerKey == ProviderKeyGemini && rs.resumedFromDisk {
-		return newAPIErr(http.StatusConflict, "resume_unsupported", "Gemini persisted resume is not supported yet")
-	}
 	// "The active account" must be scoped to this run's provider, not the single
 	// global activeAccountID: a Codex chat is resumed against the active Codex
 	// account regardless of which Claude/Gemini account is active (Task-067 issue 1).

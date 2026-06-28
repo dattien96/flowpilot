@@ -135,10 +135,6 @@ type Runner struct {
 	// is the multiplexer: concurrent sessions = concurrent processes.
 	claudePool *claudeProcessPool
 
-	// geminiSessions tracks FlowPilot synthetic session ids to Gemini ACP session ids
-	// across per-turn adapter instances.
-	geminiSessions *geminiSessionMap
-
 	// claudeMCP is the runner-hosted MCP server for the Claude permission/ask_user tools
 	// (07); mcpBaseURL is the runner's own base URL ("http://host:port"), set at startup
 	// so the adapter can build per-turn --mcp-config URLs.
@@ -157,13 +153,12 @@ func New(workspace string) (*Runner, error) {
 	}
 
 	return &Runner{
-		workspace:      resolved,
-		startedAt:      time.Now().UTC(),
-		secretStore:    newDefaultSecretStore(),
-		sessions:       make(map[string]*LiveSession),
-		claudePool:     newClaudeProcessPool(),
-		geminiSessions: newGeminiSessionMap(),
-		claudeMCP:      newClaudeMCPServer(),
+		workspace:   resolved,
+		startedAt:   time.Now().UTC(),
+		secretStore: newDefaultSecretStore(),
+		sessions:    make(map[string]*LiveSession),
+		claudePool:  newClaudeProcessPool(),
+		claudeMCP:   newClaudeMCPServer(),
 	}, nil
 }
 

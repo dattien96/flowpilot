@@ -2085,12 +2085,6 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 			live.pool.setRealSession(rs.realProviderSessionID, rs.realProviderSessionID)
 		}
 	}
-	if rs.resumedFromDisk && rs.providerKey == ProviderKeyGemini {
-		if live, ok := adapter.(*geminiAdapter); ok && rs.realProviderSessionID != "" {
-			live.sessions.setRealSession(live.scopeKey, rs.providerSessionID, rs.realProviderSessionID)
-			live.sessions.setRealSession(live.scopeKey, rs.realProviderSessionID, rs.realProviderSessionID)
-		}
-	}
 
 	turnID := s.nextID("turn")
 	rs.turnInFlight = true
@@ -2154,18 +2148,6 @@ func (s *InteractiveService) refreshResumeHandleLocked(rs *interactiveRun, adapt
 		real := live.pool.realSession(rs.providerSessionID)
 		if real == "" {
 			real = live.pool.realSession(rs.realProviderSessionID)
-		}
-		if real != "" {
-			rs.realProviderSessionID = real
-		}
-	case ProviderKeyGemini:
-		live, ok := adapter.(*geminiAdapter)
-		if !ok {
-			return ""
-		}
-		real := live.sessions.realSession(live.scopeKey, rs.providerSessionID)
-		if real == "" {
-			real = live.sessions.realSession(live.scopeKey, rs.realProviderSessionID)
 		}
 		if real != "" {
 			rs.realProviderSessionID = real
