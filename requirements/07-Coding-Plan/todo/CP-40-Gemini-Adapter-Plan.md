@@ -19,6 +19,8 @@
 ## AI Quick View
 
 ### Summary
+**NOT DONE Now: Cause agy does not support stream json mode
+Gemini cli supports but it does not work for our individual acc**
 
 - FlowPilot already has one provider-neutral desktop chat/runtime abstraction in the runner: `ProviderRuntimeAdapter`, `TurnBridge`, normalized `ProviderEvent`, and provider registry.
 - Codex and Claude prove the target shape; Gemini should plug into the same seam, not introduce a parallel runtime.
