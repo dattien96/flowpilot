@@ -1676,6 +1676,7 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	req := TurnRequest{
 		RunID:             rs.id,
 		StepID:            in.StepID,
+		ProjectID:         rs.projectID,
 		ProviderSessionID: providerSessionID,
 		ProviderTurnID:    turnID,
 		Prompt:            providerPrompt,
@@ -1711,6 +1712,10 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// across restarts (BUG-080 F-3). Take a snapshot under lock; persist outside.
 	s.mu.Lock()
 	newCodexSessionID := s.refreshResumeHandleLocked(rs, adapter)
+	geminiTurn := transcriptTurn{}
+	if rs.providerKey == ProviderKeyGemini && completed {
+		geminiTurn = transcriptTurnForProviderTurnLocked(rs, turnID)
+	}
 	snap := sessionStateOf(rs)
 	s.mu.Unlock()
 	_ = s.persistProviderSession(snap)
@@ -1719,6 +1724,16 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	if newCodexSessionID != "" {
 		if logger, logOK := s.workflowStore.(TurnLogStore); logOK {
 			_ = logger.AppendTurnLog(context.Background(), rs.id, turnLogLine{Kind: turnLogKindCodexSession, SessionID: newCodexSessionID})
+		}
+	}
+	if strings.TrimSpace(geminiTurn.User) != "" || strings.TrimSpace(geminiTurn.Assistant) != "" {
+		if logger, logOK := s.workflowStore.(TurnLogStore); logOK {
+			_ = logger.AppendTurnLog(context.Background(), rs.id, turnLogLine{
+				Kind:      turnLogKindTranscriptTurn,
+				TurnID:    turnID,
+				Prompt:    geminiTurn.User,
+				Assistant: geminiTurn.Assistant,
+			})
 		}
 	}
 	if err == nil {
@@ -1827,6 +1842,9 @@ func isRecoverableSendError(err error) bool {
 		return false
 	}
 	if errors.Is(err, errApprovalExpired) || errors.Is(err, errQuestionExpired) {
+		return false
+	}
+	if errors.Is(err, errGeminiWorkspaceRequired) {
 		return false
 	}
 	if isProviderUsageLimitError(err) {
@@ -1969,6 +1987,20 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 			live.pool.setRealSession(rs.realProviderSessionID, rs.realProviderSessionID)
 		}
 	}
+	if rs.resumedFromDisk && rs.providerKey == ProviderKeyGemini {
+		if live, ok := adapter.(*geminiAdapter); ok && rs.realProviderSessionID != "" {
+			scopeKey := strings.TrimSpace(rs.providerAccountID)
+			if scopeKey == "" {
+				scopeKey = strings.TrimSpace(live.scopeKey)
+			}
+			live.sessions.setRealSession(scopeKey, rs.providerSessionID, rs.realProviderSessionID)
+			live.sessions.setRealSession(scopeKey, rs.realProviderSessionID, rs.realProviderSessionID)
+			if scopeKey != strings.TrimSpace(live.scopeKey) {
+				live.sessions.setRealSession(live.scopeKey, rs.providerSessionID, rs.realProviderSessionID)
+				live.sessions.setRealSession(live.scopeKey, rs.realProviderSessionID, rs.realProviderSessionID)
+			}
+		}
+	}
 
 	turnID := s.nextID("turn")
 	rs.turnInFlight = true
@@ -2010,11 +2042,43 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	// session file records the composed prompt (raw + reinforcement + skill preamble),
 	// so we keep the raw input separately and prefer it on resume.
 	if logger, logOK := s.workflowStore.(TurnLogStore); logOK {
-		_ = logger.AppendTurnLog(context.Background(), runID, turnLogLine{Kind: turnLogKindPrompt, Prompt: in.Prompt})
+		_ = logger.AppendTurnLog(context.Background(), runID, turnLogLine{Kind: turnLogKindPrompt, TurnID: turnID, Prompt: in.Prompt})
 	}
 
 	go s.runTurn(ctx, rs, adapter, in, scenario, turnID)
 	return turnID, nil
+}
+
+func transcriptTurnForProviderTurnLocked(rs *interactiveRun, turnID string) transcriptTurn {
+	if rs == nil {
+		return transcriptTurn{}
+	}
+	turn := transcriptTurn{}
+	for i := len(rs.events) - 1; i >= 0; i-- {
+		ev := rs.events[i]
+		if turnID != "" && ev.ProviderTurnID != turnID {
+			continue
+		}
+		if turn.Assistant == "" && ev.Type == EventMessageCompleted && strings.TrimSpace(ev.Text) != "" {
+			turn.Assistant = ev.Text
+		}
+		if turn.User == "" && ev.Type == EventTurnStarted && strings.TrimSpace(ev.Prompt) != "" {
+			turn.User = ev.Prompt
+		}
+	}
+	if turn.Assistant == "" {
+		for i := len(rs.events) - 1; i >= 0; i-- {
+			ev := rs.events[i]
+			if turnID != "" && ev.ProviderTurnID != turnID {
+				continue
+			}
+			if ev.Type == EventTurnCompleted && strings.TrimSpace(ev.FinalMessage) != "" {
+				turn.Assistant = ev.FinalMessage
+				break
+			}
+		}
+	}
+	return turn
 }
 
 // refreshResumeHandleLocked updates the in-memory resume handle after a turn
@@ -2032,6 +2096,28 @@ func (s *InteractiveService) refreshResumeHandleLocked(rs *interactiveRun, adapt
 		real := live.pool.realSession(rs.providerSessionID)
 		if real == "" {
 			real = live.pool.realSession(rs.realProviderSessionID)
+		}
+		if real != "" {
+			rs.realProviderSessionID = real
+		}
+	case ProviderKeyGemini:
+		live, ok := adapter.(*geminiAdapter)
+		if !ok {
+			return ""
+		}
+		scopeKey := strings.TrimSpace(rs.providerAccountID)
+		if scopeKey == "" {
+			scopeKey = strings.TrimSpace(live.scopeKey)
+		}
+		real := live.sessions.realSession(scopeKey, rs.providerSessionID)
+		if real == "" {
+			real = live.sessions.realSession(scopeKey, rs.realProviderSessionID)
+		}
+		if real == "" && scopeKey != strings.TrimSpace(live.scopeKey) {
+			real = live.sessions.realSession(live.scopeKey, rs.providerSessionID)
+			if real == "" {
+				real = live.sessions.realSession(live.scopeKey, rs.realProviderSessionID)
+			}
 		}
 		if real != "" {
 			rs.realProviderSessionID = real

@@ -374,6 +374,8 @@ func TestTurnLogStoreRoundTrip(t *testing.T) {
 
 	_ = store.AppendTurnLog(context.Background(), runID, turnLogLine{Kind: turnLogKindPrompt, Prompt: "first prompt"})
 	_ = store.AppendTurnLog(context.Background(), runID, turnLogLine{Kind: turnLogKindCodexSession, SessionID: "sess-1"})
+	_ = store.AppendTurnLog(context.Background(), runID, turnLogLine{Kind: turnLogKindAssistant, Assistant: "first full answer"})
+	_ = store.AppendTurnLog(context.Background(), runID, turnLogLine{Kind: turnLogKindTranscriptTurn, TurnID: "turn-1", Prompt: "first prompt", Assistant: "first full answer"})
 	_ = store.AppendTurnLog(context.Background(), runID, turnLogLine{Kind: turnLogKindPrompt, Prompt: "second prompt"})
 	_ = store.AppendTurnLog(context.Background(), runID, turnLogLine{Kind: turnLogKindCodexSession, SessionID: "sess-2"})
 
@@ -381,10 +383,13 @@ func TestTurnLogStoreRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadTurnLog: %v", err)
 	}
-	if len(entries) != 4 {
-		t.Fatalf("expected 4 entries, got %d", len(entries))
+	if len(entries) != 6 {
+		t.Fatalf("expected 6 entries, got %d", len(entries))
 	}
-	if entries[0].Prompt != "first prompt" || entries[1].SessionID != "sess-1" {
+	if entries[0].Prompt != "first prompt" || entries[1].SessionID != "sess-1" || entries[2].Assistant != "first full answer" {
+		t.Fatalf("unexpected entries: %+v", entries)
+	}
+	if entries[3].TurnID != "turn-1" || entries[3].Prompt != "first prompt" || entries[3].Assistant != "first full answer" {
 		t.Fatalf("unexpected entries: %+v", entries)
 	}
 }

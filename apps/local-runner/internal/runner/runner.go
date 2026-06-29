@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -135,6 +136,10 @@ type Runner struct {
 	// is the multiplexer: concurrent sessions = concurrent processes.
 	claudePool *claudeProcessPool
 
+	// geminiSessions tracks FlowPilot synthetic session ids to Gemini ACP session ids
+	// across per-turn adapter instances.
+	geminiSessions *geminiSessionMap
+
 	// claudeMCP is the runner-hosted MCP server for the Claude permission/ask_user tools
 	// (07); mcpBaseURL is the runner's own base URL ("http://host:port"), set at startup
 	// so the adapter can build per-turn --mcp-config URLs.
@@ -153,12 +158,13 @@ func New(workspace string) (*Runner, error) {
 	}
 
 	return &Runner{
-		workspace:   resolved,
-		startedAt:   time.Now().UTC(),
-		secretStore: newDefaultSecretStore(),
-		sessions:    make(map[string]*LiveSession),
-		claudePool:  newClaudeProcessPool(),
-		claudeMCP:   newClaudeMCPServer(),
+		workspace:      resolved,
+		startedAt:      time.Now().UTC(),
+		secretStore:    newDefaultSecretStore(),
+		sessions:       make(map[string]*LiveSession),
+		claudePool:     newClaudeProcessPool(),
+		geminiSessions: newGeminiSessionMap(),
+		claudeMCP:      newClaudeMCPServer(),
 	}, nil
 }
 
@@ -770,7 +776,7 @@ func (r *Runner) DeleteIntegrationConnection(ctx context.Context, integrationID 
 	return nil
 }
 
-func resolvePromptExecutionAdapter(request PromptExecutionRequest, outputPath string) (string, []string, string, error) {
+func resolvePromptExecutionAdapter(request PromptExecutionRequest, outputPath, workspace string) (string, []string, string, error) {
 	modelName := strings.TrimSpace(request.ModelName)
 	providerKey := strings.TrimSpace(request.ProviderKey)
 	lowerModel := strings.ToLower(modelName)
@@ -820,12 +826,12 @@ func resolvePromptExecutionAdapter(request PromptExecutionRequest, outputPath st
 		}
 		return "claude", args, resolvedProvider, nil
 	case "gemini":
-		args := []string{}
-		if modelName != "" {
-			cliModel := normalizeGeminiModelName(modelName)
-			args = append(args, "--model", cliModel)
+		projectID, resume, err := geminiSessionProjectID("", workspace, geminiProjectEnvHints(request.AccountHomePath, request.CustomEnv))
+		if err != nil {
+			return "", nil, "", err
 		}
-		return "gemini", args, resolvedProvider, nil
+		args := geminiCLIArgs(workspace, projectID, normalizeGeminiModelName(modelName), request.AllowWrite || request.YoloMode, resume, false)
+		return geminiBinaryName(), args, resolvedProvider, nil
 	default:
 		return "", nil, "", fmt.Errorf("provider %q is not supported", resolvedProvider)
 	}
@@ -837,9 +843,17 @@ func normalizeGeminiModelName(modelName string) string {
 
 	switch lowerModel {
 	case "flash", "gemini-flash":
-		return "gemini-2.5-flash"
+		return "gemini-3.5-flash-medium"
 	case "pro", "gemini-pro":
-		return "gemini-2.5-pro"
+		return "gemini-3.1-pro-high"
+	case "auto-gemini-3", "auto-gemini-2.5":
+		return "gemini-3.5-flash-medium"
+	case "gemini-3-pro-preview", "gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-2.5-pro":
+		return "gemini-3.1-pro-high"
+	case "gemini-3-flash-preview", "gemini-2.5-flash":
+		return "gemini-3.5-flash-medium"
+	case "gemini-3.1-flash-lite-preview", "gemini-2.5-flash-lite":
+		return "gemini-3.5-flash-low"
 	default:
 		return trimmed
 	}
@@ -918,12 +932,33 @@ func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionReque
 		return PromptExecutionResult{}, err
 	}
 
-	binary, args, resolvedProvider, err := resolvePromptExecutionAdapter(request, outputPath)
+	binary, args, resolvedProvider, err := resolvePromptExecutionAdapter(request, outputPath, workspace)
 	if err != nil {
 		return PromptExecutionResult{}, err
 	}
+	usesPromptArg := resolvedProvider == string(ProviderKeyGemini)
+	if usesPromptArg {
+		args = append(args, "--print", actualPrompt)
+	}
+	if resolvedProvider == string(ProviderKeyGemini) {
+		projectID := ""
+		for i, arg := range args {
+			if arg == "--project" && i+1 < len(args) {
+				projectID = args[i+1]
+				break
+			}
+		}
+		logGeminiAgyLaunch("prompt", binary, args, geminiLaunchDebug{
+			Cwd:       workspace,
+			ProjectID: projectID,
+			Env:       geminiProjectEnvHints(request.AccountHomePath, request.CustomEnv),
+		})
+	}
 
 	command := formatShellCommand(binary, args, promptPath)
+	if usesPromptArg {
+		command = formatProviderCommand(binary, args)
+	}
 	if err := os.WriteFile(commandPath, []byte(command), 0o644); err != nil {
 		return PromptExecutionResult{}, err
 	}
@@ -932,12 +967,6 @@ func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionReque
 	defer cancel()
 	cmd := exec.CommandContext(execCtx, binary, args...)
 	cmd.Env = r.getEnvForExecution(request.ProviderKey, request.AccountHomePath, request.CustomEnv, request.ProxyURL)
-	promptFile, err := os.Open(promptPath)
-	if err != nil {
-		return PromptExecutionResult{}, err
-	}
-	defer promptFile.Close()
-
 	stdoutFile, err := os.Create(stdoutPath)
 	if err != nil {
 		return PromptExecutionResult{}, err
@@ -950,13 +979,37 @@ func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionReque
 	}
 	defer stderrFile.Close()
 
-	cmd.Stdin = promptFile
-	cmd.Stdout = stdoutFile
-	cmd.Stderr = stderrFile
+	if !usesPromptArg {
+		promptFile, err := os.Open(promptPath)
+		if err != nil {
+			return PromptExecutionResult{}, err
+		}
+		defer promptFile.Close()
+		cmd.Stdin = promptFile
+	}
+	if !usesPromptArg {
+		cmd.Stdout = stdoutFile
+		cmd.Stderr = stderrFile
+	}
 	cmd.Dir = workspace
 
 	startedAt := time.Now().UTC()
-	runErr := cmd.Run()
+	var runErr error
+	if usesPromptArg {
+		stdoutText, stderrText, err := captureAgyPrint(execCtx, cmd)
+		if strings.TrimSpace(stdoutText) == "" {
+			projectEnv := geminiProjectEnvHints(request.AccountHomePath, request.CustomEnv)
+			if recovered := recoverGeminiAgyLatestMessageFn(workspace, projectEnv); recovered != "" {
+				log.Printf("[gemini-agy] result stage=prompt recovery=conversation_db cwd=%q recovered_bytes=%d", workspace, len(recovered))
+				stdoutText = recovered
+			}
+		}
+		_, _ = stdoutFile.WriteString(stdoutText)
+		_, _ = stderrFile.WriteString(stderrText)
+		runErr = err
+	} else {
+		runErr = cmd.Run()
+	}
 	completedAt := time.Now().UTC()
 
 	exitCode := 0
@@ -969,6 +1022,9 @@ func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionReque
 	stdoutSummary := readTextWithLimit(stdoutPath, 4000)
 	stderrSummary := readTextWithLimit(stderrPath, 4000)
 	outputMarkdown := readTextWithLimit(outputPath, 12000)
+	if resolvedProvider == string(ProviderKeyGemini) {
+		log.Printf("[gemini-agy] result stage=prompt status=%s cwd=%q stdout_bytes=%d stderr=%q exit_code=%d err=%v", map[bool]string{true: "error", false: "ok"}[runErr != nil], workspace, len(stdoutSummary), limitLogText(stderrSummary, 1000), exitCode, runErr)
+	}
 	if strings.TrimSpace(outputMarkdown) == "" && strings.TrimSpace(stdoutSummary) != "" {
 		outputMarkdown = stdoutSummary
 		_ = os.WriteFile(outputPath, []byte(outputMarkdown), 0o644)
@@ -1389,11 +1445,6 @@ type codexDebugModel struct {
 	SupportedInAPI bool   `json:"supported_in_api"`
 }
 
-var (
-	geminiValidModelsPattern   = regexp.MustCompile(`(?s)var\s+VALID_GEMINI_MODELS\s*=\s*/\*.*?\*/\s*new Set\(\[(.*?)\]\);`)
-	geminiVarAssignmentPattern = regexp.MustCompile(`var\s+([A-Z0-9_]+)\s*=\s*"([^"]+)";`)
-)
-
 type mcpBackendSpec struct {
 	Key          string
 	ProviderType string
@@ -1440,18 +1491,21 @@ func providerSpecs() []providerSpec {
 		},
 		{
 			Key:         "gemini",
-			Label:       "Gemini",
-			BinaryName:  "gemini",
-			InstallHint: "Install the Gemini CLI, log in, and restart the runner.",
-			Models: []ProviderModel{
-				{ID: "auto-gemini-3", DisplayName: "auto-gemini-3", Source: "registry"},
-				{ID: "auto-gemini-2.5", DisplayName: "auto-gemini-2.5", Source: "registry"},
-				{ID: "gemini-3.1-pro-preview", DisplayName: "gemini-3.1-pro-preview", Source: "registry"},
-				{ID: "gemini-3-flash-preview", DisplayName: "gemini-3-flash-preview", Source: "registry"},
-				{ID: "gemini-3.1-flash-lite-preview", DisplayName: "gemini-3.1-flash-lite-preview", Source: "registry"},
-				{ID: "gemini-2.5-pro", DisplayName: "gemini-2.5-pro", Source: "registry"},
-			},
+			Label:       "Antigravity CLI",
+			BinaryName:  "agy",
+			InstallHint: "Install Antigravity CLI, start agy to sign in, and refresh the runner inventory.",
+			Models:      defaultGeminiProviderModels(),
 		},
+	}
+}
+
+func defaultGeminiProviderModels() []ProviderModel {
+	return []ProviderModel{
+		{ID: "gemini-3.5-flash-medium", DisplayName: "Gemini 3.5 Flash (Medium)", Source: "registry"},
+		{ID: "gemini-3.5-flash-high", DisplayName: "Gemini 3.5 Flash (High)", Source: "registry"},
+		{ID: "gemini-3.5-flash-low", DisplayName: "Gemini 3.5 Flash (Low)", Source: "registry"},
+		{ID: "gemini-3.1-pro-low", DisplayName: "Gemini 3.1 Pro (Low)", Source: "registry"},
+		{ID: "gemini-3.1-pro-high", DisplayName: "Gemini 3.1 Pro (High)", Source: "registry"},
 	}
 }
 
@@ -1535,7 +1589,7 @@ func resolveProviderModels(ctx context.Context, spec providerSpec, binaryPath st
 		}
 	}
 	if spec.Key == "gemini" {
-		if models, err := detectGeminiModels(binaryPath); err == nil && len(models) > 0 {
+		if models, err := detectGeminiModels(ctx, binaryPath, spec.Models); err == nil && len(models) > 0 {
 			return models
 		}
 	}
@@ -1578,150 +1632,52 @@ func detectCodexModels(ctx context.Context, binaryPath string) ([]ProviderModel,
 	return models, nil
 }
 
-func detectGeminiModels(binaryPath string) ([]ProviderModel, error) {
-	catalogPath, err := findGeminiCatalogPath(binaryPath)
+func detectGeminiModels(ctx context.Context, binaryPath string, fallback []ProviderModel) ([]ProviderModel, error) {
+	output, err := runCommandFn(ctx, binaryPath, "models")
 	if err != nil {
 		return nil, err
 	}
 
-	raw, err := os.ReadFile(catalogPath)
-	if err != nil {
-		return nil, err
-	}
-
-	return parseGeminiModelsFromBundle(string(raw))
+	return parseGeminiModelsFromAGYOutput(string(output), fallback)
 }
 
-func findGeminiCatalogPath(binaryPath string) (string, error) {
-	resolvedPath := binaryPath
-	if resolved, err := filepath.EvalSymlinks(binaryPath); err == nil && strings.TrimSpace(resolved) != "" {
-		resolvedPath = resolved
+func parseGeminiModelsFromAGYOutput(raw string, fallback []ProviderModel) ([]ProviderModel, error) {
+	if len(fallback) == 0 {
+		fallback = defaultGeminiProviderModels()
 	}
 
-	searchRoots := make([]string, 0, 8)
-	seen := make(map[string]struct{})
-	addRoot := func(root string) {
-		cleaned := filepath.Clean(root)
-		if cleaned == "." || cleaned == "" {
-			return
-		}
-		if _, ok := seen[cleaned]; ok {
-			return
-		}
-		seen[cleaned] = struct{}{}
-		searchRoots = append(searchRoots, cleaned)
+	byID := make(map[string]ProviderModel, len(fallback))
+	byDisplay := make(map[string]ProviderModel, len(fallback))
+	for _, model := range fallback {
+		byID[strings.ToLower(model.ID)] = model
+		byDisplay[strings.ToLower(model.DisplayName)] = model
 	}
 
-	current := filepath.Dir(resolvedPath)
-	for i := 0; i < 6; i++ {
-		addRoot(filepath.Join(current, "libexec", "lib", "node_modules", "@google", "gemini-cli", "bundle"))
-		addRoot(filepath.Join(current, "lib", "node_modules", "@google", "gemini-cli", "bundle"))
-		addRoot(filepath.Join(current, "node_modules", "@google", "gemini-cli", "bundle"))
-
-		parent := filepath.Dir(current)
-		if parent == current {
-			break
-		}
-		current = parent
-	}
-
-	for _, root := range searchRoots {
-		info, err := os.Stat(root)
-		if err != nil || !info.IsDir() {
+	models := make([]ProviderModel, 0, len(fallback))
+	seen := make(map[string]struct{}, len(fallback))
+	for _, line := range strings.Split(raw, "\n") {
+		normalized := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(line), "(current)"))
+		if normalized == "" {
 			continue
 		}
-
-		var match string
-		walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return nil
-			}
-			if d.IsDir() {
-				return nil
-			}
-			if !strings.HasSuffix(d.Name(), ".js") {
-				return nil
-			}
-
-			raw, readErr := os.ReadFile(path)
-			if readErr != nil {
-				return nil
-			}
-			if strings.Contains(string(raw), "VALID_GEMINI_MODELS") {
-				match = path
-				return fs.SkipAll
-			}
-			return nil
-		})
-		if walkErr != nil && !errors.Is(walkErr, fs.SkipAll) {
+		model, ok := byDisplay[strings.ToLower(normalized)]
+		if !ok {
+			model, ok = byID[strings.ToLower(normalized)]
+		}
+		if !ok {
 			continue
 		}
-		if match != "" {
-			return match, nil
-		}
-	}
-
-	return "", errors.New("gemini model catalog not found")
-}
-
-func parseGeminiModelsFromBundle(raw string) ([]ProviderModel, error) {
-	setMatch := geminiValidModelsPattern.FindStringSubmatch(raw)
-	if len(setMatch) < 2 {
-		return nil, errors.New("VALID_GEMINI_MODELS declaration not found")
-	}
-
-	assignments := geminiVarAssignmentPattern.FindAllStringSubmatch(raw, -1)
-	if len(assignments) == 0 {
-		return nil, errors.New("gemini model assignments not found")
-	}
-
-	values := make(map[string]string, len(assignments))
-	for _, match := range assignments {
-		if len(match) < 3 {
+		if _, exists := seen[model.ID]; exists {
 			continue
 		}
-		values[match[1]] = match[2]
+		model.Source = "agy_models_command"
+		models = append(models, model)
+		seen[model.ID] = struct{}{}
 	}
 
-	modelIDs := make([]string, 0, 10)
-	seen := make(map[string]struct{})
-	addModel := func(modelID string) {
-		modelID = strings.TrimSpace(modelID)
-		if modelID == "" {
-			return
-		}
-		if strings.Contains(modelID, "customtools") {
-			return
-		}
-		if _, ok := seen[modelID]; ok {
-			return
-		}
-		seen[modelID] = struct{}{}
-		modelIDs = append(modelIDs, modelID)
+	if len(models) == 0 {
+		return nil, errors.New("no supported gemini models found in agy output")
 	}
-
-	for _, token := range strings.Split(setMatch[1], ",") {
-		name := strings.TrimSpace(token)
-		if name == "" {
-			continue
-		}
-		if modelID, ok := values[name]; ok {
-			addModel(modelID)
-		}
-	}
-
-	addModel(values["PREVIEW_GEMINI_MODEL_AUTO"])
-	addModel(values["DEFAULT_GEMINI_MODEL_AUTO"])
-
-	models := make([]ProviderModel, 0, len(modelIDs))
-	for _, modelID := range modelIDs {
-		models = append(models, ProviderModel{
-			ID:          modelID,
-			DisplayName: modelID,
-			Source:      "gemini_bundle_registry",
-		})
-	}
-
 	return models, nil
 }
 
@@ -1922,6 +1878,22 @@ func hasLocalAuth(providerKey string) bool {
 	return ok
 }
 
+func hasGeminiAntigravityConfig() bool {
+	for _, dir := range getPossibleHomeDirs() {
+		for _, candidate := range []string{
+			filepath.Join(dir, ".gemini", "antigravity-cli", "settings.json"),
+			filepath.Join(dir, ".gemini", "antigravity-cli", "keybindings.json"),
+		} {
+			info, err := os.Stat(candidate)
+			if err == nil && !info.IsDir() && info.Size() > 0 {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
 func providerAuthStatus(spec providerSpec) string {
 	switch spec.Key {
 	case "codex":
@@ -1933,7 +1905,7 @@ func providerAuthStatus(spec providerSpec) string {
 			return "READY"
 		}
 	case "gemini":
-		if hasAnyEnv("GOOGLE_API_KEY", "GEMINI_API_KEY") || hasLocalAuth("gemini") {
+		if hasAnyEnv("GOOGLE_API_KEY", "GEMINI_API_KEY") || hasLocalAuth("gemini") || hasGeminiAntigravityConfig() {
 			return "READY"
 		}
 	}
@@ -1983,7 +1955,14 @@ func providerInstallCommand(spec providerSpec) (string, []string, error) {
 	case "codex":
 		return "npm", []string{"install", "-g", "@openai/codex"}, nil
 	case "gemini":
-		return "npm", []string{"install", "-g", "@google/gemini-cli"}, nil
+		switch runtime.GOOS {
+		case "darwin", "linux":
+			return "sh", []string{"-c", "curl -fsSL https://antigravity.google/cli/install.sh | bash"}, nil
+		case "windows":
+			return "cmd", []string{"/c", "curl -fsSL https://antigravity.google/cli/install.cmd -o install.cmd && install.cmd && del install.cmd"}, nil
+		default:
+			return "", nil, fmt.Errorf("%s install is not supported on %s", spec.Label, runtime.GOOS)
+		}
 	default:
 		return "", nil, fmt.Errorf("unsupported provider %q", spec.Key)
 	}
@@ -3422,7 +3401,10 @@ end tell`,
 	}
 }
 
-var launchTerminalCommandWithEnvFn = launchTerminalCommandWithEnv
+var (
+	launchTerminalCommandWithEnvFn  = launchTerminalCommandWithEnv
+	launchProviderTerminalCommandFn = launchProviderTerminalCommand
+)
 
 func escapeAppleScriptString(value string) string {
 	replacer := strings.NewReplacer(`\`, `\\`, `"`, `\"`)
@@ -3494,7 +3476,7 @@ func (r *Runner) AuthenticateProvider(ctx context.Context, providerName string) 
 	case "claude":
 		authCommand = "claude auth login"
 	case "gemini":
-		authCommand = "gemini"
+		authCommand = "agy"
 	default:
 		return fmt.Errorf("no auth command configured for provider %q", providerName)
 	}
@@ -3545,7 +3527,13 @@ func (r *Runner) getEnvForExecution(
 	customEnv map[string]string,
 	proxyURL string,
 ) []string {
-	baseEnv := os.Environ()
+	rawEnv := os.Environ()
+	// agy hangs when it inherits CLAUDECODE=1 or AI_AGENT=claude-code from the
+	// Claude Code parent process.  Strip those vars for the Gemini provider.
+	baseEnv := rawEnv
+	if strings.EqualFold(providerKey, "gemini") {
+		baseEnv = agyFilteredEnv(rawEnv, nil)
+	}
 	trimmedAccountHomePath := strings.TrimSpace(accountHomePath)
 
 	if trimmedAccountHomePath == "" {
@@ -3717,7 +3705,8 @@ func (r *Runner) StartInteractiveAuth(providerKey string, accountHomePath string
 		return fmt.Errorf("provider %s does not support interactive CLI login", providerKey)
 	}
 
-	return launchProviderTerminalCommand(providerKey, accountHomePath, authCommand, true)
+	authCommand = commandWithWorkingDirectory(authCommand, r.workspace)
+	return launchProviderTerminalCommandFn(providerKey, accountHomePath, authCommand, true)
 }
 
 func (r *Runner) StartInteractiveTest(providerKey string, accountHomePath string) error {
@@ -3741,7 +3730,7 @@ func (r *Runner) StartInteractiveTest(providerKey string, accountHomePath string
 	}
 
 	testCommand := commandWithWorkingDirectory(testInvocation, r.workspace)
-	return launchProviderTerminalCommand(providerKey, accountHomePath, testCommand, true)
+	return launchProviderTerminalCommandFn(providerKey, accountHomePath, testCommand, true)
 }
 
 func providerEnvSetCommand(providerKey, homePath, shellType string) string {

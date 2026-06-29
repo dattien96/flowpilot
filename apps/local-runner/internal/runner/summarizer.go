@@ -39,7 +39,7 @@ func summarizerModelFor(providerKey ProviderKey) string {
 	case ProviderKeyClaude:
 		return "haiku"
 	case ProviderKeyGemini:
-		return "gemini-2.5-flash"
+		return "gemini-3.5-flash-medium"
 	case ProviderKeyCodex:
 		// No verified cheap-model id is hardcoded; empty lets `codex exec` use the
 		// account's configured default. Set FLOWPILOT_SUMMARIZER_MODEL_CODEX (e.g.
@@ -98,10 +98,14 @@ func (r *Runner) SummarizeChatTranscript(ctx context.Context, transcript string,
 	defer os.RemoveAll(outDir)
 	outPath := filepath.Join(outDir, "summary.txt")
 
-	req := PromptExecutionRequest{ProviderKey: string(providerKey), ModelName: summarizerModelFor(providerKey)}
-	binary, args, _, err := resolvePromptExecutionAdapter(req, outPath)
+	req := PromptExecutionRequest{ProviderKey: string(providerKey), ModelName: summarizerModelFor(providerKey), AccountHomePath: homePath}
+	binary, args, _, err := resolvePromptExecutionAdapter(req, outPath, workspace)
 	if err != nil {
 		return "", err
+	}
+	prompt := summarizerInstruction + "\n\n<conversation>\n" + transcript + "\n</conversation>\n"
+	if providerKey == ProviderKeyGemini {
+		args = append(args, "--print", prompt)
 	}
 
 	execCtx, cancel := context.WithTimeout(ctx, summarizerTimeout)
@@ -110,16 +114,30 @@ func (r *Runner) SummarizeChatTranscript(ctx context.Context, transcript string,
 	cmd := exec.CommandContext(execCtx, binary, args...)
 	cmd.Env = r.getEnvForExecution(string(providerKey), homePath, nil, "")
 	cmd.Dir = workspace
-	cmd.Stdin = strings.NewReader(summarizerInstruction + "\n\n<conversation>\n" + transcript + "\n</conversation>\n")
+	if providerKey != ProviderKeyGemini {
+		cmd.Stdin = strings.NewReader(prompt)
+	}
 
 	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("summarizer call failed: %w", err)
+	if providerKey == ProviderKeyGemini {
+		stdoutText, stderrText, err := captureAgyPrint(execCtx, cmd)
+		stdout.WriteString(stdoutText)
+		stderr.WriteString(stderrText)
+		if err != nil {
+			return "", fmt.Errorf("summarizer call failed: %w", err)
+		}
+	} else {
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			return "", fmt.Errorf("summarizer call failed: %w", err)
+		}
 	}
 
 	out := strings.TrimSpace(stdout.String())
+	if out == "" && providerKey == ProviderKeyGemini {
+		out = recoverGeminiAgyLatestMessageFn(workspace, geminiProjectEnvHints(homePath, nil))
+	}
 	if out == "" {
 		// Codex emits the answer to the output file rather than stdout.
 		if b, readErr := os.ReadFile(outPath); readErr == nil {

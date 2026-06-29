@@ -281,7 +281,7 @@ func TestProviderDrivenMcpTestPopulatesResult(t *testing.T) {
 	request := McpTestRequest{
 		UseProviderCLI:   true,
 		AIProviderKey:    "gemini",
-		AIModelName:      "gemini-2.5-flash",
+		AIModelName:      "gemini-3.5-flash-medium",
 		AccountHomePath:  accountHome,
 		WorkingDirectory: tmpDir,
 	}
@@ -297,8 +297,8 @@ func TestProviderDrivenMcpTestPopulatesResult(t *testing.T) {
 		t.Errorf("expected AIProviderKey 'gemini', got: %s", result.AIProviderKey)
 	}
 
-	if result.AIModelName != "gemini-2.5-flash" {
-		t.Errorf("expected AIModelName 'gemini-2.5-flash', got: %s", result.AIModelName)
+	if result.AIModelName != "gemini-3.5-flash-medium" {
+		t.Errorf("expected AIModelName 'gemini-3.5-flash-medium', got: %s", result.AIModelName)
 	}
 
 	if result.McpServerName != "google-drive" {

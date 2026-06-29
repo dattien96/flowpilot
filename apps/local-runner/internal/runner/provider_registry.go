@@ -35,7 +35,9 @@ type TurnBridge interface {
 type TurnRequest struct {
 	RunID             string
 	StepID            string
+	ProjectID         string
 	ProviderSessionID string
+	ProviderAccountID string
 	ProviderTurnID    string
 	Prompt            string
 	ModelName         string
@@ -169,8 +171,8 @@ func providerKeyFromModel(model string) (ProviderKey, bool) {
 }
 
 // DefaultProviderRegistry builds the P2 registry: Codex backed by the fake adapter
-// (the real app-server adapter lands in P3), Claude/Gemini as disabled placeholders
-// that surface UnsupportedProviderRuntimeError.
+// (the real app-server adapter lands in P3), with Claude/Gemini kept placeholder-safe
+// so unsupported runtimes still surface UnsupportedProviderRuntimeError.
 func DefaultProviderRegistry() *ProviderRegistry {
 	r := newProviderRegistry()
 	r.register(ProviderRegistration{
@@ -204,7 +206,8 @@ func DefaultProviderRegistry() *ProviderRegistry {
 // app-server path is enabled (FLOWPILOT_CODEX_APPSERVER) the Codex registration is
 // backed by the real shared-process adapter (ensureCodexAppServer); otherwise the
 // fake adapter is kept (demo/tests stay green without a codex binary). Claude is
-// backed by its live adapter in the live runner; Gemini remains a placeholder.
+// backed by its live adapter in the live runner; Gemini is registered with
+// conservative ACP capabilities and any unproven parity flags remain disabled.
 func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 	reg := DefaultProviderRegistry()
 	if r == nil {
@@ -322,6 +325,67 @@ func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 				}
 				return r.injectSelectedSkills(workspace, req.Prompt, req.SelectedSkills) + claudeAskUserReinforcement
 			}
+			return a
+		},
+	})
+	// Gemini controlled-mode fallback runs `agy --print` per turn with a stable
+	// FlowPilot project id. This restores chat continuity after the Gemini ACP
+	// prototype became incompatible with Antigravity CLI, but it does not expose
+	// provider-owned streaming/approval/MCP events.
+	reg.register(ProviderRegistration{
+		Key:         ProviderKeyGemini,
+		DisplayName: "Gemini",
+		Status:      ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{
+			SkillSelection: true, Interrupt: true,
+		},
+		newAdapter: func() ProviderRuntimeAdapter {
+			scopeKey := "default"
+			env := map[string]string{}
+			account, err := r.ResolveProviderAccount(string(ProviderKeyGemini), "")
+			if err == nil {
+				scopeKey = account.ID
+				for key, value := range account.ExtraEnv {
+					env[key] = value
+				}
+				if account.HomePath != "" {
+					env["GEMINI_HOME"] = account.HomePath
+					env["HOME"] = account.HomePath
+					env["XDG_CONFIG_HOME"] = filepath.Join(account.HomePath, ".config")
+					if drive, path, ok := windowsHomeDriveAndPath(account.HomePath); ok {
+						env["USERPROFILE"] = account.HomePath
+						env["APPDATA"] = filepath.Join(account.HomePath, "AppData", "Roaming")
+						env["LOCALAPPDATA"] = filepath.Join(account.HomePath, "AppData", "Local")
+						env["HOMEDRIVE"] = drive
+						env["HOMEPATH"] = path
+					}
+				}
+			} else if geminiHome := strings.TrimSpace(os.Getenv("GEMINI_HOME")); geminiHome != "" {
+				scopeKey = "env:" + geminiHome
+				env["GEMINI_HOME"] = geminiHome
+				env["HOME"] = geminiHome
+				env["XDG_CONFIG_HOME"] = filepath.Join(geminiHome, ".config")
+			} else if hasAnyEnv("GOOGLE_API_KEY", "GEMINI_API_KEY") {
+				scopeKey = "env:gemini-api-key"
+			} else {
+				return errorAdapter{key: ProviderKeyGemini, err: err}
+			}
+			sessions := r.geminiSessions
+			if sessions == nil {
+				sessions = newGeminiSessionMap()
+			}
+			a := newGeminiAdapter(r.workspace, scopeKey, env)
+			a.sessions = sessions
+			a.sessionStore = ProviderSessionStoreFor(r)
+			a.promptPrep = func(req TurnRequest) string {
+				workspace := r.workspace
+				if req.Cwd != "" {
+					workspace = req.Cwd
+				}
+				return r.injectSelectedSkills(workspace, req.Prompt, req.SelectedSkills)
+			}
+			a.mcpServer = r.claudeMCP
+			a.mcpBaseURL = r.mcpBaseURLValue
 			return a
 		},
 	})

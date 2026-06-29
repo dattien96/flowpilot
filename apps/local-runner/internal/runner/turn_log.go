@@ -13,12 +13,19 @@ const (
 	// each turn.  Codex writes one rollout file per turn with a distinct session
 	// id, so seedTranscriptFromDisk needs the full chain to replay every turn.
 	turnLogKindCodexSession turnLogKind = "codex_session"
+	// turnLogKindAssistant records the full assistant response for providers
+	// that do not expose a provider-owned transcript file for replay.
+	turnLogKindAssistant turnLogKind = "assistant"
+	// turnLogKindTranscriptTurn records one visible prompt/assistant pair.
+	turnLogKindTranscriptTurn turnLogKind = "transcript_turn"
 )
 
 // turnLogLine is one NDJSON line in the per-run turn log.
 type turnLogLine struct {
 	Kind      turnLogKind `json:"kind"`
+	TurnID    string      `json:"turn_id,omitempty"`
 	Prompt    string      `json:"prompt,omitempty"`
+	Assistant string      `json:"assistant,omitempty"`
 	SessionID string      `json:"session_id,omitempty"`
 }
 

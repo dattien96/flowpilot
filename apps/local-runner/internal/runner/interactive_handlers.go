@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -554,6 +555,15 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 	if _, err := s.registry.Selectable(providerKey); err != nil {
 		return RunHandle{}, newAPIErr(http.StatusUnprocessableEntity, "provider_unavailable", err.Error())
 	}
+	if providerKey == ProviderKeyGemini {
+		cwd := strings.TrimSpace(in.Cwd)
+		if cwd == "" {
+			return RunHandle{}, newAPIErr(http.StatusBadRequest, "workspace_required", "Gemini requires a bound project workspace path; set the project's local path before starting chat")
+		}
+		if info, err := os.Stat(cwd); err != nil || !info.IsDir() {
+			return RunHandle{}, newAPIErr(http.StatusBadRequest, "workspace_unavailable", "Gemini project workspace path must point to an existing directory")
+		}
+	}
 	// Stamp the run with the account that is active for THIS provider, not the
 	// single global activeAccountID (Task-067 issue 1). Resolved before the lock
 	// since it may read the provider-accounts store.
@@ -635,7 +645,8 @@ func (s *InteractiveService) resumeRun(runID string) (RunHandle, *apiErr) {
 	// only runs post-turn, so realProviderSessionID is "" while a turn is in-flight
 	// and LocateSessionFile would fail with the synthetic "thread-*" placeholder.
 	isActiveInMemory := inMemory && rs.status != RunStatusCompleted && rs.status != RunStatusFailed && rs.status != RunStatusCancelled
-	if !isActiveInMemory {
+	isReadOnlyGeminiInMemory := inMemory && rs.providerKey == ProviderKeyGemini && len(rs.events) > 0
+	if !isActiveInMemory && !isReadOnlyGeminiInMemory {
 		if err := s.ensureResumeReady(rs); err != nil {
 			readOnlyChat := rs.runKind == "chat" && (err.code == "account_not_signed_in" || err.code == "account_unavailable")
 			if !readOnlyChat {

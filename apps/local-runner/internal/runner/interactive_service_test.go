@@ -112,6 +112,44 @@ func getSnapshot(t *testing.T, base, runID string) runSnapshotView {
 	return v
 }
 
+func TestCreateRunGeminiRequiresUsableWorkspacePath(t *testing.T) {
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key:          ProviderKeyGemini,
+		DisplayName:  "Gemini",
+		Status:       ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{SkillSelection: true},
+		newAdapter:   func() ProviderRuntimeAdapter { return &captureTurnAdapter{ch: make(chan TurnRequest, 1)} },
+	})
+	svc := NewInteractiveServiceWithRegistry(reg)
+
+	if _, apiErr := svc.createRun(StartRunInput{
+		ProjectID:   "project-gate-sandbox",
+		ChatMode:   "normal_chat",
+		ProviderKey: ProviderKeyGemini,
+	}); apiErr == nil || apiErr.code != "workspace_required" {
+		t.Fatalf("createRun missing cwd error = %#v, want workspace_required", apiErr)
+	}
+
+	if _, apiErr := svc.createRun(StartRunInput{
+		ProjectID:   "project-gate-sandbox",
+		ChatMode:   "normal_chat",
+		ProviderKey: ProviderKeyGemini,
+		Cwd:         filepath.Join(t.TempDir(), "missing"),
+	}); apiErr == nil || apiErr.code != "workspace_unavailable" {
+		t.Fatalf("createRun missing dir error = %#v, want workspace_unavailable", apiErr)
+	}
+
+	if _, apiErr := svc.createRun(StartRunInput{
+		ProjectID:   "project-gate-sandbox",
+		ChatMode:   "normal_chat",
+		ProviderKey: ProviderKeyGemini,
+		Cwd:         t.TempDir(),
+	}); apiErr != nil {
+		t.Fatalf("createRun valid cwd error = %#v", apiErr)
+	}
+}
+
 type captureTurnAdapter struct {
 	ch chan TurnRequest
 }

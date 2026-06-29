@@ -2,9 +2,12 @@ package runner
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -490,6 +493,9 @@ func (s *InteractiveService) ensureResumeReady(rs *interactiveRun) *apiErr {
 		log.Printf("[chat-history-open] provider resume handle unavailable run_id=%q provider=%q source_home=%q", rs.id, rs.providerKey, srcHome)
 		return newAPIErr(http.StatusConflict, "session_unavailable", "session data not found on this machine")
 	}
+	if rs.providerKey == ProviderKeyGemini {
+		return s.ensureGeminiResumeReady(rs, srcHome, activeAccountID, recoveredAccount)
+	}
 	sessionID := s.resumeSessionID(rs)
 	srcPath, found := LocateSessionFile(rs.providerKey, srcHome, sessionID, rs.workspaceCwd)
 	if !found {
@@ -514,6 +520,52 @@ func (s *InteractiveService) ensureResumeReady(rs *interactiveRun) *apiErr {
 	}
 	log.Printf("[chat-history-open] cross-account preparation start run_id=%q stored_account_id=%q active_account_id=%q", rs.id, rs.providerAccountID, activeAccountID)
 	return s.prepareCrossAccountResume(rs, srcPath, activeAccountID)
+}
+
+func (s *InteractiveService) ensureGeminiResumeReady(rs *interactiveRun, sourceHome, activeAccountID string, recoveredAccount bool) *apiErr {
+	projectID := s.resumeSessionID(rs)
+	sourceConfigPath := geminiProjectConfigPathForHome(sourceHome, projectID)
+	if !fileExists(sourceConfigPath) {
+		log.Printf("[chat-history-open] gemini project config missing run_id=%q project_id=%q source_home=%q path=%q", rs.id, projectID, sourceHome, sourceConfigPath)
+		return newAPIErr(http.StatusConflict, "session_unavailable", "session data not found on this machine")
+	}
+	log.Printf("[chat-history-open] gemini project config found run_id=%q project_id=%q path=%q", rs.id, projectID, sourceConfigPath)
+
+	if rs.providerAccountID == activeAccountID {
+		if !HasLocalAuthAtPath(string(rs.providerKey), sourceHome) {
+			log.Printf("[chat-history-open] auth missing run_id=%q provider=%q account_id=%q home=%q", rs.id, rs.providerKey, activeAccountID, sourceHome)
+			return newAPIErr(http.StatusConflict, "account_not_signed_in", "can't open — the active account isn't signed in")
+		}
+		if recoveredAccount {
+			if err := s.persistProviderSession(sessionStateOf(rs)); err != nil {
+				log.Printf("[chat-history-open] recovered account persistence failed run_id=%q active_account_id=%q error=%q", rs.id, activeAccountID, err)
+				return newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
+			}
+		}
+		log.Printf("[chat-history-open] resume ready run_id=%q mode=same_account_gemini account_id=%q", rs.id, activeAccountID)
+		return nil
+	}
+
+	targetHome, ok := s.resolveAccountHome(rs.providerKey, activeAccountID)
+	if !ok {
+		log.Printf("[chat-history-open] target home unresolved run_id=%q provider=%q active_account_id=%q", rs.id, rs.providerKey, activeAccountID)
+		return newAPIErr(http.StatusConflict, "account_unavailable", "active account home not found")
+	}
+	if !HasLocalAuthAtPath(string(rs.providerKey), targetHome) {
+		log.Printf("[chat-history-open] target auth missing run_id=%q provider=%q active_account_id=%q target_home=%q", rs.id, rs.providerKey, activeAccountID, targetHome)
+		return newAPIErr(http.StatusConflict, "account_not_signed_in", "can't open — the active account isn't signed in")
+	}
+	if _, err := relocateGeminiProjectConfig(sourceConfigPath, targetHome, projectID); err != nil {
+		log.Printf("[chat-history-open] gemini project relocation failed run_id=%q project_id=%q active_account_id=%q error=%q", rs.id, projectID, activeAccountID, err)
+		return newAPIErr(http.StatusConflict, "session_unavailable", "could not prepare the session on the active account")
+	}
+	rs.providerAccountID = activeAccountID
+	if snapErr := s.persistProviderSession(sessionStateOf(rs)); snapErr != nil {
+		log.Printf("[chat-history-open] account rebind persistence failed run_id=%q active_account_id=%q error=%q", rs.id, activeAccountID, snapErr)
+		return newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", snapErr.Error())
+	}
+	log.Printf("[chat-history-open] resume ready run_id=%q mode=cross_account_gemini active_account_id=%q target_home=%q", rs.id, activeAccountID, targetHome)
+	return nil
 }
 
 func (s *InteractiveService) prepareCrossAccountResume(rs *interactiveRun, srcPath, activeAccountID string) *apiErr {
@@ -655,6 +707,10 @@ func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 	if !rs.resumedFromDisk {
 		return
 	}
+	if rs.providerKey == ProviderKeyGemini {
+		s.seedGeminiTranscriptFromState(rs)
+		return
+	}
 	var loader func(string) []ProviderEvent
 	switch rs.providerKey {
 	case ProviderKeyClaude:
@@ -780,6 +836,224 @@ func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 			OccurredAt:        rs.createdAt,
 		})
 	}
+}
+
+func (s *InteractiveService) seedGeminiTranscriptFromState(rs *interactiveRun) {
+	turns := s.geminiTranscriptTurns(rs)
+	if len(turns) == 0 {
+		return
+	}
+
+	stepID := "chat-" + rs.id
+	historical := make([]ProviderEvent, 0, len(turns)*3)
+	for i, turn := range turns {
+		turnID := fmt.Sprintf("gemini-replay-%d", i+1)
+		if turn.User != "" {
+			historical = append(historical, ProviderEvent{Type: EventTurnStarted, ProviderTurnID: turnID, Prompt: turn.User})
+		}
+		if turn.Assistant != "" {
+			historical = append(historical, ProviderEvent{Type: EventMessageCompleted, ProviderTurnID: turnID, Text: turn.Assistant})
+		}
+		historical = append(historical, ProviderEvent{Type: EventTurnCompleted, ProviderTurnID: turnID, FinalMessage: turn.Assistant})
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(rs.events) > 0 {
+		return
+	}
+	sessionID := s.resumeSessionID(rs)
+	for i := range historical {
+		rs.seq++
+		historical[i].Seq = rs.seq
+		historical[i].ID = s.nextID("transcript")
+		historical[i].WorkflowRunID = rs.id
+		historical[i].WorkflowStepRunID = stepID
+		historical[i].ProviderSessionID = sessionID
+		historical[i].ProviderKey = rs.providerKey
+		historical[i].OccurredAt = rs.updatedAt
+		rs.events = append(rs.events, historical[i])
+	}
+}
+
+func (s *InteractiveService) geminiTranscriptTurns(rs *interactiveRun) []transcriptTurn {
+	type replayTurn struct {
+		turnID string
+		turn   transcriptTurn
+	}
+	var replay []replayTurn
+	if logger, ok := s.workflowStore.(TurnLogStore); ok {
+		if entries, err := logger.ReadTurnLog(context.Background(), rs.id); err == nil {
+			promptByTurnID := make(map[string]string)
+			for _, entry := range entries {
+				if entry.Kind != turnLogKindPrompt {
+					continue
+				}
+				turnID := strings.TrimSpace(entry.TurnID)
+				prompt := strings.TrimSpace(entry.Prompt)
+				if turnID != "" && prompt != "" {
+					promptByTurnID[turnID] = prompt
+				}
+			}
+			for _, entry := range entries {
+				switch entry.Kind {
+				case turnLogKindTranscriptTurn:
+					turnID := strings.TrimSpace(entry.TurnID)
+					prompt := strings.TrimSpace(entry.Prompt)
+					assistant := strings.TrimSpace(entry.Assistant)
+					if prompt == "" && turnID != "" {
+						prompt = promptByTurnID[turnID]
+					}
+					if prompt == "" && assistant == "" {
+						continue
+					}
+					if len(replay) > 0 {
+						if turnID != "" {
+							for i := len(replay) - 1; i >= 0; i-- {
+								if replay[i].turnID == turnID && strings.TrimSpace(replay[i].turn.Assistant) == "" {
+									if replay[i].turn.User == "" {
+										replay[i].turn.User = prompt
+									}
+									replay[i].turn.Assistant = assistant
+									goto nextEntry
+								}
+							}
+						}
+						if prompt != "" {
+							last := &replay[len(replay)-1]
+							if strings.TrimSpace(last.turn.User) == prompt && strings.TrimSpace(last.turn.Assistant) == "" {
+								last.turn.Assistant = assistant
+								if last.turnID == "" {
+									last.turnID = turnID
+								}
+								continue
+							}
+						}
+						if prompt == "" && assistant != "" {
+							for i := len(replay) - 1; i >= 0; i-- {
+								if strings.TrimSpace(replay[i].turn.Assistant) == "" {
+									replay[i].turn.Assistant = assistant
+									if replay[i].turnID == "" {
+										replay[i].turnID = turnID
+									}
+									goto nextEntry
+								}
+							}
+						}
+					}
+					replay = append(replay, replayTurn{turnID: turnID, turn: transcriptTurn{User: prompt, Assistant: assistant}})
+				case turnLogKindPrompt:
+					turnID := strings.TrimSpace(entry.TurnID)
+					prompt := strings.TrimSpace(entry.Prompt)
+					if prompt == "" {
+						continue
+					}
+					if turnID != "" {
+						alreadyRecorded := false
+						for i := range replay {
+							if replay[i].turnID == turnID {
+								if strings.TrimSpace(replay[i].turn.User) == "" {
+									replay[i].turn.User = prompt
+								}
+								alreadyRecorded = true
+								break
+							}
+						}
+						if alreadyRecorded {
+							continue
+						}
+					}
+					replay = append(replay, replayTurn{turnID: turnID, turn: transcriptTurn{User: prompt}})
+				case turnLogKindAssistant:
+					assistant := strings.TrimSpace(entry.Assistant)
+					if assistant == "" {
+						continue
+					}
+					if len(replay) == 0 {
+						replay = append(replay, replayTurn{turn: transcriptTurn{Assistant: assistant}})
+						continue
+					}
+					paired := false
+					for i := len(replay) - 1; i >= 0; i-- {
+						if strings.TrimSpace(replay[i].turn.Assistant) == "" {
+							replay[i].turn.Assistant = assistant
+							paired = true
+							break
+						}
+					}
+					if !paired {
+						replay = append(replay, replayTurn{turn: transcriptTurn{Assistant: assistant}})
+					}
+				}
+			nextEntry:
+			}
+		}
+	}
+	turns := make([]transcriptTurn, 0, len(replay))
+	for _, item := range replay {
+		turns = append(turns, item.turn)
+	}
+	if len(turns) > 0 {
+		last := &turns[len(turns)-1]
+		if strings.TrimSpace(last.Assistant) == "" {
+			last.Assistant = strings.TrimSpace(rs.lastMessage)
+		}
+		return turns
+	}
+
+	prompt := strings.TrimSpace(rs.lastPrompt)
+	finalMessage := strings.TrimSpace(rs.lastMessage)
+	if prompt == "" && finalMessage == "" {
+		return nil
+	}
+	return []transcriptTurn{{User: prompt, Assistant: finalMessage}}
+}
+
+func geminiProjectConfigPathForHome(home, projectID string) string {
+	home = strings.TrimSpace(home)
+	if home == "" {
+		return ""
+	}
+	return geminiProjectConfigPath(projectID, map[string]string{"HOME": home, "GEMINI_HOME": home})
+}
+
+func relocateGeminiProjectConfig(srcPath, targetHome, projectID string) (string, error) {
+	dstPath := geminiProjectConfigPathForHome(targetHome, projectID)
+	if strings.TrimSpace(dstPath) == "" {
+		return "", os.ErrNotExist
+	}
+	if filepath.Clean(srcPath) == filepath.Clean(dstPath) {
+		return srcPath, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(dstPath); err == nil {
+		same, cmpErr := sameFileContents(srcPath, dstPath)
+		if cmpErr != nil {
+			return "", cmpErr
+		}
+		if same {
+			return dstPath, nil
+		}
+		return "", os.ErrExist
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return "", err
+	}
+	defer src.Close()
+	dst, err := os.OpenFile(dstPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		return "", err
+	}
+	defer dst.Close()
+	if _, err := io.Copy(dst, src); err != nil {
+		return "", err
+	}
+	return dstPath, nil
 }
 
 func (s *InteractiveService) loadPersistedRun(runID string) (*interactiveRun, *apiErr) {
