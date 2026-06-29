@@ -45,6 +45,16 @@ export class RunnerAdminRepository implements
     return readJson<LocalRunnerProvider[]>(response).catch(() => []);
   }
 
+  async installLocalProvider(providerKey: string): Promise<LocalRunnerProvider[]> {
+    const response = await this.httpClient.request(new URL("/providers/install", this.runnerBaseUrl), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ providerName: providerKey }),
+    });
+    const payload = await readJson<{ providers: LocalRunnerProvider[] }>(response);
+    return payload.providers ?? [];
+  }
+
   async authenticateProvider(providerKey: string): Promise<void> {
     const response = await this.httpClient.request(new URL("/providers/auth", this.runnerBaseUrl), {
       method: "POST",
@@ -157,10 +167,11 @@ export class CompositeArtifactRepository implements ArtifactRepository {
 export class CompositeProviderRepository implements ProviderRepository {
   constructor(
     private readonly supabaseRepository: Pick<ProviderRepository, "listSupportedModels" | "createSupportedModel" | "updateSupportedModel" | "deleteSupportedModel">,
-    private readonly runnerRepository: Pick<ProviderRepository, "listLocalProviders" | "authenticateProvider">,
+    private readonly runnerRepository: Pick<ProviderRepository, "listLocalProviders" | "installLocalProvider" | "authenticateProvider">,
   ) {}
 
   listLocalProviders() { return this.runnerRepository.listLocalProviders(); }
+  installLocalProvider(providerKey: string) { return this.runnerRepository.installLocalProvider(providerKey); }
   authenticateProvider(providerKey: string) { return this.runnerRepository.authenticateProvider(providerKey); }
   listSupportedModels() { return this.supabaseRepository.listSupportedModels(); }
   createSupportedModel(model: Omit<SupportedModel, "id" | "createdAt" | "updatedAt">) { return this.supabaseRepository.createSupportedModel(model); }

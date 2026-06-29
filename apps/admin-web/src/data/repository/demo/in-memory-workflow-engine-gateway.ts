@@ -839,20 +839,17 @@ export class InMemoryWorkflowEngineGateway implements WorkflowEngineGateway {
   }
 
   private supportedModels: SupportedModel[] = [
-    { id: "1", providerKey: "gemini", modelId: "auto-gemini-3", displayName: "Auto (Gemini 3)", isEnabled: true, sortOrder: 1, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
-    { id: "2", providerKey: "gemini", modelId: "auto-gemini-2.5", displayName: "Auto (Gemini 2.5)", isEnabled: true, sortOrder: 2, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
-    { id: "3", providerKey: "gemini", modelId: "gemini-3.1-pro-preview", displayName: "Gemini 3.1 Pro Preview", isEnabled: true, sortOrder: 3, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
-    { id: "4", providerKey: "gemini", modelId: "gemini-3-flash-preview", displayName: "Gemini 3 Flash Preview", isEnabled: true, sortOrder: 4, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
-    { id: "5", providerKey: "gemini", modelId: "gemini-3.1-flash-lite-preview", displayName: "Gemini 3.1 Flash Lite Preview", isEnabled: true, sortOrder: 5, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
-    { id: "6", providerKey: "gemini", modelId: "gemini-2.5-pro", displayName: "Gemini 2.5 Pro", isEnabled: true, sortOrder: 6, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
-    { id: "7", providerKey: "gemini", modelId: "gemini-2.5-flash", displayName: "Gemini 2.5 Flash", isEnabled: true, sortOrder: 7, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
-    { id: "8", providerKey: "gemini", modelId: "gemini-2.5-flash-lite", displayName: "Gemini 2.5 Flash Lite", isEnabled: true, sortOrder: 8, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
-    { id: "9", providerKey: "claude", modelId: "claude-haiku", displayName: "Claude Haiku", isEnabled: true, sortOrder: 9, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
-    { id: "10", providerKey: "claude", modelId: "claude-sonnet", displayName: "Claude Sonnet", isEnabled: true, sortOrder: 10, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
-    { id: "11", providerKey: "claude", modelId: "claude-opus", displayName: "Claude Opus", isEnabled: true, sortOrder: 11, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
-    { id: "12", providerKey: "codex", modelId: "gpt-5.4-mini", displayName: "GPT 5.4 Mini", isEnabled: true, sortOrder: 12, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
-    { id: "13", providerKey: "codex", modelId: "gpt-5.4", displayName: "GPT 5.4", isEnabled: true, sortOrder: 13, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
-    { id: "14", providerKey: "codex", modelId: "gpt-5.5", displayName: "GPT 5.5", isEnabled: true, sortOrder: 14, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    { id: "1", providerKey: "gemini", modelId: "gemini-3.5-flash-medium", displayName: "Gemini 3.5 Flash (Medium)", isEnabled: true, sortOrder: 1, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    { id: "2", providerKey: "gemini", modelId: "gemini-3.5-flash-high", displayName: "Gemini 3.5 Flash (High)", isEnabled: true, sortOrder: 2, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    { id: "3", providerKey: "gemini", modelId: "gemini-3.5-flash-low", displayName: "Gemini 3.5 Flash (Low)", isEnabled: true, sortOrder: 3, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    { id: "4", providerKey: "gemini", modelId: "gemini-3.1-pro-low", displayName: "Gemini 3.1 Pro (Low)", isEnabled: true, sortOrder: 4, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    { id: "5", providerKey: "gemini", modelId: "gemini-3.1-pro-high", displayName: "Gemini 3.1 Pro (High)", isEnabled: true, sortOrder: 5, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    { id: "6", providerKey: "claude", modelId: "claude-haiku", displayName: "Claude Haiku", isEnabled: true, sortOrder: 6, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    { id: "7", providerKey: "claude", modelId: "claude-sonnet", displayName: "Claude Sonnet", isEnabled: true, sortOrder: 7, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    { id: "8", providerKey: "claude", modelId: "claude-opus", displayName: "Claude Opus", isEnabled: true, sortOrder: 8, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    { id: "9", providerKey: "codex", modelId: "gpt-5.4-mini", displayName: "GPT 5.4 Mini", isEnabled: true, sortOrder: 9, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    { id: "10", providerKey: "codex", modelId: "gpt-5.4", displayName: "GPT 5.4", isEnabled: true, sortOrder: 10, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    { id: "11", providerKey: "codex", modelId: "gpt-5.5", displayName: "GPT 5.5", isEnabled: true, sortOrder: 11, source: "seed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
   ];
 
   async listSupportedModels(): Promise<SupportedModel[]> {

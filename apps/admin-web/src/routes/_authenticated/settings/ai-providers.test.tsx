@@ -233,32 +233,16 @@ describe("AI Providers settings", () => {
     });
   });
 
-  it("auth button is shown when auth is required, and triggers the auth API", async () => {
+  it("auth-required providers do not show a separate auth button", async () => {
     const authRequiredProvider = buildProvider({
       installed: true,
       installStatus: "INSTALLED",
       authStatus: "AUTH_REQUIRED",
     });
 
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ status: "success" }),
-    } as Response);
-
     renderSubject({ providers: [authRequiredProvider] });
 
-    // Both Auth and Refresh buttons must be present
-    expect(screen.getByRole("button", { name: "Auth" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Auth" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Refresh" })).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "Auth" }));
-
-    await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith("/api/local-runner/providers/auth", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ providerName: "codex" }),
-      });
-    });
   });
 });

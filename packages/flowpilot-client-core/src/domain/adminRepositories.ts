@@ -74,6 +74,7 @@ export interface ArtifactRepository extends ArtifactCatalogRepository, ArtifactR
 
 export interface LocalProviderRepository {
   listLocalProviders(): Promise<LocalRunnerProvider[]>;
+  installLocalProvider(providerKey: string): Promise<LocalRunnerProvider[]>;
   authenticateProvider(providerKey: string): Promise<void>;
 }
 

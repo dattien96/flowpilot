@@ -88,7 +88,7 @@ export default async function SettingsPage() {
           <div className="mt-6 space-y-3">
             {providers.length === 0 ? (
               <p className="text-sm text-muted-foreground">
-                Start the local runner to detect Codex, Claude Code, and Gemini.
+                Start the local runner to detect Codex, Claude Code, and Antigravity CLI.
               </p>
             ) : (
               providers.map((provider) => (

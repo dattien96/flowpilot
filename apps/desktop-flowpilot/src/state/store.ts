@@ -22,6 +22,7 @@ import type {
 } from "@/types/contract";
 import type { RunnerClient } from "@/types/contract";
 import type { SupportedModel } from "@flowpilot/client-core";
+import type { LocalRunnerProvider } from "@flowpilot/client-core";
 import { createRunnerClient } from "@/client/createRunnerClient";
 import { RunnerApiError } from "@/client/HttpWsRunnerClient";
 import type { ScenarioName } from "@/client/mockData";
@@ -120,6 +121,7 @@ interface AppState {
   steps: Step[];
   skills: ProviderSkill[];
   providerAccounts: ProviderAccountSummary[];
+  localProviders: LocalRunnerProvider[];
   supportedModels: SupportedModel[];
   selectedProjectId?: string;
   selectedWorkflowId?: string;
@@ -220,6 +222,7 @@ interface AppState {
   // actions
   loadProjects(): Promise<void>;
   loadProviderAccounts(): Promise<void>;
+  loadLocalProviders(): Promise<void>;
   loadSkills(provider: string, cwd?: string): Promise<void>;
   selectProject(projectId: string): Promise<void>;
   setLaunchMode(mode: LaunchMode): void;
@@ -282,6 +285,7 @@ export const useStore = create<AppState>((set, get) => ({
   steps: [],
   skills: [],
   providerAccounts: [],
+  localProviders: [],
   supportedModels: [],
   status: "idle",
   timeline: [],
@@ -367,14 +371,16 @@ export const useStore = create<AppState>((set, get) => ({
       }
       try {
         const admin = await getAdminUseCases();
-        const [workflowDefinitions, stepDefinitions, supportedModels] = await Promise.all([
+        const [workflowDefinitions, stepDefinitions, supportedModels, localProviders] = await Promise.all([
           admin.workflows.listWorkflows(),
           admin.workflows.listStepDefinitions(),
           admin.providers.listSupportedModels(),
+          admin.providers.listLocalProviders(),
         ]);
         set({
           workflows: workflowDefinitions.map(mapNavigatorWorkflow),
           steps: stepDefinitions.map(mapNavigatorStep),
+          localProviders,
           supportedModels,
           // Apply default model for the current provider if none is selected yet
           ...(!get().selectedModel ? { selectedModel: pickDefaultModel(get().selectedProvider, supportedModels) } : {}),
@@ -413,6 +419,17 @@ export const useStore = create<AppState>((set, get) => ({
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("[FlowPilot] listProviderAccounts refresh failed:", err);
+    }
+  },
+
+  async loadLocalProviders() {
+    try {
+      const admin = await getAdminUseCases();
+      const localProviders = await admin.providers.listLocalProviders();
+      set({ localProviders });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] listLocalProviders refresh failed:", err);
     }
   },
 
@@ -593,6 +610,7 @@ export const useStore = create<AppState>((set, get) => ({
 
   async selectProject(projectId) {
     localStorage.setItem(LAST_PROJECT_KEY, projectId);
+    const projectChanged = get().selectedProjectId !== projectId;
     set({
       selectedProjectId: projectId,
       selectedWorkflowId: undefined,
@@ -602,6 +620,9 @@ export const useStore = create<AppState>((set, get) => ({
       historyLoadError: undefined,
       remoteHistoryLoadError: undefined,
     });
+    if (projectChanged) {
+      get().resetRun();
+    }
     void get().loadSkills(get().selectedProvider ?? "codex");
   },
 

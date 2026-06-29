@@ -116,7 +116,7 @@ export class InMemoryAiOrchestrationGateway implements AiOrchestrationGateway {
       runType: "business_review",
       inputPayload: { projectId: "project_data_platform", sourceArtifactRunId: "artifact-run-010" },
       outputPayload: null,
-      modelName: "gemini-2.5-pro",
+      modelName: "gemini-3.1-pro-high",
       reasoningEffort: null,
       triggeredBy: "demo-user",
       status: "failed",

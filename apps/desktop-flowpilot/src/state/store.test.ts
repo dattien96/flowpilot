@@ -212,6 +212,35 @@ test("openHistoryRun marks unavailable history entries on typed resume errors", 
   assert.equal(state.runHistory[0]?.unavailableReason, "session data not found on this machine");
 });
 
+test("selectProject resets the active chat run when switching projects", async () => {
+  seedStore(makeClient({ listSkills: async () => [] }), []);
+  useStore.setState({
+    selectedProjectId: "project-1",
+    runId: "current-run",
+    mainRunId: "current-run",
+    activeStepId: "chat-current-run",
+    status: "running",
+    timeline: [{ kind: "prompt", id: "prompt-1", text: "old project prompt" }],
+    artifacts: [{ id: "artifact-1", runId: "current-run", name: "Artifact", kind: "summary", createdAt: "2026-01-01T00:00:00Z" }],
+    pendingApproval: {
+      approvalId: "approval-1",
+      details: { command: "echo hi", decisions: [] },
+    },
+  });
+
+  await useStore.getState().selectProject("project-2");
+
+  const state = useStore.getState();
+  assert.equal(state.selectedProjectId, "project-2");
+  assert.equal(state.runId, undefined);
+  assert.equal(state.mainRunId, undefined);
+  assert.equal(state.activeStepId, undefined);
+  assert.equal(state.status, "idle");
+  assert.deepEqual(state.timeline, []);
+  assert.deepEqual(state.artifacts, []);
+  assert.equal(state.pendingApproval, undefined);
+});
+
 test("openHistoryRun treats active-account-not-signed-in as unavailable instead of replacing the current run", async () => {
   seedStore(
     makeClient({

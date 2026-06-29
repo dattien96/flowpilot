@@ -15,10 +15,12 @@ export function AiProvidersSettings(): React.ReactElement {
   const client = useStore((state) => state.client);
   const providerAccounts = useStore((state) => state.providerAccounts);
   const loadProviderAccounts = useStore((state) => state.loadProviderAccounts);
+  const loadLocalProviders = useStore((state) => state.loadLocalProviders);
   const [providers, setProviders] = useState<LocalRunnerProvider[]>([]);
   const [models, setModels] = useState<SupportedModel[]>([]);
   const [busy, setBusy] = useState(false);
   const [connectingProviderKey, setConnectingProviderKey] = useState<ProviderKey | null>(null);
+  const [installingProviderKey, setInstallingProviderKey] = useState<ProviderKey | null>(null);
   const [pendingProviderKey, setPendingProviderKey] = useState<ProviderKey | null>(null);
   const [pendingKnownAccountIds, setPendingKnownAccountIds] = useState<string[]>([]);
   const [message, setMessage] = useState<string | null>(null);
@@ -36,6 +38,7 @@ export function AiProvidersSettings(): React.ReactElement {
       ]);
       setProviders(nextProviders);
       setModels(nextModels);
+      await loadLocalProviders();
     } catch (error) {
       setMessageTone("error");
       setMessage(toErrorMessage(error, "Unable to load AI providers."));
@@ -142,19 +145,21 @@ export function AiProvidersSettings(): React.ReactElement {
     }
   };
 
-  const authenticate = async (providerKey: string) => {
-    setBusy(true);
+  const installProvider = async (providerKey: ProviderKey) => {
+    setInstallingProviderKey(providerKey);
+    setMessageTone("info");
+    setMessage(null);
     try {
       const admin = await getAdminUseCases();
-      await admin.providers.authenticateProvider(providerKey);
-      setMessageTone("info");
-      setMessage(`Authentication started for ${providerKey}.`);
-      await refresh();
+      const nextProviders = await admin.providers.installLocalProvider(providerKey);
+      setProviders(nextProviders);
+      await loadLocalProviders();
+      setMessage(`${providerKey === "gemini" ? "AGY CLI" : providerKey} install requested. Refresh or connect an account after the installer completes.`);
     } catch (error) {
       setMessageTone("error");
-      setMessage(toErrorMessage(error, "Unable to authenticate provider."));
+      setMessage(toErrorMessage(error, "Unable to install provider CLI."));
     } finally {
-      setBusy(false);
+      setInstallingProviderKey(null);
     }
   };
 
@@ -198,7 +203,7 @@ export function AiProvidersSettings(): React.ReactElement {
       <div className="settings-panel-head"><div><div className="settings-eyebrow">AI Providers</div><h2>AI Providers</h2><p>Inspect local provider readiness and manage supported models.</p></div></div>
       {message ? <div className={`settings-feedback${messageTone === "error" ? " error" : ""}`}>{message}</div> : null}
       <div className="settings-two-column">
-        <div className="settings-subpanel"><h3>Local Providers</h3><div className="settings-list">{providers.map((provider) => <div className="settings-list-item static" key={provider.key}><div className="settings-provider-meta"><strong>{provider.label}</strong><span>{provider.installed ? "installed" : "not installed"} / {provider.version ?? "unknown"}</span><span>{providerAccountSummary(provider.key as ProviderKey)}</span></div><div className="settings-provider-actions"><button className="secondary-btn" disabled={busy || connectingProviderKey === provider.key || !provider.installed} onClick={() => void connectAccount(provider.key as ProviderKey)} type="button">{connectingProviderKey === provider.key || pendingProviderKey === provider.key ? "Connecting..." : "Connect New Account"}</button><button className="secondary-btn" disabled={busy} onClick={() => void authenticate(provider.key)} type="button">Auth</button></div></div>)}</div></div>
+        <div className="settings-subpanel"><h3>Local Providers</h3><div className="settings-list">{providers.map((provider) => <div className="settings-list-item static" key={provider.key}><div className="settings-provider-meta"><strong>{provider.label}</strong><span>{provider.installed ? "installed" : "not installed"} / {provider.version ?? "unknown"}</span><span>{providerAccountSummary(provider.key as ProviderKey)}</span></div><div className="settings-provider-actions">{provider.key === "gemini" ? <button className="secondary-btn" disabled={busy || installingProviderKey === provider.key || provider.installed} onClick={() => void installProvider(provider.key as ProviderKey)} type="button">{installingProviderKey === provider.key ? "Installing AGY..." : provider.installed ? "AGY Installed" : "Install AGY CLI"}</button> : null}<button className="secondary-btn" disabled={busy || connectingProviderKey === provider.key || !provider.installed} onClick={() => void connectAccount(provider.key as ProviderKey)} type="button">{connectingProviderKey === provider.key || pendingProviderKey === provider.key ? "Connecting..." : "Connect New Account"}</button></div></div>)}</div></div>
         <div className="settings-subpanel"><h3>Add Supported Model</h3><div className="settings-grid"><label className="settings-field"><span>Provider</span><select value={draft.providerKey} onChange={(event) => setDraft((current) => ({ ...current, providerKey: event.target.value as "codex" | "claude" | "gemini" }))}><option value="codex">codex</option><option value="claude">claude</option><option value="gemini">gemini</option></select></label><label className="settings-field"><span>Model ID</span><input value={draft.modelId} onChange={(event) => setDraft((current) => ({ ...current, modelId: event.target.value }))} /></label><label className="settings-field settings-field-full"><span>Display Name</span><input value={draft.displayName} onChange={(event) => setDraft((current) => ({ ...current, displayName: event.target.value }))} /></label></div><div className="settings-actions"><button className="primary-btn" disabled={busy} onClick={() => void addModel()} type="button">Add Model</button></div></div>
       </div>
       <div className="settings-subpanel">
