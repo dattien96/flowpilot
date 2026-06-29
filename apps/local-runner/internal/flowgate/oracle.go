@@ -3,6 +3,7 @@ package flowgate
 import (
 	"bufio"
 	"context"
+	"log"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -36,7 +37,12 @@ func RunOracle(repoDir string, baseline *Baseline, diff []ChangedFile, overrides
 		return OracleResult{Disabled: true}
 	}
 
-	suitePassed, nowPassed, nowFailed := executeSuite(repoDir, baseline.TestCmd, baseline.TestDir)
+	testCmd := baseline.TestCmd
+	if scoped := scopeTestCommand(repoDir, baseline.TestDir, testCmd, diff); scoped != "" {
+		testCmd = scoped
+		log.Printf("[gate] scoped oracle run: %s", testCmd)
+	}
+	suitePassed, nowPassed, nowFailed := executeSuite(repoDir, testCmd, baseline.TestDir)
 
 	var changedTestFiles []string
 	for _, f := range diff {

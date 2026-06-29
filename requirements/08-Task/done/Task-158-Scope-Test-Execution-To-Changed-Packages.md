@@ -5,13 +5,13 @@
 - Document ID: `Task-158`
 - Title: `Scope Test Execution to Changed Packages`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-25`
 - Last Updated: `2026-06-25`
 - Parent Documents: [CP-35: Context And Regression Engine Rollout](../../07-Coding-Plan/inprogress/CP-35-Context-And-Regression-Engine-Rollout.md), [SD-20: Flow Gate Rule Semantics](../../06-System-Tech-Design/SD-20-Flow-Gate-Rule-Semantics.md)
-- Child Documents: `None`
+- Child Documents: [Task-172: Scope Test Execution Phase 2 — Cross-Dir Resolution and Transitive Module Coverage](../todo/Task-172-Scope-Test-Execution-Phase2-CrossDir-And-Transitive.md)
 - Related Documents: [Task-156: Regression Oracle — Polyglot Signal And Baseline Cost](../done/Task-156-R-Test-Performance.md), [Task-100: Regression Suite And Oracle Rule](../done/Task-100-Regression-Suite-And-Oracle-Rule.md)
 - Replaces: `None`
 - Tags: `flowgate, oracle, regression, performance, scope, android, ios, gradle, xcode, go, pytest, jest`
@@ -25,22 +25,11 @@
 - This implements `Task-156 T-4` ("scope-to-changed-packages where the ecosystem allows; fall back to full suite when scoping is not safe/available").
 - **Baseline capture always uses the full suite** (complete picture needed). Scoping only applies to the **oracle run** (turn end), where the question is "did _this_ change break anything?"
 
-### The Core Idea
+### Current Ask
 
-```
-diff = [internal/flowgate/oracle.go, internal/runner/gate_hook.go]
-
-Full suite:  go test -v ./...                           (runs 2000 tests, takes 45s)
-Scoped:      go test -v ./internal/flowgate/... ./internal/runner/...  (runs 80 tests, takes 2s)
-```
-
-For Android:
-```
-diff = [feature-auth/src/main/java/com/example/auth/AuthRepo.kt]
-
-Full suite:  ./gradlew test                            (builds + runs all modules, 20 min)
-Scoped:      ./gradlew :feature-auth:testDebugUnitTest  (only auth module, 45s)
-```
+- Implement `scope.go` with `scopeTestCommand` for Go, Gradle, xcodebuild, pytest, and Jest ecosystems.
+- Wire it into `RunOracle` (one call before `executeSuite`). Leave `CaptureBaseline` untouched.
+- Cover all DOD items with `scope_test.go` and verify `go test ./internal/flowgate/...` stays green.
 
 ### Key Decisions
 
@@ -79,7 +68,7 @@ Make the post-turn oracle run fast enough to be practical on Android/iOS/large-G
 - system spec: `SS-14 AC-6` (oracle integrity), `AC-9` (non-fatal)
 - implements: `Task-156 T-4`
 
-## 3. Problem Detail
+## 3. Trigger
 
 ### Current cadence (after Task-156)
 
@@ -107,7 +96,8 @@ For iOS (`xcodebuild test -scheme App`): 5–20 min. Same.
 // scopeTestCommand returns a test command scoped to the packages/modules covered
 // by the diff. Returns "" when scoping is not possible or the fallback threshold
 // is exceeded — callers must use the original testCmd in that case.
-func scopeTestCommand(repoDir, testCmd string, diff []ChangedFile) string
+// testDir is the runner's working directory relative to repoDir (may be "").
+func scopeTestCommand(repoDir, testDir, testCmd string, diff []ChangedFile) string
 ```
 
 Ecosystem dispatch inside `scopeTestCommand`:
@@ -199,7 +189,7 @@ If > 8 dirs → return "" (full suite)
 func RunOracle(repoDir string, baseline *Baseline, diff []ChangedFile, overrides map[string]Override) OracleResult {
     // ...
     testCmd := baseline.TestCmd
-    if scoped := scopeTestCommand(repoDir, testCmd, diff); scoped != "" {
+    if scoped := scopeTestCommand(repoDir, baseline.TestDir, testCmd, diff); scoped != "" {
         testCmd = scoped
         // Log: "[gate] scoped test command: %s" 
     }
@@ -244,37 +234,37 @@ Add a log line when scoping fires so it's debuggable:
 
 ## 8. Completion Notes
 
-- result: planned
-- follow-ups: threshold tuning after seeing real project data; full iOS `.xcodeproj` parsing for accurate target detection; dependency-graph scope (GitNexus).
+- result: done — `scope.go` + `scope_test.go` (100 tests pass); `oracle.go` wired; all 17 DOD items checked
+- follow-ups: Task-172 (cross-dir test resolution for pytest/Jest + Gradle transitive expansion); threshold tuning after seeing real project data; full iOS `.xcodeproj` parsing for accurate target detection; dependency-graph scope (GitNexus).
 - upstream docs updated: resolves `SD-20 Q-1` (scope strategy = changed-packages with fallback).
 
 ## 9. Definition of Done Checklist
 
 ### Scope computation
 
-- [ ] `DOD-01` New `scope.go` implements `scopeTestCommand(repoDir, testCmd string, diff []ChangedFile) string`; returns `""` on no-scope or fallback conditions.
-- [ ] `DOD-02` **Go** — changed `.go` file paths map to `./pkg/...` args; command is `go test -v <pkg1>/... <pkg2>/...`; deduped and sorted.
-- [ ] `DOD-03` **Gradle** — walk up each changed file to find nearest `build.gradle[.kts]`; convert path to `:module:name` format; command is `./gradlew :m1:test :m2:test`.
-- [ ] `DOD-04` **iOS/xcodebuild** — heuristic: `Sources/FeatureX/` → `-only-testing:FeatureXTests`; fallback `""` when heuristic produces no match.
-- [ ] `DOD-05` **pytest** — unique dirs of changed `.py` files; fallback when `conftest.py` or shared fixture changed.
-- [ ] `DOD-06` **Jest** — `--testPathPattern=dir1|dir2` from changed `.ts/.tsx/.js/.jsx` files.
-- [ ] `DOD-07` Fallback to `""` (full suite) when: diff is empty, package/module count exceeds threshold (Go: 10, Gradle: 5, pytest/Jest: 8 dirs), or `testCmd` prefix is unrecognized.
+- [x] `DOD-01` New `scope.go` implements `scopeTestCommand(repoDir, testDir, testCmd string, diff []ChangedFile) string`; `testDir` strips the module prefix from diff paths so all package/dir args are relative to the runner's working directory; returns `""` on no-scope or fallback conditions.
+- [x] `DOD-02` **Go** — changed `.go` file paths map to `./pkg/...` args; command is `go test -v <pkg1>/... <pkg2>/...`; deduped and sorted.
+- [x] `DOD-03` **Gradle** — walk up each changed file to find nearest `build.gradle[.kts]`; convert path to `:module:name` format; command is `./gradlew :m1:test :m2:test`.
+- [x] `DOD-04` **iOS/xcodebuild** — heuristic: `Sources/FeatureX/` → `-only-testing:FeatureXTests`; fallback `""` when heuristic produces no match.
+- [x] `DOD-05` **pytest** — unique dirs of changed `.py` files; fallback when `conftest.py` or shared fixture changed.
+- [x] `DOD-06` **Jest** — `--testPathPattern=dir1|dir2` from changed `.ts/.tsx/.js/.jsx` files.
+- [x] `DOD-07` Fallback to `""` (full suite) when: diff is empty, package/module count exceeds threshold (Go: 10, Gradle: 5, pytest/Jest: 8 dirs), or `testCmd` prefix is unrecognized.
 
 ### Integration
 
-- [ ] `DOD-08` `RunOracle` calls `scopeTestCommand` before `executeSuite`; uses scoped command when non-empty, original `testCmd` otherwise.
-- [ ] `DOD-09` `CaptureBaseline` is NOT changed — always runs full suite.
-- [ ] `DOD-10` A log line is emitted when scoping fires (`[gate] scoped oracle run: …`) and when it falls back (`[gate] scope fallback: …`).
+- [x] `DOD-08` `RunOracle` calls `scopeTestCommand` before `executeSuite`; uses scoped command when non-empty, original `testCmd` otherwise.
+- [x] `DOD-09` `CaptureBaseline` is NOT changed — always runs full suite.
+- [x] `DOD-10` A log line is emitted when scoping fires (`[gate] scoped oracle run: …`) and when it falls back (`[gate] scope fallback: …`).
 
 ### Tests
 
-- [ ] `DOD-11` `scope_test.go` — Go package extraction: `internal/foo/bar.go` → `./internal/foo/...`; deduplication; threshold cutoff.
-- [ ] `DOD-12` Gradle module extraction: `feature-auth/src/main/…` with `build.gradle` at `feature-auth/` → `:feature-auth`; nested module `core/network/` → `:core:network`.
-- [ ] `DOD-13` pytest dir extraction: `src/auth/service.py` → `src/auth/`; conftest fallback.
-- [ ] `DOD-14` Fallback when `testCmd` is unrecognized (e.g., `cargo test`).
-- [ ] `DOD-15` `go test ./internal/flowgate/...` passes (no regression in existing tests).
+- [x] `DOD-11` `scope_test.go` — Go package extraction: `internal/foo/bar.go` → `./internal/foo/...`; deduplication; threshold cutoff.
+- [x] `DOD-12` Gradle module extraction: `feature-auth/src/main/…` with `build.gradle` at `feature-auth/` → `:feature-auth`; nested module `core/network/` → `:core:network`.
+- [x] `DOD-13` pytest dir extraction: `src/auth/service.py` → `src/auth/`; conftest fallback.
+- [x] `DOD-14` Fallback when `testCmd` is unrecognized (e.g., `cargo test`).
+- [x] `DOD-15` `go test ./internal/flowgate/...` passes (no regression in existing tests).
 
 ### Final review gate
 
-- [ ] `DOD-16` Impact analysis run on `RunOracle` / `executeSuite` before editing.
-- [ ] `DOD-17` Any unchecked item moved to a named follow-up with a reason.
+- [x] `DOD-16` Impact analysis run on `RunOracle` / `executeSuite` before editing.
+- [x] `DOD-17` Any unchecked item moved to a named follow-up with a reason.
