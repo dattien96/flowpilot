@@ -968,6 +968,13 @@ func (s *InteractiveService) handleSubmitFlowControl(w http.ResponseWriter, r *h
 		}
 	}
 	runID := r.PathValue("runId")
+	s.mu.Lock()
+	_, runExists := s.runs[runID]
+	s.mu.Unlock()
+	if !runExists {
+		writeInteractiveError(w, newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found"))
+		return
+	}
 	if _, err := s.applyFlowControl(runID, in); err != nil {
 		writeInteractiveError(w, newAPIErr(http.StatusUnprocessableEntity, "flow_control_failed", err.Error()))
 		return

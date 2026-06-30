@@ -343,6 +343,7 @@ func (s *localFileSessionStore) AppendEvent(ctx context.Context, event ProviderE
 
 // LoadFlowEvents reads all CP-41 events from the per-run flow-events sidecar.
 // Returns nil, nil when the sidecar does not exist (new run or no flow events yet).
+// Uses json.Decoder to avoid bufio.Scanner's 64 KiB default token limit.
 func (s *localFileSessionStore) LoadFlowEvents(_ context.Context, runID string) ([]ProviderEvent, error) {
 	f, err := os.Open(s.flowEventsPath(runID))
 	if err != nil {
@@ -353,14 +354,17 @@ func (s *localFileSessionStore) LoadFlowEvents(_ context.Context, runID string) 
 	}
 	defer f.Close()
 	var evs []ProviderEvent
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
+	dec := json.NewDecoder(f)
+	for {
 		var ev ProviderEvent
-		if json.Unmarshal(sc.Bytes(), &ev) == nil && ev.Type != "" {
+		if err := dec.Decode(&ev); err != nil {
+			break // EOF or malformed line — stop; partial reads are silently dropped
+		}
+		if ev.Type != "" {
 			evs = append(evs, ev)
 		}
 	}
-	return evs, sc.Err()
+	return evs, nil
 }
 
 // DeleteFlowEvents removes the per-run flow-events sidecar.

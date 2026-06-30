@@ -95,9 +95,10 @@ func BuildAuditDraft(input AuditDraftInput) FlowAuditDraft {
 		draft.ValidationCommands = []string{input.ValidationState.ValidationCommand}
 	}
 
-	// Block on failed/env-error validation (T-4).
-	if draft.ValidationResult == "failed_validation_max_retries" ||
-		draft.ValidationResult == "retrying" {
+	// Block unless validation explicitly passed or was deliberately skipped by the
+	// user (no command configured). Every other status — retrying, env error,
+	// or failed — means the codebase is not in a known-good state (T-4).
+	if draft.ValidationResult != "passed" && draft.ValidationResult != "skipped_no_command" {
 		draft.Status = "blocked_validation_failed"
 		return draft
 	}

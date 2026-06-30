@@ -182,12 +182,12 @@ type SpawnAgentInput struct {
 	// spawning. Only the first spawn for a given cohort key uses this value; all
 	// subsequent spawns with the same cohort key are no-ops on the expected count.
 	// When zero, membership is counted one-by-one via registerCohortMember.
-	CohortSize int `json:"-"`
+	CohortSize int `json:"cohortSize,omitempty"`
 	// AutoOrchestrate enables bounded hub auto-reinvocation (Task-093 / CP-36 P-7).
 	// When true on the FIRST spawn of a flow, sets autoOrchestrate on the parent run
 	// so the engine re-prompts the hub after each cohort join, bounded by the cap.
 	// Normal chat runs (autoOrchestrate=false) are never auto-reinvoked.
-	AutoOrchestrate bool `json:"-"`
+	AutoOrchestrate bool `json:"autoOrchestrate,omitempty"`
 }
 
 // SpawnAgentResult is the tool call result and HTTP response body.
@@ -729,6 +729,12 @@ func parseSpawnAgentInput(args map[string]any) (SpawnAgentInput, error) {
 	in.Prompt = prompt
 	in.Provider, _ = args["provider"].(string)
 	in.Wait, _ = args["wait"].(bool)
+	in.FlowCohortID, _ = args["flowCohortId"].(string)
+	in.Label, _ = args["label"].(string)
+	in.AutoOrchestrate, _ = args["autoOrchestrate"].(bool)
+	if cs, ok := args["cohortSize"].(float64); ok {
+		in.CohortSize = int(cs)
+	}
 	if rawDeps, ok := args["dependsOn"].([]any); ok {
 		for _, d := range rawDeps {
 			if s, ok := d.(string); ok && s != "" {

@@ -442,6 +442,13 @@ func (s *InteractiveService) injectAgentFeedback(parentRunID, toRunID, message s
 // This is the synchronous core: it records the transition, emits the graph update,
 // and returns a FlowControlResult. Re-entry of target nodes is wired by Task-091/092.
 func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControlInput) (FlowControlResult, error) {
+	// Validate the target run exists before mutating orchestrator state (MEDIUM finding).
+	s.mu.Lock()
+	_, runExists := s.runs[parentRunID]
+	s.mu.Unlock()
+	if !runExists {
+		return FlowControlResult{}, fmt.Errorf("applyFlowControl: run %q not found", parentRunID)
+	}
 	switch in.Status {
 	case "done":
 		snap := s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
@@ -485,6 +492,11 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 		})
 		s.emitAgentGraph(parentRunID, snap)
 		go s.persistParentSession(parentRunID)
+		if result.NextAction == "looping" {
+			// Re-enter the coder so the back-edge in ReviewLoopFlowConfig fires
+			// (CRITICAL finding: continue returned "looping" but never restarted the coder).
+			go s.maybeReinvokeCoderForContinue(parentRunID, in.Summary)
+		}
 		return result, nil
 
 	case "escalate":
@@ -604,6 +616,37 @@ func (s *InteractiveService) maybeAutoReinvokeHub(parentRunID string) {
 	s.mu.Unlock()
 
 	s.scheduleChildTurn(parentRunID, stepID, autoReinvokePrompt)
+}
+
+// maybeReinvokeCoderForContinue finds the first coder child of parentRunID and
+// schedules a new turn with the review feedback. Called from applyFlowControl
+// when status == "continue" so the synthesis→coder back-edge in ReviewLoopFlowConfig
+// actually fires (CRITICAL finding: continue never restarted the coder).
+func (s *InteractiveService) maybeReinvokeCoderForContinue(parentRunID, feedback string) {
+	feedback = strings.TrimSpace(feedback)
+	if feedback == "" {
+		feedback = "[flow-engine] Review completed with requested changes. Address the review issues and resubmit."
+	}
+	s.mu.Lock()
+	var coderID, coderStepID string
+	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
+		child := s.runs[childID]
+		if child == nil || !isAgentRole(child, "coder") {
+			continue
+		}
+		if child.turnInFlight {
+			s.mu.Unlock()
+			return // coder already running; feedback will arrive via pendingAgentContext
+		}
+		coderID = childID
+		coderStepID = child.stepID
+		break
+	}
+	s.mu.Unlock()
+	if coderID == "" || coderStepID == "" {
+		return
+	}
+	s.scheduleChildTurn(coderID, coderStepID, feedback)
 }
 
 func isAgentRole(rs *interactiveRun, role string) bool {
@@ -1467,10 +1510,15 @@ func (b *turnBridge) SpawnAgent(in SpawnAgentInput) (SpawnAgentResult, error) {
 	return b.svc.spawnChildRun(b.ctx, b.rs.id, in)
 }
 
-// SubmitFlowControl advances the generic flow engine on the hub run (Task-090).
-// The bridge is attached to the hub, so b.rs.id IS the parentRunID.
+// SubmitFlowControl advances the generic flow engine on the controlling hub run.
+// When called from a child turn (synthesizer, reviewer), b.rs.parentRunID is
+// the hub run that owns the loop state; route there instead of the child.
 func (b *turnBridge) SubmitFlowControl(in FlowControlInput) (FlowControlResult, error) {
-	return b.svc.applyFlowControl(b.rs.id, in)
+	targetRunID := b.rs.id
+	if b.rs.parentRunID != "" {
+		targetRunID = b.rs.parentRunID
+	}
+	return b.svc.applyFlowControl(targetRunID, in)
 }
 
 // spawnChildRun is the shared spawn path for the spawn_agent tool and the HTTP handler.
@@ -1605,6 +1653,12 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 			if parent := s.runs[parentRunID]; parent != nil {
 				parent.autoOrchestrate = true
 			}
+			// Set explicit mode so the legacy keyword gate stays silent for this
+			// review flow (CP-36 P-7 / CRITICAL finding: mode never wired).
+			s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
+				st.Mode = "explicit"
+				return st
+			})
 		}
 		if agentDef != nil {
 			rs.agentName = agentDef.Name

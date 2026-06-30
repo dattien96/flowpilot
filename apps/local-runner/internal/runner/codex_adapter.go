@@ -99,46 +99,28 @@ func codexSpawnAgentDynamicTool() any {
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"agent":     map[string]any{"type": "string", "description": "Agent name from the catalog (e.g. 'coder', 'reviewer', 'tester')."},
-				"prompt":    map[string]any{"type": "string", "description": "Initial prompt for the sub-agent."},
-				"provider":  map[string]any{"type": "string", "description": "Override provider (optional, defaults to parent run's provider)."},
-				"dependsOn": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Run IDs this agent depends on."},
-				"wait":      map[string]any{"type": "boolean", "description": "If true, block until the sub-agent's turn completes and return its final message."},
+				"agent":           map[string]any{"type": "string", "description": "Agent name from the catalog (e.g. 'coder', 'reviewer', 'tester')."},
+				"prompt":          map[string]any{"type": "string", "description": "Initial prompt for the sub-agent."},
+				"provider":        map[string]any{"type": "string", "description": "Override provider (optional, defaults to parent run's provider)."},
+				"dependsOn":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Run IDs this agent depends on."},
+				"wait":            map[string]any{"type": "boolean", "description": "If true, block until the sub-agent's turn completes and return its final message."},
+				"flowCohortId":    map[string]any{"type": "string", "description": "Group siblings into a cohort barrier; all members must complete before the hub is re-invoked."},
+				"cohortSize":      map[string]any{"type": "integer", "description": "Total cohort members when pre-declared; otherwise counted on each spawn."},
+				"label":           map[string]any{"type": "string", "description": "Display name shown in the consolidated join note (defaults to agent name)."},
+				"autoOrchestrate": map[string]any{"type": "boolean", "description": "When true on the first spawn, enables bounded hub auto-reinvocation after each cohort join."},
 			},
 			"required": []any{"agent", "prompt", "wait"},
 		},
 	}
 }
 
-// codexReviewOutcomeDynamicTool registers submit_review_outcome as a Codex DynamicToolSpec.
+// codexReviewOutcomeDynamicTool registers submit_review_outcome as a Codex DynamicToolSpec
+// using the shared schema so Claude/Codex remain in parity (LOW finding).
 func codexReviewOutcomeDynamicTool() any {
 	return map[string]any{
 		"name":        codexReviewOutcomeToolName,
 		"description": "Submit a code-review verdict. Use approved when the code is ready, changes_requested when issues were found (feedback required), or blocked when the review cannot proceed. This is the only flow-control tool.",
-		"inputSchema": map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"status": map[string]any{
-					"type": "string",
-					"enum": []any{"approved", "changes_requested", "blocked"},
-				},
-				"issues": map[string]any{
-					"type": "array",
-					"items": map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"title":      map[string]any{"type": "string"},
-							"severity":   map[string]any{"type": "string"},
-							"file":       map[string]any{"type": "string"},
-							"resolution": map[string]any{"type": "string"},
-						},
-						"required": []any{"title"},
-					},
-				},
-				"feedback": map[string]any{"type": "string"},
-			},
-			"required": []any{"status"},
-		},
+		"inputSchema": sharedReviewOutcomeSchema(),
 	}
 }
 
