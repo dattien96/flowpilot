@@ -180,16 +180,26 @@ ipcMain.handle("notification:show", (_event, payload: { title: string; body: str
 });
 
 ipcMain.handle("http:request", async (_event, payload: BridgeHttpRequest) => {
-  const response = await fetch(payload.url, {
-    method: payload.method ?? "GET",
-    headers: payload.headers,
-    body: payload.body,
-  });
-  return {
-    status: response.status,
-    headers: Array.from(response.headers.entries()),
-    body: await response.text(),
-  };
+  // Abort after 8 s so a runner that has bound a TCP port but is not yet
+  // serving HTTP (e.g. still initialising on first start) does not hang the
+  // renderer's bootstrap promise indefinitely.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  try {
+    const response = await fetch(payload.url, {
+      method: payload.method ?? "GET",
+      headers: payload.headers,
+      body: payload.body,
+      signal: controller.signal,
+    });
+    return {
+      status: response.status,
+      headers: Array.from(response.headers.entries()),
+      body: await response.text(),
+    };
+  } finally {
+    clearTimeout(timer);
+  }
 });
 
 void app.whenReady().then(createWindow);
