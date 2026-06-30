@@ -58,7 +58,9 @@ const (
 	// Emitted by the Testing step when a validation command completes (Task-170).
 	EventFlowValidationResult ProviderEventType = "flow_validation_result"
 	// Emitted when a Coding retry is scheduled after a failed validation (Task-170).
-	EventFlowValidationRetry  ProviderEventType = "flow_validation_retry"
+	EventFlowValidationRetry ProviderEventType = "flow_validation_retry"
+	// Emitted when the Audit step prepares its draft (Task-171).
+	EventFlowAuditDraft ProviderEventType = "flow_audit_draft"
 )
 
 // ApprovalDecisionOption is one decision the runtime offers for an approval.
@@ -153,6 +155,8 @@ type ProviderEvent struct {
 	FlowValidationResult *ValidationResultMeta `json:"flowValidationResult,omitempty"`
 	// flow_validation_retry (Task-170): snapshot of the retry state transition.
 	FlowValidationRetryState *FlowValidationRetryState `json:"flowValidationRetryState,omitempty"`
+	// flow_audit_draft (Task-171): audit draft prepared after successful validation.
+	FlowAuditDraft *FlowAuditDraft `json:"flowAuditDraft,omitempty"`
 }
 
 type AgentDependencyEdge struct {
