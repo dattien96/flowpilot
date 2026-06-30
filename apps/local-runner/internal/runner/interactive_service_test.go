@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -2175,14 +2174,22 @@ func TestAutoReinvokeHubStopCancels(t *testing.T) {
 }
 
 func TestAutoReinvokeHubSingleFlightConcurrent(t *testing.T) {
-	// Calling maybeAutoReinvokeHub from two goroutines concurrently must schedule
-	// exactly one hub turn — the reinvokeInFlight flag is the single-flight guard.
+	// Calling maybeAutoReinvokeHub from two goroutines must schedule exactly one hub
+	// turn. Uses a blocking adapter so G2 always races against an in-flight turn
+	// (turnInFlight=true, reinvokeInFlight=false), exercising the single-flight guard.
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
 	reg := newProviderRegistry()
 	reg.register(ProviderRegistration{
 		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
 		Capabilities: ProviderCapabilities{Streaming: true},
 		newAdapter: func() ProviderRuntimeAdapter {
 			return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+				select {
+				case started <- struct{}{}: // signal that turn has started
+				default:
+				}
+				<-release // block until test releases it
 				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "done"})
 				return nil
 			})
@@ -2196,35 +2203,154 @@ func TestAutoReinvokeHubSingleFlightConcurrent(t *testing.T) {
 	svc.runs[parentRunID].autoOrchestrate = true
 	svc.mu.Unlock()
 
-	// Fire two concurrent calls — only one should result in a scheduled turn.
-	var wg sync.WaitGroup
-	wg.Add(2)
-	for range 2 {
-		go func() {
-			defer wg.Done()
-			svc.maybeAutoReinvokeHub(parentRunID)
-		}()
-	}
-	wg.Wait()
+	// G1 schedules the hub turn; it will block inside the adapter on 'release'.
+	svc.maybeAutoReinvokeHub(parentRunID)
 
-	// Wait for any async turn to complete.
+	// Wait until the turn is actually in flight before firing G2.
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("hub turn did not start within 2 s")
+	}
+
+	// G2 arrives while turnInFlight=true, reinvokeInFlight=false. Our fix ensures
+	// it does NOT set pendingHubReinvoke because pendingAgentContext is empty.
+	svc.maybeAutoReinvokeHub(parentRunID)
+
+	svc.mu.Lock()
+	phri := svc.runs[parentRunID].pendingHubReinvoke
+	svc.mu.Unlock()
+	if phri {
+		t.Error("pendingHubReinvoke must not be set when pendingAgentContext is empty")
+	}
+
+	// Release the blocked turn and wait for it to finish.
+	close(release)
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		svc.mu.Lock()
-		rif := svc.runs[parentRunID].reinvokeInFlight
+		tif := svc.runs[parentRunID].turnInFlight
 		svc.mu.Unlock()
-		if !rif {
+		if !tif {
 			break
 		}
 		time.Sleep(time.Millisecond)
 	}
-	time.Sleep(20 * time.Millisecond) // let any extra turn complete
+	time.Sleep(20 * time.Millisecond) // let runTurn cleanup complete
 
 	svc.mu.Lock()
 	tc := svc.runs[parentRunID].turnCount
 	svc.mu.Unlock()
 	if tc != 1 {
 		t.Errorf("concurrent maybeAutoReinvokeHub produced %d hub turns, want exactly 1", tc)
+	}
+}
+
+// TestAutoReinvokeHubNoPendingContextNoDefer verifies the single-flight fix:
+// a concurrent maybeAutoReinvokeHub call that arrives after the first call's hub
+// turn has already started (turnInFlight=true, pendingAgentContext=nil) must NOT
+// set pendingHubReinvoke. startTurn drains pendingAgentContext before launching
+// the turn, so an empty slice means the in-flight turn already consumed the signal.
+func TestAutoReinvokeHubNoPendingContextNoDefer(t *testing.T) {
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "done"})
+				return nil
+			})
+		},
+	})
+	svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	handle, _ := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	runID := handle.RunID
+
+	svc.mu.Lock()
+	svc.runs[runID].autoOrchestrate = true
+	svc.runs[runID].turnInFlight = true // hub turn already in flight
+	// pendingAgentContext is nil — the in-flight turn has consumed the context
+	svc.mu.Unlock()
+
+	svc.maybeAutoReinvokeHub(runID)
+
+	svc.mu.Lock()
+	pending := svc.runs[runID].pendingHubReinvoke
+	svc.mu.Unlock()
+	if pending {
+		t.Error("pendingHubReinvoke must not be set when pendingAgentContext is empty: in-flight turn already consumed the signal")
+	}
+}
+
+// TestAutoReinvokeHubDeferredWhenCoderCompletesInFlight verifies the deferred
+// reinvoke path: when genuinely new context arrives (coder appends a note) while
+// a hub turn is in flight, exactly one follow-up hub turn is scheduled after the
+// in-flight turn completes.
+func TestAutoReinvokeHubDeferredWhenCoderCompletesInFlight(t *testing.T) {
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "done"})
+				return nil
+			})
+		},
+	})
+	svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	handle, _ := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	runID := handle.RunID
+
+	// Simulate hub turn already in flight with a new coder-completion note pending.
+	svc.mu.Lock()
+	svc.runs[runID].autoOrchestrate = true
+	svc.runs[runID].turnInFlight = true
+	svc.runs[runID].pendingAgentContext = []string{"[flow-engine] Coder completed."}
+	svc.mu.Unlock()
+
+	// Call should defer (set pendingHubReinvoke) not fire immediately.
+	svc.maybeAutoReinvokeHub(runID)
+
+	svc.mu.Lock()
+	pending := svc.runs[runID].pendingHubReinvoke
+	rif := svc.runs[runID].reinvokeInFlight
+	svc.mu.Unlock()
+	if !pending {
+		t.Error("pendingHubReinvoke must be set when new context arrived during hub turn")
+	}
+	if rif {
+		t.Error("reinvokeInFlight must not be set while hub turn is still in flight")
+	}
+
+	// Now simulate hub turn completion: clear turnInFlight and pendingHubReinvoke,
+	// then call maybeAutoReinvokeHub (the runTurn retry path).
+	svc.mu.Lock()
+	svc.runs[runID].turnInFlight = false
+	svc.runs[runID].pendingHubReinvoke = false
+	svc.mu.Unlock()
+
+	svc.maybeAutoReinvokeHub(runID)
+
+	// Wait for the deferred hub turn to complete.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		svc.mu.Lock()
+		rif = svc.runs[runID].reinvokeInFlight
+		svc.mu.Unlock()
+		if !rif {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(20 * time.Millisecond)
+
+	svc.mu.Lock()
+	tc := svc.runs[runID].turnCount
+	svc.mu.Unlock()
+	if tc != 1 {
+		t.Errorf("deferred hub reinvoke produced %d hub turns, want exactly 1", tc)
 	}
 }
 

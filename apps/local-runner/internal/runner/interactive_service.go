@@ -601,9 +601,13 @@ func (s *InteractiveService) maybeAutoReinvokeHub(parentRunID string) {
 	s.mu.Lock()
 	parent := s.runs[parentRunID]
 	if parent == nil || !parent.autoOrchestrate || parent.reinvokeInFlight || parent.turnInFlight {
-		// Hub turn is in flight: record that a reinvoke is pending so runTurn retries
-		// after it clears turnInFlight (fixes dropped coder-completion reinvoke).
-		if parent != nil && parent.autoOrchestrate && parent.turnInFlight && !parent.reinvokeInFlight {
+		// When the hub turn is already in flight but genuinely new context has arrived
+		// (pendingAgentContext is non-empty), mark a deferred reinvoke so runTurn retries
+		// after it clears turnInFlight. startTurn drains pendingAgentContext to nil before
+		// launching the turn, so an empty slice means the in-flight turn already consumed
+		// the signal — setting pendingHubReinvoke here would fire a spurious second turn.
+		if parent != nil && parent.autoOrchestrate && parent.turnInFlight &&
+			!parent.reinvokeInFlight && len(parent.pendingAgentContext) > 0 {
 			parent.pendingHubReinvoke = true
 		}
 		s.mu.Unlock()
