@@ -250,6 +250,8 @@ interface AppState {
   resumeAgentLoop(): Promise<void>;
   injectAgentFeedback(toRunId: string, message: string): Promise<void>;
   stopAgentLoop(): Promise<void>;
+  submitReviewOutcome(outcome: "approved" | "changes_requested", issues?: import("@/types/contract").ReviewIssue[]): Promise<void>;
+  extendCap(): Promise<void>;
   listAgents(cwd?: string): Promise<AgentDefinition[]>;
   focusAgentRun(runId: string): Promise<void>;
   backToMainRun(): void;
@@ -464,6 +466,8 @@ export const useStore = create<AppState>((set, get) => ({
   async resumeAgentLoop() { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.resumeAgentLoop) set(applyAgentGraphSnapshot(await client.resumeAgentLoop(parentRunId))); },
   async injectAgentFeedback(toRunId, message) { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.injectAgentFeedback) set(applyAgentGraphSnapshot(await client.injectAgentFeedback(parentRunId, toRunId, message))); },
   async stopAgentLoop() { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.stopAgentLoop) set(applyAgentGraphSnapshot(await client.stopAgentLoop(parentRunId))); },
+  async submitReviewOutcome(outcome, issues) { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.submitReviewOutcome) set(applyAgentGraphSnapshot(await client.submitReviewOutcome(parentRunId, { outcome, issues }))); },
+  async extendCap() { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.extendCap) set(applyAgentGraphSnapshot(await client.extendCap(parentRunId))); },
 
   async listAgents(cwd) {
     const { client } = get();
