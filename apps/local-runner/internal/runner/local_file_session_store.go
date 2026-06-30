@@ -67,7 +67,10 @@ type ndjsonSessionRecord struct {
 	DependsOn           []string `json:"depends_on,omitempty"`
 	AgentStatus         string   `json:"agent_status,omitempty"`
 	ModelName           string   `json:"model_name,omitempty"`
-	PendingAgentContext []string `json:"pending_agent_context,omitempty"`
+	PendingAgentContext []string        `json:"pending_agent_context,omitempty"`
+	LoopState           *AgentLoopState `json:"loop_state,omitempty"`
+	AutoOrchestrate     bool            `json:"auto_orchestrate,omitempty"`
+	FlowCohortID        string          `json:"flow_cohort_id,omitempty"`
 }
 
 // loadFromDisk reads the NDJSON file, applies last-wins dedup per run_id, and
@@ -234,7 +237,17 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		AgentStatus:         r.AgentStatus,
 		ModelName:           r.ModelName,
 		PendingAgentContext: append([]string(nil), r.PendingAgentContext...),
+		LoopState:           loopStateFromPtr(r.LoopState),
+		AutoOrchestrate:     r.AutoOrchestrate,
+		FlowCohortID:        r.FlowCohortID,
 	}
+}
+
+func loopStateFromPtr(p *AgentLoopState) AgentLoopState {
+	if p == nil {
+		return AgentLoopState{}
+	}
+	return *p
 }
 
 // turnLogPath returns the path of the per-run turn-log sidecar file.
@@ -316,5 +329,17 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		AgentStatus:         s.AgentStatus,
 		ModelName:           s.ModelName,
 		PendingAgentContext: append([]string(nil), s.PendingAgentContext...),
+		LoopState:           loopStatePtrIfSet(s.LoopState),
+		AutoOrchestrate:     s.AutoOrchestrate,
+		FlowCohortID:        s.FlowCohortID,
 	}
+}
+
+func loopStatePtrIfSet(st AgentLoopState) *AgentLoopState {
+	if st.Mode == "" && st.Round == 0 && st.Cap == 0 && st.RoundCap == 0 &&
+		st.ActiveNode == "" && st.ExtendCount == 0 && st.GateReason == "" {
+		return nil
+	}
+	cp := st
+	return &cp
 }
