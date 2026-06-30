@@ -32,10 +32,11 @@ const (
 	// the per-turn --mcp-config. The tool names below encode it (claude's mcp__<server>__<tool>
 	// convention), and writeClaudeMCPConfig guards against an injected extra server shadowing
 	// it — so the name MUST be referenced via this const, never re-typed as a literal.
-	claudeMCPServerName      = "flowpilot"
-	claudeApproveToolName    = "mcp__" + claudeMCPServerName + "__approve"
-	claudeAskUserToolName    = "mcp__" + claudeMCPServerName + "__ask_user"
-	claudeSpawnAgentToolName = "mcp__" + claudeMCPServerName + "__spawn_agent"
+	claudeMCPServerName            = "flowpilot"
+	claudeApproveToolName          = "mcp__" + claudeMCPServerName + "__approve"
+	claudeAskUserToolName          = "mcp__" + claudeMCPServerName + "__ask_user"
+	claudeSpawnAgentToolName       = "mcp__" + claudeMCPServerName + "__spawn_agent"
+	claudeReviewOutcomeToolName    = "mcp__" + claudeMCPServerName + "__submit_review_outcome"
 )
 
 // claudeArgs builds the headless stream-json invocation. YOLO drives --permission-mode
@@ -177,6 +178,26 @@ func handleClaudeAskUser(args map[string]any, bridge TurnBridge) map[string]any 
 		return claudeMcpTextResult("No answer was provided.")
 	}
 	return claudeMcpTextResult(strings.Join(choice, ", "))
+}
+
+// handleClaudeSubmitReviewOutcome maps a submit_review_outcome tool call to bridge.SubmitFlowControl
+// via the declared face registry (approved→done, changes_requested→continue, blocked→escalate).
+func handleClaudeSubmitReviewOutcome(args map[string]any, bridge TurnBridge) map[string]any {
+	in, err := parseReviewOutcomeInput(args)
+	if err != nil {
+		return claudeMcpTextResult("submit_review_outcome: invalid arguments: " + err.Error())
+	}
+	fc, err := reviewOutcomeToFlowControl(in)
+	if err != nil {
+		return claudeMcpTextResult("submit_review_outcome: mapping error: " + err.Error())
+	}
+	result, err := bridge.SubmitFlowControl(fc)
+	if err != nil {
+		return claudeMcpTextResult("submit_review_outcome failed: " + err.Error())
+	}
+	out := ReviewOutcomeResult{FlowControlResult: result, OpenIssues: len(in.Issues)}
+	resultJSON, _ := json.Marshal(out)
+	return claudeMcpTextResult(string(resultJSON))
 }
 
 // handleClaudeSpawnAgent maps a spawn_agent tool call to the bridge's SpawnAgent and returns
