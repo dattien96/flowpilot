@@ -18,6 +18,7 @@ import type {
   RunHandle,
   RunHistoryItem,
   RunnerClient,
+  ReviewOutcomeInput,
   SpawnAgentInput,
   SpawnAgentResult,
   StartRunInput,
@@ -187,6 +188,8 @@ export class HttpWsRunnerClient implements RunnerClient {
   resumeAgentLoop(parentRunId: string): Promise<AgentGraphSnapshot> { return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/agent-loop/resume`); }
   injectAgentFeedback(parentRunId: string, toRunId: string, message: string): Promise<AgentGraphSnapshot> { return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/agent-loop/feedback`, { toRunId, message }); }
   stopAgentLoop(parentRunId: string): Promise<AgentGraphSnapshot> { return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/agent-loop/stop`); }
+  submitReviewOutcome(parentRunId: string, input: ReviewOutcomeInput): Promise<AgentGraphSnapshot> { return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/flow-control`, input); }
+  extendCap(parentRunId: string): Promise<AgentGraphSnapshot> { return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/agent-loop/extend-cap`); }
 
   spawnAgent(input: SpawnAgentInput & { parentRunId: string }): Promise<SpawnAgentResult> {
     const { parentRunId, ...body } = input;
