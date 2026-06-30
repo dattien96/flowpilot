@@ -164,6 +164,34 @@ func TestFlowAuditDraftDoesNotClaimSuccessWhenValidationFailed(t *testing.T) {
 	}
 }
 
+// TestFlowAuditDraftBlocksSkippedNoCommand verifies that skipped_no_command does
+// not produce a ready audit draft — only "passed" validation should.
+func TestFlowAuditDraftBlocksSkippedNoCommand(t *testing.T) {
+	workspace, _ := auditFixture(t)
+	hints := FlowContextHints{WorkflowRunID: "run-skipped-nc", PlanStepRunID: "step-plan", UserPrompt: "agent-flow-engine"}
+	pkg, _ := BuildFlowContextPackage(workspace, hints)
+
+	draft := BuildAuditDraft(auditDraftInput(workspace, pkg, "skipped_no_command"))
+
+	if draft.Status != "blocked_validation_failed" {
+		t.Errorf("status = %q, want blocked_validation_failed for skipped_no_command", draft.Status)
+	}
+}
+
+// TestFlowAuditDraftBlocksSkippedEnvError verifies that skipped_env_error does
+// not produce a ready audit draft.
+func TestFlowAuditDraftBlocksSkippedEnvError(t *testing.T) {
+	workspace, _ := auditFixture(t)
+	hints := FlowContextHints{WorkflowRunID: "run-skipped-env", PlanStepRunID: "step-plan", UserPrompt: "agent-flow-engine"}
+	pkg, _ := BuildFlowContextPackage(workspace, hints)
+
+	draft := BuildAuditDraft(auditDraftInput(workspace, pkg, "skipped_env_error"))
+
+	if draft.Status != "blocked_validation_failed" {
+		t.Errorf("status = %q, want blocked_validation_failed for skipped_env_error", draft.Status)
+	}
+}
+
 // TestFlowAuditDraftIncludesResidualNotes verifies that the caller-supplied
 // residual notes appear in the draft.
 func TestFlowAuditDraftIncludesResidualNotes(t *testing.T) {

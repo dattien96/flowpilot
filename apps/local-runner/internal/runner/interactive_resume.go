@@ -388,7 +388,11 @@ func (s *InteractiveService) reconstructRun(st ProviderSessionState) (*interacti
 	// FindAuditDraft etc. work after a process restart. rs is not yet visible to
 	// other goroutines here so no lock is needed for the initial population.
 	if fes, ok := s.workflowStore.(FlowEventStore); ok {
-		if evs, _ := fes.LoadFlowEvents(context.Background(), st.RunID); len(evs) > 0 {
+		evs, loadEvErr := fes.LoadFlowEvents(context.Background(), st.RunID)
+		if loadEvErr != nil {
+			log.Printf("reconstructRun: LoadFlowEvents runID=%s: %v (resuming with partial CP-41 state)", st.RunID, loadEvErr)
+		}
+		if len(evs) > 0 {
 			for i := range evs {
 				rs.seq++
 				evs[i].Seq = rs.seq

@@ -222,8 +222,9 @@ type captureBridge struct {
 	askOptions  []QuestionOption
 	askMulti    bool
 	askCallSeen bool
-	spawnSeen   bool
-	spawnInput  SpawnAgentInput
+	spawnSeen        bool
+	spawnInput       SpawnAgentInput
+	flowControlInput *FlowControlInput
 }
 
 func (b *captureBridge) Emit(ev ProviderEvent) {
@@ -253,8 +254,11 @@ func (b *captureBridge) SpawnAgent(in SpawnAgentInput) (SpawnAgentResult, error)
 	b.mu.Unlock()
 	return SpawnAgentResult{RunID: "child-1", ProviderSessionID: "sess-child-1", ProviderKey: "codex", Status: "completed"}, nil
 }
-func (b *captureBridge) SubmitFlowControl(_ FlowControlInput) (FlowControlResult, error) {
-	return FlowControlResult{}, nil
+func (b *captureBridge) SubmitFlowControl(in FlowControlInput) (FlowControlResult, error) {
+	b.mu.Lock()
+	b.flowControlInput = &in
+	b.mu.Unlock()
+	return FlowControlResult{Status: "continue", Round: 1, NextAction: "looping"}, nil
 }
 func (b *captureBridge) types() []ProviderEventType {
 	b.mu.Lock()
@@ -1451,4 +1455,76 @@ func containsType(types []ProviderEventType, want ProviderEventType) bool {
 		}
 	}
 	return false
+}
+
+// TestCodexAdapterSubmitReviewOutcomeDynamicToolRouting verifies that when the
+// Codex model calls the flowpilot_submit_review_outcome dynamic tool alias,
+// it is routed end-to-end through handleDynamicToolCall → SubmitFlowControl on
+// the bridge, and the result JSON is returned to Codex.
+func TestCodexAdapterSubmitReviewOutcomeDynamicToolRouting(t *testing.T) {
+	d, fc := startFakeCodex(t, nil)
+	adapter := newCodexAdapter(d, "/workspace")
+	d.setInbound(adapter.handleInbound)
+
+	toolReplies := make(chan map[string]any, 1)
+	fc.serve(func(fc *fakeCodex, m map[string]any) {
+		method, _ := m["method"].(string)
+		switch method {
+		case "thread/start":
+			fc.reply(m["id"], map[string]any{"threadId": "th-ro"})
+		case "turn/start":
+			fc.reply(m["id"], map[string]any{"turnId": "ct-ro"})
+			// model invokes flowpilot_submit_review_outcome (the Codex alias)
+			fc.send(map[string]any{
+				"jsonrpc": "2.0", "id": 700, "method": "item/tool/call",
+				"params": map[string]any{
+					"threadId": "th-ro", "turnId": "ct-ro", "callId": "call_ro",
+					"tool": codexReviewOutcomeToolName,
+					"arguments": map[string]any{
+						"status":   "changes_requested",
+						"feedback": "fix the null check",
+						"issues": []any{
+							map[string]any{"title": "nil dereference", "severity": "error", "file": "main.go"},
+						},
+					},
+				},
+			})
+		default:
+			if res, ok := m["result"].(map[string]any); ok {
+				if _, ok := res["contentItems"]; ok {
+					toolReplies <- res
+					fc.notify("turn.completed", map[string]any{"threadId": "th-ro", "finalMessage": "done"})
+				}
+			}
+		}
+	})
+
+	bridge := &captureBridge{approveWith: "approve"}
+	if err := adapter.SendTurn(context.Background(), TurnRequest{RunID: "r-ro", Prompt: "go"}, bridge); err != nil {
+		t.Fatalf("SendTurn: %v", err)
+	}
+
+	// Verify SubmitFlowControl was called with the correct status.
+	bridge.mu.Lock()
+	capturedFC := bridge.flowControlInput
+	bridge.mu.Unlock()
+	if capturedFC == nil {
+		t.Fatal("SubmitFlowControl was not called")
+	}
+	if capturedFC.Status != "continue" { // changes_requested maps to continue via reviewOutcomeFace
+		t.Errorf("FlowControlInput.Status = %q, want %q", capturedFC.Status, "continue")
+	}
+	if capturedFC.Summary != "fix the null check" {
+		t.Errorf("FlowControlInput.Summary = %q, want %q", capturedFC.Summary, "fix the null check")
+	}
+
+	// Verify the reply was sent back to the Codex model.
+	select {
+	case res := <-toolReplies:
+		if res["success"] != true {
+			t.Fatalf("dynamic tool result success = %v, want true", res["success"])
+		}
+	default:
+		t.Fatal("submit_review_outcome reply was not sent to Codex")
+	}
 }

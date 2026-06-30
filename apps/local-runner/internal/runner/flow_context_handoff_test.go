@@ -282,3 +282,43 @@ func TestPlanPackageLookupScopedToWorkflowRun(t *testing.T) {
 		t.Error("lookup for unknown step must return false")
 	}
 }
+
+// TestMaybeClearPlanContextIsNoOpForNonPlanStep verifies that
+// maybeClearPlanContextForPlanStep leaves planContextPackage unchanged when the
+// step being started is a Coding or Testing step rather than a Plan step.
+// Regression guard: a Coding re-entry must not evict the cached plan package.
+func TestMaybeClearPlanContextIsNoOpForNonPlanStep(t *testing.T) {
+	workspace, _ := fcpFixture(t)
+	store := newFakeWorkflowStore()
+	// Seed a plan + coding + testing step sequence.
+	store.seed("run-noop", []RuntimeWorkflowStep{
+		{ID: "step-plan", StepType: "plan", Status: StepStatusDone},
+		{ID: "step-coding", StepType: "coding", Status: StepStatusRunning},
+		{ID: "step-testing", StepType: "testing", Status: StepStatusPending},
+	})
+	svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+
+	// Seed a non-nil planContextPackage on the run.
+	pkg := &FlowContextPackage{PackageID: "pkg-sentinel"}
+	rs := &interactiveRun{
+		id:                 "run-noop",
+		workspaceCwd:       workspace,
+		subs:               map[int64]chan ProviderEvent{},
+		planContextPackage: pkg,
+	}
+
+	// Calling with a Coding step must be a no-op.
+	svc.maybeClearPlanContextForPlanStep(context.Background(), "run-noop", rs, "step-coding")
+	if rs.planContextPackage == nil {
+		t.Error("planContextPackage must not be cleared for a Coding step")
+	}
+	if rs.planContextPackage.PackageID != "pkg-sentinel" {
+		t.Errorf("planContextPackage changed unexpectedly: %+v", rs.planContextPackage)
+	}
+
+	// Calling with a Testing step must also be a no-op.
+	svc.maybeClearPlanContextForPlanStep(context.Background(), "run-noop", rs, "step-testing")
+	if rs.planContextPackage == nil {
+		t.Error("planContextPackage must not be cleared for a Testing step")
+	}
+}

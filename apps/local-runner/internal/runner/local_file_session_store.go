@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -304,8 +306,13 @@ func (s *localFileSessionStore) DeleteTurnLog(_ context.Context, runID string) e
 }
 
 // flowEventsPath returns the path of the per-run CP-41 flow-events sidecar.
-func (s *localFileSessionStore) flowEventsPath(runID string) string {
-	return filepath.Join(filepath.Dir(s.filePath), runID+"-flow-events.ndjson")
+// Returns an error when runID contains path separators that could escape the
+// store directory (path-traversal guard).
+func (s *localFileSessionStore) flowEventsPath(runID string) (string, error) {
+	if runID == "" || filepath.Base(runID) != runID {
+		return "", fmt.Errorf("invalid run ID %q: must not contain path separators", runID)
+	}
+	return filepath.Join(filepath.Dir(s.filePath), runID+"-flow-events.ndjson"), nil
 }
 
 // isFlowSidecarEventType reports whether the event type should be persisted to
@@ -333,7 +340,11 @@ func (s *localFileSessionStore) AppendEvent(ctx context.Context, event ProviderE
 	if err != nil {
 		return err
 	}
-	fh, err := os.OpenFile(s.flowEventsPath(event.WorkflowRunID), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	evPath, err := s.flowEventsPath(event.WorkflowRunID)
+	if err != nil {
+		return err
+	}
+	fh, err := os.OpenFile(evPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}
@@ -346,8 +357,13 @@ func (s *localFileSessionStore) AppendEvent(ctx context.Context, event ProviderE
 // Returns nil, nil when the sidecar does not exist (new run or no flow events yet).
 // Reads line-by-line with a 1 MiB buffer (avoids bufio.Scanner's 64 KiB limit)
 // so a single malformed line only skips that line — later valid lines are kept.
+// Malformed lines are logged with runID and line number to aid sidecar diagnosis.
 func (s *localFileSessionStore) LoadFlowEvents(_ context.Context, runID string) ([]ProviderEvent, error) {
-	f, err := os.Open(s.flowEventsPath(runID))
+	evPath, err := s.flowEventsPath(runID)
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.Open(evPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
@@ -357,9 +373,11 @@ func (s *localFileSessionStore) LoadFlowEvents(_ context.Context, runID string) 
 	defer f.Close()
 	var evs []ProviderEvent
 	br := bufio.NewReaderSize(f, 1<<20) // 1 MiB per-line buffer
+	lineNum := 0
 	for {
 		line, readErr := br.ReadBytes('\n')
 		if len(line) > 0 {
+			lineNum++
 			// trim CR+LF and skip blank lines
 			for len(line) > 0 && (line[len(line)-1] == '\n' || line[len(line)-1] == '\r') {
 				line = line[:len(line)-1]
@@ -368,8 +386,9 @@ func (s *localFileSessionStore) LoadFlowEvents(_ context.Context, runID string) 
 				var ev ProviderEvent
 				if jsonErr := json.Unmarshal(line, &ev); jsonErr == nil && ev.Type != "" {
 					evs = append(evs, ev)
+				} else if jsonErr != nil {
+					log.Printf("LoadFlowEvents: runID=%s line=%d: malformed JSON: %v", runID, lineNum, jsonErr)
 				}
-				// malformed JSON on this line is silently skipped; the loop continues
 			}
 		}
 		if readErr != nil {
@@ -385,7 +404,11 @@ func (s *localFileSessionStore) LoadFlowEvents(_ context.Context, runID string) 
 // DeleteFlowEvents removes the per-run flow-events sidecar.
 // No-op when the file does not exist.
 func (s *localFileSessionStore) DeleteFlowEvents(_ context.Context, runID string) error {
-	err := os.Remove(s.flowEventsPath(runID))
+	evPath, err := s.flowEventsPath(runID)
+	if err != nil {
+		return err
+	}
+	err = os.Remove(evPath)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}

@@ -149,6 +149,10 @@ type interactiveRun struct {
 	// reinvokeInFlight is the single-flight guard for auto-reinvocation. Set true when a
 	// hub re-prompt has been scheduled; cleared when the new turn starts (in startTurn).
 	reinvokeInFlight bool
+	// pendingHubReinvoke is set when maybeAutoReinvokeHub is called while the hub turn
+	// is still in flight (turnInFlight==true). runTurn clears turnInFlight and then
+	// retries the reinvoke so the coder-completion note is not silently dropped.
+	pendingHubReinvoke bool
 	// pendingAgentContext holds notes about UI-spawned children (and their results) that
 	// have not yet been folded into this (parent) run's provider conversation. They are
 	// prepended to the next provider turn's prompt and then cleared. Persisted to
@@ -597,6 +601,11 @@ func (s *InteractiveService) maybeAutoReinvokeHub(parentRunID string) {
 	s.mu.Lock()
 	parent := s.runs[parentRunID]
 	if parent == nil || !parent.autoOrchestrate || parent.reinvokeInFlight || parent.turnInFlight {
+		// Hub turn is in flight: record that a reinvoke is pending so runTurn retries
+		// after it clears turnInFlight (fixes dropped coder-completion reinvoke).
+		if parent != nil && parent.autoOrchestrate && parent.turnInFlight && !parent.reinvokeInFlight {
+			parent.pendingHubReinvoke = true
+		}
 		s.mu.Unlock()
 		return
 	}
@@ -2150,7 +2159,18 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 			parent.pendingRestartPrompt = ""
 		}
 	}
+	// Retry a hub reinvoke that was deferred because turnInFlight was true when the
+	// coder completion fired. This prevents the review loop from stalling when the
+	// coder finishes before the hub's current turn has cleared.
+	pendingHubReinvoke := rs.parentRunID == "" && rs.pendingHubReinvoke
+	if pendingHubReinvoke {
+		rs.pendingHubReinvoke = false
+	}
 	s.mu.Unlock()
+
+	if pendingHubReinvoke {
+		go s.maybeAutoReinvokeHub(rs.id)
+	}
 
 	// Post-turn flow gate (CP-35 P-4/P-5): observe diff, evaluate rules, enforce.
 	// Non-fatal: any internal error inside runFlowGate degrades to pass.
