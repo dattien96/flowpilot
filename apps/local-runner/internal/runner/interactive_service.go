@@ -142,6 +142,10 @@ type interactiveRun struct {
 	// root (parent) runs only; child runs leave this false. When true, maybeAutoReinvokeHub
 	// is called after each cohort join to re-prompt the hub without a human typing.
 	autoOrchestrate bool
+	// planContextPackage is the FlowContextPackage built for the Plan step of this Flow
+	// Mode run. Non-nil only for workflow runs with a Coding step. Cached here so retries
+	// reuse the same package without rebuilding; cleared when a Plan step reruns (Task-169).
+	planContextPackage *FlowContextPackage
 	// reinvokeInFlight is the single-flight guard for auto-reinvocation. Set true when a
 	// hub re-prompt has been scheduled; cleared when the new turn starts (in startTurn).
 	reinvokeInFlight bool
@@ -1932,6 +1936,10 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// Live ledger refresh (CP-35): pick up commits made during this session so the
 	// oracle always sees the current change history, not just what existed at bind time.
 	s.rebuildLedgerIfDirty(rs.workspaceCwd)
+	// Flow Mode: prepend FlowContextPackage for Coding steps before normal feature
+	// history injection. injectFeatureHistoryPrompt skips re-injection when the prompt
+	// already carries the flowContextHandoffPrefix sentinel (Task-169).
+	providerPrompt = s.injectFlowContextIfCoding(ctx, rs, in.StepID, in.Prompt, providerPrompt)
 	if s.shouldInjectFeatureHistory(rs.providerKey) {
 		providerPrompt = injectFeatureHistoryPrompt(rs.workspaceCwd, providerPrompt, transcriptTurnsFromRun(rs))
 	}
@@ -2321,6 +2329,9 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	if logger, logOK := s.workflowStore.(TurnLogStore); logOK {
 		_ = logger.AppendTurnLog(context.Background(), runID, turnLogLine{Kind: turnLogKindPrompt, TurnID: turnID, Prompt: in.Prompt})
 	}
+	// Flow Mode: clear cached FlowContextPackage when a Plan step reruns so the next
+	// Coding step rebuilds the package from the new Plan output (T-3, Task-169).
+	s.maybeClearPlanContextForPlanStep(ctx, runID, rs, in.StepID)
 
 	go s.runTurn(ctx, rs, adapter, in, scenario, turnID)
 	return turnID, nil
