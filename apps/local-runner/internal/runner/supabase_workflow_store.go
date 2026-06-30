@@ -126,6 +126,10 @@ func buildStepPatchBody(p WorkflowStepPatch) map[string]any {
 
 // ApplyStepTransition patches one step row (idempotent: re-applying the same patch
 // converges to the same row).
+//
+// Deprecated: run data is persisted by localFileSessionStore (sessions.ndjson) and
+// synced via Drive. The workflow_run_steps Supabase table is no longer written in
+// production (CP-36 P-5 / Task-085). Retained for compile-time back-compat only.
 func (s *SupabaseWorkflowStore) ApplyStepTransition(ctx context.Context, _ string, t WorkflowStepTransition) error {
 	endpoint := fmt.Sprintf("%s/workflow_run_steps?id=eq.%s", s.restURL, t.StepID)
 	payload, err := json.Marshal(buildStepPatchBody(t.Patch))
@@ -143,6 +147,9 @@ func (s *SupabaseWorkflowStore) ApplyStepTransition(ctx context.Context, _ strin
 }
 
 // SetRunStatus patches the run-level status + finished_at.
+//
+// Deprecated: see ApplyStepTransition. The workflow_runs Supabase table is no
+// longer written in production (CP-36 P-5 / Task-085).
 func (s *SupabaseWorkflowStore) SetRunStatus(ctx context.Context, runID string, runStatus WorkflowRunStatus, finishedAt string) error {
 	endpoint := fmt.Sprintf("%s/workflow_runs?id=eq.%s", s.restURL, runID)
 	payload, err := json.Marshal(map[string]any{
@@ -163,6 +170,9 @@ func (s *SupabaseWorkflowStore) SetRunStatus(ctx context.Context, runID string, 
 }
 
 // AppendLog inserts a step log row.
+//
+// Deprecated: see ApplyStepTransition. The workflow_run_logs Supabase table is no
+// longer written in production (CP-36 P-5 / Task-085).
 func (s *SupabaseWorkflowStore) AppendLog(ctx context.Context, stepID string, log WorkflowLog) error {
 	endpoint := s.restURL + "/workflow_run_logs"
 	payload, err := json.Marshal(map[string]any{
@@ -183,6 +193,10 @@ func (s *SupabaseWorkflowStore) AppendLog(ctx context.Context, stepID string, lo
 	return nil
 }
 
+// AppendEvent inserts a provider event row.
+//
+// Deprecated: see ApplyStepTransition. The workflow_provider_events Supabase table
+// is no longer written in production (CP-36 P-5 / Task-085).
 func (s *SupabaseWorkflowStore) AppendEvent(ctx context.Context, event ProviderEvent) error {
 	endpoint := s.restURL + "/workflow_provider_events"
 	payload, err := json.Marshal(map[string]any{
