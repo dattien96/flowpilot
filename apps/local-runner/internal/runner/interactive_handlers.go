@@ -55,6 +55,8 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/agent-loop/resume", s.handleResumeAgentLoop)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/agent-loop/feedback", s.handleInjectAgentFeedback)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/agent-loop/stop", s.handleStopAgentLoop)
+	mux.HandleFunc("POST /client/workflow-runs/{runId}/flow-control", s.handleSubmitFlowControl)
+	mux.HandleFunc("POST /client/workflow-runs/{runId}/agent-loop/extend-cap", s.handleExtendCap)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/gate-decision", s.handleGateDecision)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/gate-agreement", s.handleGateAgreement)
 
@@ -930,6 +932,59 @@ func (s *InteractiveService) handleGateAgreement(w http.ResponseWriter, r *http.
 		return
 	}
 	writeInteractiveJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
+}
+
+// handleSubmitFlowControl handles POST /client/workflow-runs/{runId}/flow-control.
+// Accepts either ReviewOutcomeInput {"outcome","issues",...} (the declared face used by
+// the board and by submit_review_outcome tool calls) or the raw FlowControlInput
+// {"status","summary","payload"}. Always returns an AgentGraphSnapshot so the caller
+// can update its board state without a separate refresh round-trip.
+func (s *InteractiveService) handleSubmitFlowControl(w http.ResponseWriter, r *http.Request) {
+	var body map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_request", "invalid request body"))
+		return
+	}
+	var in FlowControlInput
+	if _, hasOutcome := body["outcome"]; hasOutcome {
+		// Declared face: ReviewOutcomeInput → FlowControlInput via the face registry.
+		roi, err := parseReviewOutcomeInput(body)
+		if err != nil {
+			writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_outcome", err.Error()))
+			return
+		}
+		var mapErr error
+		in, mapErr = reviewOutcomeToFlowControl(roi)
+		if mapErr != nil {
+			writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_outcome", mapErr.Error()))
+			return
+		}
+	} else {
+		var err error
+		in, err = parseFlowControlInput(body)
+		if err != nil {
+			writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_status", err.Error()))
+			return
+		}
+	}
+	runID := r.PathValue("runId")
+	if _, err := s.applyFlowControl(runID, in); err != nil {
+		writeInteractiveError(w, newAPIErr(http.StatusUnprocessableEntity, "flow_control_failed", err.Error()))
+		return
+	}
+	writeInteractiveJSON(w, http.StatusOK, s.agentGraphSnapshot(runID))
+}
+
+// handleExtendCap handles POST /client/workflow-runs/{runId}/agent-loop/extend-cap.
+// Body: {} (empty — no parameters needed; limits come from the flow policy defaults).
+// Returns an AgentGraphSnapshot so the board can update without a separate refresh.
+func (s *InteractiveService) handleExtendCap(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("runId")
+	if _, err := s.extendCap(runID); err != nil {
+		writeInteractiveError(w, newAPIErr(http.StatusUnprocessableEntity, "extend_cap_failed", err.Error()))
+		return
+	}
+	writeInteractiveJSON(w, http.StatusOK, s.agentGraphSnapshot(runID))
 }
 
 func fakeArtifacts(runID string) []Artifact {
