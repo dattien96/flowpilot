@@ -5,13 +5,13 @@
 - Document ID: `CP-41`
 - Title: `RAG Harness Flow Mode`
 - Phase: `coding_plan`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-28`
-- Last Updated: `2026-06-28`
+- Last Updated: `2026-06-30`
 - Parent Documents: `SD-17-Context-And-Regression-Engine.md`, `SD-20-Flow-Gate-Rule-Semantics.md`, `SS-13-AI-Followable-Document-Contract.md`
-- Child Documents: [Task-168: Flow Mode Context Package Contract](../../08-Task/todo/Task-168-Flow-Mode-Context-Package-Contract.md), [Task-169: Plan To Coding Context Handoff](../../08-Task/todo/Task-169-Plan-To-Coding-Context-Handoff.md), [Task-170: Testing Feedback Retry Loop](../../08-Task/todo/Task-170-Testing-Feedback-Retry-Loop.md), [Task-171: Audit Step Draft And Commit Prep](../../08-Task/todo/Task-171-Audit-Step-Draft-And-Commit-Prep.md)
+- Child Documents: [Task-168: Flow Mode Context Package Contract](../../08-Task/done/Task-168-Flow-Mode-Context-Package-Contract.md), [Task-169: Plan To Coding Context Handoff](../../08-Task/done/Task-169-Plan-To-Coding-Context-Handoff.md), [Task-170: Testing Feedback Retry Loop](../../08-Task/done/Task-170-Testing-Feedback-Retry-Loop.md), [Task-171: Audit Step Draft And Commit Prep](../../08-Task/done/Task-171-Audit-Step-Draft-And-Commit-Prep.md)
 - Related Documents: `CP-35-Context-And-Regression-Engine-Rollout.md`, `CP-37-Prompt-Context-Continuity.md`, `Task-096-Commit-History-Ledger.md`, `Task-097-Feature-Catalog-And-Resolver.md`, `Task-157-Improve-Context-Hardness.md`, `Task-161-Per-Feature-Chat-Summary-Timeline.md`, `Task-163-Chat-Summary-Generation-Triggers.md`, `CA-132-prompt-context-continuity-and-provider-handoff.md`, `CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md` (agent-flow engine; `Task-170` retry loop should consume its bounded `flow_control` back-edge + local persistence rather than reimplementing)
 - Replaces: `none`
 - Tags: `context-regression-engine`, `flow-mode`, `rag-harness`, `feature-history`, `chat-summary`
@@ -276,14 +276,14 @@ The runner already advances this model through `WorkflowOrchestrator.Progress`, 
 
 ## 10. Definition of Done
 
-- [ ] `DOD-1` `Task-168` defines and tests a bounded deterministic context package.
-- [ ] `DOD-2` `Task-169` passes that package to Coding through a stable prompt section and logs the composed prompt for inspection.
-- [ ] `DOD-3` `Task-170` turns failed validation output into bounded retry feedback with max `3` attempts.
-- [ ] `DOD-4` `Task-171` prepares audit and commit-message drafts with `feature_key` and source-doc traceability.
-- [ ] `DOD-5` The complete implementation does not call or require any vector DB, embedding index, or similarity-search service.
-- [ ] `DOD-6` All child tasks include DOD and explicit test items.
+- [x] `DOD-1` `Task-168` defines and tests a bounded deterministic context package.
+- [x] `DOD-2` `Task-169` passes that package to Coding through a stable prompt section and logs the composed prompt for inspection.
+- [x] `DOD-3` `Task-170` turns failed validation output into bounded retry feedback with max `3` attempts.
+- [x] `DOD-4` `Task-171` prepares audit and commit-message drafts with `feature_key` and source-doc traceability.
+- [x] `DOD-5` The complete implementation does not call or require any vector DB, embedding index, or similarity-search service.
+- [x] `DOD-6` All child tasks include DOD and explicit test items.
 - [ ] `DOD-7` Manual Flow Mode run confirms graceful degradation when history/chat summaries are absent.
-- [ ] `DOD-8` Package, retry, validation, and audit state are attached to existing workflow run/step persistence, not a parallel session model.
+- [x] `DOD-8` Package, retry, validation, and audit state are attached to existing workflow run/step persistence, not a parallel session model.
 
 ## 11. Q&A / Preserved Notes
 
