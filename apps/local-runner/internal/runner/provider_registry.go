@@ -29,6 +29,9 @@ type TurnBridge interface {
 	// SpawnAgent creates a child agent run from the current turn. If in.Wait==true it
 	// blocks until the child run's first turn completes and returns its final message.
 	SpawnAgent(in SpawnAgentInput) (SpawnAgentResult, error)
+	// SubmitFlowControl advances the flow engine on the hub run with a generic
+	// continue|done|escalate signal (Task-090).
+	SubmitFlowControl(in FlowControlInput) (FlowControlResult, error)
 }
 
 // TurnRequest is the per-turn input handed to an adapter.
