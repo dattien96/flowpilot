@@ -253,6 +253,9 @@ func (b *captureBridge) SpawnAgent(in SpawnAgentInput) (SpawnAgentResult, error)
 	b.mu.Unlock()
 	return SpawnAgentResult{RunID: "child-1", ProviderSessionID: "sess-child-1", ProviderKey: "codex", Status: "completed"}, nil
 }
+func (b *captureBridge) SubmitFlowControl(_ FlowControlInput) (FlowControlResult, error) {
+	return FlowControlResult{}, nil
+}
 func (b *captureBridge) types() []ProviderEventType {
 	b.mu.Lock()
 	defer b.mu.Unlock()

@@ -51,6 +51,9 @@ func (b *fakeClaudeBridge) AskQuestion(prompt string, options []QuestionOption, 
 func (b *fakeClaudeBridge) SpawnAgent(_ SpawnAgentInput) (SpawnAgentResult, error) {
 	return SpawnAgentResult{}, nil
 }
+func (b *fakeClaudeBridge) SubmitFlowControl(_ FlowControlInput) (FlowControlResult, error) {
+	return FlowControlResult{}, nil
+}
 
 func (b *fakeClaudeBridge) types() []ProviderEventType {
 	b.mu.Lock()
