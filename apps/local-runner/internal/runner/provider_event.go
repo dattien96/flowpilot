@@ -163,8 +163,14 @@ type AgentBusMessage struct {
 type AgentLoopState struct {
 	Status     string `json:"status"`
 	Round      int    `json:"round"`
-	RoundCap   int    `json:"roundCap"`
+	RoundCap   int    `json:"roundCap"`            // legacy; use Cap for flow-engine paths
+	Cap        int    `json:"cap,omitempty"`        // flow-engine cap (Task-090); mirrors RoundCap when 0
 	GateReason string `json:"gateReason,omitempty"`
+	// New fields added by Task-090 (flow engine)
+	OpenIssues  int    `json:"openIssues,omitempty"`
+	Mode        string `json:"mode,omitempty"`        // "keyword" | "explicit"
+	ActiveNode  string `json:"activeNode,omitempty"`
+	ExtendCount int    `json:"extendCount,omitempty"`
 }
 
 type AgentGraphSnapshot struct {
