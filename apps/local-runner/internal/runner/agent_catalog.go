@@ -419,5 +419,17 @@ func builtinAgentDefinitions() []AgentDefinition {
 				"then report pass/fail results and any coverage gaps you could not close.",
 			Source: "flowpilot",
 		},
+		{
+			Name:        "synthesizer",
+			Role:        "synthesizer",
+			Description: "Consolidates reviewer findings and submits the final verdict; never restarts the coder.",
+			Tools:       []string{"Read", "Grep", "Glob"},
+			SystemPrompt: "You are the synthesizer sub-agent. Consolidate the reviewer findings from the " +
+				"cohort join note: dedup overlapping issues, resolve conflicts using the original task " +
+				"context and codebase, then call submit_review_outcome with outcome=approved (no " +
+				"actionable issues remain) or outcome=changes_requested (include a single consolidated, " +
+				"de-conflicted issue list). Never restart the coder yourself.",
+			Source: "flowpilot",
+		},
 	}
 }
