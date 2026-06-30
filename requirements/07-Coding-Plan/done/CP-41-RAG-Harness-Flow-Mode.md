@@ -285,7 +285,178 @@ The runner already advances this model through `WorkflowOrchestrator.Progress`, 
 - [ ] `DOD-7` Manual Flow Mode run confirms graceful degradation when history/chat summaries are absent.
 - [x] `DOD-8` Package, retry, validation, and audit state are attached to existing workflow run/step persistence, not a parallel session model.
 
-## 11. Q&A / Preserved Notes
+## 11. Manual E2E Test Guide
+
+Run these scenarios yourself after deployment. Each scenario lists the **setup**, the **exact action**, and the **expected result** to verify. Mark ✅ when confirmed.
+
+---
+
+### Scenario 1 — Happy Path: Full Plan → Coding → Testing → Audit
+
+**Setup:** A workspace that has `agent-flow-engine` in `change-audit/FEATURE-KEYS.md` and at least 2 commit entries in `.flowpilot/ledger/`. A configured validation command (e.g. `go test ./...`).
+
+**Action:**
+1. Open a Flow Mode run with these steps in order: **Plan → Coding → Testing → Audit**.
+2. Plan step prompt: `"Implement a small improvement to the agent-flow-engine feature"`.
+3. Let the Plan step complete.
+4. Let the Coding step execute with the injected context.
+5. Let the Testing step run the validation command.
+6. Let the Audit step complete.
+
+**Expected:**
+- [ ] Plan step: `FlowContextPackage` is emitted as `EventFlowContextPackage` in the run events. Package has `featureConfidence: verified` and `featureKey: agent-flow-engine`.
+- [ ] Coding step: prompt starts with `[FlowPilot flow context package]` sentinel. The `## Flow Context Package` section is present. Feature history block and/or chat summary block are included.
+- [ ] Testing step: validation command runs; `EventFlowValidationResult` emitted with `exitCode: 0`. No retry triggered.
+- [ ] Audit step: `EventFlowAuditDraft` emitted. Draft has `status: ready`, `featureKey: agent-flow-engine`, a valid `changeLedgerBlock` containing `feature_key:` and `source_doc_id:`.
+- [ ] Suggested commit message follows `[Feature][agent-flow-engine] ...` format.
+- [ ] Inspect draft before any write — no file is created automatically.
+
+---
+
+### Scenario 2 — Feature History Injected (Verify Deterministic Retrieval)
+
+**Setup:** Same workspace. Ensure `.flowpilot/ledger/feature_history.ndjson` has at least 2 commits for `agent-flow-engine`.
+
+**Action:** Run only the Plan step. Inspect the composed prompt logged to the prompt-log directory.
+
+**Expected:**
+- [ ] Prompt log file contains the `## Flow Context Package` section.
+- [ ] `## Prior Work` block lists the commit summaries from the ledger.
+- [ ] `## Audit note: No vector retrieval used` line is present — confirms no vector DB involved.
+- [ ] `featureConfidence` is `verified` (confidence ≥ 5.0 threshold met).
+
+---
+
+### Scenario 3 — Unknown Feature Key Degrades Gracefully
+
+**Setup:** A workspace with no `.flowpilot` catalog directory, or use a prompt that resolves to no known feature key.
+
+**Action:** Start a Flow Mode run with Plan prompt: `"Fix a bug in some-unknown-feature-xyz"`.
+
+**Expected:**
+- [ ] Plan step completes without crashing.
+- [ ] `FlowContextPackage` has `featureConfidence: unresolved` and `warnings: ["feature catalog unavailable: ..."]` or `["no feature resolved ..."]`.
+- [ ] Coding step still receives the package (degraded — no history block, but the sentinel is present).
+- [ ] No crash, no panic, no empty prompt.
+
+---
+
+### Scenario 4 — No Chat Summaries (History-Only Package)
+
+**Setup:** Workspace with feature history in `.flowpilot/ledger/feature_history.ndjson` but NO `chat_summary.ndjson`.
+
+**Action:** Run Plan step for `agent-flow-engine`.
+
+**Expected:**
+- [ ] `FlowContextPackage` has `historyBlock` populated (commit history present).
+- [ ] `discussionBlock` is empty or absent — no crash due to missing chat summary ledger.
+- [ ] Coding step prompt includes the history block but no discussion section.
+- [ ] `warnings` does NOT mention chat summary as a fatal error (graceful degradation).
+
+---
+
+### Scenario 5 — Testing Fails → Retry → Pass on Retry
+
+**Setup:** Configure the validation command to a script that fails on first call and passes on the second (e.g. a counter file, or temporarily break a test then fix it).
+
+**Action:** Let the Coding → Testing → retry-Coding → Testing cycle run.
+
+**Expected:**
+- [ ] After first Testing failure: `EventFlowValidationResult` with `exitCode != 0` emitted.
+- [ ] `EventFlowValidationRetry` emitted with `retryAttempt: 1`, `status: retrying`.
+- [ ] Coding step re-enters. Retry prompt starts with `[FlowPilot flow context package]` AND contains `## Validation Failure — Retry 1/3`.
+- [ ] Retry prompt includes **key failure lines** (bounded, not full log).
+- [ ] On the second Testing run: `exitCode: 0`. Loop ends. `EventFlowValidationResult` with passing result emitted.
+- [ ] `retryAttempt` never exceeds 3.
+
+---
+
+### Scenario 6 — Testing Fails 3 Times → Max Retries Exhausted
+
+**Setup:** Configure validation command to always fail (e.g. `go test ./nonexistent`).
+
+**Action:** Let the retry loop run to exhaustion.
+
+**Expected:**
+- [ ] 3 `EventFlowValidationRetry` events emitted (`retryAttempt: 1`, `2`, `3`).
+- [ ] After attempt 3: `status: failed_validation_max_retries`.
+- [ ] No 4th Coding retry spawned.
+- [ ] `EventFlowValidationResult` on the 3rd attempt is the final one.
+- [ ] User is surfaced a clear failure state (not a silent stop).
+
+---
+
+### Scenario 7 — Environment Error Does Not Trigger Retry
+
+**Setup:** Configure validation command to a binary that does not exist (e.g. `this-tool-does-not-exist ./...`).
+
+**Action:** Let the Testing step run.
+
+**Expected:**
+- [ ] `EventFlowValidationResult` emitted with `envError` field set (e.g. `"exec: not found in $PATH"`).
+- [ ] `status: skipped_env_error` — NOT `retrying`.
+- [ ] **No Coding retry spawned.** The env error is reported, not treated as a code failure.
+- [ ] `retryAttempt` remains 0.
+
+---
+
+### Scenario 8 — Plan Step Reruns → Coding Gets Fresh Context Package
+
+**Setup:** A Flow Mode run that has already completed one Plan → Coding cycle.
+
+**Action:** Rerun the Plan step (trigger Plan step again on the same run). Then observe the Coding step's next turn.
+
+**Expected:**
+- [ ] A new `EventFlowContextPackage` is emitted with a new `packageId`.
+- [ ] The Coding step's retry prompt references the **new** package ID, not the old one.
+- [ ] Old package ID is no longer used in the Coding prompt after the Plan rerun.
+- [ ] `planContextPackage` cache is cleared (verify by checking `EventFlowContextPackage` events — two distinct entries).
+
+---
+
+### Scenario 9 — Audit Draft Is Inspectable Before Any Write
+
+**Setup:** Complete a successful Plan → Coding → Testing run (Testing passes).
+
+**Action:** Inspect the Audit step's run events before clicking any "Commit" or "Write" button.
+
+**Expected:**
+- [ ] `EventFlowAuditDraft` event is present in the run events.
+- [ ] Draft contains: `featureKey`, `sourceDocId`, `whatChanged`, `whyChanged`, `changedFiles`, `validationResult: passed`, `changeLedgerBlock`, `commitMessage`.
+- [ ] **No CA note file has been written** to the workspace yet (check `change-audit/` directory — no new files).
+- [ ] **No git commit has been made** (run `git status` — working tree is clean or shows only coding changes, not a new commit).
+- [ ] The rendered draft text is human-readable markdown with all sections present.
+
+---
+
+### Scenario 10 — Audit Draft Blocked When Feature Key Unregistered
+
+**Setup:** A workspace where the resolved feature key is NOT in `change-audit/FEATURE-KEYS.md`.
+
+**Action:** Complete Plan → Coding → Testing successfully, then observe the Audit step.
+
+**Expected:**
+- [ ] `EventFlowAuditDraft` emitted with `status: blocked_missing_feature_key`.
+- [ ] `commitMessage` is empty.
+- [ ] `changeLedgerBlock` is empty.
+- [ ] User sees a clear "blocked" state — not a partially-written audit note.
+
+---
+
+### Failure Cases to Verify
+
+| Case | How to trigger | Expected |
+|------|---------------|----------|
+| Stale `FEATURE-KEYS.md` (key removed mid-run) | Delete the key from the file after Plan step, before Audit step | Audit draft: `blocked_missing_feature_key` |
+| Missing chat summary ledger | Delete `chat_summary.ndjson` before Plan step | Package degrades: `discussionBlock` empty; no crash |
+| Very large test log output | Run a test suite that produces >4 KB of failure output | `ValidationSummary.Truncated = true`; only first ~50 failure lines injected; raw log NOT in prompt |
+| Runner restart after Plan package creation | Kill runner after Plan step, restart | Coding step resumes; `EventFlowContextPackage` is found in persisted events; new package NOT rebuilt |
+| Supabase unavailable | Disconnect Supabase during run | Run proceeds locally; no crash; `sessions.ndjson` is the source of truth |
+| Validation command is empty string | Leave validation command blank in step config | `status: skipped_no_command`; no testing step execution; Audit step proceeds to draft |
+
+---
+
+## 12. Q&A / Preserved Notes
 
 ### A. Q&A
 

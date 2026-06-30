@@ -5,14 +5,14 @@
 - Document ID: `CP-36`
 - Title: `Generic Agent-Flow Engine And Review Loop (Domain-Free Hub Coordination, First Template)`
 - Phase: `coding_plan`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-23`
-- Last Updated: `2026-06-29`
+- Last Updated: `2026-06-30`
 - Parent Documents: [SD-19: Agent Flow Engine](../../06-System-Tech-Design/SD-19-Agent-Flow-Engine.md), [SD-18: Main-Hub Agent Review Loop](../../06-System-Tech-Design/SD-18-Main-Hub-Agent-Review-Loop.md), [SS-16: Agent Flow Engine](../../05-System-Specs/SS-16-Agent-Flow-Engine.md), [SS-15: Agent Review Loop (Review Until Clean)](../../05-System-Specs/SS-15-Agent-Review-Loop-Until-Clean.md)
-- Child Documents: [Task-089: Generic Flow Vocabulary And flow_control Handler](../../08-Task/todo/Task-089-Generic-Flow-Vocabulary-And-Flow-Control-Handler.md), [Task-090: Bounded Flow Runtime Executor](../../08-Task/todo/Task-090-Bounded-Flow-Runtime-Executor.md), [Task-085: Unified Local Run Persistence](../../08-Task/todo/Task-085-Unified-Local-Run-Persistence.md), [Task-091: Review-Loop Template (Outcome Tool, Config, Legacy Gate)](../../08-Task/todo/Task-091-Review-Loop-Template.md), [Task-092: Consolidated Multi-Result Join Note](../../08-Task/todo/Task-092-Consolidated-Multi-Result-Join-Note.md), [Task-093: Bounded Auto-Reinvocation Of The Hub](../../08-Task/todo/Task-093-Bounded-Auto-Reinvocation-Of-The-Hub.md), [Task-094: agent-review-loop Skill And synthesizer Built-in](../../08-Task/todo/Task-094-Agent-Review-Loop-Skill-And-Synthesizer-Builtin.md), [Task-095: Orchestration Board, Contract, And Client](../../08-Task/todo/Task-095-Orchestration-Board-Contract-And-Client.md)
-- Related Documents: [CP-19: Multiple Agents](../done/CP-19-Multiple-Agents.md), [CP-41: RAG Harness Flow Mode](../todo/CP-41-RAG-Harness-Flow-Mode.md), [SD-16: Agent Spawn And Tool-Calling Design](../../06-System-Tech-Design/SD-16-Agent-Spawn-And-Tool-Calling-Design.md), [Task-082: Spawn-Agent Tool And Orchestrator Core](../../08-Task/done/Task-082-Spawn-Agent-Tool-And-Orchestrator-Core.md), [Task-084: Dependency Feedback Loop And Orchestration Board](../../08-Task/done/Task-084-Dependency-Feedback-Loop-And-Orchestration-Board.md)
+- Child Documents: [Task-089: Generic Flow Vocabulary And flow_control Handler](../../08-Task/done/Task-089-Generic-Flow-Vocabulary-And-Flow-Control-Handler.md), [Task-090: Bounded Flow Runtime Executor](../../08-Task/done/Task-090-Bounded-Flow-Runtime-Executor.md), [Task-085: Unified Local Run Persistence](../../08-Task/done/Task-085-Unified-Local-Run-Persistence.md), [Task-091: Review-Loop Template (Outcome Tool, Config, Legacy Gate)](../../08-Task/done/Task-091-Review-Loop-Template.md), [Task-092: Consolidated Multi-Result Join Note](../../08-Task/done/Task-092-Consolidated-Multi-Result-Join-Note.md), [Task-093: Bounded Auto-Reinvocation Of The Hub](../../08-Task/done/Task-093-Bounded-Auto-Reinvocation-Of-The-Hub.md), [Task-094: agent-review-loop Skill And synthesizer Built-in](../../08-Task/done/Task-094-Agent-Review-Loop-Skill-And-Synthesizer-Builtin.md), [Task-095: Orchestration Board, Contract, And Client](../../08-Task/done/Task-095-Orchestration-Board-Contract-And-Client.md)
+- Related Documents: [CP-19: Multiple Agents](../done/CP-19-Multiple-Agents.md), [CP-41: RAG Harness Flow Mode](../done/CP-41-RAG-Harness-Flow-Mode.md), [SD-16: Agent Spawn And Tool-Calling Design](../../06-System-Tech-Design/SD-16-Agent-Spawn-And-Tool-Calling-Design.md), [Task-082: Spawn-Agent Tool And Orchestrator Core](../../08-Task/done/Task-082-Spawn-Agent-Tool-And-Orchestrator-Core.md), [Task-084: Dependency Feedback Loop And Orchestration Board](../../08-Task/done/Task-084-Dependency-Feedback-Loop-And-Orchestration-Board.md)
 - Replaces: `None`
 - Tags: `multi-agent, flow-engine, generic, node-edge-policy, flow-control, review-loop, main-hub, synthesis, local-persistence, local-runner, desktop`
 
@@ -221,18 +221,18 @@ All run state persists through the **local** `localFileSessionStore`, syncs via 
 
 ## 10. Definition of Done
 
-- [ ] `DOD-1` (Task-089) A domain-free vocabulary (`FlowNode`/`FlowEdge`/`FlowPolicy`) + one generic `flow_control` handler exist, with defaults applied, `quorum(n)` parsed, and the declared-face map resolving `approved/changes_requested/blocked` → `done/continue/escalate`. Unit tests green; no behavior change.
-- [ ] `DOD-2` (Task-090) The executor runs flows hub-only via `spawnNode`(inline+delegate) / `joinSatisfied`(all/any/quorum) / `route`(forward + bounded back-edge) / `applyFlowControl`, with **no role-specific Go** (proven by the domain-free guard test). `SubmitFlowControl` bridge + both HTTP routes round-trip.
-- [ ] `DOD-3` (Task-090) Bounded retries: a back-edge increments the round, is rejected at `round>=cap` (→`blocked`), and `extendCap` raises by +2 at most twice (ceiling cap+4); `reinvoke` restarts with feedback, `once` respawns.
-- [ ] `DOD-4` (Task-085) **All run data (chat + flow) persists through `localFileSessionStore`** and survives a runner restart with **no Supabase**; resume restores `mode/round/cap/activeNode/autoOrchestrate/flowCohortId`.
-- [ ] `DOD-5` (Task-085) Drive syncs a flow run cross-PC; **no production path writes** `workflow_run_logs`/`workflow_run_sessions`/`workflow_run_steps`; flow/step **definitions** still read from Supabase; single-agent runs unaffected.
-- [ ] `DOD-6` (Task-091) `submit_review_outcome` is registered and callable on **both Claude and Codex (start + resume)**, is the **only** flow tool the model sees, maps onto `flow_control`, and is the sole driver of the loop in explicit mode.
-- [ ] `DOD-7` (Task-091) The review-until-clean loop runs as **config** over the executor (no bespoke transition branch), terminating on `done` or asking the user at the cap — never silently, never unbounded; the legacy keyword loop is **byte-for-byte unchanged** when `mode != "explicit"`.
-- [ ] `DOD-8` (Task-092) N reviewer results arrive as **one** consolidated, per-member-labelled join note after the last completes (out-of-order safe; failed child shown as `failed:`); the parent synthesizes and resolves conflicts into a single issue list.
-- [ ] `DOD-9` (Task-093) Auto-reinvocation is opt-in, single-flight, cap-bounded, Stop-cancellable, fires exactly once per cohort join, and **never fires on a normal chat run**.
-- [ ] `DOD-10` (Task-094/095) The `agent-review-loop` skill + `synthesizer` built-in ship in-repo; the Orchestration Board renders N children, round/cap, open count, and a `blocked` + Extend-cap control; pause/resume/stop/inject still work.
-- [ ] `DOD-11` The engine is the substrate **CP-41** consumes with **no further agent-interaction changes** (verified by CP-41 referencing these types/handlers, not adding new coordination code).
-- [ ] `DOD-12` Normal chat, workflows, session resume, and Drive sync show no regressions; all §7 unit/contract/frontend tests pass; GitNexus impact analysis was run for each edited symbol and `gitnexus_detect_changes()` was clean before commit.
+- [x] `DOD-1` (Task-089) A domain-free vocabulary (`FlowNode`/`FlowEdge`/`FlowPolicy`) + one generic `flow_control` handler exist, with defaults applied, `quorum(n)` parsed, and the declared-face map resolving `approved/changes_requested/blocked` → `done/continue/escalate`. Unit tests green; no behavior change.
+- [x] `DOD-2` (Task-090) The executor runs flows hub-only via `spawnNode`(inline+delegate) / `joinSatisfied`(all/any/quorum) / `route`(forward + bounded back-edge) / `applyFlowControl`, with **no role-specific Go** (proven by the domain-free guard test). `SubmitFlowControl` bridge + both HTTP routes round-trip.
+- [x] `DOD-3` (Task-090) Bounded retries: a back-edge increments the round, is rejected at `round>=cap` (→`blocked`), and `extendCap` raises by +2 at most twice (ceiling cap+4); `reinvoke` restarts with feedback, `once` respawns.
+- [x] `DOD-4` (Task-085) **All run data (chat + flow) persists through `localFileSessionStore`** and survives a runner restart with **no Supabase**; resume restores `mode/round/cap/activeNode/autoOrchestrate/flowCohortId`.
+- [x] `DOD-5` (Task-085) Drive syncs a flow run cross-PC; **no production path writes** `workflow_run_logs`/`workflow_run_sessions`/`workflow_run_steps`; flow/step **definitions** still read from Supabase; single-agent runs unaffected.
+- [x] `DOD-6` (Task-091) `submit_review_outcome` is registered and callable on **both Claude and Codex (start + resume)**, is the **only** flow tool the model sees, maps onto `flow_control`, and is the sole driver of the loop in explicit mode.
+- [x] `DOD-7` (Task-091) The review-until-clean loop runs as **config** over the executor (no bespoke transition branch), terminating on `done` or asking the user at the cap — never silently, never unbounded; the legacy keyword loop is **byte-for-byte unchanged** when `mode != "explicit"`.
+- [x] `DOD-8` (Task-092) N reviewer results arrive as **one** consolidated, per-member-labelled join note after the last completes (out-of-order safe; failed child shown as `failed:`); the parent synthesizes and resolves conflicts into a single issue list.
+- [x] `DOD-9` (Task-093) Auto-reinvocation is opt-in, single-flight, cap-bounded, Stop-cancellable, fires exactly once per cohort join, and **never fires on a normal chat run**.
+- [x] `DOD-10` (Task-094/095) The `agent-review-loop` skill + `synthesizer` built-in ship in-repo; the Orchestration Board renders N children, round/cap, open count, and a `blocked` + Extend-cap control; pause/resume/stop/inject still work.
+- [x] `DOD-11` The engine is the substrate **CP-41** consumes with **no further agent-interaction changes** (verified by CP-41 referencing these types/handlers, not adding new coordination code).
+- [x] `DOD-12` Normal chat, workflows, session resume, and Drive sync show no regressions; all §7 unit/contract/frontend tests pass; GitNexus impact analysis was run for each edited symbol and `gitnexus_detect_changes()` was clean before commit.
 
 
 
@@ -253,4 +253,172 @@ I verified every task in the chain against the actual code (build + targeted tes
 | **Task-093** auto-reinvoke | draft (greenfield) | extends `releaseDependentAgents`/`scheduleChildTurn` (exist) | ready |
 | **Task-094** skill + synthesizer | draft (greenfield) | `agent_catalog.go` exists to extend | ready |
 | **Task-095** board generalize | draft (greenfield) | `OrchestrationBoard.tsx` + 6 routes exist to extend | ready |
+
+## 11. Manual E2E Test Guide
+
+Run these scenarios yourself after deployment. Each scenario lists the **setup**, the **exact action to perform**, and the **expected result** to verify. Mark ✅ when confirmed.
+
+---
+
+### Scenario 1 — Happy Path: Review Loop Approves First Round
+
+**Setup:** YOLO mode ON. A project workspace with at least one Go file.
+
+**Action:**
+```
+Use the agent-review-loop skill. Task: add input validation to the parseUserID function. Spawn 1 coder and 2 reviewers (correctness + security). Max 3 rounds.
+```
+
+**Expected:**
+- [ ] Board shows: coder node running → completes → 2 reviewer nodes running in parallel.
+- [ ] Both reviewers complete. Board shows round 1, open issues = 0 (or resolves to 0 after synthesis).
+- [ ] Hub auto-reinvokes (no user typing needed). Synthesis turn fires, calls `submit_review_outcome(approved)`.
+- [ ] Loop ends. Board shows `done`. No further spawns.
+- [ ] `sessions.ndjson` contains `mode: explicit`, `round: 1`, `status: done`.
+
+---
+
+### Scenario 2 — Changes Requested: Coder Re-enters With Merged Feedback
+
+**Setup:** YOLO mode ON. Same workspace. Instruct reviewers to raise at least one issue.
+
+**Action:**
+```
+Use the agent-review-loop skill. Task: add a struct tag to UserRecord. Reviewers should request changes on round 1 (prompt them to find something to flag).
+```
+
+**Expected:**
+- [ ] Round 1: reviewers call `submit_review_outcome(changes_requested, issues=[...])`.
+- [ ] Board shows `round: 2` and the coder node restarts — NOT two separate restarts.
+- [ ] Coder re-entry prompt contains the merged issue list from both reviewers (one note, not two).
+- [ ] Round 2 completes. If approved, board shows `done`. If still `changes_requested`, round 3 starts.
+- [ ] At no point does the coder restart twice in the same round.
+
+---
+
+### Scenario 3 — Cap Exhaustion → Blocked → Extend Cap
+
+**Setup:** YOLO mode ON. Deliberately give the coder an impossible task so reviewers always reject.
+
+**Action:**
+```
+Use the agent-review-loop skill. Task: [an intentionally ambiguous or contradictory requirement]. Cap = 2 rounds (override in the skill invocation or config).
+```
+
+**Expected:**
+- [ ] After round 2, board shows `blocked`, `gateReason` visible.
+- [ ] `ask_user` fires: options **Extend +2 / Accept as-is / Stop**.
+- [ ] **Choose "Extend +2"**: board shows `cap: 4`, loop continues for up to 2 more rounds.
+- [ ] After a second cap-hit: extend is offered again. Accept it again → `cap: 6` (ceiling = initial + 4).
+- [ ] Third cap-hit with no more extends available: only **Accept as-is / Stop** offered.
+- [ ] **Choose "Stop"**: board shows `stopped`. No further reinvocation.
+
+---
+
+### Scenario 4 — Stop Mid-Loop
+
+**Setup:** YOLO mode OFF (or ON). Start the review loop normally.
+
+**Action:** While the coder is running (round 1 in progress), click **Stop** on the Orchestration Board.
+
+**Expected:**
+- [ ] The running turn finishes its current model output, then stops.
+- [ ] No further reviewer spawns or hub reinvocations fire.
+- [ ] Board shows `stopped` or `cancelled`.
+- [ ] Restarting the server and resuming: status remains `stopped`; no auto-reinvoke triggers.
+
+---
+
+### Scenario 5 — Server Restart Mid-Loop (Resume from `sessions.ndjson`)
+
+**Setup:** YOLO mode ON. Start the review loop. Let the coder complete round 1.
+
+**Action:** While reviewers are running, **kill the local runner process** and restart it.
+
+**Expected:**
+- [ ] Desktop reconnects (existing reconnect behavior).
+- [ ] Board re-renders at the correct state: `round: 1`, reviewer nodes still running or completed.
+- [ ] If reviewers had completed before restart: hub auto-reinvokes after reconnect and synthesis fires.
+- [ ] `sessions.ndjson` fields `autoOrchestrate`, `round`, `cap`, `activeNode`, `flowCohortId` are present and correct.
+- [ ] **No Supabase write** occurs for run data (verify by checking the Supabase `workflow_run_logs` table remains unchanged).
+
+---
+
+### Scenario 6 — Drive Sync Cross-PC
+
+**Setup:** Two machines with FlowPilot installed and Drive sync enabled. Machine A starts a flow run.
+
+**Action:** On Machine A, start and complete round 1. Wait for Drive sync. Open the same project on Machine B.
+
+**Expected:**
+- [ ] Machine B shows the run in run history.
+- [ ] Opening the run on Machine B: board renders the correct state (round, children, status).
+- [ ] If the run was `blocked`, Machine B shows the Extend/Stop prompt.
+
+---
+
+### Scenario 7 — Legacy Keyword Mode Unchanged
+
+**Setup:** A workspace using the OLD review loop (no explicit `mode: explicit` set; the default keyword path).
+
+**Action:** Run the existing single-coder + single-reviewer flow exactly as before CP-36.
+
+**Expected:**
+- [ ] Behavior is byte-for-byte identical to pre-CP-36: keyword detection drives restarts, `submit_review_outcome` is NOT offered, `flow_control` is NOT called.
+- [ ] No double-restarts, no board changes, no auto-reinvoke.
+- [ ] `sessions.ndjson` shows `mode: ""` or `mode: keyword`.
+
+---
+
+### Scenario 8 — Normal Chat (No Auto-Reinvoke)
+
+**Setup:** Open a regular chat session (not a flow run, no `agent-review-loop` skill selected).
+
+**Action:** Send a normal message and let the model reply.
+
+**Expected:**
+- [ ] No reviewer spawns. No `submit_review_outcome` tool offered.
+- [ ] No auto-reinvocation after the reply.
+- [ ] `autoOrchestrate` field in `sessions.ndjson` is `false` or absent.
+
+---
+
+### Scenario 9 — N=3 Parallel Reviewers, Out-of-Order Completion
+
+**Setup:** YOLO mode ON. Modify the skill invocation to spawn 3 reviewers instead of 2.
+
+**Action:** Run the review loop. Observe reviewer completion order (may be non-deterministic).
+
+**Expected:**
+- [ ] Board shows 3 reviewer nodes. They may complete in any order.
+- [ ] Hub does NOT auto-reinvoke after the first or second reviewer completes.
+- [ ] Hub auto-reinvokes exactly once — after the **third** (final) reviewer completes (`join: all`).
+- [ ] ONE consolidated note arrives with all 3 reviewers' results, each labelled separately.
+- [ ] If one reviewer fails: it appears as `failed: <reviewer-id>` in the join note; synthesis proceeds with the 2 successful results.
+
+---
+
+### Scenario 10 — `synthesizer` Built-in as Offload
+
+**Setup:** Configure the skill to use the `synthesizer` built-in agent for synthesis instead of the main hub.
+
+**Action:** Run the review loop.
+
+**Expected:**
+- [ ] After the join note, the `synthesizer` child agent is spawned (visible in the board as a separate node).
+- [ ] `synthesizer` consolidates issues, deduplicates, and calls `submit_review_outcome`.
+- [ ] Main hub does NOT independently call `submit_review_outcome` (no double-call).
+- [ ] Behavior is otherwise identical to Scenarios 1–3.
+
+---
+
+### Failure Cases to Verify
+
+| Case | How to trigger | Expected |
+|------|---------------|----------|
+| Invalid `submit_review_outcome` status | Manually POST `{"status": "invalid_value"}` to `/flow-control` | Tool error returned; loop state unchanged; no crash |
+| Auto-reinvoke while a turn is in flight | Start a flow run; verify hub doesn't double-fire | Only one reinvoke fires; second is suppressed (single-flight guard) |
+| `cap=0` override | Set cap to 0 in skill config | Treated as default (3); loop runs normally |
+| Child fails mid-turn | Interrupt a child agent artificially | Join note records `failed: <id>`; synthesis proceeds with remaining results |
+| Drive offline during sync | Disconnect network mid-run | Run proceeds locally; sync retries when network returns |
 
