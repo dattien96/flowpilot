@@ -254,6 +254,8 @@ func (s *claudeMCPServer) dispatch(method string, msg map[string]any, token stri
 			return handleClaudeAskUser(args, bridge), nil
 		case "spawn_agent":
 			return handleClaudeSpawnAgent(args, bridge), nil
+		case "submit_review_outcome":
+			return handleClaudeSubmitReviewOutcome(args, bridge), nil
 		default:
 			return nil, map[string]any{"code": -32601, "message": "unknown tool: " + name}
 		}
@@ -293,6 +295,39 @@ func claudeMCPToolDefs() []any {
 					"wait":      map[string]any{"type": "boolean", "description": "Block until the child's first turn completes (default false)."},
 				},
 				"required": []any{"agent", "prompt"},
+			},
+		},
+		map[string]any{
+			"name":        "submit_review_outcome",
+			"description": "Submit a code-review verdict. Use approved when the code is ready, changes_requested when issues were found (feedback required), or blocked when the review cannot proceed. This is the only flow-control tool — do not use flow_control directly.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"status": map[string]any{
+						"type":        "string",
+						"enum":        []any{"approved", "changes_requested", "blocked"},
+						"description": "Review verdict.",
+					},
+					"issues": map[string]any{
+						"type":        "array",
+						"description": "List of code issues found (optional).",
+						"items": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"title":      map[string]any{"type": "string"},
+								"severity":   map[string]any{"type": "string", "enum": []any{"error", "warning", "info"}},
+								"file":       map[string]any{"type": "string"},
+								"resolution": map[string]any{"type": "string"},
+							},
+							"required": []any{"title"},
+						},
+					},
+					"feedback": map[string]any{
+						"type":        "string",
+						"description": "Required when status=changes_requested. Actionable instructions for the coder.",
+					},
+				},
+				"required": []any{"status"},
 			},
 		},
 	}
