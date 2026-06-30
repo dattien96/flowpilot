@@ -2179,7 +2179,10 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 
 	// Post-turn flow gate (CP-35 P-4/P-5): observe diff, evaluate rules, enforce.
 	// Non-fatal: any internal error inside runFlowGate degrades to pass.
-	if completed {
+	// Child agent runs (coder, reviewer) are exempt: CA note enforcement is the
+	// hub/root run's responsibility. Gating child turns causes false violations
+	// because children make code changes but never write CA notes. (BUG-152)
+	if completed && rs.parentRunID == "" {
 		if s.runFlowGate(ctx, rs, turnID, fin) {
 			completed = false
 		}
