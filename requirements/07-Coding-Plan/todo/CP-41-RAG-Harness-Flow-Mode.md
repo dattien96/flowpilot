@@ -12,7 +12,7 @@
 - Last Updated: `2026-06-28`
 - Parent Documents: `SD-17-Context-And-Regression-Engine.md`, `SD-20-Flow-Gate-Rule-Semantics.md`, `SS-13-AI-Followable-Document-Contract.md`
 - Child Documents: [Task-168: Flow Mode Context Package Contract](../../08-Task/todo/Task-168-Flow-Mode-Context-Package-Contract.md), [Task-169: Plan To Coding Context Handoff](../../08-Task/todo/Task-169-Plan-To-Coding-Context-Handoff.md), [Task-170: Testing Feedback Retry Loop](../../08-Task/todo/Task-170-Testing-Feedback-Retry-Loop.md), [Task-171: Audit Step Draft And Commit Prep](../../08-Task/todo/Task-171-Audit-Step-Draft-And-Commit-Prep.md)
-- Related Documents: `CP-35-Context-And-Regression-Engine-Rollout.md`, `CP-37-Prompt-Context-Continuity.md`, `Task-096-Commit-History-Ledger.md`, `Task-097-Feature-Catalog-And-Resolver.md`, `Task-157-Improve-Context-Hardness.md`, `Task-161-Per-Feature-Chat-Summary-Timeline.md`, `Task-163-Chat-Summary-Generation-Triggers.md`, `CA-132-prompt-context-continuity-and-provider-handoff.md`
+- Related Documents: `CP-35-Context-And-Regression-Engine-Rollout.md`, `CP-37-Prompt-Context-Continuity.md`, `Task-096-Commit-History-Ledger.md`, `Task-097-Feature-Catalog-And-Resolver.md`, `Task-157-Improve-Context-Hardness.md`, `Task-161-Per-Feature-Chat-Summary-Timeline.md`, `Task-163-Chat-Summary-Generation-Triggers.md`, `CA-132-prompt-context-continuity-and-provider-handoff.md`, `CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md` (agent-flow engine; `Task-170` retry loop should consume its bounded `flow_control` back-edge + local persistence rather than reimplementing)
 - Replaces: `none`
 - Tags: `context-regression-engine`, `flow-mode`, `rag-harness`, `feature-history`, `chat-summary`
 
@@ -168,6 +168,7 @@ The runner already advances this model through `WorkflowOrchestrator.Progress`, 
   - Ensure Coding receives the same package on retries unless the Plan step is intentionally rerun.
 
 - `P-4` [Task-170](../../08-Task/todo/Task-170-Testing-Feedback-Retry-Loop.md) Add Testing-step feedback loop.
+  - **Build on CP-36, do not reimplement:** the Testing→Coding retry is the same bounded loop as CP-36's review loop — a `back`-edge (`fail → coding`, `cap: 3`, `onCap: escalate`) driven by the generic `flow_control` handler ([CP-36 Task-090](../../08-Task/todo/Task-090-Bounded-Flow-Runtime-Executor.md)). Reuse that executor + the unified local persistence ([CP-36 Task-085](../../08-Task/todo/Task-085-Unified-Local-Run-Persistence.md)) instead of a separate retry state machine on `workflow_run_steps.retry_count`. The Plan→Coding→Testing→Audit steps become a predeclared FlowDefinition over the same engine; this CP adds only the context-harness node behavior, not new agent-interaction code.
   - Run configured build/test commands through the existing local execution path.
   - On failure, summarize compiler/test output into a bounded feedback block.
   - Retry Coding with the previous attempted change, failure summary, and original context package.
