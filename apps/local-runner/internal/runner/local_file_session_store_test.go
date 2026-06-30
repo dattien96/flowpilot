@@ -830,3 +830,124 @@ func TestLocalFileSessionStoreDeleteFlowEvents(t *testing.T) {
 	}
 }
 
+// TestFlowEventsPathTraversalRejected verifies that flowEventsPath (and its callers
+// AppendEvent / LoadFlowEvents / DeleteFlowEvents) reject run IDs that contain path
+// separators and could escape the store directory.
+func TestFlowEventsPathTraversalRejected(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+
+	// AppendEvent short-circuits for empty WorkflowRunID (no sidecar needed), so only
+	// non-empty IDs with separators are expected to surface the traversal error there.
+	appendMalicious := []string{"../escape", "sub/run-1", "sub\\run-1"}
+	pkg := FlowContextPackage{PackageID: "pkg-x"}
+	for _, id := range appendMalicious {
+		ev := ProviderEvent{
+			Type:               EventFlowContextPackage,
+			WorkflowRunID:      id,
+			FlowContextPackage: &pkg,
+		}
+		if err := store.AppendEvent(context.Background(), ev); err == nil {
+			t.Errorf("AppendEvent with run ID %q: expected error, got nil", id)
+		}
+	}
+
+	// LoadFlowEvents and DeleteFlowEvents receive the run ID as a direct parameter,
+	// so the empty string and all separator cases must be rejected.
+	directMalicious := []string{"../escape", "sub/run-1", "sub\\run-1", ""}
+	for _, id := range directMalicious {
+		if _, err := store.LoadFlowEvents(context.Background(), id); err == nil {
+			t.Errorf("LoadFlowEvents with run ID %q: expected error, got nil", id)
+		}
+		if err := store.DeleteFlowEvents(context.Background(), id); err == nil {
+			t.Errorf("DeleteFlowEvents with run ID %q: expected error, got nil", id)
+		}
+	}
+}
+
+// TestFlowEventsLoadSkipsMalformedLinesKeepsValid verifies that LoadFlowEvents
+// skips malformed NDJSON lines and returns subsequent well-formed events rather
+// than silently stopping at the first bad line.
+func TestFlowEventsLoadSkipsMalformedLinesKeepsValid(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+
+	pkg := FlowContextPackage{PackageID: "pkg-valid", WorkflowRunID: "run-malformed"}
+	goodEvent := ProviderEvent{
+		Type:               EventFlowContextPackage,
+		WorkflowRunID:      "run-malformed",
+		WorkflowStepRunID:  "step-plan",
+		FlowContextPackage: &pkg,
+	}
+	if err := store.AppendEvent(context.Background(), goodEvent); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+
+	// Inject a malformed line directly into the sidecar file between two valid events.
+	sidecar := filepath.Join(dir, "run-malformed-flow-events.ndjson")
+	f, err := os.OpenFile(sidecar, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("open sidecar: %v", err)
+	}
+	_, _ = f.WriteString("not valid json\n")
+	f.Close()
+
+	// Append a second valid event after the malformed line.
+	if err := store.AppendEvent(context.Background(), goodEvent); err != nil {
+		t.Fatalf("AppendEvent (2nd): %v", err)
+	}
+
+	evs, loadErr := store.LoadFlowEvents(context.Background(), "run-malformed")
+	if loadErr != nil {
+		t.Fatalf("LoadFlowEvents returned error: %v", loadErr)
+	}
+	if len(evs) != 2 {
+		t.Errorf("LoadFlowEvents: got %d events, want 2 (malformed line must be skipped, not abort)", len(evs))
+	}
+}
+
+// TestFlowEventsLoadHandlesLargeLines verifies that LoadFlowEvents can read a
+// flow-event line that exceeds the typical 64 KiB buffer threshold without
+// truncating or erroring.
+func TestFlowEventsLoadHandlesLargeLines(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+
+	// Build a FlowContextPackage whose JSON serialisation exceeds 64 KiB.
+	bigSrc := strings.Repeat("x", 70*1024) // 70 KiB padding in a string field
+	pkg := FlowContextPackage{
+		PackageID:     "pkg-big",
+		WorkflowRunID: "run-big",
+		Warnings:      []string{bigSrc},
+	}
+	ev := ProviderEvent{
+		Type:               EventFlowContextPackage,
+		WorkflowRunID:      "run-big",
+		WorkflowStepRunID:  "step-plan",
+		FlowContextPackage: &pkg,
+	}
+	if err := store.AppendEvent(context.Background(), ev); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+
+	evs, loadErr := store.LoadFlowEvents(context.Background(), "run-big")
+	if loadErr != nil {
+		t.Fatalf("LoadFlowEvents returned error: %v", loadErr)
+	}
+	if len(evs) != 1 {
+		t.Errorf("LoadFlowEvents: got %d events, want 1", len(evs))
+	}
+	if evs[0].FlowContextPackage == nil || evs[0].FlowContextPackage.PackageID != "pkg-big" {
+		t.Error("loaded event does not match persisted package")
+	}
+}
+

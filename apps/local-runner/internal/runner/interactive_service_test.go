@@ -264,7 +264,7 @@ func TestLiveChatInjectsFeatureHistoryForSupportedProviders(t *testing.T) {
 	svc := NewInteractiveService()
 	capture := &captureTurnAdapter{ch: make(chan TurnRequest, 1)}
 	rs := &interactiveRun{id: "run-1", providerKey: ProviderKeyClaude, workspaceCwd: workspace, runKind: "chat", turnCount: 1}
-	svc.runTurn(context.Background(), rs, capture, TurnInput{StepID: "step-1", Prompt: "chat-ui"}, "", "turn-1")
+	svc.runTurn(context.Background(), rs, capture, TurnInput{StepID: "step-1", Prompt: "chat-ui"}, "", "turn-1", nil)
 
 	select {
 	case req := <-capture.ch:
@@ -304,7 +304,7 @@ func TestLiveChatRefreshesLedgerBeforeFeatureHistoryInjection(t *testing.T) {
 	svc := NewInteractiveService()
 	capture := &captureTurnAdapter{ch: make(chan TurnRequest, 1)}
 	rs := &interactiveRun{id: "run-1", providerKey: ProviderKeyCodex, workspaceCwd: workspace, runKind: "chat", turnCount: 1}
-	svc.runTurn(context.Background(), rs, capture, TurnInput{StepID: "step-1", Prompt: "chat-ui"}, "", "turn-1")
+	svc.runTurn(context.Background(), rs, capture, TurnInput{StepID: "step-1", Prompt: "chat-ui"}, "", "turn-1", nil)
 
 	select {
 	case req := <-capture.ch:

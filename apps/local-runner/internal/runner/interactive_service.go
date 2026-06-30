@@ -601,11 +601,11 @@ func (s *InteractiveService) maybeAutoReinvokeHub(parentRunID string) {
 	s.mu.Lock()
 	parent := s.runs[parentRunID]
 	if parent == nil || !parent.autoOrchestrate || parent.reinvokeInFlight || parent.turnInFlight {
-		// When the hub turn is already in flight but genuinely new context has arrived
-		// (pendingAgentContext is non-empty), mark a deferred reinvoke so runTurn retries
-		// after it clears turnInFlight. startTurn drains pendingAgentContext to nil before
-		// launching the turn, so an empty slice means the in-flight turn already consumed
-		// the signal — setting pendingHubReinvoke here would fire a spurious second turn.
+		// startTurn drains pendingAgentContext atomically with setting turnInFlight=true
+		// (both under s.mu) before releasing the lock. So when we see turnInFlight=true
+		// here, pendingAgentContext is only non-empty if NEW context arrived after
+		// startTurn's unlock — which means the in-flight turn will NOT consume it.
+		// Defer exactly one follow-up reinvoke in that case.
 		if parent != nil && parent.autoOrchestrate && parent.turnInFlight &&
 			!parent.reinvokeInFlight && len(parent.pendingAgentContext) > 0 {
 			parent.pendingHubReinvoke = true
@@ -2025,7 +2025,7 @@ func (s *InteractiveService) clearPendingQuestion(id string) {
 	}
 }
 
-func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, adapter ProviderRuntimeAdapter, in TurnInput, scenario, turnID string) {
+func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, adapter ProviderRuntimeAdapter, in TurnInput, scenario, turnID string, capturedCtx []string) {
 	// Turn-level model/reasoning/YOLO override the run-level defaults when supplied
 	// (BUG-063). Chat mode resends these every turn so they can change between prompts;
 	// the providers re-apply them per turn (Codex thread/start per turn, Claude spawn-per-
@@ -2060,9 +2060,10 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	if in.YoloMode != nil {
 		rs.yolo = yolo
 	}
-	if len(rs.pendingAgentContext) > 0 {
-		providerPrompt = composeAgentContextBlock(rs.pendingAgentContext) + "\n\n" + in.Prompt
-		rs.pendingAgentContext = nil
+	// pendingAgentContext was drained into capturedCtx by startTurn (atomically with
+	// turnInFlight=true) so rs.pendingAgentContext is already nil here.
+	if len(capturedCtx) > 0 {
+		providerPrompt = composeAgentContextBlock(capturedCtx) + "\n\n" + in.Prompt
 	}
 	s.mu.Unlock()
 	// Live ledger refresh (CP-35): pick up commits made during this session so the
@@ -2461,6 +2462,11 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	s.emitLocked(rs, ProviderEvent{Type: EventTurnStarted, ProviderTurnID: turnID, WorkflowStepRunID: in.StepID, Prompt: in.Prompt})
 	snap := sessionStateOf(rs) // capture under lock: lastPrompt + updatedAt now set
 	isParent := rs.parentRunID == ""
+	// Drain pendingAgentContext atomically with turnInFlight=true so that any concurrent
+	// maybeAutoReinvokeHub call sees an empty slice after this unlock and does not set
+	// pendingHubReinvoke spuriously. runTurn receives the captured slice directly.
+	capturedCtx := rs.pendingAgentContext
+	rs.pendingAgentContext = nil
 	s.mu.Unlock()
 	if isParent {
 		snap.LoopState = s.agentOrchestrator.graphSnapshot(rs.id).LoopState
@@ -2476,7 +2482,7 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	// Coding step rebuilds the package from the new Plan output (T-3, Task-169).
 	s.maybeClearPlanContextForPlanStep(ctx, runID, rs, in.StepID)
 
-	go s.runTurn(ctx, rs, adapter, in, scenario, turnID)
+	go s.runTurn(ctx, rs, adapter, in, scenario, turnID, capturedCtx)
 	return turnID, nil
 }
 
