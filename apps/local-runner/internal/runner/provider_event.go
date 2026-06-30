@@ -55,6 +55,10 @@ const (
 	// (CP-35 P-4/P-5). The desktop surfaces it as an inline warning card.
 	EventFlowGateViolation    ProviderEventType = "flow_gate_violation"
 	EventFlowContextPackage   ProviderEventType = "flow_context_package"
+	// Emitted by the Testing step when a validation command completes (Task-170).
+	EventFlowValidationResult ProviderEventType = "flow_validation_result"
+	// Emitted when a Coding retry is scheduled after a failed validation (Task-170).
+	EventFlowValidationRetry  ProviderEventType = "flow_validation_retry"
 )
 
 // ApprovalDecisionOption is one decision the runtime offers for an approval.
@@ -144,6 +148,11 @@ type ProviderEvent struct {
 	ChildRunID string `json:"childRunId,omitempty"`
 	// flow_context_package (Task-168)
 	FlowContextPackage *FlowContextPackage `json:"flowContextPackage,omitempty"`
+	// flow_validation_result (Task-170): bounded metadata for a Testing step command run.
+	// Raw stdout/stderr are not persisted here; only metadata and exit code are kept.
+	FlowValidationResult *ValidationResultMeta `json:"flowValidationResult,omitempty"`
+	// flow_validation_retry (Task-170): snapshot of the retry state transition.
+	FlowValidationRetryState *FlowValidationRetryState `json:"flowValidationRetryState,omitempty"`
 }
 
 type AgentDependencyEdge struct {
