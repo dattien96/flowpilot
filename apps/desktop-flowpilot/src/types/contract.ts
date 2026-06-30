@@ -124,7 +124,12 @@ export interface AgentLoopState {
   status: string;
   round: number;
   roundCap: number;
+  cap?: number;           // flow-engine cap (Task-090); use cap ?? roundCap for display
   gateReason?: string;
+  openIssues?: number;
+  mode?: string;          // "keyword" | "explicit"
+  activeNode?: string;
+  extendCount?: number;
 }
 
 export interface AgentGraphSnapshot {
@@ -134,6 +139,44 @@ export interface AgentGraphSnapshot {
   busMessages: AgentBusMessage[];
   loopState: AgentLoopState;
 }
+
+// ---- Flow-engine contract types (CP-36 / Task-095) -------------------------
+
+export interface FlowControlInput {
+  signal: "advance" | "complete" | "block" | "extend_cap";
+  cap?: number;
+  reason?: string;
+}
+
+export interface FlowControlResult {
+  status: string;
+  round: number;
+  cap: number;
+}
+
+export interface ReviewIssue {
+  id: string;
+  severity: "error" | "warning" | "info";
+  /** Human-readable issue summary. Alias "title" accepted by the Go server. */
+  description: string;
+  /** File path or code location. Alias "file" accepted by the Go server. */
+  location?: string;
+}
+
+export interface ReviewOutcomeInput {
+  outcome: "approved" | "changes_requested";
+  issues?: ReviewIssue[];
+  /** Required by the server on the MCP/agent path for changes_requested; optional on the board path. */
+  feedback?: string;
+}
+
+export interface ReviewOutcomeResult {
+  outcome: string;
+  issueCount: number;
+  loopStatus: string;
+}
+
+// ---------------------------------------------------------------------------
 
 export interface ProviderAccountUsageLine {
   label: string;
@@ -512,6 +555,16 @@ export interface RunnerClient {
    * its SSE iterator. Implemented client-side on top of `streamRun` in Phase 1.
    */
   focusAgentRun?(runId: string, signal?: AbortSignal): AsyncIterable<ProviderEventDTO>;
+  /**
+   * Submit a reviewer verdict (approved / changes_requested) to the flow engine
+   * (CP-36 / Task-095). Calls POST .../flow-control under the hood.
+   */
+  submitReviewOutcome?(parentRunId: string, input: ReviewOutcomeInput): Promise<AgentGraphSnapshot>;
+  /**
+   * Extend the round cap by 2 on a blocked loop (CP-36 / Task-095).
+   * Calls POST .../agent-loop/extend-cap.
+   */
+  extendCap?(parentRunId: string): Promise<AgentGraphSnapshot>;
   connectProviderAccount(providerKey: ProviderKey): Promise<void>;
   activateProviderAccount(accountId: string): Promise<void>;
   openProviderAccountTerminal(accountId: string): Promise<void>;
