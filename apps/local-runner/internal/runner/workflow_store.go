@@ -83,6 +83,16 @@ type ProviderSessionState struct {
 	// run's provider conversation, persisted so the parent still learns about them after a
 	// restart (BUG-122).
 	PendingAgentContext []string
+	// LoopState persists the flow-engine loop state for root (parent) runs so a
+	// runner restart or Drive-synced cross-PC move can resume the correct round/cap
+	// (Task-085). Zero-valued for child runs and plain chat runs.
+	LoopState AgentLoopState
+	// AutoOrchestrate persists the hub auto-reinvocation flag (Task-093 / CP-36 P-7).
+	// False for child runs and plain chat runs.
+	AutoOrchestrate bool
+	// FlowCohortID persists the cohort membership ID for child runs (CP-36 / Task-095 BUG fix).
+	// Empty for parent runs and plain chat runs.
+	FlowCohortID string
 }
 
 type ProviderApprovalState struct {
