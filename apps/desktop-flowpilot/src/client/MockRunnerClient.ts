@@ -16,6 +16,7 @@ import type {
   ProviderEventDTO,
   ProviderSkill,
   RemoteChatSessionSummary,
+  ReviewOutcomeInput,
   SpawnAgentInput,
   SpawnAgentResult,
   RunHandle,
@@ -457,6 +458,38 @@ export class MockRunnerClient implements RunnerClient {
     graph.snapshot = {
       ...graph.snapshot,
       loopState: { ...graph.snapshot.loopState, status: "stopped" },
+    };
+    this.parentGraphs.set(parentRunId, graph);
+    return graph.snapshot;
+  }
+
+  async submitReviewOutcome(parentRunId: string, input: ReviewOutcomeInput): Promise<AgentGraphSnapshot> {
+    const graph = await this.syncParentGraph(parentRunId);
+    const nextStatus = input.outcome === "approved" ? "done" : "running";
+    graph.snapshot = {
+      ...graph.snapshot,
+      loopState: {
+        ...graph.snapshot.loopState,
+        status: nextStatus,
+        openIssues: input.issues?.length ?? 0,
+      },
+    };
+    this.parentGraphs.set(parentRunId, graph);
+    return graph.snapshot;
+  }
+
+  async extendCap(parentRunId: string): Promise<AgentGraphSnapshot> {
+    const graph = await this.syncParentGraph(parentRunId);
+    const prev = graph.snapshot.loopState;
+    const currentCap = prev.cap ?? prev.roundCap ?? 3;
+    graph.snapshot = {
+      ...graph.snapshot,
+      loopState: {
+        ...prev,
+        cap: currentCap + 2,
+        extendCount: (prev.extendCount ?? 0) + 1,
+        status: "running",
+      },
     };
     this.parentGraphs.set(parentRunId, graph);
     return graph.snapshot;
