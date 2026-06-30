@@ -13,7 +13,9 @@ func injectFeatureHistoryPrompt(workspace string, prompt string, priorTurns []tr
 	// A handoff envelope already carries its (correctly source-resolved) feature
 	// block, prepended at build time. Never re-inject from the flat envelope text —
 	// it embeds gate-reprompt lines naming feature keys and would mis-resolve.
-	if isHandoffPrompt(prompt) {
+	// A flow context package (Task-169) carries its own history block; skip to
+	// avoid duplicating the same feature history in the Coding prompt.
+	if isHandoffPrompt(prompt) || isFlowContextHandoff(prompt) {
 		return prompt
 	}
 	dotFlowpilotDir := filepath.Join(workspace, ".flowpilot")
