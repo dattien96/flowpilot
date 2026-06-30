@@ -53,7 +53,8 @@ const (
 	EventAgentResultInjected ProviderEventType = "agent_result_injected"
 	// Emitted after a turn completes when the post-turn flow gate detects a violation
 	// (CP-35 P-4/P-5). The desktop surfaces it as an inline warning card.
-	EventFlowGateViolation ProviderEventType = "flow_gate_violation"
+	EventFlowGateViolation    ProviderEventType = "flow_gate_violation"
+	EventFlowContextPackage   ProviderEventType = "flow_context_package"
 )
 
 // ApprovalDecisionOption is one decision the runtime offers for an approval.
@@ -141,6 +142,8 @@ type ProviderEvent struct {
 	// agent_spawned_by_user / agent_result_injected (BUG-121)
 	AgentName  string `json:"agentName,omitempty"`
 	ChildRunID string `json:"childRunId,omitempty"`
+	// flow_context_package (Task-168)
+	FlowContextPackage *FlowContextPackage `json:"flowContextPackage,omitempty"`
 }
 
 type AgentDependencyEdge struct {
