@@ -188,6 +188,15 @@ func (s *InteractiveService) pruneDeletedRunState(runIDs []string) {
 		delete(o.loop, id)
 		delete(o.queued, id)
 	}
+	// Purge cohort buffers keyed by deleted parent run IDs.
+	for k := range o.cohort {
+		for _, id := range runIDs {
+			if strings.HasPrefix(k, id+"/") {
+				delete(o.cohort, k)
+				delete(o.cohortExpected, k)
+			}
+		}
+	}
 
 	for parentRunID, childIDs := range o.children {
 		kept := childIDs[:0]
@@ -365,6 +374,8 @@ func (s *InteractiveService) reconstructRun(st ProviderSessionState) (*interacti
 		idempotency:            map[string]string{},
 		resumedFromDisk:        true,
 		pendingAgentContext:    append([]string(nil), st.PendingAgentContext...),
+		autoOrchestrate:        st.AutoOrchestrate,
+		flowCohortId:           st.FlowCohortID,
 	}
 	s.mu.Lock()
 	s.runs[rs.id] = rs
@@ -377,6 +388,11 @@ func (s *InteractiveService) reconstructRun(st ProviderSessionState) (*interacti
 		}})
 	}
 	s.mu.Unlock()
+	// Restore flow-engine loop state so a restarted or Drive-synced run resumes
+	// at the correct round/cap/mode (Task-085 T-4).
+	if st.LoopState.Mode != "" || st.LoopState.Cap > 0 || st.LoopState.Round > 0 {
+		s.agentOrchestrator.setLoop(rs.id, st.LoopState)
+	}
 	return rs, nil
 }
 
