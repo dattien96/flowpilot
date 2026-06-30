@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, Notification, shell } from "electron";
 import { execFile } from "node:child_process";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 // Electron shell (04-01). Loads the Vite dev server in dev, the built renderer in
@@ -63,13 +63,23 @@ async function loadPersistedAuthSession(): Promise<PersistedAuthSession | null> 
     ) {
       return null;
     }
+    // Empty or corrupt file (e.g. process killed mid-write) — delete and treat
+    // as no session rather than surfacing a JSON parse error to the renderer.
+    if (error instanceof SyntaxError) {
+      await rm(authSessionFilePath(), { force: true }).catch(() => {});
+      return null;
+    }
     throw error;
   }
 }
 
 async function savePersistedAuthSession(payload: PersistedAuthSession): Promise<void> {
-  await mkdir(path.dirname(authSessionFilePath()), { recursive: true });
-  await writeFile(authSessionFilePath(), JSON.stringify(payload), "utf8");
+  const dest = authSessionFilePath();
+  const tmp = dest + ".tmp";
+  await mkdir(path.dirname(dest), { recursive: true });
+  await writeFile(tmp, JSON.stringify(payload), "utf8");
+  // Atomic rename so a mid-write kill never leaves a truncated file.
+  await rename(tmp, dest);
 }
 
 async function clearPersistedAuthSession(): Promise<void> {
