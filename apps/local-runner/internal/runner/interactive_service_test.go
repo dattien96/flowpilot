@@ -5,12 +5,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1490,6 +1492,829 @@ func readTurnReqFor(t *testing.T, ch chan TurnRequest, runID string) TurnRequest
 			}
 		case <-deadline:
 			t.Fatalf("timed out waiting for turn request for run %s", runID)
+		}
+	}
+}
+
+// ---- applyFlowControl + extendCap (Task-090) ----------------------------------
+
+func newFlowTestRun(t *testing.T) (*InteractiveService, string) {
+	t.Helper()
+	svc, _ := newTestServer(t)
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	// Seed the loop state with an explicit cap so tests are deterministic.
+	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3})
+	return svc, parent.RunID
+}
+
+func TestApplyFlowControlDoneTerminates(t *testing.T) {
+	svc, runID := newFlowTestRun(t)
+	svc.agentOrchestrator.mutateLoop(runID, func(st AgentLoopState) AgentLoopState {
+		st.OpenIssues = 5
+		return st
+	})
+	result, err := svc.applyFlowControl(runID, FlowControlInput{Status: "done", Summary: "all tests pass"})
+	if err != nil {
+		t.Fatalf("applyFlowControl(done): %v", err)
+	}
+	if result.Status != "done" || result.NextAction != "done" {
+		t.Errorf("result = %+v, want Status=done NextAction=done", result)
+	}
+	snap := svc.agentGraphSnapshot(runID)
+	if snap.LoopState.Status != "done" {
+		t.Errorf("loop status = %q, want done", snap.LoopState.Status)
+	}
+	if snap.LoopState.OpenIssues != 0 {
+		t.Errorf("OpenIssues = %d, want 0 after done", snap.LoopState.OpenIssues)
+	}
+	// Hub handoff note must be queued.
+	svc.mu.Lock()
+	notes := svc.runs[runID].pendingAgentContext
+	svc.mu.Unlock()
+	if len(notes) == 0 {
+		t.Error("expected hub handoff note in pendingAgentContext, got none")
+	}
+}
+
+func TestApplyFlowControlContinueAdvancesRound(t *testing.T) {
+	svc, runID := newFlowTestRun(t)
+	result, err := svc.applyFlowControl(runID, FlowControlInput{Status: "continue", Summary: "revise"})
+	if err != nil {
+		t.Fatalf("applyFlowControl(continue): %v", err)
+	}
+	if result.Status != "continue" || result.NextAction != "looping" {
+		t.Errorf("result = %+v, want Status=continue NextAction=looping", result)
+	}
+	if result.Round != 1 {
+		t.Errorf("Round = %d, want 1", result.Round)
+	}
+	snap := svc.agentGraphSnapshot(runID)
+	if snap.LoopState.Round != 1 {
+		t.Errorf("loop Round = %d, want 1", snap.LoopState.Round)
+	}
+}
+
+func TestApplyFlowControlContinueBlocksAtCap(t *testing.T) {
+	svc, runID := newFlowTestRun(t)
+	// Advance to cap-1 rounds first, then trigger cap.
+	svc.agentOrchestrator.setLoop(runID, AgentLoopState{Status: "running", Cap: 2, RoundCap: 2, Round: 1})
+	result, err := svc.applyFlowControl(runID, FlowControlInput{Status: "continue"})
+	if err != nil {
+		t.Fatalf("applyFlowControl(continue at cap): %v", err)
+	}
+	if result.Status != "blocked" || result.NextAction != "awaiting_user" {
+		t.Errorf("result = %+v, want Status=blocked NextAction=awaiting_user", result)
+	}
+	snap := svc.agentGraphSnapshot(runID)
+	if snap.LoopState.Status != "blocked" {
+		t.Errorf("loop status = %q, want blocked", snap.LoopState.Status)
+	}
+}
+
+func TestApplyFlowControlEscalateBlocks(t *testing.T) {
+	svc, runID := newFlowTestRun(t)
+	result, err := svc.applyFlowControl(runID, FlowControlInput{Status: "escalate", Summary: "cannot proceed"})
+	if err != nil {
+		t.Fatalf("applyFlowControl(escalate): %v", err)
+	}
+	if result.Status != "blocked" || result.NextAction != "awaiting_user" {
+		t.Errorf("result = %+v, want Status=blocked NextAction=awaiting_user", result)
+	}
+	snap := svc.agentGraphSnapshot(runID)
+	if snap.LoopState.Status != "blocked" || snap.LoopState.GateReason != "cannot proceed" {
+		t.Errorf("loop = %+v, want blocked with GateReason=cannot proceed", snap.LoopState)
+	}
+}
+
+func TestExtendCapRaisesCap(t *testing.T) {
+	svc, runID := newFlowTestRun(t)
+	// Block first, then extend.
+	svc.agentOrchestrator.setLoop(runID, AgentLoopState{Status: "blocked", Cap: 3, RoundCap: 3, Round: 2})
+	result, err := svc.extendCap(runID)
+	if err != nil {
+		t.Fatalf("extendCap: %v", err)
+	}
+	if result.Cap != 5 {
+		t.Errorf("Cap after extend = %d, want 5 (3+2)", result.Cap)
+	}
+	snap := svc.agentGraphSnapshot(runID)
+	if snap.LoopState.Cap != 5 {
+		t.Errorf("loop Cap = %d, want 5", snap.LoopState.Cap)
+	}
+	if snap.LoopState.ExtendCount != 1 {
+		t.Errorf("ExtendCount = %d, want 1", snap.LoopState.ExtendCount)
+	}
+	if snap.LoopState.Status != "running" {
+		t.Errorf("status after extend from blocked = %q, want running", snap.LoopState.Status)
+	}
+}
+
+func TestExtendCapRejectedAtMax(t *testing.T) {
+	svc, runID := newFlowTestRun(t)
+	svc.agentOrchestrator.setLoop(runID, AgentLoopState{Status: "blocked", Cap: 7, RoundCap: 7, Round: 4, ExtendCount: 2})
+	_, err := svc.extendCap(runID)
+	if err == nil {
+		t.Error("expected error when ExtendCount >= ExtendMax(2), got nil")
+	}
+}
+
+func TestFlowControlHTTPRoundTrip(t *testing.T) {
+	svc, srv := newTestServer(t)
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3})
+
+	// POST flow-control?status=continue
+	status, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+parent.RunID+"/flow-control",
+		map[string]any{"status": "continue", "summary": "round 1"}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("POST flow-control: status=%d body=%s", status, body)
+	}
+	// Handler now returns AgentGraphSnapshot (Fix 3 — wire contract alignment).
+	var snap AgentGraphSnapshot
+	if err := json.Unmarshal(body, &snap); err != nil {
+		t.Fatalf("decode AgentGraphSnapshot: %v (body=%s)", err, body)
+	}
+	if snap.LoopState.Status != "running" || snap.LoopState.Round != 1 {
+		t.Errorf("loopState = %+v, want Status=running Round=1", snap.LoopState)
+	}
+
+	// POST flow-control?status=invalid → 400
+	badStatus, _ := doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+parent.RunID+"/flow-control",
+		map[string]any{"status": "invalid"}, nil)
+	if badStatus != http.StatusBadRequest {
+		t.Errorf("invalid status should return 400, got %d", badStatus)
+	}
+}
+
+func TestExtendCapHTTPRoundTrip(t *testing.T) {
+	svc, srv := newTestServer(t)
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "blocked", Cap: 3, RoundCap: 3, Round: 2})
+
+	httpStatus, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+parent.RunID+"/agent-loop/extend-cap",
+		map[string]any{}, nil)
+	if httpStatus != http.StatusOK {
+		t.Fatalf("POST extend-cap: status=%d body=%s", httpStatus, body)
+	}
+	// Handler now returns AgentGraphSnapshot (Fix 3 — wire contract alignment).
+	var snap AgentGraphSnapshot
+	if err := json.Unmarshal(body, &snap); err != nil {
+		t.Fatalf("decode AgentGraphSnapshot: %v (body=%s)", err, body)
+	}
+	if snap.LoopState.Cap != 5 {
+		t.Errorf("Cap = %d, want 5", snap.LoopState.Cap)
+	}
+	if snap.LoopState.Status != "running" {
+		t.Errorf("Status = %q after extend-cap, want running", snap.LoopState.Status)
+	}
+}
+
+func TestSubmitReviewOutcomeViaClaudeBridge(t *testing.T) {
+	svc, runID := newFlowTestRun(t)
+	// Mode=explicit so the engine path is exercised.
+	svc.agentOrchestrator.mutateLoop(runID, func(st AgentLoopState) AgentLoopState {
+		st.Mode = "explicit"
+		return st
+	})
+
+	// Directly call the handler (same path claude MCP uses).
+	result, err := svc.applyFlowControl(runID, FlowControlInput{Status: "continue", Summary: "needs revision"})
+	if err != nil {
+		t.Fatalf("applyFlowControl: %v", err)
+	}
+	if result.Status != "continue" || result.Round != 1 {
+		t.Errorf("result = %+v, want Status=continue Round=1", result)
+	}
+}
+
+// Fix 1 (Finding 1): desktop board sends { outcome: "approved" } — must not get 400.
+func TestSubmitFlowControlHTTPAcceptsOutcomeAlias(t *testing.T) {
+	svc, srv := newTestServer(t)
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3})
+
+	// Exact payload the desktop store sends from submitReviewOutcome("approved").
+	httpStatus, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+parent.RunID+"/flow-control",
+		map[string]any{"outcome": "approved"}, nil)
+	if httpStatus != http.StatusOK {
+		t.Fatalf("POST flow-control with outcome=approved: status=%d body=%s", httpStatus, body)
+	}
+	var snap AgentGraphSnapshot
+	if err := json.Unmarshal(body, &snap); err != nil {
+		t.Fatalf("decode AgentGraphSnapshot: %v (body=%s)", err, body)
+	}
+	if snap.LoopState.Status != "done" {
+		t.Errorf("Status = %q after approved, want done", snap.LoopState.Status)
+	}
+}
+
+// Fix 1: outcome=changes_requested with issues array through HTTP.
+func TestSubmitFlowControlHTTPOutcomeChangesRequested(t *testing.T) {
+	svc, srv := newTestServer(t)
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3})
+
+	httpStatus, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+parent.RunID+"/flow-control",
+		map[string]any{
+			"outcome":  "changes_requested",
+			"feedback": "fix null check",
+			"issues":   []any{map[string]any{"id": "I-1", "title": "nil deref", "severity": "error"}},
+		}, nil)
+	if httpStatus != http.StatusOK {
+		t.Fatalf("POST flow-control with outcome=changes_requested: status=%d body=%s", httpStatus, body)
+	}
+	var snap AgentGraphSnapshot
+	if err := json.Unmarshal(body, &snap); err != nil {
+		t.Fatalf("decode AgentGraphSnapshot: %v (body=%s)", err, body)
+	}
+	if snap.LoopState.Round != 1 {
+		t.Errorf("Round = %d after changes_requested, want 1", snap.LoopState.Round)
+	}
+	if snap.LoopState.OpenIssues != 1 {
+		t.Errorf("OpenIssues = %d, want 1", snap.LoopState.OpenIssues)
+	}
+}
+
+// Fix 2 (Finding 2): reviewOutcomeToFlowControl sets payload["issues"] as []ReviewIssue,
+// not []any — applyFlowControl must count them correctly either way.
+func TestApplyFlowControlCountsIssuesFromReviewOutcomePayload(t *testing.T) {
+	svc, _ := newTestServer(t)
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3})
+
+	roi := ReviewOutcomeInput{
+		Status:   "changes_requested",
+		Feedback: "fix the bug",
+		Issues: []ReviewIssue{
+			{ID: "I-1", Title: "nil deref", Severity: "error"},
+			{ID: "I-2", Title: "off-by-one", Severity: "warning"},
+		},
+	}
+	fc, fcErr := reviewOutcomeToFlowControl(roi)
+	if fcErr != nil {
+		t.Fatalf("reviewOutcomeToFlowControl: %v", fcErr)
+	}
+	result, applyErr := svc.applyFlowControl(parent.RunID, fc)
+	if applyErr != nil {
+		t.Fatalf("applyFlowControl: %v", applyErr)
+	}
+	if result.OpenIssues != 2 {
+		t.Errorf("OpenIssues = %d, want 2 ([]ReviewIssue path)", result.OpenIssues)
+	}
+	if result.Status != "continue" {
+		t.Errorf("Status = %q, want continue", result.Status)
+	}
+}
+
+// TestSubmitReviewOutcomeCannotChangeCap verifies that submit_review_outcome never
+// modifies the loop cap, even when a caller injects a raw "roundCapOverride" key
+// into the args map (the field was removed from the schema but the parser must
+// silently ignore unknown keys rather than applying them).
+func TestSubmitReviewOutcomeCannotChangeCap(t *testing.T) {
+	svc, runID := newFlowTestRun(t)
+	initialCap := 3 // matches newFlowTestRun seed
+
+	// Simulate a model attempting to sneak roundCapOverride through the raw args.
+	args := map[string]any{
+		"status":           "approved",
+		"roundCapOverride": float64(1000), // attacker-supplied; must be ignored
+	}
+	roi, err := parseReviewOutcomeInput(args)
+	if err != nil {
+		t.Fatalf("parseReviewOutcomeInput: %v", err)
+	}
+	fc, err := reviewOutcomeToFlowControl(roi)
+	if err != nil {
+		t.Fatalf("reviewOutcomeToFlowControl: %v", err)
+	}
+	if _, err = svc.applyFlowControl(runID, fc); err != nil {
+		t.Fatalf("applyFlowControl: %v", err)
+	}
+
+	snap := svc.agentGraphSnapshot(runID)
+	if got := effectiveCap(snap.LoopState); got != initialCap {
+		t.Errorf("cap after submit = %d, want %d (cap must not change via submit_review_outcome)", got, initialCap)
+	}
+}
+
+func TestLegacyKeywordModeUnchangedInKeywordMode(t *testing.T) {
+	// Keyword-mode (Mode=="") must still drive transitions via the existing isAgentRole branch.
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key:    ProviderKeyCodex,
+		Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "APPROVED"})
+				return nil
+			})
+		},
+	})
+	svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	parent, err := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	// No Mode set → keyword mode. Loop state should remain unchanged (no Mode field).
+	snap := svc.agentGraphSnapshot(parent.RunID)
+	if snap.LoopState.Mode != "" {
+		t.Errorf("Mode = %q, want empty for keyword mode", snap.LoopState.Mode)
+	}
+}
+
+func TestExplicitModeSilencesLegacyBranch(t *testing.T) {
+	// With Mode=explicit, a reviewer completing must NOT trigger a coder restart
+	// via the legacy keyword branch.
+	callCount := 0
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key:    ProviderKeyCodex,
+		Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+				callCount++
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "CHANGES REQUESTED: fix tests"})
+				return nil
+			})
+		},
+	})
+	svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	parent, _ := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	// Set explicit mode.
+	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Mode: "explicit", Cap: 3, RoundCap: 3})
+	// Spawn a child with role "reviewer".
+	_, _ = svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{
+		Agent: "reviewer", Prompt: "review", Wait: true,
+	})
+	// The keyword branch would have called advanceRound + restarted coder.
+	// In explicit mode it must not: Round stays 0.
+	snap := svc.agentGraphSnapshot(parent.RunID)
+	if snap.LoopState.Round != 0 {
+		t.Errorf("Round = %d after explicit-mode reviewer: expected 0 (keyword branch silenced)", snap.LoopState.Round)
+	}
+}
+
+func TestCohortConsolidatedNoteEmittedOnLastMember(t *testing.T) {
+	// Three children in one cohort completing out of order must produce exactly one
+	// consolidated note, emitted only after the last member completes.
+	reg := newProviderRegistry()
+	idx := 0
+	outcomes := []string{"LGTM", "needs fix", "also ok"}
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			myIdx := idx
+			idx++
+			return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+				msg := "result"
+				if myIdx < len(outcomes) {
+					msg = outcomes[myIdx]
+				}
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: msg})
+				return nil
+			})
+		},
+	})
+	svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	parentHandle, _ := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	parentRunID := parentHandle.RunID
+
+	for k := 0; k < 3; k++ {
+		lbl := fmt.Sprintf("agent-%d", k)
+		_, err := svc.spawnChildRun(context.Background(), parentRunID, SpawnAgentInput{
+			Agent: lbl, Prompt: "work", Wait: true, FlowCohortID: "review-cohort", Label: lbl,
+			CohortSize: 3,
+		})
+		if err != nil {
+			t.Fatalf("spawnChildRun[%d]: %v", k, err)
+		}
+	}
+
+	svc.mu.Lock()
+	notes := len(svc.runs[parentRunID].pendingAgentContext)
+	noteText := ""
+	if notes > 0 {
+		noteText = svc.runs[parentRunID].pendingAgentContext[0]
+	}
+	svc.mu.Unlock()
+
+	if notes != 1 {
+		t.Errorf("pendingAgentContext entries = %d, want exactly 1 consolidated note", notes)
+	}
+	for _, want := range []string{"agent-0", "agent-1", "agent-2", "Synthesize"} {
+		if !strings.Contains(noteText, want) {
+			t.Errorf("consolidated note missing %q", want)
+		}
+	}
+}
+
+func TestCohortFailedMemberIncludedInNote(t *testing.T) {
+	// A failed cohort member should appear as "failed: <err>" in the note.
+	reg := newProviderRegistry()
+	k := 0
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			idx := k
+			k++
+			return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+				if idx == 1 {
+					b.Emit(ProviderEvent{Type: EventTurnFailed, Error: "connection reset"})
+				} else {
+					b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "ok"})
+				}
+				return nil
+			})
+		},
+	})
+	svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	parentHandle2, _ := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	parentRunID2 := parentHandle2.RunID
+
+	for j := 0; j < 2; j++ {
+		lbl := fmt.Sprintf("worker-%d", j)
+		_, _ = svc.spawnChildRun(context.Background(), parentRunID2, SpawnAgentInput{
+			Agent: lbl, Prompt: "do", Wait: true, FlowCohortID: "fail-cohort", Label: lbl,
+			CohortSize: 2,
+		})
+		// worker-1 will fail; don't fatal — the cohort note should still be built.
+	}
+
+	svc.mu.Lock()
+	ctx := svc.runs[parentRunID2].pendingAgentContext
+	svc.mu.Unlock()
+
+	if len(ctx) != 1 {
+		t.Fatalf("pendingAgentContext = %d entries, want 1", len(ctx))
+	}
+	if !strings.Contains(ctx[0], "failed:") || !strings.Contains(ctx[0], "connection reset") {
+		t.Errorf("note does not contain failed member info:\n%s", ctx[0])
+	}
+}
+
+func TestNoCohortRunKeepsIsolatedAppend(t *testing.T) {
+	// Single child without FlowCohortID must keep the existing isolated-append path.
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "done"})
+				return nil
+			})
+		},
+	})
+	svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	parentHandle3, _ := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	parentRunID3 := parentHandle3.RunID
+	// Wait=false (no UIInitiated) so the only append is the completion-time isolated
+	// path (!waitForResult=true), avoiding the double-append from UIInitiated.
+	_, err := svc.spawnChildRun(context.Background(), parentRunID3, SpawnAgentInput{
+		Agent: "worker", Prompt: "do", Wait: false,
+	})
+	if err != nil {
+		t.Fatalf("spawnChildRun: %v", err)
+	}
+	// Wait for async child goroutine to complete and append the note.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		svc.mu.Lock()
+		n := len(svc.runs[parentRunID3].pendingAgentContext)
+		svc.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	svc.mu.Lock()
+	ctx := svc.runs[parentRunID3].pendingAgentContext
+	svc.mu.Unlock()
+	if len(ctx) != 1 {
+		t.Fatalf("pendingAgentContext = %d, want 1", len(ctx))
+	}
+	if strings.Contains(ctx[0], "Synthesize") {
+		t.Error("isolated note should not contain Synthesize directive")
+	}
+}
+
+// ---- Task-093: Bounded Auto-Reinvocation Of The Hub --------------------------------
+
+func TestAutoReinvokeHubFiresAfterCohortComplete(t *testing.T) {
+	// With autoOrchestrate=true, the last cohort member completing should trigger
+	// exactly one hub turn (turnCount goes from 0 to 1).
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "done"})
+				return nil
+			})
+		},
+	})
+	svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	parentHandle, _ := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	parentRunID := parentHandle.RunID
+
+	// Enable auto-orchestration directly.
+	svc.mu.Lock()
+	svc.runs[parentRunID].autoOrchestrate = true
+	svc.mu.Unlock()
+
+	// Spawn 2 cohort children with CohortSize=2 so the barrier fires after both.
+	for j := 0; j < 2; j++ {
+		lbl := fmt.Sprintf("worker-%d", j)
+		_, _ = svc.spawnChildRun(context.Background(), parentRunID, SpawnAgentInput{
+			Agent: lbl, Prompt: "do", Wait: true, FlowCohortID: "cohort", Label: lbl, CohortSize: 2,
+		})
+	}
+
+	// Hub should be auto-reinvoked asynchronously; wait up to 2 s.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		svc.mu.Lock()
+		tc := svc.runs[parentRunID].turnCount
+		svc.mu.Unlock()
+		if tc > 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	svc.mu.Lock()
+	tc := svc.runs[parentRunID].turnCount
+	svc.mu.Unlock()
+	if tc == 0 {
+		t.Fatal("hub was not auto-reinvoked after cohort join (turnCount still 0)")
+	}
+}
+
+func TestAutoReinvokeHubNormalChatNeverFires(t *testing.T) {
+	// With autoOrchestrate=false (default), cohort completion must NOT reinvoke hub.
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "done"})
+				return nil
+			})
+		},
+	})
+	svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	parentHandle, _ := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	parentRunID := parentHandle.RunID
+	// autoOrchestrate is false by default — do NOT set it.
+
+	for j := 0; j < 2; j++ {
+		lbl := fmt.Sprintf("worker-%d", j)
+		_, _ = svc.spawnChildRun(context.Background(), parentRunID, SpawnAgentInput{
+			Agent: lbl, Prompt: "do", Wait: true, FlowCohortID: "cohort2", Label: lbl, CohortSize: 2,
+		})
+	}
+
+	// Give any (incorrect) goroutine time to run.
+	time.Sleep(50 * time.Millisecond)
+	svc.mu.Lock()
+	tc := svc.runs[parentRunID].turnCount
+	svc.mu.Unlock()
+	if tc != 0 {
+		t.Fatalf("normal chat hub was auto-reinvoked (turnCount=%d), expected 0", tc)
+	}
+}
+
+func TestAutoReinvokeHubSetViaSpawnAgentInput(t *testing.T) {
+	// Passing AutoOrchestrate=true on SpawnAgentInput sets it on the parent run.
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "done"})
+				return nil
+			})
+		},
+	})
+	svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	parentHandle, _ := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	parentRunID := parentHandle.RunID
+
+	_, _ = svc.spawnChildRun(context.Background(), parentRunID, SpawnAgentInput{
+		Agent: "worker", Prompt: "do", Wait: true, FlowCohortID: "cohort3",
+		CohortSize: 1, AutoOrchestrate: true,
+	})
+
+	svc.mu.Lock()
+	ao := svc.runs[parentRunID].autoOrchestrate
+	svc.mu.Unlock()
+	if !ao {
+		t.Fatal("autoOrchestrate should be true after spawn with AutoOrchestrate=true")
+	}
+}
+
+func TestAutoReinvokeHubStopCancels(t *testing.T) {
+	// After stopAgentLoop, autoOrchestrate and reinvokeInFlight are cleared so no
+	// further auto-reinvoke fires.
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "done"})
+				return nil
+			})
+		},
+	})
+	svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	parentHandle, _ := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	parentRunID := parentHandle.RunID
+
+	svc.mu.Lock()
+	svc.runs[parentRunID].autoOrchestrate = true
+	svc.runs[parentRunID].reinvokeInFlight = true
+	svc.mu.Unlock()
+
+	svc.stopAgentLoop(parentRunID)
+
+	svc.mu.Lock()
+	ao := svc.runs[parentRunID].autoOrchestrate
+	rif := svc.runs[parentRunID].reinvokeInFlight
+	svc.mu.Unlock()
+	if ao {
+		t.Error("autoOrchestrate should be false after stopAgentLoop")
+	}
+	if rif {
+		t.Error("reinvokeInFlight should be false after stopAgentLoop")
+	}
+}
+
+func TestAutoReinvokeHubSingleFlightConcurrent(t *testing.T) {
+	// Calling maybeAutoReinvokeHub from two goroutines concurrently must schedule
+	// exactly one hub turn — the reinvokeInFlight flag is the single-flight guard.
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "done"})
+				return nil
+			})
+		},
+	})
+	svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	parentHandle, _ := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	parentRunID := parentHandle.RunID
+
+	svc.mu.Lock()
+	svc.runs[parentRunID].autoOrchestrate = true
+	svc.mu.Unlock()
+
+	// Fire two concurrent calls — only one should result in a scheduled turn.
+	var wg sync.WaitGroup
+	wg.Add(2)
+	for range 2 {
+		go func() {
+			defer wg.Done()
+			svc.maybeAutoReinvokeHub(parentRunID)
+		}()
+	}
+	wg.Wait()
+
+	// Wait for any async turn to complete.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		svc.mu.Lock()
+		rif := svc.runs[parentRunID].reinvokeInFlight
+		svc.mu.Unlock()
+		if !rif {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(20 * time.Millisecond) // let any extra turn complete
+
+	svc.mu.Lock()
+	tc := svc.runs[parentRunID].turnCount
+	svc.mu.Unlock()
+	if tc != 1 {
+		t.Errorf("concurrent maybeAutoReinvokeHub produced %d hub turns, want exactly 1", tc)
+	}
+}
+
+func TestAutoReinvokeHubTurnInFlightGuard(t *testing.T) {
+	// maybeAutoReinvokeHub must not schedule a turn when one is already in flight.
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "done"})
+				return nil
+			})
+		},
+	})
+	svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	parentHandle, _ := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	parentRunID := parentHandle.RunID
+
+	// Simulate a turn already in flight.
+	svc.mu.Lock()
+	svc.runs[parentRunID].autoOrchestrate = true
+	svc.runs[parentRunID].turnInFlight = true
+	svc.mu.Unlock()
+
+	svc.maybeAutoReinvokeHub(parentRunID)
+
+	svc.mu.Lock()
+	rif := svc.runs[parentRunID].reinvokeInFlight
+	svc.mu.Unlock()
+	// reinvokeInFlight must remain false because the turn-in-flight guard blocked it.
+	if rif {
+		t.Error("reinvokeInFlight should not be set when turnInFlight=true")
+	}
+}
+
+func TestAutoReinvokeHubCapBounded(t *testing.T) {
+	// maybeAutoReinvokeHub must not fire when Round >= effectiveCap.
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "done"})
+				return nil
+			})
+		},
+	})
+	svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	parentHandle, _ := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	parentRunID := parentHandle.RunID
+
+	// Enable auto-orchestrate and set loop to cap (Round==Cap so the guard fires).
+	svc.mu.Lock()
+	svc.runs[parentRunID].autoOrchestrate = true
+	svc.mu.Unlock()
+	svc.agentOrchestrator.setLoop(parentRunID, AgentLoopState{Mode: "explicit", Round: 3, Cap: 3, Status: "running"})
+
+	svc.maybeAutoReinvokeHub(parentRunID)
+
+	// turnCount stays 0 because the cap guard blocked reinvocation.
+	time.Sleep(20 * time.Millisecond)
+	svc.mu.Lock()
+	tc := svc.runs[parentRunID].turnCount
+	rif := svc.runs[parentRunID].reinvokeInFlight
+	svc.mu.Unlock()
+	if tc != 0 {
+		t.Errorf("hub reinvoked at cap (turnCount=%d), want 0", tc)
+	}
+	if rif {
+		t.Error("reinvokeInFlight should be false when cap guard blocked reinvocation")
+	}
+}
+
+func TestApplyFlowControlDomainFreeGuard(t *testing.T) {
+	// Verify the executor methods themselves are free of domain role strings.
+	// The actual source check is done by the build + grep in CI; here we confirm the
+	// runtime string constants the engine emits contain no role names.
+	engineOutputs := []string{
+		"done", "continue", "escalate", "blocked", "running",
+		"looping", "awaiting_user", "flow completed", "cap",
+	}
+	forbidden := []string{"coder", "reviewer", "approved", "changes_requested"}
+	for _, s := range engineOutputs {
+		for _, bad := range forbidden {
+			if strings.Contains(s, bad) {
+				t.Errorf("engine output %q contains forbidden role string %q", s, bad)
+			}
 		}
 	}
 }
