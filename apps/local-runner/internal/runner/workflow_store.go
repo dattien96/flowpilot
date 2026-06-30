@@ -46,6 +46,14 @@ type SessionHistoryReader interface {
 	GetProviderSession(ctx context.Context, runID string) (ProviderSessionState, bool, error)
 }
 
+// FlowEventStore is an optional extension of InteractiveStateStore that
+// persists CP-41 flow events (FlowContextPackage, ValidationResult, ValidationRetry,
+// AuditDraft) to a per-run sidecar NDJSON so they survive process restarts.
+type FlowEventStore interface {
+	LoadFlowEvents(ctx context.Context, runID string) ([]ProviderEvent, error)
+	DeleteFlowEvents(ctx context.Context, runID string) error
+}
+
 type SessionIndexReader interface {
 	ListAllProviderSessions(ctx context.Context) ([]ProviderSessionState, error)
 }

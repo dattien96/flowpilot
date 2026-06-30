@@ -56,6 +56,13 @@ func (s *InteractiveService) deleteChatSession(runID string) *apiErr {
 		}
 	}
 
+	// --- remove per-run CP-41 flow-events sidecar ---
+	if fes, ok := s.workflowStore.(FlowEventStore); ok {
+		for _, id := range deleteOrder {
+			_ = fes.DeleteFlowEvents(context.Background(), id)
+		}
+	}
+
 	return nil
 }
 
@@ -377,6 +384,28 @@ func (s *InteractiveService) reconstructRun(st ProviderSessionState) (*interacti
 		autoOrchestrate:        st.AutoOrchestrate,
 		flowCohortId:           st.FlowCohortID,
 	}
+	// Restore CP-41 flow events from the sidecar so FindFlowContextPackage,
+	// FindAuditDraft etc. work after a process restart. rs is not yet visible to
+	// other goroutines here so no lock is needed for the initial population.
+	if fes, ok := s.workflowStore.(FlowEventStore); ok {
+		if evs, _ := fes.LoadFlowEvents(context.Background(), st.RunID); len(evs) > 0 {
+			for i := range evs {
+				rs.seq++
+				evs[i].Seq = rs.seq
+				rs.events = append(rs.events, evs[i])
+			}
+			// Restore rs.planContextPackage from the most recent EventFlowContextPackage
+			// so injectFlowContextIfCoding skips the rebuild path after restart.
+			for i := len(rs.events) - 1; i >= 0; i-- {
+				if rs.events[i].Type == EventFlowContextPackage && rs.events[i].FlowContextPackage != nil {
+					pkg := *rs.events[i].FlowContextPackage
+					rs.planContextPackage = &pkg
+					break
+				}
+			}
+		}
+	}
+
 	s.mu.Lock()
 	s.runs[rs.id] = rs
 	if seeder, ok := s.workflowStore.(workflowRunSeeder); ok {
@@ -821,9 +850,10 @@ func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 	stepID := "chat-" + rs.id
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(rs.events) > 0 {
+	if rs.transcriptSeeded {
 		return // concurrent call guard
 	}
+	rs.transcriptSeeded = true
 	for i := range historical {
 		rs.seq++
 		historical[i].Seq = rs.seq
@@ -875,9 +905,10 @@ func (s *InteractiveService) seedGeminiTranscriptFromState(rs *interactiveRun) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(rs.events) > 0 {
+	if rs.transcriptSeeded {
 		return
 	}
+	rs.transcriptSeeded = true
 	sessionID := s.resumeSessionID(rs)
 	for i := range historical {
 		rs.seq++

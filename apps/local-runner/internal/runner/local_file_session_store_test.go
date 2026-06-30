@@ -720,3 +720,113 @@ func TestZeroFlowCohortIDOmittedFromDisk(t *testing.T) {
 	}
 }
 
+// TestLocalFileSessionStoreFlowEventsDurability verifies that CP-41 flow events
+// (EventFlowContextPackage) survive a simulated process restart: after creating
+// a new store instance from the same dataDir, LoadFlowEvents returns the
+// persisted event, and FindFlowContextPackage succeeds on the reloaded events.
+func TestLocalFileSessionStoreFlowEventsDurability(t *testing.T) {
+	dir := t.TempDir()
+
+	store1, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+
+	// Build a minimal FlowContextPackage and emit an EventFlowContextPackage.
+	pkg := FlowContextPackage{
+		PackageID:     "pkg-durability-1",
+		WorkflowRunID: "run-dur",
+		FeatureKey:    "agent-flow-engine",
+	}
+	ev := ProviderEvent{
+		Type:               EventFlowContextPackage,
+		WorkflowRunID:      "run-dur",
+		WorkflowStepRunID:  "step-plan-1",
+		FlowContextPackage: &pkg,
+	}
+	if err := store1.AppendEvent(context.Background(), ev); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+
+	// Simulate a process restart by creating a new store instance.
+	store2, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore (restart): %v", err)
+	}
+
+	// LoadFlowEvents must return the persisted event.
+	evs, err := store2.LoadFlowEvents(context.Background(), "run-dur")
+	if err != nil {
+		t.Fatalf("LoadFlowEvents: %v", err)
+	}
+	if len(evs) != 1 {
+		t.Fatalf("LoadFlowEvents: got %d events, want 1", len(evs))
+	}
+	if evs[0].Type != EventFlowContextPackage {
+		t.Errorf("event type = %q, want %q", evs[0].Type, EventFlowContextPackage)
+	}
+
+	// FindFlowContextPackage must succeed on the reloaded events.
+	found, ok := FindFlowContextPackage(evs, "step-plan-1")
+	if !ok {
+		t.Fatal("FindFlowContextPackage: not found after restart")
+	}
+	if found.PackageID != "pkg-durability-1" {
+		t.Errorf("PackageID = %q, want pkg-durability-1", found.PackageID)
+	}
+}
+
+// TestLocalFileSessionStoreFlowEventsNonCp41NotPersisted verifies that
+// non-CP-41 event types (e.g. EventTurnStarted) are NOT written to the
+// flow-events sidecar.
+func TestLocalFileSessionStoreFlowEventsNonCp41NotPersisted(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+
+	_ = store.AppendEvent(context.Background(), ProviderEvent{
+		Type:          EventTurnStarted,
+		WorkflowRunID: "run-x",
+		Prompt:        "hello",
+	})
+
+	evs, _ := store.LoadFlowEvents(context.Background(), "run-x")
+	if len(evs) != 0 {
+		t.Errorf("expected 0 flow events for non-CP-41 type, got %d", len(evs))
+	}
+}
+
+// TestLocalFileSessionStoreDeleteFlowEvents verifies that DeleteFlowEvents
+// removes the sidecar and subsequent LoadFlowEvents returns empty.
+func TestLocalFileSessionStoreDeleteFlowEvents(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+
+	pkg := FlowContextPackage{PackageID: "pkg-del", WorkflowRunID: "run-del"}
+	_ = store.AppendEvent(context.Background(), ProviderEvent{
+		Type:               EventFlowContextPackage,
+		WorkflowRunID:      "run-del",
+		WorkflowStepRunID:  "step-plan",
+		FlowContextPackage: &pkg,
+	})
+
+	if err := store.DeleteFlowEvents(context.Background(), "run-del"); err != nil {
+		t.Fatalf("DeleteFlowEvents: %v", err)
+	}
+
+	// No-op on missing file.
+	if err := store.DeleteFlowEvents(context.Background(), "run-del"); err != nil {
+		t.Fatalf("DeleteFlowEvents (2nd): %v", err)
+	}
+
+	evs, _ := store.LoadFlowEvents(context.Background(), "run-del")
+	if len(evs) != 0 {
+		t.Errorf("expected 0 events after delete, got %d", len(evs))
+	}
+}
+

@@ -192,6 +192,11 @@ type interactiveRun struct {
 
 	idempotency     map[string]string // Idempotency-Key -> turnId
 	resumedFromDisk bool
+	// transcriptSeeded guards against duplicate seedTranscriptFromDisk calls.
+	// It is set to true the first time the transcript (or Gemini turn log) is
+	// loaded from disk, so that pre-loaded flow events in rs.events (from the
+	// CP-41 flow-events sidecar) do not suppress transcript seeding.
+	transcriptSeeded bool
 }
 
 type approvalRecord struct {

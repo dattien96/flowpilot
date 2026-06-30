@@ -302,6 +302,77 @@ func (s *localFileSessionStore) DeleteTurnLog(_ context.Context, runID string) e
 	return err
 }
 
+// flowEventsPath returns the path of the per-run CP-41 flow-events sidecar.
+func (s *localFileSessionStore) flowEventsPath(runID string) string {
+	return filepath.Join(filepath.Dir(s.filePath), runID+"-flow-events.ndjson")
+}
+
+// isFlowSidecarEventType reports whether the event type should be persisted to
+// the per-run flow-events sidecar so it survives process restarts.
+func isFlowSidecarEventType(t ProviderEventType) bool {
+	switch t {
+	case EventFlowContextPackage, EventFlowValidationResult,
+		EventFlowValidationRetry, EventFlowAuditDraft:
+		return true
+	}
+	return false
+}
+
+// AppendEvent writes to the in-memory store (via the embedded fakeWorkflowStore)
+// and, for CP-41 event types, also appends to the per-run flow-events sidecar
+// NDJSON so the events survive a process restart.
+func (s *localFileSessionStore) AppendEvent(ctx context.Context, event ProviderEvent) error {
+	if err := s.fakeWorkflowStore.AppendEvent(ctx, event); err != nil {
+		return err
+	}
+	if !isFlowSidecarEventType(event.Type) || event.WorkflowRunID == "" {
+		return nil
+	}
+	data, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	fh, err := os.OpenFile(s.flowEventsPath(event.WorkflowRunID), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer fh.Close()
+	_, err = fh.Write(append(data, '\n'))
+	return err
+}
+
+// LoadFlowEvents reads all CP-41 events from the per-run flow-events sidecar.
+// Returns nil, nil when the sidecar does not exist (new run or no flow events yet).
+func (s *localFileSessionStore) LoadFlowEvents(_ context.Context, runID string) ([]ProviderEvent, error) {
+	f, err := os.Open(s.flowEventsPath(runID))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+	var evs []ProviderEvent
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		var ev ProviderEvent
+		if json.Unmarshal(sc.Bytes(), &ev) == nil && ev.Type != "" {
+			evs = append(evs, ev)
+		}
+	}
+	return evs, sc.Err()
+}
+
+// DeleteFlowEvents removes the per-run flow-events sidecar.
+// No-op when the file does not exist.
+func (s *localFileSessionStore) DeleteFlowEvents(_ context.Context, runID string) error {
+	err := os.Remove(s.flowEventsPath(runID))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
 func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 	return ndjsonSessionRecord{
 		RunID:               s.RunID,
