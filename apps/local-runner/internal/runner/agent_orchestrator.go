@@ -2,6 +2,7 @@ package runner
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -19,6 +20,19 @@ type AgentOrchestrator struct {
 	bus        map[string][]AgentBusMessage     // parentRunID → message log
 	loop       map[string]AgentLoopState        // parentRunID → loop state
 	queued     map[string][]AgentBusMessage     // parentRunID → queued feedback
+	// cohort accumulates per-member results for barrier delivery (Task-092).
+	// keyed by "parentRunID/cohortId" so multiple cohorts on one parent don't collide.
+	cohort         map[string][]cohortEntry
+	cohortExpected map[string]int // expected member count per cohort key
+}
+
+// cohortEntry is one member's result within a flow cohort barrier.
+type cohortEntry struct {
+	Label        string
+	Provider     string
+	FinalMessage string
+	Status       string // "completed" | "failed"
+	Err          string
 }
 
 type agentCompletion struct {
@@ -38,7 +52,64 @@ func newAgentOrchestrator() *AgentOrchestrator {
 		bus:        make(map[string][]AgentBusMessage),
 		loop:       make(map[string]AgentLoopState),
 		queued:     make(map[string][]AgentBusMessage),
+		cohort:         make(map[string][]cohortEntry),
+		cohortExpected: make(map[string]int),
 	}
+}
+
+// registerCohortMember increments the expected member count for a cohort.
+// Call once per child spawned with a non-empty FlowCohortID and no CohortSize.
+func (o *AgentOrchestrator) registerCohortMember(parentRunID, cohortID string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.cohortExpected[cohortKey(parentRunID, cohortID)]++
+}
+
+// preRegisterCohort sets the expected count for a cohort to count on the first
+// call (when expected == 0). Subsequent calls for the same cohort key are no-ops
+// so that Wait=true sequential spawns all sharing the same CohortSize don't
+// over-count.
+func (o *AgentOrchestrator) preRegisterCohort(parentRunID, cohortID string, count int) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	k := cohortKey(parentRunID, cohortID)
+	if o.cohortExpected[k] == 0 {
+		o.cohortExpected[k] = count
+	}
+}
+
+// cohortKey returns the map key used to index a cohort buffer.
+func cohortKey(parentRunID, cohortID string) string { return parentRunID + "/" + cohortID }
+
+// appendCohortResult adds one member's result to the cohort buffer.
+func (o *AgentOrchestrator) appendCohortResult(parentRunID, cohortID string, e cohortEntry) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	k := cohortKey(parentRunID, cohortID)
+	o.cohort[k] = append(o.cohort[k], e)
+}
+
+// cohortComplete returns true when the number of buffered results equals the registered
+// expected member count for the cohort (and expected > 0).
+func (o *AgentOrchestrator) cohortComplete(parentRunID, cohortID string) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	k := cohortKey(parentRunID, cohortID)
+	exp := o.cohortExpected[k]
+	return exp > 0 && len(o.cohort[k]) >= exp
+}
+
+// drainCohort removes the cohort buffer and expected-count entry, returning the
+// buffered entries. Clearing cohortExpected allows the same cohort key to be
+// reused after delivery.
+func (o *AgentOrchestrator) drainCohort(parentRunID, cohortID string) []cohortEntry {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	k := cohortKey(parentRunID, cohortID)
+	entries := o.cohort[k]
+	delete(o.cohort, k)
+	delete(o.cohortExpected, k)
+	return entries
 }
 
 // registerChild records the parent→child edge.
@@ -99,6 +170,24 @@ type SpawnAgentInput struct {
 	// turn so the parent agent learns about a child it did not spawn itself. The AI
 	// spawn_agent tool leaves this false — its spawns are already in provider history. (BUG-122)
 	UIInitiated bool `json:"-"`
+	// FlowCohortID groups sibling children into a barrier: when every member is
+	// terminal the engine delivers ONE consolidated note to the hub rather than N
+	// individual lines (Task-092 / CP-36 P-6).
+	FlowCohortID string `json:"flowCohortId,omitempty"`
+	// Label is the display name used in the consolidated note header; defaults to
+	// Agent when empty.
+	Label string `json:"label,omitempty"`
+	// CohortSize pre-declares the total number of members in this cohort so the
+	// barrier fires only after all siblings complete, even with sequential Wait=true
+	// spawning. Only the first spawn for a given cohort key uses this value; all
+	// subsequent spawns with the same cohort key are no-ops on the expected count.
+	// When zero, membership is counted one-by-one via registerCohortMember.
+	CohortSize int `json:"-"`
+	// AutoOrchestrate enables bounded hub auto-reinvocation (Task-093 / CP-36 P-7).
+	// When true on the FIRST spawn of a flow, sets autoOrchestrate on the parent run
+	// so the engine re-prompts the hub after each cohort join, bounded by the cap.
+	// Normal chat runs (autoOrchestrate=false) are never auto-reinvoked.
+	AutoOrchestrate bool `json:"-"`
 }
 
 // SpawnAgentResult is the tool call result and HTTP response body.
@@ -223,6 +312,14 @@ func (o *AgentOrchestrator) setLoop(parentRunID string, state AgentLoopState) {
 	o.loop[parentRunID] = state
 }
 
+// loopStateFor returns the AgentLoopState for parentRunID under o.mu, safe to call from
+// any goroutine. Use this instead of reading o.loop directly outside AgentOrchestrator.
+func (o *AgentOrchestrator) loopStateFor(parentRunID string) AgentLoopState {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.loop[parentRunID]
+}
+
 func (o *AgentOrchestrator) pause(parentRunID, reason string) AgentGraphSnapshot {
 	return o.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState { st.Status = "paused"; st.GateReason = reason; return st })
 }
@@ -339,6 +436,282 @@ func (o *AgentOrchestrator) transition(parentRunID, kind string) AgentGraphSnaps
 		}
 		return st
 	})
+}
+
+// ---- Flow vocabulary (Task-089) -----------------------------------------------
+//
+// Domain-free node/edge/policy types used by the flow executor (Task-090).
+// No role or use-case strings appear here; those live in declared-face registries.
+
+// FlowNode describes one step in an execution graph.
+type FlowNode struct {
+	ID        string `json:"id"`
+	Agent     string `json:"agent"`
+	Run       string `json:"run"`       // "inline" | "delegate"
+	Lifecycle string `json:"lifecycle"` // "once" | "reinvoke"
+	Join      string `json:"join"`      // "all" | "any" | "quorum(n)"
+}
+
+// FlowEdge is a directed connection between two FlowNodes.
+type FlowEdge struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+	When string `json:"when"` // generic status: "continue" | "done" | "escalate"
+	Kind string `json:"kind"` // "forward" | "back"
+}
+
+// FlowPolicy configures cap + bounded-extend behaviour for a flow.
+type FlowPolicy struct {
+	Cap        int    `json:"cap"`
+	OnCap      string `json:"onCap"`      // "escalate" | "done"
+	ExtendBy   int    `json:"extendBy"`
+	ExtendMax  int    `json:"extendMax"`
+}
+
+// FlowControlInput is the one generic signal an agent sends to the engine.
+type FlowControlInput struct {
+	Status  string         `json:"status"`  // "continue" | "done" | "escalate"
+	Summary string         `json:"summary,omitempty"`
+	Payload map[string]any `json:"payload,omitempty"`
+}
+
+// FlowControlResult is the engine's reply after processing a FlowControlInput.
+type FlowControlResult struct {
+	Status     string `json:"status"`
+	Round      int    `json:"round"`
+	Cap        int    `json:"cap"`
+	OpenIssues int    `json:"openIssues,omitempty"`
+	NextAction string `json:"nextAction,omitempty"`
+}
+
+// FlowControlFace maps a domain tool's status strings onto the three generic ones.
+type FlowControlFace struct {
+	Tool string            `json:"tool"`
+	Map  map[string]string `json:"map"`
+}
+
+var flowControlStatuses = map[string]bool{
+	"continue": true,
+	"done":     true,
+	"escalate": true,
+}
+
+// parseFlowControlInput extracts FlowControlInput from a tool-call arguments map,
+// mirroring parseSpawnAgentInput.
+func parseFlowControlInput(args map[string]any) (FlowControlInput, error) {
+	var in FlowControlInput
+	status, _ := args["status"].(string)
+	if !flowControlStatuses[status] {
+		return in, fmt.Errorf("flow_control: status must be continue|done|escalate, got %q", status)
+	}
+	in.Status = status
+	in.Summary, _ = args["summary"].(string)
+	if raw, ok := args["payload"].(map[string]any); ok {
+		in.Payload = raw
+	}
+	return in, nil
+}
+
+// applyFlowNodeDefaults fills zero-value fields with engine defaults.
+func applyFlowNodeDefaults(n *FlowNode) {
+	if n.Run == "" {
+		n.Run = "delegate"
+	}
+	if n.Lifecycle == "" {
+		n.Lifecycle = "reinvoke"
+	}
+	if n.Join == "" {
+		n.Join = "all"
+	}
+}
+
+// applyFlowPolicyDefaults fills zero-value fields with engine defaults.
+func applyFlowPolicyDefaults(p *FlowPolicy) {
+	if p.Cap == 0 {
+		p.Cap = 3
+	}
+	if p.OnCap == "" {
+		p.OnCap = "escalate"
+	}
+	if p.ExtendBy == 0 {
+		p.ExtendBy = 2
+	}
+	if p.ExtendMax == 0 {
+		p.ExtendMax = 2
+	}
+}
+
+// parseJoin parses "all", "any", or "quorum(n)" into a mode string and threshold.
+// Returns ("all", 0) / ("any", 0) / ("quorum", n≥1) or an error.
+func parseJoin(s string) (mode string, n int, err error) {
+	switch s {
+	case "", "all":
+		return "all", 0, nil
+	case "any":
+		return "any", 0, nil
+	}
+	if _, scanErr := fmt.Sscanf(s, "quorum(%d)", &n); scanErr == nil && n > 0 {
+		return "quorum", n, nil
+	}
+	return "", 0, fmt.Errorf("parseJoin: invalid join %q; expected all|any|quorum(n)", s)
+}
+
+// resolveFaceStatus maps a domain status through a FlowControlFace to a generic status.
+func resolveFaceStatus(face FlowControlFace, domainStatus string) (genericStatus string, ok bool) {
+	genericStatus, ok = face.Map[domainStatus]
+	return
+}
+
+// reviewOutcomeFace returns the declared face for the submit_review_outcome tool.
+// approved→done, changes_requested→continue, blocked→escalate.
+func reviewOutcomeFace() FlowControlFace {
+	return FlowControlFace{
+		Tool: "submit_review_outcome",
+		Map: map[string]string{
+			"approved":          "done",
+			"changes_requested": "continue",
+			"blocked":           "escalate",
+		},
+	}
+}
+
+// validateFlowEdges rejects configurations where more than one back-edge fires
+// on the same generic status (which would create an ambiguous routing decision).
+func validateFlowEdges(edges []FlowEdge) error {
+	backTargets := map[string]string{} // when → from (first seen)
+	for _, e := range edges {
+		if e.Kind != "back" {
+			continue
+		}
+		if prev, ok := backTargets[e.When]; ok {
+			return fmt.Errorf("validateFlowEdges: duplicate back-edge for status %q (from %q and %q)", e.When, prev, e.From)
+		}
+		backTargets[e.When] = e.From
+	}
+	return nil
+}
+
+// effectiveCap returns the flow-engine cap for a loop state: Cap if set, else RoundCap, else 3.
+func effectiveCap(st AgentLoopState) int {
+	if st.Cap > 0 {
+		return st.Cap
+	}
+	if st.RoundCap > 0 {
+		return st.RoundCap
+	}
+	return 3
+}
+
+// ---- Review-loop template (Task-091) ------------------------------------------
+//
+// submit_review_outcome is the declared face of flow_control for the review loop.
+// It maps {approved→done, changes_requested→continue, blocked→escalate} via
+// reviewOutcomeFace() (Task-089) and places issues in FlowControlInput.Payload.
+
+// ReviewIssue is one code-review finding from the reviewer agent.
+type ReviewIssue struct {
+	ID         string `json:"id,omitempty"`
+	Title      string `json:"title"`
+	Severity   string `json:"severity,omitempty"` // "error"|"warning"|"info"
+	File       string `json:"file,omitempty"`
+	Resolution string `json:"resolution,omitempty"`
+}
+
+// ReviewOutcomeInput is the schema for the submit_review_outcome tool call.
+type ReviewOutcomeInput struct {
+	Status   string        `json:"status"` // "approved"|"changes_requested"|"blocked"
+	Issues   []ReviewIssue `json:"issues,omitempty"`
+	Feedback string        `json:"feedback,omitempty"`
+}
+
+// ReviewOutcomeResult is the tool call result: mirrors FlowControlResult with open count.
+type ReviewOutcomeResult struct {
+	FlowControlResult
+	OpenIssues int `json:"openIssues,omitempty"`
+}
+
+var reviewOutcomeStatuses = map[string]bool{
+	"approved":          true,
+	"changes_requested": true,
+	"blocked":           true,
+}
+
+// parseReviewOutcomeInput validates and extracts ReviewOutcomeInput from a tool-call args map.
+//
+// Field aliases (for TS/board compatibility):
+//   - "outcome" accepted as alias for "status"
+//   - Per-issue "description" accepted as alias for "title"
+//   - Per-issue "location" accepted as alias for "file"
+//
+// feedback is required for changes_requested only on the MCP/agent path (args["status"]);
+// the board path (args["outcome"]) omits feedback and that is fine.
+func parseReviewOutcomeInput(args map[string]any) (ReviewOutcomeInput, error) {
+	var in ReviewOutcomeInput
+	boardPath := false
+	in.Status, _ = args["status"].(string)
+	if in.Status == "" {
+		in.Status, _ = args["outcome"].(string)
+		boardPath = true
+	}
+	if !reviewOutcomeStatuses[in.Status] {
+		return in, fmt.Errorf("submit_review_outcome: status must be approved|changes_requested|blocked, got %q", in.Status)
+	}
+	in.Feedback, _ = args["feedback"].(string)
+	if !boardPath && in.Status == "changes_requested" && strings.TrimSpace(in.Feedback) == "" {
+		return in, fmt.Errorf("submit_review_outcome: feedback is required when status=changes_requested")
+	}
+	if raw, ok := args["issues"].([]any); ok {
+		for _, item := range raw {
+			m, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			issue := ReviewIssue{}
+			issue.ID, _ = m["id"].(string)
+			// Accept both "title" (Go/MCP) and "description" (TS/board) as issue title.
+			issue.Title, _ = m["title"].(string)
+			if issue.Title == "" {
+				issue.Title, _ = m["description"].(string)
+			}
+			issue.Severity, _ = m["severity"].(string)
+			// Accept both "file" (Go/MCP) and "location" (TS/board) as issue location.
+			issue.File, _ = m["file"].(string)
+			if issue.File == "" {
+				issue.File, _ = m["location"].(string)
+			}
+			issue.Resolution, _ = m["resolution"].(string)
+			if issue.Title != "" {
+				in.Issues = append(in.Issues, issue)
+			}
+		}
+	}
+	return in, nil
+}
+
+// reviewOutcomeToFlowControl maps a ReviewOutcomeInput to a FlowControlInput using the
+// declared face registry. Issues and feedback ride in Payload for the coder re-entry note.
+func reviewOutcomeToFlowControl(in ReviewOutcomeInput) (FlowControlInput, error) {
+	face := reviewOutcomeFace()
+	generic, ok := resolveFaceStatus(face, in.Status)
+	if !ok {
+		return FlowControlInput{}, fmt.Errorf("reviewOutcomeToFlowControl: unknown status %q", in.Status)
+	}
+	payload := map[string]any{
+		"issues":   in.Issues,
+		"feedback": in.Feedback,
+	}
+	return FlowControlInput{
+		Status:  generic,
+		Summary: in.Feedback,
+		Payload: payload,
+	}, nil
+}
+
+// loopMode returns the Mode field of a parent run's loop state (e.g. "keyword"|"explicit").
+func (o *AgentOrchestrator) loopMode(parentRunID string) string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.loop[parentRunID].Mode
 }
 
 // parseSpawnAgentInput extracts SpawnAgentInput from a tool call arguments map.
