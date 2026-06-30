@@ -9,10 +9,10 @@
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-23`
-- Last Updated: `2026-06-23`
+- Last Updated: `2026-06-29`
 - Parent Documents: [SS-16: Agent Flow Engine](../05-System-Specs/SS-16-Agent-Flow-Engine.md)
 - Child Documents: `None` (a generic-engine CP follows once the review-loop template lands)
-- Related Documents: [SD-18: Main-Hub Agent Review Loop](./SD-18-Main-Hub-Agent-Review-Loop.md), [SD-16: Agent Spawn And Tool-Calling Design](./SD-16-Agent-Spawn-And-Tool-Calling-Design.md), [SD-13: Multiple Agents](./SD-13-Multiple-Agents.md), [SD-05: Workflow Engine](./SD-05-Workflow-Engine.md), [CP-36: Agent Review Loop And Main-Hub Orchestration](../07-Coding-Plan/todo/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md)
+- Related Documents: [SD-18: Main-Hub Agent Review Loop](./SD-18-Main-Hub-Agent-Review-Loop.md), [SD-16: Agent Spawn And Tool-Calling Design](./SD-16-Agent-Spawn-And-Tool-Calling-Design.md), [SD-13: Multiple Agents](./SD-13-Multiple-Agents.md), [SD-05: Workflow Engine](./SD-05-Workflow-Engine.md), [CP-36: Agent Review Loop And Main-Hub Orchestration](../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md)
 - Replaces: `None`
 - Tags: `multi-agent, flow-engine, generic, flow-definition, flow-catalog, workflow-bridge, local-runner`
 
@@ -43,7 +43,7 @@
 
 - Reuse the CP-19/SD-16 substrate (spawn, `dependsOn`, `pendingAgentContext`, board, auto-reinvoke) and the linear Workflow model (`cp07_workflow_engine`); no parallel system.
 - Do not alter `ProviderRuntimeAdapter` or the SSE transport except additively.
-- Phase 1 adds no Supabase migration (Chat/file). Flow-mode tables are additive and align with CP-19 Task-085.
+- Run data for **both** chat and flow modes persists **locally** (`localFileSessionStore` / `sessions.ndjson`, Drive-synced); no Supabase **run** migration. Flow/Step **definitions** stay on Supabase. This supersedes the original CP-19 Task-085 Supabase `agent_runs`/`agent_messages` plan (see CP-36 `P-5`/`Q-5`).
 - GitNexus impact analysis before editing named symbols; warn on HIGH/CRITICAL.
 
 ### Open Questions
@@ -74,8 +74,11 @@ Provide a generic coordination engine plus a FlowDefinition data model so that: 
 - `D-2` **Three concepts, separated** (SS-16 `BR-2`). `AgentDefinition` (persona; `agent_catalog.go`, exists) is the *who*. `FlowDefinition` (new) is the *how*. `Workflow`/`Step` (`cp07_workflow_engine`) is the *when*. A FlowDefinition **references** AgentDefinitions by name; it does not redefine them.
 - `D-3` **FlowDefinition as data + FlowCatalog.** Mirror `AgentCatalog` exactly: discover from project files, provider homes, and built-ins, with name precedence. Phase 1 stores FlowDefinitions as files (e.g. `.flowpilot/flows/*.yaml`); Flow mode stores the same shape in Supabase. (SS-16 `AC-2`, `AC-4`.)
 - `D-4` **Generic control signal.** The engine has one control concept, `flow_control({status: "continue"|"done"|"escalate", summary, payload?})`. A flow may **declare** a domain-named tool (e.g. `submit_review_outcome`) whose schema is data and whose handler maps onto `flow_control` (e.g. `approved→done`, `changes_requested→continue`, `blocked→escalate`). One engine handler, many declared faces — exactly how `AgentCatalog` treats agents as data. (SS-16 `AC-3`.)
-- `D-5` **`agent_flow` step bridge.** An agent flow embeds in a linear Workflow as **one step**. Reuse `step_definitions.agent_type` (today `standard|autonomous`); either treat `autonomous` as "runs a FlowDefinition" or add a new `agent_flow` value (`Q-2`). The step's live sub-graph is the agent run tree in `agent_runs`/`agent_messages` (CP-19 Task-085); it is **never** expanded into `workflow_steps`, preserving the linear engine. (SS-16 `AC-5`, `BR-4`.)
+- `D-5` **`agent_flow` step bridge.** An agent flow embeds in a linear Workflow as **one step**. Reuse `step_definitions.agent_type` (today `standard|autonomous`); either treat `autonomous` as "runs a FlowDefinition" or add a new `agent_flow` value (`Q-2`). The step's live sub-graph is the agent run tree persisted **locally** in the session record (`sessions.ndjson`, Drive-synced) for both Chat and Flow modes — superseding the original Task-085 Supabase `agent_runs`/`agent_messages` plan (CP-36 `P-5`); it is **never** expanded into `workflow_steps`, preserving the linear engine. (SS-16 `AC-5`, `BR-4`.)
 - `D-6` **The main agent owns "what next", not the engine.** On re-invocation the main agent receives the consolidated results and decides the next action (spawn more, finish) via existing tools. The engine never holds a use-case state machine — this is what makes the review loop's "restart coder on changes" a *skill behavior*, not engine code. (SS-16 `BR-1`.)
+
+- `D-7` **Node/edge/policy field vocabulary.** A FlowDefinition compiles to three domain-free shapes (canonical Go structs in CP-36 [Task-089](../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md)): `FlowNode{agent, run: inline|delegate, lifecycle: once|reinvoke, join: all|any|quorum(n)}`, `FlowEdge{from, to, when, kind: forward|back}`, `FlowPolicy{cap, onCap, extendBy, extendMax}`. `run` distinguishes "the hub does the step itself" from "spawn a child"; `lifecycle` distinguishes "respawn fresh" from "restart-with-feedback" on re-entry; a `back` edge is a bounded loop (retry) counted against `cap`. Edges match the **mapped generic `flow_control` status**, never a domain string. This is what makes "wait for reviewer 2" (a `join`) and "failed → coding" (a `back` edge) expressible without role logic.
+- `D-8` **Unified local run persistence.** Run data for both Chat and Flow modes persists through `localFileSessionStore` (`sessions.ndjson`) and syncs cross-PC via Drive; flow/step **definitions** remain on Supabase. The legacy `workflow_run_*` tables and the Supabase agent-run plan are deprecated. One run sink, two authoring surfaces (emergent chat / predeclared FlowDefinition), and the coordinator (model-driven or definition-driven) is the only difference between modes — the executor is identical. (CP-36 `P-5`/`P-6`.)
 
 Why chosen: it turns the orchestration substrate FlowPilot already has (spawn, barrier, deliver, auto-reinvoke) into a reusable engine by moving all domain meaning into data (FlowDefinition + skill) and pushing the "next step" decision to the model, while bridging cleanly to the linear Workflow model.
 
@@ -107,8 +110,8 @@ Why chosen: it turns the orchestration substrate FlowPilot already has (spawn, b
     cap: 3
     onCap: escalate
   ```
-- **Run-time entities:** the existing agent run tree (`interactiveRun` + orchestrator graph/bus in Chat mode; `agent_runs`/`agent_messages` in Flow mode). A FlowDefinition is the *template*; a run is the *instance*.
-- **Workflow bridge:** a `workflow_steps` row of an `agent_flow` step type carries a reference to a FlowDefinition; its `workflow_run_steps` row owns one root `agent_runs` entry (`workflow_runs.parent_run_id`, Task-085). No new per-agent rows in `workflow_steps`.
+- **Run-time entities:** the existing agent run tree (`interactiveRun` + orchestrator graph/bus), persisted **locally** in the session record (`sessions.ndjson`, Drive-synced) for **both** Chat and Flow modes. A FlowDefinition is the *template*; a run is the *instance*.
+- **Workflow bridge:** a `workflow_steps` row of an `agent_flow` step type carries a reference to a FlowDefinition; its run's sub-graph lives in the local session record (not Supabase per-agent rows). No new per-agent rows in `workflow_steps`.
 
 ## 6. Interfaces and Contracts
 

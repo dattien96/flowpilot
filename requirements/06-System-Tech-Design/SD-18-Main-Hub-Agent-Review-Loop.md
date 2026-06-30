@@ -11,7 +11,7 @@
 - Created: `2026-06-23`
 - Last Updated: `2026-06-23`
 - Parent Documents: [SS-15: Agent Review Loop (Review Until Clean)](../05-System-Specs/SS-15-Agent-Review-Loop-Until-Clean.md)
-- Child Documents: [CP-36: Agent Review Loop And Main-Hub Orchestration](../07-Coding-Plan/todo/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md)
+- Child Documents: [CP-36: Agent Review Loop And Main-Hub Orchestration](../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md)
 - Related Documents: [SD-19: Agent Flow Engine](./SD-19-Agent-Flow-Engine.md) (the generic engine this design is the first template of), [SD-16: Agent Spawn And Tool-Calling Design](./SD-16-Agent-Spawn-And-Tool-Calling-Design.md), [SD-13: Multiple Agents](./SD-13-Multiple-Agents.md), [SS-16: Agent Flow Engine](../05-System-Specs/SS-16-Agent-Flow-Engine.md), [SS-12: Multiple Agents](../05-System-Specs/SS-12-Multiple-Agents.md), [SS-08: Approve Gate](../05-System-Specs/SS-08-Approve-Gate.md)
 - Replaces: `None`
 - Tags: `multi-agent, review-loop, main-hub, verdict-tool, auto-reinvoke, synthesis, local-runner, desktop`
