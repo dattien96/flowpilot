@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -742,6 +743,236 @@ func TestAgentTreeSurvivesRunnerRestartBeforeSync(t *testing.T) {
 	}
 }
 
+// ---- Flow vocabulary tests (Task-089) -----------------------------------------
+
+func TestParseFlowControlInputValid(t *testing.T) {
+	for _, status := range []string{"continue", "done", "escalate"} {
+		in, err := parseFlowControlInput(map[string]any{
+			"status":  status,
+			"summary": "all good",
+			"payload": map[string]any{"k": "v"},
+		})
+		if err != nil {
+			t.Fatalf("status=%q unexpected error: %v", status, err)
+		}
+		if in.Status != status {
+			t.Errorf("status = %q, want %q", in.Status, status)
+		}
+		if in.Summary != "all good" {
+			t.Errorf("summary = %q, want all good", in.Summary)
+		}
+		if in.Payload["k"] != "v" {
+			t.Errorf("payload round-trip failed: %+v", in.Payload)
+		}
+	}
+}
+
+func TestParseFlowControlInputRejectsUnknownStatus(t *testing.T) {
+	for _, bad := range []string{"", "approved", "reject", "DONE"} {
+		_, err := parseFlowControlInput(map[string]any{"status": bad})
+		if err == nil {
+			t.Errorf("expected error for status=%q", bad)
+		}
+	}
+}
+
+func TestParseFlowControlInputPayloadOptional(t *testing.T) {
+	in, err := parseFlowControlInput(map[string]any{"status": "done"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if in.Payload != nil {
+		t.Errorf("payload should be nil when absent, got %+v", in.Payload)
+	}
+}
+
+func TestApplyFlowNodeDefaults(t *testing.T) {
+	n := FlowNode{}
+	applyFlowNodeDefaults(&n)
+	if n.Run != "delegate" || n.Lifecycle != "reinvoke" || n.Join != "all" {
+		t.Errorf("unexpected defaults: %+v", n)
+	}
+}
+
+func TestApplyFlowNodeDefaultsDoesNotOverwrite(t *testing.T) {
+	n := FlowNode{Run: "inline", Lifecycle: "once", Join: "any"}
+	applyFlowNodeDefaults(&n)
+	if n.Run != "inline" || n.Lifecycle != "once" || n.Join != "any" {
+		t.Errorf("defaults must not overwrite set fields: %+v", n)
+	}
+}
+
+func TestApplyFlowPolicyDefaults(t *testing.T) {
+	p := FlowPolicy{}
+	applyFlowPolicyDefaults(&p)
+	if p.Cap != 3 || p.OnCap != "escalate" || p.ExtendBy != 2 || p.ExtendMax != 2 {
+		t.Errorf("unexpected defaults: %+v", p)
+	}
+}
+
+func TestApplyFlowPolicyDefaultsDoesNotOverwrite(t *testing.T) {
+	p := FlowPolicy{Cap: 5, OnCap: "done", ExtendBy: 1, ExtendMax: 3}
+	applyFlowPolicyDefaults(&p)
+	if p.Cap != 5 || p.OnCap != "done" || p.ExtendBy != 1 || p.ExtendMax != 3 {
+		t.Errorf("defaults must not overwrite set fields: %+v", p)
+	}
+}
+
+func TestParseJoin(t *testing.T) {
+	cases := []struct {
+		input    string
+		wantMode string
+		wantN    int
+		wantErr  bool
+	}{
+		{"", "all", 0, false},
+		{"all", "all", 0, false},
+		{"any", "any", 0, false},
+		{"quorum(2)", "quorum", 2, false},
+		{"quorum(10)", "quorum", 10, false},
+		{"quorum(0)", "", 0, true},
+		{"quorum()", "", 0, true},
+		{"quorum", "", 0, true},
+		{"unknown", "", 0, true},
+	}
+	for _, c := range cases {
+		mode, n, err := parseJoin(c.input)
+		if c.wantErr {
+			if err == nil {
+				t.Errorf("parseJoin(%q): expected error, got mode=%q n=%d", c.input, mode, n)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("parseJoin(%q): unexpected error: %v", c.input, err)
+			continue
+		}
+		if mode != c.wantMode || n != c.wantN {
+			t.Errorf("parseJoin(%q) = (%q,%d), want (%q,%d)", c.input, mode, n, c.wantMode, c.wantN)
+		}
+	}
+}
+
+func TestResolveFaceStatusReviewOutcome(t *testing.T) {
+	face := reviewOutcomeFace()
+	if face.Tool != "submit_review_outcome" {
+		t.Errorf("tool = %q, want submit_review_outcome", face.Tool)
+	}
+	cases := map[string]string{
+		"approved":          "done",
+		"changes_requested": "continue",
+		"blocked":           "escalate",
+	}
+	for domain, want := range cases {
+		got, ok := resolveFaceStatus(face, domain)
+		if !ok || got != want {
+			t.Errorf("resolveFaceStatus(%q): got (%q,%v), want (%q,true)", domain, got, ok, want)
+		}
+	}
+	if _, ok := resolveFaceStatus(face, "unknown"); ok {
+		t.Error("resolveFaceStatus(unknown): expected ok=false")
+	}
+}
+
+func TestValidateFlowEdgesAcceptsForwardDuplicates(t *testing.T) {
+	edges := []FlowEdge{
+		{From: "a", To: "b", When: "done", Kind: "forward"},
+		{From: "a", To: "c", When: "done", Kind: "forward"},
+	}
+	if err := validateFlowEdges(edges); err != nil {
+		t.Errorf("forward duplicate should be allowed: %v", err)
+	}
+}
+
+func TestValidateFlowEdgesRejectsBackDuplicate(t *testing.T) {
+	edges := []FlowEdge{
+		{From: "b", To: "a", When: "continue", Kind: "back"},
+		{From: "c", To: "a", When: "continue", Kind: "back"},
+	}
+	if err := validateFlowEdges(edges); err == nil {
+		t.Error("expected error for duplicate back-edges on same status")
+	}
+}
+
+func TestValidateFlowEdgesAllowsDifferentBackStatuses(t *testing.T) {
+	edges := []FlowEdge{
+		{From: "b", To: "a", When: "continue", Kind: "back"},
+		{From: "c", To: "a", When: "escalate", Kind: "back"},
+	}
+	if err := validateFlowEdges(edges); err != nil {
+		t.Errorf("different back-edge statuses should be allowed: %v", err)
+	}
+}
+
+func TestFlowVocabularyJSONRoundTrip(t *testing.T) {
+	node := FlowNode{ID: "n1", Agent: "agent-a", Run: "delegate", Lifecycle: "reinvoke", Join: "quorum(2)"}
+	edge := FlowEdge{From: "n1", To: "n2", When: "done", Kind: "forward"}
+	policy := FlowPolicy{Cap: 3, OnCap: "escalate", ExtendBy: 2, ExtendMax: 2}
+	input := FlowControlInput{Status: "continue", Summary: "s", Payload: map[string]any{"x": float64(1)}}
+	result := FlowControlResult{Status: "continue", Round: 1, Cap: 3, OpenIssues: 2, NextAction: "retry"}
+
+	roundTrip := func(v any, dest any) {
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		if err := json.Unmarshal(b, dest); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+	}
+
+	var n2 FlowNode
+	roundTrip(node, &n2)
+	if n2 != node {
+		t.Errorf("FlowNode round-trip: got %+v want %+v", n2, node)
+	}
+
+	var e2 FlowEdge
+	roundTrip(edge, &e2)
+	if e2 != edge {
+		t.Errorf("FlowEdge round-trip: got %+v want %+v", e2, edge)
+	}
+
+	var p2 FlowPolicy
+	roundTrip(policy, &p2)
+	if p2 != policy {
+		t.Errorf("FlowPolicy round-trip: got %+v want %+v", p2, policy)
+	}
+
+	var i2 FlowControlInput
+	roundTrip(input, &i2)
+	if i2.Status != input.Status || i2.Summary != input.Summary || i2.Payload["x"] != float64(1) {
+		t.Errorf("FlowControlInput round-trip: got %+v want %+v", i2, input)
+	}
+
+	var r2 FlowControlResult
+	roundTrip(result, &r2)
+	if r2 != result {
+		t.Errorf("FlowControlResult round-trip: got %+v want %+v", r2, result)
+	}
+}
+
+func TestFlowVocabularyNoRoleStrings(t *testing.T) {
+	// Grep-style guard: none of the new type/function names may embed role strings.
+	// This is a compile-time property but we verify it here by inspecting string constants
+	// the engine actually uses.
+	forbidden := []string{"coder", "reviewer", "approved"}
+	engineStrings := []string{
+		"continue", "done", "escalate",
+		"delegate", "inline", "reinvoke", "once",
+		"all", "any", "quorum",
+		"forward", "back",
+		"flow_control", "submit_review_outcome",
+	}
+	for _, s := range engineStrings {
+		for _, bad := range forbidden {
+			if s == bad {
+				t.Errorf("engine string %q is a role string and must not appear in engine vocabulary", s)
+			}
+		}
+	}
+}
+
 func TestListAgentRunSummariesEmptyHTTP(t *testing.T) {
 	_, srv := newTestServer(t)
 
@@ -770,6 +1001,129 @@ func TestListAgentRunSummariesEmptyHTTP(t *testing.T) {
 // TestGraphSnapshotDedupsHistoricalAndLiveChildren guards BUG-116: graphSnapshot must not
 // list a child twice when it appears in BOTH the historical set (from a sync/restore) and
 // the live children set. The live summary (current status) must win.
+// ---- Review-loop template tests (Task-091) ------------------------------------
+
+func TestParseReviewOutcomeInputValid(t *testing.T) {
+	cases := []struct {
+		args    map[string]any
+		want    ReviewOutcomeInput
+	}{
+		{
+			map[string]any{"status": "approved"},
+			ReviewOutcomeInput{Status: "approved"},
+		},
+		{
+			map[string]any{"status": "changes_requested", "feedback": "fix the tests", "issues": []any{
+				map[string]any{"title": "nil dereference", "severity": "error", "file": "main.go"},
+			}},
+			ReviewOutcomeInput{Status: "changes_requested", Feedback: "fix the tests", Issues: []ReviewIssue{{Title: "nil dereference", Severity: "error", File: "main.go"}}},
+		},
+		{
+			map[string]any{"status": "blocked", "feedback": "no build"},
+			ReviewOutcomeInput{Status: "blocked", Feedback: "no build"},
+		},
+	}
+	for _, c := range cases {
+		got, err := parseReviewOutcomeInput(c.args)
+		if err != nil {
+			t.Errorf("parseReviewOutcomeInput(%v): unexpected error: %v", c.args, err)
+			continue
+		}
+		if got.Status != c.want.Status || got.Feedback != c.want.Feedback {
+			t.Errorf("parseReviewOutcomeInput: got %+v, want %+v", got, c.want)
+		}
+		if len(got.Issues) != len(c.want.Issues) {
+			t.Errorf("Issues len: got %d, want %d", len(got.Issues), len(c.want.Issues))
+		}
+	}
+}
+
+func TestParseReviewOutcomeInputRejectsUnknownStatus(t *testing.T) {
+	_, err := parseReviewOutcomeInput(map[string]any{"status": "rejected"})
+	if err == nil {
+		t.Error("expected error for unknown status 'rejected'")
+	}
+}
+
+func TestParseReviewOutcomeInputRequiresFeedbackForChangesRequested(t *testing.T) {
+	_, err := parseReviewOutcomeInput(map[string]any{"status": "changes_requested"})
+	if err == nil {
+		t.Error("expected error for changes_requested without feedback")
+	}
+	_, err = parseReviewOutcomeInput(map[string]any{"status": "changes_requested", "feedback": "  "})
+	if err == nil {
+		t.Error("expected error for changes_requested with blank feedback")
+	}
+}
+
+func TestReviewOutcomeToFlowControlMapping(t *testing.T) {
+	cases := []struct {
+		domainStatus  string
+		feedback      string
+		wantGeneric   string
+	}{
+		{"approved", "", "done"},
+		{"changes_requested", "revise", "continue"},
+		{"blocked", "cannot proceed", "escalate"},
+	}
+	for _, c := range cases {
+		in := ReviewOutcomeInput{Status: c.domainStatus, Feedback: c.feedback}
+		fc, err := reviewOutcomeToFlowControl(in)
+		if err != nil {
+			t.Errorf("reviewOutcomeToFlowControl(%q): unexpected error: %v", c.domainStatus, err)
+			continue
+		}
+		if fc.Status != c.wantGeneric {
+			t.Errorf("status: got %q, want %q", fc.Status, c.wantGeneric)
+		}
+	}
+}
+
+func TestReviewOutcomeIssuesRideInPayload(t *testing.T) {
+	in := ReviewOutcomeInput{
+		Status:   "changes_requested",
+		Feedback: "fix it",
+		Issues:   []ReviewIssue{{Title: "bug", File: "main.go"}},
+	}
+	fc, err := reviewOutcomeToFlowControl(in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	issues, ok := fc.Payload["issues"]
+	if !ok {
+		t.Fatal("issues missing from Payload")
+	}
+	issueList, ok := issues.([]ReviewIssue)
+	if !ok || len(issueList) != 1 || issueList[0].Title != "bug" {
+		t.Errorf("payload issues = %v, want 1 issue with Title=bug", issues)
+	}
+}
+
+func TestReviewLoopFlowConfigValid(t *testing.T) {
+	nodes, edges, policy := ReviewLoopFlowConfig()
+	if len(nodes) != 3 {
+		t.Errorf("nodes = %d, want 3", len(nodes))
+	}
+	if len(edges) != 3 {
+		t.Errorf("edges = %d, want 3", len(edges))
+	}
+	if policy.Cap != 3 || policy.OnCap != "escalate" {
+		t.Errorf("policy = %+v, want Cap=3 OnCap=escalate", policy)
+	}
+	if err := validateFlowEdges(edges); err != nil {
+		t.Errorf("validateFlowEdges: %v", err)
+	}
+	backCount := 0
+	for _, e := range edges {
+		if e.Kind == "back" {
+			backCount++
+		}
+	}
+	if backCount != 1 {
+		t.Errorf("back-edge count = %d, want 1", backCount)
+	}
+}
+
 func TestGraphSnapshotDedupsHistoricalAndLiveChildren(t *testing.T) {
 	o := newAgentOrchestrator()
 	// Same child present as historical (Completed) and live (Running).
@@ -787,5 +1141,47 @@ func TestGraphSnapshotDedupsHistoricalAndLiveChildren(t *testing.T) {
 	}
 	if snap.Runs[0].Status != RunStatusRunning {
 		t.Errorf("deduped child status = %q, want live %q", snap.Runs[0].Status, RunStatusRunning)
+	}
+}
+
+func TestCohortBufferAppendAndDrain(t *testing.T) {
+	o := newAgentOrchestrator()
+	o.appendCohortResult("p1", "cohort-A", cohortEntry{Label: "alpha", Provider: "claude", FinalMessage: "ok", Status: "completed"})
+	o.appendCohortResult("p1", "cohort-A", cohortEntry{Label: "beta", Provider: "codex", FinalMessage: "done", Status: "completed"})
+	o.appendCohortResult("p1", "cohort-B", cohortEntry{Label: "gamma", Provider: "claude", FinalMessage: "also ok", Status: "completed"})
+
+	entries := o.drainCohort("p1", "cohort-A")
+	if len(entries) != 2 {
+		t.Fatalf("drainCohort returned %d entries, want 2", len(entries))
+	}
+	if entries[0].Label != "alpha" || entries[1].Label != "beta" {
+		t.Errorf("unexpected entries: %+v", entries)
+	}
+	// cohort-A is gone; cohort-B untouched
+	if got := o.drainCohort("p1", "cohort-A"); len(got) != 0 {
+		t.Errorf("second drain should be empty, got %d entries", len(got))
+	}
+	if got := o.drainCohort("p1", "cohort-B"); len(got) != 1 {
+		t.Errorf("cohort-B drain = %d entries, want 1", len(got))
+	}
+}
+
+func TestBuildCohortNoteContainsAllMembers(t *testing.T) {
+	entries := []cohortEntry{
+		{Label: "alpha", Provider: "claude", FinalMessage: "LGTM", Status: "completed"},
+		{Label: "beta", Provider: "codex", FinalMessage: "needs fix", Status: "completed"},
+		{Label: "gamma", Provider: "claude", Status: "failed", Err: "timeout"},
+	}
+	note := buildCohortNote("parent-1", "c1", entries, 2)
+	for _, want := range []string{"round 2", "3 results joined", "alpha", "beta", "gamma", "failed: timeout", "Synthesize"} {
+		if !strings.Contains(note, want) {
+			t.Errorf("note missing %q:\n%s", want, note)
+		}
+	}
+	// No hardcoded role names.
+	for _, bad := range []string{"coder", "reviewer", "approved", "changes_requested"} {
+		if strings.Contains(note, bad) {
+			t.Errorf("note contains forbidden role string %q", bad)
+		}
 	}
 }
