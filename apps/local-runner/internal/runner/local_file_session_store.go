@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -343,7 +344,8 @@ func (s *localFileSessionStore) AppendEvent(ctx context.Context, event ProviderE
 
 // LoadFlowEvents reads all CP-41 events from the per-run flow-events sidecar.
 // Returns nil, nil when the sidecar does not exist (new run or no flow events yet).
-// Uses json.Decoder to avoid bufio.Scanner's 64 KiB default token limit.
+// Reads line-by-line with a 1 MiB buffer (avoids bufio.Scanner's 64 KiB limit)
+// so a single malformed line only skips that line — later valid lines are kept.
 func (s *localFileSessionStore) LoadFlowEvents(_ context.Context, runID string) ([]ProviderEvent, error) {
 	f, err := os.Open(s.flowEventsPath(runID))
 	if err != nil {
@@ -354,14 +356,27 @@ func (s *localFileSessionStore) LoadFlowEvents(_ context.Context, runID string) 
 	}
 	defer f.Close()
 	var evs []ProviderEvent
-	dec := json.NewDecoder(f)
+	br := bufio.NewReaderSize(f, 1<<20) // 1 MiB per-line buffer
 	for {
-		var ev ProviderEvent
-		if err := dec.Decode(&ev); err != nil {
-			break // EOF or malformed line — stop; partial reads are silently dropped
+		line, readErr := br.ReadBytes('\n')
+		if len(line) > 0 {
+			// trim CR+LF and skip blank lines
+			for len(line) > 0 && (line[len(line)-1] == '\n' || line[len(line)-1] == '\r') {
+				line = line[:len(line)-1]
+			}
+			if len(line) > 0 {
+				var ev ProviderEvent
+				if jsonErr := json.Unmarshal(line, &ev); jsonErr == nil && ev.Type != "" {
+					evs = append(evs, ev)
+				}
+				// malformed JSON on this line is silently skipped; the loop continues
+			}
 		}
-		if ev.Type != "" {
-			evs = append(evs, ev)
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			return nil, readErr
 		}
 	}
 	return evs, nil

@@ -495,7 +495,7 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 		if result.NextAction == "looping" {
 			// Re-enter the coder so the back-edge in ReviewLoopFlowConfig fires
 			// (CRITICAL finding: continue returned "looping" but never restarted the coder).
-			go s.maybeReinvokeCoderForContinue(parentRunID, in.Summary)
+			go s.maybeReinvokeCoderForContinue(parentRunID, buildCoderReentryPrompt(in))
 		}
 		return result, nil
 
@@ -618,14 +618,65 @@ func (s *InteractiveService) maybeAutoReinvokeHub(parentRunID string) {
 	s.scheduleChildTurn(parentRunID, stepID, autoReinvokePrompt)
 }
 
+// buildCoderReentryPrompt composes the full prompt for coder re-entry from the
+// FlowControlInput that came from submit_review_outcome. It includes the plain
+// feedback text and a numbered issue list (title, severity, file, resolution)
+// so the coder receives actionable details, not just the generic fallback.
+func buildCoderReentryPrompt(in FlowControlInput) string {
+	var sb strings.Builder
+	if fb := strings.TrimSpace(in.Summary); fb != "" {
+		sb.WriteString(fb)
+		sb.WriteString("\n\n")
+	}
+	writeIssue := func(i int, sev, title, file, resolution string) {
+		sb.WriteString(fmt.Sprintf("%d. [%s] %s", i+1, sev, title))
+		if file != "" {
+			sb.WriteString(fmt.Sprintf(" (%s)", file))
+		}
+		if resolution != "" {
+			sb.WriteString(fmt.Sprintf("\n   Fix: %s", resolution))
+		}
+		sb.WriteString("\n")
+	}
+	if issues, ok := in.Payload["issues"]; ok {
+		switch v := issues.(type) {
+		case []ReviewIssue:
+			if len(v) > 0 {
+				sb.WriteString("Issues to address:\n")
+				for i, issue := range v {
+					writeIssue(i, issue.Severity, issue.Title, issue.File, issue.Resolution)
+				}
+			}
+		case []any:
+			if len(v) > 0 {
+				sb.WriteString("Issues to address:\n")
+				for i, raw := range v {
+					m, ok := raw.(map[string]any)
+					if !ok {
+						continue
+					}
+					sev, _ := m["severity"].(string)
+					title, _ := m["title"].(string)
+					file, _ := m["file"].(string)
+					res, _ := m["resolution"].(string)
+					writeIssue(i, sev, title, file, res)
+				}
+			}
+		}
+	}
+	if sb.Len() == 0 {
+		return "[flow-engine] Review completed with requested changes. Address the review issues and resubmit."
+	}
+	return strings.TrimSpace(sb.String())
+}
+
 // maybeReinvokeCoderForContinue finds the first coder child of parentRunID and
-// schedules a new turn with the review feedback. Called from applyFlowControl
+// schedules a new turn with the supplied prompt. Called from applyFlowControl
 // when status == "continue" so the synthesis→coder back-edge in ReviewLoopFlowConfig
 // actually fires (CRITICAL finding: continue never restarted the coder).
-func (s *InteractiveService) maybeReinvokeCoderForContinue(parentRunID, feedback string) {
-	feedback = strings.TrimSpace(feedback)
-	if feedback == "" {
-		feedback = "[flow-engine] Review completed with requested changes. Address the review issues and resubmit."
+func (s *InteractiveService) maybeReinvokeCoderForContinue(parentRunID, prompt string) {
+	if strings.TrimSpace(prompt) == "" {
+		prompt = "[flow-engine] Review completed with requested changes. Address the review issues and resubmit."
 	}
 	s.mu.Lock()
 	var coderID, coderStepID string
@@ -646,7 +697,7 @@ func (s *InteractiveService) maybeReinvokeCoderForContinue(parentRunID, feedback
 	if coderID == "" || coderStepID == "" {
 		return
 	}
-	s.scheduleChildTurn(coderID, coderStepID, feedback)
+	s.scheduleChildTurn(coderID, coderStepID, prompt)
 }
 
 func isAgentRole(rs *interactiveRun, role string) bool {
@@ -1189,6 +1240,15 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 					parentRunID := rs.parentRunID
 					go s.maybeAutoReinvokeHub(parentRunID)
 				}
+			} else if s.agentOrchestrator.loopMode(rs.parentRunID) == "explicit" && isAgentRole(rs, "coder") {
+				// In explicit mode the hub drives all transitions. When the coder completes
+				// outside a cohort barrier (waitForResult=true, no flowCohortId), inject a
+				// note so the hub turn can read the result and spawn the next reviewer cohort.
+				note := fmt.Sprintf("[flow-engine] Coder %q completed. Result:\n%s",
+					rs.agentName, truncateDisplayField(finalMsg, 2000))
+				s.appendPendingAgentContextLocked(rs.parentRunID, note)
+				parentRunID := rs.parentRunID
+				go s.maybeAutoReinvokeHub(parentRunID)
 			} else if rs.uiInitiated || !rs.waitForResult {
 				s.appendPendingAgentContextLocked(rs.parentRunID, fmt.Sprintf(
 					"Sub-agent %q (provider: %s) completed. Result: %s",

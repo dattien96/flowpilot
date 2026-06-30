@@ -151,6 +151,12 @@ func loadFlowFeatureBlocks(dotFP, featureKey string) (history, discussion string
 // Returns collected excerpts and omission reasons for skipped files.
 func readSourceExcerpts(workspace string, paths []string) (excerpts []FlowContextExcerpt, omitted []string) {
 	cleanWS := filepath.Clean(workspace) + string(os.PathSeparator)
+	// Resolve the workspace root through symlinks once so that the per-file
+	// symlink check below compares resolved paths against the resolved root.
+	resolvedWS := cleanWS
+	if rws, err := filepath.EvalSymlinks(filepath.Clean(workspace)); err == nil {
+		resolvedWS = rws + string(os.PathSeparator)
+	}
 	total := 0
 	for _, p := range paths {
 		abs := p
@@ -159,6 +165,17 @@ func readSourceExcerpts(workspace string, paths []string) (excerpts []FlowContex
 		}
 		clean, err := filepath.Abs(abs)
 		if err != nil || !strings.HasPrefix(clean, cleanWS) {
+			omitted = append(omitted, p+": outside_workspace")
+			continue
+		}
+		// Resolve symlinks so a symlink inside the workspace that points outside
+		// is caught before the file is opened (MEDIUM finding: symlink escape).
+		resolved, err := filepath.EvalSymlinks(clean)
+		if err != nil {
+			omitted = append(omitted, p+": symlink_resolve_error")
+			continue
+		}
+		if !strings.HasPrefix(resolved+string(os.PathSeparator), resolvedWS) {
 			omitted = append(omitted, p+": outside_workspace")
 			continue
 		}
