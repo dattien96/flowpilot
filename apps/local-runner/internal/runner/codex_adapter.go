@@ -58,6 +58,10 @@ const askUserReinforcement = "\n\n---\nComplete the clear, unambiguous parts of 
 // while normalizing it back to `spawn_agent` at the runner/UI boundary. (BUG-124)
 const codexSpawnAgentToolName = "flowpilot_spawn_agent"
 
+// codexReviewOutcomeToolName uses the flowpilot_ prefix following the same reserved-name
+// avoidance pattern as codexSpawnAgentToolName.
+const codexReviewOutcomeToolName = "flowpilot_submit_review_outcome"
+
 // preparePrompt builds the final turn prompt. The default applies ask_user
 // reinforcement; promptPrep (when set) replaces it with full runner-side assembly.
 func (a *codexAdapter) preparePrompt(req TurnRequest) string {
@@ -106,6 +110,38 @@ func codexSpawnAgentDynamicTool() any {
 	}
 }
 
+// codexReviewOutcomeDynamicTool registers submit_review_outcome as a Codex DynamicToolSpec.
+func codexReviewOutcomeDynamicTool() any {
+	return map[string]any{
+		"name":        codexReviewOutcomeToolName,
+		"description": "Submit a code-review verdict. Use approved when the code is ready, changes_requested when issues were found (feedback required), or blocked when the review cannot proceed. This is the only flow-control tool.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"status": map[string]any{
+					"type": "string",
+					"enum": []any{"approved", "changes_requested", "blocked"},
+				},
+				"issues": map[string]any{
+					"type": "array",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"title":      map[string]any{"type": "string"},
+							"severity":   map[string]any{"type": "string"},
+							"file":       map[string]any{"type": "string"},
+							"resolution": map[string]any{"type": "string"},
+						},
+						"required": []any{"title"},
+					},
+				},
+				"feedback": map[string]any{"type": "string"},
+			},
+			"required": []any{"status"},
+		},
+	}
+}
+
 func (a *codexAdapter) Key() ProviderKey { return ProviderKeyCodex }
 
 func (a *codexAdapter) Capabilities() ProviderCapabilities {
@@ -130,7 +166,7 @@ func (a *codexAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tur
 	//
 	// Once a real rollout id exists, follow-up turns must rejoin that thread via app-server
 	// `thread/resume` so approval/MCP/ask_user bridging stays available on resumed turns.
-	dynamicTools := []any{codexAskUserDynamicTool(), codexSpawnAgentDynamicTool()}
+	dynamicTools := []any{codexAskUserDynamicTool(), codexSpawnAgentDynamicTool(), codexReviewOutcomeDynamicTool()}
 	threadMethod := "thread/start"
 	threadParams := codexThreadStartParams(cwd, sandbox, approvalMode, req.ModelName, req.ReasoningEffort, dynamicTools)
 	if resumeID := strings.TrimSpace(req.ProviderSessionID); resumeID != "" && !strings.HasPrefix(resumeID, "thread-") {
@@ -312,6 +348,29 @@ func (a *codexAdapter) handleDynamicToolCall(req codexInboundRequest) {
 			return
 		}
 		resultJSON, _ := json.Marshal(result)
+		_ = a.dispatcher.reply(req.ID, codexDynamicToolResult(string(resultJSON), true))
+	case "submit_review_outcome", codexReviewOutcomeToolName:
+		args, _ := req.Params["arguments"].(map[string]any)
+		if args == nil {
+			args = map[string]any{}
+		}
+		rin, parseErr := parseReviewOutcomeInput(args)
+		if parseErr != nil {
+			_ = a.dispatcher.reply(req.ID, codexDynamicToolResult(parseErr.Error(), false))
+			return
+		}
+		fc, mapErr := reviewOutcomeToFlowControl(rin)
+		if mapErr != nil {
+			_ = a.dispatcher.reply(req.ID, codexDynamicToolResult(mapErr.Error(), false))
+			return
+		}
+		fcResult, fcErr := bridge.SubmitFlowControl(fc)
+		if fcErr != nil {
+			_ = a.dispatcher.reply(req.ID, codexDynamicToolResult("submit_review_outcome failed: "+fcErr.Error(), false))
+			return
+		}
+		out := ReviewOutcomeResult{FlowControlResult: fcResult, OpenIssues: len(rin.Issues)}
+		resultJSON, _ := json.Marshal(out)
 		_ = a.dispatcher.reply(req.ID, codexDynamicToolResult(string(resultJSON), true))
 	default:
 		_ = a.dispatcher.reply(req.ID, codexDynamicToolResult("Tool is not available.", false))
