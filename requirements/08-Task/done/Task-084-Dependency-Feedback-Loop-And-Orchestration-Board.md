@@ -5,12 +5,12 @@
 - Document ID: `Task-084`
 - Title: `Dependency Feedback Loop And Orchestration Board`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-19`
-- Last Updated: `2026-06-19`
-- Parent Documents: [CP-19: Multiple Agents](../../07-Coding-Plan/inprogress/CP-19-Multiple-Agents.md)
+- Last Updated: `2026-06-29`
+- Parent Documents: [CP-19: Multiple Agents](../../07-Coding-Plan/done/CP-19-Multiple-Agents.md)
 - Child Documents: `None`
 - Related Documents: [Task-082: Spawn-Agent Tool And Orchestrator Core](../done/Task-082-Spawn-Agent-Tool-And-Orchestrator-Core.md), [Task-083: Desktop Agents Panel And Focus Navigation](./Task-083-Desktop-Agents-Panel-And-Focus-Navigation.md)
 - Replaces: `None`
@@ -59,7 +59,7 @@ Coordinate parallel agents through dependencies and a feedback loop (canonical c
 
 ## 2. Parent Links
 
-- coding plan: [CP-19](../../07-Coding-Plan/inprogress/CP-19-Multiple-Agents.md)
+- coding plan: [CP-19](../../07-Coding-Plan/done/CP-19-Multiple-Agents.md)
 - tech design: [SD-14](../../06-System-Tech-Design/SD-14-Codex-Cross-Account-Chat-Resume-And-Home-Sync.md)
 - system spec: [SS-11](../../05-System-Specs/SS-11-Workflow-With_Session.md)
 - specific upstream ids: `CP-19` P-4, P-5
@@ -101,6 +101,6 @@ CP-19's core ask — a reviewer waiting on a coder, sending feedback, and the co
 
 ## 8. Completion Notes
 
-- result:
-- follow-ups:
-- upstream docs updated:
+- result: Shipped as part of CP-19 Phase 1. Verified 2026-06-29: the dependency/bus orchestrator, coder↔reviewer keyword loop (default round cap 3), the six `agent-loop` HTTP routes (`agent-graph`, `agent-bus`, `agent-loop/pause|resume|feedback|stop`), `OrchestrationBoard.tsx`, and the `agent_graph_updated`/`agent_bus_message` SSE relays are all present; `go build ./...` is clean and `TestAgentOrchestrator*`/`TestAgentGraph*`/`TestSpawn*` pass; the feature was hardened by BUG-099…BUG-134. Status reconciled `draft`→`done` (doc lagged the shipped code).
+- follow-ups: CP-36 generalizes this single coder↔reviewer loop into a domain-free flow engine (Task-090) and an N-reviewer board (Task-095); the legacy keyword path here is gated off in explicit mode by CP-36 Task-091.
+- upstream docs updated: CP-19 `P-4` reflects the shipped state.
