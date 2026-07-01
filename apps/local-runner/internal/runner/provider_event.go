@@ -286,6 +286,13 @@ type TurnInput struct {
 	// Attachments carries image attachments for chat-mode turns (Task-052), inline as
 	// base64. Empty in workflow/step mode and when no images are attached.
 	Attachments []PromptAttachment `json:"attachments,omitempty"`
+	// SubMode/FlowRef select an optional built-in Chat Mode orchestration
+	// template (CP-42/Task-177). Validated by handleStartTurn against
+	// BuiltinOrchestrationOptions before reaching startTurn, so by the time
+	// startTurn sees a non-empty FlowRef it is already a known-valid option
+	// for SubMode.
+	SubMode string `json:"subMode,omitempty"`
+	FlowRef string `json:"flowRef,omitempty"`
 }
 
 // ---- Catalog DTOs (navigator; fake catalog in P2) --------------------------

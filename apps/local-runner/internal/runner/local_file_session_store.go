@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"flowpilot-runner/internal/agentpack"
 )
 
 const sessionStoreMaxAge = 90 * 24 * time.Hour
@@ -74,6 +76,10 @@ type ndjsonSessionRecord struct {
 	LoopState           *AgentLoopState `json:"loop_state,omitempty"`
 	AutoOrchestrate     bool            `json:"auto_orchestrate,omitempty"`
 	FlowCohortID        string          `json:"flow_cohort_id,omitempty"`
+	// ActiveFlowEdges/ActiveFlowNodes persist a resolved flow's tracked
+	// topology across a restart (BUG-NOTE-CP42 #16); see ProviderSessionState.
+	ActiveFlowEdges []agentpack.FlowEdge `json:"active_flow_edges,omitempty"`
+	ActiveFlowNodes []agentpack.FlowNode `json:"active_flow_nodes,omitempty"`
 }
 
 // loadFromDisk reads the NDJSON file, applies last-wins dedup per run_id, and
@@ -243,6 +249,8 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		LoopState:           loopStateFromPtr(r.LoopState),
 		AutoOrchestrate:     r.AutoOrchestrate,
 		FlowCohortID:        r.FlowCohortID,
+		ActiveFlowEdges:     append([]agentpack.FlowEdge(nil), r.ActiveFlowEdges...),
+		ActiveFlowNodes:     append([]agentpack.FlowNode(nil), r.ActiveFlowNodes...),
 	}
 }
 
@@ -445,6 +453,8 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		LoopState:           loopStatePtrIfSet(s.LoopState),
 		AutoOrchestrate:     s.AutoOrchestrate,
 		FlowCohortID:        s.FlowCohortID,
+		ActiveFlowEdges:     append([]agentpack.FlowEdge(nil), s.ActiveFlowEdges...),
+		ActiveFlowNodes:     append([]agentpack.FlowNode(nil), s.ActiveFlowNodes...),
 	}
 }
 

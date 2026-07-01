@@ -11,6 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"flowpilot-runner/internal/agentpack"
 )
 
 // InteractiveService implements the Phase 2 (04-02) interactive + admin APIs: the
@@ -47,6 +49,13 @@ type InteractiveService struct {
 	workflowStore WorkflowStore
 	orchestrator  *WorkflowOrchestrator
 	runner        *Runner
+	// flowDefinitionStore backs CP-42/Task-177 flowRef resolution for
+	// startResolvedFlow. Nil is valid: FlowDefinitionResolver falls back to
+	// resolving directly from the embedded agentpack, which is sufficient for
+	// built-in flows like Review Loop. Set via SetFlowDefinitionStore once a
+	// real store (file- or Supabase-backed) is available (see
+	// runner.FlowDefinitionStoreFor, called from cmd/flowpilot's serve command).
+	flowDefinitionStore FlowDefinitionStore
 
 	mu        sync.Mutex
 	runs      map[string]*interactiveRun
@@ -142,6 +151,20 @@ type interactiveRun struct {
 	// root (parent) runs only; child runs leave this false. When true, maybeAutoReinvokeHub
 	// is called after each cohort join to re-prompt the hub without a human typing.
 	autoOrchestrate bool
+	// activeFlowEdges is the resolved flow's edge list, set once on the hub/parent
+	// run when startResolvedFlow spawns its entry node (CP-42/Task-180). When
+	// non-empty, maybeReinvokeCoderForContinue resolves the "continue" reinvoke
+	// target from this data (matching a child's label to a back-edge's target
+	// node id) instead of the isCoderRun role-name fallback. Empty for runs
+	// started without a flowRef (the AI-driven spawn_agent path), which keeps
+	// using the role-based fallback unchanged.
+	activeFlowEdges []agentpack.FlowEdge
+	// activeFlowNodes is the resolved flow's node list, set alongside
+	// activeFlowEdges. tryAdvanceFlowFromNode resolves a completed node's
+	// outgoing forward edges' targets against this list (agent/behavior
+	// binding) to auto-spawn the next node(s) deterministically instead of
+	// leaving a bare completion note for the hub AI to infer from.
+	activeFlowNodes []agentpack.FlowNode
 	// planContextPackage is the FlowContextPackage built for the Plan step of this Flow
 	// Mode run. Non-nil only for workflow runs with a Coding step. Cached here so retries
 	// reuse the same package without rebuilding; cleared when a Plan step reruns (Task-169).
@@ -557,7 +580,6 @@ func (s *InteractiveService) extendCap(parentRunID string) (FlowControlResult, e
 	return result, nil
 }
 
-
 // buildCohortNote constructs the single consolidated pendingAgentContext note for a
 // completed cohort.  Each member is labelled with its config-supplied label and provider.
 // Failed members appear as "failed: <err>".
@@ -581,10 +603,15 @@ func buildCohortNote(parentRunID, cohortID string, entries []cohortEntry, round 
 	return b.String()
 }
 
-// autoReinvokePrompt is the minimal hub re-prompt used by maybeAutoReinvokeHub.
+// autoReinvokePromptText returns the minimal hub re-prompt used by maybeAutoReinvokeHub.
 // The actual agent results are already in pendingAgentContext and get prepended by
-// runTurn automatically; this string is the "user turn" trigger, not the content.
-const autoReinvokePrompt = "[flow-engine] Agent results ready. Synthesize the join note above, then call submit_review_outcome to advance or complete the review loop."
+// runTurn automatically; this text is the "user turn" trigger, not the content.
+func autoReinvokePromptText() string {
+	if prompt, ok, err := loadBuiltinPromptText("prompts/auto-reinvoke.md"); err == nil && ok {
+		return prompt
+	}
+	return "[flow-engine] Agent results ready. Synthesize the join note above, then call the declared control tool for this flow when one is available."
+}
 
 // maybeAutoReinvokeHub schedules exactly one hub turn after a cohort join, if and only if
 // ALL guards pass (T-3 / Task-093 / CP-36 P-7):
@@ -628,7 +655,7 @@ func (s *InteractiveService) maybeAutoReinvokeHub(parentRunID string) {
 	parent.reinvokeInFlight = true
 	s.mu.Unlock()
 
-	s.scheduleChildTurn(parentRunID, stepID, autoReinvokePrompt)
+	s.scheduleChildTurn(parentRunID, stepID, autoReinvokePromptText())
 }
 
 // buildCoderReentryPrompt composes the full prompt for coder re-entry from the
@@ -637,6 +664,10 @@ func (s *InteractiveService) maybeAutoReinvokeHub(parentRunID string) {
 // so the coder receives actionable details, not just the generic fallback.
 func buildCoderReentryPrompt(in FlowControlInput) string {
 	var sb strings.Builder
+	if base, ok, err := loadBuiltinPromptText("prompts/coder-reentry.md"); err == nil && ok && base != "" {
+		sb.WriteString(base)
+		sb.WriteString("\n\n")
+	}
 	if fb := strings.TrimSpace(in.Summary); fb != "" {
 		sb.WriteString(fb)
 		sb.WriteString("\n\n")
@@ -678,29 +709,88 @@ func buildCoderReentryPrompt(in FlowControlInput) string {
 		}
 	}
 	if sb.Len() == 0 {
-		return "[flow-engine] Review completed with requested changes. Address the review issues and resubmit."
+		return "[flow-engine] Changes were requested on your last submission. Address the feedback and resubmit."
 	}
 	return strings.TrimSpace(sb.String())
 }
 
-// maybeReinvokeCoderForContinue finds the first coder child of parentRunID and
-// schedules a new turn with the supplied prompt. Called from applyFlowControl
-// when status == "continue" so the synthesis→coder back-edge in ReviewLoopFlowConfig
-// actually fires (CRITICAL finding: continue never restarted the coder).
+func loadBuiltinPromptText(relPath string) (string, bool, error) {
+	prompt, ok, err := agentpack.LoadBuiltinPrompt(relPath)
+	if err != nil || !ok {
+		return "", false, err
+	}
+	return strings.TrimSpace(prompt.Contents), true, nil
+}
+
+// parentHasTrackedFlow reports whether parentRunID is a run with a resolved
+// flow's edges tracked on it (activeFlowEdges/activeFlowNodes, set by
+// startResolvedFlow/startInlineEntryChain). Must be called with s.mu already
+// held, matching every other call site in the EventTurnCompleted handler
+// this is used from (BUG-NOTE-CP42 #17).
+func parentHasTrackedFlow(s *InteractiveService, parentRunID string) bool {
+	parent := s.runs[parentRunID]
+	return parent != nil && len(parent.activeFlowEdges) > 0 && len(parent.activeFlowNodes) > 0
+}
+
+// advanceOrNotifyHub is the async continuation of a completed coder-like
+// node (Task-180 follow-up): try to auto-spawn the flow's next node(s) from
+// its own edge data via tryAdvanceFlowFromNode; if that's not applicable (no
+// tracked flow, or the next step isn't a spawnable agent.delegate node — e.g.
+// review-loop.yaml's "synthesis" node, which is the hub's own inline turn,
+// not a spawned child), fall back to the original behavior: leave a
+// completion note and reinvoke the hub so its own reasoning decides what
+// happens next.
+func (s *InteractiveService) advanceOrNotifyHub(parentRunID, completedLabel, completedAgentName, finalMsg string) {
+	if s.tryAdvanceFlowFromNode(parentRunID, completedLabel, finalMsg) {
+		return
+	}
+	note := fmt.Sprintf("[flow-engine] Coder %q completed. Result:\n%s",
+		completedAgentName, truncateDisplayField(finalMsg, 2000))
+	s.mu.Lock()
+	s.appendPendingAgentContextLocked(parentRunID, note)
+	s.mu.Unlock()
+	s.maybeAutoReinvokeHub(parentRunID)
+}
+
+// maybeReinvokeCoderForContinue finds the child of parentRunID that a
+// "continue" flow_control signal should reinvoke and schedules a new turn
+// with the supplied prompt. Called from applyFlowControl when status ==
+// "continue" so the synthesis→coder back-edge actually fires (CRITICAL
+// finding: continue never restarted the coder).
+//
+// Task-180: for a run started from a resolved flowRef, the target is
+// resolved from the flow's own edge data (activeFlowEdges) — matching a
+// spawned child's label against the back-edge's target node id — instead of
+// scanning for a role literally named "coder". A run with no tracked edges
+// (the AI-driven spawn_agent path, which never sets activeFlowEdges) falls
+// back to the original isCoderRun role match unchanged.
 func (s *InteractiveService) maybeReinvokeCoderForContinue(parentRunID, prompt string) {
 	if strings.TrimSpace(prompt) == "" {
-		prompt = "[flow-engine] Review completed with requested changes. Address the review issues and resubmit."
+		prompt = "[flow-engine] Changes were requested on your last submission. Address the feedback and resubmit."
 	}
 	s.mu.Lock()
+	var targetNodeID string
+	if parent := s.runs[parentRunID]; parent != nil {
+		targetNodeID, _ = resolveContinueBackEdgeTarget(parent.activeFlowEdges)
+	}
 	var coderID, coderStepID string
 	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
 		child := s.runs[childID]
-		if child == nil || !isAgentRole(child, "coder") {
+		if child == nil {
+			continue
+		}
+		matches := false
+		if targetNodeID != "" {
+			matches = child.label == targetNodeID
+		} else {
+			matches = isCoderRun(child)
+		}
+		if !matches {
 			continue
 		}
 		if child.turnInFlight {
 			s.mu.Unlock()
-			return // coder already running; feedback will arrive via pendingAgentContext
+			return // target already running; feedback will arrive via pendingAgentContext
 		}
 		coderID = childID
 		coderStepID = child.stepID
@@ -719,6 +809,24 @@ func isAgentRole(rs *interactiveRun, role string) bool {
 	}
 	role = strings.ToLower(role)
 	return strings.Contains(strings.ToLower(rs.agentName), role) || strings.Contains(strings.ToLower(rs.role), role)
+}
+
+// isCoderRun is the single named predicate for "is this run the coder agent"
+// (CP-42/Task-180 T-3: isolate an unavoidable role-name compatibility check
+// into one place instead of scattering the literal at each call site). It
+// wraps isAgentRole rather than eliminating the role-name check entirely: a
+// full elimination would mean resolving "which child corresponds to the
+// synthesis→coder back-edge" from the active FlowDefinition's edges instead
+// of the agent's declared role, which requires interactiveRun to carry a
+// flow-node identity and a real generic executor walking FlowEdge data — that
+// executor does not exist in the live run loop yet (ReviewLoopFlowConfig's
+// FlowNode/FlowEdge values are only exercised by tests today). Until that
+// executor exists, this is the narrowest safe compatibility shim: every
+// "coder" role check in the live cohort/hub loop goes through this one
+// function, so the domain-hardcode guard (domain_hardcode_guard_test.go) only
+// has to track one occurrence instead of four.
+func isCoderRun(rs *interactiveRun) bool {
+	return isAgentRole(rs, "coder")
 }
 
 func (s *InteractiveService) dependenciesSatisfiedLocked(rs *interactiveRun) bool {
@@ -1049,6 +1157,16 @@ func (s *InteractiveService) AttachRunner(r *Runner) {
 	}
 }
 
+// SetFlowDefinitionStore attaches the FlowDefinitionStore startResolvedFlow
+// resolves flowRefs against (CP-42/Task-177). Optional: a nil store (the
+// default) makes resolution fall back directly to the embedded agentpack,
+// which built-in flows like Review Loop always resolve against anyway.
+func (s *InteractiveService) SetFlowDefinitionStore(store FlowDefinitionStore) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.flowDefinitionStore = store
+}
+
 func (s *InteractiveService) persistProviderSession(session ProviderSessionState) error {
 	store := s.persistenceStore()
 	if store == nil {
@@ -1124,6 +1242,8 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		PendingAgentContext: append([]string(nil), rs.pendingAgentContext...),
 		AutoOrchestrate:     rs.autoOrchestrate,
 		FlowCohortID:        rs.flowCohortId,
+		ActiveFlowEdges:     append([]agentpack.FlowEdge(nil), rs.activeFlowEdges...),
+		ActiveFlowNodes:     append([]agentpack.FlowNode(nil), rs.activeFlowNodes...),
 	}
 }
 
@@ -1253,15 +1373,30 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 					parentRunID := rs.parentRunID
 					go s.maybeAutoReinvokeHub(parentRunID)
 				}
-			} else if s.agentOrchestrator.loopMode(rs.parentRunID) == "explicit" && isAgentRole(rs, "coder") {
-				// In explicit mode the hub drives all transitions. When the coder completes
-				// outside a cohort barrier (waitForResult=true, no flowCohortId), inject a
-				// note so the hub turn can read the result and spawn the next reviewer cohort.
-				note := fmt.Sprintf("[flow-engine] Coder %q completed. Result:\n%s",
-					rs.agentName, truncateDisplayField(finalMsg, 2000))
-				s.appendPendingAgentContextLocked(rs.parentRunID, note)
+			} else if s.agentOrchestrator.loopMode(rs.parentRunID) == "explicit" && (isCoderRun(rs) || parentHasTrackedFlow(s, rs.parentRunID)) {
+				// In explicit mode the hub drives all transitions. When a node completes
+				// outside a cohort barrier (waitForResult=true, no flowCohortId), try to
+				// auto-spawn the flow's next node(s) from its own edge data (Task-180
+				// follow-up); dispatched async since tryAdvanceFlowFromNode/
+				// maybeAutoReinvokeHub manage their own locking and must not run while
+				// this handler still holds s.mu.
+				//
+				// BUG-NOTE-CP42 #17: gating this solely on isCoderRun(rs) meant a flow
+				// whose entry delegate node uses a non-"coder" agent/role name (any
+				// user-authored flow, not just review-loop/rag-harness) never reached
+				// tryAdvanceFlowFromNode at all — its completion fell through to the
+				// generic "Sub-agent completed" note below, which never reinvokes the
+				// hub, silently stalling the flow. parentHasTrackedFlow additionally
+				// covers any run whose parent is a flowRef-tracked hub, regardless of
+				// role name; tryAdvanceFlowFromNode's own internal checks (activeFlowEdges
+				// set, a forward edge exists from this node) still safely no-op and fall
+				// back to the same legacy note+reinvoke path for anything it doesn't
+				// recognize, so this only adds coverage, it narrows nothing.
 				parentRunID := rs.parentRunID
-				go s.maybeAutoReinvokeHub(parentRunID)
+				completedLabel := rs.label
+				completedAgentName := rs.agentName
+				msg := finalMsg
+				go s.advanceOrNotifyHub(parentRunID, completedLabel, completedAgentName, msg)
 			} else if rs.uiInitiated || !rs.waitForResult {
 				s.appendPendingAgentContextLocked(rs.parentRunID, fmt.Sprintf(
 					"Sub-agent %q (provider: %s) completed. Result: %s",
@@ -1270,63 +1405,63 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 			// Legacy keyword-mode loop: in explicit mode the hub drives all transitions via
 			// submit_review_outcome → flow_control, so this branch must stay silent. (Task-091 T-5)
 			if s.agentOrchestrator.loopMode(rs.parentRunID) != "explicit" {
-			switch {
-			case isAgentRole(rs, "coder"):
-				s.emitAgentGraphLocked(rs.parentRunID, s.agentOrchestrator.transition(rs.parentRunID, "ready-for-review"))
-				go s.recordAgentBus(rs.parentRunID, AgentBusMessage{ID: s.nextID("bus"), ParentRunID: rs.parentRunID, FromRunID: rs.id, Kind: "ready-for-review", Message: ev.FinalMessage, Queued: false, OccurredAt: ev.OccurredAt})
-			case isAgentRole(rs, "review"):
-				msg := strings.ToLower(ev.FinalMessage)
 				switch {
-				case strings.Contains(msg, "changes requested"):
-					go s.recordAgentBus(rs.parentRunID, AgentBusMessage{ID: s.nextID("bus"), ParentRunID: rs.parentRunID, FromRunID: rs.id, Kind: "changes-requested", Message: ev.FinalMessage, Queued: false, OccurredAt: ev.OccurredAt})
-					s.emitAgentGraphLocked(rs.parentRunID, s.agentOrchestrator.transition(rs.parentRunID, "changes-requested"))
-					roundSnap := s.agentOrchestrator.advanceRound(rs.parentRunID)
-					s.emitAgentGraphLocked(rs.parentRunID, roundSnap)
-					coderID := ""
-					for _, childID := range s.agentOrchestrator.listChildren(rs.parentRunID) {
-						if child := s.runs[childID]; isAgentRole(child, "coder") {
-							coderID = childID
-							break
+				case isCoderRun(rs):
+					s.emitAgentGraphLocked(rs.parentRunID, s.agentOrchestrator.transition(rs.parentRunID, "ready-for-review"))
+					go s.recordAgentBus(rs.parentRunID, AgentBusMessage{ID: s.nextID("bus"), ParentRunID: rs.parentRunID, FromRunID: rs.id, Kind: "ready-for-review", Message: ev.FinalMessage, Queued: false, OccurredAt: ev.OccurredAt})
+				case isAgentRole(rs, "review"):
+					msg := strings.ToLower(ev.FinalMessage)
+					switch {
+					case strings.Contains(msg, "changes requested"):
+						go s.recordAgentBus(rs.parentRunID, AgentBusMessage{ID: s.nextID("bus"), ParentRunID: rs.parentRunID, FromRunID: rs.id, Kind: "changes-requested", Message: ev.FinalMessage, Queued: false, OccurredAt: ev.OccurredAt})
+						s.emitAgentGraphLocked(rs.parentRunID, s.agentOrchestrator.transition(rs.parentRunID, "changes-requested"))
+						roundSnap := s.agentOrchestrator.advanceRound(rs.parentRunID)
+						s.emitAgentGraphLocked(rs.parentRunID, roundSnap)
+						coderID := ""
+						for _, childID := range s.agentOrchestrator.listChildren(rs.parentRunID) {
+							if child := s.runs[childID]; isCoderRun(child) {
+								coderID = childID
+								break
+							}
 						}
-					}
-					if coderID != "" {
-						reviewText := ev.FinalMessage
-						if roundSnap.LoopState.Status != "stopped" {
-							runID := ""
-							prompt := ""
-							if parent := s.runs[rs.parentRunID]; parent != nil {
-								if child := s.runs[coderID]; child != nil {
-									if !s.loopAllowsNextTurnLocked(rs.parentRunID) || child.turnInFlight {
-										parent.pendingRestartRunID = child.id
-										parent.pendingRestartPrompt = reviewText
-									} else {
-										runID = child.id
-										prompt = reviewText
+						if coderID != "" {
+							reviewText := ev.FinalMessage
+							if roundSnap.LoopState.Status != "stopped" {
+								runID := ""
+								prompt := ""
+								if parent := s.runs[rs.parentRunID]; parent != nil {
+									if child := s.runs[coderID]; child != nil {
+										if !s.loopAllowsNextTurnLocked(rs.parentRunID) || child.turnInFlight {
+											parent.pendingRestartRunID = child.id
+											parent.pendingRestartPrompt = reviewText
+										} else {
+											runID = child.id
+											prompt = reviewText
+										}
+									}
+								}
+								if runID != "" && prompt != "" {
+									if child := s.runs[runID]; child != nil {
+										stepID := child.stepID
+										go func(runID, stepID, prompt string) {
+											prompt, queued := s.takeQueuedFeedbackPrompt(rs.parentRunID, runID, prompt)
+											if queued != nil {
+												s.recordAgentBus(rs.parentRunID, *queued)
+											}
+											_, _ = s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt}, "", "")
+										}(runID, stepID, prompt)
 									}
 								}
 							}
-							if runID != "" && prompt != "" {
-								if child := s.runs[runID]; child != nil {
-									stepID := child.stepID
-									go func(runID, stepID, prompt string) {
-										prompt, queued := s.takeQueuedFeedbackPrompt(rs.parentRunID, runID, prompt)
-										if queued != nil {
-											s.recordAgentBus(rs.parentRunID, *queued)
-										}
-										_, _ = s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt}, "", "")
-									}(runID, stepID, prompt)
-								}
-							}
 						}
+					case strings.Contains(msg, "rejected"):
+						go s.recordAgentBus(rs.parentRunID, AgentBusMessage{ID: s.nextID("bus"), ParentRunID: rs.parentRunID, FromRunID: rs.id, Kind: "rejected", Message: ev.FinalMessage, Queued: false, OccurredAt: ev.OccurredAt})
+						s.emitAgentGraphLocked(rs.parentRunID, s.agentOrchestrator.transition(rs.parentRunID, "rejected"))
+					default:
+						go s.recordAgentBus(rs.parentRunID, AgentBusMessage{ID: s.nextID("bus"), ParentRunID: rs.parentRunID, FromRunID: rs.id, Kind: "approved", Message: ev.FinalMessage, Queued: false, OccurredAt: ev.OccurredAt})
+						s.emitAgentGraphLocked(rs.parentRunID, s.agentOrchestrator.transition(rs.parentRunID, "approved"))
 					}
-				case strings.Contains(msg, "rejected"):
-					go s.recordAgentBus(rs.parentRunID, AgentBusMessage{ID: s.nextID("bus"), ParentRunID: rs.parentRunID, FromRunID: rs.id, Kind: "rejected", Message: ev.FinalMessage, Queued: false, OccurredAt: ev.OccurredAt})
-					s.emitAgentGraphLocked(rs.parentRunID, s.agentOrchestrator.transition(rs.parentRunID, "rejected"))
-				default:
-					go s.recordAgentBus(rs.parentRunID, AgentBusMessage{ID: s.nextID("bus"), ParentRunID: rs.parentRunID, FromRunID: rs.id, Kind: "approved", Message: ev.FinalMessage, Queued: false, OccurredAt: ev.OccurredAt})
-					s.emitAgentGraphLocked(rs.parentRunID, s.agentOrchestrator.transition(rs.parentRunID, "approved"))
 				}
-			}
 			} // end if loopMode != "explicit"
 		}
 	case EventTurnFailed:
@@ -1627,7 +1762,9 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 	if parentRun == nil {
 		return SpawnAgentResult{}, fmt.Errorf("parent run %q not found", parentRunID)
 	}
-	if defs := s.agentCatalog.listAgents(cwd); len(defs) > 0 {
+	if in.AgentDefOverride != nil {
+		agentDef = in.AgentDefOverride
+	} else if defs := s.agentCatalog.listAgents(cwd); len(defs) > 0 {
 		for i := range defs {
 			if strings.EqualFold(defs[i].Name, in.Agent) {
 				def := defs[i]
@@ -2052,6 +2189,7 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// state is persisted by the post-turn sessionStateOf snapshot below. (BUG-122)
 	providerPrompt := in.Prompt
 	s.mu.Lock()
+	offerReviewOutcomeTool := rs.autoOrchestrate
 	providerPrompt = prependModePrefix(providerPrompt, rs.turnCount, rs.changeType, rs.sourceDocID)
 	// Persist the per-turn YOLO posture as the run's current default (BUG-129). The UI
 	// toggle is sticky, so an explicit YoloMode this turn must update rs.yolo; otherwise a
@@ -2100,6 +2238,7 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		Cwd:               rs.workspaceCwd,
 		Scenario:          scenario,
 		Attachments:       in.Attachments,
+		OfferReviewOutcomeTool: offerReviewOutcomeTool,
 	}
 	// CP-35: snapshot HEAD and seed test baseline before the AI runs.
 	// Both must happen before sendTurnWithRetry so the gate sees pre-change state.
@@ -2440,6 +2579,29 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 			rs.changeType = changeType
 		}
 		rs.sourceDocID = resolveSourceDocID(rs.workspaceCwd, rs.changeType, in.SourceDocID)
+		// CP-42/Task-177: a validated flowRef on the first turn starts the
+		// built-in flow's entry node(s) deterministically instead of relying on
+		// the hub's own AI judgement to decide whether to spawn a review loop.
+		// Scheduled async — spawnChildRun manages its own locking and must not
+		// run while this function still holds s.mu.
+		if flowRef := strings.TrimSpace(in.FlowRef); flowRef != "" {
+			// BUG#1 (BUG-NOTE-CP42): notifyHubFlowStarted's note is appended to
+			// pendingAgentContext from startResolvedFlow's own goroutine, which
+			// races the drain a few lines below (capturedCtx := rs.pendingAgentContext).
+			// That drain runs synchronously as part of this same turn setup, so the
+			// async note reliably loses the race and never reaches the hub's first
+			// turn — it only surfaces on some later turn, if at all. Prepend the
+			// wait-notice synchronously to this turn's own prompt instead, and hand
+			// startResolvedFlow the original, unmodified prompt for the spawned child.
+			originalPrompt := in.Prompt
+			if notice, ok, err := loadBuiltinPromptText("prompts/flow-start-wait.md"); err == nil && ok && notice != "" {
+				in.Prompt = notice + "\n\n" + originalPrompt
+			} else {
+				in.Prompt = "[flow-engine] An agent has already been spawned to work on this request. " +
+					"Do not duplicate that work yourself. Wait for its result.\n\n" + originalPrompt
+			}
+			go s.startResolvedFlow(context.Background(), runID, flowRef, originalPrompt)
+		}
 	}
 	rs.turnCount++
 	rs.lastTurnStepID = in.StepID // CP-35: remember for gate reprompts

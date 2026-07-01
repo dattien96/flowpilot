@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+
+	"flowpilot-runner/internal/agentpack"
 )
 
 // AgentOrchestrator tracks the in-memory agent run tree for CP-19 Phase 1 (Task-082).
@@ -188,6 +190,15 @@ type SpawnAgentInput struct {
 	// so the engine re-prompts the hub after each cohort join, bounded by the cap.
 	// Normal chat runs (autoOrchestrate=false) are never auto-reinvoked.
 	AutoOrchestrate bool `json:"autoOrchestrate,omitempty"`
+	// AgentDefOverride bypasses spawnChildRun's name-based catalog lookup
+	// entirely when set. Used by the flow executor (flow_executor.go) so a
+	// pack-declared node (e.g. review-loop.yaml's agent: agents/coder.md)
+	// always runs the pack's own bundled agent, immune to a same-named
+	// project-local (.claude/agents, .codex/agents) or provider-home agent
+	// silently shadowing it via AgentCatalog.listAgents' precedence order
+	// (BUG-NOTE-CP42 #23). Never set from the wire — internal-only, like
+	// UIInitiated above.
+	AgentDefOverride *AgentDefinition `json:"-"`
 }
 
 // SpawnAgentResult is the tool call result and HTTP response body.
@@ -562,9 +573,20 @@ func resolveFaceStatus(face FlowControlFace, domainStatus string) (genericStatus
 	return
 }
 
-// reviewOutcomeFace returns the declared face for the submit_review_outcome tool.
-// approved→done, changes_requested→continue, blocked→escalate.
+// reviewOutcomeFace returns the declared face for the submit_review_outcome
+// tool. BUG-NOTE-CP42 #11: submit-review-outcome.yaml already declares this
+// exact mapping as pack data (statusMap: approved->done, changes_requested->
+// continue, blocked->escalate) — CP-42 P-5 requires declared faces to
+// actually become pack data, not just be parsed and then ignored in favor of
+// a hardcoded Go literal duplicating the same values. Reads the pack's own
+// face when available; falls back to the literal (matching the pack's
+// current content) only if the pack can't be loaded or has no such face,
+// so a packaging problem degrades gracefully instead of breaking the review
+// loop outright.
 func reviewOutcomeFace() FlowControlFace {
+	if face, ok, err := agentpack.LoadBuiltinToolFace("submit_review_outcome"); err == nil && ok && len(face.StatusMap) > 0 {
+		return FlowControlFace{Tool: face.ID, Map: face.StatusMap}
+	}
 	return FlowControlFace{
 		Tool: "submit_review_outcome",
 		Map: map[string]string{

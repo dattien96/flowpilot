@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"flowpilot-runner/internal/agentpack"
 )
 
 // ---- AgentOrchestrator unit tests ------------------------------------------
@@ -874,6 +877,31 @@ func TestResolveFaceStatusReviewOutcome(t *testing.T) {
 	}
 }
 
+// TestReviewOutcomeFaceReadsFromPackDeclaredStatusMap is the regression test
+// for BUG-NOTE-CP42 #11: submit-review-outcome.yaml declares this exact
+// mapping as pack data (statusMap), but the runtime built a hardcoded Go
+// literal duplicating the same values instead of ever reading the pack's own
+// declaration — CP-42 P-5 requires declared faces to actually become pack
+// data. This proves reviewOutcomeFace() now sources its Tool/Map directly
+// from agentpack.LoadBuiltinToolFace, not an independent literal that could
+// silently drift from the YAML.
+func TestReviewOutcomeFaceReadsFromPackDeclaredStatusMap(t *testing.T) {
+	packFace, ok, err := agentpack.LoadBuiltinToolFace("submit_review_outcome")
+	if err != nil {
+		t.Fatalf("LoadBuiltinToolFace: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected the pack to declare a submit_review_outcome tool face")
+	}
+	runtimeFace := reviewOutcomeFace()
+	if runtimeFace.Tool != packFace.ID {
+		t.Fatalf("reviewOutcomeFace().Tool = %q, want the pack's own face id %q", runtimeFace.Tool, packFace.ID)
+	}
+	if len(runtimeFace.Map) == 0 || !reflect.DeepEqual(runtimeFace.Map, packFace.StatusMap) {
+		t.Fatalf("reviewOutcomeFace().Map = %#v, want it to equal the pack's own statusMap %#v", runtimeFace.Map, packFace.StatusMap)
+	}
+}
+
 func TestValidateFlowEdgesAcceptsForwardDuplicates(t *testing.T) {
 	edges := []FlowEdge{
 		{From: "a", To: "b", When: "done", Kind: "forward"},
@@ -1005,8 +1033,8 @@ func TestListAgentRunSummariesEmptyHTTP(t *testing.T) {
 
 func TestParseReviewOutcomeInputValid(t *testing.T) {
 	cases := []struct {
-		args    map[string]any
-		want    ReviewOutcomeInput
+		args map[string]any
+		want ReviewOutcomeInput
 	}{
 		{
 			map[string]any{"status": "approved"},
@@ -1058,9 +1086,9 @@ func TestParseReviewOutcomeInputRequiresFeedbackForChangesRequested(t *testing.T
 
 func TestReviewOutcomeToFlowControlMapping(t *testing.T) {
 	cases := []struct {
-		domainStatus  string
-		feedback      string
-		wantGeneric   string
+		domainStatus string
+		feedback     string
+		wantGeneric  string
 	}{
 		{"approved", "", "done"},
 		{"changes_requested", "revise", "continue"},
@@ -1101,11 +1129,11 @@ func TestReviewOutcomeIssuesRideInPayload(t *testing.T) {
 
 func TestReviewLoopFlowConfigValid(t *testing.T) {
 	nodes, edges, policy := ReviewLoopFlowConfig()
-	if len(nodes) != 3 {
-		t.Errorf("nodes = %d, want 3", len(nodes))
+	if len(nodes) != 4 {
+		t.Errorf("nodes = %d, want 4", len(nodes))
 	}
-	if len(edges) != 3 {
-		t.Errorf("edges = %d, want 3", len(edges))
+	if len(edges) != 7 {
+		t.Errorf("edges = %d, want 7", len(edges))
 	}
 	if policy.Cap != 3 || policy.OnCap != "escalate" {
 		t.Errorf("policy = %+v, want Cap=3 OnCap=escalate", policy)

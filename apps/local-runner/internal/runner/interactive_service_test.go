@@ -10,11 +10,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"flowpilot-runner/internal/agentpack"
 	"flowpilot-runner/internal/changeledger"
 	"flowpilot-runner/internal/featurecatalog"
 	"flowpilot-runner/internal/flowgate"
@@ -1716,6 +1718,38 @@ func TestSubmitFlowControlHTTPAcceptsOutcomeAlias(t *testing.T) {
 	}
 	if snap.LoopState.Status != "done" {
 		t.Errorf("Status = %q after approved, want done", snap.LoopState.Status)
+	}
+}
+
+// TestSubmitFlowControlHTTPAcceptsCanonicalStatusField is the regression test
+// for BUG-NOTE-CP42 #32: ReviewOutcomeInput's canonical wire field is
+// "status" (json:"status" on the Go struct) — "outcome" is only the board/
+// legacy alias. handleSubmitFlowControl used to route purely on the literal
+// presence of an "outcome" key, so a caller sending the canonical
+// {"status":"approved"} body fell through to the raw FlowControlInput parser
+// instead, which only recognizes continue|done|escalate and rejected
+// "approved" outright.
+func TestSubmitFlowControlHTTPAcceptsCanonicalStatusField(t *testing.T) {
+	svc, srv := newTestServer(t)
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3})
+
+	// The canonical ReviewOutcomeInput wire shape: {"status": "approved", ...},
+	// not the board's "outcome" alias.
+	httpStatus, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+parent.RunID+"/flow-control",
+		map[string]any{"status": "approved"}, nil)
+	if httpStatus != http.StatusOK {
+		t.Fatalf("POST flow-control with status=approved: status=%d body=%s", httpStatus, body)
+	}
+	var snap AgentGraphSnapshot
+	if err := json.Unmarshal(body, &snap); err != nil {
+		t.Fatalf("decode AgentGraphSnapshot: %v (body=%s)", err, body)
+	}
+	if snap.LoopState.Status != "done" {
+		t.Errorf("Status = %q after status=approved, want done", snap.LoopState.Status)
 	}
 }
 
@@ -3459,6 +3493,59 @@ func TestReconstructRunPreservesUpdatedAt(t *testing.T) {
 	}
 	if rs.updatedAt != persisted {
 		t.Fatalf("reconstructRun updatedAt = %q, want preserved %q", rs.updatedAt, persisted)
+	}
+}
+
+// TestReconstructRunRestoresTrackedFlowTopology is the regression test for
+// BUG-NOTE-CP42 #16: activeFlowEdges/activeFlowNodes lived only on the
+// in-memory interactiveRun, and ProviderSessionState never snapshotted them —
+// so a chat reopened after a runner restart (or a Drive-synced cross-PC
+// move) lost its tracked flow topology entirely. resolveContinueBackEdgeTarget
+// and tryAdvanceFlowFromNode would then silently fall back to legacy
+// isCoderRun role matching instead of the flow's own declared edges, even
+// though the chat's mid-flow state was otherwise fully restorable.
+func TestReconstructRunRestoresTrackedFlowTopology(t *testing.T) {
+	store := newFakeWorkflowStore()
+	edges := []agentpack.FlowEdge{{From: "coder", To: "reviewer", When: "done", Kind: "forward"}}
+	nodes := []agentpack.FlowNode{{ID: "coder", Behavior: "agent.delegate", Agent: "agents/coder.md"}}
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:           "run-flow-1",
+		ProviderKey:     ProviderKeyClaude,
+		Status:          RunStatusCompleted,
+		RunKind:         "chat",
+		ActiveFlowEdges: edges,
+		ActiveFlowNodes: nodes,
+	}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+
+	rs, apiErr := svc.loadPersistedRun("run-flow-1")
+	if apiErr != nil {
+		t.Fatalf("loadPersistedRun: %v", apiErr)
+	}
+	if !reflect.DeepEqual(rs.activeFlowEdges, edges) {
+		t.Fatalf("activeFlowEdges = %#v, want %#v", rs.activeFlowEdges, edges)
+	}
+	if !reflect.DeepEqual(rs.activeFlowNodes, nodes) {
+		t.Fatalf("activeFlowNodes = %#v, want %#v", rs.activeFlowNodes, nodes)
+	}
+}
+
+// TestSessionStateOfSnapshotsTrackedFlowTopology proves the write side of the
+// same fix: sessionStateOf must actually include activeFlowEdges/
+// activeFlowNodes in the snapshot it persists, or the restore-side fix above
+// would have nothing real to round-trip in production.
+func TestSessionStateOfSnapshotsTrackedFlowTopology(t *testing.T) {
+	edges := []agentpack.FlowEdge{{From: "coder", To: "reviewer", When: "done", Kind: "forward"}}
+	nodes := []agentpack.FlowNode{{ID: "coder", Behavior: "agent.delegate", Agent: "agents/coder.md"}}
+	rs := &interactiveRun{id: "run-1", activeFlowEdges: edges, activeFlowNodes: nodes}
+	state := sessionStateOf(rs)
+	if !reflect.DeepEqual(state.ActiveFlowEdges, edges) {
+		t.Fatalf("ProviderSessionState.ActiveFlowEdges = %#v, want %#v", state.ActiveFlowEdges, edges)
+	}
+	if !reflect.DeepEqual(state.ActiveFlowNodes, nodes) {
+		t.Fatalf("ProviderSessionState.ActiveFlowNodes = %#v, want %#v", state.ActiveFlowNodes, nodes)
 	}
 }
 

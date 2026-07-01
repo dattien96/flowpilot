@@ -4,9 +4,12 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"flowpilot-runner/internal/agentpack"
 )
 
 func TestLocalFileSessionStoreUpsertAndList(t *testing.T) {
@@ -141,6 +144,51 @@ func TestLocalFileSessionStoreAgentMetadataRoundTrip(t *testing.T) {
 	}
 	if len(got.DependsOn) != 1 || got.DependsOn[0] != "run-abc" {
 		t.Fatalf("dependsOn = %v, want [run-abc]", got.DependsOn)
+	}
+}
+
+// TestLocalFileSessionStoreActiveFlowTopologyRoundTrip is the regression test
+// for BUG-NOTE-CP42 #16, on the disk-persistence side: a resolved flow's
+// tracked edges/nodes must survive an NDJSON write + reload, not just an
+// in-memory sessionStateOf/reconstructRun round-trip.
+func TestLocalFileSessionStoreActiveFlowTopologyRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+
+	edges := []agentpack.FlowEdge{{From: "coder", To: "reviewer", When: "done", Kind: "forward"}}
+	nodes := []agentpack.FlowNode{{ID: "coder", Behavior: "agent.delegate", Agent: "agents/coder.md"}}
+	sess := ProviderSessionState{
+		RunID:           "run-flow-1",
+		ProjectID:       "proj-1",
+		ProviderKey:     "codex",
+		Status:          "completed",
+		RunKind:         "chat",
+		ActiveFlowEdges: edges,
+		ActiveFlowNodes: nodes,
+	}
+	if err := store.UpsertProviderSession(context.Background(), sess); err != nil {
+		t.Fatalf("UpsertProviderSession: %v", err)
+	}
+
+	reloaded, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore reload: %v", err)
+	}
+	got, found, err := reloaded.GetProviderSession(context.Background(), "run-flow-1")
+	if err != nil {
+		t.Fatalf("GetProviderSession: %v", err)
+	}
+	if !found {
+		t.Fatal("expected session to be found")
+	}
+	if !reflect.DeepEqual(got.ActiveFlowEdges, edges) {
+		t.Fatalf("ActiveFlowEdges after reload = %#v, want %#v", got.ActiveFlowEdges, edges)
+	}
+	if !reflect.DeepEqual(got.ActiveFlowNodes, nodes) {
+		t.Fatalf("ActiveFlowNodes after reload = %#v, want %#v", got.ActiveFlowNodes, nodes)
 	}
 }
 

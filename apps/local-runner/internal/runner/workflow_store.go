@@ -3,6 +3,8 @@ package runner
 import (
 	"context"
 	"sync"
+
+	"flowpilot-runner/internal/agentpack"
 )
 
 // Phase 5 (04-05): the persistence boundary for workflow orchestration. The runner
@@ -101,6 +103,15 @@ type ProviderSessionState struct {
 	// FlowCohortID persists the cohort membership ID for child runs (CP-36 / Task-095 BUG fix).
 	// Empty for parent runs and plain chat runs.
 	FlowCohortID string
+	// ActiveFlowEdges/ActiveFlowNodes persist a resolved flow's tracked topology
+	// for root (parent) runs (BUG-NOTE-CP42 #16), so edge-driven back-edge
+	// routing (resolveContinueBackEdgeTarget) and forward auto-advance
+	// (tryAdvanceFlowFromNode) keep working after a runner restart or a
+	// Drive-synced cross-PC move — without this, a chat reopened mid-flow
+	// after a restart silently reverts to legacy isCoderRun role matching.
+	// Empty for a plain chat run never started via a resolved flowRef.
+	ActiveFlowEdges []agentpack.FlowEdge
+	ActiveFlowNodes []agentpack.FlowNode
 }
 
 type ProviderApprovalState struct {

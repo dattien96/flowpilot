@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"flowpilot-runner/internal/agentpack"
 )
 
 // deleteChatSession removes a run from memory, persistent storage, and all
@@ -383,6 +385,8 @@ func (s *InteractiveService) reconstructRun(st ProviderSessionState) (*interacti
 		pendingAgentContext:    append([]string(nil), st.PendingAgentContext...),
 		autoOrchestrate:        st.AutoOrchestrate,
 		flowCohortId:           st.FlowCohortID,
+		activeFlowEdges:        append([]agentpack.FlowEdge(nil), st.ActiveFlowEdges...),
+		activeFlowNodes:        append([]agentpack.FlowNode(nil), st.ActiveFlowNodes...),
 	}
 	// Restore CP-41 flow events from the sidecar so FindFlowContextPackage,
 	// FindAuditDraft etc. work after a process restart. rs is not yet visible to
