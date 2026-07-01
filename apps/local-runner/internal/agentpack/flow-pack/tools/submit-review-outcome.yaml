@@ -1,0 +1,40 @@
+id: submit_review_outcome
+kind: declared_face
+version: 1
+description: Review-loop face for the generic flow_control primitive.
+exposesTool: true
+mapsTo: flow.control
+input:
+  type: object
+  required:
+    - status
+  properties:
+    status:
+      type: string
+      enum:
+        - approved
+        - changes_requested
+        - blocked
+    feedback:
+      type: string
+    issues:
+      type: array
+      items:
+        type: object
+        properties:
+          file:
+            type: string
+          line:
+            type: integer
+          severity:
+            type: string
+          message:
+            type: string
+statusMap:
+  approved: done
+  changes_requested: continue
+  blocked: escalate
+payloadMap:
+  issues: payload.issues
+  feedback: summary
+

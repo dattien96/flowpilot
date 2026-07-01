@@ -389,6 +389,9 @@ func firstNonEmptyLine(text string) string {
 // exist (CP-19 P-3 / Task-081 T-3). On-disk definitions of the same name
 // override these.
 func builtinAgentDefinitions() []AgentDefinition {
+	if defs, err := loadBuiltinAgentDefinitionsFromPack(); err == nil && len(defs) > 0 {
+		return defs
+	}
 	return []AgentDefinition{
 		{
 			Name:        "coder",

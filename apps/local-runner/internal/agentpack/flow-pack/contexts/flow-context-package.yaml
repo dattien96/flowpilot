@@ -1,0 +1,18 @@
+id: flow_context_package
+version: 1
+artifactType: flow_context_package.v1
+producer: deterministic_feature_context
+description: Deterministic CP-41 context package built from feature history, chat summaries, and explicit source excerpts.
+sources:
+  - feature_catalog
+  - feature_history
+  - chat_summary
+  - source_excerpt
+  - source_doc
+constraints:
+  vectorRetrieval: false
+  embeddingIndex: false
+  requireWorkspaceSafePaths: true
+render:
+  promptTemplate: prompts/flow-context-handoff.md
+

@@ -1,0 +1,38 @@
+id: flowpilot-core-flow-pack
+version: 0.1.0
+description: Reference pack for CP-42 generic flow and node behavior refactor.
+schemaVersion: 1
+agents:
+  - agents/coder.md
+  - agents/reviewer.md
+  - agents/tester.md
+  - agents/synthesizer.md
+flows:
+  - path: flows/review-loop.yaml
+    visibility: builtin
+    editable: false
+    selectableIn:
+      - chat
+      - flow
+    chatSubModes:
+      - bug
+    cloneable: true
+  - path: flows/rag-harness.yaml
+    visibility: builtin
+    editable: false
+    chatBaseline: true
+    selectableIn:
+      - flow
+    cloneable: true
+tools:
+  - tools/submit-review-outcome.yaml
+contexts:
+  - contexts/flow-context-package.yaml
+prompts:
+  - prompts/flow-context-handoff.md
+  - prompts/auto-reinvoke.md
+  - prompts/coder-reentry.md
+  - prompts/flow-start-wait.md
+compatibility:
+  minRunnerVersion: TBD
+  fallbackToGoBuiltins: true
