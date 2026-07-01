@@ -59,6 +59,7 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
     steps: [],
     skills: [],
     providerAccounts: [],
+    localProviders: [],
     supportedModels: [],
     status: "idle",
     timeline: [],
@@ -74,13 +75,17 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
     recoverable: false,
     scenario: "normal",
     accountSwitchLoading: false,
+    providerSwitchLoading: false,
     _accountSwitchTriedIds: [],
     launchMode: "workflow",
     chatMode: "normal_chat",
     selectedProvider: "codex",
     yoloMode: false,
+    summaryGenerating: false,
     chatStartMode: "normal",
     chatSourceDocId: "",
+    flowRef: undefined,
+    builtinOrchestrationOptions: [],
     workspaceMainView: "chat",
     _historyReplaying: false,
     _historyLoadSeq: 0,
@@ -143,14 +148,16 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
             }
             try {
                 const admin = await (0, clientCore_1.getAdminUseCases)();
-                const [workflowDefinitions, stepDefinitions, supportedModels] = await Promise.all([
+                const [workflowDefinitions, stepDefinitions, supportedModels, localProviders] = await Promise.all([
                     admin.workflows.listWorkflows(),
                     admin.workflows.listStepDefinitions(),
                     admin.providers.listSupportedModels(),
+                    admin.providers.listLocalProviders(),
                 ]);
                 set({
                     workflows: workflowDefinitions.map(navigatorCatalog_1.mapNavigatorWorkflow),
                     steps: stepDefinitions.map(navigatorCatalog_1.mapNavigatorStep),
+                    localProviders,
                     supportedModels,
                     // Apply default model for the current provider if none is selected yet
                     ...(!get().selectedModel ? { selectedModel: pickDefaultModel(get().selectedProvider, supportedModels) } : {}),
@@ -193,6 +200,17 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
             console.error("[FlowPilot] listProviderAccounts refresh failed:", err);
         }
     },
+    async loadLocalProviders() {
+        try {
+            const admin = await (0, clientCore_1.getAdminUseCases)();
+            const localProviders = await admin.providers.listLocalProviders();
+            set({ localProviders });
+        }
+        catch (err) {
+            // eslint-disable-next-line no-console
+            console.error("[FlowPilot] listLocalProviders refresh failed:", err);
+        }
+    },
     async refreshAgentRuns() {
         const { client, mainRunId, runId } = get();
         const parentRunId = mainRunId ?? runId;
@@ -230,6 +248,10 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
         set(applyAgentGraphSnapshot(await client.injectAgentFeedback(parentRunId, toRunId, message))); },
     async stopAgentLoop() { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.stopAgentLoop)
         set(applyAgentGraphSnapshot(await client.stopAgentLoop(parentRunId))); },
+    async submitReviewOutcome(outcome, issues) { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.submitReviewOutcome)
+        set(applyAgentGraphSnapshot(await client.submitReviewOutcome(parentRunId, { outcome, issues }))); },
+    async extendCap() { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.extendCap)
+        set(applyAgentGraphSnapshot(await client.extendCap(parentRunId))); },
     async listAgents(cwd) {
         const { client } = get();
         if (!client.listAgents)
@@ -367,6 +389,7 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
     },
     async selectProject(projectId) {
         localStorage.setItem(LAST_PROJECT_KEY, projectId);
+        const projectChanged = get().selectedProjectId !== projectId;
         set({
             selectedProjectId: projectId,
             selectedWorkflowId: undefined,
@@ -376,6 +399,9 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
             historyLoadError: undefined,
             remoteHistoryLoadError: undefined,
         });
+        if (projectChanged) {
+            get().resetRun();
+        }
         void get().loadSkills(get().selectedProvider ?? "codex");
     },
     setLaunchMode(mode) {
@@ -396,9 +422,133 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
         set({ scenario });
     },
     selectProvider(provider) {
-        set({ selectedProvider: provider, selectedModel: pickDefaultModel(provider, get().supportedModels) });
-        if (provider) {
-            void get().loadSkills(provider);
+        const state = get();
+        if (!provider) {
+            set({
+                selectedProvider: undefined,
+                selectedModel: undefined,
+                pendingProviderSwitch: undefined,
+                pendingAccountSwitch: undefined,
+                accountSwitchLoading: false,
+            });
+            return;
+        }
+        if (state.selectedProvider === provider) {
+            return;
+        }
+        const targetModel = pickDefaultModel(provider, state.supportedModels);
+        const canRequestHandoff = state.chatMode === "normal_chat" &&
+            Boolean(state.runId) &&
+            !isInteractiveChatBlocked(state.status);
+        if (canRequestHandoff && state.selectedProvider) {
+            const sourceRunId = state.runId;
+            if (!sourceRunId)
+                return;
+            set({
+                pendingProviderSwitch: {
+                    sourceRunId,
+                    sourceProviderKey: state.selectedProvider,
+                    sourceRunStatus: state.status,
+                    targetProviderKey: provider,
+                    targetModel,
+                },
+                pendingAccountSwitch: undefined,
+                accountSwitchLoading: false,
+            });
+            return;
+        }
+        set({ selectedProvider: provider, selectedModel: targetModel, pendingProviderSwitch: undefined });
+        void get().loadSkills(provider);
+    },
+    cancelProviderSwitch() {
+        set({ pendingProviderSwitch: undefined, providerSwitchLoading: false });
+    },
+    async confirmProviderSwitch() {
+        const state = get();
+        const pending = state.pendingProviderSwitch;
+        if (!pending || state.providerSwitchLoading)
+            return;
+        if (state.chatMode !== "normal_chat" || !state.selectedProjectId) {
+            set({ pendingProviderSwitch: undefined, providerSwitchLoading: false });
+            return;
+        }
+        const targetProviderKey = pending.targetProviderKey;
+        const targetModel = pending.targetModel ?? pickDefaultModel(targetProviderKey, state.supportedModels);
+        const cwd = selectedProjectPath(state);
+        set({ providerSwitchLoading: true });
+        try {
+            const handoff = await state.client.handoffContext(pending.sourceRunId, { targetProviderKey });
+            const handle = await state.client.startRun({
+                projectId: state.selectedProjectId,
+                providerKey: targetProviderKey,
+                model: targetModel,
+                reasoningEffort: state.reasoningEffort,
+                yoloMode: state.yoloMode,
+                chatMode: "normal_chat",
+                cwd,
+            });
+            set({
+                selectedProvider: targetProviderKey,
+                selectedModel: targetModel,
+                runId: handle.runId,
+                mainRunId: handle.runId,
+                activeAgentRunId: undefined,
+                activeStepId: handle.stepId,
+                status: handle.status,
+                timeline: [],
+                artifacts: [],
+                pendingApproval: undefined,
+                pendingQuestion: undefined,
+                gateBlock: undefined,
+                latestTokenUsage: undefined,
+                lastTurnInput: undefined,
+                recoverable: false,
+                pendingAccountSwitch: undefined,
+                accountSwitchLoading: false,
+                pendingProviderSwitch: undefined,
+                providerSwitchLoading: false,
+                _accountSwitchTriedIds: [],
+                _streamingAssistantId: undefined,
+                agentRuns: [],
+                agentGraphSnapshot: undefined,
+                agentBusMessages: [],
+                agentSpawnGuideOpen: false,
+                agentSpawnGuideAgentName: undefined,
+                _runReplaySeq: {},
+                _runSnapshots: {},
+                _historyReplaying: false,
+                _streamRunSeq: state._streamRunSeq + 1,
+            });
+            set((s) => ({
+                timeline: [
+                    ...s.timeline,
+                    {
+                        kind: "system",
+                        id: `handoff-mode-${s.timeline.length}`,
+                        text: `Handoff from ${providerLabel(handoff.sourceProviderKey)} used ${handoff.handoffMode} context.`,
+                        tone: "info",
+                    },
+                ],
+            }));
+            void get().loadSkills(targetProviderKey);
+            await get().sendPrompt(handoff.prompt);
+            void get().loadRunHistory();
+        }
+        catch (err) {
+            // eslint-disable-next-line no-console
+            console.error("[FlowPilot] provider handoff failed:", err);
+            set((s) => ({
+                providerSwitchLoading: false,
+                timeline: [
+                    ...s.timeline,
+                    {
+                        kind: "system",
+                        id: `handoff-err-${s.timeline.length}`,
+                        text: `Failed to start a new chat with ${providerLabel(targetProviderKey)}: ${String(err)}`,
+                        tone: "error",
+                    },
+                ],
+            }));
         }
     },
     setSelectedModel(model) {
@@ -410,14 +560,85 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
     setYoloMode(yolo) {
         set({ yoloMode: yolo });
     },
+    async generateChatSummary() {
+        const state = get();
+        const runId = state.runId;
+        if (!runId || state.summaryGenerating)
+            return;
+        if (isInteractiveChatBlocked(state.status))
+            return;
+        set({ summaryGenerating: true });
+        try {
+            const result = await state.client.generateChatSummary(runId);
+            set((s) => ({
+                summaryGenerating: false,
+                timeline: [
+                    ...s.timeline,
+                    {
+                        kind: "system",
+                        id: `chat-summary-${s.timeline.length}`,
+                        text: result.generated
+                            ? "Chat summary updated."
+                            : `Chat summary unchanged${result.reason ? ` (${result.reason})` : ""}.`,
+                        tone: "info",
+                    },
+                ],
+            }));
+        }
+        catch (err) {
+            // eslint-disable-next-line no-console
+            console.error("[FlowPilot] generateChatSummary failed:", err);
+            set((s) => ({
+                summaryGenerating: false,
+                timeline: [
+                    ...s.timeline,
+                    {
+                        kind: "system",
+                        id: `chat-summary-err-${s.timeline.length}`,
+                        text: `Failed to generate chat summary: ${String(err)}`,
+                        tone: "error",
+                    },
+                ],
+            }));
+        }
+    },
     setChatStartMode(mode) {
         set((state) => ({
             chatStartMode: mode,
             chatSourceDocId: mode === "normal" ? "" : state.chatSourceDocId,
+            // A built-in orchestration selection only makes sense for the sub-mode
+            // it was offered under (CP-42 Task-177 T-7: switching away from Bug
+            // clears the Review Loop selection); clear both the pick and the
+            // stale option list on every intent change, then reload below if the
+            // new mode has options to offer.
+            flowRef: undefined,
+            builtinOrchestrationOptions: [],
         }));
+        if (mode === "bugfix") {
+            void get().loadBuiltinOrchestrationOptions("bug");
+        }
     },
     setChatSourceDocId(sourceDocId) {
         set({ chatSourceDocId: sourceDocId });
+    },
+    setFlowRef(flowRef) {
+        set({ flowRef });
+    },
+    async loadBuiltinOrchestrationOptions(subMode) {
+        const { client } = get();
+        if (!client.listBuiltinOrchestrationOptions) {
+            set({ builtinOrchestrationOptions: [] });
+            return;
+        }
+        try {
+            const options = await client.listBuiltinOrchestrationOptions(subMode);
+            set({ builtinOrchestrationOptions: options });
+        }
+        catch (err) {
+            // eslint-disable-next-line no-console
+            console.error("[FlowPilot] loadBuiltinOrchestrationOptions failed:", err);
+            set({ builtinOrchestrationOptions: [] });
+        }
     },
     async loadSkills(provider, cwd) {
         const { client } = get();
@@ -431,7 +652,7 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
         }
     },
     async sendPrompt(prompt, skills, attachments) {
-        const { client, chatMode, launchMode, selectedProjectId, selectedWorkflowId, selectedStepId, selectedProvider, selectedModel, reasoningEffort, yoloMode, chatStartMode, chatSourceDocId, } = get();
+        const { client, chatMode, launchMode, selectedProjectId, selectedWorkflowId, selectedStepId, selectedProvider, selectedModel, reasoningEffort, yoloMode, chatStartMode, chatSourceDocId, flowRef, } = get();
         const focusedRunId = get().activeAgentRunId;
         const mainRunId = get().mainRunId ?? get().runId;
         if (chatMode === "normal_chat" && focusedRunId && mainRunId && focusedRunId !== mainRunId) {
@@ -545,6 +766,12 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
                 attachments: chatMode === "normal_chat" && attachments && attachments.length > 0
                     ? attachments
                     : undefined,
+                // Built-in orchestration selection (CP-42/Task-177): only meaningful
+                // alongside a first-turn Bug intent, and only when the user actually
+                // picked a flow. chatStartMode's runner-facing sub-mode key is "bug",
+                // distinct from the UI's "bugfix" tab value.
+                subMode: isFirstChatTurn && chatStartMode === "bugfix" && flowRef ? "bug" : undefined,
+                flowRef: isFirstChatTurn && chatStartMode === "bugfix" ? flowRef : undefined,
             };
             set({ runId, lastTurnInput: turnInput, activeStepId: turnStepId, _streamRunSeq: get()._streamRunSeq + 1 });
             cancelHistoryReplayStream();
@@ -744,6 +971,8 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
                 recoverable: false,
                 pendingAccountSwitch: undefined,
                 accountSwitchLoading: false,
+                pendingProviderSwitch: undefined,
+                providerSwitchLoading: false,
                 _accountSwitchTriedIds: [],
                 _streamingAssistantId: undefined,
             });
@@ -864,6 +1093,8 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
             recoverable: false,
             pendingAccountSwitch: undefined,
             accountSwitchLoading: false,
+            pendingProviderSwitch: undefined,
+            providerSwitchLoading: false,
             _accountSwitchTriedIds: [],
             _streamingAssistantId: undefined,
             agentRuns: [],
@@ -939,12 +1170,16 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
             recoverable: false,
             pendingAccountSwitch: undefined,
             accountSwitchLoading: false,
+            pendingProviderSwitch: undefined,
+            providerSwitchLoading: false,
             _accountSwitchTriedIds: [],
             _streamingAssistantId: undefined,
             _runSnapshots: {},
             _runReplaySeq: {},
             chatStartMode: "normal",
             chatSourceDocId: "",
+            flowRef: undefined,
+            builtinOrchestrationOptions: [],
             selectedModel: pickDefaultModel(selectedProvider, supportedModels),
         });
     },
@@ -1057,6 +1292,9 @@ function providerLabel(providerKey) {
     if (providerKey === "codex")
         return "Codex";
     return providerKey;
+}
+function isInteractiveChatBlocked(status) {
+    return status === "running" || status === "waiting_approval" || status === "waiting_question";
 }
 function findBestCandidate(accounts, providerKey, triedAccountIds) {
     const candidates = accounts.filter((a) => a.providerKey === providerKey &&

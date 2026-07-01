@@ -423,6 +423,18 @@ input {
   font-size: 11px;
   color: var(--text-dim);
 }
+.settings-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  background: var(--surface-2, rgba(255, 255, 255, 0.08));
+  color: var(--text-dim);
+  vertical-align: middle;
+}
 .auth-title {
   margin: 10px 0 8px;
   font-size: 32px;

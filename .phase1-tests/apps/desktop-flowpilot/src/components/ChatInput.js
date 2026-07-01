@@ -5,6 +5,7 @@ exports.parseMentionRouting = parseMentionRouting;
 exports.ChatInput = ChatInput;
 const jsx_runtime_1 = require("react/jsx-runtime");
 const react_1 = require("react");
+const react_dom_1 = require("react-dom");
 const store_1 = require("@/state/store");
 const normalizeImage_1 = require("@/lib/normalizeImage");
 function CodexIcon() {
@@ -154,12 +155,15 @@ function ChatInput() {
     const setSelectedModel = (0, store_1.useStore)((s) => s.setSelectedModel);
     const setReasoningEffort = (0, store_1.useStore)((s) => s.setReasoningEffort);
     const setYoloMode = (0, store_1.useStore)((s) => s.setYoloMode);
+    const generateChatSummary = (0, store_1.useStore)((s) => s.generateChatSummary);
+    const summaryGenerating = (0, store_1.useStore)((s) => s.summaryGenerating);
     const pendingApproval = (0, store_1.useStore)((s) => s.pendingApproval);
     const pendingQuestion = (0, store_1.useStore)((s) => s.pendingQuestion);
     const latestTokenUsage = (0, store_1.useStore)((s) => s.latestTokenUsage);
     const stop = (0, store_1.useStore)((s) => s.stop);
     const timeline = (0, store_1.useStore)((s) => s.timeline);
     const providerAccounts = (0, store_1.useStore)((s) => s.providerAccounts);
+    const localProviders = (0, store_1.useStore)((s) => s.localProviders);
     const agentRuns = (0, store_1.useStore)((s) => s.agentRuns);
     const activeAgentRunId = (0, store_1.useStore)((s) => s.activeAgentRunId);
     const mainRunId = (0, store_1.useStore)((s) => s.mainRunId ?? s.runId);
@@ -168,9 +172,12 @@ function ChatInput() {
     const openAgentSpawnGuide = (0, store_1.useStore)((s) => s.openAgentSpawnGuide);
     const pendingAccountSwitch = (0, store_1.useStore)((s) => s.pendingAccountSwitch);
     const accountSwitchLoading = (0, store_1.useStore)((s) => s.accountSwitchLoading);
+    const pendingProviderSwitch = (0, store_1.useStore)((s) => s.pendingProviderSwitch);
+    const providerSwitchLoading = (0, store_1.useStore)((s) => s.providerSwitchLoading);
     const requestManualAccountSwitch = (0, store_1.useStore)((s) => s.requestManualAccountSwitch);
     const backToMainRun = (0, store_1.useStore)((s) => s.backToMainRun);
     const [text, setText] = (0, react_1.useState)("");
+    const [clearSeq, setClearSeq] = (0, react_1.useState)(0);
     const [selectedSkills, setSelectedSkills] = (0, react_1.useState)([]);
     const [pickerSortSelection, setPickerSortSelection] = (0, react_1.useState)([]);
     const [pickerSearch, setPickerSearch] = (0, react_1.useState)("");
@@ -190,8 +197,7 @@ function ChatInput() {
     const rootRef = (0, react_1.useRef)(null);
     const wasPickerVisibleRef = (0, react_1.useRef)(false);
     const isChatMode = chatMode === "normal_chat";
-    // Lock provider once any turn has been sent in the current chat session.
-    const providerLocked = isChatMode && timeline.length > 0;
+    const isSwitchBusy = pendingProviderSwitch !== undefined || providerSwitchLoading;
     const supportsVision = !!selectedProvider && VISION_PROVIDERS.has(selectedProvider);
     const hasSelectedProject = !!selectedProjectId;
     const selectedProjectPath = (0, react_1.useMemo)(() => projects.find((project) => project.id === selectedProjectId)?.path, [projects, selectedProjectId]);
@@ -330,21 +336,52 @@ function ChatInput() {
     (0, react_1.useEffect)(() => {
         setDisplayedTokenUsage(undefined);
     }, [selectedProvider]);
+    (0, react_1.useEffect)(() => {
+        setText("");
+        setSelectedSkills([]);
+        setSkillTokens([]);
+        setAttachments([]);
+        setAttachError(null);
+        setPreviewAtt(null);
+        setSkillPickerOpen(false);
+        setSlashDismissedIndex(null);
+        setPickerHighlightIndex(-1);
+    }, [runId]);
     const hasBetterAccount = (0, react_1.useMemo)(() => !!selectedProvider &&
         providerAccounts.some((a) => a.providerKey === selectedProvider && a.authStatus === "connected" && !a.isActive), [providerAccounts, selectedProvider]);
+    const installedProviders = (0, react_1.useMemo)(() => new Set(localProviders.filter((provider) => provider.installed).map((provider) => provider.key)), [localProviders]);
     const childRunFocused = isChildRunFocused(activeAgentRunId, mainRunId);
     const focusedAgentName = childRunFocused
         ? agentRuns.find((run) => run.runId === activeAgentRunId)?.agentName ?? activeAgentRunId
         : undefined;
-    const connectedProviders = (0, react_1.useMemo)(() => new Set(providerAccounts.filter((account) => account.authStatus === "connected").map((account) => account.providerKey)), [providerAccounts]);
-    const selectedProviderConnected = !!selectedProvider && connectedProviders.has(selectedProvider);
+    const activeConnectedProviders = (0, react_1.useMemo)(() => new Set(providerAccounts
+        .filter((account) => account.authStatus === "connected" && account.isActive)
+        .map((account) => account.providerKey)), [providerAccounts]);
+    const selectedProviderInstalled = !!selectedProvider && installedProviders.has(selectedProvider);
+    const selectedProviderConnected = !!selectedProvider && activeConnectedProviders.has(selectedProvider);
+    const readyProviders = (0, react_1.useMemo)(() => PROVIDER_CARDS.map((provider) => provider.value).filter((provider) => installedProviders.has(provider) && activeConnectedProviders.has(provider)), [activeConnectedProviders, installedProviders]);
+    (0, react_1.useEffect)(() => {
+        if (!isChatMode || runId)
+            return;
+        if (readyProviders.length === 0)
+            return;
+        if (!selectedProvider || !installedProviders.has(selectedProvider) || !activeConnectedProviders.has(selectedProvider)) {
+            const fallback = readyProviders[0];
+            if (fallback && fallback !== selectedProvider) {
+                selectProvider(fallback);
+            }
+        }
+    }, [activeConnectedProviders, installedProviders, isChatMode, readyProviders, runId, selectProvider, selectedProvider]);
     const blocked = status === "running" || status === "waiting_approval" || status === "waiting_question";
+    // The manual "Gen summary" control is available only for an existing chat that
+    // is idle/completed (never mid-turn) — mirrors the runner's busy guard.
+    const canGenerateSummary = isChatMode && !!runId && timeline.length > 0 && !blocked && !summaryGenerating;
     // A running child spawned with wait=true blocks the main run even when the main has no turn
     // of its own in flight (e.g. a UI wait=true spawn) — the send button must reflect that (BUG-133).
     const hasBlockingChild = agentRuns.some((r) => r.waitForResult && (r.status === "running" || r.status === "waiting_approval" || r.status === "waiting_question"));
     const usageLine = (0, react_1.useMemo)(() => usageSummaryLine(selectedProvider, displayedTokenUsage), [displayedTokenUsage, selectedProvider]);
     const canSend = isChatMode
-        ? hasSelectedProject && selectedProviderConnected && !blocked && !hasBlockingChild && !childRunFocused && text.trim().length > 0 && !showPicker && !showAgentCommand
+        ? hasSelectedProject && selectedProviderInstalled && selectedProviderConnected && !blocked && !hasBlockingChild && !childRunFocused && text.trim().length > 0 && !showPicker && !showAgentCommand
         : hasSelectedProject &&
             (launchMode === "workflow" ? !!selectedWorkflowId : !!selectedStepId) &&
             !blocked &&
@@ -448,12 +485,22 @@ function ChatInput() {
         setAttachments((prev) => prev.filter((a) => a.id !== id));
     };
     const clearComposer = () => {
-        setText("");
-        setSelectedSkills([]);
-        setSkillTokens([]);
-        setAttachments([]);
-        setAttachError(null);
-        setSkillPickerOpen(false);
+        (0, react_dom_1.flushSync)(() => {
+            setText("");
+            setClearSeq((value) => value + 1);
+            setSelectedSkills([]);
+            setSkillTokens([]);
+            setAttachments([]);
+            setAttachError(null);
+            setSkillPickerOpen(false);
+            setPickerSearch("");
+            setPickerHighlightIndex(-1);
+            setCursorPos(0);
+            setSlashDismissedIndex(null);
+        });
+        if (textAreaRef.current) {
+            textAreaRef.current.value = "";
+        }
     };
     const send = async () => {
         if (!canSend)
@@ -471,6 +518,7 @@ function ChatInput() {
                 return;
             }
             if (routed.kind === "busy") {
+                clearComposer();
                 await store_1.useStore.getState().injectAgentFeedback(routed.runId, routed.prompt || trimmed);
                 appendSystemMessage(`Queued feedback for @${routed.agentName}. It will be picked up when the child is safe to continue.`);
                 return;
@@ -549,7 +597,11 @@ function ChatInput() {
                     ? childRunFocused
                         ? "Child transcript is read-only."
                         : selectedProvider
-                            ? "Type a message. Use /s for skills, /a to spawn an agent, @ to message an agent."
+                            ? !selectedProviderInstalled
+                                ? "Install the provider CLI first."
+                                : !selectedProviderConnected
+                                    ? "Activate a connected account for this provider first."
+                                    : "Type a message. Use /s for skills, /a to spawn an agent, @ to message an agent."
                             : "Select a provider first."
                     : launchMode === "workflow"
                         ? selectedWorkflowId
@@ -562,10 +614,14 @@ function ChatInput() {
                                                 ? `Selected skills ${selectedSkills.length} of ${totalSkills}`
                                                 : "Select skills", children: [(0, jsx_runtime_1.jsxs)("span", { className: "skill-select-icon", "aria-hidden": "true", children: [(0, jsx_runtime_1.jsx)("span", {}), (0, jsx_runtime_1.jsx)("span", {}), (0, jsx_runtime_1.jsx)("span", {})] }), (0, jsx_runtime_1.jsx)("span", { className: "skill-select-text", children: !selectedProvider
                                                         ? "Select provider first"
-                                                        : `Selected skills ${selectedSkills.length}/${totalSkills}` }), (0, jsx_runtime_1.jsx)("span", { className: "skill-select-caret", "aria-hidden": "true", children: "\u25BE" })] })] }), (0, jsx_runtime_1.jsxs)("div", { className: "chat-controller-head", children: [isChatMode && hasBetterAccount && ((0, jsx_runtime_1.jsxs)("button", { type: "button", className: "acc-switch-btn", onClick: requestManualAccountSwitch, disabled: blocked || !!pendingAccountSwitch || accountSwitchLoading, title: "Switch to a better account for this provider", "aria-label": "Switch to a better account", children: [(0, jsx_runtime_1.jsx)(SwitchAccountIcon, {}), (0, jsx_runtime_1.jsx)("span", { children: "Switch acc" })] })), (0, jsx_runtime_1.jsxs)("div", { className: "chat-controller-switch chat-controller-switch-top", children: [(0, jsx_runtime_1.jsx)("span", { className: "chat-controller-label", children: "YOLO" }), (0, jsx_runtime_1.jsxs)("button", { type: "button", role: "switch", "aria-checked": yoloMode, className: `yolo-toggle ${yoloMode ? "active" : ""}`, onClick: () => setYoloMode(!yoloMode), disabled: blocked, children: [(0, jsx_runtime_1.jsx)("span", { className: "yolo-toggle-track", "aria-hidden": "true", children: (0, jsx_runtime_1.jsx)("span", { className: "yolo-toggle-thumb" }) }), (0, jsx_runtime_1.jsx)("span", { className: "yolo-toggle-label", children: yoloMode ? "On" : "Off" })] })] }), (0, jsx_runtime_1.jsx)("button", { type: "button", className: "chat-controller-toggle", onClick: () => setControllerExpanded(false), "aria-label": "Collapse chat controls", children: (0, jsx_runtime_1.jsx)("span", { "aria-hidden": "true", children: "\u25BE" }) })] })] }), (0, jsx_runtime_1.jsxs)("div", { className: "chat-controller-grid", children: [(0, jsx_runtime_1.jsxs)("div", { className: `provider-picker${providerLocked ? " provider-picker-locked" : ""}`, children: [(0, jsx_runtime_1.jsx)("span", { className: "chat-controller-label", children: "Provider" }), (0, jsx_runtime_1.jsx)("div", { className: "provider-chips", children: PROVIDER_CARDS.map((p) => ((0, jsx_runtime_1.jsxs)("button", { type: "button", className: `provider-chip provider-chip-${p.value}${selectedProvider === p.value ? " provider-chip-selected" : ""}${connectedProviders.has(p.value) ? "" : " provider-chip-unavailable"}`, onClick: () => selectProvider(selectedProvider === p.value ? undefined : p.value), disabled: blocked || providerLocked || !connectedProviders.has(p.value), "aria-pressed": selectedProvider === p.value, "aria-label": p.label, title: !connectedProviders.has(p.value)
-                                                    ? `${p.label} is unavailable until an account is connected`
-                                                    : providerLocked
-                                                        ? "Start a new chat to change provider"
+                                                        : `Selected skills ${selectedSkills.length}/${totalSkills}` }), (0, jsx_runtime_1.jsx)("span", { className: "skill-select-caret", "aria-hidden": "true", children: "\u25BE" })] })] }), (0, jsx_runtime_1.jsxs)("div", { className: "chat-controller-head", children: [isChatMode && hasBetterAccount && ((0, jsx_runtime_1.jsxs)("button", { type: "button", className: "acc-switch-btn", onClick: requestManualAccountSwitch, disabled: blocked || !!pendingAccountSwitch || accountSwitchLoading, title: "Switch to a better account for this provider", "aria-label": "Switch to a better account", children: [(0, jsx_runtime_1.jsx)(SwitchAccountIcon, {}), (0, jsx_runtime_1.jsx)("span", { children: "Switch acc" })] })), (0, jsx_runtime_1.jsxs)("div", { className: "chat-controller-switch chat-controller-switch-top", children: [(0, jsx_runtime_1.jsx)("span", { className: "chat-controller-label", children: "YOLO" }), (0, jsx_runtime_1.jsxs)("button", { type: "button", role: "switch", "aria-checked": yoloMode, className: `yolo-toggle ${yoloMode ? "active" : ""}`, onClick: () => setYoloMode(!yoloMode), disabled: blocked, children: [(0, jsx_runtime_1.jsx)("span", { className: "yolo-toggle-track", "aria-hidden": "true", children: (0, jsx_runtime_1.jsx)("span", { className: "yolo-toggle-thumb" }) }), (0, jsx_runtime_1.jsx)("span", { className: "yolo-toggle-label", children: yoloMode ? "On" : "Off" })] })] }), (0, jsx_runtime_1.jsx)("div", { className: "chat-controller-switch chat-controller-switch-top", children: (0, jsx_runtime_1.jsx)("button", { type: "button", className: "gen-summary-btn", onClick: () => void generateChatSummary(), disabled: !canGenerateSummary, title: "Generate the rolling chat summary now (available when the chat is idle)", children: summaryGenerating ? "Generating…" : "Gen summary" }) }), (0, jsx_runtime_1.jsx)("button", { type: "button", className: "chat-controller-toggle", onClick: () => setControllerExpanded(false), "aria-label": "Collapse chat controls", children: (0, jsx_runtime_1.jsx)("span", { "aria-hidden": "true", children: "\u25BE" }) })] })] }), (0, jsx_runtime_1.jsxs)("div", { className: "chat-controller-grid", children: [(0, jsx_runtime_1.jsxs)("div", { className: "provider-picker", children: [(0, jsx_runtime_1.jsx)("span", { className: "chat-controller-label", children: "Provider" }), (0, jsx_runtime_1.jsx)("div", { className: "provider-chips", children: PROVIDER_CARDS.map((p) => ((0, jsx_runtime_1.jsxs)("button", { type: "button", className: `provider-chip provider-chip-${p.value}${selectedProvider === p.value ? " provider-chip-selected" : ""}${installedProviders.has(p.value) && activeConnectedProviders.has(p.value) ? "" : " provider-chip-unavailable"}`, onClick: () => {
+                                                    if (selectedProvider === p.value)
+                                                        return;
+                                                    selectProvider(p.value);
+                                                }, disabled: blocked || isSwitchBusy || !installedProviders.has(p.value) || !activeConnectedProviders.has(p.value), "aria-pressed": selectedProvider === p.value, "aria-label": p.label, title: !installedProviders.has(p.value)
+                                                    ? `${p.label} is unavailable until its CLI is installed`
+                                                    : !activeConnectedProviders.has(p.value)
+                                                        ? `${p.label} is unavailable until a connected account is active`
                                                         : p.label, children: [(0, jsx_runtime_1.jsx)("span", { className: "provider-chip-icon", children: p.icon }), (0, jsx_runtime_1.jsx)("span", { className: "provider-chip-name", children: p.label })] }, p.value))) })] }), (0, jsx_runtime_1.jsxs)("label", { className: "chat-controller-field muted", children: [(0, jsx_runtime_1.jsx)("span", { children: "Model" }), availableModels.length > 0 ? ((0, jsx_runtime_1.jsxs)("select", { value: selectedModel ?? "", onChange: (e) => setSelectedModel(e.target.value || undefined), disabled: blocked, children: [(0, jsx_runtime_1.jsx)("option", { value: "", children: "Default" }), availableModels.map((model) => ((0, jsx_runtime_1.jsx)("option", { value: model.modelId, children: model.displayName }, model.id)))] })) : ((0, jsx_runtime_1.jsx)("input", { type: "text", value: selectedModel ?? "", onChange: (e) => setSelectedModel(e.target.value || undefined), placeholder: "Default", disabled: blocked }))] }), (0, jsx_runtime_1.jsxs)("label", { className: "chat-controller-field muted", children: [(0, jsx_runtime_1.jsx)("span", { children: "Reasoning" }), (0, jsx_runtime_1.jsx)("select", { value: reasoningEffort ?? "", onChange: (e) => setReasoningEffort(e.target.value || undefined), disabled: blocked, children: REASONING_OPTIONS.map((option) => ((0, jsx_runtime_1.jsx)("option", { value: option.value, children: option.label }, option.value))) })] })] })] })) })), showPicker && ((0, jsx_runtime_1.jsxs)("div", { className: "skill-picker", children: [(0, jsx_runtime_1.jsxs)("div", { className: "skill-picker-head", children: [(0, jsx_runtime_1.jsxs)("div", { className: "skill-picker-head-top", children: [(0, jsx_runtime_1.jsx)("span", { children: "Skills \u00B7 pick one or more" }), (0, jsx_runtime_1.jsx)("button", { type: "button", className: "skill-picker-close", onClick: () => {
                                             if (slashFragment !== null)
                                                 setSlashDismissedIndex(slashFragment.index);
@@ -616,7 +672,7 @@ function ChatInput() {
                                     e.target.value = ""; // allow re-picking the same file
                                 } }), (0, jsx_runtime_1.jsxs)("button", { type: "button", className: "attach-btn", onClick: () => fileInputRef.current?.click(), disabled: !supportsVision || blocked || attachments.length >= normalizeImage_1.MAX_ATTACHMENTS, "aria-label": supportsVision
                                     ? "Attach image"
-                                    : "Image attachments are not supported by the selected provider", title: supportsVision ? "Attach image (or paste with Ctrl+V)" : "Selected provider does not support images", children: [(0, jsx_runtime_1.jsx)("span", { "aria-hidden": "true", children: "\uD83D\uDCCE" }), attachments.length > 0 && ((0, jsx_runtime_1.jsx)("span", { className: "attach-badge", "aria-label": `${attachments.length} image${attachments.length > 1 ? "s" : ""} attached`, children: attachments.length }))] })] })), childRunFocused ? ((0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsx)("div", { className: "text-area-wrapper", children: (0, jsx_runtime_1.jsx)("div", { className: "input-note", children: "Return to the main chat to send prompts or use @agent routing." }) }), blocked && ((0, jsx_runtime_1.jsx)("button", { className: "btn send-btn send-btn-stop", onClick: () => void stop(), "aria-label": "Stop child agent", children: (0, jsx_runtime_1.jsx)(StopIcon, {}) })), (0, jsx_runtime_1.jsx)("button", { className: "btn send-btn", onClick: backToMainRun, children: "Main" })] })) : ((0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsxs)("div", { className: `text-area-wrapper${isChatMode && skillTokens.length > 0 ? " has-highlights" : ""}`, children: [isChatMode && skillTokens.length > 0 && ((0, jsx_runtime_1.jsx)("div", { className: "text-area-backdrop", "aria-hidden": "true", children: buildBackdrop(text, skillTokens) })), (0, jsx_runtime_1.jsx)("textarea", { ref: textAreaRef, className: "text-area", rows: 2, placeholder: placeholder, value: text, onChange: (e) => {
+                                    : "Image attachments are not supported by the selected provider", title: supportsVision ? "Attach image (or paste with Ctrl+V)" : "Selected provider does not support images", children: [(0, jsx_runtime_1.jsx)("span", { "aria-hidden": "true", children: "\uD83D\uDCCE" }), attachments.length > 0 && ((0, jsx_runtime_1.jsx)("span", { className: "attach-badge", "aria-label": `${attachments.length} image${attachments.length > 1 ? "s" : ""} attached`, children: attachments.length }))] })] })), childRunFocused ? ((0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsx)("div", { className: "text-area-wrapper", children: (0, jsx_runtime_1.jsx)("div", { className: "input-note", children: "Return to the main chat to send prompts or use @agent routing." }) }), blocked && ((0, jsx_runtime_1.jsx)("button", { type: "button", className: "btn send-btn send-btn-stop", onClick: () => void stop(), "aria-label": "Stop child agent", children: (0, jsx_runtime_1.jsx)(StopIcon, {}) })), (0, jsx_runtime_1.jsx)("button", { type: "button", className: "btn send-btn", onClick: backToMainRun, children: "Main" })] })) : ((0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsxs)("div", { className: `text-area-wrapper${isChatMode && skillTokens.length > 0 ? " has-highlights" : ""}`, children: [isChatMode && skillTokens.length > 0 && ((0, jsx_runtime_1.jsx)("div", { className: "text-area-backdrop", "aria-hidden": "true", children: buildBackdrop(text, skillTokens) })), (0, jsx_runtime_1.jsx)("textarea", { ref: textAreaRef, className: "text-area", rows: 2, placeholder: placeholder, value: text, onChange: (e) => {
                                             const newText = e.target.value;
                                             const newCursor = e.target.selectionStart ?? 0;
                                             setText(newText);
@@ -628,7 +684,7 @@ function ChatInput() {
                                         }, onKeyDown: onKeyDown, onPaste: onPaste, onSelect: (e) => setCursorPos(e.target.selectionStart ?? 0), onPointerDown: () => {
                                             if (skillPickerOpen)
                                                 setSkillPickerOpen(false);
-                                        } })] }), blocked ? ((0, jsx_runtime_1.jsx)("button", { className: "btn send-btn send-btn-stop", onClick: () => void stop(), "aria-label": "Stop AI", children: (0, jsx_runtime_1.jsx)(StopIcon, {}) })) : ((0, jsx_runtime_1.jsx)("button", { className: "btn btn-primary send-btn", onClick: send, disabled: !canSend, children: "Send" }))] }))] }), isChatMode && usageLine && ((0, jsx_runtime_1.jsx)("div", { className: "chat-usage-line", "aria-live": "polite", children: usageLine })), (pendingApproval || pendingQuestion) && ((0, jsx_runtime_1.jsx)("div", { className: "input-note", children: "Action required above before continuing." })), previewAtt && ((0, jsx_runtime_1.jsx)("div", { className: "attach-preview-overlay", role: "dialog", "aria-modal": "true", "aria-label": `Preview: ${previewAtt.originalName}`, onClick: () => setPreviewAtt(null), children: (0, jsx_runtime_1.jsxs)("div", { className: "attach-preview-box", onClick: (e) => e.stopPropagation(), children: [(0, jsx_runtime_1.jsxs)("div", { className: "attach-preview-header", children: [(0, jsx_runtime_1.jsx)("span", { className: "attach-preview-name", children: previewAtt.originalName }), (0, jsx_runtime_1.jsxs)("span", { className: "attach-preview-meta", children: [previewAtt.width && previewAtt.height ? `${previewAtt.width}×${previewAtt.height} · ` : "", (previewAtt.sizeBytes / 1024).toFixed(0), " KB"] }), (0, jsx_runtime_1.jsx)("button", { type: "button", className: "attach-preview-close", onClick: () => setPreviewAtt(null), "aria-label": "Close preview", children: "\u00D7" })] }), (0, jsx_runtime_1.jsx)("img", { className: "attach-preview-img", src: previewAtt.previewUrl, alt: previewAtt.originalName })] }) })), !hasSelectedProject && ((0, jsx_runtime_1.jsx)("div", { className: `chat-input-guard ${isChatMode ? "" : "chat-input-guard-compact"}`.trim(), "aria-live": "polite", children: (0, jsx_runtime_1.jsxs)("div", { className: `chat-input-guard-card ${isChatMode ? "" : "chat-input-guard-card-compact"}`.trim(), children: [(0, jsx_runtime_1.jsx)("div", { className: "chat-input-guard-title", children: "Select a project first" }), (0, jsx_runtime_1.jsx)("div", { className: "chat-input-guard-copy", children: isChatMode
+                                        } }, clearSeq)] }), blocked ? ((0, jsx_runtime_1.jsx)("button", { type: "button", className: "btn send-btn send-btn-stop", onClick: () => void stop(), "aria-label": "Stop AI", children: (0, jsx_runtime_1.jsx)(StopIcon, {}) })) : ((0, jsx_runtime_1.jsx)("button", { type: "button", className: "btn btn-primary send-btn", onClick: send, disabled: !canSend, children: "Send" }))] }))] }), isChatMode && usageLine && ((0, jsx_runtime_1.jsx)("div", { className: "chat-usage-line", "aria-live": "polite", children: usageLine })), (pendingApproval || pendingQuestion) && ((0, jsx_runtime_1.jsx)("div", { className: "input-note", children: "Action required above before continuing." })), previewAtt && ((0, jsx_runtime_1.jsx)("div", { className: "attach-preview-overlay", role: "dialog", "aria-modal": "true", "aria-label": `Preview: ${previewAtt.originalName}`, onClick: () => setPreviewAtt(null), children: (0, jsx_runtime_1.jsxs)("div", { className: "attach-preview-box", onClick: (e) => e.stopPropagation(), children: [(0, jsx_runtime_1.jsxs)("div", { className: "attach-preview-header", children: [(0, jsx_runtime_1.jsx)("span", { className: "attach-preview-name", children: previewAtt.originalName }), (0, jsx_runtime_1.jsxs)("span", { className: "attach-preview-meta", children: [previewAtt.width && previewAtt.height ? `${previewAtt.width}×${previewAtt.height} · ` : "", (previewAtt.sizeBytes / 1024).toFixed(0), " KB"] }), (0, jsx_runtime_1.jsx)("button", { type: "button", className: "attach-preview-close", onClick: () => setPreviewAtt(null), "aria-label": "Close preview", children: "\u00D7" })] }), (0, jsx_runtime_1.jsx)("img", { className: "attach-preview-img", src: previewAtt.previewUrl, alt: previewAtt.originalName })] }) })), !hasSelectedProject && ((0, jsx_runtime_1.jsx)("div", { className: `chat-input-guard ${isChatMode ? "" : "chat-input-guard-compact"}`.trim(), "aria-live": "polite", children: (0, jsx_runtime_1.jsxs)("div", { className: `chat-input-guard-card ${isChatMode ? "" : "chat-input-guard-card-compact"}`.trim(), children: [(0, jsx_runtime_1.jsx)("div", { className: "chat-input-guard-title", children: "Select a project first" }), (0, jsx_runtime_1.jsx)("div", { className: "chat-input-guard-copy", children: isChatMode
                                 ? "Choose a project before using chat, skills, or send."
                                 : "Choose a project before continuing in workflow mode." })] }) }))] }));
 }
