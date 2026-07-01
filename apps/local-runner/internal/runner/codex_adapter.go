@@ -31,14 +31,20 @@ type codexAdapter struct {
 	mu         sync.Mutex
 	bridges    map[string]TurnBridge // threadId -> active turn bridge
 	codexTurns map[string]string     // threadId -> Codex turn id (for interrupt)
+	// allowReviewOutcome tracks, per threadId, whether this turn actually
+	// advertised submit_review_outcome as a dynamicTool (BUG-NOTE-CP42 #24).
+	// handleDynamicToolCall re-checks this before acting on a call, as
+	// defense in depth against a model invoking a tool it was never shown.
+	allowReviewOutcome map[string]bool
 }
 
 func newCodexAdapter(dispatcher *codexDispatcher, cwd string) *codexAdapter {
 	a := &codexAdapter{
-		dispatcher: dispatcher,
-		cwd:        cwd,
-		bridges:    map[string]TurnBridge{},
-		codexTurns: map[string]string{},
+		dispatcher:         dispatcher,
+		cwd:                cwd,
+		bridges:            map[string]TurnBridge{},
+		codexTurns:         map[string]string{},
+		allowReviewOutcome: map[string]bool{},
 	}
 	dispatcher.setInbound(a.handleInbound)
 	return a
@@ -148,7 +154,16 @@ func (a *codexAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tur
 	//
 	// Once a real rollout id exists, follow-up turns must rejoin that thread via app-server
 	// `thread/resume` so approval/MCP/ask_user bridging stays available on resumed turns.
-	dynamicTools := []any{codexAskUserDynamicTool(), codexSpawnAgentDynamicTool(), codexReviewOutcomeDynamicTool()}
+	//
+	// submit_review_outcome is only advertised when this turn's run is actually
+	// acting as a flow hub (BUG-NOTE-CP42 #24) — previously every turn on every
+	// provider unconditionally offered it, so a model in ordinary chat could
+	// call it and mutate that run's loop state (applyFlowControl only checks
+	// the run exists, not that it's a flow hub).
+	dynamicTools := []any{codexAskUserDynamicTool(), codexSpawnAgentDynamicTool()}
+	if req.OfferReviewOutcomeTool {
+		dynamicTools = append(dynamicTools, codexReviewOutcomeDynamicTool())
+	}
 	threadMethod := "thread/start"
 	threadParams := codexThreadStartParams(cwd, sandbox, approvalMode, req.ModelName, req.ReasoningEffort, dynamicTools)
 	if resumeID := strings.TrimSpace(req.ProviderSessionID); resumeID != "" && !strings.HasPrefix(resumeID, "thread-") {
@@ -178,11 +193,13 @@ func (a *codexAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tur
 
 	a.mu.Lock()
 	a.bridges[threadID] = bridge
+	a.allowReviewOutcome[threadID] = req.OfferReviewOutcomeTool
 	a.mu.Unlock()
 	defer func() {
 		a.mu.Lock()
 		delete(a.bridges, threadID)
 		delete(a.codexTurns, threadID)
+		delete(a.allowReviewOutcome, threadID)
 		a.mu.Unlock()
 	}()
 
@@ -297,9 +314,17 @@ func (a *codexAdapter) handleDynamicToolCall(req codexInboundRequest) {
 	threadID := codexThreadIDFromParams(req.Params)
 	a.mu.Lock()
 	bridge := a.bridges[threadID]
+	allowReviewOutcome := a.allowReviewOutcome[threadID]
 	a.mu.Unlock()
 
 	tool, _ := req.Params["tool"].(string)
+	// BUG-NOTE-CP42 #24 defense in depth: submit_review_outcome isn't listed
+	// in dynamicTools for a non-hub turn, but re-check here too in case a
+	// model calls it anyway (e.g. from stale session context after a resume).
+	if (tool == "submit_review_outcome" || tool == codexReviewOutcomeToolName) && !allowReviewOutcome {
+		_ = a.dispatcher.reply(req.ID, codexDynamicToolResult("submit_review_outcome is not available for this run.", false))
+		return
+	}
 	if bridge == nil {
 		_ = a.dispatcher.reply(req.ID, codexDynamicToolResult("Tool is not available.", false))
 		return

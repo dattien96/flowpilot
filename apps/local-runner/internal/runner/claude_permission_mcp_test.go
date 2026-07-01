@@ -110,7 +110,7 @@ func TestClaudeArgsDisablesBuiltinAskUserQuestion(t *testing.T) {
 // how to call it and biased it toward the (now-disabled) built-in AskUserQuestion.
 func TestClaudeAskUserToolAdvertisesSchema(t *testing.T) {
 	var askUser map[string]any
-	for _, def := range claudeMCPToolDefs() {
+	for _, def := range claudeMCPToolDefs(true) {
 		if m, ok := def.(map[string]any); ok && m["name"] == "ask_user" {
 			askUser = m
 		}
@@ -136,7 +136,7 @@ func TestClaudeAskUserToolAdvertisesSchema(t *testing.T) {
 // would mean Claude never sees spawn_agent in tools/list and replies "tool not found".
 func TestClaudeSpawnAgentToolAdvertisesSchema(t *testing.T) {
 	var spawnAgent map[string]any
-	for _, def := range claudeMCPToolDefs() {
+	for _, def := range claudeMCPToolDefs(true) {
 		if m, ok := def.(map[string]any); ok && m["name"] == "spawn_agent" {
 			spawnAgent = m
 		}
@@ -164,7 +164,7 @@ func TestClaudeSpawnAgentToolAdvertisesSchema(t *testing.T) {
 func TestClaudeMCPServerPromptGate(t *testing.T) {
 	t.Run("unblocks when tools/list is dispatched", func(t *testing.T) {
 		s := newClaudeMCPServer()
-		tok := s.register(&fakeClaudeBridge{})
+		tok := s.register(&fakeClaudeBridge{}, true)
 		defer s.unregister(tok)
 
 		// Not ready before the handshake reaches tools/list.
@@ -190,7 +190,7 @@ func TestClaudeMCPServerPromptGate(t *testing.T) {
 
 	t.Run("times out without a connection", func(t *testing.T) {
 		s := newClaudeMCPServer()
-		tok := s.register(&fakeClaudeBridge{})
+		tok := s.register(&fakeClaudeBridge{}, true)
 		defer s.unregister(tok)
 		start := time.Now()
 		if s.waitReady(context.Background(), tok, 40*time.Millisecond) {
@@ -203,7 +203,7 @@ func TestClaudeMCPServerPromptGate(t *testing.T) {
 
 	t.Run("returns on ctx cancel", func(t *testing.T) {
 		s := newClaudeMCPServer()
-		tok := s.register(&fakeClaudeBridge{})
+		tok := s.register(&fakeClaudeBridge{}, true)
 		defer s.unregister(tok)
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()

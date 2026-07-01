@@ -54,15 +54,25 @@ type claudeMCPServer struct {
 	// tools/list for that token — i.e. the per-turn server is connected and its tools
 	// (including ask_user) are live. SendTurn waits on this before delivering the prompt.
 	ready map[string]chan struct{}
+	// allowReviewOutcome tracks, per token, whether this turn's run is
+	// actually acting as a flow hub (BUG-NOTE-CP42 #24). tools/list omits
+	// submit_review_outcome entirely when false; tools/call re-checks it as
+	// defense in depth against a model calling a tool it was never shown.
+	allowReviewOutcome map[string]bool
 }
 
 func newClaudeMCPServer() *claudeMCPServer {
-	return &claudeMCPServer{bridges: map[string]TurnBridge{}, ready: map[string]chan struct{}{}}
+	return &claudeMCPServer{
+		bridges:            map[string]TurnBridge{},
+		ready:              map[string]chan struct{}{},
+		allowReviewOutcome: map[string]bool{},
+	}
 }
 
 // register binds a turn's bridge to a fresh crypto-random token (used in the per-turn
-// --mcp-config URL so a remote caller cannot guess an active token).
-func (s *claudeMCPServer) register(bridge TurnBridge) string {
+// --mcp-config URL so a remote caller cannot guess an active token). allowReviewOutcome
+// gates whether this turn's tools/list advertises submit_review_outcome (BUG-NOTE-CP42 #24).
+func (s *claudeMCPServer) register(bridge TurnBridge, allowReviewOutcome bool) string {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
 		// rand.Read essentially never fails; fall back to a still-unique-enough value.
@@ -72,6 +82,7 @@ func (s *claudeMCPServer) register(bridge TurnBridge) string {
 	s.mu.Lock()
 	s.bridges[tok] = bridge
 	s.ready[tok] = make(chan struct{})
+	s.allowReviewOutcome[tok] = allowReviewOutcome
 	s.mu.Unlock()
 	return tok
 }
@@ -80,6 +91,7 @@ func (s *claudeMCPServer) unregister(tok string) {
 	s.mu.Lock()
 	delete(s.bridges, tok)
 	delete(s.ready, tok)
+	delete(s.allowReviewOutcome, tok)
 	s.mu.Unlock()
 }
 
@@ -236,7 +248,10 @@ func (s *claudeMCPServer) dispatch(method string, msg map[string]any, token stri
 		// The handshake reached tools/list: the per-turn server is connected and its tools
 		// are live. Unblock SendTurn so it can deliver the prompt with ask_user available.
 		s.signalReady(token)
-		return map[string]any{"tools": claudeMCPToolDefs()}, nil
+		s.mu.Lock()
+		allowReviewOutcome := s.allowReviewOutcome[token]
+		s.mu.Unlock()
+		return map[string]any{"tools": claudeMCPToolDefs(allowReviewOutcome)}, nil
 	case "tools/call":
 		name, _ := params["name"].(string)
 		args, _ := params["arguments"].(map[string]any)
@@ -255,6 +270,15 @@ func (s *claudeMCPServer) dispatch(method string, msg map[string]any, token stri
 		case "spawn_agent":
 			return handleClaudeSpawnAgent(args, bridge), nil
 		case "submit_review_outcome":
+			// BUG-NOTE-CP42 #24 defense in depth: not listed in tools/list for
+			// a non-hub turn, but re-check here too in case the model calls it
+			// anyway (e.g. from stale session context after a resume).
+			s.mu.Lock()
+			allowReviewOutcome := s.allowReviewOutcome[token]
+			s.mu.Unlock()
+			if !allowReviewOutcome {
+				return nil, map[string]any{"code": -32601, "message": "submit_review_outcome is not available for this run"}
+			}
 			return handleClaudeSubmitReviewOutcome(args, bridge), nil
 		default:
 			return nil, map[string]any{"code": -32601, "message": "unknown tool: " + name}
@@ -263,8 +287,8 @@ func (s *claudeMCPServer) dispatch(method string, msg map[string]any, token stri
 	return nil, map[string]any{"code": -32601, "message": "method not found: " + method}
 }
 
-func claudeMCPToolDefs() []any {
-	return []any{
+func claudeMCPToolDefs(allowReviewOutcome bool) []any {
+	defs := []any{
 		map[string]any{"name": "approve", "description": "FlowPilot permission prompt: approve or deny a tool use.", "inputSchema": map[string]any{"type": "object"}},
 		// ask_user MUST advertise its parameter schema (prompt/options/multiSelect) so the model
 		// knows how to call it and prefers it over its disabled built-in AskUserQuestion. Mirrors
@@ -301,12 +325,15 @@ func claudeMCPToolDefs() []any {
 				"required": []any{"agent", "prompt"},
 			},
 		},
-		map[string]any{
+	}
+	if allowReviewOutcome {
+		defs = append(defs, map[string]any{
 			"name":        "submit_review_outcome",
 			"description": "Submit a code-review verdict. Use approved when the code is ready, changes_requested when issues were found (feedback required), or blocked when the review cannot proceed. This is the only flow-control tool — do not use flow_control directly.",
 			"inputSchema": sharedReviewOutcomeSchema(),
-		},
+		})
 	}
+	return defs
 }
 
 // sharedReviewOutcomeSchema returns the canonical submit_review_outcome inputSchema used by

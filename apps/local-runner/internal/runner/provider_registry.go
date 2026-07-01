@@ -56,6 +56,15 @@ type TurnRequest struct {
 	// Attachments carries chat-turn image attachments (Task-052). Vision-capable
 	// adapters convert these into provider-specific multimodal payloads; others ignore them.
 	Attachments []PromptAttachment
+	// OfferReviewOutcomeTool gates whether the submit_review_outcome/flow_control
+	// tool is exposed to the model for this turn. True only for a run actually
+	// acting as a flow's hub (rs.autoOrchestrate) — a plain normal_chat run, or a
+	// spawned reviewer/coder child, never sees this tool (BUG-NOTE-CP42 #24):
+	// previously every turn on every provider unconditionally advertised it,
+	// so a model in ordinary chat could call it and mutate that run's loop
+	// state (applyFlowControl only checks the run exists, not that it's
+	// actually a flow hub).
+	OfferReviewOutcomeTool bool
 }
 
 // ProviderRuntimeAdapter is the provider-neutral adapter contract (03/04). The

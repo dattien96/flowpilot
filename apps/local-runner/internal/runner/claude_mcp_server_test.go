@@ -52,11 +52,67 @@ func TestClaudeMCPInitializeAndList(t *testing.T) {
 	if res["protocolVersion"] != "2025-11-25" || res["serverInfo"] == nil {
 		t.Fatalf("initialize result = %+v", init)
 	}
+	// BUG-NOTE-CP42 #24: submit_review_outcome is only advertised for a
+	// registered token whose turn is actually a flow hub. This request uses
+	// no token ("") at all, so only the 3 always-on tools (approve, ask_user,
+	// spawn_agent) should appear.
 	_, list := postMCP(t, srv, "", map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
 	lr, _ := list["result"].(map[string]any)
 	tools, _ := lr["tools"].([]any)
-	if len(tools) != 4 {
+	if len(tools) != 3 {
 		t.Fatalf("tools/list = %+v", list)
+	}
+}
+
+// TestClaudeMCPToolsListIncludesReviewOutcomeOnlyWhenAllowed is the
+// regression test for BUG-NOTE-CP42 #24: submit_review_outcome used to be
+// unconditionally advertised to every turn on every provider, so a model in
+// ordinary normal_chat could call it and mutate that run's loop state.
+func TestClaudeMCPToolsListIncludesReviewOutcomeOnlyWhenAllowed(t *testing.T) {
+	srv := newClaudeMCPServer()
+
+	normalChatTok := srv.register(&fakeClaudeBridge{}, false)
+	defer srv.unregister(normalChatTok)
+	_, list := postMCP(t, srv, normalChatTok, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+	lr, _ := list["result"].(map[string]any)
+	tools, _ := lr["tools"].([]any)
+	for _, def := range tools {
+		if m, ok := def.(map[string]any); ok && m["name"] == "submit_review_outcome" {
+			t.Fatalf("submit_review_outcome must not be advertised for a normal_chat (non-hub) turn, got %+v", tools)
+		}
+	}
+
+	hubTok := srv.register(&fakeClaudeBridge{}, true)
+	defer srv.unregister(hubTok)
+	_, list2 := postMCP(t, srv, hubTok, map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+	lr2, _ := list2["result"].(map[string]any)
+	tools2, _ := lr2["tools"].([]any)
+	found := false
+	for _, def := range tools2 {
+		if m, ok := def.(map[string]any); ok && m["name"] == "submit_review_outcome" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("submit_review_outcome must be advertised for a flow-hub turn, got %+v", tools2)
+	}
+}
+
+// TestClaudeMCPSubmitReviewOutcomeRejectedWhenNotAllowed proves the defense-
+// in-depth check at tools/call time: even if a model somehow calls
+// submit_review_outcome despite it not being listed, the call must be
+// rejected, not silently mutate the run's loop state via applyFlowControl.
+func TestClaudeMCPSubmitReviewOutcomeRejectedWhenNotAllowed(t *testing.T) {
+	srv := newClaudeMCPServer()
+	tok := srv.register(&fakeClaudeBridge{}, false)
+	defer srv.unregister(tok)
+
+	_, resp := postMCP(t, srv, tok, map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+		"params": map[string]any{"name": "submit_review_outcome", "arguments": map[string]any{"status": "approved"}},
+	})
+	if _, hasError := resp["error"]; !hasError {
+		t.Fatalf("expected an error rejecting submit_review_outcome for a non-hub turn, got %+v", resp)
 	}
 }
 
@@ -95,7 +151,7 @@ func TestClaudeMCPNotificationReturns202(t *testing.T) {
 func TestClaudeMCPApproveRoutesToBridgeDeny(t *testing.T) {
 	srv := newClaudeMCPServer()
 	b := &fakeClaudeBridge{approval: "deny"}
-	tok := srv.register(b)
+	tok := srv.register(b, true)
 	defer srv.unregister(tok)
 
 	_, resp := postMCP(t, srv, tok, map[string]any{
@@ -114,7 +170,7 @@ func TestClaudeMCPApproveRoutesToBridgeDeny(t *testing.T) {
 
 func TestClaudeMCPApproveAllow(t *testing.T) {
 	srv := newClaudeMCPServer()
-	tok := srv.register(&fakeClaudeBridge{approval: "approve"})
+	tok := srv.register(&fakeClaudeBridge{approval: "approve"}, true)
 	_, resp := postMCP(t, srv, tok, map[string]any{
 		"jsonrpc": "2.0", "id": 3, "method": "tools/call",
 		"params": map[string]any{"name": "approve", "arguments": map[string]any{"tool_name": "Bash", "input": map[string]any{"command": "echo hi"}}},
@@ -138,7 +194,7 @@ func TestClaudeMCPRejectsNonLoopback(t *testing.T) {
 
 func TestClaudeMCPTokensAreRandom(t *testing.T) {
 	srv := newClaudeMCPServer()
-	a, b := srv.register(&fakeClaudeBridge{}), srv.register(&fakeClaudeBridge{})
+	a, b := srv.register(&fakeClaudeBridge{}, true), srv.register(&fakeClaudeBridge{}, true)
 	if a == b || len(a) < 16 || a == "t1" {
 		t.Fatalf("tokens must be unguessable + unique: %q %q", a, b)
 	}

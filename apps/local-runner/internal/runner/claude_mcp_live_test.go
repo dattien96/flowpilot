@@ -28,7 +28,7 @@ func TestLiveClaudeHTTPMCPDenyBlocks(t *testing.T) {
 	// 1. Runner-hosted MCP server + a deny bridge, exposed over HTTP.
 	srv := newClaudeMCPServer()
 	bridge := &fakeClaudeBridge{approval: "deny"}
-	token := srv.register(bridge)
+	token := srv.register(bridge, true)
 	defer srv.unregister(token)
 	ts := httptest.NewServer(srv)
 	defer ts.Close()

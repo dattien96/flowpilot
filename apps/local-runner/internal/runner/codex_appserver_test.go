@@ -1500,7 +1500,7 @@ func TestCodexAdapterSubmitReviewOutcomeDynamicToolRouting(t *testing.T) {
 	})
 
 	bridge := &captureBridge{approveWith: "approve"}
-	if err := adapter.SendTurn(context.Background(), TurnRequest{RunID: "r-ro", Prompt: "go"}, bridge); err != nil {
+	if err := adapter.SendTurn(context.Background(), TurnRequest{RunID: "r-ro", Prompt: "go", OfferReviewOutcomeTool: true}, bridge); err != nil {
 		t.Fatalf("SendTurn: %v", err)
 	}
 
@@ -1526,5 +1526,107 @@ func TestCodexAdapterSubmitReviewOutcomeDynamicToolRouting(t *testing.T) {
 		}
 	default:
 		t.Fatal("submit_review_outcome reply was not sent to Codex")
+	}
+}
+
+// TestCodexAdapterDoesNotAdvertiseReviewOutcomeToolByDefault is the
+// regression test for BUG-NOTE-CP42 #24: every Codex turn used to
+// unconditionally register submit_review_outcome as a dynamicTool, so a
+// model in ordinary normal_chat could call it and mutate that run's loop
+// state via applyFlowControl (which only checks the run exists, not that
+// it's actually a flow hub). OfferReviewOutcomeTool now gates this per turn.
+func TestCodexAdapterDoesNotAdvertiseReviewOutcomeToolByDefault(t *testing.T) {
+	d, fc := startFakeCodex(t, nil)
+	adapter := newCodexAdapter(d, "/workspace")
+	d.setInbound(adapter.handleInbound)
+
+	startParams := make(chan map[string]any, 1)
+	fc.serve(func(fc *fakeCodex, m map[string]any) {
+		method, _ := m["method"].(string)
+		switch method {
+		case "thread/start":
+			if params, ok := m["params"].(map[string]any); ok {
+				select {
+				case startParams <- params:
+				default:
+				}
+			}
+			fc.reply(m["id"], map[string]any{"threadId": "th-normal-chat"})
+		case "turn/start":
+			fc.reply(m["id"], map[string]any{"turnId": "ct-normal-chat"})
+			fc.notify("turn.completed", map[string]any{"threadId": "th-normal-chat", "finalMessage": "ok"})
+		}
+	})
+
+	bridge := &captureBridge{}
+	if err := adapter.SendTurn(context.Background(), TurnRequest{RunID: "r-normal-chat", Prompt: "hi"}, bridge); err != nil {
+		t.Fatalf("SendTurn: %v", err)
+	}
+
+	select {
+	case params := <-startParams:
+		raw, _ := json.Marshal(params["dynamicTools"])
+		if strings.Contains(string(raw), "submit_review_outcome") || strings.Contains(string(raw), codexReviewOutcomeToolName) {
+			t.Fatalf("thread/start dynamicTools must not include submit_review_outcome for a normal_chat (non-hub) turn: %s", raw)
+		}
+	default:
+		t.Fatal("did not capture thread/start params")
+	}
+}
+
+// TestCodexAdapterRejectsReviewOutcomeCallWhenNotOffered proves the defense-
+// in-depth check: even if a model somehow calls submit_review_outcome
+// despite it not being advertised, the call must be rejected — not silently
+// forwarded to SubmitFlowControl.
+func TestCodexAdapterRejectsReviewOutcomeCallWhenNotOffered(t *testing.T) {
+	d, fc := startFakeCodex(t, nil)
+	adapter := newCodexAdapter(d, "/workspace")
+	d.setInbound(adapter.handleInbound)
+
+	toolReplies := make(chan map[string]any, 1)
+	fc.serve(func(fc *fakeCodex, m map[string]any) {
+		method, _ := m["method"].(string)
+		switch method {
+		case "thread/start":
+			fc.reply(m["id"], map[string]any{"threadId": "th-rejected"})
+		case "turn/start":
+			fc.reply(m["id"], map[string]any{"turnId": "ct-rejected"})
+			fc.send(map[string]any{
+				"jsonrpc": "2.0", "id": 701, "method": "item/tool/call",
+				"params": map[string]any{
+					"threadId": "th-rejected", "turnId": "ct-rejected", "callId": "call_rejected",
+					"tool":      codexReviewOutcomeToolName,
+					"arguments": map[string]any{"status": "approved"},
+				},
+			})
+		default:
+			if res, ok := m["result"].(map[string]any); ok {
+				if _, ok := res["contentItems"]; ok {
+					toolReplies <- res
+					fc.notify("turn.completed", map[string]any{"threadId": "th-rejected", "finalMessage": "done"})
+				}
+			}
+		}
+	})
+
+	bridge := &captureBridge{approveWith: "approve"}
+	if err := adapter.SendTurn(context.Background(), TurnRequest{RunID: "r-rejected", Prompt: "go"}, bridge); err != nil {
+		t.Fatalf("SendTurn: %v", err)
+	}
+
+	bridge.mu.Lock()
+	capturedFC := bridge.flowControlInput
+	bridge.mu.Unlock()
+	if capturedFC != nil {
+		t.Fatalf("SubmitFlowControl must not be called for a turn that never offered submit_review_outcome, got %+v", capturedFC)
+	}
+
+	select {
+	case res := <-toolReplies:
+		if res["success"] == true {
+			t.Fatalf("dynamic tool result success = %v, want false (rejected)", res["success"])
+		}
+	default:
+		t.Fatal("rejection reply was not sent to Codex")
 	}
 }
