@@ -4,6 +4,7 @@ import type {
   AgentDefinition,
   AgentGraphSnapshot,
   AgentRunSummary,
+  BuiltinFlowOption,
   ChatSessionRestoreRequest,
   Project,
   ProviderAccountSummary,
@@ -138,6 +139,15 @@ interface AppState {
   summaryGenerating: boolean;
   chatStartMode: ChatStartMode;
   chatSourceDocId: string;
+  /**
+   * Selected built-in orchestration flowRef for the current chat start
+   * (CP-42/Task-177), e.g. "flowpilot-core-flow-pack/review-loop". Only
+   * meaningful when chatStartMode === "bugfix"; cleared whenever chatStartMode
+   * changes to anything else (setChatStartMode) so a stale selection never
+   * leaks into an unrelated sub-mode.
+   */
+  flowRef?: string;
+  builtinOrchestrationOptions: BuiltinFlowOption[];
 
   // run
   runId?: string;
@@ -234,6 +244,8 @@ interface AppState {
   generateChatSummary(): Promise<void>;
   setChatStartMode(mode: ChatStartMode): void;
   setChatSourceDocId(sourceDocId: string): void;
+  setFlowRef(flowRef: string | undefined): void;
+  loadBuiltinOrchestrationOptions(subMode: string): Promise<void>;
   selectWorkflow(workflowId: string): Promise<void>;
   selectStep(stepId: string): void;
   setScenario(scenario: ScenarioName): void;
@@ -312,6 +324,8 @@ export const useStore = create<AppState>((set, get) => ({
   summaryGenerating: false,
   chatStartMode: "normal",
   chatSourceDocId: "",
+  flowRef: undefined,
+  builtinOrchestrationOptions: [],
   workspaceMainView: "chat",
   _historyReplaying: false,
   _historyLoadSeq: 0,
@@ -841,11 +855,41 @@ export const useStore = create<AppState>((set, get) => ({
     set((state) => ({
       chatStartMode: mode,
       chatSourceDocId: mode === "normal" ? "" : state.chatSourceDocId,
+      // A built-in orchestration selection only makes sense for the sub-mode
+      // it was offered under (CP-42 Task-177 T-7: switching away from Bug
+      // clears the Review Loop selection); clear both the pick and the
+      // stale option list on every intent change, then reload below if the
+      // new mode has options to offer.
+      flowRef: undefined,
+      builtinOrchestrationOptions: [],
     }));
+    if (mode === "bugfix") {
+      void get().loadBuiltinOrchestrationOptions("bug");
+    }
   },
 
   setChatSourceDocId(sourceDocId) {
     set({ chatSourceDocId: sourceDocId });
+  },
+
+  setFlowRef(flowRef) {
+    set({ flowRef });
+  },
+
+  async loadBuiltinOrchestrationOptions(subMode) {
+    const { client } = get();
+    if (!client.listBuiltinOrchestrationOptions) {
+      set({ builtinOrchestrationOptions: [] });
+      return;
+    }
+    try {
+      const options = await client.listBuiltinOrchestrationOptions(subMode);
+      set({ builtinOrchestrationOptions: options });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] loadBuiltinOrchestrationOptions failed:", err);
+      set({ builtinOrchestrationOptions: [] });
+    }
   },
 
   async loadSkills(provider, cwd) {
@@ -863,7 +907,7 @@ export const useStore = create<AppState>((set, get) => ({
     const {
       client, chatMode, launchMode,
       selectedProjectId, selectedWorkflowId, selectedStepId,
-      selectedProvider, selectedModel, reasoningEffort, yoloMode, chatStartMode, chatSourceDocId,
+      selectedProvider, selectedModel, reasoningEffort, yoloMode, chatStartMode, chatSourceDocId, flowRef,
     } = get();
     const focusedRunId = get().activeAgentRunId;
     const mainRunId = get().mainRunId ?? get().runId;
@@ -987,6 +1031,12 @@ export const useStore = create<AppState>((set, get) => ({
           chatMode === "normal_chat" && attachments && attachments.length > 0
             ? attachments
             : undefined,
+        // Built-in orchestration selection (CP-42/Task-177): only meaningful
+        // alongside a first-turn Bug intent, and only when the user actually
+        // picked a flow. chatStartMode's runner-facing sub-mode key is "bug",
+        // distinct from the UI's "bugfix" tab value.
+        subMode: isFirstChatTurn && chatStartMode === "bugfix" && flowRef ? "bug" : undefined,
+        flowRef: isFirstChatTurn && chatStartMode === "bugfix" ? flowRef : undefined,
       };
       set({ runId, lastTurnInput: turnInput, activeStepId: turnStepId, _streamRunSeq: get()._streamRunSeq + 1 });
       cancelHistoryReplayStream();
@@ -1419,6 +1469,8 @@ export const useStore = create<AppState>((set, get) => ({
       _runReplaySeq: {},
       chatStartMode: "normal",
       chatSourceDocId: "",
+      flowRef: undefined,
+      builtinOrchestrationOptions: [],
       selectedModel: pickDefaultModel(selectedProvider, supportedModels),
     });
   },

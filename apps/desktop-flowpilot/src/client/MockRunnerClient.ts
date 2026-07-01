@@ -3,6 +3,7 @@ import type {
   AgentDefinition,
   AgentRunSummary,
   AgentGraphSnapshot,
+  BuiltinFlowOption,
   ChatSessionRestoreRequest,
   ChatSessionRestoreResult,
   ChatSessionSyncRequest,
@@ -378,6 +379,20 @@ export class MockRunnerClient implements RunnerClient {
   async listAgents(_cwd?: string): Promise<AgentDefinition[]> {
     await delay(40);
     return MOCK_AGENTS;
+  }
+
+  async listBuiltinOrchestrationOptions(subMode: string): Promise<BuiltinFlowOption[]> {
+    await delay(20);
+    if (subMode === "bug") {
+      return [
+        {
+          flowRef: "flowpilot-core-flow-pack/review-loop",
+          label: "Review Loop",
+          description: "Coder -> reviewers -> synthesis, review-until-clean.",
+        },
+      ];
+    }
+    return [];
   }
 
   async listAgentRuns(parentRunId: string): Promise<AgentRunSummary[]> {

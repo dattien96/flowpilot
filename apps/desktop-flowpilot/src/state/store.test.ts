@@ -241,6 +241,41 @@ test("selectProject resets the active chat run when switching projects", async (
   assert.equal(state.pendingApproval, undefined);
 });
 
+test("setChatStartMode clears flowRef and builtin orchestration options on any mode change", () => {
+  seedStore(makeClient(), []);
+  useStore.setState({ flowRef: "flowpilot-core-flow-pack/review-loop", builtinOrchestrationOptions: [
+    { flowRef: "flowpilot-core-flow-pack/review-loop", label: "Review Loop", description: "" },
+  ] });
+
+  useStore.getState().setChatStartMode("normal");
+
+  const state = useStore.getState();
+  assert.equal(state.chatStartMode, "normal");
+  assert.equal(state.flowRef, undefined);
+  assert.deepEqual(state.builtinOrchestrationOptions, []);
+});
+
+test("setChatStartMode loads builtin orchestration options when entering bugfix", async () => {
+  seedStore(
+    makeClient({
+      listBuiltinOrchestrationOptions: async (subMode) => {
+        assert.equal(subMode, "bug");
+        return [{ flowRef: "flowpilot-core-flow-pack/review-loop", label: "Review Loop", description: "review until clean" }];
+      },
+    }),
+    [],
+  );
+
+  useStore.getState().setChatStartMode("bugfix");
+  // loadBuiltinOrchestrationOptions is fired-and-forgotten from setChatStartMode; await a tick.
+  await Promise.resolve();
+  await Promise.resolve();
+
+  const state = useStore.getState();
+  assert.equal(state.builtinOrchestrationOptions.length, 1);
+  assert.equal(state.builtinOrchestrationOptions[0]?.flowRef, "flowpilot-core-flow-pack/review-loop");
+});
+
 test("openHistoryRun treats active-account-not-signed-in as unavailable instead of replacing the current run", async () => {
   seedStore(
     makeClient({

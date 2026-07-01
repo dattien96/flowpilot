@@ -3,6 +3,7 @@ import type {
   AgentRunSummary,
   AgentGraphSnapshot,
   Artifact,
+  BuiltinFlowOption,
   ChatSessionRestoreRequest,
   ChatSessionRestoreResult,
   ChatSessionSyncRequest,
@@ -171,6 +172,11 @@ export class HttpWsRunnerClient implements RunnerClient {
     return this.getJSON<ProviderSkill[]>(url);
   }
 
+  listBuiltinOrchestrationOptions(subMode: string): Promise<BuiltinFlowOption[]> {
+    const url = `/client/chat/builtin-orchestration-options?subMode=${encodeURIComponent(subMode)}`;
+    return this.getJSON<BuiltinFlowOption[]>(url);
+  }
+
   listAgents(cwd?: string): Promise<AgentDefinition[]> {
     const url = cwd ? `/client/agents?cwd=${encodeURIComponent(cwd)}` : "/client/agents";
     return this.getJSON<AgentDefinition[]>(url);
@@ -283,6 +289,8 @@ export class HttpWsRunnerClient implements RunnerClient {
         model: input.model,
         yoloMode: input.yoloMode,
         attachments: input.attachments,
+        subMode: input.subMode,
+        flowRef: input.flowRef,
         scenario: this.scenario,
       },
     );

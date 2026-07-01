@@ -409,6 +409,25 @@ export interface TurnInput {
    * by vision-capable providers; the composer gates the attach control accordingly.
    */
   attachments?: PromptAttachment[];
+  /**
+   * Built-in Chat Mode orchestration selection (CP-42/Task-177). subMode is the
+   * runner's sub-mode key (currently "bug" for the Bug chat intent); flowRef
+   * selects a built-in flow such as "flowpilot-core-flow-pack/review-loop".
+   * Both are sent only on the first turn of a run, alongside changeType/
+   * sourceDocId, and are optional — omitting them is normal chat with no
+   * orchestration. The runner validates flowRef against the sub-mode's
+   * built-in options and rejects an invalid pairing before starting the turn.
+   */
+  subMode?: string;
+  flowRef?: string;
+}
+
+/** One selectable built-in orchestration flow for a given chat subMode
+ * (CP-42/Task-177), as served by GET /client/chat/builtin-orchestration-options. */
+export interface BuiltinFlowOption {
+  flowRef: string;
+  label: string;
+  description: string;
 }
 
 // ---- ProviderEventDTO (serialized ProviderEvent union) ---------------------
@@ -529,6 +548,12 @@ export interface RunnerClient {
   streamRun(runId: string, afterSeq?: number, signal?: AbortSignal): AsyncIterable<ProviderEventDTO>;
   listArtifacts(runId: string): Promise<Artifact[]>;
   listSkills(provider: string, cwd?: string): Promise<ProviderSkill[]>;
+  /**
+   * List built-in Chat Mode orchestration flow options for subMode (CP-42/
+   * Task-177), e.g. "Review Loop" for subMode="bug". Optional so existing
+   * clients (mock) need not implement it until a real backend is present.
+   */
+  listBuiltinOrchestrationOptions?(subMode: string): Promise<BuiltinFlowOption[]>;
   /**
    * List loadable sub-agent definitions for the spawn picker (CP-19 / Task-081).
    * Optional so existing clients (mock) need not implement it until the Agents
