@@ -44,8 +44,9 @@ func (s *SupabaseWorkflowStore) headers(prefer string) map[string]string {
 	return h
 }
 
-// dbStep is the PostgREST row shape for workflow_run_steps. requires_approval lives
-// on the joined workflow_steps definition, embedded via the select.
+// dbStep is the PostgREST row shape for workflow_run_steps. requires_approval
+// and behavior_id both live on the joined workflow_steps definition, embedded
+// via the select.
 type dbStep struct {
 	ID            string  `json:"id"`
 	StepType      string  `json:"step_type"`
@@ -54,14 +55,24 @@ type dbStep struct {
 	RetryCount    int     `json:"retry_count"`
 	RejectionNote *string `json:"rejection_note"`
 	WorkflowSteps *struct {
-		RequiresApproval bool `json:"requires_approval"`
+		RequiresApproval bool    `json:"requires_approval"`
+		BehaviorID       *string `json:"behavior_id"`
 	} `json:"workflow_steps"`
 }
 
 // LoadRunSteps reads a run's steps in execution order.
 func (s *SupabaseWorkflowStore) LoadRunSteps(ctx context.Context, runID string) ([]RuntimeWorkflowStep, error) {
+	// BUG-NOTE-CP42 #7: behavior_id was missing from this select, so
+	// RuntimeWorkflowStep never carried it and runtime helpers like
+	// isCodingStepType/isPlanStepType could only classify a step by its
+	// step_type — the reusable step_definitions key — which for a CP-42
+	// generic flow node is a dispatch category (e.g. "flow-agent-delegate"),
+	// not a value NormalizeBehaviorID's alias table recognizes at all. A
+	// UI-authored generic flow's coding/plan steps were invisible to this
+	// classification, disconnecting them from the Flow Mode context-handoff
+	// path entirely.
 	endpoint := fmt.Sprintf(
-		"%s/workflow_run_steps?workflow_run_id=eq.%s&order=execution_order_index.asc&select=id,step_type,status,started_at,retry_count,rejection_note,workflow_steps(requires_approval)",
+		"%s/workflow_run_steps?workflow_run_id=eq.%s&order=execution_order_index.asc&select=id,step_type,status,started_at,retry_count,rejection_note,workflow_steps(requires_approval,behavior_id)",
 		s.restURL, runID,
 	)
 	status, body, err := httpRequestFn(ctx, http.MethodGet, endpoint, s.headers(""), nil)
@@ -91,6 +102,9 @@ func (s *SupabaseWorkflowStore) LoadRunSteps(ctx context.Context, runID string) 
 		}
 		if r.WorkflowSteps != nil {
 			step.RequiresApproval = r.WorkflowSteps.RequiresApproval
+			if r.WorkflowSteps.BehaviorID != nil {
+				step.BehaviorID = *r.WorkflowSteps.BehaviorID
+			}
 		}
 		out[i] = step
 	}

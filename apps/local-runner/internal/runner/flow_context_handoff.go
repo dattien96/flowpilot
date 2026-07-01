@@ -2,7 +2,10 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"strings"
+
+	"flowpilot-runner/internal/agentpack"
 )
 
 // flowContextHandoffPrefix is the leading marker of every flow context package
@@ -15,23 +18,34 @@ func isFlowContextHandoff(prompt string) bool {
 	return strings.HasPrefix(strings.TrimSpace(prompt), flowContextHandoffPrefix)
 }
 
-// isCodingStepType returns true for step types that represent a Coding step
-// in a Flow Mode workflow.
-func isCodingStepType(stepType string) bool {
-	switch strings.ToLower(strings.TrimSpace(stepType)) {
-	case "coding", "implementation", "code":
-		return true
+// classifyStepBehavior resolves a step's canonical behavior, preferring its
+// declared BehaviorID over its StepType (BUG-NOTE-CP42 #7): step_type is a
+// reusable step_definitions key — for a CP-42 generic flow node it's a
+// dispatch category like "flow-agent-delegate", which NormalizeBehaviorID's
+// alias table doesn't recognize at all, so classifying by StepType alone
+// left every UI-authored generic flow's coding/plan steps unclassifiable.
+// Falls back to StepType for a step whose definition predates CP-42 (the
+// original hardcoded "coding"/"plan" step_type values ARE recognized
+// aliases) or never set a BehaviorID.
+func classifyStepBehavior(behaviorID, stepType string) (string, bool) {
+	if behaviorID != "" {
+		return agentpack.NormalizeBehaviorID(behaviorID)
 	}
-	return false
+	return agentpack.NormalizeBehaviorID(stepType)
 }
 
-// isPlanStepType returns true for step types that represent a Plan step.
-func isPlanStepType(stepType string) bool {
-	switch strings.ToLower(strings.TrimSpace(stepType)) {
-	case "plan", "planning", "design":
-		return true
-	}
-	return false
+// isCodingStepType returns true for a step that represents a Coding step in
+// a Flow Mode workflow, classifying by BehaviorID when set, else StepType.
+func isCodingStepType(behaviorID, stepType string) bool {
+	canonical, ok := classifyStepBehavior(behaviorID, stepType)
+	return ok && canonical == "agent.delegate"
+}
+
+// isPlanStepType returns true for a step that represents a Plan step,
+// classifying by BehaviorID when set, else StepType.
+func isPlanStepType(behaviorID, stepType string) bool {
+	canonical, ok := classifyStepBehavior(behaviorID, stepType)
+	return ok && canonical == "context.produce"
 }
 
 // findPlanStepID returns the ID of the most-recent Plan step that precedes
@@ -48,7 +62,7 @@ func findPlanStepID(steps []RuntimeWorkflowStep, codingStepID string) (string, b
 		return "", false
 	}
 	for i := codingIdx - 1; i >= 0; i-- {
-		if isPlanStepType(steps[i].StepType) {
+		if isPlanStepType(steps[i].BehaviorID, steps[i].StepType) {
 			return steps[i].ID, true
 		}
 	}
@@ -69,6 +83,44 @@ func FindFlowContextPackage(events []ProviderEvent, planStepID string) (*FlowCon
 		}
 	}
 	return nil, false
+}
+
+// renderFlowContextPrompt dispatches the context.render behavior (Task-176)
+// instead of calling ComposeFlowCodingPrompt directly, so the active
+// execution path is behavior-ID driven rather than hardcoding the render
+// step. A dispatch failure falls back to the direct call — the handler wraps
+// the same function, so failure here would indicate a registry defect, not a
+// legitimate "no context" case, and must not silently drop the package.
+func renderFlowContextPrompt(ctx context.Context, pkg FlowContextPackage, prompt string) string {
+	out, err := DefaultBehaviorRegistry().Dispatch(ctx, string(BehaviorContextRender), BehaviorInput{
+		Prompt:  prompt,
+		Payload: map[string]any{"package": pkg},
+	})
+	if err != nil || len(out.NextPromptFragments) == 0 {
+		return ComposeFlowCodingPrompt(pkg, prompt)
+	}
+	return out.NextPromptFragments[0]
+}
+
+// produceFlowContextPackage dispatches the context.produce behavior
+// (Task-176) instead of calling BuildFlowContextPackage directly, so the
+// active execution path selects context production by behavior ID.
+func produceFlowContextPackage(ctx context.Context, workspace string, hints FlowContextHints) (FlowContextPackage, error) {
+	out, err := DefaultBehaviorRegistry().Dispatch(ctx, string(BehaviorContextProduce), BehaviorInput{
+		WorkspaceCwd:  workspace,
+		WorkflowRunID: hints.WorkflowRunID,
+		StepRunID:     hints.PlanStepRunID,
+		Prompt:        hints.UserPrompt,
+		Payload:       map[string]any{"sourceDocId": hints.SourceDocID},
+	})
+	if err != nil {
+		return FlowContextPackage{}, err
+	}
+	pkg, ok := out.Payload["package"].(FlowContextPackage)
+	if !ok {
+		return FlowContextPackage{}, fmt.Errorf("context.produce: behavior output missing package")
+	}
+	return pkg, nil
 }
 
 // ComposeFlowCodingPrompt prepends the rendered FlowContextPackage plus a brief
@@ -114,14 +166,15 @@ func (s *InteractiveService) injectFlowContextIfCoding(
 		return providerPrompt
 	}
 
-	var thisStepType string
+	var thisStepType, thisBehaviorID string
 	for _, st := range steps {
 		if st.ID == stepID {
 			thisStepType = st.StepType
+			thisBehaviorID = st.BehaviorID
 			break
 		}
 	}
-	if !isCodingStepType(thisStepType) {
+	if !isCodingStepType(thisBehaviorID, thisStepType) {
 		return providerPrompt
 	}
 	planStepID, _ := findPlanStepID(steps, stepID)
@@ -138,7 +191,7 @@ func (s *InteractiveService) injectFlowContextIfCoding(
 	s.mu.Unlock()
 
 	if cached != nil {
-		return ComposeFlowCodingPrompt(*cached, providerPrompt)
+		return renderFlowContextPrompt(ctx, *cached, providerPrompt)
 	}
 
 	// Slow path: build a fresh package.
@@ -148,7 +201,7 @@ func (s *InteractiveService) injectFlowContextIfCoding(
 		UserPrompt:    rawPrompt,
 		SourceDocID:   rs.sourceDocID,
 	}
-	built, buildErr := BuildFlowContextPackage(rs.workspaceCwd, hints)
+	built, buildErr := produceFlowContextPackage(ctx, rs.workspaceCwd, hints)
 	if buildErr != nil {
 		return providerPrompt
 	}
@@ -173,7 +226,7 @@ func (s *InteractiveService) injectFlowContextIfCoding(
 	}
 	s.mu.Unlock()
 
-	return ComposeFlowCodingPrompt(*pkg, providerPrompt)
+	return renderFlowContextPrompt(ctx, *pkg, providerPrompt)
 }
 
 // maybeClearPlanContextForPlanStep clears rs.planContextPackage when stepID
@@ -188,7 +241,7 @@ func (s *InteractiveService) maybeClearPlanContextForPlanStep(ctx context.Contex
 		return
 	}
 	for _, st := range steps {
-		if st.ID == stepID && isPlanStepType(st.StepType) {
+		if st.ID == stepID && isPlanStepType(st.BehaviorID, st.StepType) {
 			s.mu.Lock()
 			rs.planContextPackage = nil
 			s.mu.Unlock()

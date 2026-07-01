@@ -43,6 +43,12 @@ type RuntimeWorkflowStep struct {
 	StartedAt        string // "" == null
 	RetryCount       int
 	RejectionNote    string // "" == null
+	// BehaviorID is the CP-42 canonical behavior id (agent.delegate/
+	// context.produce/...) declared on the step's workflow_steps definition
+	// row, when set. "" for a step whose definition predates CP-42 or never
+	// set one — callers fall back to classifying by StepType in that case
+	// (BUG-NOTE-CP42 #7).
+	BehaviorID string
 }
 
 // WorkflowStepPatch is the mutation to apply to a step. Pointer fields distinguish

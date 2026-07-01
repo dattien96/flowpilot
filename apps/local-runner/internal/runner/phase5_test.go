@@ -93,7 +93,11 @@ func newTestSupabaseStore() *SupabaseWorkflowStore {
 }
 
 func TestSupabaseStoreLoadRunStepsShaping(t *testing.T) {
-	rows := `[{"id":"s1","step_type":"plan","status":"PENDING","started_at":null,"retry_count":0,"rejection_note":null,"workflow_steps":{"requires_approval":true}}]`
+	// BUG-NOTE-CP42 #7: the embedded workflow_steps(...) select now also
+	// requests behavior_id, so RuntimeWorkflowStep can classify a CP-42
+	// generic flow node by its declared behavior instead of only its
+	// (dispatch-category) step_type.
+	rows := `[{"id":"s1","step_type":"plan","status":"PENDING","started_at":null,"retry_count":0,"rejection_note":null,"workflow_steps":{"requires_approval":true,"behavior_id":"context.produce"}}]`
 	cap := withMockHTTP(t, 200, []byte(rows))
 
 	steps, err := newTestSupabaseStore().LoadRunSteps(context.Background(), "run-1")
@@ -102,6 +106,9 @@ func TestSupabaseStoreLoadRunStepsShaping(t *testing.T) {
 	}
 	if len(steps) != 1 || steps[0].ID != "s1" || !steps[0].RequiresApproval {
 		t.Fatalf("decoded steps = %+v", steps)
+	}
+	if steps[0].BehaviorID != "context.produce" {
+		t.Fatalf("BehaviorID = %q, want context.produce", steps[0].BehaviorID)
 	}
 
 	req := (*cap)[0]
@@ -112,7 +119,7 @@ func TestSupabaseStoreLoadRunStepsShaping(t *testing.T) {
 		"https://proj.supabase.co/rest/v1/workflow_run_steps",
 		"workflow_run_id=eq.run-1",
 		"order=execution_order_index.asc",
-		"workflow_steps(requires_approval)",
+		"workflow_steps(requires_approval,behavior_id)",
 	} {
 		if !strings.Contains(req.endpoint, want) {
 			t.Fatalf("endpoint missing %q: %s", want, req.endpoint)
