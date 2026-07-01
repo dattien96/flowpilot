@@ -30,6 +30,17 @@ type WorkflowDraft = {
   modelOverride: string | null;
   reasoningEffortOverride: string | null;
   yoloMode: boolean;
+  // Pass-through only — no UI control edits these (BUG-NOTE-CP42 #14).
+  // saveWorkflow's repository upserts every field it's given, defaulting an
+  // omitted key to null/[] rather than leaving the existing DB value
+  // untouched, so a plain rename used to silently wipe an existing
+  // workflow's policy caps and edge graph. Populated from the loaded
+  // Workflow in mapWorkflowToDraft and sent back unchanged on save.
+  policyCap: number | null;
+  policyOnCap: string | null;
+  policyExtendBy: number | null;
+  policyExtendMax: number | null;
+  edges: Workflow["edges"];
 };
 
 const DEFAULT_MODEL = "gpt-5.4";
@@ -80,6 +91,11 @@ function mapWorkflowToDraft(workflow: Workflow | null): WorkflowDraft | null {
     modelOverride: workflow.modelOverride ?? DEFAULT_MODEL,
     reasoningEffortOverride: workflow.reasoningEffortOverride ?? DEFAULT_REASONING,
     yoloMode: workflow.yoloMode,
+    policyCap: workflow.policyCap,
+    policyOnCap: workflow.policyOnCap,
+    policyExtendBy: workflow.policyExtendBy,
+    policyExtendMax: workflow.policyExtendMax,
+    edges: workflow.edges,
   };
 }
 
@@ -92,6 +108,11 @@ function createEmptyWorkflowDraft(projects: Project[], modelId: string): Workflo
     modelOverride: modelId,
     reasoningEffortOverride: DEFAULT_REASONING,
     yoloMode: false,
+    policyCap: null,
+    policyOnCap: null,
+    policyExtendBy: null,
+    policyExtendMax: null,
+    edges: [],
   };
 }
 
@@ -112,6 +133,21 @@ function normalizeWorkflowSnapshot(draft: WorkflowDraft | null, steps: WorkflowS
       modelOverride: step.modelOverride ?? "",
       reasoningEffortOverride: step.reasoningEffortOverride ?? "",
       requiresApproval: step.requiresApproval,
+      // BUG-NOTE-CP42 #3: these CP-42 per-node fields are editable in the
+      // step form (nodeId/behaviorId/agentRef/dependsOn/joinMode/cohort) but
+      // were missing from this snapshot, so workflowDirty never noticed an
+      // edit to any of them and Save stayed disabled unless some older field
+      // also changed. promptTemplateRef/contextRef are the same class of
+      // field and share the same form, so included for the same reason even
+      // though the bug note didn't name them explicitly.
+      nodeId: step.nodeId ?? "",
+      behaviorId: step.behaviorId ?? "",
+      agentRef: step.agentRef ?? "",
+      dependsOn: [...step.dependsOn].sort(),
+      joinMode: step.joinMode ?? "",
+      cohort: step.cohort ?? "",
+      promptTemplateRef: step.promptTemplateRef ?? "",
+      contextRef: step.contextRef ?? "",
     })),
   });
 }
@@ -185,11 +221,22 @@ export function WorkflowsSettings(): React.ReactElement {
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const [deleteConfirmationText, setDeleteConfirmationText] = useState("");
   const [pickerModal, setPickerModal] = useState<PickerModal | null>(null);
+  // Built-in flow cloning (CP-42/Task-179): a built-in (isBuiltin=true)
+  // workflow is read-only in this screen — cloneTarget drives the "name your
+  // copy" modal that creates an editable, non-builtin copy.
+  const [cloneTarget, setCloneTarget] = useState<{ workflowId: string; sourceName: string } | null>(null);
+  const [cloneName, setCloneName] = useState("");
 
   const selectedWorkflow = useMemo(
     () => workflows.find((item) => item.id === selectedWorkflowId) ?? null,
     [workflows, selectedWorkflowId],
   );
+  // BUG-NOTE-CP42 #8: the detail copy already says a built-in can't be
+  // edited and Save/Delete are hidden for it, but the actual form fields
+  // below had no disabled binding at all — a user could type changes into a
+  // built-in workflow's Name/Description/Model/etc. that could never be
+  // saved, undercutting the read-only UX the copy promises.
+  const workflowDetailReadOnly = selectedWorkflow?.editable === false;
   const selectedStep = useMemo(
     () => stepDefinitions.find((item) => item.stepType === selectedStepType) ?? null,
     [stepDefinitions, selectedStepType],
@@ -403,6 +450,14 @@ export function WorkflowsSettings(): React.ReactElement {
       requiresApproval: true,
       createdAt: "",
       updatedAt: "",
+      nodeId: null,
+      behaviorId: null,
+      agentRef: null,
+      dependsOn: [],
+      joinMode: null,
+      cohort: null,
+      promptTemplateRef: null,
+      contextRef: null,
     };
     if (source === "detail") {
       setWorkflowSteps((current) => [...current, nextStep]);
@@ -426,6 +481,15 @@ export function WorkflowsSettings(): React.ReactElement {
         modelOverride: workflowDraft.modelOverride,
         reasoningEffortOverride: workflowDraft.reasoningEffortOverride,
         yoloMode: workflowDraft.yoloMode,
+        // BUG-NOTE-CP42 #14: pass these through unchanged so a plain edit
+        // (e.g. renaming) doesn't null out the workflow's existing policy
+        // caps and edge graph — saveWorkflow's repository has no notion of
+        // "field omitted, leave unchanged."
+        policyCap: workflowDraft.policyCap,
+        policyOnCap: workflowDraft.policyOnCap,
+        policyExtendBy: workflowDraft.policyExtendBy,
+        policyExtendMax: workflowDraft.policyExtendMax,
+        edges: workflowDraft.edges,
         steps: workflowSteps.map((step, orderIndex) => ({ ...step, orderIndex })),
       });
       await refresh(saved.id, selectedStepType, { preserveCreateDrafts: true });
@@ -451,6 +515,11 @@ export function WorkflowsSettings(): React.ReactElement {
         reasoningEffortOverride:
           createWorkflowDraft.reasoningEffortOverride ?? DEFAULT_REASONING,
         yoloMode: createWorkflowDraft.yoloMode,
+        policyCap: createWorkflowDraft.policyCap,
+        policyOnCap: createWorkflowDraft.policyOnCap,
+        policyExtendBy: createWorkflowDraft.policyExtendBy,
+        policyExtendMax: createWorkflowDraft.policyExtendMax,
+        edges: createWorkflowDraft.edges,
         steps: createWorkflowSteps.map((step, orderIndex) => ({ ...step, orderIndex })),
       });
       setWorkflowView("list");
@@ -546,6 +615,23 @@ export function WorkflowsSettings(): React.ReactElement {
     }
   };
 
+  const cloneSelected = async () => {
+    if (!cloneTarget) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const admin = await getAdminUseCases();
+      const cloned = await admin.workflows.cloneWorkflow(cloneTarget.workflowId, cloneName.trim() || `${cloneTarget.sourceName} (copy)`);
+      setCloneTarget(null);
+      setCloneName("");
+      await refresh(cloned.id, selectedStepType, { preserveCreateDrafts: true });
+      setMessage("Workflow cloned. You can now edit the copy.");
+    } catch (error) {
+      setMessage(toErrorMessage(error, "Unable to clone workflow."));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const renderWorkflowStepsEditor = (
     steps: WorkflowStep[],
@@ -559,6 +645,10 @@ export function WorkflowsSettings(): React.ReactElement {
             (definition) => !steps.some((step) => step.stepType === definition.stepType),
           )
         : availableCreateWorkflowSteps;
+    // A built-in workflow's steps can't be persisted (Save is hidden for it),
+    // so block the mutating actions here too rather than let the user add/
+    // remove steps that silently go nowhere.
+    const readOnly = source === "detail" && selectedWorkflow?.editable === false;
 
     return (
       <div className="settings-subpanel workflow-steps-panel">
@@ -566,7 +656,9 @@ export function WorkflowsSettings(): React.ReactElement {
           <div>
             <strong>Workflow Steps</strong>
             <p className="project-muted-copy">
-              Add, remove, and reorder the reusable steps that make up this workflow.
+              {readOnly
+                ? "Read-only: clone this workflow to edit its steps."
+                : "Add, remove, and reorder the reusable steps that make up this workflow."}
             </p>
           </div>
         </div>
@@ -574,6 +666,7 @@ export function WorkflowsSettings(): React.ReactElement {
           <label className="settings-field workflow-step-add-field">
             <span>Add step</span>
             <select
+              disabled={readOnly}
               onChange={(event) => onSelectedStepTypeChange(event.target.value)}
               value={selectedStepTypeValue}
             >
@@ -587,7 +680,7 @@ export function WorkflowsSettings(): React.ReactElement {
           </label>
           <button
             className="secondary-btn"
-            disabled={!selectedStepTypeValue}
+            disabled={readOnly || !selectedStepTypeValue}
             onClick={() => addWorkflowStep(source)}
             type="button"
           >
@@ -612,7 +705,7 @@ export function WorkflowsSettings(): React.ReactElement {
                   <div className="settings-inline-actions">
                     <button
                       className="secondary-btn project-icon-btn"
-                      disabled={index === 0}
+                      disabled={readOnly || index === 0}
                       onClick={() => moveWorkflowStep(index, "up", source)}
                       title="Move up"
                       type="button"
@@ -621,7 +714,7 @@ export function WorkflowsSettings(): React.ReactElement {
                     </button>
                     <button
                       className="secondary-btn project-icon-btn"
-                      disabled={index === steps.length - 1}
+                      disabled={readOnly || index === steps.length - 1}
                       onClick={() => moveWorkflowStep(index, "down", source)}
                       title="Move down"
                       type="button"
@@ -630,6 +723,7 @@ export function WorkflowsSettings(): React.ReactElement {
                     </button>
                     <button
                       className="secondary-btn"
+                      disabled={readOnly}
                       onClick={() => removeWorkflowStep(index, source)}
                       type="button"
                     >
@@ -641,6 +735,7 @@ export function WorkflowsSettings(): React.ReactElement {
                   <label className="settings-field">
                     <span>Model override</span>
                     <select
+                      disabled={readOnly}
                       onChange={(event) =>
                         source === "detail"
                           ? updateWorkflowStep(index, { modelOverride: event.target.value || null })
@@ -660,6 +755,7 @@ export function WorkflowsSettings(): React.ReactElement {
                   <label className="settings-field">
                     <span>Reasoning</span>
                     <select
+                      disabled={readOnly}
                       onChange={(event) =>
                         source === "detail"
                           ? updateWorkflowStep(index, {
@@ -681,6 +777,7 @@ export function WorkflowsSettings(): React.ReactElement {
                   <label className="settings-checkbox">
                     <input
                       checked={step.isEnabled}
+                      disabled={readOnly}
                       onChange={(event) =>
                         source === "detail"
                           ? updateWorkflowStep(index, { isEnabled: event.target.checked })
@@ -693,6 +790,7 @@ export function WorkflowsSettings(): React.ReactElement {
                   <label className="settings-checkbox">
                     <input
                       checked={step.requiresApproval}
+                      disabled={readOnly}
                       onChange={(event) =>
                         source === "detail"
                           ? updateWorkflowStep(index, { requiresApproval: event.target.checked })
@@ -703,6 +801,96 @@ export function WorkflowsSettings(): React.ReactElement {
                       type="checkbox"
                     />
                     <span>Requires approval</span>
+                  </label>
+                </div>
+                {/* Flow-engine node attrs (CP-42/Task-175/179): behavior/agent
+                    binding and graph position for this step, when it participates
+                    in a generic flow rather than (or in addition to) the legacy
+                    step-type/model/approval fields above. Optional for a plain
+                    workflow step — leave blank if this step is not part of a flow
+                    graph. */}
+                <div className="settings-grid workflow-step-grid workflow-step-flow-grid">
+                  <label className="settings-field">
+                    <span>Node ID</span>
+                    <input
+                      disabled={readOnly}
+                      onChange={(event) =>
+                        source === "detail"
+                          ? updateWorkflowStep(index, { nodeId: event.target.value || null })
+                          : updateCreateWorkflowStep(index, { nodeId: event.target.value || null })
+                      }
+                      placeholder="e.g. coder"
+                      value={step.nodeId ?? ""}
+                    />
+                  </label>
+                  <label className="settings-field">
+                    <span>Behavior ID</span>
+                    <input
+                      disabled={readOnly}
+                      onChange={(event) =>
+                        source === "detail"
+                          ? updateWorkflowStep(index, { behaviorId: event.target.value || null })
+                          : updateCreateWorkflowStep(index, { behaviorId: event.target.value || null })
+                      }
+                      placeholder="e.g. agent.delegate"
+                      value={step.behaviorId ?? ""}
+                    />
+                  </label>
+                  <label className="settings-field">
+                    <span>Agent ref</span>
+                    <input
+                      disabled={readOnly}
+                      onChange={(event) =>
+                        source === "detail"
+                          ? updateWorkflowStep(index, { agentRef: event.target.value || null })
+                          : updateCreateWorkflowStep(index, { agentRef: event.target.value || null })
+                      }
+                      placeholder="e.g. agents/coder.md"
+                      value={step.agentRef ?? ""}
+                    />
+                  </label>
+                  <label className="settings-field">
+                    <span>Depends on</span>
+                    <input
+                      disabled={readOnly}
+                      onChange={(event) => {
+                        const dependsOn = event.target.value
+                          .split(",")
+                          .map((item) => item.trim())
+                          .filter(Boolean);
+                        return source === "detail"
+                          ? updateWorkflowStep(index, { dependsOn })
+                          : updateCreateWorkflowStep(index, { dependsOn });
+                      }}
+                      placeholder="node ids, comma-separated"
+                      value={step.dependsOn.join(", ")}
+                    />
+                  </label>
+                  <label className="settings-field">
+                    <span>Join mode</span>
+                    <input
+                      disabled={readOnly}
+                      onChange={(event) =>
+                        source === "detail"
+                          ? updateWorkflowStep(index, { joinMode: event.target.value || null })
+                          : updateCreateWorkflowStep(index, { joinMode: event.target.value || null })
+                      }
+                      placeholder="all | any | quorum(n)"
+                      value={step.joinMode ?? ""}
+                    />
+                  </label>
+                  <label className="settings-field">
+                    <span>Cohort</span>
+                    <input
+                      disabled={readOnly}
+                      onChange={(event) =>
+                        source === "detail"
+                          ? updateWorkflowStep(index, { cohort: event.target.value || null })
+                          : updateCreateWorkflowStep(index, { cohort: event.target.value || null })
+                      }
+                      placeholder="optional join-group key"
+                      value={step.cohort ?? ""}
+                    />
                   </label>
                 </div>
               </div>
@@ -1290,7 +1478,10 @@ export function WorkflowsSettings(): React.ReactElement {
                       type="button"
                     >
                       <div>
-                        <strong>{workflow.name}</strong>
+                        <strong>
+                          {workflow.name}
+                          {workflow.isBuiltin ? <span className="settings-badge">Built-in</span> : null}
+                        </strong>
                         <span>
                           {workflow.projectId
                             ? projects.find((project) => project.id === workflow.projectId)?.name ??
@@ -1311,40 +1502,62 @@ export function WorkflowsSettings(): React.ReactElement {
                   <div className="settings-subpanel project-detail-panel">
                     <div className="project-create-head">
                       <div>
-                        <div className="settings-eyebrow">Workflow Detail</div>
+                        <div className="settings-eyebrow">
+                          Workflow Detail
+                          {selectedWorkflow?.isBuiltin ? <span className="settings-badge">Built-in</span> : null}
+                        </div>
                         <h3>{workflowDraft.name || "Untitled Workflow"}</h3>
                         <p className="project-muted-copy">
-                          Edit definition fields here. Save only becomes active after a change.
+                          {selectedWorkflow?.editable === false
+                            ? "This is a built-in template and cannot be edited directly. Clone it to make changes."
+                            : "Edit definition fields here. Save only becomes active after a change."}
                         </p>
                       </div>
                       <div className="settings-inline-actions">
-                        <button
-                          className="secondary-btn"
-                          onClick={() =>
-                            setDeleteTarget({
-                              kind: "workflow",
-                              id: selectedWorkflowId,
-                              label: workflowDraft.name || "this workflow",
-                            })
-                          }
-                          type="button"
-                        >
-                          Delete
-                        </button>
-                        <button
-                          className="primary-btn"
-                          disabled={busy || !workflowDirty}
-                          onClick={() => void saveWorkflow()}
-                          type="button"
-                        >
-                          Save Workflow
-                        </button>
+                        {selectedWorkflow?.cloneable !== false ? (
+                          <button
+                            className="secondary-btn"
+                            onClick={() => {
+                              setCloneTarget({ workflowId: selectedWorkflowId, sourceName: workflowDraft.name || "Untitled Workflow" });
+                              setCloneName(`${workflowDraft.name || "Untitled Workflow"} (copy)`);
+                            }}
+                            type="button"
+                          >
+                            Clone
+                          </button>
+                        ) : null}
+                        {selectedWorkflow?.editable !== false ? (
+                          <>
+                            <button
+                              className="secondary-btn"
+                              onClick={() =>
+                                setDeleteTarget({
+                                  kind: "workflow",
+                                  id: selectedWorkflowId,
+                                  label: workflowDraft.name || "this workflow",
+                                })
+                              }
+                              type="button"
+                            >
+                              Delete
+                            </button>
+                            <button
+                              className="primary-btn"
+                              disabled={busy || !workflowDirty}
+                              onClick={() => void saveWorkflow()}
+                              type="button"
+                            >
+                              Save Workflow
+                            </button>
+                          </>
+                        ) : null}
                       </div>
                     </div>
                     <div className="settings-grid">
                       <label className="settings-field">
                         <span>Owner project</span>
                         <select
+                          disabled={workflowDetailReadOnly}
                           onChange={(event) =>
                             setWorkflowDraft((current) =>
                               current
@@ -1365,6 +1578,7 @@ export function WorkflowsSettings(): React.ReactElement {
                       <label className="settings-field">
                         <span>Name</span>
                         <input
+                          disabled={workflowDetailReadOnly}
                           onChange={(event) =>
                             setWorkflowDraft((current) =>
                               current ? { ...current, name: event.target.value } : current,
@@ -1376,6 +1590,7 @@ export function WorkflowsSettings(): React.ReactElement {
                       <label className="settings-field settings-field-full">
                         <span>Description</span>
                         <textarea
+                          disabled={workflowDetailReadOnly}
                           onChange={(event) =>
                             setWorkflowDraft((current) =>
                               current ? { ...current, description: event.target.value } : current,
@@ -1387,6 +1602,7 @@ export function WorkflowsSettings(): React.ReactElement {
                       <label className="settings-field">
                         <span>Model override</span>
                         <select
+                          disabled={workflowDetailReadOnly}
                           onChange={(event) =>
                             setWorkflowDraft((current) =>
                               current
@@ -1406,6 +1622,7 @@ export function WorkflowsSettings(): React.ReactElement {
                       <label className="settings-field">
                         <span>Reasoning effort</span>
                         <select
+                          disabled={workflowDetailReadOnly}
                           onChange={(event) =>
                             setWorkflowDraft((current) =>
                               current
@@ -1428,6 +1645,7 @@ export function WorkflowsSettings(): React.ReactElement {
                       <label className="settings-checkbox settings-field-full">
                         <input
                           checked={workflowDraft.yoloMode}
+                          disabled={workflowDetailReadOnly}
                           onChange={(event) =>
                             setWorkflowDraft((current) =>
                               current ? { ...current, yoloMode: event.target.checked } : current,
@@ -1581,6 +1799,48 @@ export function WorkflowsSettings(): React.ReactElement {
       )}
 
       {renderPickerModal()}
+
+      {cloneTarget ? (
+        <div className="settings-modal-backdrop" role="presentation">
+          <div className="settings-modal">
+            <div className="project-create-head">
+              <div>
+                <div className="settings-eyebrow">Clone</div>
+                <h3>Clone Workflow</h3>
+                <p className="project-muted-copy">
+                  Creates an editable copy of <strong>{cloneTarget.sourceName}</strong>. The original stays unchanged.
+                </p>
+              </div>
+            </div>
+            <div className="settings-grid">
+              <label className="settings-field settings-field-full">
+                <span>New workflow name</span>
+                <input onChange={(event) => setCloneName(event.target.value)} value={cloneName} />
+              </label>
+            </div>
+            <div className="settings-actions">
+              <button
+                className="secondary-btn"
+                onClick={() => {
+                  setCloneTarget(null);
+                  setCloneName("");
+                }}
+                type="button"
+              >
+                Cancel
+              </button>
+              <button
+                className="primary-btn"
+                disabled={busy || !cloneName.trim()}
+                onClick={() => void cloneSelected()}
+                type="button"
+              >
+                Clone Workflow
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {deleteTarget ? (
         <div className="settings-modal-backdrop" role="presentation">
