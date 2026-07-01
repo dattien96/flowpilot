@@ -21,6 +21,7 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /client/projects/{projectId}/workflows", s.handleListWorkflows)
 	mux.HandleFunc("GET /client/steps", s.handleListSteps)
 	mux.HandleFunc("GET /client/workflows/{workflowId}/steps", s.handleListSteps)
+	mux.HandleFunc("GET /client/chat/builtin-orchestration-options", s.handleListBuiltinOrchestrationOptions)
 	mux.HandleFunc("GET /client/projects/{projectId}/workflow-runs", s.handleListProjectRunHistory)
 	mux.HandleFunc("GET /client/projects/{projectId}/chat-sessions/remote", s.handleListRemoteChatSessions)
 	mux.HandleFunc("GET /client/engine/tooling/status", s.handleGetGlobalEngineToolingStatus)
@@ -115,6 +116,21 @@ func (s *InteractiveService) handleListSkills(w http.ResponseWriter, r *http.Req
 	provider := r.URL.Query().Get("provider")
 	cwd := r.URL.Query().Get("cwd")
 	writeInteractiveJSON(w, http.StatusOK, s.skillsCatalog.listSkills(provider, cwd))
+}
+
+// handleListBuiltinOrchestrationOptions serves the Chat Mode "Built-in
+// orchestration" picker options for a given subMode (CP-42/Task-177), driven
+// entirely by embedded pack metadata rather than a hardcoded UI list. An
+// unset or unrecognized subMode returns an empty list, which the desktop
+// renders as "no picker" rather than an error.
+func (s *InteractiveService) handleListBuiltinOrchestrationOptions(w http.ResponseWriter, r *http.Request) {
+	subMode := r.URL.Query().Get("subMode")
+	opts, err := BuiltinOrchestrationOptions(subMode)
+	if err != nil {
+		writeInteractiveError(w, newAPIErr(http.StatusInternalServerError, "pack_unavailable", err.Error()))
+		return
+	}
+	writeInteractiveJSON(w, http.StatusOK, opts)
 }
 
 // handleListAgents serves the loadable sub-agent catalog (CP-19 / Task-081):
@@ -238,6 +254,15 @@ type turnBody struct {
 	// Attachments carries chat-turn image attachments (Task-052), inline base64.
 	Attachments []PromptAttachment `json:"attachments,omitempty"`
 	Scenario    string             `json:"scenario"` // P2 fake-adapter hint only
+	// SubMode/FlowRef select an optional built-in Chat Mode orchestration
+	// template (CP-42/Task-177). Both are optional and omitting them means
+	// normal chat with no orchestration. handleStartTurn validates FlowRef
+	// against BuiltinOrchestrationOptions(SubMode) before starting the turn;
+	// actually resolving/executing the selected flow into the run loop is
+	// not wired yet (see Task-177 completion notes) — this is contract and
+	// validation only.
+	SubMode string `json:"subMode,omitempty"`
+	FlowRef string `json:"flowRef,omitempty"`
 }
 
 func (s *InteractiveService) handleStartTurn(w http.ResponseWriter, r *http.Request) {
@@ -246,9 +271,13 @@ func (s *InteractiveService) handleStartTurn(w http.ResponseWriter, r *http.Requ
 		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_request", "invalid request body"))
 		return
 	}
+	if err := validateChatOrchestrationSelection(body.SubMode, body.FlowRef); err != nil {
+		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_flow_ref", err.Error()))
+		return
+	}
 	turnID, e := s.startTurn(
 		r.PathValue("runId"),
-		TurnInput{StepID: body.StepID, Prompt: body.Prompt, ChangeType: body.ChangeType, SourceDocID: body.SourceDocID, SelectedSkills: body.SelectedSkills, ReasoningEffort: body.ReasoningEffort, Model: body.Model, YoloMode: body.YoloMode, Attachments: body.Attachments},
+		TurnInput{StepID: body.StepID, Prompt: body.Prompt, ChangeType: body.ChangeType, SourceDocID: body.SourceDocID, SelectedSkills: body.SelectedSkills, ReasoningEffort: body.ReasoningEffort, Model: body.Model, YoloMode: body.YoloMode, Attachments: body.Attachments, SubMode: body.SubMode, FlowRef: body.FlowRef},
 		body.Scenario,
 		r.Header.Get("Idempotency-Key"),
 	)
@@ -946,7 +975,17 @@ func (s *InteractiveService) handleSubmitFlowControl(w http.ResponseWriter, r *h
 		return
 	}
 	var in FlowControlInput
-	if _, hasOutcome := body["outcome"]; hasOutcome {
+	// BUG-NOTE-CP42 #32: ReviewOutcomeInput's canonical wire field is "status"
+	// (json:"status" on the Go struct; "outcome" is only the board/legacy
+	// alias parseReviewOutcomeInput also accepts). Routing purely on presence
+	// of the literal "outcome" key meant a caller sending the canonical
+	// {"status":"approved"} body fell through to the raw FlowControlInput
+	// parser instead, which only recognizes status values continue|done|
+	// escalate and rejects "approved" outright. Route to the ReviewOutcomeInput
+	// parser whenever either shape is present.
+	_, hasOutcome := body["outcome"]
+	statusVal, _ := body["status"].(string)
+	if hasOutcome || reviewOutcomeStatuses[statusVal] {
 		// Declared face: ReviewOutcomeInput → FlowControlInput via the face registry.
 		roi, err := parseReviewOutcomeInput(body)
 		if err != nil {
