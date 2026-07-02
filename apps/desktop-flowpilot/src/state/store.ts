@@ -1417,12 +1417,23 @@ export const useStore = create<AppState>((set, get) => ({
       status: handle.status,
       stepId: handle.stepId,
     });
+    // BUG-170: restore the mode this run actually was, not whatever the UI happened to be
+    // in before the user clicked a history item. Without this, reopening a workflow/flow-
+    // mode run left chatMode stuck (often "normal_chat"), so the reopened run rendered
+    // without its Flow Mode surfaces (step-timeline sidebar, agents panel gating) even
+    // though the runner resumed it correctly. runKind is "chat" for normal_chat runs and
+    // "workflow" (or, for older persisted rows, undefined) for everything else.
+    const isWorkflowHistoryItem = historyItem?.runKind !== "chat";
     set({
       runId: handle.runId,
       mainRunId: handle.runId,
       activeAgentRunId: undefined,
       status: handle.status,
       activeStepId: handle.stepId,
+      chatMode: isWorkflowHistoryItem ? "workflow_step_auto" : "normal_chat",
+      ...(isWorkflowHistoryItem && historyItem?.workflowId
+        ? { launchMode: "workflow", selectedWorkflowId: historyItem.workflowId }
+        : {}),
       timeline: [],
       artifacts: [],
       pendingApprovals: [],
