@@ -432,6 +432,15 @@ func (s *InteractiveService) reconstructRun(st ProviderSessionState) (*interacti
 				RequiresApproval: false,
 			}})
 		}
+	} else if len(rs.activeFlowNodes) > 0 {
+		// BUG-178: the local runner's step-runtime store is in-memory, so a
+		// flow run's step list is empty after a server restart and its history
+		// timeline showed "No step-runtime data for this run yet". Rebuild it
+		// from the persisted flow nodes (restored onto rs above). A completed
+		// run's steps are shown DONE; otherwise PENDING (per-step progress isn't
+		// persisted). flowEngineDriven is intentionally left as-is — this only
+		// restores the display; it does not re-engage the executor.
+		s.reseedFlowStepRuntimeForResume(rs.id, rs.activeFlowNodes, rs.status == RunStatusCompleted)
 	}
 	s.mu.Unlock()
 	// Restore flow-engine loop state so a restarted or Drive-synced run resumes

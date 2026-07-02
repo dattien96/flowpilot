@@ -165,6 +165,16 @@ type interactiveRun struct {
 	// binding) to auto-spawn the next node(s) deterministically instead of
 	// leaving a bare completion note for the hub AI to infer from.
 	activeFlowNodes []agentpack.FlowNode
+	// flowEngineDriven marks a run whose step-runtime timeline is driven by the
+	// CP-42 flow executor's real node lifecycle (spawn → RUNNING, complete →
+	// DONE, flow "done" → run DONE) rather than the legacy per-turn
+	// PlanWorkflowProgress bulk planner (BUG-174). Set only for a Flow-Mode
+	// workflow-picker launch whose selected workflow auto-resolves to a
+	// flow-engine flow (see handleStartTurn → resolveWorkflowFlowRef), never for
+	// the explicit chat/flowRef path or a plain workflow, so those keep their
+	// exact existing behavior. When true, startTurn skips the bulk Progress call
+	// and the executor owns every step transition for this run.
+	flowEngineDriven bool
 	// planContextPackage is the FlowContextPackage built for the Plan step of this Flow
 	// Mode run. Non-nil only for workflow runs with a Coding step. Cached here so retries
 	// reuse the same package without rebuilding; cleared when a Plan step reruns (Task-169).
@@ -487,6 +497,12 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 		s.appendPendingAgentContext(parentRunID, strings.TrimSpace("Flow completed. "+in.Summary))
 		s.emitAgentGraph(parentRunID, snap)
 		go s.persistParentSession(parentRunID)
+		// BUG-174: the flow's control tool reported done — settle the step
+		// timeline (inline hub node DONE, run DONE) instead of leaving it to the
+		// bulk planner, which is gated off for flow-engine-driven runs.
+		if s.isFlowEngineDriven(parentRunID) {
+			s.markFlowRunComplete(context.Background(), parentRunID)
+		}
 		return FlowControlResult{Status: "done", Round: snap.LoopState.Round, Cap: effectiveCap(snap.LoopState), NextAction: "done"}, nil
 
 	case "continue":
@@ -523,6 +539,21 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 			// Re-enter the coder so the back-edge in ReviewLoopFlowConfig fires
 			// (CRITICAL finding: continue returned "looping" but never restarted the coder).
 			go s.maybeReinvokeCoderForContinue(parentRunID, buildCoderReentryPrompt(in))
+			// BUG-174: a new review round is starting — reset the downstream nodes
+			// to PENDING and re-run the entry (coder) node on the step timeline so
+			// the loop reads honestly instead of every node staying DONE.
+			if s.isFlowEngineDriven(parentRunID) {
+				nodes := s.activeFlowNodesFor(parentRunID)
+				entryID := flowEntryNodeID(nodes)
+				go func() {
+					for _, n := range nodes {
+						if n.ID != entryID {
+							s.setFlowStepStatus(context.Background(), parentRunID, n.ID, StepStatusPending)
+						}
+					}
+					s.setFlowStepStatus(context.Background(), parentRunID, entryID, StepStatusRunning)
+				}()
+			}
 		}
 		return result, nil
 
@@ -1371,6 +1402,27 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 					note := buildCohortNote(rs.parentRunID, rs.flowCohortId, entries, s.agentOrchestrator.graphSnapshot(rs.parentRunID).LoopState.Round)
 					s.appendPendingAgentContextLocked(rs.parentRunID, note)
 					parentRunID := rs.parentRunID
+					// BUG-174: the review cohort just joined — mark each reviewer
+					// node DONE and the inline hub node RUNNING on the step timeline
+					// before the hub's synthesis turn is reinvoked. Under s.mu here,
+					// so capture what we need and dispatch the step writes async.
+					if parent := s.runs[parentRunID]; parent != nil && parent.flowEngineDriven {
+						reviewerNodeIDs := make([]string, 0, len(entries))
+						for _, e := range entries {
+							if e.Label != "" {
+								reviewerNodeIDs = append(reviewerNodeIDs, e.Label)
+							}
+						}
+						hubNodeID := hubInlineNodeID(parent.activeFlowNodes)
+						go func(reviewerNodeIDs []string, hubNodeID string) {
+							for _, id := range reviewerNodeIDs {
+								s.setFlowStepStatus(context.Background(), parentRunID, id, StepStatusDone)
+							}
+							if hubNodeID != "" {
+								s.setFlowStepStatus(context.Background(), parentRunID, hubNodeID, StepStatusRunning)
+							}
+						}(reviewerNodeIDs, hubNodeID)
+					}
 					go s.maybeAutoReinvokeHub(parentRunID)
 				}
 			} else if s.agentOrchestrator.loopMode(rs.parentRunID) == "explicit" && (isCoderRun(rs) || parentHasTrackedFlow(s, rs.parentRunID)) {
@@ -1657,6 +1709,25 @@ func (b *turnBridge) RequestApproval(details ApprovalDetails) (string, error) {
 		Provider:       b.rs.providerKey,
 		Details:        &details,
 	})
+	// BUG-177: mirror a sub-agent's approval request onto the hub (parent) run's
+	// event stream so it surfaces on the main view even when that child is not
+	// the focused run. The desktop feeds pendingApprovals from the focused run's
+	// stream only, so two reviewers requesting approval at once were invisible on
+	// main (at most one could be focused). Approvals resolve globally by
+	// approvalId (s.approvals), so approving from the hub view drives the child's
+	// own record; the desktop dedups by approvalId so a concurrently-focused
+	// child plus this mirror never double-surface.
+	if b.rs.parentRunID != "" {
+		if parent := s.runs[b.rs.parentRunID]; parent != nil {
+			s.emitLocked(parent, ProviderEvent{
+				Type:           EventPermissionRequired,
+				ProviderTurnID: b.turnID,
+				ApprovalID:     rec.id,
+				Provider:       b.rs.providerKey,
+				Details:        &details,
+			})
+		}
+	}
 	s.mu.Unlock()
 
 	timer := time.NewTimer(s.approvalTTL)
@@ -1721,7 +1792,25 @@ func (b *turnBridge) SpawnAgent(in SpawnAgentInput) (SpawnAgentResult, error) {
 // SubmitFlowControl advances the generic flow engine on the controlling hub run.
 // When called from a child turn (synthesizer, reviewer), b.rs.parentRunID is
 // the hub run that owns the loop state; route there instead of the child.
+//
+// BUG-176: enforce the cohort-join barrier in code. A cohort member (e.g. a
+// review-loop reviewer, flowCohortId != "") must NOT drive the flow's control
+// tool: routing its call straight to the parent's applyFlowControl let a single
+// reviewer terminate/advance the whole round before its siblings finished
+// (observed as "synthesis marked done while the other reviewer is still
+// running"). Only the hub's own synthesis turn — which runs after the cohort
+// joins and is NOT a cohort member — may finalize the flow. A cohort member's
+// call is rejected with guidance so its findings flow through its final message
+// into the cohort note the hub synthesizes, exactly as the auto-spawn prompt
+// already instructs (BUG-NOTE-CP42 #13). Non-cohort children (flowCohortId ==
+// "") and the hub itself are unaffected.
 func (b *turnBridge) SubmitFlowControl(in FlowControlInput) (FlowControlResult, error) {
+	if b.rs.flowCohortId != "" {
+		return FlowControlResult{}, fmt.Errorf(
+			"this is a cohort review step, not the hub: do not call the flow control tool here. " +
+				"Report your findings (approve or request changes, with specifics) in your final message; " +
+				"the hub will synthesize the full cohort and finalize the flow after every reviewer has finished")
+	}
 	targetRunID := b.rs.id
 	if b.rs.parentRunID != "" {
 		targetRunID = b.rs.parentRunID
@@ -2250,11 +2339,17 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	s.ensureBaseline(rs.workspaceCwd)
 	bridge := &turnBridge{svc: s, rs: rs, ctx: ctx, turnID: turnID, yolo: yolo}
 	err := s.sendTurnWithRetry(ctx, adapter, req, bridge)
-	if err == nil {
+	if err == nil && !rs.flowEngineDriven {
 		// The provider turn owns interactive UX/events; once it returns cleanly we
 		// advance the shared workflow planner so the live run path no longer bypasses
 		// WorkflowStore/WorkflowOrchestrator entirely. A2 will replace the fake
 		// backing store and make this durable/auditable.
+		//
+		// BUG-174: skip this for flow-engine-driven runs. PlanWorkflowProgress
+		// walks every step and bulk-marks them DONE in one post-turn pass, which
+		// is exactly what made a Flow-Mode run flip all steps to DONE out of
+		// order after the hub's turn. For these runs the flow executor emits the
+		// real per-node transitions instead (flow_step_runtime.go).
 		_, _ = s.orchestrator.Progress(ctx, rs.id, yolo)
 	}
 

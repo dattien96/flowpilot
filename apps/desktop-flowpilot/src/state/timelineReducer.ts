@@ -280,6 +280,18 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
 
     case "permission_required":
       closeAssistant();
+      // Idempotent by approvalId (BUG-177): a sub-agent's approval is now mirrored
+      // onto the hub's stream so it surfaces on the main view even when that child
+      // isn't focused. If the user is also focused on that child, the same approval
+      // arrives on both the focused-child stream and the hub orchestration stream —
+      // dedup so it never becomes two cards / two pendingApprovals entries. (Also
+      // guards replay-from-seq-0 re-emitting an approval already shown.)
+      if (
+        s.pendingApprovals.some((p) => p.approvalId === e.approvalId) ||
+        timeline.some((it) => it.kind === "approval" && it.approvalId === e.approvalId)
+      ) {
+        return finalize(timeline);
+      }
       timeline.push({ kind: "approval", id: e.id, approvalId: e.approvalId, details: e.details });
       return finalize(timeline, {
         pendingApprovals: [...s.pendingApprovals, { approvalId: e.approvalId, details: e.details }],

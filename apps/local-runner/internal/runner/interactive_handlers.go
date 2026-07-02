@@ -276,6 +276,20 @@ func (s *InteractiveService) handleStartTurn(w http.ResponseWriter, r *http.Requ
 		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_flow_ref", err.Error()))
 		return
 	}
+	// BUG-174: a Flow-Mode workflow-picker launch sends a workflowID but no
+	// flowRef, so the flow executor never engaged and the hub did all the work
+	// inline. If the run's selected workflow resolves to a flow-engine flow with
+	// a spawnable entry node, adopt its canonical flowRef and mark the run
+	// flow-engine-driven, so it runs through the same startResolvedFlow path an
+	// explicit flowRef uses and its step timeline is driven node-by-node. The
+	// explicit chat/flowRef path and plain workflows are untouched (resolve
+	// returns false for them).
+	if strings.TrimSpace(body.FlowRef) == "" {
+		if flowRef, ok := s.resolveWorkflowFlowRef(r.Context(), r.PathValue("runId")); ok {
+			body.FlowRef = flowRef
+			s.markFlowEngineDriven(r.PathValue("runId"))
+		}
+	}
 	turnID, e := s.startTurn(
 		r.PathValue("runId"),
 		TurnInput{StepID: body.StepID, Prompt: body.Prompt, ChangeType: body.ChangeType, SourceDocID: body.SourceDocID, SelectedSkills: body.SelectedSkills, ReasoningEffort: body.ReasoningEffort, Model: body.Model, YoloMode: body.YoloMode, Attachments: body.Attachments, SubMode: body.SubMode, FlowRef: body.FlowRef},

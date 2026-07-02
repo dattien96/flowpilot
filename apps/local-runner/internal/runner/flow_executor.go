@@ -63,6 +63,14 @@ func (s *InteractiveService) startResolvedFlow(ctx context.Context, parentRunID,
 	}
 	s.mu.Unlock()
 
+	// BUG-174: for a flow-engine-driven run, replace the generic catalog steps
+	// with one step per flow node so the step timeline tracks the flow's real
+	// topology and the executor (not the bulk PlanWorkflowProgress planner,
+	// which startTurn now skips for these runs) owns every transition.
+	if s.isFlowEngineDriven(parentRunID) {
+		s.reseedFlowStepRuntime(parentRunID, record.Definition.Nodes)
+	}
+
 	spawnedAny := false
 	for _, node := range entryNodes {
 		agentName := flowNodeAgentName(node)
@@ -84,11 +92,57 @@ func (s *InteractiveService) startResolvedFlow(ctx context.Context, parentRunID,
 			continue
 		}
 		spawnedAny = true
+		if s.isFlowEngineDriven(parentRunID) {
+			s.setFlowStepStatus(ctx, parentRunID, node.ID, StepStatusRunning)
+		}
 	}
 
 	if spawnedAny {
 		s.notifyHubFlowStarted(parentRunID)
 	}
+}
+
+// resolveWorkflowFlowRef bridges a Flow-Mode workflow-picker launch to the flow
+// executor (BUG-174). A workflow-picker run carries a workflowID but no flowRef
+// (the desktop only sends flowRef for the chat "bug" sub-mode), so its selected
+// workflow — even a built-in flow mirrored into the workflows table — never
+// engaged the executor and the hub did all the work inline. This resolves the
+// run's workflowID against the flow definition store (GetByRef accepts the
+// mirror row's UUID and normalizes it back to the canonical packId/flowId
+// flowRef) and, if it resolves to a flow with a spawnable entry node, returns
+// that canonical flowRef so handleStartTurn can drive it through the exact same
+// startResolvedFlow path an explicit flowRef uses.
+//
+// Returns ("", false) for a non-first turn, a run with no workflowID, no
+// definition store, a resolution failure, or a plain workflow with no
+// agent.delegate entry node (and no inline entry chain) — every one a safe bail
+// that leaves the run on its existing behavior rather than forcing an executor
+// it has nothing to run.
+func (s *InteractiveService) resolveWorkflowFlowRef(ctx context.Context, runID string) (string, bool) {
+	s.mu.Lock()
+	rs := s.runs[runID]
+	if rs == nil || rs.turnCount != 0 || strings.TrimSpace(rs.workflowID) == "" {
+		s.mu.Unlock()
+		return "", false
+	}
+	workflowID := rs.workflowID
+	store := s.flowDefinitionStore
+	s.mu.Unlock()
+
+	resolver := NewFlowDefinitionResolver(store)
+	record, err := resolver.ResolveFlowRef(ctx, workflowID)
+	if err != nil {
+		// Not a resolvable flow (a plain admin workflow, or no store): bail
+		// quietly and let the run proceed on its existing path.
+		return "", false
+	}
+	if len(entryDelegateNodes(record.Definition)) == 0 && len(entryNodesNoDeps(record.Definition)) == 0 {
+		return "", false
+	}
+	if strings.TrimSpace(record.FlowRef) == "" {
+		return "", false
+	}
+	return record.FlowRef, true
 }
 
 // startInlineEntryChain handles flows whose entry node is an inline behavior
@@ -175,6 +229,14 @@ func (s *InteractiveService) startInlineEntryChain(ctx context.Context, parentRu
 	}
 	s.mu.Unlock()
 
+	// BUG-174: same step-timeline wiring as the delegate-entry path. The inline
+	// entry node has already run synchronously above, so mark it DONE and the
+	// spawned delegate target RUNNING.
+	if s.isFlowEngineDriven(parentRunID) {
+		s.reseedFlowStepRuntime(parentRunID, def.Nodes)
+		s.setFlowStepStatus(ctx, parentRunID, entry.ID, StepStatusDone)
+	}
+
 	agentDef, _ := resolvePackAgentDefinition(agentName)
 	if _, err := s.spawnChildRun(ctx, parentRunID, SpawnAgentInput{
 		Agent:            agentName,
@@ -187,6 +249,9 @@ func (s *InteractiveService) startInlineEntryChain(ctx context.Context, parentRu
 		log.Printf("[flow-executor] spawn inline-chain delegate node %q (agent %q) for flow %q on run %q failed: %v",
 			delegateTarget.ID, agentName, flowRef, parentRunID, err)
 		return false
+	}
+	if s.isFlowEngineDriven(parentRunID) {
+		s.setFlowStepStatus(ctx, parentRunID, delegateTarget.ID, StepStatusRunning)
 	}
 
 	s.notifyHubFlowStarted(parentRunID)
@@ -323,6 +388,14 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 		"[flow-engine] Review this result from node %q and report your findings (approve or request changes, with specifics) as your final message:\n\n%s",
 		completedNodeID, truncateDisplayField(resultMessage, 2000),
 	)
+	// BUG-174: the node that just completed is DONE on the step timeline; its
+	// forward targets become RUNNING as they are spawned below. Gated to
+	// flow-engine-driven runs so the AI-driven spawn_agent path is untouched.
+	flowDriven := s.isFlowEngineDriven(parentRunID)
+	if flowDriven {
+		s.setFlowStepStatus(context.Background(), parentRunID, completedNodeID, StepStatusDone)
+	}
+
 	spawnedAny := false
 	for i, node := range targetNodes {
 		agentName := flowNodeAgentName(node)
@@ -345,6 +418,9 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 			continue
 		}
 		spawnedAny = true
+		if flowDriven {
+			s.setFlowStepStatus(context.Background(), parentRunID, node.ID, StepStatusRunning)
+		}
 	}
 	return spawnedAny
 }
