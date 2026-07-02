@@ -1,0 +1,296 @@
+id: builtin-behavior-registry
+version: 1
+kind: reference_registry
+description: Reference-only for DEV - catalog of built-in FlowPilot behavior IDs. This file documents the runtime contract exposed by Go handlers; it is not yet loaded directly by the pack parser.
+sourceOfTruth:
+  runtimeRegistry: apps/local-runner/internal/runner/behavior_registry_builtin.go
+  behaviorTypes: apps/local-runner/internal/runner/behavior_registry.go
+notes:
+  - Pack YAML may select only behavior IDs that the Go behavior registry knows how to resolve.
+  - This file is documentation for humans and tooling; changing it alone does not add runtime support.
+behaviors:
+  - id: agent.delegate
+    scope: delegate
+    aliases:
+      - coding
+      - implementation
+      - code
+    purpose: Prepare and hand off a prompt to a provider-backed child or flow node.
+    runtimeHandler: behaviorAgentDelegate
+    aiRole:
+      sees:
+        - The prompt assembled by the runner for the node.
+        - Any prepended context, join note, or retry note the runner injected upstream.
+      does:
+        - Performs the actual model reasoning and generates the node's natural-language/code result.
+      doesNotDo:
+        - Does not select or execute the Go handler.
+        - Does not create the provider turn directly.
+    goRuntime:
+      inputs:
+        - BehaviorInput.Prompt
+      does:
+        - Validates that the node prompt is non-empty.
+        - Returns the prompt as NextPromptFragments for the provider-backed turn.
+        - Leaves actual spawn, provider dispatch, wait handling, and persistence to runner orchestration.
+      usesExistingLogic:
+        - Shared spawnChildRun and startTurn paths
+        - Normal provider adapter flow for Codex or Claude
+      doesNotDo:
+        - No provider call inside the handler itself.
+        - No automatic state transition beyond returning continue with prompt fragments.
+    usedBy:
+      - flows/review-loop.yaml#coder
+      - flows/review-loop.yaml#reviewer_correctness
+      - flows/review-loop.yaml#reviewer_security
+      - flows/rag-harness.yaml#implement
+
+  - id: hub.inline
+    scope: inline
+    aliases:
+      - hub.synthesize
+    purpose: Run deterministic hub-side synthesis or default continue behavior without spawning a child agent.
+    runtimeHandler: behaviorHubInline
+    aiRole:
+      sees:
+        - Joined child results and any hub reinvoke prompt.
+      does:
+        - Usually acts as the hub or synthesizer turn that decides whether to approve, continue, or block.
+      doesNotDo:
+        - Does not mutate loop state by prose alone; that still requires a control tool call.
+    goRuntime:
+      inputs:
+        - BehaviorInput.RawArgs
+      does:
+        - If raw args already look like generic flow control, forwards to flow.control behavior.
+        - Otherwise returns continue by default.
+      usesExistingLogic:
+        - behaviorFlowControl for structured control payloads
+      doesNotDo:
+        - No provider spawn.
+        - No direct applyFlowControl call from this handler alone.
+    usedBy:
+      - flows/review-loop.yaml#synthesis
+
+  - id: context.produce
+    scope: inline
+    aliases:
+      - context.deterministic_feature_package
+      - context.deterministic_feature_context
+      - plan
+      - planning
+      - design
+    purpose: Build the deterministic Flow Context Package from feature catalog, change history, chat summary, and source excerpts.
+    runtimeHandler: behaviorContextProduce
+    aiRole:
+      sees:
+        - Nothing directly from this handler, because it is an inline Go-owned behavior.
+      does:
+        - The model does not assemble the package.
+      doesNotDo:
+        - No retrieval, ranking, or summarization by AI inside this behavior.
+    goRuntime:
+      inputs:
+        - BehaviorInput.WorkflowRunID
+        - BehaviorInput.StepRunID
+        - BehaviorInput.Prompt
+        - optional payload.sourceDocId
+        - workspace cwd
+      does:
+        - Calls BuildFlowContextPackage.
+        - Resolves feature key via feature catalog.
+        - Loads change history from the change ledger.
+        - Loads prior discussion from the chat summary ledger.
+        - Reads bounded workspace-safe source excerpts.
+        - Emits payload.package for downstream context.render or delegate nodes.
+      usesExistingLogic:
+        - featurecatalog.ResolveFeature and TopCandidate scoring
+        - changeledger history slot loading
+        - chat summary slot loading
+        - workspace-safe excerpt reader with caps and symlink protection
+      doesNotDo:
+        - No vector search.
+        - No embeddings.
+        - No git diff walk inside this handler by default.
+        - No AI summarization step.
+    runtimeEffects:
+      - Produces payload.package of type FlowContextPackage.
+      - Uses deterministic CP-41 context assembly logic already implemented in Go.
+    usedBy:
+      - flows/rag-harness.yaml#context
+
+  - id: context.render
+    scope: inline
+    aliases:
+      - context.prompt_handoff
+    purpose: Render a Flow Context Package into a coding prompt handoff.
+    runtimeHandler: behaviorContextRender
+    aiRole:
+      sees:
+        - The final rendered handoff prompt after Go prepends the Flow Context Package.
+      does:
+        - Consumes the rendered package as context during the downstream delegate turn.
+      doesNotDo:
+        - Does not choose the rendering format itself.
+    goRuntime:
+      inputs:
+        - payload.package
+        - prompt
+      does:
+        - Calls ComposeFlowCodingPrompt to prepend the rendered Flow Context Package and usage instructions.
+        - Returns prompt fragments for downstream provider execution.
+      usesExistingLogic:
+        - RenderFlowContextPackage
+        - ComposeFlowCodingPrompt
+      doesNotDo:
+        - No provider call.
+        - No package reconstruction if one is already available.
+    runtimeEffects:
+      - Requires payload.package.
+      - Returns rendered prompt fragments for downstream delegate execution.
+    usedBy:
+      - Flow context handoff paths in runner code
+
+  - id: command.validate
+    scope: inline
+    aliases:
+      - validation.command
+    purpose: Convert command/validation exit status into generic flow-control semantics.
+    runtimeHandler: behaviorCommandValidate
+    aiRole:
+      sees:
+        - Usually only the follow-up prompt or summary produced after validation, not this internal mapping step.
+      does:
+        - The model does not map exit codes itself here.
+    goRuntime:
+      inputs:
+        - RawArgs.exitCode
+        - any other RawArgs validation payload
+      does:
+        - Coerces numeric exitCode safely from JSON or Go caller shapes.
+        - Returns done when exitCode is 0.
+        - Returns continue with the raw payload when exitCode is nonzero.
+      usesExistingLogic:
+        - Shared toIntArg conversion helper
+      doesNotDo:
+        - No shell command execution in this handler by itself.
+        - No retries by itself; only emits the signal for orchestration to consume.
+    runtimeEffects:
+      - exitCode 0 -> done
+      - nonzero exitCode -> continue
+      - passes raw validation payload downstream
+    usedBy:
+      - flows/rag-harness.yaml#validate
+
+  - id: validation.summarize
+    scope: inline
+    aliases: []
+    purpose: Reduce a list of issues into a done-or-continue flow decision.
+    runtimeHandler: behaviorValidationSummarize
+    aiRole:
+      sees:
+        - Usually the downstream prompt built from summarized issues.
+      does:
+        - The model does not count issues here; Go does.
+    goRuntime:
+      inputs:
+        - RawArgs.issues
+      does:
+        - Counts issues across JSON-decoded and typed Go slice shapes.
+        - Returns done when issue count is zero.
+        - Returns continue and re-emits issues payload when count is nonzero.
+      usesExistingLogic:
+        - Shared issuesLen helper tolerant of []any and typed slices
+      doesNotDo:
+        - No semantic deduplication or reasoning over the issue content.
+    runtimeEffects:
+      - no issues -> done
+      - one or more issues -> continue
+    usedBy:
+      - Generic validation summarization paths
+
+  - id: artifact.audit_draft
+    scope: inline
+    aliases:
+      - audit.draft
+    purpose: Prepare an audit draft artifact summary without committing it.
+    runtimeHandler: behaviorArtifactAuditDraft
+    aiRole:
+      sees:
+        - Usually the resulting draft prompt or confirmation step after the draft is prepared.
+      does:
+        - May author the summary upstream, but does not commit the audit through this behavior.
+    goRuntime:
+      inputs:
+        - RawArgs.summary
+      does:
+        - Validates that a non-empty summary exists.
+        - Produces draftSummary payload for a later confirmation or write step.
+      usesExistingLogic:
+        - Generic draft gating contract
+      doesNotDo:
+        - No artifact write.
+        - No user confirmation.
+    runtimeEffects:
+      - Requires a summary input.
+      - Produces draftSummary payload.
+      - Does not write an artifact by itself.
+    usedBy:
+      - flows/rag-harness.yaml#audit
+
+  - id: flow.control
+    scope: control
+    aliases:
+      - flow.control_tool
+    purpose: Consume generic continue/done/escalate control signals for the flow engine.
+    runtimeHandler: behaviorFlowControl
+    aiRole:
+      sees:
+        - Usually not directly. AI more often sees a declared face such as submit_review_outcome instead of bare flow.control.
+      does:
+        - May indirectly cause this behavior by calling a declared tool face that maps onto it.
+    goRuntime:
+      inputs:
+        - RawArgs shaped like FlowControlInput
+      does:
+        - Validates generic status values continue, done, or escalate.
+        - Returns normalized status, summary, and payload for applyFlowControl.
+        - Downstream orchestration then mutates loop state, reinvokes nodes, or blocks for user input.
+      usesExistingLogic:
+        - parseFlowControlInput
+        - applyFlowControl in InteractiveService
+      doesNotDo:
+        - No direct loop mutation inside this handler alone.
+        - No provider interaction.
+    runtimeEffects:
+      - Validates generic status values.
+      - Produces normalized status, summary, and payload for applyFlowControl.
+    usedBy:
+      - Declared tool faces such as tools/submit-review-outcome.yaml
+
+  - id: user.confirm
+    scope: control
+    aliases: []
+    purpose: Gate a pending draft or step on explicit user confirmation.
+    runtimeHandler: behaviorUserConfirm
+    aiRole:
+      sees:
+        - Usually a follow-up question or pending confirmation state.
+      does:
+        - Can ask for confirmation, but cannot fabricate confirmation through this behavior.
+    goRuntime:
+      inputs:
+        - RawArgs.confirmed
+      does:
+        - Returns done only when confirmed is explicitly true.
+        - Otherwise keeps the node open with continue.
+      usesExistingLogic:
+        - Generic control behavior contract
+      doesNotDo:
+        - No automatic approval.
+        - No side effects except emitting the status.
+    runtimeEffects:
+      - confirmed=true -> done
+      - otherwise -> continue
+    usedBy:
+      - Future or generic confirmation-gated flows

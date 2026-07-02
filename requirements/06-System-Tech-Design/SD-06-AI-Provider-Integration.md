@@ -15,10 +15,11 @@ This document translates `SS-05-Workflow-Ai-Provider` into technical implementat
   - When starting a workflow run, let the user override the project default Model and Reasoning Effort for that run.
   - The selected run-level values become the baseline for that `workflow_run`.
 - **Workflow / Step Override UI:**
-  - In the Workflow Builder, allow override of Model and Reasoning Effort at the workflow-definition level and the individual-step level.
+  - In the Workflow Builder, allow override of Model, Reasoning Effort, and YOLO mode at the workflow-definition level and the individual-step level.
+  - For built-in workflows in Settings, allow editing of the model override, reasoning effort override, and YOLO mode override directly (all other fields remain read-only).
   - The model dropdown is the source of truth; provider is derived automatically from the selected model.
   - The reasoning-effort selector must be visible alongside the model selector.
-  - If a step has no override, the UI should show that it inherits from workflow/run/project defaults, with `gpt-5.4` and `medium` as the final fallbacks.
+  - If a step has no override, the UI should show that it inherits from workflow/run/project defaults. If no model can be resolved at all, the workflow/step run is blocked and returned as non-runnable (no silent fallback).
 - **Validation UX:**
   - Prevent save/start when a selected model is not supported by the selected provider inventory.
   - Warn before run start when the derived provider is not installed or still requires authentication.
@@ -221,7 +222,7 @@ This is critical for the Workflow Engine. FlowPilot must generate and write to t
 1. **Step**: the entry step's own `step_definitions.model`.
 2. **Flow**: the workflow's `workflows.model_override`.
 3. **Project**: `projects.default_model`.
-4. **Default**: the hard-coded floor `gpt-5.4`.
+4. **Unresolved**: If none of the above are configured, there is no default fallback floor (such as `gpt-5.4`). Instead, the workflow/step run is blocked and returned as non-runnable (rendered as disabled/greyed with a tooltip in the UI).
 
 Reasoning Effort has no equivalent step-type-level tier today (`step_definitions` has no `reasoning_effort` resolution role) and continues to resolve `launchOverride.reasoning_effort ?? workflow.reasoning_effort_override ?? project.default_reasoning_effort ?? "medium"`.
 
@@ -238,7 +239,11 @@ runModel = launchOverride.model
     ?? entryStep.step_definitions.model   // Step
     ?? workflow.model_override            // Flow
     ?? project.default_model              // Project
-    ?? "gpt-5.4"                          // Default
+// No default floor (gpt-5.4 is removed)
+
+if runModel == "" {
+    return error("no model configured")
+}
 
 runReasoning = launchOverride.reasoning_effort
     ?? workflow.reasoning_effort_override
@@ -270,6 +275,7 @@ This document must stay aligned with `SD-05-Workflow-Engine`.
   - `model_override`
   - `reasoning_effort_override`
   - `provider_override` as a derived reference field
+  - `yolo_mode`
 - `step_definitions` must contain:
   - `model` (the step type's own configured model — **BUG-164**: `workflow_steps` itself carries no override columns)
 - `workflow_runs` must contain:

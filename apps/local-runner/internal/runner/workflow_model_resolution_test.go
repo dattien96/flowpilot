@@ -67,6 +67,24 @@ func resolvedRunModel(t *testing.T, catalog *interactiveCatalog) string {
 	return rs.modelName
 }
 
+func resolvedRunYolo(t *testing.T, catalog *interactiveCatalog, input StartRunInput) bool {
+	t.Helper()
+	svc, srv := newTestServerWithCatalog(t, catalog)
+	status, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs", input, nil)
+	if status != http.StatusOK {
+		t.Fatalf("start run status=%d body=%s", status, body)
+	}
+	var h RunHandle
+	mustDecode(t, body, &h)
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	rs, ok := svc.runs[h.RunID]
+	if !ok {
+		t.Fatalf("run %q not tracked", h.RunID)
+	}
+	return rs.yolo
+}
+
 func TestCreateRunResolvesModelFromStepWhenSet(t *testing.T) {
 	catalog := baseTestCatalog()
 	catalog.steps["wf-1"][0].Model = "gpt-5.5-step"
@@ -104,6 +122,60 @@ func TestCreateRunFallsBackToHardDefaultWhenNothingConfigured(t *testing.T) {
 	// Step, Flow, and Project all have no model.
 	if got := resolvedRunModel(t, catalog); got != "gpt-5.4" {
 		t.Fatalf("resolved model = %q, want gpt-5.4 (hard default)", got)
+	}
+}
+
+func TestCreateRunDoesNotApplyEntryStepYoloToWorkflowLaunch(t *testing.T) {
+	catalog := baseTestCatalog()
+	catalog.steps["wf-1"][0].YoloMode = true
+
+	if got := resolvedRunYolo(t, catalog, StartRunInput{ProjectID: "proj-1", WorkflowID: "wf-1"}); got {
+		t.Fatal("workflow run yolo = true, want false when only the entry step enables yolo_mode")
+	}
+}
+
+func TestCreateRunResolvesYoloFromWorkflowWhenEnabled(t *testing.T) {
+	catalog := baseTestCatalog()
+	catalog.workflows["proj-1"][0].YoloMode = true
+
+	if got := resolvedRunYolo(t, catalog, StartRunInput{ProjectID: "proj-1", WorkflowID: "wf-1"}); !got {
+		t.Fatal("run yolo = false, want true from workflow yolo_mode")
+	}
+}
+
+func TestCreateRunResolvesWorkflowYoloEvenWhenEntryStepDefinesModel(t *testing.T) {
+	catalog := baseTestCatalog()
+	catalog.steps["wf-1"][0].Model = "gpt-5.4-mini"
+	catalog.workflows["proj-1"][0].YoloMode = true
+
+	if got := resolvedRunYolo(t, catalog, StartRunInput{ProjectID: "proj-1", WorkflowID: "wf-1"}); !got {
+		t.Fatal("run yolo = false, want true from workflow yolo_mode even when the entry step resolves the model")
+	}
+}
+
+func TestCreateRunResolvesYoloFromSingleStepWhenEnabled(t *testing.T) {
+	catalog := baseTestCatalog()
+	catalog.steps["wf-1"][0].YoloMode = true
+
+	if got := resolvedRunYolo(t, catalog, StartRunInput{ProjectID: "proj-1", StepID: "step-1"}); !got {
+		t.Fatal("single-step run yolo = false, want true from selected step yolo_mode")
+	}
+}
+
+func TestCreateRunYoloRequestStillEnablesWhenEntryStepDefaultOff(t *testing.T) {
+	catalog := baseTestCatalog()
+
+	if got := resolvedRunYolo(t, catalog, StartRunInput{ProjectID: "proj-1", WorkflowID: "wf-1", YoloMode: true}); !got {
+		t.Fatal("run yolo = false, want true from explicit start request")
+	}
+}
+
+func TestCreateRunDoesNotApplyWorkflowYoloDefaultToNormalChat(t *testing.T) {
+	catalog := baseTestCatalog()
+	catalog.workflows["proj-1"][0].YoloMode = true
+
+	if got := resolvedRunYolo(t, catalog, StartRunInput{ProjectID: "proj-1", ChatMode: "normal_chat"}); got {
+		t.Fatal("normal chat run yolo = true, want false unless the chat request explicitly enables it")
 	}
 }
 

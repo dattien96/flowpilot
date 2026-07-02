@@ -1,8 +1,5 @@
 # FlowPilot Agent Pack Examples
 
-This directory is a reference data shape for CP-42. It is not wired into the
-runner yet.
-
 The intent is to move built-in flow/template knowledge out of Go literals while
 keeping runtime guarantees in Go handlers.
 
@@ -11,6 +8,8 @@ keeping runtime guarantees in Go handlers.
 - `manifest.yaml`: pack entrypoint and version metadata.
 - `agents/`: markdown agent definitions compatible with the current
   `AgentDefinition` frontmatter parser.
+- `behaviors/`: reference-only registry notes for built-in behavior IDs and
+  their runtime meaning.
 - `flows/`: flow topology and node behavior declarations.
 - `tools/`: declared tool faces that map domain-facing tool input to generic
   `flow_control`.

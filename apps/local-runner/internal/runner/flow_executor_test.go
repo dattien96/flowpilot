@@ -230,6 +230,63 @@ func TestCoderCompletionAutoSpawnedReviewerPromptDoesNotInstructFlowControlCall(
 	}
 }
 
+func TestFlowEngineSynthesisPromptIncludesJoinedReviewerNote(t *testing.T) {
+	var synthesisPrompt string
+	var mu sync.Mutex
+
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, req TurnRequest, b TurnBridge) error {
+				switch {
+				case strings.Contains(req.Prompt, "[flow-engine] Agent results ready") &&
+					strings.Contains(req.Prompt, "[flow-engine joined result note]"):
+					mu.Lock()
+					synthesisPrompt = req.Prompt
+					mu.Unlock()
+					b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "synthesized"})
+				case strings.Contains(req.Prompt, "Review this result from node"):
+					b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "approved"})
+				default:
+					b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "implemented"})
+				}
+				return nil
+			})
+		},
+	})
+
+	svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3})
+
+	svc.startResolvedFlow(context.Background(), parent.RunID, "flowpilot-core-flow-pack/review-loop", "fix the crash")
+
+	waitLoop(t, "synthesis prompt captured", 3*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return synthesisPrompt != ""
+	})
+
+	mu.Lock()
+	got := synthesisPrompt
+	mu.Unlock()
+	for _, want := range []string{
+		"[flow-engine joined result note]",
+		`"reviewer_correctness"`,
+		`"reviewer_security"`,
+		"[flow-engine] Agent results ready.",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("synthesis prompt missing %q:\n%s", want, got)
+		}
+	}
+}
+
 // TestForwardAutoAdvanceFiresForNonCoderNamedEntryNode is the regression
 // test for BUG-NOTE-CP42 #17: the EventTurnCompleted handler only tried
 // tryAdvanceFlowFromNode (via advanceOrNotifyHub) when the completing child
@@ -441,7 +498,7 @@ func TestStartResolvedFlowNoNotifyWhenNothingSpawned(t *testing.T) {
 // TestStartTurnWithFlowRefSpawnsEntryNodeAsynchronously proves the actual
 // wiring path (startTurn -> go startResolvedFlow), not just the underlying
 // function in isolation: a first turn carrying SubMode/FlowRef must result
-// in a coder child appearing, without blocking the turn's own response.
+// in a coder child appearing, while the hub stays quiet until reinvoked.
 func TestStartTurnWithFlowRefSpawnsEntryNodeAsynchronously(t *testing.T) {
 	svc, _ := newTestServer(t)
 
@@ -541,17 +598,14 @@ func TestContinueReinvokeUsesEdgeResolvedTargetForFlowStartedRun(t *testing.T) {
 	}
 }
 
-// TestStartTurnWithFlowRefPrependsWaitNoticeToHubsOwnFirstTurn is the
-// regression test for BUG#1 (BUG-NOTE-CP42): notifyHubFlowStarted used to
-// append its wait notice to pendingAgentContext from startResolvedFlow's own
-// goroutine, which races startTurn's synchronous drain of that same field a
-// few lines later — the note reliably lost the race and never reached the
-// hub's own first-turn prompt. This proves the fix (prepending the notice
-// synchronously to the turn's prompt before the goroutine is even dispatched)
-// by asserting the wait notice is present in the PARENT run's own first-turn
-// prompt, not just in some later pending-context note.
-func TestStartTurnWithFlowRefPrependsWaitNoticeToHubsOwnFirstTurn(t *testing.T) {
-	var parentPrompt string
+// TestStartTurnWithFlowRefSkipsHubsOwnFirstProviderTurn guards the Flow Mode
+// handoff path: the first user turn should start the flow entry child, but the
+// parent hub must not also send a provider turn that can show a main-agent
+// response before the child result is ready.
+func TestStartTurnWithFlowRefSkipsHubsOwnFirstProviderTurn(t *testing.T) {
+	var seenParent bool
+	var seenChild bool
+	parentRunID := ""
 	var mu sync.Mutex
 
 	reg := newProviderRegistry()
@@ -560,11 +614,13 @@ func TestStartTurnWithFlowRefPrependsWaitNoticeToHubsOwnFirstTurn(t *testing.T) 
 		Capabilities: ProviderCapabilities{Streaming: true},
 		newAdapter: func() ProviderRuntimeAdapter {
 			return fakeAdapterFunc(func(_ context.Context, req TurnRequest, b TurnBridge) error {
-				if strings.Contains(req.Prompt, "fix the crash on startup") {
-					mu.Lock()
-					parentPrompt = req.Prompt
-					mu.Unlock()
+				mu.Lock()
+				if req.RunID == parentRunID {
+					seenParent = true
+				} else {
+					seenChild = true
 				}
+				mu.Unlock()
 				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "ok"})
 				return nil
 			})
@@ -576,6 +632,7 @@ func TestStartTurnWithFlowRefPrependsWaitNoticeToHubsOwnFirstTurn(t *testing.T) 
 	if err != nil {
 		t.Fatalf("createRun: %v", err)
 	}
+	parentRunID = parent.RunID
 
 	if _, apiErr := svc.startTurn(parent.RunID, TurnInput{
 		StepID:  "chat-" + parent.RunID,
@@ -586,20 +643,61 @@ func TestStartTurnWithFlowRefPrependsWaitNoticeToHubsOwnFirstTurn(t *testing.T) 
 		t.Fatalf("startTurn: %s", apiErr.msg)
 	}
 
-	waitLoop(t, "hub's own first turn observed by fake adapter", 2*time.Second, func() bool {
+	waitLoop(t, "child provider turn observed by fake adapter", 2*time.Second, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
-		return parentPrompt != ""
+		return seenChild
 	})
 
 	mu.Lock()
-	got := parentPrompt
+	gotParent := seenParent
 	mu.Unlock()
-	if !strings.Contains(got, "already been spawned") || !strings.Contains(got, "duplicate that work") {
-		t.Fatalf("hub's own first-turn prompt = %.300q, want it to contain the flow-start wait notice", got)
+	if gotParent {
+		t.Fatal("hub parent provider was called on the first flowRef turn; want silent handoff to child")
 	}
-	if !strings.Contains(got, "fix the crash on startup") {
-		t.Fatalf("hub's own first-turn prompt = %.300q, want it to still contain the original user prompt", got)
+}
+
+func TestStartResolvedFlowChildInheritsWorkflowYoloDefault(t *testing.T) {
+	childYolo := make(chan bool, 1)
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, req TurnRequest, b TurnBridge) error {
+				select {
+				case childYolo <- req.YoloMode:
+				default:
+				}
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "ok"})
+				return nil
+			})
+		},
+	})
+	catalog := baseTestCatalog()
+	catalog.workflows["proj-1"][0].YoloMode = true
+	catalog.steps["wf-1"][0].Model = "gpt-5.4-mini"
+	svc := newInteractiveService(reg, catalog, newFakeWorkflowStore())
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj-1", WorkflowID: "wf-1", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	svc.mu.Lock()
+	parentYolo := svc.runs[parent.RunID].yolo
+	svc.mu.Unlock()
+	if !parentYolo {
+		t.Fatal("parent run yolo = false, want true from workflow yolo_mode")
+	}
+
+	svc.startResolvedFlow(context.Background(), parent.RunID, "flowpilot-core-flow-pack/review-loop", "fix the crash on startup")
+
+	select {
+	case got := <-childYolo:
+		if !got {
+			t.Fatal("flow child turn YoloMode = false, want true inherited from parent workflow default")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("flow child turn did not start")
 	}
 }
 

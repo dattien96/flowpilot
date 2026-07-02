@@ -19,7 +19,8 @@ Because different providers may require different underlying CLI tools or SDKs, 
 
 ### 1.2 Provider Assignment per Workflow & Step
 Provider is not a free-form user setting. The user selects a model, and FlowPilot derives the provider automatically from that model.
-- **Workflow Level:** A workflow can store a default model (`workflows.model_override`), and the provider is derived from that model for persistence and execution.
+- **Workflow Level:** A workflow can store a default model (`workflows.model_override`) and YOLO mode (`workflows.yolo_mode`), and the provider is derived from that model for persistence and execution.
+- **Built-in Workflows:** For built-in workflows, the user can edit the model override (`workflows.model_override`), reasoning effort override (`workflows.reasoning_effort_override`), and YOLO mode (`workflows.yolo_mode`) without cloning the workflow. All other fields (e.g. name, description, structure) remain strictly read-only.
 - **Step Level:** Each step *type* (`step_definitions.model`) has its own configured model, and the provider is derived from that model.
   *Example:* A user can configure a planning step type to use `gpt-5.4`, which automatically maps to **Codex**, or `gemini-*`, which automatically maps to **Gemini**.
 - **BUG-164/BUG-165 note:** step-level configuration is not a per-workflow-instance override anymore — `workflow_steps` carries no `provider_override`/`model_override`/`reasoning_effort_override` of its own. A step's model/provider is entirely the step *type's* catalog value (`step_definitions.model`), shared by every workflow that uses that step type.
@@ -31,7 +32,7 @@ Provider is not a free-form user setting. The user selects a model, and FlowPilo
 Just as providers vary, the specific model versions under those providers must be highly configurable by the user.
 
 ### 2.1 Model Selection
-Each installed provider exposes multiple models (e.g., `gpt-5.4`, `gpt-5.5`, `claude-sonnet`, `gemini-pro`). The user must be able to select the exact version they want to use. If the user does not choose a model, FlowPilot defaults to `gpt-5.4`, which maps to **Codex**.
+Each installed provider exposes multiple models (e.g., `gpt-5.4`, `gpt-5.5`, `claude-sonnet`, `gemini-pro`). The user must be able to select the exact version they want to use. If no model is configured for a workflow or step and the project default is unset, there is no silent default fallback; instead, the run is blocked and the flow/step is marked as non-runnable.
 
 ### 2.2 Model Assignment per Workflow & Step
 Model configuration is the primary user-facing AI setting:
@@ -47,7 +48,7 @@ To support this granular flexibility without confusing the user, the configurati
 1. **Step:** the step *type's* own configured model (`step_definitions.model`). Wins whenever set.
 2. **Flow:** the workflow's own model (`workflows.model_override`). Used only when the step type has no configured model.
 3. **Project:** the project's baseline model (`projects.default_model`). Used only when neither Step nor Flow has one.
-4. **Default:** the hard-coded floor `gpt-5.4`, used only when none of the above are configured.
+4. **Unresolved:** If none of the above are configured, there is no hard-coded default/fallback floor (such as `gpt-5.4`). Instead, the workflow or step is unresolved and marked as non-runnable (rendered as disabled/greyed with a tooltip in the UI).
 
 Provider is derived from whichever model wins, never chosen independently — see §1.2.
 

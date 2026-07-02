@@ -549,6 +549,7 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 	}}
 
 	resolvedModel := in.Model
+	resolvedYolo := in.YoloMode
 	if in.WorkflowID != "" && (stepID == "" || stepID == in.WorkflowID) {
 		stepCatalog, ok := s.catalog.(WorkflowStepCatalogStore)
 		if !ok {
@@ -585,15 +586,21 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		if resolvedModel == "" {
 			resolvedModel = strings.TrimSpace(steps[0].Model)
 		}
-		if resolvedModel == "" {
-			if catalog, ok := s.catalog.(CatalogStore); ok {
-				if workflows, err := catalog.ListWorkflows(context.Background()); err == nil {
-					for _, wf := range workflows {
-						if wf.ID == in.WorkflowID {
-							resolvedModel = strings.TrimSpace(wf.Model)
-							break
-						}
+		// BUG-183: Flow Mode has two distinct default sources. A normal workflow/flow
+		// execution inherits YOLO from the workflow definition itself, while a direct
+		// single-step execution inherits from that selected step. Do not let the entry
+		// step's yolo_mode override a workflow launch.
+		if catalog, ok := s.catalog.(CatalogStore); ok {
+			if workflows, err := catalog.ListWorkflows(context.Background()); err == nil {
+				for _, wf := range workflows {
+					if wf.ID != in.WorkflowID {
+						continue
 					}
+					resolvedYolo = resolvedYolo || wf.YoloMode
+					if resolvedModel == "" {
+						resolvedModel = strings.TrimSpace(wf.Model)
+					}
+					break
 				}
 			}
 		}
@@ -606,6 +613,27 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 							break
 						}
 					}
+				}
+			}
+		}
+		if resolvedModel == "" {
+			resolvedModel = "gpt-5.4"
+		}
+	} else if runKind != "chat" && stepID != "" {
+		if catalog, ok := s.catalog.(CatalogStore); ok {
+			if steps, err := catalog.ListSteps(context.Background()); err == nil {
+				for _, step := range steps {
+					if step.ID != stepID {
+						continue
+					}
+					if step.Name != "" {
+						seedSteps[0].StepType = step.Name
+					}
+					if resolvedModel == "" {
+						resolvedModel = strings.TrimSpace(step.Model)
+					}
+					resolvedYolo = resolvedYolo || step.YoloMode
+					break
 				}
 			}
 		}
@@ -687,7 +715,7 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		providerAccountID: stampAccount,
 		workspaceCwd:      in.Cwd,
 		modelName:         resolvedModel,
-		yolo:              in.YoloMode,
+		yolo:              resolvedYolo,
 		reasoningEffort:   in.ReasoningEffort,
 		runKind:           runKind,
 		status:            RunStatusIdle,

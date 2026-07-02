@@ -127,13 +127,14 @@ func chooseUsableProjectPath(candidates []string) string {
 }
 
 func (s *SupabaseCatalogStore) ListWorkflows(ctx context.Context) ([]Workflow, error) {
-	endpoint := s.restURL + "/workflows?created_by=neq.flowpilot-runtime&select=id,project_id,name,description,model_override&order=created_at.desc"
+	endpoint := s.restURL + "/workflows?created_by=neq.flowpilot-runtime&select=id,project_id,name,description,model_override,yolo_mode&order=created_at.desc"
 	var raw []struct {
 		ID            string  `json:"id"`
 		ProjectID     string  `json:"project_id"`
 		Name          string  `json:"name"`
 		Description   string  `json:"description"`
 		ModelOverride *string `json:"model_override"`
+		YoloMode      bool    `json:"yolo_mode"`
 	}
 	if err := s.getJSON(ctx, endpoint, &raw); err != nil {
 		return nil, err
@@ -144,17 +145,18 @@ func (s *SupabaseCatalogStore) ListWorkflows(ctx context.Context) ([]Workflow, e
 		if r.ModelOverride != nil {
 			model = *r.ModelOverride
 		}
-		out[i] = Workflow{ID: r.ID, ProjectID: r.ProjectID, Name: r.Name, Description: r.Description, Model: model}
+		out[i] = Workflow{ID: r.ID, ProjectID: r.ProjectID, Name: r.Name, Description: r.Description, Model: model, YoloMode: r.YoloMode}
 	}
 	return out, nil
 }
 
 func (s *SupabaseCatalogStore) ListSteps(ctx context.Context) ([]Step, error) {
-	endpoint := s.restURL + "/step_definitions?select=step_type,name,model&order=name.asc"
+	endpoint := s.restURL + "/step_definitions?select=step_type,name,model,yolo_mode&order=name.asc"
 	var raw []struct {
 		StepType string  `json:"step_type"`
 		Name     string  `json:"name"`
 		Model    *string `json:"model"`
+		YoloMode bool    `json:"yolo_mode"`
 	}
 	if err := s.getJSON(ctx, endpoint, &raw); err != nil {
 		return nil, err
@@ -165,14 +167,14 @@ func (s *SupabaseCatalogStore) ListSteps(ctx context.Context) ([]Step, error) {
 		if r.Model != nil {
 			model = *r.Model
 		}
-		out[i] = Step{ID: r.StepType, Name: r.Name, Order: i + 1, Model: model}
+		out[i] = Step{ID: r.StepType, Name: r.Name, Order: i + 1, Model: model, YoloMode: r.YoloMode}
 	}
 	return out, nil
 }
 
 func (s *SupabaseCatalogStore) ListWorkflowSteps(ctx context.Context, workflowID string) ([]Step, error) {
 	endpoint := fmt.Sprintf(
-		"%s/workflow_steps?workflow_id=eq.%s&is_enabled=is.true&select=id,workflow_id,step_type,order_index,step_definitions(name,required_skills,model)&order=order_index.asc",
+		"%s/workflow_steps?workflow_id=eq.%s&is_enabled=is.true&select=id,workflow_id,step_type,order_index,step_definitions(name,required_skills,model,yolo_mode)&order=order_index.asc",
 		s.restURL,
 		workflowID,
 	)
@@ -185,6 +187,7 @@ func (s *SupabaseCatalogStore) ListWorkflowSteps(ctx context.Context, workflowID
 			Name           string   `json:"name"`
 			RequiredSkills []string `json:"required_skills"`
 			Model          *string  `json:"model"`
+			YoloMode       bool     `json:"yolo_mode"`
 		} `json:"step_definitions"`
 	}
 	if err := s.getJSON(ctx, endpoint, &raw); err != nil {
@@ -213,6 +216,7 @@ func (s *SupabaseCatalogStore) ListWorkflowSteps(ctx context.Context, workflowID
 			Order:        r.OrderIndex + 1,
 			DefaultSkill: defaultSkill,
 			Model:        model,
+			YoloMode:     r.StepDefinitions != nil && r.StepDefinitions.YoloMode,
 		}
 	}
 	return out, nil

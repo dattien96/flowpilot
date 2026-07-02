@@ -1882,6 +1882,58 @@ test("MockRunnerClient preserves parent orchestration state across refresh pause
   assert.equal(stopped.loopState.status, "stopped");
 });
 
+test("stop uses loop stop plus parent interrupt for the main flow run", async () => {
+  const calls: string[] = [];
+  seedStore(
+    makeClient({
+      stopAgentLoop: async (runId) => {
+        calls.push(`loop:${runId}`);
+        return { parentRunId: runId, runs: [], edges: [], busMessages: [], loopState: { status: "stopped", round: 0, roundCap: 3 } };
+      },
+      interrupt: async (runId) => {
+        calls.push(`interrupt:${runId}`);
+      },
+    }),
+    [],
+  );
+  useStore.setState({
+    chatMode: "workflow_step_auto",
+    runId: "parent-1",
+    mainRunId: "parent-1",
+    activeAgentRunId: undefined,
+  });
+
+  await useStore.getState().stop();
+
+  assert.deepEqual(calls, ["loop:parent-1", "interrupt:parent-1"]);
+});
+
+test("stop keeps child-focused stop on the child run", async () => {
+  const calls: string[] = [];
+  seedStore(
+    makeClient({
+      stopAgentLoop: async (runId) => {
+        calls.push(`loop:${runId}`);
+        return { parentRunId: runId, runs: [], edges: [], busMessages: [], loopState: { status: "stopped", round: 0, roundCap: 3 } };
+      },
+      interrupt: async (runId) => {
+        calls.push(`interrupt:${runId}`);
+      },
+    }),
+    [],
+  );
+  useStore.setState({
+    chatMode: "workflow_step_auto",
+    runId: "child-1",
+    mainRunId: "parent-1",
+    activeAgentRunId: "child-1",
+  });
+
+  await useStore.getState().stop();
+
+  assert.deepEqual(calls, ["interrupt:child-1"]);
+});
+
 test("MockRunnerClient keeps child agent runs out of main history", async () => {
   const client = new MockRunnerClient();
   const parent = await client.startRun({
