@@ -5,11 +5,13 @@
 - Document ID: `BUG-177`
 - Title: `Sub-Agent Approvals Not Surfaced On The Main/Hub View`
 - Phase: `bugfix`
-- Status: `done`
+- Status: `cancelled`
 - Owner: `FlowPilot`
 - Reviewers: `FlowPilot`
 - Created: `2026-07-02`
 - Last Updated: `2026-07-02`
+
+> **REVERTED (user decision).** Live testing showed the hub-stream mirror flooded the main view with unresolved sub-agent approvals ("2/3/14 approvals required" piling up) and contributed to the main run appearing to hang. Per user direction the mirror is reverted: sub-agent approvals stay in the agent (child) view — the user focuses that agent to approve, or runs YOLO for a hands-off UX. Both code halves (runner `RequestApproval` mirror, desktop `timelineReducer` dedup) were removed; see `change-audit/CA-216-revert-subagent-approval-mirror.md`. The root-cause analysis below is retained for history.
 - Parent Documents: `requirements/07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md`
 - Child Documents: `none`
 - Related Documents: `requirements/09-BugFix/done/BUG-157-Multiple-Concurrent-Approvals.md`, `requirements/09-BugFix/done/BUG-176-Cohort-Reviewer-Can-Terminate-Flow-Before-Join-Barrier.md`, `requirements/09-BugFix/done/BUG-174-Flow-Mode-Workflow-Picker-Run-Does-Not-Orchestrate-No-Agent-Spawn-Steps-Bulk-Completed.md`

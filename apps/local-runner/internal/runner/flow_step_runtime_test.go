@@ -2,11 +2,71 @@ package runner
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
 	"flowpilot-runner/internal/agentpack"
 )
+
+// TestReviewOutcomeToolOfferedOnlyOnHubSynthesisTurn proves the BUG-179 fix: the
+// flow control tool is withheld from the hub's first turn (so it cannot finalize
+// the flow before the review cohort runs) and offered on its later synthesis
+// turn.
+func TestReviewOutcomeToolOfferedOnlyOnHubSynthesisTurn(t *testing.T) {
+	var mu sync.Mutex
+	var offers []bool
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, req TurnRequest, b TurnBridge) error {
+				mu.Lock()
+				offers = append(offers, req.OfferReviewOutcomeTool)
+				mu.Unlock()
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "ok"})
+				return nil
+			})
+		},
+	})
+	svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	// Mark it a flow hub, the way startResolvedFlow's coder spawn does.
+	svc.mu.Lock()
+	svc.runs[parent.RunID].autoOrchestrate = true
+	svc.mu.Unlock()
+
+	runTurnAndWait := func(prompt string, wantOffers int) {
+		if _, apiErr := svc.startTurn(parent.RunID, TurnInput{StepID: "chat-" + parent.RunID, Prompt: prompt}, "", ""); apiErr != nil {
+			t.Fatalf("startTurn(%q): %s", prompt, apiErr.msg)
+		}
+		waitLoop(t, "turn settled", 3*time.Second, func() bool {
+			mu.Lock()
+			n := len(offers)
+			mu.Unlock()
+			svc.mu.Lock()
+			inflight := svc.runs[parent.RunID].turnInFlight
+			svc.mu.Unlock()
+			return n == wantOffers && !inflight
+		})
+	}
+
+	runTurnAndWait("start", 1)     // hub's first turn
+	runTurnAndWait("synthesize", 2) // hub's synthesis turn
+
+	mu.Lock()
+	defer mu.Unlock()
+	if offers[0] {
+		t.Fatal("the hub's FIRST turn must NOT be offered the flow control tool (it could finalize before the cohort runs)")
+	}
+	if !offers[1] {
+		t.Fatal("the hub's synthesis turn (turnCount > 1) must be offered the flow control tool")
+	}
+}
 
 // reviewLoopTestNodes mirrors review-loop.yaml's topology for step-wiring tests
 // without depending on the embedded pack loader.
@@ -349,69 +409,6 @@ func TestReconstructNonCompletedFlowRunRestoresPendingSteps(t *testing.T) {
 		if st.Status != StepStatusPending {
 			t.Errorf("step %q status = %q, want PENDING for a non-completed run", st.ID, st.Status)
 		}
-	}
-}
-
-// TestChildApprovalMirroredToHubStream proves the BUG-177 fix: a sub-agent's
-// approval request is mirrored onto the hub (parent) run's event stream so it
-// surfaces on the main view even when that child isn't the focused run (the
-// desktop feeds pendingApprovals from the focused run's stream only, so two
-// reviewers asking at once were otherwise invisible on main).
-func TestChildApprovalMirroredToHubStream(t *testing.T) {
-	reg := newProviderRegistry()
-	reg.register(ProviderRegistration{
-		Key:          ProviderKeyClaude,
-		DisplayName:  "Claude",
-		Status:       ProviderStatusAvailable,
-		Capabilities: ProviderCapabilities{Streaming: true, ApprovalEvents: true},
-		newAdapter:   func() ProviderRuntimeAdapter { return &childWaitApprovalAdapter{} },
-	})
-	svc := NewInteractiveServiceWithRegistry(reg)
-	svc.approvalTTL = time.Second
-
-	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyClaude})
-	if err != nil {
-		t.Fatalf("createRun: %v", err)
-	}
-	if _, e := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{
-		Agent: "reviewer", Prompt: "review", Provider: "claude", Wait: false,
-	}); e != nil {
-		t.Fatalf("spawnChildRun: %v", e)
-	}
-
-	var approvalID string
-	waitLoop(t, "child approval requested", 3*time.Second, func() bool {
-		svc.mu.Lock()
-		defer svc.mu.Unlock()
-		for _, rs := range svc.runs {
-			if rs.parentRunID == parent.RunID && rs.pendingApprovalID != "" {
-				approvalID = rs.pendingApprovalID
-				return true
-			}
-		}
-		return false
-	})
-
-	// The same approval must also be present on the HUB (parent) run's own event
-	// stream, not just the child's.
-	waitLoop(t, "approval mirrored to hub stream", 3*time.Second, func() bool {
-		svc.mu.Lock()
-		defer svc.mu.Unlock()
-		parentRun := svc.runs[parent.RunID]
-		if parentRun == nil {
-			return false
-		}
-		for _, ev := range parentRun.events {
-			if ev.Type == EventPermissionRequired && ev.ApprovalID == approvalID {
-				return true
-			}
-		}
-		return false
-	})
-
-	// Resolve so the blocked child turn can finish (avoids leaking the goroutine to TTL).
-	if apiErr := svc.SubmitApprovalDecision(approvalID, "approve"); apiErr != nil {
-		t.Fatalf("SubmitApprovalDecision: %v", apiErr)
 	}
 }
 

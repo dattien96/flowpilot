@@ -1709,25 +1709,11 @@ func (b *turnBridge) RequestApproval(details ApprovalDetails) (string, error) {
 		Provider:       b.rs.providerKey,
 		Details:        &details,
 	})
-	// BUG-177: mirror a sub-agent's approval request onto the hub (parent) run's
-	// event stream so it surfaces on the main view even when that child is not
-	// the focused run. The desktop feeds pendingApprovals from the focused run's
-	// stream only, so two reviewers requesting approval at once were invisible on
-	// main (at most one could be focused). Approvals resolve globally by
-	// approvalId (s.approvals), so approving from the hub view drives the child's
-	// own record; the desktop dedups by approvalId so a concurrently-focused
-	// child plus this mirror never double-surface.
-	if b.rs.parentRunID != "" {
-		if parent := s.runs[b.rs.parentRunID]; parent != nil {
-			s.emitLocked(parent, ProviderEvent{
-				Type:           EventPermissionRequired,
-				ProviderTurnID: b.turnID,
-				ApprovalID:     rec.id,
-				Provider:       b.rs.providerKey,
-				Details:        &details,
-			})
-		}
-	}
+	// A sub-agent's approval is emitted on its own run stream and surfaced when the
+	// user focuses that agent. (BUG-177 briefly mirrored it onto the hub stream so
+	// concurrent cohort approvals showed on main, but that flooded the main view
+	// with unresolved approvals and was reverted per user direction — sub-agent
+	// approvals stay in the agent view; YOLO covers the hands-off UX.)
 	s.mu.Unlock()
 
 	timer := time.NewTimer(s.approvalTTL)
@@ -2278,7 +2264,19 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// state is persisted by the post-turn sessionStateOf snapshot below. (BUG-122)
 	providerPrompt := in.Prompt
 	s.mu.Lock()
-	offerReviewOutcomeTool := rs.autoOrchestrate
+	// BUG-179: only offer the flow control tool (submit_review_outcome) on the
+	// hub's post-join synthesis turn, never its first turn or a child's turn.
+	// spawnChildRun sets the hub's autoOrchestrate=true as soon as the entry coder
+	// is spawned (from startResolvedFlow's goroutine), so gating solely on
+	// autoOrchestrate handed the tool to the hub's *first* model turn — letting it
+	// call flow_control("done") before the reviewer cohort had even run, which
+	// marked synthesis DONE while the reviewers were still RUNNING. The hub's own
+	// turns are the only ones that may finalize (parentRunID == ""), and only after
+	// its first turn — the coder spawns on turn 1, and maybeAutoReinvokeHub only
+	// reinvokes the hub (turn ≥ 2) after the cohort join, so turnCount > 1 is the
+	// genuine synthesis turn. (A cohort reviewer is additionally blocked in
+	// SubmitFlowControl by flowCohortId, BUG-176.)
+	offerReviewOutcomeTool := rs.autoOrchestrate && rs.parentRunID == "" && rs.turnCount > 1
 	providerPrompt = prependModePrefix(providerPrompt, rs.turnCount, rs.changeType, rs.sourceDocID)
 	// Persist the per-turn YOLO posture as the run's current default (BUG-129). The UI
 	// toggle is sticky, so an explicit YoloMode this turn must update rs.yolo; otherwise a
