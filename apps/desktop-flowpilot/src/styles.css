@@ -5470,6 +5470,11 @@ body.is-resizing-sidebar {
   border-radius: 20px;
   padding: 0 7px;
 }
+.wsr-retry-badge.yolo-off {
+  color: var(--text-dim);
+  background: transparent;
+  border-color: var(--border);
+}
 
 /* BUG-156: vertical connected-circle step timeline (FlowStepTimeline). */
 .flow-timeline {

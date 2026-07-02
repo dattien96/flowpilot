@@ -27,7 +27,11 @@ export function FlowTimelineSidebar(): React.ReactElement | null {
   if (!visible) return null;
 
   const current = activeWorkflowStep(steps);
-  const doneCount = steps.filter((s) => s.status === "DONE").length;
+  // BUG-159: "reached" (done, or currently on it), not just "fully done" — the
+  // user is standing ON step 1 while it runs, so that should read "1/4", not "0/4".
+  const reachedCount = steps.filter(
+    (s) => s.status === "DONE" || s.status === "RUNNING" || s.status === "WAITING_USER_APPROVAL",
+  ).length;
 
   return (
     <aside className={`flow-sidebar ${expanded ? "flow-sidebar-expanded" : "flow-sidebar-collapsed"}`}>
@@ -35,20 +39,21 @@ export function FlowTimelineSidebar(): React.ReactElement | null {
         {expanded && (
           <div className="flow-sidebar-summary">
             <span className="flow-sidebar-progress">
-              {doneCount}/{steps.length} steps
-              {/* BUG-158: yolo is a run-wide toggle, not a per-step config, so it's
-                  surfaced once here rather than on each timeline item. */}
-              {meta.yoloMode && <span className="wsr-retry-badge">YOLO</span>}
+              {reachedCount}/{steps.length} steps
             </span>
             {current && <span className="flow-sidebar-current">{current.nodeId || current.stepType}</span>}
-            {(meta.provider || meta.model) && (
-              <span className="flow-sidebar-meta">
-                {meta.provider && (
-                  <span className={`pill-prov prov-${meta.provider}`}>{meta.provider.toUpperCase()}</span>
-                )}
-                {meta.model && <span className="ac-model">{meta.model}</span>}
+            <span className="flow-sidebar-meta">
+              {meta.provider && (
+                <span className={`pill-prov prov-${meta.provider}`}>{meta.provider.toUpperCase()}</span>
+              )}
+              {meta.model && <span className="ac-model">{meta.model}</span>}
+              {/* BUG-159: yolo is a run-wide toggle, not a per-step config, so it's
+                  surfaced once here — always visible (on or off), not only when on,
+                  so the user can tell the flow's yolo posture at a glance. */}
+              <span className={`wsr-retry-badge ${meta.yoloMode ? "yolo-on" : "yolo-off"}`}>
+                YOLO {meta.yoloMode ? "ON" : "OFF"}
               </span>
-            )}
+            </span>
           </div>
         )}
         <button
