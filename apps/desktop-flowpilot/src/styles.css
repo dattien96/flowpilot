@@ -387,6 +387,80 @@ input {
 .sidebar-resizer-right {
   border-left: 1px solid rgba(255, 255, 255, 0.06);
 }
+
+/* BUG-156: Flow Mode step-timeline sidebar — sits between the chat column and
+   the existing right sidebar, only rendered while a flow is running. */
+.flow-sidebar {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid var(--border);
+  background: var(--bg-2);
+  overflow: hidden;
+  transition: width 0.18s ease;
+}
+.flow-sidebar-expanded {
+  width: 260px;
+}
+.flow-sidebar-collapsed {
+  width: 44px;
+}
+.flow-sidebar-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.flow-sidebar-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.flow-sidebar-progress {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+.flow-sidebar-current {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.flow-sidebar-toggle {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-3);
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.flow-sidebar-toggle:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.flow-sidebar-body {
+  flex: 1;
+  overflow: auto;
+  padding: 10px 8px;
+}
+.flow-sidebar-collapsed .flow-sidebar-body {
+  padding: 10px 0;
+  display: flex;
+  justify-content: center;
+}
+
 .main {
   flex: 1;
   display: flex;
@@ -5343,6 +5417,131 @@ body.is-resizing-sidebar {
   border: 1px solid rgba(240, 180, 41, 0.4);
   border-radius: 20px;
   padding: 0 7px;
+}
+
+/* BUG-156: vertical connected-circle step timeline (FlowStepTimeline). */
+.flow-timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.flow-timeline-item {
+  display: flex;
+  gap: 10px;
+  padding: 6px 6px 14px;
+  border-radius: 8px;
+}
+.flow-timeline-item:last-child {
+  padding-bottom: 6px;
+}
+.flow-timeline-item.fti-current {
+  background: rgba(76, 141, 255, 0.1);
+  outline: 1px solid rgba(76, 141, 255, 0.35);
+}
+.fti-track {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 20px;
+}
+.fti-icon {
+  width: 20px;
+  height: 20px;
+  min-height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  border: 2px solid var(--border);
+  background: transparent;
+}
+.fti-idle .fti-icon {
+  border-color: var(--border);
+  background: transparent;
+}
+.fti-running .fti-icon {
+  border-color: var(--accent);
+  background: var(--accent);
+  box-shadow: 0 0 0 3px rgba(76, 141, 255, 0.25);
+  animation: fti-pulse 1.6s ease-in-out infinite;
+}
+.fti-done .fti-icon {
+  border-color: var(--ok);
+  background: var(--ok);
+}
+.fti-approval .fti-icon {
+  border-color: var(--warn);
+  background: var(--warn);
+  color: #1a1400;
+}
+.fti-error .fti-icon {
+  border-color: var(--err);
+  background: var(--err);
+}
+@keyframes fti-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(76, 141, 255, 0.25); }
+  50% { box-shadow: 0 0 0 6px rgba(76, 141, 255, 0.12); }
+}
+.fti-line {
+  flex: 1;
+  width: 2px;
+  min-height: 18px;
+  margin-top: 2px;
+  background: var(--border);
+  border-radius: 2px;
+}
+.fti-line-done {
+  background: var(--ok);
+}
+.fti-line-running {
+  background: linear-gradient(to bottom, var(--accent), var(--border));
+}
+.fti-body {
+  flex: 1;
+  min-width: 0;
+  padding-top: 1px;
+}
+.fti-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+.fti-desc {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 2px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.fti-meta {
+  font-size: 10.5px;
+  color: var(--text-dim);
+  margin-top: 5px;
+  display: flex;
+  gap: 7px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+/* Collapsed rail: icon-only, no title/description/meta. */
+.flow-timeline-compact {
+  align-items: center;
+}
+.flow-timeline-compact .flow-timeline-item {
+  padding: 4px 0 10px;
+}
+.flow-timeline-compact .flow-timeline-item:last-child {
+  padding-bottom: 4px;
+}
+.flow-timeline-compact .fti-track {
+  width: auto;
 }
 .ac-meta {
   font-size: 10.5px;
