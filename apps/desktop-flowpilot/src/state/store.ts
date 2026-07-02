@@ -1988,6 +1988,14 @@ async function consumeOrchestrationStream(
     if (e.seq <= afterSeq) continue;
     if (e.type === "agent_graph_updated" || e.type === "agent_bus_message") {
       set((s) => applyOrchestrationEvent(s, e));
+      // BUG-180: the flow executor's step transitions (node spawn → RUNNING,
+      // cohort-join → DONE, etc.) are store writes with no dedicated event, so the
+      // step timeline was stale until a focus switch re-fetched it. Every such
+      // transition rides alongside an agent_graph_updated (child lifecycle change),
+      // so refresh the step-runtime here to make the timeline update live.
+      // refreshWorkflowStepRuntime self-guards (chatMode + load-seq + target-run),
+      // so this is safe and de-duped against races.
+      if (e.type === "agent_graph_updated") void get().refreshWorkflowStepRuntime();
     } else {
       // CP-35: gate reprompt events (turn_started, message_delta, turn_completed, etc.)
       // arrive after sendTurn() has already closed on turn_completed. Apply them via
