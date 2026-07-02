@@ -11,7 +11,7 @@ interface SpawnDialogState {
   wait?: boolean;
 }
 
-export function AgentsPanel(): React.ReactElement {
+export function AgentsPanel(): React.ReactElement | null {
   const client = useStore((s) => s.client);
   const projects = useStore((s) => s.projects);
   const selectedProjectId = useStore((s) => s.selectedProjectId);
@@ -33,17 +33,51 @@ export function AgentsPanel(): React.ReactElement {
   const openOrchestrationBoard = useStore((s) => s.openOrchestrationBoard);
   const closeOrchestrationBoard = useStore((s) => s.closeOrchestrationBoard);
 
-  // BUG-171 follow-up: the main card's provider badge used to be hardcoded to CODEX, so a
-  // Claude- or Gemini-driven hub still read "CODEX". Source it from the run's real provider
-  // instead: in Flow Mode the step-runtime meta carries the run's actual providerKey/model
-  // (which BUG-171 made authoritative from the resolved model); in normal chat the run uses
-  // the selected provider/model. Fall back to codex only when nothing is known yet.
+  const chatMode = useStore((s) => s.chatMode);
+  const launchMode = useStore((s) => s.launchMode);
+  const workflows = useStore((s) => s.workflows);
+  const steps = useStore((s) => s.steps);
+  const selectedWorkflowId = useStore((s) => s.selectedWorkflowId);
+  const selectedStepId = useStore((s) => s.selectedStepId);
+
+  const isFlowMode = chatMode === "workflow_step_auto";
+  const isWorkflowSelected = launchMode === "workflow" && selectedWorkflowId;
+  const isStepSelected = launchMode === "step" && selectedStepId;
+
+  const project = useMemo(() => projects.find((p) => p.id === selectedProjectId), [projects, selectedProjectId]);
+  const selectedWorkflow = useMemo(() => workflows.find((w) => w.id === selectedWorkflowId), [workflows, selectedWorkflowId]);
+  const selectedStep = useMemo(() => steps.find((step) => step.id === selectedStepId), [steps, selectedStepId]);
+
+  const resolvedModel = useMemo(() => {
+    if (isFlowMode) {
+      if (isWorkflowSelected) {
+        return selectedWorkflow?.model || project?.model || "";
+      } else if (isStepSelected) {
+        return selectedStep?.model || project?.model || "";
+      }
+    }
+    return "";
+  }, [isFlowMode, isWorkflowSelected, isStepSelected, selectedWorkflow, selectedStep, project]);
+
+  const resolvedProvider = useMemo(() => {
+    if (!resolvedModel) return "";
+    const m = resolvedModel.toLowerCase().trim();
+    if (m.startsWith("gpt-")) return "codex";
+    if (m.startsWith("gemini-") || m.startsWith("auto-gemini-")) return "gemini";
+    if (m.startsWith("claude-")) return "claude";
+    return "";
+  }, [resolvedModel]);
+
   const runtimeMetaProvider = useStore((s) => s.workflowStepRuntimeMeta.provider);
   const runtimeMetaModel = useStore((s) => s.workflowStepRuntimeMeta.model);
   const selectedProvider = useStore((s) => s.selectedProvider);
   const selectedModel = useStore((s) => s.selectedModel);
-  const mainProvider = runtimeMetaProvider || selectedProvider || "codex";
-  const mainModel = runtimeMetaModel || selectedModel || "";
+  const mainProvider = resolvedProvider || runtimeMetaProvider || selectedProvider || "codex";
+  const mainModel = resolvedModel || runtimeMetaModel || selectedModel || "";
+
+  if (isFlowMode && !isWorkflowSelected && !isStepSelected) {
+    return null;
+  }
 
   const [open, setOpen] = useState(false);
   const [agents, setAgents] = useState<AgentDefinition[]>([]);

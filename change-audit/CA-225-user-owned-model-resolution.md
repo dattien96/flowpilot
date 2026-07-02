@@ -2,7 +2,7 @@
 
 ## Summary
 
-Implemented user-owned model/provider resolution in Flow Mode, removing the hardcoded `gpt-5.4` fallback floor. When no model is resolved, runs fail with `no_model_configured` instead of silently defaulting. Enabled editing of model override and YOLO mode for built-in workflows without cloning, by updating `saveWorkflow` to write only these three fields when `editable === false`.
+Implemented user-owned model/provider resolution in Flow Mode, removing the hardcoded `gpt-5.4` fallback floor. When no model is resolved, runs fail with `no_model_configured` instead of silently defaulting. Enabled editing of model override and YOLO mode for built-in workflows without cloning, by updating `saveWorkflow` to write only these three fields when `editable === false`. Updated Agents sidebar panel to show only when a workflow/step is selected, rendering model/provider directly within the Main Agent list item.
 
 ## What Changed
 
@@ -14,7 +14,8 @@ Implemented user-owned model/provider resolution in Flow Mode, removing the hard
 - `packages/flowpilot-client-core/src/data/supabaseAdminRepository.ts`: Updated `saveWorkflow` to scoped-update model_override, reasoning_effort_override, and yolo_mode on built-in workflows.
 - `apps/desktop-flowpilot/src/types/contract.ts`: Declared model/yoloMode properties on TS interfaces.
 - `apps/desktop-flowpilot/src/components/settings/WorkflowsSettings.tsx`: Removed `DEFAULT_MODEL` seeding, added empty validation, unlocked inputs on built-in workflows.
-- `apps/desktop-flowpilot/src/components/ChatWorkspace.tsx`: Rendered read-only Main Agent card and disabled dropdown options with no resolved model.
+- `apps/desktop-flowpilot/src/components/ChatWorkspace.tsx`: Removed standalone green Main Agent card.
+- `apps/desktop-flowpilot/src/components/AgentsPanel.tsx`: Updated panel to hide when no flow/step is selected in Flow mode, and display the resolved model + provider inside the main card.
 
 ## Verification
 
@@ -25,5 +26,5 @@ Implemented user-owned model/provider resolution in Flow Mode, removing the hard
 feature_key: agent-flow-engine
 source_doc_id: Task-183
 change_type: bugfix
-summary: Implement user-owned model resolution in Flow Mode with no hardcoded fallback and unlock built-in workflow model overrides
+summary: Implement user-owned model resolution in Flow Mode and integrate model/provider displays directly into Agents Panel
 # --->8---
