@@ -199,6 +199,7 @@ func TestSupabaseCatalogStoreShaping(t *testing.T) {
 			"id":"p1",
 			"name":"Acme",
 			"directory_path":"/missing/primary",
+			"default_model":"gpt-5.4",
 			"project_workspace_bindings":[
 				{"local_path":"/missing/binding"},
 				{"local_path":`+strconv.Quote(usableBinding)+`}
@@ -209,32 +210,49 @@ func TestSupabaseCatalogStoreShaping(t *testing.T) {
 	if err != nil || len(projects) != 1 || projects[0].Name != "Acme" || projects[0].Path != usableBinding {
 		t.Fatalf("projects = %+v err=%v", projects, err)
 	}
-	if !strings.Contains((*cap)[0].endpoint, "/rest/v1/projects?select=id,name,directory_path,project_workspace_bindings(local_path)") {
+	// BUG-165: Model (projects.default_model) is the "Project" tier of the
+	// Step > Flow > Project > default resolution order.
+	if projects[0].Model != "gpt-5.4" {
+		t.Fatalf("project model = %q, want gpt-5.4", projects[0].Model)
+	}
+	if !strings.Contains((*cap)[0].endpoint, "/rest/v1/projects?select=id,name,directory_path,default_model,project_workspace_bindings(local_path)") {
 		t.Fatalf("projects endpoint = %s", (*cap)[0].endpoint)
 	}
 
-	cap2 := withMockHTTP(t, 200, []byte(`[{"id":"w1","project_id":"p1","name":"Feature","description":"d"}]`))
+	cap2 := withMockHTTP(t, 200, []byte(`[{"id":"w1","project_id":"p1","name":"Feature","description":"d","model_override":"claude-sonnet"}]`))
 	wfs, err := store.ListWorkflows(context.Background())
 	if err != nil || len(wfs) != 1 || wfs[0].ProjectID != "p1" {
 		t.Fatalf("workflows = %+v err=%v", wfs, err)
 	}
-	if !strings.Contains((*cap2)[0].endpoint, "workflows?created_by=neq.flowpilot-runtime") {
+	// BUG-165: Model (workflows.model_override) is the "Flow" tier.
+	if wfs[0].Model != "claude-sonnet" {
+		t.Fatalf("workflow model = %q, want claude-sonnet", wfs[0].Model)
+	}
+	if !strings.Contains((*cap2)[0].endpoint, "workflows?created_by=neq.flowpilot-runtime") ||
+		!strings.Contains((*cap2)[0].endpoint, "model_override") {
 		t.Fatalf("workflows endpoint = %s", (*cap2)[0].endpoint)
 	}
 
-	cap3 := withMockHTTP(t, 200, []byte(`[{"step_type":"plan","name":"Plan"}]`))
+	cap3 := withMockHTTP(t, 200, []byte(`[{"step_type":"plan","name":"Plan","model":"gpt-5.5"}]`))
 	steps, err := store.ListSteps(context.Background())
 	if err != nil || len(steps) != 1 || steps[0].Name != "Plan" {
 		t.Fatalf("steps = %+v err=%v", steps, err)
 	}
-	if !strings.Contains((*cap3)[0].endpoint, "step_definitions?select=step_type,name") {
+	// BUG-165: Model (step_definitions.model) is the "Step" tier.
+	if steps[0].Model != "gpt-5.5" {
+		t.Fatalf("step model = %q, want gpt-5.5", steps[0].Model)
+	}
+	if !strings.Contains((*cap3)[0].endpoint, "step_definitions?select=step_type,name,model") {
 		t.Fatalf("steps endpoint = %s", (*cap3)[0].endpoint)
 	}
 
-	cap4 := withMockHTTP(t, 200, []byte(`[{"id":"ws1","workflow_id":"w1","step_type":"plan","order_index":0,"step_definitions":{"name":"Plan","required_skills":["planner"]}}]`))
+	cap4 := withMockHTTP(t, 200, []byte(`[{"id":"ws1","workflow_id":"w1","step_type":"plan","order_index":0,"step_definitions":{"name":"Plan","required_skills":["planner"],"model":"claude-haiku"}}]`))
 	workflowSteps, err := store.ListWorkflowSteps(context.Background(), "w1")
 	if err != nil || len(workflowSteps) != 1 || workflowSteps[0].ID != "ws1" || workflowSteps[0].DefaultSkill != "planner" {
 		t.Fatalf("workflow steps = %+v err=%v", workflowSteps, err)
+	}
+	if workflowSteps[0].Model != "claude-haiku" {
+		t.Fatalf("workflow step model = %q, want claude-haiku", workflowSteps[0].Model)
 	}
 	if !strings.Contains((*cap4)[0].endpoint, "workflow_steps?workflow_id=eq.w1") ||
 		!strings.Contains((*cap4)[0].endpoint, "is_enabled=is.true") {

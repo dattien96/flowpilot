@@ -298,9 +298,12 @@ type TurnInput struct {
 // ---- Catalog DTOs (navigator; fake catalog in P2) --------------------------
 
 type Project struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Path string `json:"path"`
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Path  string `json:"path"`
+	// Model is projects.default_model — the "Project" tier of the Step > Flow >
+	// Project > default resolution order (SS-05/SD-06, BUG-165).
+	Model string `json:"model,omitempty"`
 }
 
 type Workflow struct {
@@ -308,6 +311,9 @@ type Workflow struct {
 	ProjectID   string `json:"projectId"`
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
+	// Model is workflows.model_override — the "Flow" tier of the Step > Flow >
+	// Project > default resolution order (SS-05/SD-06, BUG-165).
+	Model string `json:"model,omitempty"`
 }
 
 type Step struct {
@@ -316,6 +322,9 @@ type Step struct {
 	Name         string `json:"name"`
 	Order        int    `json:"order"`
 	DefaultSkill string `json:"defaultSkill,omitempty"`
+	// Model is the step's step_definitions.model — the "Step" tier of the
+	// Step > Flow > Project > default resolution order (SS-05/SD-06, BUG-165).
+	Model string `json:"model,omitempty"`
 }
 
 type ProviderSkill struct {

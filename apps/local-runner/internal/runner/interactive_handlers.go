@@ -534,6 +534,7 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		RequiresApproval: false,
 	}}
 
+	resolvedModel := in.Model
 	if in.WorkflowID != "" && (stepID == "" || stepID == in.WorkflowID) {
 		stepCatalog, ok := s.catalog.(WorkflowStepCatalogStore)
 		if !ok {
@@ -560,6 +561,43 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 				RequiresApproval: false,
 			}
 		}
+		// BUG-165: the desktop client sends no explicit model for a workflow/step
+		// run (Req 2 — Flow Mode has no chat-controller model picker to source one
+		// from), so the run must resolve its own model here rather than run with
+		// an empty one for its whole lifetime. Step > Flow > Project > default, per
+		// SS-05 §2.2/§3 and SD-06 §6: the entry step's own step_definitions.model
+		// wins if set, else the workflow's model_override, else the project's
+		// default_model, else the hard floor "gpt-5.4".
+		if resolvedModel == "" {
+			resolvedModel = strings.TrimSpace(steps[0].Model)
+		}
+		if resolvedModel == "" {
+			if catalog, ok := s.catalog.(CatalogStore); ok {
+				if workflows, err := catalog.ListWorkflows(context.Background()); err == nil {
+					for _, wf := range workflows {
+						if wf.ID == in.WorkflowID {
+							resolvedModel = strings.TrimSpace(wf.Model)
+							break
+						}
+					}
+				}
+			}
+		}
+		if resolvedModel == "" {
+			if catalog, ok := s.catalog.(CatalogStore); ok {
+				if projects, err := catalog.ListProjects(context.Background()); err == nil {
+					for _, proj := range projects {
+						if proj.ID == in.ProjectID {
+							resolvedModel = strings.TrimSpace(proj.Model)
+							break
+						}
+					}
+				}
+			}
+		}
+		if resolvedModel == "" {
+			resolvedModel = "gpt-5.4"
+		}
 	} else if stepID == "" && runKind != "chat" {
 		// Normal chat: synthetic step is minted after the runID is known (see below).
 		// Workflow/step mode: stepId is required.
@@ -574,7 +612,7 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		// Workflow/step mode auto-selects the provider from the configured model; direct
 		// chat sets ProviderKey explicitly. Fall back to the default available provider
 		// when neither a provider nor a recognized model is supplied.
-		if pk, ok := providerKeyFromModel(in.Model); ok {
+		if pk, ok := providerKeyFromModel(resolvedModel); ok {
 			providerKey = pk
 		} else {
 			def, ok := s.registry.DefaultProviderKey()
@@ -626,7 +664,7 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		providerSessionID: sessionID,
 		providerAccountID: stampAccount,
 		workspaceCwd:      in.Cwd,
-		modelName:         in.Model,
+		modelName:         resolvedModel,
 		yolo:              in.YoloMode,
 		reasoningEffort:   in.ReasoningEffort,
 		runKind:           runKind,

@@ -19,9 +19,10 @@ Because different providers may require different underlying CLI tools or SDKs, 
 
 ### 1.2 Provider Assignment per Workflow & Step
 Provider is not a free-form user setting. The user selects a model, and FlowPilot derives the provider automatically from that model.
-- **Workflow Level:** A workflow can store a default model, and the provider is derived from that model for persistence and execution.
-- **Step Level (Granular override):** Each individual step can store its own model, and the provider is derived from that model.
-  *Example:* A user can choose `gpt-5.4` for planning steps, which automatically maps to **Codex**, or choose a `gemini-*` model, which automatically maps to **Gemini**.
+- **Workflow Level:** A workflow can store a default model (`workflows.model_override`), and the provider is derived from that model for persistence and execution.
+- **Step Level:** Each step *type* (`step_definitions.model`) has its own configured model, and the provider is derived from that model.
+  *Example:* A user can configure a planning step type to use `gpt-5.4`, which automatically maps to **Codex**, or `gemini-*`, which automatically maps to **Gemini**.
+- **BUG-164/BUG-165 note:** step-level configuration is not a per-workflow-instance override anymore — `workflow_steps` carries no `provider_override`/`model_override`/`reasoning_effort_override` of its own. A step's model/provider is entirely the step *type's* catalog value (`step_definitions.model`), shared by every workflow that uses that step type.
 
 ---
 
@@ -34,19 +35,23 @@ Each installed provider exposes multiple models (e.g., `gpt-5.4`, `gpt-5.5`, `cl
 
 ### 2.2 Model Assignment per Workflow & Step
 Model configuration is the primary user-facing AI setting:
-- **Workflow Level:** A user can define a single model for the entire workflow (e.g., "Use `gpt-5.4` for the whole flow").
-- **Step Level (Granular override):** A user can override the model on a per-step basis to balance intelligence and cost/speed.
-  *Example:* A user can configure the planning and architecture steps to use the highly capable `gpt-5.5`, but configure the actual implementation/coding step to use the faster `gpt-5.4`.
+- **Workflow Level:** A user can define a single model for the entire workflow (e.g., "Use `gpt-5.4` for the whole flow"), stored on `workflows.model_override`.
+- **Step Level:** Each step type has its own configured model (`step_definitions.model`) to balance intelligence and cost/speed across a workflow — e.g., a planning/architecture step type configured to run on the highly capable `gpt-5.5`, while a coding step type is configured for the faster `gpt-5.4`. This is edited on the step type's catalog entry (`Settings > Workflows > Step Definitions`), not per workflow instance (**BUG-164**: `workflow_steps` has no override columns of its own).
 
 ---
 
 ## 3. Configuration UI & Resolution Rules
 
-To support this granular flexibility without confusing the user, the configuration resolves in a specific priority order. We need to let users configure this effortlessly:
+To support this granular flexibility without confusing the user, the configuration resolves in a specific priority order — the *lowest* (most specific) layer that has a value wins:
 
-1. **Project Default:** The user sets a baseline Model and Reasoning Effort for the entire project. Provider is derived from the model and stored only as reference data.
-2. **Workflow Default:** When triggering a workflow, the user can override the Project Default Model and Reasoning Effort for that specific run.
-3. **Step Override:** The workflow template can explicitly define that a certain step *must* use a specific Model/Reasoning Effort, overriding all broader defaults.
+1. **Step:** the step *type's* own configured model (`step_definitions.model`). Wins whenever set.
+2. **Flow:** the workflow's own model (`workflows.model_override`). Used only when the step type has no configured model.
+3. **Project:** the project's baseline model (`projects.default_model`). Used only when neither Step nor Flow has one.
+4. **Default:** the hard-coded floor `gpt-5.4`, used only when none of the above are configured.
+
+Provider is derived from whichever model wins, never chosen independently — see §1.2.
+
+**BUG-165 implementation note:** for a normal (`normal_chat`) direct-chat run, the model the user explicitly selects in the chat controller is always used as-is — this resolution order does not apply to chat mode at all, only to workflow/step-mode runs (which have no chat-controller model picker to source a choice from). For a workflow/step-mode run, this order is currently resolved **once, at run start** (from the workflow's entry step), not re-resolved per step as execution advances — genuine per-step model switching during a single run's execution is a known limitation, not yet implemented.
 
 ---
 
