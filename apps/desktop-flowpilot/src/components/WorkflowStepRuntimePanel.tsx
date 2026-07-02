@@ -27,7 +27,10 @@ const STATUS_LABEL: Record<WorkflowStepRuntimeStatus, string> = {
 };
 
 function stepLabel(step: WorkflowStepRuntimeDTO): string {
-  return step.stepType || step.stepId;
+  // BUG-155: for a CP-42 flow-engine node, stepType is a shared generic
+  // dispatch category (e.g. "flow-agent-delegate") identical across every
+  // node running the same behavior — nodeId is the actual per-step name.
+  return step.nodeId || step.stepType || step.stepId;
 }
 
 export function WorkflowStepRuntimePanel(): React.ReactElement | null {
@@ -71,6 +74,12 @@ export function WorkflowStepRuntimePanel(): React.ReactElement | null {
                 </span>
               </div>
               <div className="ac-meta">
+                {step.provider && (
+                  <span className={`pill-prov prov-${step.provider}`}>{step.provider.toUpperCase()}</span>
+                )}
+                {step.model && <span className="ac-model">{step.model}</span>}
+                {step.agentRef && <span>agent: {step.agentRef}</span>}
+                {step.yoloMode && <span>yolo</span>}
                 {step.retryCount > 0 && <span className="wsr-retry-badge">Retry {step.retryCount}</span>}
                 {step.requiresApproval && <span>requires approval</span>}
               </div>

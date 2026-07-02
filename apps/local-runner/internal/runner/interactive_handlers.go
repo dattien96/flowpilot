@@ -887,6 +887,15 @@ type workflowStepRuntimeView struct {
 	FinishedAt       string                    `json:"finishedAt,omitempty"`
 	RequiresApproval bool                      `json:"requiresApproval"`
 	BehaviorID       string                    `json:"behaviorId,omitempty"`
+	// NodeID/AgentRef/Provider/Model/YoloMode round-trip RuntimeWorkflowStep's
+	// per-node identity and config (BUG-155) so the desktop sidebar can show
+	// the actual step name instead of the shared generic step_type label, plus
+	// which provider/model/agent/yolo posture that node runs under.
+	NodeID   string `json:"nodeId,omitempty"`
+	AgentRef string `json:"agentRef,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+	YoloMode bool   `json:"yoloMode,omitempty"`
 }
 
 type workflowStepsRuntimeSnapshot struct {
@@ -921,6 +930,11 @@ func (s *InteractiveService) workflowStepsRuntime(ctx context.Context, runID str
 			FinishedAt:       st.FinishedAt,
 			RequiresApproval: st.RequiresApproval,
 			BehaviorID:       st.BehaviorID,
+			NodeID:           st.NodeID,
+			AgentRef:         st.AgentRef,
+			Provider:         st.Provider,
+			Model:            st.Model,
+			YoloMode:         st.YoloMode,
 		}
 	}
 	return workflowStepsRuntimeSnapshot{RunID: runID, Steps: out}, nil

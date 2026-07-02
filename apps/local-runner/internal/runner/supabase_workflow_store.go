@@ -44,9 +44,10 @@ func (s *SupabaseWorkflowStore) headers(prefer string) map[string]string {
 	return h
 }
 
-// dbStep is the PostgREST row shape for workflow_run_steps. requires_approval
-// and behavior_id both live on the joined workflow_steps definition, embedded
-// via the select.
+// dbStep is the PostgREST row shape for workflow_run_steps. requires_approval,
+// behavior_id, node_id, agent_ref, provider_override, model_override, and the
+// step_type's yolo_mode default all live on the joined workflow_steps (and,
+// for yolo_mode, its nested step_definitions) row, embedded via the select.
 type dbStep struct {
 	ID            string  `json:"id"`
 	StepType      string  `json:"step_type"`
@@ -58,6 +59,13 @@ type dbStep struct {
 	WorkflowSteps *struct {
 		RequiresApproval bool    `json:"requires_approval"`
 		BehaviorID       *string `json:"behavior_id"`
+		NodeID           *string `json:"node_id"`
+		AgentRef         *string `json:"agent_ref"`
+		ProviderOverride *string `json:"provider_override"`
+		ModelOverride    *string `json:"model_override"`
+		StepDefinitions  *struct {
+			YoloMode bool `json:"yolo_mode"`
+		} `json:"step_definitions"`
 	} `json:"workflow_steps"`
 }
 
@@ -73,7 +81,7 @@ func (s *SupabaseWorkflowStore) LoadRunSteps(ctx context.Context, runID string) 
 	// classification, disconnecting them from the Flow Mode context-handoff
 	// path entirely.
 	endpoint := fmt.Sprintf(
-		"%s/workflow_run_steps?workflow_run_id=eq.%s&order=execution_order_index.asc&select=id,step_type,status,started_at,finished_at,retry_count,rejection_note,workflow_steps(requires_approval,behavior_id)",
+		"%s/workflow_run_steps?workflow_run_id=eq.%s&order=execution_order_index.asc&select=id,step_type,status,started_at,finished_at,retry_count,rejection_note,workflow_steps(requires_approval,behavior_id,node_id,agent_ref,provider_override,model_override,step_definitions(yolo_mode))",
 		s.restURL, runID,
 	)
 	status, body, err := httpRequestFn(ctx, http.MethodGet, endpoint, s.headers(""), nil)
@@ -108,6 +116,21 @@ func (s *SupabaseWorkflowStore) LoadRunSteps(ctx context.Context, runID string) 
 			step.RequiresApproval = r.WorkflowSteps.RequiresApproval
 			if r.WorkflowSteps.BehaviorID != nil {
 				step.BehaviorID = *r.WorkflowSteps.BehaviorID
+			}
+			if r.WorkflowSteps.NodeID != nil {
+				step.NodeID = *r.WorkflowSteps.NodeID
+			}
+			if r.WorkflowSteps.AgentRef != nil {
+				step.AgentRef = *r.WorkflowSteps.AgentRef
+			}
+			if r.WorkflowSteps.ProviderOverride != nil {
+				step.Provider = *r.WorkflowSteps.ProviderOverride
+			}
+			if r.WorkflowSteps.ModelOverride != nil {
+				step.Model = *r.WorkflowSteps.ModelOverride
+			}
+			if r.WorkflowSteps.StepDefinitions != nil {
+				step.YoloMode = r.WorkflowSteps.StepDefinitions.YoloMode
 			}
 		}
 		out[i] = step

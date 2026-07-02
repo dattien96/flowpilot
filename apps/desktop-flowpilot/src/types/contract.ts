@@ -169,6 +169,15 @@ export interface WorkflowStepRuntimeDTO {
   finishedAt?: string;
   requiresApproval: boolean;
   behaviorId?: string;
+  // nodeId is the flow-graph node id (e.g. "coder", "reviewer_correctness").
+  // For CP-42 flow-engine steps, stepType is a shared generic dispatch
+  // category (e.g. "flow-agent-delegate") identical across every node
+  // running the same behavior — nodeId is the actual per-step name (BUG-155).
+  nodeId?: string;
+  agentRef?: string;
+  provider?: string;
+  model?: string;
+  yoloMode?: boolean;
 }
 
 export interface WorkflowStepsRuntimeSnapshot {

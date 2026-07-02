@@ -50,6 +50,25 @@ type RuntimeWorkflowStep struct {
 	// set one — callers fall back to classifying by StepType in that case
 	// (BUG-NOTE-CP42 #7).
 	BehaviorID string
+	// NodeID is the flow-graph node id (e.g. "coder", "reviewer_correctness")
+	// from the step's workflow_steps.node_id column. Distinct from StepType,
+	// which for a CP-42 flow-engine node is a shared generic dispatch category
+	// (e.g. "flow-agent-delegate") and therefore identical across every node
+	// running the same behavior — NodeID is what the UI must show as the
+	// per-step name instead (BUG-155).
+	NodeID string
+	// AgentRef is the workflow_steps.agent_ref value: the agent definition
+	// file this node delegates to (e.g. "coder"), when the step declares one.
+	// "" when the step has no agent binding of its own (e.g. inline/control
+	// behaviors).
+	AgentRef string
+	// Provider/Model are the step's own workflow_steps.provider_override /
+	// model_override values, when set. "" falls back to the run's own
+	// provider/model in the UI.
+	Provider string
+	Model    string
+	// YoloMode is the step_type's step_definitions.yolo_mode default.
+	YoloMode bool
 }
 
 // WorkflowStepPatch is the mutation to apply to a step. Pointer fields distinguish
