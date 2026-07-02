@@ -437,9 +437,20 @@ func (s *SupabaseWorkflowFlowStore) insertSteps(ctx context.Context, workflowID 
 			}
 		}
 		rows = append(rows, map[string]any{
-			"workflow_id":         workflowID,
-			"step_type":           stepType,
-			"order_index":         orderOffset + i,
+			"workflow_id": workflowID,
+			"step_type":   stepType,
+			"order_index": orderOffset + i,
+			// BUG-163: workflow_steps.provider_override has a column-level default
+			// of 'codex' (20260525140000_backfill_ai_model_and_reasoning_defaults.sql).
+			// A flow YAML node has no provider of its own (agentpack.FlowNode has no
+			// Provider field) — omitting this key from the insert let Postgres silently
+			// fill in 'codex' for every mirrored node, which then took priority over
+			// LoadRunSteps's model-derived provider fallback (BUG-160) since that
+			// fallback only runs when provider_override is genuinely empty. Explicit
+			// null here overrides the column default so a mirrored node's provider
+			// resolves the same way its model does — from what it's actually
+			// configured to run on, not a schema default.
+			"provider_override":   nil,
 			"node_id":             nilIfEmpty(node.ID),
 			"behavior_id":         nilIfEmpty(node.Behavior),
 			"agent_ref":           nilIfEmpty(node.Agent),
