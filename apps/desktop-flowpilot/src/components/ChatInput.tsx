@@ -237,7 +237,7 @@ export function ChatInput(): React.ReactElement {
   const setYoloMode = useStore((s) => s.setYoloMode);
   const generateChatSummary = useStore((s) => s.generateChatSummary);
   const summaryGenerating = useStore((s) => s.summaryGenerating);
-  const pendingApproval = useStore((s) => s.pendingApproval);
+  const pendingApprovals = useStore((s) => s.pendingApprovals);
   const pendingQuestion = useStore((s) => s.pendingQuestion);
   const latestTokenUsage = useStore((s) => s.latestTokenUsage);
   const stop = useStore((s) => s.stop);
@@ -1164,7 +1164,7 @@ export function ChatInput(): React.ReactElement {
         </div>
       )}
 
-      {(pendingApproval || pendingQuestion) && (
+      {(pendingApprovals.length > 0 || pendingQuestion) && (
         <div className="input-note">Action required above before continuing.</div>
       )}
 

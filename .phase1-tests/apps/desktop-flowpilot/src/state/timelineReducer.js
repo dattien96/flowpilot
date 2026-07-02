@@ -49,26 +49,23 @@ function applyTimelineEvent(s, e) {
         e.type !== "user_question_required";
     const timeline = s.timeline.filter((it) => it.kind !== "thinking");
     let streamingAssistantId = s._streamingAssistantId;
-    // Stale pending-interaction detection (BUG-074): in live runs, approve() and
-    // answer() clear pendingApproval/pendingQuestion synchronously before the server
-    // sends any follow-up event, so these are undefined by the time the next event
-    // arrives — the blocks below are no-ops during normal execution.
-    //
-    // During history replay the resolution was client-side only; no resolution event
-    // exists in the stream. The first event that arrives after permission_required /
-    // user_question_required signals that the interaction was resolved. Stamp the
-    // card so it renders as resolved instead of re-showing the buttons.
-    //
-    // No type guards are needed: when a NEW permission_required or user_question_required
-    // fires and sets a new pending value via `...extra`, it overrides the `undefined`
-    // spread by finalize — so the net result is always correct. (BUG-074)
-    const staleApproval = s.pendingApproval;
-    if (staleApproval) {
-        for (let i = timeline.length - 1; i >= 0; i--) {
+    // Stale-approval detection (BUG-074, narrowed by BUG-157): a provider turn can fan
+    // out several parallel tool calls, so more than one approval can be legitimately
+    // outstanding at once in a LIVE run — a new permission_required or an unrelated
+    // tool_completed arriving while others are still pending is normal, not stale.
+    // The one transition that genuinely cannot happen while an approval is still open
+    // in a live run is the turn ending (turn_completed / turn_failed): the provider
+    // cannot finish a turn with a tool call still blocked on approval. So only treat
+    // pendingApprovals as stale (resolved in a prior session, no event captured — the
+    // history-replay case BUG-074 was written for) when one of those two events arrives.
+    const staleApprovalIds = e.type === "turn_completed" || e.type === "turn_failed" ? s.pendingApprovals.map((a) => a.approvalId) : [];
+    if (staleApprovalIds.length > 0) {
+        const remaining = new Set(staleApprovalIds);
+        for (let i = 0; i < timeline.length && remaining.size > 0; i++) {
             const it = timeline[i];
-            if (it.kind === "approval" && it.approvalId === staleApproval.approvalId && it.decision === undefined) {
+            if (it.kind === "approval" && it.decision === undefined && remaining.has(it.approvalId)) {
                 timeline[i] = { ...it, decision: "resolved" };
-                break;
+                remaining.delete(it.approvalId);
             }
         }
     }
@@ -85,19 +82,27 @@ function applyTimelineEvent(s, e) {
     const closeAssistant = () => {
         streamingAssistantId = undefined;
     };
-    const finalize = (nextTimeline, extra = {}) => ({
-        timeline: shouldKeepThinking
-            ? [
-                ...nextTimeline,
-                thinkingItem ?? { kind: "thinking", id: `thinking-${nextTimeline.length}`, text: "Thinking..." },
-            ]
-            : nextTimeline,
-        status,
-        _streamingAssistantId: streamingAssistantId,
-        ...(staleApproval ? { pendingApproval: undefined } : {}),
-        ...(staleQuestion ? { pendingQuestion: undefined } : {}),
-        ...extra,
-    });
+    const finalize = (nextTimeline, extra = {}) => {
+        // With multiple approvals able to be outstanding at once, an unrelated event (e.g.
+        // tool_completed for a parallel, non-gated tool call) must not flip status away from
+        // "waiting_approval" while other approvals are still open (BUG-157).
+        const pendingApprovals = extra.pendingApprovals ?? (staleApprovalIds.length > 0 ? [] : s.pendingApprovals);
+        return {
+            timeline: shouldKeepThinking
+                ? [
+                    ...nextTimeline,
+                    thinkingItem ?? { kind: "thinking", id: `thinking-${nextTimeline.length}`, text: "Thinking..." },
+                ]
+                : nextTimeline,
+            status: pendingApprovals.length > 0 ? "waiting_approval" : status,
+            _streamingAssistantId: streamingAssistantId,
+            // Always restated explicitly (not spread conditionally) so every returned partial
+            // carries the caller's ground truth for pendingApprovals, even on a no-op event.
+            pendingApprovals,
+            ...(staleQuestion ? { pendingQuestion: undefined } : {}),
+            ...extra,
+        };
+    };
     switch (e.type) {
         case "turn_started":
             closeAssistant();
@@ -212,7 +217,9 @@ function applyTimelineEvent(s, e) {
         case "permission_required":
             closeAssistant();
             timeline.push({ kind: "approval", id: e.id, approvalId: e.approvalId, details: e.details });
-            return finalize(timeline, { pendingApproval: { approvalId: e.approvalId, details: e.details } });
+            return finalize(timeline, {
+                pendingApprovals: [...s.pendingApprovals, { approvalId: e.approvalId, details: e.details }],
+            });
         case "user_question_required":
             closeAssistant();
             timeline.push({

@@ -102,7 +102,7 @@ function seedStore(client, runHistory) {
         runHistory,
         historyLoading: false,
         historyLoadError: undefined,
-        pendingApproval: undefined,
+        pendingApprovals: [],
         pendingQuestion: undefined,
         lastTurnInput: undefined,
         latestTokenUsage: undefined,
@@ -205,10 +205,12 @@ async function* cursorChildStream() {
         status: "running",
         timeline: [{ kind: "prompt", id: "prompt-1", text: "old project prompt" }],
         artifacts: [{ id: "artifact-1", runId: "current-run", name: "Artifact", kind: "summary", createdAt: "2026-01-01T00:00:00Z" }],
-        pendingApproval: {
-            approvalId: "approval-1",
-            details: { command: "echo hi", decisions: [] },
-        },
+        pendingApprovals: [
+            {
+                approvalId: "approval-1",
+                details: { command: "echo hi", decisions: [] },
+            },
+        ],
     });
     await store_1.useStore.getState().selectProject("project-2");
     const state = store_1.useStore.getState();
@@ -219,7 +221,7 @@ async function* cursorChildStream() {
     strict_1.default.equal(state.status, "idle");
     strict_1.default.deepEqual(state.timeline, []);
     strict_1.default.deepEqual(state.artifacts, []);
-    strict_1.default.equal(state.pendingApproval, undefined);
+    strict_1.default.deepEqual(state.pendingApprovals, []);
 });
 (0, node_test_1.default)("setChatStartMode clears flowRef and builtin orchestration options on any mode change", () => {
     seedStore(makeClient(), []);
@@ -415,7 +417,7 @@ async function* cursorChildStream() {
     ]);
     const state = store_1.useStore.getState();
     strict_1.default.equal(state.status, "waiting_approval");
-    strict_1.default.deepEqual(state.pendingApproval, { approvalId: "appr-1", details: approvalDetails });
+    strict_1.default.deepEqual(state.pendingApprovals, [{ approvalId: "appr-1", details: approvalDetails }]);
     const card = state.timeline.find((item) => item.kind === "approval");
     strict_1.default.equal(card?.decision, undefined, "approval card should remain actionable");
 });
@@ -799,6 +801,7 @@ async function* cursorChildStream() {
                 timeline: [],
                 artifacts: [],
                 status: "running",
+                pendingApprovals: [],
                 recoverable: false,
                 lastEventSeq: 2,
             },
@@ -884,6 +887,7 @@ async function* cursorChildStream() {
     const base = {
         status: "running",
         recoverable: false,
+        pendingApprovals: [],
         _streamingAssistantId: "assistant-main",
         timeline: [{ kind: "assistant", id: "assistant-main", text: "parent response", finalized: false }],
     };
@@ -941,6 +945,7 @@ async function* cursorChildStream() {
                 timeline: [{ kind: "assistant", id: "main-message", text: "main", finalized: true }],
                 artifacts: [],
                 status: "completed",
+                pendingApprovals: [],
                 recoverable: false,
             },
         },
@@ -1029,6 +1034,7 @@ async function* cursorChildStream() {
                 timeline: [{ kind: "prompt", id: "main-prompt", text: "main prompt" }],
                 artifacts: [],
                 status: "running",
+                pendingApprovals: [],
                 recoverable: false,
                 lastEventSeq: 10,
             },
@@ -1088,6 +1094,7 @@ async function* cursorChildStream() {
                 timeline: [{ kind: "prompt", id: "main-prompt", text: "main prompt" }],
                 artifacts: [],
                 status: "running",
+                pendingApprovals: [],
                 recoverable: false,
                 lastEventSeq: 10,
             },

@@ -102,7 +102,7 @@ function seedStore(client: RunnerClient, runHistory: RunHistoryItem[]): void {
     runHistory,
     historyLoading: false,
     historyLoadError: undefined,
-    pendingApproval: undefined,
+    pendingApprovals: [],
     pendingQuestion: undefined,
     lastTurnInput: undefined,
     latestTokenUsage: undefined,
@@ -222,10 +222,12 @@ test("selectProject resets the active chat run when switching projects", async (
     status: "running",
     timeline: [{ kind: "prompt", id: "prompt-1", text: "old project prompt" }],
     artifacts: [{ id: "artifact-1", runId: "current-run", name: "Artifact", kind: "summary", createdAt: "2026-01-01T00:00:00Z" }],
-    pendingApproval: {
-      approvalId: "approval-1",
-      details: { command: "echo hi", decisions: [] },
-    },
+    pendingApprovals: [
+      {
+        approvalId: "approval-1",
+        details: { command: "echo hi", decisions: [] },
+      },
+    ],
   });
 
   await useStore.getState().selectProject("project-2");
@@ -238,7 +240,7 @@ test("selectProject resets the active chat run when switching projects", async (
   assert.equal(state.status, "idle");
   assert.deepEqual(state.timeline, []);
   assert.deepEqual(state.artifacts, []);
-  assert.equal(state.pendingApproval, undefined);
+  assert.deepEqual(state.pendingApprovals, []);
 });
 
 test("setChatStartMode clears flowRef and builtin orchestration options on any mode change", () => {
@@ -473,7 +475,7 @@ test("openHistoryRun keeps an approval gate open when the replay ends on permiss
 
   const state = useStore.getState();
   assert.equal(state.status, "waiting_approval");
-  assert.deepEqual(state.pendingApproval, { approvalId: "appr-1", details: approvalDetails });
+  assert.deepEqual(state.pendingApprovals, [{ approvalId: "appr-1", details: approvalDetails }]);
   const card = state.timeline.find((item) => item.kind === "approval") as Extract<TimelineItem, { kind: "approval" }> | undefined;
   assert.equal(card?.decision, undefined, "approval card should remain actionable");
 });
@@ -932,6 +934,7 @@ test("focusAgentRun resumes from the last replay cursor when a child snapshot is
         timeline: [],
         artifacts: [],
         status: "running",
+        pendingApprovals: [],
         recoverable: false,
         lastEventSeq: 2,
       },
@@ -1040,6 +1043,7 @@ test("applyTimelineEvent starts a new assistant bubble for a new turn", () => {
   const base: TimelineState = {
     status: "running",
     recoverable: false,
+    pendingApprovals: [],
     _streamingAssistantId: "assistant-main",
     timeline: [{ kind: "assistant", id: "assistant-main", text: "parent response", finalized: false }],
   };
@@ -1107,6 +1111,7 @@ test("backToMainRun aborts its replay stream before focusing a child again", asy
         timeline: [{ kind: "assistant", id: "main-message", text: "main", finalized: true }],
         artifacts: [],
         status: "completed",
+        pendingApprovals: [],
         recoverable: false,
       },
     },
@@ -1211,6 +1216,7 @@ test("backToMainRun replays from snapshot lastEventSeq, not from orchestration-i
         timeline: [{ kind: "prompt", id: "main-prompt", text: "main prompt" }],
         artifacts: [],
         status: "running",
+        pendingApprovals: [],
         recoverable: false,
         lastEventSeq: 10,
       },
@@ -1278,6 +1284,7 @@ test("backToMainRun replaying the gap does not duplicate agentBusMessages", asyn
         timeline: [{ kind: "prompt", id: "main-prompt", text: "main prompt" }],
         artifacts: [],
         status: "running",
+        pendingApprovals: [],
         recoverable: false,
         lastEventSeq: 10,
       },

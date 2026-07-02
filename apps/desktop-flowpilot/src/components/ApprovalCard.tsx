@@ -9,7 +9,7 @@ interface Props {
 
 // Renders a permission_required event. In Part B this round-trips through the
 // runner approval bridge (04-04); here it resolves the mock gate.
-export function ApprovalCard({ details, decision }: Props): React.ReactElement {
+export function ApprovalCard({ approvalId, details, decision }: Props): React.ReactElement {
   const approve = useStore((s) => s.approve);
   const resolved = decision !== undefined;
 
@@ -32,7 +32,7 @@ export function ApprovalCard({ details, decision }: Props): React.ReactElement {
             <button
               key={d.value}
               className={`btn ${d.value === "deny" ? "btn-danger" : "btn-primary"}`}
-              onClick={() => void approve(d.value)}
+              onClick={() => void approve(approvalId, d.value)}
             >
               {d.label}
             </button>

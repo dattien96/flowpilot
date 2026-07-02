@@ -61,7 +61,7 @@ interface RunSnapshot {
   timeline: TimelineItem[];
   artifacts: Artifact[];
   status: RunStatus;
-  pendingApproval?: PendingApproval;
+  pendingApprovals: PendingApproval[];
   pendingQuestion?: PendingQuestion;
   latestTokenUsage?: TokenUsageSnapshot;
   lastTurnInput?: TurnInput;
@@ -172,7 +172,7 @@ interface AppState {
   historyLoadError?: string;
   remoteHistoryLoading: boolean;
   remoteHistoryLoadError?: string;
-  pendingApproval?: PendingApproval;
+  pendingApprovals: PendingApproval[];
   pendingQuestion?: PendingQuestion;
   /** A hard-blocking flow-gate violation (e.g. failed tests) the user must acknowledge.
    *  Set only for action === "block"; surfaced as a modal or decision card. (CP-35 / Task-155) */
@@ -256,7 +256,7 @@ interface AppState {
   selectStep(stepId: string): void;
   setScenario(scenario: ScenarioName): void;
   sendPrompt(prompt: string, skills?: string[], attachments?: PromptAttachment[]): Promise<void>;
-  approve(decision: string): Promise<void>;
+  approve(approvalId: string, decision: string): Promise<void>;
   answer(choice: string | string[]): Promise<void>;
   stop(): Promise<void>;
   reconnect(): Promise<void>;
@@ -311,6 +311,7 @@ export const useStore = create<AppState>((set, get) => ({
   status: "idle",
   timeline: [],
   artifacts: [],
+  pendingApprovals: [],
   runHistory: [],
   remoteChatSessions: [],
   agentRuns: [],
@@ -779,7 +780,7 @@ export const useStore = create<AppState>((set, get) => ({
         status: handle.status,
         timeline: [],
         artifacts: [],
-        pendingApproval: undefined,
+        pendingApprovals: [],
         pendingQuestion: undefined,
         gateBlock: undefined,
         latestTokenUsage: undefined,
@@ -1105,17 +1106,20 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
-  async approve(decision) {
-    const pending = get().pendingApproval;
+  async approve(approvalId, decision) {
+    // Resolve the specific card the user clicked, not "whatever is pending" — a turn
+    // can fan out several parallel tool calls awaiting approval at once, so more than
+    // one entry may be in pendingApprovals simultaneously (BUG-157).
+    const pending = get().pendingApprovals.find((p) => p.approvalId === approvalId);
     if (!pending) return;
     set((s) => ({
-      pendingApproval: undefined,
-      status: "running",
+      pendingApprovals: s.pendingApprovals.filter((p) => p.approvalId !== approvalId),
+      status: s.pendingApprovals.length > 1 ? "waiting_approval" : "running",
       timeline: s.timeline.map((it) =>
-        it.kind === "approval" && it.approvalId === pending.approvalId ? { ...it, decision } : it,
+        it.kind === "approval" && it.approvalId === approvalId ? { ...it, decision } : it,
       ),
     }));
-    await get().client.submitApproval(pending.approvalId, decision);
+    await get().client.submitApproval(approvalId, decision);
   },
 
   async answer(choice) {
@@ -1278,7 +1282,7 @@ export const useStore = create<AppState>((set, get) => ({
         status: "idle",
         timeline: [],
         artifacts: [],
-        pendingApproval: undefined,
+        pendingApprovals: [],
         pendingQuestion: undefined,
         latestTokenUsage: undefined,
         lastTurnInput: undefined,
@@ -1402,7 +1406,7 @@ export const useStore = create<AppState>((set, get) => ({
       activeStepId: handle.stepId,
       timeline: [],
       artifacts: [],
-      pendingApproval: undefined,
+      pendingApprovals: [],
       pendingQuestion: undefined,
       gateBlock: undefined,
       latestTokenUsage: undefined,
@@ -1492,7 +1496,7 @@ export const useStore = create<AppState>((set, get) => ({
       workflowStepRuntime: [],
       agentSpawnGuideOpen: false,
       agentSpawnGuideAgentName: undefined,
-      pendingApproval: undefined,
+      pendingApprovals: [],
       pendingQuestion: undefined,
       latestTokenUsage: undefined,
       lastTurnInput: undefined,
@@ -1838,39 +1842,37 @@ function settleHistoryReplayPendingState(
 ): void {
   if (resumedStatus === "waiting_approval" || resumedStatus === "waiting_question") return;
   set((s) => {
-    if (s.runId !== runId || (!s.pendingApproval && !s.pendingQuestion)) return {};
-    const pendingApproval = s.pendingApproval;
+    if (s.runId !== runId || (s.pendingApprovals.length === 0 && !s.pendingQuestion)) return {};
     const pendingQuestion = s.pendingQuestion;
     const lastMeaningfulItem = [...s.timeline].reverse().find((it) => it.kind !== "thinking");
-    const approvalStillOpen =
-      pendingApproval !== undefined &&
-      lastMeaningfulItem?.kind === "approval" &&
-      lastMeaningfulItem.approvalId === pendingApproval.approvalId &&
-      lastMeaningfulItem.decision === undefined;
+    // An approval is still genuinely open if its own card was never stamped with a
+    // decision — checked per-id (not just the last timeline item) because concurrent
+    // tool calls can leave several approval cards outstanding at once (BUG-157). This
+    // also covers BUG-105: resumedStatus is stale server ground truth when the replay
+    // stream itself ends on an unresolved permission_required.
+    const stillOpenApprovals = s.pendingApprovals.filter((pending) =>
+      s.timeline.some((it) => it.kind === "approval" && it.approvalId === pending.approvalId && it.decision === undefined),
+    );
     const questionStillOpen =
       pendingQuestion !== undefined &&
       lastMeaningfulItem?.kind === "question" &&
       lastMeaningfulItem.questionId === pendingQuestion.questionId &&
       lastMeaningfulItem.answer === undefined;
 
-    if (approvalStillOpen || questionStillOpen) {
+    if (stillOpenApprovals.length > 0 || questionStillOpen) {
       return {
-        ...(approvalStillOpen ? { pendingApproval } : { pendingApproval: undefined }),
+        pendingApprovals: stillOpenApprovals,
         ...(questionStillOpen ? { pendingQuestion } : { pendingQuestion: undefined }),
-        status: approvalStillOpen ? "waiting_approval" : "waiting_question",
+        status: stillOpenApprovals.length > 0 ? "waiting_approval" : "waiting_question",
       };
     }
 
+    const staleApprovalIds = new Set(s.pendingApprovals.map((p) => p.approvalId));
     return {
-      pendingApproval: undefined,
+      pendingApprovals: [],
       pendingQuestion: undefined,
       timeline: s.timeline.map((it) => {
-        if (
-          pendingApproval &&
-          it.kind === "approval" &&
-          it.approvalId === pendingApproval.approvalId &&
-          it.decision === undefined
-        ) {
+        if (it.kind === "approval" && staleApprovalIds.has(it.approvalId) && it.decision === undefined) {
           return { ...it, decision: "resolved" };
         }
         if (
@@ -2137,7 +2139,7 @@ function snapshotRunState(state: AppState): RunSnapshot {
     timeline: state.timeline,
     artifacts: state.artifacts,
     status: state.status,
-    pendingApproval: state.pendingApproval,
+    pendingApprovals: state.pendingApprovals,
     pendingQuestion: state.pendingQuestion,
     latestTokenUsage: state.latestTokenUsage,
     lastTurnInput: state.lastTurnInput,
@@ -2153,7 +2155,7 @@ function restoreRunSnapshot(snapshot: RunSnapshot): Partial<AppState> {
     timeline: snapshot.timeline,
     artifacts: snapshot.artifacts,
     status: snapshot.status,
-    pendingApproval: snapshot.pendingApproval,
+    pendingApprovals: snapshot.pendingApprovals,
     pendingQuestion: snapshot.pendingQuestion,
     latestTokenUsage: snapshot.latestTokenUsage,
     lastTurnInput: snapshot.lastTurnInput,
@@ -2168,7 +2170,7 @@ function emptyRunSnapshot(status: RunStatus): Partial<AppState> {
     timeline: [],
     artifacts: [],
     status,
-    pendingApproval: undefined,
+    pendingApprovals: [],
     pendingQuestion: undefined,
     gateBlock: undefined,
     latestTokenUsage: undefined,

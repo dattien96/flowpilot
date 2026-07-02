@@ -3,6 +3,9 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.useStore = void 0;
 exports.accountLabel = accountLabel;
 exports.providerLabel = providerLabel;
+exports.isFlowModeRun = isFlowModeRun;
+exports.activeWorkflowStep = activeWorkflowStep;
+exports.hasRetries = hasRetries;
 const zustand_1 = require("zustand");
 const createRunnerClient_1 = require("@/client/createRunnerClient");
 const HttpWsRunnerClient_1 = require("@/client/HttpWsRunnerClient");
@@ -64,11 +67,14 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
     status: "idle",
     timeline: [],
     artifacts: [],
+    pendingApprovals: [],
     runHistory: [],
     remoteChatSessions: [],
     agentRuns: [],
     agentGraphSnapshot: undefined,
     agentBusMessages: [],
+    workflowStepRuntime: [],
+    workflowStepRuntimeLoading: false,
     historyLoading: false,
     remoteHistoryLoading: false,
     latestTokenUsage: undefined,
@@ -91,6 +97,7 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
     _historyLoadSeq: 0,
     _remoteHistoryLoadSeq: 0,
     _agentRunsLoadSeq: 0,
+    _workflowStepRuntimeLoadSeq: 0,
     _runSnapshots: {},
     _runReplaySeq: {},
     _gateBlockedRunIds: {},
@@ -233,6 +240,30 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
             console.error("[FlowPilot] listAgentRuns failed:", err);
         }
     },
+    async refreshWorkflowStepRuntime() {
+        const { client, mainRunId, runId, chatMode } = get();
+        const targetRunId = mainRunId ?? runId;
+        // Normal chat has no workflow-step list to show; skip the request entirely (8.2).
+        if (chatMode !== "workflow_step_auto" || !targetRunId || !client.getWorkflowStepsRuntime) {
+            set({ workflowStepRuntime: [] });
+            return;
+        }
+        const seq = get()._workflowStepRuntimeLoadSeq + 1;
+        set({ _workflowStepRuntimeLoadSeq: seq, workflowStepRuntimeLoading: true });
+        try {
+            const snapshot = await client.getWorkflowStepsRuntime(targetRunId);
+            if (get()._workflowStepRuntimeLoadSeq === seq && (get().mainRunId === targetRunId || get().runId === targetRunId)) {
+                set({ workflowStepRuntime: snapshot.steps, workflowStepRuntimeLoading: false });
+            }
+        }
+        catch (err) {
+            // eslint-disable-next-line no-console
+            console.error("[FlowPilot] getWorkflowStepsRuntime failed:", err);
+            if (get()._workflowStepRuntimeLoadSeq === seq) {
+                set({ workflowStepRuntimeLoading: false });
+            }
+        }
+    },
     async refreshAgentGraph() {
         const { client, mainRunId, runId } = get();
         const parentRunId = mainRunId ?? runId;
@@ -336,6 +367,7 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
             }
         });
         void get().refreshAgentRuns();
+        void get().refreshWorkflowStepRuntime();
     },
     backToMainRun() {
         const currentRunId = get().runId;
@@ -497,7 +529,7 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
                 status: handle.status,
                 timeline: [],
                 artifacts: [],
-                pendingApproval: undefined,
+                pendingApprovals: [],
                 pendingQuestion: undefined,
                 gateBlock: undefined,
                 latestTokenUsage: undefined,
@@ -512,6 +544,7 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
                 agentRuns: [],
                 agentGraphSnapshot: undefined,
                 agentBusMessages: [],
+                workflowStepRuntime: [],
                 agentSpawnGuideOpen: false,
                 agentSpawnGuideAgentName: undefined,
                 _runReplaySeq: {},
@@ -783,6 +816,7 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
                 startOrchestrationStream(orchestrationRunId, client, set, get);
             }
             void get().refreshAgentRuns();
+            void get().refreshWorkflowStepRuntime();
         }
         catch (err) {
             // eslint-disable-next-line no-console
@@ -804,16 +838,19 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
             void get().loadRunHistory();
         }
     },
-    async approve(decision) {
-        const pending = get().pendingApproval;
+    async approve(approvalId, decision) {
+        // Resolve the specific card the user clicked, not "whatever is pending" — a turn
+        // can fan out several parallel tool calls awaiting approval at once, so more than
+        // one entry may be in pendingApprovals simultaneously (BUG-157).
+        const pending = get().pendingApprovals.find((p) => p.approvalId === approvalId);
         if (!pending)
             return;
         set((s) => ({
-            pendingApproval: undefined,
-            status: "running",
-            timeline: s.timeline.map((it) => it.kind === "approval" && it.approvalId === pending.approvalId ? { ...it, decision } : it),
+            pendingApprovals: s.pendingApprovals.filter((p) => p.approvalId !== approvalId),
+            status: s.pendingApprovals.length > 1 ? "waiting_approval" : "running",
+            timeline: s.timeline.map((it) => it.kind === "approval" && it.approvalId === approvalId ? { ...it, decision } : it),
         }));
-        await get().client.submitApproval(pending.approvalId, decision);
+        await get().client.submitApproval(approvalId, decision);
     },
     async answer(choice) {
         const pending = get().pendingQuestion;
@@ -964,7 +1001,7 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
                 status: "idle",
                 timeline: [],
                 artifacts: [],
-                pendingApproval: undefined,
+                pendingApprovals: [],
                 pendingQuestion: undefined,
                 latestTokenUsage: undefined,
                 lastTurnInput: undefined,
@@ -1085,7 +1122,7 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
             activeStepId: handle.stepId,
             timeline: [],
             artifacts: [],
-            pendingApproval: undefined,
+            pendingApprovals: [],
             pendingQuestion: undefined,
             gateBlock: undefined,
             latestTokenUsage: undefined,
@@ -1144,6 +1181,7 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
         });
         startOrchestrationStream(handle.runId, client, set, get);
         void get().refreshAgentRuns();
+        void get().refreshWorkflowStepRuntime();
     },
     resetRun() {
         const { selectedProvider, supportedModels } = get();
@@ -1161,9 +1199,10 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
             agentRuns: [],
             agentGraphSnapshot: undefined,
             agentBusMessages: [],
+            workflowStepRuntime: [],
             agentSpawnGuideOpen: false,
             agentSpawnGuideAgentName: undefined,
-            pendingApproval: undefined,
+            pendingApprovals: [],
             pendingQuestion: undefined,
             latestTokenUsage: undefined,
             lastTurnInput: undefined,
@@ -1292,6 +1331,21 @@ function providerLabel(providerKey) {
     if (providerKey === "codex")
         return "Codex";
     return providerKey;
+}
+// ── Workflow-step runtime helpers (BUG-153) ────────────────────────────────
+// Derived from workflowStepRuntime + chatMode rather than stored separately,
+// so there is exactly one source of truth to keep in sync.
+/** Flow mode only; Review Loop / normal chat has no linear workflow-step list (F-14). */
+function isFlowModeRun(chatMode) {
+    return chatMode === "workflow_step_auto";
+}
+/** The step currently RUNNING or WAITING_USER_APPROVAL, if any. */
+function activeWorkflowStep(steps) {
+    return steps.find((s) => s.status === "RUNNING" || s.status === "WAITING_USER_APPROVAL");
+}
+/** True when any step has been retried at least once (F-5). */
+function hasRetries(steps) {
+    return steps.some((s) => s.retryCount > 0);
 }
 function isInteractiveChatBlocked(status) {
     return status === "running" || status === "waiting_approval" || status === "waiting_question";
@@ -1446,34 +1500,33 @@ function settleHistoryReplayPendingState(runId, resumedStatus, set) {
     if (resumedStatus === "waiting_approval" || resumedStatus === "waiting_question")
         return;
     set((s) => {
-        if (s.runId !== runId || (!s.pendingApproval && !s.pendingQuestion))
+        if (s.runId !== runId || (s.pendingApprovals.length === 0 && !s.pendingQuestion))
             return {};
-        const pendingApproval = s.pendingApproval;
         const pendingQuestion = s.pendingQuestion;
         const lastMeaningfulItem = [...s.timeline].reverse().find((it) => it.kind !== "thinking");
-        const approvalStillOpen = pendingApproval !== undefined &&
-            lastMeaningfulItem?.kind === "approval" &&
-            lastMeaningfulItem.approvalId === pendingApproval.approvalId &&
-            lastMeaningfulItem.decision === undefined;
+        // An approval is still genuinely open if its own card was never stamped with a
+        // decision — checked per-id (not just the last timeline item) because concurrent
+        // tool calls can leave several approval cards outstanding at once (BUG-157). This
+        // also covers BUG-105: resumedStatus is stale server ground truth when the replay
+        // stream itself ends on an unresolved permission_required.
+        const stillOpenApprovals = s.pendingApprovals.filter((pending) => s.timeline.some((it) => it.kind === "approval" && it.approvalId === pending.approvalId && it.decision === undefined));
         const questionStillOpen = pendingQuestion !== undefined &&
             lastMeaningfulItem?.kind === "question" &&
             lastMeaningfulItem.questionId === pendingQuestion.questionId &&
             lastMeaningfulItem.answer === undefined;
-        if (approvalStillOpen || questionStillOpen) {
+        if (stillOpenApprovals.length > 0 || questionStillOpen) {
             return {
-                ...(approvalStillOpen ? { pendingApproval } : { pendingApproval: undefined }),
+                pendingApprovals: stillOpenApprovals,
                 ...(questionStillOpen ? { pendingQuestion } : { pendingQuestion: undefined }),
-                status: approvalStillOpen ? "waiting_approval" : "waiting_question",
+                status: stillOpenApprovals.length > 0 ? "waiting_approval" : "waiting_question",
             };
         }
+        const staleApprovalIds = new Set(s.pendingApprovals.map((p) => p.approvalId));
         return {
-            pendingApproval: undefined,
+            pendingApprovals: [],
             pendingQuestion: undefined,
             timeline: s.timeline.map((it) => {
-                if (pendingApproval &&
-                    it.kind === "approval" &&
-                    it.approvalId === pendingApproval.approvalId &&
-                    it.decision === undefined) {
+                if (it.kind === "approval" && staleApprovalIds.has(it.approvalId) && it.decision === undefined) {
                     return { ...it, decision: "resolved" };
                 }
                 if (pendingQuestion &&
@@ -1709,7 +1762,7 @@ function snapshotRunState(state) {
         timeline: state.timeline,
         artifacts: state.artifacts,
         status: state.status,
-        pendingApproval: state.pendingApproval,
+        pendingApprovals: state.pendingApprovals,
         pendingQuestion: state.pendingQuestion,
         latestTokenUsage: state.latestTokenUsage,
         lastTurnInput: state.lastTurnInput,
@@ -1724,7 +1777,7 @@ function restoreRunSnapshot(snapshot) {
         timeline: snapshot.timeline,
         artifacts: snapshot.artifacts,
         status: snapshot.status,
-        pendingApproval: snapshot.pendingApproval,
+        pendingApprovals: snapshot.pendingApprovals,
         pendingQuestion: snapshot.pendingQuestion,
         latestTokenUsage: snapshot.latestTokenUsage,
         lastTurnInput: snapshot.lastTurnInput,
@@ -1738,7 +1791,7 @@ function emptyRunSnapshot(status) {
         timeline: [],
         artifacts: [],
         status,
-        pendingApproval: undefined,
+        pendingApprovals: [],
         pendingQuestion: undefined,
         gateBlock: undefined,
         latestTokenUsage: undefined,
