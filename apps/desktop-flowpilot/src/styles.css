@@ -425,6 +425,9 @@ input {
   font-size: 11px;
   font-weight: 600;
   color: var(--text-dim);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 .flow-sidebar-current {
   font-size: 12.5px;
@@ -433,6 +436,12 @@ input {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.flow-sidebar-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
 }
 .flow-sidebar-toggle {
   flex: 0 0 auto;
@@ -2975,6 +2984,49 @@ input {
   margin-top: 10px;
 }
 
+/* grouped ask cards (concurrent approvals/questions folded into one collapsible block) */
+.card-group {
+  max-width: 560px;
+}
+.card-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.card-group-summary {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 4px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  user-select: none;
+}
+.card-group-caret {
+  flex: 0 0 12px;
+  color: var(--text-dim);
+  line-height: 1;
+}
+.card-group-bulk-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+.card-group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+.card-group-body .card {
+  max-width: none;
+}
+
 /* options */
 .option-list {
   display: flex;
@@ -5464,6 +5516,7 @@ body.is-resizing-sidebar {
 .fti-idle .fti-icon {
   border-color: var(--border);
   background: transparent;
+  color: var(--text-dim);
 }
 .fti-running .fti-icon {
   border-color: var(--accent);

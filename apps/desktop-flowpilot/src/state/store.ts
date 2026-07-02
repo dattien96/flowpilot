@@ -62,7 +62,7 @@ interface RunSnapshot {
   artifacts: Artifact[];
   status: RunStatus;
   pendingApprovals: PendingApproval[];
-  pendingQuestion?: PendingQuestion;
+  pendingQuestions: PendingQuestion[];
   latestTokenUsage?: TokenUsageSnapshot;
   lastTurnInput?: TurnInput;
   recoverable: boolean;
@@ -161,6 +161,8 @@ interface AppState {
   /** Flow-mode workflow-step runtime projection (BUG-153), Go orchestrator state only. */
   workflowStepRuntime: WorkflowStepRuntimeDTO[];
   workflowStepRuntimeLoading: boolean;
+  /** Run-level provider/model/yolo posture for the current flow (BUG-158) — not per-step. */
+  workflowStepRuntimeMeta: { provider?: string; model?: string; yoloMode?: boolean };
   /** Step id for the active run's turns; the synthetic chat step in normal_chat. */
   activeStepId?: string;
   status: RunStatus;
@@ -173,7 +175,7 @@ interface AppState {
   remoteHistoryLoading: boolean;
   remoteHistoryLoadError?: string;
   pendingApprovals: PendingApproval[];
-  pendingQuestion?: PendingQuestion;
+  pendingQuestions: PendingQuestion[];
   /** A hard-blocking flow-gate violation (e.g. failed tests) the user must acknowledge.
    *  Set only for action === "block"; surfaced as a modal or decision card. (CP-35 / Task-155) */
   gateBlock?: {
@@ -257,7 +259,7 @@ interface AppState {
   setScenario(scenario: ScenarioName): void;
   sendPrompt(prompt: string, skills?: string[], attachments?: PromptAttachment[]): Promise<void>;
   approve(approvalId: string, decision: string): Promise<void>;
-  answer(choice: string | string[]): Promise<void>;
+  answer(questionId: string, choice: string | string[]): Promise<void>;
   stop(): Promise<void>;
   reconnect(): Promise<void>;
   loadRunHistory(): Promise<void>;
@@ -312,6 +314,7 @@ export const useStore = create<AppState>((set, get) => ({
   timeline: [],
   artifacts: [],
   pendingApprovals: [],
+  pendingQuestions: [],
   runHistory: [],
   remoteChatSessions: [],
   agentRuns: [],
@@ -319,6 +322,7 @@ export const useStore = create<AppState>((set, get) => ({
   agentBusMessages: [],
   workflowStepRuntime: [],
   workflowStepRuntimeLoading: false,
+  workflowStepRuntimeMeta: {},
   historyLoading: false,
   remoteHistoryLoading: false,
   latestTokenUsage: undefined,
@@ -486,7 +490,7 @@ export const useStore = create<AppState>((set, get) => ({
     const targetRunId = mainRunId ?? runId;
     // Normal chat has no workflow-step list to show; skip the request entirely (8.2).
     if (chatMode !== "workflow_step_auto" || !targetRunId || !client.getWorkflowStepsRuntime) {
-      set({ workflowStepRuntime: [] });
+      set({ workflowStepRuntime: [], workflowStepRuntimeMeta: {} });
       return;
     }
     const seq = get()._workflowStepRuntimeLoadSeq + 1;
@@ -494,7 +498,11 @@ export const useStore = create<AppState>((set, get) => ({
     try {
       const snapshot = await client.getWorkflowStepsRuntime(targetRunId);
       if (get()._workflowStepRuntimeLoadSeq === seq && (get().mainRunId === targetRunId || get().runId === targetRunId)) {
-        set({ workflowStepRuntime: snapshot.steps, workflowStepRuntimeLoading: false });
+        set({
+          workflowStepRuntime: snapshot.steps,
+          workflowStepRuntimeMeta: { provider: snapshot.provider, model: snapshot.model, yoloMode: snapshot.yoloMode },
+          workflowStepRuntimeLoading: false,
+        });
       }
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -781,7 +789,7 @@ export const useStore = create<AppState>((set, get) => ({
         timeline: [],
         artifacts: [],
         pendingApprovals: [],
-        pendingQuestion: undefined,
+        pendingQuestions: [],
         gateBlock: undefined,
         latestTokenUsage: undefined,
         lastTurnInput: undefined,
@@ -796,6 +804,7 @@ export const useStore = create<AppState>((set, get) => ({
         agentGraphSnapshot: undefined,
         agentBusMessages: [],
         workflowStepRuntime: [],
+        workflowStepRuntimeMeta: {},
         agentSpawnGuideOpen: false,
         agentSpawnGuideAgentName: undefined,
         _runReplaySeq: {},
@@ -1122,17 +1131,20 @@ export const useStore = create<AppState>((set, get) => ({
     await get().client.submitApproval(approvalId, decision);
   },
 
-  async answer(choice) {
-    const pending = get().pendingQuestion;
+  async answer(questionId, choice) {
+    // Same rationale as approve() (BUG-157) — resolve the specific card the user
+    // acted on, not "whatever is pending", since more than one question can be
+    // outstanding at once.
+    const pending = get().pendingQuestions.find((q) => q.questionId === questionId);
     if (!pending) return;
     set((s) => ({
-      pendingQuestion: undefined,
-      status: "running",
+      pendingQuestions: s.pendingQuestions.filter((q) => q.questionId !== questionId),
+      status: s.pendingQuestions.length > 1 ? "waiting_question" : "running",
       timeline: s.timeline.map((it) =>
-        it.kind === "question" && it.questionId === pending.questionId ? { ...it, answer: choice } : it,
+        it.kind === "question" && it.questionId === questionId ? { ...it, answer: choice } : it,
       ),
     }));
-    await get().client.answerQuestion(pending.questionId, choice);
+    await get().client.answerQuestion(questionId, choice);
   },
 
   async stop() {
@@ -1283,7 +1295,7 @@ export const useStore = create<AppState>((set, get) => ({
         timeline: [],
         artifacts: [],
         pendingApprovals: [],
-        pendingQuestion: undefined,
+        pendingQuestions: [],
         latestTokenUsage: undefined,
         lastTurnInput: undefined,
         recoverable: false,
@@ -1407,7 +1419,7 @@ export const useStore = create<AppState>((set, get) => ({
       timeline: [],
       artifacts: [],
       pendingApprovals: [],
-      pendingQuestion: undefined,
+      pendingQuestions: [],
       gateBlock: undefined,
       latestTokenUsage: undefined,
       lastTurnInput: undefined,
@@ -1494,10 +1506,11 @@ export const useStore = create<AppState>((set, get) => ({
       agentGraphSnapshot: undefined,
       agentBusMessages: [],
       workflowStepRuntime: [],
+      workflowStepRuntimeMeta: {},
       agentSpawnGuideOpen: false,
       agentSpawnGuideAgentName: undefined,
       pendingApprovals: [],
-      pendingQuestion: undefined,
+      pendingQuestions: [],
       latestTokenUsage: undefined,
       lastTurnInput: undefined,
       recoverable: false,
@@ -1842,45 +1855,37 @@ function settleHistoryReplayPendingState(
 ): void {
   if (resumedStatus === "waiting_approval" || resumedStatus === "waiting_question") return;
   set((s) => {
-    if (s.runId !== runId || (s.pendingApprovals.length === 0 && !s.pendingQuestion)) return {};
-    const pendingQuestion = s.pendingQuestion;
-    const lastMeaningfulItem = [...s.timeline].reverse().find((it) => it.kind !== "thinking");
-    // An approval is still genuinely open if its own card was never stamped with a
-    // decision — checked per-id (not just the last timeline item) because concurrent
-    // tool calls can leave several approval cards outstanding at once (BUG-157). This
-    // also covers BUG-105: resumedStatus is stale server ground truth when the replay
-    // stream itself ends on an unresolved permission_required.
+    if (s.runId !== runId || (s.pendingApprovals.length === 0 && s.pendingQuestions.length === 0)) return {};
+    // An approval/question is still genuinely open if its own card was never stamped
+    // with a decision — checked per-id (not just the last timeline item) because
+    // concurrent tool calls can leave several cards outstanding at once (BUG-157).
+    // This also covers BUG-105: resumedStatus is stale server ground truth when the
+    // replay stream itself ends on an unresolved permission_required/question.
     const stillOpenApprovals = s.pendingApprovals.filter((pending) =>
       s.timeline.some((it) => it.kind === "approval" && it.approvalId === pending.approvalId && it.decision === undefined),
     );
-    const questionStillOpen =
-      pendingQuestion !== undefined &&
-      lastMeaningfulItem?.kind === "question" &&
-      lastMeaningfulItem.questionId === pendingQuestion.questionId &&
-      lastMeaningfulItem.answer === undefined;
+    const stillOpenQuestions = s.pendingQuestions.filter((pending) =>
+      s.timeline.some((it) => it.kind === "question" && it.questionId === pending.questionId && it.answer === undefined),
+    );
 
-    if (stillOpenApprovals.length > 0 || questionStillOpen) {
+    if (stillOpenApprovals.length > 0 || stillOpenQuestions.length > 0) {
       return {
         pendingApprovals: stillOpenApprovals,
-        ...(questionStillOpen ? { pendingQuestion } : { pendingQuestion: undefined }),
+        pendingQuestions: stillOpenQuestions,
         status: stillOpenApprovals.length > 0 ? "waiting_approval" : "waiting_question",
       };
     }
 
     const staleApprovalIds = new Set(s.pendingApprovals.map((p) => p.approvalId));
+    const staleQuestionIds = new Set(s.pendingQuestions.map((q) => q.questionId));
     return {
       pendingApprovals: [],
-      pendingQuestion: undefined,
+      pendingQuestions: [],
       timeline: s.timeline.map((it) => {
         if (it.kind === "approval" && staleApprovalIds.has(it.approvalId) && it.decision === undefined) {
           return { ...it, decision: "resolved" };
         }
-        if (
-          pendingQuestion &&
-          it.kind === "question" &&
-          it.questionId === pendingQuestion.questionId &&
-          it.answer === undefined
-        ) {
+        if (it.kind === "question" && staleQuestionIds.has(it.questionId) && it.answer === undefined) {
           return { ...it, answer: "answered" };
         }
         return it;
@@ -2140,7 +2145,7 @@ function snapshotRunState(state: AppState): RunSnapshot {
     artifacts: state.artifacts,
     status: state.status,
     pendingApprovals: state.pendingApprovals,
-    pendingQuestion: state.pendingQuestion,
+    pendingQuestions: state.pendingQuestions,
     latestTokenUsage: state.latestTokenUsage,
     lastTurnInput: state.lastTurnInput,
     recoverable: state.recoverable,
@@ -2156,7 +2161,7 @@ function restoreRunSnapshot(snapshot: RunSnapshot): Partial<AppState> {
     artifacts: snapshot.artifacts,
     status: snapshot.status,
     pendingApprovals: snapshot.pendingApprovals,
-    pendingQuestion: snapshot.pendingQuestion,
+    pendingQuestions: snapshot.pendingQuestions,
     latestTokenUsage: snapshot.latestTokenUsage,
     lastTurnInput: snapshot.lastTurnInput,
     recoverable: snapshot.recoverable,
@@ -2171,7 +2176,7 @@ function emptyRunSnapshot(status: RunStatus): Partial<AppState> {
     artifacts: [],
     status,
     pendingApprovals: [],
-    pendingQuestion: undefined,
+    pendingQuestions: [],
     gateBlock: undefined,
     latestTokenUsage: undefined,
     lastTurnInput: undefined,

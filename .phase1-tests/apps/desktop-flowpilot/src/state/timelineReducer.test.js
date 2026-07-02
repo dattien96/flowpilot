@@ -25,6 +25,7 @@ function thinkingState(timeline) {
         timeline,
         recoverable: false,
         pendingApprovals: [],
+        pendingQuestions: [],
         _streamingAssistantId: "assistant-1",
     };
 }
@@ -78,6 +79,7 @@ function approvalState(extras = {}) {
         timeline: [],
         recoverable: false,
         pendingApprovals: [],
+        pendingQuestions: [],
         ...extras,
     };
 }
@@ -183,58 +185,59 @@ const questionOptions = [
     { label: "Python", value: "Python" },
     { label: "TypeScript", value: "TypeScript" },
 ];
-(0, node_test_1.default)("user_question_required adds question card and sets pendingQuestion", () => {
+(0, node_test_1.default)("user_question_required adds question card and sets pendingQuestions", () => {
     const state = approvalState();
     const next = (0, timelineReducer_1.applyTimelineEvent)(state, baseEvent({ type: "user_question_required", questionId: "q-1", prompt: "Pick one", options: questionOptions }));
     const card = next.timeline?.find((it) => it.kind === "question");
     strict_1.default.ok(card, "question card should be added");
     strict_1.default.equal(card.answer, undefined);
-    strict_1.default.ok(next.pendingQuestion, "pendingQuestion should be set");
+    strict_1.default.deepEqual(next.pendingQuestions, [{ questionId: "q-1", prompt: "Pick one", options: questionOptions, multiSelect: undefined }]);
     strict_1.default.equal(next.status, "waiting_question");
 });
-(0, node_test_1.default)("history replay: follow-up event after user_question_required stamps card as answered and clears pendingQuestion", () => {
+(0, node_test_1.default)("history replay: follow-up event after user_question_required stamps card as answered and clears pendingQuestions", () => {
     const state = approvalState({
         status: "waiting_question",
         timeline: [
             { kind: "question", id: "q-1", questionId: "q-1", prompt: "Pick one", options: questionOptions },
         ],
-        pendingQuestion: { questionId: "q-1", prompt: "Pick one", options: questionOptions },
+        pendingQuestions: [{ questionId: "q-1", prompt: "Pick one", options: questionOptions }],
     });
     const next = (0, timelineReducer_1.applyTimelineEvent)(state, baseEvent({ type: "turn_completed", finalMessage: "done" }));
     const card = next.timeline?.find((it) => it.kind === "question");
     strict_1.default.equal(card?.answer, "answered", "question card should be stamped as answered");
-    strict_1.default.equal(next.pendingQuestion, undefined, "pendingQuestion should be cleared");
+    strict_1.default.deepEqual(next.pendingQuestions, [], "pendingQuestions should be cleared");
 });
-(0, node_test_1.default)("history replay: permission_required after user_question_required stamps question and sets new approval", () => {
-    // Question was answered before an approval gate fired — permission_required
-    // should trigger stale question detection (no type guard prevents it).
+(0, node_test_1.default)("BUG-157: permission_required while a question is pending does not clear or orphan the question", () => {
+    // Mixed-kind concurrency: an approval gate and a question gate can be open at the
+    // same time. permission_required must not stamp the still-open question as
+    // answered — only turn_completed/turn_failed can prove that (narrowed BUG-074).
     const state = approvalState({
         status: "waiting_question",
         timeline: [
             { kind: "question", id: "q-1", questionId: "q-1", prompt: "Pick one", options: questionOptions },
         ],
-        pendingQuestion: { questionId: "q-1", prompt: "Pick one", options: questionOptions },
+        pendingQuestions: [{ questionId: "q-1", prompt: "Pick one", options: questionOptions }],
     });
     const next = (0, timelineReducer_1.applyTimelineEvent)(state, baseEvent({ type: "permission_required", approvalId: "appr-1", provider: "codex", details: approvalDetails }));
     const qCard = next.timeline?.find((it) => it.kind === "question");
-    strict_1.default.equal(qCard?.answer, "answered", "question card should be stamped when approval gate fires after it");
-    strict_1.default.equal(next.pendingQuestion, undefined, "pendingQuestion should be cleared");
+    strict_1.default.equal(qCard?.answer, undefined, "question card must remain actionable");
+    strict_1.default.equal(next.pendingQuestions?.length, 1, "pendingQuestions should be preserved");
     strict_1.default.equal(next.pendingApprovals?.length, 1, "pendingApprovals should be set for the new approval");
 });
-(0, node_test_1.default)("live run: no stale detection for question when pendingQuestion is already undefined", () => {
-    // answer() clears pendingQuestion synchronously, so it is undefined by the time
-    // any server event arrives during a live run.
+(0, node_test_1.default)("live run: no stale detection for question when pendingQuestions is empty", () => {
+    // answer() removes the entry from pendingQuestions synchronously, so it is already
+    // gone from the array by the time any server event arrives during a live run.
     const state = approvalState({
         status: "running",
         timeline: [
             { kind: "question", id: "q-1", questionId: "q-1", prompt: "Pick one", options: questionOptions, answer: "Python" },
         ],
-        pendingQuestion: undefined,
+        pendingQuestions: [],
     });
     const next = (0, timelineReducer_1.applyTimelineEvent)(state, baseEvent({ type: "turn_completed", finalMessage: "done" }));
     const card = next.timeline?.find((it) => it.kind === "question");
     strict_1.default.equal(card?.answer, "Python", "existing answer should not be overwritten");
-    strict_1.default.equal(next.pendingQuestion, undefined);
+    strict_1.default.deepEqual(next.pendingQuestions, []);
 });
 // UC2: history replay — denied approval (BUG-074 regression guard)
 // The user denied an approval in a prior session; when history is replayed the
@@ -261,7 +264,7 @@ const questionOptions = [
     // Simulates the event sequence emitted by loadClaudeTranscriptEvents /
     // loadCodexTranscriptEvents on resume: a user prompt event followed by
     // the assistant message. Both must appear in the timeline in correct order.
-    const empty = { status: "idle", timeline: [], recoverable: false, pendingApprovals: [] };
+    const empty = { status: "idle", timeline: [], recoverable: false, pendingApprovals: [], pendingQuestions: [] };
     const afterPrompt = (0, timelineReducer_1.applyTimelineEvent)(empty, baseEvent({ type: "turn_started", providerTurnId: "replay-prompt-1", prompt: "hello there" }));
     const afterAssistant = (0, timelineReducer_1.applyTimelineEvent)({ ...empty, ...afterPrompt }, baseEvent({ type: "message_completed", text: "Hi! How can I help?" }));
     const timeline = afterAssistant.timeline ?? [];
@@ -284,6 +287,7 @@ const questionOptions = [
         timeline: [{ kind: "prompt", id: "prompt-0", text: "hello there" }],
         recoverable: false,
         pendingApprovals: [],
+        pendingQuestions: [],
     };
     const after = (0, timelineReducer_1.applyTimelineEvent)(stateWithPrompt, baseEvent({ type: "turn_started", providerTurnId: "replay-prompt-1", prompt: "hello there" }));
     const prompts = (after.timeline ?? []).filter((it) => it.kind === "prompt");
@@ -292,7 +296,7 @@ const questionOptions = [
 (0, node_test_1.default)("history replay: turn_completed after replay removes thinking row", () => {
     // seedTranscriptFromDisk appends a synthetic turn_completed to close the
     // trailing Thinking... row that finalize() would inject after message_completed.
-    const empty = { status: "idle", timeline: [], recoverable: false, pendingApprovals: [] };
+    const empty = { status: "idle", timeline: [], recoverable: false, pendingApprovals: [], pendingQuestions: [] };
     let state = { ...empty };
     for (const e of [
         baseEvent({ type: "turn_started", providerTurnId: "replay-prompt-1", prompt: "hi" }),
@@ -327,7 +331,7 @@ const questionOptions = [
 // sequence twice must rebuild the SAME timeline, not duplicate bubbles/tools.
 // Helper: fold a sequence of events into a fresh timeline.
 function foldEvents(events) {
-    let state = { status: "idle", timeline: [], recoverable: false, pendingApprovals: [] };
+    let state = { status: "idle", timeline: [], recoverable: false, pendingApprovals: [], pendingQuestions: [] };
     for (const e of events) {
         state = { ...state, ...(0, timelineReducer_1.applyTimelineEvent)(state, e) };
     }

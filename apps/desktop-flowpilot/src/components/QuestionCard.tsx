@@ -16,7 +16,7 @@ const valueOf = (o: QuestionOption): string => o.value ?? o.label;
 // The "popup with options" UX (the AskUserQuestion-style card). Backed in Part B
 // by the user-interaction bridge (04-04) — both the model-driven `ask_user` MCP
 // tool path and the deterministic workflow-driven path render THIS same card.
-export function QuestionCard({ prompt, options, multiSelect, answer }: Props): React.ReactElement {
+export function QuestionCard({ questionId, prompt, options, multiSelect, answer }: Props): React.ReactElement {
   const submit = useStore((s) => s.answer);
   const resolved = answer !== undefined;
   const [selected, setSelected] = useState<string[]>([]);
@@ -30,7 +30,7 @@ export function QuestionCard({ prompt, options, multiSelect, answer }: Props): R
 
   const answerOption = (value: string) => {
     if (!multiSelect) {
-      void submit(value);
+      void submit(questionId, value);
       return;
     }
 
@@ -40,7 +40,7 @@ export function QuestionCard({ prompt, options, multiSelect, answer }: Props): R
   const onSubmit = () => {
     const answer = resolveQuestionManualSubmit(selected, other, multiSelect);
     if (answer === undefined) return;
-    void submit(answer);
+    void submit(questionId, answer);
   };
 
   return (

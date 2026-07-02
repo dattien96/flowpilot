@@ -69,13 +69,17 @@ function applyTimelineEvent(s, e) {
             }
         }
     }
-    const staleQuestion = s.pendingQuestion;
-    if (staleQuestion) {
-        for (let i = timeline.length - 1; i >= 0; i--) {
+    // Same narrowing as approvals (BUG-157): only turn_completed/turn_failed proves a
+    // question was answered in a prior session without a captured event. A concurrent
+    // second question, or an unrelated event, must not orphan an already-open question.
+    const staleQuestionIds = e.type === "turn_completed" || e.type === "turn_failed" ? s.pendingQuestions.map((q) => q.questionId) : [];
+    if (staleQuestionIds.length > 0) {
+        const remaining = new Set(staleQuestionIds);
+        for (let i = 0; i < timeline.length && remaining.size > 0; i++) {
             const it = timeline[i];
-            if (it.kind === "question" && it.questionId === staleQuestion.questionId && it.answer === undefined) {
+            if (it.kind === "question" && it.answer === undefined && remaining.has(it.questionId)) {
                 timeline[i] = { ...it, answer: "answered" };
-                break;
+                remaining.delete(it.questionId);
             }
         }
     }
@@ -87,6 +91,8 @@ function applyTimelineEvent(s, e) {
         // tool_completed for a parallel, non-gated tool call) must not flip status away from
         // "waiting_approval" while other approvals are still open (BUG-157).
         const pendingApprovals = extra.pendingApprovals ?? (staleApprovalIds.length > 0 ? [] : s.pendingApprovals);
+        const pendingQuestions = extra.pendingQuestions ?? (staleQuestionIds.length > 0 ? [] : s.pendingQuestions);
+        const derivedStatus = pendingApprovals.length > 0 ? "waiting_approval" : pendingQuestions.length > 0 ? "waiting_question" : status;
         return {
             timeline: shouldKeepThinking
                 ? [
@@ -94,12 +100,13 @@ function applyTimelineEvent(s, e) {
                     thinkingItem ?? { kind: "thinking", id: `thinking-${nextTimeline.length}`, text: "Thinking..." },
                 ]
                 : nextTimeline,
-            status: pendingApprovals.length > 0 ? "waiting_approval" : status,
+            status: derivedStatus,
             _streamingAssistantId: streamingAssistantId,
             // Always restated explicitly (not spread conditionally) so every returned partial
-            // carries the caller's ground truth for pendingApprovals, even on a no-op event.
+            // carries the caller's ground truth for pendingApprovals/pendingQuestions, even on
+            // a no-op event.
             pendingApprovals,
-            ...(staleQuestion ? { pendingQuestion: undefined } : {}),
+            pendingQuestions,
             ...extra,
         };
     };
@@ -231,7 +238,10 @@ function applyTimelineEvent(s, e) {
                 multiSelect: e.multiSelect,
             });
             return finalize(timeline, {
-                pendingQuestion: { questionId: e.questionId, prompt: e.prompt, options: e.options, multiSelect: e.multiSelect },
+                pendingQuestions: [
+                    ...s.pendingQuestions,
+                    { questionId: e.questionId, prompt: e.prompt, options: e.options, multiSelect: e.multiSelect },
+                ],
             });
         case "turn_completed":
             closeAssistant();

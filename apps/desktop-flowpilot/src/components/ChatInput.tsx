@@ -238,7 +238,7 @@ export function ChatInput(): React.ReactElement {
   const generateChatSummary = useStore((s) => s.generateChatSummary);
   const summaryGenerating = useStore((s) => s.summaryGenerating);
   const pendingApprovals = useStore((s) => s.pendingApprovals);
-  const pendingQuestion = useStore((s) => s.pendingQuestion);
+  const pendingQuestions = useStore((s) => s.pendingQuestions);
   const latestTokenUsage = useStore((s) => s.latestTokenUsage);
   const stop = useStore((s) => s.stop);
   const timeline = useStore((s) => s.timeline);
@@ -1164,7 +1164,7 @@ export function ChatInput(): React.ReactElement {
         </div>
       )}
 
-      {(pendingApprovals.length > 0 || pendingQuestion) && (
+      {(pendingApprovals.length > 0 || pendingQuestions.length > 0) && (
         <div className="input-note">Action required above before continuing.</div>
       )}
 
