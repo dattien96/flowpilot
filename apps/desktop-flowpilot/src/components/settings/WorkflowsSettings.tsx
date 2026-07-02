@@ -450,7 +450,6 @@ export function WorkflowsSettings(): React.ReactElement {
         ? detailWorkflowStepType
         : createWorkflowStepType;
     if (!chosenStepType) return;
-    const stepDefinition = stepDefinitions.find((item) => item.stepType === chosenStepType);
     const target = source === "detail" ? workflowSteps : createWorkflowSteps;
     const nextStep: WorkflowStep = {
       id: `${chosenStepType}-${Date.now()}`,
@@ -459,12 +458,12 @@ export function WorkflowsSettings(): React.ReactElement {
       orderIndex: target.length,
       isEnabled: true,
       providerOverride: null,
-      // BUG-160: leave unset ("no override") by default instead of forcing a
-      // concrete model — a new step should inherit the run's model unless the
-      // user explicitly opts into an override via the Model override select.
+      // BUG-160/BUG-161: leave unset ("no override") by default instead of
+      // forcing a concrete value — a new step should inherit the run's
+      // model/reasoning unless the user explicitly opts into an override via
+      // the Model override / Reasoning selects.
       modelOverride: null,
-      reasoningEffortOverride:
-        stepDefinition?.reasoningEffort ?? DEFAULT_REASONING,
+      reasoningEffortOverride: null,
       requiresApproval: true,
       createdAt: "",
       updatedAt: "",
@@ -806,8 +805,12 @@ export function WorkflowsSettings(): React.ReactElement {
                               reasoningEffortOverride: event.target.value || null,
                             })
                       }
-                      value={step.reasoningEffortOverride ?? DEFAULT_REASONING}
+                      value={step.reasoningEffortOverride ?? ""}
                     >
+                      {/* BUG-161: same "no override" gap as the Model override select
+                          (BUG-160) — previously this always displayed/persisted a
+                          concrete reasoning level, never true inheritance. */}
+                      <option value="">No override (use run's reasoning)</option>
                       {REASONING_OPTIONS.map((option) => (
                         <option key={option.value} value={option.value}>
                           {option.label}
