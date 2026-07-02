@@ -10,14 +10,24 @@ import { activeWorkflowStep, isFlowModeRun, useStore } from "@/state/store";
 // (name/status/provider/model/agent/yolo — BUG-155).
 export function FlowTimelineSidebar(): React.ReactElement | null {
   const chatMode = useStore((s) => s.chatMode);
-  const runStatus = useStore((s) => s.status);
   const mainRunId = useStore((s) => s.mainRunId ?? s.runId);
   const steps = useStore((s) => s.workflowStepRuntime);
   const meta = useStore((s) => s.workflowStepRuntimeMeta);
   const refreshWorkflowStepRuntime = useStore((s) => s.refreshWorkflowStepRuntime);
   const [expanded, setExpanded] = useState(true);
 
-  const visible = isFlowModeRun(chatMode) && runStatus === "running";
+  // BUG-175: once a flow run has actually started, keep the step-timeline
+  // sidebar mounted for its entire lifetime — running, paused on an approval or
+  // question, errored, or completed. The timeline is orientation the user needs
+  // in every one of those states. Gating on runStatus (BUG-168) still lost it
+  // whenever the *main* run went idle — e.g. while a sub-agent holds an
+  // approval (the main run isn't "running" then), between the coder finishing
+  // and the reviewers starting, or once the run completed. A flow run either
+  // exists (mainRunId set, or step data loaded) or it doesn't; status is not a
+  // visibility signal. The only hidden case is before the first prompt is sent,
+  // when no run exists yet — resetRun clears both mainRunId and the step list.
+  const runStarted = Boolean(mainRunId) || steps.length > 0;
+  const visible = isFlowModeRun(chatMode) && runStarted;
 
   useEffect(() => {
     if (!visible) return;

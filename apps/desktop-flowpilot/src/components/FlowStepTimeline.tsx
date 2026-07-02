@@ -87,7 +87,16 @@ export function FlowStepTimeline({
             title={compact ? `${stepName(step)} — ${STATE_LABEL[step.status]}` : undefined}
           >
             <div className="fti-track">
-              <span className="fti-icon">{compact ? index + 1 : STATE_GLYPH[state]}</span>
+              {/* BUG-173: number every step 1-2-3-4 in BOTH modes so the expanded
+                  rail matches the collapsed rail. Status is already conveyed by the
+                  fti-{state} color classes and the current-step highlight, so the
+                  step index is the more useful glyph than the sparse STATE_GLYPH set
+                  (which was empty for idle/running — leaving expanded circles blank).
+                  Done/error keep their ✓/✕ mark, which reads as an at-a-glance
+                  completion cue layered on top of the ordering the numbers give. */}
+              <span className="fti-icon">
+                {state === "done" || state === "error" ? STATE_GLYPH[state] : index + 1}
+              </span>
               {!isLast && <span className={`fti-line fti-line-${lineState}`} />}
             </div>
 

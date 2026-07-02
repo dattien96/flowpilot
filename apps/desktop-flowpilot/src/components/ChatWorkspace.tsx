@@ -24,7 +24,9 @@ function WorkflowControlPanel(): React.ReactElement | null {
   const setLaunchMode = useStore((s) => s.setLaunchMode);
   const selectWorkflow = useStore((s) => s.selectWorkflow);
   const selectStep = useStore((s) => s.selectStep);
+  const projects = useStore((s) => s.projects);
 
+  const project = useMemo(() => projects.find((p) => p.id === selectedProjectId), [projects, selectedProjectId]);
   const visibleWorkflows = useMemo(
     () => filterNavigatorWorkflows(workflows, selectedProjectId),
     [selectedProjectId, workflows],
@@ -98,11 +100,14 @@ function WorkflowControlPanel(): React.ReactElement | null {
                 <option value="" disabled>
                   Select a workflow…
                 </option>
-                {visibleWorkflows.map((workflow) => (
-                  <option key={workflow.id} value={workflow.id}>
-                    {workflow.name}
-                  </option>
-                ))}
+                {visibleWorkflows.map((workflow) => {
+                  const resolves = Boolean(workflow.model || project?.model);
+                  return (
+                    <option key={workflow.id} value={workflow.id} disabled={!resolves}>
+                      {workflow.name} {!resolves ? " (No model set)" : ""}
+                    </option>
+                  );
+                })}
               </select>
             </div>
           </div>
@@ -123,11 +128,14 @@ function WorkflowControlPanel(): React.ReactElement | null {
                 <option value="" disabled>
                   Select a step…
                 </option>
-                {steps.map((step) => (
-                  <option key={step.id} value={step.id}>
-                    {step.name}
-                  </option>
-                ))}
+                {steps.map((step) => {
+                  const resolves = Boolean(step.model || project?.model);
+                  return (
+                    <option key={step.id} value={step.id} disabled={!resolves}>
+                      {step.name} {!resolves ? " (No model set)" : ""}
+                    </option>
+                  );
+                })}
               </select>
             </div>
           </div>

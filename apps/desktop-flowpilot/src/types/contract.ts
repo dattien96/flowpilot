@@ -17,6 +17,7 @@ export interface Project {
   name: string;
   /** Workspace path bound as the provider `cwd` (display only in Part A). */
   path: string;
+  model?: string;
 }
 
 export interface Workflow {
@@ -24,6 +25,8 @@ export interface Workflow {
   projectId: string;
   name: string;
   description?: string;
+  model?: string;
+  yoloMode?: boolean;
 }
 
 export interface Step {
@@ -33,6 +36,8 @@ export interface Step {
   order: number;
   /** Skill auto-selected for this step, if any (source: workflow_default). */
   defaultSkill?: string;
+  model?: string;
+  yoloMode?: boolean;
 }
 
 export interface ProviderSkill {

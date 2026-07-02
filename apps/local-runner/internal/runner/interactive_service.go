@@ -165,6 +165,16 @@ type interactiveRun struct {
 	// binding) to auto-spawn the next node(s) deterministically instead of
 	// leaving a bare completion note for the hub AI to infer from.
 	activeFlowNodes []agentpack.FlowNode
+	// flowEngineDriven marks a run whose step-runtime timeline is driven by the
+	// CP-42 flow executor's real node lifecycle (spawn → RUNNING, complete →
+	// DONE, flow "done" → run DONE) rather than the legacy per-turn
+	// PlanWorkflowProgress bulk planner (BUG-174). Set only for a Flow-Mode
+	// workflow-picker launch whose selected workflow auto-resolves to a
+	// flow-engine flow (see handleStartTurn → resolveWorkflowFlowRef), never for
+	// the explicit chat/flowRef path or a plain workflow, so those keep their
+	// exact existing behavior. When true, startTurn skips the bulk Progress call
+	// and the executor owns every step transition for this run.
+	flowEngineDriven bool
 	// planContextPackage is the FlowContextPackage built for the Plan step of this Flow
 	// Mode run. Non-nil only for workflow runs with a Coding step. Cached here so retries
 	// reuse the same package without rebuilding; cleared when a Plan step reruns (Task-169).
@@ -441,6 +451,10 @@ func (s *InteractiveService) stopAgentLoop(parentRunID string) AgentGraphSnapsho
 		parent.pendingRestartPrompt = ""
 		parent.autoOrchestrate = false
 		parent.reinvokeInFlight = false
+		parent.pendingHubReinvoke = false
+		if parent.turnInFlight && parent.turnCancel != nil {
+			parent.turnCancel()
+		}
 	}
 	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
 		if child := s.runs[childID]; child != nil {
@@ -487,6 +501,12 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 		s.appendPendingAgentContext(parentRunID, strings.TrimSpace("Flow completed. "+in.Summary))
 		s.emitAgentGraph(parentRunID, snap)
 		go s.persistParentSession(parentRunID)
+		// BUG-174: the flow's control tool reported done — settle the step
+		// timeline (inline hub node DONE, run DONE) instead of leaving it to the
+		// bulk planner, which is gated off for flow-engine-driven runs.
+		if s.isFlowEngineDriven(parentRunID) {
+			s.markFlowRunComplete(context.Background(), parentRunID)
+		}
 		return FlowControlResult{Status: "done", Round: snap.LoopState.Round, Cap: effectiveCap(snap.LoopState), NextAction: "done"}, nil
 
 	case "continue":
@@ -523,6 +543,21 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 			// Re-enter the coder so the back-edge in ReviewLoopFlowConfig fires
 			// (CRITICAL finding: continue returned "looping" but never restarted the coder).
 			go s.maybeReinvokeCoderForContinue(parentRunID, buildCoderReentryPrompt(in))
+			// BUG-174: a new review round is starting — reset the downstream nodes
+			// to PENDING and re-run the entry (coder) node on the step timeline so
+			// the loop reads honestly instead of every node staying DONE.
+			if s.isFlowEngineDriven(parentRunID) {
+				nodes := s.activeFlowNodesFor(parentRunID)
+				entryID := flowEntryNodeID(nodes)
+				go func() {
+					for _, n := range nodes {
+						if n.ID != entryID {
+							s.setFlowStepStatus(context.Background(), parentRunID, n.ID, StepStatusPending)
+						}
+					}
+					s.setFlowStepStatus(context.Background(), parentRunID, entryID, StepStatusRunning)
+				}()
+			}
 		}
 		return result, nil
 
@@ -585,7 +620,8 @@ func (s *InteractiveService) extendCap(parentRunID string) (FlowControlResult, e
 // Failed members appear as "failed: <err>".
 func buildCohortNote(parentRunID, cohortID string, entries []cohortEntry, round int) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "[FlowPilot flow round %d — %d results joined]\n", round, len(entries))
+	fmt.Fprintf(&b, "[flow-engine joined result note]\n")
+	fmt.Fprintf(&b, "Flow round %d — %d results joined.\n", round, len(entries))
 	for _, e := range entries {
 		label := e.Label
 		if label == "" {
@@ -594,10 +630,15 @@ func buildCohortNote(parentRunID, cohortID string, entries []cohortEntry, round 
 		if e.Status == "failed" {
 			fmt.Fprintf(&b, "%q (%s): failed: %s\n", label, e.Provider, e.Err)
 		} else {
-			fmt.Fprintf(&b, "%q (%s): %s\n", label, e.Provider, e.FinalMessage)
+			msg := strings.TrimSpace(e.FinalMessage)
+			if msg == "" {
+				msg = "(completed with no final message captured)"
+			}
+			fmt.Fprintf(&b, "%q (%s): %s\n", label, e.Provider, msg)
 		}
 	}
 	b.WriteString("---\n")
+	b.WriteString("This joined result note is part of your current prompt context.\n")
 	b.WriteString("Synthesize: dedup the findings, flag any conflicting verdicts, resolve them " +
 		"using the task context, then call the flow's control tool with the consolidated result.")
 	return b.String()
@@ -625,6 +666,17 @@ func autoReinvokePromptText() string {
 // start, so callers must NOT hold s.mu when calling directly; goroutine callers (go
 // s.maybeAutoReinvokeHub) are the only valid pattern since emitLocked holds the lock.
 func (s *InteractiveService) maybeAutoReinvokeHub(parentRunID string) {
+	s.maybeAutoReinvokeHubWithNote(parentRunID, "")
+}
+
+// maybeAutoReinvokeHubWithNote is like maybeAutoReinvokeHub but embeds cohortNote
+// directly into the synthesis turn prompt (BUG-synthesis-hang). The joined cohort
+// result note was previously stored only in pendingAgentContext and rendered via
+// composeAgentContextBlock, which is invisible to Codex agents that look for it as
+// a visible user-turn message. Embedding it inline in the prompt guarantees the
+// synthesizer always sees the note regardless of provider or adapter. When
+// cohortNote is empty the prompt is identical to the plain autoReinvokePromptText().
+func (s *InteractiveService) maybeAutoReinvokeHubWithNote(parentRunID, cohortNote string) {
 	s.mu.Lock()
 	parent := s.runs[parentRunID]
 	if parent == nil || !parent.autoOrchestrate || parent.reinvokeInFlight || parent.turnInFlight {
@@ -655,7 +707,18 @@ func (s *InteractiveService) maybeAutoReinvokeHub(parentRunID string) {
 	parent.reinvokeInFlight = true
 	s.mu.Unlock()
 
-	s.scheduleChildTurn(parentRunID, stepID, autoReinvokePromptText())
+	// Build the synthesis turn prompt. When a cohort note is provided, embed it
+	// directly in the prompt so the synthesizer always sees it as a visible user
+	// message — regardless of provider (Codex, Claude, Gemini) or YOLO mode.
+	// The pendingAgentContext context-block path alone is insufficient: Codex
+	// agents operating on resumed threads may not see prepended context blocks
+	// as part of their visible conversation, causing the "joined result note not
+	// present in visible context" block (BUG-synthesis-hang / BUG-review-feedback).
+	prompt := autoReinvokePromptText()
+	if strings.TrimSpace(cohortNote) != "" {
+		prompt = cohortNote + "\n\n---\n\n" + prompt
+	}
+	s.scheduleChildTurn(parentRunID, stepID, prompt)
 }
 
 // buildCoderReentryPrompt composes the full prompt for coder re-entry from the
@@ -1371,7 +1434,44 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 					note := buildCohortNote(rs.parentRunID, rs.flowCohortId, entries, s.agentOrchestrator.graphSnapshot(rs.parentRunID).LoopState.Round)
 					s.appendPendingAgentContextLocked(rs.parentRunID, note)
 					parentRunID := rs.parentRunID
-					go s.maybeAutoReinvokeHub(parentRunID)
+					// BUG-174/BUG-181: the review cohort just joined — mark each
+					// reviewer node DONE and the inline hub node RUNNING, THEN reinvoke
+					// the hub's synthesis turn. Both must run in ONE ordered goroutine:
+					// the synthesis turn finalizes via markFlowRunComplete (synthesis
+					// DONE), and two separate goroutines let that race the step writes —
+					// landing before the reviewer-DONE writes (synthesis DONE while
+					// reviewers still RUNNING) or after the synthesis-RUNNING write
+					// (synthesis stuck RUNNING after the flow is done). Sequencing the
+					// writes before the reinvoke removes both races. Captured under s.mu.
+					var reviewerNodeIDs []string
+					var hubNodeID string
+					flowDriven := false
+					if parent := s.runs[parentRunID]; parent != nil && parent.flowEngineDriven {
+						flowDriven = true
+						for _, e := range entries {
+							if e.Label != "" {
+								reviewerNodeIDs = append(reviewerNodeIDs, e.Label)
+							}
+						}
+						hubNodeID = hubInlineNodeID(parent.activeFlowNodes)
+					}
+					// Capture the cohort note to embed directly in the synthesis prompt.
+					// This fixes BUG-synthesis-hang: Codex agents on resumed threads do not
+					// see the joined result note when it is only in pendingAgentContext
+					// (rendered as a context block), causing the synthesizer to report
+					// "joined result note not present in visible context" and stall.
+					capturedCohortNote := note
+					go func() {
+						if flowDriven {
+							for _, id := range reviewerNodeIDs {
+								s.setFlowStepStatus(context.Background(), parentRunID, id, StepStatusDone)
+							}
+							if hubNodeID != "" {
+								s.setFlowStepStatus(context.Background(), parentRunID, hubNodeID, StepStatusRunning)
+							}
+						}
+						s.maybeAutoReinvokeHubWithNote(parentRunID, capturedCohortNote)
+					}()
 				}
 			} else if s.agentOrchestrator.loopMode(rs.parentRunID) == "explicit" && (isCoderRun(rs) || parentHasTrackedFlow(s, rs.parentRunID)) {
 				// In explicit mode the hub drives all transitions. When a node completes
@@ -1481,7 +1581,8 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 					note := buildCohortNote(rs.parentRunID, rs.flowCohortId, entries, s.agentOrchestrator.graphSnapshot(rs.parentRunID).LoopState.Round)
 					s.appendPendingAgentContextLocked(rs.parentRunID, note)
 					parentRunID := rs.parentRunID
-					go s.maybeAutoReinvokeHub(parentRunID)
+					capturedCohortNote := note // embed note directly in synthesis prompt (BUG-synthesis-hang)
+					go s.maybeAutoReinvokeHubWithNote(parentRunID, capturedCohortNote)
 				}
 			} else if rs.uiInitiated || !rs.waitForResult {
 				s.appendPendingAgentContextLocked(rs.parentRunID, fmt.Sprintf(
@@ -1657,6 +1758,11 @@ func (b *turnBridge) RequestApproval(details ApprovalDetails) (string, error) {
 		Provider:       b.rs.providerKey,
 		Details:        &details,
 	})
+	// A sub-agent's approval is emitted on its own run stream and surfaced when the
+	// user focuses that agent. (BUG-177 briefly mirrored it onto the hub stream so
+	// concurrent cohort approvals showed on main, but that flooded the main view
+	// with unresolved approvals and was reverted per user direction — sub-agent
+	// approvals stay in the agent view; YOLO covers the hands-off UX.)
 	s.mu.Unlock()
 
 	timer := time.NewTimer(s.approvalTTL)
@@ -1721,7 +1827,25 @@ func (b *turnBridge) SpawnAgent(in SpawnAgentInput) (SpawnAgentResult, error) {
 // SubmitFlowControl advances the generic flow engine on the controlling hub run.
 // When called from a child turn (synthesizer, reviewer), b.rs.parentRunID is
 // the hub run that owns the loop state; route there instead of the child.
+//
+// BUG-176: enforce the cohort-join barrier in code. A cohort member (e.g. a
+// review-loop reviewer, flowCohortId != "") must NOT drive the flow's control
+// tool: routing its call straight to the parent's applyFlowControl let a single
+// reviewer terminate/advance the whole round before its siblings finished
+// (observed as "synthesis marked done while the other reviewer is still
+// running"). Only the hub's own synthesis turn — which runs after the cohort
+// joins and is NOT a cohort member — may finalize the flow. A cohort member's
+// call is rejected with guidance so its findings flow through its final message
+// into the cohort note the hub synthesizes, exactly as the auto-spawn prompt
+// already instructs (BUG-NOTE-CP42 #13). Non-cohort children (flowCohortId ==
+// "") and the hub itself are unaffected.
 func (b *turnBridge) SubmitFlowControl(in FlowControlInput) (FlowControlResult, error) {
+	if b.rs.flowCohortId != "" {
+		return FlowControlResult{}, fmt.Errorf(
+			"this is a cohort review step, not the hub: do not call the flow control tool here. " +
+				"Report your findings (approve or request changes, with specifics) in your final message; " +
+				"the hub will synthesize the full cohort and finalize the flow after every reviewer has finished")
+	}
 	targetRunID := b.rs.id
 	if b.rs.parentRunID != "" {
 		targetRunID = b.rs.parentRunID
@@ -2189,7 +2313,19 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// state is persisted by the post-turn sessionStateOf snapshot below. (BUG-122)
 	providerPrompt := in.Prompt
 	s.mu.Lock()
-	offerReviewOutcomeTool := rs.autoOrchestrate
+	// BUG-179: only offer the flow control tool (submit_review_outcome) on the
+	// hub's post-join synthesis turn, never its first turn or a child's turn.
+	// spawnChildRun sets the hub's autoOrchestrate=true as soon as the entry coder
+	// is spawned (from startResolvedFlow's goroutine), so gating solely on
+	// autoOrchestrate handed the tool to the hub's *first* model turn — letting it
+	// call flow_control("done") before the reviewer cohort had even run, which
+	// marked synthesis DONE while the reviewers were still RUNNING. The hub's own
+	// turns are the only ones that may finalize (parentRunID == ""), and only after
+	// its first turn — the coder spawns on turn 1, and maybeAutoReinvokeHub only
+	// reinvokes the hub (turn ≥ 2) after the cohort join, so turnCount > 1 is the
+	// genuine synthesis turn. (A cohort reviewer is additionally blocked in
+	// SubmitFlowControl by flowCohortId, BUG-176.)
+	offerReviewOutcomeTool := rs.autoOrchestrate && rs.parentRunID == "" && rs.turnCount > 1
 	providerPrompt = prependModePrefix(providerPrompt, rs.turnCount, rs.changeType, rs.sourceDocID)
 	// Persist the per-turn YOLO posture as the run's current default (BUG-129). The UI
 	// toggle is sticky, so an explicit YoloMode this turn must update rs.yolo; otherwise a
@@ -2225,19 +2361,19 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	}
 	logComposedPrompt(toolWorkspace, rs.projectID, rs.id, turnID, providerPrompt)
 	req := TurnRequest{
-		RunID:             rs.id,
-		StepID:            in.StepID,
-		ProjectID:         rs.projectID,
-		ProviderSessionID: providerSessionID,
-		ProviderTurnID:    turnID,
-		Prompt:            providerPrompt,
-		ModelName:         model,
-		SelectedSkills:    in.SelectedSkills,
-		YoloMode:          yolo,
-		ReasoningEffort:   effort,
-		Cwd:               rs.workspaceCwd,
-		Scenario:          scenario,
-		Attachments:       in.Attachments,
+		RunID:                  rs.id,
+		StepID:                 in.StepID,
+		ProjectID:              rs.projectID,
+		ProviderSessionID:      providerSessionID,
+		ProviderTurnID:         turnID,
+		Prompt:                 providerPrompt,
+		ModelName:              model,
+		SelectedSkills:         in.SelectedSkills,
+		YoloMode:               yolo,
+		ReasoningEffort:        effort,
+		Cwd:                    rs.workspaceCwd,
+		Scenario:               scenario,
+		Attachments:            in.Attachments,
 		OfferReviewOutcomeTool: offerReviewOutcomeTool,
 	}
 	// CP-35: snapshot HEAD and seed test baseline before the AI runs.
@@ -2250,11 +2386,17 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	s.ensureBaseline(rs.workspaceCwd)
 	bridge := &turnBridge{svc: s, rs: rs, ctx: ctx, turnID: turnID, yolo: yolo}
 	err := s.sendTurnWithRetry(ctx, adapter, req, bridge)
-	if err == nil {
+	if err == nil && !rs.flowEngineDriven {
 		// The provider turn owns interactive UX/events; once it returns cleanly we
 		// advance the shared workflow planner so the live run path no longer bypasses
 		// WorkflowStore/WorkflowOrchestrator entirely. A2 will replace the fake
 		// backing store and make this durable/auditable.
+		//
+		// BUG-174: skip this for flow-engine-driven runs. PlanWorkflowProgress
+		// walks every step and bulk-marks them DONE in one post-turn pass, which
+		// is exactly what made a Flow-Mode run flip all steps to DONE out of
+		// order after the hub's turn. For these runs the flow executor emits the
+		// real per-node transitions instead (flow_step_runtime.go).
 		_, _ = s.orchestrator.Progress(ctx, rs.id, yolo)
 	}
 
@@ -2571,6 +2713,7 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	turnID := s.nextID("turn")
 	rs.turnInFlight = true
 	rs.reinvokeInFlight = false // the turn the reinvoke scheduled is now in flight
+	flowStartOnly := false
 	// A new turn resets the idle-summary window to zero (a pending summary timer
 	// is cancelled here and re-armed when this turn completes).
 	s.cancelChatSummary(rs.id)
@@ -2582,25 +2725,13 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		// CP-42/Task-177: a validated flowRef on the first turn starts the
 		// built-in flow's entry node(s) deterministically instead of relying on
 		// the hub's own AI judgement to decide whether to spawn a review loop.
-		// Scheduled async — spawnChildRun manages its own locking and must not
-		// run while this function still holds s.mu.
+		// The hub's first provider turn is suppressed; it will be reinvoked only
+		// after the flow reaches a hub.inline node. Scheduled async because
+		// spawnChildRun manages its own locking and must not run while this
+		// function still holds s.mu.
 		if flowRef := strings.TrimSpace(in.FlowRef); flowRef != "" {
-			// BUG#1 (BUG-NOTE-CP42): notifyHubFlowStarted's note is appended to
-			// pendingAgentContext from startResolvedFlow's own goroutine, which
-			// races the drain a few lines below (capturedCtx := rs.pendingAgentContext).
-			// That drain runs synchronously as part of this same turn setup, so the
-			// async note reliably loses the race and never reaches the hub's first
-			// turn — it only surfaces on some later turn, if at all. Prepend the
-			// wait-notice synchronously to this turn's own prompt instead, and hand
-			// startResolvedFlow the original, unmodified prompt for the spawned child.
-			originalPrompt := in.Prompt
-			if notice, ok, err := loadBuiltinPromptText("prompts/flow-start-wait.md"); err == nil && ok && notice != "" {
-				in.Prompt = notice + "\n\n" + originalPrompt
-			} else {
-				in.Prompt = "[flow-engine] An agent has already been spawned to work on this request. " +
-					"Do not duplicate that work yourself. Wait for its result.\n\n" + originalPrompt
-			}
-			go s.startResolvedFlow(context.Background(), runID, flowRef, originalPrompt)
+			flowStartOnly = true
+			go s.startResolvedFlow(context.Background(), runID, flowRef, in.Prompt)
 		}
 	}
 	rs.turnCount++
@@ -2642,6 +2773,17 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	// so we keep the raw input separately and prefer it on resume.
 	if logger, logOK := s.workflowStore.(TurnLogStore); logOK {
 		_ = logger.AppendTurnLog(context.Background(), runID, turnLogLine{Kind: turnLogKindPrompt, TurnID: turnID, Prompt: in.Prompt})
+	}
+	if flowStartOnly {
+		s.mu.Lock()
+		if current := s.runs[runID]; current != nil {
+			current.turnInFlight = false
+			current.currentTurnID = ""
+			current.turnCancel = nil
+		}
+		s.mu.Unlock()
+		cancel()
+		return turnID, nil
 	}
 	// Flow Mode: clear cached FlowContextPackage when a Plan step reruns so the next
 	// Coding step rebuilds the package from the new Plan output (T-3, Task-169).
@@ -2861,13 +3003,25 @@ func (s *InteractiveService) AskWorkflowQuestion(ctx context.Context, runID, pro
 // Interrupt cancels the in-flight turn for a run.
 func (s *InteractiveService) Interrupt(runID string) *apiErr {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	rs := s.runs[runID]
 	if rs == nil {
+		s.mu.Unlock()
 		return newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")
 	}
+	var cancels []context.CancelFunc
 	if rs.turnCancel != nil {
-		rs.turnCancel()
+		cancels = append(cancels, rs.turnCancel)
+	}
+	if rs.parentRunID == "" {
+		for _, childID := range s.agentOrchestrator.listChildren(runID) {
+			if child := s.runs[childID]; child != nil && child.turnInFlight && child.turnCancel != nil {
+				cancels = append(cancels, child.turnCancel)
+			}
+		}
+	}
+	s.mu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
 	}
 	return nil
 }

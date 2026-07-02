@@ -416,13 +416,31 @@ func (s *InteractiveService) reconstructRun(st ProviderSessionState) (*interacti
 
 	s.mu.Lock()
 	s.runs[rs.id] = rs
-	if seeder, ok := s.workflowStore.(workflowRunSeeder); ok {
-		seeder.seed(rs.id, []RuntimeWorkflowStep{{
-			ID:               "chat-" + rs.id,
-			StepType:         "chat",
-			Status:           StepStatusPending,
-			RequiresApproval: false,
-		}})
+	// BUG-170: only re-seed the synthetic chat step for chat runs, mirroring createRun's
+	// own runKind branch (interactive_handlers.go). Before this run reached reconstructRun,
+	// resume was rejected outright for any non-chat run, so this call was unconditionally
+	// chat-shaped and never actually seeded a workflow run's real steps. Now that workflow
+	// runs can reach here, seeding this fake single step would blow away the seeder's real
+	// per-step list for that run (fakeWorkflowStore.seed replaces wholesale) — workflow runs
+	// keep whatever step-runtime state their store already has instead.
+	if st.RunKind == "chat" {
+		if seeder, ok := s.workflowStore.(workflowRunSeeder); ok {
+			seeder.seed(rs.id, []RuntimeWorkflowStep{{
+				ID:               "chat-" + rs.id,
+				StepType:         "chat",
+				Status:           StepStatusPending,
+				RequiresApproval: false,
+			}})
+		}
+	} else if len(rs.activeFlowNodes) > 0 {
+		// BUG-178: the local runner's step-runtime store is in-memory, so a
+		// flow run's step list is empty after a server restart and its history
+		// timeline showed "No step-runtime data for this run yet". Rebuild it
+		// from the persisted flow nodes (restored onto rs above). A completed
+		// run's steps are shown DONE; otherwise PENDING (per-step progress isn't
+		// persisted). flowEngineDriven is intentionally left as-is — this only
+		// restores the display; it does not re-engage the executor.
+		s.reseedFlowStepRuntimeForResume(rs.id, rs.activeFlowNodes, rs.status == RunStatusCompleted)
 	}
 	s.mu.Unlock()
 	// Restore flow-engine loop state so a restarted or Drive-synced run resumes
@@ -1126,10 +1144,14 @@ func (s *InteractiveService) loadPersistedRun(runID string) (*interactiveRun, *a
 		log.Printf("[chat-history-open] persisted run not found run_id=%q", runID)
 		return nil, newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")
 	}
-	if st.RunKind != "chat" {
-		log.Printf("[chat-history-open] persisted run unsupported run_id=%q run_kind=%q", runID, st.RunKind)
-		return nil, newAPIErr(http.StatusConflict, "resume_unsupported", "only chat runs can be resumed in this version")
-	}
+	// BUG-170: workflow/flow-mode runs used to be rejected here with a blanket
+	// resume_unsupported, so any history item other than a normal_chat run showed as
+	// permanently unavailable once the runner restarted (in-memory state gone). The
+	// reconstruction path below (reconstructRun / ensureResumeReady) is generic over
+	// runKind already — it restores workflowID, flow loop state, and active flow
+	// edges/nodes regardless — so there is no technical reason to gate resume on
+	// runKind. The MVP-era restriction is lifted; see reconstructRun for the one
+	// runKind-conditional step it still needs (the synthetic chat step seed).
 	log.Printf(
 		"[chat-history-open] persisted run loaded run_id=%q provider=%q provider_session_id=%q provider_account_id=%q status=%q sync_status=%q cwd=%q",
 		st.RunID, st.ProviderKey, st.ProviderSessionID, st.ProviderAccountID, st.Status, st.SyncStatus, st.WorkingDirectory,

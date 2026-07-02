@@ -399,11 +399,17 @@ function ToolGroup({ tools }: { tools: ToolItem[] }): React.ReactElement {
 function ApprovalGroup({ items }: { items: ApprovalItem[] }): React.ReactElement {
   const approve = useStore((s) => s.approve);
   const [open, setOpen] = useState(false);
-  const label = `${items.length} approvals required`;
+  // BUG-182: once every approval in the group has been decided, hide the bulk
+  // action buttons and switch the label to a resolved state — leaving "Approve
+  // all / Deny all" visible after the user already approved all read as if the
+  // action didn't take.
+  const unresolved = items.filter((item) => item.decision === undefined);
+  const label =
+    unresolved.length > 0 ? `${unresolved.length} approvals required` : `${items.length} approvals resolved`;
 
   const bulkDecide = (decision: "approve" | "deny") => {
     for (const item of items) {
-      if (item.details.decisions.some((d) => d.value === decision)) {
+      if (item.decision === undefined && item.details.decisions.some((d) => d.value === decision)) {
         void approve(item.approvalId, decision);
       }
     }
@@ -423,14 +429,16 @@ function ApprovalGroup({ items }: { items: ApprovalItem[] }): React.ReactElement
           <span className="card-group-caret">{open ? "▾" : "▸"}</span>
           <span className="badge badge-warn">{label}</span>
         </button>
-        <div className="card-group-bulk-actions">
-          <button type="button" className="btn btn-primary" onClick={() => bulkDecide("approve")}>
-            Approve all
-          </button>
-          <button type="button" className="btn btn-danger" onClick={() => bulkDecide("deny")}>
-            Deny all
-          </button>
-        </div>
+        {unresolved.length > 0 && (
+          <div className="card-group-bulk-actions">
+            <button type="button" className="btn btn-primary" onClick={() => bulkDecide("approve")}>
+              Approve all
+            </button>
+            <button type="button" className="btn btn-danger" onClick={() => bulkDecide("deny")}>
+              Deny all
+            </button>
+          </div>
+        )}
       </div>
       {open && (
         <div className="card-group-body">

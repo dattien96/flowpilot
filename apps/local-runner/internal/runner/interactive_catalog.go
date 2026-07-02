@@ -21,8 +21,8 @@ type interactiveCatalog struct {
 func newInteractiveCatalog() *interactiveCatalog {
 	return &interactiveCatalog{
 		projects: []Project{
-			{ID: "proj-web", Name: "Acme Web App", Path: "/Users/dev/acme-web"},
-			{ID: "proj-android", Name: "Acme Android", Path: "/Users/dev/acme-android"},
+			{ID: "proj-web", Name: "Acme Web App", Path: "/Users/dev/acme-web", Model: "gpt-5.4"},
+			{ID: "proj-android", Name: "Acme Android", Path: "/Users/dev/acme-android", Model: "gpt-5.4"},
 		},
 		workflows: map[string][]Workflow{
 			"proj-web": {

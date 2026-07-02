@@ -276,6 +276,20 @@ func (s *InteractiveService) handleStartTurn(w http.ResponseWriter, r *http.Requ
 		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_flow_ref", err.Error()))
 		return
 	}
+	// BUG-174: a Flow-Mode workflow-picker launch sends a workflowID but no
+	// flowRef, so the flow executor never engaged and the hub did all the work
+	// inline. If the run's selected workflow resolves to a flow-engine flow with
+	// a spawnable entry node, adopt its canonical flowRef and mark the run
+	// flow-engine-driven, so it runs through the same startResolvedFlow path an
+	// explicit flowRef uses and its step timeline is driven node-by-node. The
+	// explicit chat/flowRef path and plain workflows are untouched (resolve
+	// returns false for them).
+	if strings.TrimSpace(body.FlowRef) == "" {
+		if flowRef, ok := s.resolveWorkflowFlowRef(r.Context(), r.PathValue("runId")); ok {
+			body.FlowRef = flowRef
+			s.markFlowEngineDriven(r.PathValue("runId"))
+		}
+	}
 	turnID, e := s.startTurn(
 		r.PathValue("runId"),
 		TurnInput{StepID: body.StepID, Prompt: body.Prompt, ChangeType: body.ChangeType, SourceDocID: body.SourceDocID, SelectedSkills: body.SelectedSkills, ReasoningEffort: body.ReasoningEffort, Model: body.Model, YoloMode: body.YoloMode, Attachments: body.Attachments, SubMode: body.SubMode, FlowRef: body.FlowRef},
@@ -534,6 +548,8 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		RequiresApproval: false,
 	}}
 
+	resolvedModel := in.Model
+	resolvedYolo := in.YoloMode
 	if in.WorkflowID != "" && (stepID == "" || stepID == in.WorkflowID) {
 		stepCatalog, ok := s.catalog.(WorkflowStepCatalogStore)
 		if !ok {
@@ -560,6 +576,82 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 				RequiresApproval: false,
 			}
 		}
+		// BUG-165: the desktop client sends no explicit model for a workflow/step
+		// run (Req 2 — Flow Mode has no chat-controller model picker to source one
+		// from), so the run must resolve its own model here rather than run with
+		// an empty one for its whole lifetime. Step > Flow > Project > default, per
+		// SS-05 §2.2/§3 and SD-06 §6: the entry step's own step_definitions.model
+		// wins if set, else the workflow's model_override, else the project's
+		// default_model, else the hard floor "gpt-5.4".
+		if resolvedModel == "" {
+			resolvedModel = strings.TrimSpace(steps[0].Model)
+		}
+		// BUG-183: Flow Mode has two distinct default sources. A normal workflow/flow
+		// execution inherits YOLO from the workflow definition itself, while a direct
+		// single-step execution inherits from that selected step. Do not let the entry
+		// step's yolo_mode override a workflow launch.
+		if catalog, ok := s.catalog.(CatalogStore); ok {
+			if workflows, err := catalog.ListWorkflows(context.Background()); err == nil {
+				for _, wf := range workflows {
+					if wf.ID != in.WorkflowID {
+						continue
+					}
+					resolvedYolo = resolvedYolo || wf.YoloMode
+					if resolvedModel == "" {
+						resolvedModel = strings.TrimSpace(wf.Model)
+					}
+					break
+				}
+			}
+		}
+		if resolvedModel == "" {
+			if catalog, ok := s.catalog.(CatalogStore); ok {
+				if projects, err := catalog.ListProjects(context.Background()); err == nil {
+					for _, proj := range projects {
+						if proj.ID == in.ProjectID {
+							resolvedModel = strings.TrimSpace(proj.Model)
+							break
+						}
+					}
+				}
+			}
+		}
+		if resolvedModel == "" {
+			return RunHandle{}, newAPIErr(http.StatusBadRequest, "no_model_configured", "no model configured for this workflow")
+		}
+	} else if runKind != "chat" && stepID != "" {
+		if catalog, ok := s.catalog.(CatalogStore); ok {
+			if steps, err := catalog.ListSteps(context.Background()); err == nil {
+				for _, step := range steps {
+					if step.ID != stepID {
+						continue
+					}
+					if step.Name != "" {
+						seedSteps[0].StepType = step.Name
+					}
+					if resolvedModel == "" {
+						resolvedModel = strings.TrimSpace(step.Model)
+					}
+					resolvedYolo = resolvedYolo || step.YoloMode
+					break
+				}
+			}
+		}
+		if resolvedModel == "" {
+			if catalog, ok := s.catalog.(CatalogStore); ok {
+				if projects, err := catalog.ListProjects(context.Background()); err == nil {
+					for _, proj := range projects {
+						if proj.ID == in.ProjectID {
+							resolvedModel = strings.TrimSpace(proj.Model)
+							break
+						}
+					}
+				}
+			}
+		}
+		if resolvedModel == "" {
+			return RunHandle{}, newAPIErr(http.StatusBadRequest, "no_model_configured", "no model configured for this step")
+		}
 	} else if stepID == "" && runKind != "chat" {
 		// Normal chat: synthetic step is minted after the runID is known (see below).
 		// Workflow/step mode: stepId is required.
@@ -570,19 +662,27 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 	// default available provider; an explicitly requested disabled/placeholder
 	// provider is rejected with the typed UnsupportedProviderRuntimeError envelope.
 	providerKey := in.ProviderKey
-	if providerKey == "" {
-		// Workflow/step mode auto-selects the provider from the configured model; direct
-		// chat sets ProviderKey explicitly. Fall back to the default available provider
-		// when neither a provider nor a recognized model is supplied.
-		if pk, ok := providerKeyFromModel(in.Model); ok {
-			providerKey = pk
-		} else {
-			def, ok := s.registry.DefaultProviderKey()
-			if !ok {
-				return RunHandle{}, newAPIErr(http.StatusServiceUnavailable, "provider_unavailable", "no provider runtime is available")
-			}
-			providerKey = def
+	// BUG-171: a resolved model with a known provider prefix (e.g. "claude-haiku",
+	// "gpt-5.4", "gemini-3-flash") is ONLY runnable on its matching provider, so the
+	// model is authoritative — it wins over a conflicting explicit/inherited provider.
+	// The trigger: a workflow/flow launch sends providerKey=selectedProvider (e.g. codex)
+	// but no model, and the Step>Flow>Project>default resolution above lands on a Claude
+	// model (BUG-162 makes coder/reviewer default to claude-haiku). Without this, the run
+	// was stamped codex + claude-haiku and the child turn died with "the 'claude-haiku'
+	// model is not supported when using Codex". Previously the provider was only derived
+	// from the model when providerKey was empty, which the desktop's flow launch never is.
+	// This is safe for normal_chat too: the UI couples provider+model, so they never
+	// conflict there (a gpt-* model already implies codex, a claude-* model implies claude),
+	// making this a no-op for chat while fixing the workflow/flow mismatch.
+	if pk, ok := providerKeyFromModel(resolvedModel); ok {
+		providerKey = pk
+	} else if providerKey == "" {
+		// No explicit provider and no model to infer one from → default available provider.
+		def, ok := s.registry.DefaultProviderKey()
+		if !ok {
+			return RunHandle{}, newAPIErr(http.StatusServiceUnavailable, "provider_unavailable", "no provider runtime is available")
 		}
+		providerKey = def
 	}
 	if _, err := s.registry.Selectable(providerKey); err != nil {
 		return RunHandle{}, newAPIErr(http.StatusUnprocessableEntity, "provider_unavailable", err.Error())
@@ -626,8 +726,8 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		providerSessionID: sessionID,
 		providerAccountID: stampAccount,
 		workspaceCwd:      in.Cwd,
-		modelName:         in.Model,
-		yolo:              in.YoloMode,
+		modelName:         resolvedModel,
+		yolo:              resolvedYolo,
 		reasoningEffort:   in.ReasoningEffort,
 		runKind:           runKind,
 		status:            RunStatusIdle,

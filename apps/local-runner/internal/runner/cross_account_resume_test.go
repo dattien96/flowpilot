@@ -390,22 +390,66 @@ func TestDeleteChatSessionCascadesToStoredChildAgentRuns(t *testing.T) {
 	}
 }
 
-func TestResumeRunRestoredWorkflowRunUnsupportedForMVP(t *testing.T) {
+// BUG-170: workflow/flow-mode runs used to be categorically rejected here with
+// resume_unsupported once the runner restarted (in-memory state gone) — every
+// history item except a normal_chat run showed as permanently unavailable.
+// reconstructRun/ensureResumeReady are generic over runKind, so a workflow run
+// with a valid persisted provider session now resumes the same way a chat run
+// does (TestResumeRunReconstructsChatRunFromDisk is the chat-run analogue).
+func TestResumeRunReconstructsWorkflowRunFromDisk(t *testing.T) {
 	store, err := NewLocalFileSessionStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewLocalFileSessionStore: %v", err)
 	}
+	root := t.TempDir()
+	acctHome := filepath.Join(root, "acct-a")
+	writeProviderAccountsConfig(t, filepath.Join(root, "provider-accounts.json"), []ProviderAccount{
+		{ID: "acct-a", ProviderKey: "codex", HomePath: acctHome, SlotIndex: 1, AuthStatus: "connected", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+	})
+	writeCodexAuth(t, acctHome)
+	writeCodexRollout(t, acctHome, "rollout-1", "/repo", time.Now().UTC())
 	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
-		RunID:     "run-workflow",
-		ProjectID: "project-1",
-		Status:    RunStatusCompleted,
-		RunKind:   "workflow",
+		RunID:             "run-workflow",
+		ProjectID:         "project-1",
+		WorkflowID:        "workflow-1",
+		ProviderKey:       ProviderKeyCodex,
+		ProviderSessionID: "rollout-1",
+		ProviderAccountID: "acct-a",
+		WorkingDirectory:  "/repo",
+		Status:            RunStatusCompleted,
+		RunKind:           "workflow",
+		StartedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+		UpdatedAt:         time.Now().UTC().Format(time.RFC3339Nano),
 	}); err != nil {
 		t.Fatalf("UpsertProviderSession: %v", err)
 	}
+
 	svc := NewInteractiveServiceWithStore(DefaultProviderRegistry(), newInteractiveCatalog(), store)
-	if _, apiErr := svc.resumeRun("run-workflow"); apiErr == nil || apiErr.code != "resume_unsupported" {
-		t.Fatalf("resumeRun error = %#v, want resume_unsupported", apiErr)
+	svc.activeAccountID = "acct-a"
+
+	handle, apiErr := svc.resumeRun("run-workflow")
+	if apiErr != nil {
+		t.Fatalf("resumeRun: %v", apiErr)
+	}
+	if handle.RunID != "run-workflow" {
+		t.Fatalf("unexpected handle: %+v", handle)
+	}
+	// Workflow runs mint no synthetic chat step — the desktop drives the step via
+	// the navigator/workflow selection, same as a freshly-started workflow run.
+	if handle.StepID != "" {
+		t.Fatalf("handle.StepID = %q, want empty for a workflow run", handle.StepID)
+	}
+
+	// Reconstructing a workflow run must not seed the fake single "chat" step onto
+	// its step-runtime (that seed call is chat-runKind-only, see reconstructRun) —
+	// LoadRunSteps should reflect whatever this store already tracks for the run
+	// (nothing was ever seeded for it here), not a spurious "chat-run-workflow" step.
+	steps, err := store.LoadRunSteps(context.Background(), "run-workflow")
+	if err != nil {
+		t.Fatalf("LoadRunSteps: %v", err)
+	}
+	if len(steps) != 0 {
+		t.Fatalf("LoadRunSteps = %+v, want none seeded for a resumed workflow run", steps)
 	}
 }
 

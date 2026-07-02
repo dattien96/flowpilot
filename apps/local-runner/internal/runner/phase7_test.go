@@ -39,7 +39,7 @@ func TestStartRunRejectsDisabledProvider(t *testing.T) {
 	_, srv := newTestServer(t)
 
 	st, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs",
-		map[string]any{"projectId": "proj-web", "workflowId": "wf-feature", "stepId": "step-plan", "providerKey": "claude"}, nil)
+		map[string]any{"projectId": "proj-web", "workflowId": "wf-feature", "stepId": "step-plan", "providerKey": "claude", "model": "claude-haiku"}, nil)
 	if st != http.StatusUnprocessableEntity {
 		t.Fatalf("start run on claude status=%d, want 422; body=%s", st, body)
 	}

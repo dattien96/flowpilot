@@ -128,7 +128,7 @@ func TestCreateRunGeminiRequiresUsableWorkspacePath(t *testing.T) {
 
 	if _, apiErr := svc.createRun(StartRunInput{
 		ProjectID:   "project-gate-sandbox",
-		ChatMode:   "normal_chat",
+		ChatMode:    "normal_chat",
 		ProviderKey: ProviderKeyGemini,
 	}); apiErr == nil || apiErr.code != "workspace_required" {
 		t.Fatalf("createRun missing cwd error = %#v, want workspace_required", apiErr)
@@ -136,7 +136,7 @@ func TestCreateRunGeminiRequiresUsableWorkspacePath(t *testing.T) {
 
 	if _, apiErr := svc.createRun(StartRunInput{
 		ProjectID:   "project-gate-sandbox",
-		ChatMode:   "normal_chat",
+		ChatMode:    "normal_chat",
 		ProviderKey: ProviderKeyGemini,
 		Cwd:         filepath.Join(t.TempDir(), "missing"),
 	}); apiErr == nil || apiErr.code != "workspace_unavailable" {
@@ -145,7 +145,7 @@ func TestCreateRunGeminiRequiresUsableWorkspacePath(t *testing.T) {
 
 	if _, apiErr := svc.createRun(StartRunInput{
 		ProjectID:   "project-gate-sandbox",
-		ChatMode:   "normal_chat",
+		ChatMode:    "normal_chat",
 		ProviderKey: ProviderKeyGemini,
 		Cwd:         t.TempDir(),
 	}); apiErr != nil {
@@ -1852,8 +1852,8 @@ func TestLegacyKeywordModeUnchangedInKeywordMode(t *testing.T) {
 	// Keyword-mode (Mode=="") must still drive transitions via the existing isAgentRole branch.
 	reg := newProviderRegistry()
 	reg.register(ProviderRegistration{
-		Key:    ProviderKeyCodex,
-		Status: ProviderStatusAvailable,
+		Key:          ProviderKeyCodex,
+		Status:       ProviderStatusAvailable,
 		Capabilities: ProviderCapabilities{Streaming: true},
 		newAdapter: func() ProviderRuntimeAdapter {
 			return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
@@ -1880,8 +1880,8 @@ func TestExplicitModeSilencesLegacyBranch(t *testing.T) {
 	callCount := 0
 	reg := newProviderRegistry()
 	reg.register(ProviderRegistration{
-		Key:    ProviderKeyCodex,
-		Status: ProviderStatusAvailable,
+		Key:          ProviderKeyCodex,
+		Status:       ProviderStatusAvailable,
 		Capabilities: ProviderCapabilities{Streaming: true},
 		newAdapter: func() ProviderRuntimeAdapter {
 			return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
@@ -1955,7 +1955,7 @@ func TestCohortConsolidatedNoteEmittedOnLastMember(t *testing.T) {
 	if notes != 1 {
 		t.Errorf("pendingAgentContext entries = %d, want exactly 1 consolidated note", notes)
 	}
-	for _, want := range []string{"agent-0", "agent-1", "agent-2", "Synthesize"} {
+	for _, want := range []string{"[flow-engine joined result note]", "agent-0", "agent-1", "agent-2", "Synthesize"} {
 		if !strings.Contains(noteText, want) {
 			t.Errorf("consolidated note missing %q", want)
 		}
@@ -2004,6 +2004,36 @@ func TestCohortFailedMemberIncludedInNote(t *testing.T) {
 	}
 	if !strings.Contains(ctx[0], "failed:") || !strings.Contains(ctx[0], "connection reset") {
 		t.Errorf("note does not contain failed member info:\n%s", ctx[0])
+	}
+}
+
+func TestCohortCompletedMemberWithoutFinalMessageGetsPlaceholder(t *testing.T) {
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: ""})
+				return nil
+			})
+		},
+	})
+	svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	parentHandle, _ := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+
+	_, _ = svc.spawnChildRun(context.Background(), parentHandle.RunID, SpawnAgentInput{
+		Agent: "reviewer", Prompt: "review", Wait: true, FlowCohortID: "empty-msg", Label: "reviewer", CohortSize: 1,
+	})
+
+	svc.mu.Lock()
+	ctx := svc.runs[parentHandle.RunID].pendingAgentContext
+	svc.mu.Unlock()
+	if len(ctx) != 1 {
+		t.Fatalf("pendingAgentContext = %d entries, want 1", len(ctx))
+	}
+	if !strings.Contains(ctx[0], "(completed with no final message captured)") {
+		t.Errorf("note missing empty-final-message placeholder:\n%s", ctx[0])
 	}
 }
 
@@ -2204,6 +2234,94 @@ func TestAutoReinvokeHubStopCancels(t *testing.T) {
 	}
 	if rif {
 		t.Error("reinvokeInFlight should be false after stopAgentLoop")
+	}
+}
+
+func TestStopAgentLoopCancelsParentTurn(t *testing.T) {
+	parentCanceled := make(chan struct{}, 1)
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(ctx context.Context, _ TurnRequest, _ TurnBridge) error {
+				<-ctx.Done()
+				select {
+				case parentCanceled <- struct{}{}:
+				default:
+				}
+				return ctx.Err()
+			})
+		},
+	})
+	svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	parentHandle, err := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	if _, apiErr := svc.startTurn(parentHandle.RunID, TurnInput{StepID: parentHandle.StepID, Prompt: "keep running"}, "", ""); apiErr != nil {
+		t.Fatalf("startTurn: %v", apiErr)
+	}
+
+	svc.stopAgentLoop(parentHandle.RunID)
+
+	select {
+	case <-parentCanceled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stopAgentLoop did not cancel the parent turn")
+	}
+}
+
+func TestInterruptParentCancelsRunningChildAgents(t *testing.T) {
+	childStarted := make(chan struct{}, 1)
+	childCanceled := make(chan struct{}, 1)
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(ctx context.Context, req TurnRequest, _ TurnBridge) error {
+				if strings.HasPrefix(req.RunID, "run-") {
+					select {
+					case childStarted <- struct{}{}:
+					default:
+					}
+				}
+				<-ctx.Done()
+				select {
+				case childCanceled <- struct{}{}:
+				default:
+				}
+				return ctx.Err()
+			})
+		},
+	})
+	svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	parentHandle, err := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+
+	if _, err := svc.spawnChildRun(context.Background(), parentHandle.RunID, SpawnAgentInput{
+		Agent:  "worker",
+		Prompt: "keep running",
+		Wait:   false,
+	}); err != nil {
+		t.Fatalf("spawnChildRun: %v", err)
+	}
+	select {
+	case <-childStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("child turn did not start")
+	}
+
+	if apiErr := svc.Interrupt(parentHandle.RunID); apiErr != nil {
+		t.Fatalf("Interrupt(parent): %s", apiErr.msg)
+	}
+	select {
+	case <-childCanceled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("interrupting parent did not cancel running child")
 	}
 }
 
@@ -2941,7 +3059,7 @@ func TestNormalTurnPersistsWithSeq(t *testing.T) {
 func TestProjectRunHistoryFiltersRunsByProject(t *testing.T) {
 	_, srv := newTestServer(t)
 	first := startProjectRun(t, srv.URL, "proj-web", "wf-feature")
-	other := startProjectRun(t, srv.URL, "proj-mobile", "wf-feature")
+	other := startProjectRun(t, srv.URL, "proj-android", "wf-feature")
 	second := startProjectRun(t, srv.URL, "proj-web", "wf-feature")
 
 	if status, turnID := sendTurn(t, srv.URL, first, "normal", nil); status != http.StatusOK || turnID == "" {

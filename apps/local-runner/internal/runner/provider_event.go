@@ -53,8 +53,8 @@ const (
 	EventAgentResultInjected ProviderEventType = "agent_result_injected"
 	// Emitted after a turn completes when the post-turn flow gate detects a violation
 	// (CP-35 P-4/P-5). The desktop surfaces it as an inline warning card.
-	EventFlowGateViolation    ProviderEventType = "flow_gate_violation"
-	EventFlowContextPackage   ProviderEventType = "flow_context_package"
+	EventFlowGateViolation  ProviderEventType = "flow_gate_violation"
+	EventFlowContextPackage ProviderEventType = "flow_context_package"
 	// Emitted by the Testing step when a validation command completes (Task-170).
 	EventFlowValidationResult ProviderEventType = "flow_validation_result"
 	// Emitted when a Coding retry is scheduled after a failed validation (Task-170).
@@ -179,12 +179,12 @@ type AgentBusMessage struct {
 type AgentLoopState struct {
 	Status     string `json:"status"`
 	Round      int    `json:"round"`
-	RoundCap   int    `json:"roundCap"`            // legacy; use Cap for flow-engine paths
-	Cap        int    `json:"cap,omitempty"`        // flow-engine cap (Task-090); mirrors RoundCap when 0
+	RoundCap   int    `json:"roundCap"`      // legacy; use Cap for flow-engine paths
+	Cap        int    `json:"cap,omitempty"` // flow-engine cap (Task-090); mirrors RoundCap when 0
 	GateReason string `json:"gateReason,omitempty"`
 	// New fields added by Task-090 (flow engine)
 	OpenIssues  int    `json:"openIssues,omitempty"`
-	Mode        string `json:"mode,omitempty"`        // "keyword" | "explicit"
+	Mode        string `json:"mode,omitempty"` // "keyword" | "explicit"
 	ActiveNode  string `json:"activeNode,omitempty"`
 	ExtendCount int    `json:"extendCount,omitempty"`
 }
@@ -301,6 +301,9 @@ type Project struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	Path string `json:"path"`
+	// Model is projects.default_model — the "Project" tier of the Step > Flow >
+	// Project > default resolution order (SS-05/SD-06, BUG-165).
+	Model string `json:"model,omitempty"`
 }
 
 type Workflow struct {
@@ -308,6 +311,10 @@ type Workflow struct {
 	ProjectID   string `json:"projectId"`
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
+	// Model is workflows.model_override — the "Flow" tier of the Step > Flow >
+	// Project > default resolution order (SS-05/SD-06, BUG-165).
+	Model    string `json:"model,omitempty"`
+	YoloMode bool   `json:"yoloMode,omitempty"`
 }
 
 type Step struct {
@@ -316,6 +323,12 @@ type Step struct {
 	Name         string `json:"name"`
 	Order        int    `json:"order"`
 	DefaultSkill string `json:"defaultSkill,omitempty"`
+	// Model is the step's step_definitions.model — the "Step" tier of the
+	// Step > Flow > Project > default resolution order (SS-05/SD-06, BUG-165).
+	Model string `json:"model,omitempty"`
+	// YoloMode is the step's step_definitions.yolo_mode default. Workflow/Flow
+	// starts lift an enabled entry-step default to the run-level YOLO posture.
+	YoloMode bool `json:"yoloMode,omitempty"`
 }
 
 type ProviderSkill struct {

@@ -15,10 +15,11 @@ This document translates `SS-05-Workflow-Ai-Provider` into technical implementat
   - When starting a workflow run, let the user override the project default Model and Reasoning Effort for that run.
   - The selected run-level values become the baseline for that `workflow_run`.
 - **Workflow / Step Override UI:**
-  - In the Workflow Builder, allow override of Model and Reasoning Effort at the workflow-definition level and the individual-step level.
+  - In the Workflow Builder, allow override of Model, Reasoning Effort, and YOLO mode at the workflow-definition level and the individual-step level.
+  - For built-in workflows in Settings, allow editing of the model override, reasoning effort override, and YOLO mode override directly (all other fields remain read-only).
   - The model dropdown is the source of truth; provider is derived automatically from the selected model.
   - The reasoning-effort selector must be visible alongside the model selector.
-  - If a step has no override, the UI should show that it inherits from workflow/run/project defaults, with `gpt-5.4` and `medium` as the final fallbacks.
+  - If a step has no override, the UI should show that it inherits from workflow/run/project defaults. If no model can be resolved at all, the workflow/step run is blocked and returned as non-runnable (no silent fallback).
 - **Validation UX:**
   - Prevent save/start when a selected model is not supported by the selected provider inventory.
   - Warn before run start when the derived provider is not installed or still requires authentication.
@@ -212,38 +213,44 @@ This is critical for the Workflow Engine. FlowPilot must generate and write to t
 ### 6.1 Persistence Locations
 - `projects.default_provider`, `projects.default_model` and `projects.default_reasoning_effort` store project-wide defaults.
 - `workflows.provider_override`, `workflows.model_override` and `workflows.reasoning_effort_override` store workflow-definition-level data, with provider derived from model.
-- `workflow_steps.provider_override`, `workflow_steps.model_override` and `workflow_steps.reasoning_effort_override` store definition-time per-step data, with provider derived from model.
+- `step_definitions.model` stores the step *type's* own configured model, shared by every workflow that uses that step type. **BUG-164**: `workflow_steps` has no `provider_override`/`model_override`/`reasoning_effort_override` of its own anymore — a step's model/provider is entirely its step type's catalog value, not a per-workflow-instance override.
 - `workflow_runs.provider`, `workflow_runs.model` and `workflow_runs.reasoning_effort` store the resolved run-level baseline chosen when a workflow starts.
 - `ai_runs.provider`, `ai_runs.model_name` and `ai_runs.reasoning_effort` store the actual parameters used for each individual model invocation.
 
 ### 6.2 Resolution Order
-Before making an LLM call for a step, the Go-Runner resolves Model and Reasoning Effort in this order, then derives Provider from the resolved model:
-1. `workflow_steps.model_override` / `workflow_steps.reasoning_effort_override`
-2. `workflow_runs.model` / `workflow_runs.reasoning_effort`
-3. `projects.default_model` / `projects.default_reasoning_effort`
-4. Final defaults: `gpt-5.4` and `medium`
+**BUG-165**: for a workflow/step-mode run, the Go-Runner resolves Model in this order at run start, then derives Provider from the resolved model — the lowest (most specific) layer with a value wins:
+1. **Step**: the entry step's own `step_definitions.model`.
+2. **Flow**: the workflow's `workflows.model_override`.
+3. **Project**: `projects.default_model`.
+4. **Unresolved**: If none of the above are configured, there is no default fallback floor (such as `gpt-5.4`). Instead, the workflow/step run is blocked and returned as non-runnable (rendered as disabled/greyed with a tooltip in the UI).
 
-Definition-time workflow overrides are applied when creating the run. In other words:
-- If the user starts a workflow without manual run overrides, the run parameters (`model`, `reasoning_effort`) inherit from workflow overrides when present, otherwise from project defaults, otherwise from the final defaults above.
-- Step overrides always win at execution time.
+Reasoning Effort has no equivalent step-type-level tier today (`step_definitions` has no `reasoning_effort` resolution role) and continues to resolve `launchOverride.reasoning_effort ?? workflow.reasoning_effort_override ?? project.default_reasoning_effort ?? "medium"`.
+
+- **Chat mode is exempt**: a `normal_chat` (direct chat) run has no workflow/step context and no chat-controller equivalent for workflow mode — the model the user explicitly selects in the chat controller is sent and used as-is, never routed through this resolution order.
 - Provider is never edited independently; it is derived from the resolved model.
+- **Known limitation**: this order is resolved **once, at run start**, from the workflow's entry step. It is not re-resolved as execution advances to later steps within the same run — genuine per-step model switching during a single run's execution is not yet implemented (tracked as follow-up work, not covered by this resolution logic).
 
 ### 6.3 Runner Pseudocode
 
 ```text
+// Workflow/step-mode run start (createRun) — BUG-165.
+// Chat mode (normal_chat) skips this entirely and uses launchOverride.model as-is.
 runModel = launchOverride.model
-    ?? workflow.model_override
-    ?? project.default_model
-    ?? "gpt-5.4"
+    ?? entryStep.step_definitions.model   // Step
+    ?? workflow.model_override            // Flow
+    ?? project.default_model              // Project
+// No default floor (gpt-5.4 is removed)
+
+if runModel == "" {
+    return error("no model configured")
+}
 
 runReasoning = launchOverride.reasoning_effort
     ?? workflow.reasoning_effort_override
     ?? project.default_reasoning_effort
     ?? "medium"
 
-stepModel = step.model_override ?? runModel
-stepReasoning = step.reasoning_effort_override ?? runReasoning
-stepProvider = providerFrom(stepModel)
+runProvider = providerFrom(runModel)
 ```
 
 ### 6.4 Validation Rules
@@ -268,10 +275,9 @@ This document must stay aligned with `SD-05-Workflow-Engine`.
   - `model_override`
   - `reasoning_effort_override`
   - `provider_override` as a derived reference field
-- `workflow_steps` must contain:
-  - `model_override`
-  - `reasoning_effort_override`
-  - `provider_override` as a derived reference field
+  - `yolo_mode`
+- `step_definitions` must contain:
+  - `model` (the step type's own configured model — **BUG-164**: `workflow_steps` itself carries no override columns)
 - `workflow_runs` must contain:
   - `model`
   - `reasoning_effort`
@@ -284,10 +290,9 @@ This document must stay aligned with `SD-05-Workflow-Engine`.
 
 ### 7.3 Step Runtime Display
 - The execution dashboard may show Provider/Model/Reasoning per step without adding new step-runtime columns.
-- For MVP, the UI can derive the displayed step Provider/Model/Reasoning by combining:
-  - `workflow_steps.model_override` / `workflow_steps.reasoning_effort_override`
-  - `workflow_runs.model` / `workflow_runs.reasoning_effort`
-  - `projects.default_model` / `projects.default_reasoning_effort`
+- The UI derives the displayed step Provider/Model by combining:
+  - `step_definitions.model` (the step type's own configured model)
+  - `workflow_runs.model` / `workflow_runs.reasoning_effort` (the run's resolved baseline, itself already Step > Flow > Project > default per §6.2)
 - If later audit requirements demand immutable per-step runtime tracing, add `resolved_provider`, `resolved_model`, and `resolved_reasoning_effort` to `workflow_run_steps`.
 
 ---
@@ -297,8 +302,8 @@ This document must stay aligned with `SD-05-Workflow-Engine`.
 1. Frontend loads provider inventory by calling `flowpilot providers list --json`.
 2. User selects project default Model/Reasoning in Settings -> persist to `projects.default_model` and `projects.default_reasoning_effort`, then derive `projects.default_provider` from the model.
 3. User optionally sets workflow-definition overrides in `workflows.model_override` / `workflows.reasoning_effort_override`.
-4. User optionally sets per-step overrides in `workflow_steps.model_override` / `workflow_steps.reasoning_effort_override`.
-5. When starting a run, the frontend may pass launch-time overrides.
+4. User configures each step *type's* own model on its `step_definitions` catalog entry (`Settings > Workflows > Step Definitions`) — not a per-workflow-instance override (**BUG-164**).
+5. When starting a workflow/step-mode run, the Go-Runner resolves the model itself (Step > Flow > Project > default, §6.2) since the frontend passes no launch-time model for this mode (**BUG-165**); a `normal_chat` run instead passes the model the user explicitly selected in the chat controller.
 6. The Go-Runner resolves `workflow_runs.model` and `workflow_runs.reasoning_effort` using the precedence rules in Section 6, derives `workflow_runs.provider` from the model, then persists the run.
 7. Before the first LLM call, the runner checks whether the resolved provider is installed and authenticated.
 8. If not installed, the runner executes the OS-appropriate install command from Section 3.

@@ -1,5 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import "@/styles.css";
 
 (
@@ -13,7 +14,9 @@ import "@/styles.css";
 void import("@/App").then(({ App }) => {
   ReactDOM.createRoot(document.getElementById("root")!).render(
     <React.StrictMode>
-      <App />
+      <ErrorBoundary>
+        <App />
+      </ErrorBoundary>
     </React.StrictMode>,
   );
 });
