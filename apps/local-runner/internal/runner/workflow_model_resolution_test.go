@@ -107,6 +107,66 @@ func TestCreateRunFallsBackToHardDefaultWhenNothingConfigured(t *testing.T) {
 	}
 }
 
+// registryWithClaudeAvailable returns the default registry but with Claude marked
+// Available (backed by the fake adapter) so a run reconciled onto Claude is actually
+// selectable in-test — DefaultProviderRegistry keeps Claude as a placeholder.
+func registryWithClaudeAvailable() *ProviderRegistry {
+	r := DefaultProviderRegistry()
+	r.register(ProviderRegistration{
+		Key:         ProviderKeyClaude,
+		DisplayName: "Claude",
+		Status:      ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{
+			Streaming: true, Resume: true, ApprovalEvents: true, FileEvents: true,
+			SkillSelection: true, Mcp: true, Interrupt: true,
+		},
+		newAdapter: func() ProviderRuntimeAdapter { return newFakeProviderAdapter(ProviderKeyClaude) },
+	})
+	return r
+}
+
+// TestCreateRunReconcilesProviderToResolvedModel reproduces BUG-171: a workflow/flow
+// launch sends providerKey=codex (the desktop passes selectedProvider) but no model,
+// and the Step>Flow>Project resolution lands on a Claude model (BUG-162 defaults
+// coder/reviewer to claude-haiku). The run must be stamped with the provider the model
+// requires (claude), not the mismatched codex it was launched with — otherwise the turn
+// dies with "the 'claude-haiku' model is not supported when using Codex".
+func TestCreateRunReconcilesProviderToResolvedModel(t *testing.T) {
+	catalog := baseTestCatalog()
+	catalog.projects[0].Model = "claude-haiku" // project default resolves to a Claude model
+
+	svc := NewInteractiveServiceWith(registryWithClaudeAvailable(), catalog)
+	mux := http.NewServeMux()
+	svc.RegisterInteractiveRoutes(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	// Explicit providerKey=codex, mirroring what the desktop's flow launch sends.
+	status, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs", StartRunInput{
+		ProjectID:   "proj-1",
+		WorkflowID:  "wf-1",
+		ProviderKey: ProviderKeyCodex,
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("start run status=%d body=%s", status, body)
+	}
+	var h RunHandle
+	mustDecode(t, body, &h)
+	if h.ProviderKey != ProviderKeyClaude {
+		t.Fatalf("ProviderKey = %q, want claude (reconciled from the resolved claude-haiku model, not the launched codex)", h.ProviderKey)
+	}
+
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	rs := svc.runs[h.RunID]
+	if rs == nil {
+		t.Fatalf("run %q not tracked", h.RunID)
+	}
+	if rs.providerKey != ProviderKeyClaude || rs.modelName != "claude-haiku" {
+		t.Fatalf("run stamped provider=%q model=%q, want claude + claude-haiku", rs.providerKey, rs.modelName)
+	}
+}
+
 // TestCreateRunNeverInjectsResolvedModelForChat: Req 1 — normal_chat must keep
 // using exactly whatever model the client explicitly selected/sent, never the
 // Step > Flow > Project > default resolution (which only applies to workflow/

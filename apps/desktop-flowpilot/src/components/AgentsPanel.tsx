@@ -33,6 +33,18 @@ export function AgentsPanel(): React.ReactElement {
   const openOrchestrationBoard = useStore((s) => s.openOrchestrationBoard);
   const closeOrchestrationBoard = useStore((s) => s.closeOrchestrationBoard);
 
+  // BUG-171 follow-up: the main card's provider badge used to be hardcoded to CODEX, so a
+  // Claude- or Gemini-driven hub still read "CODEX". Source it from the run's real provider
+  // instead: in Flow Mode the step-runtime meta carries the run's actual providerKey/model
+  // (which BUG-171 made authoritative from the resolved model); in normal chat the run uses
+  // the selected provider/model. Fall back to codex only when nothing is known yet.
+  const runtimeMetaProvider = useStore((s) => s.workflowStepRuntimeMeta.provider);
+  const runtimeMetaModel = useStore((s) => s.workflowStepRuntimeMeta.model);
+  const selectedProvider = useStore((s) => s.selectedProvider);
+  const selectedModel = useStore((s) => s.selectedModel);
+  const mainProvider = runtimeMetaProvider || selectedProvider || "codex";
+  const mainModel = runtimeMetaModel || selectedModel || "";
+
   const [open, setOpen] = useState(false);
   const [agents, setAgents] = useState<AgentDefinition[]>([]);
   const [loadingAgents, setLoadingAgents] = useState(false);
@@ -175,7 +187,8 @@ export function AgentsPanel(): React.ReactElement {
             </span>
           </div>
           <div className="ac-meta">
-            <span className="pill-prov prov-codex">CODEX</span> orchestrator
+            <span className={`pill-prov prov-${mainProvider}`}>{mainProvider.toUpperCase()}</span> orchestrator
+            {mainModel && <span className="ac-model">{mainModel}</span>}
           </div>
         </div>
 

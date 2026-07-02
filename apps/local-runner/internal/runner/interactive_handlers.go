@@ -608,19 +608,27 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 	// default available provider; an explicitly requested disabled/placeholder
 	// provider is rejected with the typed UnsupportedProviderRuntimeError envelope.
 	providerKey := in.ProviderKey
-	if providerKey == "" {
-		// Workflow/step mode auto-selects the provider from the configured model; direct
-		// chat sets ProviderKey explicitly. Fall back to the default available provider
-		// when neither a provider nor a recognized model is supplied.
-		if pk, ok := providerKeyFromModel(resolvedModel); ok {
-			providerKey = pk
-		} else {
-			def, ok := s.registry.DefaultProviderKey()
-			if !ok {
-				return RunHandle{}, newAPIErr(http.StatusServiceUnavailable, "provider_unavailable", "no provider runtime is available")
-			}
-			providerKey = def
+	// BUG-171: a resolved model with a known provider prefix (e.g. "claude-haiku",
+	// "gpt-5.4", "gemini-3-flash") is ONLY runnable on its matching provider, so the
+	// model is authoritative — it wins over a conflicting explicit/inherited provider.
+	// The trigger: a workflow/flow launch sends providerKey=selectedProvider (e.g. codex)
+	// but no model, and the Step>Flow>Project>default resolution above lands on a Claude
+	// model (BUG-162 makes coder/reviewer default to claude-haiku). Without this, the run
+	// was stamped codex + claude-haiku and the child turn died with "the 'claude-haiku'
+	// model is not supported when using Codex". Previously the provider was only derived
+	// from the model when providerKey was empty, which the desktop's flow launch never is.
+	// This is safe for normal_chat too: the UI couples provider+model, so they never
+	// conflict there (a gpt-* model already implies codex, a claude-* model implies claude),
+	// making this a no-op for chat while fixing the workflow/flow mismatch.
+	if pk, ok := providerKeyFromModel(resolvedModel); ok {
+		providerKey = pk
+	} else if providerKey == "" {
+		// No explicit provider and no model to infer one from → default available provider.
+		def, ok := s.registry.DefaultProviderKey()
+		if !ok {
+			return RunHandle{}, newAPIErr(http.StatusServiceUnavailable, "provider_unavailable", "no provider runtime is available")
 		}
+		providerKey = def
 	}
 	if _, err := s.registry.Selectable(providerKey); err != nil {
 		return RunHandle{}, newAPIErr(http.StatusUnprocessableEntity, "provider_unavailable", err.Error())
