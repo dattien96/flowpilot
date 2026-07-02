@@ -31,32 +31,44 @@ function findGroup(groups, kind) {
     strict_1.default.equal(group.kind, "approval-group");
     strict_1.default.deepEqual(group.items.map((i) => i.approvalId), ["appr-1", "appr-2", "appr-3"]);
 });
-(0, node_test_1.default)("resolved approvals are excluded from the group and still render individually as history", () => {
+(0, node_test_1.default)("resolving every item in a group keeps them grouped instead of bursting back into full cards", () => {
+    // Regression: clicking "Approve all" must not dissolve the group. Grouping is by
+    // consecutive run, not "still pending", so a fully-resolved run stays one group.
     const timeline = [
-        { kind: "approval", id: "appr-0", approvalId: "appr-0", details: approvalDetails, decision: "approve" },
-        { kind: "approval", id: "appr-1", approvalId: "appr-1", details: approvalDetails },
-        { kind: "approval", id: "appr-2", approvalId: "appr-2", details: approvalDetails },
+        { kind: "approval", id: "appr-1", approvalId: "appr-1", details: approvalDetails, decision: "approve" },
+        { kind: "approval", id: "appr-2", approvalId: "appr-2", details: approvalDetails, decision: "approve" },
+        { kind: "approval", id: "appr-3", approvalId: "appr-3", details: approvalDetails, decision: "approve" },
     ];
     const groups = (0, timelineGrouping_1.buildTimelineGroups)(timeline);
-    strict_1.default.equal(groups.length, 2, "one resolved card in place + one group for the two pending ones");
-    strict_1.default.equal(groups[0].kind, "approval");
-    const group = groups[1];
+    strict_1.default.equal(groups.length, 1, "resolved run must stay folded, not burst into 3 separate cards");
+    const group = groups[0];
     strict_1.default.equal(group.kind, "approval-group");
-    strict_1.default.deepEqual(group.items.map((i) => i.approvalId), ["appr-1", "appr-2"]);
+    strict_1.default.deepEqual(group.items.map((i) => i.approvalId), ["appr-1", "appr-2", "appr-3"]);
 });
-(0, node_test_1.default)("tool calls interleaved between concurrent approvals do not break the grouping", () => {
+(0, node_test_1.default)("a mixed run of resolved and still-pending approvals stays one group", () => {
     const timeline = [
-        { kind: "approval", id: "appr-1", approvalId: "appr-1", details: approvalDetails },
-        { kind: "tool", id: "tool-1", toolName: "search", status: "success" },
+        { kind: "approval", id: "appr-1", approvalId: "appr-1", details: approvalDetails, decision: "approve" },
         { kind: "approval", id: "appr-2", approvalId: "appr-2", details: approvalDetails },
+        { kind: "approval", id: "appr-3", approvalId: "appr-3", details: approvalDetails },
     ];
     const groups = (0, timelineGrouping_1.buildTimelineGroups)(timeline);
-    // tool-group for the single tool call, then the approval-group at the position of appr-2
-    strict_1.default.equal(groups.length, 2);
-    strict_1.default.equal(groups[0].kind, "tool-group");
-    const group = groups[1];
+    strict_1.default.equal(groups.length, 1);
+    const group = groups[0];
     strict_1.default.equal(group.kind, "approval-group");
-    strict_1.default.deepEqual(group.items.map((i) => i.approvalId), ["appr-1", "appr-2"]);
+    strict_1.default.deepEqual(group.items.map((i) => i.approvalId), ["appr-1", "appr-2", "appr-3"]);
+});
+(0, node_test_1.default)("a resolved approval run followed later by an unrelated new one stays separate (not part of the old group)", () => {
+    const timeline = [
+        { kind: "approval", id: "appr-1", approvalId: "appr-1", details: approvalDetails, decision: "approve" },
+        { kind: "approval", id: "appr-2", approvalId: "appr-2", details: approvalDetails, decision: "approve" },
+        { kind: "tool", id: "tool-1", toolName: "search", status: "success" },
+        { kind: "approval", id: "appr-3", approvalId: "appr-3", details: approvalDetails },
+    ];
+    const groups = (0, timelineGrouping_1.buildTimelineGroups)(timeline);
+    strict_1.default.equal(groups.length, 3, "old resolved group, tool-group, then the new single pending approval");
+    strict_1.default.equal(groups[0].kind, "approval-group");
+    strict_1.default.equal(groups[1].kind, "tool-group");
+    strict_1.default.equal(groups[2].kind, "approval");
 });
 (0, node_test_1.default)("questions and approvals group independently (group-by-kind, not merged into one ask group)", () => {
     const timeline = [

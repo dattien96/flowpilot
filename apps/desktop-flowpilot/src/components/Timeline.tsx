@@ -398,7 +398,7 @@ function ToolGroup({ tools }: { tools: ToolItem[] }): React.ReactElement {
 // card still expandable and independently actionable underneath.
 function ApprovalGroup({ items }: { items: ApprovalItem[] }): React.ReactElement {
   const approve = useStore((s) => s.approve);
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   const label = `${items.length} approvals required`;
 
   const bulkDecide = (decision: "approve" | "deny") => {
@@ -447,7 +447,7 @@ function ApprovalGroup({ items }: { items: ApprovalItem[] }): React.ReactElement
 // sets), so — unlike approvals — there is no generic single-click bulk action; the
 // group only folds the cards visually while keeping each one individually answerable.
 function QuestionGroup({ items }: { items: QuestionItem[] }): React.ReactElement {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   const label = `${items.length} questions pending`;
 
   return (

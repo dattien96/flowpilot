@@ -10,25 +10,22 @@ export type TimelineGroup =
   | { kind: "approval-group"; id: string; items: ApprovalItem[] }
   | { kind: "question-group"; id: string; items: QuestionItem[] };
 
-// When more than one approval (or question) is outstanding at once — e.g. a provider
+// When more than one approval (or question) appears back-to-back — e.g. a provider
 // turn fans out several parallel tool calls needing approval before the user acts on
-// any of them — fold them into a single collapsible group instead of stacking N
-// separate full-size cards. A single pending item still renders as its own plain card
-// (no group wrapper). Resolved items are unaffected and render in place as history.
+// any of them — fold that run into a single collapsible group instead of stacking N
+// separate full-size cards. A run of exactly one item still renders as its own plain
+// card (no group wrapper).
+//
+// Grouping is by CONSECUTIVE run, not "currently still pending": once a run of 2+ is
+// grouped, it stays grouped after the items resolve (e.g. clicking "Approve all")
+// instead of the group dissolving and every item bursting back out as a full card.
+// Any other item kind (tool, assistant text, file, etc.) between two approvals ends
+// the run.
 export function buildTimelineGroups(timeline: TimelineItem[]): TimelineGroup[] {
   const groups: TimelineGroup[] = [];
   let pendingTools: ToolItem[] = [];
-
-  const pendingApprovalItems = timeline.filter(
-    (it): it is ApprovalItem => it.kind === "approval" && it.decision === undefined,
-  );
-  const pendingQuestionItems = timeline.filter(
-    (it): it is QuestionItem => it.kind === "question" && it.answer === undefined,
-  );
-  const lastPendingApprovalId =
-    pendingApprovalItems.length > 1 ? pendingApprovalItems[pendingApprovalItems.length - 1].id : undefined;
-  const lastPendingQuestionId =
-    pendingQuestionItems.length > 1 ? pendingQuestionItems[pendingQuestionItems.length - 1].id : undefined;
+  let approvalRun: ApprovalItem[] = [];
+  let questionRun: QuestionItem[] = [];
 
   const flushTools = () => {
     if (pendingTools.length === 0) return;
@@ -37,32 +34,53 @@ export function buildTimelineGroups(timeline: TimelineItem[]): TimelineGroup[] {
     pendingTools = [];
   };
 
+  const flushApprovals = () => {
+    if (approvalRun.length === 0) return;
+    if (approvalRun.length === 1) {
+      groups.push(approvalRun[0]);
+    } else {
+      groups.push({ kind: "approval-group", id: `approval-group-${approvalRun[0].id}`, items: approvalRun });
+    }
+    approvalRun = [];
+  };
+
+  const flushQuestions = () => {
+    if (questionRun.length === 0) return;
+    if (questionRun.length === 1) {
+      groups.push(questionRun[0]);
+    } else {
+      groups.push({ kind: "question-group", id: `question-group-${questionRun[0].id}`, items: questionRun });
+    }
+    questionRun = [];
+  };
+
   for (const item of timeline) {
     if (item.kind === "tool") {
+      flushApprovals();
+      flushQuestions();
       pendingTools.push(item);
       continue;
     }
+    if (item.kind === "approval") {
+      flushTools();
+      flushQuestions();
+      approvalRun.push(item);
+      continue;
+    }
+    if (item.kind === "question") {
+      flushTools();
+      flushApprovals();
+      questionRun.push(item);
+      continue;
+    }
     flushTools();
-
-    if (item.kind === "approval" && item.decision === undefined && lastPendingApprovalId !== undefined) {
-      // Fold every pending approval into one group emitted at the last one's position;
-      // the earlier ones are already captured in pendingApprovalItems, so skip them here.
-      if (item.id === lastPendingApprovalId) {
-        groups.push({ kind: "approval-group", id: `approval-group-${item.id}`, items: pendingApprovalItems });
-      }
-      continue;
-    }
-
-    if (item.kind === "question" && item.answer === undefined && lastPendingQuestionId !== undefined) {
-      if (item.id === lastPendingQuestionId) {
-        groups.push({ kind: "question-group", id: `question-group-${item.id}`, items: pendingQuestionItems });
-      }
-      continue;
-    }
-
+    flushApprovals();
+    flushQuestions();
     groups.push(item);
   }
   flushTools();
+  flushApprovals();
+  flushQuestions();
 
   return groups;
 }

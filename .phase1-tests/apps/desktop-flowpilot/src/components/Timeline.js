@@ -251,7 +251,7 @@ function ToolGroup({ tools }) {
 // card still expandable and independently actionable underneath.
 function ApprovalGroup({ items }) {
     const approve = (0, store_1.useStore)((s) => s.approve);
-    const [open, setOpen] = (0, react_1.useState)(true);
+    const [open, setOpen] = (0, react_1.useState)(false);
     const label = `${items.length} approvals required`;
     const bulkDecide = (decision) => {
         for (const item of items) {
@@ -266,7 +266,7 @@ function ApprovalGroup({ items }) {
 // sets), so — unlike approvals — there is no generic single-click bulk action; the
 // group only folds the cards visually while keeping each one individually answerable.
 function QuestionGroup({ items }) {
-    const [open, setOpen] = (0, react_1.useState)(true);
+    const [open, setOpen] = (0, react_1.useState)(false);
     const label = `${items.length} questions pending`;
     return ((0, jsx_runtime_1.jsxs)("div", { className: "card-group question-group", children: [(0, jsx_runtime_1.jsxs)("button", { type: "button", className: `card-group-summary ${open ? "card-group-summary-open" : ""}`, "aria-expanded": open, "aria-label": label, title: label, onClick: () => setOpen((value) => !value), children: [(0, jsx_runtime_1.jsx)("span", { className: "card-group-caret", children: open ? "▾" : "▸" }), (0, jsx_runtime_1.jsx)("span", { className: "badge badge-ask", children: label })] }), open && ((0, jsx_runtime_1.jsx)("div", { className: "card-group-body", children: items.map((item) => ((0, jsx_runtime_1.jsx)(QuestionCard_1.QuestionCard, { questionId: item.questionId, prompt: item.prompt, options: item.options, multiSelect: item.multiSelect, answer: item.answer }, item.questionId))) }))] }));
 }
