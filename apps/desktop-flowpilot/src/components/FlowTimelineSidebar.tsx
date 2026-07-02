@@ -17,7 +17,13 @@ export function FlowTimelineSidebar(): React.ReactElement | null {
   const refreshWorkflowStepRuntime = useStore((s) => s.refreshWorkflowStepRuntime);
   const [expanded, setExpanded] = useState(true);
 
-  const visible = isFlowModeRun(chatMode) && runStatus === "running";
+  // BUG-168: stay mounted through waiting_approval/waiting_question too — those are
+  // non-terminal, in-flight states the user hits mid-run (an approval card, an
+  // ask_user question), and the step timeline is exactly the context needed while
+  // deciding on them. Only hide once the run is idle/starting or has gone terminal.
+  const visible =
+    isFlowModeRun(chatMode) &&
+    (runStatus === "running" || runStatus === "waiting_approval" || runStatus === "waiting_question");
 
   useEffect(() => {
     if (!visible) return;
