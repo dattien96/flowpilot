@@ -3059,7 +3059,7 @@ func TestNormalTurnPersistsWithSeq(t *testing.T) {
 func TestProjectRunHistoryFiltersRunsByProject(t *testing.T) {
 	_, srv := newTestServer(t)
 	first := startProjectRun(t, srv.URL, "proj-web", "wf-feature")
-	other := startProjectRun(t, srv.URL, "proj-mobile", "wf-feature")
+	other := startProjectRun(t, srv.URL, "proj-android", "wf-feature")
 	second := startProjectRun(t, srv.URL, "proj-web", "wf-feature")
 
 	if status, turnID := sendTurn(t, srv.URL, first, "normal", nil); status != http.StatusOK || turnID == "" {

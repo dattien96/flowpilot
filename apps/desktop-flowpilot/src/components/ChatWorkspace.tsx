@@ -24,6 +24,29 @@ function WorkflowControlPanel(): React.ReactElement | null {
   const setLaunchMode = useStore((s) => s.setLaunchMode);
   const selectWorkflow = useStore((s) => s.selectWorkflow);
   const selectStep = useStore((s) => s.selectStep);
+  const projects = useStore((s) => s.projects);
+
+  const project = useMemo(() => projects.find((p) => p.id === selectedProjectId), [projects, selectedProjectId]);
+  const selectedWorkflow = useMemo(() => workflows.find((w) => w.id === selectedWorkflowId), [workflows, selectedWorkflowId]);
+  const selectedStep = useMemo(() => steps.find((step) => step.id === selectedStepId), [steps, selectedStepId]);
+
+  const resolvedModel = useMemo(() => {
+    if (launchMode === "workflow" && selectedWorkflowId) {
+      return selectedWorkflow?.model || project?.model || "";
+    } else if (launchMode === "step" && selectedStepId) {
+      return selectedStep?.model || project?.model || "";
+    }
+    return "";
+  }, [launchMode, selectedWorkflow, selectedStep, project]);
+
+  const resolvedProvider = useMemo(() => {
+    if (!resolvedModel) return "";
+    const m = resolvedModel.toLowerCase().trim();
+    if (m.startsWith("gpt-")) return "Codex";
+    if (m.startsWith("gemini-") || m.startsWith("auto-gemini-")) return "Gemini";
+    if (m.startsWith("claude-")) return "Claude";
+    return "Unknown";
+  }, [resolvedModel]);
 
   const visibleWorkflows = useMemo(
     () => filterNavigatorWorkflows(workflows, selectedProjectId),
@@ -98,11 +121,14 @@ function WorkflowControlPanel(): React.ReactElement | null {
                 <option value="" disabled>
                   Select a workflow…
                 </option>
-                {visibleWorkflows.map((workflow) => (
-                  <option key={workflow.id} value={workflow.id}>
-                    {workflow.name}
-                  </option>
-                ))}
+                {visibleWorkflows.map((workflow) => {
+                  const resolves = Boolean(workflow.model || project?.model);
+                  return (
+                    <option key={workflow.id} value={workflow.id} disabled={!resolves}>
+                      {workflow.name} {!resolves ? " (No model set)" : ""}
+                    </option>
+                  );
+                })}
               </select>
             </div>
           </div>
@@ -123,14 +149,34 @@ function WorkflowControlPanel(): React.ReactElement | null {
                 <option value="" disabled>
                   Select a step…
                 </option>
-                {steps.map((step) => (
-                  <option key={step.id} value={step.id}>
-                    {step.name}
-                  </option>
-                ))}
+                {steps.map((step) => {
+                  const resolves = Boolean(step.model || project?.model);
+                  return (
+                    <option key={step.id} value={step.id} disabled={!resolves}>
+                      {step.name} {!resolves ? " (No model set)" : ""}
+                    </option>
+                  );
+                })}
               </select>
             </div>
           </div>
+
+          {/* Resolved Main Agent Card */}
+          {resolvedModel ? (
+            <div className="main-agent-card" style={{ marginTop: "16px", padding: "12px", border: "1px solid var(--border)", borderRadius: "8px", background: "var(--bg-2)" }}>
+              <div style={{ fontWeight: 600, fontSize: "11px", color: "var(--text-dim)", textTransform: "uppercase", marginBottom: "8px", letterSpacing: "0.5px" }}>Main Agent</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ color: "var(--text-dim)", fontSize: "12px" }}>Model</span>
+                  <span style={{ fontFamily: "var(--mono)", fontSize: "12px", color: "var(--text)" }}>{resolvedModel}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ color: "var(--text-dim)", fontSize: "12px" }}>Provider</span>
+                  <span style={{ fontWeight: 600, fontSize: "12px", color: resolvedProvider === "Codex" ? "var(--codex-brand)" : resolvedProvider === "Claude" ? "var(--claude-brand)" : resolvedProvider === "Gemini" ? "var(--gemini-brand)" : "var(--text)" }}>{resolvedProvider}</span>
+                </div>
+              </div>
+            </div>
+          ) : null}
         </>
       )}
     </section>

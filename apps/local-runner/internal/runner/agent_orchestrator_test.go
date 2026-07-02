@@ -581,7 +581,7 @@ func TestListAgentRunSummariesHTTPWorkflowModeParent(t *testing.T) {
 	svc, srv := newTestServer(t)
 
 	parent, err := svc.createRun(StartRunInput{
-		ProjectID: "proj", StepID: "step-1", ProviderKey: ProviderKeyCodex,
+		ProjectID: "proj-web", StepID: "step-plan", ProviderKey: ProviderKeyCodex,
 	})
 	if err != nil {
 		t.Fatalf("createRun: %v", err)

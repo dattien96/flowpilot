@@ -534,7 +534,20 @@ export class SupabaseAdminRepository implements
         .maybeSingle();
       assertNoError(existingError, "Unable to load workflow before saving.");
       if (existing && existing.editable === false) {
-        throw new Error("This workflow is a built-in template and cannot be edited. Clone it first.");
+        const updatePayload = {
+          model_override: workflow.modelOverride ?? null,
+          reasoning_effort_override: workflow.reasoningEffortOverride ?? null,
+          yolo_mode: workflow.yoloMode ?? false,
+          updated_at: now(),
+        };
+        const { data, error } = await this.supabase
+          .from("workflows")
+          .update(updatePayload)
+          .eq("id", workflow.id)
+          .select("*")
+          .single();
+        assertNoError(error, "Unable to save built-in workflow overrides.");
+        return mapWorkflow(data);
       }
     }
     const payload = {

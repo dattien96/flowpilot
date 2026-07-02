@@ -69,7 +69,7 @@ function createEmptyStepDraft(modelId: string): StepDefinition {
     requiredSkills: [],
     teamRole: null,
     subagent: null,
-    model: modelId,
+    model: "",
     reasoningEffort: DEFAULT_REASONING,
     yoloMode: false,
     agentType: "standard",
@@ -88,7 +88,7 @@ function mapWorkflowToDraft(workflow: Workflow | null): WorkflowDraft | null {
     name: workflow.name,
     description: workflow.description,
     isTemplate: workflow.isTemplate,
-    modelOverride: workflow.modelOverride ?? DEFAULT_MODEL,
+    modelOverride: workflow.modelOverride ?? "",
     reasoningEffortOverride: workflow.reasoningEffortOverride ?? DEFAULT_REASONING,
     yoloMode: workflow.yoloMode,
     policyCap: workflow.policyCap,
@@ -105,7 +105,7 @@ function createEmptyWorkflowDraft(projects: Project[], modelId: string): Workflo
     name: "New Workflow",
     description: "",
     isTemplate: false,
-    modelOverride: modelId,
+    modelOverride: "",
     reasoningEffortOverride: DEFAULT_REASONING,
     yoloMode: false,
     policyCap: null,
@@ -373,15 +373,8 @@ export function WorkflowsSettings(): React.ReactElement {
     }
   }, [availableCreateWorkflowSteps, createWorkflowStepType, workflowView]);
 
-  useEffect(() => {
-    if (stepView === "create" && !createStepDraft.model && modelOptions.length > 0) {
-      setCreateStepDraft((current) => ({ ...current, model: modelOptions[0].value }));
-    }
-  }, [createStepDraft.model, modelOptions, stepView]);
-
   const startCreateWorkflow = () => {
-    const defaultModel = modelOptions[0]?.value ?? DEFAULT_MODEL;
-    setCreateWorkflowDraft(createEmptyWorkflowDraft(projects, defaultModel));
+    setCreateWorkflowDraft(createEmptyWorkflowDraft(projects, ""));
     setCreateWorkflowSteps([]);
     setCreateWorkflowStepType(stepDefinitions[0]?.stepType ?? "");
     setWorkflowView("create");
@@ -389,8 +382,7 @@ export function WorkflowsSettings(): React.ReactElement {
   };
 
   const startCreateStep = () => {
-    const defaultModel = modelOptions[0]?.value ?? DEFAULT_MODEL;
-    setCreateStepDraft(createEmptyStepDraft(defaultModel));
+    setCreateStepDraft(createEmptyStepDraft(""));
     setStepView("create");
     setMessage(null);
   };
@@ -476,6 +468,10 @@ export function WorkflowsSettings(): React.ReactElement {
 
   const saveWorkflow = async () => {
     if (!workflowDraft) return;
+    if (!workflowDraft.modelOverride) {
+      setMessage("Model is required.");
+      return;
+    }
     setBusy(true);
     setMessage(null);
     try {
@@ -510,6 +506,10 @@ export function WorkflowsSettings(): React.ReactElement {
   };
 
   const saveNewWorkflow = async () => {
+    if (!createWorkflowDraft.modelOverride) {
+      setMessage("Model is required.");
+      return;
+    }
     setBusy(true);
     setMessage(null);
     try {
@@ -519,7 +519,7 @@ export function WorkflowsSettings(): React.ReactElement {
         name: createWorkflowDraft.name.trim() || "New Workflow",
         description: createWorkflowDraft.description,
         isTemplate: createWorkflowDraft.isTemplate,
-        modelOverride: createWorkflowDraft.modelOverride ?? DEFAULT_MODEL,
+        modelOverride: createWorkflowDraft.modelOverride,
         reasoningEffortOverride:
           createWorkflowDraft.reasoningEffortOverride ?? DEFAULT_REASONING,
         yoloMode: createWorkflowDraft.yoloMode,
@@ -542,6 +542,10 @@ export function WorkflowsSettings(): React.ReactElement {
 
   const saveStepDefinition = async () => {
     if (!stepDraft) return;
+    if (!stepDraft.model) {
+      setMessage("Model is required.");
+      return;
+    }
     setBusy(true);
     setMessage(null);
     try {
@@ -568,6 +572,10 @@ export function WorkflowsSettings(): React.ReactElement {
   const saveNewStepDefinition = async () => {
     if (!createStepDraft.stepType.trim()) {
       setMessage("Step key is required.");
+      return;
+    }
+    if (!createStepDraft.model) {
+      setMessage("Model is required.");
       return;
     }
     setBusy(true);
@@ -1022,8 +1030,9 @@ export function WorkflowsSettings(): React.ReactElement {
           <span>Model</span>
           <select
             onChange={(event) => onChange({ ...draft, model: event.target.value })}
-            value={draft.model}
+            value={draft.model ?? ""}
           >
+            <option value="">Select a model...</option>
             {modelOptions.map((model) => (
               <option key={model.value} value={model.value}>
                 {model.label}
@@ -1386,8 +1395,9 @@ export function WorkflowsSettings(): React.ReactElement {
                         modelOverride: event.target.value,
                       }))
                     }
-                    value={createWorkflowDraft.modelOverride ?? DEFAULT_MODEL}
+                    value={createWorkflowDraft.modelOverride ?? ""}
                   >
+                    <option value="">Select a model...</option>
                     {modelOptions.map((model) => (
                       <option key={model.value} value={model.value}>
                         {model.label}
@@ -1519,30 +1529,28 @@ export function WorkflowsSettings(): React.ReactElement {
                           </button>
                         ) : null}
                         {selectedWorkflow?.editable !== false ? (
-                          <>
-                            <button
-                              className="secondary-btn"
-                              onClick={() =>
-                                setDeleteTarget({
-                                  kind: "workflow",
-                                  id: selectedWorkflowId,
-                                  label: workflowDraft.name || "this workflow",
-                                })
-                              }
-                              type="button"
-                            >
-                              Delete
-                            </button>
-                            <button
-                              className="primary-btn"
-                              disabled={busy || !workflowDirty}
-                              onClick={() => void saveWorkflow()}
-                              type="button"
-                            >
-                              Save Workflow
-                            </button>
-                          </>
+                          <button
+                            className="secondary-btn"
+                            onClick={() =>
+                              setDeleteTarget({
+                                kind: "workflow",
+                                id: selectedWorkflowId,
+                                label: workflowDraft.name || "this workflow",
+                              })
+                            }
+                            type="button"
+                          >
+                            Delete
+                          </button>
                         ) : null}
+                        <button
+                          className="primary-btn"
+                          disabled={busy || !workflowDirty}
+                          onClick={() => void saveWorkflow()}
+                          type="button"
+                        >
+                          Save Workflow
+                        </button>
                       </div>
                     </div>
                     <div className="settings-grid">
@@ -1588,13 +1596,11 @@ export function WorkflowsSettings(): React.ReactElement {
                               current ? { ...current, description: event.target.value } : current,
                             )
                           }
-                          value={workflowDraft.description}
                         />
                       </label>
                       <label className="settings-field">
                         <span>Model override</span>
                         <select
-                          disabled={workflowDetailReadOnly}
                           onChange={(event) =>
                             setWorkflowDraft((current) =>
                               current
@@ -1602,8 +1608,9 @@ export function WorkflowsSettings(): React.ReactElement {
                                 : current,
                             )
                           }
-                          value={workflowDraft.modelOverride ?? DEFAULT_MODEL}
+                          value={workflowDraft.modelOverride ?? ""}
                         >
+                          <option value="">Select a model...</option>
                           {modelOptions.map((model) => (
                             <option key={model.value} value={model.value}>
                               {model.label}
@@ -1614,7 +1621,6 @@ export function WorkflowsSettings(): React.ReactElement {
                       <label className="settings-field">
                         <span>Reasoning effort</span>
                         <select
-                          disabled={workflowDetailReadOnly}
                           onChange={(event) =>
                             setWorkflowDraft((current) =>
                               current
@@ -1637,7 +1643,6 @@ export function WorkflowsSettings(): React.ReactElement {
                       <label className="settings-checkbox settings-field-full">
                         <input
                           checked={workflowDraft.yoloMode}
-                          disabled={workflowDetailReadOnly}
                           onChange={(event) =>
                             setWorkflowDraft((current) =>
                               current ? { ...current, yoloMode: event.target.checked } : current,

@@ -33,7 +33,7 @@ func newTestServerWithCatalog(t *testing.T, catalog *interactiveCatalog) (*Inter
 
 func baseTestCatalog() *interactiveCatalog {
 	return &interactiveCatalog{
-		projects: []Project{{ID: "proj-1", Name: "Proj", Path: "/tmp/proj"}},
+		projects: []Project{{ID: "proj-1", Name: "Proj", Path: "/tmp/proj", Model: "gpt-5.4"}},
 		workflows: map[string][]Workflow{
 			"proj-1": {{ID: "wf-1", ProjectID: "proj-1", Name: "WF"}},
 		},
@@ -117,11 +117,21 @@ func TestCreateRunFallsBackToProjectWhenStepAndFlowModelEmpty(t *testing.T) {
 	}
 }
 
-func TestCreateRunFallsBackToHardDefaultWhenNothingConfigured(t *testing.T) {
+func TestCreateRunReturnsErrorWhenNoModelConfigured(t *testing.T) {
 	catalog := baseTestCatalog()
-	// Step, Flow, and Project all have no model.
-	if got := resolvedRunModel(t, catalog); got != "gpt-5.4" {
-		t.Fatalf("resolved model = %q, want gpt-5.4 (hard default)", got)
+	// Clear the project default model so nothing is configured.
+	catalog.projects[0].Model = ""
+
+	_, srv := newTestServerWithCatalog(t, catalog)
+	status, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs", StartRunInput{ProjectID: "proj-1", WorkflowID: "wf-1"}, nil)
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", status, http.StatusBadRequest)
+	}
+	var res map[string]any
+	mustDecode(t, body, &res)
+	errMap, _ := res["error"].(map[string]any)
+	if errMap == nil || errMap["code"] != "no_model_configured" {
+		t.Fatalf("error code = %v, want no_model_configured. body=%s", errMap["code"], body)
 	}
 }
 

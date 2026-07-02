@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -317,7 +318,7 @@ func (s *localFileSessionStore) DeleteTurnLog(_ context.Context, runID string) e
 // Returns an error when runID contains path separators that could escape the
 // store directory (path-traversal guard).
 func (s *localFileSessionStore) flowEventsPath(runID string) (string, error) {
-	if runID == "" || filepath.Base(runID) != runID {
+	if runID == "" || filepath.Base(runID) != runID || strings.ContainsAny(runID, "/\\") {
 		return "", fmt.Errorf("invalid run ID %q: must not contain path separators", runID)
 	}
 	return filepath.Join(filepath.Dir(s.filePath), runID+"-flow-events.ndjson"), nil

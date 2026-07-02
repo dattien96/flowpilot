@@ -617,7 +617,7 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 			}
 		}
 		if resolvedModel == "" {
-			resolvedModel = "gpt-5.4"
+			return RunHandle{}, newAPIErr(http.StatusBadRequest, "no_model_configured", "no model configured for this workflow")
 		}
 	} else if runKind != "chat" && stepID != "" {
 		if catalog, ok := s.catalog.(CatalogStore); ok {
@@ -638,7 +638,19 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 			}
 		}
 		if resolvedModel == "" {
-			resolvedModel = "gpt-5.4"
+			if catalog, ok := s.catalog.(CatalogStore); ok {
+				if projects, err := catalog.ListProjects(context.Background()); err == nil {
+					for _, proj := range projects {
+						if proj.ID == in.ProjectID {
+							resolvedModel = strings.TrimSpace(proj.Model)
+							break
+						}
+					}
+				}
+			}
+		}
+		if resolvedModel == "" {
+			return RunHandle{}, newAPIErr(http.StatusBadRequest, "no_model_configured", "no model configured for this step")
 		}
 	} else if stepID == "" && runKind != "chat" {
 		// Normal chat: synthetic step is minted after the runID is known (see below).
