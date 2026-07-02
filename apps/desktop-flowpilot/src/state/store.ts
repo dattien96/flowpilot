@@ -1135,7 +1135,25 @@ export const useStore = create<AppState>((set, get) => ({
         it.kind === "approval" && it.approvalId === approvalId ? { ...it, decision } : it,
       ),
     }));
-    await get().client.submitApproval(approvalId, decision);
+    try {
+      await get().client.submitApproval(approvalId, decision);
+    } catch (err) {
+      // BUG-172: mirror sendPrompt's error handling — an unhandled rejection here
+      // (e.g. a transient network blip while YOLO fires off rapid step
+      // transitions) used to leave the run silently stuck in whatever status the
+      // optimistic update above set, with nothing telling the user it never
+      // reached the server.
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] approve failed:", err);
+      set((s) => ({
+        status: "failed",
+        recoverable: true,
+        timeline: [
+          ...s.timeline,
+          { kind: "system", id: `err-approve-${s.timeline.length}`, text: runErrorMessage(err), tone: "error" },
+        ],
+      }));
+    }
   },
 
   async answer(questionId, choice) {
@@ -1151,7 +1169,21 @@ export const useStore = create<AppState>((set, get) => ({
         it.kind === "question" && it.questionId === questionId ? { ...it, answer: choice } : it,
       ),
     }));
-    await get().client.answerQuestion(questionId, choice);
+    try {
+      await get().client.answerQuestion(questionId, choice);
+    } catch (err) {
+      // BUG-172: see approve() above — same failure mode for the question path.
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] answer failed:", err);
+      set((s) => ({
+        status: "failed",
+        recoverable: true,
+        timeline: [
+          ...s.timeline,
+          { kind: "system", id: `err-answer-${s.timeline.length}`, text: runErrorMessage(err), tone: "error" },
+        ],
+      }));
+    }
   },
 
   async stop() {
