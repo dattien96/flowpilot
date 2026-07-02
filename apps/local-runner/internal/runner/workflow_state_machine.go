@@ -62,9 +62,11 @@ type RuntimeWorkflowStep struct {
 	// "" when the step has no agent binding of its own (e.g. inline/control
 	// behaviors).
 	AgentRef string
-	// Provider/Model are the step's own workflow_steps.provider_override /
-	// model_override values, when set. "" falls back to the run's own
-	// provider/model in the UI.
+	// Provider/Model are always derived from the step type's own catalog
+	// default (step_definitions.model, with Provider derived from that model
+	// via providerKeyFromModel) — BUG-164 removed workflow_steps.
+	// provider_override/model_override entirely; a step type has exactly one
+	// configured model, not a per-workflow-instance override.
 	Provider string
 	Model    string
 	// YoloMode is the step_type's step_definitions.yolo_mode default.

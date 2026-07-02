@@ -130,8 +130,6 @@ function normalizeWorkflowSnapshot(draft: WorkflowDraft | null, steps: WorkflowS
       stepType: step.stepType,
       orderIndex: index,
       isEnabled: step.isEnabled,
-      modelOverride: step.modelOverride ?? "",
-      reasoningEffortOverride: step.reasoningEffortOverride ?? "",
       requiresApproval: step.requiresApproval,
       // BUG-NOTE-CP42 #3: these CP-42 per-node fields are editable in the
       // step form (nodeId/behaviorId/agentRef/dependsOn/joinMode/cohort) but
@@ -457,13 +455,6 @@ export function WorkflowsSettings(): React.ReactElement {
       stepType: chosenStepType,
       orderIndex: target.length,
       isEnabled: true,
-      providerOverride: null,
-      // BUG-160/BUG-161: leave unset ("no override") by default instead of
-      // forcing a concrete value — a new step should inherit the run's
-      // model/reasoning unless the user explicitly opts into an override via
-      // the Model override / Reasoning selects.
-      modelOverride: null,
-      reasoningEffortOverride: null,
       requiresApproval: true,
       createdAt: "",
       updatedAt: "",
@@ -768,56 +759,10 @@ export function WorkflowsSettings(): React.ReactElement {
                 {isExpanded ? (
                 <>
                 <div className="settings-grid workflow-step-grid">
-                  <label className="settings-field">
-                    <span>Model override</span>
-                    <select
-                      disabled={readOnly}
-                      onChange={(event) =>
-                        source === "detail"
-                          ? updateWorkflowStep(index, { modelOverride: event.target.value || null })
-                          : updateCreateWorkflowStep(index, {
-                              modelOverride: event.target.value || null,
-                            })
-                      }
-                      value={step.modelOverride ?? ""}
-                    >
-                      {/* BUG-160: explicit "no override" choice — previously every option
-                          was a concrete model, so a step could never actually inherit the
-                          run's model once opened, only switch between overrides. */}
-                      <option value="">No override (use run's model)</option>
-                      {modelOptions.map((model) => (
-                        <option key={model.value} value={model.value}>
-                          {model.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="settings-field">
-                    <span>Reasoning</span>
-                    <select
-                      disabled={readOnly}
-                      onChange={(event) =>
-                        source === "detail"
-                          ? updateWorkflowStep(index, {
-                              reasoningEffortOverride: event.target.value || null,
-                            })
-                          : updateCreateWorkflowStep(index, {
-                              reasoningEffortOverride: event.target.value || null,
-                            })
-                      }
-                      value={step.reasoningEffortOverride ?? ""}
-                    >
-                      {/* BUG-161: same "no override" gap as the Model override select
-                          (BUG-160) — previously this always displayed/persisted a
-                          concrete reasoning level, never true inheritance. */}
-                      <option value="">No override (use run's reasoning)</option>
-                      {REASONING_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                  {/* BUG-164: model/reasoning are no longer per-step overrides — a step's
+                      model is always its step type's own step_definitions.model. There is
+                      nothing to configure here anymore; edit the step type's catalog entry
+                      (below) to change what model it runs on. */}
                   <label className="settings-checkbox">
                     <input
                       checked={step.isEnabled}

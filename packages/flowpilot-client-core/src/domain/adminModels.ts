@@ -160,9 +160,6 @@ export interface WorkflowStep {
   stepType: string;
   orderIndex: number;
   isEnabled: boolean;
-  providerOverride: string | null;
-  modelOverride: string | null;
-  reasoningEffortOverride: string | null;
   requiresApproval: boolean;
   createdAt: string;
   updatedAt: string;
