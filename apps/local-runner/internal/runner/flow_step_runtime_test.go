@@ -335,6 +335,38 @@ func TestSubmitFlowControlRejectsCohortMemberButAllowsHub(t *testing.T) {
 	}
 }
 
+// TestMarkFlowRunCompleteSettlesEveryStep proves the BUG-181 fix: on flow
+// completion every non-terminal step is settled to DONE, so a reviewer whose
+// DONE write lagged or a synthesis node left RUNNING can't leave the timeline
+// inconsistent after the run is done.
+func TestMarkFlowRunCompleteSettlesEveryStep(t *testing.T) {
+	svc, _ := newTestServer(t)
+	parent, apiErr := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if apiErr != nil {
+		t.Fatalf("createRun: %v", apiErr)
+	}
+	nodes := reviewLoopTestNodes()
+	svc.mu.Lock()
+	svc.runs[parent.RunID].activeFlowNodes = nodes
+	svc.mu.Unlock()
+	svc.reseedFlowStepRuntime(parent.RunID, nodes)
+	// Simulate an inconsistent mid-finalization state: coder done, one reviewer
+	// still RUNNING, synthesis still RUNNING.
+	svc.setFlowStepStatus(context.Background(), parent.RunID, "coder", StepStatusDone)
+	svc.setFlowStepStatus(context.Background(), parent.RunID, "reviewer_correctness", StepStatusDone)
+	svc.setFlowStepStatus(context.Background(), parent.RunID, "reviewer_security", StepStatusRunning)
+	svc.setFlowStepStatus(context.Background(), parent.RunID, "synthesis", StepStatusRunning)
+
+	svc.markFlowRunComplete(context.Background(), parent.RunID)
+
+	steps, _ := svc.workflowStore.LoadRunSteps(context.Background(), parent.RunID)
+	for _, st := range steps {
+		if st.Status != StepStatusDone {
+			t.Errorf("step %q status = %q, want DONE after markFlowRunComplete", st.ID, st.Status)
+		}
+	}
+}
+
 // TestReconstructWorkflowRunRestoresStepTimeline proves the BUG-178 fix: a
 // completed flow run reopened from history after a server restart (its
 // in-memory step store now empty) rebuilds its step timeline from the persisted

@@ -145,12 +145,26 @@ func (s *InteractiveService) setFlowStepStatus(ctx context.Context, parentRunID,
 }
 
 // markFlowRunComplete is the terminal transition when the flow's control tool
-// reports "done": mark the inline hub node (review-loop's "synthesis") DONE and
-// the run DONE, so the timeline settles honestly instead of relying on the
-// bulk planner (which is gated off for flowEngineDriven runs).
+// reports "done". It is authoritative: every non-terminal step is settled to
+// DONE and the run marked DONE, so the timeline is consistent regardless of the
+// order prior async transitions landed (BUG-181) — e.g. the inline hub
+// (synthesis) node, or any reviewer whose DONE write lagged. The bulk planner is
+// gated off for flowEngineDriven runs, so this is the sole terminal settler.
 func (s *InteractiveService) markFlowRunComplete(ctx context.Context, parentRunID string) {
-	if hubID := hubInlineNodeID(s.activeFlowNodesFor(parentRunID)); hubID != "" {
-		s.setFlowStepStatus(ctx, parentRunID, hubID, StepStatusDone)
+	if steps, err := s.workflowStore.LoadRunSteps(ctx, parentRunID); err == nil {
+		for _, st := range steps {
+			switch st.Status {
+			case StepStatusDone, StepStatusFailed, StepStatusSkipped:
+				continue // already terminal
+			}
+			s.setFlowStepStatus(ctx, parentRunID, st.ID, StepStatusDone)
+		}
+	} else {
+		log.Printf("[flow-step] mark run %q done: LoadRunSteps failed: %v", parentRunID, err)
+		// Fall back to at least settling the inline hub node.
+		if hubID := hubInlineNodeID(s.activeFlowNodesFor(parentRunID)); hubID != "" {
+			s.setFlowStepStatus(ctx, parentRunID, hubID, StepStatusDone)
+		}
 	}
 	if err := s.workflowStore.SetRunStatus(ctx, parentRunID, RunStatusEngineDone, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		log.Printf("[flow-step] mark run %q done failed: %v", parentRunID, err)

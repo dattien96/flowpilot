@@ -1402,28 +1402,38 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 					note := buildCohortNote(rs.parentRunID, rs.flowCohortId, entries, s.agentOrchestrator.graphSnapshot(rs.parentRunID).LoopState.Round)
 					s.appendPendingAgentContextLocked(rs.parentRunID, note)
 					parentRunID := rs.parentRunID
-					// BUG-174: the review cohort just joined — mark each reviewer
-					// node DONE and the inline hub node RUNNING on the step timeline
-					// before the hub's synthesis turn is reinvoked. Under s.mu here,
-					// so capture what we need and dispatch the step writes async.
+					// BUG-174/BUG-181: the review cohort just joined — mark each
+					// reviewer node DONE and the inline hub node RUNNING, THEN reinvoke
+					// the hub's synthesis turn. Both must run in ONE ordered goroutine:
+					// the synthesis turn finalizes via markFlowRunComplete (synthesis
+					// DONE), and two separate goroutines let that race the step writes —
+					// landing before the reviewer-DONE writes (synthesis DONE while
+					// reviewers still RUNNING) or after the synthesis-RUNNING write
+					// (synthesis stuck RUNNING after the flow is done). Sequencing the
+					// writes before the reinvoke removes both races. Captured under s.mu.
+					var reviewerNodeIDs []string
+					var hubNodeID string
+					flowDriven := false
 					if parent := s.runs[parentRunID]; parent != nil && parent.flowEngineDriven {
-						reviewerNodeIDs := make([]string, 0, len(entries))
+						flowDriven = true
 						for _, e := range entries {
 							if e.Label != "" {
 								reviewerNodeIDs = append(reviewerNodeIDs, e.Label)
 							}
 						}
-						hubNodeID := hubInlineNodeID(parent.activeFlowNodes)
-						go func(reviewerNodeIDs []string, hubNodeID string) {
+						hubNodeID = hubInlineNodeID(parent.activeFlowNodes)
+					}
+					go func() {
+						if flowDriven {
 							for _, id := range reviewerNodeIDs {
 								s.setFlowStepStatus(context.Background(), parentRunID, id, StepStatusDone)
 							}
 							if hubNodeID != "" {
 								s.setFlowStepStatus(context.Background(), parentRunID, hubNodeID, StepStatusRunning)
 							}
-						}(reviewerNodeIDs, hubNodeID)
-					}
-					go s.maybeAutoReinvokeHub(parentRunID)
+						}
+						s.maybeAutoReinvokeHub(parentRunID)
+					}()
 				}
 			} else if s.agentOrchestrator.loopMode(rs.parentRunID) == "explicit" && (isCoderRun(rs) || parentHasTrackedFlow(s, rs.parentRunID)) {
 				// In explicit mode the hub drives all transitions. When a node completes
