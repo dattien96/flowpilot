@@ -1821,6 +1821,12 @@ async function consumeStream(
     }
     if (!isEventForRun(e, runId)) continue;
     set((s) => applyEvent(s, e));
+    // BUG-180: the hub's first turn is consumed here (not the orchestration
+    // stream, which only starts after the turn), and the flow executor reseeds +
+    // transitions steps while the coder runs during that turn. Each transition
+    // rides alongside an agent_graph_updated, so refresh the step runtime here too
+    // to keep the timeline live during the initial coder phase. (Self-guarded.)
+    if (e.type === "agent_graph_updated") void get().refreshWorkflowStepRuntime();
     if (e.type === "turn_failed" && !e.recoverable && isUsageLimitMessage(e.error)) {
       const s = get();
       if (s.chatMode === "normal_chat" && s.selectedProvider && !s.pendingAccountSwitch && !s.accountSwitchLoading) {
