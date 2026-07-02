@@ -31,3 +31,4 @@ Source of truth for stable `feature_key` values used by:
 - context-regression-engine — SD-17 context + regression engine (Plane C): gate, resolver, requirements scaffold, flow rules
 - cross-provider-handoff — cross-provider chat handoff: provider-neutral transcript transfer + summary-based hybrid
 - token-usage
+- agent-flow-engine — generic flow vocabulary (FlowNode/FlowEdge/FlowPolicy), review-loop runtime (cap, cohort barrier, auto-reinvoke), submit_review_outcome tool, synthesizer builtin, orchestration board (CP-36)

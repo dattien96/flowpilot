@@ -15,12 +15,17 @@ function withRunnerEnv(env, run) {
     const candidate = globalThis;
     const previousViteEnv = candidate.__FLOWPILOT_VITE_ENV__;
     const previousRunnerUrl = process.env.VITE_RUNNER_URL;
+    const previousLocalRunnerUrl = process.env.VITE_LOCAL_RUNNER_URL;
     const previousUseRunner = process.env.VITE_USE_RUNNER;
     candidate.__FLOWPILOT_VITE_ENV__ = env;
     if (env.VITE_RUNNER_URL === undefined)
         delete process.env.VITE_RUNNER_URL;
     else
         process.env.VITE_RUNNER_URL = env.VITE_RUNNER_URL;
+    if (env.VITE_LOCAL_RUNNER_URL === undefined)
+        delete process.env.VITE_LOCAL_RUNNER_URL;
+    else
+        process.env.VITE_LOCAL_RUNNER_URL = env.VITE_LOCAL_RUNNER_URL;
     if (env.VITE_USE_RUNNER === undefined)
         delete process.env.VITE_USE_RUNNER;
     else
@@ -37,6 +42,10 @@ function withRunnerEnv(env, run) {
             delete process.env.VITE_RUNNER_URL;
         else
             process.env.VITE_RUNNER_URL = previousRunnerUrl;
+        if (previousLocalRunnerUrl === undefined)
+            delete process.env.VITE_LOCAL_RUNNER_URL;
+        else
+            process.env.VITE_LOCAL_RUNNER_URL = previousLocalRunnerUrl;
         if (previousUseRunner === undefined)
             delete process.env.VITE_USE_RUNNER;
         else
@@ -46,6 +55,10 @@ function withRunnerEnv(env, run) {
 (0, node_test_1.default)("resolveRunnerUrlFromSources prefers renderer Vite env over process env", () => {
     const url = (0, createRunnerClient_1.resolveRunnerUrlFromSources)({ VITE_RUNNER_URL: "http://renderer-runner:4000" }, { VITE_RUNNER_URL: "http://process-runner:5000", VITE_USE_RUNNER: "true" });
     strict_1.default.equal(url, "http://renderer-runner:4000");
+});
+(0, node_test_1.default)("resolveRunnerUrlFromSources accepts VITE_LOCAL_RUNNER_URL", () => {
+    const url = (0, createRunnerClient_1.resolveRunnerUrlFromSources)({ VITE_LOCAL_RUNNER_URL: "http://local-runner:4318" }, {});
+    strict_1.default.equal(url, "http://local-runner:4318");
 });
 (0, node_test_1.default)("resolveRunnerUrlFromSources falls back to process env when renderer env is missing", () => {
     const url = (0, createRunnerClient_1.resolveRunnerUrlFromSources)({}, { VITE_USE_RUNNER: "true" });

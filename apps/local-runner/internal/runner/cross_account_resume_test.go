@@ -2093,6 +2093,210 @@ func TestResumeRunMissingPersistedSessionReturnsRunNotFound(t *testing.T) {
 	}
 }
 
+func TestResumeRunGeminiPersistedResumeRehydratesFromProjectConfig(t *testing.T) {
+	store, err := NewLocalFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	root := t.TempDir()
+	acctHome := filepath.Join(root, "acct-gemini")
+	writeProviderAccountsConfig(t, filepath.Join(root, "provider-accounts.json"), []ProviderAccount{
+		{ID: "acct-gemini", ProviderKey: "gemini", HomePath: acctHome, SlotIndex: 1, IsActive: true, AuthStatus: "connected", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+	})
+	writeProviderAuth(t, "gemini", acctHome)
+	projectID := "gemini-project-1"
+	configPath := geminiProjectConfigPathForHome(acctHome, projectID)
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	payload, err := buildGeminiProjectConfigPayload(projectID, "repo", "/repo")
+	if err != nil {
+		t.Fatalf("buildGeminiProjectConfigPayload: %v", err)
+	}
+	if err := os.WriteFile(configPath, payload, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             "run-gemini",
+		RunKind:           "chat",
+		ProviderKey:       ProviderKeyGemini,
+		ProviderSessionID: projectID,
+		ProviderAccountID: "acct-gemini",
+		WorkingDirectory:  "/repo",
+		Status:            RunStatusCompleted,
+		LastPrompt:        "stale prompt",
+		LastMessage:       "Go",
+		StartedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+		UpdatedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+	if err := store.AppendTurnLog(context.Background(), "run-gemini", turnLogLine{Kind: turnLogKindPrompt, Prompt: "which language of this project"}); err != nil {
+		t.Fatalf("AppendTurnLog: %v", err)
+	}
+	fullAnswer1 := "Go project. This first answer is intentionally longer than the history summary and must survive Gemini restart replay without using LastMessage."
+	fullAnswer2 := "The latest answer belongs to the second prompt, not the first prompt."
+	if err := store.AppendTurnLog(context.Background(), "run-gemini", turnLogLine{Kind: turnLogKindTranscriptTurn, TurnID: "turn-1", Prompt: "which language of this project", Assistant: fullAnswer1}); err != nil {
+		t.Fatalf("AppendTurnLog turn 1: %v", err)
+	}
+	if err := store.AppendTurnLog(context.Background(), "run-gemini", turnLogLine{Kind: turnLogKindTranscriptTurn, TurnID: "turn-2", Prompt: "what is the latest answer", Assistant: fullAnswer2}); err != nil {
+		t.Fatalf("AppendTurnLog turn 2: %v", err)
+	}
+	svc := NewInteractiveServiceWithStore(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+
+	handle, apiErr := svc.resumeRun("run-gemini")
+	if apiErr != nil {
+		t.Fatalf("resumeRun error = %+v, want nil", apiErr)
+	}
+	if handle.ProviderSessionID != projectID {
+		t.Fatalf("handle.ProviderSessionID = %q, want %q", handle.ProviderSessionID, projectID)
+	}
+	if handle.LastEventSeq != 6 {
+		t.Fatalf("handle.LastEventSeq = %d, want 6", handle.LastEventSeq)
+	}
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	events := svc.runs["run-gemini"].events
+	if len(events) != 6 {
+		t.Fatalf("events = %+v, want 6 replayed Gemini events", events)
+	}
+	if events[0].Type != EventTurnStarted || events[0].Prompt != "which language of this project" {
+		t.Fatalf("unexpected first event: %+v", events[0])
+	}
+	if events[0].ProviderTurnID == "" {
+		t.Fatalf("first replayed turn is missing provider turn id: %+v", events[0])
+	}
+	if events[1].Type != EventMessageCompleted || events[1].Text != fullAnswer1 {
+		t.Fatalf("unexpected second event: %+v", events[1])
+	}
+	if events[1].ProviderTurnID != events[0].ProviderTurnID {
+		t.Fatalf("first response provider turn id = %q, want %q", events[1].ProviderTurnID, events[0].ProviderTurnID)
+	}
+	if events[3].Type != EventTurnStarted || events[3].Prompt != "what is the latest answer" {
+		t.Fatalf("unexpected fourth event: %+v", events[3])
+	}
+	if events[3].ProviderTurnID == "" || events[3].ProviderTurnID == events[0].ProviderTurnID {
+		t.Fatalf("second replayed turn id = %q, want non-empty id distinct from %q", events[3].ProviderTurnID, events[0].ProviderTurnID)
+	}
+	if events[4].Type != EventMessageCompleted || events[4].Text != fullAnswer2 {
+		t.Fatalf("unexpected fifth event: %+v", events[4])
+	}
+	if events[4].ProviderTurnID != events[3].ProviderTurnID {
+		t.Fatalf("second response provider turn id = %q, want %q", events[4].ProviderTurnID, events[3].ProviderTurnID)
+	}
+	if events[5].Type != EventTurnCompleted || events[5].FinalMessage != fullAnswer2 {
+		t.Fatalf("unexpected sixth event: %+v", events[5])
+	}
+}
+
+func TestGeminiTranscriptFallbackPairsPartialSidecarFromEnd(t *testing.T) {
+	store, err := NewLocalFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	if err := store.AppendTurnLog(context.Background(), "run-gemini-partial", turnLogLine{Kind: turnLogKindPrompt, Prompt: "first prompt"}); err != nil {
+		t.Fatalf("AppendTurnLog prompt 1: %v", err)
+	}
+	if err := store.AppendTurnLog(context.Background(), "run-gemini-partial", turnLogLine{Kind: turnLogKindPrompt, Prompt: "latest prompt"}); err != nil {
+		t.Fatalf("AppendTurnLog prompt 2: %v", err)
+	}
+	if err := store.AppendTurnLog(context.Background(), "run-gemini-partial", turnLogLine{Kind: turnLogKindAssistant, Assistant: "latest answer"}); err != nil {
+		t.Fatalf("AppendTurnLog assistant: %v", err)
+	}
+	svc := NewInteractiveServiceWithStore(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+	turns := svc.geminiTranscriptTurns(&interactiveRun{id: "run-gemini-partial"})
+	if len(turns) != 2 {
+		t.Fatalf("turns = %+v, want both prompt-only history turns preserved", turns)
+	}
+	if turns[0].User != "first prompt" || turns[0].Assistant != "" {
+		t.Fatalf("unexpected first recovered turn: %+v", turns[0])
+	}
+	if turns[1].User != "latest prompt" || turns[1].Assistant != "latest answer" {
+		t.Fatalf("unexpected latest recovered turn: %+v", turns[1])
+	}
+}
+
+func TestGeminiTranscriptTurnsBackfillsPromptsByTurnID(t *testing.T) {
+	store, err := NewLocalFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	if err := store.AppendTurnLog(context.Background(), "run-gemini-turn-ids", turnLogLine{Kind: turnLogKindPrompt, TurnID: "turn-1", Prompt: "first prompt"}); err != nil {
+		t.Fatalf("AppendTurnLog prompt 1: %v", err)
+	}
+	if err := store.AppendTurnLog(context.Background(), "run-gemini-turn-ids", turnLogLine{Kind: turnLogKindTranscriptTurn, TurnID: "turn-1", Assistant: "first full answer"}); err != nil {
+		t.Fatalf("AppendTurnLog turn 1: %v", err)
+	}
+	if err := store.AppendTurnLog(context.Background(), "run-gemini-turn-ids", turnLogLine{Kind: turnLogKindPrompt, TurnID: "turn-2", Prompt: "second prompt"}); err != nil {
+		t.Fatalf("AppendTurnLog prompt 2: %v", err)
+	}
+	if err := store.AppendTurnLog(context.Background(), "run-gemini-turn-ids", turnLogLine{Kind: turnLogKindTranscriptTurn, TurnID: "turn-2", Assistant: "second full answer"}); err != nil {
+		t.Fatalf("AppendTurnLog turn 2: %v", err)
+	}
+
+	svc := NewInteractiveServiceWithStore(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+	turns := svc.geminiTranscriptTurns(&interactiveRun{id: "run-gemini-turn-ids"})
+	if len(turns) != 2 {
+		t.Fatalf("turns = %+v, want two prompt/assistant pairs", turns)
+	}
+	if turns[0].User != "first prompt" || turns[0].Assistant != "first full answer" {
+		t.Fatalf("unexpected first recovered turn: %+v", turns[0])
+	}
+	if turns[1].User != "second prompt" || turns[1].Assistant != "second full answer" {
+		t.Fatalf("unexpected second recovered turn: %+v", turns[1])
+	}
+}
+
+func TestGeminiTranscriptCapturePrefersFullMessageCompleted(t *testing.T) {
+	rs := &interactiveRun{
+		events: []ProviderEvent{
+			{Type: EventTurnStarted, ProviderTurnID: "turn-1", Prompt: "why truncated"},
+			{Type: EventMessageCompleted, ProviderTurnID: "turn-1", Text: "full assistant response that should be stored without truncation"},
+			{Type: EventTurnCompleted, ProviderTurnID: "turn-1", FinalMessage: "full assistant response..."},
+		},
+	}
+
+	turn := transcriptTurnForProviderTurnLocked(rs, "turn-1")
+	if turn.User != "why truncated" {
+		t.Fatalf("turn.User = %q, want raw prompt", turn.User)
+	}
+	if turn.Assistant != "full assistant response that should be stored without truncation" {
+		t.Fatalf("turn.Assistant = %q, want message_completed text", turn.Assistant)
+	}
+}
+
+func TestResumeRunInMemoryCompletedGeminiRemainsReadable(t *testing.T) {
+	svc := NewInteractiveServiceWith(DefaultProviderRegistry(), newInteractiveCatalog())
+	runID := "run-gemini-live"
+	svc.mu.Lock()
+	svc.runs[runID] = &interactiveRun{
+		id:                runID,
+		runKind:           "chat",
+		providerKey:       ProviderKeyGemini,
+		providerSessionID: "thread-1",
+		status:            RunStatusCompleted,
+		events: []ProviderEvent{
+			{Seq: 1, Type: EventMessageCompleted, Text: "hello"},
+			{Seq: 2, Type: EventTurnCompleted, FinalMessage: "hello"},
+		},
+	}
+	svc.mu.Unlock()
+
+	handle, apiErr := svc.resumeRun(runID)
+	if apiErr != nil {
+		t.Fatalf("resumeRun error = %+v, want nil", apiErr)
+	}
+	if handle.RunID != runID {
+		t.Fatalf("handle.RunID = %q, want %q", handle.RunID, runID)
+	}
+	if handle.ProviderKey != ProviderKeyGemini {
+		t.Fatalf("handle.ProviderKey = %q, want gemini", handle.ProviderKey)
+	}
+	if handle.LastEventSeq != 2 {
+		t.Fatalf("handle.LastEventSeq = %d, want 2", handle.LastEventSeq)
+	}
+}
+
 // TS-015: resolveAccountHome returns the configured home path for an explicit account ID.
 func TestResolveAccountHomeExplicitAccount(t *testing.T) {
 	root := t.TempDir()

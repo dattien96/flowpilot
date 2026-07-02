@@ -13,8 +13,8 @@ we fix and improve a lot for agent feature with claude: from the commit 541748ac
 - Created: `2026-06-20`
 - Last Updated: `2026-06-23`
 - Parent Documents: [SS-06: Workflow Skill Agent](../05-System-Specs/SS-06-Workflow-Skill-Agent.md), [SS-11: Workflow With Session](../05-System-Specs/SS-11-Workflow-With_Session.md)
-- Child Documents: [CP-19: Multiple Agents](../07-Coding-Plan/inprogress/CP-19-Multiple-Agents.md)
-- Related Documents: [SD-13: Multiple Agents](./SD-13-Multiple-Agents.md), [Task-081: Agent Abstraction And Catalog Loader](../08-Task/done/Task-081-Agent-Abstraction-And-Catalog-Loader.md), [Task-082: Spawn-Agent Tool And Orchestrator Core](../08-Task/done/Task-082-Spawn-Agent-Tool-And-Orchestrator-Core.md), [Task-083: Desktop Agents Panel And Focus Navigation](../08-Task/todo/Task-083-Desktop-Agents-Panel-And-Focus-Navigation.md), [Task-084: Dependency Feedback Loop And Orchestration Board](../08-Task/todo/Task-084-Dependency-Feedback-Loop-And-Orchestration-Board.md), [Task-085: Flow-Mode Supabase Agent Runs And Message Bus](../08-Task/todo/Task-085-Flow-Mode-Supabase-Agent-Runs-And-Message-Bus.md)
+- Child Documents: [CP-19: Multiple Agents](../07-Coding-Plan/done/CP-19-Multiple-Agents.md)
+- Related Documents: [SD-13: Multiple Agents](./SD-13-Multiple-Agents.md), [Task-081: Agent Abstraction And Catalog Loader](../08-Task/done/Task-081-Agent-Abstraction-And-Catalog-Loader.md), [Task-082: Spawn-Agent Tool And Orchestrator Core](../08-Task/done/Task-082-Spawn-Agent-Tool-And-Orchestrator-Core.md), [Task-083: Desktop Agents Panel And Focus Navigation](../08-Task/todo/Task-083-Desktop-Agents-Panel-And-Focus-Navigation.md), [Task-084: Dependency Feedback Loop And Orchestration Board](../08-Task/done/Task-084-Dependency-Feedback-Loop-And-Orchestration-Board.md), [Task-085: Unified Local Run Persistence](../08-Task/todo/Task-085-Unified-Local-Run-Persistence.md)
 - Replaces: `None`
 - Tags: `multi-agent, spawn-agent, tool-calling, agent-catalog, local-runner, desktop`
 
@@ -78,12 +78,12 @@ This document is intentionally explanatory because the feature crosses three men
 
 - [SS-06: Workflow Skill Agent](../05-System-Specs/SS-06-Workflow-Skill-Agent.md)
 - [SS-11: Workflow With Session](../05-System-Specs/SS-11-Workflow-With_Session.md)
-- [CP-19: Multiple Agents](../07-Coding-Plan/inprogress/CP-19-Multiple-Agents.md)
+- [CP-19: Multiple Agents](../07-Coding-Plan/done/CP-19-Multiple-Agents.md)
 - [Task-081: Agent Abstraction And Catalog Loader](../08-Task/done/Task-081-Agent-Abstraction-And-Catalog-Loader.md)
 - [Task-082: Spawn-Agent Tool And Orchestrator Core](../08-Task/done/Task-082-Spawn-Agent-Tool-And-Orchestrator-Core.md)
 - [Task-083: Desktop Agents Panel And Focus Navigation](../08-Task/todo/Task-083-Desktop-Agents-Panel-And-Focus-Navigation.md)
-- [Task-084: Dependency Feedback Loop And Orchestration Board](../08-Task/todo/Task-084-Dependency-Feedback-Loop-And-Orchestration-Board.md)
-- [Task-085: Flow-Mode Supabase Agent Runs And Message Bus](../08-Task/todo/Task-085-Flow-Mode-Supabase-Agent-Runs-And-Message-Bus.md)
+- [Task-084: Dependency Feedback Loop And Orchestration Board](../08-Task/done/Task-084-Dependency-Feedback-Loop-And-Orchestration-Board.md)
+- [Task-085: Unified Local Run Persistence](../08-Task/todo/Task-085-Unified-Local-Run-Persistence.md)
 
 ## 3. Architecture Decision
 

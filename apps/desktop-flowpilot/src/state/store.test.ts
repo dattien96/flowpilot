@@ -102,8 +102,8 @@ function seedStore(client: RunnerClient, runHistory: RunHistoryItem[]): void {
     runHistory,
     historyLoading: false,
     historyLoadError: undefined,
-    pendingApproval: undefined,
-    pendingQuestion: undefined,
+    pendingApprovals: [],
+    pendingQuestions: [],
     lastTurnInput: undefined,
     latestTokenUsage: undefined,
     recoverable: false,
@@ -210,6 +210,72 @@ test("openHistoryRun marks unavailable history entries on typed resume errors", 
   assert.equal(state.runId, "current-run");
   assert.deepEqual(state.timeline, [{ kind: "prompt", id: "prompt-1", text: "keep current timeline" }]);
   assert.equal(state.runHistory[0]?.unavailableReason, "session data not found on this machine");
+});
+
+test("selectProject resets the active chat run when switching projects", async () => {
+  seedStore(makeClient({ listSkills: async () => [] }), []);
+  useStore.setState({
+    selectedProjectId: "project-1",
+    runId: "current-run",
+    mainRunId: "current-run",
+    activeStepId: "chat-current-run",
+    status: "running",
+    timeline: [{ kind: "prompt", id: "prompt-1", text: "old project prompt" }],
+    artifacts: [{ id: "artifact-1", runId: "current-run", name: "Artifact", kind: "summary", createdAt: "2026-01-01T00:00:00Z" }],
+    pendingApprovals: [
+      {
+        approvalId: "approval-1",
+        details: { command: "echo hi", decisions: [] },
+      },
+    ],
+  });
+
+  await useStore.getState().selectProject("project-2");
+
+  const state = useStore.getState();
+  assert.equal(state.selectedProjectId, "project-2");
+  assert.equal(state.runId, undefined);
+  assert.equal(state.mainRunId, undefined);
+  assert.equal(state.activeStepId, undefined);
+  assert.equal(state.status, "idle");
+  assert.deepEqual(state.timeline, []);
+  assert.deepEqual(state.artifacts, []);
+  assert.deepEqual(state.pendingApprovals, []);
+});
+
+test("setChatStartMode clears flowRef and builtin orchestration options on any mode change", () => {
+  seedStore(makeClient(), []);
+  useStore.setState({ flowRef: "flowpilot-core-flow-pack/review-loop", builtinOrchestrationOptions: [
+    { flowRef: "flowpilot-core-flow-pack/review-loop", label: "Review Loop", description: "" },
+  ] });
+
+  useStore.getState().setChatStartMode("normal");
+
+  const state = useStore.getState();
+  assert.equal(state.chatStartMode, "normal");
+  assert.equal(state.flowRef, undefined);
+  assert.deepEqual(state.builtinOrchestrationOptions, []);
+});
+
+test("setChatStartMode loads builtin orchestration options when entering bugfix", async () => {
+  seedStore(
+    makeClient({
+      listBuiltinOrchestrationOptions: async (subMode) => {
+        assert.equal(subMode, "bug");
+        return [{ flowRef: "flowpilot-core-flow-pack/review-loop", label: "Review Loop", description: "review until clean" }];
+      },
+    }),
+    [],
+  );
+
+  useStore.getState().setChatStartMode("bugfix");
+  // loadBuiltinOrchestrationOptions is fired-and-forgotten from setChatStartMode; await a tick.
+  await Promise.resolve();
+  await Promise.resolve();
+
+  const state = useStore.getState();
+  assert.equal(state.builtinOrchestrationOptions.length, 1);
+  assert.equal(state.builtinOrchestrationOptions[0]?.flowRef, "flowpilot-core-flow-pack/review-loop");
 });
 
 test("openHistoryRun treats active-account-not-signed-in as unavailable instead of replacing the current run", async () => {
@@ -409,7 +475,7 @@ test("openHistoryRun keeps an approval gate open when the replay ends on permiss
 
   const state = useStore.getState();
   assert.equal(state.status, "waiting_approval");
-  assert.deepEqual(state.pendingApproval, { approvalId: "appr-1", details: approvalDetails });
+  assert.deepEqual(state.pendingApprovals, [{ approvalId: "appr-1", details: approvalDetails }]);
   const card = state.timeline.find((item) => item.kind === "approval") as Extract<TimelineItem, { kind: "approval" }> | undefined;
   assert.equal(card?.decision, undefined, "approval card should remain actionable");
 });
@@ -868,6 +934,8 @@ test("focusAgentRun resumes from the last replay cursor when a child snapshot is
         timeline: [],
         artifacts: [],
         status: "running",
+        pendingApprovals: [],
+        pendingQuestions: [],
         recoverable: false,
         lastEventSeq: 2,
       },
@@ -976,6 +1044,8 @@ test("applyTimelineEvent starts a new assistant bubble for a new turn", () => {
   const base: TimelineState = {
     status: "running",
     recoverable: false,
+    pendingApprovals: [],
+    pendingQuestions: [],
     _streamingAssistantId: "assistant-main",
     timeline: [{ kind: "assistant", id: "assistant-main", text: "parent response", finalized: false }],
   };
@@ -1043,6 +1113,8 @@ test("backToMainRun aborts its replay stream before focusing a child again", asy
         timeline: [{ kind: "assistant", id: "main-message", text: "main", finalized: true }],
         artifacts: [],
         status: "completed",
+        pendingApprovals: [],
+        pendingQuestions: [],
         recoverable: false,
       },
     },
@@ -1147,6 +1219,8 @@ test("backToMainRun replays from snapshot lastEventSeq, not from orchestration-i
         timeline: [{ kind: "prompt", id: "main-prompt", text: "main prompt" }],
         artifacts: [],
         status: "running",
+        pendingApprovals: [],
+        pendingQuestions: [],
         recoverable: false,
         lastEventSeq: 10,
       },
@@ -1214,6 +1288,8 @@ test("backToMainRun replaying the gap does not duplicate agentBusMessages", asyn
         timeline: [{ kind: "prompt", id: "main-prompt", text: "main prompt" }],
         artifacts: [],
         status: "running",
+        pendingApprovals: [],
+        pendingQuestions: [],
         recoverable: false,
         lastEventSeq: 10,
       },

@@ -254,6 +254,60 @@ func TestParseAgentDefinitionBlockListTools(t *testing.T) {
 	}
 }
 
+// Task-094: synthesizer is present in the catalog and overridable by an on-disk file.
+func TestSynthesizerBuiltinIsDiscoverable(t *testing.T) {
+	catalog := &AgentCatalog{
+		builtins:       builtinAgentDefinitions(),
+		providerHomeFn: func() []AgentDefinition { return nil },
+	}
+	byName := indexAgentsByName(catalog.listAgents(""))
+	def, ok := byName["synthesizer"]
+	if !ok {
+		t.Fatalf("expected built-in synthesizer, got %v", agentNames(catalog.listAgents("")))
+	}
+	if def.Source != "flowpilot" {
+		t.Errorf("synthesizer.Source = %q, want flowpilot", def.Source)
+	}
+	if def.Role != "synthesizer" {
+		t.Errorf("synthesizer.Role = %q, want synthesizer", def.Role)
+	}
+}
+
+func TestSynthesizerIsOverridableByProjectLocalFile(t *testing.T) {
+	cwd := t.TempDir()
+	agentsDir := filepath.Join(cwd, ".claude", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "---\n" +
+		"name: synthesizer\n" +
+		"description: Custom synthesizer\n" +
+		"tools: [Read, Grep]\n" +
+		"---\n" +
+		"Custom synthesis logic.\n"
+	if err := os.WriteFile(filepath.Join(agentsDir, "synthesizer.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	catalog := &AgentCatalog{
+		builtins:       builtinAgentDefinitions(),
+		providerHomeFn: func() []AgentDefinition { return nil },
+	}
+	agents := catalog.listAgents(cwd)
+	byName := indexAgentsByName(agents)
+	var count int
+	for _, def := range agents {
+		if def.Name == "synthesizer" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly one synthesizer after dedupe, got %d", count)
+	}
+	if def := byName["synthesizer"]; def.Source != "claude" {
+		t.Errorf("synthesizer.Source = %q, want claude (project-local wins)", def.Source)
+	}
+}
+
 func indexAgentsByName(agents []AgentDefinition) map[string]AgentDefinition {
 	out := make(map[string]AgentDefinition, len(agents))
 	for _, def := range agents {

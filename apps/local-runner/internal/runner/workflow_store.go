@@ -3,6 +3,8 @@ package runner
 import (
 	"context"
 	"sync"
+
+	"flowpilot-runner/internal/agentpack"
 )
 
 // Phase 5 (04-05): the persistence boundary for workflow orchestration. The runner
@@ -46,6 +48,14 @@ type SessionHistoryReader interface {
 	GetProviderSession(ctx context.Context, runID string) (ProviderSessionState, bool, error)
 }
 
+// FlowEventStore is an optional extension of InteractiveStateStore that
+// persists CP-41 flow events (FlowContextPackage, ValidationResult, ValidationRetry,
+// AuditDraft) to a per-run sidecar NDJSON so they survive process restarts.
+type FlowEventStore interface {
+	LoadFlowEvents(ctx context.Context, runID string) ([]ProviderEvent, error)
+	DeleteFlowEvents(ctx context.Context, runID string) error
+}
+
 type SessionIndexReader interface {
 	ListAllProviderSessions(ctx context.Context) ([]ProviderSessionState, error)
 }
@@ -83,6 +93,25 @@ type ProviderSessionState struct {
 	// run's provider conversation, persisted so the parent still learns about them after a
 	// restart (BUG-122).
 	PendingAgentContext []string
+	// LoopState persists the flow-engine loop state for root (parent) runs so a
+	// runner restart or Drive-synced cross-PC move can resume the correct round/cap
+	// (Task-085). Zero-valued for child runs and plain chat runs.
+	LoopState AgentLoopState
+	// AutoOrchestrate persists the hub auto-reinvocation flag (Task-093 / CP-36 P-7).
+	// False for child runs and plain chat runs.
+	AutoOrchestrate bool
+	// FlowCohortID persists the cohort membership ID for child runs (CP-36 / Task-095 BUG fix).
+	// Empty for parent runs and plain chat runs.
+	FlowCohortID string
+	// ActiveFlowEdges/ActiveFlowNodes persist a resolved flow's tracked topology
+	// for root (parent) runs (BUG-NOTE-CP42 #16), so edge-driven back-edge
+	// routing (resolveContinueBackEdgeTarget) and forward auto-advance
+	// (tryAdvanceFlowFromNode) keep working after a runner restart or a
+	// Drive-synced cross-PC move — without this, a chat reopened mid-flow
+	// after a restart silently reverts to legacy isCoderRun role matching.
+	// Empty for a plain chat run never started via a resolved flowRef.
+	ActiveFlowEdges []agentpack.FlowEdge
+	ActiveFlowNodes []agentpack.FlowNode
 }
 
 type ProviderApprovalState struct {
@@ -167,6 +196,9 @@ func (f *fakeWorkflowStore) ApplyStepTransition(_ context.Context, runID string,
 		steps[i].Status = t.Patch.Status
 		if t.Patch.StartedAt != nil {
 			steps[i].StartedAt = *t.Patch.StartedAt
+		}
+		if t.Patch.FinishedAt != nil {
+			steps[i].FinishedAt = *t.Patch.FinishedAt
 		}
 		if t.Patch.RejectionNote != nil {
 			steps[i].RejectionNote = *t.Patch.RejectionNote

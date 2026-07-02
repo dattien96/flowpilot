@@ -53,7 +53,14 @@ const (
 	EventAgentResultInjected ProviderEventType = "agent_result_injected"
 	// Emitted after a turn completes when the post-turn flow gate detects a violation
 	// (CP-35 P-4/P-5). The desktop surfaces it as an inline warning card.
-	EventFlowGateViolation ProviderEventType = "flow_gate_violation"
+	EventFlowGateViolation    ProviderEventType = "flow_gate_violation"
+	EventFlowContextPackage   ProviderEventType = "flow_context_package"
+	// Emitted by the Testing step when a validation command completes (Task-170).
+	EventFlowValidationResult ProviderEventType = "flow_validation_result"
+	// Emitted when a Coding retry is scheduled after a failed validation (Task-170).
+	EventFlowValidationRetry ProviderEventType = "flow_validation_retry"
+	// Emitted when the Audit step prepares its draft (Task-171).
+	EventFlowAuditDraft ProviderEventType = "flow_audit_draft"
 )
 
 // ApprovalDecisionOption is one decision the runtime offers for an approval.
@@ -141,6 +148,15 @@ type ProviderEvent struct {
 	// agent_spawned_by_user / agent_result_injected (BUG-121)
 	AgentName  string `json:"agentName,omitempty"`
 	ChildRunID string `json:"childRunId,omitempty"`
+	// flow_context_package (Task-168)
+	FlowContextPackage *FlowContextPackage `json:"flowContextPackage,omitempty"`
+	// flow_validation_result (Task-170): bounded metadata for a Testing step command run.
+	// Raw stdout/stderr are not persisted here; only metadata and exit code are kept.
+	FlowValidationResult *ValidationResultMeta `json:"flowValidationResult,omitempty"`
+	// flow_validation_retry (Task-170): snapshot of the retry state transition.
+	FlowValidationRetryState *FlowValidationRetryState `json:"flowValidationRetryState,omitempty"`
+	// flow_audit_draft (Task-171): audit draft prepared after successful validation.
+	FlowAuditDraft *FlowAuditDraft `json:"flowAuditDraft,omitempty"`
 }
 
 type AgentDependencyEdge struct {
@@ -163,8 +179,14 @@ type AgentBusMessage struct {
 type AgentLoopState struct {
 	Status     string `json:"status"`
 	Round      int    `json:"round"`
-	RoundCap   int    `json:"roundCap"`
+	RoundCap   int    `json:"roundCap"`            // legacy; use Cap for flow-engine paths
+	Cap        int    `json:"cap,omitempty"`        // flow-engine cap (Task-090); mirrors RoundCap when 0
 	GateReason string `json:"gateReason,omitempty"`
+	// New fields added by Task-090 (flow engine)
+	OpenIssues  int    `json:"openIssues,omitempty"`
+	Mode        string `json:"mode,omitempty"`        // "keyword" | "explicit"
+	ActiveNode  string `json:"activeNode,omitempty"`
+	ExtendCount int    `json:"extendCount,omitempty"`
 }
 
 type AgentGraphSnapshot struct {
@@ -264,6 +286,13 @@ type TurnInput struct {
 	// Attachments carries image attachments for chat-mode turns (Task-052), inline as
 	// base64. Empty in workflow/step mode and when no images are attached.
 	Attachments []PromptAttachment `json:"attachments,omitempty"`
+	// SubMode/FlowRef select an optional built-in Chat Mode orchestration
+	// template (CP-42/Task-177). Validated by handleStartTurn against
+	// BuiltinOrchestrationOptions before reaching startTurn, so by the time
+	// startTurn sees a non-empty FlowRef it is already a known-valid option
+	// for SubMode.
+	SubMode string `json:"subMode,omitempty"`
+	FlowRef string `json:"flowRef,omitempty"`
 }
 
 // ---- Catalog DTOs (navigator; fake catalog in P2) --------------------------

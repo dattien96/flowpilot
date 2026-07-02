@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -71,5 +72,41 @@ func TestBuildProviderAccountSummaryResponsesSortsAndFallsBack(t *testing.T) {
 	}
 	if got[1].UsageSource != "unavailable" {
 		t.Fatalf("expected unavailable usage source without auth metadata, got %q", got[1].UsageSource)
+	}
+}
+
+func TestBuildProviderAccountSummaryResponsesKeepsGeminiAntigravityUsageUnavailable(t *testing.T) {
+	t.Parallel()
+
+	base := t.TempDir()
+	homePath := filepath.Join(base, "gemini-active")
+	if err := os.MkdirAll(filepath.Join(homePath, ".gemini", "antigravity-cli"), 0o755); err != nil {
+		t.Fatalf("mkdir antigravity marker: %v", err)
+	}
+
+	got, err := buildProviderAccountSummaryResponses([]runner.ProviderAccount{{
+		ID:          "gemini-active",
+		ProviderKey: "gemini",
+		DisplayName: "Gemini Active",
+		HomePath:    homePath,
+		SlotIndex:   1,
+		IsActive:    true,
+		AuthStatus:  "connected",
+		CreatedAt:   "2026-06-12T10:00:00Z",
+	}})
+	if err != nil {
+		t.Fatalf("buildProviderAccountSummaryResponses() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 summary, got %d", len(got))
+	}
+	if got[0].UsageSource != "unavailable" {
+		t.Fatalf("expected AGY-backed Gemini usage to stay unavailable without native quota API, got %q", got[0].UsageSource)
+	}
+	if got[0].UsageSummary != nil {
+		t.Fatalf("expected no legacy usage summary for AGY-backed Gemini, got %q", *got[0].UsageSummary)
+	}
+	if len(got[0].UsageDetailLines) != 0 {
+		t.Fatalf("expected no legacy usage detail lines for AGY-backed Gemini, got %+v", got[0].UsageDetailLines)
 	}
 }

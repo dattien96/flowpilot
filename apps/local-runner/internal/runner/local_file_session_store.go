@@ -5,10 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
+
+	"flowpilot-runner/internal/agentpack"
 )
 
 const sessionStoreMaxAge = 90 * 24 * time.Hour
@@ -67,7 +72,14 @@ type ndjsonSessionRecord struct {
 	DependsOn           []string `json:"depends_on,omitempty"`
 	AgentStatus         string   `json:"agent_status,omitempty"`
 	ModelName           string   `json:"model_name,omitempty"`
-	PendingAgentContext []string `json:"pending_agent_context,omitempty"`
+	PendingAgentContext []string        `json:"pending_agent_context,omitempty"`
+	LoopState           *AgentLoopState `json:"loop_state,omitempty"`
+	AutoOrchestrate     bool            `json:"auto_orchestrate,omitempty"`
+	FlowCohortID        string          `json:"flow_cohort_id,omitempty"`
+	// ActiveFlowEdges/ActiveFlowNodes persist a resolved flow's tracked
+	// topology across a restart (BUG-NOTE-CP42 #16); see ProviderSessionState.
+	ActiveFlowEdges []agentpack.FlowEdge `json:"active_flow_edges,omitempty"`
+	ActiveFlowNodes []agentpack.FlowNode `json:"active_flow_nodes,omitempty"`
 }
 
 // loadFromDisk reads the NDJSON file, applies last-wins dedup per run_id, and
@@ -234,7 +246,19 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		AgentStatus:         r.AgentStatus,
 		ModelName:           r.ModelName,
 		PendingAgentContext: append([]string(nil), r.PendingAgentContext...),
+		LoopState:           loopStateFromPtr(r.LoopState),
+		AutoOrchestrate:     r.AutoOrchestrate,
+		FlowCohortID:        r.FlowCohortID,
+		ActiveFlowEdges:     append([]agentpack.FlowEdge(nil), r.ActiveFlowEdges...),
+		ActiveFlowNodes:     append([]agentpack.FlowNode(nil), r.ActiveFlowNodes...),
 	}
+}
+
+func loopStateFromPtr(p *AgentLoopState) AgentLoopState {
+	if p == nil {
+		return AgentLoopState{}
+	}
+	return *p
 }
 
 // turnLogPath returns the path of the per-run turn-log sidecar file.
@@ -289,6 +313,116 @@ func (s *localFileSessionStore) DeleteTurnLog(_ context.Context, runID string) e
 	return err
 }
 
+// flowEventsPath returns the path of the per-run CP-41 flow-events sidecar.
+// Returns an error when runID contains path separators that could escape the
+// store directory (path-traversal guard).
+func (s *localFileSessionStore) flowEventsPath(runID string) (string, error) {
+	if runID == "" || filepath.Base(runID) != runID {
+		return "", fmt.Errorf("invalid run ID %q: must not contain path separators", runID)
+	}
+	return filepath.Join(filepath.Dir(s.filePath), runID+"-flow-events.ndjson"), nil
+}
+
+// isFlowSidecarEventType reports whether the event type should be persisted to
+// the per-run flow-events sidecar so it survives process restarts.
+func isFlowSidecarEventType(t ProviderEventType) bool {
+	switch t {
+	case EventFlowContextPackage, EventFlowValidationResult,
+		EventFlowValidationRetry, EventFlowAuditDraft:
+		return true
+	}
+	return false
+}
+
+// AppendEvent writes to the in-memory store (via the embedded fakeWorkflowStore)
+// and, for CP-41 event types, also appends to the per-run flow-events sidecar
+// NDJSON so the events survive a process restart.
+func (s *localFileSessionStore) AppendEvent(ctx context.Context, event ProviderEvent) error {
+	if err := s.fakeWorkflowStore.AppendEvent(ctx, event); err != nil {
+		return err
+	}
+	if !isFlowSidecarEventType(event.Type) || event.WorkflowRunID == "" {
+		return nil
+	}
+	data, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	evPath, err := s.flowEventsPath(event.WorkflowRunID)
+	if err != nil {
+		return err
+	}
+	fh, err := os.OpenFile(evPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer fh.Close()
+	_, err = fh.Write(append(data, '\n'))
+	return err
+}
+
+// LoadFlowEvents reads all CP-41 events from the per-run flow-events sidecar.
+// Returns nil, nil when the sidecar does not exist (new run or no flow events yet).
+// Reads line-by-line with a 1 MiB buffer (avoids bufio.Scanner's 64 KiB limit)
+// so a single malformed line only skips that line — later valid lines are kept.
+// Malformed lines are logged with runID and line number to aid sidecar diagnosis.
+func (s *localFileSessionStore) LoadFlowEvents(_ context.Context, runID string) ([]ProviderEvent, error) {
+	evPath, err := s.flowEventsPath(runID)
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.Open(evPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+	var evs []ProviderEvent
+	br := bufio.NewReaderSize(f, 1<<20) // 1 MiB per-line buffer
+	lineNum := 0
+	for {
+		line, readErr := br.ReadBytes('\n')
+		if len(line) > 0 {
+			lineNum++
+			// trim CR+LF and skip blank lines
+			for len(line) > 0 && (line[len(line)-1] == '\n' || line[len(line)-1] == '\r') {
+				line = line[:len(line)-1]
+			}
+			if len(line) > 0 {
+				var ev ProviderEvent
+				if jsonErr := json.Unmarshal(line, &ev); jsonErr == nil && ev.Type != "" {
+					evs = append(evs, ev)
+				} else if jsonErr != nil {
+					log.Printf("LoadFlowEvents: runID=%s line=%d: malformed JSON: %v", runID, lineNum, jsonErr)
+				}
+			}
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			return nil, readErr
+		}
+	}
+	return evs, nil
+}
+
+// DeleteFlowEvents removes the per-run flow-events sidecar.
+// No-op when the file does not exist.
+func (s *localFileSessionStore) DeleteFlowEvents(_ context.Context, runID string) error {
+	evPath, err := s.flowEventsPath(runID)
+	if err != nil {
+		return err
+	}
+	err = os.Remove(evPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
 func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 	return ndjsonSessionRecord{
 		RunID:               s.RunID,
@@ -316,5 +450,19 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		AgentStatus:         s.AgentStatus,
 		ModelName:           s.ModelName,
 		PendingAgentContext: append([]string(nil), s.PendingAgentContext...),
+		LoopState:           loopStatePtrIfSet(s.LoopState),
+		AutoOrchestrate:     s.AutoOrchestrate,
+		FlowCohortID:        s.FlowCohortID,
+		ActiveFlowEdges:     append([]agentpack.FlowEdge(nil), s.ActiveFlowEdges...),
+		ActiveFlowNodes:     append([]agentpack.FlowNode(nil), s.ActiveFlowNodes...),
 	}
+}
+
+func loopStatePtrIfSet(st AgentLoopState) *AgentLoopState {
+	if st.Mode == "" && st.Round == 0 && st.Cap == 0 && st.RoundCap == 0 &&
+		st.ActiveNode == "" && st.ExtendCount == 0 && st.GateReason == "" {
+		return nil
+	}
+	cp := st
+	return &cp
 }

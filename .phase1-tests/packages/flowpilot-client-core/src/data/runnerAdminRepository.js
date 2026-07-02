@@ -19,6 +19,15 @@ class RunnerAdminRepository {
         const response = await this.httpClient.request(new URL("/providers", this.runnerBaseUrl), { cache: "no-store" });
         return readJson(response).catch(() => []);
     }
+    async installLocalProvider(providerKey) {
+        const response = await this.httpClient.request(new URL("/providers/install", this.runnerBaseUrl), {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ providerName: providerKey }),
+        });
+        const payload = await readJson(response);
+        return payload.providers ?? [];
+    }
     async authenticateProvider(providerKey) {
         const response = await this.httpClient.request(new URL("/providers/auth", this.runnerBaseUrl), {
             method: "POST",
@@ -131,6 +140,7 @@ class CompositeProviderRepository {
         this.runnerRepository = runnerRepository;
     }
     listLocalProviders() { return this.runnerRepository.listLocalProviders(); }
+    installLocalProvider(providerKey) { return this.runnerRepository.installLocalProvider(providerKey); }
     authenticateProvider(providerKey) { return this.runnerRepository.authenticateProvider(providerKey); }
     listSupportedModels() { return this.supabaseRepository.listSupportedModels(); }
     createSupportedModel(model) { return this.supabaseRepository.createSupportedModel(model); }

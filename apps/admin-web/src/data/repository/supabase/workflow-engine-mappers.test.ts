@@ -88,7 +88,7 @@ describe("WorkflowEngine mappers", () => {
         created_at: "2026-05-20T00:00:00Z",
         updated_at: "2026-05-20T01:00:00Z",
       }).model,
-    ).toBe("gemini-2.5-flash");
+    ).toBe("gemini-3.5-flash-medium");
 
     expect(
       mapWorkflow({
@@ -105,7 +105,7 @@ describe("WorkflowEngine mappers", () => {
         created_at: "2026-05-20T00:00:00Z",
         updated_at: "2026-05-20T01:00:00Z",
       }).modelOverride,
-    ).toBe("gemini-2.5-pro");
+    ).toBe("gemini-3.1-pro-high");
     expect(
       mapWorkflow({
         id: "wf-yolo",

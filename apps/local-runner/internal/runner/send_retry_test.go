@@ -98,6 +98,23 @@ func TestSendTurnWithRetryDoesNotRetryUsageLimit(t *testing.T) {
 	}
 }
 
+func TestSendTurnWithRetryDoesNotRetryGeminiWorkspaceRequired(t *testing.T) {
+	a := &flakyAdapter{
+		failUntil: 5,
+		failErr:   errGeminiWorkspaceRequired,
+	}
+	svc := NewInteractiveServiceWithRegistry(registryWithAdapter(a))
+	err := svc.sendTurnWithRetry(context.Background(), a, TurnRequest{RunID: "r1"}, &captureBridge{})
+	if !errors.Is(err, errGeminiWorkspaceRequired) {
+		t.Fatalf("expected Gemini workspace error passed through, got %v", err)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.attempts != 1 {
+		t.Fatalf("attempts = %d, want 1 (Gemini workspace error is terminal)", a.attempts)
+	}
+}
+
 // retry gives up after maxTurnAttempts and returns the last error.
 func TestSendTurnWithRetryGivesUp(t *testing.T) {
 	a := &flakyAdapter{failUntil: 99, failErr: errors.New("persistent failure")}

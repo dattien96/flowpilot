@@ -31,14 +31,20 @@ type codexAdapter struct {
 	mu         sync.Mutex
 	bridges    map[string]TurnBridge // threadId -> active turn bridge
 	codexTurns map[string]string     // threadId -> Codex turn id (for interrupt)
+	// allowReviewOutcome tracks, per threadId, whether this turn actually
+	// advertised submit_review_outcome as a dynamicTool (BUG-NOTE-CP42 #24).
+	// handleDynamicToolCall re-checks this before acting on a call, as
+	// defense in depth against a model invoking a tool it was never shown.
+	allowReviewOutcome map[string]bool
 }
 
 func newCodexAdapter(dispatcher *codexDispatcher, cwd string) *codexAdapter {
 	a := &codexAdapter{
-		dispatcher: dispatcher,
-		cwd:        cwd,
-		bridges:    map[string]TurnBridge{},
-		codexTurns: map[string]string{},
+		dispatcher:         dispatcher,
+		cwd:                cwd,
+		bridges:            map[string]TurnBridge{},
+		codexTurns:         map[string]string{},
+		allowReviewOutcome: map[string]bool{},
 	}
 	dispatcher.setInbound(a.handleInbound)
 	return a
@@ -57,6 +63,10 @@ const askUserReinforcement = "\n\n---\nComplete the clear, unambiguous parts of 
 // before the model can act. Keep a FlowPilot-specific registration name on Codex
 // while normalizing it back to `spawn_agent` at the runner/UI boundary. (BUG-124)
 const codexSpawnAgentToolName = "flowpilot_spawn_agent"
+
+// codexReviewOutcomeToolName uses the flowpilot_ prefix following the same reserved-name
+// avoidance pattern as codexSpawnAgentToolName.
+const codexReviewOutcomeToolName = "flowpilot_submit_review_outcome"
 
 // preparePrompt builds the final turn prompt. The default applies ask_user
 // reinforcement; promptPrep (when set) replaces it with full runner-side assembly.
@@ -95,14 +105,28 @@ func codexSpawnAgentDynamicTool() any {
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"agent":     map[string]any{"type": "string", "description": "Agent name from the catalog (e.g. 'coder', 'reviewer', 'tester')."},
-				"prompt":    map[string]any{"type": "string", "description": "Initial prompt for the sub-agent."},
-				"provider":  map[string]any{"type": "string", "description": "Override provider (optional, defaults to parent run's provider)."},
-				"dependsOn": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Run IDs this agent depends on."},
-				"wait":      map[string]any{"type": "boolean", "description": "If true, block until the sub-agent's turn completes and return its final message."},
+				"agent":           map[string]any{"type": "string", "description": "Agent name from the catalog (e.g. 'coder', 'reviewer', 'tester')."},
+				"prompt":          map[string]any{"type": "string", "description": "Initial prompt for the sub-agent."},
+				"provider":        map[string]any{"type": "string", "description": "Override provider (optional, defaults to parent run's provider)."},
+				"dependsOn":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Run IDs this agent depends on."},
+				"wait":            map[string]any{"type": "boolean", "description": "If true, block until the sub-agent's turn completes and return its final message."},
+				"flowCohortId":    map[string]any{"type": "string", "description": "Group siblings into a cohort barrier; all members must complete before the hub is re-invoked."},
+				"cohortSize":      map[string]any{"type": "integer", "description": "Total cohort members when pre-declared; otherwise counted on each spawn."},
+				"label":           map[string]any{"type": "string", "description": "Display name shown in the consolidated join note (defaults to agent name)."},
+				"autoOrchestrate": map[string]any{"type": "boolean", "description": "When true on the first spawn, enables bounded hub auto-reinvocation after each cohort join."},
 			},
 			"required": []any{"agent", "prompt", "wait"},
 		},
+	}
+}
+
+// codexReviewOutcomeDynamicTool registers submit_review_outcome as a Codex DynamicToolSpec
+// using the shared schema so Claude/Codex remain in parity (LOW finding).
+func codexReviewOutcomeDynamicTool() any {
+	return map[string]any{
+		"name":        codexReviewOutcomeToolName,
+		"description": "Submit a code-review verdict. Use approved when the code is ready, changes_requested when issues were found (feedback required), or blocked when the review cannot proceed. This is the only flow-control tool.",
+		"inputSchema": sharedReviewOutcomeSchema(),
 	}
 }
 
@@ -130,7 +154,16 @@ func (a *codexAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tur
 	//
 	// Once a real rollout id exists, follow-up turns must rejoin that thread via app-server
 	// `thread/resume` so approval/MCP/ask_user bridging stays available on resumed turns.
+	//
+	// submit_review_outcome is only advertised when this turn's run is actually
+	// acting as a flow hub (BUG-NOTE-CP42 #24) — previously every turn on every
+	// provider unconditionally offered it, so a model in ordinary chat could
+	// call it and mutate that run's loop state (applyFlowControl only checks
+	// the run exists, not that it's a flow hub).
 	dynamicTools := []any{codexAskUserDynamicTool(), codexSpawnAgentDynamicTool()}
+	if req.OfferReviewOutcomeTool {
+		dynamicTools = append(dynamicTools, codexReviewOutcomeDynamicTool())
+	}
 	threadMethod := "thread/start"
 	threadParams := codexThreadStartParams(cwd, sandbox, approvalMode, req.ModelName, req.ReasoningEffort, dynamicTools)
 	if resumeID := strings.TrimSpace(req.ProviderSessionID); resumeID != "" && !strings.HasPrefix(resumeID, "thread-") {
@@ -160,11 +193,13 @@ func (a *codexAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tur
 
 	a.mu.Lock()
 	a.bridges[threadID] = bridge
+	a.allowReviewOutcome[threadID] = req.OfferReviewOutcomeTool
 	a.mu.Unlock()
 	defer func() {
 		a.mu.Lock()
 		delete(a.bridges, threadID)
 		delete(a.codexTurns, threadID)
+		delete(a.allowReviewOutcome, threadID)
 		a.mu.Unlock()
 	}()
 
@@ -279,9 +314,17 @@ func (a *codexAdapter) handleDynamicToolCall(req codexInboundRequest) {
 	threadID := codexThreadIDFromParams(req.Params)
 	a.mu.Lock()
 	bridge := a.bridges[threadID]
+	allowReviewOutcome := a.allowReviewOutcome[threadID]
 	a.mu.Unlock()
 
 	tool, _ := req.Params["tool"].(string)
+	// BUG-NOTE-CP42 #24 defense in depth: submit_review_outcome isn't listed
+	// in dynamicTools for a non-hub turn, but re-check here too in case a
+	// model calls it anyway (e.g. from stale session context after a resume).
+	if (tool == "submit_review_outcome" || tool == codexReviewOutcomeToolName) && !allowReviewOutcome {
+		_ = a.dispatcher.reply(req.ID, codexDynamicToolResult("submit_review_outcome is not available for this run.", false))
+		return
+	}
 	if bridge == nil {
 		_ = a.dispatcher.reply(req.ID, codexDynamicToolResult("Tool is not available.", false))
 		return
@@ -312,6 +355,29 @@ func (a *codexAdapter) handleDynamicToolCall(req codexInboundRequest) {
 			return
 		}
 		resultJSON, _ := json.Marshal(result)
+		_ = a.dispatcher.reply(req.ID, codexDynamicToolResult(string(resultJSON), true))
+	case "submit_review_outcome", codexReviewOutcomeToolName:
+		args, _ := req.Params["arguments"].(map[string]any)
+		if args == nil {
+			args = map[string]any{}
+		}
+		rin, parseErr := parseReviewOutcomeInput(args)
+		if parseErr != nil {
+			_ = a.dispatcher.reply(req.ID, codexDynamicToolResult(parseErr.Error(), false))
+			return
+		}
+		fc, mapErr := reviewOutcomeToFlowControl(rin)
+		if mapErr != nil {
+			_ = a.dispatcher.reply(req.ID, codexDynamicToolResult(mapErr.Error(), false))
+			return
+		}
+		fcResult, fcErr := bridge.SubmitFlowControl(fc)
+		if fcErr != nil {
+			_ = a.dispatcher.reply(req.ID, codexDynamicToolResult("submit_review_outcome failed: "+fcErr.Error(), false))
+			return
+		}
+		out := ReviewOutcomeResult{FlowControlResult: fcResult, OpenIssues: len(rin.Issues)}
+		resultJSON, _ := json.Marshal(out)
 		_ = a.dispatcher.reply(req.ID, codexDynamicToolResult(string(resultJSON), true))
 	default:
 		_ = a.dispatcher.reply(req.ID, codexDynamicToolResult("Tool is not available.", false))

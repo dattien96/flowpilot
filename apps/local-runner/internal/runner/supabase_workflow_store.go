@@ -44,24 +44,45 @@ func (s *SupabaseWorkflowStore) headers(prefer string) map[string]string {
 	return h
 }
 
-// dbStep is the PostgREST row shape for workflow_run_steps. requires_approval lives
-// on the joined workflow_steps definition, embedded via the select.
+// dbStep is the PostgREST row shape for workflow_run_steps. requires_approval,
+// behavior_id, node_id, agent_ref, provider_override, model_override, and the
+// step_type's yolo_mode default all live on the joined workflow_steps (and,
+// for yolo_mode, its nested step_definitions) row, embedded via the select.
 type dbStep struct {
 	ID            string  `json:"id"`
 	StepType      string  `json:"step_type"`
 	Status        string  `json:"status"`
 	StartedAt     *string `json:"started_at"`
+	FinishedAt    *string `json:"finished_at"`
 	RetryCount    int     `json:"retry_count"`
 	RejectionNote *string `json:"rejection_note"`
 	WorkflowSteps *struct {
-		RequiresApproval bool `json:"requires_approval"`
+		RequiresApproval bool    `json:"requires_approval"`
+		BehaviorID       *string `json:"behavior_id"`
+		NodeID           *string `json:"node_id"`
+		AgentRef         *string `json:"agent_ref"`
+		ProviderOverride *string `json:"provider_override"`
+		ModelOverride    *string `json:"model_override"`
+		StepDefinitions  *struct {
+			YoloMode bool    `json:"yolo_mode"`
+			Model    *string `json:"model"`
+		} `json:"step_definitions"`
 	} `json:"workflow_steps"`
 }
 
 // LoadRunSteps reads a run's steps in execution order.
 func (s *SupabaseWorkflowStore) LoadRunSteps(ctx context.Context, runID string) ([]RuntimeWorkflowStep, error) {
+	// BUG-NOTE-CP42 #7: behavior_id was missing from this select, so
+	// RuntimeWorkflowStep never carried it and runtime helpers like
+	// isCodingStepType/isPlanStepType could only classify a step by its
+	// step_type — the reusable step_definitions key — which for a CP-42
+	// generic flow node is a dispatch category (e.g. "flow-agent-delegate"),
+	// not a value NormalizeBehaviorID's alias table recognizes at all. A
+	// UI-authored generic flow's coding/plan steps were invisible to this
+	// classification, disconnecting them from the Flow Mode context-handoff
+	// path entirely.
 	endpoint := fmt.Sprintf(
-		"%s/workflow_run_steps?workflow_run_id=eq.%s&order=execution_order_index.asc&select=id,step_type,status,started_at,retry_count,rejection_note,workflow_steps(requires_approval)",
+		"%s/workflow_run_steps?workflow_run_id=eq.%s&order=execution_order_index.asc&select=id,step_type,status,started_at,finished_at,retry_count,rejection_note,workflow_steps(requires_approval,behavior_id,node_id,agent_ref,provider_override,model_override,step_definitions(yolo_mode,model))",
 		s.restURL, runID,
 	)
 	status, body, err := httpRequestFn(ctx, http.MethodGet, endpoint, s.headers(""), nil)
@@ -86,11 +107,45 @@ func (s *SupabaseWorkflowStore) LoadRunSteps(ctx context.Context, runID string) 
 		if r.StartedAt != nil {
 			step.StartedAt = *r.StartedAt
 		}
+		if r.FinishedAt != nil {
+			step.FinishedAt = *r.FinishedAt
+		}
 		if r.RejectionNote != nil {
 			step.RejectionNote = *r.RejectionNote
 		}
 		if r.WorkflowSteps != nil {
 			step.RequiresApproval = r.WorkflowSteps.RequiresApproval
+			if r.WorkflowSteps.BehaviorID != nil {
+				step.BehaviorID = *r.WorkflowSteps.BehaviorID
+			}
+			if r.WorkflowSteps.NodeID != nil {
+				step.NodeID = *r.WorkflowSteps.NodeID
+			}
+			if r.WorkflowSteps.AgentRef != nil {
+				step.AgentRef = *r.WorkflowSteps.AgentRef
+			}
+			if r.WorkflowSteps.ProviderOverride != nil {
+				step.Provider = *r.WorkflowSteps.ProviderOverride
+			}
+			if r.WorkflowSteps.ModelOverride != nil {
+				step.Model = *r.WorkflowSteps.ModelOverride
+			}
+			if r.WorkflowSteps.StepDefinitions != nil {
+				step.YoloMode = r.WorkflowSteps.StepDefinitions.YoloMode
+				// BUG-160: no per-step model_override set (the user cleared it, or never
+				// set one) falls back to the step TYPE's own configured default
+				// (step_definitions.model) before falling back further to the run's own
+				// model — a step with no override should show what that step type is
+				// actually configured to run on, not just whatever the run happens to be.
+				if step.Model == "" && r.WorkflowSteps.StepDefinitions.Model != nil {
+					step.Model = *r.WorkflowSteps.StepDefinitions.Model
+				}
+			}
+			if step.Provider == "" && step.Model != "" {
+				if pk, ok := providerKeyFromModel(step.Model); ok {
+					step.Provider = string(pk)
+				}
+			}
 		}
 		out[i] = step
 	}
@@ -126,6 +181,10 @@ func buildStepPatchBody(p WorkflowStepPatch) map[string]any {
 
 // ApplyStepTransition patches one step row (idempotent: re-applying the same patch
 // converges to the same row).
+//
+// Deprecated: run data is persisted by localFileSessionStore (sessions.ndjson) and
+// synced via Drive. The workflow_run_steps Supabase table is no longer written in
+// production (CP-36 P-5 / Task-085). Retained for compile-time back-compat only.
 func (s *SupabaseWorkflowStore) ApplyStepTransition(ctx context.Context, _ string, t WorkflowStepTransition) error {
 	endpoint := fmt.Sprintf("%s/workflow_run_steps?id=eq.%s", s.restURL, t.StepID)
 	payload, err := json.Marshal(buildStepPatchBody(t.Patch))
@@ -143,6 +202,9 @@ func (s *SupabaseWorkflowStore) ApplyStepTransition(ctx context.Context, _ strin
 }
 
 // SetRunStatus patches the run-level status + finished_at.
+//
+// Deprecated: see ApplyStepTransition. The workflow_runs Supabase table is no
+// longer written in production (CP-36 P-5 / Task-085).
 func (s *SupabaseWorkflowStore) SetRunStatus(ctx context.Context, runID string, runStatus WorkflowRunStatus, finishedAt string) error {
 	endpoint := fmt.Sprintf("%s/workflow_runs?id=eq.%s", s.restURL, runID)
 	payload, err := json.Marshal(map[string]any{
@@ -163,6 +225,9 @@ func (s *SupabaseWorkflowStore) SetRunStatus(ctx context.Context, runID string, 
 }
 
 // AppendLog inserts a step log row.
+//
+// Deprecated: see ApplyStepTransition. The workflow_run_logs Supabase table is no
+// longer written in production (CP-36 P-5 / Task-085).
 func (s *SupabaseWorkflowStore) AppendLog(ctx context.Context, stepID string, log WorkflowLog) error {
 	endpoint := s.restURL + "/workflow_run_logs"
 	payload, err := json.Marshal(map[string]any{
@@ -183,6 +248,10 @@ func (s *SupabaseWorkflowStore) AppendLog(ctx context.Context, stepID string, lo
 	return nil
 }
 
+// AppendEvent inserts a provider event row.
+//
+// Deprecated: see ApplyStepTransition. The workflow_provider_events Supabase table
+// is no longer written in production (CP-36 P-5 / Task-085).
 func (s *SupabaseWorkflowStore) AppendEvent(ctx context.Context, event ProviderEvent) error {
 	endpoint := s.restURL + "/workflow_provider_events"
 	payload, err := json.Marshal(map[string]any{

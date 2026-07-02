@@ -9,56 +9,56 @@ describe("mapGeminiQuotaUsageDetailLines", () => {
   it("keeps gemini 3 quota buckets when more than three models are returned", () => {
     const lines = mapGeminiQuotaUsageDetailLines([
       {
-        modelId: "gemini-3.1-pro-preview",
+        modelId: "gemini-3.1-pro-high",
         remainingFraction: 0.4,
         resetTime: "2026-06-03T00:03:00.000Z",
       },
       {
-        modelId: "gemini-2.5-flash",
+        modelId: "gemini-3.5-flash-medium",
         remainingFraction: 1,
         resetTime: "2026-06-03T00:03:00.000Z",
       },
       {
-        modelId: "gemini-2.5-flash-lite",
+        modelId: "gemini-3.5-flash-low",
         remainingFraction: 1,
         resetTime: "2026-06-03T00:03:00.000Z",
       },
       {
-        modelId: "gemini-2.5-pro",
+        modelId: "gemini-3.1-pro-low",
         remainingFraction: 1,
         resetTime: "2026-06-03T00:03:00.000Z",
       },
       {
-        modelId: "gemini-3-flash-preview",
+        modelId: "gemini-3.5-flash-high",
         remainingFraction: 0.6,
         resetTime: "2026-06-03T00:03:00.000Z",
       },
     ]);
 
     expect(lines.map((line) => line.label)).toEqual([
-      "gemini-2.5-flash",
-      "gemini-2.5-flash-lite",
-      "gemini-2.5-pro",
-      "gemini-3-flash-preview",
-      "gemini-3.1-pro-preview",
+      "gemini-3.1-pro-high",
+      "gemini-3.1-pro-low",
+      "gemini-3.5-flash-high",
+      "gemini-3.5-flash-low",
+      "gemini-3.5-flash-medium",
     ]);
   });
 
   it("filters invalid buckets and normalizes percentages", () => {
     const lines = mapGeminiQuotaUsageDetailLines([
       {
-        modelId: "gemini-2.5-pro",
+        modelId: "gemini-3.1-pro-high",
         remainingFraction: 1.2,
-        resetTime: 1_780_444_800,
+        resetTime: "1780444800",
       },
       {
-        modelId: "gemini-3-flash-preview",
+        modelId: "gemini-3.5-flash-medium",
         remainingFraction: -0.5,
         resetTime: "1780444800",
       },
       { modelId: null, remainingFraction: 0.4, resetTime: null },
       {
-        modelId: "gemini-3.1-pro-preview",
+        modelId: "gemini-3.1-pro-low",
         remainingFraction: null,
         resetTime: null,
       },
@@ -66,12 +66,12 @@ describe("mapGeminiQuotaUsageDetailLines", () => {
 
     expect(lines).toEqual([
       {
-        label: "gemini-2.5-pro",
+        label: "gemini-3.1-pro-high",
         remainingPercent: 100,
         resetAt: "2026-06-03T00:00:00.000Z",
       },
       {
-        label: "gemini-3-flash-preview",
+        label: "gemini-3.5-flash-medium",
         remainingPercent: 0,
         resetAt: "2026-06-03T00:00:00.000Z",
       },

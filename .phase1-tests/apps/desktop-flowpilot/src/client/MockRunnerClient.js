@@ -242,6 +242,23 @@ class MockRunnerClient {
             restoreStatus: "restored",
         };
     }
+    async handoffContext(runId, input) {
+        await delay(40);
+        return {
+            sourceRunId: runId,
+            sourceProviderKey: "codex",
+            targetProviderKey: input.targetProviderKey,
+            prompt: `[mock handoff] source=${runId} target=${input.targetProviderKey}`,
+            includedTurnCount: 0,
+            omittedTurnCount: 0,
+            truncated: false,
+            handoffMode: "raw",
+        };
+    }
+    async generateChatSummary(runId) {
+        await delay(20);
+        return { runId, generated: true, skipped: false };
+    }
     async connectProviderAccount(providerKey) {
         await delay(80);
         const nextSlotIndex = MOCK_PROVIDER_ACCOUNTS.filter((account) => account.providerKey === providerKey).reduce((max, account) => Math.max(max, account.slotIndex), 0) + 1;
@@ -284,6 +301,19 @@ class MockRunnerClient {
     async listAgents(_cwd) {
         await delay(40);
         return MOCK_AGENTS;
+    }
+    async listBuiltinOrchestrationOptions(subMode) {
+        await delay(20);
+        if (subMode === "bug") {
+            return [
+                {
+                    flowRef: "flowpilot-core-flow-pack/review-loop",
+                    label: "Review Loop",
+                    description: "Coder -> reviewers -> synthesis, review-until-clean.",
+                },
+            ];
+        }
+        return [];
     }
     async listAgentRuns(parentRunId) {
         await delay(40);
@@ -357,6 +387,36 @@ class MockRunnerClient {
         graph.snapshot = {
             ...graph.snapshot,
             loopState: { ...graph.snapshot.loopState, status: "stopped" },
+        };
+        this.parentGraphs.set(parentRunId, graph);
+        return graph.snapshot;
+    }
+    async submitReviewOutcome(parentRunId, input) {
+        const graph = await this.syncParentGraph(parentRunId);
+        const nextStatus = input.outcome === "approved" ? "done" : "running";
+        graph.snapshot = {
+            ...graph.snapshot,
+            loopState: {
+                ...graph.snapshot.loopState,
+                status: nextStatus,
+                openIssues: input.issues?.length ?? 0,
+            },
+        };
+        this.parentGraphs.set(parentRunId, graph);
+        return graph.snapshot;
+    }
+    async extendCap(parentRunId) {
+        const graph = await this.syncParentGraph(parentRunId);
+        const prev = graph.snapshot.loopState;
+        const currentCap = prev.cap ?? prev.roundCap ?? 3;
+        graph.snapshot = {
+            ...graph.snapshot,
+            loopState: {
+                ...prev,
+                cap: currentCap + 2,
+                extendCount: (prev.extendCount ?? 0) + 1,
+                status: "running",
+            },
         };
         this.parentGraphs.set(parentRunId, graph);
         return graph.snapshot;

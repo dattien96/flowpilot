@@ -8,6 +8,7 @@ import { ScenarioSwitcher } from "@/components/ScenarioSwitcher";
 import { SystemControls } from "@/components/SystemControls";
 import { ProviderAccountsPanel } from "@/components/ProviderAccountsPanel";
 import { AgentsPanel } from "@/components/AgentsPanel";
+import { FlowTimelineSidebar } from "@/components/FlowTimelineSidebar";
 import { OrchestrationBoard } from "@/components/OrchestrationBoard";
 import { useStore, accountLabel, providerLabel, type ChatStartMode } from "@/state/store";
 
@@ -165,19 +166,38 @@ function ChatStartIntentPanel(): React.ReactElement | null {
   const chatStartMode = useStore((s) => s.chatStartMode);
   const chatSourceDocId = useStore((s) => s.chatSourceDocId);
   const runStatus = useStore((s) => s.status);
+  const runId = useStore((s) => s.runId);
   const setChatStartMode = useStore((s) => s.setChatStartMode);
   const setChatSourceDocId = useStore((s) => s.setChatSourceDocId);
+  const flowRef = useStore((s) => s.flowRef);
+  const setFlowRef = useStore((s) => s.setFlowRef);
+  const builtinOrchestrationOptions = useStore((s) => s.builtinOrchestrationOptions);
 
   if (chatMode !== "normal_chat") return null;
 
-  const isRunning = runStatus === "running";
+  // BUG-NOTE-CP42 #29: the runner only ever honors changeType/subMode/flowRef
+  // on the very first turn (turnCount==0), and the client itself already
+  // knows this — sendMessage's own isFirstChatTurn check
+  // (chatMode === "normal_chat" && !runId) permanently stops sending these
+  // fields the moment a runId exists, which happens on the first send and
+  // never resets for the life of this chat. But this picker was only
+  // disabled while a turn was actively in flight (isRunning), so as soon as
+  // turn 1 completed it became clickable again — letting the user "change"
+  // a setting that the client had already permanently stopped transmitting.
+  // Lock it once the chat has actually started, not just while running.
+  const chatStarted = Boolean(runId);
+  const isRunning = runStatus === "running" || chatStarted;
 
   return (
     <section className="workflow-rail workflow-rail-right chat-start-mode-panel">
       <div className="project-rail-head">
         <div>
           <label>Chat Intent</label>
-          <p>Select the intent type for this chat. Disabled while the AI is running.</p>
+          <p>
+            {chatStarted
+              ? "Locked after the first message — start a new chat to change the intent."
+              : "Select the intent type for this chat. Disabled while the AI is running."}
+          </p>
         </div>
       </div>
       <div className="tab-list tab-list-three" role="tablist" aria-label="Chat start intent">
@@ -211,6 +231,28 @@ function ChatStartIntentPanel(): React.ReactElement | null {
           />
           <p className="chat-start-mode-hint">
             If set, the runner names the tracked document directly in the injected first-turn guidance.
+          </p>
+        </div>
+      ) : null}
+      {chatStartMode === "bugfix" && builtinOrchestrationOptions.length > 0 ? (
+        <div className="nav-group chat-builtin-orchestration">
+          <label>Built-in orchestration</label>
+          <select
+            value={flowRef ?? ""}
+            disabled={isRunning}
+            onChange={(event) => setFlowRef(event.target.value || undefined)}
+          >
+            <option value="">None</option>
+            {builtinOrchestrationOptions.map((opt) => (
+              <option key={opt.flowRef} value={opt.flowRef}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+          <p className="chat-start-mode-hint">
+            {flowRef
+              ? (builtinOrchestrationOptions.find((opt) => opt.flowRef === flowRef)?.description ?? "")
+              : "Optional. Runs a built-in review-until-clean loop instead of plain bug chat."}
           </p>
         </div>
       ) : null}
@@ -624,6 +666,8 @@ export function ChatWorkspace({
           </>
         )}
       </main>
+
+      <FlowTimelineSidebar />
 
       {rightSidebarVisible && (
         <>

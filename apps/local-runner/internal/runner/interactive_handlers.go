@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,6 +21,7 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /client/projects/{projectId}/workflows", s.handleListWorkflows)
 	mux.HandleFunc("GET /client/steps", s.handleListSteps)
 	mux.HandleFunc("GET /client/workflows/{workflowId}/steps", s.handleListSteps)
+	mux.HandleFunc("GET /client/chat/builtin-orchestration-options", s.handleListBuiltinOrchestrationOptions)
 	mux.HandleFunc("GET /client/projects/{projectId}/workflow-runs", s.handleListProjectRunHistory)
 	mux.HandleFunc("GET /client/projects/{projectId}/chat-sessions/remote", s.handleListRemoteChatSessions)
 	mux.HandleFunc("GET /client/engine/tooling/status", s.handleGetGlobalEngineToolingStatus)
@@ -30,6 +32,7 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /client/projects/{projectId}/engine/gate-config", s.handleSetEngineGateConfig)
 	mux.HandleFunc("POST /client/workflow-runs", s.handleStartRun)
 	mux.HandleFunc("GET /client/workflow-runs/{runId}", s.handleGetRun)
+	mux.HandleFunc("GET /client/workflow-runs/{runId}/steps-runtime", s.handleGetWorkflowStepsRuntime)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/resume", s.handleResumeRun)
 	mux.HandleFunc("DELETE /client/workflow-runs/{runId}", s.handleDeleteRun)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/sync-chat", s.handleSyncChatRun)
@@ -54,6 +57,8 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/agent-loop/resume", s.handleResumeAgentLoop)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/agent-loop/feedback", s.handleInjectAgentFeedback)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/agent-loop/stop", s.handleStopAgentLoop)
+	mux.HandleFunc("POST /client/workflow-runs/{runId}/flow-control", s.handleSubmitFlowControl)
+	mux.HandleFunc("POST /client/workflow-runs/{runId}/agent-loop/extend-cap", s.handleExtendCap)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/gate-decision", s.handleGateDecision)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/gate-agreement", s.handleGateAgreement)
 
@@ -112,6 +117,21 @@ func (s *InteractiveService) handleListSkills(w http.ResponseWriter, r *http.Req
 	provider := r.URL.Query().Get("provider")
 	cwd := r.URL.Query().Get("cwd")
 	writeInteractiveJSON(w, http.StatusOK, s.skillsCatalog.listSkills(provider, cwd))
+}
+
+// handleListBuiltinOrchestrationOptions serves the Chat Mode "Built-in
+// orchestration" picker options for a given subMode (CP-42/Task-177), driven
+// entirely by embedded pack metadata rather than a hardcoded UI list. An
+// unset or unrecognized subMode returns an empty list, which the desktop
+// renders as "no picker" rather than an error.
+func (s *InteractiveService) handleListBuiltinOrchestrationOptions(w http.ResponseWriter, r *http.Request) {
+	subMode := r.URL.Query().Get("subMode")
+	opts, err := BuiltinOrchestrationOptions(subMode)
+	if err != nil {
+		writeInteractiveError(w, newAPIErr(http.StatusInternalServerError, "pack_unavailable", err.Error()))
+		return
+	}
+	writeInteractiveJSON(w, http.StatusOK, opts)
 }
 
 // handleListAgents serves the loadable sub-agent catalog (CP-19 / Task-081):
@@ -235,6 +255,15 @@ type turnBody struct {
 	// Attachments carries chat-turn image attachments (Task-052), inline base64.
 	Attachments []PromptAttachment `json:"attachments,omitempty"`
 	Scenario    string             `json:"scenario"` // P2 fake-adapter hint only
+	// SubMode/FlowRef select an optional built-in Chat Mode orchestration
+	// template (CP-42/Task-177). Both are optional and omitting them means
+	// normal chat with no orchestration. handleStartTurn validates FlowRef
+	// against BuiltinOrchestrationOptions(SubMode) before starting the turn;
+	// actually resolving/executing the selected flow into the run loop is
+	// not wired yet (see Task-177 completion notes) — this is contract and
+	// validation only.
+	SubMode string `json:"subMode,omitempty"`
+	FlowRef string `json:"flowRef,omitempty"`
 }
 
 func (s *InteractiveService) handleStartTurn(w http.ResponseWriter, r *http.Request) {
@@ -243,9 +272,13 @@ func (s *InteractiveService) handleStartTurn(w http.ResponseWriter, r *http.Requ
 		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_request", "invalid request body"))
 		return
 	}
+	if err := validateChatOrchestrationSelection(body.SubMode, body.FlowRef); err != nil {
+		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_flow_ref", err.Error()))
+		return
+	}
 	turnID, e := s.startTurn(
 		r.PathValue("runId"),
-		TurnInput{StepID: body.StepID, Prompt: body.Prompt, ChangeType: body.ChangeType, SourceDocID: body.SourceDocID, SelectedSkills: body.SelectedSkills, ReasoningEffort: body.ReasoningEffort, Model: body.Model, YoloMode: body.YoloMode, Attachments: body.Attachments},
+		TurnInput{StepID: body.StepID, Prompt: body.Prompt, ChangeType: body.ChangeType, SourceDocID: body.SourceDocID, SelectedSkills: body.SelectedSkills, ReasoningEffort: body.ReasoningEffort, Model: body.Model, YoloMode: body.YoloMode, Attachments: body.Attachments, SubMode: body.SubMode, FlowRef: body.FlowRef},
 		body.Scenario,
 		r.Header.Get("Idempotency-Key"),
 	)
@@ -554,6 +587,15 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 	if _, err := s.registry.Selectable(providerKey); err != nil {
 		return RunHandle{}, newAPIErr(http.StatusUnprocessableEntity, "provider_unavailable", err.Error())
 	}
+	if providerKey == ProviderKeyGemini {
+		cwd := strings.TrimSpace(in.Cwd)
+		if cwd == "" {
+			return RunHandle{}, newAPIErr(http.StatusBadRequest, "workspace_required", "Gemini requires a bound project workspace path; set the project's local path before starting chat")
+		}
+		if info, err := os.Stat(cwd); err != nil || !info.IsDir() {
+			return RunHandle{}, newAPIErr(http.StatusBadRequest, "workspace_unavailable", "Gemini project workspace path must point to an existing directory")
+		}
+	}
 	// Stamp the run with the account that is active for THIS provider, not the
 	// single global activeAccountID (Task-067 issue 1). Resolved before the lock
 	// since it may read the provider-accounts store.
@@ -635,7 +677,8 @@ func (s *InteractiveService) resumeRun(runID string) (RunHandle, *apiErr) {
 	// only runs post-turn, so realProviderSessionID is "" while a turn is in-flight
 	// and LocateSessionFile would fail with the synthetic "thread-*" placeholder.
 	isActiveInMemory := inMemory && rs.status != RunStatusCompleted && rs.status != RunStatusFailed && rs.status != RunStatusCancelled
-	if !isActiveInMemory {
+	isReadOnlyGeminiInMemory := inMemory && rs.providerKey == ProviderKeyGemini && len(rs.events) > 0
+	if !isActiveInMemory && !isReadOnlyGeminiInMemory {
 		if err := s.ensureResumeReady(rs); err != nil {
 			readOnlyChat := rs.runKind == "chat" && (err.code == "account_not_signed_in" || err.code == "account_unavailable")
 			if !readOnlyChat {
@@ -829,6 +872,98 @@ func (s *InteractiveService) runSnapshot(runID string) (runSnapshotView, *apiErr
 	return view, nil
 }
 
+// workflowStepRuntimeView is the client-facing DTO for BUG-153: it projects Go's
+// authoritative RuntimeWorkflowStep list (workflowStore.LoadRunSteps) into the
+// shape the desktop Flow-mode sidebar renders, without deriving anything from
+// AI prose or child agent messages (F-4). RejectionNote doubles as the
+// display-only retry reason (F-6) rather than a separate detector.
+type workflowStepRuntimeView struct {
+	StepID           string                    `json:"stepId"`
+	StepType         string                    `json:"stepType"`
+	Status           RuntimeWorkflowStepStatus `json:"status"`
+	RetryCount       int                       `json:"retryCount"`
+	RejectionNote    string                    `json:"rejectionNote,omitempty"`
+	StartedAt        string                    `json:"startedAt,omitempty"`
+	FinishedAt       string                    `json:"finishedAt,omitempty"`
+	RequiresApproval bool                      `json:"requiresApproval"`
+	BehaviorID       string                    `json:"behaviorId,omitempty"`
+	// NodeID/AgentRef/Provider/Model/YoloMode round-trip RuntimeWorkflowStep's
+	// per-node identity and config (BUG-155) so the desktop sidebar can show
+	// the actual step name instead of the shared generic step_type label, plus
+	// which provider/model/agent/yolo posture that node runs under.
+	NodeID   string `json:"nodeId,omitempty"`
+	AgentRef string `json:"agentRef,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+	YoloMode bool   `json:"yoloMode,omitempty"`
+}
+
+type workflowStepsRuntimeSnapshot struct {
+	RunID string                    `json:"runId"`
+	Steps []workflowStepRuntimeView `json:"steps"`
+	// Provider/Model/YoloMode are the RUN's own posture (BUG-158) — a built-in
+	// flow node has no per-node model/provider override of its own (its agent
+	// definition inherits the parent run's), and yolo is a run-wide toggle, not
+	// a per-step-type default — so these are surfaced once here rather than
+	// repeated per step.
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+	YoloMode bool   `json:"yoloMode,omitempty"`
+}
+
+// workflowStepsRuntime loads the ordered runtime step list for runID (F-2). It
+// 404s for an unknown run the same way runSnapshot does, so normal chat runs
+// and stale history entries degrade the same way the run snapshot endpoint
+// already does.
+func (s *InteractiveService) workflowStepsRuntime(ctx context.Context, runID string) (workflowStepsRuntimeSnapshot, *apiErr) {
+	s.mu.Lock()
+	rs, exists := s.runs[runID]
+	var runProvider, runModel string
+	var runYolo bool
+	if exists {
+		runProvider = string(rs.providerKey)
+		runModel = rs.modelName
+		runYolo = rs.yolo
+	}
+	s.mu.Unlock()
+	if !exists {
+		return workflowStepsRuntimeSnapshot{}, newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")
+	}
+	steps, err := s.workflowStore.LoadRunSteps(ctx, runID)
+	if err != nil {
+		return workflowStepsRuntimeSnapshot{}, newAPIErr(http.StatusInternalServerError, "load_steps_failed", err.Error())
+	}
+	out := make([]workflowStepRuntimeView, len(steps))
+	for i, st := range steps {
+		out[i] = workflowStepRuntimeView{
+			StepID:           st.ID,
+			StepType:         st.StepType,
+			Status:           st.Status,
+			RetryCount:       st.RetryCount,
+			RejectionNote:    st.RejectionNote,
+			StartedAt:        st.StartedAt,
+			FinishedAt:       st.FinishedAt,
+			RequiresApproval: st.RequiresApproval,
+			BehaviorID:       st.BehaviorID,
+			NodeID:           st.NodeID,
+			AgentRef:         st.AgentRef,
+			Provider:         st.Provider,
+			Model:            st.Model,
+			YoloMode:         st.YoloMode,
+		}
+	}
+	return workflowStepsRuntimeSnapshot{RunID: runID, Steps: out, Provider: runProvider, Model: runModel, YoloMode: runYolo}, nil
+}
+
+func (s *InteractiveService) handleGetWorkflowStepsRuntime(w http.ResponseWriter, r *http.Request) {
+	view, e := s.workflowStepsRuntime(r.Context(), r.PathValue("runId"))
+	if e != nil {
+		writeInteractiveError(w, e)
+		return
+	}
+	writeInteractiveJSON(w, http.StatusOK, view)
+}
+
 // handleSpawnAgent allows a desktop client to programmatically spawn a child agent run for
 // a given parent run. Equivalent to the spawn_agent provider tool but HTTP-initiated.
 func (s *InteractiveService) handleSpawnAgent(w http.ResponseWriter, r *http.Request) {
@@ -919,6 +1054,76 @@ func (s *InteractiveService) handleGateAgreement(w http.ResponseWriter, r *http.
 		return
 	}
 	writeInteractiveJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
+}
+
+// handleSubmitFlowControl handles POST /client/workflow-runs/{runId}/flow-control.
+// Accepts either ReviewOutcomeInput {"outcome","issues",...} (the declared face used by
+// the board and by submit_review_outcome tool calls) or the raw FlowControlInput
+// {"status","summary","payload"}. Always returns an AgentGraphSnapshot so the caller
+// can update its board state without a separate refresh round-trip.
+func (s *InteractiveService) handleSubmitFlowControl(w http.ResponseWriter, r *http.Request) {
+	var body map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_request", "invalid request body"))
+		return
+	}
+	var in FlowControlInput
+	// BUG-NOTE-CP42 #32: ReviewOutcomeInput's canonical wire field is "status"
+	// (json:"status" on the Go struct; "outcome" is only the board/legacy
+	// alias parseReviewOutcomeInput also accepts). Routing purely on presence
+	// of the literal "outcome" key meant a caller sending the canonical
+	// {"status":"approved"} body fell through to the raw FlowControlInput
+	// parser instead, which only recognizes status values continue|done|
+	// escalate and rejects "approved" outright. Route to the ReviewOutcomeInput
+	// parser whenever either shape is present.
+	_, hasOutcome := body["outcome"]
+	statusVal, _ := body["status"].(string)
+	if hasOutcome || reviewOutcomeStatuses[statusVal] {
+		// Declared face: ReviewOutcomeInput → FlowControlInput via the face registry.
+		roi, err := parseReviewOutcomeInput(body)
+		if err != nil {
+			writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_outcome", err.Error()))
+			return
+		}
+		var mapErr error
+		in, mapErr = reviewOutcomeToFlowControl(roi)
+		if mapErr != nil {
+			writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_outcome", mapErr.Error()))
+			return
+		}
+	} else {
+		var err error
+		in, err = parseFlowControlInput(body)
+		if err != nil {
+			writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_status", err.Error()))
+			return
+		}
+	}
+	runID := r.PathValue("runId")
+	s.mu.Lock()
+	_, runExists := s.runs[runID]
+	s.mu.Unlock()
+	if !runExists {
+		writeInteractiveError(w, newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found"))
+		return
+	}
+	if _, err := s.applyFlowControl(runID, in); err != nil {
+		writeInteractiveError(w, newAPIErr(http.StatusUnprocessableEntity, "flow_control_failed", err.Error()))
+		return
+	}
+	writeInteractiveJSON(w, http.StatusOK, s.agentGraphSnapshot(runID))
+}
+
+// handleExtendCap handles POST /client/workflow-runs/{runId}/agent-loop/extend-cap.
+// Body: {} (empty — no parameters needed; limits come from the flow policy defaults).
+// Returns an AgentGraphSnapshot so the board can update without a separate refresh.
+func (s *InteractiveService) handleExtendCap(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("runId")
+	if _, err := s.extendCap(runID); err != nil {
+		writeInteractiveError(w, newAPIErr(http.StatusUnprocessableEntity, "extend_cap_failed", err.Error()))
+		return
+	}
+	writeInteractiveJSON(w, http.StatusOK, s.agentGraphSnapshot(runID))
 }
 
 func fakeArtifacts(runID string) []Artifact {

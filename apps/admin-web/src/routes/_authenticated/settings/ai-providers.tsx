@@ -115,23 +115,6 @@ export function AiProvidersContent({
     },
   });
 
-  const authenticateProvider = useMutation({
-    mutationFn: async (providerName: string) => {
-      const response = await fetch("/api/local-runner/providers/auth", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({ providerName }),
-      });
-
-      if (!response.ok) {
-        const payload = (await response.json()) as { error?: string };
-        throw new Error(payload.error ?? "Failed to trigger authentication.");
-      }
-    },
-  });
-
   const queryClient = useQueryClient();
 
   const addSupportedModel = useMutation({
@@ -310,7 +293,6 @@ export function AiProvidersContent({
   const anyPending =
     refreshInventory.isPending ||
     installProvider.isPending ||
-    authenticateProvider.isPending ||
     addSupportedModel.isPending ||
     deleteSupportedModel.isPending ||
     toggleSupportedModel.isPending ||
@@ -410,25 +392,6 @@ export function AiProvidersContent({
                 </div>
 
                 <div className="flex flex-wrap gap-2">
-                  {/* Auth button (shown when installed but auth required) */}
-                  {isInstalled && authStatus === "AUTH_REQUIRED" && (
-                    <Button
-                      disabled={anyPending}
-                      type="button"
-                      variant="default"
-                      onClick={() => authenticateProvider.mutate(provider.key)}
-                    >
-                      {authenticateProvider.isPending && authenticateProvider.variables === provider.key ? (
-                        <>
-                          <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-                          Authenticating...
-                        </>
-                      ) : (
-                        "Auth"
-                      )}
-                    </Button>
-                  )}
-
                   {/* Install button (shown when NOT installed) */}
                   {!isInstalled && (
                     <Button
@@ -750,7 +713,7 @@ function AddSupportedModelForm({
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex-1 min-w-[200px]">
           <label className="text-[10px] uppercase font-mono tracking-wider text-muted-foreground block mb-1">
-            Model ID (e.g. {providerKey === "gemini" ? "gemini-2.5-pro" : providerKey === "claude" ? "claude-3-5-sonnet" : "gpt-4o"})
+            Model ID (e.g. {providerKey === "gemini" ? "gemini-3.5-flash-medium" : providerKey === "claude" ? "claude-3-5-sonnet" : "gpt-4o"})
           </label>
           <input
             type="text"

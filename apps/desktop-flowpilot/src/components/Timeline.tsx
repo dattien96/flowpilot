@@ -229,8 +229,7 @@ const shortName = (path: string): string => path.split("/").pop() ?? path;
 const TOOL_ICON: Record<string, string> = { running: "⏳", success: "✓", failed: "✕", cancelled: "⊘" };
 const FILE_ICON: Record<string, string> = { created: "＋", modified: "✎", deleted: "－", renamed: "→" };
 
-type ToolItem = Extract<TimelineItem, { kind: "tool" }>;
-type TimelineGroup = TimelineItem | { kind: "tool-group"; id: string; tools: ToolItem[] };
+import { buildTimelineGroups, type ApprovalItem, type QuestionItem, type TimelineGroup, type ToolItem } from "./timelineGrouping";
 
 export function shouldShowAgentTimelineHeader(activeAgentRunId: string | undefined, mainRunId: string | undefined, agentRunCount: number): boolean {
   return Boolean(activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId) || agentRunCount > 0;
@@ -394,6 +393,94 @@ function ToolGroup({ tools }: { tools: ToolItem[] }): React.ReactElement {
   );
 }
 
+// Grouped ask UI: when several approvals are outstanding at once, show one collapsible
+// group with a header bulk action ("Approve all" / "Deny all") plus every individual
+// card still expandable and independently actionable underneath.
+function ApprovalGroup({ items }: { items: ApprovalItem[] }): React.ReactElement {
+  const approve = useStore((s) => s.approve);
+  const [open, setOpen] = useState(false);
+  const label = `${items.length} approvals required`;
+
+  const bulkDecide = (decision: "approve" | "deny") => {
+    for (const item of items) {
+      if (item.details.decisions.some((d) => d.value === decision)) {
+        void approve(item.approvalId, decision);
+      }
+    }
+  };
+
+  return (
+    <div className="card-group approval-group">
+      <div className="card-group-head">
+        <button
+          type="button"
+          className={`card-group-summary ${open ? "card-group-summary-open" : ""}`}
+          aria-expanded={open}
+          aria-label={label}
+          title={label}
+          onClick={() => setOpen((value) => !value)}
+        >
+          <span className="card-group-caret">{open ? "▾" : "▸"}</span>
+          <span className="badge badge-warn">{label}</span>
+        </button>
+        <div className="card-group-bulk-actions">
+          <button type="button" className="btn btn-primary" onClick={() => bulkDecide("approve")}>
+            Approve all
+          </button>
+          <button type="button" className="btn btn-danger" onClick={() => bulkDecide("deny")}>
+            Deny all
+          </button>
+        </div>
+      </div>
+      {open && (
+        <div className="card-group-body">
+          {items.map((item) => (
+            <ApprovalCard key={item.approvalId} approvalId={item.approvalId} details={item.details} decision={item.decision} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Grouped ask UI for questions. Options can differ per question (arbitrary choice
+// sets), so — unlike approvals — there is no generic single-click bulk action; the
+// group only folds the cards visually while keeping each one individually answerable.
+function QuestionGroup({ items }: { items: QuestionItem[] }): React.ReactElement {
+  const [open, setOpen] = useState(false);
+  const label = `${items.length} questions pending`;
+
+  return (
+    <div className="card-group question-group">
+      <button
+        type="button"
+        className={`card-group-summary ${open ? "card-group-summary-open" : ""}`}
+        aria-expanded={open}
+        aria-label={label}
+        title={label}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span className="card-group-caret">{open ? "▾" : "▸"}</span>
+        <span className="badge badge-ask">{label}</span>
+      </button>
+      {open && (
+        <div className="card-group-body">
+          {items.map((item) => (
+            <QuestionCard
+              key={item.questionId}
+              questionId={item.questionId}
+              prompt={item.prompt}
+              options={item.options}
+              multiSelect={item.multiSelect}
+              answer={item.answer}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function FileRow({ it }: { it: Extract<TimelineItem, { kind: "file" }> }): React.ReactElement {
   const openInIde = useStore((s) => s.openInIde);
   return (
@@ -406,30 +493,6 @@ function FileRow({ it }: { it: Extract<TimelineItem, { kind: "file" }> }): React
       <span className="row-hint">open in IDE ↗</span>
     </button>
   );
-}
-
-function buildTimelineGroups(timeline: TimelineItem[]): TimelineGroup[] {
-  const groups: TimelineGroup[] = [];
-  let pendingTools: ToolItem[] = [];
-
-  const flushTools = () => {
-    if (pendingTools.length === 0) return;
-    const firstToolId = pendingTools[0].id || `${pendingTools[0].toolName}-${groups.length}`;
-    groups.push({ kind: "tool-group", id: `tool-group-${firstToolId}`, tools: pendingTools });
-    pendingTools = [];
-  };
-
-  for (const item of timeline) {
-    if (item.kind === "tool") {
-      pendingTools.push(item);
-    } else {
-      flushTools();
-      groups.push(item);
-    }
-  }
-  flushTools();
-
-  return groups;
 }
 
 function Item({ it }: { it: TimelineGroup }): React.ReactElement | null {
@@ -477,6 +540,10 @@ function Item({ it }: { it: TimelineGroup }): React.ReactElement | null {
       return <ToolRow it={it} />;
     case "tool-group":
       return <ToolGroup tools={it.tools} />;
+    case "approval-group":
+      return <ApprovalGroup items={it.items} />;
+    case "question-group":
+      return <QuestionGroup items={it.items} />;
     case "file":
       return <FileRow it={it} />;
     case "approval":

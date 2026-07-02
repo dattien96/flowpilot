@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, Notification, shell } from "electron";
 import { execFile } from "node:child_process";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 // Electron shell (04-01). Loads the Vite dev server in dev, the built renderer in
@@ -63,13 +63,23 @@ async function loadPersistedAuthSession(): Promise<PersistedAuthSession | null> 
     ) {
       return null;
     }
+    // Empty or corrupt file (e.g. process killed mid-write) — delete and treat
+    // as no session rather than surfacing a JSON parse error to the renderer.
+    if (error instanceof SyntaxError) {
+      await rm(authSessionFilePath(), { force: true }).catch(() => {});
+      return null;
+    }
     throw error;
   }
 }
 
 async function savePersistedAuthSession(payload: PersistedAuthSession): Promise<void> {
-  await mkdir(path.dirname(authSessionFilePath()), { recursive: true });
-  await writeFile(authSessionFilePath(), JSON.stringify(payload), "utf8");
+  const dest = authSessionFilePath();
+  const tmp = dest + ".tmp";
+  await mkdir(path.dirname(dest), { recursive: true });
+  await writeFile(tmp, JSON.stringify(payload), "utf8");
+  // Atomic rename so a mid-write kill never leaves a truncated file.
+  await rename(tmp, dest);
 }
 
 async function clearPersistedAuthSession(): Promise<void> {
@@ -180,16 +190,26 @@ ipcMain.handle("notification:show", (_event, payload: { title: string; body: str
 });
 
 ipcMain.handle("http:request", async (_event, payload: BridgeHttpRequest) => {
-  const response = await fetch(payload.url, {
-    method: payload.method ?? "GET",
-    headers: payload.headers,
-    body: payload.body,
-  });
-  return {
-    status: response.status,
-    headers: Array.from(response.headers.entries()),
-    body: await response.text(),
-  };
+  // Abort after 8 s so a runner that has bound a TCP port but is not yet
+  // serving HTTP (e.g. still initialising on first start) does not hang the
+  // renderer's bootstrap promise indefinitely.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  try {
+    const response = await fetch(payload.url, {
+      method: payload.method ?? "GET",
+      headers: payload.headers,
+      body: payload.body,
+      signal: controller.signal,
+    });
+    return {
+      status: response.status,
+      headers: Array.from(response.headers.entries()),
+      body: await response.text(),
+    };
+  } finally {
+    clearTimeout(timer);
+  }
 });
 
 void app.whenReady().then(createWindow);

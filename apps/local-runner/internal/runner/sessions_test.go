@@ -50,9 +50,16 @@ func TestSweepIdleSessions(t *testing.T) {
 
 func TestDetermineProviderSessionID(t *testing.T) {
 	// Test Gemini fallback
-	geminiID := DetermineProviderSessionID("gemini_acp", "gemini", "123", "", nil)
-	if geminiID != "gemini_acp_session_123" {
-		t.Errorf("Expected gemini_acp_session_123, got %s", geminiID)
+	geminiID := DetermineProviderSessionID("gemini_agy", "gemini", "123", "", nil)
+	if geminiID != "gemini_agy_session_123" {
+		t.Errorf("Expected gemini_agy_session_123, got %s", geminiID)
+	}
+
+	// Test Gemini keeps explicit real session ids
+	realGemini := "gemini-real-123"
+	geminiRealID := DetermineProviderSessionID("gemini_agy", "gemini", "123", realGemini, &realGemini)
+	if geminiRealID != "gemini-real-123" {
+		t.Errorf("Expected gemini-real-123, got %s", geminiRealID)
 	}
 
 	// Test Claude fallback
@@ -69,9 +76,9 @@ func TestDetermineProviderSessionID(t *testing.T) {
 	}
 
 	// Test Gemini ignore resume
-	geminiIgnoreID := DetermineProviderSessionID("gemini_acp", "gemini", "123", "current-thread", &resumeID)
-	if geminiIgnoreID != "current-thread" {
-		t.Errorf("Expected current-thread, got %s", geminiIgnoreID)
+	geminiResumeID := DetermineProviderSessionID("gemini_agy", "gemini", "123", "current-thread", &resumeID)
+	if geminiResumeID != "old-codex-thread" {
+		t.Errorf("Expected old-codex-thread, got %s", geminiResumeID)
 	}
 
 	// Test Claude resume
@@ -120,19 +127,13 @@ func TestStartSessionResumesProviderSessionID(t *testing.T) {
 	}
 }
 
-func TestStartSessionGeminiACPUsesCurrentHandshake(t *testing.T) {
+func TestStartSessionGeminiUsesVirtualAgySession(t *testing.T) {
 	originalCmdCtx := commandContextFn
 	defer func() { commandContextFn = originalCmdCtx }()
-	var startedArgs []string
+	commandStarted := false
 	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
-		startedArgs = append([]string{}, arg...)
-		return testShellCommand(
-			ctx,
-			shellOutputLines(
-				`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}`,
-				`{"jsonrpc":"2.0","id":2,"result":{"sessionId":"gemini-live-session"}}`,
-			)+"sleep 2\n",
-		)
+		commandStarted = true
+		return testShellCommand(ctx, "printf unexpected")
 	}
 
 	r, _ := New(".")
@@ -145,19 +146,32 @@ func TestStartSessionGeminiACPUsesCurrentHandshake(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartSession failed: %v", err)
 	}
-
-	if handle.ProviderSessionID != "gemini-live-session" {
-		t.Fatalf("expected Gemini provider session id to come from ACP session/new, got %q", handle.ProviderSessionID)
+	if commandStarted {
+		t.Fatal("expected Gemini StartSession to avoid starting a long-lived process")
 	}
-
-	if !strings.Contains(strings.Join(startedArgs, " "), "--model gemini-2.5-flash") {
-		t.Fatalf("expected Gemini ACP session to normalize legacy model alias, got args %v", startedArgs)
+	if handle.ProviderSessionID != "gemini_agy_session_"+r.sessions[*handle.ProcessKey].SessionID {
+		t.Fatalf("expected synthetic Gemini agy session id, got %q", handle.ProviderSessionID)
 	}
+	if handle.ProcessPid != nil {
+		t.Fatalf("expected virtual Gemini session to have no pid, got %v", *handle.ProcessPid)
+	}
+}
 
-	if handle.ProcessKey != nil {
-		if err := r.CloseSession(context.Background(), handle); err != nil {
-			t.Fatalf("CloseSession failed: %v", err)
-		}
+func TestStartSessionGeminiSeedsExplicitResumeID(t *testing.T) {
+	r, _ := New(".")
+	resumeID := "real-gemini-session"
+
+	handle, err := r.StartSession(context.Background(), AiSessionStartRequest{
+		ProviderKey:             "gemini",
+		ModelName:               "gemini-flash",
+		WorkingDirectory:        ".",
+		ResumeProviderSessionID: &resumeID,
+	})
+	if err != nil {
+		t.Fatalf("StartSession failed: %v", err)
+	}
+	if handle.ProviderSessionID != resumeID {
+		t.Fatalf("expected Gemini StartSession to keep explicit resume id, got %q", handle.ProviderSessionID)
 	}
 }
 
@@ -277,28 +291,6 @@ func TestStartSessionPreservesProvidedProcessKeyInProviderEnv(t *testing.T) {
 	}
 }
 
-func TestStartSessionGeminiACPRejectsInitializeErrors(t *testing.T) {
-	originalCmdCtx := commandContextFn
-	defer func() { commandContextFn = originalCmdCtx }()
-	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
-		return testShellCommand(ctx, shellOutputLine(`{"jsonrpc":"2.0","id":1,"error":{"message":"bad initialize"}}`))
-	}
-
-	r, _ := New(".")
-
-	_, err := r.StartSession(context.Background(), AiSessionStartRequest{
-		ProviderKey:      "gemini",
-		ModelName:        "gemini-flash",
-		WorkingDirectory: ".",
-	})
-	if err == nil {
-		t.Fatal("expected StartSession to fail when Gemini initialize returns an error")
-	}
-	if !strings.Contains(err.Error(), "failed Gemini ACP initialize: bad initialize") {
-		t.Fatalf("expected initialize error to be surfaced, got %v", err)
-	}
-}
-
 func TestStartSessionClaudeUsesVirtualSessionState(t *testing.T) {
 	originalCmdCtx := commandContextFn
 	originalLookPath := lookPathFn
@@ -342,32 +334,48 @@ func TestStartSessionClaudeUsesVirtualSessionState(t *testing.T) {
 	}
 }
 
-func TestSendMessageGeminiACPUsesContentBlocksAndStreamsText(t *testing.T) {
+func TestSendMessageGeminiUsesAgyPrint(t *testing.T) {
 	r, _ := New(".")
-
-	var stdin bytes.Buffer
+	homePath := t.TempDir()
+	workspace := t.TempDir()
+	projectsDir := filepath.Join(homePath, ".gemini", "config", "projects")
+	if err := os.MkdirAll(projectsDir, 0o755); err != nil {
+		t.Fatalf("mkdir projects dir: %v", err)
+	}
+	projectID := "d77f0d2e-2e78-4adf-bf19-93599129d476"
+	payload, err := buildGeminiProjectConfigPayload(projectID, "flowpilot", workspace)
+	if err != nil {
+		t.Fatalf("build project config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectsDir, projectID+".json"), payload, 0o644); err != nil {
+		t.Fatalf("write project config: %v", err)
+	}
 	processKey := "gemini-proc"
 	r.sessions[processKey] = &LiveSession{
 		SessionID:         "session-1",
 		Provider:          "gemini",
 		Model:             "gemini-flash",
-		TransportType:     "gemini_acp",
-		ProviderSessionID: "gemini-live-session",
-		Stdin:             nopWriteCloser{Writer: &stdin},
-		StdoutScanner: bufio.NewScanner(strings.NewReader(strings.Join([]string{
-			`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"gemini-live-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Hello "}}}}`,
-			`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"gemini-live-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"world"}}}}`,
-			`{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}`,
-		}, "\n"))),
-		LastUsedAt: time.Now().UTC(),
-		IdleTTL:    time.Hour,
-		Status:     "active",
+		AccountHomePath:   homePath,
+		TransportType:     "gemini_agy",
+		ProviderSessionID: "flowpilot-gemini-run-1",
+		BinaryPath:        "agy",
+		WorkingDirectory:  workspace,
+		LastUsedAt:        time.Now().UTC(),
+		IdleTTL:           time.Hour,
+		Status:            "active",
+	}
+	originalCmdCtx := commandContextFn
+	defer func() { commandContextFn = originalCmdCtx }()
+	var startedArgs []string
+	commandContextFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+		startedArgs = append([]string{}, arg...)
+		return testShellCommand(ctx, "printf 'Hello world\\n'")
 	}
 
 	result, err := r.SendMessage(context.Background(), AiSessionMessageRequest{
 		Session: AiSessionHandle{
-			TransportType:     "gemini_acp",
-			ProviderSessionID: "gemini-live-session",
+			TransportType:     "gemini_agy",
+			ProviderSessionID: "flowpilot-gemini-run-1",
 			ProcessKey:        &processKey,
 		},
 		Prompt: "Reply with just OK",
@@ -377,15 +385,25 @@ func TestSendMessageGeminiACPUsesContentBlocksAndStreamsText(t *testing.T) {
 	}
 
 	if result.OutputMarkdown != "Hello world" {
-		t.Fatalf("expected streamed Gemini output to be collected, got %q", result.OutputMarkdown)
+		t.Fatalf("expected Gemini output to be collected, got %q", result.OutputMarkdown)
 	}
-
-	written := stdin.String()
-	if !strings.Contains(written, `"method":"session/prompt"`) {
-		t.Fatalf("expected Gemini prompt request to be written, got %q", written)
+	got := strings.Join(startedArgs, " ")
+	for _, want := range []string{"--print", "--project " + projectID, "--sandbox", "Reply with just OK"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("agy send args = %q, missing %q", got, want)
+		}
 	}
-	if !strings.Contains(written, `"prompt":[{"text":"Reply with just OK","type":"text"}]`) {
-		t.Fatalf("expected Gemini prompt payload to use ACP content blocks, got %q", written)
+	if strings.Contains(got, "--new-project") {
+		t.Fatalf("agy send args = %q, should not pass --new-project when project config already exists; --project UUID is sufficient", got)
+	}
+	if len(startedArgs) < 2 || startedArgs[len(startedArgs)-2] != "--print" || startedArgs[len(startedArgs)-1] != "Reply with just OK" {
+		t.Fatalf("agy send args = %q, want --print followed by actual prompt at the end", got)
+	}
+	if strings.Contains(got, "--continue") {
+		t.Fatalf("agy send args = %q, should not continue from a legacy synthetic project id", got)
+	}
+	if r.sessions[processKey].ProviderSessionID != projectID {
+		t.Fatalf("session provider id = %q, want AGY project id %q", r.sessions[processKey].ProviderSessionID, projectID)
 	}
 }
 

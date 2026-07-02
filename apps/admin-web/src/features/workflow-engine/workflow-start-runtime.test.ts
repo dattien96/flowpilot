@@ -31,7 +31,7 @@ describe("workflow-start-runtime", () => {
     expect(resolveProviderKeyFromModel("gpt-5.5")).toBe("codex");
     expect(resolveProviderKeyFromModel("gemini-pro")).toBe("gemini");
     expect(resolveProviderKeyFromModel("auto-gemini-3")).toBe("gemini");
-    expect(resolveProviderKeyFromModel("gemini-2.5-flash")).toBe("gemini");
+    expect(resolveProviderKeyFromModel("gemini-3.5-flash-medium")).toBe("gemini");
     expect(resolveProviderKeyFromModel("claude-sonnet")).toBe("claude");
   });
 
@@ -91,7 +91,7 @@ describe("workflow-start-runtime", () => {
     await expect(
       resolveArtifactWorkspaceRoot({
         getHealth: vi.fn(async () => ({
-          status: "online",
+          status: "online" as const,
           runnerVersion: "test",
           cwd: "/Users/tiendat/Desktop/flowpilot/flowpilot",
           os: "darwin",

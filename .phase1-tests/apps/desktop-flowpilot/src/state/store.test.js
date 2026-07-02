@@ -31,6 +31,17 @@ function makeClient(overrides = {}) {
         spawnAgent: async () => ({ runId: "agent-1", providerSessionId: "session-agent", providerKey: "codex", status: "completed" }),
         startRun: async () => ({ runId: "new-run", providerSessionId: "session-1", providerKey: "codex", status: "running" }),
         resumeRun: async (runId) => ({ runId, providerSessionId: "session-1", providerKey: "codex", status: "completed" }),
+        handoffContext: async (runId, input) => ({
+            sourceRunId: runId,
+            sourceProviderKey: "codex",
+            targetProviderKey: input.targetProviderKey,
+            prompt: "[mock handoff]",
+            includedTurnCount: 0,
+            omittedTurnCount: 0,
+            truncated: false,
+            handoffMode: "raw",
+        }),
+        generateChatSummary: async (runId) => ({ runId, generated: true, skipped: false }),
         syncChatRun: async (runId) => ({ runId, sourceMachineId: "mch_sync", sourceRunId: runId, syncStatus: "synced", syncedAt: "2026-06-17T10:10:00Z", remotePath: "chat-sessions/runs/mch_sync/" + runId + "/manifest.json" }),
         deleteRun: async () => { },
         restoreChatRun: async (input) => ({ runId: input.sourceRunId, sourceMachineId: input.sourceMachineId, sourceRunId: input.sourceRunId, providerKey: "codex", restoreStatus: "restored" }),
@@ -91,14 +102,16 @@ function seedStore(client, runHistory) {
         runHistory,
         historyLoading: false,
         historyLoadError: undefined,
-        pendingApproval: undefined,
-        pendingQuestion: undefined,
+        pendingApprovals: [],
+        pendingQuestions: [],
         lastTurnInput: undefined,
         latestTokenUsage: undefined,
         recoverable: false,
         scenario: "normal",
         pendingAccountSwitch: undefined,
         accountSwitchLoading: false,
+        pendingProviderSwitch: undefined,
+        providerSwitchLoading: false,
         _accountSwitchTriedIds: [],
         _streamingAssistantId: undefined,
         _historyLoadSeq: 0,
@@ -181,6 +194,60 @@ async function* cursorChildStream() {
     strict_1.default.equal(state.runId, "current-run");
     strict_1.default.deepEqual(state.timeline, [{ kind: "prompt", id: "prompt-1", text: "keep current timeline" }]);
     strict_1.default.equal(state.runHistory[0]?.unavailableReason, "session data not found on this machine");
+});
+(0, node_test_1.default)("selectProject resets the active chat run when switching projects", async () => {
+    seedStore(makeClient({ listSkills: async () => [] }), []);
+    store_1.useStore.setState({
+        selectedProjectId: "project-1",
+        runId: "current-run",
+        mainRunId: "current-run",
+        activeStepId: "chat-current-run",
+        status: "running",
+        timeline: [{ kind: "prompt", id: "prompt-1", text: "old project prompt" }],
+        artifacts: [{ id: "artifact-1", runId: "current-run", name: "Artifact", kind: "summary", createdAt: "2026-01-01T00:00:00Z" }],
+        pendingApprovals: [
+            {
+                approvalId: "approval-1",
+                details: { command: "echo hi", decisions: [] },
+            },
+        ],
+    });
+    await store_1.useStore.getState().selectProject("project-2");
+    const state = store_1.useStore.getState();
+    strict_1.default.equal(state.selectedProjectId, "project-2");
+    strict_1.default.equal(state.runId, undefined);
+    strict_1.default.equal(state.mainRunId, undefined);
+    strict_1.default.equal(state.activeStepId, undefined);
+    strict_1.default.equal(state.status, "idle");
+    strict_1.default.deepEqual(state.timeline, []);
+    strict_1.default.deepEqual(state.artifacts, []);
+    strict_1.default.deepEqual(state.pendingApprovals, []);
+});
+(0, node_test_1.default)("setChatStartMode clears flowRef and builtin orchestration options on any mode change", () => {
+    seedStore(makeClient(), []);
+    store_1.useStore.setState({ flowRef: "flowpilot-core-flow-pack/review-loop", builtinOrchestrationOptions: [
+            { flowRef: "flowpilot-core-flow-pack/review-loop", label: "Review Loop", description: "" },
+        ] });
+    store_1.useStore.getState().setChatStartMode("normal");
+    const state = store_1.useStore.getState();
+    strict_1.default.equal(state.chatStartMode, "normal");
+    strict_1.default.equal(state.flowRef, undefined);
+    strict_1.default.deepEqual(state.builtinOrchestrationOptions, []);
+});
+(0, node_test_1.default)("setChatStartMode loads builtin orchestration options when entering bugfix", async () => {
+    seedStore(makeClient({
+        listBuiltinOrchestrationOptions: async (subMode) => {
+            strict_1.default.equal(subMode, "bug");
+            return [{ flowRef: "flowpilot-core-flow-pack/review-loop", label: "Review Loop", description: "review until clean" }];
+        },
+    }), []);
+    store_1.useStore.getState().setChatStartMode("bugfix");
+    // loadBuiltinOrchestrationOptions is fired-and-forgotten from setChatStartMode; await a tick.
+    await Promise.resolve();
+    await Promise.resolve();
+    const state = store_1.useStore.getState();
+    strict_1.default.equal(state.builtinOrchestrationOptions.length, 1);
+    strict_1.default.equal(state.builtinOrchestrationOptions[0]?.flowRef, "flowpilot-core-flow-pack/review-loop");
 });
 (0, node_test_1.default)("openHistoryRun treats active-account-not-signed-in as unavailable instead of replacing the current run", async () => {
     seedStore(makeClient({
@@ -350,7 +417,7 @@ async function* cursorChildStream() {
     ]);
     const state = store_1.useStore.getState();
     strict_1.default.equal(state.status, "waiting_approval");
-    strict_1.default.deepEqual(state.pendingApproval, { approvalId: "appr-1", details: approvalDetails });
+    strict_1.default.deepEqual(state.pendingApprovals, [{ approvalId: "appr-1", details: approvalDetails }]);
     const card = state.timeline.find((item) => item.kind === "approval");
     strict_1.default.equal(card?.decision, undefined, "approval card should remain actionable");
 });
@@ -734,6 +801,8 @@ async function* cursorChildStream() {
                 timeline: [],
                 artifacts: [],
                 status: "running",
+                pendingApprovals: [],
+                pendingQuestions: [],
                 recoverable: false,
                 lastEventSeq: 2,
             },
@@ -819,6 +888,8 @@ async function* cursorChildStream() {
     const base = {
         status: "running",
         recoverable: false,
+        pendingApprovals: [],
+        pendingQuestions: [],
         _streamingAssistantId: "assistant-main",
         timeline: [{ kind: "assistant", id: "assistant-main", text: "parent response", finalized: false }],
     };
@@ -876,6 +947,8 @@ async function* cursorChildStream() {
                 timeline: [{ kind: "assistant", id: "main-message", text: "main", finalized: true }],
                 artifacts: [],
                 status: "completed",
+                pendingApprovals: [],
+                pendingQuestions: [],
                 recoverable: false,
             },
         },
@@ -964,6 +1037,8 @@ async function* cursorChildStream() {
                 timeline: [{ kind: "prompt", id: "main-prompt", text: "main prompt" }],
                 artifacts: [],
                 status: "running",
+                pendingApprovals: [],
+                pendingQuestions: [],
                 recoverable: false,
                 lastEventSeq: 10,
             },
@@ -1023,6 +1098,8 @@ async function* cursorChildStream() {
                 timeline: [{ kind: "prompt", id: "main-prompt", text: "main prompt" }],
                 artifacts: [],
                 status: "running",
+                pendingApprovals: [],
+                pendingQuestions: [],
                 recoverable: false,
                 lastEventSeq: 10,
             },
@@ -1390,6 +1467,44 @@ async function* cursorChildStream() {
     strict_1.default.equal(state.pendingAccountSwitch?.reason, "manual");
     strict_1.default.equal(state.pendingAccountSwitch?.candidateAccount.id, "acc-2");
     strict_1.default.deepEqual(state._accountSwitchTriedIds, [], "_accountSwitchTriedIds must not be touched by manual switch");
+});
+(0, node_test_1.default)("confirmProviderSwitch records handoff diagnostics in the new timeline", async () => {
+    const timeline = [{ kind: "prompt", id: "prompt-1", text: "existing" }];
+    seedStore(makeClient({
+        handoffContext: async () => ({
+            sourceRunId: "run-old",
+            sourceProviderKey: "claude",
+            targetProviderKey: "codex",
+            prompt: "handoff prompt",
+            includedTurnCount: 3,
+            omittedTurnCount: 0,
+            truncated: false,
+            handoffMode: "hybrid",
+        }),
+        startRun: async () => ({ runId: "run-new", providerSessionId: "session-new", providerKey: "codex", status: "running", stepId: "chat-run-new" }),
+        sendTurn: () => emptyStream(),
+        listRunHistory: async () => [],
+    }), []);
+    store_1.useStore.setState({
+        pendingProviderSwitch: {
+            sourceRunId: "run-old",
+            sourceProviderKey: "claude",
+            sourceRunStatus: "completed",
+            targetProviderKey: "codex",
+            targetModel: undefined,
+        },
+        selectedProjectId: "project-1",
+        chatMode: "normal_chat",
+        runId: "run-old",
+        selectedProvider: "claude",
+        selectedModel: "claude-sonnet-4",
+        status: "completed",
+        timeline,
+    });
+    await store_1.useStore.getState().confirmProviderSwitch();
+    const notice = store_1.useStore.getState().timeline.find((item) => item.kind === "system" && item.id.startsWith("handoff-mode-"));
+    strict_1.default.ok(notice, "handoff diagnostic should be stored in timeline");
+    strict_1.default.ok(notice.text.includes("hybrid"), "handoff diagnostic should include handoff mode");
 });
 (0, node_test_1.default)("Claude usage-limit failure with null quota offers fallback switch candidate", async () => {
     const active = makeAccount("cl-1", "claude", { isActive: true, remaining5hPercent: null, remaining7dPercent: null, slotIndex: 0 });

@@ -23,6 +23,9 @@ func (b *captureResumeBridge) AskQuestion(string, []QuestionOption, bool) ([]str
 func (b *captureResumeBridge) SpawnAgent(_ SpawnAgentInput) (SpawnAgentResult, error) {
 	return SpawnAgentResult{}, nil
 }
+func (b *captureResumeBridge) SubmitFlowControl(_ FlowControlInput) (FlowControlResult, error) {
+	return FlowControlResult{}, nil
+}
 
 func TestCodexFreshRunUsesAppServerPath(t *testing.T) {
 	var adapterCalls atomic.Int32

@@ -2,6 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import type { AgentBusMessage, AgentGraphSnapshot, AgentRunSummary } from "@/types/contract";
 import { useStore } from "@/state/store";
 
+function nodeStatusClass(status: string): string {
+  if (status === "running") return "run";
+  if (status === "waiting_approval" || status === "waiting_question") return "wait";
+  return "done";
+}
+
 export function getOrchestrationBoardEmptyCopy(snapshot?: AgentGraphSnapshot, agentRuns: AgentRunSummary[] = []): string {
   if (!snapshot) return "No graph snapshot loaded. Refresh to inspect the loop.";
   if (snapshot.runs.length === 0 && agentRuns.length === 0) return "No child agents yet.";
@@ -25,6 +31,8 @@ export function OrchestrationBoard(): React.ReactElement {
   const focusAgentRun = useStore((s) => s.focusAgentRun);
   const injectAgentFeedback = useStore((s) => s.injectAgentFeedback);
   const openAgentSpawnGuide = useStore((s) => s.openAgentSpawnGuide);
+  const submitReviewOutcome = useStore((s) => s.submitReviewOutcome);
+  const extendCap = useStore((s) => s.extendCap);
   const mainRunId = useStore((s) => s.mainRunId ?? s.runId);
 
   const [feedback, setFeedback] = useState("");
@@ -38,33 +46,35 @@ export function OrchestrationBoard(): React.ReactElement {
   const emptyCopy = getOrchestrationBoardEmptyCopy(snapshot, agentRuns);
   const canRender = Boolean(snapshot) && emptyCopy.length === 0;
 
-  // Find canonical coder/reviewer runs for side-by-side SVG rendering
-  const coderRun = useMemo(() => {
-    return snapshot?.runs.find((run) => run.agentName.toLowerCase().includes("coder"));
-  }, [snapshot]);
-
-  const reviewerRun = useMemo(() => {
-    return snapshot?.runs.find((run) => run.agentName.toLowerCase().includes("reviewer"));
-  }, [snapshot]);
-
-  const loopStatus = snapshot?.loopState.status ?? "idle";
-  const loopRound = snapshot?.loopState.round ?? 0;
-  const loopRoundCap = snapshot?.loopState.roundCap ?? 3;
-  const loopGate = snapshot?.loopState.gateReason;
+  const loopState = snapshot?.loopState;
+  const loopStatus = loopState?.status ?? "idle";
+  const loopRound = loopState?.round ?? 0;
+  const loopCap = loopState?.cap ?? loopState?.roundCap ?? 3;
+  const loopGate = loopState?.gateReason;
+  const openIssues = loopState?.openIssues;
+  const isBlocked = loopStatus === "blocked";
 
   return (
     <section className="board">
       <header className="board-head">
         <div>
           <h2>▦ Orchestration</h2>
-          <span className="board-goal">
-            Goal: <b>Land BUG-094 fix, reviewer-approved</b>
-          </span>
+          {loopState?.activeNode && (
+            <span className="board-goal">
+              Active: <b>{loopState.activeNode}</b>
+            </span>
+          )}
         </div>
-        {snapshot?.loopState && (
-          <span className="status agents font-semibold">
+        {loopState && (
+          <span className={`status agents font-semibold${isBlocked ? " warn" : ""}`}>
             <span className="pulse" />
-            round {loopRound} / {loopRoundCap}
+            round {loopRound} / {loopCap}
+            {openIssues !== undefined && openIssues > 0 && (
+              <span style={{ marginLeft: "8px", color: "var(--warn)" }}>{openIssues} open</span>
+            )}
+            {loopState.mode && (
+              <span style={{ marginLeft: "8px", opacity: 0.6 }}>{loopState.mode}</span>
+            )}
           </span>
         )}
       </header>
@@ -75,99 +85,52 @@ export function OrchestrationBoard(): React.ReactElement {
         </div>
       ) : (
         <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "16px" }}>
-          {/* Main Nodes Diagram */}
-          {coderRun && reviewerRun ? (
-            <div className="bgrid">
-              {/* Coder Node */}
-              <div className="node coder">
-                <h3>
-                  <span className={`sd ${coderRun.status === "running" ? "run" : (coderRun.status === "waiting_approval" || coderRun.status === "waiting_question") ? "wait" : "done"}`} />
-                  {coderRun.agentName}
-                </h3>
-                <div className="role">Claude · implements the change</div>
-                <div className="state">
-                  <span className={`sd ${coderRun.status === "running" ? "run" : "done"}`} />
-                  {coderRun.status === "running" ? "running — applying feedback" : coderRun.status}
-                </div>
-                {coderRun.agentStatus && (
-                  <div className="substep">
-                    ▸ {coderRun.agentStatus}
+          {/* N-child nodes row */}
+          <div className="board-graph" role="list" aria-label="Agent dependency graph">
+            {snapshot!.runs.map((run) => {
+              const focused = run.runId === activeAgentRunId;
+              const sc = nodeStatusClass(run.status);
+              const statusDotColor = sc === "run" ? "var(--ok)" : sc === "wait" ? "var(--warn)" : "var(--accent)";
+              return (
+                <article key={run.runId} className={`node ${focused ? "coder" : "reviewer"}`} role="listitem" style={{ borderTopColor: statusDotColor }}>
+                  <div className="board-node-top">
+                    <h3 style={{ margin: 0 }}>
+                      <span className={`sd ${sc}`} />
+                      {run.agentName || run.runId}
+                    </h3>
+                    <span style={{ fontSize: "0.75rem", opacity: 0.7 }}>{run.status}</span>
                   </div>
-                )}
-                <button type="button" className="secondary-btn btn-sm" onClick={() => void focusAgentRun(coderRun.runId)}>
-                  Focus chat
-                </button>
-              </div>
-
-              {/* Edge SVG Connector */}
-              <div className="edge">
-                <svg viewBox="0 0 70 110" preserveAspectRatio="none">
-                  <defs>
-                    <marker id="g" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
-                      <path d="M0,0 L7,3 L0,6 Z" fill="#3fb950" />
-                    </marker>
-                    <marker id="v" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
-                      <path d="M0,0 L7,3 L0,6 Z" fill="#b07cff" />
-                    </marker>
-                  </defs>
-                  <path d="M2,34 L66,34" fill="none" stroke="#3fb950" strokeWidth="2" markerEnd="url(#g)" />
-                  <path d="M66,76 L4,76" fill="none" stroke="#b07cff" strokeWidth="2" markerEnd="url(#v)" />
-                </svg>
-                <span className="lbl" style={{ top: "14px" }}>diff ▸</span>
-                <span className="lbl" style={{ top: "64px" }}>◂ feedback</span>
-              </div>
-
-              {/* Reviewer Node */}
-              <div className="node reviewer">
-                <h3>
-                  <span className={`sd ${reviewerRun.status === "running" ? "run" : (reviewerRun.status === "waiting_approval" || reviewerRun.status === "waiting_question") ? "wait" : "done"}`} />
-                  {reviewerRun.agentName}
-                </h3>
-                <div className="role">Codex · gates the change</div>
-                <div className="state">
-                  <span className={`sd ${reviewerRun.status === "running" ? "run" : "done"}`} />
-                  {reviewerRun.status === "running" ? "running — evaluating diff" : reviewerRun.status}
-                </div>
-                {loopGate ? (
-                  <div className="substep">
-                    round {loopRound - 1} verdict: <span style={{ color: "var(--warn)", fontWeight: "bold" }}>{loopGate}</span>
-                  </div>
-                ) : reviewerRun.agentStatus ? (
-                  <div className="substep">
-                    ▸ {reviewerRun.agentStatus}
-                  </div>
-                ) : null}
-                <button type="button" className="secondary-btn btn-sm" onClick={() => void focusAgentRun(reviewerRun.runId)}>
-                  Focus chat
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="board-graph" role="list" aria-label="Agent dependency graph">
-              {snapshot!.runs.map((run) => {
-                const focused = run.runId === activeAgentRunId;
-                const statusDotColor = run.status === "running" ? "var(--ok)" : (run.status === "waiting_approval" || run.status === "waiting_question") ? "var(--warn)" : "var(--accent)";
-                return (
-                  <article key={run.runId} className={`node ${focused ? "coder" : "reviewer"}`} role="listitem" style={{ borderTopColor: statusDotColor }}>
-                    <div className="board-node-top">
-                      <strong>{run.agentName || run.runId}</strong>
-                      <span>{run.status}</span>
+                  {run.role && run.role !== run.agentName && <div className="role">{run.role}</div>}
+                  {run.agentStatus && <div className="substep">▸ {run.agentStatus}</div>}
+                  {loopGate && run.role?.toLowerCase().includes("reviewer") && (
+                    <div className="substep">
+                      verdict: <span style={{ color: "var(--warn)", fontWeight: "bold" }}>{loopGate}</span>
                     </div>
-                    <div className="role">{run.role || "agent"}</div>
-                    {run.agentStatus && <div className="substep">▸ {run.agentStatus}</div>}
-                    <div className="board-node-actions">
-                      <button type="button" className="secondary-btn btn-sm" onClick={() => void focusAgentRun(run.runId)}>Focus</button>
-                    </div>
-                  </article>
-                );
-              })}
+                  )}
+                  <div className="board-node-actions">
+                    <button type="button" className="secondary-btn btn-sm" onClick={() => void focusAgentRun(run.runId)}>Focus</button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+
+          {/* Iteration summary */}
+          <div className="board-round">
+            Round <b>{loopRound} / {loopCap}</b>
+            {openIssues !== undefined && <span> · <b style={{ color: openIssues > 0 ? "var(--warn)" : "var(--ok)" }}>{openIssues} open issue{openIssues !== 1 ? "s" : ""}</b></span>}
+            <span style={{ marginLeft: "8px", opacity: 0.7 }}>status: {loopStatus}</span>
+          </div>
+
+          {/* Blocked banner + Extend-cap control */}
+          {isBlocked && (
+            <div className="board-blocked" style={{ padding: "10px 12px", background: "var(--warn-bg, rgba(255,180,0,0.12))", borderRadius: "6px", display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+              <span style={{ color: "var(--warn)", fontWeight: "bold" }}>⚠ Blocked</span>
+              {loopGate && <span style={{ opacity: 0.8 }}>{loopGate}</span>}
+              <button type="button" className="bc warn" onClick={() => void extendCap()}>Extend cap +2</button>
+              <button type="button" className="bc primary" onClick={() => void submitReviewOutcome("approved")}>Accept &amp; approve</button>
             </div>
           )}
-
-          {/* Iteration Summary Banner */}
-          <div className="board-round">
-            Iteration <b>{loopRound} of {loopRoundCap}</b> · auto-approve when reviewer returns <b style={{ color: "var(--ok)" }}>APPROVED</b> → handoff ▸ main agent commits
-          </div>
 
           {/* Action Controls */}
           <div className="bctl">

@@ -119,7 +119,7 @@ func (a *claudeAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tu
 			if a.extraMCPServers != nil {
 				extra = a.extraMCPServers(req.YoloMode)
 			}
-			token := a.mcpServer.register(bridge)
+			token := a.mcpServer.register(bridge, req.OfferReviewOutcomeTool)
 			defer a.mcpServer.unregister(token)
 			path, cleanup, err := writeClaudeMCPConfig(base, token, extra)
 			if err != nil {

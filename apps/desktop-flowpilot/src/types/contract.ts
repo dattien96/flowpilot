@@ -124,7 +124,12 @@ export interface AgentLoopState {
   status: string;
   round: number;
   roundCap: number;
+  cap?: number;           // flow-engine cap (Task-090); use cap ?? roundCap for display
   gateReason?: string;
+  openIssues?: number;
+  mode?: string;          // "keyword" | "explicit"
+  activeNode?: string;
+  extendCount?: number;
 }
 
 export interface AgentGraphSnapshot {
@@ -134,6 +139,96 @@ export interface AgentGraphSnapshot {
   busMessages: AgentBusMessage[];
   loopState: AgentLoopState;
 }
+
+/**
+ * Runtime status of one workflow-defined step, mirroring Go's
+ * RuntimeWorkflowStepStatus (workflow_state_machine.go). Source of truth is the
+ * Go runner's workflow state machine, not AI inference or timeline text (BUG-153 V-2).
+ */
+export type WorkflowStepRuntimeStatus =
+  | "PENDING"
+  | "RUNNING"
+  | "WAITING_USER_APPROVAL"
+  | "DONE"
+  | "FAILED"
+  | "SKIPPED";
+
+/**
+ * Client-facing projection of one RuntimeWorkflowStep (BUG-153 F-1), served by
+ * `GET /client/workflow-runs/{runId}/steps-runtime`. `rejectionNote` doubles as
+ * the display-only retry reason; `retryCount > 0` with status RUNNING/PENDING
+ * indicates a retried pass rather than a fresh one.
+ */
+export interface WorkflowStepRuntimeDTO {
+  stepId: string;
+  stepType: string;
+  status: WorkflowStepRuntimeStatus;
+  retryCount: number;
+  rejectionNote?: string;
+  startedAt?: string;
+  finishedAt?: string;
+  requiresApproval: boolean;
+  behaviorId?: string;
+  // nodeId is the flow-graph node id (e.g. "coder", "reviewer_correctness").
+  // For CP-42 flow-engine steps, stepType is a shared generic dispatch
+  // category (e.g. "flow-agent-delegate") identical across every node
+  // running the same behavior — nodeId is the actual per-step name (BUG-155).
+  nodeId?: string;
+  agentRef?: string;
+  provider?: string;
+  model?: string;
+  yoloMode?: boolean;
+}
+
+export interface WorkflowStepsRuntimeSnapshot {
+  runId: string;
+  steps: WorkflowStepRuntimeDTO[];
+  // provider/model/yoloMode are the RUN's own posture (BUG-158) — a built-in
+  // flow node has no per-node override of its own (its agent definition
+  // inherits the parent run's model/provider), and yolo is a run-wide toggle,
+  // not a per-step-type default.
+  provider?: string;
+  model?: string;
+  yoloMode?: boolean;
+}
+
+// ---- Flow-engine contract types (CP-36 / Task-095) -------------------------
+
+export interface FlowControlInput {
+  signal: "advance" | "complete" | "block" | "extend_cap";
+  cap?: number;
+  reason?: string;
+}
+
+export interface FlowControlResult {
+  status: string;
+  round: number;
+  cap: number;
+}
+
+export interface ReviewIssue {
+  id: string;
+  severity: "error" | "warning" | "info";
+  /** Human-readable issue summary. Alias "title" accepted by the Go server. */
+  description: string;
+  /** File path or code location. Alias "file" accepted by the Go server. */
+  location?: string;
+}
+
+export interface ReviewOutcomeInput {
+  outcome: "approved" | "changes_requested";
+  issues?: ReviewIssue[];
+  /** Required by the server on the MCP/agent path for changes_requested; optional on the board path. */
+  feedback?: string;
+}
+
+export interface ReviewOutcomeResult {
+  outcome: string;
+  issueCount: number;
+  loopStatus: string;
+}
+
+// ---------------------------------------------------------------------------
 
 export interface ProviderAccountUsageLine {
   label: string;
@@ -366,6 +461,25 @@ export interface TurnInput {
    * by vision-capable providers; the composer gates the attach control accordingly.
    */
   attachments?: PromptAttachment[];
+  /**
+   * Built-in Chat Mode orchestration selection (CP-42/Task-177). subMode is the
+   * runner's sub-mode key (currently "bug" for the Bug chat intent); flowRef
+   * selects a built-in flow such as "flowpilot-core-flow-pack/review-loop".
+   * Both are sent only on the first turn of a run, alongside changeType/
+   * sourceDocId, and are optional — omitting them is normal chat with no
+   * orchestration. The runner validates flowRef against the sub-mode's
+   * built-in options and rejects an invalid pairing before starting the turn.
+   */
+  subMode?: string;
+  flowRef?: string;
+}
+
+/** One selectable built-in orchestration flow for a given chat subMode
+ * (CP-42/Task-177), as served by GET /client/chat/builtin-orchestration-options. */
+export interface BuiltinFlowOption {
+  flowRef: string;
+  label: string;
+  description: string;
 }
 
 // ---- ProviderEventDTO (serialized ProviderEvent union) ---------------------
@@ -487,6 +601,12 @@ export interface RunnerClient {
   listArtifacts(runId: string): Promise<Artifact[]>;
   listSkills(provider: string, cwd?: string): Promise<ProviderSkill[]>;
   /**
+   * List built-in Chat Mode orchestration flow options for subMode (CP-42/
+   * Task-177), e.g. "Review Loop" for subMode="bug". Optional so existing
+   * clients (mock) need not implement it until a real backend is present.
+   */
+  listBuiltinOrchestrationOptions?(subMode: string): Promise<BuiltinFlowOption[]>;
+  /**
    * List loadable sub-agent definitions for the spawn picker (CP-19 / Task-081).
    * Optional so existing clients (mock) need not implement it until the Agents
    * UI lands (Task-083); the real HTTP client implements it now.
@@ -498,6 +618,11 @@ export interface RunnerClient {
    */
   listAgentRuns?(parentRunId: string): Promise<AgentRunSummary[]>;
   refreshAgentGraph?(parentRunId: string): Promise<AgentGraphSnapshot>;
+  /**
+   * Load the Flow-mode workflow-step runtime projection (BUG-153 F-2). Optional
+   * so mock/older clients degrade gracefully; the real HTTP client implements it.
+   */
+  getWorkflowStepsRuntime?(runId: string): Promise<WorkflowStepsRuntimeSnapshot>;
   pauseAgentLoop?(parentRunId: string): Promise<AgentGraphSnapshot>;
   resumeAgentLoop?(parentRunId: string): Promise<AgentGraphSnapshot>;
   injectAgentFeedback?(parentRunId: string, toRunId: string, message: string): Promise<AgentGraphSnapshot>;
@@ -512,6 +637,16 @@ export interface RunnerClient {
    * its SSE iterator. Implemented client-side on top of `streamRun` in Phase 1.
    */
   focusAgentRun?(runId: string, signal?: AbortSignal): AsyncIterable<ProviderEventDTO>;
+  /**
+   * Submit a reviewer verdict (approved / changes_requested) to the flow engine
+   * (CP-36 / Task-095). Calls POST .../flow-control under the hood.
+   */
+  submitReviewOutcome?(parentRunId: string, input: ReviewOutcomeInput): Promise<AgentGraphSnapshot>;
+  /**
+   * Extend the round cap by 2 on a blocked loop (CP-36 / Task-095).
+   * Calls POST .../agent-loop/extend-cap.
+   */
+  extendCap?(parentRunId: string): Promise<AgentGraphSnapshot>;
   connectProviderAccount(providerKey: ProviderKey): Promise<void>;
   activateProviderAccount(accountId: string): Promise<void>;
   openProviderAccountTerminal(accountId: string): Promise<void>;

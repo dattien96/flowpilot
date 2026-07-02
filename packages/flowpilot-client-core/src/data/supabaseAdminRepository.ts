@@ -22,6 +22,7 @@ import type {
   Team,
   TeamMember,
   Workflow,
+  WorkflowFlowEdge,
   WorkflowRun,
   WorkflowStep,
 } from "../domain/adminModels";
@@ -143,6 +144,31 @@ function mapWorkflow(row: Row): Workflow {
     yoloMode: Boolean(row.yolo_mode ?? false),
     createdAt: String(row.created_at ?? ""),
     updatedAt: String(row.updated_at ?? ""),
+    isBuiltin: Boolean(row.is_builtin ?? false),
+    editable: Boolean(row.editable ?? true),
+    cloneable: Boolean(row.cloneable ?? true),
+    clonedFrom: row.cloned_from ? String(row.cloned_from) : null,
+    packId: row.pack_id ? String(row.pack_id) : null,
+    packVersion: row.pack_version ? String(row.pack_version) : null,
+    packFlowId: row.pack_flow_id ? String(row.pack_flow_id) : null,
+    packHash: row.pack_hash ? String(row.pack_hash) : null,
+    selectableIn: Array.isArray(row.selectable_in_json) ? row.selectable_in_json.map(String) : [],
+    chatBaseline: Boolean(row.chat_baseline ?? false),
+    chatSubModes: Array.isArray(row.chat_sub_modes_json) ? row.chat_sub_modes_json.map(String) : [],
+    policyCap: row.policy_cap == null ? null : Number(row.policy_cap),
+    policyOnCap: row.policy_on_cap ? String(row.policy_on_cap) : null,
+    policyExtendBy: row.policy_extend_by == null ? null : Number(row.policy_extend_by),
+    policyExtendMax: row.policy_extend_max == null ? null : Number(row.policy_extend_max),
+    edges: Array.isArray(row.edges_json)
+      ? row.edges_json.map(
+          (edge: Row): WorkflowFlowEdge => ({
+            from: String(edge.from ?? ""),
+            to: String(edge.to ?? ""),
+            when: String(edge.when ?? ""),
+            kind: String(edge.kind ?? ""),
+          }),
+        )
+      : [],
   };
 }
 
@@ -159,6 +185,14 @@ function mapWorkflowStep(row: Row): WorkflowStep {
     requiresApproval: Boolean(row.requires_approval ?? true),
     createdAt: String(row.created_at ?? ""),
     updatedAt: String(row.updated_at ?? ""),
+    nodeId: row.node_id ? String(row.node_id) : null,
+    behaviorId: row.behavior_id ? String(row.behavior_id) : null,
+    agentRef: row.agent_ref ? String(row.agent_ref) : null,
+    dependsOn: Array.isArray(row.depends_on_json) ? row.depends_on_json.map(String) : [],
+    joinMode: row.join_mode ? String(row.join_mode) : null,
+    cohort: row.cohort ? String(row.cohort) : null,
+    promptTemplateRef: row.prompt_template_ref ? String(row.prompt_template_ref) : null,
+    contextRef: row.context_ref ? String(row.context_ref) : null,
   };
 }
 
@@ -495,6 +529,17 @@ export class SupabaseAdminRepository implements
   }
 
   async saveWorkflow(workflow: Partial<Workflow> & { steps?: Partial<WorkflowStep>[] }) {
+    if (workflow.id) {
+      const { data: existing, error: existingError } = await this.supabase
+        .from("workflows")
+        .select("editable")
+        .eq("id", workflow.id)
+        .maybeSingle();
+      assertNoError(existingError, "Unable to load workflow before saving.");
+      if (existing && existing.editable === false) {
+        throw new Error("This workflow is a built-in template and cannot be edited. Clone it first.");
+      }
+    }
     const payload = {
       id: workflow.id,
       project_id: workflow.projectId ?? null,
@@ -505,28 +550,134 @@ export class SupabaseAdminRepository implements
       model_override: workflow.modelOverride ?? null,
       reasoning_effort_override: workflow.reasoningEffortOverride ?? null,
       yolo_mode: workflow.yoloMode ?? false,
+      policy_cap: workflow.policyCap ?? null,
+      policy_on_cap: workflow.policyOnCap ?? null,
+      policy_extend_by: workflow.policyExtendBy ?? null,
+      policy_extend_max: workflow.policyExtendMax ?? null,
+      edges_json: workflow.edges ?? [],
       updated_at: now(),
     };
     const { data, error } = await this.supabase.from("workflows").upsert(payload).select("*").single();
     assertNoError(error, "Unable to save workflow.");
     const saved = mapWorkflow(data);
     if (workflow.steps) {
-      await this.supabase.from("workflow_steps").delete().eq("workflow_id", saved.id);
+      // BUG-NOTE-CP42 #18: this used to DELETE every existing step before
+      // inserting the replacements, so an insert failure (FK/unique/network
+      // error) permanently lost the old steps — the delete had already
+      // committed. Insert the new rows first instead: a failed insert now
+      // leaves the existing steps fully intact, and only a successful insert
+      // triggers the delete that supersedes them.
       if (workflow.steps.length > 0) {
-        const { error: stepsError } = await this.supabase.from("workflow_steps").insert(workflow.steps.map((step, index) => ({
-          workflow_id: saved.id,
-          step_type: step.stepType,
-          order_index: step.orderIndex ?? index,
-          is_enabled: step.isEnabled ?? true,
-          provider_override: step.providerOverride ?? null,
-          model_override: step.modelOverride ?? null,
-          reasoning_effort_override: step.reasoningEffortOverride ?? null,
-          requires_approval: step.requiresApproval ?? true,
-        })));
+        const { data: insertedSteps, error: stepsError } = await this.supabase
+          .from("workflow_steps")
+          .insert(workflow.steps.map((step, index) => ({
+            workflow_id: saved.id,
+            step_type: step.stepType,
+            order_index: step.orderIndex ?? index,
+            is_enabled: step.isEnabled ?? true,
+            provider_override: step.providerOverride ?? null,
+            model_override: step.modelOverride ?? null,
+            reasoning_effort_override: step.reasoningEffortOverride ?? null,
+            requires_approval: step.requiresApproval ?? true,
+            node_id: step.nodeId ?? null,
+            behavior_id: step.behaviorId ?? null,
+            agent_ref: step.agentRef ?? null,
+            depends_on_json: step.dependsOn ?? [],
+            join_mode: step.joinMode ?? null,
+            cohort: step.cohort ?? null,
+            prompt_template_ref: step.promptTemplateRef ?? null,
+            context_ref: step.contextRef ?? null,
+          })))
+          .select("id");
         assertNoError(stepsError, "Unable to save workflow steps.");
+        const newStepIds = (insertedSteps ?? []).map((row: { id: string }) => row.id);
+        const { error: deleteError } = await this.supabase
+          .from("workflow_steps")
+          .delete()
+          .eq("workflow_id", saved.id)
+          .not("id", "in", `(${newStepIds.join(",")})`);
+        assertNoError(deleteError, "Unable to remove superseded workflow steps.");
+      } else {
+        // A deliberate "save with zero steps" has no prior insert to order
+        // against — the delete is the entire operation, not a supersession.
+        const { error: deleteError } = await this.supabase.from("workflow_steps").delete().eq("workflow_id", saved.id);
+        assertNoError(deleteError, "Unable to clear workflow steps.");
       }
     }
     return saved;
+  }
+
+  async cloneWorkflow(workflowId: string, name: string) {
+    const { data: sourceRow, error: sourceError } = await this.supabase
+      .from("workflows")
+      .select("*")
+      .eq("id", workflowId)
+      .single();
+    assertNoError(sourceError, "Unable to load workflow to clone.");
+    const source = mapWorkflow(sourceRow);
+    if (!source.cloneable) {
+      throw new Error("This workflow is not cloneable.");
+    }
+    const { data: stepRows, error: stepsError } = await this.supabase
+      .from("workflow_steps")
+      .select("*")
+      .eq("workflow_id", workflowId)
+      .order("order_index", { ascending: true });
+    assertNoError(stepsError, "Unable to load workflow steps to clone.");
+    const sourceSteps = (stepRows ?? []).map(mapWorkflowStep);
+
+    const insertPayload = {
+      project_id: source.projectId,
+      name,
+      description: source.description,
+      is_template: source.isTemplate,
+      provider_override: source.providerOverride,
+      model_override: source.modelOverride,
+      reasoning_effort_override: source.reasoningEffortOverride,
+      yolo_mode: source.yoloMode,
+      is_builtin: false,
+      editable: true,
+      cloneable: true,
+      cloned_from: source.id,
+      policy_cap: source.policyCap,
+      policy_on_cap: source.policyOnCap,
+      policy_extend_by: source.policyExtendBy,
+      policy_extend_max: source.policyExtendMax,
+      edges_json: source.edges,
+      updated_at: now(),
+    };
+    const { data: cloned, error: cloneError } = await this.supabase
+      .from("workflows")
+      .insert(insertPayload)
+      .select("*")
+      .single();
+    assertNoError(cloneError, "Unable to clone workflow.");
+    const clonedWorkflow = mapWorkflow(cloned);
+
+    if (sourceSteps.length > 0) {
+      const { error: insertStepsError } = await this.supabase.from("workflow_steps").insert(
+        sourceSteps.map((step: WorkflowStep) => ({
+          workflow_id: clonedWorkflow.id,
+          step_type: step.stepType,
+          order_index: step.orderIndex,
+          is_enabled: step.isEnabled,
+          provider_override: step.providerOverride,
+          model_override: step.modelOverride,
+          reasoning_effort_override: step.reasoningEffortOverride,
+          requires_approval: step.requiresApproval,
+          node_id: step.nodeId,
+          behavior_id: step.behaviorId,
+          agent_ref: step.agentRef,
+          depends_on_json: step.dependsOn,
+          join_mode: step.joinMode,
+          cohort: step.cohort,
+          prompt_template_ref: step.promptTemplateRef,
+          context_ref: step.contextRef,
+        })),
+      );
+      assertNoError(insertStepsError, "Unable to clone workflow steps.");
+    }
+    return clonedWorkflow;
   }
 
   async deleteWorkflow(workflowId: string) {

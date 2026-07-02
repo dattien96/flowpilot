@@ -167,6 +167,7 @@ const TranslatePopup_1 = require("./TranslatePopup");
 const shortName = (path) => path.split("/").pop() ?? path;
 const TOOL_ICON = { running: "⏳", success: "✓", failed: "✕", cancelled: "⊘" };
 const FILE_ICON = { created: "＋", modified: "✎", deleted: "－", renamed: "→" };
+const timelineGrouping_1 = require("./timelineGrouping");
 function shouldShowAgentTimelineHeader(activeAgentRunId, mainRunId, agentRunCount) {
     return Boolean(activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId) || agentRunCount > 0;
 }
@@ -245,31 +246,33 @@ function ToolGroup({ tools }) {
     const label = toolGroupLabel(tools);
     return ((0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsxs)("button", { type: "button", className: `tool-group-summary ${open ? "tool-group-summary-open" : ""}`, "aria-expanded": open, "aria-label": label, title: label, onClick: () => setOpen((value) => !value), children: [(0, jsx_runtime_1.jsx)("span", { className: "tool-group-caret", children: open ? "▾" : "▸" }), (0, jsx_runtime_1.jsx)("span", { className: "tool-group-title", children: label })] }), open && ((0, jsx_runtime_1.jsx)("div", { className: "tool-group-body", children: tools.length === 0 ? ((0, jsx_runtime_1.jsx)("div", { className: "tool-empty", children: "No tool calls captured." })) : (tools.map((tool, index) => (0, jsx_runtime_1.jsx)(ToolRow, { it: tool }, tool.id || `tool-${index}`))) }))] }));
 }
+// Grouped ask UI: when several approvals are outstanding at once, show one collapsible
+// group with a header bulk action ("Approve all" / "Deny all") plus every individual
+// card still expandable and independently actionable underneath.
+function ApprovalGroup({ items }) {
+    const approve = (0, store_1.useStore)((s) => s.approve);
+    const [open, setOpen] = (0, react_1.useState)(false);
+    const label = `${items.length} approvals required`;
+    const bulkDecide = (decision) => {
+        for (const item of items) {
+            if (item.details.decisions.some((d) => d.value === decision)) {
+                void approve(item.approvalId, decision);
+            }
+        }
+    };
+    return ((0, jsx_runtime_1.jsxs)("div", { className: "card-group approval-group", children: [(0, jsx_runtime_1.jsxs)("div", { className: "card-group-head", children: [(0, jsx_runtime_1.jsxs)("button", { type: "button", className: `card-group-summary ${open ? "card-group-summary-open" : ""}`, "aria-expanded": open, "aria-label": label, title: label, onClick: () => setOpen((value) => !value), children: [(0, jsx_runtime_1.jsx)("span", { className: "card-group-caret", children: open ? "▾" : "▸" }), (0, jsx_runtime_1.jsx)("span", { className: "badge badge-warn", children: label })] }), (0, jsx_runtime_1.jsxs)("div", { className: "card-group-bulk-actions", children: [(0, jsx_runtime_1.jsx)("button", { type: "button", className: "btn btn-primary", onClick: () => bulkDecide("approve"), children: "Approve all" }), (0, jsx_runtime_1.jsx)("button", { type: "button", className: "btn btn-danger", onClick: () => bulkDecide("deny"), children: "Deny all" })] })] }), open && ((0, jsx_runtime_1.jsx)("div", { className: "card-group-body", children: items.map((item) => ((0, jsx_runtime_1.jsx)(ApprovalCard_1.ApprovalCard, { approvalId: item.approvalId, details: item.details, decision: item.decision }, item.approvalId))) }))] }));
+}
+// Grouped ask UI for questions. Options can differ per question (arbitrary choice
+// sets), so — unlike approvals — there is no generic single-click bulk action; the
+// group only folds the cards visually while keeping each one individually answerable.
+function QuestionGroup({ items }) {
+    const [open, setOpen] = (0, react_1.useState)(false);
+    const label = `${items.length} questions pending`;
+    return ((0, jsx_runtime_1.jsxs)("div", { className: "card-group question-group", children: [(0, jsx_runtime_1.jsxs)("button", { type: "button", className: `card-group-summary ${open ? "card-group-summary-open" : ""}`, "aria-expanded": open, "aria-label": label, title: label, onClick: () => setOpen((value) => !value), children: [(0, jsx_runtime_1.jsx)("span", { className: "card-group-caret", children: open ? "▾" : "▸" }), (0, jsx_runtime_1.jsx)("span", { className: "badge badge-ask", children: label })] }), open && ((0, jsx_runtime_1.jsx)("div", { className: "card-group-body", children: items.map((item) => ((0, jsx_runtime_1.jsx)(QuestionCard_1.QuestionCard, { questionId: item.questionId, prompt: item.prompt, options: item.options, multiSelect: item.multiSelect, answer: item.answer }, item.questionId))) }))] }));
+}
 function FileRow({ it }) {
     const openInIde = (0, store_1.useStore)((s) => s.openInIde);
     return ((0, jsx_runtime_1.jsxs)("button", { className: "row file-row", title: it.path, onClick: () => openInIde(it.path), children: [(0, jsx_runtime_1.jsx)("span", { className: "row-icon", children: FILE_ICON[it.changeType ?? "modified"] ?? "✎" }), (0, jsx_runtime_1.jsxs)("span", { className: "row-main", children: [(0, jsx_runtime_1.jsx)("span", { className: "file-name", children: shortName(it.path) }), (0, jsx_runtime_1.jsx)("span", { className: "file-change", children: it.changeType ?? "modified" })] }), (0, jsx_runtime_1.jsx)("span", { className: "row-hint", children: "open in IDE \u2197" })] }));
-}
-function buildTimelineGroups(timeline) {
-    const groups = [];
-    let pendingTools = [];
-    const flushTools = () => {
-        if (pendingTools.length === 0)
-            return;
-        const firstToolId = pendingTools[0].id || `${pendingTools[0].toolName}-${groups.length}`;
-        groups.push({ kind: "tool-group", id: `tool-group-${firstToolId}`, tools: pendingTools });
-        pendingTools = [];
-    };
-    for (const item of timeline) {
-        if (item.kind === "tool") {
-            pendingTools.push(item);
-        }
-        else {
-            flushTools();
-            groups.push(item);
-        }
-    }
-    flushTools();
-    return groups;
 }
 function Item({ it }) {
     switch (it.kind) {
@@ -283,6 +286,10 @@ function Item({ it }) {
             return (0, jsx_runtime_1.jsx)(ToolRow, { it: it });
         case "tool-group":
             return (0, jsx_runtime_1.jsx)(ToolGroup, { tools: it.tools });
+        case "approval-group":
+            return (0, jsx_runtime_1.jsx)(ApprovalGroup, { items: it.items });
+        case "question-group":
+            return (0, jsx_runtime_1.jsx)(QuestionGroup, { items: it.items });
         case "file":
             return (0, jsx_runtime_1.jsx)(FileRow, { it: it });
         case "approval":
@@ -316,7 +323,7 @@ function Timeline() {
     }, [totalPromptCount]);
     const hiddenPromptCount = Math.max(totalPromptCount - visiblePromptCount, 0);
     const visibleTimeline = sliceTimelineFromPrompt(timeline, visiblePromptCount);
-    const timelineGroups = buildTimelineGroups(visibleTimeline);
+    const timelineGroups = (0, timelineGrouping_1.buildTimelineGroups)(visibleTimeline);
     const runningAgentCount = agentRuns.filter((run) => run.status === "running" || run.status === "waiting_approval" || run.status === "waiting_question").length;
     const showAgentHeader = shouldShowAgentTimelineHeader(activeAgentRunId, mainRunId, agentRuns.length);
     (0, react_1.useEffect)(() => {

@@ -1,0 +1,86 @@
+id: review-loop
+version: 1
+description: Chat-mode review-until-clean template over the generic flow executor.
+mode: chat
+builtin:
+  editable: false
+  selectableIn:
+    - chat
+    - flow
+  chatSubModes:
+    - bug
+  chatUI:
+    placement: sub_mode_option
+    showWhen:
+      subMode: bug
+  cloneable: true
+  mirror:
+    required: true
+    source: builtin
+policy:
+  cap: 3
+  onCap: escalate
+  extendBy: 2
+  extendMax: 2
+tools:
+  - tools/submit-review-outcome.yaml
+nodes:
+  - id: coder
+    run: delegate
+    lifecycle: reinvoke
+    behavior: agent.delegate
+    agent: agents/coder.md
+    join: all
+  - id: reviewer_correctness
+    run: delegate
+    lifecycle: reinvoke
+    behavior: agent.delegate
+    agent: agents/reviewer.md
+    dependsOn:
+      - coder
+    cohort: review
+    join: all
+  - id: reviewer_security
+    run: delegate
+    lifecycle: reinvoke
+    behavior: agent.delegate
+    agent: agents/reviewer.md
+    dependsOn:
+      - coder
+    cohort: review
+    join: all
+  - id: synthesis
+    run: inline
+    lifecycle: reinvoke
+    behavior: hub.inline
+    agent: agents/synthesizer.md
+    join: all
+edges:
+  - from: coder
+    to: reviewer_correctness
+    when: done
+    kind: forward
+  - from: coder
+    to: reviewer_security
+    when: done
+    kind: forward
+  - from: reviewer_correctness
+    to: synthesis
+    when: done
+    kind: forward
+  - from: reviewer_security
+    to: synthesis
+    when: done
+    kind: forward
+  - from: synthesis
+    to: coder
+    when: continue
+    kind: back
+  - from: synthesis
+    to: done
+    when: done
+    kind: forward
+  - from: synthesis
+    to: ask_user
+    when: escalate
+    kind: forward

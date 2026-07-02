@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -126,10 +127,27 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				sessionStore,
 			)
 			interactive.AttachRunner(instance)
+			// flowDefStore backs both built-in mirror sync and startResolvedFlow's
+			// flowRef resolution (CP-42/Task-175/177), mirrored into the existing
+			// workflows/workflow_steps tables. Requires Supabase to be configured
+			// (same requirement the desktop Settings UI has); nil otherwise, in
+			// which case built-in flows still resolve directly from the embedded
+			// pack (FlowDefinitionResolver.ResolveBuiltin) but cloning/mirror sync
+			// are unavailable.
+			flowDefStore := runner.FlowDefinitionStoreFor(instance)
+			interactive.SetFlowDefinitionStore(flowDefStore)
 			interactive.RegisterInteractiveRoutes(mux)
 			// Backfill rolling chat summaries for persisted chats missing one (or
 			// with a stale transcript hash) — one best-effort background pass.
 			go interactive.ScanPersistedChatsForSummaries(ctx)
+			// Mirror built-in agentpack flows into flowDefStore. Idempotent,
+			// best-effort, and a no-op when Supabase isn't configured (flowDefStore
+			// is nil) — a failure here must not block the server from starting.
+			go func() {
+				if _, err := runner.EnsureBuiltinFlowMirrorsWithStore(ctx, flowDefStore); err != nil {
+					log.Printf("[runner] builtin flow mirror sync failed: %v", err)
+				}
+			}()
 			mux.HandleFunc("GET /client/projects/{projectId}/chat-sync/google-drive/status", func(w http.ResponseWriter, r *http.Request) {
 				status, err := instance.GetGoogleDriveChatSyncConnectionStatus(r.PathValue("projectId"), r.URL.Query().Get("sessionId"))
 				if err != nil {

@@ -366,6 +366,7 @@ func TestResolvePromptExecutionAdapterUsesWorkspaceWriteWhenAllowed(t *testing.T
 			AllowWrite:  true,
 		},
 		"/tmp/output.md",
+		t.TempDir(),
 	)
 	if err != nil {
 		t.Fatalf("resolve prompt execution adapter: %v", err)
@@ -392,20 +393,25 @@ func TestResolvePromptExecutionAdapterMapsModelNames(t *testing.T) {
 		{"claude", "claude-sonnet", "claude", "sonnet"},
 		{"claude", "claude-opus", "claude", "opus"},
 		{"claude", "sonnet", "claude", "sonnet"},
-		{"gemini", "gemini-pro", "gemini", "gemini-2.5-pro"},
-		{"gemini", "gemini-flash", "gemini", "gemini-2.5-flash"},
-		{"gemini", "flash", "gemini", "gemini-2.5-flash"},
+		{"gemini", "gemini-pro", "agy", "gemini-3.1-pro-high"},
+		{"gemini", "gemini-flash", "agy", "gemini-3.5-flash-medium"},
+		{"gemini", "flash", "agy", "gemini-3.5-flash-medium"},
 		{"codex", "gpt-5.4", "codex", "gpt-5.4"},
 	}
 
 	for _, tc := range tests {
 		t.Run(fmt.Sprintf("%s/%s", tc.provider, tc.model), func(t *testing.T) {
+			workspace := t.TempDir()
+			accountHome := t.TempDir()
 			binary, args, _, err := resolvePromptExecutionAdapter(
 				PromptExecutionRequest{
-					ProviderKey: tc.provider,
-					ModelName:   tc.model,
+					ProviderKey:     tc.provider,
+					ModelName:       tc.model,
+					AccountHomePath: accountHome,
+					CustomEnv:       map[string]string{"GEMINI_HOME": filepath.Join(accountHome, ".gemini")},
 				},
 				"/tmp/output.md",
+				workspace,
 			)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
@@ -445,6 +451,39 @@ func TestResolvePromptExecutionAdapterMapsModelNames(t *testing.T) {
 	}
 }
 
+func TestResolvePromptExecutionAdapterGeminiOmitsNewProjectAfterConfigBootstrap(t *testing.T) {
+	workspace := t.TempDir()
+	home := t.TempDir()
+
+	binary, args, provider, err := resolvePromptExecutionAdapter(
+		PromptExecutionRequest{
+			ProviderKey:     "gemini",
+			ModelName:       "gemini-flash",
+			AccountHomePath: home,
+			CustomEnv:       map[string]string{"GEMINI_HOME": filepath.Join(home, ".gemini")},
+		},
+		"/tmp/output.md",
+		workspace,
+	)
+	if err != nil {
+		t.Fatalf("resolve prompt execution adapter: %v", err)
+	}
+	if binary != "agy" || provider != "gemini" {
+		t.Fatalf("adapter = (%q, %q), want (agy, gemini)", binary, provider)
+	}
+
+	got := strings.Join(args, " ")
+	if !strings.Contains(got, "--project ") {
+		t.Fatalf("gemini args = %q, want bootstrapped project", got)
+	}
+	if strings.Contains(got, "--new-project") {
+		t.Fatalf("gemini args = %q, should not pass --new-project after bootstrapping config", got)
+	}
+	if slices.Contains(args, "--continue") {
+		t.Fatalf("gemini args = %q, should not resume a newly bootstrapped project", got)
+	}
+}
+
 func TestResolvePromptExecutionAdapterReasoningEffort(t *testing.T) {
 	tests := []struct {
 		provider      string
@@ -457,18 +496,23 @@ func TestResolvePromptExecutionAdapterReasoningEffort(t *testing.T) {
 		{"codex", "gpt-5.5", "low", "codex", []string{"-c", "model_reasoning_effort=low"}},
 		{"claude", "claude-sonnet", "high", "claude", []string{"--effort", "high"}},
 		{"claude", "claude-opus", "xhigh", "claude", []string{"--effort", "max"}},
-		{"gemini", "gemini-pro", "high", "gemini", []string{}}, // gemini doesn't append reasoning flags
+		{"gemini", "gemini-pro", "high", "agy", []string{}}, // gemini doesn't append reasoning flags
 	}
 
 	for _, tc := range tests {
 		t.Run(fmt.Sprintf("%s/%s/%s", tc.provider, tc.model, tc.effort), func(t *testing.T) {
+			workspace := t.TempDir()
+			accountHome := t.TempDir()
 			binary, args, _, err := resolvePromptExecutionAdapter(
 				PromptExecutionRequest{
 					ProviderKey:     tc.provider,
 					ModelName:       tc.model,
 					ReasoningEffort: tc.effort,
+					AccountHomePath: accountHome,
+					CustomEnv:       map[string]string{"GEMINI_HOME": filepath.Join(accountHome, ".gemini")},
 				},
 				"/tmp/output.md",
+				workspace,
 			)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
@@ -1020,6 +1064,56 @@ func TestStartGoogleDriveMcpAuthLaunchesTerminalWithManagedPaths(t *testing.T) {
 	}
 	if observedEnv["GOOGLE_DRIVE_MCP_TOKEN_PATH"] != filepath.Join(homeDir, ".config", "google-drive-mcp", "tokens.json") {
 		t.Fatalf("expected token env to use managed token path, got %#v", observedEnv)
+	}
+}
+
+func TestStartInteractiveAuthLaunchesFromWorkspace(t *testing.T) {
+	originalLookPath := lookPathFn
+	originalLaunchProviderTerminalCommand := launchProviderTerminalCommandFn
+	t.Cleanup(func() {
+		lookPathFn = originalLookPath
+		launchProviderTerminalCommandFn = originalLaunchProviderTerminalCommand
+	})
+
+	workspace := filepath.Join(t.TempDir(), "flowpilot")
+	instance := &Runner{workspace: workspace}
+
+	lookPathFn = func(file string) (string, error) {
+		if file != "agy" {
+			t.Fatalf("expected agy lookup, got %q", file)
+		}
+		return "/usr/local/bin/agy", nil
+	}
+
+	var observedProviderKey string
+	var observedAccountHomePath string
+	var observedCommand string
+	var observedKeepShellOpen bool
+	launchProviderTerminalCommandFn = func(providerKey, accountHomePath, command string, keepShellOpen bool) error {
+		observedProviderKey = providerKey
+		observedAccountHomePath = accountHomePath
+		observedCommand = command
+		observedKeepShellOpen = keepShellOpen
+		return nil
+	}
+
+	if err := instance.StartInteractiveAuth("gemini", "/tmp/.geminiHome1"); err != nil {
+		t.Fatalf("start interactive auth: %v", err)
+	}
+
+	if observedProviderKey != "gemini" {
+		t.Fatalf("expected provider key gemini, got %q", observedProviderKey)
+	}
+	if observedAccountHomePath != "/tmp/.geminiHome1" {
+		t.Fatalf("expected account home path to round-trip, got %q", observedAccountHomePath)
+	}
+	if !observedKeepShellOpen {
+		t.Fatal("expected auth terminal to stay open")
+	}
+
+	expectedPrefix := commandWithWorkingDirectory("/usr/local/bin/agy", workspace)
+	if observedCommand != expectedPrefix {
+		t.Fatalf("expected workspace-scoped auth command %q, got %q", expectedPrefix, observedCommand)
 	}
 }
 
@@ -1755,6 +1849,9 @@ func TestDetectProvidersPopulatesInventoryShape(t *testing.T) {
 				{"slug":"codex-auto-review","display_name":"Codex Auto Review","visibility":"hide","supported_in_api":true}
 			]}`), nil
 		}
+		if strings.Contains(strings.ToLower(filepath.Base(name)), "agy") && len(args) == 1 && args[0] == "models" {
+			return []byte("Gemini 3.5 Flash (Medium)    (current)\nGemini 3.5 Flash (High)\nGemini 3.5 Flash (Low)\nGemini 3.1 Pro (Low)\nGemini 3.1 Pro (High)\nClaude Sonnet 4.6 (Thinking)\nGPT-OSS 120B (Medium)\n"), nil
+		}
 		return originalRunCommand(ctx, name, args...)
 	}
 
@@ -1765,8 +1862,7 @@ func TestDetectProvidersPopulatesInventoryShape(t *testing.T) {
 
 	writeMockProviderBinary(t, binDir, "codex", "codex 1.2.3")
 	writeMockProviderBinary(t, binDir, "claude", "claude 4.5.6")
-	writeMockProviderBinary(t, binDir, "gemini", "gemini 7.8.9")
-	writeMockGeminiBundleCatalog(t, workspace)
+	writeMockProviderBinary(t, binDir, "agy", "agy 7.8.9")
 
 	instance := &Runner{workspace: workspace}
 	providers, err := instance.DetectProviders(context.Background())
@@ -1797,17 +1893,13 @@ func TestDetectProvidersPopulatesInventoryShape(t *testing.T) {
 		{key: "claude", version: "claude 4.5.6", models: []string{"claude-opus", "claude-sonnet", "claude-haiku"}},
 		{
 			key:     "gemini",
-			version: "gemini 7.8.9",
+			version: "agy 7.8.9",
 			models: []string{
-				"gemini-3-pro-preview",
-				"gemini-3.1-pro-preview",
-				"gemini-3-flash-preview",
-				"gemini-3.1-flash-lite-preview",
-				"gemini-2.5-pro",
-				"gemini-2.5-flash",
-				"gemini-2.5-flash-lite",
-				"auto-gemini-3",
-				"auto-gemini-2.5",
+				"gemini-3.5-flash-medium",
+				"gemini-3.5-flash-high",
+				"gemini-3.5-flash-low",
+				"gemini-3.1-pro-low",
+				"gemini-3.1-pro-high",
 			},
 		},
 	}
@@ -1830,8 +1922,12 @@ func TestDetectProvidersPopulatesInventoryShape(t *testing.T) {
 		if provider["auth_status"] != "READY" {
 			t.Fatalf("expected provider %q to be ready, got %#v", want.key, provider["auth_status"])
 		}
-		if provider["detected_binary"] != want.key {
-			t.Fatalf("expected provider %q binary %q, got %#v", want.key, want.key, provider["detected_binary"])
+		expectedBinary := want.key
+		if want.key == "gemini" {
+			expectedBinary = "agy"
+		}
+		if provider["detected_binary"] != expectedBinary {
+			t.Fatalf("expected provider %q binary %q, got %#v", want.key, expectedBinary, provider["detected_binary"])
 		}
 		if provider["detected_version"] != want.version {
 			t.Fatalf("expected provider %q version %q, got %#v", want.key, want.version, provider["detected_version"])
@@ -1856,7 +1952,7 @@ func TestDetectProvidersPopulatesInventoryShape(t *testing.T) {
 				t.Fatalf("expected provider %q model %d id %q, got %#v", want.key, idx, modelID, model["id"])
 			}
 			if model["display_name"] != modelID {
-				if want.key != "codex" {
+				if want.key != "codex" && want.key != "gemini" {
 					t.Fatalf("expected provider %q model %d display name %q, got %#v", want.key, idx, modelID, model["display_name"])
 				}
 			}
@@ -1868,7 +1964,7 @@ func TestDetectProvidersPopulatesInventoryShape(t *testing.T) {
 				expectedSource = "codex_debug_models"
 			}
 			if want.key == "gemini" {
-				expectedSource = "gemini_bundle_registry"
+				expectedSource = "agy_models_command"
 			}
 			if model["source"] != expectedSource {
 				t.Fatalf("expected provider %q model %d source %s, got %#v", want.key, idx, expectedSource, model["source"])
@@ -2065,7 +2161,6 @@ func TestProviderInstallCommandMatrix(t *testing.T) {
 		wantArgs    []string
 	}{
 		{key: "codex", wantCommand: "npm", wantArgs: []string{"install", "-g", "@openai/codex"}},
-		{key: "gemini", wantCommand: "npm", wantArgs: []string{"install", "-g", "@google/gemini-cli"}},
 	}
 
 	for _, tc := range cases {
@@ -2087,6 +2182,39 @@ func TestProviderInstallCommandMatrix(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("gemini", func(t *testing.T) {
+		spec, ok := lookupProviderSpec("gemini")
+		if !ok {
+			t.Fatal("expected provider spec for gemini")
+		}
+
+		command, args, err := providerInstallCommand(spec)
+		if err != nil {
+			t.Fatalf("provider install command: %v", err)
+		}
+
+		switch runtime.GOOS {
+		case "darwin", "linux":
+			if command != "sh" {
+				t.Fatalf("expected sh install command on %s, got %q", runtime.GOOS, command)
+			}
+			if !slices.Equal(args, []string{"-c", "curl -fsSL https://antigravity.google/cli/install.sh | bash"}) {
+				t.Fatalf("unexpected gemini/antigravity args on %s: %v", runtime.GOOS, args)
+			}
+		case "windows":
+			if command != "cmd" {
+				t.Fatalf("expected cmd install command on windows, got %q", command)
+			}
+			if !slices.Equal(args, []string{"/c", "curl -fsSL https://antigravity.google/cli/install.cmd -o install.cmd && install.cmd && del install.cmd"}) {
+				t.Fatalf("unexpected gemini/antigravity args on windows: %v", args)
+			}
+		default:
+			if err == nil {
+				t.Fatalf("expected unsupported OS error for gemini on %s", runtime.GOOS)
+			}
+		}
+	})
 
 	t.Run("claude", func(t *testing.T) {
 		spec, ok := lookupProviderSpec("claude")
@@ -2120,6 +2248,32 @@ func TestProviderInstallCommandMatrix(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestProviderAuthStatusGeminiUsesAntigravityConfigMarker(t *testing.T) {
+	workspace := t.TempDir()
+	homeDir := filepath.Join(workspace, "home")
+	configDir := filepath.Join(homeDir, ".gemini", "antigravity-cli")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "settings.json"), []byte(`{"theme":"dark"}`), 0o644); err != nil {
+		t.Fatalf("write settings.json: %v", err)
+	}
+
+	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", homeDir)
+	t.Setenv("GOOGLE_API_KEY", "")
+	t.Setenv("GEMINI_API_KEY", "")
+
+	spec, ok := lookupProviderSpec("gemini")
+	if !ok {
+		t.Fatal("expected provider spec for gemini")
+	}
+
+	if got := providerAuthStatus(spec); got != "READY" {
+		t.Fatalf("expected READY from antigravity config marker, got %q", got)
+	}
 }
 
 func TestCommandWithWindowsWorkingDirectoryQuotesPath(t *testing.T) {
@@ -2181,13 +2335,13 @@ func writeMockGeminiBundleCatalog(t *testing.T, workspace string) string {
 
 	path := filepath.Join(dir, "chunk-test.js")
 	content := `var PREVIEW_GEMINI_MODEL = "gemini-3-pro-preview";
-var PREVIEW_GEMINI_3_1_MODEL = "gemini-3.1-pro-preview";
-var PREVIEW_GEMINI_3_1_CUSTOM_TOOLS_MODEL = "gemini-3.1-pro-preview-customtools";
-var PREVIEW_GEMINI_FLASH_MODEL = "gemini-3-flash-preview";
-var PREVIEW_GEMINI_3_1_FLASH_LITE_MODEL = "gemini-3.1-flash-lite-preview";
-var DEFAULT_GEMINI_MODEL = "gemini-2.5-pro";
-var DEFAULT_GEMINI_FLASH_MODEL = "gemini-2.5-flash";
-var DEFAULT_GEMINI_FLASH_LITE_MODEL = "gemini-2.5-flash-lite";
+var PREVIEW_GEMINI_3_1_MODEL = "gemini-3.1-pro-high";
+var PREVIEW_GEMINI_3_1_CUSTOM_TOOLS_MODEL = "gemini-3.1-pro-high-customtools";
+var PREVIEW_GEMINI_FLASH_MODEL = "gemini-3.5-flash-high";
+var PREVIEW_GEMINI_3_1_FLASH_LITE_MODEL = "gemini-3.5-flash-low";
+var DEFAULT_GEMINI_MODEL = "gemini-3.1-pro-low";
+var DEFAULT_GEMINI_FLASH_MODEL = "gemini-3.5-flash-medium";
+var DEFAULT_GEMINI_FLASH_LITE_MODEL = "gemini-3.5-flash-low";
 var VALID_GEMINI_MODELS = /* @__PURE__ */ new Set([
   PREVIEW_GEMINI_MODEL,
   PREVIEW_GEMINI_3_1_MODEL,
@@ -2198,8 +2352,8 @@ var VALID_GEMINI_MODELS = /* @__PURE__ */ new Set([
   DEFAULT_GEMINI_FLASH_MODEL,
   DEFAULT_GEMINI_FLASH_LITE_MODEL
 ]);
-var PREVIEW_GEMINI_MODEL_AUTO = "auto-gemini-3";
-var DEFAULT_GEMINI_MODEL_AUTO = "auto-gemini-2.5";
+var PREVIEW_GEMINI_MODEL_AUTO = "gemini-3.5-flash-high";
+var DEFAULT_GEMINI_MODEL_AUTO = "gemini-3.5-flash-medium";
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write gemini catalog: %v", err)

@@ -111,6 +111,47 @@ export interface Workflow {
   yoloMode: boolean;
   createdAt: string;
   updatedAt: string;
+  /**
+   * Flow-engine attributes (CP-42/Task-175/179). A built-in workflow is
+   * mirrored from the embedded agentpack (e.g. Review Loop) and is
+   * read-only in the Settings UI (isBuiltin=true, editable=false); users
+   * clone it into an editable copy via cloneWorkflow, which sets
+   * isBuiltin=false, editable=true, and clonedFrom to the source workflow id.
+   */
+  isBuiltin: boolean;
+  editable: boolean;
+  cloneable: boolean;
+  clonedFrom: string | null;
+  /** Pack identity, present only on isBuiltin=true rows, used by mirror-sync
+   * staleness checks (packHash changes when the source pack YAML changes). */
+  packId: string | null;
+  packVersion: string | null;
+  packFlowId: string | null;
+  packHash: string | null;
+  /** Where this flow may be selected from: "chat" and/or "flow". */
+  selectableIn: string[];
+  /** True for the always-on Chat Mode context baseline (e.g. RAG Harness);
+   * never offered as a Chat Mode orchestration picker option. */
+  chatBaseline: boolean;
+  /** Chat sub-modes (e.g. "bug") this flow's picker option is offered under. */
+  chatSubModes: string[];
+  /** Bounded-loop cap policy for this flow's cohort/hub reinvocation. */
+  policyCap: number | null;
+  policyOnCap: string | null;
+  policyExtendBy: number | null;
+  policyExtendMax: number | null;
+  /** The flow graph's edges. Not yet read by the runner's live execution
+   * path (which only starts the entry node today) — preserved for the
+   * planned FlowEdge-driven generic executor. */
+  edges: WorkflowFlowEdge[];
+}
+
+/** One edge in a Workflow's flow graph (CP-42/Task-175). */
+export interface WorkflowFlowEdge {
+  from: string;
+  to: string;
+  when: string;
+  kind: string;
 }
 
 export interface WorkflowStep {
@@ -125,6 +166,21 @@ export interface WorkflowStep {
   requiresApproval: boolean;
   createdAt: string;
   updatedAt: string;
+  /**
+   * Flow-engine per-node attributes (CP-42/Task-175/179). nodeId is the
+   * stable flow-graph identifier for this step within its workflow (e.g.
+   * "coder", "reviewer_correctness") — distinct from stepType, which is a
+   * reusable step-definition key multiple nodes/workflows can share.
+   * dependsOn references other nodes' nodeId within the same workflow.
+   */
+  nodeId: string | null;
+  behaviorId: string | null;
+  agentRef: string | null;
+  dependsOn: string[];
+  joinMode: string | null;
+  cohort: string | null;
+  promptTemplateRef: string | null;
+  contextRef: string | null;
 }
 
 export interface StepDefinition {

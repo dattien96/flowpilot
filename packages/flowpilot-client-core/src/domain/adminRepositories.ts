@@ -50,6 +50,12 @@ export interface WorkflowRepository {
   saveStepDefinition(step: StepDefinition): Promise<StepDefinition>;
   deleteStepDefinition(stepType: string): Promise<void>;
   listWorkflowRuns(projectId?: string): Promise<WorkflowRun[]>;
+  /**
+   * Clone a built-in (isBuiltin=true) workflow into an editable, user-owned
+   * copy: a new workflow row with isBuiltin=false, editable=true,
+   * clonedFrom=workflowId, plus a deep copy of its steps (CP-42/Task-179).
+   */
+  cloneWorkflow(workflowId: string, name: string): Promise<Workflow>;
 }
 
 export interface ArtifactCatalogRepository {
@@ -74,6 +80,7 @@ export interface ArtifactRepository extends ArtifactCatalogRepository, ArtifactR
 
 export interface LocalProviderRepository {
   listLocalProviders(): Promise<LocalRunnerProvider[]>;
+  installLocalProvider(providerKey: string): Promise<LocalRunnerProvider[]>;
   authenticateProvider(providerKey: string): Promise<void>;
 }
 

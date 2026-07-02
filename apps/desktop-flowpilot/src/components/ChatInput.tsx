@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { useStore } from "@/state/store";
 import type { ProviderKey, TokenUsageSnapshot } from "@/types/contract";
 import {
@@ -236,12 +237,13 @@ export function ChatInput(): React.ReactElement {
   const setYoloMode = useStore((s) => s.setYoloMode);
   const generateChatSummary = useStore((s) => s.generateChatSummary);
   const summaryGenerating = useStore((s) => s.summaryGenerating);
-  const pendingApproval = useStore((s) => s.pendingApproval);
-  const pendingQuestion = useStore((s) => s.pendingQuestion);
+  const pendingApprovals = useStore((s) => s.pendingApprovals);
+  const pendingQuestions = useStore((s) => s.pendingQuestions);
   const latestTokenUsage = useStore((s) => s.latestTokenUsage);
   const stop = useStore((s) => s.stop);
   const timeline = useStore((s) => s.timeline);
   const providerAccounts = useStore((s) => s.providerAccounts);
+  const localProviders = useStore((s) => s.localProviders);
   const agentRuns = useStore((s) => s.agentRuns);
   const activeAgentRunId = useStore((s) => s.activeAgentRunId);
   const mainRunId = useStore((s) => s.mainRunId ?? s.runId);
@@ -256,6 +258,7 @@ export function ChatInput(): React.ReactElement {
   const backToMainRun = useStore((s) => s.backToMainRun);
 
   const [text, setText] = useState("");
+  const [clearSeq, setClearSeq] = useState(0);
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const [pickerSortSelection, setPickerSortSelection] = useState<string[]>([]);
   const [pickerSearch, setPickerSearch] = useState("");
@@ -448,15 +451,40 @@ export function ChatInput(): React.ReactElement {
       providerAccounts.some((a) => a.providerKey === selectedProvider && a.authStatus === "connected" && !a.isActive),
     [providerAccounts, selectedProvider],
   );
+  const installedProviders = useMemo(
+    () => new Set(localProviders.filter((provider) => provider.installed).map((provider) => provider.key as ProviderKey)),
+    [localProviders],
+  );
   const childRunFocused = isChildRunFocused(activeAgentRunId, mainRunId);
   const focusedAgentName = childRunFocused
     ? agentRuns.find((run) => run.runId === activeAgentRunId)?.agentName ?? activeAgentRunId
     : undefined;
-  const connectedProviders = useMemo(
-    () => new Set(providerAccounts.filter((account) => account.authStatus === "connected").map((account) => account.providerKey)),
+  const activeConnectedProviders = useMemo(
+    () =>
+      new Set(
+        providerAccounts
+          .filter((account) => account.authStatus === "connected" && account.isActive)
+          .map((account) => account.providerKey),
+      ),
     [providerAccounts],
   );
-  const selectedProviderConnected = !!selectedProvider && connectedProviders.has(selectedProvider);
+  const selectedProviderInstalled = !!selectedProvider && installedProviders.has(selectedProvider);
+  const selectedProviderConnected = !!selectedProvider && activeConnectedProviders.has(selectedProvider);
+  const readyProviders = useMemo(
+    () => PROVIDER_CARDS.map((provider) => provider.value).filter((provider) => installedProviders.has(provider) && activeConnectedProviders.has(provider)),
+    [activeConnectedProviders, installedProviders],
+  );
+
+  useEffect(() => {
+    if (!isChatMode || runId) return;
+    if (readyProviders.length === 0) return;
+    if (!selectedProvider || !installedProviders.has(selectedProvider) || !activeConnectedProviders.has(selectedProvider)) {
+      const fallback = readyProviders[0];
+      if (fallback && fallback !== selectedProvider) {
+        selectProvider(fallback);
+      }
+    }
+  }, [activeConnectedProviders, installedProviders, isChatMode, readyProviders, runId, selectProvider, selectedProvider]);
 
   const blocked = status === "running" || status === "waiting_approval" || status === "waiting_question";
   // The manual "Gen summary" control is available only for an existing chat that
@@ -473,7 +501,7 @@ export function ChatInput(): React.ReactElement {
   );
 
   const canSend = isChatMode
-    ? hasSelectedProject && selectedProviderConnected && !blocked && !hasBlockingChild && !childRunFocused && text.trim().length > 0 && !showPicker && !showAgentCommand
+    ? hasSelectedProject && selectedProviderInstalled && selectedProviderConnected && !blocked && !hasBlockingChild && !childRunFocused && text.trim().length > 0 && !showPicker && !showAgentCommand
     : hasSelectedProject &&
       (launchMode === "workflow" ? !!selectedWorkflowId : !!selectedStepId) &&
       !blocked &&
@@ -579,12 +607,22 @@ export function ChatInput(): React.ReactElement {
   };
 
   const clearComposer = () => {
-    setText("");
-    setSelectedSkills([]);
-    setSkillTokens([]);
-    setAttachments([]);
-    setAttachError(null);
-    setSkillPickerOpen(false);
+    flushSync(() => {
+      setText("");
+      setClearSeq((value) => value + 1);
+      setSelectedSkills([]);
+      setSkillTokens([]);
+      setAttachments([]);
+      setAttachError(null);
+      setSkillPickerOpen(false);
+      setPickerSearch("");
+      setPickerHighlightIndex(-1);
+      setCursorPos(0);
+      setSlashDismissedIndex(null);
+    });
+    if (textAreaRef.current) {
+      textAreaRef.current.value = "";
+    }
   };
 
   const send = async () => {
@@ -602,6 +640,7 @@ export function ChatInput(): React.ReactElement {
         return;
       }
       if (routed.kind === "busy") {
+        clearComposer();
         await useStore.getState().injectAgentFeedback(routed.runId, routed.prompt || trimmed);
         appendSystemMessage(`Queued feedback for @${routed.agentName}. It will be picked up when the child is safe to continue.`);
         return;
@@ -679,7 +718,11 @@ export function ChatInput(): React.ReactElement {
       ? childRunFocused
         ? "Child transcript is read-only."
         : selectedProvider
-          ? "Type a message. Use /s for skills, /a to spawn an agent, @ to message an agent."
+          ? !selectedProviderInstalled
+            ? "Install the provider CLI first."
+            : !selectedProviderConnected
+              ? "Activate a connected account for this provider first."
+              : "Type a message. Use /s for skills, /a to spawn an agent, @ to message an agent."
           : "Select a provider first."
       : launchMode === "workflow"
         ? selectedWorkflowId
@@ -785,18 +828,20 @@ export function ChatInput(): React.ReactElement {
                       <button
                         key={p.value}
                         type="button"
-                        className={`provider-chip provider-chip-${p.value}${selectedProvider === p.value ? " provider-chip-selected" : ""}${connectedProviders.has(p.value) ? "" : " provider-chip-unavailable"}`}
+                        className={`provider-chip provider-chip-${p.value}${selectedProvider === p.value ? " provider-chip-selected" : ""}${installedProviders.has(p.value) && activeConnectedProviders.has(p.value) ? "" : " provider-chip-unavailable"}`}
                         onClick={() => {
                           if (selectedProvider === p.value) return;
                           selectProvider(p.value);
                         }}
-                        disabled={blocked || isSwitchBusy || !connectedProviders.has(p.value)}
+                        disabled={blocked || isSwitchBusy || !installedProviders.has(p.value) || !activeConnectedProviders.has(p.value)}
                         aria-pressed={selectedProvider === p.value}
                         aria-label={p.label}
                         title={
-                          !connectedProviders.has(p.value)
-                            ? `${p.label} is unavailable until an account is connected`
-                            : p.label
+                          !installedProviders.has(p.value)
+                            ? `${p.label} is unavailable until its CLI is installed`
+                            : !activeConnectedProviders.has(p.value)
+                              ? `${p.label} is unavailable until a connected account is active`
+                              : p.label
                         }
                       >
                         <span className="provider-chip-icon">{p.icon}</span>
@@ -1057,11 +1102,11 @@ export function ChatInput(): React.ReactElement {
               <div className="input-note">Return to the main chat to send prompts or use @agent routing.</div>
             </div>
             {blocked && (
-              <button className="btn send-btn send-btn-stop" onClick={() => void stop()} aria-label="Stop child agent">
+              <button type="button" className="btn send-btn send-btn-stop" onClick={() => void stop()} aria-label="Stop child agent">
                 <StopIcon />
               </button>
             )}
-            <button className="btn send-btn" onClick={backToMainRun}>
+            <button type="button" className="btn send-btn" onClick={backToMainRun}>
               Main
             </button>
           </>
@@ -1074,6 +1119,7 @@ export function ChatInput(): React.ReactElement {
                 </div>
               )}
               <textarea
+                key={clearSeq}
                 ref={textAreaRef}
                 className="text-area"
                 rows={2}
@@ -1100,11 +1146,11 @@ export function ChatInput(): React.ReactElement {
               />
             </div>
             {blocked ? (
-              <button className="btn send-btn send-btn-stop" onClick={() => void stop()} aria-label="Stop AI">
+              <button type="button" className="btn send-btn send-btn-stop" onClick={() => void stop()} aria-label="Stop AI">
                 <StopIcon />
               </button>
             ) : (
-              <button className="btn btn-primary send-btn" onClick={send} disabled={!canSend}>
+              <button type="button" className="btn btn-primary send-btn" onClick={send} disabled={!canSend}>
                 Send
               </button>
             )}
@@ -1118,7 +1164,7 @@ export function ChatInput(): React.ReactElement {
         </div>
       )}
 
-      {(pendingApproval || pendingQuestion) && (
+      {(pendingApprovals.length > 0 || pendingQuestions.length > 0) && (
         <div className="input-note">Action required above before continuing.</div>
       )}
 

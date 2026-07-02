@@ -247,6 +247,8 @@ func normalizeCodexToolName(name string) string {
 	switch strings.TrimSpace(name) {
 	case codexSpawnAgentToolName:
 		return "spawn_agent"
+	case codexReviewOutcomeToolName:
+		return "submit_review_outcome"
 	default:
 		return name
 	}

@@ -19,14 +19,11 @@ export type WorkflowRunStatus =
   | "CANCELED";
 
 export const STEP_MODEL_OPTIONS = [
-  { value: "auto-gemini-3", label: "Auto (Gemini 3)" },
-  { value: "auto-gemini-2.5", label: "Auto (Gemini 2.5)" },
-  { value: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro Preview" },
-  { value: "gemini-3-flash-preview", label: "Gemini 3 Flash Preview" },
-  { value: "gemini-3.1-flash-lite-preview", label: "Gemini 3.1 Flash Lite Preview" },
-  { value: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
-  { value: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
-  { value: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
+  { value: "gemini-3.5-flash-medium", label: "Gemini 3.5 Flash (Medium)" },
+  { value: "gemini-3.5-flash-high", label: "Gemini 3.5 Flash (High)" },
+  { value: "gemini-3.5-flash-low", label: "Gemini 3.5 Flash (Low)" },
+  { value: "gemini-3.1-pro-low", label: "Gemini 3.1 Pro (Low)" },
+  { value: "gemini-3.1-pro-high", label: "Gemini 3.1 Pro (High)" },
   { value: "claude-haiku", label: "Claude Haiku" },
   { value: "claude-sonnet", label: "Claude Sonnet" },
   { value: "claude-opus", label: "Claude Opus" },
@@ -64,10 +61,20 @@ export const REASONING_EFFORT_OPTIONS = [
 export type WorkflowStartMode = "workflow-definition" | "single-step";
 
 const LEGACY_STEP_MODEL_ALIASES: Record<string, string> = {
-  flash: "gemini-2.5-flash",
-  "gemini-flash": "gemini-2.5-flash",
-  pro: "gemini-2.5-pro",
-  "gemini-pro": "gemini-2.5-pro",
+  flash: "gemini-3.5-flash-medium",
+  "gemini-flash": "gemini-3.5-flash-medium",
+  pro: "gemini-3.1-pro-high",
+  "gemini-pro": "gemini-3.1-pro-high",
+  "auto-gemini-3": "gemini-3.5-flash-medium",
+  "auto-gemini-2.5": "gemini-3.5-flash-medium",
+  "gemini-3-pro-preview": "gemini-3.1-pro-high",
+  "gemini-3.1-pro-preview": "gemini-3.1-pro-high",
+  "gemini-3.1-pro-preview-customtools": "gemini-3.1-pro-high",
+  "gemini-3-flash-preview": "gemini-3.5-flash-medium",
+  "gemini-3.1-flash-lite-preview": "gemini-3.5-flash-low",
+  "gemini-2.5-pro": "gemini-3.1-pro-high",
+  "gemini-2.5-flash": "gemini-3.5-flash-medium",
+  "gemini-2.5-flash-lite": "gemini-3.5-flash-low",
 };
 
 export type WorkflowRunStartRequest =

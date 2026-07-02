@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -129,6 +130,20 @@ func writeJsonRpcRequest(w io.Writer, method string, params interface{}, id inte
 		req["id"] = id
 	}
 	data, err := json.Marshal(req)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(append(data, '\n'))
+	return err
+}
+
+func writeJsonRpcResponse(w io.Writer, id interface{}, result interface{}) error {
+	resp := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"result":  result,
+	}
+	data, err := json.Marshal(resp)
 	if err != nil {
 		return err
 	}
@@ -262,80 +277,6 @@ func jsonRpcErrorMessage(message map[string]interface{}) string {
 	return ""
 }
 
-func geminiACPInitializeParams() map[string]interface{} {
-	return map[string]interface{}{
-		"protocolVersion": 1,
-		"capabilities":    map[string]interface{}{},
-		"clientInfo": map[string]interface{}{
-			"name":    "flowpilot",
-			"version": "1.0",
-		},
-	}
-}
-
-func geminiACPSessionNewParams(cwd string) map[string]interface{} {
-	return map[string]interface{}{
-		"cwd":        cwd,
-		"mcpServers": []interface{}{},
-	}
-}
-
-func geminiACPPromptParams(sessionID string, prompt string) map[string]interface{} {
-	return map[string]interface{}{
-		"sessionId": sessionID,
-		"prompt": []map[string]string{
-			{
-				"type": "text",
-				"text": prompt,
-			},
-		},
-	}
-}
-
-func extractGeminiACPText(message map[string]interface{}) string {
-	method, _ := message["method"].(string)
-	if method != "session/update" {
-		return ""
-	}
-
-	params, ok := message["params"].(map[string]interface{})
-	if !ok {
-		return ""
-	}
-
-	update, ok := params["update"].(map[string]interface{})
-	if !ok {
-		return ""
-	}
-
-	if updateType, _ := update["sessionUpdate"].(string); updateType != "agent_message_chunk" {
-		return ""
-	}
-
-	content, ok := update["content"].(map[string]interface{})
-	if !ok {
-		return ""
-	}
-
-	if contentType, _ := content["type"].(string); contentType != "text" {
-		return ""
-	}
-
-	if text, ok := content["text"].(string); ok {
-		return text
-	}
-
-	return ""
-}
-
-func appendGeminiACPText(output *strings.Builder, message map[string]interface{}) {
-	if output == nil {
-		return
-	}
-
-	output.WriteString(extractGeminiACPText(message))
-}
-
 func extractClaudeStreamText(line []byte) string {
 	var msg map[string]interface{}
 	if err := json.Unmarshal(bytes.TrimSpace(line), &msg); err != nil {
@@ -423,11 +364,7 @@ func resolveBinaryAndArgs(provider string, model string, reasoningEffort string)
 		}
 		return "claude", args, "claude_stream_json"
 	case "gemini":
-		args := []string{"--acp"}
-		if model != "" {
-			args = append(args, "--model", normalizeGeminiModelName(model))
-		}
-		return "gemini", args, "gemini_acp"
+		return geminiBinaryName(), nil, "gemini_agy"
 	default:
 		return "", nil, ""
 	}
@@ -520,6 +457,23 @@ func (r *Runner) StartSession(ctx context.Context, req AiSessionStartRequest) (A
 			Command:           command,
 		}, nil
 	}
+	if transportType == "gemini_agy" {
+		providerSessionID := DetermineProviderSessionID(
+			transportType,
+			session.Provider,
+			session.SessionID,
+			"",
+			req.ResumeProviderSessionID,
+		)
+		session.ProviderSessionID = providerSessionID
+		r.sessions[processKey] = session
+		return AiSessionHandle{
+			TransportType:     transportType,
+			ProviderSessionID: providerSessionID,
+			ProcessKey:        &processKey,
+			Command:           command,
+		}, nil
+	}
 
 	cmd := commandContextFn(ctx, binaryPath, args...)
 	cmd.Env = r.getEnvForExecution(req.ProviderKey, req.AccountHomePath, sessionCustomEnv, req.ProxyURL)
@@ -590,42 +544,6 @@ func (r *Runner) StartSession(ctx context.Context, req AiSessionStartRequest) (A
 		}
 		if providerSessionID == "" {
 			providerSessionID = "codex_mcp_session_" + session.SessionID
-		}
-	} else if transportType == "gemini_acp" {
-		if err := writeJsonRpcRequest(stdin, "initialize", geminiACPInitializeParams(), 1); err != nil {
-			cmd.Process.Kill()
-			return AiSessionHandle{}, fmt.Errorf("failed to write ACP initialize request: %w", err)
-		}
-		resp, err := readJsonRpcResponse(stdoutScanner, 1)
-		if err != nil {
-			cmd.Process.Kill()
-			return AiSessionHandle{}, fmt.Errorf("failed to read ACP initialize response: %w", err)
-		}
-		if errMsg := jsonRpcErrorMessage(resp); errMsg != "" {
-			cmd.Process.Kill()
-			return AiSessionHandle{}, fmt.Errorf("failed Gemini ACP initialize: %s", errMsg)
-		}
-		if err := writeJsonRpcRequest(stdin, "session/new", geminiACPSessionNewParams(resolvedWorkingDirectory), 2); err != nil {
-			cmd.Process.Kill()
-			return AiSessionHandle{}, fmt.Errorf("failed to write session/new request: %w", err)
-		}
-		resp, err = readJsonRpcResponse(stdoutScanner, 2)
-		if err != nil {
-			cmd.Process.Kill()
-			return AiSessionHandle{}, fmt.Errorf("failed to read session/new response: %w", err)
-		}
-		if errMsg := jsonRpcErrorMessage(resp); errMsg != "" {
-			cmd.Process.Kill()
-			return AiSessionHandle{}, fmt.Errorf("failed Gemini ACP session/new: %s", errMsg)
-		}
-		if result, ok := resp["result"].(map[string]interface{}); ok {
-			if sId, ok := result["sessionId"].(string); ok {
-				providerSessionID = sId
-			}
-		}
-		if providerSessionID == "" {
-			cmd.Process.Kill()
-			return AiSessionHandle{}, fmt.Errorf("failed Gemini ACP session/new: missing sessionId")
 		}
 	}
 	providerSessionID = DetermineProviderSessionID(transportType, session.Provider, session.SessionID, providerSessionID, req.ResumeProviderSessionID)
@@ -791,75 +709,62 @@ func (r *Runner) SendMessageWithCallback(ctx context.Context, req AiSessionMessa
 				session.Mu.Unlock()
 			}
 		}
-	} else if session.TransportType == "gemini_acp" {
+	} else if session.TransportType == "gemini_agy" {
 		session.Mu.Lock()
+		model := session.Model
 		providerSessionID := session.ProviderSessionID
+		accountHomePath := session.AccountHomePath
+		customEnv := cloneSessionCustomEnv(session.CustomEnv)
+		proxyURL := session.ProxyURL
+		workingDirectory := session.WorkingDirectory
 		session.Mu.Unlock()
 
-		params := geminiACPPromptParams(providerSessionID, actualPrompt)
-		if err := writeJsonRpcRequest(session.Stdin, "session/prompt", params, 3); err != nil {
-			if terminationErr := sessionTerminationError(session); terminationErr != nil {
-				return PromptExecutionResult{}, terminationErr
-			}
-			return PromptExecutionResult{}, fmt.Errorf("session_dead: failed to send Gemini ACP prompt: %w", err)
-		}
-		var streamedOutput strings.Builder
-		resp, err := readJsonRpcResponseWithHandler(session.StdoutScanner, 3, func(msg map[string]interface{}) {
-			text := extractGeminiACPText(msg)
-			if text != "" {
-				streamedOutput.WriteString(text)
-				emit(SessionStreamEvent{Type: "chunk", Stream: "stdout", Message: text})
-			}
-		})
+		projectEnv := geminiProjectEnvHints(accountHomePath, customEnv)
+		projectID, resume, err := geminiSessionProjectID(providerSessionID, workingDirectory, projectEnv)
 		if err != nil {
-			if terminationErr := sessionTerminationError(session); terminationErr != nil {
-				return PromptExecutionResult{}, terminationErr
-			}
-			if strings.HasPrefix(err.Error(), "parse_error:") {
-				return PromptExecutionResult{}, fmt.Errorf("provider error: invalid json response: %v", err)
-			}
-			return PromptExecutionResult{}, fmt.Errorf("session_dead: failed to read Gemini ACP response: %w", err)
+			return PromptExecutionResult{}, err
 		}
-		if errObj, ok := resp["error"].(map[string]interface{}); ok {
-			errMsg := "unknown provider error"
-			if msg, ok := errObj["message"].(string); ok {
-				errMsg = msg
-			}
-			return PromptExecutionResult{}, fmt.Errorf("provider error: %s", errMsg)
-		} else if errStr, ok := resp["error"].(string); ok {
-			return PromptExecutionResult{}, fmt.Errorf("provider error: %s", errStr)
+		if projectID != providerSessionID {
+			session.Mu.Lock()
+			session.ProviderSessionID = projectID
+			session.Mu.Unlock()
 		}
-		outputMarkdown = streamedOutput.String()
-		if result, ok := resp["result"].(map[string]interface{}); ok {
-			if outputMarkdown == "" {
-				if text, ok := result["text"].(string); ok {
-					outputMarkdown = text
-				}
+
+		// createProject is false: --project UUID alone is sufficient once the config file
+		// exists at ~/.gemini/config/projects/UUID.json.  --new-project was previously
+		// added because logs showed the wrong project being used, but that was caused by
+		// the old arg order where --print consumed --project as the prompt value (the flag
+		// was never reaching agy).  With --print moved to the end this is no longer needed,
+		// and --new-project causes agy to emit no LLM response to stdout.
+		args := geminiCLIArgs(workingDirectory, projectID, normalizeGeminiModelName(model), req.YoloMode, resume, false)
+		logGeminiAgyLaunch("session", session.BinaryPath, args, geminiLaunchDebug{
+			Cwd:               workingDirectory,
+			ProjectID:         projectID,
+			ProviderSessionID: providerSessionID,
+			Resume:            resume,
+			CreateProject:     false,
+			Env:               projectEnv,
+		})
+		args = append(args, "--print", actualPrompt)
+		cmd := commandContextFn(ctx, session.BinaryPath, args...)
+		cmd.Env = r.getEnvForExecution(session.Provider, accountHomePath, customEnv, proxyURL)
+		cmd.Dir = workingDirectory
+
+		stdoutText, stderrText, err := captureAgyPrint(ctx, cmd)
+		if err != nil {
+			log.Printf("[gemini-agy] result stage=session status=error project_id=%q cwd=%q stdout_bytes=%d stderr=%q err=%v", projectID, workingDirectory, len(stdoutText), limitLogText(stderrText, 1000), err)
+			return PromptExecutionResult{}, geminiProcessError("print", err, stderrText)
+		}
+		log.Printf("[gemini-agy] result stage=session status=ok project_id=%q cwd=%q stdout_bytes=%d stderr_bytes=%d", projectID, workingDirectory, len(stdoutText), len(stderrText))
+		outputMarkdown = strings.TrimSpace(stdoutText)
+		if outputMarkdown == "" {
+			outputMarkdown = recoverGeminiAgyLatestMessageFn(workingDirectory, projectEnv)
+			if outputMarkdown != "" {
+				log.Printf("[gemini-agy] result stage=session recovery=conversation_db project_id=%q cwd=%q recovered_bytes=%d", projectID, workingDirectory, len(outputMarkdown))
 			}
-			if outputMarkdown == "" {
-				if content, ok := result["content"].([]interface{}); ok {
-					for _, entry := range content {
-						block, ok := entry.(map[string]interface{})
-						if !ok {
-							continue
-						}
-						if blockType, _ := block["type"].(string); blockType != "text" {
-							continue
-						}
-						if text, ok := block["text"].(string); ok {
-							outputMarkdown += text
-						}
-					}
-				}
-			}
-			if pSessionID, ok := result["sessionId"].(string); ok && strings.TrimSpace(pSessionID) != "" {
-				session.Mu.Lock()
-				session.ProviderSessionID = pSessionID
-				session.Mu.Unlock()
-			}
-			if text, ok := result["text"].(string); ok && outputMarkdown == "" {
-				outputMarkdown = text
-			}
+		}
+		if outputMarkdown != "" {
+			emit(SessionStreamEvent{Type: "chunk", Stream: "stdout", Message: outputMarkdown})
 		}
 	} else if session.TransportType == "claude_stream_json" {
 		session.Mu.Lock()
@@ -1246,18 +1151,26 @@ func (r *Runner) sweepIdleSessions() {
 }
 
 func DetermineProviderSessionID(transportType, provider, sessionID, currentProviderSessionID string, resumeProviderSessionID *string) string {
-	if transportType == "gemini_acp" {
+	if transportType == "gemini_acp" || transportType == "gemini_agy" {
 		if currentProviderSessionID == "" {
-			currentProviderSessionID = "gemini_acp_session_" + sessionID
+			currentProviderSessionID = "gemini_agy_session_" + sessionID
 		}
 	} else if transportType == "claude_stream_json" {
 		currentProviderSessionID = "claude_stream_session_" + sessionID
 	}
 
-	if resumeProviderSessionID != nil && *resumeProviderSessionID != "" && (provider == "codex" || provider == "claude") {
+	if resumeProviderSessionID != nil && *resumeProviderSessionID != "" && (provider == "codex" || provider == "claude" || provider == "gemini") {
 		currentProviderSessionID = *resumeProviderSessionID
 	}
 	return currentProviderSessionID
+}
+
+func isSyntheticGeminiSessionID(providerSessionID string) bool {
+	trimmed := strings.TrimSpace(providerSessionID)
+	return strings.HasPrefix(trimmed, "gemini_acp_session_") ||
+		strings.HasPrefix(trimmed, "gemini_agy_session_") ||
+		strings.HasPrefix(trimmed, "flowpilot-gemini-") ||
+		strings.HasPrefix(trimmed, "thread-")
 }
 
 func normalizeClaudeEffort(reasoningEffort string) string {
@@ -1301,8 +1214,8 @@ func expectedProcessNamesForTransport(transportType string) []string {
 		return []string{"codex", "codex.exe"}
 	case "claude_stream_json":
 		return []string{"claude", "claude.exe"}
-	case "gemini_acp":
-		return []string{"gemini", "gemini.exe"}
+	case "gemini_acp", "gemini_agy":
+		return []string{"agy", "agy.exe", "gemini", "gemini.exe"}
 	default:
 		return nil
 	}

@@ -3,6 +3,7 @@ import type {
   AgentRunSummary,
   AgentGraphSnapshot,
   Artifact,
+  BuiltinFlowOption,
   ChatSessionRestoreRequest,
   ChatSessionRestoreResult,
   ChatSessionSyncRequest,
@@ -18,12 +19,14 @@ import type {
   RunHandle,
   RunHistoryItem,
   RunnerClient,
+  ReviewOutcomeInput,
   SpawnAgentInput,
   SpawnAgentResult,
   StartRunInput,
   Step,
   TurnInput,
   Workflow,
+  WorkflowStepsRuntimeSnapshot,
 } from "@/types/contract";
 
 interface RawProviderAccountUsageLine {
@@ -170,6 +173,11 @@ export class HttpWsRunnerClient implements RunnerClient {
     return this.getJSON<ProviderSkill[]>(url);
   }
 
+  listBuiltinOrchestrationOptions(subMode: string): Promise<BuiltinFlowOption[]> {
+    const url = `/client/chat/builtin-orchestration-options?subMode=${encodeURIComponent(subMode)}`;
+    return this.getJSON<BuiltinFlowOption[]>(url);
+  }
+
   listAgents(cwd?: string): Promise<AgentDefinition[]> {
     const url = cwd ? `/client/agents?cwd=${encodeURIComponent(cwd)}` : "/client/agents";
     return this.getJSON<AgentDefinition[]>(url);
@@ -183,10 +191,15 @@ export class HttpWsRunnerClient implements RunnerClient {
   refreshAgentGraph(parentRunId: string): Promise<AgentGraphSnapshot> {
     return this.getJSON<AgentGraphSnapshot>(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/agent-graph`);
   }
+  getWorkflowStepsRuntime(runId: string): Promise<WorkflowStepsRuntimeSnapshot> {
+    return this.getJSON<WorkflowStepsRuntimeSnapshot>(`/client/workflow-runs/${encodeURIComponent(runId)}/steps-runtime`);
+  }
   pauseAgentLoop(parentRunId: string): Promise<AgentGraphSnapshot> { return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/agent-loop/pause`); }
   resumeAgentLoop(parentRunId: string): Promise<AgentGraphSnapshot> { return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/agent-loop/resume`); }
   injectAgentFeedback(parentRunId: string, toRunId: string, message: string): Promise<AgentGraphSnapshot> { return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/agent-loop/feedback`, { toRunId, message }); }
   stopAgentLoop(parentRunId: string): Promise<AgentGraphSnapshot> { return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/agent-loop/stop`); }
+  submitReviewOutcome(parentRunId: string, input: ReviewOutcomeInput): Promise<AgentGraphSnapshot> { return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/flow-control`, input); }
+  extendCap(parentRunId: string): Promise<AgentGraphSnapshot> { return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/agent-loop/extend-cap`); }
 
   spawnAgent(input: SpawnAgentInput & { parentRunId: string }): Promise<SpawnAgentResult> {
     const { parentRunId, ...body } = input;
@@ -280,6 +293,8 @@ export class HttpWsRunnerClient implements RunnerClient {
         model: input.model,
         yoloMode: input.yoloMode,
         attachments: input.attachments,
+        subMode: input.subMode,
+        flowRef: input.flowRef,
         scenario: this.scenario,
       },
     );

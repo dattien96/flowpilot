@@ -9,7 +9,7 @@ const valueOf = (o) => o.value ?? o.label;
 // The "popup with options" UX (the AskUserQuestion-style card). Backed in Part B
 // by the user-interaction bridge (04-04) — both the model-driven `ask_user` MCP
 // tool path and the deterministic workflow-driven path render THIS same card.
-function QuestionCard({ prompt, options, multiSelect, answer }) {
+function QuestionCard({ questionId, prompt, options, multiSelect, answer }) {
     const submit = (0, store_1.useStore)((s) => s.answer);
     const resolved = answer !== undefined;
     const [selected, setSelected] = (0, react_1.useState)([]);
@@ -21,7 +21,7 @@ function QuestionCard({ prompt, options, multiSelect, answer }) {
     };
     const answerOption = (value) => {
         if (!multiSelect) {
-            void submit(value);
+            void submit(questionId, value);
             return;
         }
         toggle(value);
@@ -30,7 +30,7 @@ function QuestionCard({ prompt, options, multiSelect, answer }) {
         const answer = (0, questionAnswer_1.resolveQuestionManualSubmit)(selected, other, multiSelect);
         if (answer === undefined)
             return;
-        void submit(answer);
+        void submit(questionId, answer);
     };
     return ((0, jsx_runtime_1.jsxs)("div", { className: `card question ${resolved ? "resolved" : ""}`, children: [(0, jsx_runtime_1.jsxs)("div", { className: "card-head", children: [(0, jsx_runtime_1.jsx)("span", { className: "badge badge-ask", children: "Question" }), resolved && (0, jsx_runtime_1.jsx)("span", { className: "badge", children: "answered" })] }), (0, jsx_runtime_1.jsx)("p", { className: "card-prompt", children: prompt }), resolved ? ((0, jsx_runtime_1.jsxs)("div", { className: "meta", children: ["answer: ", Array.isArray(answer) ? answer.join(", ") : answer] })) : ((0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsx)("div", { className: "option-list", children: options.map((o) => {
                             const value = valueOf(o);

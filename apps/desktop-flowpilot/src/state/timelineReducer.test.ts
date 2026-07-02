@@ -22,6 +22,8 @@ function thinkingState(timeline: TimelineItem[]): TimelineState {
     status: "running",
     timeline,
     recoverable: false,
+    pendingApprovals: [],
+    pendingQuestions: [],
     _streamingAssistantId: "assistant-1",
   };
 }
@@ -90,11 +92,13 @@ function approvalState(extras: Partial<TimelineState> = {}): TimelineState {
     status: "running",
     timeline: [],
     recoverable: false,
+    pendingApprovals: [],
+    pendingQuestions: [],
     ...extras,
   };
 }
 
-test("permission_required adds approval card to timeline and sets pendingApproval", () => {
+test("permission_required adds approval card to timeline and sets pendingApprovals", () => {
   const state = approvalState();
   const next = applyTimelineEvent(
     state,
@@ -104,19 +108,22 @@ test("permission_required adds approval card to timeline and sets pendingApprova
   const card = next.timeline?.find((it) => it.kind === "approval");
   assert.ok(card, "approval card should be added");
   assert.equal((card as Extract<TimelineItem, { kind: "approval" }>).decision, undefined);
-  assert.deepEqual(next.pendingApproval, { approvalId: "appr-1", details: approvalDetails });
+  assert.deepEqual(next.pendingApprovals, [{ approvalId: "appr-1", details: approvalDetails }]);
   assert.equal(next.status, "waiting_approval");
 });
 
-test("history replay: tool_completed after permission_required stamps card resolved and clears pendingApproval", () => {
-  // Simulates the state after permission_required was replayed from history
+test("BUG-157 regression: tool_completed for an unrelated tool does not clear a still-pending approval", () => {
+  // A provider turn can fan out several parallel tool calls. An unrelated tool
+  // finishing (e.g. one that didn't need approval) must not orphan an approval that
+  // is still genuinely outstanding — only turn_completed/turn_failed can prove an
+  // approval was resolved without a captured decision event (history replay case).
   const state = approvalState({
     status: "waiting_approval",
     timeline: [
       { kind: "tool", id: "tool-1", toolName: "mcp__search", status: "running" },
       { kind: "approval", id: "appr-1", approvalId: "appr-1", details: approvalDetails },
     ],
-    pendingApproval: { approvalId: "appr-1", details: approvalDetails },
+    pendingApprovals: [{ approvalId: "appr-1", details: approvalDetails }],
   });
 
   const next = applyTimelineEvent(
@@ -126,18 +133,18 @@ test("history replay: tool_completed after permission_required stamps card resol
 
   const card = next.timeline?.find((it) => it.kind === "approval") as Extract<TimelineItem, { kind: "approval" }> | undefined;
   assert.ok(card, "approval card should still be in timeline");
-  assert.equal(card?.decision, "resolved", "card should be stamped as resolved");
-  assert.equal(next.pendingApproval, undefined, "pendingApproval should be cleared");
-  assert.equal(next.status, "running");
+  assert.equal(card?.decision, undefined, "card must remain actionable — tool_completed is not proof of resolution");
+  assert.deepEqual(next.pendingApprovals, [{ approvalId: "appr-1", details: approvalDetails }], "pendingApprovals must be preserved");
+  assert.equal(next.status, "waiting_approval", "status must stay waiting_approval while an approval remains open");
 });
 
-test("history replay: turn_completed after permission_required stamps card resolved and clears pendingApproval", () => {
+test("history replay: turn_completed after permission_required stamps card resolved and clears pendingApprovals", () => {
   const state = approvalState({
     status: "waiting_approval",
     timeline: [
       { kind: "approval", id: "appr-1", approvalId: "appr-1", details: approvalDetails },
     ],
-    pendingApproval: { approvalId: "appr-1", details: approvalDetails },
+    pendingApprovals: [{ approvalId: "appr-1", details: approvalDetails }],
   });
 
   const next = applyTimelineEvent(
@@ -147,20 +154,40 @@ test("history replay: turn_completed after permission_required stamps card resol
 
   const card = next.timeline?.find((it) => it.kind === "approval") as Extract<TimelineItem, { kind: "approval" }> | undefined;
   assert.equal(card?.decision, "resolved", "card should be stamped as resolved");
-  assert.equal(next.pendingApproval, undefined, "pendingApproval should be cleared");
+  assert.deepEqual(next.pendingApprovals, [], "pendingApprovals should be cleared");
   assert.equal(next.status, "completed");
 });
 
-test("live run: no stale detection when pendingApproval is undefined before tool_completed", () => {
-  // In a live run approve() clears pendingApproval synchronously, so by the time
-  // any server event arrives pendingApproval is already undefined.
+test("BUG-157: turn_completed clears every entry when two approvals were concurrently pending", () => {
+  const state = approvalState({
+    status: "waiting_approval",
+    timeline: [
+      { kind: "approval", id: "appr-1", approvalId: "appr-1", details: approvalDetails },
+      { kind: "approval", id: "appr-2", approvalId: "appr-2", details: approvalDetails },
+    ],
+    pendingApprovals: [
+      { approvalId: "appr-1", details: approvalDetails },
+      { approvalId: "appr-2", details: approvalDetails },
+    ],
+  });
+
+  const next = applyTimelineEvent(state, baseEvent({ type: "turn_completed", finalMessage: "done" }));
+
+  const cards = next.timeline?.filter((it) => it.kind === "approval") as Extract<TimelineItem, { kind: "approval" }>[];
+  assert.equal(cards.every((c) => c.decision === "resolved"), true, "both cards should be stamped resolved");
+  assert.deepEqual(next.pendingApprovals, []);
+});
+
+test("live run: no stale detection when pendingApprovals is empty before tool_completed", () => {
+  // In a live run approve() removes the entry from pendingApprovals synchronously, so
+  // by the time any server event arrives it is already gone from the array.
   const state = approvalState({
     status: "running",
     timeline: [
       { kind: "tool", id: "tool-1", toolName: "mcp__search", status: "running" },
       { kind: "approval", id: "appr-1", approvalId: "appr-1", details: approvalDetails, decision: "approve" },
     ],
-    pendingApproval: undefined,
+    pendingApprovals: [],
   });
 
   const next = applyTimelineEvent(
@@ -168,23 +195,22 @@ test("live run: no stale detection when pendingApproval is undefined before tool
     baseEvent({ type: "tool_completed", toolName: "mcp__search", status: "success" }),
   );
 
-  // pendingApproval was already undefined — should remain undefined, no side effects
-  assert.equal(next.pendingApproval, undefined);
+  // pendingApprovals was already empty — should remain empty, no side effects
+  assert.deepEqual(next.pendingApprovals, []);
   // The already-resolved card should still have its decision intact
   const card = next.timeline?.find((it) => it.kind === "approval") as Extract<TimelineItem, { kind: "approval" }> | undefined;
   assert.equal(card?.decision, "approve", "existing decision should not be changed");
 });
 
-test("new permission_required while previous pendingApproval is set stamps the first and sets the second", () => {
-  // Two consecutive approval gates in replay: first is stale, second permission_required
-  // fires — staleApproval stamps first card; ...extra from the switch overrides
-  // pendingApproval back to the new approval value.
+test("BUG-157: new permission_required while a previous approval is still pending keeps BOTH open", () => {
+  // Two concurrent approval gates from parallel tool calls: the second permission_required
+  // must not evict the first — both stay in pendingApprovals until each is resolved by id.
   const state = approvalState({
     status: "waiting_approval",
     timeline: [
       { kind: "approval", id: "appr-1", approvalId: "appr-1", details: approvalDetails },
     ],
-    pendingApproval: { approvalId: "appr-1", details: approvalDetails },
+    pendingApprovals: [{ approvalId: "appr-1", details: approvalDetails }],
   });
 
   const next = applyTimelineEvent(
@@ -195,8 +221,16 @@ test("new permission_required while previous pendingApproval is set stamps the f
   const firstCard = next.timeline?.find(
     (it) => it.kind === "approval" && (it as Extract<TimelineItem, { kind: "approval" }>).approvalId === "appr-1",
   ) as Extract<TimelineItem, { kind: "approval" }> | undefined;
-  assert.equal(firstCard?.decision, "resolved", "first approval card should be stamped by stale detection");
-  assert.deepEqual(next.pendingApproval, { approvalId: "appr-2", details: approvalDetails }, "pendingApproval should point to the new approval");
+  assert.equal(firstCard?.decision, undefined, "first approval card must remain actionable, not orphaned");
+  assert.deepEqual(
+    next.pendingApprovals,
+    [
+      { approvalId: "appr-1", details: approvalDetails },
+      { approvalId: "appr-2", details: approvalDetails },
+    ],
+    "both approvals should be tracked",
+  );
+  assert.equal(next.status, "waiting_approval");
 });
 
 // Question stale detection tests
@@ -206,7 +240,7 @@ const questionOptions = [
   { label: "TypeScript", value: "TypeScript" },
 ];
 
-test("user_question_required adds question card and sets pendingQuestion", () => {
+test("user_question_required adds question card and sets pendingQuestions", () => {
   const state = approvalState();
   const next = applyTimelineEvent(
     state,
@@ -216,17 +250,17 @@ test("user_question_required adds question card and sets pendingQuestion", () =>
   const card = next.timeline?.find((it) => it.kind === "question");
   assert.ok(card, "question card should be added");
   assert.equal((card as Extract<TimelineItem, { kind: "question" }>).answer, undefined);
-  assert.ok(next.pendingQuestion, "pendingQuestion should be set");
+  assert.deepEqual(next.pendingQuestions, [{ questionId: "q-1", prompt: "Pick one", options: questionOptions, multiSelect: undefined }]);
   assert.equal(next.status, "waiting_question");
 });
 
-test("history replay: follow-up event after user_question_required stamps card as answered and clears pendingQuestion", () => {
+test("history replay: follow-up event after user_question_required stamps card as answered and clears pendingQuestions", () => {
   const state = approvalState({
     status: "waiting_question",
     timeline: [
       { kind: "question", id: "q-1", questionId: "q-1", prompt: "Pick one", options: questionOptions },
     ],
-    pendingQuestion: { questionId: "q-1", prompt: "Pick one", options: questionOptions },
+    pendingQuestions: [{ questionId: "q-1", prompt: "Pick one", options: questionOptions }],
   });
 
   const next = applyTimelineEvent(
@@ -236,18 +270,19 @@ test("history replay: follow-up event after user_question_required stamps card a
 
   const card = next.timeline?.find((it) => it.kind === "question") as Extract<TimelineItem, { kind: "question" }> | undefined;
   assert.equal(card?.answer, "answered", "question card should be stamped as answered");
-  assert.equal(next.pendingQuestion, undefined, "pendingQuestion should be cleared");
+  assert.deepEqual(next.pendingQuestions, [], "pendingQuestions should be cleared");
 });
 
-test("history replay: permission_required after user_question_required stamps question and sets new approval", () => {
-  // Question was answered before an approval gate fired — permission_required
-  // should trigger stale question detection (no type guard prevents it).
+test("BUG-157: permission_required while a question is pending does not clear or orphan the question", () => {
+  // Mixed-kind concurrency: an approval gate and a question gate can be open at the
+  // same time. permission_required must not stamp the still-open question as
+  // answered — only turn_completed/turn_failed can prove that (narrowed BUG-074).
   const state = approvalState({
     status: "waiting_question",
     timeline: [
       { kind: "question", id: "q-1", questionId: "q-1", prompt: "Pick one", options: questionOptions },
     ],
-    pendingQuestion: { questionId: "q-1", prompt: "Pick one", options: questionOptions },
+    pendingQuestions: [{ questionId: "q-1", prompt: "Pick one", options: questionOptions }],
   });
 
   const next = applyTimelineEvent(
@@ -256,20 +291,20 @@ test("history replay: permission_required after user_question_required stamps qu
   );
 
   const qCard = next.timeline?.find((it) => it.kind === "question") as Extract<TimelineItem, { kind: "question" }> | undefined;
-  assert.equal(qCard?.answer, "answered", "question card should be stamped when approval gate fires after it");
-  assert.equal(next.pendingQuestion, undefined, "pendingQuestion should be cleared");
-  assert.ok(next.pendingApproval, "pendingApproval should be set for the new approval");
+  assert.equal(qCard?.answer, undefined, "question card must remain actionable");
+  assert.equal(next.pendingQuestions?.length, 1, "pendingQuestions should be preserved");
+  assert.equal(next.pendingApprovals?.length, 1, "pendingApprovals should be set for the new approval");
 });
 
-test("live run: no stale detection for question when pendingQuestion is already undefined", () => {
-  // answer() clears pendingQuestion synchronously, so it is undefined by the time
-  // any server event arrives during a live run.
+test("live run: no stale detection for question when pendingQuestions is empty", () => {
+  // answer() removes the entry from pendingQuestions synchronously, so it is already
+  // gone from the array by the time any server event arrives during a live run.
   const state = approvalState({
     status: "running",
     timeline: [
       { kind: "question", id: "q-1", questionId: "q-1", prompt: "Pick one", options: questionOptions, answer: "Python" },
     ],
-    pendingQuestion: undefined,
+    pendingQuestions: [],
   });
 
   const next = applyTimelineEvent(
@@ -279,7 +314,7 @@ test("live run: no stale detection for question when pendingQuestion is already 
 
   const card = next.timeline?.find((it) => it.kind === "question") as Extract<TimelineItem, { kind: "question" }> | undefined;
   assert.equal(card?.answer, "Python", "existing answer should not be overwritten");
-  assert.equal(next.pendingQuestion, undefined);
+  assert.deepEqual(next.pendingQuestions, []);
 });
 
 // UC2: history replay — denied approval (BUG-074 regression guard)
@@ -293,19 +328,19 @@ test("history replay: denied approval is stamped resolved not approved (BUG-074)
     timeline: [
       { kind: "approval", id: "appr-1", approvalId: "appr-1", details: approvalDetails },
     ],
-    pendingApproval: { approvalId: "appr-1", details: approvalDetails },
+    pendingApprovals: [{ approvalId: "appr-1", details: approvalDetails }],
   });
 
   const next = applyTimelineEvent(
     state,
-    baseEvent({ type: "tool_completed", toolName: "mcp__search", status: "success" }),
+    baseEvent({ type: "turn_completed", finalMessage: "done" }),
   );
 
   const card = next.timeline?.find((it) => it.kind === "approval") as Extract<TimelineItem, { kind: "approval" }> | undefined;
   assert.equal(card?.decision, "resolved", "sentinel must be neutral resolved");
   assert.notEqual(card?.decision, "approved", "must not claim approved — original decision may have been deny");
   assert.notEqual(card?.decision, "deny", "must not claim deny — decision is not persisted in the stream");
-  assert.equal(next.pendingApproval, undefined, "pendingApproval should be cleared");
+  assert.deepEqual(next.pendingApprovals, [], "pendingApprovals should be cleared");
 });
 
 // Transcript replay tests
@@ -314,7 +349,7 @@ test("history replay: turn_started{prompt} adds a prompt bubble before the assis
   // Simulates the event sequence emitted by loadClaudeTranscriptEvents /
   // loadCodexTranscriptEvents on resume: a user prompt event followed by
   // the assistant message. Both must appear in the timeline in correct order.
-  const empty: TimelineState = { status: "idle", timeline: [], recoverable: false };
+  const empty: TimelineState = { status: "idle", timeline: [], recoverable: false, pendingApprovals: [], pendingQuestions: [] };
 
   const afterPrompt = applyTimelineEvent(
     empty,
@@ -348,6 +383,8 @@ test("history replay: hasPendingPrompt prevents double-render when turn_started{
     status: "running",
     timeline: [{ kind: "prompt", id: "prompt-0", text: "hello there" }],
     recoverable: false,
+    pendingApprovals: [],
+    pendingQuestions: [],
   };
 
   const after = applyTimelineEvent(
@@ -362,7 +399,7 @@ test("history replay: hasPendingPrompt prevents double-render when turn_started{
 test("history replay: turn_completed after replay removes thinking row", () => {
   // seedTranscriptFromDisk appends a synthetic turn_completed to close the
   // trailing Thinking... row that finalize() would inject after message_completed.
-  const empty: TimelineState = { status: "idle", timeline: [], recoverable: false };
+  const empty: TimelineState = { status: "idle", timeline: [], recoverable: false, pendingApprovals: [], pendingQuestions: [] };
 
   let state = { ...empty };
   for (const e of [
@@ -379,7 +416,7 @@ test("history replay: turn_completed after replay removes thinking row", () => {
 
 // UC5 complement: live deny — deny decision is preserved, stale detection does not fire
 // When the user clicks Deny in a live run, approve()/deny() stamps decision: "deny"
-// and clears pendingApproval synchronously. The next server event must NOT overwrite
+// and removes the entry from pendingApprovals synchronously. The next server event must NOT overwrite
 // the real decision with the "resolved" sentinel.
 test("live run: deny decision is preserved after subsequent events (BUG-074)", () => {
   const state = approvalState({
@@ -387,7 +424,7 @@ test("live run: deny decision is preserved after subsequent events (BUG-074)", (
     timeline: [
       { kind: "approval", id: "appr-1", approvalId: "appr-1", details: approvalDetails, decision: "deny" },
     ],
-    pendingApproval: undefined,
+    pendingApprovals: [],
   });
 
   const next = applyTimelineEvent(
@@ -397,7 +434,7 @@ test("live run: deny decision is preserved after subsequent events (BUG-074)", (
 
   const card = next.timeline?.find((it) => it.kind === "approval") as Extract<TimelineItem, { kind: "approval" }> | undefined;
   assert.equal(card?.decision, "deny", "live deny decision must not be overwritten by stale detection");
-  assert.equal(next.pendingApproval, undefined);
+  assert.deepEqual(next.pendingApprovals, []);
 });
 
 // ── Idempotent re-delivery (BUG-111) ────────────────────────────────────────
@@ -407,7 +444,7 @@ test("live run: deny decision is preserved after subsequent events (BUG-074)", (
 
 // Helper: fold a sequence of events into a fresh timeline.
 function foldEvents(events: ProviderEventDTO[]): TimelineState {
-  let state: TimelineState = { status: "idle", timeline: [], recoverable: false };
+  let state: TimelineState = { status: "idle", timeline: [], recoverable: false, pendingApprovals: [], pendingQuestions: [] };
   for (const e of events) {
     state = { ...state, ...applyTimelineEvent(state, e) } as TimelineState;
   }

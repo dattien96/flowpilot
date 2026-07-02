@@ -4,6 +4,7 @@ import type {
   AgentDefinition,
   AgentGraphSnapshot,
   AgentRunSummary,
+  BuiltinFlowOption,
   ChatSessionRestoreRequest,
   Project,
   ProviderAccountSummary,
@@ -19,9 +20,11 @@ import type {
   TokenUsageSnapshot,
   TurnInput,
   Workflow,
+  WorkflowStepRuntimeDTO,
 } from "@/types/contract";
 import type { RunnerClient } from "@/types/contract";
 import type { SupportedModel } from "@flowpilot/client-core";
+import type { LocalRunnerProvider } from "@flowpilot/client-core";
 import { createRunnerClient } from "@/client/createRunnerClient";
 import { RunnerApiError } from "@/client/HttpWsRunnerClient";
 import type { ScenarioName } from "@/client/mockData";
@@ -58,8 +61,8 @@ interface RunSnapshot {
   timeline: TimelineItem[];
   artifacts: Artifact[];
   status: RunStatus;
-  pendingApproval?: PendingApproval;
-  pendingQuestion?: PendingQuestion;
+  pendingApprovals: PendingApproval[];
+  pendingQuestions: PendingQuestion[];
   latestTokenUsage?: TokenUsageSnapshot;
   lastTurnInput?: TurnInput;
   recoverable: boolean;
@@ -120,6 +123,7 @@ interface AppState {
   steps: Step[];
   skills: ProviderSkill[];
   providerAccounts: ProviderAccountSummary[];
+  localProviders: LocalRunnerProvider[];
   supportedModels: SupportedModel[];
   selectedProjectId?: string;
   selectedWorkflowId?: string;
@@ -136,6 +140,15 @@ interface AppState {
   summaryGenerating: boolean;
   chatStartMode: ChatStartMode;
   chatSourceDocId: string;
+  /**
+   * Selected built-in orchestration flowRef for the current chat start
+   * (CP-42/Task-177), e.g. "flowpilot-core-flow-pack/review-loop". Only
+   * meaningful when chatStartMode === "bugfix"; cleared whenever chatStartMode
+   * changes to anything else (setChatStartMode) so a stale selection never
+   * leaks into an unrelated sub-mode.
+   */
+  flowRef?: string;
+  builtinOrchestrationOptions: BuiltinFlowOption[];
 
   // run
   runId?: string;
@@ -145,6 +158,11 @@ interface AppState {
   agentRuns: AgentRunSummary[];
   agentGraphSnapshot?: AgentGraphSnapshot;
   agentBusMessages: AgentBusMessage[];
+  /** Flow-mode workflow-step runtime projection (BUG-153), Go orchestrator state only. */
+  workflowStepRuntime: WorkflowStepRuntimeDTO[];
+  workflowStepRuntimeLoading: boolean;
+  /** Run-level provider/model/yolo posture for the current flow (BUG-158) — not per-step. */
+  workflowStepRuntimeMeta: { provider?: string; model?: string; yoloMode?: boolean };
   /** Step id for the active run's turns; the synthetic chat step in normal_chat. */
   activeStepId?: string;
   status: RunStatus;
@@ -156,8 +174,8 @@ interface AppState {
   historyLoadError?: string;
   remoteHistoryLoading: boolean;
   remoteHistoryLoadError?: string;
-  pendingApproval?: PendingApproval;
-  pendingQuestion?: PendingQuestion;
+  pendingApprovals: PendingApproval[];
+  pendingQuestions: PendingQuestion[];
   /** A hard-blocking flow-gate violation (e.g. failed tests) the user must acknowledge.
    *  Set only for action === "block"; surfaced as a modal or decision card. (CP-35 / Task-155) */
   gateBlock?: {
@@ -203,6 +221,8 @@ interface AppState {
   // stale-response guard for refreshAgentRuns; a fire-and-forget fetch must not
   // overwrite a newer SSE-delivered agent list and flicker the count (BUG-130)
   _agentRunsLoadSeq: number;
+  // stale-response guard for refreshWorkflowStepRuntime, same shape as _agentRunsLoadSeq
+  _workflowStepRuntimeLoadSeq: number;
   _runSnapshots: Record<string, RunSnapshot>;
   _runReplaySeq: Record<string, number>;
   agentSpawnGuideOpen: boolean;
@@ -220,6 +240,7 @@ interface AppState {
   // actions
   loadProjects(): Promise<void>;
   loadProviderAccounts(): Promise<void>;
+  loadLocalProviders(): Promise<void>;
   loadSkills(provider: string, cwd?: string): Promise<void>;
   selectProject(projectId: string): Promise<void>;
   setLaunchMode(mode: LaunchMode): void;
@@ -231,22 +252,27 @@ interface AppState {
   generateChatSummary(): Promise<void>;
   setChatStartMode(mode: ChatStartMode): void;
   setChatSourceDocId(sourceDocId: string): void;
+  setFlowRef(flowRef: string | undefined): void;
+  loadBuiltinOrchestrationOptions(subMode: string): Promise<void>;
   selectWorkflow(workflowId: string): Promise<void>;
   selectStep(stepId: string): void;
   setScenario(scenario: ScenarioName): void;
   sendPrompt(prompt: string, skills?: string[], attachments?: PromptAttachment[]): Promise<void>;
-  approve(decision: string): Promise<void>;
-  answer(choice: string | string[]): Promise<void>;
+  approve(approvalId: string, decision: string): Promise<void>;
+  answer(questionId: string, choice: string | string[]): Promise<void>;
   stop(): Promise<void>;
   reconnect(): Promise<void>;
   loadRunHistory(): Promise<void>;
   loadRemoteChatSessions(): Promise<void>;
   refreshAgentRuns(): Promise<void>;
+  refreshWorkflowStepRuntime(): Promise<void>;
   refreshAgentGraph(): Promise<void>;
   pauseAgentLoop(): Promise<void>;
   resumeAgentLoop(): Promise<void>;
   injectAgentFeedback(toRunId: string, message: string): Promise<void>;
   stopAgentLoop(): Promise<void>;
+  submitReviewOutcome(outcome: "approved" | "changes_requested", issues?: import("@/types/contract").ReviewIssue[]): Promise<void>;
+  extendCap(): Promise<void>;
   listAgents(cwd?: string): Promise<AgentDefinition[]>;
   focusAgentRun(runId: string): Promise<void>;
   backToMainRun(): void;
@@ -282,15 +308,21 @@ export const useStore = create<AppState>((set, get) => ({
   steps: [],
   skills: [],
   providerAccounts: [],
+  localProviders: [],
   supportedModels: [],
   status: "idle",
   timeline: [],
   artifacts: [],
+  pendingApprovals: [],
+  pendingQuestions: [],
   runHistory: [],
   remoteChatSessions: [],
   agentRuns: [],
   agentGraphSnapshot: undefined,
   agentBusMessages: [],
+  workflowStepRuntime: [],
+  workflowStepRuntimeLoading: false,
+  workflowStepRuntimeMeta: {},
   historyLoading: false,
   remoteHistoryLoading: false,
   latestTokenUsage: undefined,
@@ -306,11 +338,14 @@ export const useStore = create<AppState>((set, get) => ({
   summaryGenerating: false,
   chatStartMode: "normal",
   chatSourceDocId: "",
+  flowRef: undefined,
+  builtinOrchestrationOptions: [],
   workspaceMainView: "chat",
   _historyReplaying: false,
   _historyLoadSeq: 0,
   _remoteHistoryLoadSeq: 0,
   _agentRunsLoadSeq: 0,
+  _workflowStepRuntimeLoadSeq: 0,
   _runSnapshots: {},
   _runReplaySeq: {},
   _gateBlockedRunIds: {},
@@ -367,14 +402,16 @@ export const useStore = create<AppState>((set, get) => ({
       }
       try {
         const admin = await getAdminUseCases();
-        const [workflowDefinitions, stepDefinitions, supportedModels] = await Promise.all([
+        const [workflowDefinitions, stepDefinitions, supportedModels, localProviders] = await Promise.all([
           admin.workflows.listWorkflows(),
           admin.workflows.listStepDefinitions(),
           admin.providers.listSupportedModels(),
+          admin.providers.listLocalProviders(),
         ]);
         set({
           workflows: workflowDefinitions.map(mapNavigatorWorkflow),
           steps: stepDefinitions.map(mapNavigatorStep),
+          localProviders,
           supportedModels,
           // Apply default model for the current provider if none is selected yet
           ...(!get().selectedModel ? { selectedModel: pickDefaultModel(get().selectedProvider, supportedModels) } : {}),
@@ -416,6 +453,17 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
+  async loadLocalProviders() {
+    try {
+      const admin = await getAdminUseCases();
+      const localProviders = await admin.providers.listLocalProviders();
+      set({ localProviders });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] listLocalProviders refresh failed:", err);
+    }
+  },
+
   async refreshAgentRuns() {
     const { client, mainRunId, runId } = get();
     const parentRunId = mainRunId ?? runId;
@@ -437,6 +485,33 @@ export const useStore = create<AppState>((set, get) => ({
       console.error("[FlowPilot] listAgentRuns failed:", err);
     }
   },
+  async refreshWorkflowStepRuntime() {
+    const { client, mainRunId, runId, chatMode } = get();
+    const targetRunId = mainRunId ?? runId;
+    // Normal chat has no workflow-step list to show; skip the request entirely (8.2).
+    if (chatMode !== "workflow_step_auto" || !targetRunId || !client.getWorkflowStepsRuntime) {
+      set({ workflowStepRuntime: [], workflowStepRuntimeMeta: {} });
+      return;
+    }
+    const seq = get()._workflowStepRuntimeLoadSeq + 1;
+    set({ _workflowStepRuntimeLoadSeq: seq, workflowStepRuntimeLoading: true });
+    try {
+      const snapshot = await client.getWorkflowStepsRuntime(targetRunId);
+      if (get()._workflowStepRuntimeLoadSeq === seq && (get().mainRunId === targetRunId || get().runId === targetRunId)) {
+        set({
+          workflowStepRuntime: snapshot.steps,
+          workflowStepRuntimeMeta: { provider: snapshot.provider, model: snapshot.model, yoloMode: snapshot.yoloMode },
+          workflowStepRuntimeLoading: false,
+        });
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] getWorkflowStepsRuntime failed:", err);
+      if (get()._workflowStepRuntimeLoadSeq === seq) {
+        set({ workflowStepRuntimeLoading: false });
+      }
+    }
+  },
   async refreshAgentGraph() {
     const { client, mainRunId, runId } = get();
     const parentRunId = mainRunId ?? runId;
@@ -447,6 +522,8 @@ export const useStore = create<AppState>((set, get) => ({
   async resumeAgentLoop() { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.resumeAgentLoop) set(applyAgentGraphSnapshot(await client.resumeAgentLoop(parentRunId))); },
   async injectAgentFeedback(toRunId, message) { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.injectAgentFeedback) set(applyAgentGraphSnapshot(await client.injectAgentFeedback(parentRunId, toRunId, message))); },
   async stopAgentLoop() { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.stopAgentLoop) set(applyAgentGraphSnapshot(await client.stopAgentLoop(parentRunId))); },
+  async submitReviewOutcome(outcome, issues) { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.submitReviewOutcome) set(applyAgentGraphSnapshot(await client.submitReviewOutcome(parentRunId, { outcome, issues }))); },
+  async extendCap() { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.extendCap) set(applyAgentGraphSnapshot(await client.extendCap(parentRunId))); },
 
   async listAgents(cwd) {
     const { client } = get();
@@ -527,6 +604,7 @@ export const useStore = create<AppState>((set, get) => ({
       }
     });
     void get().refreshAgentRuns();
+    void get().refreshWorkflowStepRuntime();
   },
 
   backToMainRun() {
@@ -593,6 +671,7 @@ export const useStore = create<AppState>((set, get) => ({
 
   async selectProject(projectId) {
     localStorage.setItem(LAST_PROJECT_KEY, projectId);
+    const projectChanged = get().selectedProjectId !== projectId;
     set({
       selectedProjectId: projectId,
       selectedWorkflowId: undefined,
@@ -602,6 +681,9 @@ export const useStore = create<AppState>((set, get) => ({
       historyLoadError: undefined,
       remoteHistoryLoadError: undefined,
     });
+    if (projectChanged) {
+      get().resetRun();
+    }
     void get().loadSkills(get().selectedProvider ?? "codex");
   },
 
@@ -706,8 +788,8 @@ export const useStore = create<AppState>((set, get) => ({
         status: handle.status,
         timeline: [],
         artifacts: [],
-        pendingApproval: undefined,
-        pendingQuestion: undefined,
+        pendingApprovals: [],
+        pendingQuestions: [],
         gateBlock: undefined,
         latestTokenUsage: undefined,
         lastTurnInput: undefined,
@@ -721,6 +803,8 @@ export const useStore = create<AppState>((set, get) => ({
         agentRuns: [],
         agentGraphSnapshot: undefined,
         agentBusMessages: [],
+        workflowStepRuntime: [],
+        workflowStepRuntimeMeta: {},
         agentSpawnGuideOpen: false,
         agentSpawnGuideAgentName: undefined,
         _runReplaySeq: {},
@@ -816,11 +900,41 @@ export const useStore = create<AppState>((set, get) => ({
     set((state) => ({
       chatStartMode: mode,
       chatSourceDocId: mode === "normal" ? "" : state.chatSourceDocId,
+      // A built-in orchestration selection only makes sense for the sub-mode
+      // it was offered under (CP-42 Task-177 T-7: switching away from Bug
+      // clears the Review Loop selection); clear both the pick and the
+      // stale option list on every intent change, then reload below if the
+      // new mode has options to offer.
+      flowRef: undefined,
+      builtinOrchestrationOptions: [],
     }));
+    if (mode === "bugfix") {
+      void get().loadBuiltinOrchestrationOptions("bug");
+    }
   },
 
   setChatSourceDocId(sourceDocId) {
     set({ chatSourceDocId: sourceDocId });
+  },
+
+  setFlowRef(flowRef) {
+    set({ flowRef });
+  },
+
+  async loadBuiltinOrchestrationOptions(subMode) {
+    const { client } = get();
+    if (!client.listBuiltinOrchestrationOptions) {
+      set({ builtinOrchestrationOptions: [] });
+      return;
+    }
+    try {
+      const options = await client.listBuiltinOrchestrationOptions(subMode);
+      set({ builtinOrchestrationOptions: options });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] loadBuiltinOrchestrationOptions failed:", err);
+      set({ builtinOrchestrationOptions: [] });
+    }
   },
 
   async loadSkills(provider, cwd) {
@@ -838,7 +952,7 @@ export const useStore = create<AppState>((set, get) => ({
     const {
       client, chatMode, launchMode,
       selectedProjectId, selectedWorkflowId, selectedStepId,
-      selectedProvider, selectedModel, reasoningEffort, yoloMode, chatStartMode, chatSourceDocId,
+      selectedProvider, selectedModel, reasoningEffort, yoloMode, chatStartMode, chatSourceDocId, flowRef,
     } = get();
     const focusedRunId = get().activeAgentRunId;
     const mainRunId = get().mainRunId ?? get().runId;
@@ -962,6 +1076,12 @@ export const useStore = create<AppState>((set, get) => ({
           chatMode === "normal_chat" && attachments && attachments.length > 0
             ? attachments
             : undefined,
+        // Built-in orchestration selection (CP-42/Task-177): only meaningful
+        // alongside a first-turn Bug intent, and only when the user actually
+        // picked a flow. chatStartMode's runner-facing sub-mode key is "bug",
+        // distinct from the UI's "bugfix" tab value.
+        subMode: isFirstChatTurn && chatStartMode === "bugfix" && flowRef ? "bug" : undefined,
+        flowRef: isFirstChatTurn && chatStartMode === "bugfix" ? flowRef : undefined,
       };
       set({ runId, lastTurnInput: turnInput, activeStepId: turnStepId, _streamRunSeq: get()._streamRunSeq + 1 });
       cancelHistoryReplayStream();
@@ -974,6 +1094,7 @@ export const useStore = create<AppState>((set, get) => ({
         startOrchestrationStream(orchestrationRunId, client, set, get);
       }
       void get().refreshAgentRuns();
+    void get().refreshWorkflowStepRuntime();
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("[FlowPilot] sendPrompt failed:", err);
@@ -994,30 +1115,36 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
-  async approve(decision) {
-    const pending = get().pendingApproval;
+  async approve(approvalId, decision) {
+    // Resolve the specific card the user clicked, not "whatever is pending" — a turn
+    // can fan out several parallel tool calls awaiting approval at once, so more than
+    // one entry may be in pendingApprovals simultaneously (BUG-157).
+    const pending = get().pendingApprovals.find((p) => p.approvalId === approvalId);
     if (!pending) return;
     set((s) => ({
-      pendingApproval: undefined,
-      status: "running",
+      pendingApprovals: s.pendingApprovals.filter((p) => p.approvalId !== approvalId),
+      status: s.pendingApprovals.length > 1 ? "waiting_approval" : "running",
       timeline: s.timeline.map((it) =>
-        it.kind === "approval" && it.approvalId === pending.approvalId ? { ...it, decision } : it,
+        it.kind === "approval" && it.approvalId === approvalId ? { ...it, decision } : it,
       ),
     }));
-    await get().client.submitApproval(pending.approvalId, decision);
+    await get().client.submitApproval(approvalId, decision);
   },
 
-  async answer(choice) {
-    const pending = get().pendingQuestion;
+  async answer(questionId, choice) {
+    // Same rationale as approve() (BUG-157) — resolve the specific card the user
+    // acted on, not "whatever is pending", since more than one question can be
+    // outstanding at once.
+    const pending = get().pendingQuestions.find((q) => q.questionId === questionId);
     if (!pending) return;
     set((s) => ({
-      pendingQuestion: undefined,
-      status: "running",
+      pendingQuestions: s.pendingQuestions.filter((q) => q.questionId !== questionId),
+      status: s.pendingQuestions.length > 1 ? "waiting_question" : "running",
       timeline: s.timeline.map((it) =>
-        it.kind === "question" && it.questionId === pending.questionId ? { ...it, answer: choice } : it,
+        it.kind === "question" && it.questionId === questionId ? { ...it, answer: choice } : it,
       ),
     }));
-    await get().client.answerQuestion(pending.questionId, choice);
+    await get().client.answerQuestion(questionId, choice);
   },
 
   async stop() {
@@ -1167,8 +1294,8 @@ export const useStore = create<AppState>((set, get) => ({
         status: "idle",
         timeline: [],
         artifacts: [],
-        pendingApproval: undefined,
-        pendingQuestion: undefined,
+        pendingApprovals: [],
+        pendingQuestions: [],
         latestTokenUsage: undefined,
         lastTurnInput: undefined,
         recoverable: false,
@@ -1291,8 +1418,8 @@ export const useStore = create<AppState>((set, get) => ({
       activeStepId: handle.stepId,
       timeline: [],
       artifacts: [],
-      pendingApproval: undefined,
-      pendingQuestion: undefined,
+      pendingApprovals: [],
+      pendingQuestions: [],
       gateBlock: undefined,
       latestTokenUsage: undefined,
       lastTurnInput: undefined,
@@ -1359,6 +1486,7 @@ export const useStore = create<AppState>((set, get) => ({
       });
     startOrchestrationStream(handle.runId, client, set, get);
     void get().refreshAgentRuns();
+    void get().refreshWorkflowStepRuntime();
   },
 
   resetRun() {
@@ -1377,10 +1505,12 @@ export const useStore = create<AppState>((set, get) => ({
       agentRuns: [],
       agentGraphSnapshot: undefined,
       agentBusMessages: [],
+      workflowStepRuntime: [],
+      workflowStepRuntimeMeta: {},
       agentSpawnGuideOpen: false,
       agentSpawnGuideAgentName: undefined,
-      pendingApproval: undefined,
-      pendingQuestion: undefined,
+      pendingApprovals: [],
+      pendingQuestions: [],
       latestTokenUsage: undefined,
       lastTurnInput: undefined,
       recoverable: false,
@@ -1394,6 +1524,8 @@ export const useStore = create<AppState>((set, get) => ({
       _runReplaySeq: {},
       chatStartMode: "normal",
       chatSourceDocId: "",
+      flowRef: undefined,
+      builtinOrchestrationOptions: [],
       selectedModel: pickDefaultModel(selectedProvider, supportedModels),
     });
   },
@@ -1520,6 +1652,25 @@ export function providerLabel(providerKey: string): string {
   if (providerKey === "claude") return "Claude";
   if (providerKey === "codex") return "Codex";
   return providerKey;
+}
+
+// ── Workflow-step runtime helpers (BUG-153) ────────────────────────────────
+// Derived from workflowStepRuntime + chatMode rather than stored separately,
+// so there is exactly one source of truth to keep in sync.
+
+/** Flow mode only; Review Loop / normal chat has no linear workflow-step list (F-14). */
+export function isFlowModeRun(chatMode: ChatMode): boolean {
+  return chatMode === "workflow_step_auto";
+}
+
+/** The step currently RUNNING or WAITING_USER_APPROVAL, if any. */
+export function activeWorkflowStep(steps: WorkflowStepRuntimeDTO[]): WorkflowStepRuntimeDTO | undefined {
+  return steps.find((s) => s.status === "RUNNING" || s.status === "WAITING_USER_APPROVAL");
+}
+
+/** True when any step has been retried at least once (F-5). */
+export function hasRetries(steps: WorkflowStepRuntimeDTO[]): boolean {
+  return steps.some((s) => s.retryCount > 0);
 }
 
 function isInteractiveChatBlocked(status: RunStatus): boolean {
@@ -1704,47 +1855,37 @@ function settleHistoryReplayPendingState(
 ): void {
   if (resumedStatus === "waiting_approval" || resumedStatus === "waiting_question") return;
   set((s) => {
-    if (s.runId !== runId || (!s.pendingApproval && !s.pendingQuestion)) return {};
-    const pendingApproval = s.pendingApproval;
-    const pendingQuestion = s.pendingQuestion;
-    const lastMeaningfulItem = [...s.timeline].reverse().find((it) => it.kind !== "thinking");
-    const approvalStillOpen =
-      pendingApproval !== undefined &&
-      lastMeaningfulItem?.kind === "approval" &&
-      lastMeaningfulItem.approvalId === pendingApproval.approvalId &&
-      lastMeaningfulItem.decision === undefined;
-    const questionStillOpen =
-      pendingQuestion !== undefined &&
-      lastMeaningfulItem?.kind === "question" &&
-      lastMeaningfulItem.questionId === pendingQuestion.questionId &&
-      lastMeaningfulItem.answer === undefined;
+    if (s.runId !== runId || (s.pendingApprovals.length === 0 && s.pendingQuestions.length === 0)) return {};
+    // An approval/question is still genuinely open if its own card was never stamped
+    // with a decision — checked per-id (not just the last timeline item) because
+    // concurrent tool calls can leave several cards outstanding at once (BUG-157).
+    // This also covers BUG-105: resumedStatus is stale server ground truth when the
+    // replay stream itself ends on an unresolved permission_required/question.
+    const stillOpenApprovals = s.pendingApprovals.filter((pending) =>
+      s.timeline.some((it) => it.kind === "approval" && it.approvalId === pending.approvalId && it.decision === undefined),
+    );
+    const stillOpenQuestions = s.pendingQuestions.filter((pending) =>
+      s.timeline.some((it) => it.kind === "question" && it.questionId === pending.questionId && it.answer === undefined),
+    );
 
-    if (approvalStillOpen || questionStillOpen) {
+    if (stillOpenApprovals.length > 0 || stillOpenQuestions.length > 0) {
       return {
-        ...(approvalStillOpen ? { pendingApproval } : { pendingApproval: undefined }),
-        ...(questionStillOpen ? { pendingQuestion } : { pendingQuestion: undefined }),
-        status: approvalStillOpen ? "waiting_approval" : "waiting_question",
+        pendingApprovals: stillOpenApprovals,
+        pendingQuestions: stillOpenQuestions,
+        status: stillOpenApprovals.length > 0 ? "waiting_approval" : "waiting_question",
       };
     }
 
+    const staleApprovalIds = new Set(s.pendingApprovals.map((p) => p.approvalId));
+    const staleQuestionIds = new Set(s.pendingQuestions.map((q) => q.questionId));
     return {
-      pendingApproval: undefined,
-      pendingQuestion: undefined,
+      pendingApprovals: [],
+      pendingQuestions: [],
       timeline: s.timeline.map((it) => {
-        if (
-          pendingApproval &&
-          it.kind === "approval" &&
-          it.approvalId === pendingApproval.approvalId &&
-          it.decision === undefined
-        ) {
+        if (it.kind === "approval" && staleApprovalIds.has(it.approvalId) && it.decision === undefined) {
           return { ...it, decision: "resolved" };
         }
-        if (
-          pendingQuestion &&
-          it.kind === "question" &&
-          it.questionId === pendingQuestion.questionId &&
-          it.answer === undefined
-        ) {
+        if (it.kind === "question" && staleQuestionIds.has(it.questionId) && it.answer === undefined) {
           return { ...it, answer: "answered" };
         }
         return it;
@@ -2003,8 +2144,8 @@ function snapshotRunState(state: AppState): RunSnapshot {
     timeline: state.timeline,
     artifacts: state.artifacts,
     status: state.status,
-    pendingApproval: state.pendingApproval,
-    pendingQuestion: state.pendingQuestion,
+    pendingApprovals: state.pendingApprovals,
+    pendingQuestions: state.pendingQuestions,
     latestTokenUsage: state.latestTokenUsage,
     lastTurnInput: state.lastTurnInput,
     recoverable: state.recoverable,
@@ -2019,8 +2160,8 @@ function restoreRunSnapshot(snapshot: RunSnapshot): Partial<AppState> {
     timeline: snapshot.timeline,
     artifacts: snapshot.artifacts,
     status: snapshot.status,
-    pendingApproval: snapshot.pendingApproval,
-    pendingQuestion: snapshot.pendingQuestion,
+    pendingApprovals: snapshot.pendingApprovals,
+    pendingQuestions: snapshot.pendingQuestions,
     latestTokenUsage: snapshot.latestTokenUsage,
     lastTurnInput: snapshot.lastTurnInput,
     recoverable: snapshot.recoverable,
@@ -2034,8 +2175,8 @@ function emptyRunSnapshot(status: RunStatus): Partial<AppState> {
     timeline: [],
     artifacts: [],
     status,
-    pendingApproval: undefined,
-    pendingQuestion: undefined,
+    pendingApprovals: [],
+    pendingQuestions: [],
     gateBlock: undefined,
     latestTokenUsage: undefined,
     lastTurnInput: undefined,

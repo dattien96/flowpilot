@@ -4,8 +4,12 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
+
+	"flowpilot-runner/internal/agentpack"
 )
 
 func TestLocalFileSessionStoreUpsertAndList(t *testing.T) {
@@ -140,6 +144,51 @@ func TestLocalFileSessionStoreAgentMetadataRoundTrip(t *testing.T) {
 	}
 	if len(got.DependsOn) != 1 || got.DependsOn[0] != "run-abc" {
 		t.Fatalf("dependsOn = %v, want [run-abc]", got.DependsOn)
+	}
+}
+
+// TestLocalFileSessionStoreActiveFlowTopologyRoundTrip is the regression test
+// for BUG-NOTE-CP42 #16, on the disk-persistence side: a resolved flow's
+// tracked edges/nodes must survive an NDJSON write + reload, not just an
+// in-memory sessionStateOf/reconstructRun round-trip.
+func TestLocalFileSessionStoreActiveFlowTopologyRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+
+	edges := []agentpack.FlowEdge{{From: "coder", To: "reviewer", When: "done", Kind: "forward"}}
+	nodes := []agentpack.FlowNode{{ID: "coder", Behavior: "agent.delegate", Agent: "agents/coder.md"}}
+	sess := ProviderSessionState{
+		RunID:           "run-flow-1",
+		ProjectID:       "proj-1",
+		ProviderKey:     "codex",
+		Status:          "completed",
+		RunKind:         "chat",
+		ActiveFlowEdges: edges,
+		ActiveFlowNodes: nodes,
+	}
+	if err := store.UpsertProviderSession(context.Background(), sess); err != nil {
+		t.Fatalf("UpsertProviderSession: %v", err)
+	}
+
+	reloaded, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore reload: %v", err)
+	}
+	got, found, err := reloaded.GetProviderSession(context.Background(), "run-flow-1")
+	if err != nil {
+		t.Fatalf("GetProviderSession: %v", err)
+	}
+	if !found {
+		t.Fatal("expected session to be found")
+	}
+	if !reflect.DeepEqual(got.ActiveFlowEdges, edges) {
+		t.Fatalf("ActiveFlowEdges after reload = %#v, want %#v", got.ActiveFlowEdges, edges)
+	}
+	if !reflect.DeepEqual(got.ActiveFlowNodes, nodes) {
+		t.Fatalf("ActiveFlowNodes after reload = %#v, want %#v", got.ActiveFlowNodes, nodes)
 	}
 }
 
@@ -471,3 +520,482 @@ func TestLocalFileSessionStoreLoadsLegacyRecordWithoutSyncMetadata(t *testing.T)
 		t.Fatalf("legacy record unexpectedly populated sync metadata: %#v", got)
 	}
 }
+
+func TestLoopStateRoundTripsThroughSessionStore(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	original := ProviderSessionState{
+		RunID:     "run-flow-1",
+		ProjectID: "proj-x",
+		RunKind:   "chat",
+		Status:    "completed",
+		UpdatedAt: now,
+		LoopState: AgentLoopState{
+			Mode:        "explicit",
+			Round:       2,
+			Cap:         5,
+			RoundCap:    5,
+			ExtendCount: 1,
+			ActiveNode:  "coder",
+		},
+	}
+	if err := store.UpsertProviderSession(context.Background(), original); err != nil {
+		t.Fatalf("UpsertProviderSession: %v", err)
+	}
+
+	// Reload from disk to confirm persistence.
+	reloaded, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	got, found, err := reloaded.GetProviderSession(context.Background(), "run-flow-1")
+	if err != nil {
+		t.Fatalf("GetProviderSession: %v", err)
+	}
+	if !found {
+		t.Fatal("session not found after reload")
+	}
+	ls := got.LoopState
+	if ls.Mode != "explicit" || ls.Round != 2 || ls.Cap != 5 || ls.ExtendCount != 1 || ls.ActiveNode != "coder" {
+		t.Errorf("LoopState = %+v, want Mode=explicit Round=2 Cap=5 ExtendCount=1 ActiveNode=coder", ls)
+	}
+}
+
+func TestZeroLoopStateOmittedFromDisk(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	plain := ProviderSessionState{RunID: "run-plain", ProjectID: "p", RunKind: "chat", Status: "completed", UpdatedAt: now}
+	if err := store.UpsertProviderSession(context.Background(), plain); err != nil {
+		t.Fatalf("UpsertProviderSession: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "sessions.ndjson"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if strings.Contains(string(data), "loop_state") {
+		t.Error("sessions.ndjson should not contain loop_state for a plain chat run")
+	}
+}
+
+func TestFlowRunRestoresSeedsOrchestratorLoopState(t *testing.T) {
+	// Simulate a runner restart: persist a flow run, then reconstruct it and
+	// verify the orchestrator loop state is restored (Task-085 T-4).
+	svc, _ := newTestServer(t)
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	// Simulate explicit-mode flow run at round 2.
+	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{
+		Mode:     "explicit",
+		Round:    2,
+		Cap:      5,
+		RoundCap: 5,
+	})
+	svc.persistParentSession(parent.RunID)
+
+	// Rebuild service from the same store (simulates restart).
+	store := svc.workflowStore
+	svc2 := newInteractiveService(newProviderRegistry(), newInteractiveCatalog(), store)
+	reader, ok := store.(SessionHistoryReader)
+	if !ok {
+		t.Fatal("store does not implement SessionHistoryReader")
+	}
+	st, found, stErr := reader.GetProviderSession(context.Background(), parent.RunID)
+	if stErr != nil || !found {
+		t.Fatalf("session not found after persist: found=%v err=%v", found, stErr)
+	}
+	if _, recErr := svc2.reconstructRun(st); recErr != nil {
+		t.Fatalf("reconstructRun: %v", recErr)
+	}
+	snap := svc2.agentGraphSnapshot(parent.RunID)
+	if snap.LoopState.Mode != "explicit" || snap.LoopState.Round != 2 || snap.LoopState.Cap != 5 {
+		t.Errorf("LoopState after restart = %+v, want Mode=explicit Round=2 Cap=5", snap.LoopState)
+	}
+}
+
+func TestAutoOrchestrateRoundTripsThroughSessionStore(t *testing.T) {
+	// Verify that autoOrchestrate=true survives a write/reload cycle so a restarted
+	// runner correctly resumes hub auto-reinvocation (Task-093 / CP-36 P-7).
+	dir := t.TempDir()
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	original := ProviderSessionState{
+		RunID: "run-ao-1", ProjectID: "proj", RunKind: "chat", Status: "completed",
+		UpdatedAt:       now,
+		AutoOrchestrate: true,
+	}
+	if err := store.UpsertProviderSession(context.Background(), original); err != nil {
+		t.Fatalf("UpsertProviderSession: %v", err)
+	}
+
+	// Reload from disk.
+	reloaded, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	got, found, stErr := reloaded.GetProviderSession(context.Background(), "run-ao-1")
+	if stErr != nil {
+		t.Fatalf("GetProviderSession: %v", stErr)
+	}
+	if !found {
+		t.Fatal("session not found after reload")
+	}
+	if !got.AutoOrchestrate {
+		t.Error("AutoOrchestrate should be true after round-trip through sessions.ndjson")
+	}
+}
+
+func TestZeroAutoOrchestrateOmittedFromDisk(t *testing.T) {
+	// A plain chat run (autoOrchestrate=false) must not write the field to disk.
+	dir := t.TempDir()
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	plain := ProviderSessionState{RunID: "run-plain-ao", ProjectID: "p", RunKind: "chat", Status: "completed", UpdatedAt: now}
+	if err := store.UpsertProviderSession(context.Background(), plain); err != nil {
+		t.Fatalf("UpsertProviderSession: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "sessions.ndjson"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if strings.Contains(string(data), "auto_orchestrate") {
+		t.Error("sessions.ndjson should not contain auto_orchestrate for a plain chat run")
+	}
+}
+
+func TestFlowRunRestoresSeedsAutoOrchestrate(t *testing.T) {
+	// Simulate a runner restart: persist a flow run with autoOrchestrate=true, then
+	// reconstruct it and verify the flag is restored on the interactiveRun (Task-093).
+	svc, _ := newTestServer(t)
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	svc.mu.Lock()
+	svc.runs[parent.RunID].autoOrchestrate = true
+	svc.mu.Unlock()
+	svc.persistParentSession(parent.RunID)
+
+	// Rebuild service from the same store (simulates restart).
+	store := svc.workflowStore
+	svc2 := newInteractiveService(newProviderRegistry(), newInteractiveCatalog(), store)
+	reader, ok := store.(SessionHistoryReader)
+	if !ok {
+		t.Fatal("store does not implement SessionHistoryReader")
+	}
+	st, found, stErr := reader.GetProviderSession(context.Background(), parent.RunID)
+	if stErr != nil || !found {
+		t.Fatalf("session not found after persist: found=%v err=%v", found, stErr)
+	}
+	rs2, recErr := svc2.reconstructRun(st)
+	if recErr != nil {
+		t.Fatalf("reconstructRun: %v", recErr)
+	}
+	if !rs2.autoOrchestrate {
+		t.Error("autoOrchestrate should be true after run reconstruction from disk")
+	}
+}
+
+// BUG-fix (Finding 5): flowCohortId must survive a session store round-trip so that
+// a restored child run can still enter the cohort barrier on completion.
+func TestFlowCohortIDRoundTripsThroughSessionStore(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	sess := ProviderSessionState{
+		RunID:        "child-1",
+		ProjectID:    "proj",
+		ProviderKey:  ProviderKeyCodex,
+		UpdatedAt:    now,
+		FlowCohortID: "review-round-1",
+	}
+	if err := store.UpsertProviderSession(context.Background(), sess); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	// Reload from a fresh store instance (full disk round-trip).
+	reloaded, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	got, found, getErr := reloaded.GetProviderSession(context.Background(), "child-1")
+	if getErr != nil || !found {
+		t.Fatalf("GetProviderSession: found=%v err=%v", found, getErr)
+	}
+	if got.FlowCohortID != "review-round-1" {
+		t.Errorf("FlowCohortID = %q after round-trip, want %q", got.FlowCohortID, "review-round-1")
+	}
+}
+
+func TestZeroFlowCohortIDOmittedFromDisk(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	sess := ProviderSessionState{RunID: "plain-1", ProjectID: "proj", ProviderKey: ProviderKeyCodex}
+	if err := store.UpsertProviderSession(context.Background(), sess); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	// The NDJSON line must NOT contain "flow_cohort_id" when the field is empty.
+	data, readErr := os.ReadFile(filepath.Join(dir, "sessions.ndjson"))
+	if readErr != nil {
+		t.Fatalf("read file: %v", readErr)
+	}
+	if strings.Contains(string(data), "flow_cohort_id") {
+		t.Error("expected flow_cohort_id to be omitted when empty, but found it on disk")
+	}
+}
+
+// TestLocalFileSessionStoreFlowEventsDurability verifies that CP-41 flow events
+// (EventFlowContextPackage) survive a simulated process restart: after creating
+// a new store instance from the same dataDir, LoadFlowEvents returns the
+// persisted event, and FindFlowContextPackage succeeds on the reloaded events.
+func TestLocalFileSessionStoreFlowEventsDurability(t *testing.T) {
+	dir := t.TempDir()
+
+	store1, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+
+	// Build a minimal FlowContextPackage and emit an EventFlowContextPackage.
+	pkg := FlowContextPackage{
+		PackageID:     "pkg-durability-1",
+		WorkflowRunID: "run-dur",
+		FeatureKey:    "agent-flow-engine",
+	}
+	ev := ProviderEvent{
+		Type:               EventFlowContextPackage,
+		WorkflowRunID:      "run-dur",
+		WorkflowStepRunID:  "step-plan-1",
+		FlowContextPackage: &pkg,
+	}
+	if err := store1.AppendEvent(context.Background(), ev); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+
+	// Simulate a process restart by creating a new store instance.
+	store2, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore (restart): %v", err)
+	}
+
+	// LoadFlowEvents must return the persisted event.
+	evs, err := store2.LoadFlowEvents(context.Background(), "run-dur")
+	if err != nil {
+		t.Fatalf("LoadFlowEvents: %v", err)
+	}
+	if len(evs) != 1 {
+		t.Fatalf("LoadFlowEvents: got %d events, want 1", len(evs))
+	}
+	if evs[0].Type != EventFlowContextPackage {
+		t.Errorf("event type = %q, want %q", evs[0].Type, EventFlowContextPackage)
+	}
+
+	// FindFlowContextPackage must succeed on the reloaded events.
+	found, ok := FindFlowContextPackage(evs, "step-plan-1")
+	if !ok {
+		t.Fatal("FindFlowContextPackage: not found after restart")
+	}
+	if found.PackageID != "pkg-durability-1" {
+		t.Errorf("PackageID = %q, want pkg-durability-1", found.PackageID)
+	}
+}
+
+// TestLocalFileSessionStoreFlowEventsNonCp41NotPersisted verifies that
+// non-CP-41 event types (e.g. EventTurnStarted) are NOT written to the
+// flow-events sidecar.
+func TestLocalFileSessionStoreFlowEventsNonCp41NotPersisted(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+
+	_ = store.AppendEvent(context.Background(), ProviderEvent{
+		Type:          EventTurnStarted,
+		WorkflowRunID: "run-x",
+		Prompt:        "hello",
+	})
+
+	evs, _ := store.LoadFlowEvents(context.Background(), "run-x")
+	if len(evs) != 0 {
+		t.Errorf("expected 0 flow events for non-CP-41 type, got %d", len(evs))
+	}
+}
+
+// TestLocalFileSessionStoreDeleteFlowEvents verifies that DeleteFlowEvents
+// removes the sidecar and subsequent LoadFlowEvents returns empty.
+func TestLocalFileSessionStoreDeleteFlowEvents(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+
+	pkg := FlowContextPackage{PackageID: "pkg-del", WorkflowRunID: "run-del"}
+	_ = store.AppendEvent(context.Background(), ProviderEvent{
+		Type:               EventFlowContextPackage,
+		WorkflowRunID:      "run-del",
+		WorkflowStepRunID:  "step-plan",
+		FlowContextPackage: &pkg,
+	})
+
+	if err := store.DeleteFlowEvents(context.Background(), "run-del"); err != nil {
+		t.Fatalf("DeleteFlowEvents: %v", err)
+	}
+
+	// No-op on missing file.
+	if err := store.DeleteFlowEvents(context.Background(), "run-del"); err != nil {
+		t.Fatalf("DeleteFlowEvents (2nd): %v", err)
+	}
+
+	evs, _ := store.LoadFlowEvents(context.Background(), "run-del")
+	if len(evs) != 0 {
+		t.Errorf("expected 0 events after delete, got %d", len(evs))
+	}
+}
+
+// TestFlowEventsPathTraversalRejected verifies that flowEventsPath (and its callers
+// AppendEvent / LoadFlowEvents / DeleteFlowEvents) reject run IDs that contain path
+// separators and could escape the store directory.
+func TestFlowEventsPathTraversalRejected(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+
+	// AppendEvent short-circuits for empty WorkflowRunID (no sidecar needed), so only
+	// non-empty IDs with separators are expected to surface the traversal error there.
+	appendMalicious := []string{"../escape", "sub/run-1", "sub\\run-1"}
+	pkg := FlowContextPackage{PackageID: "pkg-x"}
+	for _, id := range appendMalicious {
+		ev := ProviderEvent{
+			Type:               EventFlowContextPackage,
+			WorkflowRunID:      id,
+			FlowContextPackage: &pkg,
+		}
+		if err := store.AppendEvent(context.Background(), ev); err == nil {
+			t.Errorf("AppendEvent with run ID %q: expected error, got nil", id)
+		}
+	}
+
+	// LoadFlowEvents and DeleteFlowEvents receive the run ID as a direct parameter,
+	// so the empty string and all separator cases must be rejected.
+	directMalicious := []string{"../escape", "sub/run-1", "sub\\run-1", ""}
+	for _, id := range directMalicious {
+		if _, err := store.LoadFlowEvents(context.Background(), id); err == nil {
+			t.Errorf("LoadFlowEvents with run ID %q: expected error, got nil", id)
+		}
+		if err := store.DeleteFlowEvents(context.Background(), id); err == nil {
+			t.Errorf("DeleteFlowEvents with run ID %q: expected error, got nil", id)
+		}
+	}
+}
+
+// TestFlowEventsLoadSkipsMalformedLinesKeepsValid verifies that LoadFlowEvents
+// skips malformed NDJSON lines and returns subsequent well-formed events rather
+// than silently stopping at the first bad line.
+func TestFlowEventsLoadSkipsMalformedLinesKeepsValid(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+
+	pkg := FlowContextPackage{PackageID: "pkg-valid", WorkflowRunID: "run-malformed"}
+	goodEvent := ProviderEvent{
+		Type:               EventFlowContextPackage,
+		WorkflowRunID:      "run-malformed",
+		WorkflowStepRunID:  "step-plan",
+		FlowContextPackage: &pkg,
+	}
+	if err := store.AppendEvent(context.Background(), goodEvent); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+
+	// Inject a malformed line directly into the sidecar file between two valid events.
+	sidecar := filepath.Join(dir, "run-malformed-flow-events.ndjson")
+	f, err := os.OpenFile(sidecar, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("open sidecar: %v", err)
+	}
+	_, _ = f.WriteString("not valid json\n")
+	f.Close()
+
+	// Append a second valid event after the malformed line.
+	if err := store.AppendEvent(context.Background(), goodEvent); err != nil {
+		t.Fatalf("AppendEvent (2nd): %v", err)
+	}
+
+	evs, loadErr := store.LoadFlowEvents(context.Background(), "run-malformed")
+	if loadErr != nil {
+		t.Fatalf("LoadFlowEvents returned error: %v", loadErr)
+	}
+	if len(evs) != 2 {
+		t.Errorf("LoadFlowEvents: got %d events, want 2 (malformed line must be skipped, not abort)", len(evs))
+	}
+}
+
+// TestFlowEventsLoadHandlesLargeLines verifies that LoadFlowEvents can read a
+// flow-event line that exceeds the typical 64 KiB buffer threshold without
+// truncating or erroring.
+func TestFlowEventsLoadHandlesLargeLines(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+
+	// Build a FlowContextPackage whose JSON serialisation exceeds 64 KiB.
+	bigSrc := strings.Repeat("x", 70*1024) // 70 KiB padding in a string field
+	pkg := FlowContextPackage{
+		PackageID:     "pkg-big",
+		WorkflowRunID: "run-big",
+		Warnings:      []string{bigSrc},
+	}
+	ev := ProviderEvent{
+		Type:               EventFlowContextPackage,
+		WorkflowRunID:      "run-big",
+		WorkflowStepRunID:  "step-plan",
+		FlowContextPackage: &pkg,
+	}
+	if err := store.AppendEvent(context.Background(), ev); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+
+	evs, loadErr := store.LoadFlowEvents(context.Background(), "run-big")
+	if loadErr != nil {
+		t.Fatalf("LoadFlowEvents returned error: %v", loadErr)
+	}
+	if len(evs) != 1 {
+		t.Errorf("LoadFlowEvents: got %d events, want 1", len(evs))
+	}
+	if evs[0].FlowContextPackage == nil || evs[0].FlowContextPackage.PackageID != "pkg-big" {
+		t.Error("loaded event does not match persisted package")
+	}
+}
+

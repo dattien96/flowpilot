@@ -706,6 +706,13 @@ func loadGeminiAccountMetadata(homePath string) (accountLaunchMetadata, error) {
 		authStorePath: filepath.Join(homePath, ".gemini"),
 	}
 
+	// Antigravity CLI no longer exposes the legacy Gemini Code Assist quota/auth
+	// files that the old metadata path depended on. Showing stale buckets from that
+	// deprecated API is worse than showing nothing.
+	if hasGeminiAntigravityMarker(homePath) {
+		return metadata, nil
+	}
+
 	if accountsPath != "" {
 		var accounts geminiAccountsFile
 		if err := readJSONFile(accountsPath, &accounts); err == nil {
@@ -741,6 +748,18 @@ func loadGeminiAccountMetadata(homePath string) (accountLaunchMetadata, error) {
 	metadata.usageSummary = quota.usageSummary
 	metadata.usageDetailLines = quota.usageDetailLines
 	return metadata, nil
+}
+
+func hasGeminiAntigravityMarker(homePath string) bool {
+	for _, candidate := range []string{
+		filepath.Join(homePath, ".gemini", "antigravity-cli"),
+		filepath.Join(homePath, "antigravity-cli"),
+	} {
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			return true
+		}
+	}
+	return false
 }
 
 type codexQuota struct {

@@ -94,17 +94,33 @@ export function App(): React.ReactElement {
 
   const refreshBootstrap = async () => {
     setPhase("loading");
-    try {
-      const bootstrap = await loadDesktopBootstrapUseCase.execute();
-      applyBootstrapState(bootstrap);
-    } catch {
-      setRuntimeStatus({
-        ...emptyRuntimeStatus,
-        runnerReachable: false,
-        lastError: "Unable to load desktop bootstrap state from the local runner.",
-      });
-      setUnauthenticatedView("settings");
-      setPhase("unauthenticated");
+    // On first `just dev` start the runner binary has to compile before it can
+    // serve.  Retry for up to 30 s (15 × 2 s) so the desktop does not get
+    // permanently stuck on the Supabase tab because the single initial probe
+    // fired before the runner was ready.
+    const MAX_ATTEMPTS = 15;
+    const RETRY_DELAY_MS = 2000;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      try {
+        const bootstrap = await loadDesktopBootstrapUseCase.execute();
+        if (bootstrap.runtimeStatus.runnerReachable || attempt === MAX_ATTEMPTS - 1) {
+          applyBootstrapState(bootstrap);
+          return;
+        }
+      } catch {
+        if (attempt === MAX_ATTEMPTS - 1) {
+          setRuntimeStatus({
+            ...emptyRuntimeStatus,
+            runnerReachable: false,
+            lastError: "Unable to load desktop bootstrap state from the local runner.",
+          });
+          setSettingsSection("runner");
+          setUnauthenticatedView("settings");
+          setPhase("unauthenticated");
+          return;
+        }
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
     }
   };
 
@@ -223,7 +239,9 @@ export function App(): React.ReactElement {
         onSelectSection={setSettingsSection}
         onValidateSupabase={handleValidateSupabase}
         runtimeStatus={runtimeStatus}
-        visibleSections={["supabase"]}
+        visibleSections={
+          runtimeStatus.runnerReachable ? ["supabase"] : ["supabase", "runner"]
+        }
       />
     );
   }

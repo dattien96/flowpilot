@@ -102,6 +102,10 @@ class HttpWsRunnerClient {
             url += `&cwd=${encodeURIComponent(cwd)}`;
         return this.getJSON(url);
     }
+    listBuiltinOrchestrationOptions(subMode) {
+        const url = `/client/chat/builtin-orchestration-options?subMode=${encodeURIComponent(subMode)}`;
+        return this.getJSON(url);
+    }
     listAgents(cwd) {
         const url = cwd ? `/client/agents?cwd=${encodeURIComponent(cwd)}` : "/client/agents";
         return this.getJSON(url);
@@ -116,6 +120,8 @@ class HttpWsRunnerClient {
     resumeAgentLoop(parentRunId) { return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/agent-loop/resume`); }
     injectAgentFeedback(parentRunId, toRunId, message) { return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/agent-loop/feedback`, { toRunId, message }); }
     stopAgentLoop(parentRunId) { return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/agent-loop/stop`); }
+    submitReviewOutcome(parentRunId, input) { return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/flow-control`, input); }
+    extendCap(parentRunId) { return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/agent-loop/extend-cap`); }
     spawnAgent(input) {
         const { parentRunId, ...body } = input;
         return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/spawn-agent`, body);
@@ -142,6 +148,12 @@ class HttpWsRunnerClient {
     }
     restoreChatRun(input) {
         return this.postJSON("/client/chat-sessions/restore", input);
+    }
+    handoffContext(runId, input) {
+        return this.postJSON(`/client/workflow-runs/${encodeURIComponent(runId)}/handoff-context`, input);
+    }
+    generateChatSummary(runId) {
+        return this.postJSON(`/client/workflow-runs/${encodeURIComponent(runId)}/chat-summary`, {});
     }
     submitApproval(approvalId, decision) {
         return this.postJSON(`/client/approvals/${encodeURIComponent(approvalId)}/decision`, { decision });
@@ -186,6 +198,8 @@ class HttpWsRunnerClient {
             model: input.model,
             yoloMode: input.yoloMode,
             attachments: input.attachments,
+            subMode: input.subMode,
+            flowRef: input.flowRef,
             scenario: this.scenario,
         });
         for await (const ev of this.openStream(input.runId, after)) {

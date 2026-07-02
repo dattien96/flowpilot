@@ -48,6 +48,7 @@ let envFile = '';
 let rootDirArg = '';
 let desktopPath = 'apps/desktop-flowpilot';
 const args = process.argv.slice(2);
+const webPortProvidedByArgs = args.includes('--web-port');
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--root-dir' && args[i + 1]) {
     rootDirArg = args[i + 1];
@@ -81,6 +82,8 @@ if (rootDirArg) {
 }
 
 loadEnvFile(envFile);
+const webPortProvidedByEnv = Boolean(process.env.FLOWPILOT_ADMIN_WEB_PORT);
+const webPortWasExplicit = webPortProvidedByArgs || webPortProvidedByEnv;
 webPort = webPort || process.env.FLOWPILOT_ADMIN_WEB_PORT || '3002';
 runnerPort = runnerPort || process.env.FLOWPILOT_RUNNER_PORT || '4317';
 desktopPort = desktopPort || process.env.FLOWPILOT_DESKTOP_PORT || '';
@@ -89,7 +92,6 @@ const flowpilotDir = path.join(rootDir, '.flowpilot');
 const metadataPath = path.join(flowpilotDir, 'supervisor.json');
 const controlPath = path.join(flowpilotDir, 'supervisor.cmd');
 const runnerUrl = process.env.FLOWPILOT_RUNNER_URL || `http://127.0.0.1:${runnerPort}`;
-const adminWebUrl = process.env.VITE_ADMIN_WEB_URL || `http://localhost:${webPort}`;
 const googleDriveRedirectUri =
   process.env.GOOGLE_DRIVE_REDIRECT_URI ||
   `${runnerUrl.replace(/\/+$/, '')}/artifact-storage/google-drive/oauth/callback`;
@@ -112,6 +114,10 @@ function ensureDirectoryExists(dir) {
 
 function isPortInUse(port) {
   return new Promise((resolve) => {
+    if (getPidUsingPort(port)) {
+      resolve(true);
+      return;
+    }
     const server = net.createServer();
     server.once('error', (err) => {
       if (err.code === 'EADDRINUSE') {
@@ -152,13 +158,19 @@ function getPidUsingPort(port) {
       }
     } else {
       try {
-        const output = execSync(`lsof -t -i tcp:${port}`, { encoding: 'utf8' }).trim();
+        const output = execSync(`lsof -t -i tcp:${port}`, {
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'ignore'],
+        }).trim();
         const pid = parseInt(output, 10);
         if (pid && pid > 0) return pid;
       } catch (e) {
         // Fallback for Linux using ss or netstat if lsof is missing
         try {
-          const output = execSync(`ss -lptn 'sport = :${port}'`, { encoding: 'utf8' });
+          const output = execSync(`ss -lptn 'sport = :${port}'`, {
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'ignore'],
+          });
           const match = output.match(/pid=(\d+)/);
           if (match && match[1]) return parseInt(match[1], 10);
         } catch (err) {}
@@ -184,7 +196,8 @@ function verifyProcessOwner(pid, type) {
       }
     }
     if (type === 'web') {
-      return cmd.includes('node') || cmd.includes('npm') || cmd.includes('next');
+      const adminWebDir = path.join(rootDir, 'apps', 'admin-web').toLowerCase();
+      return cmd.includes(adminWebDir) || cmd.includes('apps/admin-web') || cmd.includes('admin-web');
     } else if (type === 'runner') {
       return cmd.includes('flowpilot') || cmd.includes('go') || cmd.includes('runner') || cmd.includes('serve');
     }
@@ -214,6 +227,18 @@ function signalManagedProcess(child, signal) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getAdminWebUrl() {
+  return process.env.VITE_ADMIN_WEB_URL || `http://localhost:${webPort}`;
+}
+
+async function findAvailablePort(startPort, host = '127.0.0.1') {
+  let candidate = startPort;
+  while (await isPortInUse(candidate, host)) {
+    candidate += 1;
+  }
+  return candidate;
 }
 
 function isLibreTranslateInstalled() {
@@ -345,9 +370,18 @@ async function startServices() {
   }
 
   if (withWeb && webInUse && !adoptedWebPid) {
-    throw new Error(
-      `Port ${webPort} is already in use by a process that does not look like the FlowPilot web app. Stop that process or choose another port.`,
+    if (webPortWasExplicit) {
+      throw new Error(
+        `Port ${webPort} is already in use by a process that does not look like the FlowPilot web app. Stop that process or choose another port.`,
+      );
+    }
+
+    const fallbackWebPort = await findAvailablePort(parseInt(webPort, 10) + 1);
+    console.log(
+      `[Supervisor] Admin web port ${webPort} is busy. Falling back to ${fallbackWebPort}.`,
     );
+    webPort = String(fallbackWebPort);
+    return startServices();
   }
 
   if (runnerInUse && !adoptedRunnerPid) {
@@ -434,7 +468,7 @@ async function startServicesFresh(existing = {}) {
           FLOWPILOT_RUNNER_PORT: runnerPort,
           FLOWPILOT_RUNNER_URL: runnerUrl,
           VITE_LOCAL_RUNNER_URL: process.env.VITE_LOCAL_RUNNER_URL || runnerUrl,
-          VITE_ADMIN_WEB_URL: adminWebUrl,
+          VITE_ADMIN_WEB_URL: getAdminWebUrl(),
           GOOGLE_DRIVE_REDIRECT_URI: googleDriveRedirectUri,
         },
       });
@@ -514,7 +548,7 @@ async function startServicesFresh(existing = {}) {
         FLOWPILOT_RUNNER_URL: runnerUrl,
         VITE_RUNNER_URL: desktopRunnerUrl,
         VITE_LOCAL_RUNNER_URL: process.env.VITE_LOCAL_RUNNER_URL || runnerUrl,
-        VITE_ADMIN_WEB_URL: adminWebUrl,
+        VITE_ADMIN_WEB_URL: getAdminWebUrl(),
         GOOGLE_DRIVE_REDIRECT_URI: googleDriveRedirectUri,
       },
     });
@@ -566,7 +600,7 @@ async function startServicesFresh(existing = {}) {
     runnerPort: parseInt(runnerPort, 10),
     desktopPort: desktopPort ? parseInt(desktopPort, 10) : null,
     runnerUrl,
-    adminWebUrl,
+    adminWebUrl: getAdminWebUrl(),
   };
   fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2));
 }
