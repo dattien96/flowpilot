@@ -5,16 +5,18 @@
 - Document ID: `BUG-166`
 - Title: `Claude Models Missing From Supported-Models Registry`
 - Phase: `bugfix`
-- Status: `done`
+- Status: `superseded`
 - Owner: `FlowPilot`
 - Reviewers: `FlowPilot`
 - Created: `2026-07-02`
 - Last Updated: `2026-07-02`
 - Parent Documents: `requirements/09-BugFix/done/BUG-162-Coder-Reviewer-Steps-Must-Default-To-Claude-Haiku.md`
-- Child Documents: `none`
+- Child Documents: `requirements/09-BugFix/done/BUG-167-Claude-Supported-Model-Ids-Missing-Prefix.md`
 - Related Documents: `supabase/migrations/20260529153000_add_ai_supported_models.sql`
 - Replaces: `none`
 - Tags: `supabase, migration, ai-supported-models, settings`
+
+> **Superseded by `BUG-167`**: a follow-up live query (`select * from ai_supported_models`) showed the diagnosis in this document was wrong — `claude-haiku` was never *missing*; the registry had it under the bare id `"haiku"` instead of the canonical `"claude-haiku"`. This document's migration (which would have inserted a second, duplicate `"claude-haiku"` row alongside the existing `"haiku"` one) was removed before ever being applied anywhere and replaced by `BUG-167`'s in-place id correction. Left in place, unedited otherwise, as an accurate record of what was investigated and concluded at the time — see `BUG-167` for the corrected root cause and fix.
 
 ## AI Quick View
 
