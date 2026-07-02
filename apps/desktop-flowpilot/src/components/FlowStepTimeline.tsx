@@ -52,11 +52,24 @@ function stepName(step: WorkflowStepRuntimeDTO): string {
 
 interface FlowStepTimelineProps {
   steps: WorkflowStepRuntimeDTO[];
-  /** Icon-only rail: no title/description/meta, just the connected state dots. */
+  /** Icon-only rail: no title/description/meta, just the connected state dots (numbered — BUG-158). */
   compact?: boolean;
+  /**
+   * Run-level provider/model fallback (BUG-158): a flow node's agent
+   * definition has no override of its own for most built-in flows, so it
+   * inherits whatever the run itself was started with. Shown per step only
+   * when the step doesn't declare its own provider_override/model_override.
+   */
+  runProvider?: string;
+  runModel?: string;
 }
 
-export function FlowStepTimeline({ steps, compact = false }: FlowStepTimelineProps): React.ReactElement {
+export function FlowStepTimeline({
+  steps,
+  compact = false,
+  runProvider,
+  runModel,
+}: FlowStepTimelineProps): React.ReactElement {
   return (
     <ol className={`flow-timeline ${compact ? "flow-timeline-compact" : ""}`}>
       {steps.map((step, index) => {
@@ -64,6 +77,8 @@ export function FlowStepTimeline({ steps, compact = false }: FlowStepTimelinePro
         const isCurrent = state === "running" || state === "approval";
         const isLast = index === steps.length - 1;
         const lineState = state === "done" ? "done" : state === "running" ? "running" : "idle";
+        const provider = step.provider || runProvider;
+        const model = step.model || runModel;
 
         return (
           <li
@@ -72,7 +87,7 @@ export function FlowStepTimeline({ steps, compact = false }: FlowStepTimelinePro
             title={compact ? `${stepName(step)} — ${STATE_LABEL[step.status]}` : undefined}
           >
             <div className="fti-track">
-              <span className="fti-icon">{STATE_GLYPH[state]}</span>
+              <span className="fti-icon">{compact ? index + 1 : STATE_GLYPH[state]}</span>
               {!isLast && <span className={`fti-line fti-line-${lineState}`} />}
             </div>
 
@@ -83,12 +98,10 @@ export function FlowStepTimeline({ steps, compact = false }: FlowStepTimelinePro
                   {step.rejectionNote || STATE_LABEL[step.status]}
                   {step.retryCount > 0 && <span className="wsr-retry-badge">Retry {step.retryCount}</span>}
                 </div>
-                {(step.provider || step.model || step.agentRef || step.yoloMode) && (
+                {(provider || model || step.agentRef || step.yoloMode) && (
                   <div className="fti-meta">
-                    {step.provider && (
-                      <span className={`pill-prov prov-${step.provider}`}>{step.provider.toUpperCase()}</span>
-                    )}
-                    {step.model && <span className="ac-model">{step.model}</span>}
+                    {provider && <span className={`pill-prov prov-${provider}`}>{provider.toUpperCase()}</span>}
+                    {model && <span className="ac-model">{model}</span>}
                     {step.agentRef && <span>agent: {step.agentRef}</span>}
                     {step.yoloMode && <span>yolo</span>}
                   </div>

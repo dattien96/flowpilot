@@ -13,6 +13,7 @@ export function FlowTimelineSidebar(): React.ReactElement | null {
   const runStatus = useStore((s) => s.status);
   const mainRunId = useStore((s) => s.mainRunId ?? s.runId);
   const steps = useStore((s) => s.workflowStepRuntime);
+  const meta = useStore((s) => s.workflowStepRuntimeMeta);
   const refreshWorkflowStepRuntime = useStore((s) => s.refreshWorkflowStepRuntime);
   const [expanded, setExpanded] = useState(true);
 
@@ -35,8 +36,19 @@ export function FlowTimelineSidebar(): React.ReactElement | null {
           <div className="flow-sidebar-summary">
             <span className="flow-sidebar-progress">
               {doneCount}/{steps.length} steps
+              {/* BUG-158: yolo is a run-wide toggle, not a per-step config, so it's
+                  surfaced once here rather than on each timeline item. */}
+              {meta.yoloMode && <span className="wsr-retry-badge">YOLO</span>}
             </span>
             {current && <span className="flow-sidebar-current">{current.nodeId || current.stepType}</span>}
+            {(meta.provider || meta.model) && (
+              <span className="flow-sidebar-meta">
+                {meta.provider && (
+                  <span className={`pill-prov prov-${meta.provider}`}>{meta.provider.toUpperCase()}</span>
+                )}
+                {meta.model && <span className="ac-model">{meta.model}</span>}
+              </span>
+            )}
           </div>
         )}
         <button
@@ -54,7 +66,7 @@ export function FlowTimelineSidebar(): React.ReactElement | null {
         {steps.length === 0 ? (
           expanded && <div className="wsr-empty">No step-runtime data for this run yet.</div>
         ) : (
-          <FlowStepTimeline steps={steps} compact={!expanded} />
+          <FlowStepTimeline steps={steps} compact={!expanded} runProvider={meta.provider} runModel={meta.model} />
         )}
       </div>
     </aside>

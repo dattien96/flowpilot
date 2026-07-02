@@ -183,6 +183,13 @@ export interface WorkflowStepRuntimeDTO {
 export interface WorkflowStepsRuntimeSnapshot {
   runId: string;
   steps: WorkflowStepRuntimeDTO[];
+  // provider/model/yoloMode are the RUN's own posture (BUG-158) — a built-in
+  // flow node has no per-node override of its own (its agent definition
+  // inherits the parent run's model/provider), and yolo is a run-wide toggle,
+  // not a per-step-type default.
+  provider?: string;
+  model?: string;
+  yoloMode?: boolean;
 }
 
 // ---- Flow-engine contract types (CP-36 / Task-095) -------------------------

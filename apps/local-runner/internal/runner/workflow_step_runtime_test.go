@@ -86,3 +86,23 @@ func TestWorkflowStepsRuntimeUnknownRunReturns404(t *testing.T) {
 		t.Fatalf("status = %d, want 404", status)
 	}
 }
+
+// BUG-158: yolo is a run-wide toggle (not a per-step-type default), and a
+// built-in flow node has no provider/model override of its own — its agent
+// definition inherits the run's — so the snapshot surfaces the run's own
+// provider/model/yolo once at the top level rather than per step.
+func TestWorkflowStepsRuntimeIncludesRunLevelProviderModelYolo(t *testing.T) {
+	_, srv := newTestServer(t)
+	runID := startRunYolo(t, srv.URL)
+
+	status, snap := getStepsRuntime(t, srv.URL, runID)
+	if status != http.StatusOK {
+		t.Fatalf("steps-runtime status=%d", status)
+	}
+	if !snap.YoloMode {
+		t.Fatalf("YoloMode = %v, want true", snap.YoloMode)
+	}
+	if snap.Provider == "" {
+		t.Fatalf("Provider = %q, want non-empty", snap.Provider)
+	}
+}

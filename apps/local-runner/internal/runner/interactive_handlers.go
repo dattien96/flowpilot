@@ -901,6 +901,14 @@ type workflowStepRuntimeView struct {
 type workflowStepsRuntimeSnapshot struct {
 	RunID string                    `json:"runId"`
 	Steps []workflowStepRuntimeView `json:"steps"`
+	// Provider/Model/YoloMode are the RUN's own posture (BUG-158) — a built-in
+	// flow node has no per-node model/provider override of its own (its agent
+	// definition inherits the parent run's), and yolo is a run-wide toggle, not
+	// a per-step-type default — so these are surfaced once here rather than
+	// repeated per step.
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+	YoloMode bool   `json:"yoloMode,omitempty"`
 }
 
 // workflowStepsRuntime loads the ordered runtime step list for runID (F-2). It
@@ -909,7 +917,14 @@ type workflowStepsRuntimeSnapshot struct {
 // already does.
 func (s *InteractiveService) workflowStepsRuntime(ctx context.Context, runID string) (workflowStepsRuntimeSnapshot, *apiErr) {
 	s.mu.Lock()
-	_, exists := s.runs[runID]
+	rs, exists := s.runs[runID]
+	var runProvider, runModel string
+	var runYolo bool
+	if exists {
+		runProvider = string(rs.providerKey)
+		runModel = rs.modelName
+		runYolo = rs.yolo
+	}
 	s.mu.Unlock()
 	if !exists {
 		return workflowStepsRuntimeSnapshot{}, newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")
@@ -937,7 +952,7 @@ func (s *InteractiveService) workflowStepsRuntime(ctx context.Context, runID str
 			YoloMode:         st.YoloMode,
 		}
 	}
-	return workflowStepsRuntimeSnapshot{RunID: runID, Steps: out}, nil
+	return workflowStepsRuntimeSnapshot{RunID: runID, Steps: out, Provider: runProvider, Model: runModel, YoloMode: runYolo}, nil
 }
 
 func (s *InteractiveService) handleGetWorkflowStepsRuntime(w http.ResponseWriter, r *http.Request) {
