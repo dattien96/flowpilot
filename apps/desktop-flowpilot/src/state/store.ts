@@ -478,7 +478,14 @@ export const useStore = create<AppState>((set, get) => ({
     try {
       const agentRuns = await client.listAgentRuns(parentRunId);
       if (get()._agentRunsLoadSeq === seq && (get().mainRunId === parentRunId || get().runId === parentRunId)) {
-        set({ agentRuns });
+        // BUG-169: merge (not replace) with whatever is already in state, same as the SSE
+        // agent_graph_updated path (mergeAgentRunsById, BUG-132). This is a fire-and-forget
+        // HTTP snapshot racing a live SSE channel — AgentsPanel fires a refresh the instant
+        // mainRunId is set (before anything has spawned), and if that request is slow enough
+        // to resolve AFTER a later SSE update already merged a freshly-spawned child in,
+        // replacing wholesale here would wipe that child back out even though it is really
+        // running. Merging makes the two sources converge instead of racing.
+        set((s) => ({ agentRuns: mergeAgentRunsById(s.agentRuns, agentRuns) }));
       }
     } catch (err) {
       // eslint-disable-next-line no-console

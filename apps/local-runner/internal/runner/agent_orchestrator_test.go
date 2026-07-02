@@ -569,6 +569,47 @@ func TestListAgentRunSummariesHTTP(t *testing.T) {
 	}
 }
 
+// TestListAgentRunSummariesHTTPWorkflowModeParent is the workflow-mode analogue of
+// TestListAgentRunSummariesHTTP above. BUG-169: a Flow Mode ("Review Loop" workflow)
+// run's orchestrator narrated spawning a coder agent, but the desktop's Agents panel
+// never showed it. All existing coverage for "does a spawned child show up in
+// listAgentRunSummaries" used a normal_chat parent (runKind="chat"); this closes that
+// gap for a workflow-mode parent (runKind="workflow", the kind Flow Mode actually
+// launches) to rule in/out a runKind-specific listing defect. It passes, ruling that
+// hypothesis out — the desktop-side symptom is not reproducible at this layer.
+func TestListAgentRunSummariesHTTPWorkflowModeParent(t *testing.T) {
+	svc, srv := newTestServer(t)
+
+	parent, err := svc.createRun(StartRunInput{
+		ProjectID: "proj", StepID: "step-1", ProviderKey: ProviderKeyCodex,
+	})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+
+	_, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{
+		Agent: "coder", Prompt: "implement", Provider: "codex", Wait: false,
+	})
+	if spawnErr != nil {
+		t.Fatalf("spawnChildRun: %v", spawnErr)
+	}
+
+	status, body := doJSON(t, "GET", srv.URL+"/client/workflow-runs/"+parent.RunID+"/agents", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("GET /agents status=%d body=%s", status, body)
+	}
+	var summaries []AgentRunSummary
+	if err := json.Unmarshal(body, &summaries); err != nil {
+		t.Fatalf("decode summaries: %v (body=%s)", err, body)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("expected 1 summary, got %d: %+v", len(summaries), summaries)
+	}
+	if summaries[0].ParentRunID != parent.RunID {
+		t.Errorf("parentRunId = %q, want %q", summaries[0].ParentRunID, parent.RunID)
+	}
+}
+
 func TestSpawnAgentHTTPEndpoint(t *testing.T) {
 	_, srv := newTestServer(t)
 
