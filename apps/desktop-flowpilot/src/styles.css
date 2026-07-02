@@ -991,6 +991,28 @@ input {
   justify-content: space-between;
   gap: 12px;
 }
+.workflow-step-card-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+}
+.workflow-step-card-chevron {
+  display: inline-block;
+  margin-top: 2px;
+  transition: transform 0.15s ease;
+  color: var(--text-muted);
+}
+.workflow-step-card-chevron.expanded {
+  transform: rotate(90deg);
+}
 .workflow-step-grid {
   margin-top: 0;
 }

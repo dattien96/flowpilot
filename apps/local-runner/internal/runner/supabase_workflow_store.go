@@ -64,7 +64,8 @@ type dbStep struct {
 		ProviderOverride *string `json:"provider_override"`
 		ModelOverride    *string `json:"model_override"`
 		StepDefinitions  *struct {
-			YoloMode bool `json:"yolo_mode"`
+			YoloMode bool    `json:"yolo_mode"`
+			Model    *string `json:"model"`
 		} `json:"step_definitions"`
 	} `json:"workflow_steps"`
 }
@@ -81,7 +82,7 @@ func (s *SupabaseWorkflowStore) LoadRunSteps(ctx context.Context, runID string) 
 	// classification, disconnecting them from the Flow Mode context-handoff
 	// path entirely.
 	endpoint := fmt.Sprintf(
-		"%s/workflow_run_steps?workflow_run_id=eq.%s&order=execution_order_index.asc&select=id,step_type,status,started_at,finished_at,retry_count,rejection_note,workflow_steps(requires_approval,behavior_id,node_id,agent_ref,provider_override,model_override,step_definitions(yolo_mode))",
+		"%s/workflow_run_steps?workflow_run_id=eq.%s&order=execution_order_index.asc&select=id,step_type,status,started_at,finished_at,retry_count,rejection_note,workflow_steps(requires_approval,behavior_id,node_id,agent_ref,provider_override,model_override,step_definitions(yolo_mode,model))",
 		s.restURL, runID,
 	)
 	status, body, err := httpRequestFn(ctx, http.MethodGet, endpoint, s.headers(""), nil)
@@ -131,6 +132,19 @@ func (s *SupabaseWorkflowStore) LoadRunSteps(ctx context.Context, runID string) 
 			}
 			if r.WorkflowSteps.StepDefinitions != nil {
 				step.YoloMode = r.WorkflowSteps.StepDefinitions.YoloMode
+				// BUG-160: no per-step model_override set (the user cleared it, or never
+				// set one) falls back to the step TYPE's own configured default
+				// (step_definitions.model) before falling back further to the run's own
+				// model — a step with no override should show what that step type is
+				// actually configured to run on, not just whatever the run happens to be.
+				if step.Model == "" && r.WorkflowSteps.StepDefinitions.Model != nil {
+					step.Model = *r.WorkflowSteps.StepDefinitions.Model
+				}
+			}
+			if step.Provider == "" && step.Model != "" {
+				if pk, ok := providerKeyFromModel(step.Model); ok {
+					step.Provider = string(pk)
+				}
 			}
 		}
 		out[i] = step

@@ -226,6 +226,21 @@ export function WorkflowsSettings(): React.ReactElement {
   // copy" modal that creates an editable, non-builtin copy.
   const [cloneTarget, setCloneTarget] = useState<{ workflowId: string; sourceName: string } | null>(null);
   const [cloneName, setCloneName] = useState("");
+  // Workflow step cards default to collapsed; expansion is tracked per
+  // source+step id so detail and create editors don't share state.
+  const [expandedStepKeys, setExpandedStepKeys] = useState<Set<string>>(new Set());
+
+  const toggleStepExpanded = (key: string) => {
+    setExpandedStepKeys((current) => {
+      const next = new Set(current);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  };
 
   const selectedWorkflow = useMemo(
     () => workflows.find((item) => item.id === selectedWorkflowId) ?? null,
@@ -444,7 +459,10 @@ export function WorkflowsSettings(): React.ReactElement {
       orderIndex: target.length,
       isEnabled: true,
       providerOverride: null,
-      modelOverride: stepDefinition?.model ?? (modelOptions[0]?.value ?? DEFAULT_MODEL),
+      // BUG-160: leave unset ("no override") by default instead of forcing a
+      // concrete model — a new step should inherit the run's model unless the
+      // user explicitly opts into an override via the Model override select.
+      modelOverride: null,
       reasoningEffortOverride:
         stepDefinition?.reasoningEffort ?? DEFAULT_REASONING,
       requiresApproval: true,
@@ -691,17 +709,34 @@ export function WorkflowsSettings(): React.ReactElement {
           {steps.length === 0 ? (
             <div className="settings-empty">No steps added yet.</div>
           ) : (
-            steps.map((step, index) => (
+            steps.map((step, index) => {
+              const stepKey = `${source}:${step.id}`;
+              const isExpanded = expandedStepKeys.has(stepKey);
+              return (
               <div className="settings-list-item static workflow-step-card" key={`${step.stepType}-${index}`}>
                 <div className="workflow-step-card-head">
-                  <div>
-                    <strong>
-                      {index + 1}.{" "}
-                      {stepDefinitions.find((definition) => definition.stepType === step.stepType)?.name ??
-                        step.stepType}
-                    </strong>
-                    <span>{step.stepType}</span>
-                  </div>
+                  <button
+                    aria-expanded={isExpanded}
+                    className="workflow-step-card-toggle"
+                    onClick={() => toggleStepExpanded(stepKey)}
+                    type="button"
+                  >
+                    <span className={`workflow-step-card-chevron ${isExpanded ? "expanded" : ""}`}>&#9656;</span>
+                    <div>
+                      <strong>
+                        {index + 1}.{" "}
+                        {/* BUG-160: for a CP-42 flow-engine node, stepDefinition.name is a
+                            shared generic dispatch-category label ("Flow: Agent Delegate")
+                            identical across every step of that type — nodeId/agentRef are
+                            the actual per-node identity (BUG-155's fix, applied here too). */}
+                        {step.nodeId ||
+                          step.agentRef ||
+                          stepDefinitions.find((definition) => definition.stepType === step.stepType)?.name ||
+                          step.stepType}
+                      </strong>
+                      <span>{step.stepType}</span>
+                    </div>
+                  </button>
                   <div className="settings-inline-actions">
                     <button
                       className="secondary-btn project-icon-btn"
@@ -731,6 +766,8 @@ export function WorkflowsSettings(): React.ReactElement {
                     </button>
                   </div>
                 </div>
+                {isExpanded ? (
+                <>
                 <div className="settings-grid workflow-step-grid">
                   <label className="settings-field">
                     <span>Model override</span>
@@ -745,6 +782,10 @@ export function WorkflowsSettings(): React.ReactElement {
                       }
                       value={step.modelOverride ?? ""}
                     >
+                      {/* BUG-160: explicit "no override" choice — previously every option
+                          was a concrete model, so a step could never actually inherit the
+                          run's model once opened, only switch between overrides. */}
+                      <option value="">No override (use run's model)</option>
                       {modelOptions.map((model) => (
                         <option key={model.value} value={model.value}>
                           {model.label}
@@ -893,8 +934,11 @@ export function WorkflowsSettings(): React.ReactElement {
                     />
                   </label>
                 </div>
+                </>
+                ) : null}
               </div>
-            ))
+              );
+            })
           )}
         </div>
       </div>

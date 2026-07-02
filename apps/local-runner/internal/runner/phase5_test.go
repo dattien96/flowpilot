@@ -139,7 +139,7 @@ func TestSupabaseStoreLoadRunStepsShaping(t *testing.T) {
 		"https://proj.supabase.co/rest/v1/workflow_run_steps",
 		"workflow_run_id=eq.run-1",
 		"order=execution_order_index.asc",
-		"workflow_steps(requires_approval,behavior_id,node_id,agent_ref,provider_override,model_override,step_definitions(yolo_mode))",
+		"workflow_steps(requires_approval,behavior_id,node_id,agent_ref,provider_override,model_override,step_definitions(yolo_mode,model))",
 	} {
 		if !strings.Contains(req.endpoint, want) {
 			t.Fatalf("endpoint missing %q: %s", want, req.endpoint)
@@ -147,6 +147,31 @@ func TestSupabaseStoreLoadRunStepsShaping(t *testing.T) {
 	}
 	if req.headers["apikey"] != "test-key" || req.headers["Authorization"] != "Bearer test-key" {
 		t.Fatalf("auth headers = %+v", req.headers)
+	}
+}
+
+// BUG-160: a step with no model_override of its own (the user cleared it, or
+// never set one) must fall back to the step TYPE's own configured
+// step_definitions.model, and Provider must be derived from that resolved
+// model when provider_override is also unset — otherwise a "no override"
+// step in a Codex-started run always looks like Codex even when its step
+// type's own default model is a Claude one.
+func TestSupabaseStoreLoadRunStepsFallsBackToStepDefinitionModel(t *testing.T) {
+	rows := `[{"id":"s1","step_type":"flow-agent-delegate","status":"PENDING","started_at":null,"retry_count":0,"rejection_note":null,"workflow_steps":{"requires_approval":true,"behavior_id":"agent.delegate","node_id":"coder","agent_ref":"coder","provider_override":null,"model_override":null,"step_definitions":{"yolo_mode":false,"model":"claude-haiku"}}}]`
+	withMockHTTP(t, 200, []byte(rows))
+
+	steps, err := newTestSupabaseStore().LoadRunSteps(context.Background(), "run-1")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(steps) != 1 {
+		t.Fatalf("decoded steps = %+v", steps)
+	}
+	if steps[0].Model != "claude-haiku" {
+		t.Fatalf("Model = %q, want claude-haiku (fallback to step_definitions.model)", steps[0].Model)
+	}
+	if steps[0].Provider != "claude" {
+		t.Fatalf("Provider = %q, want claude (derived from the resolved model)", steps[0].Provider)
 	}
 }
 
