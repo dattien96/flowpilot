@@ -26,6 +26,7 @@ import type {
   Step,
   TurnInput,
   Workflow,
+  WorkflowStepsRuntimeSnapshot,
 } from "@/types/contract";
 
 interface RawProviderAccountUsageLine {
@@ -189,6 +190,9 @@ export class HttpWsRunnerClient implements RunnerClient {
   }
   refreshAgentGraph(parentRunId: string): Promise<AgentGraphSnapshot> {
     return this.getJSON<AgentGraphSnapshot>(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/agent-graph`);
+  }
+  getWorkflowStepsRuntime(runId: string): Promise<WorkflowStepsRuntimeSnapshot> {
+    return this.getJSON<WorkflowStepsRuntimeSnapshot>(`/client/workflow-runs/${encodeURIComponent(runId)}/steps-runtime`);
   }
   pauseAgentLoop(parentRunId: string): Promise<AgentGraphSnapshot> { return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/agent-loop/pause`); }
   resumeAgentLoop(parentRunId: string): Promise<AgentGraphSnapshot> { return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/agent-loop/resume`); }

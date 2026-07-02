@@ -8,6 +8,7 @@ import { ScenarioSwitcher } from "@/components/ScenarioSwitcher";
 import { SystemControls } from "@/components/SystemControls";
 import { ProviderAccountsPanel } from "@/components/ProviderAccountsPanel";
 import { AgentsPanel } from "@/components/AgentsPanel";
+import { WorkflowStepRuntimePanel } from "@/components/WorkflowStepRuntimePanel";
 import { OrchestrationBoard } from "@/components/OrchestrationBoard";
 import { useStore, accountLabel, providerLabel, type ChatStartMode } from "@/state/store";
 
@@ -678,6 +679,7 @@ export function ChatWorkspace({
             <div className="right-sidebar-stack">
               <WorkflowControlPanel />
               <ChatStartIntentPanel />
+              <WorkflowStepRuntimePanel />
               <AgentsPanel />
               <ProviderAccountsPanel />
             </div>

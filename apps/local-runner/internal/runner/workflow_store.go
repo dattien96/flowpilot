@@ -197,6 +197,9 @@ func (f *fakeWorkflowStore) ApplyStepTransition(_ context.Context, runID string,
 		if t.Patch.StartedAt != nil {
 			steps[i].StartedAt = *t.Patch.StartedAt
 		}
+		if t.Patch.FinishedAt != nil {
+			steps[i].FinishedAt = *t.Patch.FinishedAt
+		}
 		if t.Patch.RejectionNote != nil {
 			steps[i].RejectionNote = *t.Patch.RejectionNote
 		}

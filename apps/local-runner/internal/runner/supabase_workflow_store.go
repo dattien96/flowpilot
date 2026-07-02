@@ -52,6 +52,7 @@ type dbStep struct {
 	StepType      string  `json:"step_type"`
 	Status        string  `json:"status"`
 	StartedAt     *string `json:"started_at"`
+	FinishedAt    *string `json:"finished_at"`
 	RetryCount    int     `json:"retry_count"`
 	RejectionNote *string `json:"rejection_note"`
 	WorkflowSteps *struct {
@@ -72,7 +73,7 @@ func (s *SupabaseWorkflowStore) LoadRunSteps(ctx context.Context, runID string) 
 	// classification, disconnecting them from the Flow Mode context-handoff
 	// path entirely.
 	endpoint := fmt.Sprintf(
-		"%s/workflow_run_steps?workflow_run_id=eq.%s&order=execution_order_index.asc&select=id,step_type,status,started_at,retry_count,rejection_note,workflow_steps(requires_approval,behavior_id)",
+		"%s/workflow_run_steps?workflow_run_id=eq.%s&order=execution_order_index.asc&select=id,step_type,status,started_at,finished_at,retry_count,rejection_note,workflow_steps(requires_approval,behavior_id)",
 		s.restURL, runID,
 	)
 	status, body, err := httpRequestFn(ctx, http.MethodGet, endpoint, s.headers(""), nil)
@@ -96,6 +97,9 @@ func (s *SupabaseWorkflowStore) LoadRunSteps(ctx context.Context, runID string) 
 		}
 		if r.StartedAt != nil {
 			step.StartedAt = *r.StartedAt
+		}
+		if r.FinishedAt != nil {
+			step.FinishedAt = *r.FinishedAt
 		}
 		if r.RejectionNote != nil {
 			step.RejectionNote = *r.RejectionNote

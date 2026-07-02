@@ -41,6 +41,7 @@ type RuntimeWorkflowStep struct {
 	Status           RuntimeWorkflowStepStatus
 	RequiresApproval bool
 	StartedAt        string // "" == null
+	FinishedAt       string // "" == null
 	RetryCount       int
 	RejectionNote    string // "" == null
 	// BehaviorID is the CP-42 canonical behavior id (agent.delegate/

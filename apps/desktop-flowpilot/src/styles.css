@@ -5327,6 +5327,23 @@ body.is-resizing-sidebar {
 .sd.closed {
   background: #3a4252;
 }
+.sd.fail {
+  background: var(--err);
+}
+.wsr-empty {
+  padding: 8px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.wsr-retry-badge {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--warn);
+  background: rgba(240, 180, 41, 0.12);
+  border: 1px solid rgba(240, 180, 41, 0.4);
+  border-radius: 20px;
+  padding: 0 7px;
+}
 .ac-meta {
   font-size: 10.5px;
   color: var(--text-dim);

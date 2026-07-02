@@ -32,6 +32,7 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /client/projects/{projectId}/engine/gate-config", s.handleSetEngineGateConfig)
 	mux.HandleFunc("POST /client/workflow-runs", s.handleStartRun)
 	mux.HandleFunc("GET /client/workflow-runs/{runId}", s.handleGetRun)
+	mux.HandleFunc("GET /client/workflow-runs/{runId}/steps-runtime", s.handleGetWorkflowStepsRuntime)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/resume", s.handleResumeRun)
 	mux.HandleFunc("DELETE /client/workflow-runs/{runId}", s.handleDeleteRun)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/sync-chat", s.handleSyncChatRun)
@@ -869,6 +870,69 @@ func (s *InteractiveService) runSnapshot(runID string) (runSnapshotView, *apiErr
 		}
 	}
 	return view, nil
+}
+
+// workflowStepRuntimeView is the client-facing DTO for BUG-153: it projects Go's
+// authoritative RuntimeWorkflowStep list (workflowStore.LoadRunSteps) into the
+// shape the desktop Flow-mode sidebar renders, without deriving anything from
+// AI prose or child agent messages (F-4). RejectionNote doubles as the
+// display-only retry reason (F-6) rather than a separate detector.
+type workflowStepRuntimeView struct {
+	StepID           string                    `json:"stepId"`
+	StepType         string                    `json:"stepType"`
+	Status           RuntimeWorkflowStepStatus `json:"status"`
+	RetryCount       int                       `json:"retryCount"`
+	RejectionNote    string                    `json:"rejectionNote,omitempty"`
+	StartedAt        string                    `json:"startedAt,omitempty"`
+	FinishedAt       string                    `json:"finishedAt,omitempty"`
+	RequiresApproval bool                      `json:"requiresApproval"`
+	BehaviorID       string                    `json:"behaviorId,omitempty"`
+}
+
+type workflowStepsRuntimeSnapshot struct {
+	RunID string                    `json:"runId"`
+	Steps []workflowStepRuntimeView `json:"steps"`
+}
+
+// workflowStepsRuntime loads the ordered runtime step list for runID (F-2). It
+// 404s for an unknown run the same way runSnapshot does, so normal chat runs
+// and stale history entries degrade the same way the run snapshot endpoint
+// already does.
+func (s *InteractiveService) workflowStepsRuntime(ctx context.Context, runID string) (workflowStepsRuntimeSnapshot, *apiErr) {
+	s.mu.Lock()
+	_, exists := s.runs[runID]
+	s.mu.Unlock()
+	if !exists {
+		return workflowStepsRuntimeSnapshot{}, newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")
+	}
+	steps, err := s.workflowStore.LoadRunSteps(ctx, runID)
+	if err != nil {
+		return workflowStepsRuntimeSnapshot{}, newAPIErr(http.StatusInternalServerError, "load_steps_failed", err.Error())
+	}
+	out := make([]workflowStepRuntimeView, len(steps))
+	for i, st := range steps {
+		out[i] = workflowStepRuntimeView{
+			StepID:           st.ID,
+			StepType:         st.StepType,
+			Status:           st.Status,
+			RetryCount:       st.RetryCount,
+			RejectionNote:    st.RejectionNote,
+			StartedAt:        st.StartedAt,
+			FinishedAt:       st.FinishedAt,
+			RequiresApproval: st.RequiresApproval,
+			BehaviorID:       st.BehaviorID,
+		}
+	}
+	return workflowStepsRuntimeSnapshot{RunID: runID, Steps: out}, nil
+}
+
+func (s *InteractiveService) handleGetWorkflowStepsRuntime(w http.ResponseWriter, r *http.Request) {
+	view, e := s.workflowStepsRuntime(r.Context(), r.PathValue("runId"))
+	if e != nil {
+		writeInteractiveError(w, e)
+		return
+	}
+	writeInteractiveJSON(w, http.StatusOK, view)
 }
 
 // handleSpawnAgent allows a desktop client to programmatically spawn a child agent run for

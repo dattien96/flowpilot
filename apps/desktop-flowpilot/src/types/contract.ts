@@ -140,6 +140,42 @@ export interface AgentGraphSnapshot {
   loopState: AgentLoopState;
 }
 
+/**
+ * Runtime status of one workflow-defined step, mirroring Go's
+ * RuntimeWorkflowStepStatus (workflow_state_machine.go). Source of truth is the
+ * Go runner's workflow state machine, not AI inference or timeline text (BUG-153 V-2).
+ */
+export type WorkflowStepRuntimeStatus =
+  | "PENDING"
+  | "RUNNING"
+  | "WAITING_USER_APPROVAL"
+  | "DONE"
+  | "FAILED"
+  | "SKIPPED";
+
+/**
+ * Client-facing projection of one RuntimeWorkflowStep (BUG-153 F-1), served by
+ * `GET /client/workflow-runs/{runId}/steps-runtime`. `rejectionNote` doubles as
+ * the display-only retry reason; `retryCount > 0` with status RUNNING/PENDING
+ * indicates a retried pass rather than a fresh one.
+ */
+export interface WorkflowStepRuntimeDTO {
+  stepId: string;
+  stepType: string;
+  status: WorkflowStepRuntimeStatus;
+  retryCount: number;
+  rejectionNote?: string;
+  startedAt?: string;
+  finishedAt?: string;
+  requiresApproval: boolean;
+  behaviorId?: string;
+}
+
+export interface WorkflowStepsRuntimeSnapshot {
+  runId: string;
+  steps: WorkflowStepRuntimeDTO[];
+}
+
 // ---- Flow-engine contract types (CP-36 / Task-095) -------------------------
 
 export interface FlowControlInput {
@@ -566,6 +602,11 @@ export interface RunnerClient {
    */
   listAgentRuns?(parentRunId: string): Promise<AgentRunSummary[]>;
   refreshAgentGraph?(parentRunId: string): Promise<AgentGraphSnapshot>;
+  /**
+   * Load the Flow-mode workflow-step runtime projection (BUG-153 F-2). Optional
+   * so mock/older clients degrade gracefully; the real HTTP client implements it.
+   */
+  getWorkflowStepsRuntime?(runId: string): Promise<WorkflowStepsRuntimeSnapshot>;
   pauseAgentLoop?(parentRunId: string): Promise<AgentGraphSnapshot>;
   resumeAgentLoop?(parentRunId: string): Promise<AgentGraphSnapshot>;
   injectAgentFeedback?(parentRunId: string, toRunId: string, message: string): Promise<AgentGraphSnapshot>;

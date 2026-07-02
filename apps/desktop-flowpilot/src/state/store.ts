@@ -20,6 +20,7 @@ import type {
   TokenUsageSnapshot,
   TurnInput,
   Workflow,
+  WorkflowStepRuntimeDTO,
 } from "@/types/contract";
 import type { RunnerClient } from "@/types/contract";
 import type { SupportedModel } from "@flowpilot/client-core";
@@ -157,6 +158,9 @@ interface AppState {
   agentRuns: AgentRunSummary[];
   agentGraphSnapshot?: AgentGraphSnapshot;
   agentBusMessages: AgentBusMessage[];
+  /** Flow-mode workflow-step runtime projection (BUG-153), Go orchestrator state only. */
+  workflowStepRuntime: WorkflowStepRuntimeDTO[];
+  workflowStepRuntimeLoading: boolean;
   /** Step id for the active run's turns; the synthetic chat step in normal_chat. */
   activeStepId?: string;
   status: RunStatus;
@@ -215,6 +219,8 @@ interface AppState {
   // stale-response guard for refreshAgentRuns; a fire-and-forget fetch must not
   // overwrite a newer SSE-delivered agent list and flicker the count (BUG-130)
   _agentRunsLoadSeq: number;
+  // stale-response guard for refreshWorkflowStepRuntime, same shape as _agentRunsLoadSeq
+  _workflowStepRuntimeLoadSeq: number;
   _runSnapshots: Record<string, RunSnapshot>;
   _runReplaySeq: Record<string, number>;
   agentSpawnGuideOpen: boolean;
@@ -257,6 +263,7 @@ interface AppState {
   loadRunHistory(): Promise<void>;
   loadRemoteChatSessions(): Promise<void>;
   refreshAgentRuns(): Promise<void>;
+  refreshWorkflowStepRuntime(): Promise<void>;
   refreshAgentGraph(): Promise<void>;
   pauseAgentLoop(): Promise<void>;
   resumeAgentLoop(): Promise<void>;
@@ -309,6 +316,8 @@ export const useStore = create<AppState>((set, get) => ({
   agentRuns: [],
   agentGraphSnapshot: undefined,
   agentBusMessages: [],
+  workflowStepRuntime: [],
+  workflowStepRuntimeLoading: false,
   historyLoading: false,
   remoteHistoryLoading: false,
   latestTokenUsage: undefined,
@@ -331,6 +340,7 @@ export const useStore = create<AppState>((set, get) => ({
   _historyLoadSeq: 0,
   _remoteHistoryLoadSeq: 0,
   _agentRunsLoadSeq: 0,
+  _workflowStepRuntimeLoadSeq: 0,
   _runSnapshots: {},
   _runReplaySeq: {},
   _gateBlockedRunIds: {},
@@ -470,6 +480,29 @@ export const useStore = create<AppState>((set, get) => ({
       console.error("[FlowPilot] listAgentRuns failed:", err);
     }
   },
+  async refreshWorkflowStepRuntime() {
+    const { client, mainRunId, runId, chatMode } = get();
+    const targetRunId = mainRunId ?? runId;
+    // Normal chat has no workflow-step list to show; skip the request entirely (8.2).
+    if (chatMode !== "workflow_step_auto" || !targetRunId || !client.getWorkflowStepsRuntime) {
+      set({ workflowStepRuntime: [] });
+      return;
+    }
+    const seq = get()._workflowStepRuntimeLoadSeq + 1;
+    set({ _workflowStepRuntimeLoadSeq: seq, workflowStepRuntimeLoading: true });
+    try {
+      const snapshot = await client.getWorkflowStepsRuntime(targetRunId);
+      if (get()._workflowStepRuntimeLoadSeq === seq && (get().mainRunId === targetRunId || get().runId === targetRunId)) {
+        set({ workflowStepRuntime: snapshot.steps, workflowStepRuntimeLoading: false });
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] getWorkflowStepsRuntime failed:", err);
+      if (get()._workflowStepRuntimeLoadSeq === seq) {
+        set({ workflowStepRuntimeLoading: false });
+      }
+    }
+  },
   async refreshAgentGraph() {
     const { client, mainRunId, runId } = get();
     const parentRunId = mainRunId ?? runId;
@@ -562,6 +595,7 @@ export const useStore = create<AppState>((set, get) => ({
       }
     });
     void get().refreshAgentRuns();
+    void get().refreshWorkflowStepRuntime();
   },
 
   backToMainRun() {
@@ -760,6 +794,7 @@ export const useStore = create<AppState>((set, get) => ({
         agentRuns: [],
         agentGraphSnapshot: undefined,
         agentBusMessages: [],
+        workflowStepRuntime: [],
         agentSpawnGuideOpen: false,
         agentSpawnGuideAgentName: undefined,
         _runReplaySeq: {},
@@ -1049,6 +1084,7 @@ export const useStore = create<AppState>((set, get) => ({
         startOrchestrationStream(orchestrationRunId, client, set, get);
       }
       void get().refreshAgentRuns();
+    void get().refreshWorkflowStepRuntime();
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("[FlowPilot] sendPrompt failed:", err);
@@ -1434,6 +1470,7 @@ export const useStore = create<AppState>((set, get) => ({
       });
     startOrchestrationStream(handle.runId, client, set, get);
     void get().refreshAgentRuns();
+    void get().refreshWorkflowStepRuntime();
   },
 
   resetRun() {
@@ -1452,6 +1489,7 @@ export const useStore = create<AppState>((set, get) => ({
       agentRuns: [],
       agentGraphSnapshot: undefined,
       agentBusMessages: [],
+      workflowStepRuntime: [],
       agentSpawnGuideOpen: false,
       agentSpawnGuideAgentName: undefined,
       pendingApproval: undefined,
@@ -1597,6 +1635,25 @@ export function providerLabel(providerKey: string): string {
   if (providerKey === "claude") return "Claude";
   if (providerKey === "codex") return "Codex";
   return providerKey;
+}
+
+// ── Workflow-step runtime helpers (BUG-153) ────────────────────────────────
+// Derived from workflowStepRuntime + chatMode rather than stored separately,
+// so there is exactly one source of truth to keep in sync.
+
+/** Flow mode only; Review Loop / normal chat has no linear workflow-step list (F-14). */
+export function isFlowModeRun(chatMode: ChatMode): boolean {
+  return chatMode === "workflow_step_auto";
+}
+
+/** The step currently RUNNING or WAITING_USER_APPROVAL, if any. */
+export function activeWorkflowStep(steps: WorkflowStepRuntimeDTO[]): WorkflowStepRuntimeDTO | undefined {
+  return steps.find((s) => s.status === "RUNNING" || s.status === "WAITING_USER_APPROVAL");
+}
+
+/** True when any step has been retried at least once (F-5). */
+export function hasRetries(steps: WorkflowStepRuntimeDTO[]): boolean {
+  return steps.some((s) => s.retryCount > 0);
 }
 
 function isInteractiveChatBlocked(status: RunStatus): boolean {
