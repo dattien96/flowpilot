@@ -218,6 +218,55 @@ func (s *InteractiveService) markFlowRunComplete(ctx context.Context, parentRunI
 	if err := s.workflowStore.SetRunStatus(ctx, parentRunID, RunStatusEngineDone, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		log.Printf("[flow-step] mark run %q done failed: %v", parentRunID, err)
 	}
+	// BUG-235: the step timeline above is authoritative for the flow's own nodes,
+	// but a cohort member's underlying agent RUN can independently linger in a
+	// non-terminal status (running/waiting_*) in the Agents panel and the main
+	// chat's inline run card, even though the flow that spawned it is now done.
+	// Settle any such orphaned child so "flow done" is a clean, fully-terminal
+	// state on both the step timeline and the agent-run list.
+	s.reconcileChildRunsOnFlowDone(parentRunID)
+}
+
+// reconcileChildRunsOnFlowDone (BUG-235) force-settles any child of parentRunID
+// still reporting running/waiting_approval/waiting_question to completed, once
+// the flow itself has reached "done". A child with an actual turn in flight is
+// left alone — its own completion event will settle it normally; this only
+// catches a child whose completion should already have landed (the barrier
+// that gates a flow's "done" requires every cohort member finished) but whose
+// run-level status update did not land for some reason. Emits one fresh
+// agent_graph_updated so the desktop's Agents panel and main-chat run card
+// clear immediately instead of waiting for an event that will never come.
+func (s *InteractiveService) reconcileChildRunsOnFlowDone(parentRunID string) {
+	changed := false
+	s.mu.Lock()
+	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
+		child := s.runs[childID]
+		if child == nil || child.turnInFlight {
+			continue
+		}
+		switch child.status {
+		case RunStatusRunning, RunStatusWaitingApproval, RunStatusWaitingQuestion:
+		default:
+			continue
+		}
+		child.status = RunStatusCompleted
+		child.agentStatus = string(RunStatusCompleted)
+		changed = true
+	}
+	s.mu.Unlock()
+	if !changed {
+		return
+	}
+	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
+		summary, ok := s.agentOrchestrator.currentSummary(parentRunID, childID)
+		if !ok || summary.Status == RunStatusCompleted {
+			continue
+		}
+		summary.Status = RunStatusCompleted
+		summary.AgentStatus = string(RunStatusCompleted)
+		s.agentOrchestrator.upsertSummary(parentRunID, summary)
+	}
+	s.emitAgentGraph(parentRunID, s.agentOrchestrator.graphSnapshot(parentRunID))
 }
 
 // hubInlineNodeID returns the id of the flow's inline hub node (behavior

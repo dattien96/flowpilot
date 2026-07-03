@@ -2991,7 +2991,17 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	rs.turnCount++
 	rs.lastTurnStepID = in.StepID // CP-35: remember for gate reprompts
 	rs.currentTurnID = turnID
-	rs.lastPrompt = truncateDisplayField(in.Prompt, 100)
+	// BUG-235: lastPrompt is the history list's title source (Navigator.tsx renders
+	// runTitle(item.lastPrompt || item.lastMessage)). Every internal flow-engine-
+	// generated turn — the hub auto-reinvoke ("[flow-engine] Agent results ready...",
+	// autoReinvokePromptText), the coder re-entry, and the Continue-resume note — is
+	// prefixed "[flow-engine]" and used to overwrite it unconditionally, so a flow
+	// run's history entry ended up titled by whichever internal prompt ran last
+	// instead of the user's original request. Skip the overwrite for these internal
+	// prompts (unless lastPrompt is still empty, so a run always has SOME title).
+	if p := strings.TrimSpace(in.Prompt); !strings.HasPrefix(p, "[flow-engine]") || rs.lastPrompt == "" {
+		rs.lastPrompt = truncateDisplayField(in.Prompt, 100)
+	}
 	rs.updatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	ctx, cancel := context.WithCancel(context.Background())
 	rs.turnCancel = cancel

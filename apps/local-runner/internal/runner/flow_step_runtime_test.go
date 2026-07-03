@@ -367,6 +367,60 @@ func TestMarkFlowRunCompleteSettlesEveryStep(t *testing.T) {
 	}
 }
 
+// TestMarkFlowRunCompleteSettlesLingeringChildAgentRun is the regression test
+// for BUG-235: markFlowRunComplete settled the flow's STEP timeline but never
+// touched a child agent RUN whose own status update never landed, so it stayed
+// "running" in the Agents panel and the main chat's inline run card even after
+// the flow that spawned it was done. Constructs a child run directly (rather
+// than driving spawnChildRun's async turn machinery, whose internal retry
+// behavior on a non-terminating adapter is orthogonal to what this test proves)
+// to deterministically simulate a lingering "running" child with no turn in
+// flight — the orphan markFlowRunComplete must now clean up.
+func TestMarkFlowRunCompleteSettlesLingeringChildAgentRun(t *testing.T) {
+	svc, _ := newTestServer(t)
+	parent, apiErr := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if apiErr != nil {
+		t.Fatalf("createRun: %v", apiErr)
+	}
+	nodes := reviewLoopTestNodes()
+	svc.mu.Lock()
+	svc.runs[parent.RunID].activeFlowNodes = nodes
+	svc.mu.Unlock()
+	svc.markFlowEngineDriven(parent.RunID)
+	svc.reseedFlowStepRuntime(parent.RunID, nodes)
+
+	childID := "run-child-lingering"
+	svc.mu.Lock()
+	svc.runs[childID] = &interactiveRun{
+		id:          childID,
+		parentRunID: parent.RunID,
+		agentName:   "reviewer_correctness",
+		role:        "reviewer",
+		label:       "reviewer_correctness",
+		status:      RunStatusRunning,
+		providerKey: ProviderKeyCodex,
+	}
+	svc.mu.Unlock()
+	svc.agentOrchestrator.registerChild(parent.RunID, childID)
+	svc.agentOrchestrator.upsertSummary(parent.RunID, AgentRunSummary{
+		RunID: childID, AgentName: "reviewer_correctness", Role: "reviewer",
+		Status: RunStatusRunning, ParentRunID: parent.RunID,
+	})
+
+	svc.markFlowRunComplete(context.Background(), parent.RunID)
+
+	svc.mu.Lock()
+	gotStatus := svc.runs[childID].status
+	svc.mu.Unlock()
+	if gotStatus != RunStatusCompleted {
+		t.Errorf("child run status after markFlowRunComplete = %q, want completed", gotStatus)
+	}
+	summary, ok := svc.agentOrchestrator.currentSummary(parent.RunID, childID)
+	if !ok || summary.Status != RunStatusCompleted {
+		t.Errorf("child summary status = %+v, want completed", summary)
+	}
+}
+
 // TestReconstructWorkflowRunRestoresStepTimeline proves the BUG-178 fix: a
 // completed flow run reopened from history after a server restart (its
 // in-memory step store now empty) rebuilds its step timeline from the persisted

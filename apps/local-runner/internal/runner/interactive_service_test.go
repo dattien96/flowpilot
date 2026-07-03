@@ -1672,6 +1672,59 @@ func TestApplyFlowControlLoopingResetsStepsSynchronously(t *testing.T) {
 	}
 }
 
+// TestStartTurnPreservesOriginalPromptOverInternalFlowEngineTurns is the
+// regression test for BUG-235: the chat-history list titles a run from
+// lastPrompt (Navigator.tsx: runTitle(item.lastPrompt || item.lastMessage)).
+// Every internal flow-engine turn (hub auto-reinvoke, coder re-entry, the
+// Continue-resume note) is prefixed "[flow-engine]" and previously overwrote
+// lastPrompt unconditionally, so a flow run's history entry ended up titled by
+// whichever internal prompt ran last instead of the user's original request.
+func TestStartTurnPreservesOriginalPromptOverInternalFlowEngineTurns(t *testing.T) {
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, req TurnRequest, b TurnBridge) error {
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, ProviderTurnID: req.ProviderTurnID, FinalMessage: "ok"})
+				return nil
+			})
+		},
+	})
+	svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	parent, err := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	stepID := "chat-" + parent.RunID
+	originalPrompt := "fix bug 1 + 1 is not equals 2"
+
+	if _, apiErr := svc.startTurn(parent.RunID, TurnInput{StepID: stepID, Prompt: originalPrompt}, "", ""); apiErr != nil {
+		t.Fatalf("first startTurn: %s", apiErr.msg)
+	}
+	waitLoop(t, "first turn completes", time.Second, func() bool {
+		svc.mu.Lock()
+		defer svc.mu.Unlock()
+		return !svc.runs[parent.RunID].turnInFlight
+	})
+
+	if _, apiErr := svc.startTurn(parent.RunID, TurnInput{StepID: stepID, Prompt: autoReinvokePromptText()}, "", ""); apiErr != nil {
+		t.Fatalf("hub auto-reinvoke startTurn: %s", apiErr.msg)
+	}
+	waitLoop(t, "second (internal) turn completes", time.Second, func() bool {
+		svc.mu.Lock()
+		defer svc.mu.Unlock()
+		return !svc.runs[parent.RunID].turnInFlight
+	})
+
+	svc.mu.Lock()
+	got := svc.runs[parent.RunID].lastPrompt
+	svc.mu.Unlock()
+	if got != originalPrompt {
+		t.Errorf("lastPrompt = %q, want unchanged original prompt %q (internal flow-engine turn must not overwrite the history title)", got, originalPrompt)
+	}
+}
+
 // TestResumeFlowWithFeedbackAutoExtendsOnlyForCap is the regression test for
 // BUG-231 D-6: Continue must auto-raise the cap when the block reason was
 // the round cap, but must NOT touch the cap for a genuine escalate — an
