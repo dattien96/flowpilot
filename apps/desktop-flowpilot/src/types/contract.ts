@@ -135,6 +135,8 @@ export interface AgentLoopState {
   mode?: string;          // "keyword" | "explicit"
   activeNode?: string;
   extendCount?: number;
+  /** Why status=="blocked" (BUG-231): "cap" (round cap reached) | "escalate" (flow's control tool escalated). */
+  blockReason?: string;
 }
 
 export interface AgentGraphSnapshot {
@@ -285,6 +287,8 @@ export type RunStatus =
   | "running"
   | "waiting_approval"
   | "waiting_question"
+  /** BUG-231: the flow's agent loop paused awaiting the user (escalate or round-cap reached) — distinct from "running" so the composer unlocks and a recovery affordance can render. */
+  | "blocked"
   | "completed"
   | "failed"
   | "cancelled";
@@ -652,6 +656,13 @@ export interface RunnerClient {
    * Calls POST .../agent-loop/extend-cap.
    */
   extendCap?(parentRunId: string): Promise<AgentGraphSnapshot>;
+  /**
+   * Resume a blocked/awaiting-user loop (BUG-231's "Continue" action): injects
+   * optional user feedback, auto-raises the cap only when the block reason was
+   * the round cap, and re-invokes the hub's synthesis turn so the hub itself
+   * re-decides the route. Calls POST .../agent-loop/continue.
+   */
+  continueFlow?(parentRunId: string, feedback: string): Promise<AgentGraphSnapshot>;
   connectProviderAccount(providerKey: ProviderKey): Promise<void>;
   activateProviderAccount(accountId: string): Promise<void>;
   openProviderAccountTerminal(accountId: string): Promise<void>;

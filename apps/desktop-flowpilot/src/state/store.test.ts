@@ -1,13 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { useStore } from "./store";
+import { useStore, deriveOrchestrationRunStatus } from "./store";
 import { applyTimelineEvent, type TimelineItem, type TimelineState } from "./timelineReducer";
 import { getBusMessageLabel, getOrchestrationBoardEmptyCopy } from "@/components/OrchestrationBoard";
 import { shouldShowAgentTimelineHeader } from "@/components/Timeline";
 import { parseMentionRouting } from "@/components/ChatInput";
 import { MockRunnerClient } from "../client/MockRunnerClient";
 import { RunnerApiError } from "../client/HttpWsRunnerClient";
-import type { AgentRunSummary, ProviderAccountSummary, ProviderEventDTO, RemoteChatSessionSummary, RunHandle, RunHistoryItem, RunnerClient, TurnInput } from "../types/contract";
+import type { AgentGraphSnapshot, AgentRunSummary, ProviderAccountSummary, ProviderEventDTO, RemoteChatSessionSummary, RunHandle, RunHistoryItem, RunnerClient, TurnInput } from "../types/contract";
 
 async function* emptyStream(): AsyncIterable<ProviderEventDTO> {}
 
@@ -2440,4 +2440,108 @@ test("openHistoryRun sets _historyReplaying during replay and clears it after (B
   gate.resolve();
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(useStore.getState()._historyReplaying, false, "flag must clear once the replay completes");
+});
+
+// ---- BUG-231: escalate/awaiting-user is a non-terminal, actionable pause -----
+
+function loopSnapshot(status: string, extra: Partial<AgentGraphSnapshot["loopState"]> = {}): AgentGraphSnapshot {
+  return {
+    parentRunId: "current-run",
+    runs: [],
+    edges: [],
+    busMessages: [],
+    loopState: { status, round: 1, roundCap: 3, ...extra },
+  };
+}
+
+test("deriveOrchestrationRunStatus: a blocked loop is NOT derived as running (BUG-231)", () => {
+  assert.equal(deriveOrchestrationRunStatus("running", loopSnapshot("blocked")), "blocked");
+  assert.equal(
+    deriveOrchestrationRunStatus("running", loopSnapshot("blocked", { blockReason: "escalate" })),
+    "blocked",
+  );
+  assert.equal(
+    deriveOrchestrationRunStatus("running", loopSnapshot("blocked", { blockReason: "cap" })),
+    "blocked",
+  );
+});
+
+test("deriveOrchestrationRunStatus: running/paused loops still derive running, done/stopped unchanged", () => {
+  assert.equal(deriveOrchestrationRunStatus("running", loopSnapshot("running")), "running");
+  assert.equal(deriveOrchestrationRunStatus("running", loopSnapshot("paused")), "running");
+  assert.equal(deriveOrchestrationRunStatus("running", loopSnapshot("stopped")), "cancelled");
+  assert.equal(deriveOrchestrationRunStatus("running", loopSnapshot("done")), "completed");
+});
+
+test("deriveOrchestrationRunStatus: an actively-running child still wins over a blocked loop", () => {
+  const snap: AgentGraphSnapshot = {
+    parentRunId: "current-run",
+    runs: [{ runId: "child-1", agentName: "coder", role: "coder", status: "running", parentRunId: "current-run", createdAt: "2026-01-01T00:00:00Z" }],
+    edges: [],
+    busMessages: [],
+    loopState: { status: "blocked", round: 1, roundCap: 3 },
+  };
+  assert.equal(deriveOrchestrationRunStatus("running", snap), "running");
+});
+
+test("continueFlow calls client.continueFlow with the trimmed feedback and applies the returned snapshot", async () => {
+  const seen: { parentRunId?: string; feedback?: string } = {};
+  seedStore(
+    makeClient({
+      continueFlow: async (parentRunId, feedback) => {
+        seen.parentRunId = parentRunId;
+        seen.feedback = feedback;
+        return loopSnapshot("running");
+      },
+    }),
+    [],
+  );
+  useStore.setState({ mainRunId: "current-run" });
+
+  await useStore.getState().continueFlow("prioritize the security reviewer's finding");
+
+  assert.equal(seen.parentRunId, "current-run");
+  assert.equal(seen.feedback, "prioritize the security reviewer's finding");
+  assert.equal(useStore.getState().agentGraphSnapshot?.loopState.status, "running");
+});
+
+test("continueFlow is a no-op when the client does not implement it", async () => {
+  seedStore(makeClient({ continueFlow: undefined }), []);
+  useStore.setState({ mainRunId: "current-run" });
+
+  // Must not throw even though the client has no continueFlow implementation.
+  await useStore.getState().continueFlow("feedback");
+});
+
+test("continueFlow returns to the main run before resuming when a child agent is focused (BUG-231 follow-up)", async () => {
+  const seen: { parentRunId?: string } = {};
+  seedStore(
+    makeClient({
+      focusAgentRun: () => childFocusStream(),
+      continueFlow: async (parentRunId) => {
+        seen.parentRunId = parentRunId;
+        return loopSnapshot("running");
+      },
+    }),
+    [],
+  );
+  useStore.setState({
+    runId: "current-run",
+    mainRunId: "current-run",
+    activeAgentRunId: undefined,
+    timeline: [{ kind: "prompt", id: "prompt-main", text: "main timeline" }],
+    status: "blocked",
+    artifacts: [],
+  });
+
+  await useStore.getState().focusAgentRun("child-run");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(useStore.getState().activeAgentRunId, "child-run");
+
+  await useStore.getState().continueFlow("keep going");
+
+  assert.equal(seen.parentRunId, "current-run");
+  assert.equal(useStore.getState().runId, "current-run");
+  assert.equal(useStore.getState().activeAgentRunId, undefined);
+  assert.equal(useStore.getState().agentGraphSnapshot?.loopState.status, "running");
 });

@@ -274,6 +274,8 @@ interface AppState {
   stopAgentLoop(): Promise<void>;
   submitReviewOutcome(outcome: "approved" | "changes_requested", issues?: import("@/types/contract").ReviewIssue[]): Promise<void>;
   extendCap(): Promise<void>;
+  /** BUG-231's unified "Continue" action for a blocked/awaiting-user loop. */
+  continueFlow(feedback: string): Promise<void>;
   listAgents(cwd?: string): Promise<AgentDefinition[]>;
   focusAgentRun(runId: string): Promise<void>;
   backToMainRun(): void;
@@ -532,6 +534,18 @@ export const useStore = create<AppState>((set, get) => ({
   async stopAgentLoop() { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.stopAgentLoop) { set(applyAgentGraphSnapshot(await client.stopAgentLoop(parentRunId))); /* Bug 3 fix: also interrupt to forcefully terminate the in-flight provider turn */ if (client.interrupt) { try { await client.interrupt(parentRunId); } catch { /* best-effort: interrupt may 404 if no turn is in flight */ } } } },
   async submitReviewOutcome(outcome, issues) { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.submitReviewOutcome) set(applyAgentGraphSnapshot(await client.submitReviewOutcome(parentRunId, { outcome, issues }))); },
   async extendCap() { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.extendCap) set(applyAgentGraphSnapshot(await client.extendCap(parentRunId))); },
+  async continueFlow(feedback) {
+    const { client, mainRunId, runId, activeAgentRunId } = get();
+    const parentRunId = mainRunId ?? runId;
+    if (!parentRunId || !client.continueFlow) return;
+    // BUG-231 follow-up: resuming while a child agent is focused must not let the
+    // hub's resumed turn stream into the focused child's transcript — return to
+    // the main run first so the response lands where the user is looking.
+    if (activeAgentRunId && activeAgentRunId !== parentRunId) {
+      get().backToMainRun();
+    }
+    set(applyAgentGraphSnapshot(await client.continueFlow(parentRunId, feedback)));
+  },
 
   async listAgents(cwd) {
     const { client } = get();
@@ -2227,7 +2241,7 @@ function applyOrchestrationEvent(s: AppState, e: ProviderEventDTO): Partial<AppS
   return {};
 }
 
-function deriveOrchestrationRunStatus(current: RunStatus, snapshot: AgentGraphSnapshot): RunStatus {
+export function deriveOrchestrationRunStatus(current: RunStatus, snapshot: AgentGraphSnapshot): RunStatus {
   const childStatuses = snapshot.runs.map((run) => run.status);
   if (childStatuses.some((status) => status === "waiting_approval")) {
     return "waiting_approval";
@@ -2245,8 +2259,13 @@ function deriveOrchestrationRunStatus(current: RunStatus, snapshot: AgentGraphSn
   switch (snapshot.loopState.status) {
     case "running":
     case "paused":
-    case "blocked":
       return "running";
+    case "blocked":
+      // BUG-231: a blocked loop is a deliberate, non-terminal "awaiting user"
+      // pause (escalate, or the round cap reached) — it must NOT read as
+      // "running", or the composer stays locked ("Waiting for the current
+      // turn…") with no way for the very user the flow is waiting on to respond.
+      return "blocked";
     case "stopped":
       return "cancelled";
     case "done":

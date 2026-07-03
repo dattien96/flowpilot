@@ -3147,6 +3147,13 @@ input {
 .text-area {
   resize: none;
 }
+.flow-awaiting-user-feedback {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  margin-top: 8px;
+}
 
 /* Skill-name highlight backdrop */
 .text-area-wrapper {
