@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { useStore, deriveOrchestrationRunStatus } from "./store";
+import { useStore, deriveOrchestrationRunStatus, mergeAgentRunsById } from "./store";
 import { applyTimelineEvent, type TimelineItem, type TimelineState } from "./timelineReducer";
 import { getBusMessageLabel, getOrchestrationBoardEmptyCopy } from "@/components/OrchestrationBoard";
 import { shouldShowAgentTimelineHeader } from "@/components/Timeline";
@@ -2544,4 +2544,54 @@ test("continueFlow returns to the main run before resuming when a child agent is
   assert.equal(useStore.getState().runId, "current-run");
   assert.equal(useStore.getState().activeAgentRunId, undefined);
   assert.equal(useStore.getState().agentGraphSnapshot?.loopState.status, "running");
+});
+
+test("mergeAgentRunsById never lets a stale non-terminal snapshot revert an already-terminal run (BUG-235)", () => {
+  const existingCompleted: AgentRunSummary = {
+    runId: "child-reviewer",
+    agentName: "reviewer",
+    role: "reviewer",
+    status: "completed",
+    parentRunId: "parent",
+    createdAt: "2026-01-01T00:00:01Z",
+  };
+  // A stale HTTP refresh captured before the reviewer finished, resolving AFTER
+  // the SSE event already marked it completed — this must NOT revert it.
+  const staleRunningSnapshot: AgentRunSummary = { ...existingCompleted, status: "running" };
+
+  const merged = mergeAgentRunsById([existingCompleted], [staleRunningSnapshot]);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].status, "completed");
+});
+
+test("mergeAgentRunsById still applies a genuinely fresh non-terminal update for a never-terminal run", () => {
+  const existingRunning: AgentRunSummary = {
+    runId: "child-reviewer",
+    agentName: "reviewer",
+    role: "reviewer",
+    status: "running",
+    parentRunId: "parent",
+    createdAt: "2026-01-01T00:00:01Z",
+  };
+  const stillRunning: AgentRunSummary = { ...existingRunning, agentStatus: "waiting_approval" };
+
+  const merged = mergeAgentRunsById([existingRunning], [{ ...stillRunning, status: "waiting_approval" }]);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].status, "waiting_approval");
+});
+
+test("mergeAgentRunsById applies a terminal incoming status over an existing terminal one (status corrections still land)", () => {
+  const existingCompleted: AgentRunSummary = {
+    runId: "child-reviewer",
+    agentName: "reviewer",
+    role: "reviewer",
+    status: "completed",
+    parentRunId: "parent",
+    createdAt: "2026-01-01T00:00:01Z",
+  };
+  const nowFailed: AgentRunSummary = { ...existingCompleted, status: "failed" };
+
+  const merged = mergeAgentRunsById([existingCompleted], [nowFailed]);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].status, "failed");
 });

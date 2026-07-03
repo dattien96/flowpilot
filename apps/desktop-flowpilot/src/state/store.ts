@@ -2130,10 +2130,26 @@ function settleTerminalReplayVisuals(
 // The live SSE graph snapshot is in-memory only and omits disk-persisted closed children
 // that the HTTP list (listAgentRunSummaries) includes; replacing wholesale dropped the
 // "Recently closed" entries while an agent was running. Merging preserves them (BUG-132).
-function mergeAgentRunsById(existing: AgentRunSummary[], incoming: AgentRunSummary[]): AgentRunSummary[] {
+//
+// BUG-235: a run's status is monotonic once terminal (completed/failed/cancelled never
+// goes back to running/waiting) — but incoming can be a STALE snapshot: refreshAgentRuns'
+// HTTP request is fire-and-forget and can be captured server-side before a child finished,
+// then resolve and land AFTER the SSE agent_graph_updated event that already correctly
+// marked it terminal. Unconditional "incoming wins" let that late, stale "running" revert
+// the already-correct terminal status — and since no further event fires for an already-
+// finished child, it stayed wrongly "running" forever (Agents panel + the leftover
+// "reviewer · running" card in the main chat, even after the whole flow completed). Never
+// let a non-terminal incoming status overwrite an existing terminal one.
+export function mergeAgentRunsById(existing: AgentRunSummary[], incoming: AgentRunSummary[]): AgentRunSummary[] {
   const byId = new Map<string, AgentRunSummary>();
   for (const run of existing) byId.set(run.runId, run);
-  for (const run of incoming) byId.set(run.runId, run);
+  for (const run of incoming) {
+    const prev = byId.get(run.runId);
+    if (prev && isTerminalRunStatus(prev.status) && !isTerminalRunStatus(run.status)) {
+      continue;
+    }
+    byId.set(run.runId, run);
+  }
   return [...byId.values()];
 }
 
