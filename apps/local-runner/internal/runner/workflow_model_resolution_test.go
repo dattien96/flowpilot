@@ -117,6 +117,54 @@ func TestCreateRunFallsBackToProjectWhenStepAndFlowModelEmpty(t *testing.T) {
 	}
 }
 
+// BUG-229: a direct single-step launch (StepID set, no WorkflowID) resolves
+// its model from the selected step ONLY — no Project fallback, unlike the
+// normal-flow branch above (which legitimately falls Step > Flow > Project).
+func TestCreateRunSingleStepResolvesModelFromStepOnly(t *testing.T) {
+	catalog := baseTestCatalog()
+	catalog.steps["wf-1"][0].Model = "gpt-5.5-step"
+	catalog.projects[0].Model = "gpt-5.5-project" // must lose to Step
+
+	svc, srv := newTestServerWithCatalog(t, catalog)
+	status, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs", StartRunInput{ProjectID: "proj-1", StepID: "step-1"}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("start run status=%d body=%s", status, body)
+	}
+	var h RunHandle
+	mustDecode(t, body, &h)
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	rs, ok := svc.runs[h.RunID]
+	if !ok {
+		t.Fatalf("run %q not tracked", h.RunID)
+	}
+	if rs.modelName != "gpt-5.5-step" {
+		t.Fatalf("resolved model = %q, want gpt-5.5-step (Step tier)", rs.modelName)
+	}
+}
+
+// BUG-229: unlike the normal-flow branch (TestCreateRunFallsBackToProjectWhenStepAndFlowModelEmpty),
+// a single-step launch with no step model configured must NOT fall back to the
+// project default — it has no Flow context, so per spec it reads Step only and
+// is non-runnable rather than silently borrowing an unrelated project model.
+func TestCreateRunSingleStepDoesNotFallBackToProjectModel(t *testing.T) {
+	catalog := baseTestCatalog()
+	// Step has no model; project does.
+	catalog.projects[0].Model = "gpt-5.5-project"
+
+	_, srv := newTestServerWithCatalog(t, catalog)
+	status, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs", StartRunInput{ProjectID: "proj-1", StepID: "step-1"}, nil)
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (body=%s)", status, http.StatusBadRequest, body)
+	}
+	var res map[string]any
+	mustDecode(t, body, &res)
+	errMap, _ := res["error"].(map[string]any)
+	if errMap == nil || errMap["code"] != "no_model_configured" {
+		t.Fatalf("error code = %v, want no_model_configured. body=%s", errMap["code"], body)
+	}
+}
+
 func TestCreateRunReturnsErrorWhenNoModelConfigured(t *testing.T) {
 	catalog := baseTestCatalog()
 	// Clear the project default model so nothing is configured.
@@ -166,6 +214,10 @@ func TestCreateRunResolvesWorkflowYoloEvenWhenEntryStepDefinesModel(t *testing.T
 func TestCreateRunResolvesYoloFromSingleStepWhenEnabled(t *testing.T) {
 	catalog := baseTestCatalog()
 	catalog.steps["wf-1"][0].YoloMode = true
+	// BUG-229: a single-step launch resolves its model from the step only (no
+	// Project fallback), so the step needs its own model for the run to start
+	// at all — this test's concern is YOLO resolution, not model resolution.
+	catalog.steps["wf-1"][0].Model = "gpt-5.5-step"
 
 	if got := resolvedRunYolo(t, catalog, StartRunInput{ProjectID: "proj-1", StepID: "step-1"}); !got {
 		t.Fatal("single-step run yolo = false, want true from selected step yolo_mode")

@@ -86,6 +86,7 @@ func (s *InteractiveService) startResolvedFlow(ctx context.Context, parentRunID,
 			Label:            node.ID,
 			AutoOrchestrate:  true,
 			AgentDefOverride: agentDef,
+			Model:            s.resolveFlowNodeModel(ctx, node),
 		}); err != nil {
 			log.Printf("[flow-executor] spawn entry node %q (agent %q) for flow %q on run %q failed: %v",
 				node.ID, agentName, flowRef, parentRunID, err)
@@ -94,6 +95,7 @@ func (s *InteractiveService) startResolvedFlow(ctx context.Context, parentRunID,
 		spawnedAny = true
 		if s.isFlowEngineDriven(parentRunID) {
 			s.setFlowStepStatus(ctx, parentRunID, node.ID, StepStatusRunning)
+			s.stampFlowNodePosture(ctx, parentRunID, node)
 		}
 	}
 
@@ -245,6 +247,7 @@ func (s *InteractiveService) startInlineEntryChain(ctx context.Context, parentRu
 		Label:            delegateTarget.ID,
 		AutoOrchestrate:  true,
 		AgentDefOverride: agentDef,
+		Model:            s.resolveFlowNodeModel(ctx, *delegateTarget),
 	}); err != nil {
 		log.Printf("[flow-executor] spawn inline-chain delegate node %q (agent %q) for flow %q on run %q failed: %v",
 			delegateTarget.ID, agentName, flowRef, parentRunID, err)
@@ -252,6 +255,7 @@ func (s *InteractiveService) startInlineEntryChain(ctx context.Context, parentRu
 	}
 	if s.isFlowEngineDriven(parentRunID) {
 		s.setFlowStepStatus(ctx, parentRunID, delegateTarget.ID, StepStatusRunning)
+		s.stampFlowNodePosture(ctx, parentRunID, *delegateTarget)
 	}
 
 	s.notifyHubFlowStarted(parentRunID)
@@ -413,6 +417,7 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 			CohortSize:       len(targetNodes),
 			AutoOrchestrate:  i == 0,
 			AgentDefOverride: agentDef,
+			Model:            s.resolveFlowNodeModel(context.Background(), node),
 		}); err != nil {
 			log.Printf("[flow-executor] auto-advance: spawn node %q (agent %q) failed: %v", node.ID, agentName, err)
 			continue
@@ -420,6 +425,7 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 		spawnedAny = true
 		if flowDriven {
 			s.setFlowStepStatus(context.Background(), parentRunID, node.ID, StepStatusRunning)
+			s.stampFlowNodePosture(context.Background(), parentRunID, node)
 		}
 	}
 	return spawnedAny
@@ -488,6 +494,83 @@ func flowNodeAgentName(node agentpack.FlowNode) string {
 	}
 	base := path.Base(agent)
 	return strings.TrimSuffix(base, path.Ext(base))
+}
+
+// resolveFlowNodeModel resolves an agent.delegate flow node's OWN configured
+// model, so it can run on a different model/provider than the flow's own
+// resolved model instead of always inheriting it (BUG-228). A node's agent
+// role (e.g. "agents/reviewer.md" -> "reviewer") maps to the purpose-named
+// step_definitions catalog row "flow-agent-delegate-<role>" — the same rows
+// the manual workflow builder's "Add step" dropdown offers as "Flow: Coder" /
+// "Flow: Reviewer" (BUG-161's migration). Both cohort siblings that share one
+// agent role (reviewer_correctness, reviewer_security) resolve to the same
+// row by design — the role has one configured model, not each graph node.
+//
+// Returns "" when the role has no such row or it has no model configured, so
+// callers pass an empty SpawnAgentInput.Model and spawnChildRun falls back to
+// its pre-existing inherit-from-parent behavior unchanged. An inline
+// (hub.inline / run: inline) node never reaches this: it executes as the
+// parent run's own turn and never calls spawnChildRun, so it always uses the
+// flow's already-resolved model — no lookup needed.
+func (s *InteractiveService) resolveFlowNodeModel(ctx context.Context, node agentpack.FlowNode) string {
+	agentName := flowNodeAgentName(node)
+	if agentName == "" {
+		return ""
+	}
+	s.mu.Lock()
+	catalog := s.catalog
+	s.mu.Unlock()
+	if catalog == nil {
+		return ""
+	}
+	steps, err := catalog.ListSteps(ctx)
+	if err != nil {
+		return ""
+	}
+	stepType := "flow-agent-delegate-" + strings.ToLower(agentName)
+	for _, step := range steps {
+		if strings.EqualFold(step.ID, stepType) {
+			return strings.TrimSpace(step.Model)
+		}
+	}
+	return ""
+}
+
+// resolveFlowNodeProviderModel resolves node's OWN actually-effective
+// provider/model: its role's step_definitions row when one resolves, else the
+// run's own baseline (the same fallback spawnChildRun applies once the node
+// is actually spawned) — so callers get the node's true eventual posture
+// whether or not it has been spawned yet.
+func (s *InteractiveService) resolveFlowNodeProviderModel(ctx context.Context, parentRunID string, node agentpack.FlowNode) (provider, model string) {
+	model = s.resolveFlowNodeModel(ctx, node)
+	if model != "" {
+		if pk, ok := providerKeyFromModel(model); ok {
+			provider = string(pk)
+		}
+	}
+	if model == "" || provider == "" {
+		s.mu.Lock()
+		if parent := s.runs[parentRunID]; parent != nil {
+			if model == "" {
+				model = parent.modelName
+			}
+			if provider == "" {
+				provider = string(parent.providerKey)
+			}
+		}
+		s.mu.Unlock()
+	}
+	return provider, model
+}
+
+// stampFlowNodePosture patches node's resolved provider/model onto its
+// step-timeline row via setFlowStepPosture, so the desktop step list shows
+// what that node really ran on instead of always mirroring the run's single
+// baseline posture (BUG-228 display follow-up). Best-effort: never blocks or
+// fails the spawn it accompanies.
+func (s *InteractiveService) stampFlowNodePosture(ctx context.Context, parentRunID string, node agentpack.FlowNode) {
+	provider, model := s.resolveFlowNodeProviderModel(ctx, parentRunID, node)
+	s.setFlowStepPosture(ctx, parentRunID, node.ID, provider, model)
 }
 
 // resolvePackAgentDefinition looks up agentName directly against the

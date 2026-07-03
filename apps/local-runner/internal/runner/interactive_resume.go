@@ -416,6 +416,14 @@ func (s *InteractiveService) reconstructRun(st ProviderSessionState) (*interacti
 
 	s.mu.Lock()
 	s.runs[rs.id] = rs
+	s.mu.Unlock()
+	// BUG-232: reseedFlowStepRuntimeForResume (via flowStepRowsFromNodes ->
+	// resolveFlowNodeProviderModel) acquires s.mu itself to read the run's
+	// baseline posture — it must run AFTER s.mu.Unlock() above, never while
+	// still holding the lock, or every resumed flow-engine run deadlocks on
+	// InteractiveService's non-reentrant mutex (the whole test suite then
+	// hangs until go test's default 10-minute timeout kills it).
+	//
 	// BUG-170: only re-seed the synthetic chat step for chat runs, mirroring createRun's
 	// own runKind branch (interactive_handlers.go). Before this run reached reconstructRun,
 	// resume was rejected outright for any non-chat run, so this call was unconditionally
@@ -442,7 +450,6 @@ func (s *InteractiveService) reconstructRun(st ProviderSessionState) (*interacti
 		// restores the display; it does not re-engage the executor.
 		s.reseedFlowStepRuntimeForResume(rs.id, rs.activeFlowNodes, rs.status == RunStatusCompleted)
 	}
-	s.mu.Unlock()
 	// Restore flow-engine loop state so a restarted or Drive-synced run resumes
 	// at the correct round/cap/mode (Task-085 T-4).
 	if st.LoopState.Mode != "" || st.LoopState.Cap > 0 || st.LoopState.Round > 0 {

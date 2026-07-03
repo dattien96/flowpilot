@@ -802,6 +802,185 @@ test("sendPrompt applies live agent graph and bus SSE updates", async () => {
   assert.equal(useStore.getState().agentBusMessages.at(-1)?.message, "ready-for-review");
 });
 
+test("workflow handoff turn settles and orchestration stream keeps the run active", async () => {
+  const orchestrationGate = deferred<void>();
+  let streamCallCount = 0;
+
+  seedStore(
+    makeClient({
+      startRun: async () => ({
+        runId: "current-run",
+        providerSessionId: "session-1",
+        providerKey: "codex",
+        status: "running",
+        stepId: "wf-1",
+      }),
+      sendTurn: async function* (): AsyncIterable<ProviderEventDTO> {
+        yield { ...BASE_EVENT, workflowRunId: "current-run", seq: 1, type: "turn_started", providerTurnId: "turn-1", prompt: "hello" };
+        yield { ...BASE_EVENT, id: "evt-coder", workflowRunId: "current-run", seq: 2, type: "agent_spawned_by_user", agentName: "coder", childRunId: "child-coder" };
+        yield { ...BASE_EVENT, workflowRunId: "current-run", seq: 3, type: "turn_completed", providerTurnId: "turn-1", finalMessage: "" };
+      },
+      streamRun: async function* (): AsyncIterable<ProviderEventDTO> {
+        streamCallCount++;
+        await orchestrationGate.promise;
+        yield {
+          ...BASE_EVENT,
+          workflowRunId: "current-run",
+          seq: 4,
+          type: "agent_graph_updated",
+          agentGraphSnapshot: {
+            parentRunId: "current-run",
+            runs: [
+              {
+                runId: "child-coder",
+                agentName: "coder",
+                role: "coder",
+                status: "completed",
+                parentRunId: "current-run",
+                createdAt: "2026-01-01T00:00:00Z",
+                agentStatus: "completed",
+              },
+              {
+                runId: "child-reviewer",
+                agentName: "reviewer",
+                role: "reviewer",
+                status: "running",
+                parentRunId: "current-run",
+                createdAt: "2026-01-01T00:00:01Z",
+                agentStatus: "running",
+              },
+            ],
+            edges: [],
+            busMessages: [],
+            loopState: { status: "running", round: 1, roundCap: 3 },
+          },
+        };
+        yield {
+          ...BASE_EVENT,
+          id: "evt-reviewer",
+          workflowRunId: "current-run",
+          seq: 5,
+          type: "agent_spawned_by_user",
+          agentName: "reviewer",
+          childRunId: "child-reviewer",
+        };
+      },
+    }),
+    [],
+  );
+  useStore.setState({
+    chatMode: "workflow_step_auto",
+    launchMode: "workflow",
+    selectedWorkflowId: "wf-1",
+    selectedStepId: undefined,
+    runId: undefined,
+    mainRunId: undefined,
+    activeStepId: undefined,
+    status: "idle",
+    timeline: [],
+  });
+
+  await useStore.getState().sendPrompt("hello");
+  orchestrationGate.resolve();
+  let systemTexts: string[] = [];
+  for (let i = 0; i < 20; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    systemTexts = useStore
+      .getState()
+      .timeline.filter((item) => item.kind === "system")
+      .map((item) => item.text);
+    if (systemTexts.some((text) => text.includes("Spawned agent **reviewer**"))) {
+      break;
+    }
+  }
+
+  assert.equal(streamCallCount, 1);
+  assert.equal(useStore.getState().timeline.some((item) => item.kind === "thinking"), false);
+  assert.equal(useStore.getState().status, "running");
+  assert(systemTexts.some((text) => text.includes("Spawned agent **coder**")));
+  assert(systemTexts.some((text) => text.includes("Spawned agent **reviewer**")));
+});
+
+test("orchestration graph update refreshes stale agent run statuses without switching focus", async () => {
+  const orchestrationGate = deferred<void>();
+  const completedRuns: AgentRunSummary[] = [
+    {
+      runId: "child-reviewer",
+      agentName: "reviewer",
+      role: "reviewer",
+      status: "completed",
+      parentRunId: "current-run",
+      createdAt: "2026-01-01T00:00:01Z",
+      agentStatus: "completed",
+    },
+  ];
+
+  seedStore(
+    makeClient({
+      startRun: async () => ({
+        runId: "current-run",
+        providerSessionId: "session-1",
+        providerKey: "codex",
+        status: "running",
+        stepId: "wf-1",
+      }),
+      sendTurn: async function* (): AsyncIterable<ProviderEventDTO> {
+        yield { ...BASE_EVENT, workflowRunId: "current-run", seq: 1, type: "turn_started", providerTurnId: "turn-1", prompt: "hello" };
+        yield { ...BASE_EVENT, workflowRunId: "current-run", seq: 2, type: "turn_completed", providerTurnId: "turn-1", finalMessage: "" };
+      },
+      streamRun: async function* (): AsyncIterable<ProviderEventDTO> {
+        await orchestrationGate.promise;
+        yield {
+          ...BASE_EVENT,
+          workflowRunId: "current-run",
+          seq: 3,
+          type: "agent_graph_updated",
+          agentGraphSnapshot: {
+            parentRunId: "current-run",
+            runs: [
+              {
+                runId: "child-reviewer",
+                agentName: "reviewer",
+                role: "reviewer",
+                status: "running",
+                parentRunId: "current-run",
+                createdAt: "2026-01-01T00:00:01Z",
+                agentStatus: "running",
+              },
+            ],
+            edges: [],
+            busMessages: [],
+            loopState: { status: "running", round: 1, roundCap: 3 },
+          },
+        };
+      },
+      listAgentRuns: async () => completedRuns,
+    }),
+    [],
+  );
+  useStore.setState({
+    chatMode: "workflow_step_auto",
+    launchMode: "workflow",
+    selectedWorkflowId: "wf-1",
+    selectedStepId: undefined,
+    runId: undefined,
+    mainRunId: undefined,
+    activeStepId: undefined,
+    status: "idle",
+    timeline: [],
+  });
+
+  await useStore.getState().sendPrompt("hello");
+  orchestrationGate.resolve();
+  for (let i = 0; i < 20; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (useStore.getState().agentRuns[0]?.status === "completed") break;
+  }
+
+  assert.equal(useStore.getState().agentRuns[0]?.status, "completed");
+  assert.equal(useStore.getState().agentRuns[0]?.agentStatus, "completed");
+});
+
 test("refreshAgentRuns loads child summaries for the active main run", async () => {
   const agentRuns: AgentRunSummary[] = [
     {
@@ -1906,6 +2085,50 @@ test("stop uses loop stop plus parent interrupt for the main flow run", async ()
   await useStore.getState().stop();
 
   assert.deepEqual(calls, ["loop:parent-1", "interrupt:parent-1"]);
+});
+
+test("stop uses loop stop plus parent interrupt for normal chat flowRef runs", async () => {
+  const calls: string[] = [];
+  seedStore(
+    makeClient({
+      stopAgentLoop: async (runId) => {
+        calls.push(`loop:${runId}`);
+        return {
+          parentRunId: runId,
+          runs: [{ runId: "reviewer-1", agentName: "reviewer", role: "reviewer", status: "completed", parentRunId: runId, createdAt: "2026-01-01T00:00:00Z" }],
+          edges: [],
+          busMessages: [],
+          loopState: { status: "stopped", round: 1, roundCap: 3 },
+        };
+      },
+      interrupt: async (runId) => {
+        calls.push(`interrupt:${runId}`);
+      },
+    }),
+    [],
+  );
+  useStore.setState({
+    chatMode: "normal_chat",
+    runId: "parent-1",
+    mainRunId: "parent-1",
+    activeAgentRunId: undefined,
+    status: "running",
+    timeline: [{ kind: "thinking", id: "thinking-1", text: "Thinking..." }],
+    agentGraphSnapshot: {
+      parentRunId: "parent-1",
+      runs: [{ runId: "reviewer-1", agentName: "reviewer", role: "reviewer", status: "running", parentRunId: "parent-1", createdAt: "2026-01-01T00:00:00Z" }],
+      edges: [],
+      busMessages: [],
+      loopState: { status: "running", round: 1, roundCap: 3 },
+    },
+  });
+
+  await useStore.getState().stop();
+
+  assert.deepEqual(calls, ["loop:parent-1", "interrupt:parent-1"]);
+  assert.equal(useStore.getState().status, "cancelled");
+  assert.equal(useStore.getState().timeline.some((item) => item.kind === "thinking"), false);
+  assert.equal(useStore.getState().agentRuns[0]?.status, "completed");
 });
 
 test("stop keeps child-focused stop on the child run", async () => {

@@ -206,13 +206,14 @@ type interactiveRun struct {
 	lastEventType   ProviderEventType
 	events          []ProviderEvent
 
-	turnInFlight     bool
-	repromptAttempts int    // CP-35 P-5: number of flow-gate reprompts issued this turn
-	turnStartGitHead string // CP-35: git HEAD captured at turn start for committed-diff detection
-	lastTurnStepID   string // CP-35: stepID of the most-recently started turn, used by gate reprompts
-	currentTurnID    string
-	lastTurnID       string // id of the most-recently completed turn, for the rolling chat summary
-	turnCancel       context.CancelFunc
+	turnInFlight          bool
+	repromptAttempts      int    // CP-35 P-5: number of flow-gate reprompts issued this turn
+	turnStartGitHead      string // CP-35: git HEAD captured at turn start for committed-diff detection
+	lastTurnStepID        string // CP-35: stepID of the most-recently started turn, used by gate reprompts
+	currentTurnID         string
+	lastFlowControlTurnID string
+	lastTurnID            string // id of the most-recently completed turn, for the rolling chat summary
+	turnCancel            context.CancelFunc
 
 	pendingApprovalID string
 	pendingQuestionID string
@@ -485,7 +486,10 @@ func (s *InteractiveService) injectAgentFeedback(parentRunID, toRunID, message s
 func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControlInput) (FlowControlResult, error) {
 	// Validate the target run exists before mutating orchestrator state (MEDIUM finding).
 	s.mu.Lock()
-	_, runExists := s.runs[parentRunID]
+	rs, runExists := s.runs[parentRunID]
+	if runExists && rs.currentTurnID != "" {
+		rs.lastFlowControlTurnID = rs.currentTurnID
+	}
 	s.mu.Unlock()
 	if !runExists {
 		return FlowControlResult{}, fmt.Errorf("applyFlowControl: run %q not found", parentRunID)
@@ -580,6 +584,16 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 	}
 }
 
+func (s *InteractiveService) flowControlSubmittedForTurn(runID, turnID string) bool {
+	if runID == "" || turnID == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rs := s.runs[runID]
+	return rs != nil && rs.lastFlowControlTurnID == turnID
+}
+
 // extendCap raises the flow cap by ExtendBy and resumes from blocked.
 // Rejected once ExtendCount >= ExtendMax (default 2).
 func (s *InteractiveService) extendCap(parentRunID string) (FlowControlResult, error) {
@@ -651,7 +665,7 @@ func autoReinvokePromptText() string {
 	if prompt, ok, err := loadBuiltinPromptText("prompts/auto-reinvoke.md"); err == nil && ok {
 		return prompt
 	}
-	return "[flow-engine] Agent results ready. Synthesize the join note above, then call the declared control tool for this flow when one is available."
+	return "[flow-engine] Agent results ready. Synthesize the join note above. You must call submit_review_outcome. Do not answer in prose only. If you cannot determine the result, call submit_review_outcome with status=blocked and feedback explaining why."
 }
 
 // maybeAutoReinvokeHub schedules exactly one hub turn after a cohort join, if and only if
@@ -680,6 +694,13 @@ func (s *InteractiveService) maybeAutoReinvokeHubWithNote(parentRunID, cohortNot
 	s.mu.Lock()
 	parent := s.runs[parentRunID]
 	if parent == nil || !parent.autoOrchestrate || parent.reinvokeInFlight || parent.turnInFlight {
+		if parent != nil && parent.autoOrchestrate && strings.TrimSpace(cohortNote) != "" {
+			// A note-bearing cohort join can race with a previously scheduled empty
+			// hub reinvoke. Do not drop the joined note just because the single-flight
+			// guard is closed; the scheduled/current turn will either drain it, or a
+			// deferred reinvoke below will consume it on the next turn.
+			s.appendPendingAgentContextLocked(parentRunID, cohortNote)
+		}
 		// startTurn drains pendingAgentContext atomically with setting turnInFlight=true
 		// (both under s.mu) before releasing the lock. So when we see turnInFlight=true
 		// here, pendingAgentContext is only non-empty if NEW context arrived after
@@ -955,7 +976,11 @@ func (s *InteractiveService) releaseDependentAgents(parentRunID, completedRunID,
 		summary AgentRunSummary
 	}
 	queued := []queuedTurn{}
+	isCohortMember := false
 	s.mu.Lock()
+	if completedRun := s.runs[completedRunID]; completedRun != nil && completedRun.flowCohortId != "" {
+		isCohortMember = true
+	}
 	if !s.loopAllowsNextTurnLocked(parentRunID) {
 		for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
 			child := s.runs[childID]
@@ -1023,7 +1048,9 @@ func (s *InteractiveService) releaseDependentAgents(parentRunID, completedRunID,
 	if len(queued) > 0 {
 		s.emitAgentGraph(parentRunID, s.agentGraphSnapshot(parentRunID))
 	}
-	go s.maybeAutoReinvokeHub(parentRunID)
+	if !isCohortMember {
+		go s.maybeAutoReinvokeHub(parentRunID)
+	}
 }
 
 func (s *InteractiveService) resumePendingLoopWork(parentRunID string) {
@@ -1898,9 +1925,16 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		}
 	}
 
-	// Determine provider: explicit input > agent definition > parent run's provider.
+	// Determine provider. BUG-228: in.Model — a flow node's own step-configured
+	// model, set by the flow executor for an agent.delegate node with a
+	// purpose-named step_definitions row — is authoritative over any
+	// explicit/inherited provider, the same "model wins" pattern BUG-171
+	// established for the run's own launch. Otherwise: explicit input > agent
+	// definition > parent run's provider.
 	providerKey := ProviderKey(in.Provider)
-	if providerKey == "" && agentDef != nil && agentDef.Provider != "" {
+	if pk, ok := providerKeyFromModel(in.Model); in.Model != "" && ok {
+		providerKey = pk
+	} else if providerKey == "" && agentDef != nil && agentDef.Provider != "" {
 		providerKey = ProviderKey(agentDef.Provider)
 	}
 	if providerKey == "" {
@@ -1912,12 +1946,15 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 	}
 
 	// Resolve the child model and reasoning effort.
-	// Priority: agent definition > same-provider inheritance > per-provider default.
+	// Priority: BUG-228's in.Model (a flow node's own step-configured model) >
+	// agent definition > same-provider inheritance > per-provider default.
 	// When the child runs on a different provider than the parent, the parent's model
 	// name is invalid for the child (e.g. "sonnet" sent to Codex → 400).
 	childModel := parentModel
 	childReasoningEffort := parentReasoningEffort
-	if agentDef != nil && agentDef.Model != "" {
+	if in.Model != "" {
+		childModel = in.Model
+	} else if agentDef != nil && agentDef.Model != "" {
 		childModel = agentDef.Model
 		childReasoningEffort = agentDef.ModelReasoningEffort
 	} else if providerKey != parentProviderKey {
@@ -2402,6 +2439,20 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 
 	completed, fin := s.finishTurn(rs, turnID, err)
 
+	// BUG-226: the hub synthesis turn must finish by calling submit_review_outcome.
+	// A prose-only answer leaves the flow engine without a terminal transition, so
+	// conservatively escalate and settle the inline hub step instead of leaving it RUNNING.
+	if completed && offerReviewOutcomeTool && rs.parentRunID == "" && rs.flowEngineDriven && !s.flowControlSubmittedForTurn(rs.id, turnID) {
+		log.Printf("[flow-step] hub synthesis turn %q completed without submit_review_outcome, escalating", turnID)
+		_, _ = s.applyFlowControl(rs.id, FlowControlInput{
+			Status:  "escalate",
+			Summary: "Hub synthesis turn completed without calling submit_review_outcome. Final message: " + fin.FinalMessage,
+		})
+		if hubID := hubInlineNodeID(s.activeFlowNodesFor(rs.id)); hubID != "" {
+			s.setFlowStepStatus(ctx, rs.id, hubID, StepStatusFailed)
+		}
+	}
+
 	// Persist settled state (status, lastMessage, updatedAt) for history survival
 	// across restarts (BUG-080 F-3). Take a snapshot under lock; persist outside.
 	s.mu.Lock()
@@ -2775,13 +2826,24 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		_ = logger.AppendTurnLog(context.Background(), runID, turnLogLine{Kind: turnLogKindPrompt, TurnID: turnID, Prompt: in.Prompt})
 	}
 	if flowStartOnly {
+		var snap ProviderSessionState
 		s.mu.Lock()
 		if current := s.runs[runID]; current != nil {
+			// Flow-start handoff suppresses the hub's provider turn, but the desktop
+			// still opened a live turn stream for this providerTurnId. Emit a terminal
+			// event so the client can settle the synthetic turn and begin the separate
+			// orchestration stream that carries later hub/agent updates.
+			s.emitLocked(current, ProviderEvent{Type: EventTurnCompleted, ProviderTurnID: turnID, FinalMessage: ""})
 			current.turnInFlight = false
 			current.currentTurnID = ""
 			current.turnCancel = nil
+			current.lastTurnID = turnID
+			snap = sessionStateOf(current)
 		}
 		s.mu.Unlock()
+		if snap.RunID != "" {
+			_ = s.persistProviderSession(snap)
+		}
 		cancel()
 		return turnID, nil
 	}

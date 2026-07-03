@@ -62,11 +62,17 @@ type RuntimeWorkflowStep struct {
 	// "" when the step has no agent binding of its own (e.g. inline/control
 	// behaviors).
 	AgentRef string
-	// Provider/Model are always derived from the step type's own catalog
-	// default (step_definitions.model, with Provider derived from that model
-	// via providerKeyFromModel) — BUG-164 removed workflow_steps.
-	// provider_override/model_override entirely; a step type has exactly one
-	// configured model, not a per-workflow-instance override.
+	// Provider/Model reflect the step's actually-resolved posture. For the
+	// classic (non-flow-engine) planner these are derived from the step
+	// type's own catalog default at seed time (step_definitions.model, with
+	// Provider derived from that model via providerKeyFromModel) — BUG-164
+	// removed workflow_steps.provider_override/model_override entirely; a
+	// step type has exactly one configured model, not a per-workflow-instance
+	// override. For a flow-engine node these start empty at seed time
+	// (flowStepRowsFromNodes) and are patched in once the node is actually
+	// spawned, via stampFlowNodePosture/setFlowStepPosture (BUG-228) — either
+	// the node's own role's step_definitions row, or the run's own baseline
+	// posture when the role has no such row.
 	Provider string
 	Model    string
 	// YoloMode is the step_type's step_definitions.yolo_mode default.
@@ -82,6 +88,11 @@ type WorkflowStepPatch struct {
 	FinishedAt    *string
 	RejectionNote *string
 	RetryCount    *int
+	// Provider/Model stamp the node's OWN actually-resolved posture (BUG-228
+	// display follow-up) so the step-timeline UI shows what that node really
+	// ran on instead of always mirroring the run's single baseline posture.
+	Provider *string
+	Model    *string
 }
 
 // WorkflowLogLevel mirrors the TS log levels.

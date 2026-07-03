@@ -1,5 +1,3 @@
 [flow-engine] Agent results ready.
 
-Read the joined result note above, synthesize the current node outcome, and call
-the declared control tool for this flow when one is available.
-For the built-in review loop, that control tool is `submit_review_outcome`.
+Read the joined result note above, synthesize the current node outcome. You must call submit_review_outcome. Do not answer in prose only. If you cannot determine the result, call submit_review_outcome with status=blocked and feedback explaining why.

@@ -64,7 +64,7 @@ func (s *InteractiveService) reseedFlowStepRuntime(parentRunID string, nodes []a
 	if !ok || len(nodes) == 0 {
 		return
 	}
-	seeder.seed(parentRunID, flowStepRowsFromNodes(nodes, StepStatusPending, ""))
+	seeder.seed(parentRunID, s.flowStepRowsFromNodes(context.Background(), parentRunID, nodes, StepStatusPending, ""))
 }
 
 // reseedFlowStepRuntimeForResume rebuilds runID's step list from persisted flow
@@ -86,19 +86,29 @@ func (s *InteractiveService) reseedFlowStepRuntimeForResume(runID string, nodes 
 		status = StepStatusDone
 		ts = time.Now().UTC().Format(time.RFC3339Nano)
 	}
-	seeder.seed(runID, flowStepRowsFromNodes(nodes, status, ts))
+	seeder.seed(runID, s.flowStepRowsFromNodes(context.Background(), runID, nodes, status, ts))
 }
 
 // flowStepRowsFromNodes builds one step-runtime row per flow node (ID == NodeID
 // so a transition can address it directly by node id). When status is DONE, ts
 // stamps started/finished so the row reads as a settled step.
-func flowStepRowsFromNodes(nodes []agentpack.FlowNode, status RuntimeWorkflowStepStatus, ts string) []RuntimeWorkflowStep {
+//
+// BUG-228 display follow-up: each row's Provider/Model are resolved up front
+// (resolveFlowNodeProviderModel — the node's own role, else the run's
+// baseline) rather than left blank until the node is actually spawned. A
+// step-timeline row for a still-PENDING node must show what it will actually
+// run on, not the run's blanket baseline, once stampFlowNodePosture confirms
+// it at spawn time — that later stamp is what actually took effect;
+// resolving here too means a not-yet-spawned node shows the correct posture
+// from the moment it is seeded, without waiting for it to start.
+func (s *InteractiveService) flowStepRowsFromNodes(ctx context.Context, parentRunID string, nodes []agentpack.FlowNode, status RuntimeWorkflowStepStatus, ts string) []RuntimeWorkflowStep {
 	steps := make([]RuntimeWorkflowStep, 0, len(nodes))
 	for _, node := range nodes {
 		behaviorID := ""
 		if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok {
 			behaviorID = canonical
 		}
+		provider, model := s.resolveFlowNodeProviderModel(ctx, parentRunID, node)
 		row := RuntimeWorkflowStep{
 			ID:         node.ID,
 			StepType:   node.ID,
@@ -106,6 +116,8 @@ func flowStepRowsFromNodes(nodes []agentpack.FlowNode, status RuntimeWorkflowSte
 			BehaviorID: behaviorID,
 			AgentRef:   flowNodeAgentName(node),
 			Status:     status,
+			Provider:   provider,
+			Model:      model,
 		}
 		if status == StepStatusDone {
 			row.StartedAt = ts
@@ -141,6 +153,27 @@ func (s *InteractiveService) setFlowStepStatus(ctx context.Context, parentRunID,
 		Patch:  patch,
 	}); err != nil {
 		log.Printf("[flow-step] set node %q -> %s on run %q failed: %v", nodeID, status, parentRunID, err)
+	}
+}
+
+// setFlowStepPosture stamps nodeID's OWN actually-resolved provider/model
+// (BUG-228 display follow-up) so the step-timeline UI shows what that node
+// really ran on. Without this, every flow-engine step row stayed blank
+// (flowStepRowsFromNodes never sets Provider/Model, unlike the classic
+// planner's step seeding) and the desktop fell back to displaying the run's
+// single baseline posture for every row — masking a node's own resolved
+// model even when spawnChildRun/resolveFlowNodeModel gave it one different
+// from the run's baseline. Best-effort, like setFlowStepStatus: an unknown
+// node id no-ops, and any error is logged rather than propagated.
+func (s *InteractiveService) setFlowStepPosture(ctx context.Context, parentRunID, nodeID, provider, model string) {
+	if nodeID == "" {
+		return
+	}
+	if err := s.workflowStore.ApplyStepTransition(ctx, parentRunID, WorkflowStepTransition{
+		StepID: nodeID,
+		Patch:  WorkflowStepPatch{Provider: strptr(provider), Model: strptr(model)},
+	}); err != nil {
+		log.Printf("[flow-step] set node %q posture provider=%q model=%q on run %q failed: %v", nodeID, provider, model, parentRunID, err)
 	}
 }
 

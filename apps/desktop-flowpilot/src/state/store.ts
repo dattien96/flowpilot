@@ -73,6 +73,7 @@ interface RunSnapshot {
 
 function applyAgentGraphSnapshot(snapshot: AgentGraphSnapshot): Partial<AppState> {
   return {
+    agentRuns: snapshot.runs,
     agentGraphSnapshot: snapshot,
     agentBusMessages: snapshot.busMessages,
   };
@@ -1187,11 +1188,23 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   async stop() {
-    const { client, runId, mainRunId, activeAgentRunId, chatMode } = get();
+    const { client, runId, mainRunId, activeAgentRunId } = get();
     if (!runId) return;
     const parentRunId = mainRunId ?? runId;
     const childFocused = Boolean(activeAgentRunId && parentRunId && activeAgentRunId !== parentRunId);
-    if (!childFocused && chatMode === "workflow_step_auto" && parentRunId) {
+    if (!childFocused && parentRunId && client.stopAgentLoop && hasActiveParentAgentLoop(get(), parentRunId)) {
+      const snapshot = await client.stopAgentLoop(parentRunId);
+      set((s) => ({
+        ...applyAgentGraphSnapshot(snapshot),
+        status: deriveOrchestrationRunStatus(s.status, snapshot),
+        timeline: s.timeline.filter((it) => it.kind !== "thinking"),
+      }));
+      await client.interrupt(parentRunId);
+      void get().refreshAgentRuns();
+      void get().refreshWorkflowStepRuntime();
+      return;
+    }
+    if (!childFocused && get().chatMode === "workflow_step_auto" && parentRunId) {
       if (client.stopAgentLoop) {
         set(applyAgentGraphSnapshot(await client.stopAgentLoop(parentRunId)));
       }
@@ -1836,6 +1849,7 @@ async function consumeStream(
     // rides alongside an agent_graph_updated, so refresh the step runtime here too
     // to keep the timeline live during the initial coder phase. (Self-guarded.)
     if (e.type === "agent_graph_updated") void get().refreshWorkflowStepRuntime();
+    if (e.type === "agent_graph_updated") void get().refreshAgentRuns();
     if (e.type === "turn_failed" && !e.recoverable && isUsageLimitMessage(e.error)) {
       const s = get();
       if (s.chatMode === "normal_chat" && s.selectedProvider && !s.pendingAccountSwitch && !s.accountSwitchLoading) {
@@ -2010,7 +2024,10 @@ async function consumeOrchestrationStream(
       // so refresh the step-runtime here to make the timeline update live.
       // refreshWorkflowStepRuntime self-guards (chatMode + load-seq + target-run),
       // so this is safe and de-duped against races.
-      if (e.type === "agent_graph_updated") void get().refreshWorkflowStepRuntime();
+      if (e.type === "agent_graph_updated") {
+        void get().refreshWorkflowStepRuntime();
+        void get().refreshAgentRuns();
+      }
     } else {
       // CP-35: gate reprompt events (turn_started, message_delta, turn_completed, etc.)
       // arrive after sendTurn() has already closed on turn_completed. Apply them via
@@ -2071,6 +2088,13 @@ function isEventForRun(e: ProviderEventDTO, runId: string): boolean {
 
 function isTerminalRunStatus(status: RunStatus): boolean {
   return status === "completed" || status === "failed" || status === "cancelled";
+}
+
+function hasActiveParentAgentLoop(state: AppState, parentRunId: string): boolean {
+  const snapshot = state.agentGraphSnapshot;
+  if (!snapshot || snapshot.parentRunId !== parentRunId) return false;
+  const status = snapshot.loopState.status;
+  return Boolean(status) && status !== "done" && status !== "stopped";
 }
 
 function settleTerminalReplayVisuals(
@@ -2181,11 +2205,13 @@ function applyEvent(s: AppState, e: ProviderEventDTO): Partial<AppState> {
 function applyOrchestrationEvent(s: AppState, e: ProviderEventDTO): Partial<AppState> {
   const nextReplaySeq = { ...s._runReplaySeq, [e.workflowRunId]: e.seq };
   if (e.type === "agent_graph_updated") {
+    const nextStatus = deriveOrchestrationRunStatus(s.status, e.agentGraphSnapshot);
     return {
       // Merge (not replace) so disk-persisted closed children stay visible (BUG-132).
       agentRuns: mergeAgentRunsById(s.agentRuns, e.agentGraphSnapshot.runs),
       agentGraphSnapshot: e.agentGraphSnapshot,
       agentBusMessages: e.agentGraphSnapshot.busMessages,
+      status: nextStatus,
       _runReplaySeq: nextReplaySeq,
     };
   }
@@ -2199,6 +2225,35 @@ function applyOrchestrationEvent(s: AppState, e: ProviderEventDTO): Partial<AppS
     };
   }
   return {};
+}
+
+function deriveOrchestrationRunStatus(current: RunStatus, snapshot: AgentGraphSnapshot): RunStatus {
+  const childStatuses = snapshot.runs.map((run) => run.status);
+  if (childStatuses.some((status) => status === "waiting_approval")) {
+    return "waiting_approval";
+  }
+  if (childStatuses.some((status) => status === "waiting_question")) {
+    return "waiting_question";
+  }
+  if (
+    childStatuses.some(
+      (status) => status === "running" || status === "waiting_approval" || status === "waiting_question",
+    )
+  ) {
+    return "running";
+  }
+  switch (snapshot.loopState.status) {
+    case "running":
+    case "paused":
+    case "blocked":
+      return "running";
+    case "stopped":
+      return "cancelled";
+    case "done":
+      return current === "failed" || current === "cancelled" ? current : "completed";
+    default:
+      return current;
+  }
 }
 
 function runErrorMessage(err: unknown): string {

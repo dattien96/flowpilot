@@ -193,7 +193,12 @@ func (f *fakeWorkflowStore) ApplyStepTransition(_ context.Context, runID string,
 		if steps[i].ID != t.StepID {
 			continue
 		}
-		steps[i].Status = t.Patch.Status
+		// BUG-228: an empty Status means "leave unchanged" (e.g. setFlowStepPosture
+		// only patches Provider/Model) — a real transition always sets a non-empty
+		// RuntimeWorkflowStepStatus, so this is unambiguous.
+		if t.Patch.Status != "" {
+			steps[i].Status = t.Patch.Status
+		}
 		if t.Patch.StartedAt != nil {
 			steps[i].StartedAt = *t.Patch.StartedAt
 		}
@@ -205,6 +210,12 @@ func (f *fakeWorkflowStore) ApplyStepTransition(_ context.Context, runID string,
 		}
 		if t.Patch.RetryCount != nil {
 			steps[i].RetryCount = *t.Patch.RetryCount
+		}
+		if t.Patch.Provider != nil {
+			steps[i].Provider = *t.Patch.Provider
+		}
+		if t.Patch.Model != nil {
+			steps[i].Model = *t.Patch.Model
 		}
 		break
 	}

@@ -620,6 +620,12 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 			return RunHandle{}, newAPIErr(http.StatusBadRequest, "no_model_configured", "no model configured for this workflow")
 		}
 	} else if runKind != "chat" && stepID != "" {
+		// BUG-229: a direct single-step launch resolves its model from the
+		// selected step ONLY — no Flow tier applies (there is no workflow
+		// context) and, unlike the normal-flow branch above, no Project
+		// fallback either. Falling back to the project default here let a
+		// step with no model configured silently run on an unrelated
+		// project-wide model instead of surfacing as non-runnable.
 		if catalog, ok := s.catalog.(CatalogStore); ok {
 			if steps, err := catalog.ListSteps(context.Background()); err == nil {
 				for _, step := range steps {
@@ -634,18 +640,6 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 					}
 					resolvedYolo = resolvedYolo || step.YoloMode
 					break
-				}
-			}
-		}
-		if resolvedModel == "" {
-			if catalog, ok := s.catalog.(CatalogStore); ok {
-				if projects, err := catalog.ListProjects(context.Background()); err == nil {
-					for _, proj := range projects {
-						if proj.ID == in.ProjectID {
-							resolvedModel = strings.TrimSpace(proj.Model)
-							break
-						}
-					}
 				}
 			}
 		}

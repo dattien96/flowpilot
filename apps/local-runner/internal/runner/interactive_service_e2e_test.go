@@ -21,6 +21,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"flowpilot-runner/internal/agentpack"
 )
 
 // ── helper ───────────────────────────────────────────────────────────────────
@@ -115,7 +117,8 @@ func TestE2EReviewLoopApprovedPath(t *testing.T) {
 // TestE2EReviewLoopChangesRequestedFeedbackReachesCoderPrompt verifies that
 // applyFlowControl("continue", summary=...) triggers a coder re-entry whose
 // prompt contains the supplied feedback text. Drives the full path:
-//   applyFlowControl → maybeReinvokeCoderForContinue → scheduleChildTurn → runTurn adapter
+//
+//	applyFlowControl → maybeReinvokeCoderForContinue → scheduleChildTurn → runTurn adapter
 func TestE2EReviewLoopChangesRequestedFeedbackReachesCoderPrompt(t *testing.T) {
 	reentryPrompts := make(chan string, 5)
 
@@ -327,9 +330,9 @@ func TestE2EFlowEventSidecarPersistAndReload(t *testing.T) {
 		SourceDocIDs:  []string{"Task-178"},
 	}
 	ev := ProviderEvent{
-		Type:              EventFlowContextPackage,
-		WorkflowRunID:     "run-sidecar-1",
-		WorkflowStepRunID: "step-plan",
+		Type:               EventFlowContextPackage,
+		WorkflowRunID:      "run-sidecar-1",
+		WorkflowStepRunID:  "step-plan",
 		FlowContextPackage: &pkg,
 	}
 	if err := store1.AppendEvent(ctx, ev); err != nil {
@@ -548,5 +551,105 @@ func TestE2EParallelCodingCohortReinvokesHub(t *testing.T) {
 
 	if tc == 0 {
 		t.Error("hub was not auto-reinvoked after 3-member coding cohort completed")
+	}
+}
+
+// TestE2EReviewLoopSynthesisFallbackEscalates verifies that if the hub synthesis turn
+// completes without calling submit_review_outcome, the synthesis step is marked FAILED,
+// the loop is escalated/blocked, and no second auto-reinvoke loop is created.
+func TestE2EReviewLoopSynthesisFallbackEscalates(t *testing.T) {
+	var svc *InteractiveService
+	var parentID string
+	hubCalls := 0
+
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, req TurnRequest, b TurnBridge) error {
+				if strings.Contains(req.Prompt, "Agent results ready") {
+					hubCalls++
+					// Do NOT call b.SubmitFlowControl (submit_review_outcome tool).
+					// Answer in prose only.
+					b.Emit(ProviderEvent{
+						Type:           EventTurnCompleted,
+						ProviderTurnID: req.ProviderTurnID,
+						FinalMessage:   "Blocked: joined note unavailable",
+					})
+					return nil
+				}
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "ok"})
+				return nil
+			})
+		},
+	})
+	store := newFakeWorkflowStore()
+	svc = newInteractiveService(reg, newInteractiveCatalog(), store)
+	ph, _ := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if ph.RunID == "" {
+		t.Fatal("createRun returned empty RunID")
+	}
+	parentID = ph.RunID
+
+	svc.agentOrchestrator.setLoop(parentID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3})
+	svc.mu.Lock()
+	svc.runs[parentID].autoOrchestrate = true
+	svc.runs[parentID].flowEngineDriven = true
+	svc.runs[parentID].turnCount = 1 // simulate hub's first turn already run
+	svc.runs[parentID].activeFlowNodes = []agentpack.FlowNode{
+		{ID: "step-synth", Behavior: "hub.inline"},
+	}
+	svc.mu.Unlock()
+
+	// Seed steps into workflow store
+	svc.reseedFlowStepRuntime(parentID, svc.runs[parentID].activeFlowNodes)
+
+	// Two reviewers in a cohort — last one triggers hub auto-reinvoke.
+	for i, lbl := range []string{"reviewer-correctness", "reviewer-security"} {
+		if _, e := svc.spawnChildRun(context.Background(), parentID, SpawnAgentInput{
+			Agent: lbl, Prompt: "review the coder output", Wait: true,
+			FlowCohortID: "review-1", Label: lbl, CohortSize: 2,
+			AutoOrchestrate: i == 0,
+		}); e != nil {
+			t.Fatalf("spawnChildRun(%s): %v", lbl, e)
+		}
+	}
+
+	// Wait for the loop state to become "blocked".
+	waitLoop(t, "loop.Status==blocked", 3*time.Second, func() bool {
+		return svc.agentOrchestrator.loopStateFor(parentID).Status == "blocked"
+	})
+
+	st := svc.agentOrchestrator.loopStateFor(parentID)
+	if st.Status != "blocked" {
+		t.Errorf("loop.Status = %q, want blocked", st.Status)
+	}
+	if !strings.Contains(st.GateReason, "Hub synthesis turn completed without calling submit_review_outcome") {
+		t.Errorf("expected GateReason to mention synthesis turn completed, got: %q", st.GateReason)
+	}
+
+	// Assert synthesis step is FAILED
+	steps, err := store.LoadRunSteps(context.Background(), parentID)
+	if err != nil {
+		t.Fatalf("LoadRunSteps: %v", err)
+	}
+	foundSynth := false
+	for _, step := range steps {
+		if step.ID == "step-synth" {
+			foundSynth = true
+			if step.Status != StepStatusFailed {
+				t.Errorf("expected synthesis step status to be FAILED, got: %v", step.Status)
+			}
+		}
+	}
+	if !foundSynth {
+		t.Error("synthesis step not found in workflow store")
+	}
+
+	// Assert no second auto-reinvoke loop is created (hubCalls should remain 1).
+	time.Sleep(50 * time.Millisecond)
+	if hubCalls != 1 {
+		t.Errorf("expected exactly 1 hub call, got %d", hubCalls)
 	}
 }

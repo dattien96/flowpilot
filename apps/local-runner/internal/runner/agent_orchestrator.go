@@ -199,6 +199,14 @@ type SpawnAgentInput struct {
 	// (BUG-NOTE-CP42 #23). Never set from the wire — internal-only, like
 	// UIInitiated above.
 	AgentDefOverride *AgentDefinition `json:"-"`
+	// Model gives this spawn its own model, taking priority over both the
+	// agent definition's model and the parent run's inherited model (BUG-228).
+	// Set by the flow executor for an agent.delegate node whose role has its
+	// own purpose-named step_definitions row (e.g. "flow-agent-delegate-
+	// reviewer"), so that node's children run on their own configured
+	// model/provider instead of always inheriting the flow's single resolved
+	// model. Never set from the wire — internal-only, like AgentDefOverride.
+	Model string `json:"-"`
 }
 
 // SpawnAgentResult is the tool call result and HTTP response body.

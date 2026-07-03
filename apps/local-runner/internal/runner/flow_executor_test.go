@@ -172,6 +172,78 @@ func TestCoderCompletionAutoSpawnsReviewerCohort(t *testing.T) {
 	}
 }
 
+// TestCoderCompletionAutoSpawnsReviewerCohortWithOwnModel is the regression
+// test for BUG-228: an agent.delegate flow node whose role has its own
+// purpose-named step_definitions row ("flow-agent-delegate-reviewer") must
+// run on that row's own configured model/provider, independent of the flow's
+// own resolved model — matching the same "Flow: Reviewer" catalog entry the
+// desktop Settings > Workflows > Steps editor already exposes. The coder node
+// has no such row and must keep inheriting the flow's own resolved model
+// (Codex here), proving this is a per-role override, not a blanket switch.
+func TestCoderCompletionAutoSpawnsReviewerCohortWithOwnModel(t *testing.T) {
+	reg := registryWithClaudeAvailable()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, req TurnRequest, b TurnBridge) error {
+				finalMsg := "ok"
+				if strings.Contains(req.Prompt, "fix the crash") {
+					finalMsg = "Fixed the null pointer at handler.go:42."
+				}
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: finalMsg})
+				return nil
+			})
+		},
+	})
+
+	catalog := newInteractiveCatalog()
+	catalog.steps["wf-feature"] = append(catalog.steps["wf-feature"], Step{
+		ID: "flow-agent-delegate-reviewer", Name: "Flow: Reviewer", Model: "claude-sonnet",
+	})
+
+	svc := newInteractiveService(reg, catalog, newFakeWorkflowStore())
+	parent, err := svc.createRun(StartRunInput{
+		ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex, Model: "gpt-5.4-mini",
+	})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3})
+
+	svc.startResolvedFlow(context.Background(), parent.RunID, "flowpilot-core-flow-pack/review-loop", "fix the crash")
+
+	waitLoop(t, "reviewer cohort auto-spawned", 3*time.Second, func() bool {
+		svc.mu.Lock()
+		defer svc.mu.Unlock()
+		count := 0
+		for _, run := range svc.runs {
+			if run.parentRunID == parent.RunID && run.label != "coder" {
+				count++
+			}
+		}
+		return count == 2
+	})
+
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	for _, run := range svc.runs {
+		if run.parentRunID != parent.RunID {
+			continue
+		}
+		switch run.label {
+		case "coder":
+			if run.modelName != "gpt-5.4-mini" || run.providerKey != ProviderKeyCodex {
+				t.Errorf("coder run = provider=%q model=%q, want codex/gpt-5.4-mini (flow's own model, no step_definitions row for coder)", run.providerKey, run.modelName)
+			}
+		case "reviewer_correctness", "reviewer_security":
+			if run.modelName != "claude-sonnet" || run.providerKey != ProviderKeyClaude {
+				t.Errorf("%s run = provider=%q model=%q, want claude/claude-sonnet (flow-agent-delegate-reviewer's own model)", run.label, run.providerKey, run.modelName)
+			}
+		}
+	}
+}
+
 // TestCoderCompletionAutoSpawnedReviewerPromptDoesNotInstructFlowControlCall is
 // the regression test for BUG-NOTE-CP42 #13: tryAdvanceFlowFromNode's
 // auto-spawn prompt used to tell the reviewer to "report your findings via
@@ -654,6 +726,54 @@ func TestStartTurnWithFlowRefSkipsHubsOwnFirstProviderTurn(t *testing.T) {
 	mu.Unlock()
 	if gotParent {
 		t.Fatal("hub parent provider was called on the first flowRef turn; want silent handoff to child")
+	}
+}
+
+func TestStartTurnWithFlowRefEmitsSyntheticTurnCompletedForHubHandoff(t *testing.T) {
+	svc, _ := newTestServer(t)
+
+	parent, err := svc.createRun(StartRunInput{
+		ProjectID:   "proj",
+		ChatMode:    "normal_chat",
+		ProviderKey: ProviderKeyCodex,
+	})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+
+	if _, apiErr := svc.startTurn(parent.RunID, TurnInput{
+		StepID:  "chat-" + parent.RunID,
+		Prompt:  "fix the crash on startup",
+		SubMode: "bug",
+		FlowRef: "flowpilot-core-flow-pack/review-loop",
+	}, "", ""); apiErr != nil {
+		t.Fatalf("startTurn: %s", apiErr.msg)
+	}
+
+	waitLoop(t, "synthetic hub turn settled", 2*time.Second, func() bool {
+		svc.mu.Lock()
+		defer svc.mu.Unlock()
+		rs := svc.runs[parent.RunID]
+		return rs != nil && !rs.turnInFlight && rs.lastEventType == EventTurnCompleted
+	})
+
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	rs := svc.runs[parent.RunID]
+	if rs == nil {
+		t.Fatal("parent run missing")
+	}
+	if rs.lastEventType != EventTurnCompleted {
+		t.Fatalf("last event type = %s, want %s", rs.lastEventType, EventTurnCompleted)
+	}
+	if len(rs.events) < 2 {
+		t.Fatalf("events = %d, want at least turn_started + turn_completed", len(rs.events))
+	}
+	if rs.events[0].Type != EventTurnStarted {
+		t.Fatalf("first event = %s, want %s", rs.events[0].Type, EventTurnStarted)
+	}
+	if rs.events[len(rs.events)-1].Type != EventTurnCompleted {
+		t.Fatalf("last event = %s, want %s", rs.events[len(rs.events)-1].Type, EventTurnCompleted)
 	}
 }
 

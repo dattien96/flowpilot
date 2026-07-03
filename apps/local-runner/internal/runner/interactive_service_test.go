@@ -2435,6 +2435,54 @@ func TestAutoReinvokeHubNoPendingContextNoDefer(t *testing.T) {
 	}
 }
 
+func TestAutoReinvokeHubWithNotePreservesNoteWhenTurnInFlight(t *testing.T) {
+	svc, _ := newTestServer(t)
+	handle, _ := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	runID := handle.RunID
+
+	svc.mu.Lock()
+	svc.runs[runID].autoOrchestrate = true
+	svc.runs[runID].turnInFlight = true
+	svc.mu.Unlock()
+
+	note := "[flow-engine] Joined result note\nreviewer: approved"
+	svc.maybeAutoReinvokeHubWithNote(runID, note)
+
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	rs := svc.runs[runID]
+	if !rs.pendingHubReinvoke {
+		t.Fatal("pendingHubReinvoke = false, want true for note-bearing reinvoke while hub turn is in flight")
+	}
+	if len(rs.pendingAgentContext) != 1 || rs.pendingAgentContext[0] != note {
+		t.Fatalf("pendingAgentContext = %#v, want preserved cohort note", rs.pendingAgentContext)
+	}
+}
+
+func TestAutoReinvokeHubWithNotePreservesNoteWhenReinvokeAlreadyScheduled(t *testing.T) {
+	svc, _ := newTestServer(t)
+	handle, _ := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	runID := handle.RunID
+
+	svc.mu.Lock()
+	svc.runs[runID].autoOrchestrate = true
+	svc.runs[runID].reinvokeInFlight = true
+	svc.mu.Unlock()
+
+	note := "[flow-engine] Joined result note\nreviewer: approved"
+	svc.maybeAutoReinvokeHubWithNote(runID, note)
+
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	rs := svc.runs[runID]
+	if rs.pendingHubReinvoke {
+		t.Fatal("pendingHubReinvoke = true, want false because scheduled reinvoke can still consume preserved context")
+	}
+	if len(rs.pendingAgentContext) != 1 || rs.pendingAgentContext[0] != note {
+		t.Fatalf("pendingAgentContext = %#v, want preserved cohort note", rs.pendingAgentContext)
+	}
+}
+
 // TestAutoReinvokeHubDeferredWhenCoderCompletesInFlight verifies the deferred
 // reinvoke path: when genuinely new context arrives (coder appends a note) while
 // a hub turn is in flight, exactly one follow-up hub turn is scheduled after the
