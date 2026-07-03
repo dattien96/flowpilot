@@ -625,11 +625,23 @@ func TestE2EReviewLoopSynthesisFallbackEscalates(t *testing.T) {
 	if st.Status != "blocked" {
 		t.Errorf("loop.Status = %q, want blocked", st.Status)
 	}
-	if !strings.Contains(st.GateReason, "Hub synthesis turn completed without calling submit_review_outcome") {
-		t.Errorf("expected GateReason to mention synthesis turn completed, got: %q", st.GateReason)
+	// BUG-233: the awaiting-user card renders GateReason verbatim, so the
+	// fallback must surface the reviewers' actual findings (their joined cohort
+	// note) instead of the internal "completed without calling
+	// submit_review_outcome" diagnostic sentence.
+	if strings.Contains(st.GateReason, "completed without calling submit_review_outcome") {
+		t.Errorf("GateReason still contains the internal diagnostic sentence: %q", st.GateReason)
+	}
+	for _, want := range []string{"reviewer-correctness", "reviewer-security"} {
+		if !strings.Contains(st.GateReason, want) {
+			t.Errorf("expected GateReason to include reviewer findings (%q), got: %q", want, st.GateReason)
+		}
 	}
 
-	// Assert synthesis step is FAILED
+	// BUG-233: the hub node must settle to WAITING_USER_APPROVAL, not FAILED —
+	// this fallback is a non-terminal awaiting-user pause (same contract BUG-231
+	// established for the escalate/cap-reached paths), and FAILED reads as a
+	// terminal error.
 	steps, err := store.LoadRunSteps(context.Background(), parentID)
 	if err != nil {
 		t.Fatalf("LoadRunSteps: %v", err)
@@ -638,8 +650,8 @@ func TestE2EReviewLoopSynthesisFallbackEscalates(t *testing.T) {
 	for _, step := range steps {
 		if step.ID == "step-synth" {
 			foundSynth = true
-			if step.Status != StepStatusFailed {
-				t.Errorf("expected synthesis step status to be FAILED, got: %v", step.Status)
+			if step.Status != StepStatusWaitingUserApr {
+				t.Errorf("expected synthesis step status to be WAITING_USER_APPROVAL, got: %v", step.Status)
 			}
 		}
 	}

@@ -1568,9 +1568,14 @@ func TestApplyFlowControlEscalateSettlesHubToWaitingUser(t *testing.T) {
 	if snap.LoopState.BlockReason != "escalate" {
 		t.Errorf("loop.BlockReason = %q, want escalate", snap.LoopState.BlockReason)
 	}
-	waitLoop(t, "hub node reaches WAITING_USER_APPROVAL", time.Second, func() bool {
-		return flowStepStatus(t, svc, runID, "synthesis") == StepStatusWaitingUserApr
-	})
+	// BUG-233: the hub node's transition to WAITING_USER_APPROVAL must be visible
+	// the instant applyFlowControl returns — not eventually, via a background
+	// goroutine — because the desktop's step-runtime refresh can be triggered by
+	// the agent_graph_updated event emitted for this same call, and a
+	// still-in-flight goroutine write would let that refresh read a stale status.
+	if got := flowStepStatus(t, svc, runID, "synthesis"); got != StepStatusWaitingUserApr {
+		t.Errorf("hub node status immediately after applyFlowControl = %v, want WAITING_USER_APPROVAL", got)
+	}
 }
 
 // TestApplyFlowControlCapReachedSettlesHubToWaitingUser mirrors the escalate
@@ -1591,9 +1596,39 @@ func TestApplyFlowControlCapReachedSettlesHubToWaitingUser(t *testing.T) {
 	if snap.LoopState.BlockReason != "cap" {
 		t.Errorf("loop.BlockReason = %q, want cap", snap.LoopState.BlockReason)
 	}
-	waitLoop(t, "hub node reaches WAITING_USER_APPROVAL", time.Second, func() bool {
-		return flowStepStatus(t, svc, runID, "synthesis") == StepStatusWaitingUserApr
-	})
+	// BUG-233: see the matching comment in TestApplyFlowControlEscalateSettlesHubToWaitingUser.
+	if got := flowStepStatus(t, svc, runID, "synthesis"); got != StepStatusWaitingUserApr {
+		t.Errorf("hub node status immediately after applyFlowControl = %v, want WAITING_USER_APPROVAL", got)
+	}
+}
+
+// TestApplyFlowControlLoopingResetsStepsSynchronously is the regression test
+// for BUG-233: when a new review round starts ("continue"->"looping"), the
+// downstream nodes' PENDING reset and the entry node's RUNNING transition must
+// be visible the instant applyFlowControl returns, not via a background
+// goroutine racing the agent_graph_updated event's desktop-side step-runtime
+// refresh (the reported symptom: a fresh reviewer cohort shows as "running" in
+// the agent panel while the step timeline still reads the prior round's "all
+// done").
+func TestApplyFlowControlLoopingResetsStepsSynchronously(t *testing.T) {
+	svc, runID := newFlowEngineTestRun(t)
+	svc.setFlowStepStatus(context.Background(), runID, "coder", StepStatusDone)
+	svc.setFlowStepStatus(context.Background(), runID, "synthesis", StepStatusDone)
+	svc.agentOrchestrator.setLoop(runID, AgentLoopState{Status: "blocked", Cap: 5, RoundCap: 5, Round: 1})
+
+	result, err := svc.applyFlowControl(runID, FlowControlInput{Status: "continue", Summary: "changes requested"})
+	if err != nil {
+		t.Fatalf("applyFlowControl(continue): %v", err)
+	}
+	if result.NextAction != "looping" {
+		t.Fatalf("NextAction = %q, want looping", result.NextAction)
+	}
+	if got := flowStepStatus(t, svc, runID, "coder"); got != StepStatusRunning {
+		t.Errorf("entry node (coder) status immediately after applyFlowControl = %v, want RUNNING", got)
+	}
+	if got := flowStepStatus(t, svc, runID, "synthesis"); got != StepStatusPending {
+		t.Errorf("downstream node (synthesis) status immediately after applyFlowControl = %v, want PENDING", got)
+	}
 }
 
 // TestResumeFlowWithFeedbackAutoExtendsOnlyForCap is the regression test for
@@ -1614,6 +1649,12 @@ func TestResumeFlowWithFeedbackAutoExtendsOnlyForCap(t *testing.T) {
 		}
 		if snap.LoopState.Status != "running" || snap.LoopState.BlockReason != "" {
 			t.Errorf("status/blockReason after Continue = %q/%q, want running/\"\"", snap.LoopState.Status, snap.LoopState.BlockReason)
+		}
+		// BUG-233: the hub node's WAITING_USER_APPROVAL -> RUNNING transition must
+		// be visible the instant resumeFlowWithFeedback returns, not via a
+		// background goroutine racing the desktop's step-runtime refresh.
+		if got := flowStepStatus(t, svc, runID, "synthesis"); got != StepStatusRunning {
+			t.Errorf("hub node status immediately after resumeFlowWithFeedback = %v, want RUNNING", got)
 		}
 	})
 
