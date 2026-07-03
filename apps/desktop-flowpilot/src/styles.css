@@ -429,6 +429,21 @@ input {
   align-items: center;
   gap: 6px;
 }
+/* BUG-234: review-loop round counter. Dim on the first pass, highlighted once
+   the flow has looped back (round > 1) so a loop-back is legible at a glance. */
+.flow-sidebar-round {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+.flow-sidebar-round-active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
 .flow-sidebar-current {
   font-size: 12.5px;
   font-weight: 600;
