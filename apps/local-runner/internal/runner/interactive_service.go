@@ -1060,9 +1060,37 @@ func (s *InteractiveService) dependenciesSatisfiedLocked(rs *interactiveRun) boo
 	return true
 }
 
+// loopAllowsNextTurnLocked reports whether parentRunID's loop may fire another
+// turn (release a dependent child, resume a pending turn, re-enter the coder).
+// BUG-234: this now also excludes "blocked" and "done" — a loop that is blocked
+// awaiting the user, or already finished, must not auto-fire the next turn.
+// Previously it excluded only "paused"/"stopped", so after an escalate settled
+// the loop to "blocked", releaseDependentAgents still released dependent
+// reviewers — one of the two runaway auto-advance paths that left the run
+// spinning. When the user hits Continue, resumeFlowWithFeedback flips the loop
+// back to "running", so normal progress resumes then. Delegates to
+// loopIsAdvancing so the "which statuses are live" set has one definition.
 func (s *InteractiveService) loopAllowsNextTurnLocked(parentRunID string) bool {
-	state := s.agentOrchestrator.loopStateFor(parentRunID)
-	return state.Status != "paused" && state.Status != "stopped"
+	return s.loopIsAdvancing(parentRunID)
+}
+
+// loopIsAdvancing reports whether the flow loop for parentRunID is still in a
+// state that should auto-advance (spawn the next node, re-run the hub). It
+// mirrors the gate maybeAutoReinvokeHub already applies: a loop that is paused,
+// stopped, blocked, or done must NOT advance. BUG-234: the auto-advance paths
+// (tryAdvanceFlowFromNode and the cohort-join reviewer-DONE/hub-RUNNING write)
+// previously had NO status guard, so a child completion arriving after the loop
+// had legitimately blocked (e.g. an escalate awaiting the user) kept re-spawning
+// reviewers and flipping the hub node back to RUNNING — the synthesis step
+// spun forever and the run never settled. maybeAutoReinvokeHub was gated, so the
+// loop STATE was correct while the STEPS/spawns ran away; this closes that gap.
+func (s *InteractiveService) loopIsAdvancing(parentRunID string) bool {
+	switch s.agentOrchestrator.loopStateFor(parentRunID).Status {
+	case "paused", "stopped", "blocked", "done":
+		return false
+	default:
+		return true
+	}
 }
 
 func (s *InteractiveService) queueChildTurnLocked(rs *interactiveRun, prompt, status string) {
@@ -1587,6 +1615,14 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 					FinalMessage: truncateDisplayField(finalMsg, 1500),
 					Status:       "completed",
 				})
+				// BUG-234 (#1): settle THIS cohort member's own timeline node the moment
+				// it finishes, so a done reviewer reads DONE while its sibling is still
+				// RUNNING. Previously the reviewer nodes were only settled together at the
+				// barrier below, so one-done-one-running showed both as RUNNING. rs.label
+				// is the flow node id for a flow-spawned cohort member.
+				if parent := s.runs[rs.parentRunID]; parent != nil && parent.flowEngineDriven && rs.label != "" {
+					s.setFlowStepStatus(context.Background(), rs.parentRunID, rs.label, StepStatusDone)
+				}
 				if s.agentOrchestrator.cohortComplete(rs.parentRunID, rs.flowCohortId) {
 					entries := s.agentOrchestrator.drainCohort(rs.parentRunID, rs.flowCohortId)
 					note := buildCohortNote(rs.parentRunID, rs.flowCohortId, entries, s.agentOrchestrator.graphSnapshot(rs.parentRunID).LoopState.Round)
@@ -1637,7 +1673,14 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 						for _, id := range reviewerNodeIDs {
 							s.setFlowStepStatus(context.Background(), parentRunID, id, StepStatusDone)
 						}
-						if hubNodeID != "" {
+						// BUG-234 (#4): only drive the hub node to RUNNING and re-invoke the
+						// synthesis turn while the loop is still advancing. Once the loop has
+						// settled (blocked/awaiting-user, done, stopped), a late or stray
+						// cohort join must NOT flip the hub node back to RUNNING — that flap
+						// is what left the synthesis step spinning forever after an escalate.
+						// maybeAutoReinvokeHubWithNote is itself gated on loop status, but the
+						// hub-RUNNING write below is not, so guard it here too.
+						if hubNodeID != "" && s.loopIsAdvancing(parentRunID) {
 							s.setFlowStepStatus(context.Background(), parentRunID, hubNodeID, StepStatusRunning)
 						}
 					}
@@ -1746,6 +1789,12 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 					Status:   "failed",
 					Err:      truncateDisplayField(ev.Error, 500),
 				})
+				// BUG-234 (#1): settle this member's own node to FAILED on its own
+				// failure, mirroring the completed path, so a failed reviewer reads
+				// FAILED immediately instead of RUNNING until the barrier.
+				if parent := s.runs[rs.parentRunID]; parent != nil && parent.flowEngineDriven && rs.label != "" {
+					s.setFlowStepStatus(context.Background(), rs.parentRunID, rs.label, StepStatusFailed)
+				}
 				if s.agentOrchestrator.cohortComplete(rs.parentRunID, rs.flowCohortId) {
 					entries := s.agentOrchestrator.drainCohort(rs.parentRunID, rs.flowCohortId)
 					note := buildCohortNote(rs.parentRunID, rs.flowCohortId, entries, s.agentOrchestrator.graphSnapshot(rs.parentRunID).LoopState.Round)

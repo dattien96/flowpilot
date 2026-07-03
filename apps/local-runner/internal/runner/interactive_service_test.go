@@ -1511,6 +1511,47 @@ func newFlowTestRun(t *testing.T) (*InteractiveService, string) {
 	return svc, parent.RunID
 }
 
+// TestCohortMemberSettlesOwnNodeOnCompletion is the BUG-234 (#1) regression:
+// when one reviewer of a cohort finishes but its sibling is still running, the
+// finished reviewer's OWN step-timeline node must read DONE — not stay RUNNING
+// until the whole cohort joins. Before the fix, individual completion only
+// buffered the result and the reviewer nodes were settled together at the
+// barrier, so one-done-one-running showed both as RUNNING.
+func TestCohortMemberSettlesOwnNodeOnCompletion(t *testing.T) {
+	svc, runID := newFlowTestRun(t)
+	nodes := []agentpack.FlowNode{
+		{ID: "coder", Behavior: "agent.delegate"},
+		{ID: "reviewer_correctness", Behavior: "agent.delegate"},
+		{ID: "reviewer_security", Behavior: "agent.delegate"},
+		{ID: "synthesis", Behavior: "hub.inline"},
+	}
+	svc.mu.Lock()
+	if rs := svc.runs[runID]; rs != nil {
+		rs.activeFlowNodes = nodes
+	}
+	svc.mu.Unlock()
+	svc.markFlowEngineDriven(runID)
+	svc.reseedFlowStepRuntime(runID, nodes)
+	// Both reviewers are running; the cohort has 2 members.
+	svc.setFlowStepStatus(context.Background(), runID, "reviewer_correctness", StepStatusRunning)
+	svc.setFlowStepStatus(context.Background(), runID, "reviewer_security", StepStatusRunning)
+
+	// Complete only the first cohort member (Wait blocks until its turn finishes).
+	if _, err := svc.spawnChildRun(context.Background(), runID, SpawnAgentInput{
+		Agent: "reviewer_correctness", Prompt: "review", Wait: true,
+		FlowCohortID: "review-1", Label: "reviewer_correctness", CohortSize: 2,
+	}); err != nil {
+		t.Fatalf("spawnChildRun(reviewer_correctness): %v", err)
+	}
+
+	if got := flowStepStatus(t, svc, runID, "reviewer_correctness"); got != StepStatusDone {
+		t.Errorf("finished cohort member node = %v, want DONE (must settle on its own completion, not wait for the barrier)", got)
+	}
+	if got := flowStepStatus(t, svc, runID, "reviewer_security"); got == StepStatusDone {
+		t.Errorf("still-running sibling node = DONE, want not-DONE (the barrier has not fired — only one member completed)")
+	}
+}
+
 // newFlowEngineTestRun is like newFlowTestRun but marks the run flow-engine-
 // driven with a tracked hub.inline node, so BUG-231's setFlowStepAwaitingUser
 // (gated on isFlowEngineDriven + hubInlineNodeID) has something to settle.

@@ -347,6 +347,14 @@ func (s *InteractiveService) notifyHubFlowStarted(parentRunID string) {
 // function doesn't understand degrades to the pre-existing AI-driven
 // behavior rather than silently doing nothing.
 func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID, resultMessage string) bool {
+	// BUG-234: do not auto-advance once the loop has legitimately settled
+	// (blocked/awaiting-user, done, stopped, paused). A child completion that
+	// lands after the loop blocked would otherwise re-spawn the next nodes and,
+	// via the cohort join, flip the hub node back to RUNNING — a runaway that
+	// never lets the settled state stick (the synthesis-step-spins-forever hang).
+	if !s.loopIsAdvancing(parentRunID) {
+		return false
+	}
 	s.mu.Lock()
 	parent := s.runs[parentRunID]
 	if parent == nil || len(parent.activeFlowEdges) == 0 || len(parent.activeFlowNodes) == 0 {
@@ -402,6 +410,16 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 
 	spawnedAny := false
 	for i, node := range targetNodes {
+		// BUG-234: re-check the loop status before EACH spawn, not just at entry.
+		// The loop can transition to blocked/done between the entry gate and here
+		// (e.g. a concurrent hub synthesis turn escalates while this advance
+		// goroutine is resolving targets / building the prompt). Without this
+		// re-check, a completion that entered while "running" would still spawn the
+		// next round's reviewers into an already-settled loop — the runaway that
+		// kept the synthesis step flapping RUNNING after an escalate.
+		if !s.loopIsAdvancing(parentRunID) {
+			break
+		}
 		agentName := flowNodeAgentName(node)
 		if agentName == "" {
 			log.Printf("[flow-executor] auto-advance: node %q has no resolvable agent; skipped", node.ID)
