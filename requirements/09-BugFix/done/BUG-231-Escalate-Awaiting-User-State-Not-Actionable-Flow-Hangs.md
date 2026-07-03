@@ -215,11 +215,11 @@ Each item is a concrete, independently-verifiable outcome. `[x]` = done, `[ ]` =
 
 ## 13. Follow-Up Fixes From Live Testing
 
-Live testing of the feature above (real runner, mixed-verdict review) surfaced 4 further issues. Two were regressions introduced by this bug's own `FlowAwaitingUserCard`/`continueFlow` code and are fixed here as amendments; the other two are pre-existing, unrelated defects and are tracked in a separate doc, [BUG-233](../todo/BUG-233-Flow-Timeline-Staleness-And-Blocked-Card-Diagnostic-Content.md).
+Live testing of the feature above (real runner, mixed-verdict review) surfaced 4 further issues. Two were regressions introduced by this bug's own `FlowAwaitingUserCard`/`continueFlow` code and are fixed here as amendments; the other two are pre-existing, unrelated defects and are tracked (and now also fixed) in a separate doc, [BUG-233](BUG-233-Flow-Timeline-Staleness-And-Blocked-Card-Diagnostic-Content.md).
 
 - **Fixed — form too narrow.** `FlowAwaitingUserCard.tsx`'s feedback `<textarea>` sat as a sibling of `.other-row` (the button row), not inside a flex row, so it never picked up `.text-input`'s `flex: 1` expansion and rendered at the browser default width. Added a dedicated `.flow-awaiting-user-feedback` CSS rule (`width: 100%`, `box-sizing: border-box`, block display) in `styles.css`, and raised `rows` from 2 to 4.
 - **Fixed — Continue while a child agent is focused leaked the resumed turn into both transcripts.** `continueFlow` called `client.continueFlow` unconditionally, without the child-focus guard `sendPrompt`/`stop` already have. Added the same `activeAgentRunId !== parentRunId` check to `store.ts`'s `continueFlow`, calling `backToMainRun()` first so the resumed hub turn streams only into the main transcript.
-- **Deferred to BUG-233** — step timeline shows stale "all done" while a reviewer child is still running (independent refresh-channel race, not caused by this bug's changes).
-- **Deferred to BUG-233** — the blocked card sometimes shows the CA-226 internal diagnostic Summary verbatim instead of the reviewers' actual findings when the hub skips `submit_review_outcome`.
+- **Fixed in BUG-233** — step timeline shows stale "all done" while a reviewer child is still running (turned out to be a server-side synchronization bug, not the client-side refresh-channel race originally suspected).
+- **Fixed in BUG-233** — the blocked card sometimes shows the CA-226 internal diagnostic Summary verbatim instead of the reviewers' actual findings when the hub skips `submit_review_outcome`.
 
 Regression: added `store.test.ts` — `"continueFlow returns to the main run before resuming when a child agent is focused (BUG-231 follow-up)"`.
