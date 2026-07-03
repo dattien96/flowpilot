@@ -329,10 +329,10 @@ The desired state:
 
 ## 10. Definition of Done
 
-- [ ] A validated `internal/agentpack` schema exists for agents, flows, tools, contexts, and prompt templates.
-- [ ] Built-in flows are mirrored into definition storage as read-only rows and recreated by an idempotent sync task when missing.
-- [ ] Chat Mode applies the RAG/context baseline automatically and can optionally select Review Loop via explicit `flowRef` only in Bug sub-mode; Flow Mode can select either a read-only built-in mirror or a user-owned editable flow.
-- [ ] Built-in agents are loaded from pack files with Go literals retained only as temporary fallback.
+- [x] A validated `internal/agentpack` schema exists for agents, flows, tools, contexts, and prompt templates.
+- [x] Built-in flows are mirrored into definition storage as read-only rows and recreated by an idempotent sync task when missing.
+- [x] Chat Mode applies the RAG/context baseline automatically and can optionally select Review Loop via explicit `flowRef` only in Bug sub-mode; Flow Mode can select either a read-only built-in mirror or a user-owned editable flow.
+- [x] Built-in agents are loaded from pack files with Go literals retained only as temporary fallback.
 - [ ] Review Loop runs from a pack definition with no review-specific transition branch in the executor.
 - [ ] RAG Harness runs from a pack definition with no `isPlanStepType` or `isCodingStepType` runtime branch.
 - [ ] Context packages are typed artifacts with producer/consumer bindings defined by flow data.

@@ -252,15 +252,20 @@ function ToolGroup({ tools }) {
 function ApprovalGroup({ items }) {
     const approve = (0, store_1.useStore)((s) => s.approve);
     const [open, setOpen] = (0, react_1.useState)(false);
-    const label = `${items.length} approvals required`;
+    // BUG-182: once every approval in the group has been decided, hide the bulk
+    // action buttons and switch the label to a resolved state — leaving "Approve
+    // all / Deny all" visible after the user already approved all read as if the
+    // action didn't take.
+    const unresolved = items.filter((item) => item.decision === undefined);
+    const label = unresolved.length > 0 ? `${unresolved.length} approvals required` : `${items.length} approvals resolved`;
     const bulkDecide = (decision) => {
         for (const item of items) {
-            if (item.details.decisions.some((d) => d.value === decision)) {
+            if (item.decision === undefined && item.details.decisions.some((d) => d.value === decision)) {
                 void approve(item.approvalId, decision);
             }
         }
     };
-    return ((0, jsx_runtime_1.jsxs)("div", { className: "card-group approval-group", children: [(0, jsx_runtime_1.jsxs)("div", { className: "card-group-head", children: [(0, jsx_runtime_1.jsxs)("button", { type: "button", className: `card-group-summary ${open ? "card-group-summary-open" : ""}`, "aria-expanded": open, "aria-label": label, title: label, onClick: () => setOpen((value) => !value), children: [(0, jsx_runtime_1.jsx)("span", { className: "card-group-caret", children: open ? "▾" : "▸" }), (0, jsx_runtime_1.jsx)("span", { className: "badge badge-warn", children: label })] }), (0, jsx_runtime_1.jsxs)("div", { className: "card-group-bulk-actions", children: [(0, jsx_runtime_1.jsx)("button", { type: "button", className: "btn btn-primary", onClick: () => bulkDecide("approve"), children: "Approve all" }), (0, jsx_runtime_1.jsx)("button", { type: "button", className: "btn btn-danger", onClick: () => bulkDecide("deny"), children: "Deny all" })] })] }), open && ((0, jsx_runtime_1.jsx)("div", { className: "card-group-body", children: items.map((item) => ((0, jsx_runtime_1.jsx)(ApprovalCard_1.ApprovalCard, { approvalId: item.approvalId, details: item.details, decision: item.decision }, item.approvalId))) }))] }));
+    return ((0, jsx_runtime_1.jsxs)("div", { className: "card-group approval-group", children: [(0, jsx_runtime_1.jsxs)("div", { className: "card-group-head", children: [(0, jsx_runtime_1.jsxs)("button", { type: "button", className: `card-group-summary ${open ? "card-group-summary-open" : ""}`, "aria-expanded": open, "aria-label": label, title: label, onClick: () => setOpen((value) => !value), children: [(0, jsx_runtime_1.jsx)("span", { className: "card-group-caret", children: open ? "▾" : "▸" }), (0, jsx_runtime_1.jsx)("span", { className: "badge badge-warn", children: label })] }), unresolved.length > 0 && ((0, jsx_runtime_1.jsxs)("div", { className: "card-group-bulk-actions", children: [(0, jsx_runtime_1.jsx)("button", { type: "button", className: "btn btn-primary", onClick: () => bulkDecide("approve"), children: "Approve all" }), (0, jsx_runtime_1.jsx)("button", { type: "button", className: "btn btn-danger", onClick: () => bulkDecide("deny"), children: "Deny all" })] }))] }), open && ((0, jsx_runtime_1.jsx)("div", { className: "card-group-body", children: items.map((item) => ((0, jsx_runtime_1.jsx)(ApprovalCard_1.ApprovalCard, { approvalId: item.approvalId, details: item.details, decision: item.decision }, item.approvalId))) }))] }));
 }
 // Grouped ask UI for questions. Options can differ per question (arbitrary choice
 // sets), so — unlike approvals — there is no generic single-click bulk action; the

@@ -444,6 +444,55 @@ Run these scenarios yourself after deployment. Each scenario lists the **setup**
 
 ---
 
+### Scenario 11 — CP-42 Built-in RAG Harness Mirrors Into Workflows/Steps And Runs Node-By-Node
+
+**Setup:** Desktop app, Flow Mode, a project workspace signed in to Supabase. `internal/agentpack/flow-pack/flows/rag-harness.yaml` is the source of truth (nodes `context`→`implement`→`validate`→`audit`, back-edge `validate→implement when continue`, `builtin.chatBaseline: true`).
+
+**Action:**
+1. Open Settings → Workflows. Confirm a **"Built-in"**-badged workflow exists for RAG Harness (mirrored from the pack into the `workflows`/`workflow_steps` tables — same mechanism as Review Loop, no separate `flow_definitions` table).
+2. Open its steps list and confirm exactly 4 steps exist with `behavior_id` values `context.produce`, `agent.delegate`, `command.validate`, `artifact.audit_draft` (in that order), and that the `agent.delegate` step references `agents/coder.md`.
+3. Start a Flow Mode run against this built-in (or its clone) with a real task.
+
+**Expected:**
+- [ ] The `context` node (an **inline** node, `run: inline`, `lifecycle: once`) auto-starts as the flow's entry node — the run is not inert waiting for a user-authored "Plan" step by that literal name.
+- [ ] `EventFlowContextPackage` is emitted exactly as in Scenario 1, driven by the `context.produce` behavior handler, not by a hardcoded "Plan" step-type check.
+- [ ] The `implement` node (delegate, `agents/coder.md`) receives `main_context: flow_context_package.v1` as declared in its `inputs`, and its prompt is composed from `promptTemplate: prompts/flow-context-handoff.md`.
+- [ ] The `validate` node runs inline via `command.validate` and, on failure, the `validate→implement when continue` back-edge re-enters `implement` — matching Scenario 5's retry behavior, but driven by the YAML edge instead of a `isCodingStepType`/`isPlanStepType` literal branch.
+- [ ] The `audit` node runs last, matching Scenario 9's audit draft behavior.
+- [ ] End-to-end node sequence and events are behaviorally identical to Scenario 1, even though the underlying step identification is now behavior-ID-based.
+
+---
+
+### Scenario 12 — Custom Step Names Still Classify Correctly (Behavior-ID, Not Literal Name)
+
+**Setup:** Settings → Workflows. Clone the built-in RAG Harness flow (or create a new user-owned flow from scratch).
+
+**Action:**
+1. In the clone, rename the steps to non-"Plan"/non-"Coding" names, e.g. rename the context step to `gather_ctx` and the delegate step to `write_code` (or any arbitrary label). Keep their `behavior_id` fields set to `context.produce` and `agent.delegate` respectively (via the step editor's behavior selector, not the step's display name/`step_type`).
+2. Save the clone.
+3. Run this cloned flow with a real task.
+
+**Expected:**
+- [ ] `classifyStepBehavior` resolves the renamed steps correctly via their `BehaviorID` field (`context.produce` → treated as the Plan-equivalent step; `agent.delegate` → treated as the Coding-equivalent step) — despite neither step being named "plan" or "coding".
+- [ ] The renamed context step still triggers `FlowContextPackage` emission; the renamed delegate step still receives the context handoff prompt with the `[FlowPilot flow context package]` sentinel.
+- [ ] `findPlanStepID`-style lookback (used to find the most recent Plan-equivalent step preceding a Coding-equivalent step) still finds `gather_ctx` even though it is not literally named "Plan".
+- [ ] This confirms `flow_context_handoff.go`'s `isPlanStepType`/`isCodingStepType` route through `agentpack.NormalizeBehaviorID` rather than string-matching the step's name/`step_type` (CA-147/CP-42 `P-3`).
+
+---
+
+### Scenario 13 — Legacy `step_type`-Only Flow Still Migrates Correctly
+
+**Setup:** A workflow whose steps predate CP-42 and only have a legacy `step_type` value (`plan`/`planning`/`design` or `coding`/`implementation`/`code`) with no `behavior_id` set — i.e. a flow created before the pack refactor, or one authored without ever touching the new behavior-ID field.
+
+**Action:** Run this legacy flow through the current runner build.
+
+**Expected:**
+- [ ] `classifyStepBehavior` falls back to normalizing the legacy `step_type` value (since `behaviorID` is empty) and still correctly classifies the step as Plan-equivalent or Coding-equivalent.
+- [ ] Context package emission and handoff behave identically to a step with an explicit `behavior_id` — no regression for flows that predate this refactor.
+- [ ] No crash or "unclassifiable step" error occurs for a legacy `step_type` value that the alias table recognizes.
+
+---
+
 ### Failure Cases to Verify
 
 | Case | How to trigger | Expected |
@@ -454,6 +503,9 @@ Run these scenarios yourself after deployment. Each scenario lists the **setup**
 | Runner restart after Plan package creation | Kill runner after Plan step, restart | Coding step resumes; `EventFlowContextPackage` is found in persisted events; new package NOT rebuilt |
 | Supabase unavailable | Disconnect Supabase during run | Run proceeds locally; no crash; `sessions.ndjson` is the source of truth |
 | Validation command is empty string | Leave validation command blank in step config | `status: skipped_no_command`; no testing step execution; Audit step proceeds to draft |
+| Mirrored RAG Harness row deleted from `workflows` table mid-session | Delete the built-in RAG Harness row directly in Supabase, then start/select it again | `ResolveBuiltin` recreates the mirror row (`workflows` + `workflow_steps`) from the embedded pack before the run starts; if the recreate upsert itself fails, the run still proceeds using the embedded-pack-sourced definition rather than failing outright |
+| A step has neither `behavior_id` nor a recognized legacy `step_type` | Author a step with `step_type: "some-custom-category"` and no `behavior_id` | `classifyStepBehavior` returns `ok=false`; the step is treated as unclassifiable (not silently mis-treated as Plan or Coding) — verify no context package is wrongly attached |
+| Domain-hardcode guard regression | Add a literal `"coding"` or `"plan"` string to `flow_context_handoff.go` and run `go test ./internal/runner/... -run TestDomainHardcodeGuardMatchesFrozenBaseline` | Test fails with a count mismatch against the frozen baseline (currently 0 for this file) — confirms the RAG Harness path stays free of new literal step-name branches |
 
 ---
 

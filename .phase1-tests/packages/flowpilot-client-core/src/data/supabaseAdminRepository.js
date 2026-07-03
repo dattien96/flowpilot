@@ -137,9 +137,6 @@ function mapWorkflowStep(row) {
         stepType: String(row.step_type ?? ""),
         orderIndex: Number(row.order_index ?? 0),
         isEnabled: Boolean(row.is_enabled ?? true),
-        providerOverride: row.provider_override ? String(row.provider_override) : null,
-        modelOverride: row.model_override ? String(row.model_override) : null,
-        reasoningEffortOverride: row.reasoning_effort_override ? String(row.reasoning_effort_override) : null,
         requiresApproval: Boolean(row.requires_approval ?? true),
         createdAt: String(row.created_at ?? ""),
         updatedAt: String(row.updated_at ?? ""),
@@ -482,7 +479,20 @@ class SupabaseAdminRepository {
                 .maybeSingle();
             assertNoError(existingError, "Unable to load workflow before saving.");
             if (existing && existing.editable === false) {
-                throw new Error("This workflow is a built-in template and cannot be edited. Clone it first.");
+                const updatePayload = {
+                    model_override: workflow.modelOverride ?? null,
+                    reasoning_effort_override: workflow.reasoningEffortOverride ?? null,
+                    yolo_mode: workflow.yoloMode ?? false,
+                    updated_at: now(),
+                };
+                const { data, error } = await this.supabase
+                    .from("workflows")
+                    .update(updatePayload)
+                    .eq("id", workflow.id)
+                    .select("*")
+                    .single();
+                assertNoError(error, "Unable to save built-in workflow overrides.");
+                return mapWorkflow(data);
             }
         }
         const payload = {
@@ -520,9 +530,6 @@ class SupabaseAdminRepository {
                     step_type: step.stepType,
                     order_index: step.orderIndex ?? index,
                     is_enabled: step.isEnabled ?? true,
-                    provider_override: step.providerOverride ?? null,
-                    model_override: step.modelOverride ?? null,
-                    reasoning_effort_override: step.reasoningEffortOverride ?? null,
                     requires_approval: step.requiresApproval ?? true,
                     node_id: step.nodeId ?? null,
                     behavior_id: step.behaviorId ?? null,
@@ -603,9 +610,6 @@ class SupabaseAdminRepository {
                 step_type: step.stepType,
                 order_index: step.orderIndex,
                 is_enabled: step.isEnabled,
-                provider_override: step.providerOverride,
-                model_override: step.modelOverride,
-                reasoning_effort_override: step.reasoningEffortOverride,
                 requires_approval: step.requiresApproval,
                 node_id: step.nodeId,
                 behavior_id: step.behaviorId,

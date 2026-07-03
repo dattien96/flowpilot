@@ -8,6 +8,7 @@ const KIND_LABELS = {
     done: "Completed",
     approval: "Approvals",
     question: "Questions",
+    blocked: "Paused",
 };
 function shouldCollapseToasts(count) {
     return count >= exports.COLLAPSIBLE_TOAST_THRESHOLD;
@@ -17,6 +18,7 @@ function buildToastGroupSummary(toasts) {
         done: 0,
         approval: 0,
         question: 0,
+        blocked: 0,
     };
     for (const toast of toasts) {
         counts[toast.kind] += 1;
