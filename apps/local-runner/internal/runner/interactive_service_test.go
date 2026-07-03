@@ -1511,6 +1511,191 @@ func newFlowTestRun(t *testing.T) (*InteractiveService, string) {
 	return svc, parent.RunID
 }
 
+// newFlowEngineTestRun is like newFlowTestRun but marks the run flow-engine-
+// driven with a tracked hub.inline node, so BUG-231's setFlowStepAwaitingUser
+// (gated on isFlowEngineDriven + hubInlineNodeID) has something to settle.
+func newFlowEngineTestRun(t *testing.T) (*InteractiveService, string) {
+	t.Helper()
+	svc, runID := newFlowTestRun(t)
+	nodes := []agentpack.FlowNode{
+		{ID: "coder", Behavior: "agent.delegate"},
+		{ID: "synthesis", Behavior: "hub.inline"},
+	}
+	svc.mu.Lock()
+	if rs := svc.runs[runID]; rs != nil {
+		rs.activeFlowNodes = nodes
+	}
+	svc.mu.Unlock()
+	svc.markFlowEngineDriven(runID)
+	svc.reseedFlowStepRuntime(runID, nodes)
+	svc.setFlowStepStatus(context.Background(), runID, "synthesis", StepStatusRunning)
+	return svc, runID
+}
+
+func flowStepStatus(t *testing.T, svc *InteractiveService, runID, nodeID string) RuntimeWorkflowStepStatus {
+	t.Helper()
+	steps, err := svc.workflowStore.LoadRunSteps(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("LoadRunSteps: %v", err)
+	}
+	for _, st := range steps {
+		if st.ID == nodeID {
+			return st.Status
+		}
+	}
+	t.Fatalf("step %q not found in run %q", nodeID, runID)
+	return ""
+}
+
+// TestApplyFlowControlEscalateSettlesHubToWaitingUser is the regression test
+// for BUG-231: an escalate outcome must be a non-terminal "awaiting user"
+// pause, not a hang. The hub inline node must move to WAITING_USER_APPROVAL
+// (not stay RUNNING, not go FAILED) and the loop must carry BlockReason
+// "escalate" so the desktop can render the correct recovery affordance.
+func TestApplyFlowControlEscalateSettlesHubToWaitingUser(t *testing.T) {
+	svc, runID := newFlowEngineTestRun(t)
+	result, err := svc.applyFlowControl(runID, FlowControlInput{Status: "escalate", Summary: "reviewers disagree"})
+	if err != nil {
+		t.Fatalf("applyFlowControl(escalate): %v", err)
+	}
+	if result.NextAction != "awaiting_user" {
+		t.Errorf("NextAction = %q, want awaiting_user", result.NextAction)
+	}
+	snap := svc.agentGraphSnapshot(runID)
+	if snap.LoopState.Status != "blocked" {
+		t.Errorf("loop.Status = %q, want blocked", snap.LoopState.Status)
+	}
+	if snap.LoopState.BlockReason != "escalate" {
+		t.Errorf("loop.BlockReason = %q, want escalate", snap.LoopState.BlockReason)
+	}
+	waitLoop(t, "hub node reaches WAITING_USER_APPROVAL", time.Second, func() bool {
+		return flowStepStatus(t, svc, runID, "synthesis") == StepStatusWaitingUserApr
+	})
+}
+
+// TestApplyFlowControlCapReachedSettlesHubToWaitingUser mirrors the escalate
+// test for the cap-reached "continue" branch: BlockReason must be "cap", and
+// the hub node must also move to WAITING_USER_APPROVAL rather than staying
+// RUNNING.
+func TestApplyFlowControlCapReachedSettlesHubToWaitingUser(t *testing.T) {
+	svc, runID := newFlowEngineTestRun(t)
+	svc.agentOrchestrator.setLoop(runID, AgentLoopState{Status: "running", Cap: 2, RoundCap: 2, Round: 1})
+	result, err := svc.applyFlowControl(runID, FlowControlInput{Status: "continue", Summary: "still open issues"})
+	if err != nil {
+		t.Fatalf("applyFlowControl(continue): %v", err)
+	}
+	if result.NextAction != "awaiting_user" {
+		t.Errorf("NextAction = %q, want awaiting_user", result.NextAction)
+	}
+	snap := svc.agentGraphSnapshot(runID)
+	if snap.LoopState.BlockReason != "cap" {
+		t.Errorf("loop.BlockReason = %q, want cap", snap.LoopState.BlockReason)
+	}
+	waitLoop(t, "hub node reaches WAITING_USER_APPROVAL", time.Second, func() bool {
+		return flowStepStatus(t, svc, runID, "synthesis") == StepStatusWaitingUserApr
+	})
+}
+
+// TestResumeFlowWithFeedbackAutoExtendsOnlyForCap is the regression test for
+// BUG-231 D-6: Continue must auto-raise the cap when the block reason was
+// the round cap, but must NOT touch the cap for a genuine escalate — an
+// escalate isn't a capacity problem, so bumping the cap would be a no-op at
+// best and misleading at worst.
+func TestResumeFlowWithFeedbackAutoExtendsOnlyForCap(t *testing.T) {
+	t.Run("cap reason auto-extends", func(t *testing.T) {
+		svc, runID := newFlowEngineTestRun(t)
+		svc.agentOrchestrator.setLoop(runID, AgentLoopState{Status: "blocked", BlockReason: "cap", Cap: 3, RoundCap: 3, Round: 3})
+		snap, err := svc.resumeFlowWithFeedback(runID, "")
+		if err != nil {
+			t.Fatalf("resumeFlowWithFeedback: %v", err)
+		}
+		if snap.LoopState.Cap != 5 {
+			t.Errorf("Cap after Continue on a cap block = %d, want 5 (3+2)", snap.LoopState.Cap)
+		}
+		if snap.LoopState.Status != "running" || snap.LoopState.BlockReason != "" {
+			t.Errorf("status/blockReason after Continue = %q/%q, want running/\"\"", snap.LoopState.Status, snap.LoopState.BlockReason)
+		}
+	})
+
+	t.Run("escalate reason does not touch cap", func(t *testing.T) {
+		svc, runID := newFlowEngineTestRun(t)
+		svc.agentOrchestrator.setLoop(runID, AgentLoopState{Status: "blocked", BlockReason: "escalate", Cap: 3, RoundCap: 3, Round: 1})
+		snap, err := svc.resumeFlowWithFeedback(runID, "prioritize the security reviewer's finding")
+		if err != nil {
+			t.Fatalf("resumeFlowWithFeedback: %v", err)
+		}
+		if snap.LoopState.Cap != 3 {
+			t.Errorf("Cap after Continue on an escalate block = %d, want unchanged 3", snap.LoopState.Cap)
+		}
+		if snap.LoopState.Status != "running" || snap.LoopState.BlockReason != "" {
+			t.Errorf("status/blockReason after Continue = %q/%q, want running/\"\"", snap.LoopState.Status, snap.LoopState.BlockReason)
+		}
+	})
+}
+
+// TestResumeFlowWithFeedbackNoopWhenNotBlocked proves Continue is safe to
+// call more than once — a run that already left "blocked" is left untouched.
+func TestResumeFlowWithFeedbackNoopWhenNotBlocked(t *testing.T) {
+	svc, runID := newFlowEngineTestRun(t)
+	svc.agentOrchestrator.setLoop(runID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3, Round: 1})
+	snap, err := svc.resumeFlowWithFeedback(runID, "ignored")
+	if err != nil {
+		t.Fatalf("resumeFlowWithFeedback: %v", err)
+	}
+	if snap.LoopState.Status != "running" || snap.LoopState.Cap != 3 {
+		t.Errorf("no-op resume changed state: status=%q cap=%d", snap.LoopState.Status, snap.LoopState.Cap)
+	}
+}
+
+// TestResumeFlowWithFeedbackReinvokesHubSynthesisTurn proves Continue
+// actually re-runs the hub's synthesis turn (not just flips loop state) and
+// embeds the user's feedback directly in that turn's prompt (D-5) — the same
+// reliable-delivery pattern cohort-join notes use, rather than relying
+// solely on pendingAgentContext rendering.
+func TestResumeFlowWithFeedbackReinvokesHubSynthesisTurn(t *testing.T) {
+	promptCh := make(chan string, 1)
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, req TurnRequest, b TurnBridge) error {
+				select {
+				case promptCh <- req.Prompt:
+				default:
+				}
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "ok"})
+				return nil
+			})
+		},
+	})
+	svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	runID := parent.RunID
+	svc.mu.Lock()
+	if rs := svc.runs[runID]; rs != nil {
+		rs.autoOrchestrate = true
+	}
+	svc.mu.Unlock()
+	svc.agentOrchestrator.setLoop(runID, AgentLoopState{Status: "blocked", BlockReason: "escalate", Cap: 3, RoundCap: 3, Round: 1})
+
+	if _, err := svc.resumeFlowWithFeedback(runID, "prioritize the security reviewer's finding"); err != nil {
+		t.Fatalf("resumeFlowWithFeedback: %v", err)
+	}
+
+	select {
+	case prompt := <-promptCh:
+		if !strings.Contains(prompt, "prioritize the security reviewer's finding") {
+			t.Errorf("synthesis re-invoke prompt does not embed the user's feedback: %q", prompt)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the hub synthesis turn to be re-invoked")
+	}
+}
+
 func TestApplyFlowControlDoneTerminates(t *testing.T) {
 	svc, runID := newFlowTestRun(t)
 	svc.agentOrchestrator.mutateLoop(runID, func(st AgentLoopState) AgentLoopState {
@@ -1613,12 +1798,28 @@ func TestExtendCapRaisesCap(t *testing.T) {
 	}
 }
 
-func TestExtendCapRejectedAtMax(t *testing.T) {
+// TestExtendCapNoLongerRejectedPastFormerMax is the regression test for
+// BUG-231 D-8: ExtendMax used to reject a third extension (ExtendCount >= 2).
+// That limit only ever bounded this user-triggered action, so its only
+// remaining effect was to block the human indefinitely — the exact
+// awaiting-user wedge BUG-231 fixes. Retired: extendCap must keep succeeding
+// (and keep raising the cap) past the old limit.
+func TestExtendCapNoLongerRejectedPastFormerMax(t *testing.T) {
 	svc, runID := newFlowTestRun(t)
 	svc.agentOrchestrator.setLoop(runID, AgentLoopState{Status: "blocked", Cap: 7, RoundCap: 7, Round: 4, ExtendCount: 2})
-	_, err := svc.extendCap(runID)
-	if err == nil {
-		t.Error("expected error when ExtendCount >= ExtendMax(2), got nil")
+	result, err := svc.extendCap(runID)
+	if err != nil {
+		t.Fatalf("extendCap past the former ExtendMax: unexpected error: %v", err)
+	}
+	if result.Cap != 9 {
+		t.Errorf("Cap after third extend = %d, want 9 (7+2)", result.Cap)
+	}
+	snap := svc.agentGraphSnapshot(runID)
+	if snap.LoopState.ExtendCount != 3 {
+		t.Errorf("ExtendCount = %d, want 3", snap.LoopState.ExtendCount)
+	}
+	if snap.LoopState.Status != "running" {
+		t.Errorf("status after extend = %q, want running", snap.LoopState.Status)
 	}
 }
 

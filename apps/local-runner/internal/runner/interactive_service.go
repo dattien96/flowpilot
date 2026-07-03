@@ -531,11 +531,13 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 			st.Round++
 			if cap > 0 && st.Round >= cap {
 				st.Status = "blocked"
+				st.BlockReason = "cap" // BUG-231: distinguishes cap-reached from escalate for the resume UX
 				st.GateReason = fmt.Sprintf("cap %d reached with %d open issue(s)", cap, st.OpenIssues)
 				result = FlowControlResult{Status: "blocked", Round: st.Round, Cap: cap, OpenIssues: st.OpenIssues, NextAction: "awaiting_user"}
 			} else {
 				if st.Status == "" || st.Status == "blocked" {
 					st.Status = "running"
+					st.BlockReason = ""
 				}
 				result = FlowControlResult{Status: "continue", Round: st.Round, Cap: cap, OpenIssues: st.OpenIssues, NextAction: "looping"}
 			}
@@ -562,12 +564,17 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 					s.setFlowStepStatus(context.Background(), parentRunID, entryID, StepStatusRunning)
 				}()
 			}
+		} else if result.NextAction == "awaiting_user" {
+			// BUG-231: the round cap paused the loop awaiting the user — settle the
+			// hub node to WAITING_USER_APPROVAL instead of leaving it RUNNING.
+			go s.setFlowStepAwaitingUser(context.Background(), parentRunID)
 		}
 		return result, nil
 
 	case "escalate":
 		snap := s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
 			st.Status = "blocked"
+			st.BlockReason = "escalate" // BUG-231
 			if in.Summary != "" {
 				st.GateReason = in.Summary
 			} else {
@@ -577,6 +584,11 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 		})
 		s.emitAgentGraph(parentRunID, snap)
 		go s.persistParentSession(parentRunID)
+		// BUG-231: escalate is a deliberate, non-terminal "awaiting user" pause —
+		// settle the hub node to WAITING_USER_APPROVAL (not RUNNING, which reads
+		// as a hang, and not FAILED, which reads as an error) so the step
+		// timeline honestly shows the flow is waiting on the human, not stuck.
+		go s.setFlowStepAwaitingUser(context.Background(), parentRunID)
 		return FlowControlResult{Status: "blocked", Round: snap.LoopState.Round, Cap: effectiveCap(snap.LoopState), NextAction: "awaiting_user"}, nil
 
 	default:
@@ -595,17 +607,17 @@ func (s *InteractiveService) flowControlSubmittedForTurn(runID, turnID string) b
 }
 
 // extendCap raises the flow cap by ExtendBy and resumes from blocked.
-// Rejected once ExtendCount >= ExtendMax (default 2).
+//
+// BUG-231 (D-8): ExtendMax previously rejected this once ExtendCount reached
+// 2. That limit only ever bounded this USER-triggered action (never any auto
+// path), so its only remaining effect was to block the human after two
+// extensions — reproducing the exact "awaiting user with no way to act"
+// wedge this bug fixes. Retired: ExtendCount still increments for
+// display/telemetry, but no longer rejects the extend.
 func (s *InteractiveService) extendCap(parentRunID string) (FlowControlResult, error) {
 	const defaultExtendBy = 2
-	const defaultExtendMax = 2
-	var extendErr error
 	var result FlowControlResult
 	snap := s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
-		if st.ExtendCount >= defaultExtendMax {
-			extendErr = fmt.Errorf("extendCap: limit %d reached (ExtendCount=%d)", defaultExtendMax, st.ExtendCount)
-			return st
-		}
 		cap := effectiveCap(st)
 		st.Cap = cap + defaultExtendBy
 		// mirror RoundCap so existing board readers see the new limit
@@ -614,19 +626,80 @@ func (s *InteractiveService) extendCap(parentRunID string) (FlowControlResult, e
 		if st.Status == "blocked" {
 			st.Status = "running"
 			st.GateReason = ""
+			st.BlockReason = ""
 		}
 		result = FlowControlResult{Status: st.Status, Round: st.Round, Cap: st.Cap, NextAction: "looping"}
 		return st
 	})
-	if extendErr != nil {
-		return FlowControlResult{}, extendErr
-	}
 	s.emitAgentGraph(parentRunID, snap)
 	go s.persistParentSession(parentRunID)
 	if snap.LoopState.Status == "running" {
 		s.resumePendingLoopWork(parentRunID)
 	}
 	return result, nil
+}
+
+// resumeFlowWithFeedback is the BUG-231 "Continue" action: it answers the
+// hub's escalate/cap-reached pause and lets the hub re-decide, rather than
+// hard-routing anywhere itself (D-5). It:
+//  1. clears the block — auto-raising the cap by ExtendBy only when the block
+//     reason was the round cap (D-6); an escalate block needs no cap change,
+//  2. settles the hub inline node back to RUNNING,
+//  3. re-invokes the hub's synthesis turn with the user's feedback (if any)
+//     embedded directly in the prompt, the same reliable-delivery pattern
+//     CA-226/cohort-join notes use, instead of relying solely on
+//     pendingAgentContext rendering.
+//
+// The hub then calls submit_review_outcome again and this same applyFlowControl
+// routes the result: approved->done, changes_requested->coder, blocked->pause
+// again (the desktop form reappears). No-op (returns the current snapshot,
+// no error) if the loop is not currently blocked — safe to call more than once.
+func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string) (AgentGraphSnapshot, error) {
+	s.mu.Lock()
+	_, runExists := s.runs[parentRunID]
+	s.mu.Unlock()
+	if !runExists {
+		return AgentGraphSnapshot{}, fmt.Errorf("resumeFlowWithFeedback: run %q not found", parentRunID)
+	}
+
+	feedback = strings.TrimSpace(feedback)
+	const defaultExtendBy = 2
+	wasBlocked := false
+	snap := s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
+		if st.Status != "blocked" {
+			return st
+		}
+		wasBlocked = true
+		if st.BlockReason == "cap" {
+			cap := effectiveCap(st)
+			st.Cap = cap + defaultExtendBy
+			st.RoundCap = st.Cap
+			st.ExtendCount++
+		}
+		st.Status = "running"
+		st.GateReason = ""
+		st.BlockReason = ""
+		return st
+	})
+	if !wasBlocked {
+		return snap, nil
+	}
+
+	s.emitAgentGraph(parentRunID, snap)
+	go s.persistParentSession(parentRunID)
+	if s.isFlowEngineDriven(parentRunID) {
+		if hubID := hubInlineNodeID(s.activeFlowNodesFor(parentRunID)); hubID != "" {
+			go s.setFlowStepStatus(context.Background(), parentRunID, hubID, StepStatusRunning)
+		}
+	}
+
+	resumeNote := ""
+	if feedback != "" {
+		resumeNote = "[flow-engine] The flow was paused awaiting your input. User guidance:\n" + feedback +
+			"\n\n---\n\nRe-evaluate with this guidance in mind, then call submit_review_outcome with your decision."
+	}
+	go s.maybeAutoReinvokeHubWithNote(parentRunID, resumeNote)
+	return snap, nil
 }
 
 // buildCohortNote constructs the single consolidated pendingAgentContext note for a

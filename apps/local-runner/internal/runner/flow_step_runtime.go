@@ -156,6 +156,22 @@ func (s *InteractiveService) setFlowStepStatus(ctx context.Context, parentRunID,
 	}
 }
 
+// setFlowStepAwaitingUser transitions the flow's hub inline node (the
+// control/synthesis node) to WAITING_USER_APPROVAL (BUG-231) when the loop
+// pauses awaiting a human decision — escalate, or the round cap being
+// reached — instead of leaving it RUNNING (which reads as a hang) or marking
+// it FAILED (which reads as an error/terminal step). No-op for a run that
+// isn't flow-engine-driven or has no hub inline node. Best-effort, like
+// setFlowStepStatus.
+func (s *InteractiveService) setFlowStepAwaitingUser(ctx context.Context, parentRunID string) {
+	if !s.isFlowEngineDriven(parentRunID) {
+		return
+	}
+	if hubID := hubInlineNodeID(s.activeFlowNodesFor(parentRunID)); hubID != "" {
+		s.setFlowStepStatus(ctx, parentRunID, hubID, StepStatusWaitingUserApr)
+	}
+}
+
 // setFlowStepPosture stamps nodeID's OWN actually-resolved provider/model
 // (BUG-228 display follow-up) so the step-timeline UI shows what that node
 // really ran on. Without this, every flow-engine step row stayed blank

@@ -59,6 +59,7 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/agent-loop/stop", s.handleStopAgentLoop)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/flow-control", s.handleSubmitFlowControl)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/agent-loop/extend-cap", s.handleExtendCap)
+	mux.HandleFunc("POST /client/workflow-runs/{runId}/agent-loop/continue", s.handleContinueFlow)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/gate-decision", s.handleGateDecision)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/gate-agreement", s.handleGateAgreement)
 
@@ -1218,6 +1219,30 @@ func (s *InteractiveService) handleExtendCap(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeInteractiveJSON(w, http.StatusOK, s.agentGraphSnapshot(runID))
+}
+
+// handleContinueFlow handles POST /client/workflow-runs/{runId}/agent-loop/continue.
+// Body: {"feedback": "..."} (feedback optional). BUG-231's unified "Continue"
+// action: resumes a blocked/awaiting-user loop, letting the hub re-decide.
+// Returns an AgentGraphSnapshot so the caller can update without a separate
+// refresh round-trip, matching handleExtendCap's contract.
+func (s *InteractiveService) handleContinueFlow(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("runId")
+	var body struct {
+		Feedback string `json:"feedback"`
+	}
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_request", "invalid request body"))
+			return
+		}
+	}
+	snap, err := s.resumeFlowWithFeedback(runID, body.Feedback)
+	if err != nil {
+		writeInteractiveError(w, newAPIErr(http.StatusUnprocessableEntity, "continue_flow_failed", err.Error()))
+		return
+	}
+	writeInteractiveJSON(w, http.StatusOK, snap)
 }
 
 func fakeArtifacts(runID string) []Artifact {

@@ -187,6 +187,15 @@ type AgentLoopState struct {
 	Mode        string `json:"mode,omitempty"` // "keyword" | "explicit"
 	ActiveNode  string `json:"activeNode,omitempty"`
 	ExtendCount int    `json:"extendCount,omitempty"`
+	// BlockReason distinguishes WHY Status=="blocked" (BUG-231): "cap" (the
+	// round cap was reached mid-loop, via "continue") vs. "escalate" (the
+	// flow's control tool explicitly escalated, e.g. submit_review_outcome
+	// status=blocked). Both are non-terminal "awaiting user" pauses, but the
+	// desktop's recovery affordance differs in how it resumes (see
+	// resumeFlowWithFeedback): a "cap" block auto-raises the cap, an
+	// "escalate" block does not need to. Cleared ("") whenever Status leaves
+	// "blocked".
+	BlockReason string `json:"blockReason,omitempty"`
 }
 
 type AgentGraphSnapshot struct {
