@@ -9,7 +9,7 @@
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-23`
-- Last Updated: `2026-06-30`
+- Last Updated: `2026-07-01`
 - Parent Documents: [SD-19: Agent Flow Engine](../../06-System-Tech-Design/SD-19-Agent-Flow-Engine.md), [SD-18: Main-Hub Agent Review Loop](../../06-System-Tech-Design/SD-18-Main-Hub-Agent-Review-Loop.md), [SS-16: Agent Flow Engine](../../05-System-Specs/SS-16-Agent-Flow-Engine.md), [SS-15: Agent Review Loop (Review Until Clean)](../../05-System-Specs/SS-15-Agent-Review-Loop-Until-Clean.md)
 - Child Documents: [Task-089: Generic Flow Vocabulary And flow_control Handler](../../08-Task/done/Task-089-Generic-Flow-Vocabulary-And-Flow-Control-Handler.md), [Task-090: Bounded Flow Runtime Executor](../../08-Task/done/Task-090-Bounded-Flow-Runtime-Executor.md), [Task-085: Unified Local Run Persistence](../../08-Task/done/Task-085-Unified-Local-Run-Persistence.md), [Task-091: Review-Loop Template (Outcome Tool, Config, Legacy Gate)](../../08-Task/done/Task-091-Review-Loop-Template.md), [Task-092: Consolidated Multi-Result Join Note](../../08-Task/done/Task-092-Consolidated-Multi-Result-Join-Note.md), [Task-093: Bounded Auto-Reinvocation Of The Hub](../../08-Task/done/Task-093-Bounded-Auto-Reinvocation-Of-The-Hub.md), [Task-094: agent-review-loop Skill And synthesizer Built-in](../../08-Task/done/Task-094-Agent-Review-Loop-Skill-And-Synthesizer-Builtin.md), [Task-095: Orchestration Board, Contract, And Client](../../08-Task/done/Task-095-Orchestration-Board-Contract-And-Client.md)
 - Related Documents: [CP-19: Multiple Agents](../done/CP-19-Multiple-Agents.md), [CP-41: RAG Harness Flow Mode](../done/CP-41-RAG-Harness-Flow-Mode.md), [SD-16: Agent Spawn And Tool-Calling Design](../../06-System-Tech-Design/SD-16-Agent-Spawn-And-Tool-Calling-Design.md), [Task-082: Spawn-Agent Tool And Orchestrator Core](../../08-Task/done/Task-082-Spawn-Agent-Tool-And-Orchestrator-Core.md), [Task-084: Dependency Feedback Loop And Orchestration Board](../../08-Task/done/Task-084-Dependency-Feedback-Loop-And-Orchestration-Board.md)
@@ -288,7 +288,8 @@ Use the agent-review-loop skill. Task: add a struct tag to UserRecord. Reviewers
 ```
 
 **Expected:**
-- [ ] Round 1: reviewers call `submit_review_outcome(changes_requested, issues=[...])`.
+- [ ] Round 1: reviewers finish with normal review findings/messages only; they do **not** call `submit_review_outcome` directly.
+- [ ] The synthesis turn (hub or `synthesizer`, depending on configuration) is the only turn that calls `submit_review_outcome(changes_requested, issues=[...])`.
 - [ ] Board shows `round: 2` and the coder node restarts — NOT two separate restarts.
 - [ ] Coder re-entry prompt contains the merged issue list from both reviewers (one note, not two).
 - [ ] Round 2 completes. If approved, board shows `done`. If still `changes_requested`, round 3 starts.
@@ -417,6 +418,7 @@ Use the agent-review-loop skill. Task: [an intentionally ambiguous or contradict
 | Case | How to trigger | Expected |
 |------|---------------|----------|
 | Invalid `submit_review_outcome` status | Manually POST `{"status": "invalid_value"}` to `/flow-control` | Tool error returned; loop state unchanged; no crash |
+| `submit_review_outcome` called from a normal chat or non-hub child | Try to invoke it from a plain chat or reviewer child context | Call is rejected; no loop state is created or mutated |
 | Auto-reinvoke while a turn is in flight | Start a flow run; verify hub doesn't double-fire | Only one reinvoke fires; second is suppressed (single-flight guard) |
 | `cap=0` override | Set cap to 0 in skill config | Treated as default (3); loop runs normally |
 | Child fails mid-turn | Interrupt a child agent artificially | Join note records `failed: <id>`; synthesis proceeds with remaining results |

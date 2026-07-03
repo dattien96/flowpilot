@@ -218,28 +218,87 @@ This is critical for the Workflow Engine. FlowPilot must generate and write to t
 - `ai_runs.provider`, `ai_runs.model_name` and `ai_runs.reasoning_effort` store the actual parameters used for each individual model invocation.
 
 ### 6.2 Resolution Order
-**BUG-165**: for a workflow/step-mode run, the Go-Runner resolves Model in this order at run start, then derives Provider from the resolved model — the lowest (most specific) layer with a value wins:
-1. **Step**: the entry step's own `step_definitions.model`.
-2. **Flow**: the workflow's `workflows.model_override`.
-3. **Project**: `projects.default_model`.
-4. **Unresolved**: If none of the above are configured, there is no default fallback floor (such as `gpt-5.4`). Instead, the workflow/step run is blocked and returned as non-runnable (rendered as disabled/greyed with a tooltip in the UI).
+**BUG-165 / BUG-229**: the Go-Runner resolves Model at run start, then derives Provider from the resolved model — the lowest (most specific) layer with a value wins. The chain depends on the launch shape:
+
+- **Normal workflow launch** (`workflowId` set, entry step): `Step > Flow > Project > Unresolved`.
+  1. **Step**: the entry step's own `step_definitions.model`.
+  2. **Flow**: the workflow's `workflows.model_override`.
+  3. **Project**: `projects.default_model`.
+  4. **Unresolved**: If none of the above are configured, there is no default fallback floor (such as `gpt-5.4`). Instead, the run is blocked and returned as non-runnable (rendered as disabled/greyed with a tooltip in the UI).
+- **Direct single-step launch** (`stepId` set, no workflow context — `launchMode === "step"`): `Step > Unresolved` only.
+  1. **Step**: the selected step's own `step_definitions.model`.
+  2. **Unresolved**: there is no Flow tier (no workflow context) and, unlike the normal-flow chain, **no Project fallback either** — if the step has no configured model, the run is blocked and returned as non-runnable. Falling back to the project default here previously let a step with no model silently run on an unrelated project-wide model instead of surfacing as non-runnable (**BUG-229**).
 
 Reasoning Effort has no equivalent step-type-level tier today (`step_definitions` has no `reasoning_effort` resolution role) and continues to resolve `launchOverride.reasoning_effort ?? workflow.reasoning_effort_override ?? project.default_reasoning_effort ?? "medium"`.
 
 - **Chat mode is exempt**: a `normal_chat` (direct chat) run has no workflow/step context and no chat-controller equivalent for workflow mode — the model the user explicitly selects in the chat controller is sent and used as-is, never routed through this resolution order.
 - Provider is never edited independently; it is derived from the resolved model.
-- **Known limitation**: this order is resolved **once, at run start**, from the workflow's entry step. It is not re-resolved as execution advances to later steps within the same run — genuine per-step model switching during a single run's execution is not yet implemented (tracked as follow-up work, not covered by this resolution logic).
+
+### 6.2.1 Per-Node Override Within A Running Flow (BUG-228)
+
+The chain above resolves one baseline model/provider **for the run**, once, at start. Within that same run, the flow executor (`flow_executor.go`) additionally lets an individual flow-graph node override that baseline at spawn time, depending on the node's kind:
+
+- **Agent node** (`run: delegate`, `behavior: agent.delegate`): every `spawnChildRun` call site in the flow executor resolves the node's own model via `resolveFlowNodeModel` before spawning — it maps the node's `agent:` reference to its bare role name (`agents/reviewer.md` → `reviewer`, the same derivation `flowNodeAgentName` already used for agent-catalog lookup) and looks up the purpose-named `step_definitions` row `flow-agent-delegate-<role>` (the manual workflow builder's "Flow: Coder" / "Flow: Reviewer" catalog entries, **BUG-161**). If that row exists and has a model, `spawnChildRun` uses it — as the top-priority tier, above the (intentionally model-free) agent definition and above inheriting the parent run's model — and derives the child's provider from it the same "model is authoritative" way `createRun` does for the run's own provider (**BUG-171**). If the row doesn't exist or has no model, the node falls back to the pre-existing inherit-from-parent behavior unchanged. Both cohort siblings sharing one agent role (e.g. `reviewer_correctness` and `reviewer_security`, both `agents/reviewer.md`) resolve to the same row — this is a per-role override, not a per-graph-node one.
+- **Inline node** (`run: inline`, `behavior: hub.inline`): executes as the parent run's own turn and never calls `spawnChildRun`, so it always uses the run's own baseline model — no per-node lookup applies or is needed.
+
+This closes the "known limitation" this section previously described (genuine per-step model switching during a single run's execution): a flow *run* still resolves one baseline model at start (§6.2 above, unchanged), but an *agent node* inside that run is no longer forced onto that baseline — it can be independently configured via its role's `step_definitions` row.
 
 ### 6.3 Runner Pseudocode
 
 ```text
-// Workflow/step-mode run start (createRun) — BUG-165.
+// Workflow/step-mode run start (createRun) — BUG-165 / BUG-229.
 // Chat mode (normal_chat) skips this entirely and uses launchOverride.model as-is.
-runModel = launchOverride.model
-    ?? entryStep.step_definitions.model   // Step
-    ?? workflow.model_override            // Flow
-    ?? project.default_model              // Project
-// No default floor (gpt-5.4 is removed)
+
+if workflowId is set (normal workflow launch):
+    runModel = launchOverride.model
+        ?? entryStep.step_definitions.model   // Step
+        ?? workflow.model_override            // Flow
+        ?? project.default_model              // Project
+    // No default floor (gpt-5.4 is removed)
+else if stepId is set (direct single-step launch, no workflow context):
+    runModel = launchOverride.model
+        ?? step.step_definitions.model        // Step only — no Flow, no Project fallback
+
+if runModel == "" {
+    return error("no model configured")
+}
+
+runReasoning = launchOverride.reasoning_effort
+    ?? workflow.reasoning_effort_override
+    ?? project.default_reasoning_effort
+    ?? "medium"
+
+runProvider = providerFrom(runModel)
+```
+
+```text
+// Flow-executor per-node spawn (spawnChildRun) — BUG-228. Runs for every
+// agent.delegate node spawn; inline nodes never reach this at all.
+nodeRole = basename(node.agent, without extension)          // "agents/reviewer.md" -> "reviewer"
+nodeModel = step_definitions["flow-agent-delegate-" + nodeRole]?.model
+
+childModel = nodeModel                                        // BUG-228: node's own role model
+    ?? agentDefinition.model                                  // always empty — packs are model-free
+    ?? (parentProvider == childProvider ? parentModel : providerDefault(childProvider))
+
+childProvider = providerFrom(nodeModel) ?? explicitProvider ?? agentDefinition.provider ?? parentProvider
+```
+
+### 6.3 Runner Pseudocode
+
+```text
+// Workflow/step-mode run start (createRun) — BUG-165 / BUG-229.
+// Chat mode (normal_chat) skips this entirely and uses launchOverride.model as-is.
+
+if workflowId is set (normal workflow launch):
+    runModel = launchOverride.model
+        ?? entryStep.step_definitions.model   // Step
+        ?? workflow.model_override            // Flow
+        ?? project.default_model              // Project
+    // No default floor (gpt-5.4 is removed)
+else if stepId is set (direct single-step launch, no workflow context):
+    runModel = launchOverride.model
+        ?? step.step_definitions.model        // Step only — no Flow, no Project fallback
 
 if runModel == "" {
     return error("no model configured")

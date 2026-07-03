@@ -9,7 +9,7 @@
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-28`
-- Last Updated: `2026-06-30`
+- Last Updated: `2026-07-01`
 - Parent Documents: `SD-17-Context-And-Regression-Engine.md`, `SD-20-Flow-Gate-Rule-Semantics.md`, `SS-13-AI-Followable-Document-Contract.md`
 - Child Documents: [Task-168: Flow Mode Context Package Contract](../../08-Task/done/Task-168-Flow-Mode-Context-Package-Contract.md), [Task-169: Plan To Coding Context Handoff](../../08-Task/done/Task-169-Plan-To-Coding-Context-Handoff.md), [Task-170: Testing Feedback Retry Loop](../../08-Task/done/Task-170-Testing-Feedback-Retry-Loop.md), [Task-171: Audit Step Draft And Commit Prep](../../08-Task/done/Task-171-Audit-Step-Draft-And-Commit-Prep.md)
 - Related Documents: `CP-35-Context-And-Regression-Engine-Rollout.md`, `CP-37-Prompt-Context-Continuity.md`, `Task-096-Commit-History-Ledger.md`, `Task-097-Feature-Catalog-And-Resolver.md`, `Task-157-Improve-Context-Hardness.md`, `Task-161-Per-Feature-Chat-Summary-Timeline.md`, `Task-163-Chat-Summary-Generation-Triggers.md`, `CA-132-prompt-context-continuity-and-provider-handoff.md`, `CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md` (agent-flow engine; `Task-170` retry loop should consume its bounded `flow_control` back-edge + local persistence rather than reimplementing)
@@ -293,7 +293,7 @@ Run these scenarios yourself after deployment. Each scenario lists the **setup**
 
 ### Scenario 1 — Happy Path: Full Plan → Coding → Testing → Audit
 
-**Setup:** A workspace that has `agent-flow-engine` in `change-audit/FEATURE-KEYS.md` and at least 2 commit entries in `.flowpilot/ledger/`. A configured validation command (e.g. `go test ./...`).
+**Setup:** A workspace that has `agent-flow-engine` in `change-audit/FEATURE-KEYS.md` and at least 2 commit entries in `.flowpilot/ledger/`. A configured validation command (e.g. `go test ./...`). Use the built-in/mirrored RAG Harness flow when available.
 
 **Action:**
 1. Open a Flow Mode run with these steps in order: **Plan → Coding → Testing → Audit**.
@@ -304,6 +304,7 @@ Run these scenarios yourself after deployment. Each scenario lists the **setup**
 6. Let the Audit step complete.
 
 **Expected:**
+- [ ] The entry inline context node starts successfully from the flow definition; the run is not inert before Coding begins.
 - [ ] Plan step: `FlowContextPackage` is emitted as `EventFlowContextPackage` in the run events. Package has `featureConfidence: verified` and `featureKey: agent-flow-engine`.
 - [ ] Coding step: prompt starts with `[FlowPilot flow context package]` sentinel. The `## Flow Context Package` section is present. Feature history block and/or chat summary block are included.
 - [ ] Testing step: validation command runs; `EventFlowValidationResult` emitted with `exitCode: 0`. No retry triggered.
