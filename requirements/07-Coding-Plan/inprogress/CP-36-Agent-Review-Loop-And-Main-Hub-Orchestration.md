@@ -306,22 +306,18 @@ Add a struct tag to UserRecord. Reviewers should request changes on round 1 (fin
 
 ### Scenario 3 — Cap Exhaustion → Blocked → Extend Cap
 
-> **⚠️ 2026-07-06 — needs a decision, not yet rewritten.** The skill used to let the prompt say "Cap = 2 rounds" and the *model* would treat that as the limit. That was never Go-enforced cap either: directly reading the code (`effectiveCap` in `agent_orchestrator.go`, and confirming `flow_executor.go` never reads a flow's `Definition.Policy.Cap` when starting a run), the runtime cap for a freshly-started flow is **hardcoded to 3 regardless of the flow's own `policy_cap` value** — no code path currently applies a workflow's configured cap to a new run's loop state at start time. So even before the skill's removal, "cap=2" was a model-cooperative fiction, not a real override; after removal there's no prompt-level mechanism left to fake it either. Two ways forward: (a) rewrite this scenario to just use the real default cap (3) and drive 3 genuinely-rejected rounds (no override needed, still proves blocked→extend works), or (b) treat "workflow policy_cap not wired to runtime loop cap" as a separate bug to fix first. Left as-is below (still shows the old skill-based text) pending that decision — do not treat this scenario as validated.
+> **Resolved 2026-07-06.** Direct code reading confirmed the finding this note previously flagged: `flow_executor.go`'s `startResolvedFlow` never applied a flow's own `Definition.Policy.Cap`/`ExtendBy` to a fresh run's loop state — `effectiveCap()`'s hardcoded fallback of 3, and a hardcoded `defaultExtendBy=2` in `extendCap`/`resumeFlowWithFeedback`, silently governed every flow regardless of its own configured `policy_cap`/`policy_extend_by`. **Fixed**: `startResolvedFlow` now seeds the loop's `Cap`/`RoundCap`/`ExtendBy` from the flow's own policy (falling back to 3/2 when a flow declares none), and both extend call sites read the flow's own `ExtendBy` instead of a hardcoded constant. `Cap`/`Extend by` are now editable Settings fields for any editable (non-built-in) workflow — clone the built-in to set a non-default cap. Regression test: `TestStartResolvedFlowAppliesConfiguredCapAndExtendBy` (`flow_executor_test.go`). Also corrected below: BUG-231 already retired the `ExtendMax` ceiling check entirely (extends no longer have a limit) — the old "third cap-hit: no more extends" expectation was stale even before this fix.
 
-**Setup:** YOLO mode ON. Deliberately give the coder an impossible task so reviewers always reject.
+**Setup:** In Settings → Workflows, clone the built-in Review Loop, set its **Cap** field to 2 (leave **Extend by** at its default of 2). Deliberately give the coder an impossible task so reviewers always reject. Run the clone via **Flow Mode's workflow picker** (a clone isn't offered in Chat Mode's Bug sub-mode picker — see Scenario 9's note on why).
 
-**Action:**
-```
-Use the agent-review-loop skill. Task: [an intentionally ambiguous or contradictory requirement]. Cap = 2 rounds (override in the skill invocation or config).
-```
+**Action:** Start the cloned flow with an intentionally ambiguous/contradictory requirement.
 
 **Expected:**
-- [ ] After round 2, board shows `blocked`, `gateReason` visible.
+- [ ] After round 2 (not 3 — the clone's own Cap=2 takes effect), board shows `blocked`, `gateReason` visible.
 - [ ] `ask_user` fires: options **Extend +2 / Accept as-is / Stop**.
-- [ ] **Choose "Extend +2"**: board shows `cap: 4`, loop continues for up to 2 more rounds.
-- [ ] After a second cap-hit: extend is offered again. Accept it again → `cap: 6` (ceiling = initial + 4).
-- [ ] Third cap-hit with no more extends available: only **Accept as-is / Stop** offered.
-- [ ] **Choose "Stop"**: board shows `stopped`. No further reinvocation.
+- [ ] **Choose "Extend +2"**: board shows `cap: 4` (2 + the clone's ExtendBy=2), loop continues for up to 2 more rounds.
+- [ ] After a second cap-hit: extend is offered again, with no limit on how many times (BUG-231 retired the old ceiling) — accepting again → `cap: 6`.
+- [ ] **Choose "Stop"** on any cap-hit instead: board shows `stopped`. No further reinvocation.
 
 ---
 
@@ -395,9 +391,11 @@ Use the agent-review-loop skill. Task: [an intentionally ambiguous or contradict
 
 ### Scenario 9 — N=3 Parallel Reviewers, Out-of-Order Completion
 
-> **⚠️ 2026-07-06 — needs a decision, not yet rewritten.** The skill let the prompt say "spawn 3 reviewers"; the Go-driven built-in Review Loop's reviewer count (2: correctness + security) is now fixed by `review-loop.yaml`'s own node/edge topology — there is no prompt or Settings control to change it for the built-in flow. Two ways forward: (a) author a **custom flow** in Settings (Task-189: behavior picker + edges canvas) with 1 coder + 3 reviewer nodes sharing a cohort, and run this scenario via **Flow Mode's workflow picker** instead of Chat Mode's Bug picker (custom/cloned flows aren't offered in the chat picker today — only pack-mirrored built-ins with `chatSubModes` set are); or (b) treat this as no longer testable via Chat Mode and keep it as a Flow-Mode-only scenario going forward. Left as-is below (still shows the old skill-based text) pending that decision.
+> **Resolved 2026-07-06.** The retired skill let the prompt say "spawn 3 reviewers"; the built-in Review Loop's reviewer count (2: correctness + security) is fixed by `review-loop.yaml`'s own node/edge topology, with no prompt or Settings control to vary it — so this is now a **Flow-Mode, custom-flow scenario**, not a Chat-Mode one (custom/cloned flows aren't offered in the Chat Mode picker — only pack-mirrored built-ins with `chatSubModes` set are). Confirmed generic, not hardcoded to 2, via `TestCustomFlowWithThreeReviewersJoinsAfterAllComplete` (`flow_executor_test.go`): a from-scratch 1-coder + 3-reviewer flow fans out all 3 and the hub reinvokes exactly once, only after all 3 join (`cohortExpected`/`cohortComplete` in `agent_orchestrator.go` are generic `map[string]int`, no hardcoded count anywhere).
 
-**Action:** Run the review loop. Observe reviewer completion order (may be non-deterministic).
+**Setup:** In Settings → Workflows, author a custom flow (Task-189: behavior picker + step-definitions + edges canvas): 1 entry `agent.delegate` node (coder) with 3 forward "done" edges to 3 `agent.delegate` reviewer nodes (all `dependsOn: [coder]`, same cohort), each converging edges to a synthesis-equivalent node. Run it via **Flow Mode's workflow picker** (not Chat Mode).
+
+**Action:** Run the flow. Observe reviewer completion order (may be non-deterministic).
 
 **Expected:**
 - [ ] Board shows 3 reviewer nodes. They may complete in any order.
@@ -408,17 +406,16 @@ Use the agent-review-loop skill. Task: [an intentionally ambiguous or contradict
 
 ---
 
-### Scenario 10 — `synthesizer` Built-in as Offload
+### Scenario 10 — `synthesis` Is Its Own Tracked Step, Not a Separately Spawned Agent
 
-> **⚠️ 2026-07-06 — appears obsolete for the built-in flow, needs a decision.** This scenario's premise (synthesis can alternatively run as a separately spawned `synthesizer` child, visible on the board, instead of the hub's own inline turn) does not match the current Go-driven `review-loop.yaml`: its `synthesis` node is declared `run: inline`, `behavior: hub.inline` — synthesis is *always* the hub's own reinvoked turn (using `agents/synthesizer.md`'s prompt content), never a separately spawned child, and there is no toggle anywhere (prompt, Settings, or otherwise) to change that for the built-in flow. This may have only ever been a skill-instructable choice (the skill could in principle have called `spawn_agent` for a synthesizer instead of synthesizing inline itself) that the Go flow never actually implemented as a live option. Recommend either (a) confirming this was always aspirational/skill-only and removing this scenario, or (b) if a real "synthesizer as a separate spawned node" mode is still wanted, filing it as a new Task against the flow executor (a custom flow could set an equivalent node's behavior to `agent.delegate` instead of `hub.inline`, but this needs verifying, not assuming). Left as-is below pending that decision.
+> **Resolved 2026-07-06 (owner-confirmed).** This scenario's original premise — synthesis running as a separately spawned `synthesizer` child agent, visible on the board as its own node — was never implemented and isn't wanted: `review-loop.yaml`'s `synthesis` node is `run: inline`, `behavior: hub.inline` by design, so it's always the hub's own reinvoked turn (using `agents/synthesizer.md`'s prompt), not a spawned child. The reason `synthesis` still needs to be its OWN node in the flow definition (rather than folded into some other step) is to show up as its own row in Flow Mode's step timeline (BUG-174) — that part is real and already correct. Rewritten below to test that, instead of the never-implemented separate-agent premise.
 
-**Action:** Run the review loop.
+**Action:** Run the review loop (Scenario 1's steps) to completion.
 
 **Expected:**
-- [ ] After the join note, the `synthesizer` child agent is spawned (visible in the board as a separate node).
-- [ ] `synthesizer` consolidates issues, deduplicates, and calls `submit_review_outcome`.
-- [ ] Main hub does NOT independently call `submit_review_outcome` (no double-call).
-- [ ] Behavior is otherwise identical to Scenarios 1–3.
+- [ ] The Flow Step Timeline sidebar shows `synthesis` as its own row, distinct from `coder`/`reviewer_correctness`/`reviewer_security` — even though no separate agent is spawned for it.
+- [ ] `synthesis`'s row transitions `RUNNING` → `DONE` in step with the hub's own reinvoked turn (not bulk-completed alongside the other steps in one shot — that bulk-completion is the exact BUG-174/BUG-245 regression to watch for).
+- [ ] The hub's reinvoked turn (using the `synthesizer.md` persona) calls `submit_review_outcome` exactly once; no separate child agent ever appears on the board for synthesis.
 
 ---
 
@@ -524,7 +521,7 @@ go test ./internal/runner/... -run TestDomainHardcodeGuardMatchesFrozenBaseline 
 | Invalid `submit_review_outcome` status | Manually POST `{"status": "invalid_value"}` to `/flow-control` | Tool error returned; loop state unchanged; no crash |
 | `submit_review_outcome` called from a normal chat or non-hub child | Try to invoke it from a plain chat or reviewer child context | Call is rejected; no loop state is created or mutated |
 | Auto-reinvoke while a turn is in flight | Start a flow run; verify hub doesn't double-fire | Only one reinvoke fires; second is suppressed (single-flight guard) |
-| `cap=0` override | ⚠️ 2026-07-06: "skill config" no longer exists, and per Scenario 3's note, no live path currently applies any external cap value to a fresh run's loop state anyway — this row needs the same decision as Scenario 3 before it's retestable. | Treated as default (3); loop runs normally |
+| `policyCap=0` (or unset) on a custom/cloned flow | Set **Cap** to empty in Settings and save (persists `policy_cap: null`), then run the flow | `startResolvedFlow` falls back to the default (3); loop runs normally — resolved 2026-07-06 alongside Scenario 3's fix |
 | Child fails mid-turn | Interrupt a child agent artificially | Join note records `failed: <id>`; synthesis proceeds with remaining results |
 | Drive offline during sync | Disconnect network mid-run | Run proceeds locally; sync retries when network returns |
 | `flowRef` not in the current sub-mode's option set | POST a turn with `subMode=bug` and a made-up `flowRef` string | Request rejected by `validateChatOrchestrationSelection`; turn does not start |

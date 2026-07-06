@@ -32,12 +32,20 @@ type WorkflowDraft = {
   modelOverride: string | null;
   reasoningEffortOverride: string | null;
   yoloMode: boolean;
-  // Pass-through only — no UI control edits these (BUG-NOTE-CP42 #14).
   // saveWorkflow's repository upserts every field it's given, defaulting an
   // omitted key to null/[] rather than leaving the existing DB value
   // untouched, so a plain rename used to silently wipe an existing
-  // workflow's policy caps and edge graph. Populated from the loaded
-  // Workflow in mapWorkflowToDraft and sent back unchanged on save.
+  // workflow's policy caps and edge graph if these were ever left out of the
+  // save payload — populated from the loaded Workflow in mapWorkflowToDraft
+  // and always sent back on save (BUG-NOTE-CP42 #14).
+  // policyCap/policyExtendBy are now editable (the "Cap" and "Extend by"
+  // fields below) — startResolvedFlow applies them to the run's actual loop
+  // state, replacing a prior hardcoded cap=3/extendBy=2 that ignored these
+  // columns entirely. policyOnCap/policyExtendMax remain pass-through only:
+  // no runtime code reads either today (the cap-hit path always escalates
+  // regardless of policyOnCap, and BUG-231 retired the policyExtendMax
+  // ceiling check), so exposing an input for them would imply a behavior
+  // that doesn't exist.
   policyCap: number | null;
   policyOnCap: string | null;
   policyExtendBy: number | null;
@@ -1881,6 +1889,36 @@ export function WorkflowsSettings(): React.ReactElement {
                   />
                   <span>YOLO mode</span>
                 </label>
+                <label className="settings-field">
+                  <span>Cap (max rounds before blocking)</span>
+                  <input
+                    min={1}
+                    onChange={(event) =>
+                      setCreateWorkflowDraft((current) => ({
+                        ...current,
+                        policyCap: event.target.value ? Number(event.target.value) : null,
+                      }))
+                    }
+                    placeholder="3 (default)"
+                    type="number"
+                    value={createWorkflowDraft.policyCap ?? ""}
+                  />
+                </label>
+                <label className="settings-field">
+                  <span>Extend by (rounds added when a cap is extended)</span>
+                  <input
+                    min={1}
+                    onChange={(event) =>
+                      setCreateWorkflowDraft((current) => ({
+                        ...current,
+                        policyExtendBy: event.target.value ? Number(event.target.value) : null,
+                      }))
+                    }
+                    placeholder="2 (default)"
+                    type="number"
+                    value={createWorkflowDraft.policyExtendBy ?? ""}
+                  />
+                </label>
               </div>
             </div>
             {renderWorkflowStepsEditor(
@@ -2115,6 +2153,43 @@ export function WorkflowsSettings(): React.ReactElement {
                           type="checkbox"
                         />
                         <span>YOLO mode</span>
+                      </label>
+                      <label className="settings-field">
+                        <span>Cap (max rounds before blocking)</span>
+                        <input
+                          disabled={workflowDetailReadOnly}
+                          min={1}
+                          onChange={(event) =>
+                            setWorkflowDraft((current) =>
+                              current
+                                ? { ...current, policyCap: event.target.value ? Number(event.target.value) : null }
+                                : current,
+                            )
+                          }
+                          placeholder="3 (default)"
+                          type="number"
+                          value={workflowDraft.policyCap ?? ""}
+                        />
+                      </label>
+                      <label className="settings-field">
+                        <span>Extend by (rounds added when a cap is extended)</span>
+                        <input
+                          disabled={workflowDetailReadOnly}
+                          min={1}
+                          onChange={(event) =>
+                            setWorkflowDraft((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    policyExtendBy: event.target.value ? Number(event.target.value) : null,
+                                  }
+                                : current,
+                            )
+                          }
+                          placeholder="2 (default)"
+                          type="number"
+                          value={workflowDraft.policyExtendBy ?? ""}
+                        />
                       </label>
                     </div>
                   </div>
