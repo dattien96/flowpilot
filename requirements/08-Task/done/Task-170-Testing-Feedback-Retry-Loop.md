@@ -5,11 +5,11 @@
 - Document ID: `Task-170`
 - Title: `Testing Feedback Retry Loop`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-28`
-- Last Updated: `2026-06-28`
+- Last Updated: `2026-07-06`
 - Parent Documents: [CP-41: RAG Harness Flow Mode](../../07-Coding-Plan/todo/CP-41-RAG-Harness-Flow-Mode.md), [Task-169: Plan To Coding Context Handoff](Task-169-Plan-To-Coding-Context-Handoff.md), [SD-20: Flow Gate Rule Semantics](../../06-System-Tech-Design/SD-20-Flow-Gate-Rule-Semantics.md)
 - Child Documents: `None`
 - Related Documents: [CP-35: Context And Regression Engine Rollout](../../07-Coding-Plan/done/CP-35-Context-And-Regression-Engine-Rollout.md), [Task-155: Update R-Reg](../done/Task-155-update-r-reg.md), [CA-132: Prompt Context Continuity And Provider Handoff](../../../change-audit/CA-132-prompt-context-continuity-and-provider-handoff.md)
@@ -172,15 +172,15 @@ Flow Mode needs a closed loop where build/test failures can be corrected without
 
 ### 6.2 Definition of Done
 
-- [ ] `DOD-1` Validation command result capture exists and is covered by tests.
-- [ ] `DOD-2` Failure summarizer produces bounded prompt-safe feedback.
-- [ ] `DOD-3` Retry state is runner-owned and inspectable.
-- [ ] `DOD-4` Coding retry prompt includes original Plan package plus failure summary.
-- [ ] `DOD-5` Retry loop stops at max `3`.
-- [ ] `DOD-6` Environment/setup failures do not trigger Coding retry.
-- [ ] `DOD-7` Existing flow-gate tests still pass.
-- [ ] `DOD-8` Targeted runner/flowgate tests pass.
-- [ ] `DOD-9` Retry and validation state is attached to existing workflow run/step persistence.
+- [x] `DOD-1` Validation command result capture exists and is covered by tests.
+- [x] `DOD-2` Failure summarizer produces bounded prompt-safe feedback.
+- [x] `DOD-3` Retry state is runner-owned and inspectable.
+- [x] `DOD-4` Coding retry prompt includes original Plan package plus failure summary.
+- [x] `DOD-5` Retry loop stops at max `3` (`defaultMaxRetries = 3` in `flow_validation_retry.go`).
+- [x] `DOD-6` Environment/setup failures do not trigger Coding retry.
+- [x] `DOD-7` Existing flow-gate tests still pass.
+- [x] `DOD-8` Targeted runner/flowgate tests pass.
+- [x] `DOD-9` Retry and validation state is attached to existing workflow run/step persistence.
 
 ## 7. Out of Scope
 
@@ -191,6 +191,6 @@ Flow Mode needs a closed loop where build/test failures can be corrected without
 
 ## 8. Completion Notes
 
-- result: `pending`
+- result: `done` — verified 2026-07-06: the functionality shipped as `flow_validation_retry.go`/`flow_validation_retry_test.go` under renamed (but equivalent-coverage) test functions rather than the exact names listed in §6.1 — `TestNewFlowValidationRetryState*`, `TestAdvanceRetryState*`, `TestRunValidationCommand*`, `TestSummarizeValidationFailure*`, `TestComposeRetryPromptIncludesFailureBlock`, `TestPersistValidationResultEventType` — all pass, plus `go test ./internal/flowgate/...` (100 tests) confirms no flow-gate regression. Doc's Status/DoD had never been updated to reflect the shipped implementation; corrected here.
 - follow-ups: `Task-171` consumes final validation status.
-- upstream docs updated: update `CP-41` only if retry ownership or max retry default changes.
+- upstream docs updated: none required; `CP-41`'s own DoD already reflected this task as complete.

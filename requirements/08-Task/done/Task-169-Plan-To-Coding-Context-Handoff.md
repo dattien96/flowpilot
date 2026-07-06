@@ -5,11 +5,11 @@
 - Document ID: `Task-169`
 - Title: `Plan To Coding Context Handoff`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-28`
-- Last Updated: `2026-06-28`
+- Last Updated: `2026-07-06`
 - Parent Documents: [CP-41: RAG Harness Flow Mode](../../07-Coding-Plan/todo/CP-41-RAG-Harness-Flow-Mode.md), [Task-168: Flow Mode Context Package Contract](Task-168-Flow-Mode-Context-Package-Contract.md), [SD-17: Context And Regression Engine](../../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md)
 - Child Documents: `None`
 - Related Documents: [CP-37: Prompt Context Continuity](../../07-Coding-Plan/done/CP-37-Prompt-Context-Continuity.md), [Task-157: Improve Context Hardness](../done/Task-157-Improve-Context-Hardness.md), [Task-161: Per-Feature Chat-Summary Timeline](../done/Task-161-Per-Feature-Chat-Summary-Timeline.md), [CA-132: Prompt Context Continuity And Provider Handoff](../../../change-audit/CA-132-prompt-context-continuity-and-provider-handoff.md)
@@ -152,14 +152,14 @@ Once the Plan step can build a package, Flow Mode needs a reliable way to pass i
 
 ### 6.2 Definition of Done
 
-- [ ] `DOD-1` Flow run state can store and retrieve the Plan context package.
-- [ ] `DOD-2` Coding prompt includes a stable `## Flow Context Package` section.
-- [ ] `DOD-3` Coding retries reuse the package unless Plan reruns.
-- [ ] `DOD-4` Prompt logging captures the package for manual validation.
-- [ ] `DOD-5` Existing chat/handoff prompt tests still pass.
-- [ ] `DOD-6` No vector DB, embedding, or similarity-search path is introduced.
-- [ ] `DOD-7` Targeted runner tests pass.
-- [ ] `DOD-8` Handoff lookup is scoped to the existing run/step persistence model.
+- [x] `DOD-1` Flow run state can store and retrieve the Plan context package.
+- [x] `DOD-2` Coding prompt includes a stable `## Flow Context Package` section.
+- [x] `DOD-3` Coding retries reuse the package unless Plan reruns.
+- [x] `DOD-4` Prompt logging captures the package for manual validation.
+- [x] `DOD-5` Existing chat/handoff prompt tests still pass.
+- [x] `DOD-6` No vector DB, embedding, or similarity-search path is introduced.
+- [x] `DOD-7` Targeted runner tests pass.
+- [x] `DOD-8` Handoff lookup is scoped to the existing run/step persistence model.
 
 ## 7. Out of Scope
 
@@ -170,6 +170,6 @@ Once the Plan step can build a package, Flow Mode needs a reliable way to pass i
 
 ## 8. Completion Notes
 
-- result: `pending`
+- result: `done` — verified 2026-07-06: all 10 test items in §6.1 exist and pass (`go test ./internal/runner/ -run 'TestFlowCodingPromptIncludesPlanContextPackage|TestFlowCodingPromptIncludesPackageOnce|TestFlowCodingRetryReusesPlanPackage|TestPlanRerunReplacesFlowContextPackage|TestFlowContextPackageAppearsInPromptLog|TestNormalChatFeatureHistoryInjectionUnchanged|TestSystemPromptDoesNotResolveFromContextPackageText|TestCodingStepLoadsPackageFromPriorPlanStep|TestCodingStepWarnsWhenPlanPackageMissing|TestPlanPackageLookupScopedToWorkflowRun'`). Doc's Status/DoD had never been updated to reflect the shipped implementation; corrected here.
 - follow-ups: `Task-170` appends validation feedback to this handoff path.
-- upstream docs updated: update `CP-41` only if handoff ownership changes.
+- upstream docs updated: none required; `CP-41`'s own DoD already reflected this task as complete.

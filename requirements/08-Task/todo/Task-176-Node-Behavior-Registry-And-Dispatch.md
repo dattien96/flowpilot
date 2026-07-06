@@ -129,7 +129,7 @@ CP-41 currently identifies Plan and Coding behavior by step type strings. That m
 
 ## 8. Completion Notes
 
-- result: implemented
+- result: implemented (registry core), with 2 confirmed sub-gaps — verified 2026-07-06. The registry (`BehaviorID`/`BehaviorSpec`/`BehaviorInput`/`BehaviorOutput`/`BehaviorRegistry`/9 core behavior IDs) is real and passes all 20 tests in `behavior_registry_test.go`, plus `go build ./...` clean. Gaps: (T-5) config validation is folded into each handler's own ad hoc checks rather than a separate declared-schema validation step before execution; (T-7) no generic converter turns `BehaviorOutput.Events`/`Payload` into existing provider/runtime events — the registry is wired into exactly one call site (`startInlineEntryChain`), which interprets `BehaviorOutput.Payload["package"]` directly rather than through a general output→event bridge.
 - follow-ups: `Task-177`, `Task-178`, `Task-180`
 - notes: registry and core behavior handlers are additive only; `interactive_service.go` role checks and `ReviewLoopFlowConfig` still use their legacy paths until Task-180 migrates them onto behavior dispatch.
 - upstream docs updated: [CP-42](../../../07-Coding-Plan/todo/CP-42-Flow-Pack-And-Generic-Node-Behavior-Refactor.md) progress notes and [CA-149](../../../change-audit/CA-149-node-behavior-registry-and-dispatch.md)

@@ -5,11 +5,11 @@
 - Document ID: `Task-175`
 - Title: `Built-In Flow Mirror Sync And Resolver`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `FlowPilot`
 - Created: `2026-07-01`
-- Last Updated: `2026-07-01`
+- Last Updated: `2026-07-06`
 - Parent Documents: `CP-42-Flow-Pack-And-Generic-Node-Behavior-Refactor`
 - Child Documents: `Task-177`, `Task-178`, `Task-179`
 - Related Documents: `Task-173`, `CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration`, `CP-41-RAG-Harness-Flow-Mode`
@@ -134,5 +134,6 @@ Flow Mode is already conceptually generic, but built-in flows need to appear in 
 
 - result: implemented
 - notes: **superseded design, see [CA-160](../../../change-audit/CA-160-flow-definitions-migrated-to-workflows-table.md) for the current state.** CA-150/154/157 built a standalone `flow_definitions` table; per explicit user direction this was replaced with mirroring built-ins directly into the existing `workflows`/`workflow_steps` tables (extended with new flow-engine columns) so the existing Settings "Workflows/Steps" screen can be the authoring UI instead of a parallel one. `FlowDefinitionResolver`/`FlowMirrorSyncService`/`FlowDefinitionStore` now run against `SupabaseWorkflowFlowStore`, tested against an in-memory fake and the real Supabase-shaped store (mocked transport). `FlowDefinitionStoreFor` returns `nil` (not a file fallback) when Supabase isn't configured, matching the Settings UI's own hard Supabase requirement — `FlowDefinitionResolver` still falls back to the embedded pack directly in that case. `cmd/flowpilot runner serve` calls `EnsureBuiltinFlowMirrorsWithStore` at startup, non-fatally.
-- follow-ups: the `add_flow_engine_attrs_to_workflows` migration needs a real review/apply pass against a live Supabase project (no database access this session).
+- verified 2026-07-06: every T-item and Acceptance Check item confirmed against code — `flow_definition_resolver.go`/`supabase_workflow_flow_store.go` plus 21 tests in `flow_definition_resolver_test.go`/`supabase_workflow_flow_store_test.go` (mirror sync insert/no-op/hash-update/never-overwrites-user-flow, resolver mirror-preference/fallback/recreate, clone/reject-read-only-edit) all pass; `go build ./...` clean. `Status` was still `draft` despite this doc's own "result: implemented"; corrected here.
+- follow-ups: the `add_flow_engine_attrs_to_workflows` migration still needs a real review/apply pass against a live Supabase project (no database access this session or the verification pass).
 - upstream docs updated: [CP-42](../../../07-Coding-Plan/todo/CP-42-Flow-Pack-And-Generic-Node-Behavior-Refactor.md) progress notes and [CA-160](../../../change-audit/CA-160-flow-definitions-migrated-to-workflows-table.md)

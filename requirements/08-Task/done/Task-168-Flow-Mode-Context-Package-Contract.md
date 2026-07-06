@@ -5,11 +5,11 @@
 - Document ID: `Task-168`
 - Title: `Flow Mode Context Package Contract`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-28`
-- Last Updated: `2026-06-28`
+- Last Updated: `2026-07-06`
 - Parent Documents: [CP-41: RAG Harness Flow Mode](../../07-Coding-Plan/todo/CP-41-RAG-Harness-Flow-Mode.md), [SD-17: Context And Regression Engine](../../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md), [SD-20: Flow Gate Rule Semantics](../../06-System-Tech-Design/SD-20-Flow-Gate-Rule-Semantics.md), [SS-13: AI-Followable Document Contract](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md)
 - Child Documents: `None`
 - Related Documents: [CP-35: Context And Regression Engine Rollout](../../07-Coding-Plan/done/CP-35-Context-And-Regression-Engine-Rollout.md), [CP-37: Prompt Context Continuity](../../07-Coding-Plan/done/CP-37-Prompt-Context-Continuity.md), [Task-157: Improve Context Hardness](../done/Task-157-Improve-Context-Hardness.md), [Task-161: Per-Feature Chat-Summary Timeline](../done/Task-161-Per-Feature-Chat-Summary-Timeline.md), [Task-163: Chat-Summary Generation Triggers](../done/Task-163-Chat-Summary-Generation-Triggers.md), [CA-132: Prompt Context Continuity And Provider Handoff](../../../change-audit/CA-132-prompt-context-continuity-and-provider-handoff.md)
@@ -178,14 +178,14 @@ CP-41 needs a stable Plan-step output before Coding, Testing, and Audit can be w
 
 ### 6.2 Definition of Done
 
-- [ ] `DOD-1` `FlowContextPackage` and source-ref models exist and are documented by tests.
-- [ ] `DOD-2` Package builder uses existing feature resolver/history/chat-summary seams.
-- [ ] `DOD-3` Package builder has no vector DB, embedding, or similarity-search dependency.
-- [ ] `DOD-4` Source excerpts are workspace-safe, bounded, and source-referenced.
-- [ ] `DOD-5` Missing/ambiguous context degrades with warnings instead of failing the Flow Mode run.
-- [ ] `DOD-6` Renderer emits stable Markdown for `Task-169`.
-- [ ] `DOD-7` Targeted Go tests pass for runner/featurecatalog/changeledger packages touched by this task.
-- [ ] `DOD-8` Package persistence is attached to existing run/step ids and does not create a parallel flow/session store.
+- [x] `DOD-1` `FlowContextPackage` and source-ref models exist and are documented by tests.
+- [x] `DOD-2` Package builder uses existing feature resolver/history/chat-summary seams.
+- [x] `DOD-3` Package builder has no vector DB, embedding, or similarity-search dependency.
+- [x] `DOD-4` Source excerpts are workspace-safe, bounded, and source-referenced.
+- [x] `DOD-5` Missing/ambiguous context degrades with warnings instead of failing the Flow Mode run.
+- [x] `DOD-6` Renderer emits stable Markdown for `Task-169`.
+- [x] `DOD-7` Targeted Go tests pass for runner/featurecatalog/changeledger packages touched by this task.
+- [x] `DOD-8` Package persistence is attached to existing run/step ids and does not create a parallel flow/session store.
 
 ## 7. Out of Scope
 
@@ -196,6 +196,6 @@ CP-41 needs a stable Plan-step output before Coding, Testing, and Audit can be w
 
 ## 8. Completion Notes
 
-- result: `pending`
+- result: `done` — verified 2026-07-06: all 12 test items in §6.1 exist in `flow_context_package_test.go` and pass (`go test ./internal/runner/ -run 'TestBuildFlowContextPackage|TestRenderFlowContextPackage|TestFlowContextPackage'`). Doc's Status/DoD had never been updated to reflect the shipped implementation; corrected here.
 - follow-ups: `Task-169` consumes the renderer output.
-- upstream docs updated: update `CP-41` only if implementation changes the task boundaries.
+- upstream docs updated: none required; `CP-41`'s own DoD already reflected this task as complete.
