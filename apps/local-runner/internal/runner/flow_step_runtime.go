@@ -136,6 +136,10 @@ func (s *InteractiveService) setFlowStepStatus(ctx context.Context, parentRunID,
 	if nodeID == "" {
 		return
 	}
+	s.flowDiagLog(parentRunID, "step_status_transition", "updating flow step status",
+		"node_id", nodeID,
+		"status", string(status),
+	)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	patch := WorkflowStepPatch{Status: status}
 	switch status {
@@ -153,6 +157,11 @@ func (s *InteractiveService) setFlowStepStatus(ctx context.Context, parentRunID,
 		Patch:  patch,
 	}); err != nil {
 		log.Printf("[flow-step] set node %q -> %s on run %q failed: %v", nodeID, status, parentRunID, err)
+		s.flowDiagLog(parentRunID, "step_status_transition_failed", "flow step status update failed",
+			"node_id", nodeID,
+			"status", string(status),
+			"error", err.Error(),
+		)
 	}
 }
 
@@ -185,11 +194,22 @@ func (s *InteractiveService) setFlowStepPosture(ctx context.Context, parentRunID
 	if nodeID == "" {
 		return
 	}
+	s.flowDiagLog(parentRunID, "step_posture_transition", "updating flow step posture",
+		"node_id", nodeID,
+		"provider", provider,
+		"model", model,
+	)
 	if err := s.workflowStore.ApplyStepTransition(ctx, parentRunID, WorkflowStepTransition{
 		StepID: nodeID,
 		Patch:  WorkflowStepPatch{Provider: strptr(provider), Model: strptr(model)},
 	}); err != nil {
 		log.Printf("[flow-step] set node %q posture provider=%q model=%q on run %q failed: %v", nodeID, provider, model, parentRunID, err)
+		s.flowDiagLog(parentRunID, "step_posture_transition_failed", "flow step posture update failed",
+			"node_id", nodeID,
+			"provider", provider,
+			"model", model,
+			"error", err.Error(),
+		)
 	}
 }
 
@@ -200,6 +220,7 @@ func (s *InteractiveService) setFlowStepPosture(ctx context.Context, parentRunID
 // (synthesis) node, or any reviewer whose DONE write lagged. The bulk planner is
 // gated off for flowEngineDriven runs, so this is the sole terminal settler.
 func (s *InteractiveService) markFlowRunComplete(ctx context.Context, parentRunID string) {
+	s.flowDiagLog(parentRunID, "flow_run_complete_begin", "marking flow run complete")
 	if steps, err := s.workflowStore.LoadRunSteps(ctx, parentRunID); err == nil {
 		for _, st := range steps {
 			switch st.Status {
@@ -210,6 +231,9 @@ func (s *InteractiveService) markFlowRunComplete(ctx context.Context, parentRunI
 		}
 	} else {
 		log.Printf("[flow-step] mark run %q done: LoadRunSteps failed: %v", parentRunID, err)
+		s.flowDiagLog(parentRunID, "flow_run_complete_load_steps_failed", "failed to load run steps while completing flow",
+			"error", err.Error(),
+		)
 		// Fall back to at least settling the inline hub node.
 		if hubID := hubInlineNodeID(s.activeFlowNodesFor(parentRunID)); hubID != "" {
 			s.setFlowStepStatus(ctx, parentRunID, hubID, StepStatusDone)
@@ -217,6 +241,9 @@ func (s *InteractiveService) markFlowRunComplete(ctx context.Context, parentRunI
 	}
 	if err := s.workflowStore.SetRunStatus(ctx, parentRunID, RunStatusEngineDone, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		log.Printf("[flow-step] mark run %q done failed: %v", parentRunID, err)
+		s.flowDiagLog(parentRunID, "flow_run_complete_set_status_failed", "failed to set terminal flow run status",
+			"error", err.Error(),
+		)
 	}
 	// BUG-235: the step timeline above is authoritative for the flow's own nodes,
 	// but a cohort member's underlying agent RUN can independently linger in a
@@ -225,6 +252,7 @@ func (s *InteractiveService) markFlowRunComplete(ctx context.Context, parentRunI
 	// Settle any such orphaned child so "flow done" is a clean, fully-terminal
 	// state on both the step timeline and the agent-run list.
 	s.reconcileChildRunsOnFlowDone(parentRunID)
+	s.flowDiagLog(parentRunID, "flow_run_complete_done", "flow run marked complete")
 }
 
 // reconcileChildRunsOnFlowDone (BUG-235) force-settles any child of parentRunID

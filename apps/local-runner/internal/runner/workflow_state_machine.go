@@ -45,19 +45,19 @@ type RuntimeWorkflowStep struct {
 	RetryCount       int
 	RejectionNote    string // "" == null
 	// BehaviorID is the CP-42 canonical behavior id (agent.delegate/
-	// context.produce/...) declared on the step's workflow_steps definition
-	// row, when set. "" for a step whose definition predates CP-42 or never
+	// context.produce/...) declared on the joined step definition, when set.
+	// "" for a step whose definition predates CP-42 or never
 	// set one — callers fall back to classifying by StepType in that case
 	// (BUG-NOTE-CP42 #7).
 	BehaviorID string
 	// NodeID is the flow-graph node id (e.g. "coder", "reviewer_correctness")
-	// from the step's workflow_steps.node_id column. Distinct from StepType,
+	// from the joined step definition. Distinct from StepType,
 	// which for a CP-42 flow-engine node is a shared generic dispatch category
 	// (e.g. "flow-agent-delegate") and therefore identical across every node
 	// running the same behavior — NodeID is what the UI must show as the
 	// per-step name instead (BUG-155).
 	NodeID string
-	// AgentRef is the workflow_steps.agent_ref value: the agent definition
+	// AgentRef is the step definition's agent_ref value: the agent definition
 	// file this node delegates to (e.g. "coder"), when the step declares one.
 	// "" when the step has no agent binding of its own (e.g. inline/control
 	// behaviors).

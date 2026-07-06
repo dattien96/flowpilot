@@ -96,6 +96,36 @@ func TestCreateRunResolvesModelFromStepWhenSet(t *testing.T) {
 	}
 }
 
+// TestCreateRunResolvesEntryStepModelFromRoleFallback reproduces the "main"
+// half of BUG-235-follow-up: a flow-pack-mirrored entry step's own
+// step_definitions row (keyed by a per-flow/per-node step_type like
+// "review-loop__coder") never carries a model — only the purpose-named role
+// row ("flow-agent-delegate-coder", the row Settings > Workflows actually
+// writes to) does. The Step tier must still resolve that role model instead
+// of skipping straight to the Flow/Project tiers, so the run's own launch
+// posture (displayed as "main" in the desktop Agents panel) matches what the
+// user configured for the entry node's role.
+func TestCreateRunResolvesEntryStepModelFromRoleFallback(t *testing.T) {
+	catalog := baseTestCatalog()
+	// Entry step's mirrored row: node_id/agent_ref set, but no model — this is
+	// exactly what upsertNodeStepDefinitions writes for a flow-pack node.
+	catalog.steps["wf-1"][0].NodeID = "coder"
+	catalog.steps["wf-1"][0].AgentRef = "agents/coder.md"
+	catalog.steps["wf-1"][0].Model = ""
+	// The role-purpose row Settings > Workflows configures for "coder" nodes.
+	// A codex-prefixed model, matching the other cases in this file — the
+	// default test registry only marks Codex as selectable.
+	catalog.steps["role-rows"] = []Step{
+		{ID: "flow-agent-delegate-coder", Model: "gpt-5.5-role"},
+	}
+	catalog.workflows["proj-1"][0].Model = "gpt-5.5-flow" // must lose to the role fallback
+	catalog.projects[0].Model = "gpt-5.5-project"         // must lose to the role fallback
+
+	if got := resolvedRunModel(t, catalog); got != "gpt-5.5-role" {
+		t.Fatalf("resolved model = %q, want gpt-5.5-role (role-fallback Step tier)", got)
+	}
+}
+
 func TestCreateRunFallsBackToFlowWhenStepModelEmpty(t *testing.T) {
 	catalog := baseTestCatalog()
 	// Step has no model.

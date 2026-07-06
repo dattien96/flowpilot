@@ -64,6 +64,16 @@ func TestLoadBuiltinReviewLoopFlow(t *testing.T) {
 	if got := review.Nodes[0].Behavior; got != "agent.delegate" {
 		t.Fatalf("coder behavior = %q, want agent.delegate", got)
 	}
+	lifecycles := map[string]string{}
+	for _, node := range review.Nodes {
+		lifecycles[node.ID] = node.Lifecycle
+	}
+	if lifecycles["coder"] != "reinvoke" {
+		t.Fatalf("coder lifecycle = %q, want reinvoke", lifecycles["coder"])
+	}
+	if lifecycles["reviewer_correctness"] != "spawn" || lifecycles["reviewer_security"] != "spawn" {
+		t.Fatalf("reviewer lifecycles = correctness:%q security:%q, want spawn/spawn", lifecycles["reviewer_correctness"], lifecycles["reviewer_security"])
+	}
 	if got := review.Nodes[3].Behavior; got != "hub.inline" {
 		t.Fatalf("synthesis behavior = %q, want hub.inline", got)
 	}
@@ -97,6 +107,18 @@ func TestLoadBuiltinRAGHarnessFlow(t *testing.T) {
 	}
 	if !strings.EqualFold(rag.Nodes[0].Behavior, "context.produce") {
 		t.Fatalf("first node behavior = %q, want context.produce", rag.Nodes[0].Behavior)
+	}
+}
+
+func TestValidateFlowDefinitionRejectsInvalidLifecycle(t *testing.T) {
+	err := ValidateFlowDefinition(FlowDefinition{
+		ID: "bad-lifecycle",
+		Nodes: []FlowNode{
+			{ID: "worker", Behavior: "agent.delegate", Lifecycle: "reuse"},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid lifecycle") {
+		t.Fatalf("ValidateFlowDefinition error = %v, want invalid lifecycle", err)
 	}
 }
 

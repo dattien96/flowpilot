@@ -95,3 +95,83 @@ func TestBuiltinWorkflowWritesRestrictedAtRLS(t *testing.T) {
 		}
 	}
 }
+
+func TestStepDefinitionsMigrationOwnsFlowNodeDefinitionColumns(t *testing.T) {
+	path := "../../../../supabase/migrations/20260703160000_move_flow_node_definition_to_step_definitions.sql"
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	sql := strings.ToLower(string(raw))
+	for _, want := range []string{
+		"alter table public.step_definitions",
+		"add column if not exists node_lifecycle text",
+		"add column if not exists behavior_id text",
+		"add column if not exists agent_ref text",
+		"add column if not exists depends_on_json jsonb",
+		"from public.workflow_steps ws",
+		"insert into public.step_definitions",
+		"workflow_step_id",
+		"new_step_type",
+		"update public.workflow_steps ws",
+		"set step_type = legacy.new_step_type",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("migration missing %q, got: %s", want, string(raw))
+		}
+	}
+	if strings.Contains(sql, "update public.step_definitions sd") {
+		t.Fatalf("migration must create node-specific step_definitions, not update shared step_definitions rows in place: %s", string(raw))
+	}
+	if strings.Contains(sql, "execute $backfill$") {
+		t.Fatalf("migration contains a stale dynamic execute marker: %s", string(raw))
+	}
+	if strings.Contains(sql, "alter table workflow_steps") || strings.Contains(sql, "alter table public.workflow_steps") {
+		t.Fatalf("migration must not add new flow-node definition columns to workflow_steps: %s", string(raw))
+	}
+
+	basePath := "../../../../supabase/migrations/20260701090000_add_flow_engine_attrs_to_workflows.sql"
+	baseRaw, err := os.ReadFile(basePath)
+	if err != nil {
+		t.Fatalf("read base migration: %v", err)
+	}
+	baseSQL := strings.ToLower(string(baseRaw))
+	if !strings.Contains(baseSQL, "alter table step_definitions") {
+		t.Fatalf("base migration must add flow-node definition columns to step_definitions: %s", string(baseRaw))
+	}
+	if strings.Contains(baseSQL, "alter table workflow_steps\n  add column if not exists node_id") ||
+		strings.Contains(baseSQL, "alter table public.workflow_steps\n  add column if not exists node_id") {
+		t.Fatalf("base migration must not add flow-node definition columns to workflow_steps: %s", string(baseRaw))
+	}
+}
+
+func TestRepairMigrationRepointsLegacyWorkflowStepsToNodeDefinitions(t *testing.T) {
+	path := "../../../../supabase/migrations/20260704153000_repair_flow_node_step_definition_relations.sql"
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	sql := strings.ToLower(string(raw))
+	for _, want := range []string{
+		"insert into public.step_definitions",
+		"workflow_step_id",
+		"new_step_type",
+		"sd.model",
+		"sd.yolo_mode",
+		"node_id",
+		"behavior_id",
+		"agent_ref",
+		"update public.workflow_steps ws",
+		"set step_type = legacy.new_step_type",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("repair migration missing %q, got: %s", want, string(raw))
+		}
+	}
+	if strings.Contains(sql, "update public.step_definitions sd") {
+		t.Fatalf("repair migration must create node-specific step_definitions, not update shared rows in place: %s", string(raw))
+	}
+	if strings.Contains(sql, "execute $backfill$") {
+		t.Fatalf("repair migration contains a stale dynamic execute marker: %s", string(raw))
+	}
+}

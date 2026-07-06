@@ -3,7 +3,7 @@
 -- shared dispatch category for every agent.delegate flow node (coder,
 -- reviewer_correctness, reviewer_security, rag-harness's implement, ...).
 -- That is correct for BUILT-IN flow-pack mirrors, whose real per-node identity
--- lives in workflow_steps.node_id/agent_ref (BUG-155). But a user manually
+-- lives in node-specific step_definitions.node_id/agent_ref (BUG-155). But a user manually
 -- building a custom workflow in Settings > Workflows picks a step TYPE from
 -- the "Add step" dropdown, which only ever offered the one generic name — so
 -- a hand-built workflow could not distinguish a "coder" step from a
@@ -31,18 +31,22 @@ values
 on conflict (step_type) do nothing;
 
 -- Best-effort reassignment of existing workflow_steps rows: a row already
--- carrying an agent_ref that clearly names "coder" or "review" is
+-- whose joined step_definition carries an agent_ref that clearly names "coder" or "review" is
 -- reclassified to the matching new step_type. Anything ambiguous (no
 -- agent_ref, or an agent_ref that names neither) is left pointing at the
 -- original generic 'flow-agent-delegate' row rather than guessed at.
-update public.workflow_steps
+update public.workflow_steps ws
 set step_type = 'flow-agent-delegate-coder'
-where step_type = 'flow-agent-delegate'
-  and agent_ref is not null
-  and agent_ref ilike '%coder%';
+from public.step_definitions sd
+where ws.step_type = sd.step_type
+  and ws.step_type = 'flow-agent-delegate'
+  and sd.agent_ref is not null
+  and sd.agent_ref ilike '%coder%';
 
-update public.workflow_steps
+update public.workflow_steps ws
 set step_type = 'flow-agent-delegate-reviewer'
-where step_type = 'flow-agent-delegate'
-  and agent_ref is not null
-  and agent_ref ilike '%review%';
+from public.step_definitions sd
+where ws.step_type = sd.step_type
+  and ws.step_type = 'flow-agent-delegate'
+  and sd.agent_ref is not null
+  and sd.agent_ref ilike '%review%';

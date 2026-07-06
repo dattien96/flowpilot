@@ -332,6 +332,9 @@ type Step struct {
 	Name         string `json:"name"`
 	Order        int    `json:"order"`
 	DefaultSkill string `json:"defaultSkill,omitempty"`
+	NodeID       string `json:"nodeId,omitempty"`
+	BehaviorID   string `json:"behaviorId,omitempty"`
+	AgentRef     string `json:"agentRef,omitempty"`
 	// Model is the step's step_definitions.model — the "Step" tier of the
 	// Step > Flow > Project > default resolution order (SS-05/SD-06, BUG-165).
 	Model string `json:"model,omitempty"`

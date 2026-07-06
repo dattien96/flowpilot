@@ -97,6 +97,118 @@ func TestTryAdvanceFlowFromNodeBailsOnNonDelegateTarget(t *testing.T) {
 	}
 }
 
+func TestTryAdvanceFlowFromNodeLifecycleReinvokeReusesExistingTarget(t *testing.T) {
+	var mu sync.Mutex
+	var prompts []string
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, req TurnRequest, b TurnBridge) error {
+				mu.Lock()
+				prompts = append(prompts, req.Prompt)
+				mu.Unlock()
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "reviewed"})
+				return nil
+			})
+		},
+	})
+
+	svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3})
+	svc.mu.Lock()
+	svc.runs[parent.RunID].activeFlowEdges = []agentpack.FlowEdge{{From: "coder", To: "reviewer", When: "done", Kind: "forward"}}
+	svc.runs[parent.RunID].activeFlowNodes = []agentpack.FlowNode{{ID: "reviewer", Behavior: "agent.delegate", Agent: "agents/reviewer.md", Lifecycle: "reinvoke"}}
+	svc.mu.Unlock()
+
+	if _, err := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{
+		Agent: "reviewer", Prompt: "initial review", Label: "reviewer", Wait: false,
+	}); err != nil {
+		t.Fatalf("spawnChildRun(reviewer): %v", err)
+	}
+	waitLoop(t, "initial reviewer completed", 3*time.Second, func() bool {
+		svc.mu.Lock()
+		defer svc.mu.Unlock()
+		for _, run := range svc.runs {
+			if run.parentRunID == parent.RunID && run.label == "reviewer" && run.status == RunStatusCompleted {
+				return true
+			}
+		}
+		return false
+	})
+
+	before := countChildrenWithLabel(svc, parent.RunID, "reviewer")
+	if !svc.tryAdvanceFlowFromNode(parent.RunID, "coder", "new coder result") {
+		t.Fatal("tryAdvanceFlowFromNode returned false; expected reinvoke target to advance")
+	}
+	waitLoop(t, "reviewer reinvoked", 3*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(prompts) >= 2 && strings.Contains(prompts[len(prompts)-1], "new coder result")
+	})
+	if after := countChildrenWithLabel(svc, parent.RunID, "reviewer"); after != before {
+		t.Fatalf("reviewer child count = %d, want unchanged %d for lifecycle=reinvoke", after, before)
+	}
+}
+
+func TestTryAdvanceFlowFromNodeLifecycleSpawnCreatesFreshTarget(t *testing.T) {
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "reviewed"})
+				return nil
+			})
+		},
+	})
+
+	svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3})
+	svc.mu.Lock()
+	svc.runs[parent.RunID].activeFlowEdges = []agentpack.FlowEdge{{From: "coder", To: "reviewer", When: "done", Kind: "forward"}}
+	svc.runs[parent.RunID].activeFlowNodes = []agentpack.FlowNode{{ID: "reviewer", Behavior: "agent.delegate", Agent: "agents/reviewer.md", Lifecycle: "spawn"}}
+	svc.mu.Unlock()
+
+	if _, err := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{
+		Agent: "reviewer", Prompt: "initial review", Label: "reviewer", Wait: false,
+	}); err != nil {
+		t.Fatalf("spawnChildRun(reviewer): %v", err)
+	}
+	waitLoop(t, "initial reviewer exists", 3*time.Second, func() bool {
+		return countChildrenWithLabel(svc, parent.RunID, "reviewer") == 1
+	})
+
+	if !svc.tryAdvanceFlowFromNode(parent.RunID, "coder", "new coder result") {
+		t.Fatal("tryAdvanceFlowFromNode returned false; expected spawn target to advance")
+	}
+	waitLoop(t, "fresh reviewer spawned", 3*time.Second, func() bool {
+		return countChildrenWithLabel(svc, parent.RunID, "reviewer") == 2
+	})
+}
+
+func countChildrenWithLabel(svc *InteractiveService, parentRunID, label string) int {
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	count := 0
+	for _, run := range svc.runs {
+		if run.parentRunID == parentRunID && run.label == label {
+			count++
+		}
+	}
+	return count
+}
+
 // TestCoderCompletionAutoSpawnsReviewerCohort is the real end-to-end proof
 // this whole task was about: after investigating a user question about how
 // the AI hub would know to spawn a reviewer cohort, it turned out nothing
@@ -244,6 +356,111 @@ func TestCoderCompletionAutoSpawnsReviewerCohortWithOwnModel(t *testing.T) {
 	}
 }
 
+func TestResolveFlowNodeModelPrefersNodeSpecificStepDefinition(t *testing.T) {
+	catalog := newInteractiveCatalog()
+	catalog.steps["wf-feature"] = append(catalog.steps["wf-feature"],
+		Step{
+			ID:     "flow-agent-delegate-reviewer",
+			Name:   "Flow: Reviewer",
+			Model:  "gpt-5.4-mini",
+			NodeID: "",
+		},
+		Step{
+			ID:       "flowpilot_core_flow_pack__review_loop__reviewer_correctness",
+			Name:     "Review Loop: Reviewer Correctness",
+			NodeID:   "reviewer_correctness",
+			AgentRef: "agents/reviewer.md",
+			Model:    "gpt-5.4",
+		},
+	)
+	svc := newInteractiveService(DefaultProviderRegistry(), catalog, newFakeWorkflowStore())
+
+	got := svc.resolveFlowNodeModel(context.Background(), agentpack.FlowNode{
+		ID:       "reviewer_correctness",
+		Behavior: "agent.delegate",
+		Agent:    "agents/reviewer.md",
+	})
+	if got != "gpt-5.4" {
+		t.Fatalf("resolveFlowNodeModel = %q, want node-specific step_definitions.model gpt-5.4", got)
+	}
+}
+
+// TestResolveFlowNodeModelIgnoresContaminatedGenericDispatchRow is the BUG-241
+// regression: an early BUG-236 draft migration copied node_id onto the generic
+// dispatch-category rows (e.g. flow-agent-delegate-reviewer.node_id =
+// "reviewer_correctness") and the BUG-239 repair never cleared it. Because that
+// contaminated generic row also matched the node's node_id, it could win the
+// node_id lookup over the node's OWN per-node row — so two graph nodes sharing
+// an agent file (reviewer_correctness / reviewer_security) resolved to
+// DIFFERENT models: one aliased onto the single contaminated generic row, the
+// other fell through to its own per-node row. The guard must skip generic
+// dispatch rows in the node_id match so BOTH reviewers resolve their own
+// per-node step definition regardless of any residual contamination.
+func TestResolveFlowNodeModelIgnoresContaminatedGenericDispatchRow(t *testing.T) {
+	catalog := newInteractiveCatalog()
+	catalog.steps["wf-feature"] = append(catalog.steps["wf-feature"],
+		// Contaminated generic dispatch row: a node_id it should never carry.
+		Step{
+			ID:       "flow-agent-delegate-reviewer",
+			Name:     "Flow: Reviewer",
+			Model:    "claude-sonnet",
+			NodeID:   "reviewer_correctness",
+			AgentRef: "agents/reviewer.md",
+		},
+		// The two real per-node rows the workflow relation actually points to.
+		Step{
+			ID:       "flowpilot_core_flow_pack__review_loop__reviewer_correctness",
+			Name:     "Review Loop: Reviewer Correctness",
+			NodeID:   "reviewer_correctness",
+			AgentRef: "agents/reviewer.md",
+			Model:    "gpt-5.4",
+		},
+		Step{
+			ID:       "flowpilot_core_flow_pack__review_loop__reviewer_security",
+			Name:     "Review Loop: Reviewer Security",
+			NodeID:   "reviewer_security",
+			AgentRef: "agents/reviewer.md",
+			Model:    "claude-haiku",
+		},
+	)
+	svc := newInteractiveService(DefaultProviderRegistry(), catalog, newFakeWorkflowStore())
+
+	if got := svc.resolveFlowNodeModel(context.Background(), agentpack.FlowNode{
+		ID: "reviewer_correctness", Behavior: "agent.delegate", Agent: "agents/reviewer.md",
+	}); got != "gpt-5.4" {
+		t.Fatalf("reviewer_correctness resolved = %q, want its own per-node gpt-5.4 (not the contaminated generic row's claude-sonnet)", got)
+	}
+	if got := svc.resolveFlowNodeModel(context.Background(), agentpack.FlowNode{
+		ID: "reviewer_security", Behavior: "agent.delegate", Agent: "agents/reviewer.md",
+	}); got != "claude-haiku" {
+		t.Fatalf("reviewer_security resolved = %q, want its own per-node claude-haiku", got)
+	}
+}
+
+func TestResolveFlowNodeModelIgnoresHubInlineAgentRef(t *testing.T) {
+	catalog := newInteractiveCatalog()
+	catalog.steps["wf-feature"] = append(catalog.steps["wf-feature"],
+		Step{
+			ID:         "flowpilot_core_flow_pack__review_loop__synthesis",
+			Name:       "Review Loop: Synthesis",
+			NodeID:     "synthesis",
+			BehaviorID: "hub.inline",
+			AgentRef:   "agents/synthesizer.md",
+			Model:      "haiku",
+		},
+	)
+	svc := newInteractiveService(DefaultProviderRegistry(), catalog, newFakeWorkflowStore())
+
+	got := svc.resolveFlowNodeModel(context.Background(), agentpack.FlowNode{
+		ID:       "synthesis",
+		Behavior: "hub.inline",
+		Agent:    "agents/synthesizer.md",
+	})
+	if got != "" {
+		t.Fatalf("resolveFlowNodeModel = %q, want empty so hub.inline inherits the parent run model", got)
+	}
+}
+
 // TestCoderCompletionAutoSpawnedReviewerPromptDoesNotInstructFlowControlCall is
 // the regression test for BUG-NOTE-CP42 #13: tryAdvanceFlowFromNode's
 // auto-spawn prompt used to tell the reviewer to "report your findings via
@@ -300,6 +517,70 @@ func TestCoderCompletionAutoSpawnedReviewerPromptDoesNotInstructFlowControlCall(
 				"only the hub's own synthesis turn after cohort join may do that", got, forbidden)
 		}
 	}
+}
+
+func TestCoderCompletionAutoAdvanceDoesNotScheduleEmptyHubReinvoke(t *testing.T) {
+	var mu sync.Mutex
+	reviewerPrompts := 0
+	synthesisPrompts := 0
+	releaseReviewers := make(chan struct{})
+	var closeRelease sync.Once
+	t.Cleanup(func() { closeRelease.Do(func() { close(releaseReviewers) }) })
+
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(ctx context.Context, req TurnRequest, b TurnBridge) error {
+				switch {
+				case strings.Contains(req.Prompt, "Review this result from node"):
+					mu.Lock()
+					reviewerPrompts++
+					mu.Unlock()
+					select {
+					case <-releaseReviewers:
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+					b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "approved"})
+				case strings.Contains(req.Prompt, "[flow-engine] Agent results ready"):
+					mu.Lock()
+					synthesisPrompts++
+					mu.Unlock()
+					b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "synthesized"})
+				default:
+					b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "implemented"})
+				}
+				return nil
+			})
+		},
+	})
+
+	svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3})
+
+	svc.startResolvedFlow(context.Background(), parent.RunID, "flowpilot-core-flow-pack/review-loop", "fix the crash")
+
+	waitLoop(t, "reviewer cohort started", 3*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return reviewerPrompts == 2
+	})
+
+	time.Sleep(200 * time.Millisecond)
+	mu.Lock()
+	got := synthesisPrompts
+	mu.Unlock()
+	if got != 0 {
+		t.Fatalf("hub was reinvoked before reviewer cohort joined; synthesis prompts before reviewer release = %d", got)
+	}
+
+	closeRelease.Do(func() { close(releaseReviewers) })
 }
 
 func TestFlowEngineSynthesisPromptIncludesJoinedReviewerNote(t *testing.T) {

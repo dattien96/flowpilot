@@ -33,7 +33,7 @@ nodes:
     join: all
   - id: reviewer_correctness
     run: delegate
-    lifecycle: reinvoke
+    lifecycle: spawn
     behavior: agent.delegate
     agent: agents/reviewer.md
     dependsOn:
@@ -42,7 +42,7 @@ nodes:
     join: all
   - id: reviewer_security
     run: delegate
-    lifecycle: reinvoke
+    lifecycle: spawn
     behavior: agent.delegate
     agent: agents/reviewer.md
     dependsOn:

@@ -313,7 +313,16 @@ func (s *FlowMirrorSyncService) SyncBuiltins(ctx context.Context) ([]FlowDefinit
 			return synced, fmt.Errorf("flow mirror sync: lookup %s/%s: %w", record.PackID, record.PackFlowID, err)
 		}
 		if ok && existing.PackHash == record.PackHash && existing.PackVersion == record.PackVersion {
-			continue // up to date, nothing to write
+			// BUG-Rnd2 (Bug A): a pack hash match is not sufficient — an old DB row
+			// may have been created before the node_lifecycle column existed, leaving
+			// every step_definition with node_lifecycle=NULL. flowNodeLifecycle()
+			// defaults a NULL lifecycle to "reinvoke", so reviewer-spawn nodes
+			// silently become reinvoke nodes at runtime. Re-upsert whenever the
+			// embedded pack declares a lifecycle that the stored mirror is missing.
+			if !mirrorHasMissingLifecycles(existing.Definition.Nodes, record.Definition.Nodes) {
+				continue // truly up to date, nothing to write
+			}
+			// Fall through: at least one node lifecycle is absent from the mirror.
 		}
 		saved, err := s.store.Upsert(ctx, record)
 		if err != nil {
@@ -322,4 +331,31 @@ func (s *FlowMirrorSyncService) SyncBuiltins(ctx context.Context) ([]FlowDefinit
 		synced = append(synced, saved)
 	}
 	return synced, nil
+}
+
+// mirrorHasMissingLifecycles returns true when any node in canonical (the
+// embedded pack's node list) has a non-empty Lifecycle that the corresponding
+// node in stored (the DB mirror's node list, matched by node ID) is missing.
+//
+// Used by SyncBuiltins to detect rows created before node_lifecycle was added
+// to the DB schema. Such rows would otherwise pass the hash+version freshness
+// check and never be refreshed, leaving every node defaulting to "reinvoke"
+// at runtime even when the pack YAML declares "spawn".
+func mirrorHasMissingLifecycles(stored, canonical []agentpack.FlowNode) bool {
+	storedByID := make(map[string]agentpack.FlowNode, len(stored))
+	for _, n := range stored {
+		if n.ID != "" {
+			storedByID[n.ID] = n
+		}
+	}
+	for _, n := range canonical {
+		if strings.TrimSpace(n.Lifecycle) == "" {
+			continue // pack node has no lifecycle declared; nothing to check
+		}
+		mirrored, ok := storedByID[n.ID]
+		if !ok || strings.TrimSpace(mirrored.Lifecycle) == "" {
+			return true // canonical lifecycle missing from mirror
+		}
+	}
+	return false
 }

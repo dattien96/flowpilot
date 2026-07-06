@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -587,6 +588,18 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		if resolvedModel == "" {
 			resolvedModel = strings.TrimSpace(steps[0].Model)
 		}
+		// BUG-235-follow-up: the entry step's own step_definitions row is a
+		// flow-pack mirror row keyed by a per-flow/per-node step_type (e.g.
+		// "review-loop__coder") that mirror-sync never writes a model onto, so
+		// the direct steps[0].Model read above is always empty for a flow-pack
+		// workflow's entry node. Fall back to the same node_id/role lookup
+		// resolveFlowNodeModel uses for child spawns, so the run's own Step
+		// tier actually sees the model configured on the purpose-named role
+		// row (e.g. "Flow: Coder" / flow-agent-delegate-coder) instead of
+		// skipping straight past it to the Flow/Project tiers.
+		if resolvedModel == "" {
+			resolvedModel = s.resolveConfiguredModelForAgent(context.Background(), steps[0].NodeID, agentNameFromRef(steps[0].AgentRef))
+		}
 		// BUG-183: Flow Mode has two distinct default sources. A normal workflow/flow
 		// execution inherits YOLO from the workflow definition itself, while a direct
 		// single-step execution inherits from that selected step. Do not let the entry
@@ -1080,7 +1093,16 @@ func (s *InteractiveService) handleSpawnAgent(w http.ResponseWriter, r *http.Req
 
 // handleListAgentRuns returns the agent run summaries that are children of the given run.
 func (s *InteractiveService) handleListAgentRuns(w http.ResponseWriter, r *http.Request) {
-	writeInteractiveJSON(w, http.StatusOK, s.listAgentRunSummaries(r.PathValue("runId")))
+	parentRunID := r.PathValue("runId")
+	summaries := s.listAgentRunSummaries(parentRunID)
+	if cohortDiagEnabled() {
+		runs := make([]string, len(summaries))
+		for i, sum := range summaries {
+			runs[i] = fmt.Sprintf("%s(%s):%s", sum.RunID, sum.AgentName, sum.Status)
+		}
+		cohortDiagLog("handleListAgentRuns HTTP response parent=%q runs=%v", parentRunID, runs)
+	}
+	writeInteractiveJSON(w, http.StatusOK, summaries)
 }
 
 func (s *InteractiveService) handleGetAgentGraph(w http.ResponseWriter, r *http.Request) {

@@ -46,14 +46,14 @@ type agentCompletion struct {
 
 func newAgentOrchestrator() *AgentOrchestrator {
 	return &AgentOrchestrator{
-		children:   make(map[string][]string),
-		waiters:    make(map[string]chan agentCompletion),
-		historical: make(map[string][]AgentRunSummary),
-		summaries:  make(map[string]map[string]AgentRunSummary),
-		edges:      make(map[string][]AgentDependencyEdge),
-		bus:        make(map[string][]AgentBusMessage),
-		loop:       make(map[string]AgentLoopState),
-		queued:     make(map[string][]AgentBusMessage),
+		children:       make(map[string][]string),
+		waiters:        make(map[string]chan agentCompletion),
+		historical:     make(map[string][]AgentRunSummary),
+		summaries:      make(map[string]map[string]AgentRunSummary),
+		edges:          make(map[string][]AgentDependencyEdge),
+		bus:            make(map[string][]AgentBusMessage),
+		loop:           make(map[string]AgentLoopState),
+		queued:         make(map[string][]AgentBusMessage),
 		cohort:         make(map[string][]cohortEntry),
 		cohortExpected: make(map[string]int),
 	}
@@ -65,6 +65,8 @@ func (o *AgentOrchestrator) registerCohortMember(parentRunID, cohortID string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.cohortExpected[cohortKey(parentRunID, cohortID)]++
+	cohortDiagLog("registerCohortMember increment parent=%q cohort=%q expectedNow=%d",
+		parentRunID, cohortID, o.cohortExpected[cohortKey(parentRunID, cohortID)])
 }
 
 // preRegisterCohort sets the expected count for a cohort to count on the first
@@ -77,6 +79,10 @@ func (o *AgentOrchestrator) preRegisterCohort(parentRunID, cohortID string, coun
 	k := cohortKey(parentRunID, cohortID)
 	if o.cohortExpected[k] == 0 {
 		o.cohortExpected[k] = count
+		cohortDiagLog("preRegisterCohort SET parent=%q cohort=%q expected=%d", parentRunID, cohortID, count)
+	} else {
+		cohortDiagLog("preRegisterCohort no-op (already %d) parent=%q cohort=%q requestedCount=%d",
+			o.cohortExpected[k], parentRunID, cohortID, count)
 	}
 }
 
@@ -89,6 +95,8 @@ func (o *AgentOrchestrator) appendCohortResult(parentRunID, cohortID string, e c
 	defer o.mu.Unlock()
 	k := cohortKey(parentRunID, cohortID)
 	o.cohort[k] = append(o.cohort[k], e)
+	cohortDiagLog("appendCohortResult parent=%q cohort=%q label=%q status=%q bufferLen=%d expected=%d",
+		parentRunID, cohortID, e.Label, e.Status, len(o.cohort[k]), o.cohortExpected[k])
 }
 
 // cohortComplete returns true when the number of buffered results equals the registered
@@ -98,7 +106,10 @@ func (o *AgentOrchestrator) cohortComplete(parentRunID, cohortID string) bool {
 	defer o.mu.Unlock()
 	k := cohortKey(parentRunID, cohortID)
 	exp := o.cohortExpected[k]
-	return exp > 0 && len(o.cohort[k]) >= exp
+	complete := exp > 0 && len(o.cohort[k]) >= exp
+	cohortDiagLog("cohortComplete check parent=%q cohort=%q bufferLen=%d expected=%d result=%t",
+		parentRunID, cohortID, len(o.cohort[k]), exp, complete)
+	return complete
 }
 
 // drainCohort removes the cohort buffer and expected-count entry, returning the
@@ -109,6 +120,13 @@ func (o *AgentOrchestrator) drainCohort(parentRunID, cohortID string) []cohortEn
 	defer o.mu.Unlock()
 	k := cohortKey(parentRunID, cohortID)
 	entries := o.cohort[k]
+	if cohortDiagEnabled() {
+		labels := make([]string, len(entries))
+		for i, e := range entries {
+			labels[i] = e.Label + ":" + e.Status
+		}
+		cohortDiagLog("drainCohort parent=%q cohort=%q entries=%v", parentRunID, cohortID, labels)
+	}
 	delete(o.cohort, k)
 	delete(o.cohortExpected, k)
 	return entries
@@ -199,6 +217,12 @@ type SpawnAgentInput struct {
 	// (BUG-NOTE-CP42 #23). Never set from the wire — internal-only, like
 	// UIInitiated above.
 	AgentDefOverride *AgentDefinition `json:"-"`
+	// ParentContextNote injects a parent-visible note immediately after the child
+	// run is created but before its first asynchronous turn is launched. Internal
+	// only: used by flow startup so the hub reliably sees "work already started"
+	// even when a fast child turn would otherwise race ahead and drain pending
+	// context before the caller can append the notice.
+	ParentContextNote string `json:"-"`
 	// Model gives this spawn its own model, taking priority over both the
 	// agent definition's model and the parent run's inherited model (BUG-228).
 	// Set by the flow executor for an agent.delegate node whose role has its
@@ -234,7 +258,13 @@ type AgentRunSummary struct {
 	// WaitForResult mirrors the spawn's wait flag so the desktop can tell which running
 	// children block the main run (wait=true) vs. run in the background (wait=false) (BUG-133).
 	WaitForResult bool `json:"waitForResult,omitempty"`
+	// ActivationSeq is incremented each time a reinvoke-lifecycle child is reactivated
+	// (completed → running again) so the desktop can distinguish a genuine reinvoke from
+	// a stale HTTP snapshot that BUG-235's terminal-status guard would otherwise block.
+	// Zero for the first activation; omitted from JSON when zero.
+	ActivationSeq int `json:"activationSeq,omitempty"`
 }
+
 
 // setHistoricalChildren stores agent summaries from a restored sync manifest so that
 // listAgentRunSummaries can return them even when the live runs are no longer in memory.
@@ -467,7 +497,7 @@ type FlowNode struct {
 	ID        string `json:"id"`
 	Agent     string `json:"agent"`
 	Run       string `json:"run"`       // "inline" | "delegate"
-	Lifecycle string `json:"lifecycle"` // "once" | "reinvoke"
+	Lifecycle string `json:"lifecycle"` // "once" | "reinvoke" | "spawn"
 	Join      string `json:"join"`      // "all" | "any" | "quorum(n)"
 }
 
@@ -481,15 +511,15 @@ type FlowEdge struct {
 
 // FlowPolicy configures cap + bounded-extend behaviour for a flow.
 type FlowPolicy struct {
-	Cap        int    `json:"cap"`
-	OnCap      string `json:"onCap"`      // "escalate" | "done"
-	ExtendBy   int    `json:"extendBy"`
-	ExtendMax  int    `json:"extendMax"`
+	Cap       int    `json:"cap"`
+	OnCap     string `json:"onCap"` // "escalate" | "done"
+	ExtendBy  int    `json:"extendBy"`
+	ExtendMax int    `json:"extendMax"`
 }
 
 // FlowControlInput is the one generic signal an agent sends to the engine.
 type FlowControlInput struct {
-	Status  string         `json:"status"`  // "continue" | "done" | "escalate"
+	Status  string         `json:"status"` // "continue" | "done" | "escalate"
 	Summary string         `json:"summary,omitempty"`
 	Payload map[string]any `json:"payload,omitempty"`
 }

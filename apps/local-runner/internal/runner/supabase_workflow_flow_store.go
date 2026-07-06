@@ -14,24 +14,6 @@ import (
 	"flowpilot-runner/internal/agentpack"
 )
 
-// stepTypeForBehavior maps a canonical CP-42 behavior ID onto the generic,
-// reusable step_definitions.step_type row seeded by the
-// add_flow_engine_attrs_to_workflows migration. workflow_steps.step_type has
-// a NOT NULL foreign key to step_definitions, so every mirrored flow-engine
-// node needs a valid step_type even though its real per-node identity lives
-// in its own node_id/behavior_id/agent_ref columns, not in step_type.
-var stepTypeForBehavior = map[string]string{
-	"agent.delegate":       "flow-agent-delegate",
-	"hub.inline":           "flow-hub-inline",
-	"context.produce":      "flow-context-produce",
-	"context.render":       "flow-context-render",
-	"command.validate":     "flow-command-validate",
-	"validation.summarize": "flow-validation-summarize",
-	"artifact.audit_draft": "flow-artifact-audit-draft",
-	"flow.control":         "flow-control",
-	"user.confirm":         "flow-user-confirm",
-}
-
 var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 func looksLikeUUID(s string) bool {
@@ -79,9 +61,15 @@ type dbFlowEdgeRow struct {
 }
 
 type dbWorkflowStepRow struct {
+	StepType       string              `json:"step_type"`
+	OrderIndex     int                 `json:"order_index"`
+	StepDefinition dbStepDefinitionRow `json:"step_definitions"`
+}
+
+type dbStepDefinitionRow struct {
 	StepType          string            `json:"step_type"`
-	OrderIndex        int               `json:"order_index"`
 	NodeID            *string           `json:"node_id"`
+	NodeLifecycle     *string           `json:"node_lifecycle"`
 	BehaviorID        *string           `json:"behavior_id"`
 	AgentRef          *string           `json:"agent_ref"`
 	DependsOnJSON     []string          `json:"depends_on_json"`
@@ -98,30 +86,30 @@ type dbFlowContextRow struct {
 }
 
 type dbWorkflowRow struct {
-	ID               string              `json:"id"`
-	Name             string              `json:"name"`
-	Description      string              `json:"description"`
-	IsBuiltin        bool                `json:"is_builtin"`
-	Editable         bool                `json:"editable"`
-	Cloneable        bool                `json:"cloneable"`
-	ClonedFrom       *string             `json:"cloned_from"`
-	PackID           *string             `json:"pack_id"`
-	PackVersion      *string             `json:"pack_version"`
-	PackFlowID       *string             `json:"pack_flow_id"`
-	PackHash         *string             `json:"pack_hash"`
-	SelectableInJSON []string            `json:"selectable_in_json"`
-	ChatBaseline     bool                `json:"chat_baseline"`
-	ChatSubModesJSON []string            `json:"chat_sub_modes_json"`
-	PolicyCap        *int                `json:"policy_cap"`
-	PolicyOnCap      *string             `json:"policy_on_cap"`
-	PolicyExtendBy   *int                `json:"policy_extend_by"`
-	PolicyExtendMax  *int                `json:"policy_extend_max"`
-	EdgesJSON        []dbFlowEdgeRow                `json:"edges_json"`
-	ContextsJSON     map[string]dbFlowContextRow    `json:"contexts_json"`
-	WorkflowSteps    []dbWorkflowStepRow            `json:"workflow_steps"`
+	ID               string                      `json:"id"`
+	Name             string                      `json:"name"`
+	Description      string                      `json:"description"`
+	IsBuiltin        bool                        `json:"is_builtin"`
+	Editable         bool                        `json:"editable"`
+	Cloneable        bool                        `json:"cloneable"`
+	ClonedFrom       *string                     `json:"cloned_from"`
+	PackID           *string                     `json:"pack_id"`
+	PackVersion      *string                     `json:"pack_version"`
+	PackFlowID       *string                     `json:"pack_flow_id"`
+	PackHash         *string                     `json:"pack_hash"`
+	SelectableInJSON []string                    `json:"selectable_in_json"`
+	ChatBaseline     bool                        `json:"chat_baseline"`
+	ChatSubModesJSON []string                    `json:"chat_sub_modes_json"`
+	PolicyCap        *int                        `json:"policy_cap"`
+	PolicyOnCap      *string                     `json:"policy_on_cap"`
+	PolicyExtendBy   *int                        `json:"policy_extend_by"`
+	PolicyExtendMax  *int                        `json:"policy_extend_max"`
+	EdgesJSON        []dbFlowEdgeRow             `json:"edges_json"`
+	ContextsJSON     map[string]dbFlowContextRow `json:"contexts_json"`
+	WorkflowSteps    []dbWorkflowStepRow         `json:"workflow_steps"`
 }
 
-const workflowSelect = "*,workflow_steps(step_type,order_index,node_id,behavior_id,agent_ref,depends_on_json,join_mode,cohort,prompt_template_ref,context_ref,inputs_json,outputs_json)"
+const workflowSelect = "*,workflow_steps(step_type,order_index,step_definitions(step_type,node_id,node_lifecycle,behavior_id,agent_ref,depends_on_json,join_mode,cohort,prompt_template_ref,context_ref,inputs_json,outputs_json))"
 
 func recordFromWorkflowRow(row dbWorkflowRow) FlowDefinitionRecord {
 	rec := FlowDefinitionRecord{
@@ -200,30 +188,34 @@ func recordFromWorkflowRow(row dbWorkflowRow) FlowDefinitionRecord {
 	steps := append([]dbWorkflowStepRow(nil), row.WorkflowSteps...)
 	sort.Slice(steps, func(i, j int) bool { return steps[i].OrderIndex < steps[j].OrderIndex })
 	for _, st := range steps {
-		node := agentpack.FlowNode{DependsOn: st.DependsOnJSON}
-		if st.NodeID != nil {
-			node.ID = *st.NodeID
+		defn := st.StepDefinition
+		node := agentpack.FlowNode{DependsOn: defn.DependsOnJSON}
+		if defn.NodeID != nil {
+			node.ID = *defn.NodeID
 		}
-		if st.BehaviorID != nil {
-			node.Behavior = *st.BehaviorID
+		if defn.NodeLifecycle != nil {
+			node.Lifecycle = *defn.NodeLifecycle
 		}
-		if st.AgentRef != nil {
-			node.Agent = *st.AgentRef
+		if defn.BehaviorID != nil {
+			node.Behavior = *defn.BehaviorID
 		}
-		if st.JoinMode != nil {
-			node.Join = *st.JoinMode
+		if defn.AgentRef != nil {
+			node.Agent = *defn.AgentRef
 		}
-		if st.Cohort != nil {
-			node.Cohort = *st.Cohort
+		if defn.JoinMode != nil {
+			node.Join = *defn.JoinMode
 		}
-		if st.PromptTemplateRef != nil {
-			node.PromptTemplate = *st.PromptTemplateRef
+		if defn.Cohort != nil {
+			node.Cohort = *defn.Cohort
 		}
-		if len(st.InputsJSON) > 0 {
-			node.Inputs = st.InputsJSON
+		if defn.PromptTemplateRef != nil {
+			node.PromptTemplate = *defn.PromptTemplateRef
 		}
-		if len(st.OutputsJSON) > 0 {
-			node.Outputs = st.OutputsJSON
+		if len(defn.InputsJSON) > 0 {
+			node.Inputs = defn.InputsJSON
+		}
+		if len(defn.OutputsJSON) > 0 {
+			node.Outputs = defn.OutputsJSON
 		}
 		def.Nodes = append(def.Nodes, node)
 	}
@@ -274,9 +266,9 @@ func (s *SupabaseWorkflowFlowStore) GetByRef(ctx context.Context, flowRef string
 }
 
 // ListAll returns every workflow row (built-in mirrors and user-owned
-// flows/plain admin workflows alike — a plain workflow with no behavior_id
-// on any step simply has no agent.delegate entry node, so it is inert to the
-// flow executor).
+// flows/plain admin workflows alike — a plain workflow whose joined step
+// definitions have no behavior_id simply has no agent.delegate entry node, so
+// it is inert to the flow executor).
 func (s *SupabaseWorkflowFlowStore) ListAll(ctx context.Context) ([]FlowDefinitionRecord, error) {
 	endpoint := fmt.Sprintf("%s/workflows?select=%s", s.restURL, url.QueryEscape(workflowSelect))
 	status, body, err := httpRequestFn(ctx, http.MethodGet, endpoint, s.headers(""), nil)
@@ -359,7 +351,12 @@ func (s *SupabaseWorkflowFlowStore) Upsert(ctx context.Context, record FlowDefin
 	}
 	workflowID := savedRows[0].ID
 
-	if err := s.replaceSteps(ctx, workflowID, record.Definition.Nodes); err != nil {
+	stepTypes, err := s.upsertNodeStepDefinitions(ctx, record, workflowID, record.Definition.Nodes)
+	if err != nil {
+		return FlowDefinitionRecord{}, err
+	}
+
+	if err := s.replaceSteps(ctx, workflowID, stepTypes); err != nil {
 		return FlowDefinitionRecord{}, err
 	}
 
@@ -379,21 +376,21 @@ func (s *SupabaseWorkflowFlowStore) Upsert(ctx context.Context, record FlowDefin
 // rows they're about to replace are still present (see replaceSteps).
 const insertOrderIndexOffset = 1_000_000
 
-// replaceSteps swaps workflowID's steps for nodes. Ordered insert-then-delete
+// replaceSteps swaps workflowID's relation rows for stepTypes. Ordered insert-then-delete
 // (BUG-NOTE-CP42 #18): the old delete-then-insert sequence left a window
 // where an insert failure (FK/unique/network error) permanently lost every
 // existing step, since the delete had already committed. Inserting the new
 // rows first means a failed insert leaves the existing steps fully intact —
 // the caller sees an error and the stored flow is unchanged, not silently
 // emptied.
-func (s *SupabaseWorkflowFlowStore) replaceSteps(ctx context.Context, workflowID string, nodes []agentpack.FlowNode) error {
-	if len(nodes) == 0 {
+func (s *SupabaseWorkflowFlowStore) replaceSteps(ctx context.Context, workflowID string, stepTypes []string) error {
+	if len(stepTypes) == 0 {
 		// Nothing to preserve: a deliberate "save with zero steps" has no
 		// insert-first ordering to get right.
 		return s.deleteAllSteps(ctx, workflowID)
 	}
 
-	newIDs, err := s.insertSteps(ctx, workflowID, nodes, insertOrderIndexOffset)
+	newIDs, err := s.insertSteps(ctx, workflowID, stepTypes, insertOrderIndexOffset)
 	if err != nil {
 		return fmt.Errorf("supabase workflow flow: insert new steps (existing steps left untouched): %w", err)
 	}
@@ -424,23 +421,20 @@ func (s *SupabaseWorkflowFlowStore) deleteAllSteps(ctx context.Context, workflow
 	return nil
 }
 
-// insertSteps inserts nodes as new workflow_steps rows (order_index offset by
-// orderOffset) and returns their store-assigned ids, in the same order as
-// nodes.
-func (s *SupabaseWorkflowFlowStore) insertSteps(ctx context.Context, workflowID string, nodes []agentpack.FlowNode, orderOffset int) ([]string, error) {
+func (s *SupabaseWorkflowFlowStore) upsertNodeStepDefinitions(ctx context.Context, record FlowDefinitionRecord, workflowID string, nodes []agentpack.FlowNode) ([]string, error) {
+	stepTypes := make([]string, 0, len(nodes))
 	rows := make([]map[string]any, 0, len(nodes))
-	for i, node := range nodes {
-		stepType := "flow-agent-delegate"
-		if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok {
-			if mapped, ok := stepTypeForBehavior[canonical]; ok {
-				stepType = mapped
-			}
-		}
+	for _, node := range nodes {
+		stepType := flowNodeStepType(record, workflowID, node)
+		stepTypes = append(stepTypes, stepType)
 		rows = append(rows, map[string]any{
-			"workflow_id":         workflowID,
 			"step_type":           stepType,
-			"order_index":         orderOffset + i,
+			"name":                flowNodeStepName(record, node),
+			"description":         flowNodeStepDescription(record, node),
+			"prompt_base":         flowNodePromptBase(record, node),
+			"agent_type":          "standard",
 			"node_id":             nilIfEmpty(node.ID),
+			"node_lifecycle":      nilIfEmpty(node.Lifecycle),
 			"behavior_id":         nilIfEmpty(node.Behavior),
 			"agent_ref":           nilIfEmpty(node.Agent),
 			"depends_on_json":     nonNilStrings(node.DependsOn),
@@ -449,6 +443,35 @@ func (s *SupabaseWorkflowFlowStore) insertSteps(ctx context.Context, workflowID 
 			"prompt_template_ref": nilIfEmpty(node.PromptTemplate),
 			"inputs_json":         nonNilStringMap(node.Inputs),
 			"outputs_json":        nonNilStringMap(node.Outputs),
+		})
+	}
+	if len(rows) == 0 {
+		return stepTypes, nil
+	}
+	payload, err := json.Marshal(rows)
+	if err != nil {
+		return nil, fmt.Errorf("encode step definitions: %w", err)
+	}
+	endpoint := s.restURL + "/step_definitions?on_conflict=step_type"
+	status, body, err := httpRequestFn(ctx, http.MethodPost, endpoint, s.headers("resolution=merge-duplicates,return=minimal"), payload)
+	if err != nil {
+		return nil, err
+	}
+	if status < 200 || status >= 300 {
+		return nil, fmt.Errorf("upsert step definitions failed: status %d: %s", status, string(body))
+	}
+	return stepTypes, nil
+}
+
+// insertSteps inserts relation rows that attach already-upserted step definitions
+// to workflowID (order_index offset by orderOffset) and returns their ids.
+func (s *SupabaseWorkflowFlowStore) insertSteps(ctx context.Context, workflowID string, stepTypes []string, orderOffset int) ([]string, error) {
+	rows := make([]map[string]any, 0, len(stepTypes))
+	for i, stepType := range stepTypes {
+		rows = append(rows, map[string]any{
+			"workflow_id": workflowID,
+			"step_type":   stepType,
+			"order_index": orderOffset + i,
 		})
 	}
 	payload, err := json.Marshal(rows)
@@ -520,6 +543,93 @@ func nameForRecord(record FlowDefinitionRecord) string {
 		return flowOptionLabel(record.PackFlowID)
 	}
 	return "Untitled Flow"
+}
+
+func flowNodeStepType(record FlowDefinitionRecord, workflowID string, node agentpack.FlowNode) string {
+	flowKey := record.PackFlowID
+	if flowKey == "" {
+		flowKey = record.Definition.ID
+	}
+	if flowKey == "" {
+		flowKey = workflowID
+	}
+	if record.PackID != "" {
+		flowKey = record.PackID + "__" + flowKey
+	}
+	nodeKey := node.ID
+	if nodeKey == "" {
+		nodeKey = flowNodeAgentName(node)
+	}
+	if nodeKey == "" {
+		nodeKey = "node"
+	}
+	return sanitizeStepType(flowKey + "__" + nodeKey)
+}
+
+func sanitizeStepType(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var b strings.Builder
+	lastUnderscore := false
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastUnderscore = false
+		case r == '-' || r == '_':
+			if !lastUnderscore {
+				b.WriteRune('_')
+				lastUnderscore = true
+			}
+		default:
+			if !lastUnderscore {
+				b.WriteRune('_')
+				lastUnderscore = true
+			}
+		}
+	}
+	out := strings.Trim(b.String(), "_")
+	if out == "" {
+		return "flow_node"
+	}
+	return out
+}
+
+func flowNodeStepName(record FlowDefinitionRecord, node agentpack.FlowNode) string {
+	flowName := nameForRecord(record)
+	nodeName := strings.TrimSpace(node.ID)
+	if nodeName == "" {
+		nodeName = flowNodeAgentName(node)
+	}
+	if nodeName == "" {
+		nodeName = "node"
+	}
+	return flowName + ": " + humanizeFlowNodeID(nodeName)
+}
+
+func humanizeFlowNodeID(value string) string {
+	parts := strings.FieldsFunc(value, func(r rune) bool { return r == '_' || r == '-' })
+	if len(parts) == 0 {
+		return value
+	}
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(part[:1]) + part[1:]
+	}
+	return strings.Join(parts, " ")
+}
+
+func flowNodeStepDescription(record FlowDefinitionRecord, node agentpack.FlowNode) string {
+	behavior := strings.TrimSpace(node.Behavior)
+	if behavior == "" {
+		behavior = "flow node"
+	}
+	return fmt.Sprintf("Builtin flow node %q for %s. Behavior: %s.", strings.TrimSpace(node.ID), nameForRecord(record), behavior)
+}
+
+func flowNodePromptBase(record FlowDefinitionRecord, node agentpack.FlowNode) string {
+	return fmt.Sprintf("Execute the %q node in the %q flow.", strings.TrimSpace(node.ID), nameForRecord(record))
 }
 
 func nonNilStrings(values []string) []string {

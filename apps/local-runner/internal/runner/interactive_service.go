@@ -147,6 +147,11 @@ type interactiveRun struct {
 	// with wait=false only acks "spawned" — its eventual result must be injected like a UI
 	// spawn so the parent still learns the outcome (BUG-126).
 	waitForResult bool
+	// activationSeq tracks how many times this child has been reinvoked. Incremented
+	// in reinvokeExistingFlowChild each time the node is reactivated (lifecycle: reinvoke).
+	// Surfaced via AgentRunSummary.ActivationSeq so the desktop can distinguish a genuine
+	// completed→running transition from a stale HTTP snapshot (BUG-Rnd2 Bug B).
+	activationSeq int
 	// autoOrchestrate enables bounded hub auto-reinvocation (Task-093 / CP-36 P-7). Set on
 	// root (parent) runs only; child runs leave this false. When true, maybeAutoReinvokeHub
 	// is called after each cohort join to re-prompt the hub without a human typing.
@@ -490,6 +495,10 @@ func (s *InteractiveService) injectAgentFeedback(parentRunID, toRunID, message s
 // This is the synchronous core: it records the transition, emits the graph update,
 // and returns a FlowControlResult. Re-entry of target nodes is wired by Task-091/092.
 func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControlInput) (FlowControlResult, error) {
+	s.flowDiagLog(parentRunID, "flow_control_received", "received flow control input",
+		"status", in.Status,
+		"summary_len", len(strings.TrimSpace(in.Summary)),
+	)
 	// Validate the target run exists before mutating orchestrator state (MEDIUM finding).
 	s.mu.Lock()
 	rs, runExists := s.runs[parentRunID]
@@ -498,6 +507,9 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 	}
 	s.mu.Unlock()
 	if !runExists {
+		s.flowDiagLog(parentRunID, "flow_control_missing_run", "flow control target run was not found",
+			"status", in.Status,
+		)
 		return FlowControlResult{}, fmt.Errorf("applyFlowControl: run %q not found", parentRunID)
 	}
 	switch in.Status {
@@ -517,6 +529,11 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 		if s.isFlowEngineDriven(parentRunID) {
 			s.markFlowRunComplete(context.Background(), parentRunID)
 		}
+		s.flowDiagLog(parentRunID, "flow_control_done", "flow marked done",
+			"next_action", "done",
+			"round", snap.LoopState.Round,
+			"cap", effectiveCap(snap.LoopState),
+		)
 		return FlowControlResult{Status: "done", Round: snap.LoopState.Round, Cap: effectiveCap(snap.LoopState), NextAction: "done"}, nil
 
 	case "continue":
@@ -578,6 +595,12 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 		}
 		s.emitAgentGraph(parentRunID, snap)
 		go s.persistParentSession(parentRunID)
+		s.flowDiagLog(parentRunID, "flow_control_continue", "flow continue applied",
+			"next_action", result.NextAction,
+			"round", result.Round,
+			"cap", result.Cap,
+			"open_issues", result.OpenIssues,
+		)
 		if result.NextAction == "looping" {
 			// Re-enter the coder so the back-edge in ReviewLoopFlowConfig fires
 			// (CRITICAL finding: continue returned "looping" but never restarted the coder).
@@ -606,9 +629,18 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 		s.setFlowStepAwaitingUser(context.Background(), parentRunID)
 		s.emitAgentGraph(parentRunID, snap)
 		go s.persistParentSession(parentRunID)
+		s.flowDiagLog(parentRunID, "flow_control_escalate", "flow escalated to awaiting user",
+			"next_action", "awaiting_user",
+			"round", snap.LoopState.Round,
+			"cap", effectiveCap(snap.LoopState),
+			"summary", strings.TrimSpace(in.Summary),
+		)
 		return FlowControlResult{Status: "blocked", Round: snap.LoopState.Round, Cap: effectiveCap(snap.LoopState), NextAction: "awaiting_user"}, nil
 
 	default:
+		s.flowDiagLog(parentRunID, "flow_control_unknown_status", "unknown flow control status received",
+			"status", in.Status,
+		)
 		return FlowControlResult{}, fmt.Errorf("applyFlowControl: unknown status %q", in.Status)
 	}
 }
@@ -842,6 +874,10 @@ func (s *InteractiveService) maybeAutoReinvokeHubWithNote(parentRunID, cohortNot
 			parent.pendingHubReinvoke = true
 		}
 		s.mu.Unlock()
+		s.flowDiagLog(parentRunID, "hub_reinvoke_deferred", "hub reinvoke was deferred or skipped by current state",
+			"has_parent", parent != nil,
+			"cohort_note_len", len(strings.TrimSpace(cohortNote)),
+		)
 		return
 	}
 	// Read loop state under o.mu (s.mu → o.mu is the established order; loopStateFor is safe here).
@@ -849,15 +885,25 @@ func (s *InteractiveService) maybeAutoReinvokeHubWithNote(parentRunID, cohortNot
 	switch st.Status {
 	case "paused", "stopped", "blocked", "done":
 		s.mu.Unlock()
+		s.flowDiagLog(parentRunID, "hub_reinvoke_blocked", "hub reinvoke blocked by loop status",
+			"cohort_note_len", len(strings.TrimSpace(cohortNote)),
+		)
 		return
 	}
 	if st.Round >= effectiveCap(st) {
 		s.mu.Unlock()
+		s.flowDiagLog(parentRunID, "hub_reinvoke_cap_blocked", "hub reinvoke blocked by round cap",
+			"cohort_note_len", len(strings.TrimSpace(cohortNote)),
+		)
 		return
 	}
 	stepID := s.nextID("step")
 	parent.reinvokeInFlight = true
 	s.mu.Unlock()
+	s.flowDiagLog(parentRunID, "hub_reinvoke_scheduled", "hub reinvoke scheduled",
+		"step_id", stepID,
+		"cohort_note_len", len(strings.TrimSpace(cohortNote)),
+	)
 
 	// Build the synthesis turn prompt. When a cohort note is provided, embed it
 	// directly in the prompt so the synthesizer always sees it as a visible user
@@ -985,10 +1031,43 @@ func (s *InteractiveService) maybeReinvokeCoderForContinue(parentRunID, prompt s
 	}
 	s.mu.Lock()
 	var targetNodeID string
+	var targetNode agentpack.FlowNode
+	var hasTargetNode bool
+	var flowDriven bool
 	if parent := s.runs[parentRunID]; parent != nil {
 		targetNodeID, _ = resolveContinueBackEdgeTarget(parent.activeFlowEdges)
+		if targetNodeID != "" {
+			targetNode, hasTargetNode = findFlowNode(parent.activeFlowNodes, targetNodeID)
+		}
+		flowDriven = parent.flowEngineDriven
+	}
+	if hasTargetNode && !flowNodeReusesChild(targetNode) {
+		s.mu.Unlock()
+		agentName := flowNodeAgentName(targetNode)
+		if agentName == "" {
+			return
+		}
+		agentDef, _ := resolvePackAgentDefinition(agentName)
+		if _, err := s.spawnChildRun(context.Background(), parentRunID, SpawnAgentInput{
+			Agent:            agentName,
+			Prompt:           prompt,
+			Wait:             false,
+			Label:            targetNode.ID,
+			AutoOrchestrate:  true,
+			AgentDefOverride: agentDef,
+			Model:            s.resolveFlowNodeModel(context.Background(), targetNode),
+		}); err != nil {
+			log.Printf("[flow-executor] continue: spawn node %q (agent %q) failed: %v", targetNode.ID, agentName, err)
+			return
+		}
+		if flowDriven {
+			s.setFlowStepStatus(context.Background(), parentRunID, targetNode.ID, StepStatusRunning)
+			s.stampFlowNodePosture(context.Background(), parentRunID, targetNode)
+		}
+		return
 	}
 	var coderID, coderStepID string
+	var snap AgentGraphSnapshot
 	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
 		child := s.runs[childID]
 		if child == nil {
@@ -1007,6 +1086,22 @@ func (s *InteractiveService) maybeReinvokeCoderForContinue(parentRunID, prompt s
 			s.mu.Unlock()
 			return // target already running; feedback will arrive via pendingAgentContext
 		}
+		child.status = RunStatusRunning
+		child.agentStatus = string(RunStatusRunning)
+		s.agentOrchestrator.upsertSummary(parentRunID, AgentRunSummary{
+			RunID:         child.id,
+			AgentName:     child.agentName,
+			Role:          child.role,
+			Status:        child.status,
+			ParentRunID:   child.parentRunID,
+			CreatedAt:     child.createdAt,
+			DependsOn:     append([]string(nil), child.dependsOn...),
+			AgentStatus:   child.agentStatus,
+			ProviderKey:   string(child.providerKey),
+			ModelName:     child.modelName,
+			WaitForResult: child.waitForResult,
+		})
+		snap = s.agentOrchestrator.graphSnapshot(parentRunID)
 		coderID = childID
 		coderStepID = child.stepID
 		break
@@ -1015,6 +1110,7 @@ func (s *InteractiveService) maybeReinvokeCoderForContinue(parentRunID, prompt s
 	if coderID == "" || coderStepID == "" {
 		return
 	}
+	s.emitAgentGraph(parentRunID, snap)
 	s.scheduleChildTurn(coderID, coderStepID, prompt)
 }
 
@@ -1136,10 +1232,12 @@ func (s *InteractiveService) releaseDependentAgents(parentRunID, completedRunID,
 	}
 	queued := []queuedTurn{}
 	isCohortMember := false
+	trackedFlow := false
 	s.mu.Lock()
 	if completedRun := s.runs[completedRunID]; completedRun != nil && completedRun.flowCohortId != "" {
 		isCohortMember = true
 	}
+	trackedFlow = parentHasTrackedFlow(s, parentRunID)
 	if !s.loopAllowsNextTurnLocked(parentRunID) {
 		for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
 			child := s.runs[childID]
@@ -1207,7 +1305,10 @@ func (s *InteractiveService) releaseDependentAgents(parentRunID, completedRunID,
 	if len(queued) > 0 {
 		s.emitAgentGraph(parentRunID, s.agentGraphSnapshot(parentRunID))
 	}
-	if !isCohortMember {
+	// Flow-graph runs route child completion through advanceOrNotifyHub. Do not
+	// also schedule this dependency-release fallback, or the hub can synthesize
+	// from a stale wait notice while the auto-spawned reviewer cohort is running.
+	if !isCohortMember && !trackedFlow {
 		go s.maybeAutoReinvokeHub(parentRunID)
 	}
 }
@@ -1266,6 +1367,14 @@ func (s *InteractiveService) emitAgentGraph(parentRunID string, snap AgentGraphS
 
 func (s *InteractiveService) emitAgentGraphLocked(parentRunID string, snap AgentGraphSnapshot) {
 	if rs := s.runs[parentRunID]; rs != nil {
+		if cohortDiagEnabled() {
+			runs := make([]string, len(snap.Runs))
+			for i, r := range snap.Runs {
+				runs[i] = fmt.Sprintf("%s(%s):%s", r.RunID, r.AgentName, r.Status)
+			}
+			cohortDiagLog("emitAgentGraph parent=%q loopStatus=%q loopRound=%d runs=%v",
+				parentRunID, snap.LoopState.Status, snap.LoopState.Round, runs)
+		}
 		_ = s.emitLocked(rs, ProviderEvent{Type: EventAgentGraphUpdated, AgentGraphSnapshot: &snap})
 	}
 }
@@ -1615,6 +1724,13 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 					FinalMessage: truncateDisplayField(finalMsg, 1500),
 					Status:       "completed",
 				})
+				s.flowDiagLog(rs.parentRunID, "cohort_member_completed", "cohort member completed and buffered",
+					"child_run_id", rs.id,
+					"cohort_id", rs.flowCohortId,
+					"label", rs.label,
+					"provider", string(rs.providerKey),
+					"final_message_len", len(strings.TrimSpace(finalMsg)),
+				)
 				// BUG-234 (#1): settle THIS cohort member's own timeline node the moment
 				// it finishes, so a done reviewer reads DONE while its sibling is still
 				// RUNNING. Previously the reviewer nodes were only settled together at the
@@ -1622,10 +1738,17 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 				// is the flow node id for a flow-spawned cohort member.
 				if parent := s.runs[rs.parentRunID]; parent != nil && parent.flowEngineDriven && rs.label != "" {
 					s.setFlowStepStatus(context.Background(), rs.parentRunID, rs.label, StepStatusDone)
+					cohortDiagLog("member self-settled DONE parent=%q run=%q label=%q", rs.parentRunID, rs.id, rs.label)
 				}
 				if s.agentOrchestrator.cohortComplete(rs.parentRunID, rs.flowCohortId) {
 					entries := s.agentOrchestrator.drainCohort(rs.parentRunID, rs.flowCohortId)
 					note := buildCohortNote(rs.parentRunID, rs.flowCohortId, entries, s.agentOrchestrator.graphSnapshot(rs.parentRunID).LoopState.Round)
+					s.flowDiagLog(rs.parentRunID, "cohort_join_complete", "cohort barrier completed and note built",
+						"cohort_id", rs.flowCohortId,
+						"entry_count", len(entries),
+						"note_len", len(note),
+					)
+					cohortDiagLog("cohortNote built parent=%q cohort=%q entries=%d noteLen=%d", rs.parentRunID, rs.flowCohortId, len(entries), len(note))
 					s.appendPendingAgentContextLocked(rs.parentRunID, note)
 					if parent := s.runs[rs.parentRunID]; parent != nil {
 						// BUG-233: retain the joined note past pendingAgentContext being
@@ -1684,6 +1807,8 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 							s.setFlowStepStatus(context.Background(), parentRunID, hubNodeID, StepStatusRunning)
 						}
 					}
+					cohortDiagLog("scheduling hub reinvoke parent=%q flowDriven=%t loopAdvancing=%t reviewerNodeIDs=%v noteLen=%d",
+						parentRunID, flowDriven, s.loopIsAdvancing(parentRunID), reviewerNodeIDs, len(capturedCohortNote))
 					go s.maybeAutoReinvokeHubWithNote(parentRunID, capturedCohortNote)
 				}
 			} else if s.agentOrchestrator.loopMode(rs.parentRunID) == "explicit" && (isCoderRun(rs) || parentHasTrackedFlow(s, rs.parentRunID)) {
@@ -1789,15 +1914,28 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 					Status:   "failed",
 					Err:      truncateDisplayField(ev.Error, 500),
 				})
+				s.flowDiagLog(rs.parentRunID, "cohort_member_failed", "cohort member failed and buffered",
+					"child_run_id", rs.id,
+					"cohort_id", rs.flowCohortId,
+					"label", rs.label,
+					"provider", string(rs.providerKey),
+					"error", truncateDisplayField(ev.Error, 500),
+				)
 				// BUG-234 (#1): settle this member's own node to FAILED on its own
 				// failure, mirroring the completed path, so a failed reviewer reads
 				// FAILED immediately instead of RUNNING until the barrier.
 				if parent := s.runs[rs.parentRunID]; parent != nil && parent.flowEngineDriven && rs.label != "" {
 					s.setFlowStepStatus(context.Background(), rs.parentRunID, rs.label, StepStatusFailed)
+					cohortDiagLog("member self-settled FAILED parent=%q run=%q label=%q", rs.parentRunID, rs.id, rs.label)
 				}
 				if s.agentOrchestrator.cohortComplete(rs.parentRunID, rs.flowCohortId) {
 					entries := s.agentOrchestrator.drainCohort(rs.parentRunID, rs.flowCohortId)
 					note := buildCohortNote(rs.parentRunID, rs.flowCohortId, entries, s.agentOrchestrator.graphSnapshot(rs.parentRunID).LoopState.Round)
+					s.flowDiagLog(rs.parentRunID, "cohort_join_complete_after_failure", "cohort barrier completed after member failure",
+						"cohort_id", rs.flowCohortId,
+						"entry_count", len(entries),
+						"note_len", len(note),
+					)
 					s.appendPendingAgentContextLocked(rs.parentRunID, note)
 					if parent := s.runs[rs.parentRunID]; parent != nil {
 						parent.lastCohortNote = note // BUG-233: retained for the CA-226 fallback GateReason
@@ -2084,6 +2222,18 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 	// multiple times (and with what params) vs. a single intended spawn.
 	log.Printf("[agent-spawn] request parent=%q agent=%q provider=%q wait=%t dependsOn=%v promptLen=%d",
 		parentRunID, in.Agent, in.Provider, in.Wait, in.DependsOn, len(in.Prompt))
+	s.flowDiagLog(parentRunID, "child_spawn_requested", "child spawn requested",
+		"agent", in.Agent,
+		"provider", in.Provider,
+		"wait", in.Wait,
+		"depends_on_count", len(in.DependsOn),
+		"flow_cohort_id", in.FlowCohortID,
+		"cohort_size", in.CohortSize,
+		"label", in.Label,
+		"auto_orchestrate", in.AutoOrchestrate,
+		"model_override", in.Model,
+		"prompt_len", len(in.Prompt),
+	)
 	// Validate that the parent run exists before creating any child resource.
 	var agentDef *AgentDefinition
 	s.mu.Lock()
@@ -2106,6 +2256,9 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 	}
 	s.mu.Unlock()
 	if parentRun == nil {
+		s.flowDiagLog(parentRunID, "child_spawn_missing_parent", "child spawn parent run not found",
+			"agent", in.Agent,
+		)
 		return SpawnAgentResult{}, fmt.Errorf("parent run %q not found", parentRunID)
 	}
 	if in.AgentDefOverride != nil {
@@ -2248,6 +2401,10 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 	s.mu.Unlock()
 	if childSnap.RunID != "" {
 		if err := s.persistProviderSession(childSnap); err != nil {
+			s.flowDiagLog(parentRunID, "child_spawn_persist_failed", "child run snapshot persistence failed",
+				"child_run_id", childSnap.RunID,
+				"error", err.Error(),
+			)
 			return SpawnAgentResult{}, err
 		}
 	}
@@ -2256,6 +2413,15 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 	// "[agent-spawn] request" line above to map each spawn call to its child run id.
 	log.Printf("[agent-spawn] child created parent=%q child=%q agent=%q role=%q provider=%q model=%q blockedStart=%t",
 		parentRunID, handle.RunID, childSnap.AgentName, childSnap.Role, childSnap.ProviderKey, childModel, blockedStart)
+	s.flowDiagLog(parentRunID, "child_spawn_created", "child run created",
+		"child_run_id", handle.RunID,
+		"agent_name", childSnap.AgentName,
+		"agent_role", childSnap.Role,
+		"provider", string(childSnap.ProviderKey),
+		"model", childModel,
+		"blocked_start", blockedStart,
+		"agent_status", agentStatus,
+	)
 
 	// Record the tree edge.
 	s.agentOrchestrator.registerChild(parentRunID, handle.RunID)
@@ -2299,6 +2465,9 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		s.appendPendingAgentContext(parentRunID, fmt.Sprintf(
 			"Sub-agent %q (provider: %s, model: %s) was started from the FlowPilot UI.",
 			childSnap.AgentName, childSnap.ProviderKey, childModel))
+	}
+	if note := strings.TrimSpace(in.ParentContextNote); note != "" {
+		s.appendPendingAgentContext(parentRunID, note)
 	}
 
 	// Fire the first turn asynchronously; the child streams via its own SSE.

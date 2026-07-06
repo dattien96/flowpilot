@@ -15,7 +15,7 @@ func ReviewLoopFlowConfig() ([]FlowNode, []FlowEdge, FlowPolicy) {
 
 	nodes := []FlowNode{
 		{ID: "coder", Run: "delegate", Lifecycle: "reinvoke", Join: "all"},
-		{ID: "reviewer", Run: "delegate", Lifecycle: "reinvoke", Join: "all"},
+		{ID: "reviewer", Run: "delegate", Lifecycle: "spawn", Join: "all"},
 		{ID: "synthesis", Run: "inline", Lifecycle: "once", Join: "all"},
 	}
 	edges := []FlowEdge{

@@ -233,7 +233,7 @@ func TestSupabaseCatalogStoreShaping(t *testing.T) {
 		t.Fatalf("workflows endpoint = %s", (*cap2)[0].endpoint)
 	}
 
-	cap3 := withMockHTTP(t, 200, []byte(`[{"step_type":"plan","name":"Plan","model":"gpt-5.5"}]`))
+	cap3 := withMockHTTP(t, 200, []byte(`[{"step_type":"plan","name":"Plan","model":"gpt-5.5","node_id":"reviewer_correctness","behavior_id":"agent.delegate","agent_ref":"agents/reviewer.md"}]`))
 	steps, err := store.ListSteps(context.Background())
 	if err != nil || len(steps) != 1 || steps[0].Name != "Plan" {
 		t.Fatalf("steps = %+v err=%v", steps, err)
@@ -242,8 +242,16 @@ func TestSupabaseCatalogStoreShaping(t *testing.T) {
 	if steps[0].Model != "gpt-5.5" {
 		t.Fatalf("step model = %q, want gpt-5.5", steps[0].Model)
 	}
+	if steps[0].NodeID != "reviewer_correctness" || steps[0].BehaviorID != "agent.delegate" || steps[0].AgentRef != "agents/reviewer.md" {
+		t.Fatalf("step node metadata = node:%q behavior:%q agent:%q", steps[0].NodeID, steps[0].BehaviorID, steps[0].AgentRef)
+	}
 	if !strings.Contains((*cap3)[0].endpoint, "step_definitions?select=step_type,name,model") {
 		t.Fatalf("steps endpoint = %s", (*cap3)[0].endpoint)
+	}
+	for _, want := range []string{"node_id", "behavior_id", "agent_ref"} {
+		if !strings.Contains((*cap3)[0].endpoint, want) {
+			t.Fatalf("steps endpoint missing %q: %s", want, (*cap3)[0].endpoint)
+		}
 	}
 
 	cap4 := withMockHTTP(t, 200, []byte(`[{"id":"ws1","workflow_id":"w1","step_type":"plan","order_index":0,"step_definitions":{"name":"Plan","required_skills":["planner"],"model":"claude-haiku"}}]`))
