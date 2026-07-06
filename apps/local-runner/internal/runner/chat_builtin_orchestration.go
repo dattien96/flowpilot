@@ -59,9 +59,10 @@ func BuiltinOrchestrationOptions(subMode string) ([]BuiltinFlowOption, error) {
 
 // validateChatOrchestrationSelection checks that flowRef, if provided, is one
 // of the built-in options offered for subMode. An empty flowRef (normal chat,
-// no orchestration) is always valid regardless of subMode. This validates the
-// request contract only — resolving and executing the selected flow into the
-// run loop is a separate step not wired into startTurn yet (Task-177).
+// no orchestration) is always valid regardless of subMode. Resolving and
+// executing the validated flowRef into the run loop happens in startTurn
+// (interactive_service.go), via the same startResolvedFlow path Flow Mode
+// uses.
 func validateChatOrchestrationSelection(subMode, flowRef string) error {
 	flowRef = strings.TrimSpace(flowRef)
 	if flowRef == "" {

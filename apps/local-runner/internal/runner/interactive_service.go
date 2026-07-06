@@ -3145,8 +3145,26 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		// after the flow reaches a hub.inline node. Scheduled async because
 		// spawnChildRun manages its own locking and must not run while this
 		// function still holds s.mu.
+		//
+		// BUG-NOTE (Chat Mode Review Loop): flowEngineDriven is set HERE,
+		// inline (not via the markFlowEngineDriven helper, which would
+		// deadlock on s.mu — already held across this whole function), so
+		// every caller that reaches this branch is covered by construction.
+		// It used to be set only by handleStartTurn's separate
+		// resolveWorkflowFlowRef branch (the Flow-Mode workflow-picker path),
+		// so a Chat Mode "bug" sub-mode launch — which sends flowRef directly
+		// and never goes through that branch — spawned its flow's entry node
+		// correctly but never got flagged flow-engine-driven. That silently
+		// disabled every isFlowEngineDriven-gated behavior for Chat Mode: the
+		// legacy bulk step planner kept running alongside the executor
+		// (BUG-174's fix, undone for chat), the BUG-226 no-tool-call escalation
+		// safety net never fired, and BUG-234's per-node step settlement was
+		// skipped. Both the workflowID-resolved and explicit chat flowRef
+		// paths set in.FlowRef before calling startTurn, so flagging it here
+		// once covers both.
 		if flowRef := strings.TrimSpace(in.FlowRef); flowRef != "" {
 			flowStartOnly = true
+			rs.flowEngineDriven = true
 			go s.startResolvedFlow(context.Background(), runID, flowRef, in.Prompt)
 		}
 	}

@@ -168,7 +168,7 @@ function builtinWorkflowRow(overrides = {}) {
     await repo.saveWorkflow({
         id: "wf-1",
         name: "wf",
-        steps: [{ stepType: "coding", nodeId: "coder", behaviorId: "agent.delegate", agentRef: "agents/coder.md", dependsOn: [] }],
+        steps: [{ stepType: "coding" }],
     });
     strict_1.default.deepEqual(callOrder, ["insert", "delete"]);
 });
@@ -189,11 +189,20 @@ function builtinWorkflowRow(overrides = {}) {
     await strict_1.default.rejects(() => repo.saveWorkflow({
         id: "wf-1",
         name: "wf",
-        steps: [{ stepType: "coding", nodeId: "coder", behaviorId: "agent.delegate", agentRef: "agents/coder.md", dependsOn: [] }],
+        steps: [{ stepType: "coding" }],
     }));
     strict_1.default.equal(sawDelete, false, "existing steps must not be deleted when the replacement insert failed");
 });
-(0, node_test_1.default)("mapWorkflowStep round-trips the new flow-engine attrs", async () => {
+// Task-189 (owner-confirmed 2026-07-06, = BUG-236 contract): node identity
+// (nodeId/behaviorId/agentRef/dependsOn/joinMode/cohort) lives ONLY on
+// StepDefinition — WorkflowStep/workflow_steps is a pure relation/order
+// table and must never carry node data. This test used to be named
+// "mapWorkflowStep round-trips the new flow-engine attrs" and asserted the
+// OPPOSITE (that saveWorkflow wrote node_id/behavior_id/etc into the
+// workflow_steps insert payload) — that was the design BUG-236 explicitly
+// rejected. Rewritten to assert the corrected contract instead of the
+// rejected one.
+(0, node_test_1.default)("saveWorkflow never writes node-identity fields into workflow_steps (BUG-236)", async () => {
     const supabase = new FakeSupabase();
     supabase.register("workflows", new FakeTable({
         maybeSingle: { data: null, error: null },
@@ -205,21 +214,21 @@ function builtinWorkflowRow(overrides = {}) {
     await repo.saveWorkflow({
         id: "wf-1",
         name: "wf",
-        steps: [
-            {
-                stepType: "coding",
-                nodeId: "coder",
-                behaviorId: "agent.delegate",
-                agentRef: "agents/coder.md",
-                dependsOn: [],
-                joinMode: "all",
-            },
-        ],
+        steps: [{ stepType: "coding", orderIndex: 0, isEnabled: true, requiresApproval: false }],
     });
     const payload = stepsTable.lastPayload;
-    strict_1.default.equal(payload[0].node_id, "coder");
-    strict_1.default.equal(payload[0].behavior_id, "agent.delegate");
-    strict_1.default.equal(payload[0].agent_ref, "agents/coder.md");
-    strict_1.default.deepEqual(payload[0].depends_on_json, []);
-    strict_1.default.equal(payload[0].join_mode, "all");
+    strict_1.default.deepEqual(Object.keys(payload[0]).sort(), [
+        "is_enabled",
+        "order_index",
+        "requires_approval",
+        "step_type",
+        "workflow_id",
+    ]);
+    strict_1.default.equal(payload[0].step_type, "coding");
+    strict_1.default.equal(payload[0].order_index, 0);
+    strict_1.default.equal(payload[0].is_enabled, true);
+    strict_1.default.equal(payload[0].requires_approval, false);
+    for (const nodeField of ["node_id", "behavior_id", "agent_ref", "depends_on_json", "join_mode", "cohort"]) {
+        strict_1.default.equal(nodeField in payload[0], false, `workflow_steps payload must never carry "${nodeField}"`);
+    }
 });

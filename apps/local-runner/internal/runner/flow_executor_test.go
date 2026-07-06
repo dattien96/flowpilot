@@ -2,6 +2,8 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -890,6 +892,63 @@ func TestStartTurnWithFlowRefSpawnsEntryNodeAsynchronously(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatal("no coder child appeared within 2s of starting the turn with flowRef set")
+}
+
+// TestChatModeHandleStartTurnMarksRunFlowEngineDriven is the regression test
+// for the Chat Mode Review Loop gap: every other startResolvedFlow/startTurn
+// test in this file calls svc.startTurn(...) directly, bypassing
+// handleStartTurn (the actual HTTP handler a real desktop "bug" sub-mode
+// chat turn hits, per apps/desktop-flowpilot/src/state/store.ts's
+// subMode/flowRef payload). That let a real defect through unnoticed:
+// handleStartTurn only called markFlowEngineDriven on its own
+// resolveWorkflowFlowRef branch (the Flow-Mode workflow-picker path), never
+// on the explicit chat flowRef path — so a Chat Mode review-loop run spawned
+// its entry node correctly but silently never got flagged flow-engine-driven,
+// disabling every isFlowEngineDriven-gated behavior (BUG-174's legacy-planner
+// suppression, BUG-226's no-tool-call escalation, BUG-234's step settlement)
+// for Chat Mode only. Fixed by setting flowEngineDriven inline in startTurn
+// itself, covering both paths by construction. This test drives the real
+// HTTP route so a future regression in either handleStartTurn or startTurn
+// is caught here, not just in a lower-level unit test.
+func TestChatModeHandleStartTurnMarksRunFlowEngineDriven(t *testing.T) {
+	svc, srv := newTestServer(t)
+
+	status, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs", StartRunInput{
+		ProjectID:   "proj",
+		ChatMode:    "normal_chat",
+		ProviderKey: ProviderKeyCodex,
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("start chat run status=%d body=%s", status, body)
+	}
+	var handle RunHandle
+	if err := json.Unmarshal(body, &handle); err != nil {
+		t.Fatalf("decode handle: %v", err)
+	}
+
+	// Mirrors exactly what the desktop's first chat turn sends when the user
+	// picked "Review Loop" from the "Bug" sub-mode's built-in orchestration
+	// picker (store.ts's sendPrompt: subMode="bug", flowRef=<picked option>).
+	status, body = doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+handle.RunID+"/turns", map[string]any{
+		"stepId":  handle.StepID,
+		"prompt":  "fix the crash on startup",
+		"subMode": "bug",
+		"flowRef": "flowpilot-core-flow-pack/review-loop",
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("send chat turn status=%d body=%s", status, body)
+	}
+
+	waitLoop(t, "coder entry node spawned via the real HTTP handleStartTurn route", 3*time.Second, func() bool {
+		return countChildrenWithLabel(svc, handle.RunID, "coder") == 1
+	})
+
+	if !svc.isFlowEngineDriven(handle.RunID) {
+		t.Fatal("run started via Chat Mode's explicit flowRef (the \"bug\" sub-mode picker) must be flagged " +
+			"flow-engine-driven, exactly like a Flow-Mode workflow-picker launch — otherwise the legacy bulk " +
+			"step planner, the BUG-226 escalation safety net, and BUG-234's step settlement are all silently " +
+			"disabled for Chat Mode")
+	}
 }
 
 // TestContinueReinvokeUsesEdgeResolvedTargetForFlowStartedRun proves the

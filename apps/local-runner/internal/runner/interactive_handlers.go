@@ -261,9 +261,9 @@ type turnBody struct {
 	// template (CP-42/Task-177). Both are optional and omitting them means
 	// normal chat with no orchestration. handleStartTurn validates FlowRef
 	// against BuiltinOrchestrationOptions(SubMode) before starting the turn;
-	// actually resolving/executing the selected flow into the run loop is
-	// not wired yet (see Task-177 completion notes) — this is contract and
-	// validation only.
+	// startTurn (interactive_service.go) then resolves/executes it via
+	// startResolvedFlow on the run's first turn, exactly like a Flow-Mode
+	// workflow-picker launch.
 	SubMode string `json:"subMode,omitempty"`
 	FlowRef string `json:"flowRef,omitempty"`
 }
@@ -281,15 +281,18 @@ func (s *InteractiveService) handleStartTurn(w http.ResponseWriter, r *http.Requ
 	// BUG-174: a Flow-Mode workflow-picker launch sends a workflowID but no
 	// flowRef, so the flow executor never engaged and the hub did all the work
 	// inline. If the run's selected workflow resolves to a flow-engine flow with
-	// a spawnable entry node, adopt its canonical flowRef and mark the run
-	// flow-engine-driven, so it runs through the same startResolvedFlow path an
-	// explicit flowRef uses and its step timeline is driven node-by-node. The
-	// explicit chat/flowRef path and plain workflows are untouched (resolve
-	// returns false for them).
+	// a spawnable entry node, adopt its canonical flowRef so it runs through the
+	// same startResolvedFlow path an explicit flowRef uses and its step timeline
+	// is driven node-by-node. The explicit chat/flowRef path and plain
+	// workflows are untouched (resolve returns false for them).
+	//
+	// startTurn itself marks the run flow-engine-driven once it sees a non-empty
+	// FlowRef (both this branch, via body.FlowRef below, and the explicit chat
+	// flowRef path converge there) — this handler no longer needs its own
+	// markFlowEngineDriven call.
 	if strings.TrimSpace(body.FlowRef) == "" {
 		if flowRef, ok := s.resolveWorkflowFlowRef(r.Context(), r.PathValue("runId")); ok {
 			body.FlowRef = flowRef
-			s.markFlowEngineDriven(r.PathValue("runId"))
 		}
 	}
 	turnID, e := s.startTurn(
