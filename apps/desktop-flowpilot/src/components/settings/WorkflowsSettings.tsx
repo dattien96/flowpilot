@@ -256,6 +256,20 @@ export function WorkflowsSettings(): React.ReactElement {
   // Workflow step cards default to collapsed; expansion is tracked per
   // source+step id so detail and create editors don't share state.
   const [expandedStepKeys, setExpandedStepKeys] = useState<Set<string>>(new Set());
+  // Task-189 slice 4: the visual canvas is a second view over the SAME
+  // `edges` array as the form-list editor (no separate edge state — that's
+  // what keeps the two in sync). Node x/y is purely a view-layout concern:
+  // it is never sent to saveWorkflow/saveNewWorkflow and has no backing
+  // column, so it can't violate the "node data lives only in
+  // step_definitions" contract — it just remembers where a node box was
+  // last dragged to, keyed by `${source}:${nodeKey}`.
+  const [canvasPositions, setCanvasPositions] = useState<Record<string, { x: number; y: number }>>({});
+  const [draggingCanvasNode, setDraggingCanvasNode] = useState<{ source: "detail" | "create"; key: string } | null>(
+    null,
+  );
+  const [pendingCanvasEdgeFrom, setPendingCanvasEdgeFrom] = useState<
+    { source: "detail" | "create"; nodeId: string } | null
+  >(null);
 
   const toggleStepExpanded = (key: string) => {
     setExpandedStepKeys((current) => {
@@ -544,6 +558,77 @@ export function WorkflowsSettings(): React.ReactElement {
     } else {
       setCreateWorkflowDraft((current) => ({ ...current, edges: apply(current.edges) }));
     }
+  };
+
+  // Task-189 slice 4: canvas equivalent of addWorkflowEdge, but with an
+  // explicit from/to (the two nodes the user connected by clicking their
+  // connector dots in sequence) instead of defaulting to the first two node
+  // options.
+  const addWorkflowEdgeBetween = (from: string, to: string, source: "detail" | "create") => {
+    const nextEdge: WorkflowFlowEdge = { from, to, when: "done", kind: "forward" };
+    if (source === "detail") {
+      setWorkflowDraft((current) => (current ? { ...current, edges: [...current.edges, nextEdge] } : current));
+    } else {
+      setCreateWorkflowDraft((current) => ({ ...current, edges: [...current.edges, nextEdge] }));
+    }
+  };
+
+  // Default grid layout for any canvas node that hasn't been manually
+  // dragged yet, keyed by `${source}:${nodeKey}` so detail/create canvases
+  // (and re-renders after adding/removing nodes) never collide.
+  const canvasLayoutFor = (
+    source: "detail" | "create",
+    keys: string[],
+  ): Record<string, { x: number; y: number }> => {
+    const layout: Record<string, { x: number; y: number }> = {};
+    keys.forEach((key, index) => {
+      const stored = canvasPositions[`${source}:${key}`];
+      if (stored) {
+        layout[key] = stored;
+        return;
+      }
+      const column = index % 3;
+      const row = Math.floor(index / 3);
+      layout[key] = { x: 70 + column * 190, y: 50 + row * 110 };
+    });
+    return layout;
+  };
+
+  const handleCanvasNodePointerDown = (source: "detail" | "create", key: string) => (
+    event: React.PointerEvent<HTMLDivElement>,
+  ) => {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setDraggingCanvasNode({ source, key });
+  };
+
+  const handleCanvasSurfacePointerMove = (source: "detail" | "create") => (
+    event: React.PointerEvent<HTMLDivElement>,
+  ) => {
+    if (!draggingCanvasNode || draggingCanvasNode.source !== source) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = Math.max(30, event.clientX - rect.left);
+    const y = Math.max(24, event.clientY - rect.top);
+    setCanvasPositions((current) => ({ ...current, [`${source}:${draggingCanvasNode.key}`]: { x, y } }));
+  };
+
+  const handleCanvasSurfacePointerUp = () => setDraggingCanvasNode(null);
+
+  // Clicking a node's connector dot arms a pending "from" node; clicking a
+  // second (different) node's dot completes the edge. Clicking the same
+  // node again, or starting a fresh click while a different source's canvas
+  // is armed, resets the pending state instead of connecting.
+  const handleCanvasConnectorClick = (source: "detail" | "create", key: string) => {
+    if (!pendingCanvasEdgeFrom || pendingCanvasEdgeFrom.source !== source) {
+      setPendingCanvasEdgeFrom({ source, nodeId: key });
+      return;
+    }
+    if (pendingCanvasEdgeFrom.nodeId === key) {
+      setPendingCanvasEdgeFrom(null);
+      return;
+    }
+    addWorkflowEdgeBetween(pendingCanvasEdgeFrom.nodeId, key, source);
+    setPendingCanvasEdgeFrom(null);
   };
 
   const saveWorkflow = async () => {
@@ -1026,6 +1111,128 @@ export function WorkflowsSettings(): React.ReactElement {
         >
           + Add Edge
         </button>
+      </div>
+    );
+  };
+
+  // Task-189 slice 4: the visual canvas. It reads/writes the SAME
+  // `edges` array as renderWorkflowEdgesEditor above (passed in verbatim) —
+  // there is no separate canvas-edge state, so editing an edge's "when" in
+  // the form-list is reflected here immediately and vice versa. Only node
+  // *position* is canvas-local view state (canvasPositions), never
+  // persisted.
+  const renderWorkflowFlowCanvas = (
+    edges: WorkflowFlowEdge[],
+    steps: WorkflowStep[],
+    source: "detail" | "create",
+  ) => {
+    const readOnly = source === "detail" && selectedWorkflow?.editable === false;
+    const nodeOptions = workflowEdgeNodeOptions(steps);
+    const nodeKeys = [...nodeOptions, ...FLOW_EDGE_TERMINALS];
+    const layout = canvasLayoutFor(source, nodeKeys);
+    const pending = pendingCanvasEdgeFrom?.source === source ? pendingCanvasEdgeFrom : null;
+
+    return (
+      <div className="settings-subpanel workflow-canvas-panel">
+        <div className="project-panel-head">
+          <div>
+            <strong>Flow Canvas</strong>
+            <p className="project-muted-copy">
+              Drag a node to arrange it. Click a node's dot, then another node's dot, to draw an
+              edge between them — it's added to the Flow Edges list above.
+            </p>
+          </div>
+        </div>
+        {pending ? (
+          <div className="settings-warning">
+            Drawing an edge from &quot;{pending.nodeId}&quot; — click another node&apos;s dot to
+            connect it, or{" "}
+            <button
+              className="link-btn"
+              onClick={() => setPendingCanvasEdgeFrom(null)}
+              type="button"
+            >
+              cancel
+            </button>
+            .
+          </div>
+        ) : null}
+        {nodeOptions.length === 0 ? (
+          <div className="settings-empty">
+            No nodes with a Node ID yet — set a Node ID on a step type before it can appear here.
+          </div>
+        ) : (
+          <div
+            className="workflow-canvas-surface"
+            onPointerLeave={handleCanvasSurfacePointerUp}
+            onPointerMove={handleCanvasSurfacePointerMove(source)}
+            onPointerUp={handleCanvasSurfacePointerUp}
+          >
+            <svg className="workflow-canvas-edges">
+              <defs>
+                <marker
+                  id={`workflow-canvas-arrow-${source}`}
+                  markerHeight="8"
+                  markerWidth="8"
+                  orient="auto"
+                  refX="7"
+                  refY="4"
+                >
+                  <path className="workflow-canvas-arrowhead" d="M0,0 L8,4 L0,8 z" />
+                </marker>
+              </defs>
+              {edges.map((edge, index) => {
+                const from = layout[edge.from];
+                const to = layout[edge.to];
+                if (!from || !to) return null;
+                return (
+                  <g key={index}>
+                    <line
+                      className={edge.kind === "back" ? "workflow-canvas-edge back" : "workflow-canvas-edge"}
+                      markerEnd={`url(#workflow-canvas-arrow-${source})`}
+                      x1={from.x}
+                      y1={from.y}
+                      x2={to.x}
+                      y2={to.y}
+                    />
+                    <text className="workflow-canvas-edge-label" x={(from.x + to.x) / 2} y={(from.y + to.y) / 2 - 6}>
+                      {edge.when}
+                    </text>
+                  </g>
+                );
+              })}
+            </svg>
+            {nodeKeys.map((key) => {
+              const isTerminal = FLOW_EDGE_TERMINALS.includes(key);
+              const position = layout[key];
+              return (
+                <div
+                  className={[
+                    "workflow-canvas-node",
+                    isTerminal ? "terminal" : "",
+                    pending?.nodeId === key ? "connecting" : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
+                  key={key}
+                  onPointerDown={isTerminal ? undefined : handleCanvasNodePointerDown(source, key)}
+                  style={{ left: position.x, top: position.y }}
+                >
+                  <span>{key}</span>
+                  <button
+                    className="workflow-canvas-connector"
+                    disabled={readOnly}
+                    onClick={() => handleCanvasConnectorClick(source, key)}
+                    title="Click, then click another node, to draw an edge"
+                    type="button"
+                  >
+                    ●
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     );
   };
@@ -1683,6 +1890,7 @@ export function WorkflowsSettings(): React.ReactElement {
               setCreateWorkflowStepType,
             )}
             {renderWorkflowEdgesEditor(createWorkflowDraft.edges, createWorkflowSteps, "create")}
+            {renderWorkflowFlowCanvas(createWorkflowDraft.edges, createWorkflowSteps, "create")}
           </div>
         ) : (
           <div className="project-layout">
@@ -1900,6 +2108,7 @@ export function WorkflowsSettings(): React.ReactElement {
                     setDetailWorkflowStepType,
                   )}
                   {renderWorkflowEdgesEditor(workflowDraft.edges, workflowSteps, "detail")}
+                  {renderWorkflowFlowCanvas(workflowDraft.edges, workflowSteps, "detail")}
                 </>
               ) : (
                 <div className="settings-subpanel">

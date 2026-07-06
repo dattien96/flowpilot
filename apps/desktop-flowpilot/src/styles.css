@@ -1054,6 +1054,81 @@ input {
     grid-template-columns: 1fr;
   }
 }
+.link-btn {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+}
+.workflow-canvas-panel {
+  margin-top: 16px;
+}
+.workflow-canvas-surface {
+  position: relative;
+  height: 360px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-2);
+  touch-action: none;
+}
+.workflow-canvas-edges {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+}
+.workflow-canvas-edge {
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+.workflow-canvas-edge.back {
+  stroke-dasharray: 4 3;
+  stroke: var(--warn);
+}
+.workflow-canvas-arrowhead {
+  fill: var(--accent);
+}
+.workflow-canvas-edge-label {
+  font-size: 10px;
+  fill: var(--text-dim);
+}
+.workflow-canvas-node {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-3);
+  cursor: grab;
+  font-size: 12px;
+  user-select: none;
+  white-space: nowrap;
+}
+.workflow-canvas-node.terminal {
+  cursor: default;
+  border-style: dashed;
+  color: var(--text-dim);
+}
+.workflow-canvas-node.connecting {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.workflow-canvas-connector {
+  border: none;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+  line-height: 1;
+  padding: 0;
+}
 .workflow-artifact-selector {
   display: grid;
   gap: 10px;
