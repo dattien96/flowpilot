@@ -812,6 +812,15 @@ input {
   border: 1px dashed var(--border);
   color: var(--text-dim);
 }
+.settings-warning {
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--warn);
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  color: var(--warn);
+  font-size: 13px;
+  margin: 8px 0;
+}
 .settings-card {
   padding: 14px;
   border-radius: 14px;
@@ -1030,6 +1039,20 @@ input {
 }
 .workflow-step-grid {
   margin-top: 0;
+}
+.workflow-edges-panel {
+  margin-top: 16px;
+}
+.workflow-edge-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr)) auto;
+  align-items: end;
+  gap: 12px;
+}
+@media (max-width: 900px) {
+  .workflow-edge-row {
+    grid-template-columns: 1fr;
+  }
 }
 .workflow-artifact-selector {
   display: grid;

@@ -5,9 +5,10 @@ import type {
   StepDefinition,
   SupportedModel,
   Workflow,
+  WorkflowFlowEdge,
   WorkflowStep,
 } from "@flowpilot/client-core";
-import { FLOW_BEHAVIOR_OPTIONS } from "@flowpilot/client-core";
+import { FLOW_BEHAVIOR_OPTIONS, FLOW_EDGE_TERMINALS } from "@flowpilot/client-core";
 import { getAdminUseCases } from "@/clientCore";
 import { formatTimestamp, integrationTypes, toErrorMessage } from "@/components/settings/settingsHelpers";
 
@@ -486,6 +487,65 @@ export function WorkflowsSettings(): React.ReactElement {
     }
   };
 
+  // Task-189: an edge's from/to references a node's `nodeId` (the flow-graph
+  // identity resolved onto FlowNode.ID at runtime — recordFromWorkflowRow in
+  // supabase_workflow_flow_store.go only sets it when the step_definition's
+  // node_id is non-empty, with NO fallback to step_type), not the step's
+  // `stepType`. A step whose step_definition has no Node ID set can't be
+  // referenced by an edge yet; it's filtered out here and flagged by the
+  // edges-editor validation (Task-189 slice 3) instead of silently producing
+  // an edge that can never resolve to a real node.
+  const workflowEdgeNodeOptions = (steps: WorkflowStep[]): string[] => {
+    const ids = steps
+      .map((step) => stepDefinitions.find((definition) => definition.stepType === step.stepType)?.nodeId)
+      .filter((id): id is string => Boolean(id));
+    return Array.from(new Set(ids));
+  };
+
+  // Task-189: the flow graph's edges (Workflow.edges/edges_json) were already
+  // round-tripped by saveWorkflow/saveNewWorkflow (BUG-NOTE-CP42 #14 passes
+  // them through unchanged), but no UI control ever wrote to them — a new
+  // workflow always saved with edges: [] and could never advance past its
+  // entry node. These three helpers are the edges-editor equivalent of
+  // addWorkflowStep/updateWorkflowStep/removeWorkflowStep above.
+  const addWorkflowEdge = (source: "detail" | "create") => {
+    const nodeOptions = workflowEdgeNodeOptions(source === "detail" ? workflowSteps : createWorkflowSteps);
+    const nextEdge: WorkflowFlowEdge = {
+      from: nodeOptions[0] ?? "",
+      to: nodeOptions[1] ?? FLOW_EDGE_TERMINALS[0],
+      when: "done",
+      kind: "forward",
+    };
+    if (source === "detail") {
+      setWorkflowDraft((current) => (current ? { ...current, edges: [...current.edges, nextEdge] } : current));
+    } else {
+      setCreateWorkflowDraft((current) => ({ ...current, edges: [...current.edges, nextEdge] }));
+    }
+  };
+
+  const updateWorkflowEdge = (
+    index: number,
+    patch: Partial<WorkflowFlowEdge>,
+    source: "detail" | "create",
+  ) => {
+    const apply = (edges: WorkflowFlowEdge[]) =>
+      edges.map((edge, currentIndex) => (currentIndex === index ? { ...edge, ...patch } : edge));
+    if (source === "detail") {
+      setWorkflowDraft((current) => (current ? { ...current, edges: apply(current.edges) } : current));
+    } else {
+      setCreateWorkflowDraft((current) => ({ ...current, edges: apply(current.edges) }));
+    }
+  };
+
+  const removeWorkflowEdge = (index: number, source: "detail" | "create") => {
+    const apply = (edges: WorkflowFlowEdge[]) => edges.filter((_, currentIndex) => currentIndex !== index);
+    if (source === "detail") {
+      setWorkflowDraft((current) => (current ? { ...current, edges: apply(current.edges) } : current));
+    } else {
+      setCreateWorkflowDraft((current) => ({ ...current, edges: apply(current.edges) }));
+    }
+  };
+
   const saveWorkflow = async () => {
     if (!workflowDraft) return;
     if (!workflowDraft.modelOverride) {
@@ -821,6 +881,133 @@ export function WorkflowsSettings(): React.ReactElement {
             })
           )}
         </div>
+      </div>
+    );
+  };
+
+  // Task-189 slice 2: the form-list edge editor. `steps` is this workflow's
+  // OWN step list (workflowSteps for "detail", createWorkflowSteps for
+  // "create") so the from/to pickers only ever offer nodes that are actually
+  // part of this flow. A canvas-based graph editor (Task-189 slice 4) will be
+  // added as a second, synchronized view over the same `edges` array — not a
+  // replacement for this one.
+  const renderWorkflowEdgesEditor = (
+    edges: WorkflowFlowEdge[],
+    steps: WorkflowStep[],
+    source: "detail" | "create",
+  ) => {
+    const readOnly = source === "detail" && selectedWorkflow?.editable === false;
+    const nodeOptions = workflowEdgeNodeOptions(steps);
+    const toOptions = [...nodeOptions, ...FLOW_EDGE_TERMINALS];
+    const nodesMissingId = steps.filter(
+      (step) => !stepDefinitions.find((definition) => definition.stepType === step.stepType)?.nodeId,
+    );
+
+    return (
+      <div className="settings-subpanel workflow-edges-panel">
+        <div className="project-panel-head">
+          <div>
+            <strong>Flow Edges</strong>
+            <p className="project-muted-copy">
+              {readOnly
+                ? "Read-only: clone this workflow to edit its edges."
+                : "Wire the flow graph: which node follows which, and under what outcome. " +
+                  "Without at least one edge, this flow's steps run in isolation and the " +
+                  "engine cannot advance past the entry node."}
+            </p>
+          </div>
+        </div>
+        {nodesMissingId.length > 0 ? (
+          <div className="settings-warning">
+            {nodesMissingId.length} step(s) have no Node ID set on their step type — set a Node
+            ID (in the step type's catalog entry) before they can be used as an edge endpoint:{" "}
+            {nodesMissingId.map((step) => step.stepType).join(", ")}
+          </div>
+        ) : null}
+        <div className="settings-list">
+          {edges.length === 0 ? (
+            <div className="settings-empty">No edges yet — add one below.</div>
+          ) : (
+            edges.map((edge, index) => (
+              <div className="settings-list-item static workflow-edge-row" key={index}>
+                <label className="settings-field">
+                  <span>From</span>
+                  <select
+                    disabled={readOnly}
+                    onChange={(event) => updateWorkflowEdge(index, { from: event.target.value }, source)}
+                    value={edge.from}
+                  >
+                    <option value="">(select a node)</option>
+                    {nodeOptions.map((id) => (
+                      <option key={id} value={id}>
+                        {id}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="settings-field">
+                  <span>To</span>
+                  <select
+                    disabled={readOnly}
+                    onChange={(event) => updateWorkflowEdge(index, { to: event.target.value }, source)}
+                    value={edge.to}
+                  >
+                    <option value="">(select a node or terminal)</option>
+                    {toOptions.map((id) => (
+                      <option key={id} value={id}>
+                        {FLOW_EDGE_TERMINALS.includes(id) ? `(terminal) ${id}` : id}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="settings-field">
+                  <span>When (outcome status)</span>
+                  <input
+                    disabled={readOnly}
+                    list="workflow-edge-when-suggestions"
+                    onChange={(event) => updateWorkflowEdge(index, { when: event.target.value }, source)}
+                    placeholder="done | continue | escalate"
+                    value={edge.when}
+                  />
+                </label>
+                <label className="settings-field">
+                  <span>Kind</span>
+                  <select
+                    disabled={readOnly}
+                    onChange={(event) => updateWorkflowEdge(index, { kind: event.target.value }, source)}
+                    value={edge.kind}
+                  >
+                    <option value="forward">Forward</option>
+                    <option value="back">Back (loop)</option>
+                  </select>
+                </label>
+                <div className="settings-inline-actions">
+                  <button
+                    className="secondary-btn"
+                    disabled={readOnly}
+                    onClick={() => removeWorkflowEdge(index, source)}
+                    type="button"
+                  >
+                    Remove
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+        <datalist id="workflow-edge-when-suggestions">
+          <option value="done" />
+          <option value="continue" />
+          <option value="escalate" />
+        </datalist>
+        <button
+          className="secondary-btn"
+          disabled={readOnly || nodeOptions.length === 0}
+          onClick={() => addWorkflowEdge(source)}
+          type="button"
+        >
+          + Add Edge
+        </button>
       </div>
     );
   };
@@ -1477,6 +1664,7 @@ export function WorkflowsSettings(): React.ReactElement {
               createWorkflowStepType,
               setCreateWorkflowStepType,
             )}
+            {renderWorkflowEdgesEditor(createWorkflowDraft.edges, createWorkflowSteps, "create")}
           </div>
         ) : (
           <div className="project-layout">
@@ -1693,6 +1881,7 @@ export function WorkflowsSettings(): React.ReactElement {
                     detailWorkflowStepType,
                     setDetailWorkflowStepType,
                   )}
+                  {renderWorkflowEdgesEditor(workflowDraft.edges, workflowSteps, "detail")}
                 </>
               ) : (
                 <div className="settings-subpanel">
