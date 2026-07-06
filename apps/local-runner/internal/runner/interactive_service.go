@@ -617,6 +617,22 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 		return result, nil
 
 	case "escalate":
+		// BUG-231: escalate is a deliberate, non-terminal "awaiting user" pause —
+		// settle the hub node to WAITING_USER_APPROVAL (not RUNNING, which reads
+		// as a hang, and not FAILED, which reads as an error) so the step
+		// timeline honestly shows the flow is waiting on the human, not stuck.
+		// BUG-233: done before emitAgentGraph so the desktop's step-runtime
+		// refresh (triggered by the SSE event below) can't observe a stale
+		// RUNNING snapshot.
+		// BUG-244: settle the step BEFORE mutateLoop flips the loop to
+		// "blocked", not after. The step reaching its awaiting-user state is the
+		// CAUSE; the loop being blocked is the effect — so "loop blocked" must
+		// imply "step already settled" for every observer, including one that
+		// keys off the loop status alone (e.g. a poller/waiter reading the
+		// orchestrator loop state, which flips in-memory here with no SSE of its
+		// own). Doing mutateLoop first left a window where the loop read
+		// "blocked" while the step was still RUNNING.
+		s.setFlowStepAwaitingUser(context.Background(), parentRunID)
 		snap := s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
 			st.Status = "blocked"
 			st.BlockReason = "escalate" // BUG-231
@@ -627,14 +643,6 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 			}
 			return st
 		})
-		// BUG-231: escalate is a deliberate, non-terminal "awaiting user" pause —
-		// settle the hub node to WAITING_USER_APPROVAL (not RUNNING, which reads
-		// as a hang, and not FAILED, which reads as an error) so the step
-		// timeline honestly shows the flow is waiting on the human, not stuck.
-		// BUG-233: done synchronously, before emitAgentGraph, so the desktop's
-		// step-runtime refresh (triggered by the SSE event below) can't observe
-		// a stale RUNNING snapshot from before this transition landed.
-		s.setFlowStepAwaitingUser(context.Background(), parentRunID)
 		s.emitAgentGraph(parentRunID, snap)
 		go s.persistParentSession(parentRunID)
 		s.flowDiagLog(parentRunID, "flow_control_escalate", "flow escalated to awaiting user",
