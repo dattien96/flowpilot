@@ -259,6 +259,8 @@ I verified every task in the chain against the actual code (build + targeted tes
 
 Run these scenarios yourself after deployment. Each scenario lists the **setup**, the **exact action to perform**, and the **expected result** to verify. Mark ✅ when confirmed.
 
+> **2026-07-06 — the `agent-review-loop` skill has been retired.** It was a model-driven trigger: the model read a markdown protocol and decided itself when to spawn/wait/reinvoke, which the owner rejected as contrary to FlowPilot's own "minimize dependence on the model" vision (see BUG-245). The **only supported way to start Review Loop from Chat Mode now is the Bug sub-mode's built-in orchestration picker** (Scenario 11's steps), which is fully Go-driven via `flowRef` → `startResolvedFlow` — exactly the same mechanism Flow Mode uses. Every scenario below that used to say "Use the agent-review-loop skill..." has been rewritten to use the picker instead. One real behavior change this surfaces, not just a trigger-mechanism swap: the skill used to let a user's prompt configure things like reviewer count and cap in natural language (the model read and acted on it); the Go-driven flow's node/edge topology and cap now come entirely from the flow's own definition (`review-loop.yaml` + the workflow row's policy fields), not from anything typed in the chat prompt. Scenarios 3 and 9 depended on exactly that prompt-configurability and could not be faithfully ported — see the note on each.
+
 ---
 
 ### Scenario 1 — Happy Path: Review Loop Approves First Round
@@ -266,9 +268,13 @@ Run these scenarios yourself after deployment. Each scenario lists the **setup**
 **Setup:** YOLO mode ON. A project workspace with at least one Go file.
 
 **Action:**
+1. In the **Chat Intent** panel, click the **Bug** tab (`chatStartMode=bugfix`).
+2. In the **Built-in orchestration** select, choose **Review Loop**.
+3. Type the task and send the first message:
 ```
-Use the agent-review-loop skill. Task: add input validation to the parseUserID function. Spawn 1 coder and 2 reviewers (correctness + security). Max 3 rounds.
+Add input validation to the parseUserID function.
 ```
+(Reviewer count (2: correctness + security) and cap (3) are fixed by `review-loop.yaml`'s own node/edge/policy definition — they are no longer instructable via the prompt; see the note above Scenario 1.)
 
 **Expected:**
 - [ ] Board shows: coder node running → completes → 2 reviewer nodes running in parallel.
@@ -283,9 +289,9 @@ Use the agent-review-loop skill. Task: add input validation to the parseUserID f
 
 **Setup:** YOLO mode ON. Same workspace. Instruct reviewers to raise at least one issue.
 
-**Action:**
+**Action:** Same picker steps as Scenario 1 (Bug tab → select Review Loop), with this task:
 ```
-Use the agent-review-loop skill. Task: add a struct tag to UserRecord. Reviewers should request changes on round 1 (prompt them to find something to flag).
+Add a struct tag to UserRecord. Reviewers should request changes on round 1 (find something to flag).
 ```
 
 **Expected:**
@@ -299,6 +305,8 @@ Use the agent-review-loop skill. Task: add a struct tag to UserRecord. Reviewers
 ---
 
 ### Scenario 3 — Cap Exhaustion → Blocked → Extend Cap
+
+> **⚠️ 2026-07-06 — needs a decision, not yet rewritten.** The skill used to let the prompt say "Cap = 2 rounds" and the *model* would treat that as the limit. That was never Go-enforced cap either: directly reading the code (`effectiveCap` in `agent_orchestrator.go`, and confirming `flow_executor.go` never reads a flow's `Definition.Policy.Cap` when starting a run), the runtime cap for a freshly-started flow is **hardcoded to 3 regardless of the flow's own `policy_cap` value** — no code path currently applies a workflow's configured cap to a new run's loop state at start time. So even before the skill's removal, "cap=2" was a model-cooperative fiction, not a real override; after removal there's no prompt-level mechanism left to fake it either. Two ways forward: (a) rewrite this scenario to just use the real default cap (3) and drive 3 genuinely-rejected rounds (no override needed, still proves blocked→extend works), or (b) treat "workflow policy_cap not wired to runtime loop cap" as a separate bug to fix first. Left as-is below (still shows the old skill-based text) pending that decision — do not treat this scenario as validated.
 
 **Setup:** YOLO mode ON. Deliberately give the coder an impossible task so reviewers always reject.
 
@@ -319,7 +327,7 @@ Use the agent-review-loop skill. Task: [an intentionally ambiguous or contradict
 
 ### Scenario 4 — Stop Mid-Loop
 
-**Setup:** YOLO mode OFF (or ON). Start the review loop normally.
+**Setup:** YOLO mode OFF (or ON). Start the review loop via the picker (Scenario 1's steps).
 
 **Action:** While the coder is running (round 1 in progress), click **Stop** on the Orchestration Board.
 
@@ -333,7 +341,7 @@ Use the agent-review-loop skill. Task: [an intentionally ambiguous or contradict
 
 ### Scenario 5 — Server Restart Mid-Loop (Resume from `sessions.ndjson`)
 
-**Setup:** YOLO mode ON. Start the review loop. Let the coder complete round 1.
+**Setup:** YOLO mode ON. Start the review loop via the picker (Scenario 1's steps). Let the coder complete round 1.
 
 **Action:** While reviewers are running, **kill the local runner process** and restart it.
 
@@ -348,7 +356,7 @@ Use the agent-review-loop skill. Task: [an intentionally ambiguous or contradict
 
 ### Scenario 6 — Drive Sync Cross-PC
 
-**Setup:** Two machines with FlowPilot installed and Drive sync enabled. Machine A starts a flow run.
+**Setup:** Two machines with FlowPilot installed and Drive sync enabled. Machine A starts a review loop via the picker (Scenario 1's steps).
 
 **Action:** On Machine A, start and complete round 1. Wait for Drive sync. Open the same project on Machine B.
 
@@ -374,7 +382,7 @@ Use the agent-review-loop skill. Task: [an intentionally ambiguous or contradict
 
 ### Scenario 8 — Normal Chat (No Auto-Reinvoke)
 
-**Setup:** Open a regular chat session (not a flow run, no `agent-review-loop` skill selected).
+**Setup:** Open a regular chat session (`normal` sub-mode, or `Bug` sub-mode with **None** selected in the built-in orchestration picker — no `flowRef` sent).
 
 **Action:** Send a normal message and let the model reply.
 
@@ -387,7 +395,7 @@ Use the agent-review-loop skill. Task: [an intentionally ambiguous or contradict
 
 ### Scenario 9 — N=3 Parallel Reviewers, Out-of-Order Completion
 
-**Setup:** YOLO mode ON. Modify the skill invocation to spawn 3 reviewers instead of 2.
+> **⚠️ 2026-07-06 — needs a decision, not yet rewritten.** The skill let the prompt say "spawn 3 reviewers"; the Go-driven built-in Review Loop's reviewer count (2: correctness + security) is now fixed by `review-loop.yaml`'s own node/edge topology — there is no prompt or Settings control to change it for the built-in flow. Two ways forward: (a) author a **custom flow** in Settings (Task-189: behavior picker + edges canvas) with 1 coder + 3 reviewer nodes sharing a cohort, and run this scenario via **Flow Mode's workflow picker** instead of Chat Mode's Bug picker (custom/cloned flows aren't offered in the chat picker today — only pack-mirrored built-ins with `chatSubModes` set are); or (b) treat this as no longer testable via Chat Mode and keep it as a Flow-Mode-only scenario going forward. Left as-is below (still shows the old skill-based text) pending that decision.
 
 **Action:** Run the review loop. Observe reviewer completion order (may be non-deterministic).
 
@@ -402,7 +410,7 @@ Use the agent-review-loop skill. Task: [an intentionally ambiguous or contradict
 
 ### Scenario 10 — `synthesizer` Built-in as Offload
 
-**Setup:** Configure the skill to use the `synthesizer` built-in agent for synthesis instead of the main hub.
+> **⚠️ 2026-07-06 — appears obsolete for the built-in flow, needs a decision.** This scenario's premise (synthesis can alternatively run as a separately spawned `synthesizer` child, visible on the board, instead of the hub's own inline turn) does not match the current Go-driven `review-loop.yaml`: its `synthesis` node is declared `run: inline`, `behavior: hub.inline` — synthesis is *always* the hub's own reinvoked turn (using `agents/synthesizer.md`'s prompt content), never a separately spawned child, and there is no toggle anywhere (prompt, Settings, or otherwise) to change that for the built-in flow. This may have only ever been a skill-instructable choice (the skill could in principle have called `spawn_agent` for a synthesizer instead of synthesizing inline itself) that the Go flow never actually implemented as a live option. Recommend either (a) confirming this was always aspirational/skill-only and removing this scenario, or (b) if a real "synthesizer as a separate spawned node" mode is still wanted, filing it as a new Task against the flow executor (a custom flow could set an equivalent node's behavior to `agent.delegate` instead of `hub.inline`, but this needs verifying, not assuming). Left as-is below pending that decision.
 
 **Action:** Run the review loop.
 
@@ -414,7 +422,9 @@ Use the agent-review-loop skill. Task: [an intentionally ambiguous or contradict
 
 ---
 
-### Scenario 11 — CP-42 Built-in Orchestration Picker Starts Review Loop Without The Skill Prompt
+### Scenario 11 — CP-42 Built-in Orchestration Picker: Deep Technical Verification
+
+> Updated 2026-07-06: this scenario used to be framed as "the alternative to the (now-retired) skill" — since Scenario 1 above uses this exact same picker now, this is really a deeper technical check of the same mechanism (the pack-driven wait note, the raw API response, and — new — the flow-engine-driven bookkeeping BUG-245 found missing), not a separate trigger path.
 
 **Setup:** Desktop app, a project workspace signed in to Supabase. Open Chat (`normal_chat` mode, not Flow Mode).
 
@@ -422,15 +432,16 @@ Use the agent-review-loop skill. Task: [an intentionally ambiguous or contradict
 1. In the **Chat Intent** panel on the right rail, click the **Bug** tab (this sets `chatStartMode=bugfix`).
 2. Confirm a **Built-in orchestration** select appears below the Bug ID field, with options **None** and **Review Loop**.
 3. Select **Review Loop** (this sets `flowRef=flowpilot-core-flow-pack/review-loop`, canonical `packId/flowId` form).
-4. Type a normal task description (no need to mention "agent-review-loop skill") and send the first message.
+4. Type a normal task description and send the first message.
 
 **Expected:**
 - [ ] The hint text under the select shows the flow's own `description` from `review-loop.yaml`, not the generic "Optional..." placeholder.
 - [ ] The run starts and the **coder** node (`agents/coder.md`, node id `coder`) auto-spawns as the entry node — the hub itself does not immediately try to write the code.
 - [ ] The hub's first turn instead receives the pack-driven wait note (`prompts/flow-start-wait.md`) telling it a child agent already started; the hub does not duplicate the coder's work.
-- [ ] When `coder` completes, `reviewer_correctness` and `reviewer_security` (both `dependsOn: coder`, `cohort: review`) auto-spawn in parallel — matching the `coder → reviewer_correctness` / `coder → reviewer_security` forward edges in `review-loop.yaml`, with no user having invoked the `agent-review-loop` skill by name.
-- [ ] Board/graph shows the same 4-node topology (`coder`, `reviewer_correctness`, `reviewer_security`, `synthesis`) as the legacy skill-driven path in Scenario 1.
+- [ ] When `coder` completes, `reviewer_correctness` and `reviewer_security` (both `dependsOn: coder`, `cohort: review`) auto-spawn in parallel — matching the `coder → reviewer_correctness` / `coder → reviewer_security` forward edges in `review-loop.yaml`.
+- [ ] Board/graph shows the same 4-node topology (`coder`, `reviewer_correctness`, `reviewer_security`, `synthesis`) as Scenario 1.
 - [ ] `GET /client/chat/builtin-orchestration-options?subMode=bug` (or the equivalent client call) returns exactly one option with `flowRef` ending in `/review-loop` and `label: "Review Loop"`.
+- [ ] **BUG-245 regression check:** the Flow Step Timeline sidebar updates node-by-node as each step completes (coder → reviewers → synthesis), never jumping to "all done" in one bulk update after a single turn — this is what silently broke when a Chat-Mode-triggered run wasn't flagged flow-engine-driven. If a reviewer's synthesis turn answers in prose without calling `submit_review_outcome`, the run must escalate to `blocked`/awaiting-user, not silently stall.
 
 ---
 
@@ -513,7 +524,7 @@ go test ./internal/runner/... -run TestDomainHardcodeGuardMatchesFrozenBaseline 
 | Invalid `submit_review_outcome` status | Manually POST `{"status": "invalid_value"}` to `/flow-control` | Tool error returned; loop state unchanged; no crash |
 | `submit_review_outcome` called from a normal chat or non-hub child | Try to invoke it from a plain chat or reviewer child context | Call is rejected; no loop state is created or mutated |
 | Auto-reinvoke while a turn is in flight | Start a flow run; verify hub doesn't double-fire | Only one reinvoke fires; second is suppressed (single-flight guard) |
-| `cap=0` override | Set cap to 0 in skill config | Treated as default (3); loop runs normally |
+| `cap=0` override | ⚠️ 2026-07-06: "skill config" no longer exists, and per Scenario 3's note, no live path currently applies any external cap value to a fresh run's loop state anyway — this row needs the same decision as Scenario 3 before it's retestable. | Treated as default (3); loop runs normally |
 | Child fails mid-turn | Interrupt a child agent artificially | Join note records `failed: <id>`; synthesis proceeds with remaining results |
 | Drive offline during sync | Disconnect network mid-run | Run proceeds locally; sync retries when network returns |
 | `flowRef` not in the current sub-mode's option set | POST a turn with `subMode=bug` and a made-up `flowRef` string | Request rejected by `validateChatOrchestrationSelection`; turn does not start |
