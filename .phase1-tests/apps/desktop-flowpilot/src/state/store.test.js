@@ -2136,3 +2136,88 @@ function loopSnapshot(status, extra = {}) {
     strict_1.default.equal(store_1.useStore.getState().activeAgentRunId, undefined);
     strict_1.default.equal(store_1.useStore.getState().agentGraphSnapshot?.loopState.status, "running");
 });
+(0, node_test_1.default)("mergeAgentRunsById never lets a stale non-terminal snapshot revert an already-terminal run (BUG-235)", () => {
+    const existingCompleted = {
+        runId: "child-reviewer",
+        agentName: "reviewer",
+        role: "reviewer",
+        status: "completed",
+        parentRunId: "parent",
+        createdAt: "2026-01-01T00:00:01Z",
+    };
+    // A stale HTTP refresh captured before the reviewer finished, resolving AFTER
+    // the SSE event already marked it completed — this must NOT revert it.
+    const staleRunningSnapshot = { ...existingCompleted, status: "running" };
+    const merged = (0, store_1.mergeAgentRunsById)([existingCompleted], [staleRunningSnapshot]);
+    strict_1.default.equal(merged.length, 1);
+    strict_1.default.equal(merged[0].status, "completed");
+});
+(0, node_test_1.default)("mergeAgentRunsById still applies a genuinely fresh non-terminal update for a never-terminal run", () => {
+    const existingRunning = {
+        runId: "child-reviewer",
+        agentName: "reviewer",
+        role: "reviewer",
+        status: "running",
+        parentRunId: "parent",
+        createdAt: "2026-01-01T00:00:01Z",
+    };
+    const stillRunning = { ...existingRunning, agentStatus: "waiting_approval" };
+    const merged = (0, store_1.mergeAgentRunsById)([existingRunning], [{ ...stillRunning, status: "waiting_approval" }]);
+    strict_1.default.equal(merged.length, 1);
+    strict_1.default.equal(merged[0].status, "waiting_approval");
+});
+(0, node_test_1.default)("mergeAgentRunsById applies a terminal incoming status over an existing terminal one (status corrections still land)", () => {
+    const existingCompleted = {
+        runId: "child-reviewer",
+        agentName: "reviewer",
+        role: "reviewer",
+        status: "completed",
+        parentRunId: "parent",
+        createdAt: "2026-01-01T00:00:01Z",
+    };
+    const nowFailed = { ...existingCompleted, status: "failed" };
+    const merged = (0, store_1.mergeAgentRunsById)([existingCompleted], [nowFailed]);
+    strict_1.default.equal(merged.length, 1);
+    strict_1.default.equal(merged[0].status, "failed");
+});
+(0, node_test_1.default)("mergeAgentRunsById allows completed→running when activationSeq increases (genuine reinvoke, BUG-Rnd2)", () => {
+    // Coder has completed round 1 and is now being reinvoked by the backend.
+    // The backend increments activationSeq from 0 to 1.
+    const existingCompleted = {
+        runId: "child-coder",
+        agentName: "coder",
+        role: "coder",
+        status: "completed",
+        parentRunId: "parent",
+        createdAt: "2026-01-01T00:00:00Z",
+        activationSeq: 0,
+    };
+    const genuineReinvoke = {
+        ...existingCompleted,
+        status: "running",
+        activationSeq: 1, // backend incremented this
+    };
+    const merged = (0, store_1.mergeAgentRunsById)([existingCompleted], [genuineReinvoke]);
+    strict_1.default.equal(merged.length, 1);
+    strict_1.default.equal(merged[0].status, "running", "reinvoke with higher activationSeq must be allowed");
+    strict_1.default.equal(merged[0].activationSeq, 1);
+});
+(0, node_test_1.default)("mergeAgentRunsById still blocks completed→running when activationSeq is same or absent (stale snapshot, BUG-235)", () => {
+    const existingCompleted = {
+        runId: "child-reviewer",
+        agentName: "reviewer",
+        role: "reviewer",
+        status: "completed",
+        parentRunId: "parent",
+        createdAt: "2026-01-01T00:00:01Z",
+        activationSeq: 1,
+    };
+    // Same activationSeq — this is a stale HTTP snapshot, not a genuine reinvoke.
+    const staleRunning = { ...existingCompleted, status: "running" };
+    const merged1 = (0, store_1.mergeAgentRunsById)([existingCompleted], [staleRunning]);
+    strict_1.default.equal(merged1[0].status, "completed", "same activationSeq must be blocked (stale snapshot)");
+    // No activationSeq at all (absent from JSON) — treat as 0, which is <= existing 1.
+    const staleNoSeq = { ...existingCompleted, status: "running", activationSeq: undefined };
+    const merged2 = (0, store_1.mergeAgentRunsById)([existingCompleted], [staleNoSeq]);
+    strict_1.default.equal(merged2[0].status, "completed", "absent activationSeq must be blocked (stale snapshot)");
+});

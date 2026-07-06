@@ -6,6 +6,7 @@ exports.providerLabel = providerLabel;
 exports.isFlowModeRun = isFlowModeRun;
 exports.activeWorkflowStep = activeWorkflowStep;
 exports.hasRetries = hasRetries;
+exports.mergeAgentRunsById = mergeAgentRunsById;
 exports.deriveOrchestrationRunStatus = deriveOrchestrationRunStatus;
 const zustand_1 = require("zustand");
 const createRunnerClient_1 = require("@/client/createRunnerClient");
@@ -1766,12 +1767,33 @@ function settleTerminalReplayVisuals(runId, replayStatus, set) {
 // The live SSE graph snapshot is in-memory only and omits disk-persisted closed children
 // that the HTTP list (listAgentRunSummaries) includes; replacing wholesale dropped the
 // "Recently closed" entries while an agent was running. Merging preserves them (BUG-132).
+//
+// BUG-235: a run's status is monotonic once terminal (completed/failed/cancelled never
+// goes back to running/waiting) — but incoming can be a STALE snapshot: refreshAgentRuns'
+// HTTP request is fire-and-forget and can be captured server-side before a child finished,
+// then resolve and land AFTER the SSE agent_graph_updated event that already correctly
+// marked it terminal. Unconditional "incoming wins" let that late, stale "running" revert
+// the already-correct terminal status — and since no further event fires for an already-
+// finished child, it stayed wrongly "running" forever (Agents panel + the leftover
+// "reviewer · running" card in the main chat, even after the whole flow completed). Never
+// let a non-terminal incoming status overwrite an existing terminal one.
 function mergeAgentRunsById(existing, incoming) {
     const byId = new Map();
     for (const run of existing)
         byId.set(run.runId, run);
-    for (const run of incoming)
+    for (const run of incoming) {
+        const prev = byId.get(run.runId);
+        if (prev && isTerminalRunStatus(prev.status) && !isTerminalRunStatus(run.status)) {
+            // BUG-235: never let a stale HTTP snapshot revert an already-terminal status.
+            // Exception (BUG-Rnd2): when the backend genuinely reinvokes the same runId
+            // (lifecycle: reinvoke), it increments activationSeq. A higher activationSeq
+            // means this is a real completed→running transition, not a stale snapshot.
+            const isGenuineReinvoke = (run.activationSeq ?? 0) > (prev.activationSeq ?? 0);
+            if (!isGenuineReinvoke)
+                continue;
+        }
         byId.set(run.runId, run);
+    }
     return [...byId.values()];
 }
 function applyEvent(s, e) {
