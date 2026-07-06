@@ -608,7 +608,39 @@ func flowNodeReusesChild(node agentpack.FlowNode) bool {
 }
 
 func (s *InteractiveService) reinvokeExistingFlowChild(parentRunID, nodeID, prompt string) bool {
-	if strings.TrimSpace(parentRunID) == "" || strings.TrimSpace(nodeID) == "" || strings.TrimSpace(prompt) == "" {
+	if strings.TrimSpace(nodeID) == "" {
+		return false
+	}
+	return s.reinvokeMatchingFlowChild(parentRunID, prompt, func(child *interactiveRun) bool {
+		return child.label == nodeID
+	})
+}
+
+// reinvokeMatchingFlowChild is the single implementation behind every
+// "reactivate an existing child run for another turn" path: find the first
+// non-terminal-turn child of parentRunID satisfying match, transition it back
+// to running, and notify the desktop. BUG-242: this used to be duplicated —
+// reinvokeExistingFlowChild (the forward-edge reuse-lifecycle path) had the
+// BUG-Rnd2 fixes below, but maybeReinvokeCoderForContinue's back-edge
+// "continue" reinvoke (the actual path a review-loop round-2+ coder re-entry
+// takes) had its own older, un-fixed copy — so the coder reappearing for round
+// 2 stayed stuck in the desktop's "Recently closed" section with no new
+// main-chat card, while a forward-spawned reviewer behaved correctly.
+//
+// - BUG-Rnd2 (Bug B): increments activationSeq so the desktop's monotonic
+//   terminal-status guard (mergeAgentRunsById) recognizes a genuine
+//   completed→running transition instead of discarding it as a stale
+//   snapshot — without this the run never leaves "completed" client-side and
+//   is miscategorized as closed regardless of what the backend just did.
+// - BUG-Rnd2 (Bug C): emits EventAgentSpawnedByUser so the parent thread
+//   renders a new agent card for this turn, matching the spawnChildRun path
+//   (idempotent by event id, so replay never duplicates the row).
+//
+// Returns true if a matching child was found (whether or not a new turn was
+// actually scheduled — a match with a turn already in flight still counts as
+// "handled": its own completion will drive the next step).
+func (s *InteractiveService) reinvokeMatchingFlowChild(parentRunID, prompt string, match func(*interactiveRun) bool) bool {
+	if strings.TrimSpace(parentRunID) == "" || strings.TrimSpace(prompt) == "" || match == nil {
 		return false
 	}
 	s.mu.Lock()
@@ -617,16 +649,13 @@ func (s *InteractiveService) reinvokeExistingFlowChild(parentRunID, nodeID, prom
 	var agentName string
 	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
 		child := s.runs[childID]
-		if child == nil || child.label != nodeID {
+		if child == nil || !match(child) {
 			continue
 		}
 		if child.turnInFlight {
 			s.mu.Unlock()
 			return true
 		}
-		// BUG-Rnd2 (Bug B): increment the activation counter so the desktop can
-		// detect this as a genuine completed→running transition and lift the
-		// BUG-235 terminal-status guard in mergeAgentRunsById.
 		child.activationSeq++
 		child.status = RunStatusRunning
 		child.agentStatus = string(RunStatusRunning)
@@ -655,10 +684,6 @@ func (s *InteractiveService) reinvokeExistingFlowChild(parentRunID, nodeID, prom
 		return false
 	}
 	s.emitAgentGraph(parentRunID, snap)
-	// BUG-Rnd2 (Bug C): emit a spawn annotation on the parent run so the main
-	// thread renders a new agent card for this reinvoke turn — matching the
-	// spawnChildRun path. Idempotency in the timeline reducer deduplicates by
-	// event id, so replay will not duplicate the row.
 	s.emitOnParentRun(parentRunID, ProviderEvent{
 		Type:       EventAgentSpawnedByUser,
 		AgentName:  agentName,

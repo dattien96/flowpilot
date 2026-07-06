@@ -521,14 +521,22 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 			return st
 		})
 		s.appendPendingAgentContext(parentRunID, strings.TrimSpace("Flow completed. "+in.Summary))
-		s.emitAgentGraph(parentRunID, snap)
-		go s.persistParentSession(parentRunID)
-		// BUG-174: the flow's control tool reported done — settle the step
-		// timeline (inline hub node DONE, run DONE) instead of leaving it to the
-		// bulk planner, which is gated off for flow-engine-driven runs.
+		// BUG-174/BUG-242: settle the step timeline (inline hub node DONE, run
+		// DONE) BEFORE emitAgentGraph below, not after. emitAgentGraph fires the
+		// agent_graph_updated SSE event the desktop reacts to by refreshing the
+		// step-runtime snapshot (refreshWorkflowStepRuntime) — BUG-233 already
+		// established this exact ordering requirement for the "continue"/
+		// looping branch above, but the "done" branch still emitted first and
+		// settled the steps after. That let the desktop's refresh race ahead of
+		// these writes and read the still-RUNNING hub/synthesis node from the
+		// prior instant, and since setFlowStepStatus emits no event of its own,
+		// nothing corrected the stale RUNNING display until an unrelated event
+		// (e.g. a manual agent focus switch) triggered another refresh.
 		if s.isFlowEngineDriven(parentRunID) {
 			s.markFlowRunComplete(context.Background(), parentRunID)
 		}
+		s.emitAgentGraph(parentRunID, snap)
+		go s.persistParentSession(parentRunID)
 		s.flowDiagLog(parentRunID, "flow_control_done", "flow marked done",
 			"next_action", "done",
 			"round", snap.LoopState.Round,
@@ -1066,52 +1074,20 @@ func (s *InteractiveService) maybeReinvokeCoderForContinue(parentRunID, prompt s
 		}
 		return
 	}
-	var coderID, coderStepID string
-	var snap AgentGraphSnapshot
-	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
-		child := s.runs[childID]
-		if child == nil {
-			continue
-		}
-		matches := false
-		if targetNodeID != "" {
-			matches = child.label == targetNodeID
-		} else {
-			matches = isCoderRun(child)
-		}
-		if !matches {
-			continue
-		}
-		if child.turnInFlight {
-			s.mu.Unlock()
-			return // target already running; feedback will arrive via pendingAgentContext
-		}
-		child.status = RunStatusRunning
-		child.agentStatus = string(RunStatusRunning)
-		s.agentOrchestrator.upsertSummary(parentRunID, AgentRunSummary{
-			RunID:         child.id,
-			AgentName:     child.agentName,
-			Role:          child.role,
-			Status:        child.status,
-			ParentRunID:   child.parentRunID,
-			CreatedAt:     child.createdAt,
-			DependsOn:     append([]string(nil), child.dependsOn...),
-			AgentStatus:   child.agentStatus,
-			ProviderKey:   string(child.providerKey),
-			ModelName:     child.modelName,
-			WaitForResult: child.waitForResult,
-		})
-		snap = s.agentOrchestrator.graphSnapshot(parentRunID)
-		coderID = childID
-		coderStepID = child.stepID
-		break
-	}
 	s.mu.Unlock()
-	if coderID == "" || coderStepID == "" {
-		return
-	}
-	s.emitAgentGraph(parentRunID, snap)
-	s.scheduleChildTurn(coderID, coderStepID, prompt)
+	// BUG-242: delegate to the single reinvoke implementation instead of a
+	// second, older inline copy that never got the BUG-Rnd2 activationSeq/
+	// EventAgentSpawnedByUser fixes — this is the actual code path a
+	// review-loop round-2+ coder re-entry takes (the synthesis→coder back-edge
+	// "continue"), so its coder reappeared miscategorized as "closed" in the
+	// desktop with no new main-chat card even though the backend was already
+	// running it again.
+	s.reinvokeMatchingFlowChild(parentRunID, prompt, func(child *interactiveRun) bool {
+		if targetNodeID != "" {
+			return child.label == targetNodeID
+		}
+		return isCoderRun(child)
+	})
 }
 
 func isAgentRole(rs *interactiveRun, role string) bool {
@@ -1277,16 +1253,17 @@ func (s *InteractiveService) releaseDependentAgents(parentRunID, completedRunID,
 				OccurredAt:  occurredAt,
 			},
 			summary: AgentRunSummary{
-				RunID:       child.id,
-				AgentName:   child.agentName,
-				Role:        child.role,
-				Status:      child.status,
-				ParentRunID: child.parentRunID,
-				CreatedAt:   child.createdAt,
-				DependsOn:   append([]string(nil), child.dependsOn...),
-				AgentStatus: child.agentStatus,
-				ProviderKey: string(child.providerKey),
-				ModelName:   child.modelName,
+				RunID:         child.id,
+				AgentName:     child.agentName,
+				Role:          child.role,
+				Status:        child.status,
+				ParentRunID:   child.parentRunID,
+				CreatedAt:     child.createdAt,
+				DependsOn:     append([]string(nil), child.dependsOn...),
+				AgentStatus:   child.agentStatus,
+				ProviderKey:   string(child.providerKey),
+				ModelName:     child.modelName,
+				ActivationSeq: child.activationSeq, // BUG-242: preserve, don't silently reset to 0
 			},
 		})
 	}
@@ -1987,6 +1964,14 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 			ProviderKey:   string(rs.providerKey),
 			ModelName:     modelName,
 			WaitForResult: rs.waitForResult,
+			// BUG-242: this generic per-event summary write used to omit
+			// ActivationSeq entirely, so the very next turn-progress event after
+			// a reinvokeMatchingFlowChild reactivation (e.g. the reinvoked
+			// child's own completion) silently reset the reported activationSeq
+			// back to 0 — undermining the desktop's monotonic terminal-status
+			// guard (mergeAgentRunsById), which relies on activationSeq only
+			// ever increasing to recognize a genuine reinvoke.
+			ActivationSeq: rs.activationSeq,
 		})
 		shouldEmitParentGraph = shouldEmitAgentGraphForChildEvent(ev.Type)
 	}

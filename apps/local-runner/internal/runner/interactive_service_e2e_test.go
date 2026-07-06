@@ -423,6 +423,85 @@ func TestE2EReviewLoopChangesRequestedFeedbackReachesCoderPrompt(t *testing.T) {
 	}
 }
 
+// TestE2EReviewLoopCoderReentryIncrementsActivationSeqAndEmitsSpawnEvent is
+// the regression test for BUG-242 (Bug 1): a review-loop round-2+ coder
+// re-entry goes through applyFlowControl("continue") ->
+// maybeReinvokeCoderForContinue, which used to carry its own older inline
+// reinvoke logic that never incremented activationSeq or emitted
+// EventAgentSpawnedByUser — only the separate reinvokeExistingFlowChild
+// (forward-edge reuse path) had those BUG-Rnd2 fixes. Without activationSeq
+// incrementing, the desktop's monotonic terminal-status guard
+// (mergeAgentRunsById) discarded the completed->running transition as a stale
+// snapshot, so the coder stayed miscategorized in "Recently closed" with no
+// new main-chat card even though the backend had genuinely restarted it.
+// Both call sites now delegate to the single reinvokeMatchingFlowChild.
+func TestE2EReviewLoopCoderReentryIncrementsActivationSeqAndEmitsSpawnEvent(t *testing.T) {
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, req TurnRequest, b TurnBridge) error {
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "ok"})
+				return nil
+			})
+		},
+	})
+
+	svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	ph, _ := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	parentID := ph.RunID
+	svc.agentOrchestrator.setLoop(parentID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3})
+
+	spawnResult, err := svc.spawnChildRun(context.Background(), parentID, SpawnAgentInput{
+		Agent: "coder", Prompt: "implement auth middleware", Wait: true,
+	})
+	if err != nil {
+		t.Fatalf("spawnChildRun(coder): %v", err)
+	}
+	coderRunID := spawnResult.RunID
+
+	summaryBefore, ok := svc.agentOrchestrator.currentSummary(parentID, coderRunID)
+	if !ok {
+		t.Fatalf("no summary found for coder run %q before continue", coderRunID)
+	}
+	if summaryBefore.Status != RunStatusCompleted {
+		t.Fatalf("coder status before continue = %q, want completed", summaryBefore.Status)
+	}
+
+	if _, err := svc.applyFlowControl(parentID, FlowControlInput{
+		Status:  "continue",
+		Summary: "fix the null pointer dereference",
+	}); err != nil {
+		t.Fatalf("applyFlowControl(continue): %v", err)
+	}
+
+	waitLoop(t, "coder summary reflects reinvoke", 3*time.Second, func() bool {
+		summary, ok := svc.agentOrchestrator.currentSummary(parentID, coderRunID)
+		return ok && summary.ActivationSeq > summaryBefore.ActivationSeq
+	})
+
+	summaryAfter, _ := svc.agentOrchestrator.currentSummary(parentID, coderRunID)
+	if summaryAfter.ActivationSeq <= summaryBefore.ActivationSeq {
+		t.Fatalf("activationSeq = %d after continue, want > %d (before) so the desktop recognizes a genuine reinvoke, not a stale snapshot",
+			summaryAfter.ActivationSeq, summaryBefore.ActivationSeq)
+	}
+
+	svc.mu.Lock()
+	rs := svc.runs[parentID]
+	var sawSpawnEvent bool
+	for _, ev := range rs.events {
+		if ev.Type == EventAgentSpawnedByUser && ev.ChildRunID == coderRunID {
+			sawSpawnEvent = true
+			break
+		}
+	}
+	svc.mu.Unlock()
+	if !sawSpawnEvent {
+		t.Error("expected an EventAgentSpawnedByUser for the reinvoked coder run on the parent's timeline, so the main chat renders a new agent card for this turn")
+	}
+}
+
 // TestE2EReviewLoopCapHitBlocked verifies that applyFlowControl("continue")
 // when Round == Cap transitions the loop to blocked and returns NextAction=awaiting_user.
 func TestE2EReviewLoopCapHitBlocked(t *testing.T) {
