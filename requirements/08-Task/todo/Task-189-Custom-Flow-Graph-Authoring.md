@@ -5,11 +5,11 @@
 - Document ID: `Task-189`
 - Title: `Custom Flow Graph Authoring (Steps + Edges + Behavior, All In UI)`
 - Phase: `task`
-- Status: `in_progress` (approved 2026-07-06; scope narrowed after verifying client-core already persists `edges_json`/policy — the gap is UI-concentrated: behavior picker + edges form-list + canvas + assembly + validation)
+- Status: `in_progress` (approved 2026-07-06; scope narrowed after verifying client-core already persists `edges_json`/policy — the gap is UI-concentrated: behavior picker + edges form-list + canvas + assembly + validation. All 5 implementation/test slices shipped 2026-07-06; kept `in_progress` pending the owner's own manual click-through in Settings — see §8.)
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-06`
-- Last Updated: `2026-07-06`
+- Last Updated: `2026-07-06` (implementation complete across 5 slices; owner manual E2E still pending)
 - Parent Documents: [CP-42: Flow Pack And Generic Node Behavior Refactor](../../07-Coding-Plan/inprogress/CP-42-Flow-Pack-And-Generic-Node-Behavior-Refactor.md) (P-9), [Task-179: Settings Flow Pack Authoring UI](Task-179-Settings-Flow-Pack-Authoring-UI.md)
 - Child Documents: `none`
 - Related Documents: [BUG-236: Builtin Flow Mirror Stores Node Definition On workflow_steps Instead Of step_definitions](../../09-BugFix/todo/BUG-236-Builtin-Flow-Mirror-Stores-Node-Definition-On-Workflow-Steps-Instead-Of-Step-Definitions.md), [Task-175: Built-In Flow Mirror Sync And Resolver](../done/Task-175-Builtin-Flow-Mirror-Sync-And-Resolver.md), [Task-176: Node Behavior Registry And Dispatch](Task-176-Node-Behavior-Registry-And-Dispatch.md)
@@ -89,12 +89,15 @@ Owner requirement: "I need to create my own custom flows — steps, edges, behav
 
 ## 6. Acceptance Check / Test Items / DoD (finalize on approval)
 
-- A from-scratch custom flow authored in the UI (nodes = step-definitions with behavior/agent; edges drawn in form + canvas; policy set) runs in Flow Mode: entry node spawns, forward edges advance, cohort/join behave per the authored graph — no fallback to the legacy non-flow path.
-- Node data is stored only in `step_definitions`; `workflow_steps` carries only step_type + order.
-- Form-list and canvas stay in sync (edit in one reflects in the other).
-- Cloning a built-in still works (no regression).
-- Validation blocks an invalid graph (dangling edge, delegate without agent, unknown behavior, no entry node) with clear messages.
-- `go build ./...`, `go test ./internal/runner/...`, desktop `npm run typecheck`, phase1 tests pass.
+- [x] A from-scratch custom flow (nodes = step-definitions with behavior/agent; edges; policy) runs in Flow Mode: entry node spawns, forward edges advance — proven at the runner level by `TestCustomUserOwnedFlowResolvesSpawnsEntryAndAdvancesEdge` (resolves a `supabase_user_definition` flowRef with no builtin pack involvement, spawns only the entry node, then the entry node's completion auto-advances the flow's own edge with no test code driving it). No fallback to the legacy non-flow path, no schema/runtime change needed. Cohort/join behavior for a multi-node fan-out is exercised by the pre-existing review-loop tests, which run through the identical code path.
+- [x] Node data is stored only in `step_definitions`; `workflow_steps` carries only step_type + order — reconfirmed by `saveWorkflow never writes node-identity fields into workflow_steps (BUG-236)` (slice 3) and unchanged by slices 4-5.
+- [x] Form-list and canvas stay in sync — by construction, not by mirrored state: both `renderWorkflowEdgesEditor` and `renderWorkflowFlowCanvas` read/write the exact same `WorkflowDraft.edges` array; there is no separate canvas-edge state to drift.
+- [x] Cloning a built-in still works (no regression) — `cloneWorkflow creates an editable, non-builtin copy referencing the source` (pre-existing, still passing) and slice 3/5's typecheck/build/test passes didn't touch the clone path.
+- [x] Validation blocks an invalid graph (dangling edge, delegate without agent, unknown behavior, no entry node) with clear messages — `validateFlowGraph` (slice 3), gated on `edges.length > 0` so legacy non-graph workflows are unaffected.
+- [x] `go build ./...`, `go test ./internal/runner/...` pass (15 pre-existing, environment-specific failures unrelated to this task — missing real Codex CLI, Windows-specific home-dir assertions — same count before and after every slice's change).
+- [x] Desktop typecheck passes — verified via the `tsc` binary directly (`node_modules/.bin/tsc.cmd --noEmit`), not `npx tsc`/the `rtk` proxy, which were found mid-task to silently swallow real compiler errors.
+- [x] Phase1 tests pass — 43/47, with the same 4 pre-existing unrelated failures as before this task (`desktopAdminSupabaseClient`, `desktopSupabaseAuthRepository`, `importBoundary` cwd-fragility, a `FakeTable` missing `.update()` mock).
+- [ ] **Not yet done — owner's own manual click-through**: author a custom flow end-to-end in the live Settings UI (behavior picker → edges form-list/canvas → save → run in Flow Mode → watch agents spawn and edges follow) was NOT performed by the assistant. The dev sandbox used for this task has no reachable local-runner/Supabase backend to authenticate through to the Workflows settings screen (confirmed via the desktop preview: it stalls on "Runner Offline" / "Failed to fetch" with no real backend or credentials available), so this item is verified by code review + typecheck + the runner-level integration test above, not a live click-through. Leave this box unchecked until the owner does that pass themselves (e.g. against `D:\working\gate-sandbox` or wherever the real backend runs).
 
 ## 7. Out of Scope
 
@@ -104,4 +107,11 @@ Owner requirement: "I need to create my own custom flows — steps, edges, behav
 
 ## 8. Completion Notes
 
-- result: `plan` — not started; scope corrected 2026-07-06 to the step_definitions-as-node model per owner direction (dropped the earlier workflow_steps-persistence approach). On approval, finalize §6 and implement across the behavior picker → edges form-list + canvas → assembly + validation → runner confirmation → tests.
+- result: `implemented, pending owner manual E2E` — all 5 slices shipped 2026-07-06 on `task/flow-agents`:
+  - Slice 1 (`041e09c`): static behavior-ID picker mirroring `DefaultBehaviorRegistry` (T-3), replacing the free-text Behavior field.
+  - Slice 2 (`0c0ede1`): edges form-list editor (from/to/when/kind) bound to `WorkflowDraft.edges`, wired into both create and detail views (T-2 form-list half).
+  - Slice 3 (`7155841`): `validateFlowGraph` client-core function + save-time gating (T-4/T-5), gated on `edges.length > 0`. Also fixed 3 pre-existing broken tests in `workflowFlowEngineAttrs.test.ts` that encoded the rejected workflow_steps-node-data design.
+  - Slice 4 (`f7a7543`): visual canvas editor — drag-to-position nodes, click-connector-dots-to-draw-edges — as a second view over the exact same `edges` array the form-list uses (T-2 canvas half, "cả hai cùng lúc").
+  - Slice 5 (`a5a19be`): `TestCustomUserOwnedFlowResolvesSpawnsEntryAndAdvancesEdge`, the runner-level proof that a from-scratch `supabase_user_definition` flow (not a builtin) resolves, spawns its entry node, and auto-advances its own edge — confirming T-1's claim that no schema/runtime change was needed.
+  - T-1 reconfirmed throughout: no `WorkflowStep`/schema change was made; node data lives only in `step_definitions`.
+  - **Left undone deliberately**: the owner's own manual click-through in the live Settings UI (see the unchecked §6 item) — the assistant's dev sandbox has no reachable backend to authenticate through to Settings, so this task should stay in `in_progress` (not moved to `done`) until the owner runs that pass themselves, consistent with how CP-36/CP-41 are being held open in this same work cycle pending the owner's own E2E runs.
