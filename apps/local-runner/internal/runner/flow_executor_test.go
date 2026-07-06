@@ -1381,3 +1381,136 @@ func TestCustomUserOwnedFlowResolvesSpawnsEntryAndAdvancesEdge(t *testing.T) {
 		return countChildrenWithLabel(svc, parent.RunID, "final_check") == 1
 	})
 }
+
+// TestCustomFlowWithThreeReviewersJoinsAfterAllComplete directly answers a
+// concrete question raised while reviewing CP-36's E2E guide's Scenario 9
+// (N=3 parallel reviewers): the built-in Review Loop's own review-loop.yaml
+// hardcodes exactly 2 reviewer nodes, so that scenario can no longer be
+// driven by prompt text (the retired agent-review-loop skill used to let the
+// prompt say "spawn 3 reviewers"). The question was whether a from-scratch
+// CUSTOM flow authored via Task-189's UI (behavior picker + edges canvas) —
+// not a built-in, and not editing one — could declare 3 reviewer-equivalent
+// nodes fanning out from one entry node and have the cohort/join mechanism
+// correctly wait for all 3 (not 2) before advancing, proving the underlying
+// engine has no hardcoded reviewer-count assumption anywhere.
+//
+// This is a genuinely different flow topology from every other test in this
+// file (3-way fan-out, not 2), registered as a bare-UUID
+// supabase_user_definition record exactly like
+// TestCustomUserOwnedFlowResolvesSpawnsEntryAndAdvancesEdge — the same shape
+// Task-189's editor would produce for "coder + 3 reviewer nodes, all
+// dependsOn:[drafting], same cohort, forward-edged from drafting".
+func TestCustomFlowWithThreeReviewersJoinsAfterAllComplete(t *testing.T) {
+	const customFlowRef = "44444444-4444-4444-4444-444444444444"
+
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "ok"})
+				return nil
+			})
+		},
+	})
+	catalog := newInteractiveCatalog()
+	catalog.steps[customFlowRef] = []Step{
+		{ID: "drafting", WorkflowID: customFlowRef, Name: "drafting", Order: 1, Model: "gpt-5.4"},
+	}
+	svc := newInteractiveService(reg, catalog, newFakeWorkflowStore())
+
+	store := newFakeFlowDefinitionStore()
+	store.byRef[customFlowRef] = FlowDefinitionRecord{
+		FlowRef:   customFlowRef,
+		Name:      "My Custom 3-Reviewer Flow",
+		Source:    "supabase_user_definition",
+		Editable:  true,
+		Cloneable: true,
+		Definition: agentpack.FlowDefinition{
+			ID: "custom-three-reviewer",
+			Nodes: []agentpack.FlowNode{
+				{ID: "drafting", Behavior: "agent.delegate", Agent: "agents/coder.md"},
+				{ID: "review_a", Behavior: "agent.delegate", Agent: "agents/reviewer.md", DependsOn: []string{"drafting"}},
+				{ID: "review_b", Behavior: "agent.delegate", Agent: "agents/reviewer.md", DependsOn: []string{"drafting"}},
+				{ID: "review_c", Behavior: "agent.delegate", Agent: "agents/reviewer.md", DependsOn: []string{"drafting"}},
+			},
+			Edges: []agentpack.FlowEdge{
+				{From: "drafting", To: "review_a", When: "done", Kind: "forward"},
+				{From: "drafting", To: "review_b", When: "done", Kind: "forward"},
+				{From: "drafting", To: "review_c", When: "done", Kind: "forward"},
+			},
+		},
+	}
+	svc.SetFlowDefinitionStore(store)
+
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3})
+	svc.mu.Lock()
+	svc.runs[parent.RunID].workflowID = customFlowRef
+	svc.mu.Unlock()
+
+	ref, ok := svc.resolveWorkflowFlowRef(context.Background(), parent.RunID)
+	if !ok {
+		t.Fatal("resolveWorkflowFlowRef returned false; want it to resolve the custom 3-reviewer flow")
+	}
+
+	svc.startResolvedFlow(context.Background(), parent.RunID, ref, "draft the feature")
+
+	// The entry node's completion auto-advances all 3 forward "done" edges at
+	// once (forwardDoneTargets returns every matching edge, not just the
+	// first) — this is the fan-out half of the question.
+	waitLoop(t, "all 3 reviewer nodes auto-spawned from drafting's 3 forward edges", 3*time.Second, func() bool {
+		return countChildrenWithLabel(svc, parent.RunID, "review_a") == 1 &&
+			countChildrenWithLabel(svc, parent.RunID, "review_b") == 1 &&
+			countChildrenWithLabel(svc, parent.RunID, "review_c") == 1
+	})
+
+	// All 3 must share one cohort (this is what makes the join wait for
+	// exactly 3, not 2) — the fan-out loop in tryAdvanceFlowFromNode sets
+	// CohortSize: len(targetNodes), which is 3 here, not a hardcoded 2. The
+	// actual registered expected-count lives in the orchestrator's internal
+	// cohortExpected map (unexported), so it's proven behaviorally below
+	// instead: the hub reinvoke must wait for all 3, not fire after 2.
+	svc.mu.Lock()
+	cohortIDs := map[string]struct{}{}
+	for _, run := range svc.runs {
+		if run.parentRunID == parent.RunID && run.label != "drafting" {
+			cohortIDs[run.flowCohortId] = struct{}{}
+		}
+	}
+	svc.mu.Unlock()
+	if len(cohortIDs) != 1 {
+		t.Fatalf("expected all 3 reviewers in exactly one shared cohort, got %v", cohortIDs)
+	}
+	for id := range cohortIDs {
+		if id == "" {
+			t.Fatal("expected a non-empty shared FlowCohortID")
+		}
+	}
+
+	// The fan-in half of the question: the hub (this test's parent run, which
+	// never took its own first turn — startResolvedFlow was called directly,
+	// not through startTurn) must be reinvoked exactly once, driven by the
+	// cohort join completing with all 3 members — proving the join genuinely
+	// counts to 3, not silently proceeding after 2 the way a hardcoded-2
+	// assumption would. All 3 reviewers' turns already completed (the fake
+	// adapter is synchronous per spawn), so by the time the join buffer holds
+	// all 3 results the cohort-complete reinvoke should fire exactly once,
+	// taking turnCount from 0 to 1.
+	waitLoop(t, "hub reinvoked after all 3 reviewers joined", 3*time.Second, func() bool {
+		svc.mu.Lock()
+		defer svc.mu.Unlock()
+		return svc.runs[parent.RunID].turnCount >= 1
+	})
+	svc.mu.Lock()
+	finalTurnCount := svc.runs[parent.RunID].turnCount
+	svc.mu.Unlock()
+	if finalTurnCount != 1 {
+		t.Fatalf("hub turnCount = %d, want exactly 1 (one reinvoke after the 3-member join) — "+
+			"a value >1 would mean the hub was reinvoked more than once for one join", finalTurnCount)
+	}
+}
