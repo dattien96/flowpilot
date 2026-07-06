@@ -2595,3 +2595,49 @@ test("mergeAgentRunsById applies a terminal incoming status over an existing ter
   assert.equal(merged.length, 1);
   assert.equal(merged[0].status, "failed");
 });
+
+test("mergeAgentRunsById allows completed→running when activationSeq increases (genuine reinvoke, BUG-Rnd2)", () => {
+  // Coder has completed round 1 and is now being reinvoked by the backend.
+  // The backend increments activationSeq from 0 to 1.
+  const existingCompleted: AgentRunSummary = {
+    runId: "child-coder",
+    agentName: "coder",
+    role: "coder",
+    status: "completed",
+    parentRunId: "parent",
+    createdAt: "2026-01-01T00:00:00Z",
+    activationSeq: 0,
+  };
+  const genuineReinvoke: AgentRunSummary = {
+    ...existingCompleted,
+    status: "running",
+    activationSeq: 1, // backend incremented this
+  };
+
+  const merged = mergeAgentRunsById([existingCompleted], [genuineReinvoke]);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].status, "running", "reinvoke with higher activationSeq must be allowed");
+  assert.equal(merged[0].activationSeq, 1);
+});
+
+test("mergeAgentRunsById still blocks completed→running when activationSeq is same or absent (stale snapshot, BUG-235)", () => {
+  const existingCompleted: AgentRunSummary = {
+    runId: "child-reviewer",
+    agentName: "reviewer",
+    role: "reviewer",
+    status: "completed",
+    parentRunId: "parent",
+    createdAt: "2026-01-01T00:00:01Z",
+    activationSeq: 1,
+  };
+
+  // Same activationSeq — this is a stale HTTP snapshot, not a genuine reinvoke.
+  const staleRunning: AgentRunSummary = { ...existingCompleted, status: "running" };
+  const merged1 = mergeAgentRunsById([existingCompleted], [staleRunning]);
+  assert.equal(merged1[0].status, "completed", "same activationSeq must be blocked (stale snapshot)");
+
+  // No activationSeq at all (absent from JSON) — treat as 0, which is <= existing 1.
+  const staleNoSeq: AgentRunSummary = { ...existingCompleted, status: "running", activationSeq: undefined };
+  const merged2 = mergeAgentRunsById([existingCompleted], [staleNoSeq]);
+  assert.equal(merged2[0].status, "completed", "absent activationSeq must be blocked (stale snapshot)");
+});

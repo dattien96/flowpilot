@@ -41,6 +41,16 @@ function now() {
   return new Date().toISOString();
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function stringRecord(value: Record<string, unknown>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [key, String(item ?? "")]),
+  );
+}
+
 function mapProject(row: Row): Project {
   return {
     id: String(row.id),
@@ -182,14 +192,6 @@ function mapWorkflowStep(row: Row): WorkflowStep {
     requiresApproval: Boolean(row.requires_approval ?? true),
     createdAt: String(row.created_at ?? ""),
     updatedAt: String(row.updated_at ?? ""),
-    nodeId: row.node_id ? String(row.node_id) : null,
-    behaviorId: row.behavior_id ? String(row.behavior_id) : null,
-    agentRef: row.agent_ref ? String(row.agent_ref) : null,
-    dependsOn: Array.isArray(row.depends_on_json) ? row.depends_on_json.map(String) : [],
-    joinMode: row.join_mode ? String(row.join_mode) : null,
-    cohort: row.cohort ? String(row.cohort) : null,
-    promptTemplateRef: row.prompt_template_ref ? String(row.prompt_template_ref) : null,
-    contextRef: row.context_ref ? String(row.context_ref) : null,
   };
 }
 
@@ -208,6 +210,17 @@ function mapStepDefinition(row: Row): StepDefinition {
     reasoningEffort: row.reasoning_effort ? String(row.reasoning_effort) : null,
     yoloMode: Boolean(row.yolo_mode ?? false),
     agentType: row.agent_type === "autonomous" ? "autonomous" : "standard",
+    nodeId: row.node_id ? String(row.node_id) : null,
+    behaviorId: row.behavior_id ? String(row.behavior_id) : null,
+    agentRef: row.agent_ref ? String(row.agent_ref) : null,
+    nodeLifecycle: row.node_lifecycle ? String(row.node_lifecycle) : null,
+    dependsOn: Array.isArray(row.depends_on_json) ? row.depends_on_json.map(String) : [],
+    joinMode: row.join_mode ? String(row.join_mode) : null,
+    cohort: row.cohort ? String(row.cohort) : null,
+    promptTemplateRef: row.prompt_template_ref ? String(row.prompt_template_ref) : null,
+    contextRef: row.context_ref ? String(row.context_ref) : null,
+    inputs: isRecord(row.inputs_json) ? stringRecord(row.inputs_json) : {},
+    outputs: isRecord(row.outputs_json) ? stringRecord(row.outputs_json) : {},
     inputArtifactDefinitions: Array.isArray(row.input_artifact_definitions) ? row.input_artifact_definitions.map(String) : [],
     outputArtifactDefinitions: Array.isArray(row.output_artifact_definitions) ? row.output_artifact_definitions.map(String) : [],
     createdAt: String(row.created_at ?? ""),
@@ -586,14 +599,6 @@ export class SupabaseAdminRepository implements
             order_index: step.orderIndex ?? index,
             is_enabled: step.isEnabled ?? true,
             requires_approval: step.requiresApproval ?? true,
-            node_id: step.nodeId ?? null,
-            behavior_id: step.behaviorId ?? null,
-            agent_ref: step.agentRef ?? null,
-            depends_on_json: step.dependsOn ?? [],
-            join_mode: step.joinMode ?? null,
-            cohort: step.cohort ?? null,
-            prompt_template_ref: step.promptTemplateRef ?? null,
-            context_ref: step.contextRef ?? null,
           })))
           .select("id");
         assertNoError(stepsError, "Unable to save workflow steps.");
@@ -669,14 +674,6 @@ export class SupabaseAdminRepository implements
           order_index: step.orderIndex,
           is_enabled: step.isEnabled,
           requires_approval: step.requiresApproval,
-          node_id: step.nodeId,
-          behavior_id: step.behaviorId,
-          agent_ref: step.agentRef,
-          depends_on_json: step.dependsOn,
-          join_mode: step.joinMode,
-          cohort: step.cohort,
-          prompt_template_ref: step.promptTemplateRef,
-          context_ref: step.contextRef,
         })),
       );
       assertNoError(insertStepsError, "Unable to clone workflow steps.");
@@ -753,6 +750,17 @@ export class SupabaseAdminRepository implements
       reasoning_effort: step.reasoningEffort,
       yolo_mode: step.yoloMode,
       agent_type: step.agentType,
+      node_id: step.nodeId ?? null,
+      behavior_id: step.behaviorId ?? null,
+      agent_ref: step.agentRef ?? null,
+      node_lifecycle: step.nodeLifecycle ?? null,
+      depends_on_json: step.dependsOn ?? [],
+      join_mode: step.joinMode ?? null,
+      cohort: step.cohort ?? null,
+      prompt_template_ref: step.promptTemplateRef ?? null,
+      context_ref: step.contextRef ?? null,
+      inputs_json: step.inputs ?? {},
+      outputs_json: step.outputs ?? {},
       updated_at: now(),
     }, { onConflict: "step_type" }).select("*").single();
     assertNoError(error, "Unable to save step definition.");

@@ -106,7 +106,15 @@ export interface AgentRunSummary {
   modelName?: string;
   /** True when spawned with wait=true; such a running child blocks the main run (BUG-133). */
   waitForResult?: boolean;
+  /**
+   * Incremented each time a reinvoke-lifecycle child is reactivated (completed → running).
+   * mergeAgentRunsById uses this to distinguish a genuine reinvoke from a stale HTTP
+   * snapshot — allowing the completed→running transition only when activationSeq increases.
+   * Zero / absent for first activation and for spawn-lifecycle children (BUG-Rnd2).
+   */
+  activationSeq?: number;
 }
+
 
 export interface AgentDependencyEdge {
   fromRunId: string;

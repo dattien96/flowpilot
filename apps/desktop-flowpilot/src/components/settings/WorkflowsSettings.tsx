@@ -73,6 +73,17 @@ function createEmptyStepDraft(modelId: string): StepDefinition {
     reasoningEffort: DEFAULT_REASONING,
     yoloMode: false,
     agentType: "standard",
+    nodeId: null,
+    behaviorId: null,
+    agentRef: null,
+    nodeLifecycle: null,
+    dependsOn: [],
+    joinMode: null,
+    cohort: null,
+    promptTemplateRef: null,
+    contextRef: null,
+    inputs: {},
+    outputs: {},
     inputArtifactDefinitions: [],
     outputArtifactDefinitions: [],
     createdAt: "",
@@ -131,21 +142,6 @@ function normalizeWorkflowSnapshot(draft: WorkflowDraft | null, steps: WorkflowS
       orderIndex: index,
       isEnabled: step.isEnabled,
       requiresApproval: step.requiresApproval,
-      // BUG-NOTE-CP42 #3: these CP-42 per-node fields are editable in the
-      // step form (nodeId/behaviorId/agentRef/dependsOn/joinMode/cohort) but
-      // were missing from this snapshot, so workflowDirty never noticed an
-      // edit to any of them and Save stayed disabled unless some older field
-      // also changed. promptTemplateRef/contextRef are the same class of
-      // field and share the same form, so included for the same reason even
-      // though the bug note didn't name them explicitly.
-      nodeId: step.nodeId ?? "",
-      behaviorId: step.behaviorId ?? "",
-      agentRef: step.agentRef ?? "",
-      dependsOn: [...step.dependsOn].sort(),
-      joinMode: step.joinMode ?? "",
-      cohort: step.cohort ?? "",
-      promptTemplateRef: step.promptTemplateRef ?? "",
-      contextRef: step.contextRef ?? "",
     })),
   });
 }
@@ -166,6 +162,17 @@ function normalizeStepSnapshot(step: StepDefinition | null) {
     reasoningEffort: step.reasoningEffort ?? "",
     yoloMode: step.yoloMode,
     agentType: step.agentType,
+    nodeId: step.nodeId ?? "",
+    behaviorId: step.behaviorId ?? "",
+    agentRef: step.agentRef ?? "",
+    nodeLifecycle: step.nodeLifecycle ?? "",
+    dependsOn: [...(step.dependsOn ?? [])].sort(),
+    joinMode: step.joinMode ?? "",
+    cohort: step.cohort ?? "",
+    promptTemplateRef: step.promptTemplateRef ?? "",
+    contextRef: step.contextRef ?? "",
+    inputs: step.inputs ?? {},
+    outputs: step.outputs ?? {},
     inputArtifactDefinitions: step.inputArtifactDefinitions,
     outputArtifactDefinitions: step.outputArtifactDefinitions,
   });
@@ -180,6 +187,26 @@ function buildModelOptions(models: SupportedModel[]) {
 
 function toggleString(list: string[], value: string) {
   return list.includes(value) ? list.filter((item) => item !== value) : [...list, value];
+}
+
+function stringMapToText(values: Record<string, string> | undefined) {
+  return Object.entries(values ?? {})
+    .map(([key, value]) => `${key}=${value}`)
+    .join(", ");
+}
+
+function textToStringMap(value: string) {
+  return Object.fromEntries(
+    value
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .map((item) => {
+        const [key, ...rest] = item.split("=");
+        return [key.trim(), rest.join("=").trim()];
+      })
+      .filter(([key]) => Boolean(key)),
+  );
 }
 
 function toTitleCase(value: string) {
@@ -450,14 +477,6 @@ export function WorkflowsSettings(): React.ReactElement {
       requiresApproval: true,
       createdAt: "",
       updatedAt: "",
-      nodeId: null,
-      behaviorId: null,
-      agentRef: null,
-      dependsOn: [],
-      joinMode: null,
-      cohort: null,
-      promptTemplateRef: null,
-      contextRef: null,
     };
     if (source === "detail") {
       setWorkflowSteps((current) => [...current, nextStep]);
@@ -710,6 +729,7 @@ export function WorkflowsSettings(): React.ReactElement {
             steps.map((step, index) => {
               const stepKey = `${source}:${step.id}`;
               const isExpanded = expandedStepKeys.has(stepKey);
+              const definition = stepDefinitions.find((item) => item.stepType === step.stepType);
               return (
               <div className="settings-list-item static workflow-step-card" key={`${step.stepType}-${index}`}>
                 <div className="workflow-step-card-head">
@@ -723,14 +743,7 @@ export function WorkflowsSettings(): React.ReactElement {
                     <div>
                       <strong>
                         {index + 1}.{" "}
-                        {/* BUG-160: for a CP-42 flow-engine node, stepDefinition.name is a
-                            shared generic dispatch-category label ("Flow: Agent Delegate")
-                            identical across every step of that type — nodeId/agentRef are
-                            the actual per-node identity (BUG-155's fix, applied here too). */}
-                        {step.nodeId ||
-                          step.agentRef ||
-                          stepDefinitions.find((definition) => definition.stepType === step.stepType)?.name ||
-                          step.stepType}
+                        {definition?.nodeId || definition?.agentRef || definition?.name || step.stepType}
                       </strong>
                       <span>{step.stepType}</span>
                     </div>
@@ -800,96 +813,6 @@ export function WorkflowsSettings(): React.ReactElement {
                     <span>Requires approval</span>
                   </label>
                 </div>
-                {/* Flow-engine node attrs (CP-42/Task-175/179): behavior/agent
-                    binding and graph position for this step, when it participates
-                    in a generic flow rather than (or in addition to) the legacy
-                    step-type/model/approval fields above. Optional for a plain
-                    workflow step — leave blank if this step is not part of a flow
-                    graph. */}
-                <div className="settings-grid workflow-step-grid workflow-step-flow-grid">
-                  <label className="settings-field">
-                    <span>Node ID</span>
-                    <input
-                      disabled={readOnly}
-                      onChange={(event) =>
-                        source === "detail"
-                          ? updateWorkflowStep(index, { nodeId: event.target.value || null })
-                          : updateCreateWorkflowStep(index, { nodeId: event.target.value || null })
-                      }
-                      placeholder="e.g. coder"
-                      value={step.nodeId ?? ""}
-                    />
-                  </label>
-                  <label className="settings-field">
-                    <span>Behavior ID</span>
-                    <input
-                      disabled={readOnly}
-                      onChange={(event) =>
-                        source === "detail"
-                          ? updateWorkflowStep(index, { behaviorId: event.target.value || null })
-                          : updateCreateWorkflowStep(index, { behaviorId: event.target.value || null })
-                      }
-                      placeholder="e.g. agent.delegate"
-                      value={step.behaviorId ?? ""}
-                    />
-                  </label>
-                  <label className="settings-field">
-                    <span>Agent ref</span>
-                    <input
-                      disabled={readOnly}
-                      onChange={(event) =>
-                        source === "detail"
-                          ? updateWorkflowStep(index, { agentRef: event.target.value || null })
-                          : updateCreateWorkflowStep(index, { agentRef: event.target.value || null })
-                      }
-                      placeholder="e.g. agents/coder.md"
-                      value={step.agentRef ?? ""}
-                    />
-                  </label>
-                  <label className="settings-field">
-                    <span>Depends on</span>
-                    <input
-                      disabled={readOnly}
-                      onChange={(event) => {
-                        const dependsOn = event.target.value
-                          .split(",")
-                          .map((item) => item.trim())
-                          .filter(Boolean);
-                        return source === "detail"
-                          ? updateWorkflowStep(index, { dependsOn })
-                          : updateCreateWorkflowStep(index, { dependsOn });
-                      }}
-                      placeholder="node ids, comma-separated"
-                      value={step.dependsOn.join(", ")}
-                    />
-                  </label>
-                  <label className="settings-field">
-                    <span>Join mode</span>
-                    <input
-                      disabled={readOnly}
-                      onChange={(event) =>
-                        source === "detail"
-                          ? updateWorkflowStep(index, { joinMode: event.target.value || null })
-                          : updateCreateWorkflowStep(index, { joinMode: event.target.value || null })
-                      }
-                      placeholder="all | any | quorum(n)"
-                      value={step.joinMode ?? ""}
-                    />
-                  </label>
-                  <label className="settings-field">
-                    <span>Cohort</span>
-                    <input
-                      disabled={readOnly}
-                      onChange={(event) =>
-                        source === "detail"
-                          ? updateWorkflowStep(index, { cohort: event.target.value || null })
-                          : updateCreateWorkflowStep(index, { cohort: event.target.value || null })
-                      }
-                      placeholder="optional join-group key"
-                      value={step.cohort ?? ""}
-                    />
-                  </label>
-                </div>
                 </>
                 ) : null}
               </div>
@@ -907,6 +830,9 @@ export function WorkflowsSettings(): React.ReactElement {
     mode: "detail" | "create",
   ) => {
     const requiredSkillsText = draft.requiredSkills.join(", ");
+    const dependsOnText = (draft.dependsOn ?? []).join(", ");
+    const inputsText = stringMapToText(draft.inputs);
+    const outputsText = stringMapToText(draft.outputs);
     return (
       <div className="settings-grid">
         <label className="settings-field">
@@ -1069,6 +995,106 @@ export function WorkflowsSettings(): React.ReactElement {
             <option value="standard">standard</option>
             <option value="autonomous">autonomous</option>
           </select>
+        </label>
+        <label className="settings-field">
+          <span>Node ID</span>
+          <input
+            onChange={(event) => onChange({ ...draft, nodeId: event.target.value || null })}
+            placeholder="e.g. coder"
+            value={draft.nodeId ?? ""}
+          />
+        </label>
+        <label className="settings-field">
+          <span>Behavior ID</span>
+          <input
+            onChange={(event) => onChange({ ...draft, behaviorId: event.target.value || null })}
+            placeholder="e.g. agent.delegate"
+            value={draft.behaviorId ?? ""}
+          />
+        </label>
+        <label className="settings-field">
+          <span>Agent ref</span>
+          <input
+            onChange={(event) => onChange({ ...draft, agentRef: event.target.value || null })}
+            placeholder="e.g. agents/coder.md"
+            value={draft.agentRef ?? ""}
+          />
+        </label>
+        <label className="settings-field">
+          <span>Lifecycle</span>
+          <select
+            onChange={(event) => onChange({ ...draft, nodeLifecycle: event.target.value || null })}
+            value={draft.nodeLifecycle ?? ""}
+          >
+            <option value="">Default (reinvoke)</option>
+            <option value="reinvoke">Reinvoke</option>
+            <option value="spawn">Spawn new</option>
+            <option value="once">Once</option>
+          </select>
+        </label>
+        <label className="settings-field">
+          <span>Depends on</span>
+          <input
+            onChange={(event) =>
+              onChange({
+                ...draft,
+                dependsOn: event.target.value
+                  .split(",")
+                  .map((item) => item.trim())
+                  .filter(Boolean),
+              })
+            }
+            placeholder="node ids, comma-separated"
+            value={dependsOnText}
+          />
+        </label>
+        <label className="settings-field">
+          <span>Join mode</span>
+          <input
+            onChange={(event) => onChange({ ...draft, joinMode: event.target.value || null })}
+            placeholder="all | any | quorum(n)"
+            value={draft.joinMode ?? ""}
+          />
+        </label>
+        <label className="settings-field">
+          <span>Cohort</span>
+          <input
+            onChange={(event) => onChange({ ...draft, cohort: event.target.value || null })}
+            placeholder="optional join-group key"
+            value={draft.cohort ?? ""}
+          />
+        </label>
+        <label className="settings-field">
+          <span>Prompt template ref</span>
+          <input
+            onChange={(event) => onChange({ ...draft, promptTemplateRef: event.target.value || null })}
+            placeholder="prompts/example.md"
+            value={draft.promptTemplateRef ?? ""}
+          />
+        </label>
+        <label className="settings-field">
+          <span>Context ref</span>
+          <input
+            onChange={(event) => onChange({ ...draft, contextRef: event.target.value || null })}
+            placeholder="contexts/example.yaml"
+            value={draft.contextRef ?? ""}
+          />
+        </label>
+        <label className="settings-field">
+          <span>Inputs</span>
+          <input
+            onChange={(event) => onChange({ ...draft, inputs: textToStringMap(event.target.value) })}
+            placeholder="main_context=flow_context_package.v1"
+            value={inputsText}
+          />
+        </label>
+        <label className="settings-field">
+          <span>Outputs</span>
+          <input
+            onChange={(event) => onChange({ ...draft, outputs: textToStringMap(event.target.value) })}
+            placeholder="main_context=flow_context_package.v1"
+            value={outputsText}
+          />
         </label>
         <label className="settings-checkbox settings-field-full">
           <input

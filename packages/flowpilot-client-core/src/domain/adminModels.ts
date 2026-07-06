@@ -163,21 +163,6 @@ export interface WorkflowStep {
   requiresApproval: boolean;
   createdAt: string;
   updatedAt: string;
-  /**
-   * Flow-engine per-node attributes (CP-42/Task-175/179). nodeId is the
-   * stable flow-graph identifier for this step within its workflow (e.g.
-   * "coder", "reviewer_correctness") — distinct from stepType, which is a
-   * reusable step-definition key multiple nodes/workflows can share.
-   * dependsOn references other nodes' nodeId within the same workflow.
-   */
-  nodeId: string | null;
-  behaviorId: string | null;
-  agentRef: string | null;
-  dependsOn: string[];
-  joinMode: string | null;
-  cohort: string | null;
-  promptTemplateRef: string | null;
-  contextRef: string | null;
 }
 
 export interface StepDefinition {
@@ -194,6 +179,17 @@ export interface StepDefinition {
   reasoningEffort: string | null;
   yoloMode: boolean;
   agentType: "standard" | "autonomous";
+  nodeId?: string | null;
+  behaviorId?: string | null;
+  agentRef?: string | null;
+  nodeLifecycle?: string | null;
+  dependsOn?: string[];
+  joinMode?: string | null;
+  cohort?: string | null;
+  promptTemplateRef?: string | null;
+  contextRef?: string | null;
+  inputs?: Record<string, string>;
+  outputs?: Record<string, string>;
   inputArtifactDefinitions: string[];
   outputArtifactDefinitions: string[];
   createdAt: string;

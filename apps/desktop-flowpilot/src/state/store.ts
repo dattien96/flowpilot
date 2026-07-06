@@ -2146,12 +2146,18 @@ export function mergeAgentRunsById(existing: AgentRunSummary[], incoming: AgentR
   for (const run of incoming) {
     const prev = byId.get(run.runId);
     if (prev && isTerminalRunStatus(prev.status) && !isTerminalRunStatus(run.status)) {
-      continue;
+      // BUG-235: never let a stale HTTP snapshot revert an already-terminal status.
+      // Exception (BUG-Rnd2): when the backend genuinely reinvokes the same runId
+      // (lifecycle: reinvoke), it increments activationSeq. A higher activationSeq
+      // means this is a real completed→running transition, not a stale snapshot.
+      const isGenuineReinvoke = (run.activationSeq ?? 0) > (prev.activationSeq ?? 0);
+      if (!isGenuineReinvoke) continue;
     }
     byId.set(run.runId, run);
   }
   return [...byId.values()];
 }
+
 
 function applyEvent(s: AppState, e: ProviderEventDTO): Partial<AppState> {
   const next = applyTimelineEvent(s, e);
