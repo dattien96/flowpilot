@@ -21,6 +21,7 @@
 ### Summary
 
 - Prepping a manual E2E test of the built-in RAG Harness Flow Mode pipeline (`context` → `implement` → `validate` → `audit`) surfaced that the last two nodes do not do what their governing tasks (Task-170, Task-171) implemented and tested in isolation.
+- **SCOPE CORRECTION (2026-07-06, deeper trace): the root cause is bigger than "two stub handlers." The flow executor has NO path to execute an inline behavior node reached mid-flow (via a forward edge from a completed node).** `tryAdvanceFlowFromNode` (`flow_executor.go:440-448`) only auto-advances to `agent.delegate` targets (it spawns child runs); when a completed node's forward-`done` target is an inline node (`validate` = `command.validate`, `audit` = `artifact.audit_draft`), it logs "target node is not a spawnable delegate" and **bails**, falling back to the note+reinvoke-hub path. The behavior registry's `Dispatch` is only ever called for the flow's ENTRY inline node (`startInlineEntryChain`, `flow_executor.go:228`) and the coding-prompt context handoff (`renderFlowContextPrompt`) — never for a mid-flow inline node. So in RAG Harness, after `implement` (the coder) completes, `validate` and `audit` are **never executed at all**; the stub-handler problem below is secondary to there being no dispatch to them in the first place.
 - `behaviorCommandValidate` (the registered `command.validate` handler, `apps/local-runner/internal/runner/behavior_registry_builtin.go:153-163`) never runs a shell command — it only reads `RawArgs["exitCode"]`, a value nothing in the live dispatch path ever populates. The real command-execution/retry machinery (`RunValidationCommand`, `NewFlowValidationRetryState`, `AdvanceRetryState`, `ComposeRetryPrompt` in `flow_validation_retry.go`) is fully implemented and unit-tested but has **zero production callers** — it is only invoked by its own tests.
 - `behaviorArtifactAuditDraft` (the registered `artifact.audit_draft` handler, `behavior_registry_builtin.go:209-219`) is a stub that echoes `RawArgs["summary"]` back — it never calls the real `BuildAuditDraft` (`flow_audit_draft.go:68-127`), the function that actually produces the `flowpilot:change-ledger` block and commit-message suggestion. `BuildAuditDraft` is likewise only called from its own tests and one hand-driven "E2E" test that calls it directly, bypassing `startTurn`/the behavior registry entirely.
 - No desktop UI surface exists anywhere to view an audit draft even if one were produced (`AuditDraft`/`EventFlowAuditDraft` — zero matches in `apps/desktop-flowpilot/src` or `packages/flowpilot-client-core/src`).
@@ -93,9 +94,14 @@ The built-in RAG Harness Flow Mode pipeline's last two nodes (`validate`, `audit
 
 ## 7. Fix Strategy
 
+Ordered by dependency — `F-0` is the prerequisite the original scoping missed:
+
+- `F-0` **(NEW, prerequisite) Mid-flow inline-node execution.** Give the flow executor a path to run an inline behavior node reached via a forward edge from a completed node: when `tryAdvanceFlowFromNode`'s forward-`done` target is an inline behavior (not `agent.delegate`), dispatch it through the behavior registry in-process (as `startInlineEntryChain` already does for the entry node), apply its `BehaviorOutput` (status → follow forward/back edge; e.g. `command.validate` "continue" → back-edge to `implement`), and continue advancing. Without this, `F-1`/`F-2` are unreachable no matter how they're wired. This is real flow-engine work, not a wiring tweak.
 - `F-1` Wire `behaviorCommandValidate` to call `RunValidationCommand` with a command sourced per `Q-1`'s resolution, threading the result through `FlowValidationRetryState`/`AdvanceRetryState` instead of expecting a pre-populated `exitCode`.
 - `F-2` Wire `behaviorArtifactAuditDraft` to call `BuildAuditDraft` with the real accumulated flow state (feature key, source doc id, validation result, changed files) instead of echoing `RawArgs["summary"]`.
 - `F-3` Add a desktop UI surface (chat/flow timeline card or dedicated panel per `Q-2`) so a produced audit draft is genuinely inspectable before any write/commit, satisfying Task-171's own acceptance criterion.
+
+**Revised size estimate:** with `F-0` added, this is a medium-large change to the flow engine + two handler rewrites + a command-source decision + a desktop UI surface — not the small "wire two functions" fix the first draft of this doc implied.
 
 ## 8. Validation
 
