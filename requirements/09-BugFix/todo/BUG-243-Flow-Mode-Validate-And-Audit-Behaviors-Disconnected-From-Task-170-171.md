@@ -5,7 +5,7 @@
 - Document ID: `BUG-243`
 - Title: `Flow Mode validate/audit Behaviors Disconnected From Task-170/171 Implementations`
 - Phase: `bugfix`
-- Status: `draft`
+- Status: `deferred` — per owner direction (2026-07-06), the validate/audit fix (F-0 mid-flow inline-node execution + F-1/F-2 handler wiring + F-3 audit UI) is the "RAG-harness pipeline execution" mechanism and is **folded into CP-43's planned context-harness rework**, not fixed as a standalone bug. This doc stays as the diagnosis of record; the fix is tracked under [CP-43](../../07-Coding-Plan/todo/CP-43-Change-Contract-And-Canonical-Intent-Signature.md). Not a blocker for the two priorities now in flight (Review-Loop-in-chat = done via BUG-244; custom-flow authoring = Task-189).
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-06`
