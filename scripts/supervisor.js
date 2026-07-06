@@ -221,6 +221,22 @@ function signalManagedProcess(child, signal) {
       process.kill(-child.pid, signal);
       return;
     }
+    if (process.platform === 'win32') {
+      // BUG-240: on Windows, `go run` compiles to a temp binary and launches
+      // it as a genuinely separate child process (no POSIX exec()-replace
+      // semantics), so `child.pid` here is only the go.exe/cmd.exe wrapper —
+      // never the actual compiled server process running underneath it.
+      // process.kill(pid, signal) targets that single PID only and does not
+      // propagate to the descendant, and Node's Windows SIGINT emulation has
+      // no real graceful-shutdown semantics to preserve anyway (it just
+      // terminates the targeted process). Go straight to a tree-kill so the
+      // wrapper and its compiled child both die together, instead of
+      // signaling only the wrapper and relying on a liveness poll (see
+      // cleanupAndExit) that can read the wrapper as "dead" while the real
+      // server binary is still orphaned and running.
+      killProcessTree(child);
+      return;
+    }
     process.kill(child.pid, signal);
   } catch (e) {}
 }
