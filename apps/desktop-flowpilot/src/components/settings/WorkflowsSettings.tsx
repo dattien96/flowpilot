@@ -1938,6 +1938,15 @@ export function WorkflowsSettings(): React.ReactElement {
                             : "Workspace global"}{" "}
                           / {formatTimestamp(workflow.updatedAt)}
                         </span>
+                        {workflow.isBuiltin ? (
+                          <span className="settings-list-item-meta">
+                            {workflow.packId ?? "unknown pack"}
+                            {workflow.packVersion ? ` v${workflow.packVersion}` : ""}
+                            {workflow.selectableIn.length > 0
+                              ? ` · selectable in: ${workflow.selectableIn.join(", ")}`
+                              : ""}
+                          </span>
+                        ) : null}
                       </div>
                     </button>
                   ))
@@ -1961,6 +1970,14 @@ export function WorkflowsSettings(): React.ReactElement {
                             ? "This is a built-in template and cannot be edited directly. Clone it to make changes."
                             : "Edit definition fields here. Save only becomes active after a change."}
                         </p>
+                        {selectedWorkflow?.isBuiltin ? (
+                          <p className="project-muted-copy settings-list-item-meta">
+                            Pack: {selectedWorkflow.packId ?? "unknown"}
+                            {selectedWorkflow.packVersion ? ` v${selectedWorkflow.packVersion}` : ""} · Selectable
+                            in: {selectedWorkflow.selectableIn.length > 0 ? selectedWorkflow.selectableIn.join(", ") : "none"}
+                            {selectedWorkflow.chatBaseline ? " (chat baseline, always on)" : ""}
+                          </p>
+                        ) : null}
                       </div>
                       <div className="settings-inline-actions">
                         {selectedWorkflow?.cloneable !== false ? (
