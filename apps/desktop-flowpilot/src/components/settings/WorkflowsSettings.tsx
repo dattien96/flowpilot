@@ -7,6 +7,7 @@ import type {
   Workflow,
   WorkflowStep,
 } from "@flowpilot/client-core";
+import { FLOW_BEHAVIOR_OPTIONS } from "@flowpilot/client-core";
 import { getAdminUseCases } from "@/clientCore";
 import { formatTimestamp, integrationTypes, toErrorMessage } from "@/components/settings/settingsHelpers";
 
@@ -1006,11 +1007,17 @@ export function WorkflowsSettings(): React.ReactElement {
         </label>
         <label className="settings-field">
           <span>Behavior ID</span>
-          <input
+          <select
             onChange={(event) => onChange({ ...draft, behaviorId: event.target.value || null })}
-            placeholder="e.g. agent.delegate"
             value={draft.behaviorId ?? ""}
-          />
+          >
+            <option value="">(none / inherit from step type)</option>
+            {FLOW_BEHAVIOR_OPTIONS.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.label}
+              </option>
+            ))}
+          </select>
         </label>
         <label className="settings-field">
           <span>Agent ref</span>

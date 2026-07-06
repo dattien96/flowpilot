@@ -5,7 +5,7 @@
 - Document ID: `Task-189`
 - Title: `Custom Flow Graph Authoring (Steps + Edges + Behavior, All In UI)`
 - Phase: `task`
-- Status: `draft` (PLAN — awaiting owner approval before implementation)
+- Status: `in_progress` (approved 2026-07-06; scope narrowed after verifying client-core already persists `edges_json`/policy — the gap is UI-concentrated: behavior picker + edges form-list + canvas + assembly + validation)
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-06`

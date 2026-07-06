@@ -154,6 +154,32 @@ export interface WorkflowFlowEdge {
   kind: string;
 }
 
+/** A selectable node behavior for the flow-authoring UI (Task-189, Q-3).
+ * Static shared list mirroring the runner's DefaultBehaviorRegistry
+ * (behavior_registry.go). Kept in sync manually; revisit as a runtime
+ * endpoint only if the behavior set becomes dynamic. `requiresAgent` drives
+ * the "a delegate node must have an agent ref" validation. */
+export interface FlowBehaviorOption {
+  id: string;
+  label: string;
+  requiresAgent: boolean;
+}
+
+export const FLOW_BEHAVIOR_OPTIONS: FlowBehaviorOption[] = [
+  { id: "agent.delegate", label: "Agent delegate — spawn an agent", requiresAgent: true },
+  { id: "hub.inline", label: "Hub inline — synthesis / orchestration turn", requiresAgent: false },
+  { id: "context.produce", label: "Context produce — build a context package", requiresAgent: false },
+  { id: "context.render", label: "Context render — render a context package into a prompt", requiresAgent: false },
+  { id: "command.validate", label: "Command validate — run a validation command", requiresAgent: false },
+  { id: "validation.summarize", label: "Validation summarize — reduce validation output", requiresAgent: false },
+  { id: "artifact.audit_draft", label: "Artifact audit draft — prepare an audit/commit draft", requiresAgent: false },
+  { id: "flow.control", label: "Flow control — map a tool outcome to flow control", requiresAgent: false },
+  { id: "user.confirm", label: "User confirm — gate on explicit user confirmation", requiresAgent: false },
+];
+
+/** Edge terminal pseudo-nodes an edge may point at besides a declared node. */
+export const FLOW_EDGE_TERMINALS: string[] = ["done", "ask_user"];
+
 export interface WorkflowStep {
   id: string;
   workflowId: string;
