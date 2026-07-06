@@ -1217,3 +1217,108 @@ func TestStartResolvedFlowUnknownFlowRefSpawnsNothing(t *testing.T) {
 		}
 	}
 }
+
+// TestCustomUserOwnedFlowResolvesSpawnsEntryAndAdvancesEdge is Task-189's own
+// DoD item: "a runner test that a from-scratch custom workflow (step-
+// definitions with behavior/agent + edges) resolves via
+// resolveWorkflowFlowRef and spawns its entry node + advances an edge."
+//
+// Unlike every other startResolvedFlow test in this file, the flowRef here is
+// NOT one of the two builtin pack flows (review-loop/rag-harness) — it is a
+// bare UUID-style ref registered directly on a fakeFlowDefinitionStore with
+// Source: "supabase_user_definition", exactly the shape a brand-new workflow
+// authored from scratch in Settings (Task-189 slices 2-4: behavior picker +
+// edges form-list/canvas) would produce once saved. This proves the "no
+// schema/runtime change needed" claim in Task-189's own AI Quick View: a
+// custom flow that only ever exists as step_definitions + workflow edges
+// resolves and runs through the exact same path a built-in does.
+func TestCustomUserOwnedFlowResolvesSpawnsEntryAndAdvancesEdge(t *testing.T) {
+	const customFlowRef = "33333333-3333-3333-3333-333333333333"
+
+	// spawnChildRun propagates the parent's workflowID onto every child's own
+	// createRun call, which — for ANY workflowID, not just a flow's own ref —
+	// looks up catalog step rows via ListWorkflowSteps to seed that child's
+	// step timeline (createRun, interactive_handlers.go). A real custom flow
+	// authored via Task-189 always has real workflow_steps rows alongside its
+	// step_definitions, so this seeds the same thing here: one catalog step
+	// row for customFlowRef, just enough for createRun's "has enabled steps"
+	// check to pass for the entry node's own child run.
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "ok"})
+				return nil
+			})
+		},
+	})
+	catalog := newInteractiveCatalog()
+	catalog.steps[customFlowRef] = []Step{
+		{ID: "drafting", WorkflowID: customFlowRef, Name: "drafting", Order: 1, Model: "gpt-5.4"},
+	}
+	svc := newInteractiveService(reg, catalog, newFakeWorkflowStore())
+
+	store := newFakeFlowDefinitionStore()
+	store.byRef[customFlowRef] = FlowDefinitionRecord{
+		FlowRef:   customFlowRef,
+		Name:      "My Custom Flow",
+		Source:    "supabase_user_definition",
+		Editable:  true,
+		Cloneable: true,
+		Definition: agentpack.FlowDefinition{
+			ID: "custom-two-step",
+			Nodes: []agentpack.FlowNode{
+				{ID: "drafting", Behavior: "agent.delegate", Agent: "agents/coder.md"},
+				{ID: "final_check", Behavior: "agent.delegate", Agent: "agents/reviewer.md", DependsOn: []string{"drafting"}},
+			},
+			Edges: []agentpack.FlowEdge{
+				{From: "drafting", To: "final_check", When: "done", Kind: "forward"},
+			},
+		},
+	}
+	svc.SetFlowDefinitionStore(store)
+
+	// A Flow Mode workflow-picker launch: workflowID carries the user-owned
+	// workflow row's UUID, not a flowRef (mirrors what resolveWorkflowFlowRef's
+	// own doc comment describes as its trigger case).
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3})
+	svc.mu.Lock()
+	svc.runs[parent.RunID].workflowID = customFlowRef
+	svc.mu.Unlock()
+
+	ref, ok := svc.resolveWorkflowFlowRef(context.Background(), parent.RunID)
+	if !ok {
+		t.Fatal("resolveWorkflowFlowRef returned false; want it to resolve the custom user-owned flow")
+	}
+	if ref != customFlowRef {
+		t.Fatalf("resolved flowRef = %q, want %q", ref, customFlowRef)
+	}
+
+	svc.startResolvedFlow(context.Background(), parent.RunID, ref, "draft the feature")
+
+	if countChildrenWithLabel(svc, parent.RunID, "drafting") != 1 {
+		t.Fatal("expected the custom flow's entry node (drafting) to be spawned as a child")
+	}
+	if countChildrenWithLabel(svc, parent.RunID, "final_check") != 0 {
+		t.Fatal("final_check depends on drafting and must not be spawned until the edge advances")
+	}
+
+	// The entry node's turn completes asynchronously (the fake adapter emits
+	// EventTurnCompleted in its own goroutine); production wiring
+	// (parentHasTrackedFlow's branch in the EventTurnCompleted handler, see
+	// interactive_service.go's advanceOrNotifyHub call) then auto-advances via
+	// tryAdvanceFlowFromNode on its own — driven purely by the custom flow's
+	// own edge data set by startResolvedFlow above, with no test code deciding
+	// to spawn final_check itself. Calling tryAdvanceFlowFromNode directly
+	// here as well would double-spawn (BUG-NOTE: it doesn't dedupe against a
+	// prior identical advance), so this only waits for it.
+	waitLoop(t, "final_check auto-spawned once drafting's forward done edge advanced", 3*time.Second, func() bool {
+		return countChildrenWithLabel(svc, parent.RunID, "final_check") == 1
+	})
+}
