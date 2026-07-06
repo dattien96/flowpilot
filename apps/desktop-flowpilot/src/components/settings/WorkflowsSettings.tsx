@@ -8,7 +8,7 @@ import type {
   WorkflowFlowEdge,
   WorkflowStep,
 } from "@flowpilot/client-core";
-import { FLOW_BEHAVIOR_OPTIONS, FLOW_EDGE_TERMINALS } from "@flowpilot/client-core";
+import { FLOW_BEHAVIOR_OPTIONS, FLOW_EDGE_TERMINALS, validateFlowGraph } from "@flowpilot/client-core";
 import { getAdminUseCases } from "@/clientCore";
 import { formatTimestamp, integrationTypes, toErrorMessage } from "@/components/settings/settingsHelpers";
 
@@ -552,6 +552,17 @@ export function WorkflowsSettings(): React.ReactElement {
       setMessage("Model is required.");
       return;
     }
+    // Task-189 slice 3: only enforce flow-graph correctness once the user has
+    // actually started wiring edges — a plain linear/legacy workflow with no
+    // edges never intended to run as a flow-engine graph at all (it relies on
+    // order_index sequencing), so it must not be newly blocked by these checks.
+    if (workflowDraft.edges.length > 0) {
+      const issues = validateFlowGraph(workflowSteps, stepDefinitions, workflowDraft.edges);
+      if (issues.length > 0) {
+        setMessage(issues.join(" "));
+        return;
+      }
+    }
     setBusy(true);
     setMessage(null);
     try {
@@ -589,6 +600,13 @@ export function WorkflowsSettings(): React.ReactElement {
     if (!createWorkflowDraft.modelOverride) {
       setMessage("Model is required.");
       return;
+    }
+    if (createWorkflowDraft.edges.length > 0) {
+      const issues = validateFlowGraph(createWorkflowSteps, stepDefinitions, createWorkflowDraft.edges);
+      if (issues.length > 0) {
+        setMessage(issues.join(" "));
+        return;
+      }
     }
     setBusy(true);
     setMessage(null);
