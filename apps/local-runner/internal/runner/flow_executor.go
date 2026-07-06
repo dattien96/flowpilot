@@ -49,6 +49,30 @@ func (s *InteractiveService) startResolvedFlow(ctx context.Context, parentRunID,
 		"edge_count", len(record.Definition.Edges),
 	)
 
+	// Apply the flow's own configured Cap/ExtendBy to the run's loop state.
+	// Previously this never happened: effectiveCap()/the hardcoded
+	// defaultExtendBy=2 in extendCap/resumeFlowWithFeedback meant EVERY flow
+	// ran with cap=3, extendBy=2 regardless of what workflows.policy_cap/
+	// policy_extend_by said in Supabase — a built-in with cap=3 in its own
+	// YAML happened to match that hardcoded fallback, which is exactly what
+	// masked the gap. A custom/cloned flow's own configured cap now actually
+	// takes effect. Falls back to the same 3/2 defaults when a flow declares
+	// no policy at all (a bare custom flow's Policy is a zero-value struct).
+	cap := record.Definition.Policy.Cap
+	if cap <= 0 {
+		cap = 3
+	}
+	extendBy := record.Definition.Policy.ExtendBy
+	if extendBy <= 0 {
+		extendBy = 2
+	}
+	s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
+		st.Cap = cap
+		st.RoundCap = cap
+		st.ExtendBy = extendBy
+		return st
+	})
+
 	entryNodes := entryDelegateNodes(record.Definition)
 	if len(entryNodes) == 0 {
 		// BUG-NOTE-CP42 #9: a flow whose entry node is an inline behavior

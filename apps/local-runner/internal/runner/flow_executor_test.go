@@ -1514,3 +1514,88 @@ func TestCustomFlowWithThreeReviewersJoinsAfterAllComplete(t *testing.T) {
 			"a value >1 would mean the hub was reinvoked more than once for one join", finalTurnCount)
 	}
 }
+
+// TestStartResolvedFlowAppliesConfiguredCapAndExtendBy is the regression test
+// for the gap found while reviewing CP-36's Scenario 3 (cap override): no
+// code path ever applied a flow's own Definition.Policy.Cap/ExtendBy to a
+// fresh run's loop state — effectiveCap()'s hardcoded fallback of 3, and
+// extendCap/resumeFlowWithFeedback's hardcoded defaultExtendBy=2, silently
+// governed EVERY flow regardless of its own configured policy_cap/
+// policy_extend_by. The built-in Review Loop's own YAML happens to declare
+// cap=3/extendBy=2, which is exactly why this went unnoticed — it matched
+// the hardcoded fallback by coincidence.
+//
+// Registers a custom flow with Policy.Cap=2, Policy.ExtendBy=5 (deliberately
+// different from the old hardcoded 3/2) and proves both take effect: the
+// loop's Cap is 2 immediately after start (not 3), and extendCap raises it
+// by 5 (not 2).
+func TestStartResolvedFlowAppliesConfiguredCapAndExtendBy(t *testing.T) {
+	const customFlowRef = "55555555-5555-5555-5555-555555555555"
+
+	svc, _ := newTestServer(t)
+	catalog := newInteractiveCatalog()
+	catalog.steps[customFlowRef] = []Step{
+		{ID: "drafting", WorkflowID: customFlowRef, Name: "drafting", Order: 1, Model: "gpt-5.4"},
+	}
+	svc.catalog = catalog
+
+	store := newFakeFlowDefinitionStore()
+	store.byRef[customFlowRef] = FlowDefinitionRecord{
+		FlowRef:   customFlowRef,
+		Name:      "My Custom Capped Flow",
+		Source:    "supabase_user_definition",
+		Editable:  true,
+		Cloneable: true,
+		Definition: agentpack.FlowDefinition{
+			ID: "custom-capped",
+			Nodes: []agentpack.FlowNode{
+				{ID: "drafting", Behavior: "agent.delegate", Agent: "agents/coder.md"},
+			},
+			Policy: agentpack.FlowPolicy{Cap: 2, ExtendBy: 5},
+		},
+	}
+	svc.SetFlowDefinitionStore(store)
+
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+
+	svc.startResolvedFlow(context.Background(), parent.RunID, customFlowRef, "draft the feature")
+
+	st := svc.agentOrchestrator.loopStateFor(parent.RunID)
+	if st.Cap != 2 {
+		t.Fatalf("loop.Cap = %d, want 2 (the custom flow's own Policy.Cap) — the old hardcoded fallback of 3 must not apply", st.Cap)
+	}
+	if st.ExtendBy != 5 {
+		t.Fatalf("loop.ExtendBy = %d, want 5 (the custom flow's own Policy.ExtendBy)", st.ExtendBy)
+	}
+
+	// Drive the loop to its (now genuinely 2, not 3) cap and confirm it
+	// blocks at exactly round 2, not 3.
+	svc.agentOrchestrator.mutateLoop(parent.RunID, func(st AgentLoopState) AgentLoopState {
+		st.Status = "running"
+		st.Round = 2
+		return st
+	})
+	result, flowErr := svc.applyFlowControl(parent.RunID, FlowControlInput{Status: "continue", Summary: "still open issues"})
+	if flowErr != nil {
+		t.Fatalf("applyFlowControl(continue): %v", flowErr)
+	}
+	if result.NextAction != "awaiting_user" {
+		t.Fatalf("NextAction = %q, want awaiting_user — the loop should block at round 2 since Cap=2, not silently allow a 3rd round", result.NextAction)
+	}
+	if st := svc.agentOrchestrator.loopStateFor(parent.RunID); st.Status != "blocked" {
+		t.Fatalf("loop.Status = %q, want blocked", st.Status)
+	}
+
+	// extendCap must raise Cap by the flow's own ExtendBy (5), not the old
+	// hardcoded 2 — new cap should be 2+5=7, not 2+2=4.
+	extendResult, extendErr := svc.extendCap(parent.RunID)
+	if extendErr != nil {
+		t.Fatalf("extendCap: %v", extendErr)
+	}
+	if extendResult.Cap != 7 {
+		t.Fatalf("extendCap raised Cap to %d, want 7 (2 + the flow's own ExtendBy=5, not the old hardcoded +2=4)", extendResult.Cap)
+	}
+}

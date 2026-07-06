@@ -680,11 +680,10 @@ func (s *InteractiveService) flowControlSubmittedForTurn(runID, turnID string) b
 // wedge this bug fixes. Retired: ExtendCount still increments for
 // display/telemetry, but no longer rejects the extend.
 func (s *InteractiveService) extendCap(parentRunID string) (FlowControlResult, error) {
-	const defaultExtendBy = 2
 	var result FlowControlResult
 	snap := s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
 		cap := effectiveCap(st)
-		st.Cap = cap + defaultExtendBy
+		st.Cap = cap + effectiveExtendBy(st)
 		// mirror RoundCap so existing board readers see the new limit
 		st.RoundCap = st.Cap
 		st.ExtendCount++
@@ -728,7 +727,6 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 	}
 
 	feedback = strings.TrimSpace(feedback)
-	const defaultExtendBy = 2
 	wasBlocked := false
 	snap := s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
 		if st.Status != "blocked" {
@@ -737,7 +735,7 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 		wasBlocked = true
 		if st.BlockReason == "cap" {
 			cap := effectiveCap(st)
-			st.Cap = cap + defaultExtendBy
+			st.Cap = cap + effectiveExtendBy(st)
 			st.RoundCap = st.Cap
 			st.ExtendCount++
 		}

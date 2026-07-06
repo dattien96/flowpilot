@@ -662,6 +662,17 @@ func effectiveCap(st AgentLoopState) int {
 	return 3
 }
 
+// effectiveExtendBy returns st's configured cap-extension step (seeded from
+// the flow's own Definition.Policy.ExtendBy at startResolvedFlow), falling
+// back to 2 for loops that never went through that path (e.g. an AI-driven
+// spawn_agent run with no tracked flow topology).
+func effectiveExtendBy(st AgentLoopState) int {
+	if st.ExtendBy > 0 {
+		return st.ExtendBy
+	}
+	return 2
+}
+
 // ---- Review-loop template (Task-091) ------------------------------------------
 //
 // submit_review_outcome is the declared face of flow_control for the review loop.

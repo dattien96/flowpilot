@@ -187,6 +187,12 @@ type AgentLoopState struct {
 	Mode        string `json:"mode,omitempty"` // "keyword" | "explicit"
 	ActiveNode  string `json:"activeNode,omitempty"`
 	ExtendCount int    `json:"extendCount,omitempty"`
+	// ExtendBy is how much extendCap/resumeFlowWithFeedback raise Cap by on a
+	// cap-hit, seeded from the flow's own Definition.Policy.ExtendBy at
+	// startResolvedFlow (falls back to 2 when unset/zero, matching the
+	// pre-existing hardcoded default). Per-flow, not global, so a custom flow
+	// with a different policy_extend_by value actually takes effect.
+	ExtendBy int `json:"extendBy,omitempty"`
 	// BlockReason distinguishes WHY Status=="blocked" (BUG-231): "cap" (the
 	// round cap was reached mid-loop, via "continue") vs. "escalate" (the
 	// flow's control tool explicitly escalated, e.g. submit_review_outcome
