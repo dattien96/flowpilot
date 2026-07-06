@@ -255,7 +255,66 @@ The Head is a mandatory slot; raw history is optional/lower-priority in the budg
 - [ ] `go build ./...` and `go test ./internal/changecontract/... ./internal/flowgate/...` pass; no regression in `CP-35` module tests.
 - [ ] `contracts.ndjson` stays local-only; `canonical/*.json` syncs to `context-engine/` via the `CP-35 P-8` mechanism.
 
-## 11. Notes
+## 11. Relocated Context-Harness E2E Tests (from CP-41 §11)
+
+> **Scope note.** CP-43's primary scope (§1–§10 above) is the Change Contract / Canonical Intent Signature / scope-drift work. The manual E2E scenarios below were **relocated from CP-41 §11** because they exercise the deterministic **context-harness / feature-history-retrieval** behavior (feature-key resolution, history/chat-summary injection, and context-package lifecycle) that this CP is slated to **rework** per the owner's direction to refactor the context-harness logic here. They are parked in CP-43 so CP-41's own closure is not gated on context-harness behavior that is about to change. Until §1 (Goal) is formally expanded to cover the context-harness refactor, treat these as **inherited acceptance checks**, not new CP-43 scope — and re-validate them against the reworked logic when it lands, since the exact package shape / event names below may change.
+
+### Scenario CH-1 — Feature History Injected (Verify Deterministic Retrieval)
+
+**Setup:** A workspace whose `.flowpilot/ledger/feature_history.ndjson` has at least 2 commits for the target feature key.
+
+**Action:** Run only the context/Plan step. Inspect the composed prompt logged to the prompt-log directory.
+
+**Expected:**
+- [ ] Prompt log file contains the `## Flow Context Package` section.
+- [ ] `## Prior Work` block lists the commit summaries from the ledger.
+- [ ] `## Audit note: No vector retrieval used` line is present — confirms no vector DB involved.
+- [ ] `featureConfidence` is `verified` (confidence ≥ 5.0 threshold met).
+
+### Scenario CH-2 — Unknown Feature Key Degrades Gracefully
+
+**Setup:** A workspace with no `.flowpilot` catalog directory, or a prompt that resolves to no known feature key.
+
+**Action:** Start the flow with a context/Plan prompt like: `"Fix a bug in some-unknown-feature-xyz"`.
+
+**Expected:**
+- [ ] Context/Plan step completes without crashing.
+- [ ] `FlowContextPackage` has `featureConfidence: unresolved` and `warnings: ["feature catalog unavailable: ..."]` or `["no feature resolved ..."]`.
+- [ ] Coding step still receives the package (degraded — no history block, but the sentinel is present).
+- [ ] No crash, no panic, no empty prompt.
+
+### Scenario CH-3 — No Chat Summaries (History-Only Package)
+
+**Setup:** Workspace with feature history in `.flowpilot/ledger/feature_history.ndjson` but NO `chat_summary.ndjson`. *(This is CP-41's original `DOD-7` graceful-degradation acceptance.)*
+
+**Action:** Run the context/Plan step for a known feature key.
+
+**Expected:**
+- [ ] `FlowContextPackage` has `historyBlock` populated (commit history present).
+- [ ] `discussionBlock` is empty or absent — no crash due to missing chat summary ledger.
+- [ ] Coding step prompt includes the history block but no discussion section.
+- [ ] `warnings` does NOT mention chat summary as a fatal error (graceful degradation).
+
+### Scenario CH-4 — Plan Step Reruns → Coding Gets Fresh Context Package
+
+**Setup:** A Flow Mode run that has already completed one context→Coding cycle.
+
+**Action:** Rerun the context/Plan step on the same run. Then observe the Coding step's next turn.
+
+**Expected:**
+- [ ] A new `EventFlowContextPackage` is emitted with a new `packageId`.
+- [ ] The Coding step's retry prompt references the **new** package ID, not the old one.
+- [ ] Old package ID is no longer used in the Coding prompt after the rerun.
+- [ ] `planContextPackage` cache is cleared (verify by two distinct `EventFlowContextPackage` entries).
+
+### Relocated failure cases
+
+| Case | How to trigger | Expected |
+|------|---------------|----------|
+| Missing chat summary ledger | Delete `chat_summary.ndjson` before the context/Plan step | Package degrades: `discussionBlock` empty; no crash |
+| Runner restart after context-package creation | Kill runner after the context/Plan step, restart | Coding step resumes; `EventFlowContextPackage` is found in persisted events; new package NOT rebuilt |
+
+## 12. Notes
 
 - **Lifecycle walkthrough + who-creates/who-changes:** see [SD-21 §13 (Phụ lục A, tiếng Việt)](../../06-System-Tech-Design/SD-21-Change-Contract-And-Canonical-Intent-Signature.md#13-phụ-lục-a--giải-thích--ví-dụ-vòng-đời-tiếng-việt) — the concrete `chat-ui` example (Change Contract vs Canonical Head, `intent_signature`, and the runner/AI/human roles) lives there and is not duplicated here.
 - This CP activates the deferred `SD-17 D-11`; `SD-21` is the reviewed design of record for it.

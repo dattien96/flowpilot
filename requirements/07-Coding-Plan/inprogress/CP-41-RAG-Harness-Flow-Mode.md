@@ -289,6 +289,10 @@ The runner already advances this model through `WorkflowOrchestrator.Progress`, 
 
 Run these scenarios yourself after deployment. Each scenario lists the **setup**, the **exact action**, and the **expected result** to verify. Mark ✅ when confirmed.
 
+> **Relocated (2026-07-06):** the pure **context-harness** scenarios — deterministic feature-history retrieval, unknown-key degradation, no-chat-summary degradation (original `DOD-7`), and context-package rebuild on Plan rerun — plus the "Missing chat summary ledger" and "Runner restart after context-package creation" failure rows, were **moved to [CP-43 §11 (Relocated Context-Harness E2E Tests)](../todo/CP-43-Change-Contract-And-Canonical-Intent-Signature.md#11-relocated-context-harness-e2e-tests-from-cp-41-11)**, because the context-harness logic they exercise is being reworked under CP-43. The scenario numbers below therefore have gaps (2/3/4/8 relocated); the remaining scenarios keep their original numbers.
+>
+> **Blocked-on-code note:** Scenarios 5/6/7 (Testing/validate retry) and 9/10 (Audit draft) are currently **not runnable end-to-end** — the `command.validate` and `artifact.audit_draft` behavior handlers are stubs not wired to their Task-170/171 implementations (see [BUG-243](../../09-BugFix/todo/BUG-243-Flow-Mode-Validate-And-Audit-Behaviors-Disconnected-From-Task-170-171.md)). Only the launch → context → coder portion (hops 1–4) is testable until BUG-243 is fixed.
+
 ---
 
 ### Scenario 1 — Happy Path: Full Plan → Coding → Testing → Audit
@@ -314,45 +318,11 @@ Run these scenarios yourself after deployment. Each scenario lists the **setup**
 
 ---
 
-### Scenario 2 — Feature History Injected (Verify Deterministic Retrieval)
+### Scenario 2 — *(relocated to [CP-43 §11 CH-1](../todo/CP-43-Change-Contract-And-Canonical-Intent-Signature.md#11-relocated-context-harness-e2e-tests-from-cp-41-11): Feature History Injected)*
 
-**Setup:** Same workspace. Ensure `.flowpilot/ledger/feature_history.ndjson` has at least 2 commits for `agent-flow-engine`.
+### Scenario 3 — *(relocated to [CP-43 §11 CH-2](../todo/CP-43-Change-Contract-And-Canonical-Intent-Signature.md#11-relocated-context-harness-e2e-tests-from-cp-41-11): Unknown Feature Key Degrades Gracefully)*
 
-**Action:** Run only the Plan step. Inspect the composed prompt logged to the prompt-log directory.
-
-**Expected:**
-- [ ] Prompt log file contains the `## Flow Context Package` section.
-- [ ] `## Prior Work` block lists the commit summaries from the ledger.
-- [ ] `## Audit note: No vector retrieval used` line is present — confirms no vector DB involved.
-- [ ] `featureConfidence` is `verified` (confidence ≥ 5.0 threshold met).
-
----
-
-### Scenario 3 — Unknown Feature Key Degrades Gracefully
-
-**Setup:** A workspace with no `.flowpilot` catalog directory, or use a prompt that resolves to no known feature key.
-
-**Action:** Start a Flow Mode run with Plan prompt: `"Fix a bug in some-unknown-feature-xyz"`.
-
-**Expected:**
-- [ ] Plan step completes without crashing.
-- [ ] `FlowContextPackage` has `featureConfidence: unresolved` and `warnings: ["feature catalog unavailable: ..."]` or `["no feature resolved ..."]`.
-- [ ] Coding step still receives the package (degraded — no history block, but the sentinel is present).
-- [ ] No crash, no panic, no empty prompt.
-
----
-
-### Scenario 4 — No Chat Summaries (History-Only Package)
-
-**Setup:** Workspace with feature history in `.flowpilot/ledger/feature_history.ndjson` but NO `chat_summary.ndjson`.
-
-**Action:** Run Plan step for `agent-flow-engine`.
-
-**Expected:**
-- [ ] `FlowContextPackage` has `historyBlock` populated (commit history present).
-- [ ] `discussionBlock` is empty or absent — no crash due to missing chat summary ledger.
-- [ ] Coding step prompt includes the history block but no discussion section.
-- [ ] `warnings` does NOT mention chat summary as a fatal error (graceful degradation).
+### Scenario 4 — *(relocated to [CP-43 §11 CH-3](../todo/CP-43-Change-Contract-And-Canonical-Intent-Signature.md#11-relocated-context-harness-e2e-tests-from-cp-41-11): No Chat Summaries — original `DOD-7`)*
 
 ---
 
@@ -401,17 +371,7 @@ Run these scenarios yourself after deployment. Each scenario lists the **setup**
 
 ---
 
-### Scenario 8 — Plan Step Reruns → Coding Gets Fresh Context Package
-
-**Setup:** A Flow Mode run that has already completed one Plan → Coding cycle.
-
-**Action:** Rerun the Plan step (trigger Plan step again on the same run). Then observe the Coding step's next turn.
-
-**Expected:**
-- [ ] A new `EventFlowContextPackage` is emitted with a new `packageId`.
-- [ ] The Coding step's retry prompt references the **new** package ID, not the old one.
-- [ ] Old package ID is no longer used in the Coding prompt after the Plan rerun.
-- [ ] `planContextPackage` cache is cleared (verify by checking `EventFlowContextPackage` events — two distinct entries).
+### Scenario 8 — *(relocated to [CP-43 §11 CH-4](../todo/CP-43-Change-Contract-And-Canonical-Intent-Signature.md#11-relocated-context-harness-e2e-tests-from-cp-41-11): Plan Rerun → Fresh Context Package)*
 
 ---
 
@@ -498,10 +458,10 @@ Run these scenarios yourself after deployment. Each scenario lists the **setup**
 | Case | How to trigger | Expected |
 |------|---------------|----------|
 | Stale `FEATURE-KEYS.md` (key removed mid-run) | Delete the key from the file after Plan step, before Audit step | Audit draft: `blocked_missing_feature_key` |
-| Missing chat summary ledger | Delete `chat_summary.ndjson` before Plan step | Package degrades: `discussionBlock` empty; no crash |
 | Very large test log output | Run a test suite that produces >4 KB of failure output | `ValidationSummary.Truncated = true`; only first ~50 failure lines injected; raw log NOT in prompt |
-| Runner restart after Plan package creation | Kill runner after Plan step, restart | Coding step resumes; `EventFlowContextPackage` is found in persisted events; new package NOT rebuilt |
 | Supabase unavailable | Disconnect Supabase during run | Run proceeds locally; no crash; `sessions.ndjson` is the source of truth |
+| *(Missing chat summary ledger — relocated to [CP-43 §11](../todo/CP-43-Change-Contract-And-Canonical-Intent-Signature.md#11-relocated-context-harness-e2e-tests-from-cp-41-11))* | | |
+| *(Runner restart after context-package creation — relocated to [CP-43 §11](../todo/CP-43-Change-Contract-And-Canonical-Intent-Signature.md#11-relocated-context-harness-e2e-tests-from-cp-41-11))* | | |
 | Validation command is empty string | Leave validation command blank in step config | `status: skipped_no_command`; no testing step execution; Audit step proceeds to draft |
 | Mirrored RAG Harness row deleted from `workflows` table mid-session | Delete the built-in RAG Harness row directly in Supabase, then start/select it again | `ResolveBuiltin` recreates the mirror row (`workflows` + `workflow_steps`) from the embedded pack before the run starts; if the recreate upsert itself fails, the run still proceeds using the embedded-pack-sourced definition rather than failing outright |
 | A step has neither `behavior_id` nor a recognized legacy `step_type` | Author a step with `step_type: "some-custom-category"` and no `behavior_id` | `classifyStepBehavior` returns `ok=false`; the step is treated as unclassifiable (not silently mis-treated as Plan or Coding) — verify no context package is wrongly attached |
