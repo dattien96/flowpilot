@@ -810,6 +810,44 @@ input {
 .settings-list-item.static {
   cursor: default;
 }
+.settings-list-item.checkable {
+  justify-content: flex-start;
+}
+.settings-list-item.bulk-selected {
+  border-color: var(--err);
+  background: rgba(248, 81, 73, 0.1);
+}
+.settings-bulk-checkbox {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--err);
+}
+.settings-bulk-checkbox:disabled {
+  opacity: 0.4;
+}
+.settings-list-item.not-deletable {
+  opacity: 0.6;
+}
+.settings-list-item.checkable.not-deletable {
+  cursor: default;
+}
+.project-bulk-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  border: 1px solid var(--err);
+  border-radius: 10px;
+  background: rgba(248, 81, 73, 0.08);
+  color: var(--text);
+}
+.danger-btn {
+  border-color: var(--err);
+  color: var(--err);
+}
 .settings-list-item-meta {
   display: block;
   font-size: 11px;

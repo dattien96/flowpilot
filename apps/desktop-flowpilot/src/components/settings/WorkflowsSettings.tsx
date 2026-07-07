@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   ArtifactDefinition,
   Project,
@@ -15,8 +15,20 @@ import { formatTimestamp, integrationTypes, toErrorMessage } from "@/components/
 type Tab = "workflows" | "steps";
 type ViewMode = "list" | "create";
 type DeleteTarget =
-  | { kind: "workflow"; id: string; label: string }
-  | { kind: "step"; id: string; label: string };
+  | { kind: "workflow"; ids: string[]; labels: string[] }
+  | {
+      kind: "step";
+      ids: string[];
+      labels: string[];
+      // BUG-247-follow-up: a workflow's step list is a pure relation to
+      // step_definitions (BUG-236) with no FK-cascade backing it, so
+      // deleting a step definition out from under a workflow that still
+      // lists it leaves that workflow with a dangling stepType it can never
+      // resolve at runtime. These are the workflows deleteSelected removes
+      // alongside the step(s) themselves.
+      cascadeWorkflows: { id: string; name: string }[];
+    };
+type BulkSelect = { kind: "workflow" | "step"; ids: Set<string> };
 
 type PickerModal =
   | { kind: "artifact-input"; mode: "detail" | "create" }
@@ -236,6 +248,13 @@ export function WorkflowsSettings(): React.ReactElement {
   const [workflowSteps, setWorkflowSteps] = useState<WorkflowStep[]>([]);
   const [stepDefinitions, setStepDefinitions] = useState<StepDefinition[]>([]);
   const [artifactDefinitions, setArtifactDefinitions] = useState<ArtifactDefinition[]>([]);
+  // Built-in workflows are read-only (see workflowDetailReadOnly below) and
+  // can never be edited to drop a step, so a step definition still listed by
+  // any built-in workflow can't be deleted either — doing so would leave
+  // that (undeletable, uneditable) workflow with a dangling stepType it can
+  // never resolve at runtime. Recomputed on every refresh() from the small
+  // set of built-in workflows' own step lists.
+  const [stepTypesUsedByBuiltin, setStepTypesUsedByBuiltin] = useState<Set<string>>(new Set());
   const [selectedWorkflowId, setSelectedWorkflowId] = useState("");
   const [selectedStepType, setSelectedStepType] = useState("");
   const [detailWorkflowStepType, setDetailWorkflowStepType] = useState("");
@@ -256,6 +275,13 @@ export function WorkflowsSettings(): React.ReactElement {
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const [deleteConfirmationText, setDeleteConfirmationText] = useState("");
   const [pickerModal, setPickerModal] = useState<PickerModal | null>(null);
+  // Multi-select delete: entered via long-press on a Workflow/Step Registry
+  // row instead of a mode toggle. `bulkSelect` is null outside select mode;
+  // once set, every row in that same list renders a checkbox and a tap
+  // toggles selection instead of opening the row for edit.
+  const [bulkSelect, setBulkSelect] = useState<BulkSelect | null>(null);
+  const longPressTimerRef = useRef<number | null>(null);
+  const longPressFiredRef = useRef(false);
   // Built-in flow cloning (CP-42/Task-179): a built-in (isBuiltin=true)
   // workflow is read-only in this screen — cloneTarget drives the "name your
   // copy" modal that creates an editable, non-builtin copy.
@@ -290,6 +316,58 @@ export function WorkflowsSettings(): React.ReactElement {
       return next;
     });
   };
+
+  const clearLongPressTimer = () => {
+    if (longPressTimerRef.current !== null) {
+      window.clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  };
+
+  // Long-press (works for touch and mouse via Pointer Events) enters select
+  // mode and selects the pressed row; a short tap afterwards falls through
+  // to the row's normal click handler. `longPressFiredRef` lets that click
+  // handler tell the two apart, since a pointerup after a fired long-press
+  // still dispatches a click. If select mode is already active, long-pressing
+  // another row adds it to the existing selection instead of resetting it —
+  // once inside select mode a plain tap already toggles rows one at a time,
+  // but a user may still long-press out of habit and shouldn't lose progress.
+  const startLongPress = (kind: "workflow" | "step", id: string) => {
+    clearLongPressTimer();
+    longPressFiredRef.current = false;
+    longPressTimerRef.current = window.setTimeout(() => {
+      longPressFiredRef.current = true;
+      setBulkSelect((current) => {
+        if (current && current.kind === kind) {
+          const next = new Set(current.ids);
+          next.add(id);
+          return { ...current, ids: next };
+        }
+        return { kind, ids: new Set([id]) };
+      });
+    }, 500);
+  };
+
+  const consumeLongPressClick = () => {
+    if (!longPressFiredRef.current) return false;
+    longPressFiredRef.current = false;
+    return true;
+  };
+
+  const toggleBulkSelected = (id: string) => {
+    setBulkSelect((current) => {
+      if (!current) return current;
+      const next = new Set(current.ids);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return { ...current, ids: next };
+    });
+  };
+
+  const exitBulkSelect = () => setBulkSelect(null);
 
   const selectedWorkflow = useMemo(
     () => workflows.find((item) => item.id === selectedWorkflowId) ?? null,
@@ -345,6 +423,12 @@ export function WorkflowsSettings(): React.ReactElement {
           ? stepType
           : nextStepDefinitions[0]?.stepType ?? "";
 
+      const builtinWorkflows = nextWorkflows.filter((workflow) => workflow.isBuiltin);
+      const builtinStepLists = await Promise.all(
+        builtinWorkflows.map((workflow) => admin.workflows.listWorkflowSteps(workflow.id)),
+      );
+      const nextStepTypesUsedByBuiltin = new Set(builtinStepLists.flat().map((step) => step.stepType));
+
       setProjects(nextProjects);
       setWorkflows(nextWorkflows);
       setStepDefinitions(nextStepDefinitions);
@@ -352,6 +436,7 @@ export function WorkflowsSettings(): React.ReactElement {
       setArtifactDefinitions(nextArtifactDefinitions);
       setSelectedWorkflowId(resolvedWorkflowId);
       setSelectedStepType(resolvedStepType);
+      setStepTypesUsedByBuiltin(nextStepTypesUsedByBuiltin);
 
       if (!options?.preserveCreateDrafts) {
         setCreateWorkflowDraft(createEmptyWorkflowDraft(nextProjects, defaultModel));
@@ -796,6 +881,54 @@ export function WorkflowsSettings(): React.ReactElement {
     }
   };
 
+  const openDeleteWorkflowConfirm = (ids: string[], labels: string[]) => {
+    if (ids.length === 0) return;
+    setDeleteTarget({ kind: "workflow", ids, labels });
+    setDeleteConfirmationText("");
+  };
+
+  // Steps have no FK-cascade from workflow_steps back to step_definitions
+  // (BUG-236: a workflow's step list is a pure relation), so deleting a step
+  // definition that's still referenced by a workflow would leave that
+  // workflow with a dangling stepType it can never resolve at runtime. Look
+  // up every workflow currently using any of the given step types and fold
+  // them into the same confirmation so they're deleted together.
+  const openDeleteStepConfirm = async (ids: string[], labels: string[]) => {
+    if (ids.length === 0) return;
+    // A step still listed by a built-in workflow can't be deleted at all —
+    // that workflow is read-only, so there's no cascade that could clear it
+    // out first. Block before the usage lookup instead of only relying on
+    // the disabled row/button, since bulk selections can mix deletable and
+    // blocked steps.
+    const blockedIds = ids.filter((id) => stepTypesUsedByBuiltin.has(id));
+    if (blockedIds.length > 0) {
+      const blockedLabels = blockedIds.map(
+        (id) => stepDefinitions.find((step) => step.stepType === id)?.name ?? id,
+      );
+      setMessage(
+        `Can't delete ${blockedLabels.join(", ")}: still used by a built-in workflow, which can't be edited.`,
+      );
+      return;
+    }
+    setBusy(true);
+    setMessage(null);
+    try {
+      const admin = await getAdminUseCases();
+      const usages = await admin.workflows.listWorkflowsUsingSteps(ids);
+      const cascadeWorkflowIds = Array.from(new Set(usages.map((usage) => usage.workflowId)));
+      const cascadeWorkflows = cascadeWorkflowIds.map((workflowId) => ({
+        id: workflowId,
+        name: workflows.find((workflow) => workflow.id === workflowId)?.name ?? workflowId,
+      }));
+      setDeleteTarget({ kind: "step", ids, labels, cascadeWorkflows });
+      setDeleteConfirmationText("");
+    } catch (error) {
+      setMessage(toErrorMessage(error, "Unable to check step usage before delete."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const deleteSelected = async () => {
     if (!deleteTarget) return;
     setBusy(true);
@@ -803,17 +936,39 @@ export function WorkflowsSettings(): React.ReactElement {
     try {
       const admin = await getAdminUseCases();
       if (deleteTarget.kind === "workflow") {
-        await admin.workflows.deleteWorkflow(deleteTarget.id);
+        // Independent rows — run the deletes concurrently instead of one at
+        // a time so a bulk delete of N workflows takes roughly as long as
+        // the slowest single delete, not N times that.
+        await Promise.all(deleteTarget.ids.map((id) => admin.workflows.deleteWorkflow(id)));
         setDeleteTarget(null);
         setDeleteConfirmationText("");
+        exitBulkSelect();
         await refresh(undefined, selectedStepType);
-        setMessage("Workflow deleted.");
+        setMessage(
+          deleteTarget.ids.length > 1 ? `${deleteTarget.ids.length} workflows deleted.` : "Workflow deleted.",
+        );
       } else {
-        await admin.workflows.deleteStepDefinition(deleteTarget.id);
+        // Cascade workflows must be gone before the step definitions they
+        // reference are deleted, but within each phase the rows are
+        // independent, so fan each phase out concurrently rather than
+        // serializing every single delete.
+        await Promise.all(
+          deleteTarget.cascadeWorkflows.map((cascadeWorkflow) => admin.workflows.deleteWorkflow(cascadeWorkflow.id)),
+        );
+        await Promise.all(deleteTarget.ids.map((id) => admin.workflows.deleteStepDefinition(id)));
         setDeleteTarget(null);
         setDeleteConfirmationText("");
-        await refresh(selectedWorkflowId, undefined);
-        setMessage("Step definition deleted.");
+        exitBulkSelect();
+        await refresh(undefined, undefined);
+        const cascadeNote =
+          deleteTarget.cascadeWorkflows.length > 0
+            ? ` (also removed ${deleteTarget.cascadeWorkflows.length} workflow(s) that used it)`
+            : "";
+        setMessage(
+          (deleteTarget.ids.length > 1
+            ? `${deleteTarget.ids.length} step definitions deleted.`
+            : "Step definition deleted.") + cascadeNote,
+        );
       }
     } catch (error) {
       setMessage(toErrorMessage(error, "Unable to delete item."));
@@ -1746,14 +1901,20 @@ export function WorkflowsSettings(): React.ReactElement {
         <div className="header-tabs">
           <button
             className={`header-tab ${tab === "workflows" ? "active" : ""}`}
-            onClick={() => setTab("workflows")}
+            onClick={() => {
+              setTab("workflows");
+              exitBulkSelect();
+            }}
             type="button"
           >
             Workflows
           </button>
           <button
             className={`header-tab ${tab === "steps" ? "active" : ""}`}
-            onClick={() => setTab("steps")}
+            onClick={() => {
+              setTab("steps");
+              exitBulkSelect();
+            }}
             type="button"
           >
             Steps
@@ -1950,44 +2111,103 @@ export function WorkflowsSettings(): React.ReactElement {
                   +
                 </button>
               </div>
+              {bulkSelect?.kind === "workflow" ? (
+                <div className="project-bulk-bar">
+                  <span>{bulkSelect.ids.size} selected</span>
+                  <div className="settings-inline-actions">
+                    <button className="secondary-btn" onClick={exitBulkSelect} type="button">
+                      Cancel
+                    </button>
+                    <button
+                      className="secondary-btn danger-btn"
+                      disabled={bulkSelect.ids.size === 0}
+                      onClick={() => {
+                        const ids = Array.from(bulkSelect.ids);
+                        openDeleteWorkflowConfirm(
+                          ids,
+                          ids.map((id) => workflows.find((workflow) => workflow.id === id)?.name ?? id),
+                        );
+                      }}
+                      type="button"
+                    >
+                      Delete {bulkSelect.ids.size}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
               <div className="settings-list">
                 {workflows.length === 0 ? (
                   <div className="settings-empty">No workflows found. Use the + button to create one.</div>
                 ) : (
-                  workflows.map((workflow) => (
-                    <button
-                      className={`settings-list-item ${workflow.id === selectedWorkflowId ? "active" : ""}`}
-                      key={workflow.id}
-                      onClick={() => {
-                        void refresh(workflow.id, selectedStepType, { preserveCreateDrafts: true });
-                        setMessage(null);
-                      }}
-                      type="button"
-                    >
-                      <div>
-                        <strong>
-                          {workflow.name}
-                          {workflow.isBuiltin ? <span className="settings-badge">Built-in</span> : null}
-                        </strong>
-                        <span>
-                          {workflow.projectId
-                            ? projects.find((project) => project.id === workflow.projectId)?.name ??
-                              workflow.projectId
-                            : "Workspace global"}{" "}
-                          / {formatTimestamp(workflow.updatedAt)}
-                        </span>
-                        {workflow.isBuiltin ? (
-                          <span className="settings-list-item-meta">
-                            {workflow.packId ?? "unknown pack"}
-                            {workflow.packVersion ? ` v${workflow.packVersion}` : ""}
-                            {workflow.selectableIn.length > 0
-                              ? ` · selectable in: ${workflow.selectableIn.join(", ")}`
-                              : ""}
-                          </span>
+                  workflows.map((workflow) => {
+                    const bulkModeActive = bulkSelect?.kind === "workflow";
+                    const isBulkSelected = bulkModeActive && bulkSelect.ids.has(workflow.id);
+                    // Built-ins can't be deleted (Delete is disabled for them
+                    // below too), so long-press on one is a no-op instead of
+                    // starting a select mode that can only ever fail to delete.
+                    const longPressSelectable = workflow.editable !== false;
+                    return (
+                      <button
+                        className={`settings-list-item ${
+                          workflow.id === selectedWorkflowId && !bulkModeActive ? "active" : ""
+                        } ${isBulkSelected ? "bulk-selected" : ""} ${bulkModeActive ? "checkable" : ""} ${
+                          !longPressSelectable ? "not-deletable" : ""
+                        }`}
+                        key={workflow.id}
+                        onClick={() => {
+                          if (consumeLongPressClick()) return;
+                          if (bulkModeActive) {
+                            if (longPressSelectable) toggleBulkSelected(workflow.id);
+                            return;
+                          }
+                          void refresh(workflow.id, selectedStepType, { preserveCreateDrafts: true });
+                          setMessage(null);
+                        }}
+                        onPointerCancel={clearLongPressTimer}
+                        onPointerDown={() => {
+                          if (longPressSelectable) startLongPress("workflow", workflow.id);
+                        }}
+                        onPointerLeave={clearLongPressTimer}
+                        onPointerUp={clearLongPressTimer}
+                        title={longPressSelectable ? undefined : "Built-in workflows can't be deleted."}
+                        type="button"
+                      >
+                        {bulkModeActive ? (
+                          <input
+                            aria-hidden="true"
+                            checked={isBulkSelected}
+                            className="settings-bulk-checkbox"
+                            disabled={!longPressSelectable}
+                            readOnly
+                            tabIndex={-1}
+                            type="checkbox"
+                          />
                         ) : null}
-                      </div>
-                    </button>
-                  ))
+                        <div>
+                          <strong>
+                            {workflow.name}
+                            {workflow.isBuiltin ? <span className="settings-badge">Built-in</span> : null}
+                          </strong>
+                          <span>
+                            {workflow.projectId
+                              ? projects.find((project) => project.id === workflow.projectId)?.name ??
+                                workflow.projectId
+                              : "Workspace global"}{" "}
+                            / {formatTimestamp(workflow.updatedAt)}
+                          </span>
+                          {workflow.isBuiltin ? (
+                            <span className="settings-list-item-meta">
+                              {workflow.packId ?? "unknown pack"}
+                              {workflow.packVersion ? ` v${workflow.packVersion}` : ""}
+                              {workflow.selectableIn.length > 0
+                                ? ` · selectable in: ${workflow.selectableIn.join(", ")}`
+                                : ""}
+                            </span>
+                          ) : null}
+                        </div>
+                      </button>
+                    );
+                  })
                 )}
               </div>
             </aside>
@@ -2030,21 +2250,24 @@ export function WorkflowsSettings(): React.ReactElement {
                             Clone
                           </button>
                         ) : null}
-                        {selectedWorkflow?.editable !== false ? (
-                          <button
-                            className="secondary-btn"
-                            onClick={() =>
-                              setDeleteTarget({
-                                kind: "workflow",
-                                id: selectedWorkflowId,
-                                label: workflowDraft.name || "this workflow",
-                              })
-                            }
-                            type="button"
-                          >
-                            Delete
-                          </button>
-                        ) : null}
+                        <button
+                          className="secondary-btn"
+                          disabled={selectedWorkflow?.editable === false}
+                          onClick={() =>
+                            openDeleteWorkflowConfirm(
+                              [selectedWorkflowId],
+                              [workflowDraft.name || "this workflow"],
+                            )
+                          }
+                          title={
+                            selectedWorkflow?.editable === false
+                              ? "Built-in workflows can't be deleted."
+                              : undefined
+                          }
+                          type="button"
+                        >
+                          Delete
+                        </button>
                         <button
                           className="primary-btn"
                           disabled={busy || !workflowDirty}
@@ -2264,28 +2487,87 @@ export function WorkflowsSettings(): React.ReactElement {
                 +
               </button>
             </div>
+            {bulkSelect?.kind === "step" ? (
+              <div className="project-bulk-bar">
+                <span>{bulkSelect.ids.size} selected</span>
+                <div className="settings-inline-actions">
+                  <button className="secondary-btn" onClick={exitBulkSelect} type="button">
+                    Cancel
+                  </button>
+                  <button
+                    className="secondary-btn danger-btn"
+                    disabled={bulkSelect.ids.size === 0}
+                    onClick={() => {
+                      const ids = Array.from(bulkSelect.ids);
+                      void openDeleteStepConfirm(
+                        ids,
+                        ids.map((id) => stepDefinitions.find((step) => step.stepType === id)?.name ?? id),
+                      );
+                    }}
+                    type="button"
+                  >
+                    Delete {bulkSelect.ids.size}
+                  </button>
+                </div>
+              </div>
+            ) : null}
             <div className="settings-list">
               {stepDefinitions.length === 0 ? (
                 <div className="settings-empty">No step definitions found. Use the + button to create one.</div>
               ) : (
-                stepDefinitions.map((step) => (
-                  <button
-                    className={`settings-list-item ${step.stepType === selectedStepType ? "active" : ""}`}
-                    key={step.stepType}
-                    onClick={() => {
-                      void refresh(selectedWorkflowId, step.stepType, { preserveCreateDrafts: true });
-                      setMessage(null);
-                    }}
-                    type="button"
-                  >
-                    <div>
-                      <strong>{step.name}</strong>
-                      <span>
-                        {step.stepType} / {step.model}
-                      </span>
-                    </div>
-                  </button>
-                ))
+                stepDefinitions.map((step) => {
+                  const bulkModeActive = bulkSelect?.kind === "step";
+                  const isBulkSelected = bulkModeActive && bulkSelect.ids.has(step.stepType);
+                  // A step still listed by a built-in workflow can't be
+                  // deleted (that workflow is read-only), so it can't be
+                  // long-pressed into a select mode that can only fail.
+                  const longPressSelectable = !stepTypesUsedByBuiltin.has(step.stepType);
+                  return (
+                    <button
+                      className={`settings-list-item ${
+                        step.stepType === selectedStepType && !bulkModeActive ? "active" : ""
+                      } ${isBulkSelected ? "bulk-selected" : ""} ${bulkModeActive ? "checkable" : ""} ${
+                        !longPressSelectable ? "not-deletable" : ""
+                      }`}
+                      key={step.stepType}
+                      onClick={() => {
+                        if (consumeLongPressClick()) return;
+                        if (bulkModeActive) {
+                          if (longPressSelectable) toggleBulkSelected(step.stepType);
+                          return;
+                        }
+                        void refresh(selectedWorkflowId, step.stepType, { preserveCreateDrafts: true });
+                        setMessage(null);
+                      }}
+                      onPointerCancel={clearLongPressTimer}
+                      onPointerDown={() => {
+                        if (longPressSelectable) startLongPress("step", step.stepType);
+                      }}
+                      onPointerLeave={clearLongPressTimer}
+                      onPointerUp={clearLongPressTimer}
+                      title={longPressSelectable ? undefined : "Used by a built-in workflow — can't be deleted."}
+                      type="button"
+                    >
+                      {bulkModeActive ? (
+                        <input
+                          aria-hidden="true"
+                          checked={isBulkSelected}
+                          className="settings-bulk-checkbox"
+                          disabled={!longPressSelectable}
+                          readOnly
+                          tabIndex={-1}
+                          type="checkbox"
+                        />
+                      ) : null}
+                      <div>
+                        <strong>{step.name}</strong>
+                        <span>
+                          {step.stepType} / {step.model}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })
               )}
             </div>
           </aside>
@@ -2304,12 +2586,14 @@ export function WorkflowsSettings(): React.ReactElement {
                   <div className="settings-inline-actions">
                     <button
                       className="secondary-btn"
+                      disabled={stepTypesUsedByBuiltin.has(stepDraft.stepType)}
                       onClick={() =>
-                        setDeleteTarget({
-                          kind: "step",
-                          id: stepDraft.stepType,
-                          label: stepDraft.name || stepDraft.stepType,
-                        })
+                        void openDeleteStepConfirm([stepDraft.stepType], [stepDraft.name || stepDraft.stepType])
+                      }
+                      title={
+                        stepTypesUsedByBuiltin.has(stepDraft.stepType)
+                          ? "Used by a built-in workflow — can't be deleted."
+                          : undefined
                       }
                       type="button"
                     >
@@ -2386,10 +2670,35 @@ export function WorkflowsSettings(): React.ReactElement {
             <div className="project-create-head">
               <div>
                 <div className="settings-eyebrow">Delete</div>
-                <h3>{deleteTarget.kind === "workflow" ? "Delete Workflow" : "Delete Step Definition"}</h3>
+                <h3>
+                  {deleteTarget.kind === "workflow"
+                    ? deleteTarget.ids.length > 1
+                      ? `Delete ${deleteTarget.ids.length} Workflows`
+                      : "Delete Workflow"
+                    : deleteTarget.ids.length > 1
+                      ? `Delete ${deleteTarget.ids.length} Step Definitions`
+                      : "Delete Step Definition"}
+                </h3>
                 <p className="project-muted-copy">
-                  Type <code>delete</code> to confirm deleting <strong>{deleteTarget.label}</strong>.
+                  Type <code>delete</code> to confirm deleting{" "}
+                  {deleteTarget.labels.length > 1 ? (
+                    <>{deleteTarget.labels.length} items</>
+                  ) : (
+                    <strong>{deleteTarget.labels[0]}</strong>
+                  )}
+                  .
                 </p>
+                {deleteTarget.labels.length > 1 ? (
+                  <p className="project-muted-copy settings-list-item-meta">{deleteTarget.labels.join(", ")}</p>
+                ) : null}
+                {deleteTarget.kind === "step" && deleteTarget.cascadeWorkflows.length > 0 ? (
+                  <div className="settings-warning">
+                    Still used by {deleteTarget.cascadeWorkflows.length} workflow
+                    {deleteTarget.cascadeWorkflows.length > 1 ? "s" : ""} — deleting{" "}
+                    {deleteTarget.ids.length > 1 ? "these steps" : "this step"} will also delete{" "}
+                    {deleteTarget.cascadeWorkflows.map((workflow) => workflow.name).join(", ")}.
+                  </div>
+                ) : null}
               </div>
             </div>
             <div className="settings-grid">
@@ -2418,7 +2727,13 @@ export function WorkflowsSettings(): React.ReactElement {
                 onClick={() => void deleteSelected()}
                 type="button"
               >
-                {deleteTarget.kind === "workflow" ? "Delete Workflow" : "Delete Step"}
+                {deleteTarget.kind === "workflow"
+                  ? deleteTarget.ids.length > 1
+                    ? `Delete ${deleteTarget.ids.length} Workflows`
+                    : "Delete Workflow"
+                  : deleteTarget.ids.length > 1
+                    ? `Delete ${deleteTarget.ids.length} Steps`
+                    : "Delete Step"}
               </button>
             </div>
           </div>

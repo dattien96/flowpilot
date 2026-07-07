@@ -49,6 +49,14 @@ export interface WorkflowRepository {
   listStepDefinitions(): Promise<StepDefinition[]>;
   saveStepDefinition(step: StepDefinition): Promise<StepDefinition>;
   deleteStepDefinition(stepType: string): Promise<void>;
+  /**
+   * Reverse lookup for step-definition deletion: which workflows currently
+   * reference any of the given step types, across every workflow (not just
+   * the one selected in the editor). Deleting a step out from under a
+   * workflow that still lists it leaves that workflow's step list dangling,
+   * so callers use this to cascade-delete those workflows first.
+   */
+  listWorkflowsUsingSteps(stepTypes: string[]): Promise<{ workflowId: string; stepType: string }[]>;
   listWorkflowRuns(projectId?: string): Promise<WorkflowRun[]>;
   /**
    * Clone a built-in (isBuiltin=true) workflow into an editable, user-owned

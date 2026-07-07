@@ -692,6 +692,19 @@ export class SupabaseAdminRepository implements
     return (data ?? []).map(mapWorkflowStep);
   }
 
+  async listWorkflowsUsingSteps(stepTypes: string[]) {
+    if (stepTypes.length === 0) return [];
+    const { data, error } = await this.supabase
+      .from("workflow_steps")
+      .select("workflow_id, step_type")
+      .in("step_type", stepTypes);
+    assertNoError(error, "Unable to list workflows using these step types.");
+    return (data ?? []).map((row: Row) => ({
+      workflowId: String(row.workflow_id),
+      stepType: String(row.step_type),
+    }));
+  }
+
   async listStepDefinitions() {
     const [definitionsResult, inputBindingsResult, outputBindingsResult] = await Promise.all([
       this.supabase.from("step_definitions").select("*").order("name", { ascending: true }),
