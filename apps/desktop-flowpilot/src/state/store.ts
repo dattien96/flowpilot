@@ -1206,7 +1206,11 @@ export const useStore = create<AppState>((set, get) => ({
     if (!runId) return;
     const parentRunId = mainRunId ?? runId;
     const childFocused = Boolean(activeAgentRunId && parentRunId && activeAgentRunId !== parentRunId);
-    if (!childFocused && parentRunId && client.stopAgentLoop && hasActiveParentAgentLoop(get(), parentRunId)) {
+    // BUG-247: stop() must always cascade to the parent run and every running child in a
+    // single press, whether it was triggered from the main chat or a focused child's
+    // read-only view — Task-088's original child-only routing left the parent (and its
+    // loop) running until the user switched back and pressed Stop a second time.
+    if (parentRunId && client.stopAgentLoop && hasActiveParentAgentLoop(get(), parentRunId)) {
       const snapshot = await client.stopAgentLoop(parentRunId);
       set((s) => ({
         ...applyAgentGraphSnapshot(snapshot),
@@ -1214,18 +1218,39 @@ export const useStore = create<AppState>((set, get) => ({
         timeline: s.timeline.filter((it) => it.kind !== "thinking"),
       }));
       await client.interrupt(parentRunId);
+      if (childFocused) {
+        try {
+          await client.interrupt(runId);
+        } catch {
+          /* best-effort: the loop stop above may have already cancelled the child's turn */
+        }
+      }
       void get().refreshAgentRuns();
       void get().refreshWorkflowStepRuntime();
       return;
     }
-    if (!childFocused && get().chatMode === "workflow_step_auto" && parentRunId) {
+    if (get().chatMode === "workflow_step_auto" && parentRunId) {
       if (client.stopAgentLoop) {
         set(applyAgentGraphSnapshot(await client.stopAgentLoop(parentRunId)));
       }
       await client.interrupt(parentRunId);
+      if (childFocused) {
+        try {
+          await client.interrupt(runId);
+        } catch {
+          /* best-effort: the loop stop above may have already cancelled the child's turn */
+        }
+      }
       return;
     }
     await client.interrupt(runId);
+    if (childFocused && parentRunId !== runId) {
+      try {
+        await client.interrupt(parentRunId);
+      } catch {
+        /* best-effort: parent may have no in-flight turn to cancel */
+      }
+    }
   },
 
   async reconnect() {
@@ -2264,6 +2289,18 @@ function applyOrchestrationEvent(s: AppState, e: ProviderEventDTO): Partial<AppS
 }
 
 export function deriveOrchestrationRunStatus(current: RunStatus, snapshot: AgentGraphSnapshot): RunStatus {
+  // BUG-248: a "stopped" loop is a definitive, user-initiated full halt — stopAgentLoop
+  // already called turnCancel() on the parent and every running child before this
+  // snapshot was taken. Each child's own `status` field only flips to terminal
+  // asynchronously once its turn handler observes ctx.Done() (interactive_service.go
+  // finishTurn), and cancelling a child's turn never re-emits an agent_graph_updated
+  // event for the parent — so a snapshot fetched in that window can report a child as
+  // still "running" forever, with no later event ever correcting it. Treat "stopped"
+  // as authoritative over any such stale/racy child status, or the main run reads as
+  // permanently stuck "running" and even a second Stop press has nothing left to do.
+  if (snapshot.loopState.status === "stopped") {
+    return "cancelled";
+  }
   const childStatuses = snapshot.runs.map((run) => run.status);
   if (childStatuses.some((status) => status === "waiting_approval")) {
     return "waiting_approval";

@@ -2131,7 +2131,7 @@ test("stop uses loop stop plus parent interrupt for normal chat flowRef runs", a
   assert.equal(useStore.getState().agentRuns[0]?.status, "completed");
 });
 
-test("stop keeps child-focused stop on the child run", async () => {
+test("stop from a child-focused view also stops the parent loop (BUG-247)", async () => {
   const calls: string[] = [];
   seedStore(
     makeClient({
@@ -2154,7 +2154,40 @@ test("stop keeps child-focused stop on the child run", async () => {
 
   await useStore.getState().stop();
 
-  assert.deepEqual(calls, ["interrupt:child-1"]);
+  assert.deepEqual(calls, ["loop:parent-1", "interrupt:parent-1", "interrupt:child-1"]);
+});
+
+test("stop from a child-focused view with an active tracked loop stops parent and child (BUG-247)", async () => {
+  const calls: string[] = [];
+  seedStore(
+    makeClient({
+      stopAgentLoop: async (runId) => {
+        calls.push(`loop:${runId}`);
+        return { parentRunId: runId, runs: [], edges: [], busMessages: [], loopState: { status: "stopped", round: 0, roundCap: 3 } };
+      },
+      interrupt: async (runId) => {
+        calls.push(`interrupt:${runId}`);
+      },
+    }),
+    [],
+  );
+  useStore.setState({
+    chatMode: "normal_chat",
+    runId: "child-1",
+    mainRunId: "parent-1",
+    activeAgentRunId: "child-1",
+    agentGraphSnapshot: {
+      parentRunId: "parent-1",
+      runs: [{ runId: "child-1", agentName: "reviewer", role: "reviewer", status: "running", parentRunId: "parent-1", createdAt: "2026-01-01T00:00:00Z" }],
+      edges: [],
+      busMessages: [],
+      loopState: { status: "running", round: 1, roundCap: 3 },
+    },
+  });
+
+  await useStore.getState().stop();
+
+  assert.deepEqual(calls, ["loop:parent-1", "interrupt:parent-1", "interrupt:child-1"]);
 });
 
 test("MockRunnerClient keeps child agent runs out of main history", async () => {
@@ -2482,6 +2515,24 @@ test("deriveOrchestrationRunStatus: an actively-running child still wins over a 
     loopState: { status: "blocked", round: 1, roundCap: 3 },
   };
   assert.equal(deriveOrchestrationRunStatus("running", snap), "running");
+});
+
+test("deriveOrchestrationRunStatus: a stopped loop wins even if a child's status snapshot is stale-running (BUG-248)", () => {
+  // stopAgentLoop's turnCancel() only signals cancellation — a child's own `status`
+  // field flips to terminal asynchronously once its turn handler observes ctx.Done().
+  // A snapshot taken synchronously right after the stop call can still report that
+  // child as "running". Unlike a "blocked" loop (a deliberate pause where an
+  // actively-running child legitimately still wins), "stopped" is a definitive,
+  // user-initiated full halt and must be authoritative, or the main run reads as
+  // permanently stuck "running" with no later event to correct it.
+  const snap: AgentGraphSnapshot = {
+    parentRunId: "current-run",
+    runs: [{ runId: "child-1", agentName: "coder", role: "coder", status: "running", parentRunId: "current-run", createdAt: "2026-01-01T00:00:00Z" }],
+    edges: [],
+    busMessages: [],
+    loopState: { status: "stopped", round: 1, roundCap: 3 },
+  };
+  assert.equal(deriveOrchestrationRunStatus("running", snap), "cancelled");
 });
 
 test("continueFlow calls client.continueFlow with the trimmed feedback and applies the returned snapshot", async () => {

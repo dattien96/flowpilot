@@ -466,17 +466,39 @@ func (s *InteractiveService) stopAgentLoop(parentRunID string) AgentGraphSnapsho
 		parent.pendingHubReinvoke = false
 		if parent.turnInFlight && parent.turnCancel != nil {
 			parent.turnCancel()
+			// BUG-248: turnCancel() only signals cancellation — the run's own
+			// finishTurn() flips `status` to cancelled asynchronously once the turn's
+			// goroutine observes ctx.Done(), and that happens off this lock.
+			parent.status = RunStatusCancelled
 		}
 	}
+	cancelledChildIDs := make([]string, 0)
 	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
 		if child := s.runs[childID]; child != nil {
 			child.pendingTurnPrompt = ""
 			if child.turnInFlight && child.turnCancel != nil {
 				child.turnCancel()
+				child.status = RunStatusCancelled // BUG-248: see parent.status comment above.
+				child.agentStatus = string(RunStatusCancelled)
+				cancelledChildIDs = append(cancelledChildIDs, childID)
 			}
 		}
 	}
 	s.mu.Unlock()
+	// BUG-248: the snapshot below is built from AgentOrchestrator's own summary cache
+	// (upsertSummary), not from interactiveRun.status directly — the two are only kept
+	// in sync by emitLocked reacting to turn-progress events, which for a cancelled
+	// turn only happens later, asynchronously, once finishTurn's goroutine observes
+	// ctx.Done(). Patch the cached summaries eagerly here too, or this snapshot (and
+	// the desktop's derived run status computed from it) would still read the child as
+	// "running" with no later agent_graph_updated event ever correcting it.
+	for _, childID := range cancelledChildIDs {
+		if summary, ok := s.agentOrchestrator.currentSummary(parentRunID, childID); ok {
+			summary.Status = RunStatusCancelled
+			summary.AgentStatus = string(RunStatusCancelled)
+			s.agentOrchestrator.upsertSummary(parentRunID, summary)
+		}
+	}
 	snap := s.agentGraphSnapshot(parentRunID)
 	s.emitAgentGraph(parentRunID, snap)
 	return snap

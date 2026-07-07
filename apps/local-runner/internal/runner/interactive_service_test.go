@@ -2661,6 +2661,72 @@ func TestInterruptParentCancelsRunningChildAgents(t *testing.T) {
 	}
 }
 
+// TestStopAgentLoopSnapshotReportsChildCancelledSynchronously guards BUG-248: the
+// snapshot stopAgentLoop returns must report a cancelled child's status immediately,
+// not "running". turnCancel() only signals cancellation — the child's own finishTurn
+// (which sets status = RunStatusCancelled) runs asynchronously once its turn's
+// goroutine observes ctx.Done(), and a cancelled child's finishTurn never re-emits an
+// agent_graph_updated event for the parent, so the desktop has no later event to
+// correct a stale "running" reading. The adapter here blocks past ctx.Done() so
+// finishTurn provably has not run yet when the snapshot is inspected.
+func TestStopAgentLoopSnapshotReportsChildCancelledSynchronously(t *testing.T) {
+	childStarted := make(chan struct{}, 1)
+	releaseChild := make(chan struct{})
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(ctx context.Context, req TurnRequest, _ TurnBridge) error {
+				if strings.HasPrefix(req.RunID, "run-") {
+					select {
+					case childStarted <- struct{}{}:
+					default:
+					}
+				}
+				<-ctx.Done()
+				<-releaseChild // held open so finishTurn cannot have run yet
+				return ctx.Err()
+			})
+		},
+	})
+	svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	t.Cleanup(func() { close(releaseChild) })
+	parentHandle, err := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	child, spawnErr := svc.spawnChildRun(context.Background(), parentHandle.RunID, SpawnAgentInput{
+		Agent:  "worker",
+		Prompt: "keep running",
+		Wait:   false,
+	})
+	if spawnErr != nil {
+		t.Fatalf("spawnChildRun: %v", spawnErr)
+	}
+	select {
+	case <-childStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("child turn did not start")
+	}
+
+	snap := svc.stopAgentLoop(parentHandle.RunID)
+
+	var childRun *AgentRunSummary
+	for i := range snap.Runs {
+		if snap.Runs[i].RunID == child.RunID {
+			childRun = &snap.Runs[i]
+			break
+		}
+	}
+	if childRun == nil {
+		t.Fatalf("stopAgentLoop snapshot missing child run %q", child.RunID)
+	}
+	if childRun.Status != RunStatusCancelled {
+		t.Fatalf("stopAgentLoop snapshot reported child status %q, want %q (finishTurn has not run yet)", childRun.Status, RunStatusCancelled)
+	}
+}
+
 func TestAutoReinvokeHubSingleFlightConcurrent(t *testing.T) {
 	// Calling maybeAutoReinvokeHub from two goroutines must schedule exactly one hub
 	// turn. Uses a blocking adapter so G2 always races against an in-flight turn
