@@ -1730,15 +1730,12 @@ export function WorkflowsSettings(): React.ReactElement {
             value={draft.agentRef ?? ""}
           >
             <option value="">(none)</option>
-            {agentOptions.map((agent) => {
-              const value = agent.path || agent.name;
-              return (
-                <option key={value} value={value}>
-                  {agent.name} ({agent.source})
-                </option>
-              );
-            })}
-            {draft.agentRef && !agentOptions.some((agent) => (agent.path || agent.name) === draft.agentRef) ? (
+            {agentOptions.map((agent) => (
+              <option key={agent.name} value={agent.name}>
+                {agent.name} ({agent.source})
+              </option>
+            ))}
+            {draft.agentRef && !agentOptions.some((agent) => agent.name === draft.agentRef) ? (
               <option value={draft.agentRef}>{draft.agentRef} (current value, not in this project's list)</option>
             ) : null}
           </select>
