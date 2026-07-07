@@ -11,6 +11,8 @@ import type {
 import { FLOW_BEHAVIOR_OPTIONS, FLOW_EDGE_TERMINALS, validateFlowGraph } from "@flowpilot/client-core";
 import { getAdminUseCases } from "@/clientCore";
 import { formatTimestamp, integrationTypes, toErrorMessage } from "@/components/settings/settingsHelpers";
+import { createRunnerClient } from "@/client/createRunnerClient";
+import type { AgentDefinition } from "@/types/contract";
 
 type Tab = "workflows" | "steps";
 type ViewMode = "list" | "create";
@@ -270,6 +272,19 @@ export function WorkflowsSettings(): React.ReactElement {
   const [createStepDraft, setCreateStepDraft] = useState<StepDefinition>(() =>
     createEmptyStepDraft(DEFAULT_MODEL),
   );
+  // Owner finding (2026-07-06): step-definitions are edited in the Steps tab,
+  // independent of any one workflow, so there's no workflow.projectId to
+  // resolve a real target-project cwd from automatically. This lets the user
+  // explicitly pick which project's agents to preview/select for Agent ref —
+  // "" (Workspace global) loads only built-in + provider-home agents (no
+  // project-local .claude/agents, since there's no fixed cwd for those).
+  // Whatever gets picked here is a real, working agent at runtime: Go's
+  // spawnChildRun falls back to agentCatalog.listAgents(cwd) — cwd = the
+  // RUN's own workspaceCwd at that time — whenever resolvePackAgentDefinition
+  // (built-ins only) doesn't recognize the name, so a project-local agent
+  // works as long as the flow actually runs against that same project later.
+  const [agentPreviewProjectId, setAgentPreviewProjectId] = useState("");
+  const [agentOptions, setAgentOptions] = useState<AgentDefinition[]>([]);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
@@ -475,6 +490,27 @@ export function WorkflowsSettings(): React.ReactElement {
   useEffect(() => {
     void refresh();
   }, []);
+
+  useEffect(() => {
+    const cwd = projects.find((project) => project.id === agentPreviewProjectId)?.directoryPath ?? undefined;
+    let cancelled = false;
+    const client = createRunnerClient();
+    if (!client.listAgents) {
+      setAgentOptions([]);
+      return;
+    }
+    client
+      .listAgents(cwd)
+      .then((agents) => {
+        if (!cancelled) setAgentOptions(agents);
+      })
+      .catch(() => {
+        if (!cancelled) setAgentOptions([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentPreviewProjectId, projects]);
 
   useEffect(() => {
     if (
@@ -1647,12 +1683,38 @@ export function WorkflowsSettings(): React.ReactElement {
           </select>
         </label>
         <label className="settings-field">
+          <span>Preview agents for project</span>
+          <select
+            onChange={(event) => setAgentPreviewProjectId(event.target.value)}
+            value={agentPreviewProjectId}
+          >
+            <option value="">Workspace global (built-in + provider-home only)</option>
+            {projects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="settings-field">
           <span>Agent ref</span>
-          <input
+          <select
             onChange={(event) => onChange({ ...draft, agentRef: event.target.value || null })}
-            placeholder="e.g. agents/coder.md"
             value={draft.agentRef ?? ""}
-          />
+          >
+            <option value="">(none)</option>
+            {agentOptions.map((agent) => {
+              const value = agent.path || agent.name;
+              return (
+                <option key={value} value={value}>
+                  {agent.name} ({agent.source})
+                </option>
+              );
+            })}
+            {draft.agentRef && !agentOptions.some((agent) => (agent.path || agent.name) === draft.agentRef) ? (
+              <option value={draft.agentRef}>{draft.agentRef} (current value, not in this project's list)</option>
+            ) : null}
+          </select>
         </label>
         <label className="settings-field">
           <span>Lifecycle</span>
