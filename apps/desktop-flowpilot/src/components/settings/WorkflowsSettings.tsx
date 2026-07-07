@@ -75,6 +75,14 @@ const REASONING_OPTIONS = [
   { value: "high", label: "High" },
   { value: "xhigh", label: "XHigh" },
 ] as const;
+// The 3 outcome statuses a hub.inline node's flow_control call can actually
+// produce (mapped via reviewOutcomeFace() in the runner). A plain
+// agent.delegate node only ever completes as "done" - it has no way to
+// produce "continue"/"escalate" itself. A native <select> here (not a
+// datalist "suggestion" input) avoids a real browser quirk: an <input
+// list=...> only filters the datalist to entries matching what's ALREADY
+// typed, so once a field held "done", the other two options never showed.
+const WORKFLOW_EDGE_WHEN_OPTIONS = ["done", "continue", "escalate"] as const;
 
 function deriveStepPromptBase(input: { stepType: string; name: string; description: string }) {
   const title = input.name.trim() || input.stepType.trim() || "workflow step";
@@ -1350,13 +1358,21 @@ export function WorkflowsSettings(): React.ReactElement {
                 </label>
                 <label className="settings-field">
                   <span>When (outcome status)</span>
-                  <input
+                  <select
                     disabled={readOnly}
-                    list="workflow-edge-when-suggestions"
                     onChange={(event) => updateWorkflowEdge(index, { when: event.target.value }, source)}
-                    placeholder="done | continue | escalate"
                     value={edge.when}
-                  />
+                  >
+                    <option value="">(select an outcome)</option>
+                    {WORKFLOW_EDGE_WHEN_OPTIONS.map((option) => (
+                      <option key={option} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                    {edge.when && !(WORKFLOW_EDGE_WHEN_OPTIONS as readonly string[]).includes(edge.when) ? (
+                      <option value={edge.when}>{edge.when} (current value)</option>
+                    ) : null}
+                  </select>
                 </label>
                 <label className="settings-field">
                   <span>Kind</span>
@@ -1383,11 +1399,6 @@ export function WorkflowsSettings(): React.ReactElement {
             ))
           )}
         </div>
-        <datalist id="workflow-edge-when-suggestions">
-          <option value="done" />
-          <option value="continue" />
-          <option value="escalate" />
-        </datalist>
         <button
           className="secondary-btn"
           disabled={readOnly || nodeOptions.length === 0}
