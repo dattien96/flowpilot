@@ -429,6 +429,21 @@ input {
   align-items: center;
   gap: 6px;
 }
+/* BUG-234: review-loop round counter. Dim on the first pass, highlighted once
+   the flow has looped back (round > 1) so a loop-back is legible at a glance. */
+.flow-sidebar-round {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+.flow-sidebar-round-active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
 .flow-sidebar-current {
   font-size: 12.5px;
   font-weight: 600;
@@ -655,6 +670,19 @@ input {
   border-right: 1px solid var(--border);
   background: var(--bg-2);
   padding: 20px 16px;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+  min-height: 0;
+}
+.settings-sidebar-bottom {
+  margin-top: auto;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.settings-sidebar-bottom .system-controls {
+  padding: 4px 0 0;
+  border-top: 0;
 }
 .settings-nav {
   display: grid;
@@ -709,7 +737,8 @@ input {
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.42);
 }
 .settings-panel {
-  max-width: 880px;
+  max-width: 1200px;
+  margin: 0 auto;
   padding: 24px;
   border: 1px solid var(--border);
   border-radius: 16px;
@@ -766,11 +795,13 @@ input {
 .settings-card strong {
   display: block;
   margin-bottom: 3px;
+  overflow-wrap: anywhere;
 }
 .settings-list-item span,
 .settings-card span {
   color: var(--text-dim);
   font-size: 12px;
+  overflow-wrap: anywhere;
 }
 .settings-list-item.active {
   border-color: var(--accent);
@@ -778,6 +809,48 @@ input {
 }
 .settings-list-item.static {
   cursor: default;
+}
+.settings-list-item.checkable {
+  justify-content: flex-start;
+}
+.settings-list-item.bulk-selected {
+  border-color: var(--err);
+  background: rgba(248, 81, 73, 0.1);
+}
+.settings-bulk-checkbox {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--err);
+}
+.settings-bulk-checkbox:disabled {
+  opacity: 0.4;
+}
+.settings-list-item.not-deletable {
+  opacity: 0.6;
+}
+.settings-list-item.checkable.not-deletable {
+  cursor: default;
+}
+.project-bulk-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  border: 1px solid var(--err);
+  border-radius: 10px;
+  background: rgba(248, 81, 73, 0.08);
+  color: var(--text);
+}
+.danger-btn {
+  border-color: var(--err);
+  color: var(--err);
+}
+.settings-list-item-meta {
+  display: block;
+  font-size: 11px;
 }
 .settings-provider-meta {
   display: flex;
@@ -796,6 +869,15 @@ input {
   border-radius: 12px;
   border: 1px dashed var(--border);
   color: var(--text-dim);
+}
+.settings-warning {
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--warn);
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  color: var(--warn);
+  font-size: 13px;
+  margin: 8px 0;
 }
 .settings-card {
   padding: 14px;
@@ -835,6 +917,17 @@ input {
 .project-registry-panel,
 .project-detail-column .settings-subpanel {
   margin-top: 0;
+}
+.project-registry-panel,
+.project-detail-column {
+  /* Each side scrolls on its own once it outgrows the available viewport
+     height, instead of both columns being yanked along by one shared
+     page-level scrollbar (which loses your place on whichever side you
+     weren't scrolling). 260px approximates the panel head + tabs + padding
+     sitting above .project-layout, measured against .settings-main's
+     top/bottom padding. */
+  max-height: calc(100vh - 260px);
+  overflow-y: auto;
 }
 .project-detail-column {
   display: grid;
@@ -1015,6 +1108,94 @@ input {
 }
 .workflow-step-grid {
   margin-top: 0;
+}
+.workflow-edges-panel {
+  margin-top: 16px;
+}
+.workflow-edge-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr)) auto;
+  align-items: end;
+  gap: 12px;
+}
+@media (max-width: 900px) {
+  .workflow-edge-row {
+    grid-template-columns: 1fr;
+  }
+}
+.link-btn {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+}
+.workflow-canvas-panel {
+  margin-top: 16px;
+}
+.workflow-canvas-surface {
+  position: relative;
+  height: 360px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-2);
+  touch-action: none;
+}
+.workflow-canvas-edges {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+}
+.workflow-canvas-edge {
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+.workflow-canvas-edge.back {
+  stroke-dasharray: 4 3;
+  stroke: var(--warn);
+}
+.workflow-canvas-arrowhead {
+  fill: var(--accent);
+}
+.workflow-canvas-edge-label {
+  font-size: 10px;
+  fill: var(--text-dim);
+}
+.workflow-canvas-node {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-3);
+  cursor: grab;
+  font-size: 12px;
+  user-select: none;
+  white-space: nowrap;
+}
+.workflow-canvas-node.terminal {
+  border-style: dashed;
+  color: var(--text-dim);
+}
+.workflow-canvas-node.connecting {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.workflow-canvas-connector {
+  border: none;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+  line-height: 1;
+  padding: 0;
 }
 .workflow-artifact-selector {
   display: grid;
@@ -3146,6 +3327,18 @@ input {
 }
 .text-area {
   resize: none;
+}
+.flow-awaiting-user-detail {
+  min-height: 60px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.flow-awaiting-user-feedback {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  margin-top: 8px;
 }
 
 /* Skill-name highlight backdrop */

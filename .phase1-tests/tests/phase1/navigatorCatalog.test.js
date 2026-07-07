@@ -24,6 +24,33 @@ const navigatorCatalog_1 = require("../../apps/desktop-flowpilot/src/app/navigat
         projectId: "",
         name: "Global Workflow",
         description: "Shared",
+        model: undefined,
+        yoloMode: false,
+    });
+});
+// BUG-230: modelOverride/yoloMode were previously dropped, so the desktop's
+// pre-run preview always fell through to the project's default model no
+// matter what a workflow's own Settings > Workflows override said.
+(0, node_test_1.default)("mapNavigatorWorkflow carries modelOverride and yoloMode through to the navigator Workflow", () => {
+    strict_1.default.deepEqual((0, navigatorCatalog_1.mapNavigatorWorkflow)({
+        id: "review-loop",
+        projectId: null,
+        name: "Review Loop",
+        description: "Built-in review loop",
+        isTemplate: false,
+        providerOverride: null,
+        modelOverride: "claude-haiku",
+        reasoningEffortOverride: "medium",
+        yoloMode: true,
+        createdAt: "",
+        updatedAt: "",
+    }), {
+        id: "review-loop",
+        projectId: "",
+        name: "Review Loop",
+        description: "Built-in review loop",
+        model: "claude-haiku",
+        yoloMode: true,
     });
 });
 (0, node_test_1.default)("mapNavigatorStep uses step type as the launch id and first required skill as hint", () => {
@@ -50,6 +77,37 @@ const navigatorCatalog_1 = require("../../apps/desktop-flowpilot/src/app/navigat
         name: "Tech Spec",
         order: 3,
         defaultSkill: "tech_spec_skill",
+        model: "gpt-5.4",
+        yoloMode: false,
+    });
+});
+// BUG-230: the step tier's own model/yoloMode were previously dropped here too.
+(0, node_test_1.default)("mapNavigatorStep carries model and yoloMode through to the navigator Step", () => {
+    strict_1.default.deepEqual((0, navigatorCatalog_1.mapNavigatorStep)({
+        stepType: "reviewer",
+        name: "Reviewer",
+        description: "",
+        promptBase: null,
+        requiredMcps: [],
+        mcpAccessMode: "read_only",
+        requiredSkills: [],
+        teamRole: null,
+        subagent: null,
+        model: "claude-sonnet",
+        reasoningEffort: "high",
+        yoloMode: true,
+        agentType: "standard",
+        inputArtifactDefinitions: [],
+        outputArtifactDefinitions: [],
+        createdAt: "",
+        updatedAt: "",
+    }, 1), {
+        id: "reviewer",
+        name: "Reviewer",
+        order: 1,
+        defaultSkill: undefined,
+        model: "claude-sonnet",
+        yoloMode: true,
     });
 });
 (0, node_test_1.default)("filterNavigatorWorkflows keeps global workflows alongside project-scoped ones", () => {

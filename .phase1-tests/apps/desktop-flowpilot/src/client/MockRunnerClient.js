@@ -416,6 +416,31 @@ class MockRunnerClient {
                 cap: currentCap + 2,
                 extendCount: (prev.extendCount ?? 0) + 1,
                 status: "running",
+                blockReason: undefined,
+            },
+        };
+        this.parentGraphs.set(parentRunId, graph);
+        return graph.snapshot;
+    }
+    // BUG-231: mirrors the runner's resumeFlowWithFeedback — auto-extends the
+    // cap only when the block reason was "cap", leaves it alone for "escalate".
+    async continueFlow(parentRunId, _feedback) {
+        const graph = await this.syncParentGraph(parentRunId);
+        const prev = graph.snapshot.loopState;
+        if (prev.status !== "blocked") {
+            return graph.snapshot;
+        }
+        const currentCap = prev.cap ?? prev.roundCap ?? 3;
+        const extendForCap = prev.blockReason === "cap";
+        graph.snapshot = {
+            ...graph.snapshot,
+            loopState: {
+                ...prev,
+                cap: extendForCap ? currentCap + 2 : currentCap,
+                extendCount: extendForCap ? (prev.extendCount ?? 0) + 1 : prev.extendCount,
+                status: "running",
+                gateReason: undefined,
+                blockReason: undefined,
             },
         };
         this.parentGraphs.set(parentRunId, graph);

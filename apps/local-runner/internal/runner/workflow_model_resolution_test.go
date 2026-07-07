@@ -96,6 +96,36 @@ func TestCreateRunResolvesModelFromStepWhenSet(t *testing.T) {
 	}
 }
 
+// TestCreateRunResolvesEntryStepModelFromRoleFallback reproduces the "main"
+// half of BUG-235-follow-up: a flow-pack-mirrored entry step's own
+// step_definitions row (keyed by a per-flow/per-node step_type like
+// "review-loop__coder") never carries a model — only the purpose-named role
+// row ("flow-agent-delegate-coder", the row Settings > Workflows actually
+// writes to) does. The Step tier must still resolve that role model instead
+// of skipping straight to the Flow/Project tiers, so the run's own launch
+// posture (displayed as "main" in the desktop Agents panel) matches what the
+// user configured for the entry node's role.
+func TestCreateRunResolvesEntryStepModelFromRoleFallback(t *testing.T) {
+	catalog := baseTestCatalog()
+	// Entry step's mirrored row: node_id/agent_ref set, but no model — this is
+	// exactly what upsertNodeStepDefinitions writes for a flow-pack node.
+	catalog.steps["wf-1"][0].NodeID = "coder"
+	catalog.steps["wf-1"][0].AgentRef = "agents/coder.md"
+	catalog.steps["wf-1"][0].Model = ""
+	// The role-purpose row Settings > Workflows configures for "coder" nodes.
+	// A codex-prefixed model, matching the other cases in this file — the
+	// default test registry only marks Codex as selectable.
+	catalog.steps["role-rows"] = []Step{
+		{ID: "flow-agent-delegate-coder", Model: "gpt-5.5-role"},
+	}
+	catalog.workflows["proj-1"][0].Model = "gpt-5.5-flow" // must lose to the role fallback
+	catalog.projects[0].Model = "gpt-5.5-project"         // must lose to the role fallback
+
+	if got := resolvedRunModel(t, catalog); got != "gpt-5.5-role" {
+		t.Fatalf("resolved model = %q, want gpt-5.5-role (role-fallback Step tier)", got)
+	}
+}
+
 func TestCreateRunFallsBackToFlowWhenStepModelEmpty(t *testing.T) {
 	catalog := baseTestCatalog()
 	// Step has no model.
@@ -114,6 +144,54 @@ func TestCreateRunFallsBackToProjectWhenStepAndFlowModelEmpty(t *testing.T) {
 
 	if got := resolvedRunModel(t, catalog); got != "gpt-5.5-project" {
 		t.Fatalf("resolved model = %q, want gpt-5.5-project (Project tier)", got)
+	}
+}
+
+// BUG-229: a direct single-step launch (StepID set, no WorkflowID) resolves
+// its model from the selected step ONLY — no Project fallback, unlike the
+// normal-flow branch above (which legitimately falls Step > Flow > Project).
+func TestCreateRunSingleStepResolvesModelFromStepOnly(t *testing.T) {
+	catalog := baseTestCatalog()
+	catalog.steps["wf-1"][0].Model = "gpt-5.5-step"
+	catalog.projects[0].Model = "gpt-5.5-project" // must lose to Step
+
+	svc, srv := newTestServerWithCatalog(t, catalog)
+	status, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs", StartRunInput{ProjectID: "proj-1", StepID: "step-1"}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("start run status=%d body=%s", status, body)
+	}
+	var h RunHandle
+	mustDecode(t, body, &h)
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	rs, ok := svc.runs[h.RunID]
+	if !ok {
+		t.Fatalf("run %q not tracked", h.RunID)
+	}
+	if rs.modelName != "gpt-5.5-step" {
+		t.Fatalf("resolved model = %q, want gpt-5.5-step (Step tier)", rs.modelName)
+	}
+}
+
+// BUG-229: unlike the normal-flow branch (TestCreateRunFallsBackToProjectWhenStepAndFlowModelEmpty),
+// a single-step launch with no step model configured must NOT fall back to the
+// project default — it has no Flow context, so per spec it reads Step only and
+// is non-runnable rather than silently borrowing an unrelated project model.
+func TestCreateRunSingleStepDoesNotFallBackToProjectModel(t *testing.T) {
+	catalog := baseTestCatalog()
+	// Step has no model; project does.
+	catalog.projects[0].Model = "gpt-5.5-project"
+
+	_, srv := newTestServerWithCatalog(t, catalog)
+	status, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs", StartRunInput{ProjectID: "proj-1", StepID: "step-1"}, nil)
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (body=%s)", status, http.StatusBadRequest, body)
+	}
+	var res map[string]any
+	mustDecode(t, body, &res)
+	errMap, _ := res["error"].(map[string]any)
+	if errMap == nil || errMap["code"] != "no_model_configured" {
+		t.Fatalf("error code = %v, want no_model_configured. body=%s", errMap["code"], body)
 	}
 }
 
@@ -166,6 +244,10 @@ func TestCreateRunResolvesWorkflowYoloEvenWhenEntryStepDefinesModel(t *testing.T
 func TestCreateRunResolvesYoloFromSingleStepWhenEnabled(t *testing.T) {
 	catalog := baseTestCatalog()
 	catalog.steps["wf-1"][0].YoloMode = true
+	// BUG-229: a single-step launch resolves its model from the step only (no
+	// Project fallback), so the step needs its own model for the run to start
+	// at all — this test's concern is YOLO resolution, not model resolution.
+	catalog.steps["wf-1"][0].Model = "gpt-5.5-step"
 
 	if got := resolvedRunYolo(t, catalog, StartRunInput{ProjectID: "proj-1", StepID: "step-1"}); !got {
 		t.Fatal("single-step run yolo = false, want true from selected step yolo_mode")

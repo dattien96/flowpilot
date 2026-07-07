@@ -7,6 +7,7 @@ const LABEL: Record<RunStatusValue, string> = {
   running: "Running",
   waiting_approval: "Waiting · approval",
   waiting_question: "Waiting · question",
+  blocked: "Waiting · your input",
   completed: "Completed",
   failed: "Failed",
   cancelled: "Cancelled",
@@ -20,7 +21,7 @@ export function RunStatus(): React.ReactElement {
   const stop = useStore((s) => s.stop);
   const agentRuns = useStore((s) => s.agentRuns);
 
-  const active = status === "running" || status === "waiting_approval" || status === "waiting_question";
+  const active = status === "running" || status === "waiting_approval" || status === "waiting_question" || status === "blocked";
   const ready = status === "idle" && !runId && projects.length > 0;
   const statusClass = ready ? "ready" : status;
   const statusLabel = ready ? "Run Ready" : LABEL[status];

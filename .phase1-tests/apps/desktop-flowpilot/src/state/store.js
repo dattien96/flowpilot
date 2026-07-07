@@ -6,6 +6,8 @@ exports.providerLabel = providerLabel;
 exports.isFlowModeRun = isFlowModeRun;
 exports.activeWorkflowStep = activeWorkflowStep;
 exports.hasRetries = hasRetries;
+exports.mergeAgentRunsById = mergeAgentRunsById;
+exports.deriveOrchestrationRunStatus = deriveOrchestrationRunStatus;
 const zustand_1 = require("zustand");
 const createRunnerClient_1 = require("@/client/createRunnerClient");
 const HttpWsRunnerClient_1 = require("@/client/HttpWsRunnerClient");
@@ -21,6 +23,7 @@ let activeOrchestrationStreamController;
 let activeAgentFocusStreamController;
 function applyAgentGraphSnapshot(snapshot) {
     return {
+        agentRuns: snapshot.runs,
         agentGraphSnapshot: snapshot,
         agentBusMessages: snapshot.busMessages,
     };
@@ -234,7 +237,14 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
         try {
             const agentRuns = await client.listAgentRuns(parentRunId);
             if (get()._agentRunsLoadSeq === seq && (get().mainRunId === parentRunId || get().runId === parentRunId)) {
-                set({ agentRuns });
+                // BUG-169: merge (not replace) with whatever is already in state, same as the SSE
+                // agent_graph_updated path (mergeAgentRunsById, BUG-132). This is a fire-and-forget
+                // HTTP snapshot racing a live SSE channel — AgentsPanel fires a refresh the instant
+                // mainRunId is set (before anything has spawned), and if that request is slow enough
+                // to resolve AFTER a later SSE update already merged a freshly-spawned child in,
+                // replacing wholesale here would wipe that child back out even though it is really
+                // running. Merging makes the two sources converge instead of racing.
+                set((s) => ({ agentRuns: mergeAgentRunsById(s.agentRuns, agentRuns) }));
             }
         }
         catch (err) {
@@ -283,12 +293,32 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
         set(applyAgentGraphSnapshot(await client.resumeAgentLoop(parentRunId))); },
     async injectAgentFeedback(toRunId, message) { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.injectAgentFeedback)
         set(applyAgentGraphSnapshot(await client.injectAgentFeedback(parentRunId, toRunId, message))); },
-    async stopAgentLoop() { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.stopAgentLoop)
-        set(applyAgentGraphSnapshot(await client.stopAgentLoop(parentRunId))); },
+    async stopAgentLoop() { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.stopAgentLoop) {
+        set(applyAgentGraphSnapshot(await client.stopAgentLoop(parentRunId))); /* Bug 3 fix: also interrupt to forcefully terminate the in-flight provider turn */
+        if (client.interrupt) {
+            try {
+                await client.interrupt(parentRunId);
+            }
+            catch { /* best-effort: interrupt may 404 if no turn is in flight */ }
+        }
+    } },
     async submitReviewOutcome(outcome, issues) { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.submitReviewOutcome)
         set(applyAgentGraphSnapshot(await client.submitReviewOutcome(parentRunId, { outcome, issues }))); },
     async extendCap() { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.extendCap)
         set(applyAgentGraphSnapshot(await client.extendCap(parentRunId))); },
+    async continueFlow(feedback) {
+        const { client, mainRunId, runId, activeAgentRunId } = get();
+        const parentRunId = mainRunId ?? runId;
+        if (!parentRunId || !client.continueFlow)
+            return;
+        // BUG-231 follow-up: resuming while a child agent is focused must not let the
+        // hub's resumed turn stream into the focused child's transcript — return to
+        // the main run first so the response lands where the user is looking.
+        if (activeAgentRunId && activeAgentRunId !== parentRunId) {
+            get().backToMainRun();
+        }
+        set(applyAgentGraphSnapshot(await client.continueFlow(parentRunId, feedback)));
+    },
     async listAgents(cwd) {
         const { client } = get();
         if (!client.listAgents)
@@ -857,7 +887,26 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
             status: s.pendingApprovals.length > 1 ? "waiting_approval" : "running",
             timeline: s.timeline.map((it) => it.kind === "approval" && it.approvalId === approvalId ? { ...it, decision } : it),
         }));
-        await get().client.submitApproval(approvalId, decision);
+        try {
+            await get().client.submitApproval(approvalId, decision);
+        }
+        catch (err) {
+            // BUG-172: mirror sendPrompt's error handling — an unhandled rejection here
+            // (e.g. a transient network blip while YOLO fires off rapid step
+            // transitions) used to leave the run silently stuck in whatever status the
+            // optimistic update above set, with nothing telling the user it never
+            // reached the server.
+            // eslint-disable-next-line no-console
+            console.error("[FlowPilot] approve failed:", err);
+            set((s) => ({
+                status: "failed",
+                recoverable: true,
+                timeline: [
+                    ...s.timeline,
+                    { kind: "system", id: `err-approve-${s.timeline.length}`, text: runErrorMessage(err), tone: "error" },
+                ],
+            }));
+        }
     },
     async answer(questionId, choice) {
         // Same rationale as approve() (BUG-157) — resolve the specific card the user
@@ -871,12 +920,48 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
             status: s.pendingQuestions.length > 1 ? "waiting_question" : "running",
             timeline: s.timeline.map((it) => it.kind === "question" && it.questionId === questionId ? { ...it, answer: choice } : it),
         }));
-        await get().client.answerQuestion(questionId, choice);
+        try {
+            await get().client.answerQuestion(questionId, choice);
+        }
+        catch (err) {
+            // BUG-172: see approve() above — same failure mode for the question path.
+            // eslint-disable-next-line no-console
+            console.error("[FlowPilot] answer failed:", err);
+            set((s) => ({
+                status: "failed",
+                recoverable: true,
+                timeline: [
+                    ...s.timeline,
+                    { kind: "system", id: `err-answer-${s.timeline.length}`, text: runErrorMessage(err), tone: "error" },
+                ],
+            }));
+        }
     },
     async stop() {
-        const { client, runId } = get();
+        const { client, runId, mainRunId, activeAgentRunId } = get();
         if (!runId)
             return;
+        const parentRunId = mainRunId ?? runId;
+        const childFocused = Boolean(activeAgentRunId && parentRunId && activeAgentRunId !== parentRunId);
+        if (!childFocused && parentRunId && client.stopAgentLoop && hasActiveParentAgentLoop(get(), parentRunId)) {
+            const snapshot = await client.stopAgentLoop(parentRunId);
+            set((s) => ({
+                ...applyAgentGraphSnapshot(snapshot),
+                status: deriveOrchestrationRunStatus(s.status, snapshot),
+                timeline: s.timeline.filter((it) => it.kind !== "thinking"),
+            }));
+            await client.interrupt(parentRunId);
+            void get().refreshAgentRuns();
+            void get().refreshWorkflowStepRuntime();
+            return;
+        }
+        if (!childFocused && get().chatMode === "workflow_step_auto" && parentRunId) {
+            if (client.stopAgentLoop) {
+                set(applyAgentGraphSnapshot(await client.stopAgentLoop(parentRunId)));
+            }
+            await client.interrupt(parentRunId);
+            return;
+        }
         await client.interrupt(runId);
     },
     async reconnect() {
@@ -1124,12 +1209,23 @@ exports.useStore = (0, zustand_1.create)((set, get) => ({
             status: handle.status,
             stepId: handle.stepId,
         });
+        // BUG-170: restore the mode this run actually was, not whatever the UI happened to be
+        // in before the user clicked a history item. Without this, reopening a workflow/flow-
+        // mode run left chatMode stuck (often "normal_chat"), so the reopened run rendered
+        // without its Flow Mode surfaces (step-timeline sidebar, agents panel gating) even
+        // though the runner resumed it correctly. runKind is "chat" for normal_chat runs and
+        // "workflow" (or, for older persisted rows, undefined) for everything else.
+        const isWorkflowHistoryItem = historyItem?.runKind !== "chat";
         set({
             runId: handle.runId,
             mainRunId: handle.runId,
             activeAgentRunId: undefined,
             status: handle.status,
             activeStepId: handle.stepId,
+            chatMode: isWorkflowHistoryItem ? "workflow_step_auto" : "normal_chat",
+            ...(isWorkflowHistoryItem && historyItem?.workflowId
+                ? { launchMode: "workflow", selectedWorkflowId: historyItem.workflowId }
+                : {}),
             timeline: [],
             artifacts: [],
             pendingApprovals: [],
@@ -1432,6 +1528,15 @@ async function consumeStream(runId, stream, set, get) {
         if (!isEventForRun(e, runId))
             continue;
         set((s) => applyEvent(s, e));
+        // BUG-180: the hub's first turn is consumed here (not the orchestration
+        // stream, which only starts after the turn), and the flow executor reseeds +
+        // transitions steps while the coder runs during that turn. Each transition
+        // rides alongside an agent_graph_updated, so refresh the step runtime here too
+        // to keep the timeline live during the initial coder phase. (Self-guarded.)
+        if (e.type === "agent_graph_updated")
+            void get().refreshWorkflowStepRuntime();
+        if (e.type === "agent_graph_updated")
+            void get().refreshAgentRuns();
         if (e.type === "turn_failed" && !e.recoverable && isUsageLimitMessage(e.error)) {
             const s = get();
             if (s.chatMode === "normal_chat" && s.selectedProvider && !s.pendingAccountSwitch && !s.accountSwitchLoading) {
@@ -1579,6 +1684,17 @@ async function consumeOrchestrationStream(runId, stream, orchestrationSeq, after
             continue;
         if (e.type === "agent_graph_updated" || e.type === "agent_bus_message") {
             set((s) => applyOrchestrationEvent(s, e));
+            // BUG-180: the flow executor's step transitions (node spawn → RUNNING,
+            // cohort-join → DONE, etc.) are store writes with no dedicated event, so the
+            // step timeline was stale until a focus switch re-fetched it. Every such
+            // transition rides alongside an agent_graph_updated (child lifecycle change),
+            // so refresh the step-runtime here to make the timeline update live.
+            // refreshWorkflowStepRuntime self-guards (chatMode + load-seq + target-run),
+            // so this is safe and de-duped against races.
+            if (e.type === "agent_graph_updated") {
+                void get().refreshWorkflowStepRuntime();
+                void get().refreshAgentRuns();
+            }
         }
         else {
             // CP-35: gate reprompt events (turn_started, message_delta, turn_completed, etc.)
@@ -1628,6 +1744,13 @@ function isEventForRun(e, runId) {
 function isTerminalRunStatus(status) {
     return status === "completed" || status === "failed" || status === "cancelled";
 }
+function hasActiveParentAgentLoop(state, parentRunId) {
+    const snapshot = state.agentGraphSnapshot;
+    if (!snapshot || snapshot.parentRunId !== parentRunId)
+        return false;
+    const status = snapshot.loopState.status;
+    return Boolean(status) && status !== "done" && status !== "stopped";
+}
 function settleTerminalReplayVisuals(runId, replayStatus, set) {
     if (!isTerminalRunStatus(replayStatus))
         return;
@@ -1644,12 +1767,33 @@ function settleTerminalReplayVisuals(runId, replayStatus, set) {
 // The live SSE graph snapshot is in-memory only and omits disk-persisted closed children
 // that the HTTP list (listAgentRunSummaries) includes; replacing wholesale dropped the
 // "Recently closed" entries while an agent was running. Merging preserves them (BUG-132).
+//
+// BUG-235: a run's status is monotonic once terminal (completed/failed/cancelled never
+// goes back to running/waiting) — but incoming can be a STALE snapshot: refreshAgentRuns'
+// HTTP request is fire-and-forget and can be captured server-side before a child finished,
+// then resolve and land AFTER the SSE agent_graph_updated event that already correctly
+// marked it terminal. Unconditional "incoming wins" let that late, stale "running" revert
+// the already-correct terminal status — and since no further event fires for an already-
+// finished child, it stayed wrongly "running" forever (Agents panel + the leftover
+// "reviewer · running" card in the main chat, even after the whole flow completed). Never
+// let a non-terminal incoming status overwrite an existing terminal one.
 function mergeAgentRunsById(existing, incoming) {
     const byId = new Map();
     for (const run of existing)
         byId.set(run.runId, run);
-    for (const run of incoming)
+    for (const run of incoming) {
+        const prev = byId.get(run.runId);
+        if (prev && isTerminalRunStatus(prev.status) && !isTerminalRunStatus(run.status)) {
+            // BUG-235: never let a stale HTTP snapshot revert an already-terminal status.
+            // Exception (BUG-Rnd2): when the backend genuinely reinvokes the same runId
+            // (lifecycle: reinvoke), it increments activationSeq. A higher activationSeq
+            // means this is a real completed→running transition, not a stale snapshot.
+            const isGenuineReinvoke = (run.activationSeq ?? 0) > (prev.activationSeq ?? 0);
+            if (!isGenuineReinvoke)
+                continue;
+        }
         byId.set(run.runId, run);
+    }
     return [...byId.values()];
 }
 function applyEvent(s, e) {
@@ -1732,11 +1876,13 @@ function applyEvent(s, e) {
 function applyOrchestrationEvent(s, e) {
     const nextReplaySeq = { ...s._runReplaySeq, [e.workflowRunId]: e.seq };
     if (e.type === "agent_graph_updated") {
+        const nextStatus = deriveOrchestrationRunStatus(s.status, e.agentGraphSnapshot);
         return {
             // Merge (not replace) so disk-persisted closed children stay visible (BUG-132).
             agentRuns: mergeAgentRunsById(s.agentRuns, e.agentGraphSnapshot.runs),
             agentGraphSnapshot: e.agentGraphSnapshot,
             agentBusMessages: e.agentGraphSnapshot.busMessages,
+            status: nextStatus,
             _runReplaySeq: nextReplaySeq,
         };
     }
@@ -1750,6 +1896,35 @@ function applyOrchestrationEvent(s, e) {
         };
     }
     return {};
+}
+function deriveOrchestrationRunStatus(current, snapshot) {
+    const childStatuses = snapshot.runs.map((run) => run.status);
+    if (childStatuses.some((status) => status === "waiting_approval")) {
+        return "waiting_approval";
+    }
+    if (childStatuses.some((status) => status === "waiting_question")) {
+        return "waiting_question";
+    }
+    if (childStatuses.some((status) => status === "running" || status === "waiting_approval" || status === "waiting_question")) {
+        return "running";
+    }
+    switch (snapshot.loopState.status) {
+        case "running":
+        case "paused":
+            return "running";
+        case "blocked":
+            // BUG-231: a blocked loop is a deliberate, non-terminal "awaiting user"
+            // pause (escalate, or the round cap reached) — it must NOT read as
+            // "running", or the composer stays locked ("Waiting for the current
+            // turn…") with no way for the very user the flow is waiting on to respond.
+            return "blocked";
+        case "stopped":
+            return "cancelled";
+        case "done":
+            return current === "failed" || current === "cancelled" ? current : "completed";
+        default:
+            return current;
+    }
 }
 function runErrorMessage(err) {
     if (err instanceof HttpWsRunnerClient_1.RunnerApiError) {

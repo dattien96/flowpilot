@@ -697,6 +697,172 @@ async function* cursorChildStream() {
     strict_1.default.equal(store_1.useStore.getState().agentGraphSnapshot?.loopState.round, 1);
     strict_1.default.equal(store_1.useStore.getState().agentBusMessages.at(-1)?.message, "ready-for-review");
 });
+(0, node_test_1.default)("workflow handoff turn settles and orchestration stream keeps the run active", async () => {
+    const orchestrationGate = deferred();
+    let streamCallCount = 0;
+    seedStore(makeClient({
+        startRun: async () => ({
+            runId: "current-run",
+            providerSessionId: "session-1",
+            providerKey: "codex",
+            status: "running",
+            stepId: "wf-1",
+        }),
+        sendTurn: async function* () {
+            yield { ...BASE_EVENT, workflowRunId: "current-run", seq: 1, type: "turn_started", providerTurnId: "turn-1", prompt: "hello" };
+            yield { ...BASE_EVENT, id: "evt-coder", workflowRunId: "current-run", seq: 2, type: "agent_spawned_by_user", agentName: "coder", childRunId: "child-coder" };
+            yield { ...BASE_EVENT, workflowRunId: "current-run", seq: 3, type: "turn_completed", providerTurnId: "turn-1", finalMessage: "" };
+        },
+        streamRun: async function* () {
+            streamCallCount++;
+            await orchestrationGate.promise;
+            yield {
+                ...BASE_EVENT,
+                workflowRunId: "current-run",
+                seq: 4,
+                type: "agent_graph_updated",
+                agentGraphSnapshot: {
+                    parentRunId: "current-run",
+                    runs: [
+                        {
+                            runId: "child-coder",
+                            agentName: "coder",
+                            role: "coder",
+                            status: "completed",
+                            parentRunId: "current-run",
+                            createdAt: "2026-01-01T00:00:00Z",
+                            agentStatus: "completed",
+                        },
+                        {
+                            runId: "child-reviewer",
+                            agentName: "reviewer",
+                            role: "reviewer",
+                            status: "running",
+                            parentRunId: "current-run",
+                            createdAt: "2026-01-01T00:00:01Z",
+                            agentStatus: "running",
+                        },
+                    ],
+                    edges: [],
+                    busMessages: [],
+                    loopState: { status: "running", round: 1, roundCap: 3 },
+                },
+            };
+            yield {
+                ...BASE_EVENT,
+                id: "evt-reviewer",
+                workflowRunId: "current-run",
+                seq: 5,
+                type: "agent_spawned_by_user",
+                agentName: "reviewer",
+                childRunId: "child-reviewer",
+            };
+        },
+    }), []);
+    store_1.useStore.setState({
+        chatMode: "workflow_step_auto",
+        launchMode: "workflow",
+        selectedWorkflowId: "wf-1",
+        selectedStepId: undefined,
+        runId: undefined,
+        mainRunId: undefined,
+        activeStepId: undefined,
+        status: "idle",
+        timeline: [],
+    });
+    await store_1.useStore.getState().sendPrompt("hello");
+    orchestrationGate.resolve();
+    let systemTexts = [];
+    for (let i = 0; i < 20; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        systemTexts = store_1.useStore
+            .getState()
+            .timeline.filter((item) => item.kind === "system")
+            .map((item) => item.text);
+        if (systemTexts.some((text) => text.includes("Spawned agent **reviewer**"))) {
+            break;
+        }
+    }
+    strict_1.default.equal(streamCallCount, 1);
+    strict_1.default.equal(store_1.useStore.getState().timeline.some((item) => item.kind === "thinking"), false);
+    strict_1.default.equal(store_1.useStore.getState().status, "running");
+    (0, strict_1.default)(systemTexts.some((text) => text.includes("Spawned agent **coder**")));
+    (0, strict_1.default)(systemTexts.some((text) => text.includes("Spawned agent **reviewer**")));
+});
+(0, node_test_1.default)("orchestration graph update refreshes stale agent run statuses without switching focus", async () => {
+    const orchestrationGate = deferred();
+    const completedRuns = [
+        {
+            runId: "child-reviewer",
+            agentName: "reviewer",
+            role: "reviewer",
+            status: "completed",
+            parentRunId: "current-run",
+            createdAt: "2026-01-01T00:00:01Z",
+            agentStatus: "completed",
+        },
+    ];
+    seedStore(makeClient({
+        startRun: async () => ({
+            runId: "current-run",
+            providerSessionId: "session-1",
+            providerKey: "codex",
+            status: "running",
+            stepId: "wf-1",
+        }),
+        sendTurn: async function* () {
+            yield { ...BASE_EVENT, workflowRunId: "current-run", seq: 1, type: "turn_started", providerTurnId: "turn-1", prompt: "hello" };
+            yield { ...BASE_EVENT, workflowRunId: "current-run", seq: 2, type: "turn_completed", providerTurnId: "turn-1", finalMessage: "" };
+        },
+        streamRun: async function* () {
+            await orchestrationGate.promise;
+            yield {
+                ...BASE_EVENT,
+                workflowRunId: "current-run",
+                seq: 3,
+                type: "agent_graph_updated",
+                agentGraphSnapshot: {
+                    parentRunId: "current-run",
+                    runs: [
+                        {
+                            runId: "child-reviewer",
+                            agentName: "reviewer",
+                            role: "reviewer",
+                            status: "running",
+                            parentRunId: "current-run",
+                            createdAt: "2026-01-01T00:00:01Z",
+                            agentStatus: "running",
+                        },
+                    ],
+                    edges: [],
+                    busMessages: [],
+                    loopState: { status: "running", round: 1, roundCap: 3 },
+                },
+            };
+        },
+        listAgentRuns: async () => completedRuns,
+    }), []);
+    store_1.useStore.setState({
+        chatMode: "workflow_step_auto",
+        launchMode: "workflow",
+        selectedWorkflowId: "wf-1",
+        selectedStepId: undefined,
+        runId: undefined,
+        mainRunId: undefined,
+        activeStepId: undefined,
+        status: "idle",
+        timeline: [],
+    });
+    await store_1.useStore.getState().sendPrompt("hello");
+    orchestrationGate.resolve();
+    for (let i = 0; i < 20; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        if (store_1.useStore.getState().agentRuns[0]?.status === "completed")
+            break;
+    }
+    strict_1.default.equal(store_1.useStore.getState().agentRuns[0]?.status, "completed");
+    strict_1.default.equal(store_1.useStore.getState().agentRuns[0]?.agentStatus, "completed");
+});
 (0, node_test_1.default)("refreshAgentRuns loads child summaries for the active main run", async () => {
     const agentRuns = [
         {
@@ -1570,6 +1736,84 @@ async function* cursorChildStream() {
     strict_1.default.equal(resumed.busMessages.at(-1)?.message, "revise the draft");
     strict_1.default.equal(stopped.loopState.status, "stopped");
 });
+(0, node_test_1.default)("stop uses loop stop plus parent interrupt for the main flow run", async () => {
+    const calls = [];
+    seedStore(makeClient({
+        stopAgentLoop: async (runId) => {
+            calls.push(`loop:${runId}`);
+            return { parentRunId: runId, runs: [], edges: [], busMessages: [], loopState: { status: "stopped", round: 0, roundCap: 3 } };
+        },
+        interrupt: async (runId) => {
+            calls.push(`interrupt:${runId}`);
+        },
+    }), []);
+    store_1.useStore.setState({
+        chatMode: "workflow_step_auto",
+        runId: "parent-1",
+        mainRunId: "parent-1",
+        activeAgentRunId: undefined,
+    });
+    await store_1.useStore.getState().stop();
+    strict_1.default.deepEqual(calls, ["loop:parent-1", "interrupt:parent-1"]);
+});
+(0, node_test_1.default)("stop uses loop stop plus parent interrupt for normal chat flowRef runs", async () => {
+    const calls = [];
+    seedStore(makeClient({
+        stopAgentLoop: async (runId) => {
+            calls.push(`loop:${runId}`);
+            return {
+                parentRunId: runId,
+                runs: [{ runId: "reviewer-1", agentName: "reviewer", role: "reviewer", status: "completed", parentRunId: runId, createdAt: "2026-01-01T00:00:00Z" }],
+                edges: [],
+                busMessages: [],
+                loopState: { status: "stopped", round: 1, roundCap: 3 },
+            };
+        },
+        interrupt: async (runId) => {
+            calls.push(`interrupt:${runId}`);
+        },
+    }), []);
+    store_1.useStore.setState({
+        chatMode: "normal_chat",
+        runId: "parent-1",
+        mainRunId: "parent-1",
+        activeAgentRunId: undefined,
+        status: "running",
+        timeline: [{ kind: "thinking", id: "thinking-1", text: "Thinking..." }],
+        agentGraphSnapshot: {
+            parentRunId: "parent-1",
+            runs: [{ runId: "reviewer-1", agentName: "reviewer", role: "reviewer", status: "running", parentRunId: "parent-1", createdAt: "2026-01-01T00:00:00Z" }],
+            edges: [],
+            busMessages: [],
+            loopState: { status: "running", round: 1, roundCap: 3 },
+        },
+    });
+    await store_1.useStore.getState().stop();
+    strict_1.default.deepEqual(calls, ["loop:parent-1", "interrupt:parent-1"]);
+    strict_1.default.equal(store_1.useStore.getState().status, "cancelled");
+    strict_1.default.equal(store_1.useStore.getState().timeline.some((item) => item.kind === "thinking"), false);
+    strict_1.default.equal(store_1.useStore.getState().agentRuns[0]?.status, "completed");
+});
+(0, node_test_1.default)("stop keeps child-focused stop on the child run", async () => {
+    const calls = [];
+    seedStore(makeClient({
+        stopAgentLoop: async (runId) => {
+            calls.push(`loop:${runId}`);
+            return { parentRunId: runId, runs: [], edges: [], busMessages: [], loopState: { status: "stopped", round: 0, roundCap: 3 } };
+        },
+        interrupt: async (runId) => {
+            calls.push(`interrupt:${runId}`);
+        },
+    }), []);
+    store_1.useStore.setState({
+        chatMode: "workflow_step_auto",
+        runId: "child-1",
+        mainRunId: "parent-1",
+        activeAgentRunId: "child-1",
+    });
+    await store_1.useStore.getState().stop();
+    strict_1.default.deepEqual(calls, ["interrupt:child-1"]);
+});
 (0, node_test_1.default)("MockRunnerClient keeps child agent runs out of main history", async () => {
     const client = new MockRunnerClient_1.MockRunnerClient();
     const parent = await client.startRun({
@@ -1813,4 +2057,167 @@ async function* cursorChildStream() {
     gate.resolve();
     await new Promise((resolve) => setTimeout(resolve, 0));
     strict_1.default.equal(store_1.useStore.getState()._historyReplaying, false, "flag must clear once the replay completes");
+});
+// ---- BUG-231: escalate/awaiting-user is a non-terminal, actionable pause -----
+function loopSnapshot(status, extra = {}) {
+    return {
+        parentRunId: "current-run",
+        runs: [],
+        edges: [],
+        busMessages: [],
+        loopState: { status, round: 1, roundCap: 3, ...extra },
+    };
+}
+(0, node_test_1.default)("deriveOrchestrationRunStatus: a blocked loop is NOT derived as running (BUG-231)", () => {
+    strict_1.default.equal((0, store_1.deriveOrchestrationRunStatus)("running", loopSnapshot("blocked")), "blocked");
+    strict_1.default.equal((0, store_1.deriveOrchestrationRunStatus)("running", loopSnapshot("blocked", { blockReason: "escalate" })), "blocked");
+    strict_1.default.equal((0, store_1.deriveOrchestrationRunStatus)("running", loopSnapshot("blocked", { blockReason: "cap" })), "blocked");
+});
+(0, node_test_1.default)("deriveOrchestrationRunStatus: running/paused loops still derive running, done/stopped unchanged", () => {
+    strict_1.default.equal((0, store_1.deriveOrchestrationRunStatus)("running", loopSnapshot("running")), "running");
+    strict_1.default.equal((0, store_1.deriveOrchestrationRunStatus)("running", loopSnapshot("paused")), "running");
+    strict_1.default.equal((0, store_1.deriveOrchestrationRunStatus)("running", loopSnapshot("stopped")), "cancelled");
+    strict_1.default.equal((0, store_1.deriveOrchestrationRunStatus)("running", loopSnapshot("done")), "completed");
+});
+(0, node_test_1.default)("deriveOrchestrationRunStatus: an actively-running child still wins over a blocked loop", () => {
+    const snap = {
+        parentRunId: "current-run",
+        runs: [{ runId: "child-1", agentName: "coder", role: "coder", status: "running", parentRunId: "current-run", createdAt: "2026-01-01T00:00:00Z" }],
+        edges: [],
+        busMessages: [],
+        loopState: { status: "blocked", round: 1, roundCap: 3 },
+    };
+    strict_1.default.equal((0, store_1.deriveOrchestrationRunStatus)("running", snap), "running");
+});
+(0, node_test_1.default)("continueFlow calls client.continueFlow with the trimmed feedback and applies the returned snapshot", async () => {
+    const seen = {};
+    seedStore(makeClient({
+        continueFlow: async (parentRunId, feedback) => {
+            seen.parentRunId = parentRunId;
+            seen.feedback = feedback;
+            return loopSnapshot("running");
+        },
+    }), []);
+    store_1.useStore.setState({ mainRunId: "current-run" });
+    await store_1.useStore.getState().continueFlow("prioritize the security reviewer's finding");
+    strict_1.default.equal(seen.parentRunId, "current-run");
+    strict_1.default.equal(seen.feedback, "prioritize the security reviewer's finding");
+    strict_1.default.equal(store_1.useStore.getState().agentGraphSnapshot?.loopState.status, "running");
+});
+(0, node_test_1.default)("continueFlow is a no-op when the client does not implement it", async () => {
+    seedStore(makeClient({ continueFlow: undefined }), []);
+    store_1.useStore.setState({ mainRunId: "current-run" });
+    // Must not throw even though the client has no continueFlow implementation.
+    await store_1.useStore.getState().continueFlow("feedback");
+});
+(0, node_test_1.default)("continueFlow returns to the main run before resuming when a child agent is focused (BUG-231 follow-up)", async () => {
+    const seen = {};
+    seedStore(makeClient({
+        focusAgentRun: () => childFocusStream(),
+        continueFlow: async (parentRunId) => {
+            seen.parentRunId = parentRunId;
+            return loopSnapshot("running");
+        },
+    }), []);
+    store_1.useStore.setState({
+        runId: "current-run",
+        mainRunId: "current-run",
+        activeAgentRunId: undefined,
+        timeline: [{ kind: "prompt", id: "prompt-main", text: "main timeline" }],
+        status: "blocked",
+        artifacts: [],
+    });
+    await store_1.useStore.getState().focusAgentRun("child-run");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    strict_1.default.equal(store_1.useStore.getState().activeAgentRunId, "child-run");
+    await store_1.useStore.getState().continueFlow("keep going");
+    strict_1.default.equal(seen.parentRunId, "current-run");
+    strict_1.default.equal(store_1.useStore.getState().runId, "current-run");
+    strict_1.default.equal(store_1.useStore.getState().activeAgentRunId, undefined);
+    strict_1.default.equal(store_1.useStore.getState().agentGraphSnapshot?.loopState.status, "running");
+});
+(0, node_test_1.default)("mergeAgentRunsById never lets a stale non-terminal snapshot revert an already-terminal run (BUG-235)", () => {
+    const existingCompleted = {
+        runId: "child-reviewer",
+        agentName: "reviewer",
+        role: "reviewer",
+        status: "completed",
+        parentRunId: "parent",
+        createdAt: "2026-01-01T00:00:01Z",
+    };
+    // A stale HTTP refresh captured before the reviewer finished, resolving AFTER
+    // the SSE event already marked it completed — this must NOT revert it.
+    const staleRunningSnapshot = { ...existingCompleted, status: "running" };
+    const merged = (0, store_1.mergeAgentRunsById)([existingCompleted], [staleRunningSnapshot]);
+    strict_1.default.equal(merged.length, 1);
+    strict_1.default.equal(merged[0].status, "completed");
+});
+(0, node_test_1.default)("mergeAgentRunsById still applies a genuinely fresh non-terminal update for a never-terminal run", () => {
+    const existingRunning = {
+        runId: "child-reviewer",
+        agentName: "reviewer",
+        role: "reviewer",
+        status: "running",
+        parentRunId: "parent",
+        createdAt: "2026-01-01T00:00:01Z",
+    };
+    const stillRunning = { ...existingRunning, agentStatus: "waiting_approval" };
+    const merged = (0, store_1.mergeAgentRunsById)([existingRunning], [{ ...stillRunning, status: "waiting_approval" }]);
+    strict_1.default.equal(merged.length, 1);
+    strict_1.default.equal(merged[0].status, "waiting_approval");
+});
+(0, node_test_1.default)("mergeAgentRunsById applies a terminal incoming status over an existing terminal one (status corrections still land)", () => {
+    const existingCompleted = {
+        runId: "child-reviewer",
+        agentName: "reviewer",
+        role: "reviewer",
+        status: "completed",
+        parentRunId: "parent",
+        createdAt: "2026-01-01T00:00:01Z",
+    };
+    const nowFailed = { ...existingCompleted, status: "failed" };
+    const merged = (0, store_1.mergeAgentRunsById)([existingCompleted], [nowFailed]);
+    strict_1.default.equal(merged.length, 1);
+    strict_1.default.equal(merged[0].status, "failed");
+});
+(0, node_test_1.default)("mergeAgentRunsById allows completed→running when activationSeq increases (genuine reinvoke, BUG-Rnd2)", () => {
+    // Coder has completed round 1 and is now being reinvoked by the backend.
+    // The backend increments activationSeq from 0 to 1.
+    const existingCompleted = {
+        runId: "child-coder",
+        agentName: "coder",
+        role: "coder",
+        status: "completed",
+        parentRunId: "parent",
+        createdAt: "2026-01-01T00:00:00Z",
+        activationSeq: 0,
+    };
+    const genuineReinvoke = {
+        ...existingCompleted,
+        status: "running",
+        activationSeq: 1, // backend incremented this
+    };
+    const merged = (0, store_1.mergeAgentRunsById)([existingCompleted], [genuineReinvoke]);
+    strict_1.default.equal(merged.length, 1);
+    strict_1.default.equal(merged[0].status, "running", "reinvoke with higher activationSeq must be allowed");
+    strict_1.default.equal(merged[0].activationSeq, 1);
+});
+(0, node_test_1.default)("mergeAgentRunsById still blocks completed→running when activationSeq is same or absent (stale snapshot, BUG-235)", () => {
+    const existingCompleted = {
+        runId: "child-reviewer",
+        agentName: "reviewer",
+        role: "reviewer",
+        status: "completed",
+        parentRunId: "parent",
+        createdAt: "2026-01-01T00:00:01Z",
+        activationSeq: 1,
+    };
+    // Same activationSeq — this is a stale HTTP snapshot, not a genuine reinvoke.
+    const staleRunning = { ...existingCompleted, status: "running" };
+    const merged1 = (0, store_1.mergeAgentRunsById)([existingCompleted], [staleRunning]);
+    strict_1.default.equal(merged1[0].status, "completed", "same activationSeq must be blocked (stale snapshot)");
+    // No activationSeq at all (absent from JSON) — treat as 0, which is <= existing 1.
+    const staleNoSeq = { ...existingCompleted, status: "running", activationSeq: undefined };
+    const merged2 = (0, store_1.mergeAgentRunsById)([existingCompleted], [staleNoSeq]);
+    strict_1.default.equal(merged2[0].status, "completed", "absent activationSeq must be blocked (stale snapshot)");
 });

@@ -33,20 +33,26 @@ func newInteractiveCatalog() *interactiveCatalog {
 				{ID: "wf-screen", ProjectID: "proj-android", Name: "Build Screen", Description: "Compose UI → wire VM → test."},
 			},
 		},
+		// BUG-229: a direct single-step launch resolves its model from the step
+		// ONLY (no Project fallback), matching step_definitions.model being a
+		// mandatory field on real, well-formed data (Task-183 T-2). Every fixture
+		// step below carries the same model the project used to supply via the
+		// now-removed fallback, so single-step launches in the tests below keep
+		// resolving to the identical model/provider they did before.
 		steps: map[string][]Step{
 			"wf-feature": {
-				{ID: "step-plan", WorkflowID: "wf-feature", Name: "Plan", Order: 1, DefaultSkill: "architect"},
-				{ID: "step-code", WorkflowID: "wf-feature", Name: "Implement", Order: 2, DefaultSkill: "coder"},
-				{ID: "step-test", WorkflowID: "wf-feature", Name: "Write Tests", Order: 3},
-				{ID: "step-sum", WorkflowID: "wf-feature", Name: "Summarize", Order: 4},
+				{ID: "step-plan", WorkflowID: "wf-feature", Name: "Plan", Order: 1, DefaultSkill: "architect", Model: "gpt-5.4"},
+				{ID: "step-code", WorkflowID: "wf-feature", Name: "Implement", Order: 2, DefaultSkill: "coder", Model: "gpt-5.4"},
+				{ID: "step-test", WorkflowID: "wf-feature", Name: "Write Tests", Order: 3, Model: "gpt-5.4"},
+				{ID: "step-sum", WorkflowID: "wf-feature", Name: "Summarize", Order: 4, Model: "gpt-5.4"},
 			},
 			"wf-bugfix": {
-				{ID: "bug-repro", WorkflowID: "wf-bugfix", Name: "Reproduce", Order: 1},
-				{ID: "bug-patch", WorkflowID: "wf-bugfix", Name: "Patch", Order: 2, DefaultSkill: "coder"},
+				{ID: "bug-repro", WorkflowID: "wf-bugfix", Name: "Reproduce", Order: 1, Model: "gpt-5.4"},
+				{ID: "bug-patch", WorkflowID: "wf-bugfix", Name: "Patch", Order: 2, DefaultSkill: "coder", Model: "gpt-5.4"},
 			},
 			"wf-screen": {
-				{ID: "scr-ui", WorkflowID: "wf-screen", Name: "Compose UI", Order: 1},
-				{ID: "scr-vm", WorkflowID: "wf-screen", Name: "Wire ViewModel", Order: 2},
+				{ID: "scr-ui", WorkflowID: "wf-screen", Name: "Compose UI", Order: 1, Model: "gpt-5.4"},
+				{ID: "scr-vm", WorkflowID: "wf-screen", Name: "Wire ViewModel", Order: 2, Model: "gpt-5.4"},
 			},
 		},
 		skills: []ProviderSkill{

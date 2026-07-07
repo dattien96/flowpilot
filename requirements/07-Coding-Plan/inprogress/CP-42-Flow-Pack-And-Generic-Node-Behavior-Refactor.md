@@ -259,19 +259,29 @@ The desired state:
   - built-in mirror sync is idempotent and updates stale mirrors only when pack version changes.
   - starting Chat Mode with no orchestration selection still applies the RAG/context baseline.
   - selecting Review Loop in the Chat Mode Bug sub-mode built-in picker resolves to the mirrored definition when present and triggers mirror sync when missing.
+  - flowRef start recreates a missing built-in mirror row on demand and preserves the normalized pack shape (`Definition.ID`, contexts, node inputs/outputs).
+  - built-in flowRef start supports inline entry nodes and emits the expected context package / wait-note events instead of stalling.
   - switching Chat sub-mode away from Bug hides or clears the Review Loop selection.
+  - after the first chat turn, intent / `flowRef` selection stays locked and cannot drift from the run's already-persisted mode.
   - selecting a user flow in Flow Mode never mutates built-in mirror rows.
   - behavior registry rejects unknown behavior IDs before run start.
   - Review Loop pack produces the same node/edge/policy behavior as current CP-36 path.
+  - forward-edge auto-spawn from `edges_json` launches the reviewer cohort deterministically for flowRef-started runs.
   - RAG Harness pack produces the same prompt/context behavior as current CP-41 path.
   - changing `reviewer.md` changes reviewer instruction text but not route/cap/join behavior.
+  - project-local or provider-home agent files cannot shadow pack-owned built-in flow agents during executor-driven spawns.
   - invalid declared-face status mapping is rejected before tool registration.
+  - `submit_review_outcome` is only advertised to allowed hub turns and is rejected for normal chat / non-hub child turns.
   - generic-flow guard test rejects domain-specific strings in executor code.
 - manual checks:
   - install built-in pack into a fresh workspace and verify normal Chat Mode uses the RAG/context baseline with no orchestration picker selection.
   - select Bug sub-mode, choose Review Loop in the built-in picker, and verify it starts the Review Loop template.
+  - for the built-in Review Loop start path, verify the hub gets the wait note, does not also code itself, and the reviewer cohort is auto-spawned from the flow edges.
   - select Normal or Task sub-mode and verify Review Loop is not offered.
+  - start a plain normal chat and verify `submit_review_outcome` is not offered; then start Review Loop and verify only the hub/synthesis turn can use it.
+  - after the first chat turn completes, verify the intent / `flowRef` picker is locked and explains that changing it requires a new chat.
   - delete the mirrored built-in definition in a test database, select the built-in flow, and verify the sync task recreates it before run start.
+  - delete the mirrored built-in RAG Harness definition and verify restart/recreate still preserves flow contexts plus node inputs/outputs, and the inline entry node executes.
   - clone a built-in flow in Settings UI, edit the clone, and verify the built-in remains read-only and unchanged.
   - edit `reviewer.md` and verify the prompt changes without code changes.
   - create a custom Flow Mode flow in Settings UI with a non-Plan/non-Coding node naming scheme and verify it runs through behavior declarations.
@@ -281,10 +291,12 @@ The desired state:
   - invalid prompt template reference.
   - context producer emits malformed artifact.
   - declared tool face maps to unsupported generic status.
+  - a non-hub run attempts to call `submit_review_outcome`.
   - user deletes a behavior referenced by an existing flow.
   - legacy flow definition has only `step_type` and no `behaviorId`.
   - built-in YAML exists locally but Supabase mirror is stale or missing.
   - built-in mirror row was manually edited despite `editable=false`.
+  - workflow-step replacement insert fails mid-save; existing steps must remain intact instead of being deleted first.
 
 ## 8. Rollout and Fallback
 
@@ -317,10 +329,10 @@ The desired state:
 
 ## 10. Definition of Done
 
-- [ ] A validated `internal/agentpack` schema exists for agents, flows, tools, contexts, and prompt templates.
-- [ ] Built-in flows are mirrored into definition storage as read-only rows and recreated by an idempotent sync task when missing.
-- [ ] Chat Mode applies the RAG/context baseline automatically and can optionally select Review Loop via explicit `flowRef` only in Bug sub-mode; Flow Mode can select either a read-only built-in mirror or a user-owned editable flow.
-- [ ] Built-in agents are loaded from pack files with Go literals retained only as temporary fallback.
+- [x] A validated `internal/agentpack` schema exists for agents, flows, tools, contexts, and prompt templates.
+- [x] Built-in flows are mirrored into definition storage as read-only rows and recreated by an idempotent sync task when missing.
+- [x] Chat Mode applies the RAG/context baseline automatically and can optionally select Review Loop via explicit `flowRef` only in Bug sub-mode; Flow Mode can select either a read-only built-in mirror or a user-owned editable flow.
+- [x] Built-in agents are loaded from pack files with Go literals retained only as temporary fallback.
 - [ ] Review Loop runs from a pack definition with no review-specific transition branch in the executor.
 - [ ] RAG Harness runs from a pack definition with no `isPlanStepType` or `isCodingStepType` runtime branch.
 - [ ] Context packages are typed artifacts with producer/consumer bindings defined by flow data.

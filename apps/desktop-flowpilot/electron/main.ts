@@ -190,11 +190,20 @@ ipcMain.handle("notification:show", (_event, payload: { title: string; body: str
 });
 
 ipcMain.handle("http:request", async (_event, payload: BridgeHttpRequest) => {
-  // Abort after 8 s so a runner that has bound a TCP port but is not yet
-  // serving HTTP (e.g. still initialising on first start) does not hang the
-  // renderer's bootstrap promise indefinitely.
+  // BUG-150 added this abort so an early-bootstrap Supabase Auth check
+  // couldn't hang the renderer indefinitely against a slow/unreachable
+  // network. But this channel is also the `global.fetch` for every Supabase
+  // admin/auth request (desktopBridgeFetch), not just that one bootstrap
+  // probe — every admin CRUD call (list/save/delete) rides the same 8 s
+  // budget. That's fine for a single small row, but a delete that fans out
+  // into several sequential requests (e.g. cascading a step-definition
+  // delete across the workflows still using it) or a delete whose FK cascade
+  // touches a workflow with a lot of run history can legitimately take
+  // longer than 8 s on a real network, and would abort with no Supabase-side
+  // error to show for it. 30 s keeps the "don't hang forever" guarantee
+  // BUG-150 wanted while giving normal admin traffic realistic headroom.
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8000);
+  const timer = setTimeout(() => controller.abort(), 30000);
   try {
     const response = await fetch(payload.url, {
       method: payload.method ?? "GET",

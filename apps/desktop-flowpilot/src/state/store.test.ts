@@ -1,13 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { useStore } from "./store";
+import { useStore, deriveOrchestrationRunStatus, mergeAgentRunsById } from "./store";
 import { applyTimelineEvent, type TimelineItem, type TimelineState } from "./timelineReducer";
 import { getBusMessageLabel, getOrchestrationBoardEmptyCopy } from "@/components/OrchestrationBoard";
 import { shouldShowAgentTimelineHeader } from "@/components/Timeline";
 import { parseMentionRouting } from "@/components/ChatInput";
 import { MockRunnerClient } from "../client/MockRunnerClient";
 import { RunnerApiError } from "../client/HttpWsRunnerClient";
-import type { AgentRunSummary, ProviderAccountSummary, ProviderEventDTO, RemoteChatSessionSummary, RunHandle, RunHistoryItem, RunnerClient, TurnInput } from "../types/contract";
+import type { AgentGraphSnapshot, AgentRunSummary, ProviderAccountSummary, ProviderEventDTO, RemoteChatSessionSummary, RunHandle, RunHistoryItem, RunnerClient, TurnInput } from "../types/contract";
 
 async function* emptyStream(): AsyncIterable<ProviderEventDTO> {}
 
@@ -800,6 +800,185 @@ test("sendPrompt applies live agent graph and bus SSE updates", async () => {
 
   assert.equal(useStore.getState().agentGraphSnapshot?.loopState.round, 1);
   assert.equal(useStore.getState().agentBusMessages.at(-1)?.message, "ready-for-review");
+});
+
+test("workflow handoff turn settles and orchestration stream keeps the run active", async () => {
+  const orchestrationGate = deferred<void>();
+  let streamCallCount = 0;
+
+  seedStore(
+    makeClient({
+      startRun: async () => ({
+        runId: "current-run",
+        providerSessionId: "session-1",
+        providerKey: "codex",
+        status: "running",
+        stepId: "wf-1",
+      }),
+      sendTurn: async function* (): AsyncIterable<ProviderEventDTO> {
+        yield { ...BASE_EVENT, workflowRunId: "current-run", seq: 1, type: "turn_started", providerTurnId: "turn-1", prompt: "hello" };
+        yield { ...BASE_EVENT, id: "evt-coder", workflowRunId: "current-run", seq: 2, type: "agent_spawned_by_user", agentName: "coder", childRunId: "child-coder" };
+        yield { ...BASE_EVENT, workflowRunId: "current-run", seq: 3, type: "turn_completed", providerTurnId: "turn-1", finalMessage: "" };
+      },
+      streamRun: async function* (): AsyncIterable<ProviderEventDTO> {
+        streamCallCount++;
+        await orchestrationGate.promise;
+        yield {
+          ...BASE_EVENT,
+          workflowRunId: "current-run",
+          seq: 4,
+          type: "agent_graph_updated",
+          agentGraphSnapshot: {
+            parentRunId: "current-run",
+            runs: [
+              {
+                runId: "child-coder",
+                agentName: "coder",
+                role: "coder",
+                status: "completed",
+                parentRunId: "current-run",
+                createdAt: "2026-01-01T00:00:00Z",
+                agentStatus: "completed",
+              },
+              {
+                runId: "child-reviewer",
+                agentName: "reviewer",
+                role: "reviewer",
+                status: "running",
+                parentRunId: "current-run",
+                createdAt: "2026-01-01T00:00:01Z",
+                agentStatus: "running",
+              },
+            ],
+            edges: [],
+            busMessages: [],
+            loopState: { status: "running", round: 1, roundCap: 3 },
+          },
+        };
+        yield {
+          ...BASE_EVENT,
+          id: "evt-reviewer",
+          workflowRunId: "current-run",
+          seq: 5,
+          type: "agent_spawned_by_user",
+          agentName: "reviewer",
+          childRunId: "child-reviewer",
+        };
+      },
+    }),
+    [],
+  );
+  useStore.setState({
+    chatMode: "workflow_step_auto",
+    launchMode: "workflow",
+    selectedWorkflowId: "wf-1",
+    selectedStepId: undefined,
+    runId: undefined,
+    mainRunId: undefined,
+    activeStepId: undefined,
+    status: "idle",
+    timeline: [],
+  });
+
+  await useStore.getState().sendPrompt("hello");
+  orchestrationGate.resolve();
+  let systemTexts: string[] = [];
+  for (let i = 0; i < 20; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    systemTexts = useStore
+      .getState()
+      .timeline.filter((item) => item.kind === "system")
+      .map((item) => item.text);
+    if (systemTexts.some((text) => text.includes("Spawned agent **reviewer**"))) {
+      break;
+    }
+  }
+
+  assert.equal(streamCallCount, 1);
+  assert.equal(useStore.getState().timeline.some((item) => item.kind === "thinking"), false);
+  assert.equal(useStore.getState().status, "running");
+  assert(systemTexts.some((text) => text.includes("Spawned agent **coder**")));
+  assert(systemTexts.some((text) => text.includes("Spawned agent **reviewer**")));
+});
+
+test("orchestration graph update refreshes stale agent run statuses without switching focus", async () => {
+  const orchestrationGate = deferred<void>();
+  const completedRuns: AgentRunSummary[] = [
+    {
+      runId: "child-reviewer",
+      agentName: "reviewer",
+      role: "reviewer",
+      status: "completed",
+      parentRunId: "current-run",
+      createdAt: "2026-01-01T00:00:01Z",
+      agentStatus: "completed",
+    },
+  ];
+
+  seedStore(
+    makeClient({
+      startRun: async () => ({
+        runId: "current-run",
+        providerSessionId: "session-1",
+        providerKey: "codex",
+        status: "running",
+        stepId: "wf-1",
+      }),
+      sendTurn: async function* (): AsyncIterable<ProviderEventDTO> {
+        yield { ...BASE_EVENT, workflowRunId: "current-run", seq: 1, type: "turn_started", providerTurnId: "turn-1", prompt: "hello" };
+        yield { ...BASE_EVENT, workflowRunId: "current-run", seq: 2, type: "turn_completed", providerTurnId: "turn-1", finalMessage: "" };
+      },
+      streamRun: async function* (): AsyncIterable<ProviderEventDTO> {
+        await orchestrationGate.promise;
+        yield {
+          ...BASE_EVENT,
+          workflowRunId: "current-run",
+          seq: 3,
+          type: "agent_graph_updated",
+          agentGraphSnapshot: {
+            parentRunId: "current-run",
+            runs: [
+              {
+                runId: "child-reviewer",
+                agentName: "reviewer",
+                role: "reviewer",
+                status: "running",
+                parentRunId: "current-run",
+                createdAt: "2026-01-01T00:00:01Z",
+                agentStatus: "running",
+              },
+            ],
+            edges: [],
+            busMessages: [],
+            loopState: { status: "running", round: 1, roundCap: 3 },
+          },
+        };
+      },
+      listAgentRuns: async () => completedRuns,
+    }),
+    [],
+  );
+  useStore.setState({
+    chatMode: "workflow_step_auto",
+    launchMode: "workflow",
+    selectedWorkflowId: "wf-1",
+    selectedStepId: undefined,
+    runId: undefined,
+    mainRunId: undefined,
+    activeStepId: undefined,
+    status: "idle",
+    timeline: [],
+  });
+
+  await useStore.getState().sendPrompt("hello");
+  orchestrationGate.resolve();
+  for (let i = 0; i < 20; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (useStore.getState().agentRuns[0]?.status === "completed") break;
+  }
+
+  assert.equal(useStore.getState().agentRuns[0]?.status, "completed");
+  assert.equal(useStore.getState().agentRuns[0]?.agentStatus, "completed");
 });
 
 test("refreshAgentRuns loads child summaries for the active main run", async () => {
@@ -1908,7 +2087,51 @@ test("stop uses loop stop plus parent interrupt for the main flow run", async ()
   assert.deepEqual(calls, ["loop:parent-1", "interrupt:parent-1"]);
 });
 
-test("stop keeps child-focused stop on the child run", async () => {
+test("stop uses loop stop plus parent interrupt for normal chat flowRef runs", async () => {
+  const calls: string[] = [];
+  seedStore(
+    makeClient({
+      stopAgentLoop: async (runId) => {
+        calls.push(`loop:${runId}`);
+        return {
+          parentRunId: runId,
+          runs: [{ runId: "reviewer-1", agentName: "reviewer", role: "reviewer", status: "completed", parentRunId: runId, createdAt: "2026-01-01T00:00:00Z" }],
+          edges: [],
+          busMessages: [],
+          loopState: { status: "stopped", round: 1, roundCap: 3 },
+        };
+      },
+      interrupt: async (runId) => {
+        calls.push(`interrupt:${runId}`);
+      },
+    }),
+    [],
+  );
+  useStore.setState({
+    chatMode: "normal_chat",
+    runId: "parent-1",
+    mainRunId: "parent-1",
+    activeAgentRunId: undefined,
+    status: "running",
+    timeline: [{ kind: "thinking", id: "thinking-1", text: "Thinking..." }],
+    agentGraphSnapshot: {
+      parentRunId: "parent-1",
+      runs: [{ runId: "reviewer-1", agentName: "reviewer", role: "reviewer", status: "running", parentRunId: "parent-1", createdAt: "2026-01-01T00:00:00Z" }],
+      edges: [],
+      busMessages: [],
+      loopState: { status: "running", round: 1, roundCap: 3 },
+    },
+  });
+
+  await useStore.getState().stop();
+
+  assert.deepEqual(calls, ["loop:parent-1", "interrupt:parent-1"]);
+  assert.equal(useStore.getState().status, "cancelled");
+  assert.equal(useStore.getState().timeline.some((item) => item.kind === "thinking"), false);
+  assert.equal(useStore.getState().agentRuns[0]?.status, "completed");
+});
+
+test("stop from a child-focused view also stops the parent loop (BUG-247)", async () => {
   const calls: string[] = [];
   seedStore(
     makeClient({
@@ -1931,7 +2154,40 @@ test("stop keeps child-focused stop on the child run", async () => {
 
   await useStore.getState().stop();
 
-  assert.deepEqual(calls, ["interrupt:child-1"]);
+  assert.deepEqual(calls, ["loop:parent-1", "interrupt:parent-1", "interrupt:child-1"]);
+});
+
+test("stop from a child-focused view with an active tracked loop stops parent and child (BUG-247)", async () => {
+  const calls: string[] = [];
+  seedStore(
+    makeClient({
+      stopAgentLoop: async (runId) => {
+        calls.push(`loop:${runId}`);
+        return { parentRunId: runId, runs: [], edges: [], busMessages: [], loopState: { status: "stopped", round: 0, roundCap: 3 } };
+      },
+      interrupt: async (runId) => {
+        calls.push(`interrupt:${runId}`);
+      },
+    }),
+    [],
+  );
+  useStore.setState({
+    chatMode: "normal_chat",
+    runId: "child-1",
+    mainRunId: "parent-1",
+    activeAgentRunId: "child-1",
+    agentGraphSnapshot: {
+      parentRunId: "parent-1",
+      runs: [{ runId: "child-1", agentName: "reviewer", role: "reviewer", status: "running", parentRunId: "parent-1", createdAt: "2026-01-01T00:00:00Z" }],
+      edges: [],
+      busMessages: [],
+      loopState: { status: "running", round: 1, roundCap: 3 },
+    },
+  });
+
+  await useStore.getState().stop();
+
+  assert.deepEqual(calls, ["loop:parent-1", "interrupt:parent-1", "interrupt:child-1"]);
 });
 
 test("MockRunnerClient keeps child agent runs out of main history", async () => {
@@ -2217,4 +2473,222 @@ test("openHistoryRun sets _historyReplaying during replay and clears it after (B
   gate.resolve();
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(useStore.getState()._historyReplaying, false, "flag must clear once the replay completes");
+});
+
+// ---- BUG-231: escalate/awaiting-user is a non-terminal, actionable pause -----
+
+function loopSnapshot(status: string, extra: Partial<AgentGraphSnapshot["loopState"]> = {}): AgentGraphSnapshot {
+  return {
+    parentRunId: "current-run",
+    runs: [],
+    edges: [],
+    busMessages: [],
+    loopState: { status, round: 1, roundCap: 3, ...extra },
+  };
+}
+
+test("deriveOrchestrationRunStatus: a blocked loop is NOT derived as running (BUG-231)", () => {
+  assert.equal(deriveOrchestrationRunStatus("running", loopSnapshot("blocked")), "blocked");
+  assert.equal(
+    deriveOrchestrationRunStatus("running", loopSnapshot("blocked", { blockReason: "escalate" })),
+    "blocked",
+  );
+  assert.equal(
+    deriveOrchestrationRunStatus("running", loopSnapshot("blocked", { blockReason: "cap" })),
+    "blocked",
+  );
+});
+
+test("deriveOrchestrationRunStatus: running/paused loops still derive running, done/stopped unchanged", () => {
+  assert.equal(deriveOrchestrationRunStatus("running", loopSnapshot("running")), "running");
+  assert.equal(deriveOrchestrationRunStatus("running", loopSnapshot("paused")), "running");
+  assert.equal(deriveOrchestrationRunStatus("running", loopSnapshot("stopped")), "cancelled");
+  assert.equal(deriveOrchestrationRunStatus("running", loopSnapshot("done")), "completed");
+});
+
+test("deriveOrchestrationRunStatus: an actively-running child still wins over a blocked loop", () => {
+  const snap: AgentGraphSnapshot = {
+    parentRunId: "current-run",
+    runs: [{ runId: "child-1", agentName: "coder", role: "coder", status: "running", parentRunId: "current-run", createdAt: "2026-01-01T00:00:00Z" }],
+    edges: [],
+    busMessages: [],
+    loopState: { status: "blocked", round: 1, roundCap: 3 },
+  };
+  assert.equal(deriveOrchestrationRunStatus("running", snap), "running");
+});
+
+test("deriveOrchestrationRunStatus: a stopped loop wins even if a child's status snapshot is stale-running (BUG-248)", () => {
+  // stopAgentLoop's turnCancel() only signals cancellation — a child's own `status`
+  // field flips to terminal asynchronously once its turn handler observes ctx.Done().
+  // A snapshot taken synchronously right after the stop call can still report that
+  // child as "running". Unlike a "blocked" loop (a deliberate pause where an
+  // actively-running child legitimately still wins), "stopped" is a definitive,
+  // user-initiated full halt and must be authoritative, or the main run reads as
+  // permanently stuck "running" with no later event to correct it.
+  const snap: AgentGraphSnapshot = {
+    parentRunId: "current-run",
+    runs: [{ runId: "child-1", agentName: "coder", role: "coder", status: "running", parentRunId: "current-run", createdAt: "2026-01-01T00:00:00Z" }],
+    edges: [],
+    busMessages: [],
+    loopState: { status: "stopped", round: 1, roundCap: 3 },
+  };
+  assert.equal(deriveOrchestrationRunStatus("running", snap), "cancelled");
+});
+
+test("continueFlow calls client.continueFlow with the trimmed feedback and applies the returned snapshot", async () => {
+  const seen: { parentRunId?: string; feedback?: string } = {};
+  seedStore(
+    makeClient({
+      continueFlow: async (parentRunId, feedback) => {
+        seen.parentRunId = parentRunId;
+        seen.feedback = feedback;
+        return loopSnapshot("running");
+      },
+    }),
+    [],
+  );
+  useStore.setState({ mainRunId: "current-run" });
+
+  await useStore.getState().continueFlow("prioritize the security reviewer's finding");
+
+  assert.equal(seen.parentRunId, "current-run");
+  assert.equal(seen.feedback, "prioritize the security reviewer's finding");
+  assert.equal(useStore.getState().agentGraphSnapshot?.loopState.status, "running");
+});
+
+test("continueFlow is a no-op when the client does not implement it", async () => {
+  seedStore(makeClient({ continueFlow: undefined }), []);
+  useStore.setState({ mainRunId: "current-run" });
+
+  // Must not throw even though the client has no continueFlow implementation.
+  await useStore.getState().continueFlow("feedback");
+});
+
+test("continueFlow returns to the main run before resuming when a child agent is focused (BUG-231 follow-up)", async () => {
+  const seen: { parentRunId?: string } = {};
+  seedStore(
+    makeClient({
+      focusAgentRun: () => childFocusStream(),
+      continueFlow: async (parentRunId) => {
+        seen.parentRunId = parentRunId;
+        return loopSnapshot("running");
+      },
+    }),
+    [],
+  );
+  useStore.setState({
+    runId: "current-run",
+    mainRunId: "current-run",
+    activeAgentRunId: undefined,
+    timeline: [{ kind: "prompt", id: "prompt-main", text: "main timeline" }],
+    status: "blocked",
+    artifacts: [],
+  });
+
+  await useStore.getState().focusAgentRun("child-run");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(useStore.getState().activeAgentRunId, "child-run");
+
+  await useStore.getState().continueFlow("keep going");
+
+  assert.equal(seen.parentRunId, "current-run");
+  assert.equal(useStore.getState().runId, "current-run");
+  assert.equal(useStore.getState().activeAgentRunId, undefined);
+  assert.equal(useStore.getState().agentGraphSnapshot?.loopState.status, "running");
+});
+
+test("mergeAgentRunsById never lets a stale non-terminal snapshot revert an already-terminal run (BUG-235)", () => {
+  const existingCompleted: AgentRunSummary = {
+    runId: "child-reviewer",
+    agentName: "reviewer",
+    role: "reviewer",
+    status: "completed",
+    parentRunId: "parent",
+    createdAt: "2026-01-01T00:00:01Z",
+  };
+  // A stale HTTP refresh captured before the reviewer finished, resolving AFTER
+  // the SSE event already marked it completed — this must NOT revert it.
+  const staleRunningSnapshot: AgentRunSummary = { ...existingCompleted, status: "running" };
+
+  const merged = mergeAgentRunsById([existingCompleted], [staleRunningSnapshot]);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].status, "completed");
+});
+
+test("mergeAgentRunsById still applies a genuinely fresh non-terminal update for a never-terminal run", () => {
+  const existingRunning: AgentRunSummary = {
+    runId: "child-reviewer",
+    agentName: "reviewer",
+    role: "reviewer",
+    status: "running",
+    parentRunId: "parent",
+    createdAt: "2026-01-01T00:00:01Z",
+  };
+  const stillRunning: AgentRunSummary = { ...existingRunning, agentStatus: "waiting_approval" };
+
+  const merged = mergeAgentRunsById([existingRunning], [{ ...stillRunning, status: "waiting_approval" }]);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].status, "waiting_approval");
+});
+
+test("mergeAgentRunsById applies a terminal incoming status over an existing terminal one (status corrections still land)", () => {
+  const existingCompleted: AgentRunSummary = {
+    runId: "child-reviewer",
+    agentName: "reviewer",
+    role: "reviewer",
+    status: "completed",
+    parentRunId: "parent",
+    createdAt: "2026-01-01T00:00:01Z",
+  };
+  const nowFailed: AgentRunSummary = { ...existingCompleted, status: "failed" };
+
+  const merged = mergeAgentRunsById([existingCompleted], [nowFailed]);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].status, "failed");
+});
+
+test("mergeAgentRunsById allows completed→running when activationSeq increases (genuine reinvoke, BUG-Rnd2)", () => {
+  // Coder has completed round 1 and is now being reinvoked by the backend.
+  // The backend increments activationSeq from 0 to 1.
+  const existingCompleted: AgentRunSummary = {
+    runId: "child-coder",
+    agentName: "coder",
+    role: "coder",
+    status: "completed",
+    parentRunId: "parent",
+    createdAt: "2026-01-01T00:00:00Z",
+    activationSeq: 0,
+  };
+  const genuineReinvoke: AgentRunSummary = {
+    ...existingCompleted,
+    status: "running",
+    activationSeq: 1, // backend incremented this
+  };
+
+  const merged = mergeAgentRunsById([existingCompleted], [genuineReinvoke]);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].status, "running", "reinvoke with higher activationSeq must be allowed");
+  assert.equal(merged[0].activationSeq, 1);
+});
+
+test("mergeAgentRunsById still blocks completed→running when activationSeq is same or absent (stale snapshot, BUG-235)", () => {
+  const existingCompleted: AgentRunSummary = {
+    runId: "child-reviewer",
+    agentName: "reviewer",
+    role: "reviewer",
+    status: "completed",
+    parentRunId: "parent",
+    createdAt: "2026-01-01T00:00:01Z",
+    activationSeq: 1,
+  };
+
+  // Same activationSeq — this is a stale HTTP snapshot, not a genuine reinvoke.
+  const staleRunning: AgentRunSummary = { ...existingCompleted, status: "running" };
+  const merged1 = mergeAgentRunsById([existingCompleted], [staleRunning]);
+  assert.equal(merged1[0].status, "completed", "same activationSeq must be blocked (stale snapshot)");
+
+  // No activationSeq at all (absent from JSON) — treat as 0, which is <= existing 1.
+  const staleNoSeq: AgentRunSummary = { ...existingCompleted, status: "running", activationSeq: undefined };
+  const merged2 = mergeAgentRunsById([existingCompleted], [staleNoSeq]);
+  assert.equal(merged2[0].status, "completed", "absent activationSeq must be blocked (stale snapshot)");
 });

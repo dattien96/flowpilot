@@ -197,7 +197,7 @@ test("saveWorkflow inserts new steps before deleting superseded ones", async () 
   await repo.saveWorkflow({
     id: "wf-1",
     name: "wf",
-    steps: [{ stepType: "coding", nodeId: "coder", behaviorId: "agent.delegate", agentRef: "agents/coder.md", dependsOn: [] }],
+    steps: [{ stepType: "coding" }],
   });
 
   assert.deepEqual(callOrder, ["insert", "delete"]);
@@ -225,14 +225,23 @@ test("saveWorkflow does not delete existing steps when the insert fails", async 
     repo.saveWorkflow({
       id: "wf-1",
       name: "wf",
-      steps: [{ stepType: "coding", nodeId: "coder", behaviorId: "agent.delegate", agentRef: "agents/coder.md", dependsOn: [] }],
+      steps: [{ stepType: "coding" }],
     }),
   );
 
   assert.equal(sawDelete, false, "existing steps must not be deleted when the replacement insert failed");
 });
 
-test("mapWorkflowStep round-trips the new flow-engine attrs", async () => {
+// Task-189 (owner-confirmed 2026-07-06, = BUG-236 contract): node identity
+// (nodeId/behaviorId/agentRef/dependsOn/joinMode/cohort) lives ONLY on
+// StepDefinition — WorkflowStep/workflow_steps is a pure relation/order
+// table and must never carry node data. This test used to be named
+// "mapWorkflowStep round-trips the new flow-engine attrs" and asserted the
+// OPPOSITE (that saveWorkflow wrote node_id/behavior_id/etc into the
+// workflow_steps insert payload) — that was the design BUG-236 explicitly
+// rejected. Rewritten to assert the corrected contract instead of the
+// rejected one.
+test("saveWorkflow never writes node-identity fields into workflow_steps (BUG-236)", async () => {
   const supabase = new FakeSupabase();
   supabase.register(
     "workflows",
@@ -248,22 +257,22 @@ test("mapWorkflowStep round-trips the new flow-engine attrs", async () => {
   await repo.saveWorkflow({
     id: "wf-1",
     name: "wf",
-    steps: [
-      {
-        stepType: "coding",
-        nodeId: "coder",
-        behaviorId: "agent.delegate",
-        agentRef: "agents/coder.md",
-        dependsOn: [],
-        joinMode: "all",
-      },
-    ],
+    steps: [{ stepType: "coding", orderIndex: 0, isEnabled: true, requiresApproval: false }],
   });
 
   const payload = stepsTable.lastPayload as Array<Record<string, unknown>>;
-  assert.equal(payload[0].node_id, "coder");
-  assert.equal(payload[0].behavior_id, "agent.delegate");
-  assert.equal(payload[0].agent_ref, "agents/coder.md");
-  assert.deepEqual(payload[0].depends_on_json, []);
-  assert.equal(payload[0].join_mode, "all");
+  assert.deepEqual(Object.keys(payload[0]).sort(), [
+    "is_enabled",
+    "order_index",
+    "requires_approval",
+    "step_type",
+    "workflow_id",
+  ]);
+  assert.equal(payload[0].step_type, "coding");
+  assert.equal(payload[0].order_index, 0);
+  assert.equal(payload[0].is_enabled, true);
+  assert.equal(payload[0].requires_approval, false);
+  for (const nodeField of ["node_id", "behavior_id", "agent_ref", "depends_on_json", "join_mode", "cohort"]) {
+    assert.equal(nodeField in payload[0], false, `workflow_steps payload must never carry "${nodeField}"`);
+  }
 });

@@ -45,28 +45,34 @@ type RuntimeWorkflowStep struct {
 	RetryCount       int
 	RejectionNote    string // "" == null
 	// BehaviorID is the CP-42 canonical behavior id (agent.delegate/
-	// context.produce/...) declared on the step's workflow_steps definition
-	// row, when set. "" for a step whose definition predates CP-42 or never
+	// context.produce/...) declared on the joined step definition, when set.
+	// "" for a step whose definition predates CP-42 or never
 	// set one — callers fall back to classifying by StepType in that case
 	// (BUG-NOTE-CP42 #7).
 	BehaviorID string
 	// NodeID is the flow-graph node id (e.g. "coder", "reviewer_correctness")
-	// from the step's workflow_steps.node_id column. Distinct from StepType,
+	// from the joined step definition. Distinct from StepType,
 	// which for a CP-42 flow-engine node is a shared generic dispatch category
 	// (e.g. "flow-agent-delegate") and therefore identical across every node
 	// running the same behavior — NodeID is what the UI must show as the
 	// per-step name instead (BUG-155).
 	NodeID string
-	// AgentRef is the workflow_steps.agent_ref value: the agent definition
+	// AgentRef is the step definition's agent_ref value: the agent definition
 	// file this node delegates to (e.g. "coder"), when the step declares one.
 	// "" when the step has no agent binding of its own (e.g. inline/control
 	// behaviors).
 	AgentRef string
-	// Provider/Model are always derived from the step type's own catalog
-	// default (step_definitions.model, with Provider derived from that model
-	// via providerKeyFromModel) — BUG-164 removed workflow_steps.
-	// provider_override/model_override entirely; a step type has exactly one
-	// configured model, not a per-workflow-instance override.
+	// Provider/Model reflect the step's actually-resolved posture. For the
+	// classic (non-flow-engine) planner these are derived from the step
+	// type's own catalog default at seed time (step_definitions.model, with
+	// Provider derived from that model via providerKeyFromModel) — BUG-164
+	// removed workflow_steps.provider_override/model_override entirely; a
+	// step type has exactly one configured model, not a per-workflow-instance
+	// override. For a flow-engine node these start empty at seed time
+	// (flowStepRowsFromNodes) and are patched in once the node is actually
+	// spawned, via stampFlowNodePosture/setFlowStepPosture (BUG-228) — either
+	// the node's own role's step_definitions row, or the run's own baseline
+	// posture when the role has no such row.
 	Provider string
 	Model    string
 	// YoloMode is the step_type's step_definitions.yolo_mode default.
@@ -82,6 +88,11 @@ type WorkflowStepPatch struct {
 	FinishedAt    *string
 	RejectionNote *string
 	RetryCount    *int
+	// Provider/Model stamp the node's OWN actually-resolved posture (BUG-228
+	// display follow-up) so the step-timeline UI shows what that node really
+	// ran on instead of always mirroring the run's single baseline posture.
+	Provider *string
+	Model    *string
 }
 
 // WorkflowLogLevel mirrors the TS log levels.

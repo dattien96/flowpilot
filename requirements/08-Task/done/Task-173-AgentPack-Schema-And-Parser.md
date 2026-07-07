@@ -5,11 +5,11 @@
 - Document ID: `Task-173`
 - Title: `AgentPack Schema And Parser`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `FlowPilot`
 - Created: `2026-07-01`
-- Last Updated: `2026-07-01`
+- Last Updated: `2026-07-06`
 - Parent Documents: `CP-42-Flow-Pack-And-Generic-Node-Behavior-Refactor`
 - Child Documents: `Task-174`, `Task-175`, `Task-176`
 - Related Documents: `CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration`, `CP-41-RAG-Harness-Flow-Mode`
@@ -118,6 +118,6 @@ CP-36 and CP-41 define generic node/edge/policy primitives, but the current impl
 
 ## 8. Completion Notes
 
-- result: implemented
+- result: `done` — verified 2026-07-06: every T-item (T-1..T-9) and every Acceptance Check bullet confirmed against code (`apps/local-runner/internal/agentpack/pack.go`, `pack_test.go`, 15/15 tests pass; `go build ./...` clean). One naming note: `ValidatePack(fs.FS, Manifest) error` was implemented as two cooperating functions (`ValidateManifestFS` + `ValidateFlowDefinition`, orchestrated by `LoadPackFS`) rather than one function of that literal name — functionally equivalent. `Status` was still `draft` despite the doc's own "result: implemented"; corrected here.
 - follow-ups: `Task-174`, `Task-175`, `Task-176`
 - upstream docs updated: [CP-42](../../../07-Coding-Plan/todo/CP-42-Flow-Pack-And-Generic-Node-Behavior-Refactor.md) progress notes and [CA-147](../../../change-audit/CA-147-agent-flow-pack-and-generic-node-behavior-refactor.md)

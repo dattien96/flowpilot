@@ -11,6 +11,28 @@ interface SpawnDialogState {
   wait?: boolean;
 }
 
+interface MainAgentDisplayInput {
+  resolvedProvider: string;
+  resolvedModel: string;
+  runtimeMetaProvider: string | undefined;
+  runtimeMetaModel: string | undefined;
+  selectedProvider: string | undefined;
+  selectedModel: string | undefined;
+}
+
+/**
+ * BUG-227: once a run has started, workflowStepRuntimeMeta (runtimeMeta*) carries
+ * the run's actual resolved posture (Step > Flow > Project, BUG-165) and must win
+ * over resolvedProvider/resolvedModel, which are only a pre-run PREVIEW derived
+ * from the picked workflow/step's catalog row. Exported so the priority order has
+ * a direct regression test independent of the component's render output.
+ */
+export function resolveMainAgentDisplay(input: MainAgentDisplayInput): { mainProvider: string; mainModel: string } {
+  const mainProvider = input.runtimeMetaProvider || input.resolvedProvider || input.selectedProvider || "codex";
+  const mainModel = input.runtimeMetaModel || input.resolvedModel || input.selectedModel || "";
+  return { mainProvider, mainModel };
+}
+
 export function AgentsPanel(): React.ReactElement | null {
   const client = useStore((s) => s.client);
   const projects = useStore((s) => s.projects);
@@ -72,12 +94,15 @@ export function AgentsPanel(): React.ReactElement | null {
   const runtimeMetaModel = useStore((s) => s.workflowStepRuntimeMeta.model);
   const selectedProvider = useStore((s) => s.selectedProvider);
   const selectedModel = useStore((s) => s.selectedModel);
-  const mainProvider = resolvedProvider || runtimeMetaProvider || selectedProvider || "codex";
-  const mainModel = resolvedModel || runtimeMetaModel || selectedModel || "";
-
-  if (isFlowMode && !isWorkflowSelected && !isStepSelected) {
-    return null;
-  }
+  const { mainProvider, mainModel } = resolveMainAgentDisplay({
+    resolvedProvider,
+    resolvedModel,
+    runtimeMetaProvider,
+    runtimeMetaModel,
+    selectedProvider,
+    selectedModel,
+  });
+  const hideUntilFlowTargetSelected = isFlowMode && !isWorkflowSelected && !isStepSelected;
 
   const [open, setOpen] = useState(false);
   const [agents, setAgents] = useState<AgentDefinition[]>([]);
@@ -177,6 +202,10 @@ export function AgentsPanel(): React.ReactElement | null {
   const spawnBlocked = mainCardBusy || hasBlockingChild;
 
   const dependencyCandidates = activeRuns;
+
+  if (hideUntilFlowTargetSelected) {
+    return null;
+  }
 
   return (
     <section className="panel agents">

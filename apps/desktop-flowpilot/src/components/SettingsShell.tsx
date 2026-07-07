@@ -16,6 +16,7 @@ import { TeamsSettings } from "@/components/settings/TeamsSettings";
 import { WorkflowsSettings } from "@/components/settings/WorkflowsSettings";
 import { RunnerHealthPanel } from "@/components/RunnerHealthPanel";
 import { SupabaseSetupScreen } from "@/components/SupabaseSetupScreen";
+import { SystemControls } from "@/components/SystemControls";
 
 export type SettingsSection =
   | "supabase"
@@ -139,6 +140,10 @@ export function SettingsShell({
             );
           })}
         </nav>
+
+        <div className="settings-sidebar-bottom">
+          <SystemControls />
+        </div>
       </aside>
 
       <main className="settings-main">

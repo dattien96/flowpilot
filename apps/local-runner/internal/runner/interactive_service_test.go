@@ -1511,6 +1511,326 @@ func newFlowTestRun(t *testing.T) (*InteractiveService, string) {
 	return svc, parent.RunID
 }
 
+// TestCohortMemberSettlesOwnNodeOnCompletion is the BUG-234 (#1) regression:
+// when one reviewer of a cohort finishes but its sibling is still running, the
+// finished reviewer's OWN step-timeline node must read DONE — not stay RUNNING
+// until the whole cohort joins. Before the fix, individual completion only
+// buffered the result and the reviewer nodes were settled together at the
+// barrier, so one-done-one-running showed both as RUNNING.
+func TestCohortMemberSettlesOwnNodeOnCompletion(t *testing.T) {
+	svc, runID := newFlowTestRun(t)
+	nodes := []agentpack.FlowNode{
+		{ID: "coder", Behavior: "agent.delegate"},
+		{ID: "reviewer_correctness", Behavior: "agent.delegate"},
+		{ID: "reviewer_security", Behavior: "agent.delegate"},
+		{ID: "synthesis", Behavior: "hub.inline"},
+	}
+	svc.mu.Lock()
+	if rs := svc.runs[runID]; rs != nil {
+		rs.activeFlowNodes = nodes
+	}
+	svc.mu.Unlock()
+	svc.markFlowEngineDriven(runID)
+	svc.reseedFlowStepRuntime(runID, nodes)
+	// Both reviewers are running; the cohort has 2 members.
+	svc.setFlowStepStatus(context.Background(), runID, "reviewer_correctness", StepStatusRunning)
+	svc.setFlowStepStatus(context.Background(), runID, "reviewer_security", StepStatusRunning)
+
+	// Complete only the first cohort member (Wait blocks until its turn finishes).
+	if _, err := svc.spawnChildRun(context.Background(), runID, SpawnAgentInput{
+		Agent: "reviewer_correctness", Prompt: "review", Wait: true,
+		FlowCohortID: "review-1", Label: "reviewer_correctness", CohortSize: 2,
+	}); err != nil {
+		t.Fatalf("spawnChildRun(reviewer_correctness): %v", err)
+	}
+
+	if got := flowStepStatus(t, svc, runID, "reviewer_correctness"); got != StepStatusDone {
+		t.Errorf("finished cohort member node = %v, want DONE (must settle on its own completion, not wait for the barrier)", got)
+	}
+	if got := flowStepStatus(t, svc, runID, "reviewer_security"); got == StepStatusDone {
+		t.Errorf("still-running sibling node = DONE, want not-DONE (the barrier has not fired — only one member completed)")
+	}
+}
+
+// newFlowEngineTestRun is like newFlowTestRun but marks the run flow-engine-
+// driven with a tracked hub.inline node, so BUG-231's setFlowStepAwaitingUser
+// (gated on isFlowEngineDriven + hubInlineNodeID) has something to settle.
+func newFlowEngineTestRun(t *testing.T) (*InteractiveService, string) {
+	t.Helper()
+	svc, runID := newFlowTestRun(t)
+	nodes := []agentpack.FlowNode{
+		{ID: "coder", Behavior: "agent.delegate"},
+		{ID: "synthesis", Behavior: "hub.inline"},
+	}
+	svc.mu.Lock()
+	if rs := svc.runs[runID]; rs != nil {
+		rs.activeFlowNodes = nodes
+	}
+	svc.mu.Unlock()
+	svc.markFlowEngineDriven(runID)
+	svc.reseedFlowStepRuntime(runID, nodes)
+	svc.setFlowStepStatus(context.Background(), runID, "synthesis", StepStatusRunning)
+	return svc, runID
+}
+
+func flowStepStatus(t *testing.T, svc *InteractiveService, runID, nodeID string) RuntimeWorkflowStepStatus {
+	t.Helper()
+	steps, err := svc.workflowStore.LoadRunSteps(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("LoadRunSteps: %v", err)
+	}
+	for _, st := range steps {
+		if st.ID == nodeID {
+			return st.Status
+		}
+	}
+	t.Fatalf("step %q not found in run %q", nodeID, runID)
+	return ""
+}
+
+// TestApplyFlowControlEscalateSettlesHubToWaitingUser is the regression test
+// for BUG-231: an escalate outcome must be a non-terminal "awaiting user"
+// pause, not a hang. The hub inline node must move to WAITING_USER_APPROVAL
+// (not stay RUNNING, not go FAILED) and the loop must carry BlockReason
+// "escalate" so the desktop can render the correct recovery affordance.
+func TestApplyFlowControlEscalateSettlesHubToWaitingUser(t *testing.T) {
+	svc, runID := newFlowEngineTestRun(t)
+	result, err := svc.applyFlowControl(runID, FlowControlInput{Status: "escalate", Summary: "reviewers disagree"})
+	if err != nil {
+		t.Fatalf("applyFlowControl(escalate): %v", err)
+	}
+	if result.NextAction != "awaiting_user" {
+		t.Errorf("NextAction = %q, want awaiting_user", result.NextAction)
+	}
+	snap := svc.agentGraphSnapshot(runID)
+	if snap.LoopState.Status != "blocked" {
+		t.Errorf("loop.Status = %q, want blocked", snap.LoopState.Status)
+	}
+	if snap.LoopState.BlockReason != "escalate" {
+		t.Errorf("loop.BlockReason = %q, want escalate", snap.LoopState.BlockReason)
+	}
+	// BUG-233: the hub node's transition to WAITING_USER_APPROVAL must be visible
+	// the instant applyFlowControl returns — not eventually, via a background
+	// goroutine — because the desktop's step-runtime refresh can be triggered by
+	// the agent_graph_updated event emitted for this same call, and a
+	// still-in-flight goroutine write would let that refresh read a stale status.
+	if got := flowStepStatus(t, svc, runID, "synthesis"); got != StepStatusWaitingUserApr {
+		t.Errorf("hub node status immediately after applyFlowControl = %v, want WAITING_USER_APPROVAL", got)
+	}
+}
+
+// TestApplyFlowControlCapReachedSettlesHubToWaitingUser mirrors the escalate
+// test for the cap-reached "continue" branch: BlockReason must be "cap", and
+// the hub node must also move to WAITING_USER_APPROVAL rather than staying
+// RUNNING.
+func TestApplyFlowControlCapReachedSettlesHubToWaitingUser(t *testing.T) {
+	svc, runID := newFlowEngineTestRun(t)
+	svc.agentOrchestrator.setLoop(runID, AgentLoopState{Status: "running", Cap: 2, RoundCap: 2, Round: 1})
+	result, err := svc.applyFlowControl(runID, FlowControlInput{Status: "continue", Summary: "still open issues"})
+	if err != nil {
+		t.Fatalf("applyFlowControl(continue): %v", err)
+	}
+	if result.NextAction != "awaiting_user" {
+		t.Errorf("NextAction = %q, want awaiting_user", result.NextAction)
+	}
+	snap := svc.agentGraphSnapshot(runID)
+	if snap.LoopState.BlockReason != "cap" {
+		t.Errorf("loop.BlockReason = %q, want cap", snap.LoopState.BlockReason)
+	}
+	// BUG-233: see the matching comment in TestApplyFlowControlEscalateSettlesHubToWaitingUser.
+	if got := flowStepStatus(t, svc, runID, "synthesis"); got != StepStatusWaitingUserApr {
+		t.Errorf("hub node status immediately after applyFlowControl = %v, want WAITING_USER_APPROVAL", got)
+	}
+}
+
+// TestApplyFlowControlLoopingResetsStepsSynchronously is the regression test
+// for BUG-233: when a new review round starts ("continue"->"looping"), the
+// downstream nodes' PENDING reset and the entry node's RUNNING transition must
+// be visible the instant applyFlowControl returns, not via a background
+// goroutine racing the agent_graph_updated event's desktop-side step-runtime
+// refresh (the reported symptom: a fresh reviewer cohort shows as "running" in
+// the agent panel while the step timeline still reads the prior round's "all
+// done").
+func TestApplyFlowControlLoopingResetsStepsSynchronously(t *testing.T) {
+	svc, runID := newFlowEngineTestRun(t)
+	svc.setFlowStepStatus(context.Background(), runID, "coder", StepStatusDone)
+	svc.setFlowStepStatus(context.Background(), runID, "synthesis", StepStatusDone)
+	svc.agentOrchestrator.setLoop(runID, AgentLoopState{Status: "blocked", Cap: 5, RoundCap: 5, Round: 1})
+
+	result, err := svc.applyFlowControl(runID, FlowControlInput{Status: "continue", Summary: "changes requested"})
+	if err != nil {
+		t.Fatalf("applyFlowControl(continue): %v", err)
+	}
+	if result.NextAction != "looping" {
+		t.Fatalf("NextAction = %q, want looping", result.NextAction)
+	}
+	if got := flowStepStatus(t, svc, runID, "coder"); got != StepStatusRunning {
+		t.Errorf("entry node (coder) status immediately after applyFlowControl = %v, want RUNNING", got)
+	}
+	if got := flowStepStatus(t, svc, runID, "synthesis"); got != StepStatusPending {
+		t.Errorf("downstream node (synthesis) status immediately after applyFlowControl = %v, want PENDING", got)
+	}
+}
+
+// TestStartTurnPreservesOriginalPromptOverInternalFlowEngineTurns is the
+// regression test for BUG-235: the chat-history list titles a run from
+// lastPrompt (Navigator.tsx: runTitle(item.lastPrompt || item.lastMessage)).
+// Every internal flow-engine turn (hub auto-reinvoke, coder re-entry, the
+// Continue-resume note) is prefixed "[flow-engine]" and previously overwrote
+// lastPrompt unconditionally, so a flow run's history entry ended up titled by
+// whichever internal prompt ran last instead of the user's original request.
+func TestStartTurnPreservesOriginalPromptOverInternalFlowEngineTurns(t *testing.T) {
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, req TurnRequest, b TurnBridge) error {
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, ProviderTurnID: req.ProviderTurnID, FinalMessage: "ok"})
+				return nil
+			})
+		},
+	})
+	svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	parent, err := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	stepID := "chat-" + parent.RunID
+	originalPrompt := "fix bug 1 + 1 is not equals 2"
+
+	if _, apiErr := svc.startTurn(parent.RunID, TurnInput{StepID: stepID, Prompt: originalPrompt}, "", ""); apiErr != nil {
+		t.Fatalf("first startTurn: %s", apiErr.msg)
+	}
+	waitLoop(t, "first turn completes", time.Second, func() bool {
+		svc.mu.Lock()
+		defer svc.mu.Unlock()
+		return !svc.runs[parent.RunID].turnInFlight
+	})
+
+	if _, apiErr := svc.startTurn(parent.RunID, TurnInput{StepID: stepID, Prompt: autoReinvokePromptText()}, "", ""); apiErr != nil {
+		t.Fatalf("hub auto-reinvoke startTurn: %s", apiErr.msg)
+	}
+	waitLoop(t, "second (internal) turn completes", time.Second, func() bool {
+		svc.mu.Lock()
+		defer svc.mu.Unlock()
+		return !svc.runs[parent.RunID].turnInFlight
+	})
+
+	svc.mu.Lock()
+	got := svc.runs[parent.RunID].lastPrompt
+	svc.mu.Unlock()
+	if got != originalPrompt {
+		t.Errorf("lastPrompt = %q, want unchanged original prompt %q (internal flow-engine turn must not overwrite the history title)", got, originalPrompt)
+	}
+}
+
+// TestResumeFlowWithFeedbackAutoExtendsOnlyForCap is the regression test for
+// BUG-231 D-6: Continue must auto-raise the cap when the block reason was
+// the round cap, but must NOT touch the cap for a genuine escalate — an
+// escalate isn't a capacity problem, so bumping the cap would be a no-op at
+// best and misleading at worst.
+func TestResumeFlowWithFeedbackAutoExtendsOnlyForCap(t *testing.T) {
+	t.Run("cap reason auto-extends", func(t *testing.T) {
+		svc, runID := newFlowEngineTestRun(t)
+		svc.agentOrchestrator.setLoop(runID, AgentLoopState{Status: "blocked", BlockReason: "cap", Cap: 3, RoundCap: 3, Round: 3})
+		snap, err := svc.resumeFlowWithFeedback(runID, "")
+		if err != nil {
+			t.Fatalf("resumeFlowWithFeedback: %v", err)
+		}
+		if snap.LoopState.Cap != 5 {
+			t.Errorf("Cap after Continue on a cap block = %d, want 5 (3+2)", snap.LoopState.Cap)
+		}
+		if snap.LoopState.Status != "running" || snap.LoopState.BlockReason != "" {
+			t.Errorf("status/blockReason after Continue = %q/%q, want running/\"\"", snap.LoopState.Status, snap.LoopState.BlockReason)
+		}
+		// BUG-233: the hub node's WAITING_USER_APPROVAL -> RUNNING transition must
+		// be visible the instant resumeFlowWithFeedback returns, not via a
+		// background goroutine racing the desktop's step-runtime refresh.
+		if got := flowStepStatus(t, svc, runID, "synthesis"); got != StepStatusRunning {
+			t.Errorf("hub node status immediately after resumeFlowWithFeedback = %v, want RUNNING", got)
+		}
+	})
+
+	t.Run("escalate reason does not touch cap", func(t *testing.T) {
+		svc, runID := newFlowEngineTestRun(t)
+		svc.agentOrchestrator.setLoop(runID, AgentLoopState{Status: "blocked", BlockReason: "escalate", Cap: 3, RoundCap: 3, Round: 1})
+		snap, err := svc.resumeFlowWithFeedback(runID, "prioritize the security reviewer's finding")
+		if err != nil {
+			t.Fatalf("resumeFlowWithFeedback: %v", err)
+		}
+		if snap.LoopState.Cap != 3 {
+			t.Errorf("Cap after Continue on an escalate block = %d, want unchanged 3", snap.LoopState.Cap)
+		}
+		if snap.LoopState.Status != "running" || snap.LoopState.BlockReason != "" {
+			t.Errorf("status/blockReason after Continue = %q/%q, want running/\"\"", snap.LoopState.Status, snap.LoopState.BlockReason)
+		}
+	})
+}
+
+// TestResumeFlowWithFeedbackNoopWhenNotBlocked proves Continue is safe to
+// call more than once — a run that already left "blocked" is left untouched.
+func TestResumeFlowWithFeedbackNoopWhenNotBlocked(t *testing.T) {
+	svc, runID := newFlowEngineTestRun(t)
+	svc.agentOrchestrator.setLoop(runID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3, Round: 1})
+	snap, err := svc.resumeFlowWithFeedback(runID, "ignored")
+	if err != nil {
+		t.Fatalf("resumeFlowWithFeedback: %v", err)
+	}
+	if snap.LoopState.Status != "running" || snap.LoopState.Cap != 3 {
+		t.Errorf("no-op resume changed state: status=%q cap=%d", snap.LoopState.Status, snap.LoopState.Cap)
+	}
+}
+
+// TestResumeFlowWithFeedbackReinvokesHubSynthesisTurn proves Continue
+// actually re-runs the hub's synthesis turn (not just flips loop state) and
+// embeds the user's feedback directly in that turn's prompt (D-5) — the same
+// reliable-delivery pattern cohort-join notes use, rather than relying
+// solely on pendingAgentContext rendering.
+func TestResumeFlowWithFeedbackReinvokesHubSynthesisTurn(t *testing.T) {
+	promptCh := make(chan string, 1)
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, req TurnRequest, b TurnBridge) error {
+				select {
+				case promptCh <- req.Prompt:
+				default:
+				}
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "ok"})
+				return nil
+			})
+		},
+	})
+	svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	runID := parent.RunID
+	svc.mu.Lock()
+	if rs := svc.runs[runID]; rs != nil {
+		rs.autoOrchestrate = true
+	}
+	svc.mu.Unlock()
+	svc.agentOrchestrator.setLoop(runID, AgentLoopState{Status: "blocked", BlockReason: "escalate", Cap: 3, RoundCap: 3, Round: 1})
+
+	if _, err := svc.resumeFlowWithFeedback(runID, "prioritize the security reviewer's finding"); err != nil {
+		t.Fatalf("resumeFlowWithFeedback: %v", err)
+	}
+
+	select {
+	case prompt := <-promptCh:
+		if !strings.Contains(prompt, "prioritize the security reviewer's finding") {
+			t.Errorf("synthesis re-invoke prompt does not embed the user's feedback: %q", prompt)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the hub synthesis turn to be re-invoked")
+	}
+}
+
 func TestApplyFlowControlDoneTerminates(t *testing.T) {
 	svc, runID := newFlowTestRun(t)
 	svc.agentOrchestrator.mutateLoop(runID, func(st AgentLoopState) AgentLoopState {
@@ -1613,12 +1933,28 @@ func TestExtendCapRaisesCap(t *testing.T) {
 	}
 }
 
-func TestExtendCapRejectedAtMax(t *testing.T) {
+// TestExtendCapNoLongerRejectedPastFormerMax is the regression test for
+// BUG-231 D-8: ExtendMax used to reject a third extension (ExtendCount >= 2).
+// That limit only ever bounded this user-triggered action, so its only
+// remaining effect was to block the human indefinitely — the exact
+// awaiting-user wedge BUG-231 fixes. Retired: extendCap must keep succeeding
+// (and keep raising the cap) past the old limit.
+func TestExtendCapNoLongerRejectedPastFormerMax(t *testing.T) {
 	svc, runID := newFlowTestRun(t)
 	svc.agentOrchestrator.setLoop(runID, AgentLoopState{Status: "blocked", Cap: 7, RoundCap: 7, Round: 4, ExtendCount: 2})
-	_, err := svc.extendCap(runID)
-	if err == nil {
-		t.Error("expected error when ExtendCount >= ExtendMax(2), got nil")
+	result, err := svc.extendCap(runID)
+	if err != nil {
+		t.Fatalf("extendCap past the former ExtendMax: unexpected error: %v", err)
+	}
+	if result.Cap != 9 {
+		t.Errorf("Cap after third extend = %d, want 9 (7+2)", result.Cap)
+	}
+	snap := svc.agentGraphSnapshot(runID)
+	if snap.LoopState.ExtendCount != 3 {
+		t.Errorf("ExtendCount = %d, want 3", snap.LoopState.ExtendCount)
+	}
+	if snap.LoopState.Status != "running" {
+		t.Errorf("status after extend = %q, want running", snap.LoopState.Status)
 	}
 }
 
@@ -2325,6 +2661,72 @@ func TestInterruptParentCancelsRunningChildAgents(t *testing.T) {
 	}
 }
 
+// TestStopAgentLoopSnapshotReportsChildCancelledSynchronously guards BUG-248: the
+// snapshot stopAgentLoop returns must report a cancelled child's status immediately,
+// not "running". turnCancel() only signals cancellation — the child's own finishTurn
+// (which sets status = RunStatusCancelled) runs asynchronously once its turn's
+// goroutine observes ctx.Done(), and a cancelled child's finishTurn never re-emits an
+// agent_graph_updated event for the parent, so the desktop has no later event to
+// correct a stale "running" reading. The adapter here blocks past ctx.Done() so
+// finishTurn provably has not run yet when the snapshot is inspected.
+func TestStopAgentLoopSnapshotReportsChildCancelledSynchronously(t *testing.T) {
+	childStarted := make(chan struct{}, 1)
+	releaseChild := make(chan struct{})
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(ctx context.Context, req TurnRequest, _ TurnBridge) error {
+				if strings.HasPrefix(req.RunID, "run-") {
+					select {
+					case childStarted <- struct{}{}:
+					default:
+					}
+				}
+				<-ctx.Done()
+				<-releaseChild // held open so finishTurn cannot have run yet
+				return ctx.Err()
+			})
+		},
+	})
+	svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	t.Cleanup(func() { close(releaseChild) })
+	parentHandle, err := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	child, spawnErr := svc.spawnChildRun(context.Background(), parentHandle.RunID, SpawnAgentInput{
+		Agent:  "worker",
+		Prompt: "keep running",
+		Wait:   false,
+	})
+	if spawnErr != nil {
+		t.Fatalf("spawnChildRun: %v", spawnErr)
+	}
+	select {
+	case <-childStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("child turn did not start")
+	}
+
+	snap := svc.stopAgentLoop(parentHandle.RunID)
+
+	var childRun *AgentRunSummary
+	for i := range snap.Runs {
+		if snap.Runs[i].RunID == child.RunID {
+			childRun = &snap.Runs[i]
+			break
+		}
+	}
+	if childRun == nil {
+		t.Fatalf("stopAgentLoop snapshot missing child run %q", child.RunID)
+	}
+	if childRun.Status != RunStatusCancelled {
+		t.Fatalf("stopAgentLoop snapshot reported child status %q, want %q (finishTurn has not run yet)", childRun.Status, RunStatusCancelled)
+	}
+}
+
 func TestAutoReinvokeHubSingleFlightConcurrent(t *testing.T) {
 	// Calling maybeAutoReinvokeHub from two goroutines must schedule exactly one hub
 	// turn. Uses a blocking adapter so G2 always races against an in-flight turn
@@ -2432,6 +2834,54 @@ func TestAutoReinvokeHubNoPendingContextNoDefer(t *testing.T) {
 	svc.mu.Unlock()
 	if pending {
 		t.Error("pendingHubReinvoke must not be set when pendingAgentContext is empty: in-flight turn already consumed the signal")
+	}
+}
+
+func TestAutoReinvokeHubWithNotePreservesNoteWhenTurnInFlight(t *testing.T) {
+	svc, _ := newTestServer(t)
+	handle, _ := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	runID := handle.RunID
+
+	svc.mu.Lock()
+	svc.runs[runID].autoOrchestrate = true
+	svc.runs[runID].turnInFlight = true
+	svc.mu.Unlock()
+
+	note := "[flow-engine] Joined result note\nreviewer: approved"
+	svc.maybeAutoReinvokeHubWithNote(runID, note)
+
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	rs := svc.runs[runID]
+	if !rs.pendingHubReinvoke {
+		t.Fatal("pendingHubReinvoke = false, want true for note-bearing reinvoke while hub turn is in flight")
+	}
+	if len(rs.pendingAgentContext) != 1 || rs.pendingAgentContext[0] != note {
+		t.Fatalf("pendingAgentContext = %#v, want preserved cohort note", rs.pendingAgentContext)
+	}
+}
+
+func TestAutoReinvokeHubWithNotePreservesNoteWhenReinvokeAlreadyScheduled(t *testing.T) {
+	svc, _ := newTestServer(t)
+	handle, _ := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	runID := handle.RunID
+
+	svc.mu.Lock()
+	svc.runs[runID].autoOrchestrate = true
+	svc.runs[runID].reinvokeInFlight = true
+	svc.mu.Unlock()
+
+	note := "[flow-engine] Joined result note\nreviewer: approved"
+	svc.maybeAutoReinvokeHubWithNote(runID, note)
+
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	rs := svc.runs[runID]
+	if rs.pendingHubReinvoke {
+		t.Fatal("pendingHubReinvoke = true, want false because scheduled reinvoke can still consume preserved context")
+	}
+	if len(rs.pendingAgentContext) != 1 || rs.pendingAgentContext[0] != note {
+		t.Fatalf("pendingAgentContext = %#v, want preserved cohort note", rs.pendingAgentContext)
 	}
 }
 

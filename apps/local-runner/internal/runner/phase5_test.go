@@ -93,7 +93,7 @@ func newTestSupabaseStore() *SupabaseWorkflowStore {
 }
 
 func TestSupabaseStoreLoadRunStepsShaping(t *testing.T) {
-	// BUG-NOTE-CP42 #7: the embedded workflow_steps(...) select now also
+	// BUG-NOTE-CP42 #7: the embedded step_definitions(...) select now also
 	// requests behavior_id, so RuntimeWorkflowStep can classify a CP-42
 	// generic flow node by its declared behavior instead of only its
 	// (dispatch-category) step_type.
@@ -103,7 +103,7 @@ func TestSupabaseStoreLoadRunStepsShaping(t *testing.T) {
 	// BUG-164: workflow_steps has no provider_override/model_override of its
 	// own anymore — Model/Provider are always derived from the step type's
 	// own step_definitions.model, never from a per-workflow-instance override.
-	rows := `[{"id":"s1","step_type":"flow-agent-delegate","status":"PENDING","started_at":null,"retry_count":0,"rejection_note":null,"workflow_steps":{"requires_approval":true,"behavior_id":"agent.delegate","node_id":"coder","agent_ref":"coder","step_definitions":{"yolo_mode":true,"model":"claude-haiku"}}}]`
+	rows := `[{"id":"s1","step_type":"flow-agent-delegate","status":"PENDING","started_at":null,"retry_count":0,"rejection_note":null,"workflow_steps":{"requires_approval":true,"step_definitions":{"yolo_mode":true,"model":"claude-haiku","behavior_id":"agent.delegate","node_id":"coder","agent_ref":"coder"}}}]`
 	cap := withMockHTTP(t, 200, []byte(rows))
 
 	steps, err := newTestSupabaseStore().LoadRunSteps(context.Background(), "run-1")
@@ -140,7 +140,7 @@ func TestSupabaseStoreLoadRunStepsShaping(t *testing.T) {
 		"https://proj.supabase.co/rest/v1/workflow_run_steps",
 		"workflow_run_id=eq.run-1",
 		"order=execution_order_index.asc",
-		"workflow_steps(requires_approval,behavior_id,node_id,agent_ref,step_definitions(yolo_mode,model))",
+		"workflow_steps(requires_approval,step_definitions(yolo_mode,model,behavior_id,node_id,agent_ref))",
 	} {
 		if !strings.Contains(req.endpoint, want) {
 			t.Fatalf("endpoint missing %q: %s", want, req.endpoint)

@@ -1254,3 +1254,36 @@ func TestBuildCohortNoteContainsAllMembers(t *testing.T) {
 		}
 	}
 }
+
+// TestSummarizeCohortNoteForUserStripsEngineInstructions is the regression test
+// for BUG-233: the awaiting-user card must show the reviewers' actual findings,
+// not the engine-internal header/instructions meant for the hub's own prompt.
+func TestSummarizeCohortNoteForUserStripsEngineInstructions(t *testing.T) {
+	entries := []cohortEntry{
+		{Label: "alpha", Provider: "claude", FinalMessage: "LGTM", Status: "completed"},
+		{Label: "beta", Provider: "codex", FinalMessage: "needs fix", Status: "completed"},
+		{Label: "gamma", Provider: "claude", Status: "failed", Err: "timeout"},
+	}
+	note := buildCohortNote("parent-1", "c1", entries, 2)
+	summary := summarizeCohortNoteForUser(note)
+
+	for _, want := range []string{"alpha", "LGTM", "beta", "needs fix", "gamma", "failed: timeout"} {
+		if !strings.Contains(summary, want) {
+			t.Errorf("summary missing %q:\n%s", want, summary)
+		}
+	}
+	for _, bad := range []string{"[flow-engine", "Flow round", "This joined result note", "Synthesize:"} {
+		if strings.Contains(summary, bad) {
+			t.Errorf("summary still contains engine-internal text %q:\n%s", bad, summary)
+		}
+	}
+}
+
+func TestSummarizeCohortNoteForUserEmptyInputReturnsEmpty(t *testing.T) {
+	if got := summarizeCohortNoteForUser(""); got != "" {
+		t.Errorf("summarizeCohortNoteForUser(\"\") = %q, want \"\"", got)
+	}
+	if got := summarizeCohortNoteForUser("   \n  "); got != "" {
+		t.Errorf("summarizeCohortNoteForUser(whitespace) = %q, want \"\"", got)
+	}
+}

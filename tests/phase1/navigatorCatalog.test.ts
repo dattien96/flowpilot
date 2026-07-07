@@ -27,6 +27,37 @@ test("mapNavigatorWorkflow keeps workflow ids and normalizes global workflows", 
       projectId: "",
       name: "Global Workflow",
       description: "Shared",
+      model: undefined,
+      yoloMode: false,
+    },
+  );
+});
+
+// BUG-230: modelOverride/yoloMode were previously dropped, so the desktop's
+// pre-run preview always fell through to the project's default model no
+// matter what a workflow's own Settings > Workflows override said.
+test("mapNavigatorWorkflow carries modelOverride and yoloMode through to the navigator Workflow", () => {
+  assert.deepEqual(
+    mapNavigatorWorkflow({
+      id: "review-loop",
+      projectId: null,
+      name: "Review Loop",
+      description: "Built-in review loop",
+      isTemplate: false,
+      providerOverride: null,
+      modelOverride: "claude-haiku",
+      reasoningEffortOverride: "medium",
+      yoloMode: true,
+      createdAt: "",
+      updatedAt: "",
+    }),
+    {
+      id: "review-loop",
+      projectId: "",
+      name: "Review Loop",
+      description: "Built-in review loop",
+      model: "claude-haiku",
+      yoloMode: true,
     },
   );
 });
@@ -60,6 +91,44 @@ test("mapNavigatorStep uses step type as the launch id and first required skill 
       name: "Tech Spec",
       order: 3,
       defaultSkill: "tech_spec_skill",
+      model: "gpt-5.4",
+      yoloMode: false,
+    },
+  );
+});
+
+// BUG-230: the step tier's own model/yoloMode were previously dropped here too.
+test("mapNavigatorStep carries model and yoloMode through to the navigator Step", () => {
+  assert.deepEqual(
+    mapNavigatorStep(
+      {
+        stepType: "reviewer",
+        name: "Reviewer",
+        description: "",
+        promptBase: null,
+        requiredMcps: [],
+        mcpAccessMode: "read_only",
+        requiredSkills: [],
+        teamRole: null,
+        subagent: null,
+        model: "claude-sonnet",
+        reasoningEffort: "high",
+        yoloMode: true,
+        agentType: "standard",
+        inputArtifactDefinitions: [],
+        outputArtifactDefinitions: [],
+        createdAt: "",
+        updatedAt: "",
+      },
+      1,
+    ),
+    {
+      id: "reviewer",
+      name: "Reviewer",
+      order: 1,
+      defaultSkill: undefined,
+      model: "claude-sonnet",
+      yoloMode: true,
     },
   );
 });

@@ -116,12 +116,16 @@ class HttpWsRunnerClient {
     refreshAgentGraph(parentRunId) {
         return this.getJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/agent-graph`);
     }
+    getWorkflowStepsRuntime(runId) {
+        return this.getJSON(`/client/workflow-runs/${encodeURIComponent(runId)}/steps-runtime`);
+    }
     pauseAgentLoop(parentRunId) { return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/agent-loop/pause`); }
     resumeAgentLoop(parentRunId) { return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/agent-loop/resume`); }
     injectAgentFeedback(parentRunId, toRunId, message) { return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/agent-loop/feedback`, { toRunId, message }); }
     stopAgentLoop(parentRunId) { return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/agent-loop/stop`); }
     submitReviewOutcome(parentRunId, input) { return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/flow-control`, input); }
     extendCap(parentRunId) { return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/agent-loop/extend-cap`); }
+    continueFlow(parentRunId, feedback) { return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/agent-loop/continue`, { feedback }); }
     spawnAgent(input) {
         const { parentRunId, ...body } = input;
         return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/spawn-agent`, body);

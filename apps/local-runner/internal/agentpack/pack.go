@@ -752,6 +752,13 @@ func ValidateFlowDefinition(def FlowDefinition) error {
 				return fmt.Errorf("flow %q node %q uses unknown behavior %q", def.ID, node.ID, node.Behavior)
 			}
 		}
+		if lifecycle := strings.ToLower(strings.TrimSpace(node.Lifecycle)); lifecycle != "" {
+			switch lifecycle {
+			case "once", "reinvoke", "spawn":
+			default:
+				return fmt.Errorf("flow %q node %q has invalid lifecycle %q", def.ID, node.ID, node.Lifecycle)
+			}
+		}
 	}
 	// BUG-NOTE-CP42 #33: dependsOn references another node's id within the same
 	// flow (per the add_flow_engine_attrs_to_workflows migration's own comment),

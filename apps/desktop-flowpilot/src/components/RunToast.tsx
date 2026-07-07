@@ -7,11 +7,11 @@ import type { RunStatus } from "@/types/contract";
 interface Toast {
   id: number;
   message: string;
-  kind: "done" | "approval" | "question";
+  kind: "done" | "approval" | "question" | "blocked";
 }
 
 let seq = 0;
-const ACTIVE_STATUSES: RunStatus[] = ["starting", "running", "waiting_approval", "waiting_question", "completed", "failed"];
+const ACTIVE_STATUSES: RunStatus[] = ["starting", "running", "waiting_approval", "waiting_question", "blocked", "completed", "failed"];
 
 function fireNative(title: string, body: string) {
   console.log("[RunToast] fireNative", title, body);
@@ -60,6 +60,17 @@ export function RunToast(): React.ReactElement | null {
       const toast: Toast = { id: ++seq, message: "AI has a question for you", kind: "question" };
       setToasts((ts) => [...ts, toast]);
       fireNative("FlowPilot", "AI has a question for you");
+      const tid = setTimeout(() => setToasts((ts) => ts.filter((t) => t.id !== toast.id)), 8000);
+      return () => clearTimeout(tid);
+    }
+
+    // BUG-231: the flow paused awaiting the user (escalate or round-cap
+    // reached) — surface it the same way as an approval/question, since it is
+    // equally "the AI is waiting on you", not a silent hang.
+    if (status === "blocked" && prev !== "blocked") {
+      const toast: Toast = { id: ++seq, message: "Flow paused — needs your input", kind: "blocked" };
+      setToasts((ts) => [...ts, toast]);
+      fireNative("FlowPilot", "Flow paused — needs your input");
       const tid = setTimeout(() => setToasts((ts) => ts.filter((t) => t.id !== toast.id)), 8000);
       return () => clearTimeout(tid);
     }

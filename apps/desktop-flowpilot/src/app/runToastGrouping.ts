@@ -1,4 +1,4 @@
-export type RunToastKind = "done" | "approval" | "question";
+export type RunToastKind = "done" | "approval" | "question" | "blocked";
 
 export interface RunToastGroupItem {
   kind: RunToastKind;
@@ -10,6 +10,7 @@ const KIND_LABELS: Record<RunToastKind, string> = {
   done: "Completed",
   approval: "Approvals",
   question: "Questions",
+  blocked: "Paused",
 };
 
 export function shouldCollapseToasts(count: number): boolean {
@@ -21,6 +22,7 @@ export function buildToastGroupSummary(toasts: readonly RunToastGroupItem[]): st
     done: 0,
     approval: 0,
     question: 0,
+    blocked: 0,
   };
 
   for (const toast of toasts) {

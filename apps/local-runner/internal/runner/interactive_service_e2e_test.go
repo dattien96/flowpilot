@@ -19,8 +19,11 @@ package runner
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"flowpilot-runner/internal/agentpack"
 )
 
 // ── helper ───────────────────────────────────────────────────────────────────
@@ -112,10 +115,254 @@ func TestE2EReviewLoopApprovedPath(t *testing.T) {
 	}
 }
 
+// TestE2EReviewLoopMultiRoundChangesThenApprovedCompletes drives a REAL two-round
+// review loop end to end through the built-in flow topology: round 1 synthesis
+// requests changes (loop back to the coder), round 2 synthesis approves (flow
+// done). This is the multi-round completion path that had NO coverage before
+// BUG-234 — TestE2EReviewLoopApprovedPath drives only one round, and
+// TestE2EReviewLoopChangesRequestedFeedbackReachesCoderPrompt stops after the
+// first coder re-entry without ever driving the second synthesis. The live-
+// testing regression (synthesis stuck RUNNING, a looped run never completing)
+// surfaces here as a waitLoop timeout.
+func TestE2EReviewLoopMultiRoundChangesThenApprovedCompletes(t *testing.T) {
+	var synthMu sync.Mutex
+	synthCalls := 0
+
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, req TurnRequest, b TurnBridge) error {
+				// The hub synthesis turn is the only one whose prompt carries the
+				// auto-reinvoke text ("Agent results ready"); coder/reviewer turns do not.
+				if strings.Contains(req.Prompt, "Agent results ready") {
+					synthMu.Lock()
+					synthCalls++
+					n := synthCalls
+					synthMu.Unlock()
+					// Round 1 → changes_requested (loop back to coder); round 2 → approved (done).
+					in := FlowControlInput{Status: "done", Summary: "all reviewers approved"}
+					if n == 1 {
+						in = FlowControlInput{Status: "continue", Summary: "address the failing test from round 1"}
+					}
+					if _, err := b.SubmitFlowControl(in); err != nil {
+						return err
+					}
+					b.Emit(ProviderEvent{Type: EventTurnCompleted, ProviderTurnID: req.ProviderTurnID, FinalMessage: "synthesis turn " + in.Status})
+					return nil
+				}
+				// Coder and reviewer turns simply complete.
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, ProviderTurnID: req.ProviderTurnID, FinalMessage: "ok"})
+				return nil
+			})
+		},
+	})
+
+	svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	ph, _ := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if ph.RunID == "" {
+		t.Fatal("createRun returned empty RunID")
+	}
+	parentID := ph.RunID
+
+	// Drive the real built-in review-loop flow: startResolvedFlow sets the flow
+	// topology + autoOrchestrate + explicit mode + flowEngineDriven and spawns the
+	// coder entry node. Auto-advance then carries coder → reviewer cohort →
+	// synthesis → (continue) coder → reviewer cohort → synthesis → done, with no
+	// further manual driving.
+	svc.startResolvedFlow(context.Background(), parentID, "flowpilot-core-flow-pack/review-loop", "fix the bug where 1+1 != 2")
+
+	waitLoop(t, "loop.Status==done after a changes→approved multi-round", 8*time.Second, func() bool {
+		return svc.agentOrchestrator.loopStateFor(parentID).Status == "done"
+	})
+
+	st := svc.agentOrchestrator.loopStateFor(parentID)
+	synthMu.Lock()
+	n := synthCalls
+	synthMu.Unlock()
+	if st.Status != "done" {
+		t.Fatalf("loop.Status = %q, want done (synthCalls=%d, round=%d) — multi-round flow failed to complete", st.Status, n, st.Round)
+	}
+	if n < 2 {
+		t.Errorf("synthesis turn fired %d time(s), want >= 2 (round 1 changes_requested + round 2 approved)", n)
+	}
+}
+
+// TestE2EReviewLoopMultiRoundSlowSynthesisStillCompletes forces the deferred-
+// reinvoke window (BUG-234 probe): the round-1 synthesis turn calls
+// submit_review_outcome(changes_requested) — which schedules the coder re-entry —
+// and then STALLS before emitting TurnCompleted. With a fast fake coder/reviewer,
+// the round-2 cohort joins while the round-1 synthesis turn is still in flight, so
+// maybeAutoReinvokeHubWithNote must DEFER the round-2 synthesis (pendingHubReinvoke)
+// and the turn-completion retry must fire it. If that retry path is broken, the
+// hub node stays RUNNING and the flow never completes (the Ảnh 5 hang shape).
+func TestE2EReviewLoopMultiRoundSlowSynthesisStillCompletes(t *testing.T) {
+	var synthMu sync.Mutex
+	synthCalls := 0
+
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, req TurnRequest, b TurnBridge) error {
+				if strings.Contains(req.Prompt, "Agent results ready") {
+					synthMu.Lock()
+					synthCalls++
+					n := synthCalls
+					synthMu.Unlock()
+					in := FlowControlInput{Status: "done", Summary: "all reviewers approved"}
+					if n == 1 {
+						in = FlowControlInput{Status: "continue", Summary: "address the failing test from round 1"}
+					}
+					if _, err := b.SubmitFlowControl(in); err != nil {
+						return err
+					}
+					// Round 1: hold the turn open past the round-2 cohort join to force
+					// the deferred-reinvoke path. The coder re-entry + round-2 reviewers
+					// (instant fakes) complete inside this window.
+					if n == 1 {
+						time.Sleep(150 * time.Millisecond)
+					}
+					b.Emit(ProviderEvent{Type: EventTurnCompleted, ProviderTurnID: req.ProviderTurnID, FinalMessage: "synthesis turn " + in.Status})
+					return nil
+				}
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, ProviderTurnID: req.ProviderTurnID, FinalMessage: "ok"})
+				return nil
+			})
+		},
+	})
+
+	svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	ph, _ := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if ph.RunID == "" {
+		t.Fatal("createRun returned empty RunID")
+	}
+	parentID := ph.RunID
+	svc.startResolvedFlow(context.Background(), parentID, "flowpilot-core-flow-pack/review-loop", "fix the bug where 1+1 != 2")
+
+	waitLoop(t, "loop.Status==done despite a slow round-1 synthesis", 8*time.Second, func() bool {
+		return svc.agentOrchestrator.loopStateFor(parentID).Status == "done"
+	})
+
+	st := svc.agentOrchestrator.loopStateFor(parentID)
+	synthMu.Lock()
+	n := synthCalls
+	synthMu.Unlock()
+	if st.Status != "done" {
+		t.Fatalf("loop.Status = %q, want done (synthCalls=%d) — deferred round-2 synthesis was never retried", st.Status, n)
+	}
+	if n < 2 {
+		t.Errorf("synthesis turn fired %d time(s), want >= 2", n)
+	}
+}
+
+// TestE2EReviewLoopBlockedByProseOnlyRoundStopsAdvancing is the BUG-234 (#4)
+// regression: in a looped run, a round-2 synthesis that COMPLETES WITHOUT calling
+// submit_review_outcome (prose-only — the realistic Haiku failure) trips the
+// CA-226 fallback, which escalates the loop to blocked and settles the hub node
+// to WAITING_USER_APPROVAL. The flow must then STOP: no more reviewer spawns, and
+// the hub node must STAY WAITING_USER_APPROVAL (not flip back to RUNNING). Before
+// the fix, the auto-advance paths had no loop-status guard, so late/continuing
+// completions re-spawned reviewers and flipped the hub node back to RUNNING
+// forever — the "synthesis step spins, run never completes" hang.
+func TestE2EReviewLoopBlockedByProseOnlyRoundStopsAdvancing(t *testing.T) {
+	var mu sync.Mutex
+	synthCalls := 0
+	reviewerSpawns := 0
+
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, req TurnRequest, b TurnBridge) error {
+				if strings.Contains(req.Prompt, "Agent results ready") {
+					mu.Lock()
+					synthCalls++
+					n := synthCalls
+					mu.Unlock()
+					if n == 1 {
+						if _, err := b.SubmitFlowControl(FlowControlInput{Status: "continue", Summary: "address round 1"}); err != nil {
+							return err
+						}
+						b.Emit(ProviderEvent{Type: EventTurnCompleted, ProviderTurnID: req.ProviderTurnID, FinalMessage: "changes requested"})
+						return nil
+					}
+					// Round 2+: complete WITHOUT calling submit_review_outcome (prose only).
+					b.Emit(ProviderEvent{Type: EventTurnCompleted, ProviderTurnID: req.ProviderTurnID, FinalMessage: "I am not sure, looks plausible."})
+					return nil
+				}
+				if strings.Contains(req.Prompt, "Review this result") {
+					mu.Lock()
+					reviewerSpawns++
+					mu.Unlock()
+				}
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, ProviderTurnID: req.ProviderTurnID, FinalMessage: "ok"})
+				return nil
+			})
+		},
+	})
+
+	svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	ph, _ := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if ph.RunID == "" {
+		t.Fatal("createRun returned empty RunID")
+	}
+	parentID := ph.RunID
+	svc.startResolvedFlow(context.Background(), parentID, "flowpilot-core-flow-pack/review-loop", "fix the bug where 1+1 != 2")
+	// Mirror what handleStartTurn does for a real flow-engine launch so the
+	// CA-226 fallback (gated on flowEngineDriven) and the step timeline engage.
+	svc.markFlowEngineDriven(parentID)
+	svc.mu.Lock()
+	nodes := append([]agentpack.FlowNode(nil), svc.runs[parentID].activeFlowNodes...)
+	svc.mu.Unlock()
+	svc.reseedFlowStepRuntime(parentID, nodes)
+
+	// Wait for the loop to reach blocked (the round-2 prose-only synthesis escalates).
+	waitLoop(t, "loop.Status==blocked after a prose-only round-2 synthesis", 8*time.Second, func() bool {
+		return svc.agentOrchestrator.loopStateFor(parentID).Status == "blocked"
+	})
+
+	// The pre-fix bug was an UNBOUNDED runaway: after the escalate, reviewers kept
+	// re-spawning and the hub node kept flipping RUNNING → WAITING → RUNNING every
+	// round, forever — the synthesis step spun and the run never settled. The fix
+	// gates every auto-advance/spawn and the cohort-join hub-RUNNING write on the
+	// loop still being active. A single reviewer turn already in flight at the
+	// exact block instant may still land (a benign, one-shot boundary race that
+	// cascades no further because the reinvoke and hub-RUNNING writes are gated),
+	// so the guarantee we assert is: the count SETTLES (stops growing once any
+	// in-flight turn lands), the loop STAYS blocked, and — the actual user-facing
+	// symptom — the hub node STAYS WAITING_USER_APPROVAL rather than flapping back
+	// to RUNNING. Sample after a generous drain so any in-flight turn has landed.
+	time.Sleep(800 * time.Millisecond)
+	mu.Lock()
+	countA := reviewerSpawns
+	mu.Unlock()
+	time.Sleep(800 * time.Millisecond)
+	mu.Lock()
+	countB := reviewerSpawns
+	mu.Unlock()
+
+	st := svc.agentOrchestrator.loopStateFor(parentID)
+	if st.Status != "blocked" {
+		t.Fatalf("loop.Status = %q, want blocked (must stay settled, not resume)", st.Status)
+	}
+	hubStatus := flowStepStatus(t, svc, parentID, hubInlineNodeID(nodes))
+	if hubStatus != StepStatusWaitingUserApr {
+		t.Errorf("hub node status = %v, want WAITING_USER_APPROVAL (must not flap back to RUNNING after block)", hubStatus)
+	}
+	if countB != countA {
+		t.Errorf("reviewer turns still firing after the loop blocked and drained: %d → %d across 800ms (runaway auto-advance not gated)", countA, countB)
+	}
+}
+
 // TestE2EReviewLoopChangesRequestedFeedbackReachesCoderPrompt verifies that
 // applyFlowControl("continue", summary=...) triggers a coder re-entry whose
 // prompt contains the supplied feedback text. Drives the full path:
-//   applyFlowControl → maybeReinvokeCoderForContinue → scheduleChildTurn → runTurn adapter
+//
+//	applyFlowControl → maybeReinvokeCoderForContinue → scheduleChildTurn → runTurn adapter
 func TestE2EReviewLoopChangesRequestedFeedbackReachesCoderPrompt(t *testing.T) {
 	reentryPrompts := make(chan string, 5)
 
@@ -173,6 +420,85 @@ func TestE2EReviewLoopChangesRequestedFeedbackReachesCoderPrompt(t *testing.T) {
 	st := svc.agentOrchestrator.loopStateFor(parentID)
 	if st.Round < 1 {
 		t.Errorf("loop.Round = %d after one continue cycle, want >= 1", st.Round)
+	}
+}
+
+// TestE2EReviewLoopCoderReentryIncrementsActivationSeqAndEmitsSpawnEvent is
+// the regression test for BUG-242 (Bug 1): a review-loop round-2+ coder
+// re-entry goes through applyFlowControl("continue") ->
+// maybeReinvokeCoderForContinue, which used to carry its own older inline
+// reinvoke logic that never incremented activationSeq or emitted
+// EventAgentSpawnedByUser — only the separate reinvokeExistingFlowChild
+// (forward-edge reuse path) had those BUG-Rnd2 fixes. Without activationSeq
+// incrementing, the desktop's monotonic terminal-status guard
+// (mergeAgentRunsById) discarded the completed->running transition as a stale
+// snapshot, so the coder stayed miscategorized in "Recently closed" with no
+// new main-chat card even though the backend had genuinely restarted it.
+// Both call sites now delegate to the single reinvokeMatchingFlowChild.
+func TestE2EReviewLoopCoderReentryIncrementsActivationSeqAndEmitsSpawnEvent(t *testing.T) {
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, req TurnRequest, b TurnBridge) error {
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "ok"})
+				return nil
+			})
+		},
+	})
+
+	svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	ph, _ := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	parentID := ph.RunID
+	svc.agentOrchestrator.setLoop(parentID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3})
+
+	spawnResult, err := svc.spawnChildRun(context.Background(), parentID, SpawnAgentInput{
+		Agent: "coder", Prompt: "implement auth middleware", Wait: true,
+	})
+	if err != nil {
+		t.Fatalf("spawnChildRun(coder): %v", err)
+	}
+	coderRunID := spawnResult.RunID
+
+	summaryBefore, ok := svc.agentOrchestrator.currentSummary(parentID, coderRunID)
+	if !ok {
+		t.Fatalf("no summary found for coder run %q before continue", coderRunID)
+	}
+	if summaryBefore.Status != RunStatusCompleted {
+		t.Fatalf("coder status before continue = %q, want completed", summaryBefore.Status)
+	}
+
+	if _, err := svc.applyFlowControl(parentID, FlowControlInput{
+		Status:  "continue",
+		Summary: "fix the null pointer dereference",
+	}); err != nil {
+		t.Fatalf("applyFlowControl(continue): %v", err)
+	}
+
+	waitLoop(t, "coder summary reflects reinvoke", 3*time.Second, func() bool {
+		summary, ok := svc.agentOrchestrator.currentSummary(parentID, coderRunID)
+		return ok && summary.ActivationSeq > summaryBefore.ActivationSeq
+	})
+
+	summaryAfter, _ := svc.agentOrchestrator.currentSummary(parentID, coderRunID)
+	if summaryAfter.ActivationSeq <= summaryBefore.ActivationSeq {
+		t.Fatalf("activationSeq = %d after continue, want > %d (before) so the desktop recognizes a genuine reinvoke, not a stale snapshot",
+			summaryAfter.ActivationSeq, summaryBefore.ActivationSeq)
+	}
+
+	svc.mu.Lock()
+	rs := svc.runs[parentID]
+	var sawSpawnEvent bool
+	for _, ev := range rs.events {
+		if ev.Type == EventAgentSpawnedByUser && ev.ChildRunID == coderRunID {
+			sawSpawnEvent = true
+			break
+		}
+	}
+	svc.mu.Unlock()
+	if !sawSpawnEvent {
+		t.Error("expected an EventAgentSpawnedByUser for the reinvoked coder run on the parent's timeline, so the main chat renders a new agent card for this turn")
 	}
 }
 
@@ -327,9 +653,9 @@ func TestE2EFlowEventSidecarPersistAndReload(t *testing.T) {
 		SourceDocIDs:  []string{"Task-178"},
 	}
 	ev := ProviderEvent{
-		Type:              EventFlowContextPackage,
-		WorkflowRunID:     "run-sidecar-1",
-		WorkflowStepRunID: "step-plan",
+		Type:               EventFlowContextPackage,
+		WorkflowRunID:      "run-sidecar-1",
+		WorkflowStepRunID:  "step-plan",
 		FlowContextPackage: &pkg,
 	}
 	if err := store1.AppendEvent(ctx, ev); err != nil {
@@ -548,5 +874,117 @@ func TestE2EParallelCodingCohortReinvokesHub(t *testing.T) {
 
 	if tc == 0 {
 		t.Error("hub was not auto-reinvoked after 3-member coding cohort completed")
+	}
+}
+
+// TestE2EReviewLoopSynthesisFallbackEscalates verifies that if the hub synthesis turn
+// completes without calling submit_review_outcome, the synthesis step is marked FAILED,
+// the loop is escalated/blocked, and no second auto-reinvoke loop is created.
+func TestE2EReviewLoopSynthesisFallbackEscalates(t *testing.T) {
+	var svc *InteractiveService
+	var parentID string
+	hubCalls := 0
+
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, req TurnRequest, b TurnBridge) error {
+				if strings.Contains(req.Prompt, "Agent results ready") {
+					hubCalls++
+					// Do NOT call b.SubmitFlowControl (submit_review_outcome tool).
+					// Answer in prose only.
+					b.Emit(ProviderEvent{
+						Type:           EventTurnCompleted,
+						ProviderTurnID: req.ProviderTurnID,
+						FinalMessage:   "Blocked: joined note unavailable",
+					})
+					return nil
+				}
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "ok"})
+				return nil
+			})
+		},
+	})
+	store := newFakeWorkflowStore()
+	svc = newInteractiveService(reg, newInteractiveCatalog(), store)
+	ph, _ := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if ph.RunID == "" {
+		t.Fatal("createRun returned empty RunID")
+	}
+	parentID = ph.RunID
+
+	svc.agentOrchestrator.setLoop(parentID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3})
+	svc.mu.Lock()
+	svc.runs[parentID].autoOrchestrate = true
+	svc.runs[parentID].flowEngineDriven = true
+	svc.runs[parentID].turnCount = 1 // simulate hub's first turn already run
+	svc.runs[parentID].activeFlowNodes = []agentpack.FlowNode{
+		{ID: "step-synth", Behavior: "hub.inline"},
+	}
+	svc.mu.Unlock()
+
+	// Seed steps into workflow store
+	svc.reseedFlowStepRuntime(parentID, svc.runs[parentID].activeFlowNodes)
+
+	// Two reviewers in a cohort — last one triggers hub auto-reinvoke.
+	for i, lbl := range []string{"reviewer-correctness", "reviewer-security"} {
+		if _, e := svc.spawnChildRun(context.Background(), parentID, SpawnAgentInput{
+			Agent: lbl, Prompt: "review the coder output", Wait: true,
+			FlowCohortID: "review-1", Label: lbl, CohortSize: 2,
+			AutoOrchestrate: i == 0,
+		}); e != nil {
+			t.Fatalf("spawnChildRun(%s): %v", lbl, e)
+		}
+	}
+
+	// Wait for the loop state to become "blocked".
+	waitLoop(t, "loop.Status==blocked", 3*time.Second, func() bool {
+		return svc.agentOrchestrator.loopStateFor(parentID).Status == "blocked"
+	})
+
+	st := svc.agentOrchestrator.loopStateFor(parentID)
+	if st.Status != "blocked" {
+		t.Errorf("loop.Status = %q, want blocked", st.Status)
+	}
+	// BUG-233: the awaiting-user card renders GateReason verbatim, so the
+	// fallback must surface the reviewers' actual findings (their joined cohort
+	// note) instead of the internal "completed without calling
+	// submit_review_outcome" diagnostic sentence.
+	if strings.Contains(st.GateReason, "completed without calling submit_review_outcome") {
+		t.Errorf("GateReason still contains the internal diagnostic sentence: %q", st.GateReason)
+	}
+	for _, want := range []string{"reviewer-correctness", "reviewer-security"} {
+		if !strings.Contains(st.GateReason, want) {
+			t.Errorf("expected GateReason to include reviewer findings (%q), got: %q", want, st.GateReason)
+		}
+	}
+
+	// BUG-233: the hub node must settle to WAITING_USER_APPROVAL, not FAILED —
+	// this fallback is a non-terminal awaiting-user pause (same contract BUG-231
+	// established for the escalate/cap-reached paths), and FAILED reads as a
+	// terminal error.
+	steps, err := store.LoadRunSteps(context.Background(), parentID)
+	if err != nil {
+		t.Fatalf("LoadRunSteps: %v", err)
+	}
+	foundSynth := false
+	for _, step := range steps {
+		if step.ID == "step-synth" {
+			foundSynth = true
+			if step.Status != StepStatusWaitingUserApr {
+				t.Errorf("expected synthesis step status to be WAITING_USER_APPROVAL, got: %v", step.Status)
+			}
+		}
+	}
+	if !foundSynth {
+		t.Error("synthesis step not found in workflow store")
+	}
+
+	// Assert no second auto-reinvoke loop is created (hubCalls should remain 1).
+	time.Sleep(50 * time.Millisecond)
+	if hubCalls != 1 {
+		t.Errorf("expected exactly 1 hub call, got %d", hubCalls)
 	}
 }

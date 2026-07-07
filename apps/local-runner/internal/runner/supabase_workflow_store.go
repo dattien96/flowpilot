@@ -44,9 +44,8 @@ func (s *SupabaseWorkflowStore) headers(prefer string) map[string]string {
 	return h
 }
 
-// dbStep is the PostgREST row shape for workflow_run_steps. requires_approval,
-// behavior_id, node_id, and agent_ref live on the joined workflow_steps row;
-// the step type's own model/yolo_mode default lives on its nested
+// dbStep is the PostgREST row shape for workflow_run_steps. workflow_steps is
+// only the workflow-to-step relation; node definition fields live on the joined
 // step_definitions row. BUG-164: workflow_steps has no provider_override/
 // model_override of its own anymore — a step type has exactly one configured
 // model, not a per-workflow-instance override, so Provider/Model are always
@@ -65,8 +64,11 @@ type dbStep struct {
 		NodeID           *string `json:"node_id"`
 		AgentRef         *string `json:"agent_ref"`
 		StepDefinitions  *struct {
-			YoloMode bool    `json:"yolo_mode"`
-			Model    *string `json:"model"`
+			YoloMode   bool    `json:"yolo_mode"`
+			Model      *string `json:"model"`
+			BehaviorID *string `json:"behavior_id"`
+			NodeID     *string `json:"node_id"`
+			AgentRef   *string `json:"agent_ref"`
 		} `json:"step_definitions"`
 	} `json:"workflow_steps"`
 }
@@ -83,7 +85,7 @@ func (s *SupabaseWorkflowStore) LoadRunSteps(ctx context.Context, runID string) 
 	// classification, disconnecting them from the Flow Mode context-handoff
 	// path entirely.
 	endpoint := fmt.Sprintf(
-		"%s/workflow_run_steps?workflow_run_id=eq.%s&order=execution_order_index.asc&select=id,step_type,status,started_at,finished_at,retry_count,rejection_note,workflow_steps(requires_approval,behavior_id,node_id,agent_ref,step_definitions(yolo_mode,model))",
+		"%s/workflow_run_steps?workflow_run_id=eq.%s&order=execution_order_index.asc&select=id,step_type,status,started_at,finished_at,retry_count,rejection_note,workflow_steps(requires_approval,step_definitions(yolo_mode,model,behavior_id,node_id,agent_ref))",
 		s.restURL, runID,
 	)
 	status, body, err := httpRequestFn(ctx, http.MethodGet, endpoint, s.headers(""), nil)
@@ -116,17 +118,17 @@ func (s *SupabaseWorkflowStore) LoadRunSteps(ctx context.Context, runID string) 
 		}
 		if r.WorkflowSteps != nil {
 			step.RequiresApproval = r.WorkflowSteps.RequiresApproval
-			if r.WorkflowSteps.BehaviorID != nil {
-				step.BehaviorID = *r.WorkflowSteps.BehaviorID
-			}
-			if r.WorkflowSteps.NodeID != nil {
-				step.NodeID = *r.WorkflowSteps.NodeID
-			}
-			if r.WorkflowSteps.AgentRef != nil {
-				step.AgentRef = *r.WorkflowSteps.AgentRef
-			}
 			if r.WorkflowSteps.StepDefinitions != nil {
 				step.YoloMode = r.WorkflowSteps.StepDefinitions.YoloMode
+				if r.WorkflowSteps.StepDefinitions.BehaviorID != nil {
+					step.BehaviorID = *r.WorkflowSteps.StepDefinitions.BehaviorID
+				}
+				if r.WorkflowSteps.StepDefinitions.NodeID != nil {
+					step.NodeID = *r.WorkflowSteps.StepDefinitions.NodeID
+				}
+				if r.WorkflowSteps.StepDefinitions.AgentRef != nil {
+					step.AgentRef = *r.WorkflowSteps.StepDefinitions.AgentRef
+				}
 				// BUG-164: a step type has exactly one configured model
 				// (step_definitions.model) — no per-workflow-instance override exists
 				// anymore, so Model/Provider always come from the step type's own
@@ -134,6 +136,15 @@ func (s *SupabaseWorkflowStore) LoadRunSteps(ctx context.Context, runID string) 
 				if r.WorkflowSteps.StepDefinitions.Model != nil {
 					step.Model = *r.WorkflowSteps.StepDefinitions.Model
 				}
+			}
+			if step.BehaviorID == "" && r.WorkflowSteps.BehaviorID != nil {
+				step.BehaviorID = *r.WorkflowSteps.BehaviorID
+			}
+			if step.NodeID == "" && r.WorkflowSteps.NodeID != nil {
+				step.NodeID = *r.WorkflowSteps.NodeID
+			}
+			if step.AgentRef == "" && r.WorkflowSteps.AgentRef != nil {
+				step.AgentRef = *r.WorkflowSteps.AgentRef
 			}
 			if step.Model != "" {
 				if pk, ok := providerKeyFromModel(step.Model); ok {

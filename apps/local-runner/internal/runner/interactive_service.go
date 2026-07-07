@@ -147,6 +147,11 @@ type interactiveRun struct {
 	// with wait=false only acks "spawned" — its eventual result must be injected like a UI
 	// spawn so the parent still learns the outcome (BUG-126).
 	waitForResult bool
+	// activationSeq tracks how many times this child has been reinvoked. Incremented
+	// in reinvokeExistingFlowChild each time the node is reactivated (lifecycle: reinvoke).
+	// Surfaced via AgentRunSummary.ActivationSeq so the desktop can distinguish a genuine
+	// completed→running transition from a stale HTTP snapshot (BUG-Rnd2 Bug B).
+	activationSeq int
 	// autoOrchestrate enables bounded hub auto-reinvocation (Task-093 / CP-36 P-7). Set on
 	// root (parent) runs only; child runs leave this false. When true, maybeAutoReinvokeHub
 	// is called after each cohort join to re-prompt the hub without a human typing.
@@ -191,6 +196,12 @@ type interactiveRun struct {
 	// prepended to the next provider turn's prompt and then cleared. Persisted to
 	// sessions.ndjson so the parent still learns about them after a server restart. (BUG-122)
 	pendingAgentContext []string
+	// lastCohortNote holds the most recently joined reviewer-cohort note (BUG-233),
+	// so it survives past pendingAgentContext being drained into the hub's synthesis
+	// turn. Used to build a findings-based fallback GateReason if that turn completes
+	// without calling submit_review_outcome (CA-226), instead of an internal
+	// diagnostic sentence. Overwritten on each new cohort join.
+	lastCohortNote string
 
 	status          RunStatus
 	createdAt       string
@@ -206,13 +217,14 @@ type interactiveRun struct {
 	lastEventType   ProviderEventType
 	events          []ProviderEvent
 
-	turnInFlight     bool
-	repromptAttempts int    // CP-35 P-5: number of flow-gate reprompts issued this turn
-	turnStartGitHead string // CP-35: git HEAD captured at turn start for committed-diff detection
-	lastTurnStepID   string // CP-35: stepID of the most-recently started turn, used by gate reprompts
-	currentTurnID    string
-	lastTurnID       string // id of the most-recently completed turn, for the rolling chat summary
-	turnCancel       context.CancelFunc
+	turnInFlight          bool
+	repromptAttempts      int    // CP-35 P-5: number of flow-gate reprompts issued this turn
+	turnStartGitHead      string // CP-35: git HEAD captured at turn start for committed-diff detection
+	lastTurnStepID        string // CP-35: stepID of the most-recently started turn, used by gate reprompts
+	currentTurnID         string
+	lastFlowControlTurnID string
+	lastTurnID            string // id of the most-recently completed turn, for the rolling chat summary
+	turnCancel            context.CancelFunc
 
 	pendingApprovalID string
 	pendingQuestionID string
@@ -454,17 +466,39 @@ func (s *InteractiveService) stopAgentLoop(parentRunID string) AgentGraphSnapsho
 		parent.pendingHubReinvoke = false
 		if parent.turnInFlight && parent.turnCancel != nil {
 			parent.turnCancel()
+			// BUG-248: turnCancel() only signals cancellation — the run's own
+			// finishTurn() flips `status` to cancelled asynchronously once the turn's
+			// goroutine observes ctx.Done(), and that happens off this lock.
+			parent.status = RunStatusCancelled
 		}
 	}
+	cancelledChildIDs := make([]string, 0)
 	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
 		if child := s.runs[childID]; child != nil {
 			child.pendingTurnPrompt = ""
 			if child.turnInFlight && child.turnCancel != nil {
 				child.turnCancel()
+				child.status = RunStatusCancelled // BUG-248: see parent.status comment above.
+				child.agentStatus = string(RunStatusCancelled)
+				cancelledChildIDs = append(cancelledChildIDs, childID)
 			}
 		}
 	}
 	s.mu.Unlock()
+	// BUG-248: the snapshot below is built from AgentOrchestrator's own summary cache
+	// (upsertSummary), not from interactiveRun.status directly — the two are only kept
+	// in sync by emitLocked reacting to turn-progress events, which for a cancelled
+	// turn only happens later, asynchronously, once finishTurn's goroutine observes
+	// ctx.Done(). Patch the cached summaries eagerly here too, or this snapshot (and
+	// the desktop's derived run status computed from it) would still read the child as
+	// "running" with no later agent_graph_updated event ever correcting it.
+	for _, childID := range cancelledChildIDs {
+		if summary, ok := s.agentOrchestrator.currentSummary(parentRunID, childID); ok {
+			summary.Status = RunStatusCancelled
+			summary.AgentStatus = string(RunStatusCancelled)
+			s.agentOrchestrator.upsertSummary(parentRunID, summary)
+		}
+	}
 	snap := s.agentGraphSnapshot(parentRunID)
 	s.emitAgentGraph(parentRunID, snap)
 	return snap
@@ -483,11 +517,21 @@ func (s *InteractiveService) injectAgentFeedback(parentRunID, toRunID, message s
 // This is the synchronous core: it records the transition, emits the graph update,
 // and returns a FlowControlResult. Re-entry of target nodes is wired by Task-091/092.
 func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControlInput) (FlowControlResult, error) {
+	s.flowDiagLog(parentRunID, "flow_control_received", "received flow control input",
+		"status", in.Status,
+		"summary_len", len(strings.TrimSpace(in.Summary)),
+	)
 	// Validate the target run exists before mutating orchestrator state (MEDIUM finding).
 	s.mu.Lock()
-	_, runExists := s.runs[parentRunID]
+	rs, runExists := s.runs[parentRunID]
+	if runExists && rs.currentTurnID != "" {
+		rs.lastFlowControlTurnID = rs.currentTurnID
+	}
 	s.mu.Unlock()
 	if !runExists {
+		s.flowDiagLog(parentRunID, "flow_control_missing_run", "flow control target run was not found",
+			"status", in.Status,
+		)
 		return FlowControlResult{}, fmt.Errorf("applyFlowControl: run %q not found", parentRunID)
 	}
 	switch in.Status {
@@ -499,14 +543,27 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 			return st
 		})
 		s.appendPendingAgentContext(parentRunID, strings.TrimSpace("Flow completed. "+in.Summary))
-		s.emitAgentGraph(parentRunID, snap)
-		go s.persistParentSession(parentRunID)
-		// BUG-174: the flow's control tool reported done — settle the step
-		// timeline (inline hub node DONE, run DONE) instead of leaving it to the
-		// bulk planner, which is gated off for flow-engine-driven runs.
+		// BUG-174/BUG-242: settle the step timeline (inline hub node DONE, run
+		// DONE) BEFORE emitAgentGraph below, not after. emitAgentGraph fires the
+		// agent_graph_updated SSE event the desktop reacts to by refreshing the
+		// step-runtime snapshot (refreshWorkflowStepRuntime) — BUG-233 already
+		// established this exact ordering requirement for the "continue"/
+		// looping branch above, but the "done" branch still emitted first and
+		// settled the steps after. That let the desktop's refresh race ahead of
+		// these writes and read the still-RUNNING hub/synthesis node from the
+		// prior instant, and since setFlowStepStatus emits no event of its own,
+		// nothing corrected the stale RUNNING display until an unrelated event
+		// (e.g. a manual agent focus switch) triggered another refresh.
 		if s.isFlowEngineDriven(parentRunID) {
 			s.markFlowRunComplete(context.Background(), parentRunID)
 		}
+		s.emitAgentGraph(parentRunID, snap)
+		go s.persistParentSession(parentRunID)
+		s.flowDiagLog(parentRunID, "flow_control_done", "flow marked done",
+			"next_action", "done",
+			"round", snap.LoopState.Round,
+			"cap", effectiveCap(snap.LoopState),
+		)
 		return FlowControlResult{Status: "done", Round: snap.LoopState.Round, Cap: effectiveCap(snap.LoopState), NextAction: "done"}, nil
 
 	case "continue":
@@ -527,43 +584,80 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 			st.Round++
 			if cap > 0 && st.Round >= cap {
 				st.Status = "blocked"
+				st.BlockReason = "cap" // BUG-231: distinguishes cap-reached from escalate for the resume UX
 				st.GateReason = fmt.Sprintf("cap %d reached with %d open issue(s)", cap, st.OpenIssues)
 				result = FlowControlResult{Status: "blocked", Round: st.Round, Cap: cap, OpenIssues: st.OpenIssues, NextAction: "awaiting_user"}
 			} else {
 				if st.Status == "" || st.Status == "blocked" {
 					st.Status = "running"
+					st.BlockReason = ""
 				}
 				result = FlowControlResult{Status: "continue", Round: st.Round, Cap: cap, OpenIssues: st.OpenIssues, NextAction: "looping"}
 			}
 			return st
 		})
+		if result.NextAction == "looping" {
+			// BUG-174: a new review round is starting — reset the downstream nodes
+			// to PENDING and re-run the entry (coder) node on the step timeline so
+			// the loop reads honestly instead of every node staying DONE.
+			//
+			// BUG-233: this MUST complete before emitAgentGraph below. emitAgentGraph
+			// fires the agent_graph_updated SSE event that the desktop reacts to by
+			// refreshing the step-runtime snapshot; doing the reset in a goroutine
+			// raced that refresh against these writes, so the desktop could read the
+			// backend's step store before the new round's PENDING/RUNNING transitions
+			// landed and render the stale "all done" snapshot from the prior round.
+			if s.isFlowEngineDriven(parentRunID) {
+				nodes := s.activeFlowNodesFor(parentRunID)
+				entryID := flowEntryNodeID(nodes)
+				for _, n := range nodes {
+					if n.ID != entryID {
+						s.setFlowStepStatus(context.Background(), parentRunID, n.ID, StepStatusPending)
+					}
+				}
+				s.setFlowStepStatus(context.Background(), parentRunID, entryID, StepStatusRunning)
+			}
+		} else if result.NextAction == "awaiting_user" {
+			// BUG-231/BUG-233: the round cap paused the loop awaiting the user —
+			// settle the hub node to WAITING_USER_APPROVAL (synchronously, before
+			// emitAgentGraph — see BUG-233 note above) instead of leaving it RUNNING.
+			s.setFlowStepAwaitingUser(context.Background(), parentRunID)
+		}
 		s.emitAgentGraph(parentRunID, snap)
 		go s.persistParentSession(parentRunID)
+		s.flowDiagLog(parentRunID, "flow_control_continue", "flow continue applied",
+			"next_action", result.NextAction,
+			"round", result.Round,
+			"cap", result.Cap,
+			"open_issues", result.OpenIssues,
+		)
 		if result.NextAction == "looping" {
 			// Re-enter the coder so the back-edge in ReviewLoopFlowConfig fires
 			// (CRITICAL finding: continue returned "looping" but never restarted the coder).
 			go s.maybeReinvokeCoderForContinue(parentRunID, buildCoderReentryPrompt(in))
-			// BUG-174: a new review round is starting — reset the downstream nodes
-			// to PENDING and re-run the entry (coder) node on the step timeline so
-			// the loop reads honestly instead of every node staying DONE.
-			if s.isFlowEngineDriven(parentRunID) {
-				nodes := s.activeFlowNodesFor(parentRunID)
-				entryID := flowEntryNodeID(nodes)
-				go func() {
-					for _, n := range nodes {
-						if n.ID != entryID {
-							s.setFlowStepStatus(context.Background(), parentRunID, n.ID, StepStatusPending)
-						}
-					}
-					s.setFlowStepStatus(context.Background(), parentRunID, entryID, StepStatusRunning)
-				}()
-			}
 		}
 		return result, nil
 
 	case "escalate":
+		// BUG-231: escalate is a deliberate, non-terminal "awaiting user" pause —
+		// settle the hub node to WAITING_USER_APPROVAL (not RUNNING, which reads
+		// as a hang, and not FAILED, which reads as an error) so the step
+		// timeline honestly shows the flow is waiting on the human, not stuck.
+		// BUG-233: done before emitAgentGraph so the desktop's step-runtime
+		// refresh (triggered by the SSE event below) can't observe a stale
+		// RUNNING snapshot.
+		// BUG-244: settle the step BEFORE mutateLoop flips the loop to
+		// "blocked", not after. The step reaching its awaiting-user state is the
+		// CAUSE; the loop being blocked is the effect — so "loop blocked" must
+		// imply "step already settled" for every observer, including one that
+		// keys off the loop status alone (e.g. a poller/waiter reading the
+		// orchestrator loop state, which flips in-memory here with no SSE of its
+		// own). Doing mutateLoop first left a window where the loop read
+		// "blocked" while the step was still RUNNING.
+		s.setFlowStepAwaitingUser(context.Background(), parentRunID)
 		snap := s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
 			st.Status = "blocked"
+			st.BlockReason = "escalate" // BUG-231
 			if in.Summary != "" {
 				st.GateReason = in.Summary
 			} else {
@@ -573,46 +667,128 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 		})
 		s.emitAgentGraph(parentRunID, snap)
 		go s.persistParentSession(parentRunID)
+		s.flowDiagLog(parentRunID, "flow_control_escalate", "flow escalated to awaiting user",
+			"next_action", "awaiting_user",
+			"round", snap.LoopState.Round,
+			"cap", effectiveCap(snap.LoopState),
+			"summary", strings.TrimSpace(in.Summary),
+		)
 		return FlowControlResult{Status: "blocked", Round: snap.LoopState.Round, Cap: effectiveCap(snap.LoopState), NextAction: "awaiting_user"}, nil
 
 	default:
+		s.flowDiagLog(parentRunID, "flow_control_unknown_status", "unknown flow control status received",
+			"status", in.Status,
+		)
 		return FlowControlResult{}, fmt.Errorf("applyFlowControl: unknown status %q", in.Status)
 	}
 }
 
+func (s *InteractiveService) flowControlSubmittedForTurn(runID, turnID string) bool {
+	if runID == "" || turnID == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rs := s.runs[runID]
+	return rs != nil && rs.lastFlowControlTurnID == turnID
+}
+
 // extendCap raises the flow cap by ExtendBy and resumes from blocked.
-// Rejected once ExtendCount >= ExtendMax (default 2).
+//
+// BUG-231 (D-8): ExtendMax previously rejected this once ExtendCount reached
+// 2. That limit only ever bounded this USER-triggered action (never any auto
+// path), so its only remaining effect was to block the human after two
+// extensions — reproducing the exact "awaiting user with no way to act"
+// wedge this bug fixes. Retired: ExtendCount still increments for
+// display/telemetry, but no longer rejects the extend.
 func (s *InteractiveService) extendCap(parentRunID string) (FlowControlResult, error) {
-	const defaultExtendBy = 2
-	const defaultExtendMax = 2
-	var extendErr error
 	var result FlowControlResult
 	snap := s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
-		if st.ExtendCount >= defaultExtendMax {
-			extendErr = fmt.Errorf("extendCap: limit %d reached (ExtendCount=%d)", defaultExtendMax, st.ExtendCount)
-			return st
-		}
 		cap := effectiveCap(st)
-		st.Cap = cap + defaultExtendBy
+		st.Cap = cap + effectiveExtendBy(st)
 		// mirror RoundCap so existing board readers see the new limit
 		st.RoundCap = st.Cap
 		st.ExtendCount++
 		if st.Status == "blocked" {
 			st.Status = "running"
 			st.GateReason = ""
+			st.BlockReason = ""
 		}
 		result = FlowControlResult{Status: st.Status, Round: st.Round, Cap: st.Cap, NextAction: "looping"}
 		return st
 	})
-	if extendErr != nil {
-		return FlowControlResult{}, extendErr
-	}
 	s.emitAgentGraph(parentRunID, snap)
 	go s.persistParentSession(parentRunID)
 	if snap.LoopState.Status == "running" {
 		s.resumePendingLoopWork(parentRunID)
 	}
 	return result, nil
+}
+
+// resumeFlowWithFeedback is the BUG-231 "Continue" action: it answers the
+// hub's escalate/cap-reached pause and lets the hub re-decide, rather than
+// hard-routing anywhere itself (D-5). It:
+//  1. clears the block — auto-raising the cap by ExtendBy only when the block
+//     reason was the round cap (D-6); an escalate block needs no cap change,
+//  2. settles the hub inline node back to RUNNING,
+//  3. re-invokes the hub's synthesis turn with the user's feedback (if any)
+//     embedded directly in the prompt, the same reliable-delivery pattern
+//     CA-226/cohort-join notes use, instead of relying solely on
+//     pendingAgentContext rendering.
+//
+// The hub then calls submit_review_outcome again and this same applyFlowControl
+// routes the result: approved->done, changes_requested->coder, blocked->pause
+// again (the desktop form reappears). No-op (returns the current snapshot,
+// no error) if the loop is not currently blocked — safe to call more than once.
+func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string) (AgentGraphSnapshot, error) {
+	s.mu.Lock()
+	_, runExists := s.runs[parentRunID]
+	s.mu.Unlock()
+	if !runExists {
+		return AgentGraphSnapshot{}, fmt.Errorf("resumeFlowWithFeedback: run %q not found", parentRunID)
+	}
+
+	feedback = strings.TrimSpace(feedback)
+	wasBlocked := false
+	snap := s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
+		if st.Status != "blocked" {
+			return st
+		}
+		wasBlocked = true
+		if st.BlockReason == "cap" {
+			cap := effectiveCap(st)
+			st.Cap = cap + effectiveExtendBy(st)
+			st.RoundCap = st.Cap
+			st.ExtendCount++
+		}
+		st.Status = "running"
+		st.GateReason = ""
+		st.BlockReason = ""
+		return st
+	})
+	if !wasBlocked {
+		return snap, nil
+	}
+
+	// BUG-233: settle the hub node before emitAgentGraph (not in a goroutine) —
+	// emitAgentGraph fires the SSE event that triggers the desktop's step-runtime
+	// refresh, which could otherwise read the store before this write landed and
+	// render the pre-Continue (WAITING_USER_APPROVAL / stale-done) snapshot.
+	if s.isFlowEngineDriven(parentRunID) {
+		if hubID := hubInlineNodeID(s.activeFlowNodesFor(parentRunID)); hubID != "" {
+			s.setFlowStepStatus(context.Background(), parentRunID, hubID, StepStatusRunning)
+		}
+	}
+	s.emitAgentGraph(parentRunID, snap)
+	go s.persistParentSession(parentRunID)
+
+	resumeNote := ""
+	if feedback != "" {
+		resumeNote = "[flow-engine] The flow was paused awaiting your input. User guidance:\n" + feedback +
+			"\n\n---\n\nRe-evaluate with this guidance in mind, then call submit_review_outcome with your decision."
+	}
+	go s.maybeAutoReinvokeHubWithNote(parentRunID, resumeNote)
+	return snap, nil
 }
 
 // buildCohortNote constructs the single consolidated pendingAgentContext note for a
@@ -644,6 +820,43 @@ func buildCohortNote(parentRunID, cohortID string, entries []cohortEntry, round 
 	return b.String()
 }
 
+// lastCohortNoteFor returns runID's most recently joined reviewer-cohort note
+// (BUG-233), or "" if none has joined yet / the run doesn't exist.
+func (s *InteractiveService) lastCohortNoteFor(runID string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if rs := s.runs[runID]; rs != nil {
+		return rs.lastCohortNote
+	}
+	return ""
+}
+
+// summarizeCohortNoteForUser extracts the per-reviewer findings lines from a
+// buildCohortNote-shaped note, dropping the engine-internal header ("[flow-engine
+// joined result note]", "Flow round N — ...") and the hub-only instructions after
+// the "---" separator (BUG-233). Returns "" if note is empty or has no findings
+// lines, so callers can fall back to other content.
+func summarizeCohortNoteForUser(note string) string {
+	if strings.TrimSpace(note) == "" {
+		return ""
+	}
+	var findings []string
+	for _, line := range strings.Split(note, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "[flow-engine") || strings.HasPrefix(trimmed, "Flow round") {
+			continue
+		}
+		if trimmed == "---" || strings.HasPrefix(trimmed, "This joined result note") || strings.HasPrefix(trimmed, "Synthesize:") {
+			break
+		}
+		findings = append(findings, trimmed)
+	}
+	if len(findings) == 0 {
+		return ""
+	}
+	return truncateDisplayField(strings.Join(findings, "\n"), 800)
+}
+
 // autoReinvokePromptText returns the minimal hub re-prompt used by maybeAutoReinvokeHub.
 // The actual agent results are already in pendingAgentContext and get prepended by
 // runTurn automatically; this text is the "user turn" trigger, not the content.
@@ -651,7 +864,7 @@ func autoReinvokePromptText() string {
 	if prompt, ok, err := loadBuiltinPromptText("prompts/auto-reinvoke.md"); err == nil && ok {
 		return prompt
 	}
-	return "[flow-engine] Agent results ready. Synthesize the join note above, then call the declared control tool for this flow when one is available."
+	return "[flow-engine] Agent results ready. Synthesize the join note above. You must call submit_review_outcome. Do not answer in prose only. If you cannot determine the result, call submit_review_outcome with status=blocked and feedback explaining why."
 }
 
 // maybeAutoReinvokeHub schedules exactly one hub turn after a cohort join, if and only if
@@ -680,6 +893,13 @@ func (s *InteractiveService) maybeAutoReinvokeHubWithNote(parentRunID, cohortNot
 	s.mu.Lock()
 	parent := s.runs[parentRunID]
 	if parent == nil || !parent.autoOrchestrate || parent.reinvokeInFlight || parent.turnInFlight {
+		if parent != nil && parent.autoOrchestrate && strings.TrimSpace(cohortNote) != "" {
+			// A note-bearing cohort join can race with a previously scheduled empty
+			// hub reinvoke. Do not drop the joined note just because the single-flight
+			// guard is closed; the scheduled/current turn will either drain it, or a
+			// deferred reinvoke below will consume it on the next turn.
+			s.appendPendingAgentContextLocked(parentRunID, cohortNote)
+		}
 		// startTurn drains pendingAgentContext atomically with setting turnInFlight=true
 		// (both under s.mu) before releasing the lock. So when we see turnInFlight=true
 		// here, pendingAgentContext is only non-empty if NEW context arrived after
@@ -690,6 +910,10 @@ func (s *InteractiveService) maybeAutoReinvokeHubWithNote(parentRunID, cohortNot
 			parent.pendingHubReinvoke = true
 		}
 		s.mu.Unlock()
+		s.flowDiagLog(parentRunID, "hub_reinvoke_deferred", "hub reinvoke was deferred or skipped by current state",
+			"has_parent", parent != nil,
+			"cohort_note_len", len(strings.TrimSpace(cohortNote)),
+		)
 		return
 	}
 	// Read loop state under o.mu (s.mu → o.mu is the established order; loopStateFor is safe here).
@@ -697,15 +921,25 @@ func (s *InteractiveService) maybeAutoReinvokeHubWithNote(parentRunID, cohortNot
 	switch st.Status {
 	case "paused", "stopped", "blocked", "done":
 		s.mu.Unlock()
+		s.flowDiagLog(parentRunID, "hub_reinvoke_blocked", "hub reinvoke blocked by loop status",
+			"cohort_note_len", len(strings.TrimSpace(cohortNote)),
+		)
 		return
 	}
 	if st.Round >= effectiveCap(st) {
 		s.mu.Unlock()
+		s.flowDiagLog(parentRunID, "hub_reinvoke_cap_blocked", "hub reinvoke blocked by round cap",
+			"cohort_note_len", len(strings.TrimSpace(cohortNote)),
+		)
 		return
 	}
 	stepID := s.nextID("step")
 	parent.reinvokeInFlight = true
 	s.mu.Unlock()
+	s.flowDiagLog(parentRunID, "hub_reinvoke_scheduled", "hub reinvoke scheduled",
+		"step_id", stepID,
+		"cohort_note_len", len(strings.TrimSpace(cohortNote)),
+	)
 
 	// Build the synthesis turn prompt. When a cohort note is provided, embed it
 	// directly in the prompt so the synthesizer always sees it as a visible user
@@ -833,37 +1067,55 @@ func (s *InteractiveService) maybeReinvokeCoderForContinue(parentRunID, prompt s
 	}
 	s.mu.Lock()
 	var targetNodeID string
+	var targetNode agentpack.FlowNode
+	var hasTargetNode bool
+	var flowDriven bool
 	if parent := s.runs[parentRunID]; parent != nil {
 		targetNodeID, _ = resolveContinueBackEdgeTarget(parent.activeFlowEdges)
-	}
-	var coderID, coderStepID string
-	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
-		child := s.runs[childID]
-		if child == nil {
-			continue
-		}
-		matches := false
 		if targetNodeID != "" {
-			matches = child.label == targetNodeID
-		} else {
-			matches = isCoderRun(child)
+			targetNode, hasTargetNode = findFlowNode(parent.activeFlowNodes, targetNodeID)
 		}
-		if !matches {
-			continue
-		}
-		if child.turnInFlight {
-			s.mu.Unlock()
-			return // target already running; feedback will arrive via pendingAgentContext
-		}
-		coderID = childID
-		coderStepID = child.stepID
-		break
+		flowDriven = parent.flowEngineDriven
 	}
-	s.mu.Unlock()
-	if coderID == "" || coderStepID == "" {
+	if hasTargetNode && !flowNodeReusesChild(targetNode) {
+		s.mu.Unlock()
+		agentName := flowNodeAgentName(targetNode)
+		if agentName == "" {
+			return
+		}
+		agentDef, _ := resolvePackAgentDefinition(agentName)
+		if _, err := s.spawnChildRun(context.Background(), parentRunID, SpawnAgentInput{
+			Agent:            agentName,
+			Prompt:           prompt,
+			Wait:             false,
+			Label:            targetNode.ID,
+			AutoOrchestrate:  true,
+			AgentDefOverride: agentDef,
+			Model:            s.resolveFlowNodeModel(context.Background(), targetNode),
+		}); err != nil {
+			log.Printf("[flow-executor] continue: spawn node %q (agent %q) failed: %v", targetNode.ID, agentName, err)
+			return
+		}
+		if flowDriven {
+			s.setFlowStepStatus(context.Background(), parentRunID, targetNode.ID, StepStatusRunning)
+			s.stampFlowNodePosture(context.Background(), parentRunID, targetNode)
+		}
 		return
 	}
-	s.scheduleChildTurn(coderID, coderStepID, prompt)
+	s.mu.Unlock()
+	// BUG-242: delegate to the single reinvoke implementation instead of a
+	// second, older inline copy that never got the BUG-Rnd2 activationSeq/
+	// EventAgentSpawnedByUser fixes — this is the actual code path a
+	// review-loop round-2+ coder re-entry takes (the synthesis→coder back-edge
+	// "continue"), so its coder reappeared miscategorized as "closed" in the
+	// desktop with no new main-chat card even though the backend was already
+	// running it again.
+	s.reinvokeMatchingFlowChild(parentRunID, prompt, func(child *interactiveRun) bool {
+		if targetNodeID != "" {
+			return child.label == targetNodeID
+		}
+		return isCoderRun(child)
+	})
 }
 
 func isAgentRole(rs *interactiveRun, role string) bool {
@@ -908,9 +1160,37 @@ func (s *InteractiveService) dependenciesSatisfiedLocked(rs *interactiveRun) boo
 	return true
 }
 
+// loopAllowsNextTurnLocked reports whether parentRunID's loop may fire another
+// turn (release a dependent child, resume a pending turn, re-enter the coder).
+// BUG-234: this now also excludes "blocked" and "done" — a loop that is blocked
+// awaiting the user, or already finished, must not auto-fire the next turn.
+// Previously it excluded only "paused"/"stopped", so after an escalate settled
+// the loop to "blocked", releaseDependentAgents still released dependent
+// reviewers — one of the two runaway auto-advance paths that left the run
+// spinning. When the user hits Continue, resumeFlowWithFeedback flips the loop
+// back to "running", so normal progress resumes then. Delegates to
+// loopIsAdvancing so the "which statuses are live" set has one definition.
 func (s *InteractiveService) loopAllowsNextTurnLocked(parentRunID string) bool {
-	state := s.agentOrchestrator.loopStateFor(parentRunID)
-	return state.Status != "paused" && state.Status != "stopped"
+	return s.loopIsAdvancing(parentRunID)
+}
+
+// loopIsAdvancing reports whether the flow loop for parentRunID is still in a
+// state that should auto-advance (spawn the next node, re-run the hub). It
+// mirrors the gate maybeAutoReinvokeHub already applies: a loop that is paused,
+// stopped, blocked, or done must NOT advance. BUG-234: the auto-advance paths
+// (tryAdvanceFlowFromNode and the cohort-join reviewer-DONE/hub-RUNNING write)
+// previously had NO status guard, so a child completion arriving after the loop
+// had legitimately blocked (e.g. an escalate awaiting the user) kept re-spawning
+// reviewers and flipping the hub node back to RUNNING — the synthesis step
+// spun forever and the run never settled. maybeAutoReinvokeHub was gated, so the
+// loop STATE was correct while the STEPS/spawns ran away; this closes that gap.
+func (s *InteractiveService) loopIsAdvancing(parentRunID string) bool {
+	switch s.agentOrchestrator.loopStateFor(parentRunID).Status {
+	case "paused", "stopped", "blocked", "done":
+		return false
+	default:
+		return true
+	}
 }
 
 func (s *InteractiveService) queueChildTurnLocked(rs *interactiveRun, prompt, status string) {
@@ -955,7 +1235,13 @@ func (s *InteractiveService) releaseDependentAgents(parentRunID, completedRunID,
 		summary AgentRunSummary
 	}
 	queued := []queuedTurn{}
+	isCohortMember := false
+	trackedFlow := false
 	s.mu.Lock()
+	if completedRun := s.runs[completedRunID]; completedRun != nil && completedRun.flowCohortId != "" {
+		isCohortMember = true
+	}
+	trackedFlow = parentHasTrackedFlow(s, parentRunID)
 	if !s.loopAllowsNextTurnLocked(parentRunID) {
 		for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
 			child := s.runs[childID]
@@ -995,16 +1281,17 @@ func (s *InteractiveService) releaseDependentAgents(parentRunID, completedRunID,
 				OccurredAt:  occurredAt,
 			},
 			summary: AgentRunSummary{
-				RunID:       child.id,
-				AgentName:   child.agentName,
-				Role:        child.role,
-				Status:      child.status,
-				ParentRunID: child.parentRunID,
-				CreatedAt:   child.createdAt,
-				DependsOn:   append([]string(nil), child.dependsOn...),
-				AgentStatus: child.agentStatus,
-				ProviderKey: string(child.providerKey),
-				ModelName:   child.modelName,
+				RunID:         child.id,
+				AgentName:     child.agentName,
+				Role:          child.role,
+				Status:        child.status,
+				ParentRunID:   child.parentRunID,
+				CreatedAt:     child.createdAt,
+				DependsOn:     append([]string(nil), child.dependsOn...),
+				AgentStatus:   child.agentStatus,
+				ProviderKey:   string(child.providerKey),
+				ModelName:     child.modelName,
+				ActivationSeq: child.activationSeq, // BUG-242: preserve, don't silently reset to 0
 			},
 		})
 	}
@@ -1023,7 +1310,12 @@ func (s *InteractiveService) releaseDependentAgents(parentRunID, completedRunID,
 	if len(queued) > 0 {
 		s.emitAgentGraph(parentRunID, s.agentGraphSnapshot(parentRunID))
 	}
-	go s.maybeAutoReinvokeHub(parentRunID)
+	// Flow-graph runs route child completion through advanceOrNotifyHub. Do not
+	// also schedule this dependency-release fallback, or the hub can synthesize
+	// from a stale wait notice while the auto-spawned reviewer cohort is running.
+	if !isCohortMember && !trackedFlow {
+		go s.maybeAutoReinvokeHub(parentRunID)
+	}
 }
 
 func (s *InteractiveService) resumePendingLoopWork(parentRunID string) {
@@ -1080,6 +1372,14 @@ func (s *InteractiveService) emitAgentGraph(parentRunID string, snap AgentGraphS
 
 func (s *InteractiveService) emitAgentGraphLocked(parentRunID string, snap AgentGraphSnapshot) {
 	if rs := s.runs[parentRunID]; rs != nil {
+		if cohortDiagEnabled() {
+			runs := make([]string, len(snap.Runs))
+			for i, r := range snap.Runs {
+				runs[i] = fmt.Sprintf("%s(%s):%s", r.RunID, r.AgentName, r.Status)
+			}
+			cohortDiagLog("emitAgentGraph parent=%q loopStatus=%q loopRound=%d runs=%v",
+				parentRunID, snap.LoopState.Status, snap.LoopState.Round, runs)
+		}
 		_ = s.emitLocked(rs, ProviderEvent{Type: EventAgentGraphUpdated, AgentGraphSnapshot: &snap})
 	}
 }
@@ -1429,20 +1729,49 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 					FinalMessage: truncateDisplayField(finalMsg, 1500),
 					Status:       "completed",
 				})
+				s.flowDiagLog(rs.parentRunID, "cohort_member_completed", "cohort member completed and buffered",
+					"child_run_id", rs.id,
+					"cohort_id", rs.flowCohortId,
+					"label", rs.label,
+					"provider", string(rs.providerKey),
+					"final_message_len", len(strings.TrimSpace(finalMsg)),
+				)
+				// BUG-234 (#1): settle THIS cohort member's own timeline node the moment
+				// it finishes, so a done reviewer reads DONE while its sibling is still
+				// RUNNING. Previously the reviewer nodes were only settled together at the
+				// barrier below, so one-done-one-running showed both as RUNNING. rs.label
+				// is the flow node id for a flow-spawned cohort member.
+				if parent := s.runs[rs.parentRunID]; parent != nil && parent.flowEngineDriven && rs.label != "" {
+					s.setFlowStepStatus(context.Background(), rs.parentRunID, rs.label, StepStatusDone)
+					cohortDiagLog("member self-settled DONE parent=%q run=%q label=%q", rs.parentRunID, rs.id, rs.label)
+				}
 				if s.agentOrchestrator.cohortComplete(rs.parentRunID, rs.flowCohortId) {
 					entries := s.agentOrchestrator.drainCohort(rs.parentRunID, rs.flowCohortId)
 					note := buildCohortNote(rs.parentRunID, rs.flowCohortId, entries, s.agentOrchestrator.graphSnapshot(rs.parentRunID).LoopState.Round)
+					s.flowDiagLog(rs.parentRunID, "cohort_join_complete", "cohort barrier completed and note built",
+						"cohort_id", rs.flowCohortId,
+						"entry_count", len(entries),
+						"note_len", len(note),
+					)
+					cohortDiagLog("cohortNote built parent=%q cohort=%q entries=%d noteLen=%d", rs.parentRunID, rs.flowCohortId, len(entries), len(note))
 					s.appendPendingAgentContextLocked(rs.parentRunID, note)
+					if parent := s.runs[rs.parentRunID]; parent != nil {
+						// BUG-233: retain the joined note past pendingAgentContext being
+						// drained into the hub's synthesis turn, so the CA-226 fallback
+						// (hub completes without calling submit_review_outcome) can build
+						// a findings-based GateReason instead of an internal diagnostic one.
+						parent.lastCohortNote = note
+					}
 					parentRunID := rs.parentRunID
-					// BUG-174/BUG-181: the review cohort just joined — mark each
-					// reviewer node DONE and the inline hub node RUNNING, THEN reinvoke
-					// the hub's synthesis turn. Both must run in ONE ordered goroutine:
-					// the synthesis turn finalizes via markFlowRunComplete (synthesis
-					// DONE), and two separate goroutines let that race the step writes —
-					// landing before the reviewer-DONE writes (synthesis DONE while
-					// reviewers still RUNNING) or after the synthesis-RUNNING write
-					// (synthesis stuck RUNNING after the flow is done). Sequencing the
-					// writes before the reinvoke removes both races. Captured under s.mu.
+					// BUG-174/BUG-181: the review cohort just joined — mark each reviewer
+					// node DONE and the inline hub node RUNNING (synchronously, under s.mu
+					// — see BUG-233 note below), THEN reinvoke the hub's synthesis turn in a
+					// goroutine: the synthesis turn finalizes via markFlowRunComplete
+					// (synthesis DONE), and running the step writes async here previously
+					// let that race the step writes — landing before the reviewer-DONE
+					// writes (synthesis DONE while reviewers still RUNNING) or after the
+					// synthesis-RUNNING write (synthesis stuck RUNNING after the flow is
+					// done). Sequencing the writes before the reinvoke removes both races.
 					var reviewerNodeIDs []string
 					var hubNodeID string
 					flowDriven := false
@@ -1461,17 +1790,31 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 					// (rendered as a context block), causing the synthesizer to report
 					// "joined result note not present in visible context" and stall.
 					capturedCohortNote := note
-					go func() {
-						if flowDriven {
-							for _, id := range reviewerNodeIDs {
-								s.setFlowStepStatus(context.Background(), parentRunID, id, StepStatusDone)
-							}
-							if hubNodeID != "" {
-								s.setFlowStepStatus(context.Background(), parentRunID, hubNodeID, StepStatusRunning)
-							}
+					// BUG-233: keep the reviewer-DONE / hub-RUNNING step writes synchronous
+					// (still under s.mu via emitLocked) instead of inside the goroutine below.
+					// workflowStore.ApplyStepTransition uses its own lock, so this is safe here
+					// and guarantees the writes land before this handler returns and any
+					// subsequent agent_graph_updated event fires — otherwise the desktop's
+					// step-runtime refresh could race ahead of these writes and render the
+					// prior round's stale "all done"/RUNNING snapshot.
+					if flowDriven {
+						for _, id := range reviewerNodeIDs {
+							s.setFlowStepStatus(context.Background(), parentRunID, id, StepStatusDone)
 						}
-						s.maybeAutoReinvokeHubWithNote(parentRunID, capturedCohortNote)
-					}()
+						// BUG-234 (#4): only drive the hub node to RUNNING and re-invoke the
+						// synthesis turn while the loop is still advancing. Once the loop has
+						// settled (blocked/awaiting-user, done, stopped), a late or stray
+						// cohort join must NOT flip the hub node back to RUNNING — that flap
+						// is what left the synthesis step spinning forever after an escalate.
+						// maybeAutoReinvokeHubWithNote is itself gated on loop status, but the
+						// hub-RUNNING write below is not, so guard it here too.
+						if hubNodeID != "" && s.loopIsAdvancing(parentRunID) {
+							s.setFlowStepStatus(context.Background(), parentRunID, hubNodeID, StepStatusRunning)
+						}
+					}
+					cohortDiagLog("scheduling hub reinvoke parent=%q flowDriven=%t loopAdvancing=%t reviewerNodeIDs=%v noteLen=%d",
+						parentRunID, flowDriven, s.loopIsAdvancing(parentRunID), reviewerNodeIDs, len(capturedCohortNote))
+					go s.maybeAutoReinvokeHubWithNote(parentRunID, capturedCohortNote)
 				}
 			} else if s.agentOrchestrator.loopMode(rs.parentRunID) == "explicit" && (isCoderRun(rs) || parentHasTrackedFlow(s, rs.parentRunID)) {
 				// In explicit mode the hub drives all transitions. When a node completes
@@ -1576,10 +1919,32 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 					Status:   "failed",
 					Err:      truncateDisplayField(ev.Error, 500),
 				})
+				s.flowDiagLog(rs.parentRunID, "cohort_member_failed", "cohort member failed and buffered",
+					"child_run_id", rs.id,
+					"cohort_id", rs.flowCohortId,
+					"label", rs.label,
+					"provider", string(rs.providerKey),
+					"error", truncateDisplayField(ev.Error, 500),
+				)
+				// BUG-234 (#1): settle this member's own node to FAILED on its own
+				// failure, mirroring the completed path, so a failed reviewer reads
+				// FAILED immediately instead of RUNNING until the barrier.
+				if parent := s.runs[rs.parentRunID]; parent != nil && parent.flowEngineDriven && rs.label != "" {
+					s.setFlowStepStatus(context.Background(), rs.parentRunID, rs.label, StepStatusFailed)
+					cohortDiagLog("member self-settled FAILED parent=%q run=%q label=%q", rs.parentRunID, rs.id, rs.label)
+				}
 				if s.agentOrchestrator.cohortComplete(rs.parentRunID, rs.flowCohortId) {
 					entries := s.agentOrchestrator.drainCohort(rs.parentRunID, rs.flowCohortId)
 					note := buildCohortNote(rs.parentRunID, rs.flowCohortId, entries, s.agentOrchestrator.graphSnapshot(rs.parentRunID).LoopState.Round)
+					s.flowDiagLog(rs.parentRunID, "cohort_join_complete_after_failure", "cohort barrier completed after member failure",
+						"cohort_id", rs.flowCohortId,
+						"entry_count", len(entries),
+						"note_len", len(note),
+					)
 					s.appendPendingAgentContextLocked(rs.parentRunID, note)
+					if parent := s.runs[rs.parentRunID]; parent != nil {
+						parent.lastCohortNote = note // BUG-233: retained for the CA-226 fallback GateReason
+					}
 					parentRunID := rs.parentRunID
 					capturedCohortNote := note // embed note directly in synthesis prompt (BUG-synthesis-hang)
 					go s.maybeAutoReinvokeHubWithNote(parentRunID, capturedCohortNote)
@@ -1627,6 +1992,14 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 			ProviderKey:   string(rs.providerKey),
 			ModelName:     modelName,
 			WaitForResult: rs.waitForResult,
+			// BUG-242: this generic per-event summary write used to omit
+			// ActivationSeq entirely, so the very next turn-progress event after
+			// a reinvokeMatchingFlowChild reactivation (e.g. the reinvoked
+			// child's own completion) silently reset the reported activationSeq
+			// back to 0 — undermining the desktop's monotonic terminal-status
+			// guard (mergeAgentRunsById), which relies on activationSeq only
+			// ever increasing to recognize a genuine reinvoke.
+			ActivationSeq: rs.activationSeq,
 		})
 		shouldEmitParentGraph = shouldEmitAgentGraphForChildEvent(ev.Type)
 	}
@@ -1862,6 +2235,18 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 	// multiple times (and with what params) vs. a single intended spawn.
 	log.Printf("[agent-spawn] request parent=%q agent=%q provider=%q wait=%t dependsOn=%v promptLen=%d",
 		parentRunID, in.Agent, in.Provider, in.Wait, in.DependsOn, len(in.Prompt))
+	s.flowDiagLog(parentRunID, "child_spawn_requested", "child spawn requested",
+		"agent", in.Agent,
+		"provider", in.Provider,
+		"wait", in.Wait,
+		"depends_on_count", len(in.DependsOn),
+		"flow_cohort_id", in.FlowCohortID,
+		"cohort_size", in.CohortSize,
+		"label", in.Label,
+		"auto_orchestrate", in.AutoOrchestrate,
+		"model_override", in.Model,
+		"prompt_len", len(in.Prompt),
+	)
 	// Validate that the parent run exists before creating any child resource.
 	var agentDef *AgentDefinition
 	s.mu.Lock()
@@ -1884,6 +2269,9 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 	}
 	s.mu.Unlock()
 	if parentRun == nil {
+		s.flowDiagLog(parentRunID, "child_spawn_missing_parent", "child spawn parent run not found",
+			"agent", in.Agent,
+		)
 		return SpawnAgentResult{}, fmt.Errorf("parent run %q not found", parentRunID)
 	}
 	if in.AgentDefOverride != nil {
@@ -1898,9 +2286,16 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		}
 	}
 
-	// Determine provider: explicit input > agent definition > parent run's provider.
+	// Determine provider. BUG-228: in.Model — a flow node's own step-configured
+	// model, set by the flow executor for an agent.delegate node with a
+	// purpose-named step_definitions row — is authoritative over any
+	// explicit/inherited provider, the same "model wins" pattern BUG-171
+	// established for the run's own launch. Otherwise: explicit input > agent
+	// definition > parent run's provider.
 	providerKey := ProviderKey(in.Provider)
-	if providerKey == "" && agentDef != nil && agentDef.Provider != "" {
+	if pk, ok := providerKeyFromModel(in.Model); in.Model != "" && ok {
+		providerKey = pk
+	} else if providerKey == "" && agentDef != nil && agentDef.Provider != "" {
 		providerKey = ProviderKey(agentDef.Provider)
 	}
 	if providerKey == "" {
@@ -1912,12 +2307,15 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 	}
 
 	// Resolve the child model and reasoning effort.
-	// Priority: agent definition > same-provider inheritance > per-provider default.
+	// Priority: BUG-228's in.Model (a flow node's own step-configured model) >
+	// agent definition > same-provider inheritance > per-provider default.
 	// When the child runs on a different provider than the parent, the parent's model
 	// name is invalid for the child (e.g. "sonnet" sent to Codex → 400).
 	childModel := parentModel
 	childReasoningEffort := parentReasoningEffort
-	if agentDef != nil && agentDef.Model != "" {
+	if in.Model != "" {
+		childModel = in.Model
+	} else if agentDef != nil && agentDef.Model != "" {
 		childModel = agentDef.Model
 		childReasoningEffort = agentDef.ModelReasoningEffort
 	} else if providerKey != parentProviderKey {
@@ -2016,6 +2414,10 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 	s.mu.Unlock()
 	if childSnap.RunID != "" {
 		if err := s.persistProviderSession(childSnap); err != nil {
+			s.flowDiagLog(parentRunID, "child_spawn_persist_failed", "child run snapshot persistence failed",
+				"child_run_id", childSnap.RunID,
+				"error", err.Error(),
+			)
 			return SpawnAgentResult{}, err
 		}
 	}
@@ -2024,6 +2426,15 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 	// "[agent-spawn] request" line above to map each spawn call to its child run id.
 	log.Printf("[agent-spawn] child created parent=%q child=%q agent=%q role=%q provider=%q model=%q blockedStart=%t",
 		parentRunID, handle.RunID, childSnap.AgentName, childSnap.Role, childSnap.ProviderKey, childModel, blockedStart)
+	s.flowDiagLog(parentRunID, "child_spawn_created", "child run created",
+		"child_run_id", handle.RunID,
+		"agent_name", childSnap.AgentName,
+		"agent_role", childSnap.Role,
+		"provider", string(childSnap.ProviderKey),
+		"model", childModel,
+		"blocked_start", blockedStart,
+		"agent_status", agentStatus,
+	)
 
 	// Record the tree edge.
 	s.agentOrchestrator.registerChild(parentRunID, handle.RunID)
@@ -2067,6 +2478,9 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		s.appendPendingAgentContext(parentRunID, fmt.Sprintf(
 			"Sub-agent %q (provider: %s, model: %s) was started from the FlowPilot UI.",
 			childSnap.AgentName, childSnap.ProviderKey, childModel))
+	}
+	if note := strings.TrimSpace(in.ParentContextNote); note != "" {
+		s.appendPendingAgentContext(parentRunID, note)
 	}
 
 	// Fire the first turn asynchronously; the child streams via its own SSE.
@@ -2402,6 +2816,28 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 
 	completed, fin := s.finishTurn(rs, turnID, err)
 
+	// BUG-226: the hub synthesis turn must finish by calling submit_review_outcome.
+	// A prose-only answer leaves the flow engine without a terminal transition, so
+	// conservatively escalate and settle the inline hub step instead of leaving it RUNNING.
+	if completed && offerReviewOutcomeTool && rs.parentRunID == "" && rs.flowEngineDriven && !s.flowControlSubmittedForTurn(rs.id, turnID) {
+		log.Printf("[flow-step] hub synthesis turn %q completed without submit_review_outcome, escalating", turnID)
+		// BUG-233: the awaiting-user card renders this Summary verbatim as
+		// GateReason, so prefer a concise summary of what the reviewers actually
+		// found over the hub's raw prose or an internal diagnostic sentence.
+		summary := "Hub synthesis turn completed without calling submit_review_outcome. Final message: " + fin.FinalMessage
+		if findings := summarizeCohortNoteForUser(s.lastCohortNoteFor(rs.id)); findings != "" {
+			summary = "Reviewers reported:\n" + findings
+		}
+		_, _ = s.applyFlowControl(rs.id, FlowControlInput{
+			Status:  "escalate",
+			Summary: summary,
+		})
+		// BUG-231/BUG-233: applyFlowControl's "escalate" case above already settles
+		// the hub node to WAITING_USER_APPROVAL — do not override it to FAILED here.
+		// FAILED reads as a terminal error, not the intended non-terminal
+		// awaiting-user pause this fallback triggers.
+	}
+
 	// Persist settled state (status, lastMessage, updatedAt) for history survival
 	// across restarts (BUG-080 F-3). Take a snapshot under lock; persist outside.
 	s.mu.Lock()
@@ -2729,15 +3165,43 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		// after the flow reaches a hub.inline node. Scheduled async because
 		// spawnChildRun manages its own locking and must not run while this
 		// function still holds s.mu.
+		//
+		// BUG-NOTE (Chat Mode Review Loop): flowEngineDriven is set HERE,
+		// inline (not via the markFlowEngineDriven helper, which would
+		// deadlock on s.mu — already held across this whole function), so
+		// every caller that reaches this branch is covered by construction.
+		// It used to be set only by handleStartTurn's separate
+		// resolveWorkflowFlowRef branch (the Flow-Mode workflow-picker path),
+		// so a Chat Mode "bug" sub-mode launch — which sends flowRef directly
+		// and never goes through that branch — spawned its flow's entry node
+		// correctly but never got flagged flow-engine-driven. That silently
+		// disabled every isFlowEngineDriven-gated behavior for Chat Mode: the
+		// legacy bulk step planner kept running alongside the executor
+		// (BUG-174's fix, undone for chat), the BUG-226 no-tool-call escalation
+		// safety net never fired, and BUG-234's per-node step settlement was
+		// skipped. Both the workflowID-resolved and explicit chat flowRef
+		// paths set in.FlowRef before calling startTurn, so flagging it here
+		// once covers both.
 		if flowRef := strings.TrimSpace(in.FlowRef); flowRef != "" {
 			flowStartOnly = true
+			rs.flowEngineDriven = true
 			go s.startResolvedFlow(context.Background(), runID, flowRef, in.Prompt)
 		}
 	}
 	rs.turnCount++
 	rs.lastTurnStepID = in.StepID // CP-35: remember for gate reprompts
 	rs.currentTurnID = turnID
-	rs.lastPrompt = truncateDisplayField(in.Prompt, 100)
+	// BUG-235: lastPrompt is the history list's title source (Navigator.tsx renders
+	// runTitle(item.lastPrompt || item.lastMessage)). Every internal flow-engine-
+	// generated turn — the hub auto-reinvoke ("[flow-engine] Agent results ready...",
+	// autoReinvokePromptText), the coder re-entry, and the Continue-resume note — is
+	// prefixed "[flow-engine]" and used to overwrite it unconditionally, so a flow
+	// run's history entry ended up titled by whichever internal prompt ran last
+	// instead of the user's original request. Skip the overwrite for these internal
+	// prompts (unless lastPrompt is still empty, so a run always has SOME title).
+	if p := strings.TrimSpace(in.Prompt); !strings.HasPrefix(p, "[flow-engine]") || rs.lastPrompt == "" {
+		rs.lastPrompt = truncateDisplayField(in.Prompt, 100)
+	}
 	rs.updatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	ctx, cancel := context.WithCancel(context.Background())
 	rs.turnCancel = cancel
@@ -2775,13 +3239,24 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		_ = logger.AppendTurnLog(context.Background(), runID, turnLogLine{Kind: turnLogKindPrompt, TurnID: turnID, Prompt: in.Prompt})
 	}
 	if flowStartOnly {
+		var snap ProviderSessionState
 		s.mu.Lock()
 		if current := s.runs[runID]; current != nil {
+			// Flow-start handoff suppresses the hub's provider turn, but the desktop
+			// still opened a live turn stream for this providerTurnId. Emit a terminal
+			// event so the client can settle the synthetic turn and begin the separate
+			// orchestration stream that carries later hub/agent updates.
+			s.emitLocked(current, ProviderEvent{Type: EventTurnCompleted, ProviderTurnID: turnID, FinalMessage: ""})
 			current.turnInFlight = false
 			current.currentTurnID = ""
 			current.turnCancel = nil
+			current.lastTurnID = turnID
+			snap = sessionStateOf(current)
 		}
 		s.mu.Unlock()
+		if snap.RunID != "" {
+			_ = s.persistProviderSession(snap)
+		}
 		cancel()
 		return turnID, nil
 	}

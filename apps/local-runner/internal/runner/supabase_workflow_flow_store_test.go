@@ -30,7 +30,14 @@ func TestSupabaseWorkflowFlowStoreGetByRefBuiltinPackFlowID(t *testing.T) {
 				"chat_sub_modes_json": []string{"bug"}, "policy_cap": 3, "policy_on_cap": "escalate",
 				"policy_extend_by": 2, "policy_extend_max": 2, "edges_json": []any{},
 				"workflow_steps": []map[string]any{
-					{"step_type": "flow-agent-delegate", "order_index": 0, "node_id": "coder", "behavior_id": "agent.delegate", "agent_ref": "agents/coder.md", "depends_on_json": []string{}},
+					{
+						"step_type": "flowpilot_core_flow_pack__review_loop__coder", "order_index": 0,
+						"step_definitions": map[string]any{
+							"step_type": "flowpilot_core_flow_pack__review_loop__coder", "node_id": "coder",
+							"node_lifecycle": "reinvoke", "behavior_id": "agent.delegate",
+							"agent_ref": "agents/coder.md", "depends_on_json": []string{},
+						},
+					},
 				},
 			},
 		}
@@ -60,6 +67,9 @@ func TestSupabaseWorkflowFlowStoreGetByRefBuiltinPackFlowID(t *testing.T) {
 	}
 	if record.Definition.Nodes[0].Behavior != "agent.delegate" || record.Definition.Nodes[0].Agent != "agents/coder.md" {
 		t.Fatalf("unexpected node fields: %#v", record.Definition.Nodes[0])
+	}
+	if record.Definition.Nodes[0].Lifecycle != "reinvoke" {
+		t.Fatalf("node lifecycle = %q, want reinvoke", record.Definition.Nodes[0].Lifecycle)
 	}
 	// BUG-NOTE-CP42 #21: Definition.ID must be the flow's own semantic id
 	// ("review-loop"), matching what the embedded-pack path
@@ -95,16 +105,22 @@ func TestSupabaseWorkflowFlowStoreGetByRefDecodesInputsOutputsAndContexts(t *tes
 				"contexts_json": map[string]any{"main_context": map[string]any{"ref": "contexts/flow-context-package.yaml"}},
 				"workflow_steps": []map[string]any{
 					{
-						"step_type": "flow-agent-delegate", "order_index": 0, "node_id": "implement",
-						"behavior_id": "agent.delegate", "agent_ref": "agents/coder.md", "depends_on_json": []string{"context"},
-						"inputs_json":  map[string]any{"main_context": "flow_context_package.v1"},
-						"outputs_json": map[string]any{},
+						"step_type": "flowpilot_core_flow_pack__rag_harness__implement", "order_index": 0,
+						"step_definitions": map[string]any{
+							"step_type": "flowpilot_core_flow_pack__rag_harness__implement", "node_id": "implement",
+							"behavior_id": "agent.delegate", "agent_ref": "agents/coder.md", "depends_on_json": []string{"context"},
+							"inputs_json":  map[string]any{"main_context": "flow_context_package.v1"},
+							"outputs_json": map[string]any{},
+						},
 					},
 					{
-						"step_type": "flow-context-produce", "order_index": 1, "node_id": "context",
-						"behavior_id": "context.produce", "depends_on_json": []string{},
-						"inputs_json":  map[string]any{},
-						"outputs_json": map[string]any{"main_context": "flow_context_package.v1"},
+						"step_type": "flowpilot_core_flow_pack__rag_harness__context", "order_index": 1,
+						"step_definitions": map[string]any{
+							"step_type": "flowpilot_core_flow_pack__rag_harness__context", "node_id": "context",
+							"behavior_id": "context.produce", "depends_on_json": []string{},
+							"inputs_json":  map[string]any{},
+							"outputs_json": map[string]any{"main_context": "flow_context_package.v1"},
+						},
 					},
 				},
 			},
@@ -216,18 +232,23 @@ func TestSupabaseWorkflowFlowStoreUpsertBuiltinUsesPackConflictTarget(t *testing
 	}
 }
 
-// TestSupabaseWorkflowFlowStoreUpsertSendsContextsAndNodeInputsOutputs is the
-// write-side half of the BUG-NOTE-CP42 #10 regression test: Upsert's
-// workflows payload must carry contexts_json, and replaceSteps' per-step
-// payload must carry inputs_json/outputs_json, or a mirror-sync round-trip
-// silently drops this data on write even if the read side is fixed.
+// TestSupabaseWorkflowFlowStoreUpsertSendsContextsAndStepDefinitionNodeData is
+// the write-side half of BUG-NOTE-CP42 #10 and BUG-236: Upsert's workflows
+// payload must carry contexts_json, node definition data must be written to
+// step_definitions, and workflow_steps must remain only the relation/order rows.
 func TestSupabaseWorkflowFlowStoreUpsertSendsContextsAndNodeInputsOutputs(t *testing.T) {
 	original := httpRequestFn
 	defer func() { httpRequestFn = original }()
 
-	var workflowBody, stepsBody []byte
+	var workflowBody, stepDefinitionsBody, stepsBody []byte
 	row := map[string]any{"id": "55555555-5555-5555-5555-555555555555", "name": "RAG Harness", "is_builtin": true, "pack_id": "flowpilot-core-flow-pack", "pack_flow_id": "rag-harness", "editable": false, "cloneable": true, "edges_json": []any{}}
 	httpRequestFn = func(_ context.Context, method, endpoint string, _ map[string]string, body []byte) (int, []byte, error) {
+		if strings.Contains(endpoint, "/step_definitions") {
+			if method == http.MethodPost {
+				stepDefinitionsBody = body
+			}
+			return 201, nil, nil
+		}
 		if strings.Contains(endpoint, "/workflow_steps") {
 			switch method {
 			case http.MethodPost:
@@ -244,7 +265,7 @@ func TestSupabaseWorkflowFlowStoreUpsertSendsContextsAndNodeInputsOutputs(t *tes
 				return 200, nil, nil
 			}
 		}
-		if method == http.MethodPost {
+		if method == http.MethodPost && strings.Contains(endpoint, "/workflows") {
 			workflowBody = body
 		}
 		b, _ := json.Marshal([]map[string]any{row})
@@ -259,9 +280,9 @@ func TestSupabaseWorkflowFlowStoreUpsertSendsContextsAndNodeInputsOutputs(t *tes
 				"main_context": {Ref: "contexts/flow-context-package.yaml"},
 			},
 			Nodes: []agentpack.FlowNode{
-				{ID: "context", Behavior: "context.produce", Outputs: map[string]string{"main_context": "flow_context_package.v1"}},
+				{ID: "context", Behavior: "context.produce", Lifecycle: "once", Outputs: map[string]string{"main_context": "flow_context_package.v1"}},
 				{ID: "implement", Behavior: "agent.delegate", Agent: "agents/coder.md", DependsOn: []string{"context"},
-					Inputs: map[string]string{"main_context": "flow_context_package.v1"}},
+					Lifecycle: "reinvoke", Inputs: map[string]string{"main_context": "flow_context_package.v1"}},
 			},
 		},
 	})
@@ -282,6 +303,36 @@ func TestSupabaseWorkflowFlowStoreUpsertSendsContextsAndNodeInputsOutputs(t *tes
 		t.Fatalf("workflow payload contexts_json = %#v, want main_context.ref set", sentWorkflow["contexts_json"])
 	}
 
+	if stepDefinitionsBody == nil {
+		t.Fatal("expected a POST to /step_definitions")
+	}
+	var sentDefinitions []map[string]any
+	if err := json.Unmarshal(stepDefinitionsBody, &sentDefinitions); err != nil {
+		t.Fatalf("decode step definitions body: %v", err)
+	}
+	var sawImplementInputs, sawContextOutputs, sawImplementLifecycle, sawContextLifecycle bool
+	for _, s := range sentDefinitions {
+		if s["node_id"] == "implement" {
+			inputs, _ := s["inputs_json"].(map[string]any)
+			sawImplementInputs = inputs["main_context"] == "flow_context_package.v1"
+			sawImplementLifecycle = s["node_lifecycle"] == "reinvoke"
+		}
+		if s["node_id"] == "context" {
+			outputs, _ := s["outputs_json"].(map[string]any)
+			sawContextOutputs = outputs["main_context"] == "flow_context_package.v1"
+			sawContextLifecycle = s["node_lifecycle"] == "once"
+		}
+	}
+	if !sawImplementInputs {
+		t.Fatalf("implement step definition missing inputs_json.main_context: %#v", sentDefinitions)
+	}
+	if !sawContextOutputs {
+		t.Fatalf("context step definition missing outputs_json.main_context: %#v", sentDefinitions)
+	}
+	if !sawImplementLifecycle || !sawContextLifecycle {
+		t.Fatalf("step definitions missing node_lifecycle mirror: %#v", sentDefinitions)
+	}
+
 	if stepsBody == nil {
 		t.Fatal("expected a POST to /workflow_steps")
 	}
@@ -289,22 +340,12 @@ func TestSupabaseWorkflowFlowStoreUpsertSendsContextsAndNodeInputsOutputs(t *tes
 	if err := json.Unmarshal(stepsBody, &sentSteps); err != nil {
 		t.Fatalf("decode steps body: %v", err)
 	}
-	var sawImplementInputs, sawContextOutputs bool
 	for _, s := range sentSteps {
-		if s["node_id"] == "implement" {
-			inputs, _ := s["inputs_json"].(map[string]any)
-			sawImplementInputs = inputs["main_context"] == "flow_context_package.v1"
+		for _, forbidden := range []string{"node_id", "behavior_id", "agent_ref", "node_lifecycle", "inputs_json", "outputs_json"} {
+			if _, exists := s[forbidden]; exists {
+				t.Fatalf("workflow_steps payload must not carry node definition field %q: %#v", forbidden, sentSteps)
+			}
 		}
-		if s["node_id"] == "context" {
-			outputs, _ := s["outputs_json"].(map[string]any)
-			sawContextOutputs = outputs["main_context"] == "flow_context_package.v1"
-		}
-	}
-	if !sawImplementInputs {
-		t.Fatalf("implement step missing inputs_json.main_context: %#v", sentSteps)
-	}
-	if !sawContextOutputs {
-		t.Fatalf("context step missing outputs_json.main_context: %#v", sentSteps)
 	}
 }
 
@@ -321,6 +362,9 @@ func TestSupabaseWorkflowFlowStoreReplaceStepsInsertsBeforeDeleting(t *testing.T
 	var callOrder []string
 	row := map[string]any{"id": "66666666-6666-6666-6666-666666666666", "name": "RAG Harness", "is_builtin": true, "pack_id": "flowpilot-core-flow-pack", "pack_flow_id": "rag-harness", "editable": false, "cloneable": true, "edges_json": []any{}}
 	httpRequestFn = func(_ context.Context, method, endpoint string, _ map[string]string, body []byte) (int, []byte, error) {
+		if strings.Contains(endpoint, "/step_definitions") {
+			return 201, nil, nil
+		}
 		if strings.Contains(endpoint, "/workflow_steps") {
 			callOrder = append(callOrder, method)
 			if method == http.MethodPost {
@@ -379,6 +423,9 @@ func TestSupabaseWorkflowFlowStoreReplaceStepsInsertFailureLeavesNoDeleteCall(t 
 	var sawDelete bool
 	row := map[string]any{"id": "77777777-7777-7777-7777-777777777777", "name": "RAG Harness", "is_builtin": true, "pack_id": "flowpilot-core-flow-pack", "pack_flow_id": "rag-harness", "editable": false, "cloneable": true, "edges_json": []any{}}
 	httpRequestFn = func(_ context.Context, method, endpoint string, _ map[string]string, _ []byte) (int, []byte, error) {
+		if strings.Contains(endpoint, "/step_definitions") {
+			return 201, nil, nil
+		}
 		if strings.Contains(endpoint, "/workflow_steps") {
 			if method == http.MethodDelete {
 				sawDelete = true

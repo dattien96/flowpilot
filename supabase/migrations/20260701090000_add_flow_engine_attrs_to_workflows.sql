@@ -1,12 +1,11 @@
--- Migration: Add flow-engine attributes to workflows/workflow_steps (CP-42 Task-175/179)
+-- Migration: Add flow-engine attributes to workflows/step_definitions (CP-42 Task-175/179)
 --
 -- Supersedes an earlier, never-applied `flow_definitions` migration. Rather than run a
 -- parallel table, built-in agentpack flows (Review Loop, RAG Harness) are mirrored
--- directly into `workflows` + `workflow_steps` as read-only rows, and the existing
+-- directly into `workflows` + `workflow_steps` as read-only relation rows, and the existing
 -- Settings "Workflows/Steps" screen (WorkflowsSettings.tsx) is reused instead of a new
--- screen. `workflow_steps.step_type` already references the reusable `step_definitions`
--- catalog; `behavior_id` is added alongside it as the CP-42 behavior-ID a node runs under
--- (agent.delegate/hub.inline/...), decoupled from the human-facing step_type label.
+-- screen. FLOW = workflows, NODE = step_definitions; workflow_steps remains the
+-- workflow-to-step relation/order table.
 
 -- ---------------------------------------------------------------------------
 -- workflows: built-in/read-only flags, pack identity for mirror-sync staleness
@@ -35,7 +34,7 @@ alter table workflows
   -- Flow-level named context bindings ({name: {ref: "contexts/....yaml"}}),
   -- e.g. rag-harness's `contexts.main_context`. Preserved with full fidelity
   -- from the source agentpack YAML alongside per-node inputs_json/
-  -- outputs_json on workflow_steps below.
+  -- outputs_json on step_definitions below.
   add column if not exists contexts_json jsonb not null default '{}'::jsonb;
 
 -- Mirror-sync lookup by pack identity. Deliberately NOT a partial index
@@ -51,15 +50,14 @@ create unique index if not exists workflows_pack_flow_uidx
   on workflows(pack_id, pack_flow_id);
 
 -- ---------------------------------------------------------------------------
--- workflow_steps: per-node flow-graph attributes. node_id is the stable
--- flow-graph identifier for this step within its workflow (e.g. "coder",
--- "reviewer_correctness") — distinct from step_type, which is a reusable,
--- shared step-definition key that multiple nodes across multiple workflows
--- can reference. dependsOn references other nodes' node_id within the same
--- workflow.
+-- step_definitions: per-node flow-graph attributes. Built-in mirror sync
+-- creates one step_definition per flow node and attaches it to the workflow
+-- through workflow_steps. node_id is the stable flow-graph identifier for this
+-- step within its workflow (e.g. "coder", "reviewer_correctness").
 -- ---------------------------------------------------------------------------
-alter table workflow_steps
+alter table step_definitions
   add column if not exists node_id text,
+  add column if not exists node_lifecycle text,
   add column if not exists behavior_id text,
   add column if not exists agent_ref text,
   add column if not exists depends_on_json jsonb not null default '[]'::jsonb,
@@ -75,18 +73,14 @@ alter table workflow_steps
   add column if not exists inputs_json jsonb not null default '{}'::jsonb,
   add column if not exists outputs_json jsonb not null default '{}'::jsonb;
 
-create unique index if not exists workflow_steps_workflow_node_uidx
-  on workflow_steps(workflow_id, node_id)
-  where node_id is not null;
-
 -- ---------------------------------------------------------------------------
 -- Seed generic step_definitions rows for the CP-42 canonical behavior IDs.
 -- workflow_steps.step_type has a NOT NULL FK to step_definitions(step_type),
 -- so a mirrored flow-engine node needs a valid step_type to reference even
--- though its real per-node identity lives in node_id/behavior_id/agent_ref.
+-- though its real per-node identity lives on node-specific step_definitions.
 -- These rows are generic dispatch categories, not human-authored step
 -- definitions — a node's specific behavior/agent binding always comes from
--- its own behavior_id/agent_ref columns, never from this row's fields.
+-- its own node-specific step_definition, never from the workflow_steps row.
 -- ---------------------------------------------------------------------------
 insert into step_definitions (step_type, name, description, agent_type)
 values

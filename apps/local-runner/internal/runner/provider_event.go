@@ -187,6 +187,21 @@ type AgentLoopState struct {
 	Mode        string `json:"mode,omitempty"` // "keyword" | "explicit"
 	ActiveNode  string `json:"activeNode,omitempty"`
 	ExtendCount int    `json:"extendCount,omitempty"`
+	// ExtendBy is how much extendCap/resumeFlowWithFeedback raise Cap by on a
+	// cap-hit, seeded from the flow's own Definition.Policy.ExtendBy at
+	// startResolvedFlow (falls back to 2 when unset/zero, matching the
+	// pre-existing hardcoded default). Per-flow, not global, so a custom flow
+	// with a different policy_extend_by value actually takes effect.
+	ExtendBy int `json:"extendBy,omitempty"`
+	// BlockReason distinguishes WHY Status=="blocked" (BUG-231): "cap" (the
+	// round cap was reached mid-loop, via "continue") vs. "escalate" (the
+	// flow's control tool explicitly escalated, e.g. submit_review_outcome
+	// status=blocked). Both are non-terminal "awaiting user" pauses, but the
+	// desktop's recovery affordance differs in how it resumes (see
+	// resumeFlowWithFeedback): a "cap" block auto-raises the cap, an
+	// "escalate" block does not need to. Cleared ("") whenever Status leaves
+	// "blocked".
+	BlockReason string `json:"blockReason,omitempty"`
 }
 
 type AgentGraphSnapshot struct {
@@ -323,6 +338,9 @@ type Step struct {
 	Name         string `json:"name"`
 	Order        int    `json:"order"`
 	DefaultSkill string `json:"defaultSkill,omitempty"`
+	NodeID       string `json:"nodeId,omitempty"`
+	BehaviorID   string `json:"behaviorId,omitempty"`
+	AgentRef     string `json:"agentRef,omitempty"`
 	// Model is the step's step_definitions.model — the "Step" tier of the
 	// Step > Flow > Project > default resolution order (SS-05/SD-06, BUG-165).
 	Model string `json:"model,omitempty"`

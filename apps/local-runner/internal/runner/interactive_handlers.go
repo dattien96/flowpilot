@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -59,6 +60,7 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/agent-loop/stop", s.handleStopAgentLoop)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/flow-control", s.handleSubmitFlowControl)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/agent-loop/extend-cap", s.handleExtendCap)
+	mux.HandleFunc("POST /client/workflow-runs/{runId}/agent-loop/continue", s.handleContinueFlow)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/gate-decision", s.handleGateDecision)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/gate-agreement", s.handleGateAgreement)
 
@@ -259,9 +261,9 @@ type turnBody struct {
 	// template (CP-42/Task-177). Both are optional and omitting them means
 	// normal chat with no orchestration. handleStartTurn validates FlowRef
 	// against BuiltinOrchestrationOptions(SubMode) before starting the turn;
-	// actually resolving/executing the selected flow into the run loop is
-	// not wired yet (see Task-177 completion notes) — this is contract and
-	// validation only.
+	// startTurn (interactive_service.go) then resolves/executes it via
+	// startResolvedFlow on the run's first turn, exactly like a Flow-Mode
+	// workflow-picker launch.
 	SubMode string `json:"subMode,omitempty"`
 	FlowRef string `json:"flowRef,omitempty"`
 }
@@ -279,15 +281,18 @@ func (s *InteractiveService) handleStartTurn(w http.ResponseWriter, r *http.Requ
 	// BUG-174: a Flow-Mode workflow-picker launch sends a workflowID but no
 	// flowRef, so the flow executor never engaged and the hub did all the work
 	// inline. If the run's selected workflow resolves to a flow-engine flow with
-	// a spawnable entry node, adopt its canonical flowRef and mark the run
-	// flow-engine-driven, so it runs through the same startResolvedFlow path an
-	// explicit flowRef uses and its step timeline is driven node-by-node. The
-	// explicit chat/flowRef path and plain workflows are untouched (resolve
-	// returns false for them).
+	// a spawnable entry node, adopt its canonical flowRef so it runs through the
+	// same startResolvedFlow path an explicit flowRef uses and its step timeline
+	// is driven node-by-node. The explicit chat/flowRef path and plain
+	// workflows are untouched (resolve returns false for them).
+	//
+	// startTurn itself marks the run flow-engine-driven once it sees a non-empty
+	// FlowRef (both this branch, via body.FlowRef below, and the explicit chat
+	// flowRef path converge there) — this handler no longer needs its own
+	// markFlowEngineDriven call.
 	if strings.TrimSpace(body.FlowRef) == "" {
 		if flowRef, ok := s.resolveWorkflowFlowRef(r.Context(), r.PathValue("runId")); ok {
 			body.FlowRef = flowRef
-			s.markFlowEngineDriven(r.PathValue("runId"))
 		}
 	}
 	turnID, e := s.startTurn(
@@ -586,6 +591,18 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		if resolvedModel == "" {
 			resolvedModel = strings.TrimSpace(steps[0].Model)
 		}
+		// BUG-235-follow-up: the entry step's own step_definitions row is a
+		// flow-pack mirror row keyed by a per-flow/per-node step_type (e.g.
+		// "review-loop__coder") that mirror-sync never writes a model onto, so
+		// the direct steps[0].Model read above is always empty for a flow-pack
+		// workflow's entry node. Fall back to the same node_id/role lookup
+		// resolveFlowNodeModel uses for child spawns, so the run's own Step
+		// tier actually sees the model configured on the purpose-named role
+		// row (e.g. "Flow: Coder" / flow-agent-delegate-coder) instead of
+		// skipping straight past it to the Flow/Project tiers.
+		if resolvedModel == "" {
+			resolvedModel = s.resolveConfiguredModelForAgent(context.Background(), steps[0].NodeID, agentNameFromRef(steps[0].AgentRef))
+		}
 		// BUG-183: Flow Mode has two distinct default sources. A normal workflow/flow
 		// execution inherits YOLO from the workflow definition itself, while a direct
 		// single-step execution inherits from that selected step. Do not let the entry
@@ -620,6 +637,12 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 			return RunHandle{}, newAPIErr(http.StatusBadRequest, "no_model_configured", "no model configured for this workflow")
 		}
 	} else if runKind != "chat" && stepID != "" {
+		// BUG-229: a direct single-step launch resolves its model from the
+		// selected step ONLY — no Flow tier applies (there is no workflow
+		// context) and, unlike the normal-flow branch above, no Project
+		// fallback either. Falling back to the project default here let a
+		// step with no model configured silently run on an unrelated
+		// project-wide model instead of surfacing as non-runnable.
 		if catalog, ok := s.catalog.(CatalogStore); ok {
 			if steps, err := catalog.ListSteps(context.Background()); err == nil {
 				for _, step := range steps {
@@ -634,18 +657,6 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 					}
 					resolvedYolo = resolvedYolo || step.YoloMode
 					break
-				}
-			}
-		}
-		if resolvedModel == "" {
-			if catalog, ok := s.catalog.(CatalogStore); ok {
-				if projects, err := catalog.ListProjects(context.Background()); err == nil {
-					for _, proj := range projects {
-						if proj.ID == in.ProjectID {
-							resolvedModel = strings.TrimSpace(proj.Model)
-							break
-						}
-					}
 				}
 			}
 		}
@@ -1085,7 +1096,16 @@ func (s *InteractiveService) handleSpawnAgent(w http.ResponseWriter, r *http.Req
 
 // handleListAgentRuns returns the agent run summaries that are children of the given run.
 func (s *InteractiveService) handleListAgentRuns(w http.ResponseWriter, r *http.Request) {
-	writeInteractiveJSON(w, http.StatusOK, s.listAgentRunSummaries(r.PathValue("runId")))
+	parentRunID := r.PathValue("runId")
+	summaries := s.listAgentRunSummaries(parentRunID)
+	if cohortDiagEnabled() {
+		runs := make([]string, len(summaries))
+		for i, sum := range summaries {
+			runs[i] = fmt.Sprintf("%s(%s):%s", sum.RunID, sum.AgentName, sum.Status)
+		}
+		cohortDiagLog("handleListAgentRuns HTTP response parent=%q runs=%v", parentRunID, runs)
+	}
+	writeInteractiveJSON(w, http.StatusOK, summaries)
 }
 
 func (s *InteractiveService) handleGetAgentGraph(w http.ResponseWriter, r *http.Request) {
@@ -1224,6 +1244,30 @@ func (s *InteractiveService) handleExtendCap(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeInteractiveJSON(w, http.StatusOK, s.agentGraphSnapshot(runID))
+}
+
+// handleContinueFlow handles POST /client/workflow-runs/{runId}/agent-loop/continue.
+// Body: {"feedback": "..."} (feedback optional). BUG-231's unified "Continue"
+// action: resumes a blocked/awaiting-user loop, letting the hub re-decide.
+// Returns an AgentGraphSnapshot so the caller can update without a separate
+// refresh round-trip, matching handleExtendCap's contract.
+func (s *InteractiveService) handleContinueFlow(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("runId")
+	var body struct {
+		Feedback string `json:"feedback"`
+	}
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_request", "invalid request body"))
+			return
+		}
+	}
+	snap, err := s.resumeFlowWithFeedback(runID, body.Feedback)
+	if err != nil {
+		writeInteractiveError(w, newAPIErr(http.StatusUnprocessableEntity, "continue_flow_failed", err.Error()))
+		return
+	}
+	writeInteractiveJSON(w, http.StatusOK, snap)
 }
 
 func fakeArtifacts(runID string) []Artifact {

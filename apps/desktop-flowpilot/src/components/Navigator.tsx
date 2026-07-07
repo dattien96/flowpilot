@@ -19,6 +19,12 @@ const RUN_LABEL: Record<RunHistoryItem["status"], string> = {
   running: "Running",
   waiting_approval: "Waiting · approval",
   waiting_question: "Waiting · question",
+  // BUG-231: a persisted RunHistoryItem's status is sourced from the Go
+  // runner's own RunStatus enum, which has no "blocked" value (only the
+  // separate, live-only AgentLoopState can be "blocked") — this key exists
+  // purely to satisfy the exhaustive Record since RunHistoryItem shares the
+  // RunStatus type, and should never actually be hit at runtime.
+  blocked: "Waiting · your input",
   completed: "Completed",
   failed: "Failed",
   cancelled: "Cancelled",

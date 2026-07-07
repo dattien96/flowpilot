@@ -64,7 +64,7 @@ func (s *InteractiveService) reseedFlowStepRuntime(parentRunID string, nodes []a
 	if !ok || len(nodes) == 0 {
 		return
 	}
-	seeder.seed(parentRunID, flowStepRowsFromNodes(nodes, StepStatusPending, ""))
+	seeder.seed(parentRunID, s.flowStepRowsFromNodes(context.Background(), parentRunID, nodes, StepStatusPending, ""))
 }
 
 // reseedFlowStepRuntimeForResume rebuilds runID's step list from persisted flow
@@ -86,19 +86,29 @@ func (s *InteractiveService) reseedFlowStepRuntimeForResume(runID string, nodes 
 		status = StepStatusDone
 		ts = time.Now().UTC().Format(time.RFC3339Nano)
 	}
-	seeder.seed(runID, flowStepRowsFromNodes(nodes, status, ts))
+	seeder.seed(runID, s.flowStepRowsFromNodes(context.Background(), runID, nodes, status, ts))
 }
 
 // flowStepRowsFromNodes builds one step-runtime row per flow node (ID == NodeID
 // so a transition can address it directly by node id). When status is DONE, ts
 // stamps started/finished so the row reads as a settled step.
-func flowStepRowsFromNodes(nodes []agentpack.FlowNode, status RuntimeWorkflowStepStatus, ts string) []RuntimeWorkflowStep {
+//
+// BUG-228 display follow-up: each row's Provider/Model are resolved up front
+// (resolveFlowNodeProviderModel — the node's own role, else the run's
+// baseline) rather than left blank until the node is actually spawned. A
+// step-timeline row for a still-PENDING node must show what it will actually
+// run on, not the run's blanket baseline, once stampFlowNodePosture confirms
+// it at spawn time — that later stamp is what actually took effect;
+// resolving here too means a not-yet-spawned node shows the correct posture
+// from the moment it is seeded, without waiting for it to start.
+func (s *InteractiveService) flowStepRowsFromNodes(ctx context.Context, parentRunID string, nodes []agentpack.FlowNode, status RuntimeWorkflowStepStatus, ts string) []RuntimeWorkflowStep {
 	steps := make([]RuntimeWorkflowStep, 0, len(nodes))
 	for _, node := range nodes {
 		behaviorID := ""
 		if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok {
 			behaviorID = canonical
 		}
+		provider, model := s.resolveFlowNodeProviderModel(ctx, parentRunID, node)
 		row := RuntimeWorkflowStep{
 			ID:         node.ID,
 			StepType:   node.ID,
@@ -106,6 +116,8 @@ func flowStepRowsFromNodes(nodes []agentpack.FlowNode, status RuntimeWorkflowSte
 			BehaviorID: behaviorID,
 			AgentRef:   flowNodeAgentName(node),
 			Status:     status,
+			Provider:   provider,
+			Model:      model,
 		}
 		if status == StepStatusDone {
 			row.StartedAt = ts
@@ -124,6 +136,10 @@ func (s *InteractiveService) setFlowStepStatus(ctx context.Context, parentRunID,
 	if nodeID == "" {
 		return
 	}
+	s.flowDiagLog(parentRunID, "step_status_transition", "updating flow step status",
+		"node_id", nodeID,
+		"status", string(status),
+	)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	patch := WorkflowStepPatch{Status: status}
 	switch status {
@@ -141,6 +157,59 @@ func (s *InteractiveService) setFlowStepStatus(ctx context.Context, parentRunID,
 		Patch:  patch,
 	}); err != nil {
 		log.Printf("[flow-step] set node %q -> %s on run %q failed: %v", nodeID, status, parentRunID, err)
+		s.flowDiagLog(parentRunID, "step_status_transition_failed", "flow step status update failed",
+			"node_id", nodeID,
+			"status", string(status),
+			"error", err.Error(),
+		)
+	}
+}
+
+// setFlowStepAwaitingUser transitions the flow's hub inline node (the
+// control/synthesis node) to WAITING_USER_APPROVAL (BUG-231) when the loop
+// pauses awaiting a human decision — escalate, or the round cap being
+// reached — instead of leaving it RUNNING (which reads as a hang) or marking
+// it FAILED (which reads as an error/terminal step). No-op for a run that
+// isn't flow-engine-driven or has no hub inline node. Best-effort, like
+// setFlowStepStatus.
+func (s *InteractiveService) setFlowStepAwaitingUser(ctx context.Context, parentRunID string) {
+	if !s.isFlowEngineDriven(parentRunID) {
+		return
+	}
+	if hubID := hubInlineNodeID(s.activeFlowNodesFor(parentRunID)); hubID != "" {
+		s.setFlowStepStatus(ctx, parentRunID, hubID, StepStatusWaitingUserApr)
+	}
+}
+
+// setFlowStepPosture stamps nodeID's OWN actually-resolved provider/model
+// (BUG-228 display follow-up) so the step-timeline UI shows what that node
+// really ran on. Without this, every flow-engine step row stayed blank
+// (flowStepRowsFromNodes never sets Provider/Model, unlike the classic
+// planner's step seeding) and the desktop fell back to displaying the run's
+// single baseline posture for every row — masking a node's own resolved
+// model even when spawnChildRun/resolveFlowNodeModel gave it one different
+// from the run's baseline. Best-effort, like setFlowStepStatus: an unknown
+// node id no-ops, and any error is logged rather than propagated.
+func (s *InteractiveService) setFlowStepPosture(ctx context.Context, parentRunID, nodeID, provider, model string) {
+	if nodeID == "" {
+		return
+	}
+	s.flowDiagLog(parentRunID, "step_posture_transition", "updating flow step posture",
+		"node_id", nodeID,
+		"provider", provider,
+		"model", model,
+	)
+	if err := s.workflowStore.ApplyStepTransition(ctx, parentRunID, WorkflowStepTransition{
+		StepID: nodeID,
+		Patch:  WorkflowStepPatch{Provider: strptr(provider), Model: strptr(model)},
+	}); err != nil {
+		log.Printf("[flow-step] set node %q posture provider=%q model=%q on run %q failed: %v", nodeID, provider, model, parentRunID, err)
+		s.flowDiagLog(parentRunID, "step_posture_transition_failed", "flow step posture update failed",
+			"node_id", nodeID,
+			"provider", provider,
+			"model", model,
+			"error", err.Error(),
+		)
 	}
 }
 
@@ -151,6 +220,7 @@ func (s *InteractiveService) setFlowStepStatus(ctx context.Context, parentRunID,
 // (synthesis) node, or any reviewer whose DONE write lagged. The bulk planner is
 // gated off for flowEngineDriven runs, so this is the sole terminal settler.
 func (s *InteractiveService) markFlowRunComplete(ctx context.Context, parentRunID string) {
+	s.flowDiagLog(parentRunID, "flow_run_complete_begin", "marking flow run complete")
 	if steps, err := s.workflowStore.LoadRunSteps(ctx, parentRunID); err == nil {
 		for _, st := range steps {
 			switch st.Status {
@@ -161,6 +231,9 @@ func (s *InteractiveService) markFlowRunComplete(ctx context.Context, parentRunI
 		}
 	} else {
 		log.Printf("[flow-step] mark run %q done: LoadRunSteps failed: %v", parentRunID, err)
+		s.flowDiagLog(parentRunID, "flow_run_complete_load_steps_failed", "failed to load run steps while completing flow",
+			"error", err.Error(),
+		)
 		// Fall back to at least settling the inline hub node.
 		if hubID := hubInlineNodeID(s.activeFlowNodesFor(parentRunID)); hubID != "" {
 			s.setFlowStepStatus(ctx, parentRunID, hubID, StepStatusDone)
@@ -168,7 +241,60 @@ func (s *InteractiveService) markFlowRunComplete(ctx context.Context, parentRunI
 	}
 	if err := s.workflowStore.SetRunStatus(ctx, parentRunID, RunStatusEngineDone, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		log.Printf("[flow-step] mark run %q done failed: %v", parentRunID, err)
+		s.flowDiagLog(parentRunID, "flow_run_complete_set_status_failed", "failed to set terminal flow run status",
+			"error", err.Error(),
+		)
 	}
+	// BUG-235: the step timeline above is authoritative for the flow's own nodes,
+	// but a cohort member's underlying agent RUN can independently linger in a
+	// non-terminal status (running/waiting_*) in the Agents panel and the main
+	// chat's inline run card, even though the flow that spawned it is now done.
+	// Settle any such orphaned child so "flow done" is a clean, fully-terminal
+	// state on both the step timeline and the agent-run list.
+	s.reconcileChildRunsOnFlowDone(parentRunID)
+	s.flowDiagLog(parentRunID, "flow_run_complete_done", "flow run marked complete")
+}
+
+// reconcileChildRunsOnFlowDone (BUG-235) force-settles any child of parentRunID
+// still reporting running/waiting_approval/waiting_question to completed, once
+// the flow itself has reached "done". A child with an actual turn in flight is
+// left alone — its own completion event will settle it normally; this only
+// catches a child whose completion should already have landed (the barrier
+// that gates a flow's "done" requires every cohort member finished) but whose
+// run-level status update did not land for some reason. Emits one fresh
+// agent_graph_updated so the desktop's Agents panel and main-chat run card
+// clear immediately instead of waiting for an event that will never come.
+func (s *InteractiveService) reconcileChildRunsOnFlowDone(parentRunID string) {
+	changed := false
+	s.mu.Lock()
+	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
+		child := s.runs[childID]
+		if child == nil || child.turnInFlight {
+			continue
+		}
+		switch child.status {
+		case RunStatusRunning, RunStatusWaitingApproval, RunStatusWaitingQuestion:
+		default:
+			continue
+		}
+		child.status = RunStatusCompleted
+		child.agentStatus = string(RunStatusCompleted)
+		changed = true
+	}
+	s.mu.Unlock()
+	if !changed {
+		return
+	}
+	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
+		summary, ok := s.agentOrchestrator.currentSummary(parentRunID, childID)
+		if !ok || summary.Status == RunStatusCompleted {
+			continue
+		}
+		summary.Status = RunStatusCompleted
+		summary.AgentStatus = string(RunStatusCompleted)
+		s.agentOrchestrator.upsertSummary(parentRunID, summary)
+	}
+	s.emitAgentGraph(parentRunID, s.agentOrchestrator.graphSnapshot(parentRunID))
 }
 
 // hubInlineNodeID returns the id of the flow's inline hub node (behavior

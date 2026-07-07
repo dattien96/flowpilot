@@ -1,20 +1,34 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   ArtifactDefinition,
   Project,
   StepDefinition,
   SupportedModel,
   Workflow,
+  WorkflowFlowEdge,
   WorkflowStep,
 } from "@flowpilot/client-core";
+import { FLOW_BEHAVIOR_OPTIONS, FLOW_EDGE_TERMINALS, validateFlowGraph } from "@flowpilot/client-core";
 import { getAdminUseCases } from "@/clientCore";
 import { formatTimestamp, integrationTypes, toErrorMessage } from "@/components/settings/settingsHelpers";
 
 type Tab = "workflows" | "steps";
 type ViewMode = "list" | "create";
 type DeleteTarget =
-  | { kind: "workflow"; id: string; label: string }
-  | { kind: "step"; id: string; label: string };
+  | { kind: "workflow"; ids: string[]; labels: string[] }
+  | {
+      kind: "step";
+      ids: string[];
+      labels: string[];
+      // BUG-247-follow-up: a workflow's step list is a pure relation to
+      // step_definitions (BUG-236) with no FK-cascade backing it, so
+      // deleting a step definition out from under a workflow that still
+      // lists it leaves that workflow with a dangling stepType it can never
+      // resolve at runtime. These are the workflows deleteSelected removes
+      // alongside the step(s) themselves.
+      cascadeWorkflows: { id: string; name: string }[];
+    };
+type BulkSelect = { kind: "workflow" | "step"; ids: Set<string> };
 
 type PickerModal =
   | { kind: "artifact-input"; mode: "detail" | "create" }
@@ -30,12 +44,20 @@ type WorkflowDraft = {
   modelOverride: string | null;
   reasoningEffortOverride: string | null;
   yoloMode: boolean;
-  // Pass-through only — no UI control edits these (BUG-NOTE-CP42 #14).
   // saveWorkflow's repository upserts every field it's given, defaulting an
   // omitted key to null/[] rather than leaving the existing DB value
   // untouched, so a plain rename used to silently wipe an existing
-  // workflow's policy caps and edge graph. Populated from the loaded
-  // Workflow in mapWorkflowToDraft and sent back unchanged on save.
+  // workflow's policy caps and edge graph if these were ever left out of the
+  // save payload — populated from the loaded Workflow in mapWorkflowToDraft
+  // and always sent back on save (BUG-NOTE-CP42 #14).
+  // policyCap/policyExtendBy are now editable (the "Cap" and "Extend by"
+  // fields below) — startResolvedFlow applies them to the run's actual loop
+  // state, replacing a prior hardcoded cap=3/extendBy=2 that ignored these
+  // columns entirely. policyOnCap/policyExtendMax remain pass-through only:
+  // no runtime code reads either today (the cap-hit path always escalates
+  // regardless of policyOnCap, and BUG-231 retired the policyExtendMax
+  // ceiling check), so exposing an input for them would imply a behavior
+  // that doesn't exist.
   policyCap: number | null;
   policyOnCap: string | null;
   policyExtendBy: number | null;
@@ -73,6 +95,17 @@ function createEmptyStepDraft(modelId: string): StepDefinition {
     reasoningEffort: DEFAULT_REASONING,
     yoloMode: false,
     agentType: "standard",
+    nodeId: null,
+    behaviorId: null,
+    agentRef: null,
+    nodeLifecycle: null,
+    dependsOn: [],
+    joinMode: null,
+    cohort: null,
+    promptTemplateRef: null,
+    contextRef: null,
+    inputs: {},
+    outputs: {},
     inputArtifactDefinitions: [],
     outputArtifactDefinitions: [],
     createdAt: "",
@@ -131,21 +164,6 @@ function normalizeWorkflowSnapshot(draft: WorkflowDraft | null, steps: WorkflowS
       orderIndex: index,
       isEnabled: step.isEnabled,
       requiresApproval: step.requiresApproval,
-      // BUG-NOTE-CP42 #3: these CP-42 per-node fields are editable in the
-      // step form (nodeId/behaviorId/agentRef/dependsOn/joinMode/cohort) but
-      // were missing from this snapshot, so workflowDirty never noticed an
-      // edit to any of them and Save stayed disabled unless some older field
-      // also changed. promptTemplateRef/contextRef are the same class of
-      // field and share the same form, so included for the same reason even
-      // though the bug note didn't name them explicitly.
-      nodeId: step.nodeId ?? "",
-      behaviorId: step.behaviorId ?? "",
-      agentRef: step.agentRef ?? "",
-      dependsOn: [...step.dependsOn].sort(),
-      joinMode: step.joinMode ?? "",
-      cohort: step.cohort ?? "",
-      promptTemplateRef: step.promptTemplateRef ?? "",
-      contextRef: step.contextRef ?? "",
     })),
   });
 }
@@ -166,6 +184,17 @@ function normalizeStepSnapshot(step: StepDefinition | null) {
     reasoningEffort: step.reasoningEffort ?? "",
     yoloMode: step.yoloMode,
     agentType: step.agentType,
+    nodeId: step.nodeId ?? "",
+    behaviorId: step.behaviorId ?? "",
+    agentRef: step.agentRef ?? "",
+    nodeLifecycle: step.nodeLifecycle ?? "",
+    dependsOn: [...(step.dependsOn ?? [])].sort(),
+    joinMode: step.joinMode ?? "",
+    cohort: step.cohort ?? "",
+    promptTemplateRef: step.promptTemplateRef ?? "",
+    contextRef: step.contextRef ?? "",
+    inputs: step.inputs ?? {},
+    outputs: step.outputs ?? {},
     inputArtifactDefinitions: step.inputArtifactDefinitions,
     outputArtifactDefinitions: step.outputArtifactDefinitions,
   });
@@ -180,6 +209,26 @@ function buildModelOptions(models: SupportedModel[]) {
 
 function toggleString(list: string[], value: string) {
   return list.includes(value) ? list.filter((item) => item !== value) : [...list, value];
+}
+
+function stringMapToText(values: Record<string, string> | undefined) {
+  return Object.entries(values ?? {})
+    .map(([key, value]) => `${key}=${value}`)
+    .join(", ");
+}
+
+function textToStringMap(value: string) {
+  return Object.fromEntries(
+    value
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .map((item) => {
+        const [key, ...rest] = item.split("=");
+        return [key.trim(), rest.join("=").trim()];
+      })
+      .filter(([key]) => Boolean(key)),
+  );
 }
 
 function toTitleCase(value: string) {
@@ -199,6 +248,13 @@ export function WorkflowsSettings(): React.ReactElement {
   const [workflowSteps, setWorkflowSteps] = useState<WorkflowStep[]>([]);
   const [stepDefinitions, setStepDefinitions] = useState<StepDefinition[]>([]);
   const [artifactDefinitions, setArtifactDefinitions] = useState<ArtifactDefinition[]>([]);
+  // Built-in workflows are read-only (see workflowDetailReadOnly below) and
+  // can never be edited to drop a step, so a step definition still listed by
+  // any built-in workflow can't be deleted either — doing so would leave
+  // that (undeletable, uneditable) workflow with a dangling stepType it can
+  // never resolve at runtime. Recomputed on every refresh() from the small
+  // set of built-in workflows' own step lists.
+  const [stepTypesUsedByBuiltin, setStepTypesUsedByBuiltin] = useState<Set<string>>(new Set());
   const [selectedWorkflowId, setSelectedWorkflowId] = useState("");
   const [selectedStepType, setSelectedStepType] = useState("");
   const [detailWorkflowStepType, setDetailWorkflowStepType] = useState("");
@@ -219,6 +275,13 @@ export function WorkflowsSettings(): React.ReactElement {
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const [deleteConfirmationText, setDeleteConfirmationText] = useState("");
   const [pickerModal, setPickerModal] = useState<PickerModal | null>(null);
+  // Multi-select delete: entered via long-press on a Workflow/Step Registry
+  // row instead of a mode toggle. `bulkSelect` is null outside select mode;
+  // once set, every row in that same list renders a checkbox and a tap
+  // toggles selection instead of opening the row for edit.
+  const [bulkSelect, setBulkSelect] = useState<BulkSelect | null>(null);
+  const longPressTimerRef = useRef<number | null>(null);
+  const longPressFiredRef = useRef(false);
   // Built-in flow cloning (CP-42/Task-179): a built-in (isBuiltin=true)
   // workflow is read-only in this screen — cloneTarget drives the "name your
   // copy" modal that creates an editable, non-builtin copy.
@@ -227,6 +290,20 @@ export function WorkflowsSettings(): React.ReactElement {
   // Workflow step cards default to collapsed; expansion is tracked per
   // source+step id so detail and create editors don't share state.
   const [expandedStepKeys, setExpandedStepKeys] = useState<Set<string>>(new Set());
+  // Task-189 slice 4: the visual canvas is a second view over the SAME
+  // `edges` array as the form-list editor (no separate edge state — that's
+  // what keeps the two in sync). Node x/y is purely a view-layout concern:
+  // it is never sent to saveWorkflow/saveNewWorkflow and has no backing
+  // column, so it can't violate the "node data lives only in
+  // step_definitions" contract — it just remembers where a node box was
+  // last dragged to, keyed by `${source}:${nodeKey}`.
+  const [canvasPositions, setCanvasPositions] = useState<Record<string, { x: number; y: number }>>({});
+  const [draggingCanvasNode, setDraggingCanvasNode] = useState<{ source: "detail" | "create"; key: string } | null>(
+    null,
+  );
+  const [pendingCanvasEdgeFrom, setPendingCanvasEdgeFrom] = useState<
+    { source: "detail" | "create"; nodeId: string } | null
+  >(null);
 
   const toggleStepExpanded = (key: string) => {
     setExpandedStepKeys((current) => {
@@ -239,6 +316,58 @@ export function WorkflowsSettings(): React.ReactElement {
       return next;
     });
   };
+
+  const clearLongPressTimer = () => {
+    if (longPressTimerRef.current !== null) {
+      window.clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  };
+
+  // Long-press (works for touch and mouse via Pointer Events) enters select
+  // mode and selects the pressed row; a short tap afterwards falls through
+  // to the row's normal click handler. `longPressFiredRef` lets that click
+  // handler tell the two apart, since a pointerup after a fired long-press
+  // still dispatches a click. If select mode is already active, long-pressing
+  // another row adds it to the existing selection instead of resetting it —
+  // once inside select mode a plain tap already toggles rows one at a time,
+  // but a user may still long-press out of habit and shouldn't lose progress.
+  const startLongPress = (kind: "workflow" | "step", id: string) => {
+    clearLongPressTimer();
+    longPressFiredRef.current = false;
+    longPressTimerRef.current = window.setTimeout(() => {
+      longPressFiredRef.current = true;
+      setBulkSelect((current) => {
+        if (current && current.kind === kind) {
+          const next = new Set(current.ids);
+          next.add(id);
+          return { ...current, ids: next };
+        }
+        return { kind, ids: new Set([id]) };
+      });
+    }, 500);
+  };
+
+  const consumeLongPressClick = () => {
+    if (!longPressFiredRef.current) return false;
+    longPressFiredRef.current = false;
+    return true;
+  };
+
+  const toggleBulkSelected = (id: string) => {
+    setBulkSelect((current) => {
+      if (!current) return current;
+      const next = new Set(current.ids);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return { ...current, ids: next };
+    });
+  };
+
+  const exitBulkSelect = () => setBulkSelect(null);
 
   const selectedWorkflow = useMemo(
     () => workflows.find((item) => item.id === selectedWorkflowId) ?? null,
@@ -294,6 +423,12 @@ export function WorkflowsSettings(): React.ReactElement {
           ? stepType
           : nextStepDefinitions[0]?.stepType ?? "";
 
+      const builtinWorkflows = nextWorkflows.filter((workflow) => workflow.isBuiltin);
+      const builtinStepLists = await Promise.all(
+        builtinWorkflows.map((workflow) => admin.workflows.listWorkflowSteps(workflow.id)),
+      );
+      const nextStepTypesUsedByBuiltin = new Set(builtinStepLists.flat().map((step) => step.stepType));
+
       setProjects(nextProjects);
       setWorkflows(nextWorkflows);
       setStepDefinitions(nextStepDefinitions);
@@ -301,6 +436,7 @@ export function WorkflowsSettings(): React.ReactElement {
       setArtifactDefinitions(nextArtifactDefinitions);
       setSelectedWorkflowId(resolvedWorkflowId);
       setSelectedStepType(resolvedStepType);
+      setStepTypesUsedByBuiltin(nextStepTypesUsedByBuiltin);
 
       if (!options?.preserveCreateDrafts) {
         setCreateWorkflowDraft(createEmptyWorkflowDraft(nextProjects, defaultModel));
@@ -450,14 +586,6 @@ export function WorkflowsSettings(): React.ReactElement {
       requiresApproval: true,
       createdAt: "",
       updatedAt: "",
-      nodeId: null,
-      behaviorId: null,
-      agentRef: null,
-      dependsOn: [],
-      joinMode: null,
-      cohort: null,
-      promptTemplateRef: null,
-      contextRef: null,
     };
     if (source === "detail") {
       setWorkflowSteps((current) => [...current, nextStep]);
@@ -466,11 +594,152 @@ export function WorkflowsSettings(): React.ReactElement {
     }
   };
 
+  // Task-189: an edge's from/to references a node's `nodeId` (the flow-graph
+  // identity resolved onto FlowNode.ID at runtime — recordFromWorkflowRow in
+  // supabase_workflow_flow_store.go only sets it when the step_definition's
+  // node_id is non-empty, with NO fallback to step_type), not the step's
+  // `stepType`. A step whose step_definition has no Node ID set can't be
+  // referenced by an edge yet; it's filtered out here and flagged by the
+  // edges-editor validation (Task-189 slice 3) instead of silently producing
+  // an edge that can never resolve to a real node.
+  const workflowEdgeNodeOptions = (steps: WorkflowStep[]): string[] => {
+    const ids = steps
+      .map((step) => stepDefinitions.find((definition) => definition.stepType === step.stepType)?.nodeId)
+      .filter((id): id is string => Boolean(id));
+    return Array.from(new Set(ids));
+  };
+
+  // Task-189: the flow graph's edges (Workflow.edges/edges_json) were already
+  // round-tripped by saveWorkflow/saveNewWorkflow (BUG-NOTE-CP42 #14 passes
+  // them through unchanged), but no UI control ever wrote to them — a new
+  // workflow always saved with edges: [] and could never advance past its
+  // entry node. These three helpers are the edges-editor equivalent of
+  // addWorkflowStep/updateWorkflowStep/removeWorkflowStep above.
+  const addWorkflowEdge = (source: "detail" | "create") => {
+    const nodeOptions = workflowEdgeNodeOptions(source === "detail" ? workflowSteps : createWorkflowSteps);
+    const nextEdge: WorkflowFlowEdge = {
+      from: nodeOptions[0] ?? "",
+      to: nodeOptions[1] ?? FLOW_EDGE_TERMINALS[0],
+      when: "done",
+      kind: "forward",
+    };
+    if (source === "detail") {
+      setWorkflowDraft((current) => (current ? { ...current, edges: [...current.edges, nextEdge] } : current));
+    } else {
+      setCreateWorkflowDraft((current) => ({ ...current, edges: [...current.edges, nextEdge] }));
+    }
+  };
+
+  const updateWorkflowEdge = (
+    index: number,
+    patch: Partial<WorkflowFlowEdge>,
+    source: "detail" | "create",
+  ) => {
+    const apply = (edges: WorkflowFlowEdge[]) =>
+      edges.map((edge, currentIndex) => (currentIndex === index ? { ...edge, ...patch } : edge));
+    if (source === "detail") {
+      setWorkflowDraft((current) => (current ? { ...current, edges: apply(current.edges) } : current));
+    } else {
+      setCreateWorkflowDraft((current) => ({ ...current, edges: apply(current.edges) }));
+    }
+  };
+
+  const removeWorkflowEdge = (index: number, source: "detail" | "create") => {
+    const apply = (edges: WorkflowFlowEdge[]) => edges.filter((_, currentIndex) => currentIndex !== index);
+    if (source === "detail") {
+      setWorkflowDraft((current) => (current ? { ...current, edges: apply(current.edges) } : current));
+    } else {
+      setCreateWorkflowDraft((current) => ({ ...current, edges: apply(current.edges) }));
+    }
+  };
+
+  // Task-189 slice 4: canvas equivalent of addWorkflowEdge, but with an
+  // explicit from/to (the two nodes the user connected by clicking their
+  // connector dots in sequence) instead of defaulting to the first two node
+  // options.
+  const addWorkflowEdgeBetween = (from: string, to: string, source: "detail" | "create") => {
+    const nextEdge: WorkflowFlowEdge = { from, to, when: "done", kind: "forward" };
+    if (source === "detail") {
+      setWorkflowDraft((current) => (current ? { ...current, edges: [...current.edges, nextEdge] } : current));
+    } else {
+      setCreateWorkflowDraft((current) => ({ ...current, edges: [...current.edges, nextEdge] }));
+    }
+  };
+
+  // Default grid layout for any canvas node that hasn't been manually
+  // dragged yet, keyed by `${source}:${nodeKey}` so detail/create canvases
+  // (and re-renders after adding/removing nodes) never collide.
+  const canvasLayoutFor = (
+    source: "detail" | "create",
+    keys: string[],
+  ): Record<string, { x: number; y: number }> => {
+    const layout: Record<string, { x: number; y: number }> = {};
+    keys.forEach((key, index) => {
+      const stored = canvasPositions[`${source}:${key}`];
+      if (stored) {
+        layout[key] = stored;
+        return;
+      }
+      const column = index % 3;
+      const row = Math.floor(index / 3);
+      layout[key] = { x: 70 + column * 190, y: 50 + row * 110 };
+    });
+    return layout;
+  };
+
+  const handleCanvasNodePointerDown = (source: "detail" | "create", key: string) => (
+    event: React.PointerEvent<HTMLDivElement>,
+  ) => {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setDraggingCanvasNode({ source, key });
+  };
+
+  const handleCanvasSurfacePointerMove = (source: "detail" | "create") => (
+    event: React.PointerEvent<HTMLDivElement>,
+  ) => {
+    if (!draggingCanvasNode || draggingCanvasNode.source !== source) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = Math.max(30, event.clientX - rect.left);
+    const y = Math.max(24, event.clientY - rect.top);
+    setCanvasPositions((current) => ({ ...current, [`${source}:${draggingCanvasNode.key}`]: { x, y } }));
+  };
+
+  const handleCanvasSurfacePointerUp = () => setDraggingCanvasNode(null);
+
+  // Clicking a node's connector dot arms a pending "from" node; clicking a
+  // second (different) node's dot completes the edge. Clicking the same
+  // node again, or starting a fresh click while a different source's canvas
+  // is armed, resets the pending state instead of connecting.
+  const handleCanvasConnectorClick = (source: "detail" | "create", key: string) => {
+    if (!pendingCanvasEdgeFrom || pendingCanvasEdgeFrom.source !== source) {
+      setPendingCanvasEdgeFrom({ source, nodeId: key });
+      return;
+    }
+    if (pendingCanvasEdgeFrom.nodeId === key) {
+      setPendingCanvasEdgeFrom(null);
+      return;
+    }
+    addWorkflowEdgeBetween(pendingCanvasEdgeFrom.nodeId, key, source);
+    setPendingCanvasEdgeFrom(null);
+  };
+
   const saveWorkflow = async () => {
     if (!workflowDraft) return;
     if (!workflowDraft.modelOverride) {
       setMessage("Model is required.");
       return;
+    }
+    // Task-189 slice 3: only enforce flow-graph correctness once the user has
+    // actually started wiring edges — a plain linear/legacy workflow with no
+    // edges never intended to run as a flow-engine graph at all (it relies on
+    // order_index sequencing), so it must not be newly blocked by these checks.
+    if (workflowDraft.edges.length > 0) {
+      const issues = validateFlowGraph(workflowSteps, stepDefinitions, workflowDraft.edges);
+      if (issues.length > 0) {
+        setMessage(issues.join(" "));
+        return;
+      }
     }
     setBusy(true);
     setMessage(null);
@@ -509,6 +778,13 @@ export function WorkflowsSettings(): React.ReactElement {
     if (!createWorkflowDraft.modelOverride) {
       setMessage("Model is required.");
       return;
+    }
+    if (createWorkflowDraft.edges.length > 0) {
+      const issues = validateFlowGraph(createWorkflowSteps, stepDefinitions, createWorkflowDraft.edges);
+      if (issues.length > 0) {
+        setMessage(issues.join(" "));
+        return;
+      }
     }
     setBusy(true);
     setMessage(null);
@@ -605,6 +881,54 @@ export function WorkflowsSettings(): React.ReactElement {
     }
   };
 
+  const openDeleteWorkflowConfirm = (ids: string[], labels: string[]) => {
+    if (ids.length === 0) return;
+    setDeleteTarget({ kind: "workflow", ids, labels });
+    setDeleteConfirmationText("");
+  };
+
+  // Steps have no FK-cascade from workflow_steps back to step_definitions
+  // (BUG-236: a workflow's step list is a pure relation), so deleting a step
+  // definition that's still referenced by a workflow would leave that
+  // workflow with a dangling stepType it can never resolve at runtime. Look
+  // up every workflow currently using any of the given step types and fold
+  // them into the same confirmation so they're deleted together.
+  const openDeleteStepConfirm = async (ids: string[], labels: string[]) => {
+    if (ids.length === 0) return;
+    // A step still listed by a built-in workflow can't be deleted at all —
+    // that workflow is read-only, so there's no cascade that could clear it
+    // out first. Block before the usage lookup instead of only relying on
+    // the disabled row/button, since bulk selections can mix deletable and
+    // blocked steps.
+    const blockedIds = ids.filter((id) => stepTypesUsedByBuiltin.has(id));
+    if (blockedIds.length > 0) {
+      const blockedLabels = blockedIds.map(
+        (id) => stepDefinitions.find((step) => step.stepType === id)?.name ?? id,
+      );
+      setMessage(
+        `Can't delete ${blockedLabels.join(", ")}: still used by a built-in workflow, which can't be edited.`,
+      );
+      return;
+    }
+    setBusy(true);
+    setMessage(null);
+    try {
+      const admin = await getAdminUseCases();
+      const usages = await admin.workflows.listWorkflowsUsingSteps(ids);
+      const cascadeWorkflowIds = Array.from(new Set(usages.map((usage) => usage.workflowId)));
+      const cascadeWorkflows = cascadeWorkflowIds.map((workflowId) => ({
+        id: workflowId,
+        name: workflows.find((workflow) => workflow.id === workflowId)?.name ?? workflowId,
+      }));
+      setDeleteTarget({ kind: "step", ids, labels, cascadeWorkflows });
+      setDeleteConfirmationText("");
+    } catch (error) {
+      setMessage(toErrorMessage(error, "Unable to check step usage before delete."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const deleteSelected = async () => {
     if (!deleteTarget) return;
     setBusy(true);
@@ -612,17 +936,39 @@ export function WorkflowsSettings(): React.ReactElement {
     try {
       const admin = await getAdminUseCases();
       if (deleteTarget.kind === "workflow") {
-        await admin.workflows.deleteWorkflow(deleteTarget.id);
+        // Independent rows — run the deletes concurrently instead of one at
+        // a time so a bulk delete of N workflows takes roughly as long as
+        // the slowest single delete, not N times that.
+        await Promise.all(deleteTarget.ids.map((id) => admin.workflows.deleteWorkflow(id)));
         setDeleteTarget(null);
         setDeleteConfirmationText("");
+        exitBulkSelect();
         await refresh(undefined, selectedStepType);
-        setMessage("Workflow deleted.");
+        setMessage(
+          deleteTarget.ids.length > 1 ? `${deleteTarget.ids.length} workflows deleted.` : "Workflow deleted.",
+        );
       } else {
-        await admin.workflows.deleteStepDefinition(deleteTarget.id);
+        // Cascade workflows must be gone before the step definitions they
+        // reference are deleted, but within each phase the rows are
+        // independent, so fan each phase out concurrently rather than
+        // serializing every single delete.
+        await Promise.all(
+          deleteTarget.cascadeWorkflows.map((cascadeWorkflow) => admin.workflows.deleteWorkflow(cascadeWorkflow.id)),
+        );
+        await Promise.all(deleteTarget.ids.map((id) => admin.workflows.deleteStepDefinition(id)));
         setDeleteTarget(null);
         setDeleteConfirmationText("");
-        await refresh(selectedWorkflowId, undefined);
-        setMessage("Step definition deleted.");
+        exitBulkSelect();
+        await refresh(undefined, undefined);
+        const cascadeNote =
+          deleteTarget.cascadeWorkflows.length > 0
+            ? ` (also removed ${deleteTarget.cascadeWorkflows.length} workflow(s) that used it)`
+            : "";
+        setMessage(
+          (deleteTarget.ids.length > 1
+            ? `${deleteTarget.ids.length} step definitions deleted.`
+            : "Step definition deleted.") + cascadeNote,
+        );
       }
     } catch (error) {
       setMessage(toErrorMessage(error, "Unable to delete item."));
@@ -710,6 +1056,7 @@ export function WorkflowsSettings(): React.ReactElement {
             steps.map((step, index) => {
               const stepKey = `${source}:${step.id}`;
               const isExpanded = expandedStepKeys.has(stepKey);
+              const definition = stepDefinitions.find((item) => item.stepType === step.stepType);
               return (
               <div className="settings-list-item static workflow-step-card" key={`${step.stepType}-${index}`}>
                 <div className="workflow-step-card-head">
@@ -723,14 +1070,7 @@ export function WorkflowsSettings(): React.ReactElement {
                     <div>
                       <strong>
                         {index + 1}.{" "}
-                        {/* BUG-160: for a CP-42 flow-engine node, stepDefinition.name is a
-                            shared generic dispatch-category label ("Flow: Agent Delegate")
-                            identical across every step of that type — nodeId/agentRef are
-                            the actual per-node identity (BUG-155's fix, applied here too). */}
-                        {step.nodeId ||
-                          step.agentRef ||
-                          stepDefinitions.find((definition) => definition.stepType === step.stepType)?.name ||
-                          step.stepType}
+                        {definition?.nodeId || definition?.agentRef || definition?.name || step.stepType}
                       </strong>
                       <span>{step.stepType}</span>
                     </div>
@@ -800,96 +1140,6 @@ export function WorkflowsSettings(): React.ReactElement {
                     <span>Requires approval</span>
                   </label>
                 </div>
-                {/* Flow-engine node attrs (CP-42/Task-175/179): behavior/agent
-                    binding and graph position for this step, when it participates
-                    in a generic flow rather than (or in addition to) the legacy
-                    step-type/model/approval fields above. Optional for a plain
-                    workflow step — leave blank if this step is not part of a flow
-                    graph. */}
-                <div className="settings-grid workflow-step-grid workflow-step-flow-grid">
-                  <label className="settings-field">
-                    <span>Node ID</span>
-                    <input
-                      disabled={readOnly}
-                      onChange={(event) =>
-                        source === "detail"
-                          ? updateWorkflowStep(index, { nodeId: event.target.value || null })
-                          : updateCreateWorkflowStep(index, { nodeId: event.target.value || null })
-                      }
-                      placeholder="e.g. coder"
-                      value={step.nodeId ?? ""}
-                    />
-                  </label>
-                  <label className="settings-field">
-                    <span>Behavior ID</span>
-                    <input
-                      disabled={readOnly}
-                      onChange={(event) =>
-                        source === "detail"
-                          ? updateWorkflowStep(index, { behaviorId: event.target.value || null })
-                          : updateCreateWorkflowStep(index, { behaviorId: event.target.value || null })
-                      }
-                      placeholder="e.g. agent.delegate"
-                      value={step.behaviorId ?? ""}
-                    />
-                  </label>
-                  <label className="settings-field">
-                    <span>Agent ref</span>
-                    <input
-                      disabled={readOnly}
-                      onChange={(event) =>
-                        source === "detail"
-                          ? updateWorkflowStep(index, { agentRef: event.target.value || null })
-                          : updateCreateWorkflowStep(index, { agentRef: event.target.value || null })
-                      }
-                      placeholder="e.g. agents/coder.md"
-                      value={step.agentRef ?? ""}
-                    />
-                  </label>
-                  <label className="settings-field">
-                    <span>Depends on</span>
-                    <input
-                      disabled={readOnly}
-                      onChange={(event) => {
-                        const dependsOn = event.target.value
-                          .split(",")
-                          .map((item) => item.trim())
-                          .filter(Boolean);
-                        return source === "detail"
-                          ? updateWorkflowStep(index, { dependsOn })
-                          : updateCreateWorkflowStep(index, { dependsOn });
-                      }}
-                      placeholder="node ids, comma-separated"
-                      value={step.dependsOn.join(", ")}
-                    />
-                  </label>
-                  <label className="settings-field">
-                    <span>Join mode</span>
-                    <input
-                      disabled={readOnly}
-                      onChange={(event) =>
-                        source === "detail"
-                          ? updateWorkflowStep(index, { joinMode: event.target.value || null })
-                          : updateCreateWorkflowStep(index, { joinMode: event.target.value || null })
-                      }
-                      placeholder="all | any | quorum(n)"
-                      value={step.joinMode ?? ""}
-                    />
-                  </label>
-                  <label className="settings-field">
-                    <span>Cohort</span>
-                    <input
-                      disabled={readOnly}
-                      onChange={(event) =>
-                        source === "detail"
-                          ? updateWorkflowStep(index, { cohort: event.target.value || null })
-                          : updateCreateWorkflowStep(index, { cohort: event.target.value || null })
-                      }
-                      placeholder="optional join-group key"
-                      value={step.cohort ?? ""}
-                    />
-                  </label>
-                </div>
                 </>
                 ) : null}
               </div>
@@ -901,12 +1151,264 @@ export function WorkflowsSettings(): React.ReactElement {
     );
   };
 
+  // Task-189 slice 2: the form-list edge editor. `steps` is this workflow's
+  // OWN step list (workflowSteps for "detail", createWorkflowSteps for
+  // "create") so the from/to pickers only ever offer nodes that are actually
+  // part of this flow. A canvas-based graph editor (Task-189 slice 4) will be
+  // added as a second, synchronized view over the same `edges` array — not a
+  // replacement for this one.
+  const renderWorkflowEdgesEditor = (
+    edges: WorkflowFlowEdge[],
+    steps: WorkflowStep[],
+    source: "detail" | "create",
+  ) => {
+    const readOnly = source === "detail" && selectedWorkflow?.editable === false;
+    const nodeOptions = workflowEdgeNodeOptions(steps);
+    const toOptions = [...nodeOptions, ...FLOW_EDGE_TERMINALS];
+    const nodesMissingId = steps.filter(
+      (step) => !stepDefinitions.find((definition) => definition.stepType === step.stepType)?.nodeId,
+    );
+
+    return (
+      <div className="settings-subpanel workflow-edges-panel">
+        <div className="project-panel-head">
+          <div>
+            <strong>Flow Edges</strong>
+            <p className="project-muted-copy">
+              {readOnly
+                ? "Read-only: clone this workflow to edit its edges."
+                : "Wire the flow graph: which node follows which, and under what outcome. " +
+                  "Without at least one edge, this flow's steps run in isolation and the " +
+                  "engine cannot advance past the entry node."}
+            </p>
+          </div>
+        </div>
+        {nodesMissingId.length > 0 ? (
+          <div className="settings-warning">
+            {nodesMissingId.length} step(s) have no Node ID set on their step type — set a Node
+            ID (in the step type's catalog entry) before they can be used as an edge endpoint:{" "}
+            {nodesMissingId.map((step) => step.stepType).join(", ")}
+          </div>
+        ) : null}
+        <div className="settings-list">
+          {edges.length === 0 ? (
+            <div className="settings-empty">No edges yet — add one below.</div>
+          ) : (
+            edges.map((edge, index) => (
+              <div className="settings-list-item static workflow-edge-row" key={index}>
+                <label className="settings-field">
+                  <span>From</span>
+                  <select
+                    disabled={readOnly}
+                    onChange={(event) => updateWorkflowEdge(index, { from: event.target.value }, source)}
+                    value={edge.from}
+                  >
+                    <option value="">(select a node)</option>
+                    {nodeOptions.map((id) => (
+                      <option key={id} value={id}>
+                        {id}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="settings-field">
+                  <span>To</span>
+                  <select
+                    disabled={readOnly}
+                    onChange={(event) => updateWorkflowEdge(index, { to: event.target.value }, source)}
+                    value={edge.to}
+                  >
+                    <option value="">(select a node or terminal)</option>
+                    {toOptions.map((id) => (
+                      <option key={id} value={id}>
+                        {FLOW_EDGE_TERMINALS.includes(id) ? `(terminal) ${id}` : id}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="settings-field">
+                  <span>When (outcome status)</span>
+                  <input
+                    disabled={readOnly}
+                    list="workflow-edge-when-suggestions"
+                    onChange={(event) => updateWorkflowEdge(index, { when: event.target.value }, source)}
+                    placeholder="done | continue | escalate"
+                    value={edge.when}
+                  />
+                </label>
+                <label className="settings-field">
+                  <span>Kind</span>
+                  <select
+                    disabled={readOnly}
+                    onChange={(event) => updateWorkflowEdge(index, { kind: event.target.value }, source)}
+                    value={edge.kind}
+                  >
+                    <option value="forward">Forward</option>
+                    <option value="back">Back (loop)</option>
+                  </select>
+                </label>
+                <div className="settings-inline-actions">
+                  <button
+                    className="secondary-btn"
+                    disabled={readOnly}
+                    onClick={() => removeWorkflowEdge(index, source)}
+                    type="button"
+                  >
+                    Remove
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+        <datalist id="workflow-edge-when-suggestions">
+          <option value="done" />
+          <option value="continue" />
+          <option value="escalate" />
+        </datalist>
+        <button
+          className="secondary-btn"
+          disabled={readOnly || nodeOptions.length === 0}
+          onClick={() => addWorkflowEdge(source)}
+          type="button"
+        >
+          + Add Edge
+        </button>
+      </div>
+    );
+  };
+
+  // Task-189 slice 4: the visual canvas. It reads/writes the SAME
+  // `edges` array as renderWorkflowEdgesEditor above (passed in verbatim) —
+  // there is no separate canvas-edge state, so editing an edge's "when" in
+  // the form-list is reflected here immediately and vice versa. Only node
+  // *position* is canvas-local view state (canvasPositions), never
+  // persisted.
+  const renderWorkflowFlowCanvas = (
+    edges: WorkflowFlowEdge[],
+    steps: WorkflowStep[],
+    source: "detail" | "create",
+  ) => {
+    const readOnly = source === "detail" && selectedWorkflow?.editable === false;
+    const nodeOptions = workflowEdgeNodeOptions(steps);
+    const nodeKeys = [...nodeOptions, ...FLOW_EDGE_TERMINALS];
+    const layout = canvasLayoutFor(source, nodeKeys);
+    const pending = pendingCanvasEdgeFrom?.source === source ? pendingCanvasEdgeFrom : null;
+
+    return (
+      <div className="settings-subpanel workflow-canvas-panel">
+        <div className="project-panel-head">
+          <div>
+            <strong>Flow Canvas</strong>
+            <p className="project-muted-copy">
+              Drag a node to arrange it. Click a node's dot, then another node's dot, to draw an
+              edge between them — it's added to the Flow Edges list above.
+            </p>
+          </div>
+        </div>
+        {pending ? (
+          <div className="settings-warning">
+            Drawing an edge from &quot;{pending.nodeId}&quot; — click another node&apos;s dot to
+            connect it, or{" "}
+            <button
+              className="link-btn"
+              onClick={() => setPendingCanvasEdgeFrom(null)}
+              type="button"
+            >
+              cancel
+            </button>
+            .
+          </div>
+        ) : null}
+        {nodeOptions.length === 0 ? (
+          <div className="settings-empty">
+            No nodes with a Node ID yet — set a Node ID on a step type before it can appear here.
+          </div>
+        ) : (
+          <div
+            className="workflow-canvas-surface"
+            onPointerLeave={handleCanvasSurfacePointerUp}
+            onPointerMove={handleCanvasSurfacePointerMove(source)}
+            onPointerUp={handleCanvasSurfacePointerUp}
+          >
+            <svg className="workflow-canvas-edges">
+              <defs>
+                <marker
+                  id={`workflow-canvas-arrow-${source}`}
+                  markerHeight="8"
+                  markerWidth="8"
+                  orient="auto"
+                  refX="7"
+                  refY="4"
+                >
+                  <path className="workflow-canvas-arrowhead" d="M0,0 L8,4 L0,8 z" />
+                </marker>
+              </defs>
+              {edges.map((edge, index) => {
+                const from = layout[edge.from];
+                const to = layout[edge.to];
+                if (!from || !to) return null;
+                return (
+                  <g key={index}>
+                    <line
+                      className={edge.kind === "back" ? "workflow-canvas-edge back" : "workflow-canvas-edge"}
+                      markerEnd={`url(#workflow-canvas-arrow-${source})`}
+                      x1={from.x}
+                      y1={from.y}
+                      x2={to.x}
+                      y2={to.y}
+                    />
+                    <text className="workflow-canvas-edge-label" x={(from.x + to.x) / 2} y={(from.y + to.y) / 2 - 6}>
+                      {edge.when}
+                    </text>
+                  </g>
+                );
+              })}
+            </svg>
+            {nodeKeys.map((key) => {
+              const isTerminal = FLOW_EDGE_TERMINALS.includes(key);
+              const position = layout[key];
+              return (
+                <div
+                  className={[
+                    "workflow-canvas-node",
+                    isTerminal ? "terminal" : "",
+                    pending?.nodeId === key ? "connecting" : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
+                  key={key}
+                  onPointerDown={handleCanvasNodePointerDown(source, key)}
+                  style={{ left: position.x, top: position.y }}
+                >
+                  <span>{key}</span>
+                  <button
+                    className="workflow-canvas-connector"
+                    disabled={readOnly}
+                    onClick={() => handleCanvasConnectorClick(source, key)}
+                    title="Click, then click another node, to draw an edge"
+                    type="button"
+                  >
+                    ●
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const renderStepDefinitionForm = (
     draft: StepDefinition,
     onChange: (next: StepDefinition) => void,
     mode: "detail" | "create",
   ) => {
     const requiredSkillsText = draft.requiredSkills.join(", ");
+    const dependsOnText = (draft.dependsOn ?? []).join(", ");
+    const inputsText = stringMapToText(draft.inputs);
+    const outputsText = stringMapToText(draft.outputs);
     return (
       <div className="settings-grid">
         <label className="settings-field">
@@ -1069,6 +1571,112 @@ export function WorkflowsSettings(): React.ReactElement {
             <option value="standard">standard</option>
             <option value="autonomous">autonomous</option>
           </select>
+        </label>
+        <label className="settings-field">
+          <span>Node ID</span>
+          <input
+            onChange={(event) => onChange({ ...draft, nodeId: event.target.value || null })}
+            placeholder="e.g. coder"
+            value={draft.nodeId ?? ""}
+          />
+        </label>
+        <label className="settings-field">
+          <span>Behavior ID</span>
+          <select
+            onChange={(event) => onChange({ ...draft, behaviorId: event.target.value || null })}
+            value={draft.behaviorId ?? ""}
+          >
+            <option value="">(none / inherit from step type)</option>
+            {FLOW_BEHAVIOR_OPTIONS.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="settings-field">
+          <span>Agent ref</span>
+          <input
+            onChange={(event) => onChange({ ...draft, agentRef: event.target.value || null })}
+            placeholder="e.g. agents/coder.md"
+            value={draft.agentRef ?? ""}
+          />
+        </label>
+        <label className="settings-field">
+          <span>Lifecycle</span>
+          <select
+            onChange={(event) => onChange({ ...draft, nodeLifecycle: event.target.value || null })}
+            value={draft.nodeLifecycle ?? ""}
+          >
+            <option value="">Default (reinvoke)</option>
+            <option value="reinvoke">Reinvoke</option>
+            <option value="spawn">Spawn new</option>
+            <option value="once">Once</option>
+          </select>
+        </label>
+        <label className="settings-field">
+          <span>Depends on</span>
+          <input
+            onChange={(event) =>
+              onChange({
+                ...draft,
+                dependsOn: event.target.value
+                  .split(",")
+                  .map((item) => item.trim())
+                  .filter(Boolean),
+              })
+            }
+            placeholder="node ids, comma-separated"
+            value={dependsOnText}
+          />
+        </label>
+        <label className="settings-field">
+          <span>Join mode</span>
+          <input
+            onChange={(event) => onChange({ ...draft, joinMode: event.target.value || null })}
+            placeholder="all | any | quorum(n)"
+            value={draft.joinMode ?? ""}
+          />
+        </label>
+        <label className="settings-field">
+          <span>Cohort</span>
+          <input
+            onChange={(event) => onChange({ ...draft, cohort: event.target.value || null })}
+            placeholder="optional join-group key"
+            value={draft.cohort ?? ""}
+          />
+        </label>
+        <label className="settings-field">
+          <span>Prompt template ref</span>
+          <input
+            onChange={(event) => onChange({ ...draft, promptTemplateRef: event.target.value || null })}
+            placeholder="prompts/example.md"
+            value={draft.promptTemplateRef ?? ""}
+          />
+        </label>
+        <label className="settings-field">
+          <span>Context ref</span>
+          <input
+            onChange={(event) => onChange({ ...draft, contextRef: event.target.value || null })}
+            placeholder="contexts/example.yaml"
+            value={draft.contextRef ?? ""}
+          />
+        </label>
+        <label className="settings-field">
+          <span>Inputs</span>
+          <input
+            onChange={(event) => onChange({ ...draft, inputs: textToStringMap(event.target.value) })}
+            placeholder="main_context=flow_context_package.v1"
+            value={inputsText}
+          />
+        </label>
+        <label className="settings-field">
+          <span>Outputs</span>
+          <input
+            onChange={(event) => onChange({ ...draft, outputs: textToStringMap(event.target.value) })}
+            placeholder="main_context=flow_context_package.v1"
+            value={outputsText}
+          />
         </label>
         <label className="settings-checkbox settings-field-full">
           <input
@@ -1293,14 +1901,20 @@ export function WorkflowsSettings(): React.ReactElement {
         <div className="header-tabs">
           <button
             className={`header-tab ${tab === "workflows" ? "active" : ""}`}
-            onClick={() => setTab("workflows")}
+            onClick={() => {
+              setTab("workflows");
+              exitBulkSelect();
+            }}
             type="button"
           >
             Workflows
           </button>
           <button
             className={`header-tab ${tab === "steps" ? "active" : ""}`}
-            onClick={() => setTab("steps")}
+            onClick={() => {
+              setTab("steps");
+              exitBulkSelect();
+            }}
             type="button"
           >
             Steps
@@ -1436,6 +2050,36 @@ export function WorkflowsSettings(): React.ReactElement {
                   />
                   <span>YOLO mode</span>
                 </label>
+                <label className="settings-field">
+                  <span>Cap (max rounds before blocking)</span>
+                  <input
+                    min={1}
+                    onChange={(event) =>
+                      setCreateWorkflowDraft((current) => ({
+                        ...current,
+                        policyCap: event.target.value ? Number(event.target.value) : null,
+                      }))
+                    }
+                    placeholder="3 (default)"
+                    type="number"
+                    value={createWorkflowDraft.policyCap ?? ""}
+                  />
+                </label>
+                <label className="settings-field">
+                  <span>Extend by (rounds added when a cap is extended)</span>
+                  <input
+                    min={1}
+                    onChange={(event) =>
+                      setCreateWorkflowDraft((current) => ({
+                        ...current,
+                        policyExtendBy: event.target.value ? Number(event.target.value) : null,
+                      }))
+                    }
+                    placeholder="2 (default)"
+                    type="number"
+                    value={createWorkflowDraft.policyExtendBy ?? ""}
+                  />
+                </label>
               </div>
             </div>
             {renderWorkflowStepsEditor(
@@ -1444,6 +2088,8 @@ export function WorkflowsSettings(): React.ReactElement {
               createWorkflowStepType,
               setCreateWorkflowStepType,
             )}
+            {renderWorkflowEdgesEditor(createWorkflowDraft.edges, createWorkflowSteps, "create")}
+            {renderWorkflowFlowCanvas(createWorkflowDraft.edges, createWorkflowSteps, "create")}
           </div>
         ) : (
           <div className="project-layout">
@@ -1465,35 +2111,103 @@ export function WorkflowsSettings(): React.ReactElement {
                   +
                 </button>
               </div>
+              {bulkSelect?.kind === "workflow" ? (
+                <div className="project-bulk-bar">
+                  <span>{bulkSelect.ids.size} selected</span>
+                  <div className="settings-inline-actions">
+                    <button className="secondary-btn" onClick={exitBulkSelect} type="button">
+                      Cancel
+                    </button>
+                    <button
+                      className="secondary-btn danger-btn"
+                      disabled={bulkSelect.ids.size === 0}
+                      onClick={() => {
+                        const ids = Array.from(bulkSelect.ids);
+                        openDeleteWorkflowConfirm(
+                          ids,
+                          ids.map((id) => workflows.find((workflow) => workflow.id === id)?.name ?? id),
+                        );
+                      }}
+                      type="button"
+                    >
+                      Delete {bulkSelect.ids.size}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
               <div className="settings-list">
                 {workflows.length === 0 ? (
                   <div className="settings-empty">No workflows found. Use the + button to create one.</div>
                 ) : (
-                  workflows.map((workflow) => (
-                    <button
-                      className={`settings-list-item ${workflow.id === selectedWorkflowId ? "active" : ""}`}
-                      key={workflow.id}
-                      onClick={() => {
-                        void refresh(workflow.id, selectedStepType, { preserveCreateDrafts: true });
-                        setMessage(null);
-                      }}
-                      type="button"
-                    >
-                      <div>
-                        <strong>
-                          {workflow.name}
-                          {workflow.isBuiltin ? <span className="settings-badge">Built-in</span> : null}
-                        </strong>
-                        <span>
-                          {workflow.projectId
-                            ? projects.find((project) => project.id === workflow.projectId)?.name ??
-                              workflow.projectId
-                            : "Workspace global"}{" "}
-                          / {formatTimestamp(workflow.updatedAt)}
-                        </span>
-                      </div>
-                    </button>
-                  ))
+                  workflows.map((workflow) => {
+                    const bulkModeActive = bulkSelect?.kind === "workflow";
+                    const isBulkSelected = bulkModeActive && bulkSelect.ids.has(workflow.id);
+                    // Built-ins can't be deleted (Delete is disabled for them
+                    // below too), so long-press on one is a no-op instead of
+                    // starting a select mode that can only ever fail to delete.
+                    const longPressSelectable = workflow.editable !== false;
+                    return (
+                      <button
+                        className={`settings-list-item ${
+                          workflow.id === selectedWorkflowId && !bulkModeActive ? "active" : ""
+                        } ${isBulkSelected ? "bulk-selected" : ""} ${bulkModeActive ? "checkable" : ""} ${
+                          !longPressSelectable ? "not-deletable" : ""
+                        }`}
+                        key={workflow.id}
+                        onClick={() => {
+                          if (consumeLongPressClick()) return;
+                          if (bulkModeActive) {
+                            if (longPressSelectable) toggleBulkSelected(workflow.id);
+                            return;
+                          }
+                          void refresh(workflow.id, selectedStepType, { preserveCreateDrafts: true });
+                          setMessage(null);
+                        }}
+                        onPointerCancel={clearLongPressTimer}
+                        onPointerDown={() => {
+                          if (longPressSelectable) startLongPress("workflow", workflow.id);
+                        }}
+                        onPointerLeave={clearLongPressTimer}
+                        onPointerUp={clearLongPressTimer}
+                        title={longPressSelectable ? undefined : "Built-in workflows can't be deleted."}
+                        type="button"
+                      >
+                        {bulkModeActive ? (
+                          <input
+                            aria-hidden="true"
+                            checked={isBulkSelected}
+                            className="settings-bulk-checkbox"
+                            disabled={!longPressSelectable}
+                            readOnly
+                            tabIndex={-1}
+                            type="checkbox"
+                          />
+                        ) : null}
+                        <div>
+                          <strong>
+                            {workflow.name}
+                            {workflow.isBuiltin ? <span className="settings-badge">Built-in</span> : null}
+                          </strong>
+                          <span>
+                            {workflow.projectId
+                              ? projects.find((project) => project.id === workflow.projectId)?.name ??
+                                workflow.projectId
+                              : "Workspace global"}{" "}
+                            / {formatTimestamp(workflow.updatedAt)}
+                          </span>
+                          {workflow.isBuiltin ? (
+                            <span className="settings-list-item-meta">
+                              {workflow.packId ?? "unknown pack"}
+                              {workflow.packVersion ? ` v${workflow.packVersion}` : ""}
+                              {workflow.selectableIn.length > 0
+                                ? ` · selectable in: ${workflow.selectableIn.join(", ")}`
+                                : ""}
+                            </span>
+                          ) : null}
+                        </div>
+                      </button>
+                    );
+                  })
                 )}
               </div>
             </aside>
@@ -1514,6 +2228,14 @@ export function WorkflowsSettings(): React.ReactElement {
                             ? "This is a built-in template and cannot be edited directly. Clone it to make changes."
                             : "Edit definition fields here. Save only becomes active after a change."}
                         </p>
+                        {selectedWorkflow?.isBuiltin ? (
+                          <p className="project-muted-copy settings-list-item-meta">
+                            Pack: {selectedWorkflow.packId ?? "unknown"}
+                            {selectedWorkflow.packVersion ? ` v${selectedWorkflow.packVersion}` : ""} · Selectable
+                            in: {selectedWorkflow.selectableIn.length > 0 ? selectedWorkflow.selectableIn.join(", ") : "none"}
+                            {selectedWorkflow.chatBaseline ? " (chat baseline, always on)" : ""}
+                          </p>
+                        ) : null}
                       </div>
                       <div className="settings-inline-actions">
                         {selectedWorkflow?.cloneable !== false ? (
@@ -1528,21 +2250,24 @@ export function WorkflowsSettings(): React.ReactElement {
                             Clone
                           </button>
                         ) : null}
-                        {selectedWorkflow?.editable !== false ? (
-                          <button
-                            className="secondary-btn"
-                            onClick={() =>
-                              setDeleteTarget({
-                                kind: "workflow",
-                                id: selectedWorkflowId,
-                                label: workflowDraft.name || "this workflow",
-                              })
-                            }
-                            type="button"
-                          >
-                            Delete
-                          </button>
-                        ) : null}
+                        <button
+                          className="secondary-btn"
+                          disabled={selectedWorkflow?.editable === false}
+                          onClick={() =>
+                            openDeleteWorkflowConfirm(
+                              [selectedWorkflowId],
+                              [workflowDraft.name || "this workflow"],
+                            )
+                          }
+                          title={
+                            selectedWorkflow?.editable === false
+                              ? "Built-in workflows can't be deleted."
+                              : undefined
+                          }
+                          type="button"
+                        >
+                          Delete
+                        </button>
                         <button
                           className="primary-btn"
                           disabled={busy || !workflowDirty}
@@ -1652,6 +2377,43 @@ export function WorkflowsSettings(): React.ReactElement {
                         />
                         <span>YOLO mode</span>
                       </label>
+                      <label className="settings-field">
+                        <span>Cap (max rounds before blocking)</span>
+                        <input
+                          disabled={workflowDetailReadOnly}
+                          min={1}
+                          onChange={(event) =>
+                            setWorkflowDraft((current) =>
+                              current
+                                ? { ...current, policyCap: event.target.value ? Number(event.target.value) : null }
+                                : current,
+                            )
+                          }
+                          placeholder="3 (default)"
+                          type="number"
+                          value={workflowDraft.policyCap ?? ""}
+                        />
+                      </label>
+                      <label className="settings-field">
+                        <span>Extend by (rounds added when a cap is extended)</span>
+                        <input
+                          disabled={workflowDetailReadOnly}
+                          min={1}
+                          onChange={(event) =>
+                            setWorkflowDraft((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    policyExtendBy: event.target.value ? Number(event.target.value) : null,
+                                  }
+                                : current,
+                            )
+                          }
+                          placeholder="2 (default)"
+                          type="number"
+                          value={workflowDraft.policyExtendBy ?? ""}
+                        />
+                      </label>
                     </div>
                   </div>
                     {renderWorkflowStepsEditor(
@@ -1660,6 +2422,8 @@ export function WorkflowsSettings(): React.ReactElement {
                     detailWorkflowStepType,
                     setDetailWorkflowStepType,
                   )}
+                  {renderWorkflowEdgesEditor(workflowDraft.edges, workflowSteps, "detail")}
+                  {renderWorkflowFlowCanvas(workflowDraft.edges, workflowSteps, "detail")}
                 </>
               ) : (
                 <div className="settings-subpanel">
@@ -1723,28 +2487,87 @@ export function WorkflowsSettings(): React.ReactElement {
                 +
               </button>
             </div>
+            {bulkSelect?.kind === "step" ? (
+              <div className="project-bulk-bar">
+                <span>{bulkSelect.ids.size} selected</span>
+                <div className="settings-inline-actions">
+                  <button className="secondary-btn" onClick={exitBulkSelect} type="button">
+                    Cancel
+                  </button>
+                  <button
+                    className="secondary-btn danger-btn"
+                    disabled={bulkSelect.ids.size === 0}
+                    onClick={() => {
+                      const ids = Array.from(bulkSelect.ids);
+                      void openDeleteStepConfirm(
+                        ids,
+                        ids.map((id) => stepDefinitions.find((step) => step.stepType === id)?.name ?? id),
+                      );
+                    }}
+                    type="button"
+                  >
+                    Delete {bulkSelect.ids.size}
+                  </button>
+                </div>
+              </div>
+            ) : null}
             <div className="settings-list">
               {stepDefinitions.length === 0 ? (
                 <div className="settings-empty">No step definitions found. Use the + button to create one.</div>
               ) : (
-                stepDefinitions.map((step) => (
-                  <button
-                    className={`settings-list-item ${step.stepType === selectedStepType ? "active" : ""}`}
-                    key={step.stepType}
-                    onClick={() => {
-                      void refresh(selectedWorkflowId, step.stepType, { preserveCreateDrafts: true });
-                      setMessage(null);
-                    }}
-                    type="button"
-                  >
-                    <div>
-                      <strong>{step.name}</strong>
-                      <span>
-                        {step.stepType} / {step.model}
-                      </span>
-                    </div>
-                  </button>
-                ))
+                stepDefinitions.map((step) => {
+                  const bulkModeActive = bulkSelect?.kind === "step";
+                  const isBulkSelected = bulkModeActive && bulkSelect.ids.has(step.stepType);
+                  // A step still listed by a built-in workflow can't be
+                  // deleted (that workflow is read-only), so it can't be
+                  // long-pressed into a select mode that can only fail.
+                  const longPressSelectable = !stepTypesUsedByBuiltin.has(step.stepType);
+                  return (
+                    <button
+                      className={`settings-list-item ${
+                        step.stepType === selectedStepType && !bulkModeActive ? "active" : ""
+                      } ${isBulkSelected ? "bulk-selected" : ""} ${bulkModeActive ? "checkable" : ""} ${
+                        !longPressSelectable ? "not-deletable" : ""
+                      }`}
+                      key={step.stepType}
+                      onClick={() => {
+                        if (consumeLongPressClick()) return;
+                        if (bulkModeActive) {
+                          if (longPressSelectable) toggleBulkSelected(step.stepType);
+                          return;
+                        }
+                        void refresh(selectedWorkflowId, step.stepType, { preserveCreateDrafts: true });
+                        setMessage(null);
+                      }}
+                      onPointerCancel={clearLongPressTimer}
+                      onPointerDown={() => {
+                        if (longPressSelectable) startLongPress("step", step.stepType);
+                      }}
+                      onPointerLeave={clearLongPressTimer}
+                      onPointerUp={clearLongPressTimer}
+                      title={longPressSelectable ? undefined : "Used by a built-in workflow — can't be deleted."}
+                      type="button"
+                    >
+                      {bulkModeActive ? (
+                        <input
+                          aria-hidden="true"
+                          checked={isBulkSelected}
+                          className="settings-bulk-checkbox"
+                          disabled={!longPressSelectable}
+                          readOnly
+                          tabIndex={-1}
+                          type="checkbox"
+                        />
+                      ) : null}
+                      <div>
+                        <strong>{step.name}</strong>
+                        <span>
+                          {step.stepType} / {step.model}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })
               )}
             </div>
           </aside>
@@ -1763,12 +2586,14 @@ export function WorkflowsSettings(): React.ReactElement {
                   <div className="settings-inline-actions">
                     <button
                       className="secondary-btn"
+                      disabled={stepTypesUsedByBuiltin.has(stepDraft.stepType)}
                       onClick={() =>
-                        setDeleteTarget({
-                          kind: "step",
-                          id: stepDraft.stepType,
-                          label: stepDraft.name || stepDraft.stepType,
-                        })
+                        void openDeleteStepConfirm([stepDraft.stepType], [stepDraft.name || stepDraft.stepType])
+                      }
+                      title={
+                        stepTypesUsedByBuiltin.has(stepDraft.stepType)
+                          ? "Used by a built-in workflow — can't be deleted."
+                          : undefined
                       }
                       type="button"
                     >
@@ -1845,10 +2670,35 @@ export function WorkflowsSettings(): React.ReactElement {
             <div className="project-create-head">
               <div>
                 <div className="settings-eyebrow">Delete</div>
-                <h3>{deleteTarget.kind === "workflow" ? "Delete Workflow" : "Delete Step Definition"}</h3>
+                <h3>
+                  {deleteTarget.kind === "workflow"
+                    ? deleteTarget.ids.length > 1
+                      ? `Delete ${deleteTarget.ids.length} Workflows`
+                      : "Delete Workflow"
+                    : deleteTarget.ids.length > 1
+                      ? `Delete ${deleteTarget.ids.length} Step Definitions`
+                      : "Delete Step Definition"}
+                </h3>
                 <p className="project-muted-copy">
-                  Type <code>delete</code> to confirm deleting <strong>{deleteTarget.label}</strong>.
+                  Type <code>delete</code> to confirm deleting{" "}
+                  {deleteTarget.labels.length > 1 ? (
+                    <>{deleteTarget.labels.length} items</>
+                  ) : (
+                    <strong>{deleteTarget.labels[0]}</strong>
+                  )}
+                  .
                 </p>
+                {deleteTarget.labels.length > 1 ? (
+                  <p className="project-muted-copy settings-list-item-meta">{deleteTarget.labels.join(", ")}</p>
+                ) : null}
+                {deleteTarget.kind === "step" && deleteTarget.cascadeWorkflows.length > 0 ? (
+                  <div className="settings-warning">
+                    Still used by {deleteTarget.cascadeWorkflows.length} workflow
+                    {deleteTarget.cascadeWorkflows.length > 1 ? "s" : ""} — deleting{" "}
+                    {deleteTarget.ids.length > 1 ? "these steps" : "this step"} will also delete{" "}
+                    {deleteTarget.cascadeWorkflows.map((workflow) => workflow.name).join(", ")}.
+                  </div>
+                ) : null}
               </div>
             </div>
             <div className="settings-grid">
@@ -1877,7 +2727,13 @@ export function WorkflowsSettings(): React.ReactElement {
                 onClick={() => void deleteSelected()}
                 type="button"
               >
-                {deleteTarget.kind === "workflow" ? "Delete Workflow" : "Delete Step"}
+                {deleteTarget.kind === "workflow"
+                  ? deleteTarget.ids.length > 1
+                    ? `Delete ${deleteTarget.ids.length} Workflows`
+                    : "Delete Workflow"
+                  : deleteTarget.ids.length > 1
+                    ? `Delete ${deleteTarget.ids.length} Steps`
+                    : "Delete Step"}
               </button>
             </div>
           </div>

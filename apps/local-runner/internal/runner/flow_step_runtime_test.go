@@ -367,6 +367,60 @@ func TestMarkFlowRunCompleteSettlesEveryStep(t *testing.T) {
 	}
 }
 
+// TestMarkFlowRunCompleteSettlesLingeringChildAgentRun is the regression test
+// for BUG-235: markFlowRunComplete settled the flow's STEP timeline but never
+// touched a child agent RUN whose own status update never landed, so it stayed
+// "running" in the Agents panel and the main chat's inline run card even after
+// the flow that spawned it was done. Constructs a child run directly (rather
+// than driving spawnChildRun's async turn machinery, whose internal retry
+// behavior on a non-terminating adapter is orthogonal to what this test proves)
+// to deterministically simulate a lingering "running" child with no turn in
+// flight — the orphan markFlowRunComplete must now clean up.
+func TestMarkFlowRunCompleteSettlesLingeringChildAgentRun(t *testing.T) {
+	svc, _ := newTestServer(t)
+	parent, apiErr := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if apiErr != nil {
+		t.Fatalf("createRun: %v", apiErr)
+	}
+	nodes := reviewLoopTestNodes()
+	svc.mu.Lock()
+	svc.runs[parent.RunID].activeFlowNodes = nodes
+	svc.mu.Unlock()
+	svc.markFlowEngineDriven(parent.RunID)
+	svc.reseedFlowStepRuntime(parent.RunID, nodes)
+
+	childID := "run-child-lingering"
+	svc.mu.Lock()
+	svc.runs[childID] = &interactiveRun{
+		id:          childID,
+		parentRunID: parent.RunID,
+		agentName:   "reviewer_correctness",
+		role:        "reviewer",
+		label:       "reviewer_correctness",
+		status:      RunStatusRunning,
+		providerKey: ProviderKeyCodex,
+	}
+	svc.mu.Unlock()
+	svc.agentOrchestrator.registerChild(parent.RunID, childID)
+	svc.agentOrchestrator.upsertSummary(parent.RunID, AgentRunSummary{
+		RunID: childID, AgentName: "reviewer_correctness", Role: "reviewer",
+		Status: RunStatusRunning, ParentRunID: parent.RunID,
+	})
+
+	svc.markFlowRunComplete(context.Background(), parent.RunID)
+
+	svc.mu.Lock()
+	gotStatus := svc.runs[childID].status
+	svc.mu.Unlock()
+	if gotStatus != RunStatusCompleted {
+		t.Errorf("child run status after markFlowRunComplete = %q, want completed", gotStatus)
+	}
+	summary, ok := svc.agentOrchestrator.currentSummary(parent.RunID, childID)
+	if !ok || summary.Status != RunStatusCompleted {
+		t.Errorf("child summary status = %+v, want completed", summary)
+	}
+}
+
 // TestReconstructWorkflowRunRestoresStepTimeline proves the BUG-178 fix: a
 // completed flow run reopened from history after a server restart (its
 // in-memory step store now empty) rebuilds its step timeline from the persisted
@@ -441,6 +495,97 @@ func TestReconstructNonCompletedFlowRunRestoresPendingSteps(t *testing.T) {
 		if st.Status != StepStatusPending {
 			t.Errorf("step %q status = %q, want PENDING for a non-completed run", st.ID, st.Status)
 		}
+	}
+}
+
+// stepWriteBeforeEmitProbe wraps a *fakeWorkflowStore (embedded by pointer, not
+// by interface, so it still satisfies workflowRunSeeder — reseedFlowStepRuntime
+// silently no-ops against anything that doesn't) to observe, at the instant
+// hubNodeID's step is transitioned to StepStatusDone, how many "done"
+// agent_graph_updated events have already been recorded on the parent run's
+// timeline. Used by TestApplyFlowControlDoneSettlesStepsBeforeEmittingAgentGraph
+// (BUG-242) to prove step settlement happens BEFORE the desktop-facing emit,
+// not after.
+type stepWriteBeforeEmitProbe struct {
+	*fakeWorkflowStore
+	svc         *InteractiveService
+	parentRunID string
+	hubNodeID   string
+
+	sawHubDoneWrite                 bool
+	doneAgentGraphEventsAtWriteTime int
+}
+
+func (p *stepWriteBeforeEmitProbe) ApplyStepTransition(ctx context.Context, runID string, t WorkflowStepTransition) error {
+	if runID == p.parentRunID && t.StepID == p.hubNodeID && t.Patch.Status == StepStatusDone {
+		p.svc.mu.Lock()
+		count := 0
+		if rs := p.svc.runs[p.parentRunID]; rs != nil {
+			for _, ev := range rs.events {
+				if ev.Type == EventAgentGraphUpdated && ev.AgentGraphSnapshot != nil && ev.AgentGraphSnapshot.LoopState.Status == "done" {
+					count++
+				}
+			}
+		}
+		p.svc.mu.Unlock()
+		p.sawHubDoneWrite = true
+		p.doneAgentGraphEventsAtWriteTime = count
+	}
+	return p.fakeWorkflowStore.ApplyStepTransition(ctx, runID, t)
+}
+
+// TestApplyFlowControlDoneSettlesStepsBeforeEmittingAgentGraph is the
+// regression test for BUG-242 (Bug 3): the flow's "done" control result used
+// to call emitAgentGraph — which fires the agent_graph_updated SSE event the
+// desktop reacts to by refreshing its step-runtime snapshot
+// (refreshWorkflowStepRuntime) — BEFORE markFlowRunComplete settled the
+// flow's own step timeline (the hub/synthesis node -> DONE). That let the
+// desktop's refresh race ahead of the settlement and read the still-RUNNING
+// hub node; since setFlowStepStatus emits no event of its own, nothing
+// corrected the stale display until an unrelated event (e.g. a manual agent
+// focus switch) triggered another refresh. BUG-233 already fixed this exact
+// ordering for the "continue"/looping branch; this proves "done" now does the
+// same: by the time the hub node's step is actually written to DONE, no
+// "done" agent_graph_updated event has been emitted yet.
+func TestApplyFlowControlDoneSettlesStepsBeforeEmittingAgentGraph(t *testing.T) {
+	svc, _ := newTestServer(t)
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+
+	fake, ok := svc.workflowStore.(*fakeWorkflowStore)
+	if !ok {
+		t.Fatalf("newTestServer's workflowStore = %T, want *fakeWorkflowStore", svc.workflowStore)
+	}
+	probe := &stepWriteBeforeEmitProbe{fakeWorkflowStore: fake, svc: svc, parentRunID: parent.RunID, hubNodeID: "synthesis"}
+	svc.workflowStore = probe
+
+	nodes := reviewLoopTestNodes()
+	svc.mu.Lock()
+	svc.runs[parent.RunID].activeFlowNodes = nodes
+	svc.mu.Unlock()
+	svc.markFlowEngineDriven(parent.RunID)
+	svc.reseedFlowStepRuntime(parent.RunID, nodes)
+	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3})
+	svc.setFlowStepStatus(context.Background(), parent.RunID, "synthesis", StepStatusRunning)
+
+	if _, err := svc.applyFlowControl(parent.RunID, FlowControlInput{Status: "done", Summary: "all approved"}); err != nil {
+		t.Fatalf("applyFlowControl(done): %v", err)
+	}
+
+	if !probe.sawHubDoneWrite {
+		t.Fatal("expected markFlowRunComplete to write the synthesis node's step status to DONE")
+	}
+	if probe.doneAgentGraphEventsAtWriteTime != 0 {
+		t.Errorf("%d \"done\" agent_graph_updated event(s) already emitted by the time the synthesis node's step was settled to DONE — "+
+			"the desktop's refresh can race ahead of the settlement and read a stale RUNNING status", probe.doneAgentGraphEventsAtWriteTime)
+	}
+
+	steps, _ := svc.workflowStore.LoadRunSteps(context.Background(), parent.RunID)
+	synth, ok := stepByID(steps, "synthesis")
+	if !ok || synth.Status != StepStatusDone {
+		t.Fatalf("synthesis step status = %+v, want DONE after applyFlowControl(done)", synth)
 	}
 }
 

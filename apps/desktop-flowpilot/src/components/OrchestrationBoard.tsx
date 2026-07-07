@@ -32,10 +32,11 @@ export function OrchestrationBoard(): React.ReactElement {
   const injectAgentFeedback = useStore((s) => s.injectAgentFeedback);
   const openAgentSpawnGuide = useStore((s) => s.openAgentSpawnGuide);
   const submitReviewOutcome = useStore((s) => s.submitReviewOutcome);
-  const extendCap = useStore((s) => s.extendCap);
+  const continueFlow = useStore((s) => s.continueFlow);
   const mainRunId = useStore((s) => s.mainRunId ?? s.runId);
 
   const [feedback, setFeedback] = useState("");
+  const [blockedFeedback, setBlockedFeedback] = useState("");
   const focusTarget = useMemo(() => snapshot?.runs.find((run) => run.status === "running")?.runId ?? activeAgentRunId, [snapshot, activeAgentRunId]);
 
   useEffect(() => {
@@ -122,13 +123,37 @@ export function OrchestrationBoard(): React.ReactElement {
             <span style={{ marginLeft: "8px", opacity: 0.7 }}>status: {loopStatus}</span>
           </div>
 
-          {/* Blocked banner + Extend-cap control */}
+          {/* BUG-231: blocked banner + unified Continue action. Continue answers
+              the hub and lets it re-decide (approve/continue/escalate again) —
+              it auto-raises the cap only when the block reason is the round cap,
+              so there is no separate "Extend cap" button anymore (D-8): a
+              standalone extend was meaningless for a genuine escalate and, once
+              Continue auto-extends, redundant for a cap-reached block. */}
           {isBlocked && (
-            <div className="board-blocked" style={{ padding: "10px 12px", background: "var(--warn-bg, rgba(255,180,0,0.12))", borderRadius: "6px", display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
-              <span style={{ color: "var(--warn)", fontWeight: "bold" }}>⚠ Blocked</span>
-              {loopGate && <span style={{ opacity: 0.8 }}>{loopGate}</span>}
-              <button type="button" className="bc warn" onClick={() => void extendCap()}>Extend cap +2</button>
-              <button type="button" className="bc primary" onClick={() => void submitReviewOutcome("approved")}>Accept &amp; approve</button>
+            <div className="board-blocked" style={{ padding: "10px 12px", background: "var(--warn-bg, rgba(255,180,0,0.12))", borderRadius: "6px", display: "flex", flexDirection: "column", gap: "8px" }}>
+              <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+                <span style={{ color: "var(--warn)", fontWeight: "bold" }}>
+                  ⚠ {loopState?.blockReason === "cap" ? "Round limit reached" : "Blocked — needs your decision"}
+                </span>
+                {loopGate && <span style={{ opacity: 0.8 }}>{loopGate}</span>}
+              </div>
+              <textarea
+                className="text-input"
+                placeholder="Optional — give the flow guidance before continuing…"
+                value={blockedFeedback}
+                onChange={(e) => setBlockedFeedback(e.target.value)}
+                rows={2}
+              />
+              <div style={{ display: "flex", gap: "8px" }}>
+                <button
+                  type="button"
+                  className="bc primary"
+                  onClick={() => void continueFlow(blockedFeedback.trim()).then(() => setBlockedFeedback(""))}
+                >
+                  Continue
+                </button>
+                <button type="button" className="bc" onClick={() => void submitReviewOutcome("approved")}>Accept &amp; approve</button>
+              </div>
             </div>
           )}
 

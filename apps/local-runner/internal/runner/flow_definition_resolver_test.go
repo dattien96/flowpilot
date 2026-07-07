@@ -413,3 +413,113 @@ func TestUpdateUserFlowAllowsEditableUserRecord(t *testing.T) {
 		t.Fatalf("update did not persist: %#v", stored)
 	}
 }
+
+// TestMirrorHasMissingLifecycles verifies the helper detects absent node
+// lifecycles in a stored mirror so SyncBuiltins can force a re-upsert.
+func TestMirrorHasMissingLifecycles(t *testing.T) {
+	canonical := []agentpack.FlowNode{
+		{ID: "coder", Lifecycle: "reinvoke"},
+		{ID: "reviewer_correctness", Lifecycle: "spawn"},
+		{ID: "reviewer_security", Lifecycle: "spawn"},
+		{ID: "synthesis", Lifecycle: ""},
+	}
+
+	t.Run("all lifecycles present", func(t *testing.T) {
+		stored := []agentpack.FlowNode{
+			{ID: "coder", Lifecycle: "reinvoke"},
+			{ID: "reviewer_correctness", Lifecycle: "spawn"},
+			{ID: "reviewer_security", Lifecycle: "spawn"},
+			{ID: "synthesis", Lifecycle: ""},
+		}
+		if mirrorHasMissingLifecycles(stored, canonical) {
+			t.Error("expected false (all lifecycles present), got true")
+		}
+	})
+
+	t.Run("reviewer lifecycle missing (NULL migration)", func(t *testing.T) {
+		stored := []agentpack.FlowNode{
+			{ID: "coder", Lifecycle: "reinvoke"},
+			{ID: "reviewer_correctness", Lifecycle: ""},   // NULL from old migration
+			{ID: "reviewer_security", Lifecycle: ""},     // NULL from old migration
+			{ID: "synthesis", Lifecycle: ""},
+		}
+		if !mirrorHasMissingLifecycles(stored, canonical) {
+			t.Error("expected true (reviewer lifecycle missing from mirror), got false")
+		}
+	})
+
+	t.Run("node missing entirely from stored", func(t *testing.T) {
+		stored := []agentpack.FlowNode{
+			{ID: "coder", Lifecycle: "reinvoke"},
+			// reviewer_correctness and reviewer_security completely absent
+		}
+		if !mirrorHasMissingLifecycles(stored, canonical) {
+			t.Error("expected true (reviewer node missing from mirror), got false")
+		}
+	})
+
+	t.Run("synthesis lifecycle empty in both — not a mismatch", func(t *testing.T) {
+		// synthesis has no lifecycle declared in YAML; its absence in mirror is fine.
+		stored := []agentpack.FlowNode{
+			{ID: "coder", Lifecycle: "reinvoke"},
+			{ID: "reviewer_correctness", Lifecycle: "spawn"},
+			{ID: "reviewer_security", Lifecycle: "spawn"},
+			{ID: "synthesis", Lifecycle: ""},
+		}
+		if mirrorHasMissingLifecycles(stored, canonical) {
+			t.Error("expected false (synthesis empty lifecycle is not a mismatch), got true")
+		}
+	})
+}
+
+// TestSyncBuiltinsReupsertsWhenNodeLifecycleMissing verifies that SyncBuiltins
+// writes a corrected mirror row even when pack_hash and pack_version match,
+// if the stored mirror has empty node lifecycles. This is the BUG-Rnd2 Bug A fix.
+func TestSyncBuiltinsReupsertsWhenNodeLifecycleMissing(t *testing.T) {
+	store := newFakeFlowDefinitionStore()
+	svc := NewFlowMirrorSyncService(store)
+	ctx := context.Background()
+
+	// First sync: record with correct lifecycles.
+	first, err := svc.SyncBuiltins(ctx)
+	if err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	if len(first) == 0 {
+		t.Fatal("expected at least one flow synced on first run")
+	}
+
+	// Simulate a migration that added node_lifecycle column with NULL default:
+	// retrieve the current mirror row and blank out all node lifecycles.
+	rec, ok, err := store.GetByPackFlow(ctx, "flowpilot-core-flow-pack", "review-loop")
+	if err != nil || !ok {
+		t.Fatalf("expected mirrored review-loop row: ok=%v err=%v", ok, err)
+	}
+	for i := range rec.Definition.Nodes {
+		rec.Definition.Nodes[i].Lifecycle = "" // simulate NULL column
+	}
+	if _, err := store.Upsert(ctx, rec); err != nil {
+		t.Fatalf("seed NULL-lifecycle row: %v", err)
+	}
+
+	// Second sync: same hash and version, but lifecycles are missing — must re-upsert.
+	second, err := svc.SyncBuiltins(ctx)
+	if err != nil {
+		t.Fatalf("re-sync: %v", err)
+	}
+	found := false
+	for _, r := range second {
+		if r.PackFlowID == "review-loop" {
+			found = true
+			// Verify reviewer nodes now have spawn lifecycle restored.
+			for _, node := range r.Definition.Nodes {
+				if (node.ID == "reviewer_correctness" || node.ID == "reviewer_security") && node.Lifecycle != "spawn" {
+					t.Errorf("node %q lifecycle = %q after re-sync, want spawn", node.ID, node.Lifecycle)
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected SyncBuiltins to re-upsert review-loop when node lifecycles are missing; got no-op")
+	}
+}

@@ -14,6 +14,15 @@ export function FlowTimelineSidebar(): React.ReactElement | null {
   const steps = useStore((s) => s.workflowStepRuntime);
   const meta = useStore((s) => s.workflowStepRuntimeMeta);
   const refreshWorkflowStepRuntime = useStore((s) => s.refreshWorkflowStepRuntime);
+  // BUG-234 (#2): the review loop can send the flow back to the coder for another
+  // round. The step timeline reuses one row per node, so a loop-back is otherwise
+  // invisible (the same 4 rows just re-run). Surface the loop's round counter so a
+  // loop-back reads as "Round 2/3" rather than looking like the first pass repeating.
+  const loopRound = useStore((s) => s.agentGraphSnapshot?.loopState?.round ?? 0);
+  const loopCap = useStore((s) => {
+    const ls = s.agentGraphSnapshot?.loopState;
+    return ls?.cap ?? ls?.roundCap ?? 0;
+  });
   const [expanded, setExpanded] = useState(true);
 
   // BUG-175: once a flow run has actually started, keep the step-timeline
@@ -48,6 +57,15 @@ export function FlowTimelineSidebar(): React.ReactElement | null {
       <div className="flow-sidebar-head">
         {expanded && (
           <div className="flow-sidebar-summary">
+            {/* BUG-234 (#2): round counter — loopRound is 0-based (0 = first pass),
+                so display round+1. Highlighted once a loop-back has occurred so the
+                user can see the flow returned to the coder for another round. */}
+            {steps.length > 0 && (
+              <span className={`flow-sidebar-round ${loopRound > 0 ? "flow-sidebar-round-active" : ""}`}>
+                Round {loopRound + 1}
+                {loopCap > 0 ? `/${loopCap}` : ""}
+              </span>
+            )}
             <span className="flow-sidebar-progress">
               {reachedCount}/{steps.length} steps
             </span>

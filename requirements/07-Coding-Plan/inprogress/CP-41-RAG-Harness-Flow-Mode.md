@@ -9,7 +9,7 @@
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-28`
-- Last Updated: `2026-06-30`
+- Last Updated: `2026-07-01`
 - Parent Documents: `SD-17-Context-And-Regression-Engine.md`, `SD-20-Flow-Gate-Rule-Semantics.md`, `SS-13-AI-Followable-Document-Contract.md`
 - Child Documents: [Task-168: Flow Mode Context Package Contract](../../08-Task/done/Task-168-Flow-Mode-Context-Package-Contract.md), [Task-169: Plan To Coding Context Handoff](../../08-Task/done/Task-169-Plan-To-Coding-Context-Handoff.md), [Task-170: Testing Feedback Retry Loop](../../08-Task/done/Task-170-Testing-Feedback-Retry-Loop.md), [Task-171: Audit Step Draft And Commit Prep](../../08-Task/done/Task-171-Audit-Step-Draft-And-Commit-Prep.md)
 - Related Documents: `CP-35-Context-And-Regression-Engine-Rollout.md`, `CP-37-Prompt-Context-Continuity.md`, `Task-096-Commit-History-Ledger.md`, `Task-097-Feature-Catalog-And-Resolver.md`, `Task-157-Improve-Context-Hardness.md`, `Task-161-Per-Feature-Chat-Summary-Timeline.md`, `Task-163-Chat-Summary-Generation-Triggers.md`, `CA-132-prompt-context-continuity-and-provider-handoff.md`, `CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md` (agent-flow engine; `Task-170` retry loop should consume its bounded `flow_control` back-edge + local persistence rather than reimplementing)
@@ -289,11 +289,15 @@ The runner already advances this model through `WorkflowOrchestrator.Progress`, 
 
 Run these scenarios yourself after deployment. Each scenario lists the **setup**, the **exact action**, and the **expected result** to verify. Mark ✅ when confirmed.
 
+> **Relocated (2026-07-06):** the pure **context-harness** scenarios — deterministic feature-history retrieval, unknown-key degradation, no-chat-summary degradation (original `DOD-7`), and context-package rebuild on Plan rerun — plus the "Missing chat summary ledger" and "Runner restart after context-package creation" failure rows, were **moved to [CP-43 §11 (Relocated Context-Harness E2E Tests)](../todo/CP-43-Change-Contract-And-Canonical-Intent-Signature.md#11-relocated-context-harness-e2e-tests-from-cp-41-11)**, because the context-harness logic they exercise is being reworked under CP-43. The scenario numbers below therefore have gaps (2/3/4/8 relocated); the remaining scenarios keep their original numbers.
+>
+> **Blocked-on-code note:** Scenarios 5/6/7 (Testing/validate retry) and 9/10 (Audit draft) are currently **not runnable end-to-end** — the `command.validate` and `artifact.audit_draft` behavior handlers are stubs not wired to their Task-170/171 implementations (see [BUG-243](../../09-BugFix/todo/BUG-243-Flow-Mode-Validate-And-Audit-Behaviors-Disconnected-From-Task-170-171.md)). Only the launch → context → coder portion (hops 1–4) is testable until BUG-243 is fixed.
+
 ---
 
 ### Scenario 1 — Happy Path: Full Plan → Coding → Testing → Audit
 
-**Setup:** A workspace that has `agent-flow-engine` in `change-audit/FEATURE-KEYS.md` and at least 2 commit entries in `.flowpilot/ledger/`. A configured validation command (e.g. `go test ./...`).
+**Setup:** A workspace that has `agent-flow-engine` in `change-audit/FEATURE-KEYS.md` and at least 2 commit entries in `.flowpilot/ledger/`. A configured validation command (e.g. `go test ./...`). Use the built-in/mirrored RAG Harness flow when available.
 
 **Action:**
 1. Open a Flow Mode run with these steps in order: **Plan → Coding → Testing → Audit**.
@@ -304,6 +308,7 @@ Run these scenarios yourself after deployment. Each scenario lists the **setup**
 6. Let the Audit step complete.
 
 **Expected:**
+- [ ] The entry inline context node starts successfully from the flow definition; the run is not inert before Coding begins.
 - [ ] Plan step: `FlowContextPackage` is emitted as `EventFlowContextPackage` in the run events. Package has `featureConfidence: verified` and `featureKey: agent-flow-engine`.
 - [ ] Coding step: prompt starts with `[FlowPilot flow context package]` sentinel. The `## Flow Context Package` section is present. Feature history block and/or chat summary block are included.
 - [ ] Testing step: validation command runs; `EventFlowValidationResult` emitted with `exitCode: 0`. No retry triggered.
@@ -313,45 +318,11 @@ Run these scenarios yourself after deployment. Each scenario lists the **setup**
 
 ---
 
-### Scenario 2 — Feature History Injected (Verify Deterministic Retrieval)
+### Scenario 2 — *(relocated to [CP-43 §11 CH-1](../todo/CP-43-Change-Contract-And-Canonical-Intent-Signature.md#11-relocated-context-harness-e2e-tests-from-cp-41-11): Feature History Injected)*
 
-**Setup:** Same workspace. Ensure `.flowpilot/ledger/feature_history.ndjson` has at least 2 commits for `agent-flow-engine`.
+### Scenario 3 — *(relocated to [CP-43 §11 CH-2](../todo/CP-43-Change-Contract-And-Canonical-Intent-Signature.md#11-relocated-context-harness-e2e-tests-from-cp-41-11): Unknown Feature Key Degrades Gracefully)*
 
-**Action:** Run only the Plan step. Inspect the composed prompt logged to the prompt-log directory.
-
-**Expected:**
-- [ ] Prompt log file contains the `## Flow Context Package` section.
-- [ ] `## Prior Work` block lists the commit summaries from the ledger.
-- [ ] `## Audit note: No vector retrieval used` line is present — confirms no vector DB involved.
-- [ ] `featureConfidence` is `verified` (confidence ≥ 5.0 threshold met).
-
----
-
-### Scenario 3 — Unknown Feature Key Degrades Gracefully
-
-**Setup:** A workspace with no `.flowpilot` catalog directory, or use a prompt that resolves to no known feature key.
-
-**Action:** Start a Flow Mode run with Plan prompt: `"Fix a bug in some-unknown-feature-xyz"`.
-
-**Expected:**
-- [ ] Plan step completes without crashing.
-- [ ] `FlowContextPackage` has `featureConfidence: unresolved` and `warnings: ["feature catalog unavailable: ..."]` or `["no feature resolved ..."]`.
-- [ ] Coding step still receives the package (degraded — no history block, but the sentinel is present).
-- [ ] No crash, no panic, no empty prompt.
-
----
-
-### Scenario 4 — No Chat Summaries (History-Only Package)
-
-**Setup:** Workspace with feature history in `.flowpilot/ledger/feature_history.ndjson` but NO `chat_summary.ndjson`.
-
-**Action:** Run Plan step for `agent-flow-engine`.
-
-**Expected:**
-- [ ] `FlowContextPackage` has `historyBlock` populated (commit history present).
-- [ ] `discussionBlock` is empty or absent — no crash due to missing chat summary ledger.
-- [ ] Coding step prompt includes the history block but no discussion section.
-- [ ] `warnings` does NOT mention chat summary as a fatal error (graceful degradation).
+### Scenario 4 — *(relocated to [CP-43 §11 CH-3](../todo/CP-43-Change-Contract-And-Canonical-Intent-Signature.md#11-relocated-context-harness-e2e-tests-from-cp-41-11): No Chat Summaries — original `DOD-7`)*
 
 ---
 
@@ -400,17 +371,7 @@ Run these scenarios yourself after deployment. Each scenario lists the **setup**
 
 ---
 
-### Scenario 8 — Plan Step Reruns → Coding Gets Fresh Context Package
-
-**Setup:** A Flow Mode run that has already completed one Plan → Coding cycle.
-
-**Action:** Rerun the Plan step (trigger Plan step again on the same run). Then observe the Coding step's next turn.
-
-**Expected:**
-- [ ] A new `EventFlowContextPackage` is emitted with a new `packageId`.
-- [ ] The Coding step's retry prompt references the **new** package ID, not the old one.
-- [ ] Old package ID is no longer used in the Coding prompt after the Plan rerun.
-- [ ] `planContextPackage` cache is cleared (verify by checking `EventFlowContextPackage` events — two distinct entries).
+### Scenario 8 — *(relocated to [CP-43 §11 CH-4](../todo/CP-43-Change-Contract-And-Canonical-Intent-Signature.md#11-relocated-context-harness-e2e-tests-from-cp-41-11): Plan Rerun → Fresh Context Package)*
 
 ---
 
@@ -443,16 +404,68 @@ Run these scenarios yourself after deployment. Each scenario lists the **setup**
 
 ---
 
+### Scenario 11 — CP-42 Built-in RAG Harness Mirrors Into Workflows/Steps And Runs Node-By-Node
+
+**Setup:** Desktop app, Flow Mode, a project workspace signed in to Supabase. `internal/agentpack/flow-pack/flows/rag-harness.yaml` is the source of truth (nodes `context`→`implement`→`validate`→`audit`, back-edge `validate→implement when continue`, `builtin.chatBaseline: true`).
+
+**Action:**
+1. Open Settings → Workflows. Confirm a **"Built-in"**-badged workflow exists for RAG Harness (mirrored from the pack into the `workflows`/`workflow_steps` tables — same mechanism as Review Loop, no separate `flow_definitions` table).
+2. Open its steps list and confirm exactly 4 steps exist with `behavior_id` values `context.produce`, `agent.delegate`, `command.validate`, `artifact.audit_draft` (in that order), and that the `agent.delegate` step references `agents/coder.md`.
+3. Start a Flow Mode run against this built-in (or its clone) with a real task.
+
+**Expected:**
+- [ ] The `context` node (an **inline** node, `run: inline`, `lifecycle: once`) auto-starts as the flow's entry node — the run is not inert waiting for a user-authored "Plan" step by that literal name.
+- [ ] `EventFlowContextPackage` is emitted exactly as in Scenario 1, driven by the `context.produce` behavior handler, not by a hardcoded "Plan" step-type check.
+- [ ] The `implement` node (delegate, `agents/coder.md`) receives `main_context: flow_context_package.v1` as declared in its `inputs`, and its prompt is composed from `promptTemplate: prompts/flow-context-handoff.md`.
+- [ ] The `validate` node runs inline via `command.validate` and, on failure, the `validate→implement when continue` back-edge re-enters `implement` — matching Scenario 5's retry behavior, but driven by the YAML edge instead of a `isCodingStepType`/`isPlanStepType` literal branch.
+- [ ] The `audit` node runs last, matching Scenario 9's audit draft behavior.
+- [ ] End-to-end node sequence and events are behaviorally identical to Scenario 1, even though the underlying step identification is now behavior-ID-based.
+
+---
+
+### Scenario 12 — Custom Step Names Still Classify Correctly (Behavior-ID, Not Literal Name)
+
+**Setup:** Settings → Workflows. Clone the built-in RAG Harness flow (or create a new user-owned flow from scratch).
+
+**Action:**
+1. In the clone, rename the steps to non-"Plan"/non-"Coding" names, e.g. rename the context step to `gather_ctx` and the delegate step to `write_code` (or any arbitrary label). Keep their `behavior_id` fields set to `context.produce` and `agent.delegate` respectively (via the step editor's behavior selector, not the step's display name/`step_type`).
+2. Save the clone.
+3. Run this cloned flow with a real task.
+
+**Expected:**
+- [ ] `classifyStepBehavior` resolves the renamed steps correctly via their `BehaviorID` field (`context.produce` → treated as the Plan-equivalent step; `agent.delegate` → treated as the Coding-equivalent step) — despite neither step being named "plan" or "coding".
+- [ ] The renamed context step still triggers `FlowContextPackage` emission; the renamed delegate step still receives the context handoff prompt with the `[FlowPilot flow context package]` sentinel.
+- [ ] `findPlanStepID`-style lookback (used to find the most recent Plan-equivalent step preceding a Coding-equivalent step) still finds `gather_ctx` even though it is not literally named "Plan".
+- [ ] This confirms `flow_context_handoff.go`'s `isPlanStepType`/`isCodingStepType` route through `agentpack.NormalizeBehaviorID` rather than string-matching the step's name/`step_type` (CA-147/CP-42 `P-3`).
+
+---
+
+### Scenario 13 — Legacy `step_type`-Only Flow Still Migrates Correctly
+
+**Setup:** A workflow whose steps predate CP-42 and only have a legacy `step_type` value (`plan`/`planning`/`design` or `coding`/`implementation`/`code`) with no `behavior_id` set — i.e. a flow created before the pack refactor, or one authored without ever touching the new behavior-ID field.
+
+**Action:** Run this legacy flow through the current runner build.
+
+**Expected:**
+- [ ] `classifyStepBehavior` falls back to normalizing the legacy `step_type` value (since `behaviorID` is empty) and still correctly classifies the step as Plan-equivalent or Coding-equivalent.
+- [ ] Context package emission and handoff behave identically to a step with an explicit `behavior_id` — no regression for flows that predate this refactor.
+- [ ] No crash or "unclassifiable step" error occurs for a legacy `step_type` value that the alias table recognizes.
+
+---
+
 ### Failure Cases to Verify
 
 | Case | How to trigger | Expected |
 |------|---------------|----------|
 | Stale `FEATURE-KEYS.md` (key removed mid-run) | Delete the key from the file after Plan step, before Audit step | Audit draft: `blocked_missing_feature_key` |
-| Missing chat summary ledger | Delete `chat_summary.ndjson` before Plan step | Package degrades: `discussionBlock` empty; no crash |
 | Very large test log output | Run a test suite that produces >4 KB of failure output | `ValidationSummary.Truncated = true`; only first ~50 failure lines injected; raw log NOT in prompt |
-| Runner restart after Plan package creation | Kill runner after Plan step, restart | Coding step resumes; `EventFlowContextPackage` is found in persisted events; new package NOT rebuilt |
 | Supabase unavailable | Disconnect Supabase during run | Run proceeds locally; no crash; `sessions.ndjson` is the source of truth |
+| *(Missing chat summary ledger — relocated to [CP-43 §11](../todo/CP-43-Change-Contract-And-Canonical-Intent-Signature.md#11-relocated-context-harness-e2e-tests-from-cp-41-11))* | | |
+| *(Runner restart after context-package creation — relocated to [CP-43 §11](../todo/CP-43-Change-Contract-And-Canonical-Intent-Signature.md#11-relocated-context-harness-e2e-tests-from-cp-41-11))* | | |
 | Validation command is empty string | Leave validation command blank in step config | `status: skipped_no_command`; no testing step execution; Audit step proceeds to draft |
+| Mirrored RAG Harness row deleted from `workflows` table mid-session | Delete the built-in RAG Harness row directly in Supabase, then start/select it again | `ResolveBuiltin` recreates the mirror row (`workflows` + `workflow_steps`) from the embedded pack before the run starts; if the recreate upsert itself fails, the run still proceeds using the embedded-pack-sourced definition rather than failing outright |
+| A step has neither `behavior_id` nor a recognized legacy `step_type` | Author a step with `step_type: "some-custom-category"` and no `behavior_id` | `classifyStepBehavior` returns `ok=false`; the step is treated as unclassifiable (not silently mis-treated as Plan or Coding) — verify no context package is wrongly attached |
+| Domain-hardcode guard regression | Add a literal `"coding"` or `"plan"` string to `flow_context_handoff.go` and run `go test ./internal/runner/... -run TestDomainHardcodeGuardMatchesFrozenBaseline` | Test fails with a count mismatch against the frozen baseline (currently 0 for this file) — confirms the RAG Harness path stays free of new literal step-name branches |
 
 ---
 

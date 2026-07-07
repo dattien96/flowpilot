@@ -50,9 +50,15 @@ To support this granular flexibility without confusing the user, the configurati
 3. **Project:** the project's baseline model (`projects.default_model`). Used only when neither Step nor Flow has one.
 4. **Unresolved:** If none of the above are configured, there is no hard-coded default/fallback floor (such as `gpt-5.4`). Instead, the workflow or step is unresolved and marked as non-runnable (rendered as disabled/greyed with a tooltip in the UI).
 
+The Flow and Project tiers only apply to a **normal workflow launch** (a run started from a workflow's entry step). A **direct single-step launch** (`launchMode === "step"`, no workflow context) has no Flow tier to fall back to and does **not** fall back to Project either — it resolves **Step only**: if that step type has no configured model, the run is unresolved/non-runnable, the same as case 4 above (**BUG-229**).
+
 Provider is derived from whichever model wins, never chosen independently — see §1.2.
 
-**BUG-165 implementation note:** for a normal (`normal_chat`) direct-chat run, the model the user explicitly selects in the chat controller is always used as-is — this resolution order does not apply to chat mode at all, only to workflow/step-mode runs (which have no chat-controller model picker to source a choice from). For a workflow/step-mode run, this order is currently resolved **once, at run start** (from the workflow's entry step), not re-resolved per step as execution advances — genuine per-step model switching during a single run's execution is a known limitation, not yet implemented.
+**BUG-165 implementation note:** for a normal (`normal_chat`) direct-chat run, the model the user explicitly selects in the chat controller is always used as-is — this resolution order does not apply to chat mode at all, only to workflow/step-mode runs (which have no chat-controller model picker to source a choice from). For a workflow/step-mode run, this order is resolved **once, at run start** (from the workflow's entry step) to give the *run itself* one baseline model/provider.
+
+**BUG-228 — per-node override within a running flow:** within that same run, an individual flow-graph node can still run on its own model/provider, independent of the run's baseline, depending on the node's kind:
+- **Agent node** (`run: delegate`, `behavior: agent.delegate` — spawns a separate child agent run, e.g. `coder`, `reviewer_correctness`): resolves its own model from the purpose-named `step_definitions` row for its agent role (e.g. `agents/reviewer.md` → `flow-agent-delegate-reviewer`, the same "Flow: Reviewer" entry the manual workflow builder's step-type dropdown offers — **BUG-161**). Every node sharing one agent role (e.g. both reviewer nodes in a cohort) shares that role's one configured model — this is a per-role override, not a per-graph-node one. A role with no such row, or no model configured on it, falls back to inheriting the run's baseline model unchanged (pre-existing behavior).
+- **Inline node** (`run: inline`, `behavior: hub.inline` — executes as the parent run's own turn, no child spawn): always uses the flow's own baseline model; there is no per-node override for inline nodes.
 
 ---
 
