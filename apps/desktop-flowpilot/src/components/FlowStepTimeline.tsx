@@ -42,6 +42,17 @@ const STATE_LABEL: Record<WorkflowStepRuntimeStatus, string> = {
   SKIPPED: "skipped",
 };
 
+// A node's agentRef is stored as either a bare agent name or a full definition
+// path (the Agent-ref dropdown stores agent.path to disambiguate same-named
+// files across sources). The timeline only needs the human-readable name, which
+// is what the runtime resolves the ref to — so collapse a path to its base name
+// without extension, matching the clean name shown in the Agents panel.
+function agentRefLabel(agentRef: string): string {
+  const base = agentRef.split(/[\\/]/).pop() ?? agentRef;
+  const dot = base.lastIndexOf(".");
+  return dot > 0 ? base.slice(0, dot) : base;
+}
+
 function stepName(step: WorkflowStepRuntimeDTO): string {
   // nodeId is the flow-graph node id ("coder", "reviewer_correctness"); stepType
   // for a CP-42 flow-engine node is a shared generic dispatch category
@@ -111,7 +122,7 @@ export function FlowStepTimeline({
                   <div className="fti-meta">
                     {provider && <span className={`pill-prov prov-${provider}`}>{provider.toUpperCase()}</span>}
                     {model && <span className="ac-model">{model}</span>}
-                    {step.agentRef && <span>agent: {step.agentRef}</span>}
+                    {step.agentRef && <span title={step.agentRef}>agent: {agentRefLabel(step.agentRef)}</span>}
                     {step.yoloMode && <span>yolo</span>}
                   </div>
                 )}
