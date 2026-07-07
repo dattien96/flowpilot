@@ -1730,12 +1730,20 @@ export function WorkflowsSettings(): React.ReactElement {
             value={draft.agentRef ?? ""}
           >
             <option value="">(none)</option>
-            {agentOptions.map((agent) => (
-              <option key={agent.name} value={agent.name}>
-                {agent.name} ({agent.source})
-              </option>
-            ))}
-            {draft.agentRef && !agentOptions.some((agent) => agent.name === draft.agentRef) ? (
+            {agentOptions.map((agent) => {
+              // Prefer the full path so same-named agents across sources
+              // (project .claude/agents vs provider-home .codex/agents) stay
+              // distinct. Built-in flow-pack agents have no path, so they fall
+              // back to their bare name. Runtime resolution (spawnChildRun)
+              // matches either form, so both work.
+              const value = agent.path || agent.name;
+              return (
+                <option key={value} value={value}>
+                  {agent.name} ({agent.source})
+                </option>
+              );
+            })}
+            {draft.agentRef && !agentOptions.some((agent) => (agent.path || agent.name) === draft.agentRef) ? (
               <option value={draft.agentRef}>{draft.agentRef} (current value, not in this project's list)</option>
             ) : null}
           </select>

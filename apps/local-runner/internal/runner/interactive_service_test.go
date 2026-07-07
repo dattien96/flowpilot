@@ -1182,6 +1182,52 @@ func TestAgentGraphRoutesExposeSnapshotAndControls(t *testing.T) {
 	}
 }
 
+// A flow-authored node stores its agent reference as the full definition
+// path (the Agent-ref dropdown submits agent.path to keep same-named agents
+// across sources distinct). spawnChildRun must resolve that path back to the
+// real AgentDefinition — otherwise agentDef stays nil, the child runs with the
+// bare task prompt (no system prompt, no identity line), and the UI shows the
+// raw path instead of the agent's clean name.
+func TestSpawnChildResolvesAgentByPath(t *testing.T) {
+	dir := t.TempDir()
+	agentsDir := filepath.Join(dir, ".codex", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatalf("mkdir agents: %v", err)
+	}
+	agentPath := filepath.Join(agentsDir, "coder-agent.toml")
+	def := "name = \"coder-agent\"\nrole = \"coder\"\ndeveloper_instructions = \"You are the project coder.\"\n"
+	if err := os.WriteFile(agentPath, []byte(def), 0o644); err != nil {
+		t.Fatalf("write agent def: %v", err)
+	}
+
+	svc, _ := newTestServer(t)
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	svc.mu.Lock()
+	svc.runs[parent.RunID].workspaceCwd = dir
+	svc.mu.Unlock()
+
+	spawned, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{Agent: agentPath, Prompt: "do it", Provider: "codex", Wait: false})
+	if spawnErr != nil {
+		t.Fatalf("spawnChildRun: %v", spawnErr)
+	}
+	svc.mu.Lock()
+	gotName, gotRole := "", ""
+	if child := svc.runs[spawned.RunID]; child != nil {
+		gotName = child.agentName
+		gotRole = child.role
+	}
+	svc.mu.Unlock()
+	if gotName != "coder-agent" {
+		t.Fatalf("child agentName = %q, want %q (path did not resolve to the definition)", gotName, "coder-agent")
+	}
+	if gotRole != "coder" {
+		t.Fatalf("child role = %q, want %q", gotRole, "coder")
+	}
+}
+
 func TestSpawnChildEmitsGraphAndBusEvents(t *testing.T) {
 	svc, srv := newTestServer(t)
 	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})

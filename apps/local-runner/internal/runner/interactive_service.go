@@ -2297,7 +2297,16 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		agentDef = in.AgentDefOverride
 	} else if defs := s.agentCatalog.listAgents(cwd); len(defs) > 0 {
 		for i := range defs {
-			if strings.EqualFold(defs[i].Name, in.Agent) {
+			// Match by bare Name (built-in flow-pack agents are referenced by
+			// name) or by full Path (project-local / provider-home agents,
+			// which the flow-authoring UI stores by path to disambiguate
+			// same-named files across sources). The Agent-ref dropdown submits
+			// agent.path whenever a definition has one, so resolution must
+			// accept a path too — otherwise agentDef stays nil and the child
+			// runs with the raw task prompt (no system prompt, no identity
+			// line), which is exactly what happened for path-referenced agents.
+			if strings.EqualFold(defs[i].Name, in.Agent) ||
+				(defs[i].Path != "" && strings.EqualFold(defs[i].Path, in.Agent)) {
 				def := defs[i]
 				agentDef = &def
 				break
