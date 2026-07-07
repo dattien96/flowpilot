@@ -12,7 +12,7 @@
 - Last Updated: `2026-07-01`
 - Parent Documents: [SD-19: Agent Flow Engine](../../06-System-Tech-Design/SD-19-Agent-Flow-Engine.md), [SD-18: Main-Hub Agent Review Loop](../../06-System-Tech-Design/SD-18-Main-Hub-Agent-Review-Loop.md), [SS-16: Agent Flow Engine](../../05-System-Specs/SS-16-Agent-Flow-Engine.md), [SS-15: Agent Review Loop (Review Until Clean)](../../05-System-Specs/SS-15-Agent-Review-Loop-Until-Clean.md)
 - Child Documents: [Task-089: Generic Flow Vocabulary And flow_control Handler](../../08-Task/done/Task-089-Generic-Flow-Vocabulary-And-Flow-Control-Handler.md), [Task-090: Bounded Flow Runtime Executor](../../08-Task/done/Task-090-Bounded-Flow-Runtime-Executor.md), [Task-085: Unified Local Run Persistence](../../08-Task/done/Task-085-Unified-Local-Run-Persistence.md), [Task-091: Review-Loop Template (Outcome Tool, Config, Legacy Gate)](../../08-Task/done/Task-091-Review-Loop-Template.md), [Task-092: Consolidated Multi-Result Join Note](../../08-Task/done/Task-092-Consolidated-Multi-Result-Join-Note.md), [Task-093: Bounded Auto-Reinvocation Of The Hub](../../08-Task/done/Task-093-Bounded-Auto-Reinvocation-Of-The-Hub.md), [Task-094: agent-review-loop Skill And synthesizer Built-in](../../08-Task/done/Task-094-Agent-Review-Loop-Skill-And-Synthesizer-Builtin.md), [Task-095: Orchestration Board, Contract, And Client](../../08-Task/done/Task-095-Orchestration-Board-Contract-And-Client.md)
-- Related Documents: [CP-19: Multiple Agents](../done/CP-19-Multiple-Agents.md), [CP-41: RAG Harness Flow Mode](../done/CP-41-RAG-Harness-Flow-Mode.md), [SD-16: Agent Spawn And Tool-Calling Design](../../06-System-Tech-Design/SD-16-Agent-Spawn-And-Tool-Calling-Design.md), [Task-082: Spawn-Agent Tool And Orchestrator Core](../../08-Task/done/Task-082-Spawn-Agent-Tool-And-Orchestrator-Core.md), [Task-084: Dependency Feedback Loop And Orchestration Board](../../08-Task/done/Task-084-Dependency-Feedback-Loop-And-Orchestration-Board.md)
+- Related Documents: [CP-19: Multiple Agents](../done/CP-19-Multiple-Agents.md), [CP-41: RAG Harness Flow Mode](../done/CP-41-RAG-Harness-Flow-Mode.md), [SD-16: Agent Spawn And Tool-Calling Design](../../06-System-Tech-Design/SD-16-Agent-Spawn-And-Tool-Calling-Design.md), [Task-082: Spawn-Agent Tool And Orchestrator Core](../../08-Task/done/Task-082-Spawn-Agent-Tool-And-Orchestrator-Core.md), [Task-084: Dependency Feedback Loop And Orchestration Board](../../08-Task/done/Task-084-Dependency-Feedback-Loop-And-Orchestration-Board.md), [BUG-249: Corrupted Builtin Mirror Recreate Duplicates Row And Drops Overrides](../../09-BugFix/done/BUG-249-Corrupted-Builtin-Mirror-Recreate-Duplicates-Row-And-Drops-Overrides.md) (found during Scenario 14's own live E2E pass)
 - Replaces: `None`
 - Tags: `multi-agent, flow-engine, generic, node-edge-policy, flow-control, review-loop, main-hub, synthesis, local-persistence, local-runner, desktop`
 
@@ -263,7 +263,7 @@ Run these scenarios yourself after deployment. Each scenario lists the **setup**
 
 ---
 
-### Scenario 1 — Happy Path: Review Loop Approves First Round
+### PASSED - Scenario 1 — Happy Path: Review Loop Approves First Round
 
 **Setup:** YOLO mode ON. A project workspace with at least one Go file.
 
@@ -277,11 +277,11 @@ Add input validation to the parseUserID function.
 (Reviewer count (2: correctness + security) and cap (3) are fixed by `review-loop.yaml`'s own node/edge/policy definition — they are no longer instructable via the prompt; see the note above Scenario 1.)
 
 **Expected:**
-- [ ] Board shows: coder node running → completes → 2 reviewer nodes running in parallel.
-- [ ] Both reviewers complete. Board shows round 1, open issues = 0 (or resolves to 0 after synthesis).
-- [ ] Hub auto-reinvokes (no user typing needed). Synthesis turn fires, calls `submit_review_outcome(approved)`.
-- [ ] Loop ends. Board shows `done`. No further spawns.
-- [ ] `sessions.ndjson` contains `mode: explicit`, `round: 1`, `status: done`.
+- [x] Board shows: coder node running → completes → 2 reviewer nodes running in parallel.
+- [x] Both reviewers complete. Board shows round 1, open issues = 0 (or resolves to 0 after synthesis).
+- [x] Hub auto-reinvokes (no user typing needed). Synthesis turn fires, calls `submit_review_outcome(approved)`.
+- [x] Loop ends. Board shows `done`. No further spawns.
+- [x] `sessions.ndjson` contains `mode: explicit`, `round: 1`, `status: done`.
 
 ---
 
@@ -419,9 +419,7 @@ Add a struct tag to UserRecord. Reviewers should request changes on round 1 (fin
 
 ---
 
-### Scenario 11 — CP-42 Built-in Orchestration Picker: Deep Technical Verification
-
-> Updated 2026-07-06: this scenario used to be framed as "the alternative to the (now-retired) skill" — since Scenario 1 above uses this exact same picker now, this is really a deeper technical check of the same mechanism (the pack-driven wait note, the raw API response, and — new — the flow-engine-driven bookkeeping BUG-245 found missing), not a separate trigger path.
+### (PASSED) Scenario 11 — CP-42 Built-in Orchestration Picker: Deep Technical Verification
 
 **Setup:** Desktop app, a project workspace signed in to Supabase. Open Chat (`normal_chat` mode, not Flow Mode).
 
@@ -490,29 +488,15 @@ Add a struct tag to UserRecord. Reviewers should request changes on round 1 (fin
 3. Trigger a run that selects Review Loop again (Chat Bug sub-mode → Built-in orchestration → Review Loop → send a message), OR reopen Workflows Settings if the sync runs on startup.
 
 **Expected:**
-- [ ] The mirror is recreated automatically (a new `workflows` row reappears with `is_builtin=true`, matching `pack_id`/`pack_flow_id`/`pack_version`) before the run is allowed to start — the run does not silently proceed against a missing definition.
-- [ ] The recreated row's steps match `review-loop.yaml` exactly: 4 steps (`coder`, `reviewer_correctness`, `reviewer_security`, `synthesis`), each with the correct `behavior_id` (`agent.delegate` ×3, `hub.inline` ×1) and `depends_on_json`/`edges_json` matching the YAML edges.
-- [ ] Any prior clone made from the old mirror (Scenario 13) is unaffected — `cloned_from` still points at a valid pack identity, not a dangling row id.
-- [ ] Workflows Settings shows the **"Built-in"** badge again for the recreated row.
+- [x] The mirror is recreated automatically (a new `workflows` row reappears with `is_builtin=true`, matching `pack_id`/`pack_flow_id`/`pack_version`) before the run is allowed to start — the run does not silently proceed against a missing definition. **Verified 2026-07-07** by the owner against a live Supabase project: renamed `review-loop`'s `pack_flow_id` to `review-loop-haha`, restarted the runner, and confirmed via a fresh `workflows` CSV export that a new row appeared with `is_builtin=true`, `pack_id=flowpilot-core-flow-pack`, `pack_flow_id=review-loop`, `pack_version=0.1.0`.
+- [x] The recreated row's steps match `review-loop.yaml` exactly: 4 steps (`coder`, `reviewer_correctness`, `reviewer_security`, `synthesis`), each with the correct `behavior_id` (`agent.delegate` ×3, `hub.inline` ×1) and `depends_on_json`/`edges_json` matching the YAML edges. **Verified 2026-07-07**: the recreated row's `pack_hash` is byte-identical to the original row's, and `edges_json` matches exactly.
+- [ ] Any prior clone made from the old mirror (Scenario 13) is unaffected — `cloned_from` still points at a valid pack identity, not a dangling row id. **Not verified** — the owner's two CSV exports show no row with a `cloned_from` pointing at Review Loop, so Scenario 13 (clone) does not appear to have been exercised yet in this pass. Re-check once a Review Loop clone exists.
+- [x] Workflows Settings shows the **"Built-in"** badge again for the recreated row. **Verified 2026-07-07** (owner screenshot).
+
+**Gap found during this live pass, filed and fixed as [BUG-249](../../09-BugFix/done/BUG-249-Corrupted-Builtin-Mirror-Recreate-Duplicates-Row-And-Drops-Overrides.md):** the recreate above is real and correct, but the *old*, now-orphaned row was never cleaned up — Settings' Definitions list and the Workflow Mode picker both showed two duplicate "Review Loop / BUILT-IN" entries — and the fresh row's `model_override` silently reverted to the column default (`gpt-5.4`) instead of the orphaned row's actual prior value (`claude-haiku`). Neither behavior is covered by this scenario's 4 checklist items above, which is why they still read "recreated correctly" while the duplicate/override-loss gap existed alongside. `FlowMirrorSyncService.SyncBuiltins` now reclaims a hash-matching orphan in place (preserving its `model_override`/etc.) or retires it (`is_builtin=false`, renamed) when reclaim isn't possible — see BUG-249 for the full fix and its own regression tests. Re-run this scenario's repro once the owner has restarted the runner with the fix to confirm the orphan row is retired rather than left duplicated.
 
 ---
 
-### Scenario 15 — Developer Check: Domain-Hardcode Guard Baseline
-
-**Setup:** Local dev machine with the repo checked out, Go toolchain installed.
-
-**Action:** Run:
-```
-cd apps/local-runner
-go test ./internal/runner/... -run TestDomainHardcodeGuardMatchesFrozenBaseline -v
-```
-
-**Expected:**
-- [ ] Test passes, confirming the current hardcode counts match the frozen baseline in `domain_hardcode_guard_test.go` (`interactive_service.go`=1, `agent_catalog.go`=6, `review_loop_config.go`=7, `flow_context_handoff.go`=0, `agent_orchestrator.go`=0).
-- [ ] If you intentionally add a new literal `"coder"`/`"reviewer"`/`"plan"`/etc. string to one of the five guarded files, re-running the test **fails** with a count mismatch — confirming the guard actually detects regressions rather than being a no-op.
-- [ ] Note this guard does **not** assert zero hardcodes — the 14 baseline hits are documented legacy fallbacks (see the comment block above `domainHardcodeBaseline`), not proof CP-42 `DOD-9` is fully met.
-
----
 
 ### Failure Cases to Verify
 

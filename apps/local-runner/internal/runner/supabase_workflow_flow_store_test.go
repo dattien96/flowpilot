@@ -569,3 +569,182 @@ func TestEnsureBuiltinFlowMirrorsWithStoreNilStoreIsNoOp(t *testing.T) {
 		t.Fatalf("expected nil result for nil store, got %#v", synced)
 	}
 }
+
+// BUG-249, reproduced by CP-36 Scenario 14: manually renaming a builtin
+// mirror row's pack_flow_id (e.g. "review-loop" -> "review-loop-haha")
+// orphans it. Before any duplicate has been created, ReclaimOrRetireStaleBuiltinMirrors
+// must repair the orphan in place by matching its unchanged pack_hash to the
+// current flow, rather than leaving the next sync insert a second row.
+func TestReclaimOrRetireStaleBuiltinMirrorsReclaimsByHashWhenSlotIsFree(t *testing.T) {
+	original := httpRequestFn
+	defer func() { httpRequestFn = original }()
+
+	var patchURL string
+	var patchBody []byte
+	httpRequestFn = func(_ context.Context, method, endpoint string, _ map[string]string, body []byte) (int, []byte, error) {
+		if method == http.MethodGet {
+			rows := []map[string]any{
+				{"id": "11111111-1111-1111-1111-111111111111", "name": "Review Loop", "pack_flow_id": "review-loop-haha", "pack_hash": "hash-review-loop"},
+			}
+			b, _ := json.Marshal(rows)
+			return 200, b, nil
+		}
+		if method == http.MethodPatch {
+			patchURL, patchBody = endpoint, body
+			return 200, nil, nil
+		}
+		t.Fatalf("unexpected method %s", method)
+		return 0, nil, nil
+	}
+
+	store := NewSupabaseWorkflowFlowStore(SupabaseWorkspaceConfig{APIURL: "https://proj.supabase.co/"}, "k")
+	handled, err := store.ReclaimOrRetireStaleBuiltinMirrors(context.Background(), "flowpilot-core-flow-pack", []flowHashID{
+		{FlowID: "review-loop", Hash: "hash-review-loop"},
+		{FlowID: "rag-harness", Hash: "hash-rag-harness"},
+	})
+	if err != nil {
+		t.Fatalf("ReclaimOrRetireStaleBuiltinMirrors: %v", err)
+	}
+	if handled != 1 {
+		t.Fatalf("handled = %d, want 1", handled)
+	}
+	if !strings.Contains(patchURL, "id=eq.11111111-1111-1111-1111-111111111111") {
+		t.Fatalf("expected patch targeted by row id, got %s", patchURL)
+	}
+	var sent map[string]any
+	if err := json.Unmarshal(patchBody, &sent); err != nil {
+		t.Fatalf("decode patch body: %v", err)
+	}
+	if sent["pack_flow_id"] != "review-loop" {
+		t.Fatalf("expected pack_flow_id repaired to review-loop, got %#v", sent)
+	}
+	if _, ok := sent["is_builtin"]; ok {
+		t.Fatalf("reclaim must not touch is_builtin -- it's still a live builtin, got %#v", sent)
+	}
+}
+
+// If the orphan is discovered AFTER a fresh row has already been inserted for
+// the same flow (the duplicate has already happened -- the exact state the
+// user found via live Supabase CSV export), reclaiming into the occupied
+// pack_flow_id slot would violate the unique(pack_id, pack_flow_id) index.
+// The orphan must be retired instead, leaving the already-correct row alone.
+func TestReclaimOrRetireStaleBuiltinMirrorsRetiresWhenSlotAlreadyOccupied(t *testing.T) {
+	original := httpRequestFn
+	defer func() { httpRequestFn = original }()
+
+	var patchURL string
+	var patchBody []byte
+	httpRequestFn = func(_ context.Context, method, endpoint string, _ map[string]string, body []byte) (int, []byte, error) {
+		if method == http.MethodGet {
+			rows := []map[string]any{
+				{"id": "11111111-1111-1111-1111-111111111111", "name": "Review Loop", "pack_flow_id": "review-loop-haha", "pack_hash": "hash-review-loop"},
+				{"id": "22222222-2222-2222-2222-222222222222", "name": "Review Loop", "pack_flow_id": "review-loop", "pack_hash": "hash-review-loop"},
+			}
+			b, _ := json.Marshal(rows)
+			return 200, b, nil
+		}
+		if method == http.MethodPatch {
+			patchURL, patchBody = endpoint, body
+			return 200, nil, nil
+		}
+		t.Fatalf("unexpected method %s", method)
+		return 0, nil, nil
+	}
+
+	store := NewSupabaseWorkflowFlowStore(SupabaseWorkspaceConfig{APIURL: "https://proj.supabase.co/"}, "k")
+	handled, err := store.ReclaimOrRetireStaleBuiltinMirrors(context.Background(), "flowpilot-core-flow-pack", []flowHashID{
+		{FlowID: "review-loop", Hash: "hash-review-loop"},
+	})
+	if err != nil {
+		t.Fatalf("ReclaimOrRetireStaleBuiltinMirrors: %v", err)
+	}
+	if handled != 1 {
+		t.Fatalf("handled = %d, want 1", handled)
+	}
+	if !strings.Contains(patchURL, "id=eq.11111111-1111-1111-1111-111111111111") {
+		t.Fatalf("expected the orphan (not the occupant) to be patched, got %s", patchURL)
+	}
+	var sent map[string]any
+	if err := json.Unmarshal(patchBody, &sent); err != nil {
+		t.Fatalf("decode patch body: %v", err)
+	}
+	if sent["is_builtin"] != false || sent["editable"] != true {
+		t.Fatalf("expected retirement (is_builtin=false, editable=true), got %#v", sent)
+	}
+	name, _ := sent["name"].(string)
+	if !strings.HasPrefix(name, "Review Loop") || !strings.Contains(name, "stale mirror") {
+		t.Fatalf("expected renamed with stale-mirror suffix, got %q", name)
+	}
+}
+
+// An orphan whose content hash matches no current flow (content also
+// changed, or the flow was removed from the pack) cannot be reclaimed and
+// must be retired rather than left as a silent phantom builtin.
+func TestReclaimOrRetireStaleBuiltinMirrorsRetiresWhenNoHashMatch(t *testing.T) {
+	original := httpRequestFn
+	defer func() { httpRequestFn = original }()
+
+	var patchCount int
+	var lastBody []byte
+	httpRequestFn = func(_ context.Context, method, endpoint string, _ map[string]string, body []byte) (int, []byte, error) {
+		if method == http.MethodGet {
+			rows := []map[string]any{
+				{"id": "11111111-1111-1111-1111-111111111111", "name": "Old Removed Flow", "pack_flow_id": "removed-flow", "pack_hash": "hash-not-current"},
+			}
+			b, _ := json.Marshal(rows)
+			return 200, b, nil
+		}
+		patchCount++
+		lastBody = body
+		return 200, nil, nil
+	}
+
+	store := NewSupabaseWorkflowFlowStore(SupabaseWorkspaceConfig{APIURL: "https://proj.supabase.co/"}, "k")
+	handled, err := store.ReclaimOrRetireStaleBuiltinMirrors(context.Background(), "flowpilot-core-flow-pack", []flowHashID{
+		{FlowID: "review-loop", Hash: "hash-review-loop"},
+	})
+	if err != nil {
+		t.Fatalf("ReclaimOrRetireStaleBuiltinMirrors: %v", err)
+	}
+	if handled != 1 || patchCount != 1 {
+		t.Fatalf("handled=%d patchCount=%d, want 1/1", handled, patchCount)
+	}
+	var sent map[string]any
+	if err := json.Unmarshal(lastBody, &sent); err != nil {
+		t.Fatalf("decode patch body: %v", err)
+	}
+	if sent["is_builtin"] != false {
+		t.Fatalf("expected retirement, got %#v", sent)
+	}
+}
+
+// A row already retired in a prior pass (its name already carries the
+// stale-mirror suffix) must not be re-patched every sync.
+func TestReclaimOrRetireStaleBuiltinMirrorsSkipsAlreadyRetiredRows(t *testing.T) {
+	original := httpRequestFn
+	defer func() { httpRequestFn = original }()
+
+	patchCalled := false
+	httpRequestFn = func(_ context.Context, method, endpoint string, _ map[string]string, body []byte) (int, []byte, error) {
+		if method == http.MethodGet {
+			rows := []map[string]any{
+				{"id": "11111111-1111-1111-1111-111111111111", "name": "Review Loop" + staleMirrorSuffix, "pack_flow_id": "review-loop-haha", "pack_hash": "hash-not-current"},
+			}
+			b, _ := json.Marshal(rows)
+			return 200, b, nil
+		}
+		patchCalled = true
+		return 200, nil, nil
+	}
+
+	store := NewSupabaseWorkflowFlowStore(SupabaseWorkspaceConfig{APIURL: "https://proj.supabase.co/"}, "k")
+	handled, err := store.ReclaimOrRetireStaleBuiltinMirrors(context.Background(), "flowpilot-core-flow-pack", []flowHashID{
+		{FlowID: "review-loop", Hash: "hash-review-loop"},
+	})
+	if err != nil {
+		t.Fatalf("ReclaimOrRetireStaleBuiltinMirrors: %v", err)
+	}
+	if handled != 0 || patchCalled {
+		t.Fatalf("expected no-op for an already-retired row, got handled=%d patchCalled=%v", handled, patchCalled)
+	}
+}

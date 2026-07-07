@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"strings"
 
 	"flowpilot-runner/internal/agentpack"
@@ -298,6 +299,30 @@ func (s *FlowMirrorSyncService) SyncBuiltins(ctx context.Context) ([]FlowDefinit
 	if err != nil {
 		return nil, fmt.Errorf("flow mirror sync: load embedded pack: %w", err)
 	}
+
+	// BUG-249: repair or retire any orphaned builtin mirror row (e.g. a
+	// manually corrupted/renamed pack_flow_id, CP-36 Scenario 14's own
+	// reproduction) before the per-flow loop below runs. Doing this first
+	// means a reclaimed row is already fixed by the time the loop's own
+	// GetByPackFlow lookup runs, so it is treated as a normal up-to-date
+	// mirror with no separate "already reclaimed" branch needed here.
+	// Best-effort and non-fatal: a store that doesn't support this optional
+	// capability (e.g. the in-memory test fake) simply keeps the prior
+	// behavior of inserting a fresh row when a mirror is missing.
+	if reclaimer, ok := s.store.(builtinStaleMirrorReclaimer); ok && pack.Manifest.ID != "" {
+		currentFlows := make([]flowHashID, 0, len(pack.Flows))
+		for i, def := range pack.Flows {
+			raw, err := agentpack.ReadBuiltinFlowRaw(pack.Manifest.Flows[i].Path)
+			if err != nil {
+				return nil, fmt.Errorf("flow mirror sync: read %q: %w", pack.Manifest.Flows[i].Path, err)
+			}
+			currentFlows = append(currentFlows, flowHashID{FlowID: def.ID, Hash: hashFlowContent(raw)})
+		}
+		if _, err := reclaimer.ReclaimOrRetireStaleBuiltinMirrors(ctx, pack.Manifest.ID, currentFlows); err != nil {
+			log.Printf("[flow-mirror-sync] stale builtin mirror reclaim/retire for pack %q failed (non-fatal, per-flow sync below still runs): %v", pack.Manifest.ID, err)
+		}
+	}
+
 	var synced []FlowDefinitionRecord
 	for i, def := range pack.Flows {
 		manifestFlow := pack.Manifest.Flows[i]

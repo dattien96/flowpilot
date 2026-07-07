@@ -523,3 +523,74 @@ func TestSyncBuiltinsReupsertsWhenNodeLifecycleMissing(t *testing.T) {
 		t.Fatal("expected SyncBuiltins to re-upsert review-loop when node lifecycles are missing; got no-op")
 	}
 }
+
+// spyStaleMirrorReclaimer records how SyncBuiltins invokes the optional
+// builtinStaleMirrorReclaimer capability (BUG-249), without needing a real
+// Supabase-backed store. Embeds fakeFlowDefinitionStore for the rest of the
+// FlowDefinitionStore contract.
+type spyStaleMirrorReclaimer struct {
+	*fakeFlowDefinitionStore
+	calledPackID string
+	calledFlows  []flowHashID
+	calls        int
+}
+
+func (s *spyStaleMirrorReclaimer) ReclaimOrRetireStaleBuiltinMirrors(_ context.Context, packID string, currentFlows []flowHashID) (int, error) {
+	s.calls++
+	s.calledPackID = packID
+	s.calledFlows = currentFlows
+	return 0, nil
+}
+
+// BUG-249: SyncBuiltins must invoke the store's optional reclaim/retire
+// capability, once per pack, with the complete current flow id+hash set —
+// before doing any of its own per-flow upserts. This is what lets a store
+// backend (SupabaseWorkflowFlowStore in production) repair or retire a
+// corrupted mirror row before the per-flow loop's plain GetByPackFlow miss
+// would otherwise insert a duplicate.
+func TestFlowMirrorSyncInvokesStaleMirrorReclaimerBeforeUpserting(t *testing.T) {
+	spy := &spyStaleMirrorReclaimer{fakeFlowDefinitionStore: newFakeFlowDefinitionStore()}
+	svc := NewFlowMirrorSyncService(spy)
+
+	if _, err := svc.SyncBuiltins(context.Background()); err != nil {
+		t.Fatalf("SyncBuiltins: %v", err)
+	}
+	if spy.calls != 1 {
+		t.Fatalf("reclaimer called %d times, want exactly 1 (once per pack)", spy.calls)
+	}
+	if spy.calledPackID != "flowpilot-core-flow-pack" {
+		t.Fatalf("reclaimer called with packID %q, want flowpilot-core-flow-pack", spy.calledPackID)
+	}
+	if len(spy.calledFlows) == 0 {
+		t.Fatal("expected the full current flow id+hash set to be passed")
+	}
+	sawReviewLoop := false
+	for _, f := range spy.calledFlows {
+		if f.FlowID == "review-loop" {
+			sawReviewLoop = true
+			if f.Hash == "" {
+				t.Fatal("review-loop's hash must not be empty")
+			}
+		}
+	}
+	if !sawReviewLoop {
+		t.Fatalf("expected review-loop among the flows passed to the reclaimer, got %#v", spy.calledFlows)
+	}
+}
+
+// A store that doesn't implement builtinStaleMirrorReclaimer (e.g. the plain
+// in-memory fake used by every other test in this file) must not break
+// SyncBuiltins — the type assertion simply misses and the pre-BUG-249 sync
+// behavior is unchanged.
+func TestFlowMirrorSyncWorksWithoutStaleMirrorReclaimerSupport(t *testing.T) {
+	store := newFakeFlowDefinitionStore()
+	svc := NewFlowMirrorSyncService(store)
+
+	synced, err := svc.SyncBuiltins(context.Background())
+	if err != nil {
+		t.Fatalf("SyncBuiltins: %v", err)
+	}
+	if len(synced) == 0 {
+		t.Fatal("expected the normal first-run sync to still insert every builtin flow")
+	}
+}
