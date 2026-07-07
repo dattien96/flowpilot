@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-07-06`
 - Last Updated: `2026-07-07` (owner's live E2E run confirms the from-scratch custom flow authors, saves, and executes correctly end-to-end)
-- Parent Documents: [CP-42: Flow Pack And Generic Node Behavior Refactor](../../07-Coding-Plan/inprogress/CP-42-Flow-Pack-And-Generic-Node-Behavior-Refactor.md) (P-9), [Task-179: Settings Flow Pack Authoring UI](../done/Task-179-Settings-Flow-Pack-Authoring-UI.md)
+- Parent Documents: [CP-42: Flow Pack And Generic Node Behavior Refactor](../../07-Coding-Plan/done/CP-42-Flow-Pack-And-Generic-Node-Behavior-Refactor.md) (P-9), [Task-179: Settings Flow Pack Authoring UI](../done/Task-179-Settings-Flow-Pack-Authoring-UI.md)
 - Child Documents: `none`
 - Related Documents: [BUG-236: Builtin Flow Mirror Stores Node Definition On workflow_steps Instead Of step_definitions](../../09-BugFix/done/BUG-236-Builtin-Flow-Mirror-Stores-Node-Definition-On-Workflow-Steps-Instead-Of-Step-Definitions.md), [Task-175: Built-In Flow Mirror Sync And Resolver](../done/Task-175-Builtin-Flow-Mirror-Sync-And-Resolver.md), [Task-176: Node Behavior Registry And Dispatch](../done/Task-176-Node-Behavior-Registry-And-Dispatch.md)
 - Replaces: `none`
