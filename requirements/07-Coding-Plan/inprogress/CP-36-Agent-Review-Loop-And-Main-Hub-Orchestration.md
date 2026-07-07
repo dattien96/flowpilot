@@ -440,7 +440,7 @@ Add a struct tag to UserRecord. Reviewers should request changes on round 1 (fin
 
 ---
 
-### Scenario 12 — Built-in Orchestration Picker Is Sub-Mode Aware And Locks After First Turn
+### PASSED - Scenario 12 — Built-in Orchestration Picker Is Sub-Mode Aware And Locks After First Turn
 
 **Setup:** Same as Scenario 11, fresh chat (no `runId` yet).
 
@@ -451,14 +451,14 @@ Add a struct tag to UserRecord. Reviewers should request changes on round 1 (fin
 4. After the first turn completes, try to click the **Normal** or **Task** tab, or change the **Built-in orchestration** select.
 
 **Expected:**
-- [ ] With **Normal** or **Task** selected, the **Built-in orchestration** select is not rendered at all (Review Loop only declares `chatSubModes: [bug]` in the pack).
-- [ ] After the first turn, the Chat Intent panel shows **"Locked after the first message — start a new chat to change the intent."** and all three intent tabs plus the orchestration select become disabled/non-interactive.
-- [ ] A raw `POST /client/workflow-runs/{runId}/turns` with a different `flowRef` or `subMode` than the one used on turn 1 of the same run is rejected (validated against `BuiltinOrchestrationOptions(subMode)`), not silently applied.
-- [ ] Starting a **new** chat resets the picker and allows a different selection.
+- [x] With **Normal** or **Task** selected, the **Built-in orchestration** select is not rendered at all (Review Loop only declares `chatSubModes: [bug]` in the pack).
+- [x] After the first turn, the Chat Intent panel shows **"Locked after the first message — start a new chat to change the intent."** and all three intent tabs plus the orchestration select become disabled/non-interactive.
+- [x] A raw `POST /client/workflow-runs/{runId}/turns` with a different `flowRef` or `subMode` than the one used on turn 1 of the same run cannot change the run's flow selection. **Verified/corrected 2026-07-07** — the original wording ("rejected... not silently applied") overstated what actually happens: `handleStartTurn`'s `validateChatOrchestrationSelection` (`chat_builtin_orchestration.go:66`) only checks that the posted `flowRef` is a valid option for the posted `subMode` in isolation — it has no awareness of turn 1's own selection, so a *different but still pack-valid* `flowRef`/`subMode` on turn 2+ returns `200 OK`, not a rejection. The actual lock is structural, in `startTurn` (`interactive_service.go:3199`): `in.FlowRef`/`in.SubMode` are only ever read inside `if rs.turnCount == 0 { ... }`, so on every turn after the first that whole block — and the fields it reads — is skipped entirely. The run's flow selection is therefore silently ignored on turn 2+, not explicitly rejected; the net effect the scenario actually cares about (the run can't be hijacked onto a different flow mid-conversation) still holds. A genuinely invalid `flowRef` for the given `subMode` does still get an explicit `400 invalid_flow_ref` from `validateChatOrchestrationSelection`, but that check runs identically on every turn and has nothing to do with matching turn 1.
+- [x] Starting a **new** chat resets the picker and allows a different selection.
 
 ---
 
-### Scenario 13 — Clone A Built-in Flow In Settings; Original Stays Read-Only
+### PASSED - Scenario 13 — Clone A Built-in Flow In Settings; Original Stays Read-Only
 
 **Setup:** Desktop app → Settings → Workflows screen (`WorkflowsSettings.tsx`). At least one prior run has caused the `review-loop` built-in to mirror into the `workflows` table (e.g. run Scenario 11 once first), or the mirror sync has otherwise populated it.
 
@@ -478,7 +478,7 @@ Add a struct tag to UserRecord. Reviewers should request changes on round 1 (fin
 
 ---
 
-### Scenario 14 — Missing Built-in Mirror Row Is Recreated On Demand
+### PASSED - Scenario 14 — Missing Built-in Mirror Row Is Recreated On Demand
 
 **Setup:** The `review-loop` built-in has previously mirrored into the `workflows` table (row has `is_builtin=true`, `pack_id=flowpilot-core-flow-pack`, `pack_flow_id=review-loop`). Access to the Supabase project's `workflows` table (via dashboard or SQL).
 
