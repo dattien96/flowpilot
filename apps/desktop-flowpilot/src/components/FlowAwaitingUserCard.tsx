@@ -57,7 +57,7 @@ export function FlowAwaitingUserCard(): React.ReactElement | null {
       <div className="card-head">
         <span className="badge badge-ask">{reasonLabel}</span>
       </div>
-      <p className="card-prompt">{detail}</p>
+      <p className="card-prompt flow-awaiting-user-detail">{detail}</p>
       <textarea
         className="text-input flow-awaiting-user-feedback"
         placeholder="Optional — give the flow guidance before continuing…"

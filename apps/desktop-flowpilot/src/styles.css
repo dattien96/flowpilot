@@ -724,7 +724,8 @@ input {
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.42);
 }
 .settings-panel {
-  max-width: 880px;
+  max-width: 1200px;
+  margin: 0 auto;
   padding: 24px;
   border: 1px solid var(--border);
   border-radius: 16px;
@@ -781,11 +782,13 @@ input {
 .settings-card strong {
   display: block;
   margin-bottom: 3px;
+  overflow-wrap: anywhere;
 }
 .settings-list-item span,
 .settings-card span {
   color: var(--text-dim);
   font-size: 12px;
+  overflow-wrap: anywhere;
 }
 .settings-list-item.active {
   border-color: var(--accent);
@@ -863,6 +866,17 @@ input {
 .project-registry-panel,
 .project-detail-column .settings-subpanel {
   margin-top: 0;
+}
+.project-registry-panel,
+.project-detail-column {
+  /* Each side scrolls on its own once it outgrows the available viewport
+     height, instead of both columns being yanked along by one shared
+     page-level scrollbar (which loses your place on whichever side you
+     weren't scrolling). 260px approximates the panel head + tabs + padding
+     sitting above .project-layout, measured against .settings-main's
+     top/bottom padding. */
+  max-height: calc(100vh - 260px);
+  overflow-y: auto;
 }
 .project-detail-column {
   display: grid;
@@ -3263,6 +3277,11 @@ input {
 }
 .text-area {
   resize: none;
+}
+.flow-awaiting-user-detail {
+  min-height: 60px;
+  max-height: 240px;
+  overflow-y: auto;
 }
 .flow-awaiting-user-feedback {
   display: block;
