@@ -4299,6 +4299,56 @@ func TestSkipsResumeSessionValidation(t *testing.T) {
 	}
 }
 
+// BUG-251: after a restart, a child agent's run row is read from
+// listAgentRunSummaries' disk fallback (neither the live in-memory map nor the
+// orchestrator's in-memory historical cache have anything for it yet) --
+// nothing is actually executing it anymore, since the whole process just
+// restarted. reconstructRun already normalizes an in-flight status
+// (running/starting/waiting_*) to "cancelled" for a run's own top-level
+// status via normalizeResumedStatus; this disk-fallback branch skipped that
+// normalization, so a reviewer/coder child whose CLI process was killed
+// mid-turn showed a permanently stale "running" badge in the Agents panel
+// with no way to tell it apart from one genuinely still executing.
+func TestListAgentRunSummariesNormalizesStaleRunningStatusAfterRestart(t *testing.T) {
+	store := newFakeWorkflowStore()
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:       "run-hub-1",
+		ProviderKey: ProviderKeyClaude,
+		Status:      RunStatusCompleted,
+		RunKind:     "chat",
+	}); err != nil {
+		t.Fatalf("seed parent: %v", err)
+	}
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:       "run-reviewer-1",
+		ProviderKey: ProviderKeyClaude,
+		ParentRunID: "run-hub-1",
+		AgentName:   "reviewer",
+		Role:        "reviewer",
+		Status:      RunStatusRunning,
+		AgentStatus: string(RunStatusRunning),
+		RunKind:     "chat",
+	}); err != nil {
+		t.Fatalf("seed child: %v", err)
+	}
+	// A fresh service with nothing in s.runs and an empty agentOrchestrator --
+	// exactly the state right after a runner restart, before any run in this
+	// chat has been reopened.
+	svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+
+	summaries := svc.listAgentRunSummaries("run-hub-1")
+	if len(summaries) != 1 {
+		t.Fatalf("summaries = %+v, want exactly 1", summaries)
+	}
+	got := summaries[0]
+	if got.Status != RunStatusCancelled {
+		t.Fatalf("Status = %q, want %q (BUG-251: stale running status must be normalized after restart)", got.Status, RunStatusCancelled)
+	}
+	if got.AgentStatus != string(RunStatusCancelled) {
+		t.Fatalf("AgentStatus = %q, want %q", got.AgentStatus, RunStatusCancelled)
+	}
+}
+
 // Integration-level proof for BUG-250: a run persisted only via
 // sessions.ndjson (never in memory) whose provider_session_id is still the
 // placeholder must be reopenable through the real resumeRun path, not just

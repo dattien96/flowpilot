@@ -2626,15 +2626,25 @@ func (s *InteractiveService) listAgentRunSummaries(parentRunID string) []AgentRu
 				if _, seen := seenIDs[session.RunID]; seen {
 					continue
 				}
+				// BUG-251: a child neither in the live map (liveIDs) nor the
+				// orchestrator's in-memory historical cache is being read straight
+				// from disk after a restart -- nothing is actually tracking or
+				// executing it anymore. reconstructRun already normalizes this exact
+				// situation for a run's own top-level status via
+				// normalizeResumedStatus (running/starting/waiting_* -> cancelled);
+				// this disk-fallback branch skipped that normalization entirely, so
+				// a reviewer/coder child whose process was killed mid-turn showed a
+				// permanently stale "running" badge in the Agents panel with no way
+				// to ever tell it apart from one that's genuinely still executing.
 				out = append(out, AgentRunSummary{
 					RunID:       session.RunID,
 					AgentName:   session.AgentName,
 					Role:        session.Role,
-					Status:      session.Status,
+					Status:      normalizeResumedStatus(session.Status),
 					ParentRunID: session.ParentRunID,
 					CreatedAt:   session.StartedAt,
 					DependsOn:   append([]string(nil), session.DependsOn...),
-					AgentStatus: session.AgentStatus,
+					AgentStatus: string(normalizeResumedStatus(RunStatus(session.AgentStatus))),
 					ProviderKey: string(session.ProviderKey),
 					ModelName:   session.ModelName,
 				})
