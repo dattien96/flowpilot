@@ -498,6 +498,27 @@ Both fixes confirmed via regression tests; **neither yet re-verified against a l
 
 ---
 
+### PASSED - Scenario 15 — Reviewers Escalate Instead Of Looping On An Unresolvable Spec/Test Conflict
+
+> **Discovered 2026-07-07** while preparing a task for Scenario 3 (needed a prompt guaranteed to make reviewers repeatedly request changes). The prompt instead surfaced this scenario: a task whose stated requirement is genuinely impossible to satisfy without breaking the project's own test/skill contract should make the hub escalate immediately, not grind through rounds pointlessly toward the cap. This is a distinct, previously-untested code path from Scenario 3's cap-exhaustion path — different `BlockReason` (`"escalate"` vs `"cap"`), reached via a completely different route (the hub choosing `submit_review_outcome(status="blocked")` on round 1 off its own judgment, vs. mechanically incrementing `round` past `cap`).
+
+**Setup:** Any Review Loop run (built-in or clone) against a project whose test suite already asserts a specific, existing behavior.
+
+**Action:** Ask for a code change whose literal requirement contradicts an existing, passing test, while also instructing (via the project's own skill, e.g. `oracle-rule`) that the test must not be edited and must keep passing. Against `gate-sandbox`:
+```
+Fix Modulo in calc.go: Modulo(-7, 3) must return 2 (true mathematical modulo — result always non-negative, matching Python's % semantics), not the current -1 (Go's native % semantics). This must NOT break the existing test baseline — TestAdd, TestSubtract, and TestModulo must all still pass, and per this project's oracle-rule skill you must not modify calc_test.go to make it pass; fix the code only.
+```
+(`calc_test.go` asserts `Modulo(-7, 3) == -1`, so the requested `== 2` is structurally unsatisfiable without either breaking the pinned test or leaving the task's own stated requirement unmet.)
+
+**Expected:**
+- [x] Both reviewers concur the conflict is real and code-unfixable, not a normal review finding. **Verified 2026-07-07**: both reviewers' verdicts agreed no code change should be approved, citing the exact spec/test contradiction (`Modulo(-7,3)==2` requested vs. `TestModulo` asserting `-1`) and the `oracle-rule` constraint against editing the test.
+- [x] The coder does not attempt a change that would break the pinned test baseline; it reports the conflict instead of guessing. **Verified**: the coder left `calc.go`/`calc_test.go` untouched and surfaced the contradiction rather than picking a side unilaterally.
+- [x] The hub calls `submit_review_outcome(status="blocked")` (→ `flow_control(status="escalate")`) on the **first** round, not after grinding through cap rounds. **Verified**: the desktop showed a "Needs your decision" card immediately, with `Stop`/`Continue` actions — the `BlockReason="escalate"` path (`interactive_service.go:642`), not the round-count `BlockReason="cap"` path (`interactive_service.go:586`) Scenario 3 exercises.
+- [x] The escalation message is specific and actionable (names the exact conflicting values and the blocking skill rule), not a generic failure. **Verified**: the card text named `Modulo(-7,3)`, both the requested `2` and existing `-1`, `calc.go:22-27`, and `oracle-rule` by name, plus next-step suggestions for the human to unblock it.
+- [ ] Clicking **Continue** with clarifying feedback (e.g. "the test is outdated; update Modulo and its test together") lets the hub re-decide and proceed. **Not verified this pass** — the run was stopped rather than continued, to move on to a fresh Scenario 3 attempt with a non-contradictory prompt.
+
+---
+
 
 ### Failure Cases to Verify
 
