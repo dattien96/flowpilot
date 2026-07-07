@@ -285,7 +285,7 @@ Add input validation to the parseUserID function.
 
 ---
 
-### Scenario 2 — Changes Requested: Coder Re-enters With Merged Feedback
+### PASSED - Scenario 2 — Changes Requested: Coder Re-enters With Merged Feedback
 
 **Setup:** YOLO mode ON. Same workspace. Instruct reviewers to raise at least one issue.
 
@@ -295,12 +295,12 @@ Add a struct tag to UserRecord. Reviewers should request changes on round 1 (fin
 ```
 
 **Expected:**
-- [ ] Round 1: reviewers finish with normal review findings/messages only; they do **not** call `submit_review_outcome` directly.
-- [ ] The synthesis turn (hub or `synthesizer`, depending on configuration) is the only turn that calls `submit_review_outcome(changes_requested, issues=[...])`.
-- [ ] Board shows `round: 2` and the coder node restarts — NOT two separate restarts.
-- [ ] Coder re-entry prompt contains the merged issue list from both reviewers (one note, not two).
-- [ ] Round 2 completes. If approved, board shows `done`. If still `changes_requested`, round 3 starts.
-- [ ] At no point does the coder restart twice in the same round.
+- [x] Round 1: reviewers finish with normal review findings/messages only; they do **not** call `submit_review_outcome` directly.
+- [x] The synthesis turn (hub or `synthesizer`, depending on configuration) is the only turn that calls `submit_review_outcome(changes_requested, issues=[...])`.
+- [x] Board shows `round: 2` and the coder node restarts — NOT two separate restarts.
+- [x] Coder re-entry prompt contains the merged issue list from both reviewers (one note, not two).
+- [x] Round 2 completes. If approved, board shows `done`. If still `changes_requested`, round 3 starts.
+- [x] At no point does the coder restart twice in the same round.
 
 ---
 
@@ -321,17 +321,17 @@ Add a struct tag to UserRecord. Reviewers should request changes on round 1 (fin
 
 ---
 
-### Scenario 4 — Stop Mid-Loop
+### PASSED- Scenario 4 — Stop Mid-Loop
 
 **Setup:** YOLO mode OFF (or ON). Start the review loop via the picker (Scenario 1's steps).
 
 **Action:** While the coder is running (round 1 in progress), click **Stop** on the Orchestration Board.
 
 **Expected:**
-- [ ] The running turn finishes its current model output, then stops.
-- [ ] No further reviewer spawns or hub reinvocations fire.
-- [ ] Board shows `stopped` or `cancelled`.
-- [ ] Restarting the server and resuming: status remains `stopped`; no auto-reinvoke triggers.
+- [x] The running turn finishes its current model output, then stops.
+- [x] No further reviewer spawns or hub reinvocations fire.
+- [x] Board shows `stopped` or `cancelled`.
+- [x] Restarting the server and resuming: status remains `stopped`; no auto-reinvoke triggers.
 
 ---
 
@@ -376,16 +376,16 @@ Add a struct tag to UserRecord. Reviewers should request changes on round 1 (fin
 
 ---
 
-### Scenario 8 — Normal Chat (No Auto-Reinvoke)
+### PASSED - Scenario 8 — Normal Chat (No Auto-Reinvoke)
 
 **Setup:** Open a regular chat session (`normal` sub-mode, or `Bug` sub-mode with **None** selected in the built-in orchestration picker — no `flowRef` sent).
 
 **Action:** Send a normal message and let the model reply.
 
 **Expected:**
-- [ ] No reviewer spawns. No `submit_review_outcome` tool offered.
-- [ ] No auto-reinvocation after the reply.
-- [ ] `autoOrchestrate` field in `sessions.ndjson` is `false` or absent.
+- [x] No reviewer spawns. No `submit_review_outcome` tool offered. **Verified 2026-07-07** (`run-5744`): grepping `sessions.ndjson` for `"parent_run_id":"run-5744"` returns 0 matches — no child agent was ever spawned under this run, unlike a real flow run in the same file (e.g. `run-5311`, which has a `run-5560` child with `"parent_run_id":"run-5311"`, `"role":"reviewer"`).
+- [x] No auto-reinvocation after the reply. **Verified 2026-07-07**: none of `run-5744`'s 3 session records contain `active_flow_edges`, `active_flow_nodes`, `loop_state`, or `pending_agent_context` — the fields that only appear once the flow executor/hub-reinvoke path actually engages (all present throughout `run-5311`'s records for comparison).
+- [x] `autoOrchestrate` field in `sessions.ndjson` is `false` or absent. **Verified 2026-07-07**: absent from all 3 of `run-5744`'s records (vs. `"auto_orchestrate":true` on every `run-5311` record).
 
 ---
 
@@ -406,20 +406,20 @@ Add a struct tag to UserRecord. Reviewers should request changes on round 1 (fin
 
 ---
 
-### Scenario 10 — `synthesis` Is Its Own Tracked Step, Not a Separately Spawned Agent
+### PASSED - Scenario 10 — `synthesis` Is Its Own Tracked Step, Not a Separately Spawned Agent
 
 > **Resolved 2026-07-06 (owner-confirmed).** This scenario's original premise — synthesis running as a separately spawned `synthesizer` child agent, visible on the board as its own node — was never implemented and isn't wanted: `review-loop.yaml`'s `synthesis` node is `run: inline`, `behavior: hub.inline` by design, so it's always the hub's own reinvoked turn (using `agents/synthesizer.md`'s prompt), not a spawned child. The reason `synthesis` still needs to be its OWN node in the flow definition (rather than folded into some other step) is to show up as its own row in Flow Mode's step timeline (BUG-174) — that part is real and already correct. Rewritten below to test that, instead of the never-implemented separate-agent premise.
 
 **Action:** Run the review loop (Scenario 1's steps) to completion.
 
 **Expected:**
-- [ ] The Flow Step Timeline sidebar shows `synthesis` as its own row, distinct from `coder`/`reviewer_correctness`/`reviewer_security` — even though no separate agent is spawned for it.
-- [ ] `synthesis`'s row transitions `RUNNING` → `DONE` in step with the hub's own reinvoked turn (not bulk-completed alongside the other steps in one shot — that bulk-completion is the exact BUG-174/BUG-245 regression to watch for).
-- [ ] The hub's reinvoked turn (using the `synthesizer.md` persona) calls `submit_review_outcome` exactly once; no separate child agent ever appears on the board for synthesis.
+- [x] The Flow Step Timeline sidebar shows `synthesis` as its own row, distinct from `coder`/`reviewer_correctness`/`reviewer_security` — even though no separate agent is spawned for it.
+- [x] `synthesis`'s row transitions `RUNNING` → `DONE` in step with the hub's own reinvoked turn (not bulk-completed alongside the other steps in one shot — that bulk-completion is the exact BUG-174/BUG-245 regression to watch for).
+- [x] The hub's reinvoked turn (using the `synthesizer.md` persona) calls `submit_review_outcome` exactly once; no separate child agent ever appears on the board for synthesis.
 
 ---
 
-### (PASSED) Scenario 11 — CP-42 Built-in Orchestration Picker: Deep Technical Verification
+### Scenario 11 — CP-42 Built-in Orchestration Picker: Deep Technical Verification
 
 **Setup:** Desktop app, a project workspace signed in to Supabase. Open Chat (`normal_chat` mode, not Flow Mode).
 
