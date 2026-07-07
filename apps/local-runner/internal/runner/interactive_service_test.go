@@ -1228,6 +1228,48 @@ func TestSpawnChildResolvesAgentByPath(t *testing.T) {
 	}
 }
 
+// An extensionless or hand-typed path (e.g. "...\coder-agent" for the file
+// "...\coder-agent.toml", as stored by the old free-text Agent-ref input)
+// must still resolve via the base-name fallback rather than spawning an agent
+// with no identity.
+func TestSpawnChildResolvesAgentByExtensionlessPath(t *testing.T) {
+	dir := t.TempDir()
+	agentsDir := filepath.Join(dir, ".codex", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatalf("mkdir agents: %v", err)
+	}
+	agentPath := filepath.Join(agentsDir, "coder-agent.toml")
+	def := "name = \"coder-agent\"\nrole = \"coder\"\ndeveloper_instructions = \"You are the project coder.\"\n"
+	if err := os.WriteFile(agentPath, []byte(def), 0o644); err != nil {
+		t.Fatalf("write agent def: %v", err)
+	}
+
+	svc, _ := newTestServer(t)
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	svc.mu.Lock()
+	svc.runs[parent.RunID].workspaceCwd = dir
+	svc.mu.Unlock()
+
+	// Note: the ref intentionally omits the ".toml" extension.
+	extensionless := filepath.Join(agentsDir, "coder-agent")
+	spawned, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{Agent: extensionless, Prompt: "do it", Provider: "codex", Wait: false})
+	if spawnErr != nil {
+		t.Fatalf("spawnChildRun: %v", spawnErr)
+	}
+	svc.mu.Lock()
+	gotName := ""
+	if child := svc.runs[spawned.RunID]; child != nil {
+		gotName = child.agentName
+	}
+	svc.mu.Unlock()
+	if gotName != "coder-agent" {
+		t.Fatalf("child agentName = %q, want %q (extensionless path did not resolve)", gotName, "coder-agent")
+	}
+}
+
 func TestSpawnChildEmitsGraphAndBusEvents(t *testing.T) {
 	svc, srv := newTestServer(t)
 	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})

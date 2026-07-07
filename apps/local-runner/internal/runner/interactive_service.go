@@ -2296,20 +2296,35 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 	if in.AgentDefOverride != nil {
 		agentDef = in.AgentDefOverride
 	} else if defs := s.agentCatalog.listAgents(cwd); len(defs) > 0 {
+		// in.Agent may be a bare agent name (built-in flow-pack agents and
+		// name-authored refs) or a full definition path (the Agent-ref dropdown
+		// stores agent.path to disambiguate same-named files across sources).
+		// Match precisely first — Name, then full Path — so a path always
+		// resolves; otherwise agentDef stays nil and the child runs with the
+		// raw task prompt (no system prompt, no identity line).
 		for i := range defs {
-			// Match by bare Name (built-in flow-pack agents are referenced by
-			// name) or by full Path (project-local / provider-home agents,
-			// which the flow-authoring UI stores by path to disambiguate
-			// same-named files across sources). The Agent-ref dropdown submits
-			// agent.path whenever a definition has one, so resolution must
-			// accept a path too — otherwise agentDef stays nil and the child
-			// runs with the raw task prompt (no system prompt, no identity
-			// line), which is exactly what happened for path-referenced agents.
 			if strings.EqualFold(defs[i].Name, in.Agent) ||
 				(defs[i].Path != "" && strings.EqualFold(defs[i].Path, in.Agent)) {
 				def := defs[i]
 				agentDef = &def
 				break
+			}
+		}
+		// Fallback: degrade a path that did not match exactly to its base name
+		// without extension, then match that against Name. This rescues a
+		// hand-typed or extensionless ref (e.g. "...\coder-agent" for the file
+		// "...\coder-agent.toml") and a definition that has since moved, rather
+		// than silently spawning an agent with no identity.
+		if agentDef == nil {
+			base := strings.TrimSuffix(filepath.Base(in.Agent), filepath.Ext(in.Agent))
+			if base != "" && !strings.EqualFold(base, in.Agent) {
+				for i := range defs {
+					if strings.EqualFold(defs[i].Name, base) {
+						def := defs[i]
+						agentDef = &def
+						break
+					}
+				}
 			}
 		}
 	}
