@@ -99,6 +99,18 @@ Owner requirement: "I need to create my own custom flows — steps, edges, behav
 - [x] Phase1 tests pass — 43/47, with the same 4 pre-existing unrelated failures as before this task (`desktopAdminSupabaseClient`, `desktopSupabaseAuthRepository`, `importBoundary` cwd-fragility, a `FakeTable` missing `.update()` mock).
 - [ ] **Not yet done — owner's own manual click-through**: author a custom flow end-to-end in the live Settings UI (behavior picker → edges form-list/canvas → save → run in Flow Mode → watch agents spawn and edges follow) was NOT performed by the assistant. The dev sandbox used for this task has no reachable local-runner/Supabase backend to authenticate through to the Workflows settings screen (confirmed via the desktop preview: it stalls on "Runner Offline" / "Failed to fetch" with no real backend or credentials available), so this item is verified by code review + typecheck + the runner-level integration test above, not a live click-through. Leave this box unchecked until the owner does that pass themselves (e.g. against `D:\working\gate-sandbox` or wherever the real backend runs).
 
+  **Step-by-step (against a real backend):**
+  1. **Settings → Workflows → Steps tab**: create two new step-definitions (these become the flow's nodes — a workflow step only ever *references* an existing step-definition by `stepType`, it never defines node data inline, so the nodes must exist here first):
+     - `my-coder`: Node ID = `coder`, Behavior ID = **Agent delegate — spawn an agent** (from the dropdown, not free text), Agent ref = `agents/coder.md`, Depends on = *(empty — this is the entry node)*.
+     - `my-reviewer`: Node ID = `reviewer`, Behavior ID = **Agent delegate — spawn an agent**, Agent ref = `agents/reviewer.md`, Depends on = `coder` (comma-separated Node IDs, per the field's own input format).
+  2. **Settings → Workflows**: click **+** to create a new workflow. Set a Name and a Model override (Save is blocked without one, T-2/BUG-165).
+  3. In the new workflow's **Steps** section, use the step-type dropdown to add `my-coder`, then `my-reviewer` (in that order).
+  4. In **Flow Edges** (the form-list, or the canvas below it — both edit the same `edges` array, so use whichever is convenient): add one edge `coder → reviewer`, When = `done`, Kind = `forward`. Optionally add `reviewer → done` (the `done` terminal) so the flow has a clean end.
+  5. Click **Save Workflow**. `validateFlowGraph` should pass silently — if it instead shows an error (dangling edge / missing agent ref / no entry node), that itself is worth reporting, since it would mean slice 3's validation has a bug the assistant's own tests missed.
+  6. Switch to **Flow Mode**, select this new custom workflow from the picker, and start a run with any prompt.
+  7. **Expected**: the `coder` node auto-spawns as the entry node (no AI decision involved). When it completes, `reviewer` auto-spawns via the `coder → reviewer` edge. The Flow Step Timeline sidebar shows both nodes, transitioning `PENDING → RUNNING → DONE` node-by-node (not both flipping to done at once).
+  8. Also worth checking: clone a **built-in** (e.g. Review Loop) from the same screen and confirm it still runs correctly (T-1's "do not regress clone-a-built-in" acceptance item) — this exercises the same save path with `is_builtin:false` instead of a from-scratch workflow.
+
 ## 7. Out of Scope
 
 - validate/audit node EXECUTION (BUG-243 → CP-43).
