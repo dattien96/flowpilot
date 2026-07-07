@@ -1131,7 +1131,6 @@ input {
   white-space: nowrap;
 }
 .workflow-canvas-node.terminal {
-  cursor: default;
   border-style: dashed;
   color: var(--text-dim);
 }

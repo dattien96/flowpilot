@@ -1223,7 +1223,7 @@ export function WorkflowsSettings(): React.ReactElement {
                     .filter(Boolean)
                     .join(" ")}
                   key={key}
-                  onPointerDown={isTerminal ? undefined : handleCanvasNodePointerDown(source, key)}
+                  onPointerDown={handleCanvasNodePointerDown(source, key)}
                   style={{ left: position.x, top: position.y }}
                 >
                   <span>{key}</span>
