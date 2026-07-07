@@ -670,6 +670,19 @@ input {
   border-right: 1px solid var(--border);
   background: var(--bg-2);
   padding: 20px 16px;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+  min-height: 0;
+}
+.settings-sidebar-bottom {
+  margin-top: auto;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.settings-sidebar-bottom .system-controls {
+  padding: 4px 0 0;
+  border-top: 0;
 }
 .settings-nav {
   display: grid;
