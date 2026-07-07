@@ -860,7 +860,19 @@ export function WorkflowsSettings(): React.ReactElement {
         edges: workflowDraft.edges,
         steps: workflowSteps.map((step, orderIndex) => ({ ...step, orderIndex })),
       });
-      await persistEdgeDerivedDependsOn(admin, workflowSteps, workflowDraft.edges);
+      // Own try/catch: the workflow itself already saved successfully by this
+      // point, so a failure syncing derived dependsOn must not be reported as
+      // "Unable to save workflow" — that would wrongly suggest the save never
+      // happened at all.
+      try {
+        await persistEdgeDerivedDependsOn(admin, workflowSteps, workflowDraft.edges);
+      } catch (dependsOnError) {
+        await refresh(saved.id, selectedStepType, { preserveCreateDrafts: true });
+        setMessage(
+          `Workflow saved, but some step dependencies could not sync: ${toErrorMessage(dependsOnError, "unknown error")}`,
+        );
+        return;
+      }
       await refresh(saved.id, selectedStepType, { preserveCreateDrafts: true });
       setMessage("Workflow saved.");
     } catch (error) {
@@ -902,7 +914,20 @@ export function WorkflowsSettings(): React.ReactElement {
         edges: createWorkflowDraft.edges,
         steps: createWorkflowSteps.map((step, orderIndex) => ({ ...step, orderIndex })),
       });
-      await persistEdgeDerivedDependsOn(admin, createWorkflowSteps, createWorkflowDraft.edges);
+      // Own try/catch: the workflow itself already saved successfully by this
+      // point, so a failure syncing derived dependsOn must not be reported as
+      // "Unable to create workflow" — that would wrongly suggest the create
+      // never happened at all.
+      try {
+        await persistEdgeDerivedDependsOn(admin, createWorkflowSteps, createWorkflowDraft.edges);
+      } catch (dependsOnError) {
+        setWorkflowView("list");
+        await refresh(saved.id, selectedStepType);
+        setMessage(
+          `Workflow created, but some step dependencies could not sync: ${toErrorMessage(dependsOnError, "unknown error")}`,
+        );
+        return;
+      }
       setWorkflowView("list");
       await refresh(saved.id, selectedStepType);
       setMessage("Workflow created.");
@@ -1503,7 +1528,6 @@ export function WorkflowsSettings(): React.ReactElement {
     mode: "detail" | "create",
   ) => {
     const requiredSkillsText = draft.requiredSkills.join(", ");
-    const dependsOnText = (draft.dependsOn ?? []).join(", ");
     const inputsText = stringMapToText(draft.inputs);
     const outputsText = stringMapToText(draft.outputs);
     return (
@@ -1661,14 +1685,6 @@ export function WorkflowsSettings(): React.ReactElement {
           </select>
         </label>
         <label className="settings-field">
-          <span>Node ID</span>
-          <input
-            onChange={(event) => onChange({ ...draft, nodeId: event.target.value || null })}
-            placeholder="e.g. coder"
-            value={draft.nodeId ?? ""}
-          />
-        </label>
-        <label className="settings-field">
           <span>Behavior ID</span>
           <select
             onChange={(event) => onChange({ ...draft, behaviorId: event.target.value || null })}
@@ -1727,10 +1743,6 @@ export function WorkflowsSettings(): React.ReactElement {
             <option value="spawn">Spawn new</option>
             <option value="once">Once</option>
           </select>
-        </label>
-        <label className="settings-field">
-          <span>Depends on (auto)</span>
-          <input disabled readOnly value={dependsOnText || "(entry node — no incoming edges)"} />
         </label>
         <label className="settings-field">
           <span>Prompt template ref</span>
