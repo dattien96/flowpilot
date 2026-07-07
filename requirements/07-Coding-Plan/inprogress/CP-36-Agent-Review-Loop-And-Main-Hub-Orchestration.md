@@ -335,18 +335,24 @@ Add a struct tag to UserRecord. Reviewers should request changes on round 1 (fin
 
 ---
 
-### Scenario 5 — Server Restart Mid-Loop (Resume from `sessions.ndjson`)
+### PASSED - Scenario 5 — Server Restart Mid-Loop (Resume from `sessions.ndjson`)
 
 **Setup:** YOLO mode ON. Start the review loop via the picker (Scenario 1's steps). Let the coder complete round 1.
 
 **Action:** While reviewers are running, **kill the local runner process** and restart it.
 
 **Expected:**
-- [ ] Desktop reconnects (existing reconnect behavior).
-- [ ] Board re-renders at the correct state: `round: 1`, reviewer nodes still running or completed.
-- [ ] If reviewers had completed before restart: hub auto-reinvokes after reconnect and synthesis fires.
-- [ ] `sessions.ndjson` fields `autoOrchestrate`, `round`, `cap`, `activeNode`, `flowCohortId` are present and correct.
-- [ ] **No Supabase write** occurs for run data (verify by checking the Supabase `workflow_run_logs` table remains unchanged).
+- [x] Desktop reconnects (existing reconnect behavior). **Verified 2026-07-07**: after the BUG-250/BUG-251 fixes and a runner restart, the hub chat reopens successfully (previously errored with `session_unavailable`).
+- [x] Board re-renders at the correct state, corrected to reflect reality: since the runner (and everything it spawned) was genuinely killed, the reviewer nodes correctly show `cancelled` rather than "still running" — the original wording assumed the process might still be alive, which BUG-251's investigation disproved via a live process listing (no runner, no orphaned provider CLI process). **Verified 2026-07-07** (owner).
+- [ ] If reviewers had completed before restart: hub auto-reinvokes after reconnect and synthesis fires. **Not exercised this pass** — the repro killed the runner while reviewers were still running, not after they'd completed; this specific timing variant remains untested.
+- [x] `sessions.ndjson` fields `autoOrchestrate`, `round`, `cap`, `activeNode`, `flowCohortId` are present and correct. **Verified 2026-07-07** from the same run's persisted records (`run-6074`): `"auto_orchestrate":true`, `"loop_state":{"round":0,"roundCap":3,"cap":3,...}`, `"flow_cohort_id":"flow-auto-coder-round-0"` on the reviewer children — all present and consistent with the flow's actual progress.
+- [ ] **No Supabase write** occurs for run data. **Not verified this pass** — no Supabase `workflow_run_logs` check was performed.
+
+**Bug found and fixed during this live pass, filed as [BUG-250](../../09-BugFix/done/BUG-250-Restarted-Flow-Hub-Run-Permanently-Unresumable-Placeholder-Session.md):** following this scenario's exact repro (kill after reviewers were already running), reopening the hub's own chat post-restart failed with `session_unavailable` — the hub's own provider turn is deliberately suppressed while the flow runs (CP-42), so its `provider_session_id` never advances past the synthetic `"thread-<n>"` placeholder, and the existing resume bypass for that placeholder case only covered a run still resident in memory, not one rebuilt from `sessions.ndjson` after a restart. Fixed by extending the bypass (`skipsResumeSessionValidation`) to trigger whenever the session id is still the placeholder, regardless of in-memory status (Codex excluded — it already self-heals via rollout-file rediscovery).
+
+**Second bug found immediately after, filed as [BUG-251](../../09-BugFix/done/BUG-251-Restarted-Child-Agent-Shows-Permanently-Stale-Running-Status.md):** once the hub chat reopened, the Agents panel still showed both reviewer children as `running` — confirmed stale via a live process listing showing zero `flowpilot.exe` runner processes and zero orphaned provider CLI processes. `listAgentRunSummaries`'s disk-fallback branch (used when a child isn't in the live map or the orchestrator's in-memory cache — exactly the post-restart state) read `session.Status`/`AgentStatus` verbatim with no normalization, unlike the sibling `reconstructRun` path which already normalizes `running`/`starting`/`waiting_*` to `cancelled` on rebuild-from-disk. Fixed by applying the same `normalizeResumedStatus` to that branch.
+
+**Confirmed fixed 2026-07-07** (owner): after restarting the runner with both fixes, the hub chat reopens and its children correctly show `cancelled`. The two untested items above (hub-reinvoke-after-restart timing, Supabase write check) are left open for a future pass, not blocking this scenario's core repro.
 
 **Bug found and fixed during this live pass, filed as [BUG-250](../../09-BugFix/done/BUG-250-Restarted-Flow-Hub-Run-Permanently-Unresumable-Placeholder-Session.md):** following this scenario's exact repro (kill after reviewers were already running), reopening the hub's own chat post-restart failed with `session_unavailable` — the hub's own provider turn is deliberately suppressed while the flow runs (CP-42), so its `provider_session_id` never advances past the synthetic `"thread-<n>"` placeholder, and the existing resume bypass for that placeholder case only covered a run still resident in memory, not one rebuilt from `sessions.ndjson` after a restart. Fixed by extending the bypass (`skipsResumeSessionValidation`) to trigger whenever the session id is still the placeholder, regardless of in-memory status (Codex excluded — it already self-heals via rollout-file rediscovery).
 
