@@ -609,6 +609,65 @@ export function WorkflowsSettings(): React.ReactElement {
     return Array.from(new Set(ids));
   };
 
+  // Owner finding (2026-07-06): step_definitions.dependsOn used to be a
+  // manually-typed field kept separately from this workflow's own edges —
+  // two sources of truth for the same fact (which nodes must complete before
+  // this one is an entry vs. downstream node), with nothing keeping them in
+  // sync. A node reachable only via an edge, but with a stale/blank
+  // dependsOn, would be misidentified as an entry node by the runner's
+  // entryDelegateNodes (flow_executor.go) and double-spawned. dependsOn is
+  // now DERIVED from this workflow's own edges on every save — the "Depends
+  // on" field in the step-definition form is read-only display only.
+  //
+  // Only forward edges count as a real dependency: a back edge (e.g.
+  // synthesis -> coder on "continue") represents loop re-entry, not an
+  // initial-run prerequisite, and must not make the entry node look
+  // non-entry.
+  const computeDependsOnByStepType = (
+    steps: WorkflowStep[],
+    edges: WorkflowFlowEdge[],
+  ): Map<string, string[]> => {
+    const result = new Map<string, string[]>();
+    for (const step of steps) {
+      const definition = stepDefinitions.find((d) => d.stepType === step.stepType);
+      const nodeId = definition?.nodeId;
+      if (!nodeId) continue;
+      const incoming = edges
+        .filter((edge) => edge.to === nodeId && edge.kind === "forward")
+        .map((edge) => edge.from);
+      result.set(step.stepType, Array.from(new Set(incoming)));
+    }
+    return result;
+  };
+
+  const arraysEqualUnordered = (a: string[], b: string[]): boolean => {
+    if (a.length !== b.length) return false;
+    const sortedA = [...a].sort();
+    const sortedB = [...b].sort();
+    return sortedA.every((value, index) => value === sortedB[index]);
+  };
+
+  // Persists the edge-derived dependsOn onto each affected step-definition.
+  // Called from saveWorkflow/saveNewWorkflow after the workflow itself saves
+  // successfully, gated the same way validateFlowGraph is (only workflows
+  // that actually declare edges get this treatment — a plain legacy/linear
+  // workflow with edges: [] never had a graph-derived dependsOn to begin
+  // with and is left alone).
+  const persistEdgeDerivedDependsOn = async (
+    admin: Awaited<ReturnType<typeof getAdminUseCases>>,
+    steps: WorkflowStep[],
+    edges: WorkflowFlowEdge[],
+  ) => {
+    if (edges.length === 0) return;
+    const computed = computeDependsOnByStepType(steps, edges);
+    for (const [stepType, dependsOn] of computed) {
+      const definition = stepDefinitions.find((d) => d.stepType === stepType);
+      if (!definition) continue;
+      if (arraysEqualUnordered(definition.dependsOn ?? [], dependsOn)) continue;
+      await admin.workflows.saveStepDefinition({ ...definition, dependsOn });
+    }
+  };
+
   // Task-189: the flow graph's edges (Workflow.edges/edges_json) were already
   // round-tripped by saveWorkflow/saveNewWorkflow (BUG-NOTE-CP42 #14 passes
   // them through unchanged), but no UI control ever wrote to them — a new
@@ -765,6 +824,7 @@ export function WorkflowsSettings(): React.ReactElement {
         edges: workflowDraft.edges,
         steps: workflowSteps.map((step, orderIndex) => ({ ...step, orderIndex })),
       });
+      await persistEdgeDerivedDependsOn(admin, workflowSteps, workflowDraft.edges);
       await refresh(saved.id, selectedStepType, { preserveCreateDrafts: true });
       setMessage("Workflow saved.");
     } catch (error) {
@@ -806,6 +866,7 @@ export function WorkflowsSettings(): React.ReactElement {
         edges: createWorkflowDraft.edges,
         steps: createWorkflowSteps.map((step, orderIndex) => ({ ...step, orderIndex })),
       });
+      await persistEdgeDerivedDependsOn(admin, createWorkflowSteps, createWorkflowDraft.edges);
       setWorkflowView("list");
       await refresh(saved.id, selectedStepType);
       setMessage("Workflow created.");
@@ -1415,7 +1476,22 @@ export function WorkflowsSettings(): React.ReactElement {
           <span>Step key</span>
           <input
             disabled={mode === "detail"}
-            onChange={(event) => onChange({ ...draft, stepType: event.target.value })}
+            onChange={(event) => {
+              const nextStepType = event.target.value;
+              // Node ID auto-follows the Step key while it's untouched (still
+              // empty, or still equal to the previous Step key value) — Step
+              // key is only ever editable at creation time (disabled above in
+              // "detail" mode), so this only ever runs while a new
+              // step-definition is being drafted. Once the user types their
+              // own Node ID, it stops matching the old Step key and this
+              // no-ops, leaving their choice alone.
+              const nodeIdFollowsStepType = !draft.nodeId || draft.nodeId === draft.stepType;
+              onChange({
+                ...draft,
+                stepType: nextStepType,
+                nodeId: nodeIdFollowsStepType ? nextStepType : draft.nodeId,
+              });
+            }}
             value={draft.stepType}
           />
         </label>
@@ -1520,15 +1596,6 @@ export function WorkflowsSettings(): React.ReactElement {
           />
         </label>
         <label className="settings-field">
-          <span>Subagent</span>
-          <input
-            onChange={(event) =>
-              onChange({ ...draft, subagent: event.target.value || null })
-            }
-            value={draft.subagent ?? ""}
-          />
-        </label>
-        <label className="settings-field">
           <span>Model</span>
           <select
             onChange={(event) => onChange({ ...draft, model: event.target.value })}
@@ -1555,21 +1622,6 @@ export function WorkflowsSettings(): React.ReactElement {
                 {option.label}
               </option>
             ))}
-          </select>
-        </label>
-        <label className="settings-field">
-          <span>Agent type</span>
-          <select
-            onChange={(event) =>
-              onChange({
-                ...draft,
-                agentType: event.target.value === "autonomous" ? "autonomous" : "standard",
-              })
-            }
-            value={draft.agentType}
-          >
-            <option value="standard">standard</option>
-            <option value="autonomous">autonomous</option>
           </select>
         </label>
         <label className="settings-field">
@@ -1615,36 +1667,8 @@ export function WorkflowsSettings(): React.ReactElement {
           </select>
         </label>
         <label className="settings-field">
-          <span>Depends on</span>
-          <input
-            onChange={(event) =>
-              onChange({
-                ...draft,
-                dependsOn: event.target.value
-                  .split(",")
-                  .map((item) => item.trim())
-                  .filter(Boolean),
-              })
-            }
-            placeholder="node ids, comma-separated"
-            value={dependsOnText}
-          />
-        </label>
-        <label className="settings-field">
-          <span>Join mode</span>
-          <input
-            onChange={(event) => onChange({ ...draft, joinMode: event.target.value || null })}
-            placeholder="all | any | quorum(n)"
-            value={draft.joinMode ?? ""}
-          />
-        </label>
-        <label className="settings-field">
-          <span>Cohort</span>
-          <input
-            onChange={(event) => onChange({ ...draft, cohort: event.target.value || null })}
-            placeholder="optional join-group key"
-            value={draft.cohort ?? ""}
-          />
+          <span>Depends on (auto)</span>
+          <input disabled readOnly value={dependsOnText || "(entry node — no incoming edges)"} />
         </label>
         <label className="settings-field">
           <span>Prompt template ref</span>
