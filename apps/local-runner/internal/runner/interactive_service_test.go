@@ -4230,3 +4230,101 @@ func TestAgentGraphUpdateDoesNotResetParentRunStatus(t *testing.T) {
 		t.Fatalf("parent status after orchestration relays = %q, want %q (must not flip to running)", got, RunStatusCompleted)
 	}
 }
+
+// BUG-250: a flow-engine-driven hub's own first provider turn is suppressed
+// (CP-42), so provider_session_id never advances past the synthetic
+// "thread-<n>" placeholder until the hub is later reinvoked. Before this fix,
+// resumeRun's session-file validation bypass only covered a run still
+// resident in memory (isActiveInMemory requires inMemory==true) -- once the
+// runner restarts and the run is rebuilt from sessions.ndjson, inMemory is
+// permanently false regardless of status, so the bypass never applied and
+// LocateSessionFile always failed against a placeholder that was never a real
+// provider session to begin with, permanently blocking reopen.
+func TestSkipsResumeSessionValidation(t *testing.T) {
+	svc, _ := newTestServer(t)
+
+	cases := []struct {
+		name        string
+		rs          *interactiveRun
+		inMemory    bool
+		wantSkipped bool
+	}{
+		{
+			name: "BUG-250: Claude placeholder session, rebuilt from disk (not in memory), status completed -- must skip",
+			rs: &interactiveRun{
+				providerKey:       ProviderKeyClaude,
+				providerSessionID: "thread-6075",
+				status:            RunStatusCompleted,
+			},
+			inMemory:    false,
+			wantSkipped: true,
+		},
+		{
+			name: "Claude with a real session id, rebuilt from disk -- must NOT skip",
+			rs: &interactiveRun{
+				providerKey:       ProviderKeyClaude,
+				providerSessionID: "674851bf-1b16-47d4-a7ce-7ec0b78e46a0",
+				status:            RunStatusCompleted,
+			},
+			inMemory:    false,
+			wantSkipped: false,
+		},
+		{
+			name: "Codex with a placeholder session, rebuilt from disk -- must NOT skip (Codex self-heals via rollout discovery)",
+			rs: &interactiveRun{
+				providerKey:       ProviderKeyCodex,
+				providerSessionID: "thread-6075",
+				status:            RunStatusCompleted,
+			},
+			inMemory:    false,
+			wantSkipped: false,
+		},
+		{
+			name: "Claude placeholder session, still in memory with turn in flight -- skip for the pre-existing isActiveInMemory reason",
+			rs: &interactiveRun{
+				providerKey:       ProviderKeyClaude,
+				providerSessionID: "thread-6075",
+				status:            RunStatusRunning,
+			},
+			inMemory:    true,
+			wantSkipped: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := svc.skipsResumeSessionValidation(tc.rs, tc.inMemory); got != tc.wantSkipped {
+				t.Fatalf("skipsResumeSessionValidation = %v, want %v", got, tc.wantSkipped)
+			}
+		})
+	}
+}
+
+// Integration-level proof for BUG-250: a run persisted only via
+// sessions.ndjson (never in memory) whose provider_session_id is still the
+// placeholder must be reopenable through the real resumeRun path, not just
+// the extracted helper. No provider accounts are configured on this service
+// at all, so if the fix's bypass did not fire, ensureResumeReady would
+// certainly fail on account/home resolution before ever reaching
+// LocateSessionFile -- resumeRun succeeding here proves the validation was
+// skipped, not that it accidentally passed.
+func TestResumeRunSucceedsForRebuiltRunWithPlaceholderSession(t *testing.T) {
+	store := newFakeWorkflowStore()
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             "run-hub-1",
+		ProviderKey:       ProviderKeyClaude,
+		ProviderSessionID: "thread-6075",
+		Status:            RunStatusCompleted,
+		RunKind:           "chat",
+	}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+
+	handle, apiErr := svc.resumeRun("run-hub-1")
+	if apiErr != nil {
+		t.Fatalf("resumeRun: %v (BUG-250: a rebuilt run with a placeholder session must not require a resolvable session file)", apiErr)
+	}
+	if handle.RunID != "run-hub-1" {
+		t.Fatalf("handle.RunID = %q, want run-hub-1", handle.RunID)
+	}
+}

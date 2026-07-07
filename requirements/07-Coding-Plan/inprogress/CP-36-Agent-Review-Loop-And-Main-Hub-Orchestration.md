@@ -348,6 +348,8 @@ Add a struct tag to UserRecord. Reviewers should request changes on round 1 (fin
 - [ ] `sessions.ndjson` fields `autoOrchestrate`, `round`, `cap`, `activeNode`, `flowCohortId` are present and correct.
 - [ ] **No Supabase write** occurs for run data (verify by checking the Supabase `workflow_run_logs` table remains unchanged).
 
+**Bug found and fixed during this live pass, filed as [BUG-250](../../09-BugFix/done/BUG-250-Restarted-Flow-Hub-Run-Permanently-Unresumable-Placeholder-Session.md):** following this scenario's exact repro (kill after reviewers were already running), reopening the hub's own chat post-restart failed with `session_unavailable` — the hub's own provider turn is deliberately suppressed while the flow runs (CP-42), so its `provider_session_id` never advances past the synthetic `"thread-<n>"` placeholder, and the existing resume bypass for that placeholder case only covered a run still resident in memory, not one rebuilt from `sessions.ndjson` after a restart. Fixed by extending the bypass (`skipsResumeSessionValidation`) to trigger whenever the session id is still the placeholder, regardless of in-memory status (Codex excluded — it already self-heals via rollout-file rediscovery). Confirmed via 2 regression tests; **not yet re-verified against a live restart-and-reopen** — re-run this scenario's repro against the rebuilt `bin/flowpilot.exe` to confirm the hub chat now opens read-only instead of erroring.
+
 ---
 
 ### Scenario 6 — Drive Sync Cross-PC
