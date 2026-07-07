@@ -551,7 +551,7 @@ class MockRunnerClient {
         this.replayRuns.add(runId);
         return { runId, providerSessionId, providerKey: "codex", status: "running" };
     }
-    async submitApproval(approvalId, decision) {
+    async submitApproval(approvalId, decision, _remember) {
         const resolve = this.approvalGates.get(approvalId);
         if (resolve) {
             this.approvalGates.delete(approvalId);

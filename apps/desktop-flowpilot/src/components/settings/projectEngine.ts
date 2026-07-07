@@ -447,6 +447,51 @@ export async function saveProjectEngineGateMode(
   return payload.gateMode ?? "enforce";
 }
 
+// fetchApprovalAllowlist returns the project's persisted "don't ask again"
+// shell-command rules (BUG-246).
+export async function fetchApprovalAllowlist(
+  projectId: string,
+  workingDirectory: string,
+): Promise<string[]> {
+  const response = await fetch(
+    new URL(
+      `/client/projects/${encodeURIComponent(projectId)}/engine/approval-allowlist?workingDirectory=${encodeURIComponent(workingDirectory)}`,
+      RUNNER_URL,
+    ).toString(),
+    { cache: "no-store" },
+  );
+  if (!response.ok) {
+    throw new Error(await readProjectEngineError(response));
+  }
+  const payload = (await response.json()) as { allow?: string[] };
+  return payload.allow ?? [];
+}
+
+// removeApprovalAllowRule drops one remembered rule and returns the updated list.
+export async function removeApprovalAllowRule(
+  projectId: string,
+  workingDirectory: string,
+  rule: string,
+): Promise<string[]> {
+  const response = await fetch(
+    new URL(
+      `/client/projects/${encodeURIComponent(projectId)}/engine/approval-allowlist/remove`,
+      RUNNER_URL,
+    ).toString(),
+    {
+      method: "POST",
+      cache: "no-store",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ workingDirectory, rule }),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(await readProjectEngineError(response));
+  }
+  const payload = (await response.json()) as { allow?: string[] };
+  return payload.allow ?? [];
+}
+
 export async function autoInitProjectEngine(
   projectId: string,
   bindings: ReadonlyArray<{ localPath: string }>,

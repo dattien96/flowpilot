@@ -5,10 +5,12 @@ import { LIBRETRANSLATE_URL } from "@/config";
 import { formatTimestamp, toErrorMessage } from "@/components/settings/settingsHelpers";
 import {
   engineTone,
+  fetchApprovalAllowlist,
   fetchGlobalEngineToolingStatus,
   fetchProjectEngineStatus,
   initProjectEngine,
   installLibreTranslateTool,
+  removeApprovalAllowRule,
   saveProjectEngineGateMode,
   summarizeProjectEngineInit,
   type GlobalEngineToolingStatus,
@@ -50,6 +52,9 @@ export function EngineSettings(): React.ReactElement {
   const [gateMode, setGateMode] = useState<string>("enforce");
   const [gateModeLocal, setGateModeLocal] = useState<string>("enforce");
   const [gateModeSaving, setGateModeSaving] = useState(false);
+  // BUG-246: persisted "don't ask again" shell-approval rules for this project.
+  const [approvalAllowlist, setApprovalAllowlist] = useState<string[]>([]);
+  const [allowlistRemoving, setAllowlistRemoving] = useState<string | null>(null);
   const [libreInstallBusy, setLibreInstallBusy] = useState(false);
   const [libreInstallResult, setLibreInstallResult] = useState<LibreTranslateInstallResult | null>(null);
 
@@ -114,6 +119,7 @@ export function EngineSettings(): React.ReactElement {
   useEffect(() => {
     if (!selectedProjectId || !selectedBindingPath) {
       setProjectStatus(null);
+      setApprovalAllowlist([]);
       return;
     }
     let active = true;
@@ -131,11 +137,37 @@ export function EngineSettings(): React.ReactElement {
           setMessage(toErrorMessage(error, "Unable to load project engine status."));
         }
       }
+      try {
+        const allow = await fetchApprovalAllowlist(selectedProjectId, selectedBindingPath);
+        if (active) {
+          setApprovalAllowlist(allow);
+        }
+      } catch {
+        // Non-fatal: the allowlist is best-effort; leave whatever was shown.
+        if (active) {
+          setApprovalAllowlist([]);
+        }
+      }
     })();
     return () => {
       active = false;
     };
   }, [selectedBindingPath, selectedProjectId]);
+
+  const removeAllowRule = async (rule: string) => {
+    if (!selectedProjectId || !selectedBindingPath) return;
+    setAllowlistRemoving(rule);
+    setMessage(null);
+    try {
+      const updated = await removeApprovalAllowRule(selectedProjectId, selectedBindingPath, rule);
+      setApprovalAllowlist(updated);
+      setMessage(`Removed auto-approve rule "${rule}".`);
+    } catch (error) {
+      setMessage(toErrorMessage(error, "Unable to remove the auto-approve rule."));
+    } finally {
+      setAllowlistRemoving(null);
+    }
+  };
 
   const refreshTooling = async () => {
     setMessage(null);
@@ -528,6 +560,45 @@ export function EngineSettings(): React.ReactElement {
             </div>
           ))}
         </div>
+      </div>
+      <div className="settings-subpanel">
+        <div className="settings-panel-head">
+          <div>
+            <h3>Auto-approved commands</h3>
+            <p>
+              Commands you chose “don’t ask again” for during a YOLO-off run. They auto-approve
+              without a prompt (matched by executable + subcommand). This list is per project and
+              syncs via Drive. Remove a rule to be asked again.
+            </p>
+          </div>
+        </div>
+        {!selectedProjectId || !selectedBindingPath ? (
+          <div className="settings-empty" style={{ marginTop: 16 }}>
+            Select a project binding above to manage auto-approved commands.
+          </div>
+        ) : approvalAllowlist.length === 0 ? (
+          <div className="settings-empty" style={{ marginTop: 16 }}>
+            No auto-approve rules yet. They appear here after you tick “don’t ask again” on a command approval.
+          </div>
+        ) : (
+          <div className="settings-validation">
+            {approvalAllowlist.map((rule) => (
+              <div className="validation-row" key={rule}>
+                <span>
+                  <code>{rule}</code>
+                </span>
+                <button
+                  className="secondary-btn"
+                  disabled={allowlistRemoving !== null}
+                  onClick={() => void removeAllowRule(rule)}
+                  type="button"
+                >
+                  {allowlistRemoving === rule ? "Removing..." : "Remove"}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </section>
   );

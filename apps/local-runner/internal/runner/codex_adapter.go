@@ -430,6 +430,10 @@ func codexApprovalDetails(method string, params map[string]any) ApprovalDetails 
 		Command: str("command"),
 		Cwd:     str("cwd"),
 		Reason:  str("reason"),
+		// Kind classifies the approval so the "don't ask again" allowlist only
+		// applies to shell commands (BUG-246). Exec approvals carry a command;
+		// file-change and MCP-elicitation approvals do not.
+		Kind: codexApprovalKind(method),
 		Decisions: []ApprovalDecisionOption{
 			{Value: "approve", Label: "Approve"},
 			{Value: "deny", Label: "Deny"},
@@ -444,6 +448,25 @@ func codexApprovalDetails(method string, params map[string]any) ApprovalDetails 
 		details.Reason = message
 	}
 	return details
+}
+
+// codexApprovalKind maps a Codex inbound approval method to an ApprovalDetails
+// Kind so the runner can gate the "don't ask again" allowlist to shell commands
+// only (BUG-246).
+func codexApprovalKind(method string) string {
+	switch method {
+	case "approval/request",
+		"execCommandApproval",
+		"item/commandExecution/requestApproval":
+		return "exec"
+	case "applyPatchApproval",
+		"item/fileChange/requestApproval":
+		return "file"
+	case "mcpServer/elicitation/request":
+		return "mcp"
+	default:
+		return "other"
+	}
 }
 
 func codexInboundApprovalMethod(method string) bool {

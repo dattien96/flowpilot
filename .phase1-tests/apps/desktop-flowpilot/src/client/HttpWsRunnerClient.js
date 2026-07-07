@@ -159,8 +159,11 @@ class HttpWsRunnerClient {
     generateChatSummary(runId) {
         return this.postJSON(`/client/workflow-runs/${encodeURIComponent(runId)}/chat-summary`, {});
     }
-    submitApproval(approvalId, decision) {
-        return this.postJSON(`/client/approvals/${encodeURIComponent(approvalId)}/decision`, { decision });
+    submitApproval(approvalId, decision, remember) {
+        return this.postJSON(`/client/approvals/${encodeURIComponent(approvalId)}/decision`, {
+            decision,
+            ...(remember ? { remember: true } : {}),
+        });
     }
     answerQuestion(questionId, choice) {
         return this.postJSON(`/client/questions/${encodeURIComponent(questionId)}/answer`, { choice });

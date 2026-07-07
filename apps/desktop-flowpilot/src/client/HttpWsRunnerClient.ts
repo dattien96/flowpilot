@@ -241,8 +241,11 @@ export class HttpWsRunnerClient implements RunnerClient {
   generateChatSummary(runId: string): Promise<ChatSummaryResult> {
     return this.postJSON<ChatSummaryResult>(`/client/workflow-runs/${encodeURIComponent(runId)}/chat-summary`, {});
   }
-  submitApproval(approvalId: string, decision: string): Promise<void> {
-    return this.postJSON<void>(`/client/approvals/${encodeURIComponent(approvalId)}/decision`, { decision });
+  submitApproval(approvalId: string, decision: string, remember?: boolean): Promise<void> {
+    return this.postJSON<void>(`/client/approvals/${encodeURIComponent(approvalId)}/decision`, {
+      decision,
+      ...(remember ? { remember: true } : {}),
+    });
   }
   answerQuestion(questionId: string, choice: string | string[]): Promise<void> {
     return this.postJSON<void>(`/client/questions/${encodeURIComponent(questionId)}/answer`, { choice });

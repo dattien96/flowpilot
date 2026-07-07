@@ -580,6 +580,9 @@ export interface ApprovalDetails {
   command?: string;
   cwd?: string;
   reason?: string;
+  /** Classifies the approval. Only "exec" (a shell command) is eligible for the
+   *  per-project "don't ask again" allowlist (BUG-246). */
+  kind?: "exec" | "file" | "mcp" | "other";
   /** Decisions the runtime offers (e.g. approve / deny / approve_for_session). */
   decisions: { value: string; label: string }[];
 }
@@ -609,7 +612,7 @@ export interface RunnerClient {
   generateChatSummary(runId: string): Promise<ChatSummaryResult>;
   /** Streaming turn: yields normalized provider events until terminal. */
   sendTurn(input: TurnInput): AsyncIterable<ProviderEventDTO>;
-  submitApproval(approvalId: string, decision: string): Promise<void>;
+  submitApproval(approvalId: string, decision: string, remember?: boolean): Promise<void>;
   answerQuestion(questionId: string, choice: string | string[]): Promise<void>;
   /** Stop the in-flight turn (POST /client/workflow-runs/{runId}/interrupt). */
   interrupt(runId: string): Promise<void>;

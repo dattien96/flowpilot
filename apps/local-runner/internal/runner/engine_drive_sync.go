@@ -135,6 +135,43 @@ func (s *InteractiveService) restoreChatSummaryFromDrive(projectID, dotFlowpilot
 	return nil, fmt.Sprintf("restored %d chat-summary entries from drive", imported)
 }
 
+// restoreApprovalAllowlistFromDrive pulls the project's
+// `context-engine/approval-allowlist.json` from Drive (if present) and merges it
+// into the local allowlist. This is what carries the user's "don't ask again"
+// shell-command rules (BUG-246) to a fresh machine — unlike ledger/catalog, the
+// allowlist is not rebuildable from git, so Drive is the only source. The merge
+// is additive (union of rules; writeApprovalAllowRules dedupes), so it never
+// clobbers rules added locally on this machine. Best-effort: Drive being absent
+// is "skipped", not an error.
+func (s *InteractiveService) restoreApprovalAllowlistFromDrive(projectID, dotFlowpilotDir string) (error, string) {
+	syncer := s.buildEngineDriveSyncer(projectID)
+	ds, ok := syncer.(*engineDriveSyncer)
+	if !ok || ds == nil {
+		return nil, "drive not connected; approval allowlist left as-is"
+	}
+	data, found, err := ds.FetchFile(context.Background(), approvalAllowlistFileName)
+	if err != nil {
+		return err, "approval-allowlist restore failed (drive read)"
+	}
+	if !found || len(bytes.TrimSpace(data)) == 0 {
+		return nil, "no approval allowlist in drive to restore"
+	}
+	var remote approvalAllowlistFile
+	if err := json.Unmarshal(data, &remote); err != nil {
+		return err, "approval-allowlist restore failed (parse)"
+	}
+	if len(remote.Allow) == 0 {
+		return nil, "no approval-allowlist rules in drive to restore"
+	}
+	before := len(readApprovalAllowRules(dotFlowpilotDir))
+	merged := append(readApprovalAllowRules(dotFlowpilotDir), remote.Allow...)
+	if err := writeApprovalAllowRules(dotFlowpilotDir, merged); err != nil {
+		return err, "approval-allowlist restore failed (write)"
+	}
+	imported := len(readApprovalAllowRules(dotFlowpilotDir)) - before
+	return nil, fmt.Sprintf("restored %d approval-allowlist rules from drive", imported)
+}
+
 // mergeChatSummaryNDJSON additively merges NDJSON chat-summary rows into ledger:
 // a row is imported only when its (run_id, feature_key) pair is not already
 // present locally. Returns the number of rows imported.

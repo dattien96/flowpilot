@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -2105,13 +2106,31 @@ func (b *turnBridge) RequestApproval(details ApprovalDetails) (string, error) {
 	// operations; everything else falls through to ask-the-human. Every
 	// auto-decision is recorded AND returned so the adapter replies to the inbound
 	// request (the provider never hangs).
-	switch s.policy.Decide(details) {
-	case PolicyAutoApprove:
-		s.recordAutoApproval(b.rs, details, "approve", "policy_allowlist")
-		return "approve", nil
-	case PolicyAutoDeny:
+	//
+	// Denylist wins over everything (including a user-remembered rule), so it is
+	// evaluated first.
+	outcome := s.policy.Decide(details)
+	if outcome == PolicyAutoDeny {
 		s.recordAutoApproval(b.rs, details, "deny", "policy_denylist")
 		return "deny", nil
+	}
+
+	// BUG-246: a shell command the user previously chose "don't ask again" for
+	// auto-approves without a card. Provider-neutral — both Claude and Codex route
+	// shell approvals through here. Only "exec" approvals are eligible, and a
+	// compound command never matches (matchesApprovalRule rejects it), so a
+	// remembered `git status` never green-lights `git status && rm -rf /`.
+	if details.Kind == "exec" && b.rs.workspaceCwd != "" {
+		dotFP := filepath.Join(b.rs.workspaceCwd, ".flowpilot")
+		if matchesApprovalRule(details.Command, readApprovalAllowRules(dotFP)) {
+			s.recordAutoApproval(b.rs, details, "approve", "policy_user_remembered")
+			return "approve", nil
+		}
+	}
+
+	if outcome == PolicyAutoApprove {
+		s.recordAutoApproval(b.rs, details, "approve", "policy_allowlist")
+		return "approve", nil
 	}
 
 	s.mu.Lock()
@@ -3361,6 +3380,14 @@ func (s *InteractiveService) refreshResumeHandleLocked(rs *interactiveRun, adapt
 
 // SubmitApprovalDecision is idempotent + first-write-wins.
 func (s *InteractiveService) SubmitApprovalDecision(approvalID, decision string) *apiErr {
+	return s.submitApprovalDecision(approvalID, decision, false)
+}
+
+// submitApprovalDecision resolves an approval card. When remember==true and the
+// user approved a shell command, it persists an executable+subcommand rule to
+// the project's approval-allowlist so the same command auto-approves next time
+// (BUG-246). Compound commands and non-exec approvals are never remembered.
+func (s *InteractiveService) submitApprovalDecision(approvalID, decision string, remember bool) *apiErr {
 	s.mu.Lock()
 	rec := s.approvals[approvalID]
 	if rec == nil {
@@ -3388,10 +3415,25 @@ func (s *InteractiveService) SubmitApprovalDecision(approvalID, decision string)
 	}
 	rec.status = "resolved"
 	rec.decision = decision
-	if rs := s.runs[rec.runID]; rs != nil && rs.pendingApprovalID == approvalID {
-		rs.pendingApprovalID = ""
+	details := rec.details
+	var rememberCwd string
+	if rs := s.runs[rec.runID]; rs != nil {
+		if rs.pendingApprovalID == approvalID {
+			rs.pendingApprovalID = ""
+		}
+		rememberCwd = rs.workspaceCwd
 	}
 	s.mu.Unlock()
+
+	// Persist the "don't ask again" rule outside the lock (file IO). Only shell
+	// commands the user actually approved are eligible; deriveApprovalRule
+	// rejects compound commands.
+	if remember && decision == "approve" && details.Kind == "exec" && rememberCwd != "" {
+		if rule, ok := deriveApprovalRule(details.Command); ok {
+			_ = addApprovalAllowRule(filepath.Join(rememberCwd, ".flowpilot"), rule)
+		}
+	}
+
 	rec.resolve <- decision
 	return nil
 }

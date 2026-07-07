@@ -31,6 +31,8 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /client/projects/{projectId}/engine/init", s.handleInitEngine)
 	mux.HandleFunc("GET /client/projects/{projectId}/engine/gate-config", s.handleGetEngineGateConfig)
 	mux.HandleFunc("POST /client/projects/{projectId}/engine/gate-config", s.handleSetEngineGateConfig)
+	mux.HandleFunc("GET /client/projects/{projectId}/engine/approval-allowlist", s.handleGetApprovalAllowlist)
+	mux.HandleFunc("POST /client/projects/{projectId}/engine/approval-allowlist/remove", s.handleRemoveApprovalAllowRule)
 	mux.HandleFunc("POST /client/workflow-runs", s.handleStartRun)
 	mux.HandleFunc("GET /client/workflow-runs/{runId}", s.handleGetRun)
 	mux.HandleFunc("GET /client/workflow-runs/{runId}/steps-runtime", s.handleGetWorkflowStepsRuntime)
@@ -343,12 +345,15 @@ func (s *InteractiveService) handleInterrupt(w http.ResponseWriter, r *http.Requ
 func (s *InteractiveService) handleApprovalDecision(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Decision string `json:"decision"`
+		// Remember persists a "don't ask again" rule for this shell command
+		// (BUG-246). Ignored for non-exec approvals and compound commands.
+		Remember bool `json:"remember"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_request", "invalid request body"))
 		return
 	}
-	if e := s.SubmitApprovalDecision(r.PathValue("approvalId"), body.Decision); e != nil {
+	if e := s.submitApprovalDecision(r.PathValue("approvalId"), body.Decision, body.Remember); e != nil {
 		writeInteractiveError(w, e)
 		return
 	}

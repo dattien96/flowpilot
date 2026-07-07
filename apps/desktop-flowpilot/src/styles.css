@@ -3187,6 +3187,23 @@ input {
   margin-top: 10px;
 }
 
+/* "Don't ask again" opt-in on shell-command approvals (BUG-246). */
+.approval-remember {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 0.85em;
+  color: var(--muted, #888);
+  cursor: pointer;
+}
+.approval-remember input {
+  cursor: pointer;
+}
+.approval-remember code {
+  font-family: var(--mono);
+}
+
 /* grouped ask cards (concurrent approvals/questions folded into one collapsible block) */
 .card-group {
   max-width: 560px;

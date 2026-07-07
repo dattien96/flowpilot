@@ -259,7 +259,7 @@ interface AppState {
   selectStep(stepId: string): void;
   setScenario(scenario: ScenarioName): void;
   sendPrompt(prompt: string, skills?: string[], attachments?: PromptAttachment[]): Promise<void>;
-  approve(approvalId: string, decision: string): Promise<void>;
+  approve(approvalId: string, decision: string, remember?: boolean): Promise<void>;
   answer(questionId: string, choice: string | string[]): Promise<void>;
   stop(): Promise<void>;
   reconnect(): Promise<void>;
@@ -1137,7 +1137,7 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
-  async approve(approvalId, decision) {
+  async approve(approvalId, decision, remember) {
     // Resolve the specific card the user clicked, not "whatever is pending" — a turn
     // can fan out several parallel tool calls awaiting approval at once, so more than
     // one entry may be in pendingApprovals simultaneously (BUG-157).
@@ -1151,7 +1151,7 @@ export const useStore = create<AppState>((set, get) => ({
       ),
     }));
     try {
-      await get().client.submitApproval(approvalId, decision);
+      await get().client.submitApproval(approvalId, decision, remember);
     } catch (err) {
       // BUG-172: mirror sendPrompt's error handling — an unhandled rejection here
       // (e.g. a transient network blip while YOLO fires off rapid step
