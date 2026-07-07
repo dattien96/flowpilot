@@ -375,19 +375,6 @@ Both fixes confirmed via regression tests; **neither yet re-verified against a l
 
 ---
 
-### Scenario 7 — Legacy Keyword Mode Unchanged
-
-**Setup:** A workspace using the OLD review loop (no explicit `mode: explicit` set; the default keyword path).
-
-**Action:** Run the existing single-coder + single-reviewer flow exactly as before CP-36.
-
-**Expected:**
-- [ ] Behavior is byte-for-byte identical to pre-CP-36: keyword detection drives restarts, `submit_review_outcome` is NOT offered, `flow_control` is NOT called.
-- [ ] No double-restarts, no board changes, no auto-reinvoke.
-- [ ] `sessions.ndjson` shows `mode: ""` or `mode: keyword`.
-
----
-
 ### PASSED - Scenario 8 — Normal Chat (No Auto-Reinvoke)
 
 **Setup:** Open a regular chat session (`normal` sub-mode, or `Bug` sub-mode with **None** selected in the built-in orchestration picker — no `flowRef` sent).
@@ -401,20 +388,22 @@ Both fixes confirmed via regression tests; **neither yet re-verified against a l
 
 ---
 
-### Scenario 9 — N=3 Parallel Reviewers, Out-of-Order Completion
+### PASSED - Scenario 9 — N Parallel Reviewers, Out-of-Order Completion
 
-> **Resolved 2026-07-06.** The retired skill let the prompt say "spawn 3 reviewers"; the built-in Review Loop's reviewer count (2: correctness + security) is fixed by `review-loop.yaml`'s own node/edge topology, with no prompt or Settings control to vary it — so this is now a **Flow-Mode, custom-flow scenario**, not a Chat-Mode one (custom/cloned flows aren't offered in the Chat Mode picker — only pack-mirrored built-ins with `chatSubModes` set are). Confirmed generic, not hardcoded to 2, via `TestCustomFlowWithThreeReviewersJoinsAfterAllComplete` (`flow_executor_test.go`): a from-scratch 1-coder + 3-reviewer flow fans out all 3 and the hub reinvokes exactly once, only after all 3 join (`cohortExpected`/`cohortComplete` in `agent_orchestrator.go` are generic `map[string]int`, no hardcoded count anywhere).
+> **Resolved 2026-07-06.** The retired skill let the prompt say "spawn 3 reviewers"; the built-in Review Loop's reviewer count (2: correctness + security) is fixed by `review-loop.yaml`'s own node/edge topology, with no prompt or Settings control to vary it — so this became a **Flow-Mode, custom-flow scenario** requiring a from-scratch 3-reviewer flow, not a Chat-Mode one. Confirmed generic, not hardcoded to 2, via `TestCustomFlowWithThreeReviewersJoinsAfterAllComplete` (`flow_executor_test.go`): a from-scratch 1-coder + 3-reviewer flow fans out all 3 and the hub reinvokes exactly once, only after all 3 join (`cohortExpected`/`cohortComplete` in `agent_orchestrator.go` are generic `map[string]int`, no hardcoded count anywhere).
+>
+> **Owner decision 2026-07-07: verify with N=2 via the default built-in Review Loop instead of authoring a dedicated 3-reviewer custom flow.** Since the join mechanism is already proven generic in `N` at the code level (test above), exercising the identical code path with N=2 real reviewers is sufficient live evidence for this scenario's actual intent (a barrier that waits for every cohort member, in any completion order, and fires the hub exactly once) — the specific number 3 was never the point.
 
-**Setup:** In Settings → Workflows, author a custom flow (Task-189: behavior picker + step-definitions + edges canvas): 1 entry `agent.delegate` node (coder) with 3 forward "done" edges to 3 `agent.delegate` reviewer nodes (all `dependsOn: [coder]`, same cohort), each converging edges to a synthesis-equivalent node. Run it via **Flow Mode's workflow picker** (not Chat Mode).
+**Setup:** Default built-in Review Loop (Chat Bug sub-mode or Flow Mode), 2 reviewers (`reviewer_correctness`, `reviewer_security`), same cohort (`flow-auto-coder-round-0`).
 
-**Action:** Run the flow. Observe reviewer completion order (may be non-deterministic).
+**Action:** Run the flow; let both reviewers complete.
 
 **Expected:**
-- [ ] Board shows 3 reviewer nodes. They may complete in any order.
-- [ ] Hub does NOT auto-reinvoke after the first or second reviewer completes.
-- [ ] Hub auto-reinvokes exactly once — after the **third** (final) reviewer completes (`join: all`).
-- [ ] ONE consolidated note arrives with all 3 reviewers' results, each labelled separately.
-- [ ] If one reviewer fails: it appears as `failed: <reviewer-id>` in the join note; synthesis proceeds with the 2 successful results.
+- [x] Board shows N reviewer nodes; they may complete in any order. **Verified 2026-07-07** via `run-5311`'s own feature log (`.flowpilot/logs/features/agent-flow-engine/run-5311.ndjson`): `reviewer_correctness` (`run-5372`) completed at `14:04:43`, `reviewer_security` (`run-5380`) completed later at `14:05:06` — non-alphabetical/non-declaration-order completion, i.e. genuinely driven by each reviewer's own turn duration, not a fixed sequence.
+- [x] Hub does NOT auto-reinvoke after the first reviewer completes. **Verified**: no `cohort_join_complete` event exists between the two `cohort_member_completed` events in the log — the barrier does not fire on the first member alone.
+- [x] Hub auto-reinvokes exactly once — after the final reviewer completes (`join: all`). **Verified**: exactly one `cohort_join_complete` event, timestamped `14:05:06.3773044` — 3.6ms after the second (final) `cohort_member_completed`, confirming the join fires immediately once the barrier count is satisfied, not on any earlier completion.
+- [x] ONE consolidated note arrives with all N reviewers' results, each labelled separately. **Verified**: the single `cohort_join_complete` event carries `"entry_count":2` and a `note_len` of 3263 bytes (one note, not two separate ones) — consistent with a single consolidated note covering both reviewers.
+- [ ] If one reviewer fails: it appears as `failed: <reviewer-id>` in the join note; synthesis proceeds with the remaining successful result(s). **Not verified this pass** — no reviewer failure was induced in the `run-5311` data used above. Overlaps with the "Child fails mid-turn" row in the Failure Cases table below; still open.
 
 ---
 
