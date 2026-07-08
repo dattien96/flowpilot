@@ -1760,6 +1760,64 @@ func TestApplyFlowControlLoopingResetsStepsSynchronously(t *testing.T) {
 	}
 }
 
+// TestApplyFlowControlContinueClearsRejectedLoopStatus is the regression test
+// for run-13821: the hub submitted "continue" from a rejected review verdict,
+// but applyFlowControl left loop.Status="rejected". The re-entered coder then
+// completed while the loop was not advancing, so tryAdvanceFlowFromNode refused
+// to spawn the next reviewer cohort and the coder's full output leaked into
+// the main hub prompt as a fallback note.
+func TestApplyFlowControlContinueClearsRejectedLoopStatus(t *testing.T) {
+	svc, runID := newFlowEngineTestRun(t)
+	svc.agentOrchestrator.setLoop(runID, AgentLoopState{
+		Status:     "rejected",
+		GateReason: "previous reviewer verdict",
+		Cap:        5,
+		RoundCap:   5,
+		Round:      1,
+		OpenIssues: 2,
+	})
+
+	result, err := svc.applyFlowControl(runID, FlowControlInput{Status: "continue", Summary: "retry the fix"})
+	if err != nil {
+		t.Fatalf("applyFlowControl(continue): %v", err)
+	}
+	if result.NextAction != "looping" {
+		t.Fatalf("NextAction = %q, want looping", result.NextAction)
+	}
+	snap := svc.agentGraphSnapshot(runID)
+	if got := snap.LoopState.Status; got != "running" {
+		t.Fatalf("loop.Status = %q, want running so coder completion can auto-advance", got)
+	}
+	if got := snap.LoopState.GateReason; got != "" {
+		t.Fatalf("loop.GateReason = %q, want cleared stale reviewer verdict", got)
+	}
+}
+
+func TestSubmitFlowControlRejectsDuplicateSubmissionForSameTurn(t *testing.T) {
+	svc, runID := newFlowEngineTestRun(t)
+	svc.agentOrchestrator.setLoop(runID, AgentLoopState{Status: "running", Cap: 5, RoundCap: 5})
+
+	svc.mu.Lock()
+	rs := svc.runs[runID]
+	rs.currentTurnID = "turn-synthesis-1"
+	bridge := &turnBridge{svc: svc, rs: rs}
+	svc.mu.Unlock()
+
+	if _, err := bridge.SubmitFlowControl(FlowControlInput{Status: "continue", Summary: "changes requested"}); err != nil {
+		t.Fatalf("first SubmitFlowControl(continue): %v", err)
+	}
+	if _, err := bridge.SubmitFlowControl(FlowControlInput{Status: "escalate", Summary: "stale second verdict"}); err == nil {
+		t.Fatal("second SubmitFlowControl in the same provider turn returned nil error, want duplicate rejection")
+	}
+	snap := svc.agentGraphSnapshot(runID)
+	if got := snap.LoopState.Status; got != "running" {
+		t.Fatalf("loop.Status = %q after duplicate submission, want still running", got)
+	}
+	if strings.Contains(snap.LoopState.GateReason, "stale second verdict") {
+		t.Fatalf("duplicate submission mutated GateReason: %q", snap.LoopState.GateReason)
+	}
+}
+
 // TestStartTurnPreservesOriginalPromptOverInternalFlowEngineTurns is the
 // regression test for BUG-235: the chat-history list titles a run from
 // lastPrompt (Navigator.tsx: runTitle(item.lastPrompt || item.lastMessage)).

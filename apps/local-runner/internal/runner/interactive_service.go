@@ -589,10 +589,13 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 				st.GateReason = fmt.Sprintf("cap %d reached with %d open issue(s)", cap, st.OpenIssues)
 				result = FlowControlResult{Status: "blocked", Round: st.Round, Cap: cap, OpenIssues: st.OpenIssues, NextAction: "awaiting_user"}
 			} else {
-				if st.Status == "" || st.Status == "blocked" {
-					st.Status = "running"
-					st.BlockReason = ""
-				}
+				// A new loop round is actively running, regardless of the prior
+				// reviewer verdict state ("rejected", "blocked", etc.). Leaving
+				// stale verdict statuses here prevents the re-entered coder from
+				// auto-advancing to the next reviewer cohort when it completes.
+				st.Status = "running"
+				st.BlockReason = ""
+				st.GateReason = ""
 				result = FlowControlResult{Status: "continue", Round: st.Round, Cap: cap, OpenIssues: st.OpenIssues, NextAction: "looping"}
 			}
 			return st
@@ -2242,6 +2245,9 @@ func (b *turnBridge) SubmitFlowControl(in FlowControlInput) (FlowControlResult, 
 	targetRunID := b.rs.id
 	if b.rs.parentRunID != "" {
 		targetRunID = b.rs.parentRunID
+	}
+	if b.rs.currentTurnID != "" && b.svc.flowControlSubmittedForTurn(targetRunID, b.rs.currentTurnID) {
+		return FlowControlResult{}, fmt.Errorf("flow control already submitted for this provider turn")
 	}
 	return b.svc.applyFlowControl(targetRunID, in)
 }
