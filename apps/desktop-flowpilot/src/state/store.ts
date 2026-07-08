@@ -1386,26 +1386,13 @@ export const useStore = create<AppState>((set, get) => ({
     const wasActive = get().runId === runId;
     // Optimistically remove from local history so the UI responds immediately.
     set((s) => ({ runHistory: s.runHistory.filter((item) => item.runId !== runId) }));
-    // If the deleted run was the active session, reset the main panel to idle.
+    // If the deleted run was the active session, reset the whole workspace back to
+    // an empty new chat — reuse resetRun() (not a hand-rolled subset) so Flow Timeline
+    // and Agents panel state (mainRunId, agentRuns, workflowStepRuntime, etc.) and the
+    // orchestration/agent-focus streams are cleared the same way a fresh chat start
+    // clears them (BUG-258).
     if (wasActive) {
-      set({
-        runId: undefined,
-        activeStepId: undefined,
-        status: "idle",
-        timeline: [],
-        artifacts: [],
-        pendingApprovals: [],
-        pendingQuestions: [],
-        latestTokenUsage: undefined,
-        lastTurnInput: undefined,
-        recoverable: false,
-        pendingAccountSwitch: undefined,
-        accountSwitchLoading: false,
-        pendingProviderSwitch: undefined,
-        providerSwitchLoading: false,
-        _accountSwitchTriedIds: [],
-        _streamingAssistantId: undefined,
-      });
+      get().resetRun();
     }
     try {
       await client.deleteRun(runId);

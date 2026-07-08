@@ -243,6 +243,52 @@ test("selectProject resets the active chat run when switching projects", async (
   assert.deepEqual(state.pendingApprovals, []);
 });
 
+test("deleteHistoryRun on the active chat clears Flow Timeline and Agents panel state, not just the timeline (BUG-258)", async () => {
+  const client = makeClient({
+    listRunHistory: async () => [],
+    deleteRun: async () => {},
+  });
+  seedStore(client, [
+    { runId: "current-run", projectId: "project-1", providerKey: "codex", status: "completed", startedAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" },
+  ]);
+  useStore.setState({
+    runId: "current-run",
+    mainRunId: "current-run",
+    activeAgentRunId: "agent-1",
+    status: "running",
+    timeline: [{ kind: "prompt", id: "prompt-1", text: "keep current timeline" }],
+    agentRuns: [{ runId: "agent-1", agentName: "coder", role: "coder", providerKey: "codex", status: "completed", createdAt: "2026-01-01T00:00:00Z" }],
+    agentGraphSnapshot: { parentRunId: "current-run", runs: [], edges: [], busMessages: [], loopState: { status: "running", round: 1, roundCap: 3 } },
+    workflowStepRuntime: [{ stepId: "step-1", stepType: "flow-agent-delegate", status: "DONE", retryCount: 0, requiresApproval: false, nodeId: "coder" }],
+    workflowStepRuntimeMeta: { provider: "codex", model: "gpt-5", yoloMode: false },
+    _runSnapshots: {
+      "current-run": {
+        timeline: [],
+        artifacts: [],
+        status: "completed",
+        pendingApprovals: [],
+        pendingQuestions: [],
+        recoverable: false,
+        lastEventSeq: 3,
+      },
+    },
+  });
+
+  await useStore.getState().deleteHistoryRun("current-run");
+
+  const state = useStore.getState();
+  assert.equal(state.runId, undefined);
+  assert.equal(state.mainRunId, undefined);
+  assert.equal(state.activeAgentRunId, undefined);
+  assert.equal(state.status, "idle");
+  assert.deepEqual(state.timeline, []);
+  assert.deepEqual(state.agentRuns, []);
+  assert.equal(state.agentGraphSnapshot, undefined);
+  assert.deepEqual(state.workflowStepRuntime, []);
+  assert.deepEqual(state.workflowStepRuntimeMeta, {});
+  assert.deepEqual(state.runHistory, []);
+});
+
 test("setChatStartMode clears flowRef and builtin orchestration options on any mode change", () => {
   seedStore(makeClient(), []);
   useStore.setState({ flowRef: "flowpilot-core-flow-pack/review-loop", builtinOrchestrationOptions: [
