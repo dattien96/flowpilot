@@ -89,26 +89,48 @@ type FlowContextPackage struct {
 
 // BuildFlowContextPackage assembles a deterministic FlowContextPackage for the
 // Plan step of a Flow Mode run. It is a thin context.Background() wrapper
-// around BuildFlowContextPackageCtx, kept for the ~30 existing call sites
+// around buildFlowContextPackage, kept for the ~30 existing call sites
 // (mostly tests) that predate context propagation. Production code that has a
 // live context (currently behaviorContextProduce) should call
 // BuildFlowContextPackageCtx directly so a future context-aware source can
 // observe caller cancellation/timeout.
 func BuildFlowContextPackage(workspace string, hints FlowContextHints) (FlowContextPackage, error) {
-	return BuildFlowContextPackageCtx(context.Background(), workspace, hints)
+	return buildFlowContextPackage(context.Background(), workspace, hints, nil)
 }
 
-// BuildFlowContextPackageCtx assembles a deterministic FlowContextPackage for
+// BuildFlowContextPackageCtx is BuildFlowContextPackage with an explicit
+// context, for callers (currently behaviorContextProduce) that have a live
+// ctx to propagate so a future context-aware source can observe caller
+// cancellation/timeout.
+func BuildFlowContextPackageCtx(ctx context.Context, workspace string, hints FlowContextHints) (FlowContextPackage, error) {
+	return buildFlowContextPackage(ctx, workspace, hints, nil)
+}
+
+// BuildFlowContextPackageWithSources is BuildFlowContextPackageCtx with an
+// explicit enabled-source-ID list, used when the active flow declares a
+// `contexts.<name>.sources` binding (CP-44 P-4 / Task-194). A nil or empty
+// sourceIDs falls back to the default built-in set, identical to
+// BuildFlowContextPackageCtx.
+func BuildFlowContextPackageWithSources(ctx context.Context, workspace string, hints FlowContextHints, sourceIDs []string) (FlowContextPackage, error) {
+	return buildFlowContextPackage(ctx, workspace, hints, sourceIDs)
+}
+
+// buildFlowContextPackage assembles a deterministic FlowContextPackage for
 // the Plan step of a Flow Mode run. It resolves the feature key from the user
 // prompt (a pre-processing step, not a ContextSource — CP-44 P-2/Task-192
 // T-1, since every source needs the resolved feature key), then runs the
 // enabled ContextSourceRegistry sources and projects their sections onto the
-// package's legacy fields.
+// package's legacy fields (CP-44 P-3/Task-193 introduces the typed Sections
+// slice on top of this without changing this projection).
+//
+// enabledSourceIDs selects which registered sources run; nil/empty uses
+// defaultContextSourceIDs, reproducing the pre-CP-44 3-step hardcoded
+// retrieval exactly (CP-44 P-4/Task-194 T-1/T-3).
 //
 // A missing catalog, unresolvable feature key, or absent ledger files produce
 // a package with Warnings instead of an error so a Flow Mode run degrades
 // gracefully (CP-41 P-2, Task-168 T-4).
-func BuildFlowContextPackageCtx(ctx context.Context, workspace string, hints FlowContextHints) (FlowContextPackage, error) {
+func buildFlowContextPackage(ctx context.Context, workspace string, hints FlowContextHints, enabledSourceIDs []string) (FlowContextPackage, error) {
 	pkg := FlowContextPackage{
 		WorkflowRunID: hints.WorkflowRunID,
 		PlanStepRunID: hints.PlanStepRunID,
@@ -130,13 +152,17 @@ func BuildFlowContextPackageCtx(ctx context.Context, workspace string, hints Flo
 		pkg.FeatureKey, pkg.FeatureConfidence = resolvePackageFeature(hints.UserPrompt, catalog, &pkg.Warnings)
 	}
 
-	// Step 2: collect the enabled context sources (CP-44 P-2).
+	// Step 2: collect the enabled context sources (CP-44 P-2/P-4).
+	ids := enabledSourceIDs
+	if len(ids) == 0 {
+		ids = defaultContextSourceIDs
+	}
 	enrichedHints := hints
 	enrichedHints.Workspace = workspace
 	enrichedHints.FeatureKey = pkg.FeatureKey
 	enrichedHints.FeatureConfidence = pkg.FeatureConfidence
 
-	sections, sourceWarnings := DefaultContextSourceRegistry().Collect(ctx, defaultContextSourceIDs, enrichedHints)
+	sections, sourceWarnings := DefaultContextSourceRegistry().Collect(ctx, ids, enrichedHints)
 	pkg.Sections = sections
 	pkg.Warnings = append(pkg.Warnings, sourceWarnings...)
 	projectContextSections(&pkg, sections)

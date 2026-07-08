@@ -2,9 +2,11 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 
+	"flowpilot-runner/internal/agentpack"
 	"flowpilot-runner/internal/changeledger"
 	"flowpilot-runner/internal/featurecatalog"
 )
@@ -26,6 +28,40 @@ var defaultContextSourceIDs = []string{
 	string(ContextSourceFeatureHistory),
 	string(ContextSourceChatSummary),
 	string(ContextSourceSourceExcerpt),
+}
+
+// ValidateFlowContextSources checks every `contexts.<name>.sources` entry
+// declared in def resolves to a registered ContextSource, failing fast at
+// flow-load time rather than letting a flow silently run without an unknown
+// source (CP-44 P-4/D-4, Task-194 T-2). Mirrors the unknown-behavior-id check
+// agentpack.ValidateFlowDefinition already does for node.Behavior, but lives
+// in the runner package because ContextSourceRegistry does.
+func ValidateFlowContextSources(def agentpack.FlowDefinition) error {
+	registry := DefaultContextSourceRegistry()
+	for name, binding := range def.Contexts {
+		for _, id := range binding.Sources {
+			if _, err := registry.Resolve(id); err != nil {
+				return fmt.Errorf("flow %q context %q declares unknown source %q: %w", def.ID, name, id, err)
+			}
+		}
+	}
+	return nil
+}
+
+// resolveEnabledContextSourceIDs finds the context binding a context-producing
+// node fills — by matching one of the node's declared Outputs keys against
+// def.Contexts (the same key convention rag-harness.yaml uses: node output
+// "main_context" binds to contexts.main_context) — and returns its declared
+// Sources. Returns nil (meaning: use the default built-in set) when the node
+// has no matching binding, or the binding declares no Sources (CP-44 P-4,
+// Task-194 T-1/T-4).
+func resolveEnabledContextSourceIDs(def agentpack.FlowDefinition, node agentpack.FlowNode) []string {
+	for outputKey := range node.Outputs {
+		if binding, ok := def.Contexts[outputKey]; ok && len(binding.Sources) > 0 {
+			return binding.Sources
+		}
+	}
+	return nil
 }
 
 // registerBuiltinContextSources adds the three migrated built-in sources to r.

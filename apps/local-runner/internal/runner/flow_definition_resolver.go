@@ -118,6 +118,9 @@ func (r *FlowDefinitionResolver) ResolveFlowRef(ctx context.Context, flowRef str
 			if err := agentpack.ValidateFlowDefinition(record.Definition); err != nil {
 				return FlowDefinitionRecord{}, fmt.Errorf("flow definition resolver: stored definition for %q failed validation: %w", flowRef, err)
 			}
+			if err := ValidateFlowContextSources(record.Definition); err != nil {
+				return FlowDefinitionRecord{}, fmt.Errorf("flow definition resolver: stored definition for %q failed validation: %w", flowRef, err)
+			}
 			return record, nil
 		}
 	}
@@ -137,6 +140,9 @@ func (r *FlowDefinitionResolver) ResolveBuiltin(ctx context.Context, packID, flo
 			return FlowDefinitionRecord{}, fmt.Errorf("flow definition resolver: mirror lookup for %s/%s: %w", packID, flowID, err)
 		} else if ok {
 			if err := agentpack.ValidateFlowDefinition(record.Definition); err != nil {
+				return FlowDefinitionRecord{}, fmt.Errorf("flow definition resolver: mirrored definition for %s/%s failed validation: %w", packID, flowID, err)
+			}
+			if err := ValidateFlowContextSources(record.Definition); err != nil {
 				return FlowDefinitionRecord{}, fmt.Errorf("flow definition resolver: mirrored definition for %s/%s failed validation: %w", packID, flowID, err)
 			}
 			return record, nil

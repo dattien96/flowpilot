@@ -101,6 +101,13 @@ type FlowPolicy struct {
 
 type FlowContextBinding struct {
 	Ref string
+	// Sources lists enabled ContextSource IDs for this binding (CP-44 P-4 /
+	// Task-194). Empty means "use the runner's default built-in set" — a flow
+	// that declares no sources keeps the pre-CP-44 behavior unchanged.
+	// Validated against the registered context sources at flow-load time
+	// (see runner.ValidateFlowContextSources); an unknown ID here fails flow
+	// resolution rather than silently running without it.
+	Sources []string
 }
 
 type FlowNode struct {
@@ -623,6 +630,7 @@ func flowFromMap(m map[string]any) (FlowDefinition, error) {
 			binding := FlowContextBinding{}
 			if rawMap, ok := raw.(map[string]any); ok {
 				binding.Ref = stringField(rawMap, "ref")
+				binding.Sources = stringSliceField(rawMap, "sources")
 			} else {
 				binding.Ref = fmt.Sprint(raw)
 			}
