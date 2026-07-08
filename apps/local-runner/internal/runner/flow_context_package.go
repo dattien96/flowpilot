@@ -55,6 +55,12 @@ type FlowContextHints struct {
 	Workspace         string
 	FeatureKey        string
 	FeatureConfidence FlowContextConfidence
+
+	// MCPDriverRef optionally names a driver reference for the mcp.driver
+	// context source (CP-44 P-5/Task-195), e.g. an MCP-connected driver file
+	// id. Empty means no MCP-backed source is configured for this run; the
+	// mcp.driver source degrades to an empty, warning-free section.
+	MCPDriverRef string
 }
 
 // FlowContextPackage is the deterministic context package assembled by the Plan

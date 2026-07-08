@@ -64,11 +64,15 @@ func resolveEnabledContextSourceIDs(def agentpack.FlowDefinition, node agentpack
 	return nil
 }
 
-// registerBuiltinContextSources adds the three migrated built-in sources to r.
+// registerBuiltinContextSources adds the three migrated built-in sources plus
+// the mcp.driver external source to r. mcp.driver is registered (so a flow
+// can validate/enable it via `contexts.<name>.sources`, Task-194) but is not
+// part of defaultContextSourceIDs — it only runs when a flow opts in.
 func registerBuiltinContextSources(r *ContextSourceRegistry) {
 	mustRegisterContextSource(r, &featureHistorySource{priority: 2})
 	mustRegisterContextSource(r, &chatSummarySource{priority: 5})
 	mustRegisterContextSource(r, &sourceExcerptSource{priority: 4})
+	mustRegisterContextSource(r, &mcpDriverSource{priority: 6})
 }
 
 // mustRegisterContextSource panics on a registration conflict among the
